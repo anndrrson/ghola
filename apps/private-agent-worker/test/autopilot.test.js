@@ -4,7 +4,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  controlAutopilotSession,
   createAutopilotSession,
+  resetAutopilotExecutionControlsForTests,
   runAutopilotTick,
   stopAutopilotLoop,
 } from "../src/execution/autopilot.js";
@@ -31,11 +33,96 @@ describe("autonomous autopilot engine", () => {
   });
 
   afterEach(() => {
+    resetAutopilotExecutionControlsForTests();
     resetEnv();
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
-  it("creates a ready bounded session and submits one dry-run autonomous order", async () => {
+  it("does not submit or resurrect state when control lands during market or AI work", async (t) => {
+    for (const phase of ["market", "ai"]) {
+      for (const action of ["pause", "kill"]) {
+        await t.test(`${phase}:${action}`, async () => {
+          const state = createWorkerState(dir);
+          const recipient = { recipient_id: `did:key:${phase}-${action}` };
+          const now = new Date(Date.now() + 60_000);
+          const session = await createTestSession({
+            state,
+            recipient,
+            now,
+            owner: `owner_${phase}_${action}`,
+            aiDirect: phase === "ai",
+          });
+          const delayed = deferred();
+          const started = deferred();
+          let submitCalls = 0;
+          const tick = runAutopilotTick({
+            sessionId: session.autopilot_session_id,
+            state,
+            recipient,
+            now: new Date(now.getTime() + 60_000),
+            env: process.env,
+            marketSnapshot: phase === "market"
+              ? async () => { started.resolve(); return delayed.promise; }
+              : undefined,
+            decideOrder: phase === "ai"
+              ? async () => { started.resolve(); return delayed.promise; }
+              : undefined,
+            executeOrder: async () => { submitCalls += 1; return executionReceipt(); },
+          });
+          await started.promise;
+          const control = controlAutopilotSession({
+            sessionId: session.autopilot_session_id,
+            action,
+            state,
+            recipient,
+            now: new Date(now.getTime() + 61_000),
+          });
+          await waitForLatch(state, session.autopilot_session_id, action);
+          delayed.resolve(phase === "market" ? forcedMarket(now) : { ok: true });
+          assert.deepEqual(await tick, { ok: false, error: "autopilot_control_requested" });
+          const acknowledged = await control;
+          assert.equal(acknowledged.session.status, action === "kill" ? "killed" : "paused");
+          assert.equal(acknowledged.session.control_latch, null);
+          assert.equal(submitCalls, 0);
+          const stored = await state.getAutopilotSession(session.autopilot_session_id);
+          assert.equal(stored.status, action === "kill" ? "killed" : "paused");
+          assert.equal(stored.order_count, 0);
+        });
+      }
+    }
+  });
+
+  it("keeps live-configured generic autopilot verification-only", async () => {
+    const state = createWorkerState(dir);
+    const recipient = { recipient_id: "did:key:generic-containment" };
+    const now = new Date(Date.now() + 60_000);
+    const session = await createTestSession({ state, recipient, now, owner: "owner_generic_containment" });
+    let executeCalls = 0;
+    let verifyCalls = 0;
+    const tick = await runAutopilotTick({
+      sessionId: session.autopilot_session_id,
+      state,
+      recipient,
+      now: new Date(now.getTime() + 60_000),
+      env: process.env,
+      executeOrder: async () => { executeCalls += 1; return executionReceipt(); },
+      verifyOrder: async (request) => {
+        verifyCalls += 1;
+        return verificationReceipt(request.work_order_commitment);
+      },
+    });
+
+    assert.equal(tick.ok, true);
+    assert.equal(tick.mode, "no_submit");
+    assert.equal(verifyCalls, 1);
+    assert.equal(executeCalls, 0);
+    const stored = await state.getAutopilotSession(session.autopilot_session_id);
+    assert.equal(stored.autonomous_live_submit_enabled, false);
+    assert.equal(stored.autonomous_execution_mode, "no_submit");
+    assert.equal(stored.order_count, 0);
+  });
+
+  it("creates a ready bounded session and verifies one autonomous proposal", async () => {
     const state = createWorkerState(dir);
     const recipient = { recipient_id: "did:key:test-autopilot-worker" };
     const now = new Date(Date.now() + 60_000);
@@ -62,6 +149,7 @@ describe("autonomous autopilot engine", () => {
 
     assert.equal(session.status, "running");
     assert.equal(session.execution_enabled, true);
+    assert.equal(session.autonomous_live_submit_enabled, false);
     assert.equal(session.venue_access.jupiter.status, "ready");
 
     const tick = await runAutopilotTick({
@@ -73,26 +161,26 @@ describe("autonomous autopilot engine", () => {
     });
 
     assert.equal(tick.ok, true);
+    assert.equal(tick.mode, "no_submit");
     assert.equal(tick.proposal.venue_id, "jupiter");
     assert.equal(tick.proposal.operation_class, "swap");
-    assert.equal(tick.receipt.status, "submitted");
+    assert.equal(tick.receipt.status, "verified_no_funds");
 
     const updated = await state.getAutopilotSession(session.autopilot_session_id);
-    assert.equal(updated.order_count, 1);
-    assert.equal(updated.daily_notional_used_bucket, "50");
+    assert.equal(updated.order_count, 0);
+    assert.equal(updated.daily_notional_used_bucket, "0");
 
     const eventTypes = (await state
       .listAutopilotEvents(session.autopilot_session_id))
       .map((event) => event.type);
-    assert.deepEqual(eventTypes.slice(-8), [
+    assert.deepEqual(eventTypes.slice(-7), [
       "agent_tick",
       "position_update",
       "proposal",
       "ai_score",
+      "guardrail",
       "execution",
-      "live_order_submitted",
       "receipt",
-      "venue_reconcile",
     ]);
   });
 
@@ -136,16 +224,17 @@ describe("autonomous autopilot engine", () => {
     assert.equal(tick.proposal.instruction.order.live_order_mode, undefined);
   });
 
-  it("blocks a running session before another order when marked loss reaches its circuit", async () => {
+  it("contains a live-configured protective exit without invoking submit", async () => {
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "full_ticket";
     const state = createWorkerState(dir);
-    const recipient = { recipient_id: "did:key:test-autopilot-worker" };
+    const recipient = { recipient_id: "did:key:test-autopilot-protective" };
     const now = new Date(Date.now() + 60_000);
     const session = await createAutopilotSession({
       body: {
-        owner_commitment: "owner_autopilot_loss_circuit",
+        owner_commitment: "owner_autopilot_protective_containment",
         session_policy: {
           ai_direct_enabled: false,
-          venue_allowlist: ["jupiter"],
+          venue_allowlist: ["hyperliquid"],
           market_allowlist: ["SOL-USD"],
           max_notional_bucket: "50",
           max_position_notional_bucket: "100",
@@ -162,29 +251,41 @@ describe("autonomous autopilot engine", () => {
       startLoop: false,
       now,
     });
-    const opened = await runAutopilotTick({
-      sessionId: session.autopilot_session_id,
-      state,
-      recipient,
-      now: new Date(now.getTime() + 60_000),
-      env: process.env,
+    await state.putAutopilotPosition(session.autopilot_session_id, {
+      venue_id: "hyperliquid",
+      market: "SOL-USD",
+      side: "buy",
+      signed_quantity: 0.5,
+      average_entry_price: 100,
+      last_mark_price: 100,
+      mark_updated_at: now.toISOString(),
+      estimated_exposure_notional_usd: 50,
+      realized_pnl_usd: 0,
+      unrealized_pnl_usd: 0,
+      estimated_total_pnl_usd: 0,
+      managed_by_session: true,
+      last_work_order_commitment: "legacy_autopilot_order",
     });
-    assert.equal(opened.ok, true);
-
     process.env.PRIVATE_AGENT_AUTOPILOT_FORCE_PRICE = "80";
+    let executeCalls = 0;
     const stopped = await runAutopilotTick({
       sessionId: session.autopilot_session_id,
       state,
       recipient,
       now: new Date(now.getTime() + 90_000),
       env: process.env,
+      executeOrder: async () => { executeCalls += 1; return executionReceipt(); },
     });
-    assert.deepEqual(stopped, { ok: false, error: "loss_limit_reached" });
+    assert.equal(stopped.ok, false);
+    assert.equal(stopped.error, "autonomous_live_submit_contained");
+    assert.equal(executeCalls, 0);
     const blocked = await state.getAutopilotSession(session.autopilot_session_id);
     assert.equal(blocked.status, "risk_halted");
     assert.equal(blocked.execution_enabled, false);
-    assert.equal(blocked.order_count, 1);
+    assert.equal(blocked.order_count, 0);
     assert.equal(blocked.risk_summary.estimated_total_pnl_usd, -10);
+    const events = await state.listAutopilotEvents(session.autopilot_session_id);
+    assert.equal(events.some((event) => event.type === "live_order_submitted"), false);
   });
 
   it("resumes persisted running autopilot sessions after worker restart", async () => {
@@ -222,6 +323,26 @@ describe("autonomous autopilot engine", () => {
       events.some((event) => event.message === "Autopilot worker loop resumed after restart."),
       true,
     );
+  });
+
+  it("does not resume a persisted session with an unresolved control latch", async () => {
+    process.env.PRIVATE_AGENT_AUTOPILOT_INITIAL_DELAY_MS = "60000";
+    const state = createWorkerState(dir);
+    const recipient = { recipient_id: "did:key:test-autopilot-latch" };
+    const now = new Date(Date.now() + 60_000);
+    const session = await createTestSession({ state, recipient, now, owner: "owner_restart_latch" });
+    const stored = await state.getAutopilotSession(session.autopilot_session_id);
+    stored.control_epoch = 1;
+    stored.control_latch = { action: "kill", requested_at: now.toISOString() };
+    stored.execution_enabled = false;
+    await state.putAutopilotSession(stored);
+
+    const resumed = await resumeAutopilotLoops({ state, recipient, now });
+
+    assert.equal(resumed.resumed, 0);
+    const preserved = await state.getAutopilotSession(session.autopilot_session_id);
+    assert.equal(preserved.control_latch.action, "kill");
+    assert.equal(preserved.control_epoch, 1);
   });
 
   it("keeps agents active with no-submit verification when live submit is not armed", async () => {
@@ -330,7 +451,7 @@ describe("autonomous autopilot engine", () => {
     assert.equal(tick.receipt.checks.transaction_broadcast, false);
   });
 
-  it("lets AI-direct mode originate a bounded dry-run order after deterministic validation", async () => {
+  it("lets AI mode originate a bounded no-submit proposal after deterministic validation", async () => {
     process.env.PRIVATE_AGENT_AI_DIRECT_ENABLED = "true";
     process.env.PRIVATE_AGENT_AI_DIRECT_MODE = "mock";
     process.env.PRIVATE_AGENT_AI_MAX_DECISIONS_PER_HOUR = "12";
@@ -361,7 +482,8 @@ describe("autonomous autopilot engine", () => {
       now,
     });
 
-    assert.equal(session.strategy.ai_can_execute_directly, true);
+    assert.equal(session.strategy.ai_can_execute_directly, false);
+    assert.equal(session.strategy.live_submit_enabled, false);
     assert.equal(session.session_policy.ai_direct_enabled, true);
 
     const tick = await runAutopilotTick({
@@ -373,6 +495,7 @@ describe("autonomous autopilot engine", () => {
     });
 
     assert.equal(tick.ok, true);
+    assert.equal(tick.mode, "no_submit");
     assert.equal(tick.proposal.decision_source, "ai_direct_order_v1");
     assert.match(tick.proposal.decision_id, /^aidec_/);
     assert.equal(tick.proposal.venue_id, "jupiter");
@@ -383,21 +506,19 @@ describe("autonomous autopilot engine", () => {
     assert.equal(decisions[0].status, "accepted");
 
     const positions = await state.listAutopilotPositions(session.autopilot_session_id);
-    assert.equal(positions.length, 1);
-    assert.equal(positions[0].venue_id, "jupiter");
+    assert.equal(positions.length, 0);
 
     const eventTypes = (await state
       .listAutopilotEvents(session.autopilot_session_id))
       .map((event) => event.type);
-    assert.deepEqual(eventTypes.slice(-8), [
+    assert.deepEqual(eventTypes.slice(-7), [
       "position_update",
       "ai_decision",
       "proposal",
       "ai_score",
+      "guardrail",
       "execution",
-      "live_order_submitted",
       "receipt",
-      "venue_reconcile",
     ]);
   });
 
@@ -451,3 +572,82 @@ describe("autonomous autopilot engine", () => {
     assert.equal(eventTypes.includes("execution"), false);
   });
 });
+
+async function createTestSession({ state, recipient, now, owner, aiDirect = false }) {
+  if (aiDirect) {
+    process.env.PRIVATE_AGENT_AI_DIRECT_ENABLED = "true";
+    process.env.PRIVATE_AGENT_AI_DIRECT_MODE = "mock";
+    process.env.PRIVATE_AGENT_AI_MAX_DECISIONS_PER_HOUR = "12";
+  }
+  return createAutopilotSession({
+    body: {
+      owner_commitment: owner,
+      session_policy: {
+        ai_direct_enabled: aiDirect,
+        decision_model: aiDirect ? "ai_direct_order_v1" : undefined,
+        venue_allowlist: ["jupiter"],
+        market_allowlist: ["SOL-USD"],
+        max_notional_bucket: "50",
+        max_position_notional_bucket: "100",
+        max_daily_notional_bucket: "250",
+        max_order_count: 10,
+        ttl_ms: 2 * 60 * 60_000,
+        max_slippage_bps: 50,
+      },
+    },
+    recipient,
+    state,
+    provider: "test",
+    startLoop: false,
+    now,
+  });
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+async function waitForLatch(state, sessionId, action) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const session = await state.getAutopilotSession(sessionId);
+    if (session?.control_latch?.action === action) return session;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error("control latch was not persisted");
+}
+
+function forcedMarket(now) {
+  return {
+    product_id: "SOL-USD",
+    price: 100,
+    mid: 100,
+    change_24h: 1,
+    spread_bps: 10,
+    fetched_at: now.toISOString(),
+    live_status: "forced",
+    stale: false,
+  };
+}
+
+function executionReceipt() {
+  return {
+    status: "submitted",
+    work_order_commitment: "work_order_test",
+    provider_ref_commitment: "provider_test",
+    result_commitment: "result_test",
+    fill_summary: null,
+  };
+}
+
+function verificationReceipt(workOrderCommitment) {
+  return {
+    status: "verified_no_funds",
+    work_order_commitment: workOrderCommitment,
+    provider_ref_commitment: "provider_verification_test",
+    result_commitment: "result_verification_test",
+    checks: { transaction_broadcast: false },
+  };
+}

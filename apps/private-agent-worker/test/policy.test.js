@@ -117,6 +117,24 @@ describe("full-ticket execution policy", () => {
     });
   });
 
+  it("keeps only the authoritative size field after normalization", () => {
+    const quoteSized = hyperliquidFullTicketOrder({
+      size_mode: "quote",
+      quote_size: "10",
+      base_size: "0.5",
+    });
+    const baseSized = hyperliquidFullTicketOrder({
+      size_mode: "base",
+      quote_size: "10",
+      base_size: "0.5",
+    });
+
+    assert.equal(quoteSized.order.quote_size, "10");
+    assert.equal(quoteSized.order.base_size, null);
+    assert.equal(baseSized.order.base_size, "0.5");
+    assert.equal(baseSized.order.quote_size, null);
+  });
+
   it("rejects live submit when a conditional agent mandate has no proof", async () => {
     const instruction = hyperliquidFullTicketOrder({}, {
       mandate: {

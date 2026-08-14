@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { applyEstimatedFill } from "./run-risk.js";
+import { autonomousLiveSubmitEnabled } from "./autonomous-submit-containment.js";
 
 // Deterministic directional strategy: watch a user-drawn price level, fire a
 // single bounded entry when the level is broken/retested/swept, then monitor
@@ -88,6 +89,9 @@ export async function runGuardedLevelTriggerTick({
   appendEvent,
   executeOrder,
   verifyOrder,
+  checkpoint = async () => {},
+  commitExecution = async (task) => task(),
+  marketSnapshot = null,
 }) {
   const policy = session.session_policy;
   const mandate = policy.agent_mandate || null;
@@ -110,7 +114,14 @@ export async function runGuardedLevelTriggerTick({
     return { ok: false, error: "venue_not_ready" };
   }
   const product = primaryProduct(policy);
-  const market = await marketPrice({ product, env, fetchImpl, now });
+  const market = marketSnapshot || await marketPrice({
+    product,
+    network: policy.execution_network,
+    env,
+    fetchImpl,
+    now,
+  });
+  await checkpoint();
   await appendEvent(state, session, "agent_tick", "Level-trigger evaluated market data.", {
     product_id: product,
     price: market.price,
@@ -135,7 +146,7 @@ export async function runGuardedLevelTriggerTick({
     }
     return runExit({
       session, state, recipient, now, env, venue, product, side, price, mandate,
-      directive, reason: decision.reason, appendEvent, executeOrder,
+      directive, reason: decision.reason, appendEvent, executeOrder, checkpoint, commitExecution,
     });
   }
 
@@ -154,8 +165,11 @@ export async function runGuardedLevelTriggerTick({
     return { ok: false, error: "entry_not_triggered", phase: "watching" };
   }
 
-  const notional = Math.min(bucketToUsd(policy.max_notional_bucket), remainingDailyNotional(session));
-  if (notional <= 0) {
+  const exactNotional = Number(policy.exact_notional_usd);
+  const notional = Number.isFinite(exactNotional) && exactNotional > 0
+    ? exactNotional
+    : bucketToUsd(policy.max_notional_bucket);
+  if (!(notional > 0) || notional > bucketToUsd(policy.max_notional_bucket) || notional > remainingDailyNotional(session)) {
     await appendEvent(state, session, "guardrail", "Daily notional cap is exhausted; no entry attempted.", {
       max_daily_notional_bucket: policy.max_daily_notional_bucket,
     }, now);
@@ -168,14 +182,7 @@ export async function runGuardedLevelTriggerTick({
     ...mandate,
     condition_proof: mintConditionProof({ session, mandate, venueId: instruction.venue_id, now }),
   };
-  const workOrderCommitment = `level_entry_${digest({
-    session: session.autopilot_session_id,
-    venue,
-    product,
-    side,
-    trigger: mandate.trigger_level,
-    now: now.toISOString(),
-  })}`;
+  const workOrderCommitment = levelTriggerWorkOrderCommitments(session)[0];
 
   await appendEvent(state, session, "proposal", "Level trigger satisfied; bounded entry built with a satisfied condition proof.", {
     venue_id: instruction.venue_id,
@@ -187,14 +194,15 @@ export async function runGuardedLevelTriggerTick({
     reason: entry.reason,
   }, now);
 
-  // ---- Live submit gate (shared with the autopilot live flag) ----
-  if (!levelTriggerLiveSubmitEnabled({ env, venue })) {
+  // Autonomous entry is verification-only until distributed execution claims exist.
+  if (!levelTriggerLiveSubmitEnabled({ state, policy, venue })) {
     if (directive.proved_once) {
       await persistDirective(state, session, directive, now);
-      return { ok: false, error: "awaiting_live_submit", phase: "watching" };
+      return { ok: false, error: "autonomous_live_submit_contained", phase: "watching" };
     }
     let receipt;
     try {
+      await checkpoint();
       receipt = await verifyOrder({
         venue_id: instruction.venue_id,
         operation_class: instruction.operation_class,
@@ -206,6 +214,7 @@ export async function runGuardedLevelTriggerTick({
         recipient,
         state,
       });
+      await checkpoint();
     } catch (error) {
       await appendEvent(state, session, "risk_reject", "Level-trigger no-submit verification failed.", {
         error: String(error?.code || error?.message || "no_submit_verification_failed"),
@@ -214,8 +223,8 @@ export async function runGuardedLevelTriggerTick({
     }
     directive.proved_once = true;
     await persistDirective(state, session, directive, now);
-    await appendEvent(state, session, "guardrail", "Live submit gate is disabled; entry proven without broadcasting.", {
-      required_env: "PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT=true",
+    await appendEvent(state, session, "guardrail", "Autonomous broadcasting is disabled by worker safety containment; entry proven without broadcasting.", {
+      containment: "distributed_execution_claim_unavailable",
       execution_mode: "no_submit",
       broadcast_performed: false,
     }, now);
@@ -233,7 +242,7 @@ export async function runGuardedLevelTriggerTick({
 
   let receipt;
   try {
-    receipt = await executeOrder({
+    receipt = await commitExecution(() => executeOrder({
       venue_id: instruction.venue_id,
       operation_class: instruction.operation_class,
       work_order_commitment: workOrderCommitment,
@@ -243,7 +252,7 @@ export async function runGuardedLevelTriggerTick({
       execution: executionForVenue(session, venue),
       recipient,
       state,
-    });
+    }));
   } catch (error) {
     await appendEvent(state, session, "risk_reject", "Level-trigger entry submission failed; no position opened.", {
       venue_id: instruction.venue_id,
@@ -259,6 +268,7 @@ export async function runGuardedLevelTriggerTick({
   directive.entry_price = price;
   directive.entry_notional = notional;
   directive.entry_at = now.toISOString();
+  directive.entry_work_order_commitment = workOrderCommitment;
   directive.deadline_at = deadlineFor(mandate, now);
   stored.directive = directive;
   stored.order_count = Number(stored.order_count || 0) + 1;
@@ -317,7 +327,7 @@ export async function runGuardedLevelTriggerTick({
   return { ok: true, phase: "in_position", receipt };
 }
 
-async function runExit({ session, state, recipient, now, env, venue, product, side, price, mandate, directive, reason, appendEvent, executeOrder }) {
+async function runExit({ session, state, recipient, now, env, venue, product, side, price, mandate, directive, reason, appendEvent, executeOrder, checkpoint, commitExecution }) {
   const exitSide = side === "buy" ? "sell" : "buy";
   const notional = Number(directive.entry_notional) > 0
     ? Number(directive.entry_notional)
@@ -325,19 +335,36 @@ async function runExit({ session, state, recipient, now, env, venue, product, si
   const instruction = instructionForVenue({ venue, product, side: exitSide, price, notional, policy: session.session_policy, now, env });
   if (instruction.order) instruction.order.reduce_only = true;
   const orderMarket = instruction.order?.market || product;
-  const workOrderCommitment = `level_exit_${digest({
-    session: session.autopilot_session_id,
-    venue,
-    product,
-    reason,
-    now: now.toISOString(),
-  })}`;
+  const workOrderCommitment = levelTriggerWorkOrderCommitments(session, directive.entry_work_order_commitment)[1];
 
-  const liveSubmit = levelTriggerLiveSubmitEnabled({ env, venue });
+  const liveSubmit = levelTriggerLiveSubmitEnabled({ state, policy: session.session_policy, venue });
+  if (!liveSubmit) {
+    const stored = await state.getAutopilotSession(session.autopilot_session_id) || session;
+    stored.directive = {
+      ...directive,
+      phase: "exit_blocked",
+      exit_reason: reason,
+      exit_at: null,
+    };
+    stored.status = "paused";
+    stored.execution_enabled = false;
+    stored.next_step = "Exit condition met, but autonomous broadcasting is contained. Close the position manually.";
+    stored.updated_at = now.toISOString();
+    await state.putAutopilotSession(stored);
+    await appendEvent(state, stored, "risk_reject", "Level-trigger exit was not broadcast because autonomous live submit is contained.", {
+      reason,
+      containment: "distributed_execution_claim_unavailable",
+      broadcast_performed: false,
+      reduce_only: true,
+      work_order_commitment: workOrderCommitment,
+    }, now);
+    return { ok: false, error: "autonomous_live_submit_contained", phase: "exit_blocked", reason };
+  }
   let receipt = null;
   if (liveSubmit) {
     try {
-      receipt = await executeOrder({
+      await checkpoint();
+      receipt = await commitExecution(() => executeOrder({
         venue_id: instruction.venue_id,
         operation_class: instruction.operation_class,
         work_order_commitment: workOrderCommitment,
@@ -347,7 +374,7 @@ async function runExit({ session, state, recipient, now, env, venue, product, si
         execution: executionForVenue(session, venue),
         recipient,
         state,
-      });
+      }));
     } catch (error) {
       await appendEvent(state, session, "risk_reject", "Level-trigger exit submission failed; position requires manual review.", {
         reason,
@@ -427,6 +454,7 @@ function normalizeDirective(directive, side, now) {
       entry_price: directive.entry_price ?? null,
       entry_notional: directive.entry_notional ?? null,
       entry_at: directive.entry_at || null,
+      entry_work_order_commitment: directive.entry_work_order_commitment || null,
       deadline_at: directive.deadline_at || null,
       armed_at: directive.armed_at || now.toISOString(),
       exit_reason: directive.exit_reason || null,
@@ -443,6 +471,7 @@ function normalizeDirective(directive, side, now) {
     entry_price: null,
     entry_notional: null,
     entry_at: null,
+    entry_work_order_commitment: null,
     deadline_at: null,
     armed_at: now.toISOString(),
     exit_reason: null,
@@ -488,16 +517,21 @@ function bandFraction(mandate) {
   return effective / 10_000;
 }
 
-async function marketPrice({ product, env, fetchImpl, now }) {
+async function marketPrice({ product, network, env, fetchImpl, now }) {
   if (env.PRIVATE_AGENT_AUTOPILOT_SIGNAL_MODE === "force") {
     const price = Number(env.PRIVATE_AGENT_AUTOPILOT_FORCE_PRICE || "100");
     return { product_id: product, price, mid: price, live_status: "forced", stale: !(price > 0) };
   }
-  const url = `https://api.coinbase.com/api/v3/brokerage/market/products/${encodeURIComponent(product)}`;
-  const response = await fetchImpl(url, { cache: "no-store", headers: { "cache-control": "no-cache" } });
+  const url = network === "testnet" ? "https://api.hyperliquid-testnet.xyz/info" : "https://api.hyperliquid.xyz/info";
+  const response = await fetchImpl(url, {
+    method: "POST",
+    cache: "no-store",
+    headers: { "content-type": "application/json", "cache-control": "no-cache" },
+    body: JSON.stringify({ type: "allMids" }),
+  });
   if (!response.ok) throw new Error(`market_snapshot_${response.status}`);
   const body = await response.json();
-  const price = numberValue(body.price || body.mid_market_price || body.pricebook?.best_bid);
+  const price = numberValue(body?.[venueMarketSymbol("hyperliquid", product)]);
   return { product_id: product, price, mid: price, live_status: "live", stale: !(Number(price) > 0) };
 }
 
@@ -605,6 +639,8 @@ function workerSessionPolicy(session) {
     max_daily_notional_bucket: policy.max_daily_notional_bucket,
     max_order_count: policy.max_order_count,
     max_slippage_bps: policy.max_slippage_bps,
+    execution_network: policy.execution_network,
+    exact_notional_usd: policy.exact_notional_usd,
     allowed_order_types: policy.allowed_order_types,
     kill_switch: policy.kill_switch === true || session.status === "killed",
     expires_at: session.expires_at,
@@ -619,7 +655,7 @@ function readyVenues(session) {
 function primaryProduct(policy) {
   const markets = (policy.market_allowlist || []).map(normalizeMarket);
   const product = markets.find((market) => market.endsWith("-USD")) || markets[0] || "SOL-USD";
-  return ["BTC-USD", "ETH-USD", "SOL-USD"].includes(product) ? product : "SOL-USD";
+  return ["BTC-USD", "ETH-USD", "SOL-USD", "HYPE-USD"].includes(product) ? product : "SOL-USD";
 }
 
 function publicPosition(position) {
@@ -659,12 +695,32 @@ function defaultExecutionMode(venue) {
   return "ghola_pooled";
 }
 
-export function levelTriggerLiveSubmitEnabled({ env, venue }) {
-  if (String(env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT || "").trim().toLowerCase() === "true") {
-    return true;
-  }
-  return venue === "hyperliquid" &&
-    String(env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET || "").trim().toLowerCase() !== "true";
+export function levelTriggerLiveSubmitEnabled({ state, policy, venue } = {}) {
+  return autonomousLiveSubmitEnabled({ strategyId: "level_trigger_v1", state, policy, venue });
+}
+
+export function levelTriggerWorkOrderCommitments(session, entryCommitment = null) {
+  const policy = session.session_policy || {};
+  const venue = policy.venue_allowlist?.[0] || null;
+  const product = primaryProduct(policy);
+  const side = policy.agent_side === "sell" ? "sell" : "buy";
+  const entry = entryCommitment || `level_entry_${digest({
+    session: session.autopilot_session_id,
+    policy: policy.policy_commitment,
+    venue,
+    product,
+    side,
+    phase: "entry",
+  })}`;
+  const exit = `level_exit_${digest({
+    session: session.autopilot_session_id,
+    policy: policy.policy_commitment,
+    venue,
+    product,
+    phase: "exit",
+    entry_work_order_commitment: entry,
+  })}`;
+  return [entry, exit];
 }
 
 function remainingDailyNotional(session) {

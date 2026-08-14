@@ -185,8 +185,8 @@ function normalizeOrder(order, venueId, operationClass) {
   return {
     market: normalizeMarket(market, venueId),
     side,
-    base_size: baseSize,
-    quote_size: quoteSize,
+    base_size: sizeMode === "base" ? baseSize : null,
+    quote_size: sizeMode === "quote" ? quoteSize : null,
     limit_price: limitPrice,
     order_type: orderType,
     size_mode: sizeMode,
@@ -304,6 +304,12 @@ export async function enforceInstructionPolicy({ body, instruction, session, sta
     }
     if (instruction.order.reduce_only !== true && maxNotional > 0 && notional > maxNotional) {
       throw new ExecutionPolicyError("execution instruction exceeds max notional bucket");
+    }
+    if (policy?.strategy_id === "level_trigger_v1") {
+      const exactNotional = Number(policy.exact_notional_usd);
+      if (!Number.isFinite(exactNotional) || Math.abs(notional - exactNotional) > 1e-8) {
+        throw new ExecutionPolicyError("level trigger exact notional mismatch");
+      }
     }
     await enforceGlobalSessionDailyNotional({ body, instruction, state, policy, notional });
     await enforceHyperliquidTinyFillPolicy({ body, instruction, state, notional });

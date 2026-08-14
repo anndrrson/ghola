@@ -106,6 +106,136 @@ describe("coinbase live adapter", () => {
     assert.equal(JSON.stringify(result).includes("api_private_key"), false);
   });
 
+  it("sends exactly the authoritative quote size for IOC orders", async () => {
+    const oldDryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    const oldLiveMode = process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+    const oldProducts = process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS;
+    delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = "full";
+    process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS = "BTC-USD";
+    const requestBodies = [];
+    try {
+      await submitCoinbaseExecution({
+        credential: testCredential(),
+        clientOrderId: "ghola_quote_ioc",
+        fetchImpl: async (url, init) => {
+          if (String(url).endsWith("/key_permissions")) {
+            return new Response(JSON.stringify({ can_view: true, can_trade: true, can_transfer: false }), { status: 200 });
+          }
+          requestBodies.push(JSON.parse(init.body));
+          return new Response(JSON.stringify({ success: true, order_id: "order_ioc" }), { status: 200 });
+        },
+        instruction: {
+          operation_class: "spot_limit_order",
+          order: {
+            market: "BTC-USD",
+            side: "buy",
+            size_mode: "quote",
+            quote_size: "25",
+            base_size: "0.0004",
+            limit_price: "62500",
+            tif: "ioc",
+            post_only: false,
+          },
+        },
+      });
+    } finally {
+      if (oldDryRun === undefined) delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+      else process.env.PRIVATE_AGENT_VENUE_DRY_RUN = oldDryRun;
+      if (oldLiveMode === undefined) delete process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+      else process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = oldLiveMode;
+      if (oldProducts === undefined) delete process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS;
+      else process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS = oldProducts;
+    }
+
+    assert.deepEqual(requestBodies[0].order_configuration.sor_limit_ioc, {
+      quote_size: "25",
+      limit_price: "62500",
+      rfq_disabled: true,
+    });
+  });
+
+  it("rejects ambiguous dual-size orders without an authoritative mode before network access", async () => {
+    const oldDryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    const oldLiveMode = process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+    delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = "full";
+    let fetchCalls = 0;
+    try {
+      await assert.rejects(
+        () => submitCoinbaseExecution({
+          credential: testCredential(),
+          clientOrderId: "ghola_ambiguous_size",
+          fetchImpl: async () => {
+            fetchCalls += 1;
+            throw new Error("network should not be reached");
+          },
+          instruction: {
+            operation_class: "spot_limit_order",
+            order: {
+              market: "BTC-USD",
+              side: "buy",
+              quote_size: "25",
+              base_size: "0.0004",
+              limit_price: "62500",
+              tif: "ioc",
+            },
+          },
+        }),
+        /one authoritative size mode/,
+      );
+    } finally {
+      if (oldDryRun === undefined) delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+      else process.env.PRIVATE_AGENT_VENUE_DRY_RUN = oldDryRun;
+      if (oldLiveMode === undefined) delete process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+      else process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = oldLiveMode;
+    }
+    assert.equal(fetchCalls, 0);
+  });
+
+  it("caps the authoritative base size even when a smaller quote size is also present", async () => {
+    const oldDryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    const oldLiveMode = process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+    const oldMaxNotional = process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD;
+    delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = "full";
+    process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD = "100";
+    let fetchCalls = 0;
+    try {
+      await assert.rejects(
+        () => submitCoinbaseExecution({
+          credential: testCredential(),
+          clientOrderId: "ghola_base_cap",
+          fetchImpl: async () => {
+            fetchCalls += 1;
+            throw new Error("network should not be reached");
+          },
+          instruction: {
+            operation_class: "spot_limit_order",
+            order: {
+              market: "BTC-USD",
+              side: "buy",
+              size_mode: "base",
+              base_size: "2",
+              quote_size: "1",
+              limit_price: "100",
+              tif: "ioc",
+            },
+          },
+        }),
+        /exceeds notional cap/,
+      );
+    } finally {
+      if (oldDryRun === undefined) delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+      else process.env.PRIVATE_AGENT_VENUE_DRY_RUN = oldDryRun;
+      if (oldLiveMode === undefined) delete process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+      else process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = oldLiveMode;
+      if (oldMaxNotional === undefined) delete process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD;
+      else process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD = oldMaxNotional;
+    }
+    assert.equal(fetchCalls, 0);
+  });
+
   it("blocks products outside the Coinbase live allowlist before key preflight", async () => {
     const oldDryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
     const oldLiveMode = process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;

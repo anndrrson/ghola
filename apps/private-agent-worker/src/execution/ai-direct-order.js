@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { generateText, Output } from "ai";
 import { z } from "zod";
 
 const VENUES = ["jupiter", "phoenix", "hyperliquid", "coinbase_advanced"];
@@ -57,6 +56,7 @@ export async function decideAiDirectOrder({
   }
 
   try {
+    const { generateText, Output } = await import("ai");
     const { output, usage, response } = await generateText({
       model: modelId,
       output: Output.object({ schema: aiDirectDecisionSchema }),

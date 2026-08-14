@@ -235,6 +235,9 @@ export async function verifyCoinbaseNoSubmit({
 }
 
 function assertCoinbaseLiveEnabled(credential, instruction) {
+  const sizeFields = instruction?.order
+    ? coinbaseOrderSizeFields(instruction.order)
+    : null;
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") return;
   if (process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE !== "full") {
     throw new CoinbaseExecutionError("coinbase live submit is disabled", 503);
@@ -255,7 +258,7 @@ function assertCoinbaseLiveEnabled(credential, instruction) {
   if (productAllowlist.size === 0 && process.env.NODE_ENV === "production") {
     throw new CoinbaseExecutionError("coinbase product allowlist is not configured", 503);
   }
-  const notional = estimateCoinbaseNotionalUsd(instruction.order);
+  const notional = estimateCoinbaseNotionalUsd(instruction.order, sizeFields);
   const maxNotional = Math.min(
     capUsd(
       process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD ||
@@ -304,6 +307,7 @@ export async function reconcileCoinbaseExecution({ credential, instruction, clie
 
 function buildCoinbaseOrderPayload(instruction, clientOrderId, credential) {
   const order = instruction.order;
+  const sizeFields = coinbaseOrderSizeFields(order);
   const side = order.side === "buy" ? "BUY" : "SELL";
   const payload = {
     client_order_id: clientOrderId,
@@ -316,8 +320,7 @@ function buildCoinbaseOrderPayload(instruction, clientOrderId, credential) {
   }
   if (instruction.operation_class === "spot_market_order") {
     payload.order_configuration.market_market_ioc = {
-      ...(order.quote_size ? { quote_size: order.quote_size } : {}),
-      ...(order.base_size ? { base_size: order.base_size } : {}),
+      ...sizeFields,
     };
     return payload;
   }
@@ -327,13 +330,35 @@ function buildCoinbaseOrderPayload(instruction, clientOrderId, credential) {
       ? "limit_limit_fok"
       : "limit_limit_gtc";
   payload.order_configuration[key] = {
-    ...(order.quote_size ? { quote_size: order.quote_size } : {}),
-    ...(order.base_size ? { base_size: order.base_size } : {}),
+    ...sizeFields,
     limit_price: order.limit_price,
     ...(key === "limit_limit_gtc" ? { post_only: order.post_only === true } : {}),
     rfq_disabled: true,
   };
   return payload;
+}
+
+function coinbaseOrderSizeFields(order) {
+  const quoteSize = positiveDecimalText(order.quote_size);
+  const baseSize = positiveDecimalText(order.base_size);
+  const sizeMode = order.size_mode === "quote" || order.size_mode === "base"
+    ? order.size_mode
+    : quoteSize && !baseSize
+      ? "quote"
+      : baseSize && !quoteSize
+        ? "base"
+        : null;
+  if (sizeMode === "quote" && quoteSize) return { quote_size: quoteSize };
+  if (sizeMode === "base" && baseSize) return { base_size: baseSize };
+  throw new CoinbaseExecutionError("coinbase order requires one authoritative size mode", 400);
+}
+
+function positiveDecimalText(value) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const text = String(value).trim();
+  if (!/^\d+(?:\.\d+)?$/.test(text)) return null;
+  const parsed = Number(text);
+  return text && Number.isFinite(parsed) && parsed > 0 ? text : null;
 }
 
 async function coinbaseRequest({ credential, method, path, body, fetchImpl }) {
@@ -386,10 +411,10 @@ function coinbaseProductAllowlist() {
   );
 }
 
-function estimateCoinbaseNotionalUsd(order) {
-  const quote = Number.parseFloat(String(order.quote_size || ""));
+function estimateCoinbaseNotionalUsd(order, sizeFields) {
+  const quote = Number.parseFloat(String(sizeFields?.quote_size || ""));
   if (Number.isFinite(quote) && quote > 0) return quote;
-  const base = Number.parseFloat(String(order.base_size || ""));
+  const base = Number.parseFloat(String(sizeFields?.base_size || ""));
   const price = Number.parseFloat(String(order.limit_price || ""));
   if (Number.isFinite(base) && Number.isFinite(price) && base > 0 && price > 0) return base * price;
   return 0;

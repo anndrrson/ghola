@@ -252,12 +252,20 @@ export async function readHyperliquidAccountSnapshot({
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
     return {
       version: 1,
+      platform_class: "hyperliquid_style_market",
+      venue_id: "hyperliquid",
       status: "ready_to_trade",
       account_source: accountSource,
+      network: credential.network,
       trading_enabled: true,
       equity_bucket: "ready",
+      margin_utilization_bucket: "unknown",
       position_count: 0,
+      position_total_count: 0,
+      positions_truncated: false,
       open_order_count: 0,
+      open_order_total_count: 0,
+      open_orders_truncated: false,
       stream_status: "snapshot",
       positions: [],
       open_orders: [],
@@ -287,6 +295,7 @@ export async function readHyperliquidAccountSnapshot({
     openOrders,
     userFills,
     accountSource,
+    network: credential.network,
     streamStatus: "snapshot",
   });
 }
@@ -303,12 +312,20 @@ export async function createHyperliquidAccountStateStream({
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
     const snapshot = {
       version: 1,
+      platform_class: "hyperliquid_style_market",
+      venue_id: "hyperliquid",
       status: "ready_to_trade",
       account_source: accountSource,
+      network: credential.network,
       trading_enabled: true,
       equity_bucket: "ready",
+      margin_utilization_bucket: "unknown",
       position_count: 0,
+      position_total_count: 0,
+      positions_truncated: false,
       open_order_count: 0,
+      open_order_total_count: 0,
+      open_orders_truncated: false,
       stream_status: "live",
       positions: [],
       open_orders: [],
@@ -372,6 +389,7 @@ export async function createHyperliquidAccountStateStream({
         openOrders: currentOpenOrders,
         userFills: currentFills,
         accountSource,
+        network: credential.network,
         streamStatus,
       }),
     });
@@ -441,6 +459,10 @@ export async function createHyperliquidAccountStateStream({
     }
     const channel = message?.channel;
     const data = message?.data;
+    if (channel === "pong") {
+      onEvent({ event: "stream_status", data: accountStreamStatus("live") });
+      return false;
+    }
     if (channel === "clearinghouseState") {
       currentState = data?.clearinghouseState || data;
       return true;
@@ -464,6 +486,7 @@ export async function createHyperliquidAccountStateStream({
       return fills.length > 0;
     }
     if (channel === "orderUpdates") {
+      currentOpenOrders = mergeHyperliquidOpenOrderUpdates(currentOpenOrders, data);
       onEvent({ event: "account_event", data: sanitizeOrderUpdate(data) });
       return true;
     }
@@ -492,11 +515,45 @@ export async function createHyperliquidAccountStateStream({
   };
 }
 
+function mergeHyperliquidOpenOrderUpdates(current, data) {
+  const updates = Array.isArray(data) ? data : data ? [data] : [];
+  let next = Array.isArray(current) ? [...current] : [];
+  for (const update of updates) {
+    const order = update?.order || update;
+    const key = hyperliquidOpenOrderKey(order);
+    if (!key) continue;
+    next = next.filter((candidate) => hyperliquidOpenOrderKey(candidate) !== key);
+    const status = stringValue(update?.status ?? order?.status).toLowerCase();
+    if (!TERMINAL_HYPERLIQUID_ORDER_STATUSES.has(status)) {
+      next.push({ ...order, status: status || "open" });
+    }
+  }
+  return next;
+}
+
+const TERMINAL_HYPERLIQUID_ORDER_STATUSES = new Set([
+  "filled",
+  "canceled",
+  "cancelled",
+  "rejected",
+  "margin_canceled",
+  "margincanceled",
+  "expired",
+]);
+
+function hyperliquidOpenOrderKey(order) {
+  const oid = stringValue(order?.oid);
+  if (oid) return `oid:${oid}`;
+  const cloid = stringValue(order?.cloid);
+  return cloid ? `cloid:${cloid}` : "";
+}
+
 function hyperliquidAccountStateFromParts({
   state,
   openOrders,
   userFills,
   accountSource,
+  network,
   streamStatus = "snapshot",
 }) {
   const accountValue = decimalNumber(
@@ -505,23 +562,33 @@ function hyperliquidAccountStateFromParts({
       "0",
   );
   const positions = sanitizePositions(state?.assetPositions);
+  const positionTotalCount = activePositionCount(state?.assetPositions);
   const sanitizedOpenOrders = sanitizeOpenOrders(openOrders);
+  const openOrderTotalCount = Array.isArray(openOrders) ? openOrders.length : 0;
   const recentFills = sanitizeFills(userFills);
   const positionCount = positions.length;
   const openOrderCount = sanitizedOpenOrders.length;
   const status = accountValue >= 5 ? "ready_to_trade" : "needs_funds";
   return {
     version: 1,
+    platform_class: "hyperliquid_style_market",
+    venue_id: "hyperliquid",
     status,
     account_source: accountSource,
+    network: network === "testnet" ? "testnet" : "mainnet",
     trading_enabled: status === "ready_to_trade",
     equity_bucket: accountValue <= 0
       ? "none"
       : accountValue < 5
         ? "low"
         : "ready",
+    margin_utilization_bucket: hyperliquidMarginUtilizationBucket(state),
     position_count: positionCount,
+    position_total_count: positionTotalCount,
+    positions_truncated: positionTotalCount > positionCount,
     open_order_count: openOrderCount,
+    open_order_total_count: openOrderTotalCount,
+    open_orders_truncated: openOrderTotalCount > openOrderCount,
     stream_status: streamStatus,
     positions,
     open_orders: sanitizedOpenOrders,
@@ -535,14 +602,41 @@ function hyperliquidAccountStateFromParts({
   };
 }
 
+export function hyperliquidMarginUtilizationBucket(state) {
+  const accountValue = finiteNumber(
+    state?.marginSummary?.accountValue ?? state?.crossMarginSummary?.accountValue,
+  );
+  const marginUsed = finiteNumber(
+    state?.marginSummary?.totalMarginUsed ?? state?.crossMarginSummary?.totalMarginUsed,
+  );
+  if (accountValue == null || marginUsed == null || accountValue < 0 || marginUsed < 0) return "unknown";
+  if (marginUsed === 0) return "none";
+  if (accountValue === 0) return "90%+";
+  const utilizationPct = marginUsed / accountValue * 100;
+  if (!Number.isFinite(utilizationPct) || utilizationPct < 0) return "unknown";
+  if (utilizationPct < 25) return "<25%";
+  if (utilizationPct < 50) return "25-50%";
+  if (utilizationPct < 75) return "50-75%";
+  if (utilizationPct < 90) return "75-90%";
+  return "90%+";
+}
+
+function activePositionCount(assetPositions) {
+  if (!Array.isArray(assetPositions)) return 0;
+  return assetPositions
+    .map((item) => item?.position || item)
+    .filter((position) => decimalNumber(position?.szi ?? "0") !== 0)
+    .length;
+}
+
 function sanitizePositions(assetPositions) {
   if (!Array.isArray(assetPositions)) return [];
   return assetPositions
     .map((item) => item?.position || item)
     .filter((position) => decimalNumber(position?.szi ?? "0") !== 0)
-    .slice(0, POSITION_WINDOW)
     .map((position) => {
       const size = decimalNumber(position?.szi ?? "0");
+      const risk = hyperliquidPositionRiskBuckets(position);
       return {
         position_commitment: commitment("hyperliquid_position", {
           coin: position?.coin,
@@ -555,8 +649,63 @@ function sanitizePositions(assetPositions) {
         size_bucket: decimalBucket(Math.abs(size)),
         entry_price_bucket: decimalBucket(position?.entryPx),
         unrealized_pnl_bucket: signedDecimalBucket(position?.unrealizedPnl),
+        leverage_bucket: risk.leverage_bucket,
+        liquidation_distance_bucket: risk.liquidation_distance_bucket,
       };
-    });
+    })
+    .sort((left, right) => liquidationRiskRank(left.liquidation_distance_bucket) - liquidationRiskRank(right.liquidation_distance_bucket))
+    .slice(0, POSITION_WINDOW);
+}
+
+function liquidationRiskRank(value) {
+  return ["at_or_beyond", "<2%", "unknown", "2-5%", "5-10%", "10-25%", "25%+", "none"].indexOf(value);
+}
+
+export function hyperliquidPositionRiskBuckets(position) {
+  const size = finiteNumber(position?.szi);
+  const absoluteSize = size == null ? null : Math.abs(size);
+  const positionValue = finiteNumber(position?.positionValue);
+  const liquidationPrice = finiteNumber(position?.liquidationPx);
+  const leverage = finiteNumber(position?.leverage?.value ?? position?.leverage);
+  const currentPrice = absoluteSize != null && absoluteSize > 0 && positionValue != null && Math.abs(positionValue) > 0
+    ? Math.abs(positionValue) / absoluteSize
+    : null;
+
+  return {
+    leverage_bucket: leverageBucket(leverage),
+    liquidation_distance_bucket: liquidationDistanceBucket({
+      size,
+      currentPrice,
+      liquidationPrice,
+    }),
+  };
+}
+
+function leverageBucket(value) {
+  if (value == null || value <= 0) return "unknown";
+  if (value <= 2) return "0-2x";
+  if (value <= 5) return "2-5x";
+  if (value <= 10) return "5-10x";
+  if (value <= 20) return "10-20x";
+  return "20x+";
+}
+
+function liquidationDistanceBucket({ size, currentPrice, liquidationPrice }) {
+  if (liquidationPrice === 0) return "none";
+  if (size == null || size === 0 || currentPrice == null || currentPrice <= 0 || liquidationPrice == null || liquidationPrice < 0) {
+    return "unknown";
+  }
+  const signedDistance = size > 0
+    ? (currentPrice - liquidationPrice) / currentPrice
+    : (liquidationPrice - currentPrice) / currentPrice;
+  if (!Number.isFinite(signedDistance)) return "unknown";
+  if (signedDistance <= 0) return "at_or_beyond";
+  const distancePct = signedDistance * 100;
+  if (distancePct < 2) return "<2%";
+  if (distancePct < 5) return "2-5%";
+  if (distancePct < 10) return "5-10%";
+  if (distancePct < 25) return "10-25%";
+  return "25%+";
 }
 
 function sanitizeOpenOrders(openOrders) {
@@ -767,6 +916,12 @@ async function postHyperliquidInfo(fetchImpl, baseUrl, body) {
 function decimalNumber(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function finiteNumber(value) {
+  if (value == null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function decimalBucket(value) {

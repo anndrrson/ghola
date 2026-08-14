@@ -5,9 +5,11 @@ import {
 } from "./arbitrage.js";
 import {
   isLevelTriggerSession,
+  levelTriggerWorkOrderCommitments,
   runGuardedLevelTriggerTick,
 } from "./level-trigger.js";
 import { decideAiDirectOrder, publicDecisionRecord } from "./ai-direct-order.js";
+import { autonomousLiveSubmitEnabled } from "./autonomous-submit-containment.js";
 import { executeAutopilotOrder, verifyAutopilotOrder } from "./private-execution.js";
 import { normalizeAgentMandate } from "./policy.js";
 import {
@@ -23,14 +25,30 @@ const SOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
 const SUPPORTED_VENUES = new Set(["jupiter", "phoenix", "backpack", "hyperliquid", "coinbase_advanced"]);
-const SUPPORTED_MARKETS = new Set(["SOL-USD", "BTC-USD", "ETH-USD", "SOL/USDC", "SOL", "BTC", "ETH", "HYPE"]);
+const SUPPORTED_MARKETS = new Set(["SOL-USD", "BTC-USD", "ETH-USD", "HYPE-USD", "SOL/USDC", "SOL", "BTC", "ETH", "HYPE"]);
 const DEFAULT_VENUES = ["jupiter", "phoenix", "hyperliquid", "coinbase_advanced"];
 const DEFAULT_MARKETS = ["SOL-USD", "BTC-USD", "ETH-USD"];
 const LOOP_TIMERS = new Map();
-const ACTIVE_TICKS = new Set();
+const ACTIVE_TICKS = new Map();
+const CONTROL_REQUESTS = new Map();
+const SESSION_WRITE_LOCKS = new Map();
+
+class AutopilotControlAbort extends Error {
+  constructor(message = "autopilot_control_requested") {
+    super(message);
+    this.name = "AutopilotControlAbort";
+    this.code = message;
+  }
+}
 
 export async function createAutopilotSession({ body, recipient, state, provider, startLoop = true, now = new Date() }) {
   const policy = normalizeAutopilotPolicy(body?.session_policy || body || {}, now);
+  const liveSubmitEnabled = autonomousLiveSubmitEnabled({
+    strategyId: policy.strategy_id,
+    venue: policy.venue_allowlist[0],
+    policy,
+    state,
+  });
   const venueAccess = normalizeVenueAccess(body?.venue_access || body?.venue_vaults || {}, policy);
   const readyVenues = policy.venue_allowlist.filter((venue) => venueAccess[venue]?.status === "ready");
   const status = policy.kill_switch
@@ -49,7 +67,7 @@ export async function createAutopilotSession({ body, recipient, state, provider,
     owner_commitment: stringValue(body?.owner_commitment) || "owner_redacted",
     provider,
     status,
-    strategy: strategyForPolicy(policy),
+    strategy: strategyForPolicy(policy, liveSubmitEnabled),
     session_policy: policy,
     venue_access: venueAccess,
     order_count: 0,
@@ -61,11 +79,17 @@ export async function createAutopilotSession({ body, recipient, state, provider,
     updated_at: now.toISOString(),
     expires_at: policy.expires_at,
     next_step: status === "running"
-      ? "Autonomous worker is running. Trades require fresh market data, AI score, and policy guardrails."
+      ? liveSubmitEnabled
+        ? "Exact Hyperliquid level plan is armed for bounded live execution."
+        : "Autonomous worker is running in verification-only mode; no venue orders can be broadcast."
       : status === "pending_funding"
-        ? "Fund an isolated venue vault or connect a trade-only venue vault before live execution."
+        ? "Connect an isolated venue vault before venue-specific no-submit verification."
         : "Kill switch is active.",
     execution_enabled: status === "running",
+    autonomous_live_submit_enabled: liveSubmitEnabled,
+    autonomous_execution_mode: liveSubmitEnabled ? "live" : "no_submit",
+    control_epoch: 0,
+    control_latch: null,
     control_plane: "worker",
     visibility_summary: {
       main_wallet_prompts_per_trade: false,
@@ -79,7 +103,7 @@ export async function createAutopilotSession({ body, recipient, state, provider,
     policy,
   }, now);
   await appendEvent(state, session, "venue_readiness", readyVenues.length
-    ? "At least one venue is ready for autonomous execution."
+    ? "At least one venue is ready for autonomous no-submit verification."
     : "No isolated execution vault is funded yet.", {
       venues: policy.venue_allowlist.map((venue) => ({
         venue_id: venue,
@@ -100,7 +124,7 @@ export async function createAutopilotSession({ body, recipient, state, provider,
     data_max_age_ms: policy.data_max_age_ms,
   }, now);
   if (status === "pending_funding") {
-    await appendEvent(state, session, "funding_required", "Isolated venue funding is required before autonomous live trading.", {
+    await appendEvent(state, session, "funding_required", "An isolated venue connection is required before autonomous no-submit verification.", {
       funding_model: "isolated_user_vault",
       ready_venues: readyVenues,
     }, now);
@@ -110,43 +134,126 @@ export async function createAutopilotSession({ body, recipient, state, provider,
 }
 
 export async function controlAutopilotSession({ sessionId, action, state, recipient = null, now = new Date() }) {
-  const session = await state.getAutopilotSession(sessionId);
-  if (!session) return null;
-  const refreshed = refreshSession(session, now);
-  if (action === "kill") {
-    refreshed.status = "killed";
-    refreshed.execution_enabled = false;
-    refreshed.next_step = "Kill switch active. No autonomous execution is allowed.";
-    stopAutopilotLoop(sessionId);
-  } else if (refreshed.status === "expired") {
-    refreshed.execution_enabled = false;
-    refreshed.next_step = "Session expired. Create a new autonomous session.";
-    stopAutopilotLoop(sessionId);
-  } else if (action === "pause") {
-    refreshed.status = "paused";
-    refreshed.execution_enabled = false;
-    refreshed.next_step = "Autopilot paused.";
-    stopAutopilotLoop(sessionId);
-  } else if (action === "resume") {
-    const ready = readyVenues(refreshed);
-    refreshed.status = ready.length ? "running" : "pending_funding";
-    refreshed.execution_enabled = ready.length > 0;
-    refreshed.next_step = ready.length
-      ? "Autonomous worker is running."
-      : "Fund an isolated venue vault before live execution.";
-    if (recipient && ready.length) startAutopilotLoop({ sessionId, state, recipient });
+  if (action !== "kill" && action !== "pause" && action !== "resume") {
+    const error = new Error("autopilot_control_action_invalid");
+    error.code = "autopilot_control_action_invalid";
+    error.status = 400;
+    throw error;
   }
-  refreshed.updated_at = now.toISOString();
-  await state.putAutopilotSession(refreshed);
-  const event = await appendEvent(state, refreshed, "session_state", `Autopilot ${action}.`, { action }, now);
-  return { session: publicSession(refreshed), event };
+  if (CONTROL_REQUESTS.has(sessionId)) throw controlError("autopilot_control_in_progress", 409);
+
+  const request = { action, requested_at: now.toISOString() };
+  CONTROL_REQUESTS.set(sessionId, request);
+  const active = ACTIVE_TICKS.get(sessionId);
+  if (active && action === "resume") {
+    CONTROL_REQUESTS.delete(sessionId);
+    throw controlError("autopilot_tick_in_progress", 409);
+  }
+  if (active && action !== "resume") active.stopRequested = request;
+  try {
+    let latched;
+    let controlEpoch;
+    await withSessionWriteLock(sessionId, async () => {
+      const session = await state.getAutopilotSession(sessionId);
+      if (!session) return;
+      const refreshed = refreshSession(session, now);
+      if (action === "resume") {
+        if (refreshed.control_latch) throw controlError("autopilot_control_latch_unresolved", 409);
+        const ready = readyVenues(refreshed);
+        refreshed.control_epoch = Number(refreshed.control_epoch || 0) + 1;
+        refreshed.status = ready.length ? "running" : "pending_funding";
+        refreshed.execution_enabled = ready.length > 0;
+        refreshed.next_step = ready.length
+          ? "Autonomous worker is running in verification-only mode; no venue orders can be broadcast."
+          : "Connect an isolated venue vault before venue-specific no-submit verification.";
+        refreshed.updated_at = now.toISOString();
+        latched = await state.putAutopilotSession(refreshed);
+        return;
+      }
+
+      if (refreshed.control_latch && refreshed.control_latch.action !== action) {
+        if (action !== "kill") throw controlError("autopilot_control_latch_unresolved", 409);
+      }
+      controlEpoch = refreshed.control_latch?.action === action
+        ? Number(refreshed.control_epoch || 0)
+        : Number(refreshed.control_epoch || 0) + 1;
+      refreshed.control_epoch = controlEpoch;
+      refreshed.control_latch = { action, requested_at: request.requested_at };
+      refreshed.execution_enabled = false;
+      refreshed.updated_at = now.toISOString();
+      refreshed.next_step = action === "kill"
+        ? "Kill requested; waiting for any committed execution to reconcile before acknowledgement."
+        : "Pause requested; waiting for any committed execution to reconcile before acknowledgement.";
+      latched = await state.putAutopilotSession(refreshed);
+    });
+    if (!latched) return null;
+
+    if (action === "resume") {
+      const ready = readyVenues(latched);
+      if (recipient && ready.length) startAutopilotLoop({ sessionId, state, recipient });
+      const event = await appendEvent(state, latched, "session_state", "Autopilot resume.", { action }, now);
+      return { session: publicSession(latched), event };
+    }
+
+    stopAutopilotLoop(sessionId);
+    if (active && !active.executionClaimed) active.abortController.abort();
+    if (active) {
+      const settled = await waitForTickSettlement(active, integerEnv("PRIVATE_AGENT_AUTOPILOT_CONTROL_WAIT_MS", 5_000));
+      if (!settled) {
+        await appendEvent(state, latched, "session_state", `Autopilot ${action} is pending active execution settlement.`, {
+          action,
+          control_epoch: controlEpoch,
+          acknowledged: false,
+        }, now);
+        throw controlError("autopilot_control_settlement_pending", 409);
+      }
+    }
+    if (isLevelTriggerSession(latched)) {
+      for (const workOrder of levelTriggerWorkOrderCommitments(latched)) {
+        const evidence = await state.getExecutionClaimEvidence?.(workOrder);
+        if (evidence && !["completed", "rejected"].includes(evidence.status) && !evidence.receipt) {
+          throw controlError("autopilot_control_settlement_pending", 409);
+        }
+      }
+    }
+
+    let finalized;
+    await withSessionWriteLock(sessionId, async () => {
+      const current = await state.getAutopilotSession(sessionId);
+      if (!current) return;
+      if (Number(current.control_epoch || 0) !== controlEpoch || current.control_latch?.action !== action) {
+        throw controlError("autopilot_control_epoch_changed", 409);
+      }
+      current.status = action === "kill" ? "killed" : "paused";
+      current.execution_enabled = false;
+      current.control_latch = null;
+      current.next_step = action === "kill"
+        ? "Kill switch active. No autonomous execution is allowed."
+        : "Autopilot paused.";
+      current.updated_at = now.toISOString();
+      finalized = await state.putAutopilotSession(current);
+    });
+    if (!finalized) return null;
+    const event = await appendEvent(state, finalized, "session_state", `Autopilot ${action}.`, {
+      action,
+      control_epoch: controlEpoch,
+      acknowledged: true,
+    }, now);
+    return { session: publicSession(finalized), event };
+  } finally {
+    if (CONTROL_REQUESTS.get(sessionId) === request) CONTROL_REQUESTS.delete(sessionId);
+  }
 }
 
 export async function listAutopilotEvents({ sessionId, state, now = new Date() }) {
-  const session = await state.getAutopilotSession(sessionId);
-  if (!session) return null;
-  const refreshed = refreshSession(session, now);
-  if (refreshed.status !== session.status) await state.putAutopilotSession(refreshed);
+  let refreshed;
+  await withSessionWriteLock(sessionId, async () => {
+    const session = await state.getAutopilotSession(sessionId);
+    if (!session) return;
+    refreshed = refreshSession(session, now);
+    if (refreshed.status !== session.status) await state.putAutopilotSession(refreshed);
+  });
+  if (!refreshed) return null;
   return {
     session: publicSession(refreshed),
     events: await state.listAutopilotEvents(sessionId),
@@ -166,7 +273,10 @@ export function startAutopilotLoop({ sessionId, state, recipient }) {
       }).catch(() => null);
     });
     const session = await state.getAutopilotSession(sessionId);
-    if (session?.status === "running" || session?.status === "risk_halted") {
+    if (!session?.control_latch && (
+      (session?.status === "running" && session.execution_enabled === true) ||
+      session?.status === "risk_halted"
+    )) {
       const next = setTimeout(tick, integerEnv("PRIVATE_AGENT_AUTOPILOT_TICK_MS", 30_000));
       next.unref?.();
       LOOP_TIMERS.set(sessionId, next);
@@ -184,15 +294,37 @@ export function stopAutopilotLoop(sessionId) {
   LOOP_TIMERS.delete(sessionId);
 }
 
+export function resetAutopilotExecutionControlsForTests() {
+  for (const timer of LOOP_TIMERS.values()) clearTimeout(timer);
+  LOOP_TIMERS.clear();
+  ACTIVE_TICKS.clear();
+  CONTROL_REQUESTS.clear();
+  SESSION_WRITE_LOCKS.clear();
+}
+
 export async function runAutopilotTick(input) {
   const sessionId = input?.sessionId;
   if (!sessionId) return { ok: false, error: "autopilot_session_id_required" };
+  if (CONTROL_REQUESTS.has(sessionId)) return { ok: false, error: "autopilot_control_in_progress" };
   if (ACTIVE_TICKS.has(sessionId)) return { ok: false, error: "autopilot_tick_in_progress" };
-  ACTIVE_TICKS.add(sessionId);
+  let resolveSettled;
+  const context = {
+    abortController: new AbortController(),
+    controlEpoch: null,
+    executionClaimed: false,
+    stopRequested: null,
+    settled: new Promise((resolve) => { resolveSettled = resolve; }),
+  };
+  ACTIVE_TICKS.set(sessionId, context);
   try {
-    return await runAutopilotTickUnlocked(input);
+    const guardedState = guardedTickState(input.state, sessionId, context);
+    return await runAutopilotTickUnlocked({ ...input, state: guardedState, controlContext: context });
+  } catch (error) {
+    if (error instanceof AutopilotControlAbort) return { ok: false, error: error.code };
+    throw error;
   } finally {
     ACTIVE_TICKS.delete(sessionId);
+    resolveSettled();
   }
 }
 
@@ -203,17 +335,26 @@ async function runAutopilotTickUnlocked({
   now = new Date(),
   fetchImpl = fetch,
   env = process.env,
+  controlContext,
+  marketSnapshot = marketSnapshotForSession,
+  decideOrder = decideAiDirectOrder,
+  executeOrder = executeAutopilotOrder,
+  verifyOrder = verifyAutopilotOrder,
 }) {
   const stored = await state.getAutopilotSession(sessionId);
   if (!stored) return { ok: false, error: "autopilot_session_not_found" };
   const session = refreshSession(stored, now);
+  controlContext.controlEpoch = Number(session.control_epoch || 0);
+  const checkpoint = () => checkpointExecutionPermit({ sessionId, state, context: controlContext });
+  const commitExecution = (task) => claimExecutionPermit({ sessionId, state, context: controlContext, task });
   const riskMonitoring = session.status === "risk_halted";
-  if ((!riskMonitoring && session.status !== "running") || (!riskMonitoring && !session.execution_enabled)) {
+  if (session.control_latch || (!riskMonitoring && session.status !== "running") || (!riskMonitoring && !session.execution_enabled)) {
     await state.putAutopilotSession(session);
     return { ok: false, error: "autopilot_not_running" };
   }
 
-  const market = await marketSnapshotForSession(session, { fetchImpl, env, now });
+  const market = await marketSnapshot(session, { fetchImpl, env, now, signal: controlContext.abortController.signal });
+  await checkpointExecutionPermit({ sessionId, state, context: controlContext });
   session.last_tick_at = now.toISOString();
   await state.putAutopilotSession(session);
   await appendEvent(state, session, "agent_tick", "Autopilot evaluated market data.", {
@@ -245,6 +386,8 @@ async function runAutopilotTickUnlocked({
       protectiveExit,
       now,
       env,
+      executeOrder,
+      commitExecution,
     });
   }
   const lossDecision = lossCircuitDecision(
@@ -292,8 +435,11 @@ async function runAutopilotTickUnlocked({
       env,
       fetchImpl,
       appendEvent,
-      executeOrder: executeAutopilotOrder,
-      verifyOrder: verifyAutopilotOrder,
+      executeOrder,
+      verifyOrder,
+      checkpoint,
+      commitExecution,
+      marketSnapshot: market,
     });
   }
 
@@ -317,8 +463,10 @@ async function runAutopilotTickUnlocked({
       env,
       fetchImpl,
       appendEvent,
-      executeOrder: executeAutopilotOrder,
-      verifyOrder: verifyAutopilotOrder,
+      executeOrder,
+      verifyOrder,
+      checkpoint,
+      commitExecution,
     });
   }
 
@@ -337,7 +485,7 @@ async function runAutopilotTickUnlocked({
       }, now);
       return { ok: false, error: "ai_decision_budget_exhausted" };
     }
-    const decision = await decideAiDirectOrder({
+    const decision = await decideOrder({
       session,
       market,
       positions,
@@ -345,6 +493,7 @@ async function runAutopilotTickUnlocked({
       now,
       minConfidenceBps: session.session_policy.ai_min_confidence_bps,
     });
+    await checkpoint();
     await state.appendAutopilotDecision(sessionId, decision.record);
     await appendEvent(state, session, "ai_decision", decision.ok
       ? "AI direct order decision accepted by schema and confidence checks."
@@ -399,7 +548,7 @@ async function runAutopilotTickUnlocked({
     proposal: proposal.proposal_commitment,
     tick: now.toISOString(),
   })}`;
-  if (env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT !== "true") {
+  if (!autonomousLiveSubmitEnabled()) {
     return verifyAutopilotProposalNoSubmit({
       session,
       sessionId,
@@ -408,6 +557,8 @@ async function runAutopilotTickUnlocked({
       proposal,
       workOrderCommitment,
       now,
+      verifyOrder,
+      checkpoint,
     });
   }
 
@@ -436,7 +587,7 @@ async function runAutopilotTickUnlocked({
     };
   }
 
-  const receipt = await executeAutopilotOrder({
+  const receipt = await commitExecution(() => executeOrder({
     venue_id: proposal.venue_id,
     operation_class: proposal.operation_class,
     work_order_commitment: workOrderCommitment,
@@ -446,7 +597,7 @@ async function runAutopilotTickUnlocked({
     execution: executionForVenue(session, proposal.venue_id),
     recipient,
     state,
-  });
+  }));
   const updated = await state.getAutopilotSession(sessionId) || session;
   updated.order_count = Number(updated.order_count || 0) + 1;
   updated.last_execution_at = now.toISOString();
@@ -514,6 +665,8 @@ async function executeProtectiveHyperliquidExit({
   protectiveExit,
   now,
   env,
+  executeOrder,
+  commitExecution,
 }) {
   session.status = "risk_halted";
   session.execution_enabled = false;
@@ -527,14 +680,18 @@ async function executeProtectiveHyperliquidExit({
     stop_loss_bps: session.session_policy.stop_loss_bps,
     take_profit_bps: session.session_policy.take_profit_bps,
   }, now);
+  if (!autonomousLiveSubmitEnabled()) {
+    await appendEvent(state, session, "risk_reject", "Autonomous protective broadcast is disabled by worker safety containment; manually close the position.", {
+      reason: "autonomous_live_submit_contained",
+      reduce_only: true,
+      broadcast_performed: false,
+    }, now);
+    return { ok: false, error: "autonomous_live_submit_contained", protective_exit: protectiveExit };
+  }
   if (
     env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT !== "true" ||
     env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE !== "full_ticket"
   ) {
-    await appendEvent(state, session, "risk_reject", "Protective exit could not broadcast because full-ticket live submit is not armed.", {
-      reason: "protective_exit_live_submit_unavailable",
-      reduce_only: true,
-    }, now);
     return { ok: false, error: "protective_exit_live_submit_unavailable" };
   }
   const workOrderCommitment = `autopilot_protective_exit_${digest({
@@ -551,7 +708,7 @@ async function executeProtectiveHyperliquidExit({
   });
   let receipt;
   try {
-    receipt = await executeAutopilotOrder({
+    receipt = await commitExecution(() => executeOrder({
       venue_id: "hyperliquid",
       operation_class: "limit_order",
       work_order_commitment: workOrderCommitment,
@@ -561,7 +718,7 @@ async function executeProtectiveHyperliquidExit({
       execution: executionForVenue(session, "hyperliquid"),
       recipient,
       state,
-    });
+    }));
   } catch (error) {
     await appendEvent(state, session, "risk_reject", "Protective reduce-only order failed closed.", {
       reason: String(error?.code || error?.message || "protective_exit_failed"),
@@ -651,15 +808,18 @@ async function verifyAutopilotProposalNoSubmit({
   proposal,
   workOrderCommitment,
   now,
+  verifyOrder,
+  checkpoint,
 }) {
-  await appendEvent(state, session, "guardrail", "Live submit gate is disabled; agent is proving the order without broadcasting.", {
-    required_env: "PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT=true",
+  await appendEvent(state, session, "guardrail", "Autonomous broadcasting is disabled by worker safety containment; proving the order without broadcasting.", {
+    containment: "distributed_execution_claim_unavailable",
     execution_mode: "no_submit",
     broadcast_performed: false,
   }, now);
   let receipt;
   try {
-    receipt = await verifyAutopilotOrder({
+    await checkpoint();
+    receipt = await verifyOrder({
       venue_id: proposal.venue_id,
       operation_class: proposal.operation_class,
       work_order_commitment: workOrderCommitment,
@@ -670,6 +830,7 @@ async function verifyAutopilotProposalNoSubmit({
       recipient,
       state,
     });
+    await checkpoint();
   } catch (error) {
     await appendEvent(state, session, "risk_reject", "No-submit venue verification failed; live execution would be blocked.", {
       venue_id: proposal.venue_id,
@@ -690,7 +851,7 @@ async function verifyAutopilotProposalNoSubmit({
   const updated = await state.getAutopilotSession(sessionId) || session;
   updated.last_verified_at = now.toISOString();
   updated.updated_at = now.toISOString();
-  updated.next_step = "Agent is actively verifying executable orders without broadcasting. Arm live submit to place bounded venue orders.";
+  updated.next_step = "Agent is verifying executable orders without broadcasting while autonomous live submit is contained.";
   await state.putAutopilotSession(updated);
   await appendEvent(state, updated, "execution", "Agent verified an executable no-submit order.", {
     venue_id: proposal.venue_id,
@@ -740,6 +901,8 @@ function normalizeAutopilotPolicy(raw, now) {
     (raw.ai_direct_enabled === true || stringValue(raw.decision_model) === "ai_direct_order_v1");
   const agentMandate = strategyId === "level_trigger_v1" ? normalizeAgentMandate(raw.agent_mandate) : null;
   const agentSide = stringValue(raw.agent_side).toLowerCase() === "sell" ? "sell" : "buy";
+  const executionNetwork = stringValue(raw.execution_network).toLowerCase();
+  const exactNotionalUsd = canonicalExactNotional(raw.exact_notional_usd);
   const policy = {
     version: 2,
     strategy_id: strategyId,
@@ -771,7 +934,12 @@ function normalizeAutopilotPolicy(raw, now) {
     timezone: stringValue(raw.timezone) || null,
     expires_at: new Date(now.getTime() + ttlMs).toISOString(),
     ...(strategyId === "level_trigger_v1"
-      ? { agent_mandate: agentMandate, agent_side: agentSide }
+      ? {
+          agent_mandate: agentMandate,
+          agent_side: agentSide,
+          execution_network: ["mainnet", "testnet"].includes(executionNetwork) ? executionNetwork : null,
+          exact_notional_usd: exactNotionalUsd,
+        }
       : {}),
   };
   return {
@@ -780,7 +948,7 @@ function normalizeAutopilotPolicy(raw, now) {
   };
 }
 
-function strategyForPolicy(policy) {
+function strategyForPolicy(policy, liveSubmitEnabled = false) {
   if (policy.strategy_id === "level_trigger_v1") {
     return {
       version: 1,
@@ -788,6 +956,8 @@ function strategyForPolicy(policy) {
       decision_model: "deterministic_level_trigger",
       executable_order_source: "deterministic_level_trigger",
       ai_can_execute_directly: false,
+      live_submit_enabled: liveSubmitEnabled,
+      execution_mode: liveSubmitEnabled ? "live" : "no_submit",
     };
   }
   if (policy.strategy_id === "hedged_spread_arbitrage_v1") {
@@ -796,7 +966,9 @@ function strategyForPolicy(policy) {
       strategy_id: "hedged_spread_arbitrage_v1",
       decision_model: "rules_plus_ai_score",
       executable_order_source: "deterministic_guarded_arb_planner",
-      ai_can_execute_directly: true,
+      ai_can_execute_directly: false,
+      live_submit_enabled: false,
+      execution_mode: "no_submit",
     };
   }
   if (policy.ai_direct_enabled) {
@@ -805,7 +977,9 @@ function strategyForPolicy(policy) {
       strategy_id: "momentum_micro_trader",
       decision_model: "ai_direct_order_v1",
       executable_order_source: "ai_structured_decision_validated_by_policy",
-      ai_can_execute_directly: true,
+      ai_can_execute_directly: false,
+      live_submit_enabled: false,
+      execution_mode: "no_submit",
     };
   }
   return {
@@ -814,6 +988,8 @@ function strategyForPolicy(policy) {
     decision_model: "rules_plus_ai_score",
     executable_order_source: "deterministic_guarded_strategy",
     ai_can_execute_directly: false,
+    live_submit_enabled: false,
+    execution_mode: "no_submit",
   };
 }
 
@@ -1162,7 +1338,7 @@ function instructionForVenue({ venue, market, side, price, notional, policy, now
   };
 }
 
-async function marketSnapshotForSession(session, { fetchImpl, env, now }) {
+async function marketSnapshotForSession(session, { fetchImpl, env, now, signal }) {
   const productId = primaryProduct(session);
   if (env.PRIVATE_AGENT_AUTOPILOT_SIGNAL_MODE === "force") {
     return {
@@ -1176,8 +1352,36 @@ async function marketSnapshotForSession(session, { fetchImpl, env, now }) {
       stale: false,
     };
   }
+  if (session.session_policy.strategy_id === "level_trigger_v1") {
+    const baseUrl = session.session_policy.execution_network === "testnet"
+      ? "https://api.hyperliquid-testnet.xyz/info"
+      : "https://api.hyperliquid.xyz/info";
+    const response = await fetchImpl(baseUrl, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "content-type": "application/json", "cache-control": "no-cache" },
+      body: JSON.stringify({ type: "allMids" }),
+      signal,
+    });
+    if (!response.ok) throw new Error(`hyperliquid_market_snapshot_${response.status}`);
+    const mids = await response.json();
+    const price = numberValue(mids?.[venueMarketSymbol("hyperliquid", productId)]);
+    if (!price) throw new Error("hyperliquid_market_snapshot_invalid");
+    return {
+      product_id: productId,
+      price,
+      mid: price,
+      change_24h: null,
+      spread_bps: null,
+      mark_source: "hyperliquid_all_mids",
+      signal_source: "hyperliquid_all_mids",
+      fetched_at: now.toISOString(),
+      live_status: "live",
+      stale: false,
+    };
+  }
   const url = `https://api.coinbase.com/api/v3/brokerage/market/products/${encodeURIComponent(productId)}`;
-  const response = await fetchImpl(url, { cache: "no-store", headers: { "cache-control": "no-cache" } });
+  const response = await fetchImpl(url, { cache: "no-store", headers: { "cache-control": "no-cache" }, signal });
   if (!response.ok) throw new Error(`market_snapshot_${response.status}`);
   const body = await response.json();
   const signalPrice = numberValue(body.price || body.mid_market_price || body.pricebook?.best_bid);
@@ -1189,6 +1393,7 @@ async function marketSnapshotForSession(session, { fetchImpl, env, now }) {
       cache: "no-store",
       headers: { "content-type": "application/json", "cache-control": "no-cache" },
       body: JSON.stringify({ type: "allMids" }),
+      signal,
     });
     if (!midsResponse.ok) throw new Error(`hyperliquid_market_snapshot_${midsResponse.status}`);
     const mids = await midsResponse.json();
@@ -1316,6 +1521,8 @@ function workerSessionPolicy(session) {
     max_daily_notional_bucket: policy.max_daily_notional_bucket,
     max_order_count: policy.max_order_count,
     max_slippage_bps: policy.max_slippage_bps,
+    execution_network: policy.execution_network,
+    exact_notional_usd: policy.exact_notional_usd,
     stop_loss_bps: policy.stop_loss_bps,
     take_profit_bps: policy.take_profit_bps,
     allowed_order_types: policy.allowed_order_types,
@@ -1363,7 +1570,7 @@ function readyVenues(session) {
 function primaryProduct(session) {
   const markets = session.session_policy.market_allowlist;
   const product = markets.find((market) => market.endsWith("-USD")) || "SOL-USD";
-  return ["BTC-USD", "ETH-USD", "SOL-USD"].includes(product) ? product : "SOL-USD";
+  return ["BTC-USD", "ETH-USD", "SOL-USD", "HYPE-USD"].includes(product) ? product : "SOL-USD";
 }
 
 function publicSession(session) {
@@ -1484,6 +1691,13 @@ function bucketToUsd(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
+function canonicalExactNotional(value) {
+  const number = Number(stringValue(value));
+  if (!Number.isFinite(number) || number <= 0 || number > 100) return null;
+  return number.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+
 function bucket(value, allowed, fallback) {
   const raw = stringValue(value).replace(/[^0-9.]/g, "");
   return allowed.includes(raw) ? raw : fallback;
@@ -1517,6 +1731,97 @@ function clampInt(value, min, max, fallback) {
 function integerEnv(name, fallback) {
   const parsed = Number.parseInt(String(process.env[name] ?? ""), 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function guardedTickState(state, sessionId, context) {
+  return new Proxy(state, {
+    get(target, property, receiver) {
+      if (property === "putAutopilotSession") {
+        return async (candidate) => withSessionWriteLock(sessionId, async () => {
+          const current = await target.getAutopilotSession(sessionId);
+          if (!current) throw new AutopilotControlAbort("autopilot_session_not_found");
+          const epochChanged = Number(current.control_epoch || 0) !== Number(context.controlEpoch || 0);
+          const stopped = Boolean(context.stopRequested || current.control_latch || epochChanged);
+          if (stopped && !context.executionClaimed) throw new AutopilotControlAbort();
+          const next = stopped
+            ? preserveControlState(candidate, current)
+            : {
+              ...candidate,
+              control_epoch: Number(context.controlEpoch || 0),
+              control_latch: null,
+            };
+          return target.putAutopilotSession(next);
+        });
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+async function checkpointExecutionPermit({ sessionId, state, context }) {
+  if (context.executionClaimed) return state.getAutopilotSession(sessionId);
+  if (context.stopRequested || context.abortController.signal.aborted) throw new AutopilotControlAbort();
+  const current = await state.getAutopilotSession(sessionId);
+  if (!current || current.control_latch ||
+    Number(current.control_epoch || 0) !== Number(context.controlEpoch || 0) ||
+    (current.status !== "running" && current.status !== "risk_halted") ||
+    (current.status === "running" && current.execution_enabled !== true)) {
+    throw new AutopilotControlAbort();
+  }
+  return current;
+}
+
+async function claimExecutionPermit({ sessionId, state, context, task }) {
+  await withSessionWriteLock(sessionId, async () => {
+    if (context.executionClaimed) throw new AutopilotControlAbort("autopilot_execution_already_claimed");
+    await checkpointExecutionPermit({ sessionId, state, context });
+    context.executionClaimed = true;
+  });
+  return task();
+}
+
+function preserveControlState(candidate, current) {
+  return {
+    ...candidate,
+    status: current.status,
+    execution_enabled: current.execution_enabled,
+    next_step: current.next_step,
+    control_epoch: Number(current.control_epoch || 0),
+    control_latch: current.control_latch || null,
+  };
+}
+
+async function withSessionWriteLock(sessionId, task) {
+  const previous = SESSION_WRITE_LOCKS.get(sessionId) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => { release = resolve; });
+  SESSION_WRITE_LOCKS.set(sessionId, current);
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+    if (SESSION_WRITE_LOCKS.get(sessionId) === current) SESSION_WRITE_LOCKS.delete(sessionId);
+  }
+}
+
+async function waitForTickSettlement(context, timeoutMs) {
+  let timer;
+  const timedOut = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+    timer.unref?.();
+  });
+  const settled = await Promise.race([context.settled.then(() => true), timedOut]);
+  clearTimeout(timer);
+  return settled;
+}
+
+function controlError(code, status) {
+  const error = new Error(code);
+  error.code = code;
+  error.status = status;
+  return error;
 }
 
 function array(value) {

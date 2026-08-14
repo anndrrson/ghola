@@ -9,6 +9,7 @@ import { Keypair } from "@solana/web3.js";
 import {
   createPrivateAgentWorkerServer,
   loadRecipient,
+  privateExecutionClaimStoreReady,
   recipientReportDataHex,
 } from "../src/server.js";
 import {
@@ -18,6 +19,7 @@ import {
   sealForTest,
 } from "../src/crypto/envelope.js";
 import { bodyHash } from "../src/auth/capability.js";
+import { createWorkerState } from "../src/state/private-state.js";
 
 const OLD_ENV = { ...process.env };
 
@@ -351,6 +353,28 @@ describe("private agent worker", () => {
     baseUrl = await listen(server);
   });
 
+  it("requires a shared durable claim store for non-dev live submissions", () => {
+    assert.equal(privateExecutionClaimStoreReady({
+      PRIVATE_AGENT_VENUE_DRY_RUN: "false",
+      PRIVATE_AGENT_ALLOW_UNATTESTED_DEV: "true",
+      PRIVATE_AGENT_STATE_STORE: "json",
+    }), false);
+    assert.equal(privateExecutionClaimStoreReady({
+      PRIVATE_AGENT_VENUE_DRY_RUN: "false",
+      PRIVATE_AGENT_ALLOW_UNATTESTED_DEV: "false",
+      PRIVATE_AGENT_STATE_STORE: "sqlite",
+    }), false);
+    assert.equal(privateExecutionClaimStoreReady({
+      PRIVATE_AGENT_VENUE_DRY_RUN: "false",
+      PRIVATE_AGENT_ALLOW_UNATTESTED_DEV: "false",
+      PRIVATE_AGENT_STATE_STORE: "postgres",
+    }), true);
+    assert.equal(privateExecutionClaimStoreReady({
+      PRIVATE_AGENT_VENUE_DRY_RUN: "true",
+      PRIVATE_AGENT_STATE_STORE: "json",
+    }), true);
+  });
+
   afterEach(async () => {
     await close(server);
     rmSync(dir, { recursive: true, force: true });
@@ -641,9 +665,34 @@ describe("private agent worker", () => {
     assert.equal(JSON.stringify(result).includes("test-backpack-api-key"), false);
   });
 
-  it("keeps the cross-venue endpoint fail-closed without a BYO venue adapter", async () => {
+  it("contains cross-venue submit with a ready adapter while preserving cancel", async () => {
+    await close(server);
+    const state = createWorkerState(dir);
+    let preflightCalls = 0;
+    let submitCalls = 0;
+    let scheduleCalls = 0;
+    let cancelCalls = 0;
+    const crossVenueAdapter = {
+      preflight: async () => { preflightCalls += 1; },
+      submit: async () => {
+        submitCalls += 1;
+        return { filled_notional_micro_usdc: 5_000_000, venue_order_reference: "must_not_submit" };
+      },
+      hedge: async () => ({ filled_notional_micro_usdc: 0 }),
+      unwind: async () => ({ filled_notional_micro_usdc: 0 }),
+      cancel: async () => { cancelCalls += 1; },
+    };
+    server = createPrivateAgentWorkerServer({
+      state,
+      crossVenueAdapter,
+      crossVenueSchedule: () => { scheduleCalls += 1; },
+      startConsumerRuntime: false,
+      resumeAutopilotLoops: false,
+    });
+    baseUrl = await listen(server);
     process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
     process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    process.env.PRIVATE_AGENT_CROSS_VENUE_LIVE_SUBMIT = "true";
     const body = {
       version: 1,
       execution_id: `consumer_cross_venue_execution_${"a".repeat(48)}`,
@@ -663,6 +712,32 @@ describe("private agent worker", () => {
         { leg_id: "consumer_cross_leg_sell_server", venue_id: "phoenix", side: "sell", symbol: "SOL-PERP", limit_price: "151", target_notional_micro_usdc: 5_000_000, order_type: "ioc_limit" },
       ],
     };
+
+    const readinessBody = { version: 1, operation_class: "cross_venue_byo_readiness" };
+    const readinessToken = capabilityToken({
+      path: "/execution/cross-venue/ready",
+      scope: "credential:verify",
+      body: readinessBody,
+      expected: { operation_class: "cross_venue_byo_readiness" },
+    });
+    const readinessResponse = await fetch(`${baseUrl}/execution/cross-venue/ready`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${readinessToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(readinessBody),
+    });
+    assert.equal(readinessResponse.status, 503);
+    assert.deepEqual(await readinessResponse.json(), {
+      version: 1,
+      ready: false,
+      execution_mode: "coordinated_byo",
+      atomic: false,
+      reason_codes: ["cross_venue_durable_claim_unavailable"],
+    });
+
     const token = capabilityToken({
       path: "/execution/cross-venue/submit",
       scope: "order:submit",
@@ -679,7 +754,35 @@ describe("private agent worker", () => {
       body: JSON.stringify(body),
     });
     assert.equal(response.status, 503);
-    assert.deepEqual(await response.json(), { error: "cross_venue_byo_adapter_unavailable" });
+    assert.deepEqual(await response.json(), { error: "cross_venue_durable_claim_unavailable" });
+    assert.equal(preflightCalls, 0);
+    assert.equal(submitCalls, 0);
+    assert.equal(scheduleCalls, 0);
+
+    await state.putExecutionAttempt(body.execution_id, {
+      version: 1,
+      execution_id: body.execution_id,
+      owner_commitment: body.owner_commitment,
+      status: "accepted",
+      sequence: 1,
+    });
+    const cancelToken = capabilityToken({
+      path: "/execution/cross-venue/cancel",
+      scope: "autopilot:control",
+      body,
+      expected: { operation_class: "cross_venue_byo", owner_commitment: body.owner_commitment },
+    });
+    const cancelResponse = await fetch(`${baseUrl}/execution/cross-venue/cancel`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${cancelToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+    assert.equal(cancelResponse.status, 202);
+    assert.equal(cancelCalls, 1);
   });
 
   it("blocks live pooled readiness when worker state is not shared", async () => {
@@ -758,7 +861,7 @@ describe("private agent worker", () => {
 
     assert.equal(response.status, 200);
     const body = await response.json();
-    assert.equal(body.status, "reconciled");
+    assert.equal(body.status, "reconcile_required");
     assert.equal(body.final_proof.broadcast_performed, false);
     assert.equal(body.final_proof.final_venue_execution_proven, false);
     assert.notEqual(body.status, "submitted");
@@ -955,6 +1058,9 @@ describe("private agent worker", () => {
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.status, "ready_to_trade");
+    assert.equal(body.platform_class, "hyperliquid_style_market");
+    assert.equal(body.venue_id, "hyperliquid");
+    assert.equal(body.network, "testnet");
     assert.equal(body.account_source, "sealed_byo");
     assert.equal(body.trading_enabled, true);
     assert.equal(JSON.stringify(body).includes("api_wallet_private_key"), false);
@@ -1062,6 +1168,9 @@ describe("private agent worker", () => {
     const body = await readSseEvent(response, "account_state");
     assert.equal(body.status, "ready_to_trade");
     assert.equal(body.stream_status, "live");
+    assert.equal(body.platform_class, "hyperliquid_style_market");
+    assert.equal(body.venue_id, "hyperliquid");
+    assert.equal(body.network, "testnet");
     assert.equal(body.visibility_summary.main_wallet_exposed, false);
     assert.equal(body.visibility_summary.hyperliquid_sees, "execution_account_and_order_activity");
     assert.equal(JSON.stringify(body).includes("api_wallet_private_key"), false);
@@ -1794,7 +1903,7 @@ describe("private agent worker", () => {
     assert.match(body.details.join(" "), /platform_fee_policy is required/);
   });
 
-  it("reconciles Solana perps work orders without exposing raw venue details", async () => {
+  it("fails closed when Solana perps reconciliation has no stored venue proof", async () => {
     const response = await fetch(`${baseUrl}/venues/solana-perps/reconcile`, {
       method: "POST",
       headers: {
@@ -1812,9 +1921,11 @@ describe("private agent worker", () => {
 
     assert.equal(response.status, 200);
     const body = await response.json();
-    assert.equal(body.status, "reconciled");
+    assert.equal(body.status, "reconcile_required");
     assert.equal(body.platform_class, "solana_perps_market");
     assert.equal(body.visibility_summary.main_wallet_exposed, false);
+    assert.equal(body.final_proof.broadcast_performed, false);
+    assert.equal(body.final_proof.final_venue_execution_proven, false);
   });
 
   it("verifies Solana perps no-submit readiness without broadcasting", async () => {
@@ -2006,7 +2117,8 @@ describe("private agent worker", () => {
 
     assert.equal(reconcileResponse.status, 200);
     const reconciled = await reconcileResponse.json();
-    assert.equal(reconciled.status, "reconciled");
+    assert.equal(reconciled.status, "submitted");
+    assert.deepEqual(reconciled, submitted);
     assert.equal(reconciled.platform_class, "solana_swap_aggregator");
     assert.equal(reconciled.visibility_summary.main_wallet_exposed, false);
     assert.equal(reconciled.final_proof.proof_kind, "jupiter_swap_execution_proof_v1");
@@ -2115,8 +2227,9 @@ describe("private agent worker", () => {
     assert.match(body.details.join(" "), /plaintext Solana perps/);
   });
 
-  it("fails closed for live Solana perps submit until the SDK runner is configured", async () => {
+  it("fails closed for a live Phoenix resting order without proven cancellation", async () => {
     process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    process.env.PRIVATE_AGENT_STATE_STORE = "postgres";
     const workOrderCommitment = "connector_work_order_phoenix_live_disabled_123";
     const response = await fetch(`${baseUrl}/venues/solana-perps/orders`, {
       method: "POST",
@@ -2156,8 +2269,8 @@ describe("private agent worker", () => {
 
     assert.equal(response.status, 503);
     const body = await response.json();
-    assert.equal(body.error_code, "connector_submit_failed");
-    assert.match(body.error, /live submit is disabled/);
+    assert.equal(body.error_code, "PHOENIX_LIVE_EXECUTION_RECOVERY_UNPROVEN");
+    assert.match(body.error, /exact submit and cancellation recovery/);
   });
 
   it("rejects shielded-funding attestation without a bearer token", async () => {

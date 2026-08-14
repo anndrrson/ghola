@@ -9,6 +9,7 @@ import {
 } from "../src/execution/arbitrage.js";
 import {
   createAutopilotSession,
+  resetAutopilotExecutionControlsForTests,
   runAutopilotTick,
 } from "../src/execution/autopilot.js";
 import { createWorkerState } from "../src/state/private-state.js";
@@ -37,6 +38,7 @@ describe("guarded arbitrage autopilot", () => {
   });
 
   afterEach(() => {
+    resetAutopilotExecutionControlsForTests();
     resetEnv();
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
@@ -123,7 +125,7 @@ describe("guarded arbitrage autopilot", () => {
     assert.equal(rejected.error, "market_data_skew_exceeded");
   });
 
-  it("submits and records a bounded dry-run arbitrage pair", async () => {
+  it("verifies and records a bounded no-submit arbitrage pair", async () => {
     const state = createWorkerState(dir);
     const recipient = { recipient_id: "did:key:test-arb-worker" };
     const now = new Date(Date.now() + 60_000);
@@ -165,9 +167,10 @@ describe("guarded arbitrage autopilot", () => {
     });
 
     assert.equal(tick.ok, true);
+    assert.equal(tick.mode, "no_submit");
     assert.equal(tick.receipts.length, 2);
     const updated = await state.getAutopilotSession(created.autopilot_session_id);
-    assert.equal(updated.order_count, 2);
+    assert.equal(updated.order_count, 0);
     assert.equal((await state.listAutopilotOpportunities(created.autopilot_session_id)).length, 1);
 
     const eventTypes = (await state
@@ -176,7 +179,130 @@ describe("guarded arbitrage autopilot", () => {
     assert.equal(eventTypes.includes("arb_scan"), true);
     assert.equal(eventTypes.includes("arb_opportunity"), true);
     assert.equal(eventTypes.includes("arb_pair_preflight"), true);
-    assert.equal(eventTypes.includes("arb_pair_reconciled"), true);
+    assert.equal(eventTypes.includes("arb_pair_submitted"), false);
+    assert.equal(eventTypes.includes("arb_pair_reconciled"), false);
+    assert.equal(eventTypes.includes("guardrail"), true);
+  });
+
+  it("cannot invoke either live leg even when all live environment gates are set", async () => {
+    const state = createWorkerState(dir);
+    const recipient = { recipient_id: "did:key:test-arb-containment" };
+    const now = new Date(Date.now() + 60_000);
+    const created = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_arb_containment",
+        session_policy: {
+          strategy_id: "hedged_spread_arbitrage_v1",
+          venue_allowlist: ["coinbase_advanced", "hyperliquid"],
+          market_allowlist: ["SOL-USD"],
+          max_notional_bucket: "25",
+          max_daily_notional_bucket: "100",
+          max_order_count: 10,
+          ttl_ms: 2 * 60 * 60_000,
+          max_slippage_bps: 5,
+          min_net_edge_bps: 25,
+        },
+        venue_access: {
+          coinbase_advanced: { status: "ready", execution_mode: "byo_api_key" },
+          hyperliquid: { status: "ready", execution_mode: "byo_api_key" },
+        },
+      },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+    let executeCalls = 0;
+    let verifyCalls = 0;
+    let dailyReservationCalls = 0;
+    const incrementPolicyAmount = state.incrementPolicyAmount.bind(state);
+    state.incrementPolicyAmount = (...args) => {
+      dailyReservationCalls += 1;
+      return incrementPolicyAmount(...args);
+    };
+    const tick = await runAutopilotTick({
+      sessionId: created.autopilot_session_id,
+      state,
+      recipient,
+      now: new Date(now.getTime() + 60_000),
+      env: process.env,
+      verifyOrder: async (request) => {
+        verifyCalls += 1;
+        return {
+          status: "verified_no_funds",
+          venue_id: request.venue_id,
+          verification_commitment: `verify_${verifyCalls}`,
+          result_commitment: `result_${verifyCalls}`,
+        };
+      },
+      executeOrder: async () => { executeCalls += 1; throw new Error("live submit must remain contained"); },
+    });
+
+    assert.equal(tick.ok, true);
+    assert.equal(tick.mode, "no_submit");
+    assert.equal(verifyCalls, 2);
+    assert.equal(executeCalls, 0);
+    assert.equal(dailyReservationCalls, 0);
+    assert.equal((await state.getAutopilotSession(created.autopilot_session_id)).order_count, 0);
+  });
+
+  it("continues no-submit pair proofs when the broadcast flag is off", async () => {
+    process.env.PRIVATE_AGENT_ARB_LIVE_SUBMIT = "false";
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    const state = createWorkerState(dir);
+    const recipient = { recipient_id: "did:key:test-arb-no-live-proof" };
+    const now = new Date(Date.now() + 60_000);
+    const created = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_arb_no_live_proof",
+        session_policy: {
+          strategy_id: "hedged_spread_arbitrage_v1",
+          venue_allowlist: ["coinbase_advanced", "hyperliquid"],
+          market_allowlist: ["SOL-USD"],
+          max_notional_bucket: "25",
+          max_daily_notional_bucket: "100",
+          max_order_count: 10,
+          ttl_ms: 2 * 60 * 60_000,
+          max_slippage_bps: 5,
+          min_net_edge_bps: 25,
+        },
+        venue_access: {
+          coinbase_advanced: { status: "ready", execution_mode: "byo_api_key" },
+          hyperliquid: { status: "ready", execution_mode: "byo_api_key" },
+        },
+      },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+    let executeCalls = 0;
+    let verifyCalls = 0;
+    const tick = await runAutopilotTick({
+      sessionId: created.autopilot_session_id,
+      state,
+      recipient,
+      now: new Date(now.getTime() + 60_000),
+      env: process.env,
+      verifyOrder: async (request) => {
+        verifyCalls += 1;
+        return {
+          status: "verified_no_funds",
+          venue_id: request.venue_id,
+          verification_commitment: `verify_off_${verifyCalls}`,
+          result_commitment: `result_off_${verifyCalls}`,
+        };
+      },
+      executeOrder: async () => { executeCalls += 1; throw new Error("live submit must remain contained"); },
+    });
+
+    assert.equal(tick.ok, true);
+    assert.equal(tick.mode, "no_submit");
+    assert.equal(verifyCalls, 2);
+    assert.equal(executeCalls, 0);
+    assert.equal((await state.getAutopilotSession(created.autopilot_session_id)).order_count, 0);
   });
 });
 

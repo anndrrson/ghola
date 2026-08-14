@@ -688,6 +688,33 @@ function sharedStateReady() {
   };
 }
 
+export function privateExecutionClaimStoreReady(envInput = process.env) {
+  if (envInput.PRIVATE_AGENT_VENUE_DRY_RUN === "true") return true;
+  const mode = String(
+    envInput.PRIVATE_AGENT_STATE_STORE ||
+    envInput.GHOLA_PRIVATE_AGENT_STATE_STORE ||
+    "json",
+  ).trim().toLowerCase();
+  return ["postgres", "postgresql", "neon"].includes(mode);
+}
+
+function requirePrivateExecutionClaimStore(res) {
+  if (privateExecutionClaimStoreReady()) return false;
+  json(res, 503, {
+    error: "durable shared execution claim store is required",
+    error_code: "worker_execution_claim_store_not_shared",
+  });
+  return true;
+}
+
+const CROSS_VENUE_DURABLE_CLAIM_UNAVAILABLE = "cross_venue_durable_claim_unavailable";
+
+// Cross-venue submission stays code-disabled until its coordinator acquires
+// one durable atomic claim before either leg can reach a venue adapter.
+function crossVenueDurableClaimReady() {
+  return false;
+}
+
 function positiveCap(name, fallbackName = null) {
   const raw = process.env[name] || (fallbackName ? process.env[fallbackName] : "") || "";
   const value = Number.parseFloat(raw);
@@ -1803,7 +1830,10 @@ export function createPrivateAgentWorkerServer(options = {}) {
     callback: options.crossVenueCallback,
     schedule: options.crossVenueSchedule,
   });
-  if (options.startConsumerRuntime !== false) consumerRuntime.start();
+  if (
+    options.startConsumerRuntime !== false &&
+    process.env.PRIVATE_AGENT_CONSUMER_RUNTIME_ENABLED !== "false"
+  ) consumerRuntime.start();
   if (options.resumeAutopilotLoops !== false) {
     queueMicrotask(() => {
       resumeAutopilotLoops({ state, recipient }).catch((error) => {
@@ -1868,6 +1898,15 @@ export function createPrivateAgentWorkerServer(options = {}) {
           expected: () => ({ operation_class: "cross_venue_byo_readiness" }),
         });
         if (authorized.rejected) return;
+        if (!crossVenueDurableClaimReady()) {
+          return json(res, 503, {
+            version: 1,
+            ready: false,
+            execution_mode: "coordinated_byo",
+            atomic: false,
+            reason_codes: [CROSS_VENUE_DURABLE_CLAIM_UNAVAILABLE],
+          });
+        }
         const adapterReady = crossVenueCoordinator.ready();
         return json(res, adapterReady ? 200 : 503, {
           version: 1,
@@ -1892,6 +1931,10 @@ export function createPrivateAgentWorkerServer(options = {}) {
           }),
         });
         if (authorized.rejected) return;
+        if (action === "submit" && !crossVenueDurableClaimReady()) {
+          return json(res, 503, { error: CROSS_VENUE_DURABLE_CLAIM_UNAVAILABLE });
+        }
+        if (action === "submit" && requirePrivateExecutionClaimStore(res)) return;
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
         }
@@ -2530,6 +2573,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
             error_code: hyperliquidValidationErrorCode(errors),
           });
         }
+        if (requirePrivateExecutionClaimStore(res)) return;
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, {
             error: "attested sealed execution is unavailable",
@@ -2672,6 +2716,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
             details: errors,
           });
         }
+        if (requirePrivateExecutionClaimStore(res)) return;
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, {
             error: "attested sealed execution is unavailable",
@@ -2772,6 +2817,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
             details: errors,
           });
         }
+        if (requirePrivateExecutionClaimStore(res)) return;
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, {
             error: "attested sealed execution is unavailable",
@@ -2911,6 +2957,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
             details: errors,
           });
         }
+        if (requirePrivateExecutionClaimStore(res)) return;
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, {
             error: "attested sealed execution is unavailable",
@@ -3108,6 +3155,7 @@ export async function resumeAutopilotLoops({ state, recipient, now = new Date() 
     : [];
   let resumed = 0;
   for (const session of sessions) {
+    if (session?.control_latch) continue;
     const shouldResume = (session?.status === "running" && session.execution_enabled === true) ||
       session?.status === "risk_halted";
     if (!shouldResume) continue;

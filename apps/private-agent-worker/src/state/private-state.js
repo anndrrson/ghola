@@ -10,6 +10,15 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
 const STATE_VERSION = 1;
+const STATE_MUTATION_QUEUES = new Map();
+const COINBASE_OMNIBUS_LIFECYCLE = "coinbase_omnibus_reservation_v1";
+const COINBASE_OMNIBUS_PLACE_OPERATIONS = new Set([
+  "spot_limit_order",
+  "spot_market_order",
+]);
+const OMNIBUS_TERMINAL_STATUSES = new Set(["settled", "released"]);
+const RESERVATION_MAX_DECIMAL_PLACES = 8;
+const RESERVATION_MAX_SCALED_UNITS = BigInt(Number.MAX_SAFE_INTEGER);
 
 function emptyState() {
   return {
@@ -18,6 +27,7 @@ function emptyState() {
     idempotency: {},
     policy_counts: {},
     policy_amounts: {},
+    execution_claims: {},
     execution_attempts: {},
     capability_jtis: {},
     autopilot_sessions: {},
@@ -63,6 +73,7 @@ export function createWorkerState(dir) {
       idempotency: loaded.idempotency || {},
       policy_counts: loaded.policy_counts || {},
       policy_amounts: loaded.policy_amounts || {},
+      execution_claims: loaded.execution_claims || {},
       execution_attempts: loaded.execution_attempts || {},
       capability_jtis: loaded.capability_jtis || {},
       autopilot_sessions: loaded.autopilot_sessions || {},
@@ -106,7 +117,9 @@ export function createConfiguredWorkerState(dir, env = process.env) {
       env.PRIVATE_AGENT_DATABASE_URL ||
       env.DATABASE_URL ||
       "";
-    return createPostgresWorkerState(databaseUrl);
+    return createPostgresWorkerState(databaseUrl, {
+      driver: env.PRIVATE_AGENT_POSTGRES_DRIVER || env.GHOLA_PRIVATE_AGENT_POSTGRES_DRIVER || "auto",
+    });
   }
   throw new Error(`unsupported PRIVATE_AGENT_STATE_STORE: ${store}`);
 }
@@ -162,7 +175,7 @@ export function createSqliteWorkerState(dbPath) {
     }
   }
 
-  function save(state) {
+  function persist(state) {
     const next = {
       ...state,
       version: STATE_VERSION,
@@ -171,18 +184,39 @@ export function createSqliteWorkerState(dbPath) {
     const stateJson = JSON.stringify(next);
     const stateSha = createHash("sha256").update(stateJson).digest("hex");
     const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO worker_state_documents (id, state_json, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at
+    `).run("private-agent-execution-state-v1", stateJson, now);
+    db.prepare(`
+      INSERT INTO worker_state_ledger (document_id, state_json, state_sha256, created_at)
+      VALUES (?, ?, ?, ?)
+    `).run("private-agent-execution-state-v1", stateJson, stateSha, now);
+  }
+
+  function save(state) {
     db.exec("BEGIN IMMEDIATE");
     try {
-      db.prepare(`
-        INSERT INTO worker_state_documents (id, state_json, updated_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at
-      `).run("private-agent-execution-state-v1", stateJson, now);
-      db.prepare(`
-        INSERT INTO worker_state_ledger (document_id, state_json, state_sha256, created_at)
-        VALUES (?, ?, ?, ?)
-      `).run("private-agent-execution-state-v1", stateJson, stateSha, now);
+      persist(state);
       db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  function mutate(updater) {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const state = normalizeState(load());
+      const result = updater(state);
+      if (result && typeof result.then === "function") {
+        throw new Error("sqlite state mutation updater must be synchronous");
+      }
+      persist(state);
+      db.exec("COMMIT");
+      return result;
     } catch (error) {
       db.exec("ROLLBACK");
       throw error;
@@ -194,20 +228,53 @@ export function createSqliteWorkerState(dbPath) {
     hmacSecret,
     load,
     save,
+    mutate,
   });
 }
 
-export function createPostgresWorkerState(databaseUrl) {
+function postgresUrlIsLoopback(databaseUrl) {
+  try {
+    const hostname = new URL(databaseUrl).hostname;
+    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
+function postgresTemplateClient(pool) {
+  return async (strings, ...values) => {
+    let text = strings[0];
+    for (let index = 0; index < values.length; index += 1) {
+      text += `$${index + 1}${strings[index + 1]}`;
+    }
+    const result = await pool.query({ text, values });
+    return result.rows;
+  };
+}
+
+export function createPostgresWorkerState(databaseUrl, { driver = "auto" } = {}) {
   if (!databaseUrl) {
     throw new Error("PRIVATE_AGENT_STATE_STORE=postgres requires PRIVATE_AGENT_STATE_POSTGRES_URL or DATABASE_URL");
   }
   let sqlPromise = null;
+  let poolPromise = null;
   let initPromise = null;
   let hmacSecretPromise = null;
 
   async function sqlClient() {
     if (!sqlPromise) {
-      sqlPromise = import("@neondatabase/serverless").then(({ neon }) => neon(databaseUrl));
+      const useNodePostgres = driver === "pg" || driver === "node-postgres" ||
+        (driver === "auto" && postgresUrlIsLoopback(databaseUrl));
+      if (useNodePostgres) {
+        poolPromise = import("pg").then(({ Pool }) => new Pool({
+          connectionString: databaseUrl,
+          max: 8,
+          connectionTimeoutMillis: 5_000,
+        }));
+        sqlPromise = poolPromise.then(postgresTemplateClient);
+      } else {
+        sqlPromise = import("@neondatabase/serverless").then(({ neon }) => neon(databaseUrl));
+      }
     }
     return sqlPromise;
   }
@@ -216,21 +283,29 @@ export function createPostgresWorkerState(databaseUrl) {
     const sql = await sqlClient();
     if (!initPromise) {
       initPromise = (async () => {
-        await sql`
+        let initSql = sql;
+        let initClient = null;
+        if (poolPromise) {
+          initClient = await (await poolPromise).connect();
+          await initClient.query("SELECT pg_advisory_lock($1)", [1_917_420_811]);
+          initSql = postgresTemplateClient(initClient);
+        }
+        try {
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_state_documents (
             id TEXT PRIMARY KEY,
             state_json JSONB NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_state_secrets (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_sessions (
             session_commitment TEXT PRIMARY KEY,
             session_json JSONB NOT NULL,
@@ -242,30 +317,42 @@ export function createPostgresWorkerState(databaseUrl) {
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
           CREATE INDEX IF NOT EXISTS idx_worker_sessions_venue
           ON worker_sessions (venue_id, updated_at DESC)
         `;
-        await sql`
+        await initSql`
           CREATE INDEX IF NOT EXISTS idx_worker_sessions_vault
           ON worker_sessions (vault_commitment, updated_at DESC)
         `;
-        await sql`
+        await initSql`
           CREATE INDEX IF NOT EXISTS idx_worker_sessions_policy
           ON worker_sessions (policy_commitment, updated_at DESC)
         `;
-        await sql`
+        await initSql`
           CREATE INDEX IF NOT EXISTS idx_worker_sessions_allocation
           ON worker_sessions (allocation_commitment, updated_at DESC)
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_idempotency (
             work_order_commitment TEXT PRIMARY KEY,
             receipt_json JSONB NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
+          CREATE TABLE IF NOT EXISTS worker_execution_claims (
+            work_order_commitment TEXT PRIMARY KEY,
+            claim_token TEXT NOT NULL,
+            status TEXT NOT NULL,
+            claim_json JSONB NOT NULL,
+            attempt_json JSONB,
+            receipt_json JSONB,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `;
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_execution_attempts (
             work_order_commitment TEXT PRIMARY KEY,
             attempt_json JSONB NOT NULL,
@@ -273,28 +360,28 @@ export function createPostgresWorkerState(databaseUrl) {
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_capability_jtis (
             jti TEXT PRIMARY KEY,
             expires_at_unix BIGINT NOT NULL,
             consumed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_policy_counts (
             key TEXT PRIMARY KEY,
             count INTEGER NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_policy_amounts (
             key TEXT PRIMARY KEY,
             amount DOUBLE PRECISION NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_autopilot_sessions (
             autopilot_session_id TEXT PRIMARY KEY,
             owner_commitment TEXT,
@@ -303,11 +390,11 @@ export function createPostgresWorkerState(databaseUrl) {
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
           CREATE INDEX IF NOT EXISTS idx_worker_autopilot_sessions_owner
           ON worker_autopilot_sessions (owner_commitment, created_at DESC)
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_autopilot_events (
             event_id TEXT PRIMARY KEY,
             autopilot_session_id TEXT NOT NULL,
@@ -315,11 +402,11 @@ export function createPostgresWorkerState(databaseUrl) {
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
           CREATE INDEX IF NOT EXISTS idx_worker_autopilot_events_session
           ON worker_autopilot_events (autopilot_session_id, created_at DESC)
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_autopilot_decisions (
             decision_id TEXT PRIMARY KEY,
             autopilot_session_id TEXT NOT NULL,
@@ -327,11 +414,11 @@ export function createPostgresWorkerState(databaseUrl) {
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
           CREATE INDEX IF NOT EXISTS idx_worker_autopilot_decisions_session
           ON worker_autopilot_decisions (autopilot_session_id, created_at DESC)
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_autopilot_positions (
             autopilot_session_id TEXT NOT NULL,
             position_key TEXT NOT NULL,
@@ -340,11 +427,11 @@ export function createPostgresWorkerState(databaseUrl) {
             PRIMARY KEY (autopilot_session_id, position_key)
           )
         `;
-        await sql`
+        await initSql`
           CREATE INDEX IF NOT EXISTS idx_worker_autopilot_positions_session
           ON worker_autopilot_positions (autopilot_session_id, updated_at DESC)
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_autopilot_opportunities (
             opportunity_id TEXT PRIMARY KEY,
             autopilot_session_id TEXT NOT NULL,
@@ -352,25 +439,25 @@ export function createPostgresWorkerState(databaseUrl) {
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
           CREATE INDEX IF NOT EXISTS idx_worker_autopilot_opportunities_session
           ON worker_autopilot_opportunities (autopilot_session_id, created_at DESC)
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_hyperliquid_managed_allocations (
             allocation_commitment TEXT PRIMARY KEY,
             allocation_json JSONB NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_omnibus_allocations (
             allocation_commitment TEXT PRIMARY KEY,
             allocation_json JSONB NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_omnibus_reservations (
             allocation_commitment TEXT NOT NULL,
             work_order_commitment TEXT NOT NULL,
@@ -379,11 +466,11 @@ export function createPostgresWorkerState(databaseUrl) {
             PRIMARY KEY (allocation_commitment, work_order_commitment)
           )
         `;
-        await sql`
+        await initSql`
           CREATE INDEX IF NOT EXISTS idx_worker_omnibus_reservations_allocation
           ON worker_omnibus_reservations (allocation_commitment, updated_at DESC)
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_omnibus_fills (
             allocation_commitment TEXT NOT NULL,
             fill_commitment TEXT NOT NULL,
@@ -392,11 +479,11 @@ export function createPostgresWorkerState(databaseUrl) {
             PRIMARY KEY (allocation_commitment, fill_commitment)
           )
         `;
-        await sql`
+        await initSql`
           CREATE INDEX IF NOT EXISTS idx_worker_omnibus_fills_allocation
           ON worker_omnibus_fills (allocation_commitment, created_at DESC)
         `;
-        await sql`
+        await initSql`
           CREATE TABLE IF NOT EXISTS worker_state_ledger (
             ledger_id BIGSERIAL PRIMARY KEY,
             document_id TEXT NOT NULL,
@@ -405,11 +492,17 @@ export function createPostgresWorkerState(databaseUrl) {
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
-        await sql`
+        await initSql`
           CREATE INDEX IF NOT EXISTS idx_worker_state_ledger_document_created
           ON worker_state_ledger (document_id, created_at DESC)
         `;
-        await migrateLegacyPostgresDocument(sql);
+        await migrateLegacyPostgresDocument(initSql);
+        } finally {
+          if (initClient) {
+            await initClient.query("SELECT pg_advisory_unlock($1)", [1_917_420_811]).catch(() => {});
+            initClient.release();
+          }
+        }
       })();
     }
     await initPromise;
@@ -444,6 +537,10 @@ export function createPostgresWorkerState(databaseUrl) {
   return {
     path: "postgres",
 
+    async close() {
+      if (poolPromise) await (await poolPromise).end();
+    },
+
     async deriveClientOrderId(prefix, workOrderCommitment) {
       return `${prefix}_${(await hmacHex([prefix, workOrderCommitment])).slice(0, 32)}`;
     },
@@ -464,6 +561,327 @@ export function createPostgresWorkerState(databaseUrl) {
         receipt: decodeJson(rows[0].receipt_json),
         updated_at: toIso(rows[0].updated_at),
       };
+    },
+
+    async claimExecution(workOrderCommitment, context = {}) {
+      const sql = await ensureInitialized();
+      const claimToken = randomBytes(24).toString("hex");
+      const now = new Date().toISOString();
+      const requestedContext = sanitizeExecutionClaimContext(context);
+      if (!validExecutionRequestDigest(requestedContext.request_digest)) {
+        return { status: "context_mismatch" };
+      }
+      const claim = {
+        work_order_commitment: workOrderCommitment,
+        claim_token: claimToken,
+        status: "in_progress",
+        context: requestedContext,
+        created_at: now,
+        updated_at: now,
+      };
+      const inserted = await sql`
+        INSERT INTO worker_execution_claims (
+          work_order_commitment,
+          claim_token,
+          status,
+          claim_json,
+          created_at,
+          updated_at
+        )
+        SELECT
+          ${workOrderCommitment},
+          ${claimToken},
+          ${"in_progress"},
+          ${jsonParam(claim)}::jsonb,
+          NOW(),
+          NOW()
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM worker_execution_attempts
+          WHERE work_order_commitment = ${workOrderCommitment}
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM worker_idempotency
+          WHERE work_order_commitment = ${workOrderCommitment}
+        )
+        ON CONFLICT (work_order_commitment) DO NOTHING
+        RETURNING claim_json
+      `;
+      if (inserted[0]) {
+        return {
+          status: "claimed",
+          claim_token: claimToken,
+          claim: decodeJson(inserted[0].claim_json) || claim,
+        };
+      }
+
+      const existingRows = await sql`
+        SELECT
+          (
+            SELECT receipt_json
+            FROM worker_idempotency
+            WHERE work_order_commitment = ${workOrderCommitment}
+          ) AS completed_receipt,
+          (
+            SELECT receipt_json
+            FROM worker_execution_claims
+            WHERE work_order_commitment = ${workOrderCommitment}
+          ) AS claim_receipt,
+          (
+            SELECT status
+            FROM worker_execution_claims
+            WHERE work_order_commitment = ${workOrderCommitment}
+          ) AS claim_status,
+          (
+            SELECT claim_json
+            FROM worker_execution_claims
+            WHERE work_order_commitment = ${workOrderCommitment}
+          ) AS claim_json,
+          EXISTS (
+            SELECT 1
+            FROM worker_execution_attempts
+            WHERE work_order_commitment = ${workOrderCommitment}
+          ) AS has_attempt
+      `;
+      const existing = existingRows[0] || {};
+      const completedReceipt = decodeJson(existing.completed_receipt);
+      const claimReceipt = decodeJson(existing.claim_receipt);
+      const claimRecord = decodeJson(existing.claim_json);
+      if (!executionClaimBindingMatches(requestedContext, {
+        claim: claimRecord,
+        receipt: completedReceipt || claimReceipt,
+      })) {
+        return { status: "context_mismatch" };
+      }
+      if (completedReceipt) return { status: "completed", receipt: completedReceipt };
+      if (existing.claim_status === "completed" && claimReceipt) {
+        return { status: "completed", receipt: claimReceipt };
+      }
+      if (existing.claim_status === "rejected" && claimRecord?.rejection) {
+        return { status: "rejected", rejection: claimRecord.rejection };
+      }
+      return {
+        status: (existing.claim_status || existing.has_attempt)
+          ? "reconcile_required"
+          : "in_progress",
+      };
+    },
+
+    async recordExecutionClaimEvidence(workOrderCommitment, claimToken, { attempt, receipt }) {
+      const sql = await ensureInitialized();
+      const now = new Date().toISOString();
+      const completionDigest = executionCompletionRequestDigest(attempt, receipt);
+      if (!completionDigest) throw executionClaimContextConflict();
+      const nextAttempt = {
+        ...attempt,
+        work_order_commitment: workOrderCommitment,
+        updated_at: now,
+      };
+      const rows = await sql`
+        WITH owned AS (
+          UPDATE worker_execution_claims
+          SET
+            attempt_json = ${jsonParam(nextAttempt)}::jsonb,
+            receipt_json = ${jsonParam(receipt)}::jsonb,
+            updated_at = NOW()
+          WHERE work_order_commitment = ${workOrderCommitment}
+            AND claim_token = ${claimToken}
+            AND status = ${"in_progress"}
+            AND claim_json -> 'context' ->> 'request_digest' = ${completionDigest}
+          RETURNING work_order_commitment, receipt_json
+        ), attempt_write AS (
+          INSERT INTO worker_execution_attempts (
+            work_order_commitment,
+            attempt_json,
+            status,
+            updated_at
+          )
+          SELECT
+            ${workOrderCommitment},
+            ${jsonParam(nextAttempt)}::jsonb,
+            ${nextAttempt.status || null},
+            NOW()
+          FROM owned
+          WHERE TRUE
+          ON CONFLICT (work_order_commitment)
+          DO UPDATE SET
+            attempt_json = excluded.attempt_json,
+            status = excluded.status,
+            updated_at = excluded.updated_at
+          RETURNING work_order_commitment
+        )
+        SELECT owned.receipt_json
+        FROM owned
+        JOIN attempt_write USING (work_order_commitment)
+      `;
+      const stored = decodeJson(rows[0]?.receipt_json);
+      if (!stored) throw executionClaimConflict();
+      return stored;
+    },
+
+    async completeExecutionClaim(workOrderCommitment, claimToken, { attempt, receipt }) {
+      const sql = await ensureInitialized();
+      const now = new Date().toISOString();
+      const completionDigest = executionCompletionRequestDigest(attempt, receipt);
+      if (!completionDigest) throw executionClaimContextConflict();
+      const nextAttempt = {
+        ...attempt,
+        work_order_commitment: workOrderCommitment,
+        updated_at: now,
+      };
+      const rows = await sql`
+        WITH owned AS (
+          UPDATE worker_execution_claims
+          SET
+            status = ${"completed"},
+            attempt_json = ${jsonParam(nextAttempt)}::jsonb,
+            receipt_json = ${jsonParam(receipt)}::jsonb,
+            updated_at = NOW()
+          WHERE work_order_commitment = ${workOrderCommitment}
+            AND claim_token = ${claimToken}
+            AND status = ${"in_progress"}
+            AND claim_json -> 'context' ->> 'request_digest' = ${completionDigest}
+          RETURNING work_order_commitment
+        ), attempt_write AS (
+          INSERT INTO worker_execution_attempts (
+            work_order_commitment,
+            attempt_json,
+            status,
+            updated_at
+          )
+          SELECT
+            ${workOrderCommitment},
+            ${jsonParam(nextAttempt)}::jsonb,
+            ${nextAttempt.status || null},
+            NOW()
+          FROM owned
+          WHERE TRUE
+          ON CONFLICT (work_order_commitment)
+          DO UPDATE SET
+            attempt_json = excluded.attempt_json,
+            status = excluded.status,
+            updated_at = excluded.updated_at
+          RETURNING work_order_commitment
+        ), receipt_write AS (
+          INSERT INTO worker_idempotency (work_order_commitment, receipt_json, updated_at)
+          SELECT ${workOrderCommitment}, ${jsonParam(receipt)}::jsonb, NOW()
+          FROM owned
+          WHERE TRUE
+          ON CONFLICT (work_order_commitment)
+          DO UPDATE SET receipt_json = excluded.receipt_json, updated_at = excluded.updated_at
+          RETURNING receipt_json
+        )
+        SELECT receipt_json
+        FROM receipt_write
+      `;
+      const completed = decodeJson(rows[0]?.receipt_json);
+      if (completed) return completed;
+      const cachedRows = await sql`
+        SELECT receipt_json
+        FROM worker_idempotency
+        WHERE work_order_commitment = ${workOrderCommitment}
+      `;
+      const cached = decodeJson(cachedRows[0]?.receipt_json);
+      if (cached) {
+        if (cached.execution_request_digest !== completionDigest) {
+          throw executionClaimContextConflict();
+        }
+        return cached;
+      }
+      throw executionClaimConflict();
+    },
+
+    async markExecutionClaimReconcileRequired(
+      workOrderCommitment,
+      claimToken,
+      attempt = {},
+      evidence = null,
+    ) {
+      const sql = await ensureInitialized();
+      const failure = sanitizeExecutionClaimFailure(attempt);
+      const evidenceDigest = evidence
+        ? executionCompletionRequestDigest(evidence.attempt, evidence.receipt)
+        : null;
+      if (evidence && !evidenceDigest) throw executionClaimContextConflict();
+      const suppliedAttempt = evidence?.attempt
+        ? {
+          ...evidence.attempt,
+          work_order_commitment: workOrderCommitment,
+          updated_at: new Date().toISOString(),
+        }
+        : {};
+      const failurePatch = {
+        ...failure,
+        reconciliation_failure: failure,
+        work_order_commitment: workOrderCommitment,
+        status: "reconcile_required",
+        updated_at: new Date().toISOString(),
+      };
+      const suppliedReceipt = evidence?.receipt || null;
+      const rows = await sql`
+        WITH owned AS (
+          UPDATE worker_execution_claims
+          SET
+            status = ${"reconcile_required"},
+            attempt_json = COALESCE(attempt_json, '{}'::jsonb) ||
+              ${jsonParam(suppliedAttempt)}::jsonb ||
+              ${jsonParam(failurePatch)}::jsonb,
+            receipt_json = COALESCE(
+              ${suppliedReceipt ? jsonParam(suppliedReceipt) : null}::jsonb,
+              receipt_json
+            ),
+            updated_at = NOW()
+          WHERE work_order_commitment = ${workOrderCommitment}
+            AND claim_token = ${claimToken}
+            AND status = ${"in_progress"}
+            AND (${evidenceDigest}::text IS NULL OR claim_json -> 'context' ->> 'request_digest' = ${evidenceDigest})
+          RETURNING work_order_commitment, attempt_json
+        ), attempt_write AS (
+          INSERT INTO worker_execution_attempts (
+            work_order_commitment,
+            attempt_json,
+            status,
+            updated_at
+          )
+          SELECT
+            work_order_commitment,
+            attempt_json,
+            ${"reconcile_required"},
+            NOW()
+          FROM owned
+          WHERE TRUE
+          ON CONFLICT (work_order_commitment)
+          DO UPDATE SET
+            attempt_json = excluded.attempt_json,
+            status = excluded.status,
+            updated_at = excluded.updated_at
+          RETURNING work_order_commitment
+        )
+        SELECT work_order_commitment
+        FROM attempt_write
+      `;
+      return { ok: Boolean(rows[0]) };
+    },
+
+    async rejectExecutionClaim(workOrderCommitment, claimToken, rejection) {
+      const sql = await ensureInitialized();
+      const sanitized = sanitizeExecutionClaimFailure(rejection);
+      const rows = await sql`
+        UPDATE worker_execution_claims
+        SET
+          status = ${"rejected"},
+          claim_json = claim_json || ${jsonParam({
+            status: "rejected",
+            rejection: sanitized,
+          })}::jsonb,
+          updated_at = NOW()
+        WHERE work_order_commitment = ${workOrderCommitment}
+          AND claim_token = ${claimToken}
+          AND status = ${"in_progress"}
+        RETURNING work_order_commitment
+      `;
+      return { ok: Boolean(rows[0]) };
     },
 
     async putIdempotency(workOrderCommitment, receipt) {
@@ -504,6 +922,21 @@ export function createPostgresWorkerState(databaseUrl) {
         WHERE work_order_commitment = ${workOrderCommitment}
       `;
       return decodeJson(rows[0]?.attempt_json) || null;
+    },
+
+    async getExecutionClaimEvidence(workOrderCommitment) {
+      const sql = await ensureInitialized();
+      const rows = await sql`
+        SELECT status, attempt_json, receipt_json
+        FROM worker_execution_claims
+        WHERE work_order_commitment = ${workOrderCommitment}
+      `;
+      if (!rows[0]) return null;
+      return {
+        status: rows[0].status,
+        attempt: decodeJson(rows[0].attempt_json),
+        receipt: decodeJson(rows[0].receipt_json),
+      };
     },
 
     async consumeCapabilityJti(jti, expiresAtUnix) {
@@ -825,7 +1258,7 @@ export function createPostgresWorkerState(databaseUrl) {
         const rows = await sql`
           INSERT INTO worker_policy_amounts (key, amount, updated_at)
           SELECT ${key}, ${parsedAmount}, NOW()
-          WHERE ${parsedAmount} <= ${parsedMax}
+          WHERE ${parsedAmount}::double precision <= ${parsedMax}::double precision
           ON CONFLICT (key)
           DO UPDATE SET
             amount = worker_policy_amounts.amount + ${parsedAmount},
@@ -860,6 +1293,102 @@ export function createPostgresWorkerState(databaseUrl) {
       return readOmnibusAllocation(sql, allocationCommitment);
     },
 
+    async getCoinbaseOmnibusReservation(input) {
+      const sql = await ensureInitialized();
+      const allocationCommitment = requiredReservationText(
+        input?.allocation_commitment,
+        "allocation_commitment",
+      );
+      const workOrderCommitment = requiredReservationText(
+        input?.work_order_commitment,
+        "work_order_commitment",
+      );
+      const rows = await sql`
+        SELECT reservation_json
+        FROM worker_omnibus_reservations
+        WHERE allocation_commitment = ${allocationCommitment}
+          AND work_order_commitment = ${workOrderCommitment}
+      `;
+      const reservation = decodeJson(rows[0]?.reservation_json);
+      return reservation?.lifecycle === COINBASE_OMNIBUS_LIFECYCLE ? reservation : null;
+    },
+
+    async transitionCoinbaseOmnibusReservation(input) {
+      const sql = await ensureInitialized();
+      const scope = coinbaseOmnibusReservationScope(input);
+      const allocation = coinbaseOmnibusTransitionAllocation(input, scope.allocation_commitment);
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const rows = await sql`
+          SELECT reservation_json
+          FROM worker_omnibus_reservations
+          WHERE allocation_commitment = ${scope.allocation_commitment}
+            AND work_order_commitment = ${scope.work_order_commitment}
+        `;
+        const current = decodeJson(rows[0]?.reservation_json);
+        if (current && current.lifecycle !== COINBASE_OMNIBUS_LIFECYCLE) {
+          throw omnibusReservationError(
+            "legacy omnibus reservation requires reconciliation before lifecycle migration",
+            "COINBASE_OMNIBUS_LEGACY_RESERVATION",
+          );
+        }
+        const next = applyCoinbaseOmnibusReservationTransition(current, input);
+        if (next === current) return current;
+
+        if (!current) {
+          const inserted = await sql`
+            WITH reservation_write AS (
+              INSERT INTO worker_omnibus_reservations (
+                allocation_commitment,
+                work_order_commitment,
+                reservation_json,
+                updated_at
+              )
+              VALUES (
+                ${scope.allocation_commitment},
+                ${scope.work_order_commitment},
+                ${jsonParam(next)}::jsonb,
+                NOW()
+              )
+              ON CONFLICT (allocation_commitment, work_order_commitment) DO NOTHING
+              RETURNING reservation_json
+            ), allocation_write AS (
+              INSERT INTO worker_omnibus_allocations (
+                allocation_commitment,
+                allocation_json,
+                updated_at
+              )
+              SELECT
+                ${scope.allocation_commitment},
+                ${jsonParam(allocation)}::jsonb,
+                NOW()
+              FROM reservation_write
+              ON CONFLICT (allocation_commitment) DO NOTHING
+              RETURNING allocation_commitment
+            )
+            SELECT reservation_write.reservation_json
+            FROM reservation_write
+            LEFT JOIN allocation_write ON TRUE
+          `;
+          if (inserted[0]) return decodeJson(inserted[0].reservation_json) || next;
+          continue;
+        }
+
+        const updated = await sql`
+          UPDATE worker_omnibus_reservations
+          SET reservation_json = ${jsonParam(next)}::jsonb, updated_at = NOW()
+          WHERE allocation_commitment = ${scope.allocation_commitment}
+            AND work_order_commitment = ${scope.work_order_commitment}
+            AND reservation_json = ${jsonParam(current)}::jsonb
+          RETURNING reservation_json
+        `;
+        if (updated[0]) return decodeJson(updated[0].reservation_json) || next;
+      }
+      throw omnibusReservationError(
+        "coinbase omnibus reservation changed concurrently; retry reconciliation",
+        "COINBASE_OMNIBUS_CONCURRENT_TRANSITION",
+      );
+    },
+
     async reserveOmnibus(input) {
       const sql = await ensureInitialized();
       await upsertOmnibusAllocation(sql, input.allocation || {
@@ -885,9 +1414,15 @@ export function createPostgresWorkerState(databaseUrl) {
           NOW()
         )
         ON CONFLICT (allocation_commitment, work_order_commitment)
-        DO UPDATE SET reservation_json = excluded.reservation_json, updated_at = excluded.updated_at
+        DO NOTHING
       `;
-      return reservation;
+      const storedRows = await sql`
+        SELECT reservation_json
+        FROM worker_omnibus_reservations
+        WHERE allocation_commitment = ${input.allocation_commitment}
+          AND work_order_commitment = ${input.work_order_commitment}
+      `;
+      return decodeJson(storedRows[0]?.reservation_json) || reservation;
     },
 
     async releaseOmnibus(input) {
@@ -900,17 +1435,27 @@ export function createPostgresWorkerState(databaseUrl) {
       `;
       const existing = decodeJson(rows[0]?.reservation_json);
       if (!existing) return;
+      if (existing.lifecycle === COINBASE_OMNIBUS_LIFECYCLE) {
+        throw omnibusReservationError(
+          "strict coinbase omnibus reservations require terminal release proof",
+          "COINBASE_OMNIBUS_INVALID_RELEASE_PROOF",
+        );
+      }
+      if (OMNIBUS_TERMINAL_STATUSES.has(existing.status)) return existing;
       const next = {
         ...existing,
         status: "released",
         updated_at: new Date().toISOString(),
       };
-      await sql`
+      const updated = await sql`
         UPDATE worker_omnibus_reservations
         SET reservation_json = ${jsonParam(next)}::jsonb, updated_at = NOW()
         WHERE allocation_commitment = ${input.allocation_commitment}
           AND work_order_commitment = ${input.work_order_commitment}
+          AND COALESCE(reservation_json ->> 'status', '') NOT IN ('settled', 'released')
+        RETURNING reservation_json
       `;
+      return decodeJson(updated[0]?.reservation_json) || existing;
     },
 
     async settleOmnibusFill(input) {
@@ -918,6 +1463,19 @@ export function createPostgresWorkerState(databaseUrl) {
       await upsertOmnibusAllocation(sql, {
         allocation_commitment: input.allocation_commitment,
       });
+      const reservationRows = await sql`
+        SELECT reservation_json
+        FROM worker_omnibus_reservations
+        WHERE allocation_commitment = ${input.allocation_commitment}
+          AND work_order_commitment = ${input.work_order_commitment}
+      `;
+      const reservation = decodeJson(reservationRows[0]?.reservation_json);
+      if (reservation?.lifecycle === COINBASE_OMNIBUS_LIFECYCLE) {
+        throw omnibusReservationError(
+          "strict coinbase omnibus fills require an amount-aware transition",
+          "COINBASE_OMNIBUS_INVALID_TRANSITION",
+        );
+      }
       const fill = {
         fill_commitment: input.fill_commitment,
         work_order_commitment: input.work_order_commitment,
@@ -936,14 +1494,7 @@ export function createPostgresWorkerState(databaseUrl) {
         ON CONFLICT (allocation_commitment, fill_commitment)
         DO UPDATE SET fill_json = excluded.fill_json
       `;
-      const reservationRows = await sql`
-        SELECT reservation_json
-        FROM worker_omnibus_reservations
-        WHERE allocation_commitment = ${input.allocation_commitment}
-          AND work_order_commitment = ${input.work_order_commitment}
-      `;
-      const reservation = decodeJson(reservationRows[0]?.reservation_json);
-      if (reservation) {
+      if (reservation && !OMNIBUS_TERMINAL_STATUSES.has(reservation.status)) {
         const nextReservation = {
           ...reservation,
           status: "settled",
@@ -954,11 +1505,533 @@ export function createPostgresWorkerState(databaseUrl) {
           SET reservation_json = ${jsonParam(nextReservation)}::jsonb, updated_at = NOW()
           WHERE allocation_commitment = ${input.allocation_commitment}
             AND work_order_commitment = ${input.work_order_commitment}
+            AND COALESCE(reservation_json ->> 'status', '') NOT IN ('settled', 'released')
         `;
       }
       return fill;
     },
   };
+}
+
+/**
+ * Pure, fail-closed Coinbase omnibus reservation transition.
+ *
+ * The caller must repeat the complete placement scope for every mutation. Release
+ * transitions additionally require provider evidence bound to the stored scope.
+ */
+export function applyCoinbaseOmnibusReservationTransition(current, event) {
+  if (!event || typeof event !== "object" || Array.isArray(event)) {
+    throw omnibusReservationError(
+      "coinbase omnibus reservation transition is required",
+      "COINBASE_OMNIBUS_INVALID_TRANSITION",
+      400,
+    );
+  }
+  const transition = requiredReservationText(event.transition, "transition");
+  const scope = coinbaseOmnibusReservationScope(event);
+  const scopeCommitment = stableRecordId("coinbase_omnibus_scope", scope);
+
+  if (transition === "reserve") {
+    if (!COINBASE_OMNIBUS_PLACE_OPERATIONS.has(scope.operation_class)) {
+      throw omnibusReservationError(
+        "coinbase omnibus capacity may only be reserved for placement operations",
+        "COINBASE_OMNIBUS_INVALID_OPERATION",
+        400,
+      );
+    }
+    const reservedAmount = reservationDecimal(event.reserved_amount, "reserved_amount");
+    if (current) {
+      const accounting = assertCoinbaseReservationRecord(current, scopeCommitment);
+      if (!reservationDecimalsEqual(accounting.reserved, reservedAmount)) {
+        throw omnibusReservationError(
+          "coinbase omnibus reservation amount conflicts with existing scope",
+          "COINBASE_OMNIBUS_RESERVATION_CONFLICT",
+        );
+      }
+      return current;
+    }
+    const now = timestampOrNow(event.at);
+    const zero = zeroReservationDecimal();
+    return {
+      lifecycle: COINBASE_OMNIBUS_LIFECYCLE,
+      allocation_commitment: scope.allocation_commitment,
+      work_order_commitment: scope.work_order_commitment,
+      scope,
+      scope_commitment: scopeCommitment,
+      status: "reserved",
+      reserved_amount: reservationDecimalNumber(reservedAmount),
+      reserved_amount_decimal: reservedAmount.canonical,
+      filled_amount: 0,
+      filled_amount_decimal: zero.canonical,
+      released_amount: 0,
+      released_amount_decimal: zero.canonical,
+      remaining_amount: reservationDecimalNumber(reservedAmount),
+      remaining_amount_decimal: reservedAmount.canonical,
+      fill_amounts: {},
+      fill_amount_decimals: {},
+      release_proof: null,
+      created_at: now,
+      updated_at: now,
+    };
+  }
+
+  if (!current) {
+    throw omnibusReservationError(
+      "coinbase omnibus reservation was not found",
+      "COINBASE_OMNIBUS_RESERVATION_NOT_FOUND",
+      404,
+    );
+  }
+  const accounting = assertCoinbaseReservationRecord(current, scopeCommitment);
+
+  if (transition === "fill") {
+    const fillCommitment = requiredReservationText(event.fill_commitment, "fill_commitment");
+    const fillAmount = reservationDecimal(event.fill_amount, "fill_amount");
+    const fillAmounts = current.fill_amounts && typeof current.fill_amounts === "object"
+      ? current.fill_amounts
+      : {};
+    const fillAmountDecimals = current.fill_amount_decimals &&
+      typeof current.fill_amount_decimals === "object"
+      ? current.fill_amount_decimals
+      : {};
+    if (Object.prototype.hasOwnProperty.call(fillAmounts, fillCommitment) ||
+      Object.prototype.hasOwnProperty.call(fillAmountDecimals, fillCommitment)) {
+      const storedFillAmount = reservationDecimal(
+        fillAmountDecimals[fillCommitment] ?? fillAmounts[fillCommitment],
+        "stored fill_amount",
+      );
+      if (!reservationDecimalsEqual(storedFillAmount, fillAmount)) {
+        throw omnibusReservationError(
+          "coinbase omnibus fill commitment conflicts with its recorded amount",
+          "COINBASE_OMNIBUS_FILL_CONFLICT",
+        );
+      }
+      return current;
+    }
+    assertReservationNotTerminal(current);
+    const nextFilledAmount = addReservationDecimals(accounting.filled, fillAmount);
+    const nextCommittedAmount = addReservationDecimals(nextFilledAmount, accounting.released);
+    if (compareReservationDecimals(nextCommittedAmount, accounting.reserved) > 0) {
+      throw omnibusReservationError(
+        "coinbase omnibus fill exceeds the reserved amount",
+        "COINBASE_OMNIBUS_OVERFILL",
+      );
+    }
+    const boundedFilledAmount = reservationDecimalsEqual(nextCommittedAmount, accounting.reserved)
+      ? subtractReservationDecimals(accounting.reserved, accounting.released)
+      : nextFilledAmount;
+    const remainingAmount = subtractReservationDecimals(
+      subtractReservationDecimals(accounting.reserved, boundedFilledAmount),
+      accounting.released,
+    );
+    const settled = reservationDecimalIsZero(remainingAmount);
+    const now = timestampOrNow(event.at);
+    return {
+      ...current,
+      status: settled ? "settled" : "partially_filled",
+      filled_amount: reservationDecimalNumber(boundedFilledAmount),
+      filled_amount_decimal: boundedFilledAmount.canonical,
+      remaining_amount: reservationDecimalNumber(remainingAmount),
+      remaining_amount_decimal: remainingAmount.canonical,
+      fill_amounts: {
+        ...fillAmounts,
+        [fillCommitment]: reservationDecimalNumber(fillAmount),
+      },
+      fill_amount_decimals: {
+        ...fillAmountDecimals,
+        [fillCommitment]: fillAmount.canonical,
+      },
+      updated_at: now,
+      settled_at: settled ? now : current.settled_at,
+    };
+  }
+
+  if (transition === "release") {
+    const proof = coinbaseOmnibusReleaseProof(event.proof, current, accounting);
+    if (current.status === "released" && current.release_proof) {
+      const storedProof = coinbaseOmnibusReleaseProof(
+        current.release_proof,
+        current,
+        accounting,
+      );
+      if (stableRecordId("coinbase_omnibus_release_proof", storedProof) ===
+        stableRecordId("coinbase_omnibus_release_proof", proof)) {
+        return current;
+      }
+    }
+    assertReservationNotTerminal(current);
+    if (reservationDecimalIsZero(accounting.remaining)) {
+      throw omnibusReservationError(
+        "coinbase omnibus reservation has no remainder to release",
+        "COINBASE_OMNIBUS_NO_REMAINDER",
+      );
+    }
+    const releasedAmount = addReservationDecimals(accounting.released, accounting.remaining);
+    const now = timestampOrNow(event.at);
+    return {
+      ...current,
+      status: "released",
+      released_amount: reservationDecimalNumber(releasedAmount),
+      released_amount_decimal: releasedAmount.canonical,
+      remaining_amount: 0,
+      remaining_amount_decimal: zeroReservationDecimal().canonical,
+      release_proof: proof,
+      updated_at: now,
+      released_at: now,
+    };
+  }
+
+  throw omnibusReservationError(
+    "coinbase omnibus reservation transition is unsupported",
+    "COINBASE_OMNIBUS_INVALID_TRANSITION",
+    400,
+  );
+}
+
+function coinbaseOmnibusReservationScope(value) {
+  const venueId = value.venue_id == null ? "coinbase_advanced" : String(value.venue_id).trim();
+  const executionMode = value.execution_mode == null
+    ? "partner_omnibus"
+    : String(value.execution_mode).trim();
+  if (venueId !== "coinbase_advanced" || executionMode !== "partner_omnibus") {
+    throw omnibusReservationError(
+      "coinbase omnibus reservation scope is invalid",
+      "COINBASE_OMNIBUS_SCOPE_MISMATCH",
+      400,
+    );
+  }
+  const side = requiredReservationText(value.side, "side").toLowerCase();
+  if (side !== "buy" && side !== "sell") {
+    throw omnibusReservationError(
+      "coinbase omnibus reservation side is invalid",
+      "COINBASE_OMNIBUS_SCOPE_MISMATCH",
+      400,
+    );
+  }
+  return {
+    venue_id: venueId,
+    execution_mode: executionMode,
+    allocation_commitment: requiredReservationText(
+      value.allocation_commitment,
+      "allocation_commitment",
+    ),
+    work_order_commitment: requiredReservationText(
+      value.work_order_commitment,
+      "work_order_commitment",
+    ),
+    operation_class: requiredReservationText(value.operation_class, "operation_class"),
+    client_order_id: requiredReservationText(value.client_order_id, "client_order_id"),
+    product_id: requiredReservationText(value.product_id, "product_id").toUpperCase(),
+    side,
+  };
+}
+
+function coinbaseOmnibusTransitionAllocation(input, allocationCommitment) {
+  if (!input.allocation) return { allocation_commitment: allocationCommitment };
+  if (!input.allocation || typeof input.allocation !== "object" || Array.isArray(input.allocation) ||
+    requiredReservationText(
+      input.allocation.allocation_commitment,
+      "allocation.allocation_commitment",
+    ) !== allocationCommitment) {
+    throw omnibusReservationError(
+      "coinbase omnibus allocation metadata targets a different allocation",
+      "COINBASE_OMNIBUS_SCOPE_MISMATCH",
+      400,
+    );
+  }
+  return {
+    ...input.allocation,
+    allocation_commitment: allocationCommitment,
+  };
+}
+
+function assertCoinbaseReservationRecord(current, expectedScopeCommitment) {
+  if (current.lifecycle !== COINBASE_OMNIBUS_LIFECYCLE ||
+    current.scope_commitment !== expectedScopeCommitment) {
+    throw omnibusReservationError(
+      "coinbase omnibus reservation scope does not match the stored placement",
+      "COINBASE_OMNIBUS_SCOPE_MISMATCH",
+    );
+  }
+  return coinbaseOmnibusReservationAccounting(current);
+}
+
+function coinbaseOmnibusReservationAccounting(current) {
+  const reserved = storedReservationDecimal(current, "reserved_amount", false);
+  const filled = storedReservationDecimal(current, "filled_amount", true);
+  const released = storedReservationDecimal(current, "released_amount", true);
+  const remaining = storedReservationDecimal(current, "remaining_amount", true);
+  const committed = addReservationDecimals(addReservationDecimals(filled, released), remaining);
+  const fillAmounts = current.fill_amounts && typeof current.fill_amounts === "object"
+    ? current.fill_amounts
+    : {};
+  const fillAmountDecimals = current.fill_amount_decimals &&
+    typeof current.fill_amount_decimals === "object"
+    ? current.fill_amount_decimals
+    : {};
+  let fillTotal = zeroReservationDecimal();
+  for (const fillCommitment of new Set([
+    ...Object.keys(fillAmounts),
+    ...Object.keys(fillAmountDecimals),
+  ])) {
+    const decimal = reservationDecimal(
+      fillAmountDecimals[fillCommitment] ?? fillAmounts[fillCommitment],
+      "stored fill_amount",
+    );
+    if (Object.prototype.hasOwnProperty.call(fillAmounts, fillCommitment) &&
+      Object.prototype.hasOwnProperty.call(fillAmountDecimals, fillCommitment) &&
+      Number.isFinite(fillAmounts[fillCommitment])) {
+      const numericAmount = Number(decimal.canonical);
+      if (!Number.isFinite(numericAmount) || !Object.is(numericAmount, fillAmounts[fillCommitment])) {
+        throw invalidOmnibusReservationState();
+      }
+    }
+    fillTotal = addReservationDecimals(fillTotal, decimal);
+  }
+  if (!reservationDecimalsEqual(committed, reserved) ||
+    !reservationDecimalsEqual(fillTotal, filled)) {
+    throw invalidOmnibusReservationState();
+  }
+
+  const filledIsZero = reservationDecimalIsZero(filled);
+  const releasedIsZero = reservationDecimalIsZero(released);
+  const remainingIsZero = reservationDecimalIsZero(remaining);
+  const statusIsValid = (current.status === "reserved" && filledIsZero &&
+      releasedIsZero && !remainingIsZero) ||
+    (current.status === "partially_filled" && !filledIsZero &&
+      releasedIsZero && !remainingIsZero) ||
+    (current.status === "settled" && !filledIsZero &&
+      releasedIsZero && remainingIsZero) ||
+    (current.status === "released" && remainingIsZero &&
+      !reservationDecimalIsZero(released));
+  if (!statusIsValid) throw invalidOmnibusReservationState();
+  return { reserved, filled, released, remaining };
+}
+
+function invalidOmnibusReservationState() {
+  return omnibusReservationError(
+    "coinbase omnibus reservation accounting state is invalid",
+    "COINBASE_OMNIBUS_INVALID_STATE",
+  );
+}
+
+function assertReservationNotTerminal(current) {
+  if (OMNIBUS_TERMINAL_STATUSES.has(current.status)) {
+    throw omnibusReservationError(
+      "coinbase omnibus reservation is terminal",
+      "COINBASE_OMNIBUS_TERMINAL",
+    );
+  }
+  if (current.status !== "reserved" && current.status !== "partially_filled") {
+    throw omnibusReservationError(
+      "coinbase omnibus reservation state is invalid",
+      "COINBASE_OMNIBUS_INVALID_STATE",
+    );
+  }
+}
+
+function coinbaseOmnibusReleaseProof(value, current, accounting) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw invalidOmnibusReleaseProof();
+  }
+  const kind = requiredReservationText(value.kind, "proof.kind");
+  const proofCommitment = requiredReservationText(
+    value.proof_commitment,
+    "proof.proof_commitment",
+  );
+  const scopeCommitment = requiredReservationText(
+    value.scope_commitment,
+    "proof.scope_commitment",
+  );
+  const targetClientOrderId = requiredReservationText(
+    value.target_client_order_id,
+    "proof.target_client_order_id",
+  );
+  if (scopeCommitment !== current.scope_commitment ||
+    targetClientOrderId !== current.scope?.client_order_id) {
+    throw omnibusReservationError(
+      "coinbase omnibus release proof targets a different placement",
+      "COINBASE_OMNIBUS_SCOPE_MISMATCH",
+    );
+  }
+
+  if (kind === "rejected_before_submit") {
+    if (value.submission_attempted !== false ||
+      !reservationDecimalIsZero(accounting.filled)) {
+      throw invalidOmnibusReleaseProof();
+    }
+    return {
+      kind,
+      proof_commitment: proofCommitment,
+      scope_commitment: scopeCommitment,
+      target_client_order_id: targetClientOrderId,
+      submission_attempted: false,
+      reason_code: requiredReservationText(value.reason_code, "proof.reason_code"),
+    };
+  }
+
+  if (kind !== "cancel_confirmed" && kind !== "reconcile_terminal") {
+    throw invalidOmnibusReleaseProof();
+  }
+  const terminalStatus = requiredReservationText(
+    value.terminal_status,
+    "proof.terminal_status",
+  ).toLowerCase();
+  const providerOrderId = requiredReservationText(
+    value.provider_order_id,
+    "proof.provider_order_id",
+  );
+  const allowedStatuses = kind === "cancel_confirmed"
+    ? new Set(["cancelled"])
+    : new Set(["cancelled", "expired", "failed", "rejected"]);
+  const observedFilledAmount = reservationDecimal(
+    value.observed_filled_amount_decimal ?? value.observed_filled_amount,
+    "proof.observed_filled_amount",
+    true,
+  );
+  if (!allowedStatuses.has(terminalStatus) ||
+    !reservationDecimalsEqual(observedFilledAmount, accounting.filled)) {
+    throw invalidOmnibusReleaseProof();
+  }
+  return {
+    kind,
+    proof_commitment: proofCommitment,
+    scope_commitment: scopeCommitment,
+    target_client_order_id: targetClientOrderId,
+    terminal_status: terminalStatus,
+    observed_filled_amount: reservationDecimalNumber(observedFilledAmount),
+    observed_filled_amount_decimal: observedFilledAmount.canonical,
+    provider_order_id: providerOrderId,
+  };
+}
+
+function requiredReservationText(value, field) {
+  if (typeof value !== "string" || !value.trim() || value.trim().length > 512) {
+    throw omnibusReservationError(
+      `coinbase omnibus ${field} is invalid`,
+      "COINBASE_OMNIBUS_INVALID_INPUT",
+      400,
+    );
+  }
+  return value.trim();
+}
+
+function reservationDecimal(value, field, allowZero = false) {
+  if (typeof value !== "number" && typeof value !== "string") {
+    throw invalidReservationAmount(field);
+  }
+  let text = typeof value === "number" ? String(value) : value.trim();
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) throw invalidReservationAmount(field);
+    const fixed = value.toFixed(RESERVATION_MAX_DECIMAL_PLACES);
+    text = fixed.replace(/0+$/, "").replace(/\.$/, "");
+    if (Number(text) !== value) throw invalidReservationAmount(field);
+  }
+  const match = /^(0|[1-9]\d*)(?:\.(\d+))?$/.exec(text);
+  if (!match) throw invalidReservationAmount(field);
+  const whole = BigInt(match[1]);
+  const fraction = (match[2] || "").replace(/0+$/, "");
+  if (fraction.length > RESERVATION_MAX_DECIMAL_PLACES) throw invalidReservationAmount(field);
+  const scale = fraction.length;
+  const units = (whole * (10n ** BigInt(scale))) + BigInt(fraction || "0");
+  if (units > RESERVATION_MAX_SCALED_UNITS || (!allowZero && units === 0n)) {
+    throw invalidReservationAmount(field);
+  }
+  return reservationDecimalFromUnits(units, scale);
+}
+
+function storedReservationDecimal(current, field, allowZero) {
+  const decimalField = `${field}_decimal`;
+  const decimal = reservationDecimal(current[decimalField] ?? current[field], `stored ${field}`, allowZero);
+  if (current[decimalField] !== undefined && current[field] !== undefined &&
+    Number.isFinite(current[field])) {
+    const numericAmount = Number(decimal.canonical);
+    if (!Number.isFinite(numericAmount) || !Object.is(numericAmount, current[field])) {
+      throw invalidOmnibusReservationState();
+    }
+  }
+  return decimal;
+}
+
+function zeroReservationDecimal() {
+  return { units: 0n, scale: 0, canonical: "0" };
+}
+
+function reservationDecimalFromUnits(units, scale) {
+  let nextUnits = units;
+  let nextScale = scale;
+  while (nextScale > 0 && nextUnits % 10n === 0n) {
+    nextUnits /= 10n;
+    nextScale -= 1;
+  }
+  const digits = nextUnits.toString();
+  const canonical = nextScale === 0
+    ? digits
+    : `${digits.length > nextScale ? digits.slice(0, -nextScale) : "0"}.${digits.padStart(nextScale, "0").slice(-nextScale)}`;
+  return { units: nextUnits, scale: nextScale, canonical };
+}
+
+function alignReservationDecimals(left, right) {
+  const scale = Math.max(left.scale, right.scale);
+  return {
+    leftUnits: left.units * (10n ** BigInt(scale - left.scale)),
+    rightUnits: right.units * (10n ** BigInt(scale - right.scale)),
+    scale,
+  };
+}
+
+function addReservationDecimals(left, right) {
+  const aligned = alignReservationDecimals(left, right);
+  return reservationDecimalFromUnits(aligned.leftUnits + aligned.rightUnits, aligned.scale);
+}
+
+function subtractReservationDecimals(left, right) {
+  const aligned = alignReservationDecimals(left, right);
+  if (aligned.leftUnits < aligned.rightUnits) throw invalidOmnibusReservationState();
+  return reservationDecimalFromUnits(aligned.leftUnits - aligned.rightUnits, aligned.scale);
+}
+
+function compareReservationDecimals(left, right) {
+  const aligned = alignReservationDecimals(left, right);
+  return aligned.leftUnits === aligned.rightUnits ? 0 : aligned.leftUnits > aligned.rightUnits ? 1 : -1;
+}
+
+function reservationDecimalsEqual(left, right) {
+  return compareReservationDecimals(left, right) === 0;
+}
+
+function reservationDecimalIsZero(value) {
+  return value.units === 0n;
+}
+
+function reservationDecimalNumber(value) {
+  const parsed = Number(value.canonical);
+  if (!Number.isFinite(parsed) || parsed.toFixed(value.scale) !== value.canonical) {
+    throw invalidReservationAmount("stored amount");
+  }
+  return parsed;
+}
+
+function invalidReservationAmount(field) {
+  return omnibusReservationError(
+    `coinbase omnibus ${field} must be a safe finite decimal amount`,
+    "COINBASE_OMNIBUS_INVALID_AMOUNT",
+    400,
+  );
+}
+
+function invalidOmnibusReleaseProof() {
+  return omnibusReservationError(
+    "coinbase omnibus remainder release requires exact terminal provider proof",
+    "COINBASE_OMNIBUS_INVALID_RELEASE_PROOF",
+  );
+}
+
+function omnibusReservationError(message, code, status = 409) {
+  const error = new Error(message);
+  error.code = code;
+  error.status = status;
+  return error;
 }
 
 function jsonParam(value) {
@@ -1099,6 +2172,33 @@ async function migrateLegacyPostgresDocument(sql) {
         ${workOrderCommitment},
         ${jsonParam(record.receipt)}::jsonb,
         ${timestampOrNow(record.updated_at)}
+      )
+      ON CONFLICT (work_order_commitment) DO NOTHING
+    `;
+  }
+
+  for (const [workOrderCommitment, claim] of Object.entries(state.execution_claims || {})) {
+    if (!claim?.claim_token) continue;
+    await sql`
+      INSERT INTO worker_execution_claims (
+        work_order_commitment,
+        claim_token,
+        status,
+        claim_json,
+        attempt_json,
+        receipt_json,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        ${workOrderCommitment},
+        ${claim.claim_token},
+        ${claim.status || "reconcile_required"},
+        ${jsonParam(claim)}::jsonb,
+        ${claim.attempt ? jsonParam(claim.attempt) : null}::jsonb,
+        ${claim.receipt ? jsonParam(claim.receipt) : null}::jsonb,
+        ${timestampOrNow(claim.created_at)},
+        ${timestampOrNow(claim.updated_at || claim.created_at)}
       )
       ON CONFLICT (work_order_commitment) DO NOTHING
     `;
@@ -1284,7 +2384,7 @@ async function migrateLegacyPostgresDocument(sql) {
   }
 }
 
-export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
+export function createWorkerStateAdapter({ path, hmacSecret, load, save, mutate = null }) {
   async function hmacHex(parts) {
     const secret = typeof hmacSecret === "function" ? await hmacSecret() : hmacSecret;
     return createHmac("sha256", Buffer.from(secret, "hex"))
@@ -1296,7 +2396,22 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
     return normalizeState(await load());
   }
 
-  return {
+  async function mutateState(updater) {
+    return serializeStateMutation(path, async () => {
+      if (typeof mutate === "function") {
+        return mutate(updater);
+      }
+      const state = await loadState();
+      const result = updater(state);
+      if (result && typeof result.then === "function") {
+        throw new Error("state mutation updater must be synchronous");
+      }
+      await save(state);
+      return result;
+    });
+  }
+
+  const adapter = {
     path,
 
     async deriveClientOrderId(prefix, workOrderCommitment) {
@@ -1311,60 +2426,230 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
       return (await loadState()).idempotency[workOrderCommitment] || null;
     },
 
+    async claimExecution(workOrderCommitment, context = {}) {
+      return mutateState((state) => {
+        const requestedContext = sanitizeExecutionClaimContext(context);
+        if (!validExecutionRequestDigest(requestedContext.request_digest)) {
+          return { status: "context_mismatch" };
+        }
+        const cached = state.idempotency[workOrderCommitment]?.receipt;
+        const existing = state.execution_claims[workOrderCommitment];
+        if (cached || existing || state.execution_attempts[workOrderCommitment]) {
+          if (!executionClaimBindingMatches(requestedContext, { claim: existing, receipt: cached })) {
+            return { status: "context_mismatch" };
+          }
+        }
+        if (cached) return { status: "completed", receipt: cached };
+        if (existing?.status === "completed" && existing.receipt) {
+          return { status: "completed", receipt: existing.receipt };
+        }
+        if (existing?.status === "rejected" && existing.rejection) {
+          return { status: "rejected", rejection: existing.rejection };
+        }
+        if (existing || state.execution_attempts[workOrderCommitment]) {
+          return { status: "reconcile_required" };
+        }
+        const now = new Date().toISOString();
+        const claimToken = randomBytes(24).toString("hex");
+        const claim = {
+          work_order_commitment: workOrderCommitment,
+          claim_token: claimToken,
+          status: "in_progress",
+          context: requestedContext,
+          created_at: now,
+          updated_at: now,
+        };
+        state.execution_claims[workOrderCommitment] = claim;
+        return { status: "claimed", claim_token: claimToken, claim };
+      });
+    },
+
+    async recordExecutionClaimEvidence(workOrderCommitment, claimToken, { attempt, receipt }) {
+      return mutateState((state) => {
+        const existing = state.execution_claims[workOrderCommitment];
+        const completionDigest = executionCompletionRequestDigest(attempt, receipt);
+        if (!completionDigest) throw executionClaimContextConflict();
+        if (!existing || existing.status !== "in_progress" || existing.claim_token !== claimToken) {
+          throw executionClaimConflict();
+        }
+        if (existing.context?.request_digest !== completionDigest) {
+          throw executionClaimContextConflict();
+        }
+        const now = new Date().toISOString();
+        const nextAttempt = {
+          ...attempt,
+          work_order_commitment: workOrderCommitment,
+          updated_at: now,
+        };
+        state.execution_attempts[workOrderCommitment] = nextAttempt;
+        state.execution_claims[workOrderCommitment] = {
+          ...existing,
+          attempt: nextAttempt,
+          receipt,
+          evidence_recorded_at: now,
+          updated_at: now,
+        };
+        return receipt;
+      });
+    },
+
+    async completeExecutionClaim(workOrderCommitment, claimToken, { attempt, receipt }) {
+      return mutateState((state) => {
+        const existing = state.execution_claims[workOrderCommitment];
+        const completionDigest = executionCompletionRequestDigest(attempt, receipt);
+        if (!completionDigest) throw executionClaimContextConflict();
+        if (existing?.status === "completed" && existing.receipt) {
+          if (
+            existing.context?.request_digest !== completionDigest ||
+            !executionClaimBindingMatches(existing.context, { claim: existing, receipt: existing.receipt })
+          ) {
+            throw executionClaimContextConflict();
+          }
+          return existing.receipt;
+        }
+        if (!existing || existing.status !== "in_progress" || existing.claim_token !== claimToken) {
+          throw executionClaimConflict();
+        }
+        if (existing.context?.request_digest !== completionDigest) {
+          throw executionClaimContextConflict();
+        }
+        const now = new Date().toISOString();
+        const nextAttempt = {
+          ...attempt,
+          work_order_commitment: workOrderCommitment,
+          updated_at: now,
+        };
+        state.execution_attempts[workOrderCommitment] = nextAttempt;
+        state.idempotency[workOrderCommitment] = { receipt, updated_at: now };
+        state.execution_claims[workOrderCommitment] = {
+          ...existing,
+          status: "completed",
+          attempt: nextAttempt,
+          receipt,
+          updated_at: now,
+        };
+        return receipt;
+      });
+    },
+
+    async markExecutionClaimReconcileRequired(
+      workOrderCommitment,
+      claimToken,
+      attempt = {},
+      evidence = null,
+    ) {
+      return mutateState((state) => {
+        const existing = state.execution_claims[workOrderCommitment];
+        if (!existing || existing.status !== "in_progress" || existing.claim_token !== claimToken) {
+          return { ok: false };
+        }
+        const failure = sanitizeExecutionClaimFailure(attempt);
+        const evidenceDigest = evidence
+          ? executionCompletionRequestDigest(evidence.attempt, evidence.receipt)
+          : null;
+        if (evidence && !evidenceDigest) throw executionClaimContextConflict();
+        if (evidenceDigest && existing.context?.request_digest !== evidenceDigest) {
+          throw executionClaimContextConflict();
+        }
+        const now = new Date().toISOString();
+        const nextAttempt = {
+          ...(existing.attempt || state.execution_attempts[workOrderCommitment] || {}),
+          ...(evidence?.attempt || {}),
+          ...failure,
+          reconciliation_failure: failure,
+          work_order_commitment: workOrderCommitment,
+          status: "reconcile_required",
+          updated_at: now,
+        };
+        state.execution_attempts[workOrderCommitment] = nextAttempt;
+        state.execution_claims[workOrderCommitment] = {
+          ...existing,
+          status: "reconcile_required",
+          attempt: nextAttempt,
+          receipt: evidence?.receipt || existing.receipt || null,
+          updated_at: now,
+        };
+        return { ok: true };
+      });
+    },
+
+    async rejectExecutionClaim(workOrderCommitment, claimToken, rejection) {
+      return mutateState((state) => {
+        const existing = state.execution_claims[workOrderCommitment];
+        if (!existing || existing.status !== "in_progress" || existing.claim_token !== claimToken) {
+          return { ok: false };
+        }
+        state.execution_claims[workOrderCommitment] = {
+          ...existing,
+          status: "rejected",
+          rejection: sanitizeExecutionClaimFailure(rejection),
+          updated_at: new Date().toISOString(),
+        };
+        return { ok: true };
+      });
+    },
+
     async putIdempotency(workOrderCommitment, receipt) {
-      const state = await loadState();
-      state.idempotency[workOrderCommitment] = {
-        receipt,
-        updated_at: new Date().toISOString(),
-      };
-      await save(state);
-      return receipt;
+      return mutateState((state) => {
+        state.idempotency[workOrderCommitment] = {
+          receipt,
+          updated_at: new Date().toISOString(),
+        };
+        return receipt;
+      });
     },
 
     async putExecutionAttempt(workOrderCommitment, attempt) {
-      const state = await loadState();
-      state.execution_attempts[workOrderCommitment] = {
-        ...attempt,
-        work_order_commitment: workOrderCommitment,
-        updated_at: new Date().toISOString(),
-      };
-      await save(state);
-      return state.execution_attempts[workOrderCommitment];
+      return mutateState((state) => {
+        state.execution_attempts[workOrderCommitment] = {
+          ...attempt,
+          work_order_commitment: workOrderCommitment,
+          updated_at: new Date().toISOString(),
+        };
+        return state.execution_attempts[workOrderCommitment];
+      });
     },
 
     async getExecutionAttempt(workOrderCommitment) {
       return (await loadState()).execution_attempts[workOrderCommitment] || null;
     },
 
-    async consumeCapabilityJti(jti, expiresAtUnix) {
-      const state = await loadState();
-      const now = Math.floor(Date.now() / 1000);
-      for (const [key, record] of Object.entries(state.capability_jtis || {})) {
-        if (Number(record?.expires_at_unix || 0) <= now) {
-          delete state.capability_jtis[key];
-        }
-      }
-      if (state.capability_jtis[jti]) {
-        await save(state);
-        return { ok: false, replayed: true };
-      }
-      state.capability_jtis[jti] = {
-        jti,
-        expires_at_unix: Number.isInteger(expiresAtUnix) ? expiresAtUnix : now + 300,
-        consumed_at: new Date().toISOString(),
+    async getExecutionClaimEvidence(workOrderCommitment) {
+      const claim = (await loadState()).execution_claims[workOrderCommitment];
+      if (!claim) return null;
+      return {
+        status: claim.status,
+        attempt: claim.attempt || null,
+        receipt: claim.receipt || null,
       };
-      await save(state);
-      return { ok: true };
+    },
+
+    async consumeCapabilityJti(jti, expiresAtUnix) {
+      return mutateState((state) => {
+        const now = Math.floor(Date.now() / 1000);
+        for (const [key, record] of Object.entries(state.capability_jtis || {})) {
+          if (Number(record?.expires_at_unix || 0) <= now) {
+            delete state.capability_jtis[key];
+          }
+        }
+        if (state.capability_jtis[jti]) return { ok: false, replayed: true };
+        state.capability_jtis[jti] = {
+          jti,
+          expires_at_unix: Number.isInteger(expiresAtUnix) ? expiresAtUnix : now + 300,
+          consumed_at: new Date().toISOString(),
+        };
+        return { ok: true };
+      });
     },
 
     async putAutopilotSession(session) {
-      const state = await loadState();
-      state.autopilot_sessions[session.autopilot_session_id] = {
-        ...session,
-        updated_at: new Date().toISOString(),
-      };
-      await save(state);
-      return state.autopilot_sessions[session.autopilot_session_id];
+      return mutateState((state) => {
+        state.autopilot_sessions[session.autopilot_session_id] = {
+          ...session,
+          updated_at: new Date().toISOString(),
+        };
+        return state.autopilot_sessions[session.autopilot_session_id];
+      });
     },
 
     async getAutopilotSession(sessionId) {
@@ -1378,14 +2663,13 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
     },
 
     async appendAutopilotEvent(sessionId, event) {
-      const state = await loadState();
-      const existing = Array.isArray(state.autopilot_events[sessionId])
-        ? state.autopilot_events[sessionId]
-        : [];
-      const next = existing.concat(event).slice(-250);
-      state.autopilot_events[sessionId] = next;
-      await save(state);
-      return event;
+      return mutateState((state) => {
+        const existing = Array.isArray(state.autopilot_events[sessionId])
+          ? state.autopilot_events[sessionId]
+          : [];
+        state.autopilot_events[sessionId] = existing.concat(event).slice(-250);
+        return event;
+      });
     },
 
     async listAutopilotEvents(sessionId) {
@@ -1393,14 +2677,13 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
     },
 
     async appendAutopilotDecision(sessionId, decision) {
-      const state = await loadState();
-      const existing = Array.isArray(state.autopilot_decisions[sessionId])
-        ? state.autopilot_decisions[sessionId]
-        : [];
-      const next = existing.concat(decision).slice(-250);
-      state.autopilot_decisions[sessionId] = next;
-      await save(state);
-      return decision;
+      return mutateState((state) => {
+        const existing = Array.isArray(state.autopilot_decisions[sessionId])
+          ? state.autopilot_decisions[sessionId]
+          : [];
+        state.autopilot_decisions[sessionId] = existing.concat(decision).slice(-250);
+        return decision;
+      });
     },
 
     async listAutopilotDecisions(sessionId) {
@@ -1408,21 +2691,21 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
     },
 
     async putAutopilotPosition(sessionId, position) {
-      const state = await loadState();
-      const existing = Array.isArray(state.autopilot_positions[sessionId])
-        ? state.autopilot_positions[sessionId]
-        : [];
-      const key = `${position.venue_id || "unknown"}:${position.market || "unknown"}`;
-      const next = existing
-        .filter((item) => `${item.venue_id || "unknown"}:${item.market || "unknown"}` !== key)
-        .concat({
-          ...position,
-          updated_at: new Date().toISOString(),
-        })
-        .slice(-50);
-      state.autopilot_positions[sessionId] = next;
-      await save(state);
-      return next[next.length - 1];
+      return mutateState((state) => {
+        const existing = Array.isArray(state.autopilot_positions[sessionId])
+          ? state.autopilot_positions[sessionId]
+          : [];
+        const key = `${position.venue_id || "unknown"}:${position.market || "unknown"}`;
+        const next = existing
+          .filter((item) => `${item.venue_id || "unknown"}:${item.market || "unknown"}` !== key)
+          .concat({
+            ...position,
+            updated_at: new Date().toISOString(),
+          })
+          .slice(-50);
+        state.autopilot_positions[sessionId] = next;
+        return next[next.length - 1];
+      });
     },
 
     async listAutopilotPositions(sessionId) {
@@ -1430,14 +2713,13 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
     },
 
     async appendAutopilotOpportunity(sessionId, opportunity) {
-      const state = await loadState();
-      const existing = Array.isArray(state.autopilot_opportunities[sessionId])
-        ? state.autopilot_opportunities[sessionId]
-        : [];
-      const next = existing.concat(opportunity).slice(-100);
-      state.autopilot_opportunities[sessionId] = next;
-      await save(state);
-      return opportunity;
+      return mutateState((state) => {
+        const existing = Array.isArray(state.autopilot_opportunities[sessionId])
+          ? state.autopilot_opportunities[sessionId]
+          : [];
+        state.autopilot_opportunities[sessionId] = existing.concat(opportunity).slice(-100);
+        return opportunity;
+      });
     },
 
     async listAutopilotOpportunities(sessionId) {
@@ -1445,13 +2727,13 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
     },
 
     async putSession(session) {
-      const state = await loadState();
-      state.sessions[session.session_commitment] = {
-        ...session,
-        updated_at: new Date().toISOString(),
-      };
-      await save(state);
-      return state.sessions[session.session_commitment];
+      return mutateState((state) => {
+        state.sessions[session.session_commitment] = {
+          ...session,
+          updated_at: new Date().toISOString(),
+        };
+        return state.sessions[session.session_commitment];
+      });
     },
 
     async findSession(input) {
@@ -1471,13 +2753,13 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
     },
 
     async putHyperliquidManagedAllocation(allocation) {
-      const state = await loadState();
-      state.hyperliquid_managed_allocations[allocation.allocation_commitment] = {
-        allocation,
-        updated_at: new Date().toISOString(),
-      };
-      await save(state);
-      return state.hyperliquid_managed_allocations[allocation.allocation_commitment];
+      return mutateState((state) => {
+        state.hyperliquid_managed_allocations[allocation.allocation_commitment] = {
+          allocation,
+          updated_at: new Date().toISOString(),
+        };
+        return state.hyperliquid_managed_allocations[allocation.allocation_commitment];
+      });
     },
 
     async getHyperliquidManagedAllocation(allocationCommitment) {
@@ -1485,111 +2767,258 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
     },
 
     async incrementPolicyCount(key, maxCount) {
-      const state = await loadState();
-      const current = state.policy_counts[key] || { count: 0, updated_at: null };
-      if (Number.isInteger(maxCount) && current.count >= maxCount) {
-        return { ok: false, count: current.count };
-      }
-      const next = {
-        count: current.count + 1,
-        updated_at: new Date().toISOString(),
-      };
-      state.policy_counts[key] = next;
-      await save(state);
-      return { ok: true, count: next.count };
+      return mutateState((state) => {
+        const current = state.policy_counts[key] || { count: 0, updated_at: null };
+        if (Number.isInteger(maxCount) && current.count >= maxCount) {
+          return { ok: false, count: current.count };
+        }
+        const next = {
+          count: current.count + 1,
+          updated_at: new Date().toISOString(),
+        };
+        state.policy_counts[key] = next;
+        return { ok: true, count: next.count };
+      });
     },
 
     async incrementPolicyAmount(key, amount, maxAmount) {
-      const state = await loadState();
-      const parsedAmount = Number.parseFloat(String(amount || "0"));
-      const parsedMax = Number.parseFloat(String(maxAmount || "0"));
-      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
-        return { ok: false, amount: 0 };
-      }
-      const current = state.policy_amounts[key] || { amount: 0, updated_at: null };
-      const nextAmount = Number(current.amount || 0) + parsedAmount;
-      if (Number.isFinite(parsedMax) && parsedMax > 0 && nextAmount > parsedMax) {
-        return { ok: false, amount: Number(current.amount || 0) };
-      }
-      const next = {
-        amount: nextAmount,
-        updated_at: new Date().toISOString(),
-      };
-      state.policy_amounts[key] = next;
-      await save(state);
-      return { ok: true, amount: next.amount };
+      return mutateState((state) => {
+        const parsedAmount = Number.parseFloat(String(amount || "0"));
+        const parsedMax = Number.parseFloat(String(maxAmount || "0"));
+        if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+          return { ok: false, amount: 0 };
+        }
+        const current = state.policy_amounts[key] || { amount: 0, updated_at: null };
+        const nextAmount = Number(current.amount || 0) + parsedAmount;
+        if (Number.isFinite(parsedMax) && parsedMax > 0 && nextAmount > parsedMax) {
+          return { ok: false, amount: Number(current.amount || 0) };
+        }
+        const next = {
+          amount: nextAmount,
+          updated_at: new Date().toISOString(),
+        };
+        state.policy_amounts[key] = next;
+        return { ok: true, amount: next.amount };
+      });
     },
 
     async putOmnibusAllocation(allocation) {
-      const state = await loadState();
-      state.omnibus[allocation.allocation_commitment] = {
-        allocation,
-        reservations: state.omnibus[allocation.allocation_commitment]?.reservations || {},
-        fills: state.omnibus[allocation.allocation_commitment]?.fills || {},
-        updated_at: new Date().toISOString(),
-      };
-      await save(state);
-      return state.omnibus[allocation.allocation_commitment];
+      return mutateState((state) => {
+        state.omnibus[allocation.allocation_commitment] = {
+          allocation,
+          reservations: state.omnibus[allocation.allocation_commitment]?.reservations || {},
+          fills: state.omnibus[allocation.allocation_commitment]?.fills || {},
+          updated_at: new Date().toISOString(),
+        };
+        return state.omnibus[allocation.allocation_commitment];
+      });
     },
 
     async getOmnibusAllocation(allocationCommitment) {
       return (await loadState()).omnibus[allocationCommitment] || null;
     },
 
+    async getCoinbaseOmnibusReservation(input) {
+      const allocationCommitment = requiredReservationText(
+        input?.allocation_commitment,
+        "allocation_commitment",
+      );
+      const workOrderCommitment = requiredReservationText(
+        input?.work_order_commitment,
+        "work_order_commitment",
+      );
+      const allocation = (await loadState()).omnibus[allocationCommitment];
+      const reservation = allocation?.reservations?.[workOrderCommitment];
+      return reservation?.lifecycle === COINBASE_OMNIBUS_LIFECYCLE ? reservation : null;
+    },
+
+    async transitionCoinbaseOmnibusReservation(input) {
+      return mutateState((state) => {
+        const scope = coinbaseOmnibusReservationScope(input);
+        const allocation = coinbaseOmnibusTransitionAllocation(input, scope.allocation_commitment);
+        const existing = state.omnibus[scope.allocation_commitment] || {
+          allocation,
+          reservations: {},
+          fills: {},
+        };
+        const current = existing.reservations[scope.work_order_commitment] || null;
+        if (current && current.lifecycle !== COINBASE_OMNIBUS_LIFECYCLE) {
+          throw omnibusReservationError(
+            "legacy omnibus reservation requires reconciliation before lifecycle migration",
+            "COINBASE_OMNIBUS_LEGACY_RESERVATION",
+          );
+        }
+        const next = applyCoinbaseOmnibusReservationTransition(current, input);
+        existing.reservations[scope.work_order_commitment] = next;
+        existing.updated_at = next.updated_at;
+        state.omnibus[scope.allocation_commitment] = existing;
+        return next;
+      });
+    },
+
     async reserveOmnibus(input) {
-      const state = await loadState();
-      const existing = state.omnibus[input.allocation_commitment] || {
-        allocation: input.allocation || { allocation_commitment: input.allocation_commitment },
-        reservations: {},
-        fills: {},
-      };
-      existing.reservations[input.work_order_commitment] = {
-        work_order_commitment: input.work_order_commitment,
-        notional_bucket: input.notional_bucket,
-        status: "reserved",
-        created_at: new Date().toISOString(),
-      };
-      existing.updated_at = new Date().toISOString();
-      state.omnibus[input.allocation_commitment] = existing;
-      await save(state);
-      return existing.reservations[input.work_order_commitment];
+      return mutateState((state) => {
+        const existing = state.omnibus[input.allocation_commitment] || {
+          allocation: input.allocation || { allocation_commitment: input.allocation_commitment },
+          reservations: {},
+          fills: {},
+        };
+        if (!existing.reservations[input.work_order_commitment]) {
+          existing.reservations[input.work_order_commitment] = {
+            work_order_commitment: input.work_order_commitment,
+            notional_bucket: input.notional_bucket,
+            status: "reserved",
+            created_at: new Date().toISOString(),
+          };
+        }
+        existing.updated_at = new Date().toISOString();
+        state.omnibus[input.allocation_commitment] = existing;
+        return existing.reservations[input.work_order_commitment];
+      });
     },
 
     async releaseOmnibus(input) {
-      const state = await loadState();
-      const existing = state.omnibus[input.allocation_commitment];
-      if (existing?.reservations?.[input.work_order_commitment]) {
-        existing.reservations[input.work_order_commitment].status = "released";
-        existing.reservations[input.work_order_commitment].updated_at = new Date().toISOString();
-        existing.updated_at = new Date().toISOString();
-        await save(state);
-      }
+      return mutateState((state) => {
+        const existing = state.omnibus[input.allocation_commitment];
+        const reservation = existing?.reservations?.[input.work_order_commitment];
+        if (reservation?.lifecycle === COINBASE_OMNIBUS_LIFECYCLE) {
+          throw omnibusReservationError(
+            "strict coinbase omnibus reservations require terminal release proof",
+            "COINBASE_OMNIBUS_INVALID_RELEASE_PROOF",
+          );
+        }
+        if (existing?.reservations?.[input.work_order_commitment] &&
+          !OMNIBUS_TERMINAL_STATUSES.has(
+            existing.reservations[input.work_order_commitment].status,
+          )) {
+          existing.reservations[input.work_order_commitment].status = "released";
+          existing.reservations[input.work_order_commitment].updated_at = new Date().toISOString();
+          existing.updated_at = new Date().toISOString();
+          return existing.reservations[input.work_order_commitment];
+        }
+        return existing?.reservations?.[input.work_order_commitment];
+      });
     },
 
     async settleOmnibusFill(input) {
-      const state = await loadState();
-      const existing = state.omnibus[input.allocation_commitment] || {
-        allocation: { allocation_commitment: input.allocation_commitment },
-        reservations: {},
-        fills: {},
-      };
-      existing.fills[input.fill_commitment] = {
-        fill_commitment: input.fill_commitment,
-        work_order_commitment: input.work_order_commitment,
-        fee_bucket: input.fee_bucket || null,
-        notional_bucket: input.notional_bucket || null,
-        created_at: new Date().toISOString(),
-      };
-      if (existing.reservations[input.work_order_commitment]) {
-        existing.reservations[input.work_order_commitment].status = "settled";
-        existing.reservations[input.work_order_commitment].updated_at = new Date().toISOString();
-      }
-      existing.updated_at = new Date().toISOString();
-      state.omnibus[input.allocation_commitment] = existing;
-      await save(state);
-      return existing.fills[input.fill_commitment];
+      return mutateState((state) => {
+        const existing = state.omnibus[input.allocation_commitment] || {
+          allocation: { allocation_commitment: input.allocation_commitment },
+          reservations: {},
+          fills: {},
+        };
+        if (existing.reservations[input.work_order_commitment]?.lifecycle ===
+          COINBASE_OMNIBUS_LIFECYCLE) {
+          throw omnibusReservationError(
+            "strict coinbase omnibus fills require an amount-aware transition",
+            "COINBASE_OMNIBUS_INVALID_TRANSITION",
+          );
+        }
+        existing.fills[input.fill_commitment] = {
+          fill_commitment: input.fill_commitment,
+          work_order_commitment: input.work_order_commitment,
+          fee_bucket: input.fee_bucket || null,
+          notional_bucket: input.notional_bucket || null,
+          created_at: new Date().toISOString(),
+        };
+        if (existing.reservations[input.work_order_commitment] &&
+          !OMNIBUS_TERMINAL_STATUSES.has(
+            existing.reservations[input.work_order_commitment].status,
+          )) {
+          existing.reservations[input.work_order_commitment].status = "settled";
+          existing.reservations[input.work_order_commitment].updated_at = new Date().toISOString();
+        }
+        existing.updated_at = new Date().toISOString();
+        state.omnibus[input.allocation_commitment] = existing;
+        return existing.fills[input.fill_commitment];
+      });
     },
   };
+  return adapter;
+}
+
+function serializeStateMutation(path, task) {
+  const key = String(path || "worker-state");
+  const previous = STATE_MUTATION_QUEUES.get(key) || Promise.resolve();
+  const run = previous.catch(() => undefined).then(task);
+  const tail = run.then(() => undefined, () => undefined);
+  STATE_MUTATION_QUEUES.set(key, tail);
+  tail.then(() => {
+    if (STATE_MUTATION_QUEUES.get(key) === tail) STATE_MUTATION_QUEUES.delete(key);
+  });
+  return run;
+}
+
+function sanitizeExecutionClaimContext(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const context = {};
+  for (const key of ["venue_id", "platform_class", "execution_mode", "operation_class"]) {
+    if (typeof value[key] === "string" && value[key].length <= 128) context[key] = value[key];
+  }
+  if (validExecutionRequestDigest(value.request_digest)) {
+    context.request_digest = value.request_digest.toLowerCase();
+  }
+  return context;
+}
+
+function validExecutionRequestDigest(value) {
+  return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
+}
+
+function executionClaimBindingMatches(requestedContext, { claim, receipt }) {
+  const requestedDigest = requestedContext?.request_digest;
+  if (!validExecutionRequestDigest(requestedDigest)) return false;
+  const storedDigests = [
+    claim?.context?.request_digest,
+    receipt?.execution_request_digest,
+  ].filter((value) => value !== undefined && value !== null);
+  return storedDigests.length > 0 && storedDigests.every((digest) =>
+    validExecutionRequestDigest(digest) && digest.toLowerCase() === requestedDigest.toLowerCase());
+}
+
+function executionCompletionRequestDigest(attempt, receipt) {
+  const attemptDigest = attempt?.execution_request_digest;
+  const receiptDigest = receipt?.execution_request_digest;
+  if (!validExecutionRequestDigest(attemptDigest) || !validExecutionRequestDigest(receiptDigest)) return null;
+  return attemptDigest.toLowerCase() === receiptDigest.toLowerCase()
+    ? receiptDigest.toLowerCase()
+    : null;
+}
+
+function sanitizeExecutionClaimFailure(value) {
+  const failure = sanitizeExecutionClaimContext(value);
+  const errorCode = typeof value?.error_code === "string"
+    ? value.error_code.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96)
+    : "EXECUTION_CLAIM_REJECTED";
+  const errorMessage = typeof value?.error_message === "string"
+    ? value.error_message.slice(0, 240)
+    : "execution rejected";
+  const errorStatus = Number.isInteger(value?.error_status) && value.error_status >= 400 && value.error_status <= 599
+    ? value.error_status
+    : 400;
+  return {
+    ...failure,
+    error_code: errorCode,
+    error_message: errorMessage,
+    error_status: errorStatus,
+    created_at: typeof value?.created_at === "string"
+      ? value.created_at
+      : new Date().toISOString(),
+  };
+}
+
+function executionClaimConflict() {
+  const error = new Error("execution claim is unresolved; reconciliation required");
+  error.code = "EXECUTION_CLAIM_RECONCILE_REQUIRED";
+  error.status = 409;
+  return error;
+}
+
+function executionClaimContextConflict() {
+  const error = new Error("work order is bound to a different execution request");
+  error.code = "EXECUTION_CLAIM_CONTEXT_MISMATCH";
+  error.status = 409;
+  return error;
 }
 
 function normalizeState(value) {
@@ -1608,6 +3037,7 @@ function normalizeState(value) {
     idempotency: loaded.idempotency || {},
     policy_counts: loaded.policy_counts || {},
     policy_amounts: loaded.policy_amounts || {},
+    execution_claims: loaded.execution_claims || {},
     execution_attempts: loaded.execution_attempts || {},
     capability_jtis: loaded.capability_jtis || {},
     autopilot_sessions: loaded.autopilot_sessions || {},
