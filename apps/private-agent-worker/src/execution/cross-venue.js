@@ -43,7 +43,7 @@ export function createCrossVenueCoordinator({ state, adapter, callback = default
         reasons.push("cross_venue_durable_claim_store_unavailable");
       }
       if (!adapter || adapter.durable_claims !== true) reasons.push("cross_venue_durable_adapter_unavailable");
-      for (const method of ["preflight", "submit", "hedge", "unwind", "cancel", "reconcile"]) {
+      for (const method of ["preflight", "submit", "hedge", "unwind", "cancel", "reconcile", "close"]) {
         if (typeof adapter?.[method] !== "function") reasons.push(`cross_venue_adapter_${method}_unavailable`);
       }
       const adapterStatus = typeof adapter?.readiness === "function" ? adapter.readiness() : null;
@@ -179,6 +179,70 @@ export function createCrossVenueCoordinator({ state, adapter, callback = default
         receipt: publicReceipt(evidence.receipt || evidence.attempt || { execution_id: plan.execution_id, status: "cancel_requested", sequence: 1 }),
       };
     },
+
+    async close(plan) {
+      const errors = validateCrossVenueExecutionRequest(plan);
+      if (errors.length) return { ok: false, status: 400, error: "invalid_cross_venue_execution", details: errors };
+      const readiness = this.readiness();
+      if (!readiness.ready) {
+        return { ok: false, status: 503, error: readiness.reason_codes[0] || "cross_venue_byo_adapter_unavailable", details: readiness.reason_codes };
+      }
+      const parentEvidence = await state.getExecutionClaimEvidence(plan.execution_id);
+      if (!parentEvidence) return { ok: false, status: 404, error: "cross_venue_execution_not_found" };
+      if (parentEvidence.context?.request_digest !== crossVenueExecutionRequestDigest(plan)) {
+        return { ok: false, status: 409, error: "cross_venue_execution_context_mismatch" };
+      }
+      if (parentEvidence.status !== "completed" || parentEvidence.receipt?.status !== "complete") {
+        return { ok: false, status: 409, error: "cross_venue_close_requires_completed_pair" };
+      }
+      const workOrder = `${plan.execution_id}:close_v1`;
+      const claimContext = closeClaimContext(plan);
+      const claim = await state.claimExecution(workOrder, claimContext);
+      if (claim?.status === "completed" && claim.receipt) {
+        return { ok: true, status: 200, replayed: true, receipt: publicReceipt(claim.receipt) };
+      }
+      if (claim?.status === "context_mismatch") {
+        return { ok: false, status: 409, error: "cross_venue_close_context_mismatch" };
+      }
+      if (claim?.status === "rejected") {
+        return { ok: false, status: 409, error: claim.rejection?.error_code || "cross_venue_close_rejected" };
+      }
+      const canComplete = claim?.status === "claimed" && claim.claim_token;
+      const canRecover = claim?.status === "in_progress" || claim?.status === "reconcile_required";
+      if (!canComplete && !canRecover) return { ok: false, status: 409, error: "cross_venue_close_reconciliation_required" };
+      try {
+        const result = await adapter.close({ plan: publicPlan(plan), evidence: parentEvidence });
+        if (!result?.terminal || result.status !== "closed" || result.final_proof?.final_flat_proven !== true) {
+          throw Object.assign(new Error("cross_venue_close_reconciliation_required"), { code: "cross_venue_close_reconciliation_required" });
+        }
+        const completion = closeCompletion({ plan, claimContext, result });
+        const receipt = canComplete
+          ? await state.completeExecutionClaim(workOrder, claim.claim_token, completion)
+          : await state.resolveExecutionClaim(workOrder, completion);
+        void emitOperatorEvent("cross_venue_pair_closed", {
+          severity: "info",
+          execution_id: plan.execution_id,
+          close_work_order_commitment: workOrder,
+          final_flat_proven: true,
+        });
+        return { ok: true, status: 200, replayed: canRecover, receipt: publicReceipt(receipt) };
+      } catch (error) {
+        if (canComplete) {
+          await state.markExecutionClaimReconcileRequired(workOrder, claim.claim_token, {
+            ...claimContext,
+            status: "reconcile_required",
+            error_code: safeError(error),
+          }).catch(() => null);
+        }
+        void emitOperatorEvent("cross_venue_close_reconciliation_required", {
+          severity: "critical",
+          execution_id: plan.execution_id,
+          close_work_order_commitment: workOrder,
+          error_code: safeError(error),
+        });
+        return { ok: false, status: 409, error: safeError(error) };
+      }
+    },
   };
   return coordinator;
 }
@@ -208,9 +272,14 @@ async function run({ plan, state, adapter, callback, claimContext, claimToken })
       Math.max(12_000, plan.risk_budget.max_hedge_duration_ms),
       "cross_venue_submit_timeout",
     );
+    if (submitted.some((result) => result.status === "rejected")) {
+      const error = new Error("cross_venue_leg_reconciliation_required");
+      error.code = "cross_venue_leg_reconciliation_required";
+      throw error;
+    }
     const fills = submitted.map((result, index) => normalizeResult(result, plan.legs[index]));
-    const residual = Math.abs(fills[0].filled_notional_micro_usdc - fills[1].filled_notional_micro_usdc);
-    if (residual === 0) {
+    const exposure = residualExposure(fills, plan.legs);
+    if (exposure.notional_micro_usdc === 0) {
       sequence += 1;
       const phase = fills.every((fill) => fill.filled_notional_micro_usdc > 0) ? "complete" : "failed";
       const completion = parentCompletion({
@@ -230,14 +299,15 @@ async function run({ plan, state, adapter, callback, claimContext, claimToken })
     lastCompletion = parentCompletion({ plan, claimContext, phase: "hedging", sequence, legs: fills });
     await state.recordExecutionClaimEvidence(plan.execution_id, claimToken, lastCompletion);
     await reportBestEffort(callback, plan, lastCompletion.receipt.report);
-    const dominant = fills[0].filled_notional_micro_usdc > fills[1].filled_notional_micro_usdc ? 0 : 1;
+    const dominant = exposure.dominant_index;
     const hedgeSide = plan.legs[dominant].side === "buy" ? "sell" : "buy";
     let repair;
     try {
       repair = await withTimeout(adapter.hedge({
         plan: publicPlan(plan),
         side: hedgeSide,
-        notional_micro_usdc: residual,
+        notional_micro_usdc: exposure.notional_micro_usdc,
+        base_size: exposure.base_size,
         preferred_venue_id: preferredHedgeVenue(plan),
         max_slippage_bps: plan.risk_budget.max_hedge_slippage_bps,
       }), plan.risk_budget.max_hedge_duration_ms, "cross_venue_hedge_timeout");
@@ -245,25 +315,29 @@ async function run({ plan, state, adapter, callback, claimContext, claimToken })
       repair = await withTimeout(adapter.unwind({
         plan: publicPlan(plan),
         side: hedgeSide,
-        notional_micro_usdc: residual,
+        notional_micro_usdc: exposure.notional_micro_usdc,
+        base_size: exposure.base_size,
         venue_id: plan.legs[dominant].venue_id,
         dominant_leg: fills[dominant],
+        legs: fills,
         max_loss_micro_usdc: plan.risk_budget.max_unwind_loss_micro_usdc,
       }), plan.risk_budget.max_hedge_duration_ms, "cross_venue_unwind_timeout");
     }
-    const repaired = normalizeRepair(repair, residual);
+    const repaired = normalizeRepair(repair, exposure.notional_micro_usdc, exposure.base_size);
     const repairFill = {
       repair_id: `cross_repair_${digest({ execution_id: plan.execution_id, sequence, side: hedgeSide })}`,
       venue_id: repaired.venue_id || preferredHedgeVenue(plan),
       side: hedgeSide,
       filled_notional_micro_usdc: repaired.filled_notional_micro_usdc,
+      filled_base_size: repaired.filled_base_size,
       venue_order_reference: repaired.venue_order_reference,
     };
-    const signedOriginal = plan.legs.reduce((total, leg, index) => total + (leg.side === "buy" ? 1 : -1) * fills[index].filled_notional_micro_usdc, 0);
-    const signedRepair = (repairFill.side === "buy" ? 1 : -1) * repairFill.filled_notional_micro_usdc;
-    const finalResidual = Math.abs(signedOriginal + signedRepair);
+    const finalResidual = residualExposure(
+      [...fills, repairFill],
+      [...plan.legs, { side: repairFill.side, limit_price: plan.legs[dominant].limit_price }],
+    );
     sequence += 1;
-    const phase = finalResidual === 0 ? "complete" : "failed";
+    const phase = finalResidual.notional_micro_usdc === 0 ? "complete" : "failed";
     const completion = parentCompletion({
       plan,
       claimContext,
@@ -274,7 +348,7 @@ async function run({ plan, state, adapter, callback, claimContext, claimToken })
       hedge_slippage_bps: repaired.slippage_bps,
       unwind_loss_micro_usdc: repaired.realized_loss_micro_usdc,
       daily_realized_loss_micro_usdc: repaired.daily_realized_loss_micro_usdc,
-      failure_code: finalResidual === 0 ? null : "automatic_hedge_incomplete",
+      failure_code: finalResidual.notional_micro_usdc === 0 ? null : "automatic_hedge_incomplete",
     });
     const receipt = await state.completeExecutionClaim(plan.execution_id, claimToken, completion);
     await reportBestEffort(callback, plan, completion.receipt.report);
@@ -307,6 +381,38 @@ function parentClaimContext(plan) {
     execution_mode: "ghola_pooled",
     operation_class: "cross_venue_ioc_pair",
     request_digest: crossVenueExecutionRequestDigest(plan),
+  };
+}
+
+function closeClaimContext(plan) {
+  return {
+    venue_id: "cross_venue",
+    platform_class: "coordinated_execution",
+    execution_mode: "ghola_pooled",
+    operation_class: "cross_venue_reduce_only_close",
+    request_digest: createHash("sha256").update(stableJson({ action: "close_v1", plan: publicPlan(plan) })).digest("hex"),
+  };
+}
+
+function closeCompletion({ plan, claimContext, result }) {
+  const observedAt = new Date().toISOString();
+  const receipt = {
+    version: 1,
+    execution_id: plan.execution_id,
+    status: "closed",
+    sequence: 1,
+    legs: result.legs,
+    final_proof: result.final_proof,
+    execution_request_digest: claimContext.request_digest,
+    completed_at: observedAt,
+  };
+  return {
+    attempt: {
+      ...receipt,
+      report: { phase: "closed", legs: result.legs, observed_at: observedAt },
+      updated_at: observedAt,
+    },
+    receipt,
   };
 }
 
@@ -400,21 +506,26 @@ async function defaultCallback(payload) {
 }
 
 function normalizeResult(result, leg) {
-  if (result.status === "rejected") return { leg_id: leg.leg_id, status: "rejected", filled_notional_micro_usdc: 0 };
+  if (result.status === "rejected") return { leg_id: leg.leg_id, status: "rejected", filled_notional_micro_usdc: 0, filled_base_size: "0" };
   const fill = result.value || {};
   const amount = boundedFill(fill.filled_notional_micro_usdc, leg.target_notional_micro_usdc);
+  const baseSize = safeDecimal(fill.filled_base_size);
+  const fullBaseFill = safeDecimal(leg.target_base_size) && baseSize &&
+    Math.abs(Number(baseSize) - Number(leg.target_base_size)) <= 1e-9;
   return {
     leg_id: leg.leg_id,
-    status: amount === 0 ? "rejected" : amount === leg.target_notional_micro_usdc ? "filled" : "partially_filled",
+    status: amount === 0 ? "rejected" : fullBaseFill || amount === leg.target_notional_micro_usdc ? "filled" : "partially_filled",
     filled_notional_micro_usdc: amount,
-    filled_base_size: safeDecimal(fill.filled_base_size),
+    filled_base_size: baseSize,
     venue_order_reference: safeReference(fill.venue_order_reference),
   };
 }
 
-function normalizeRepair(value, maximum) {
+function normalizeRepair(value, maximum, maximumBase = null) {
+  const base = safeDecimal(value?.filled_base_size) || "0";
   return {
     filled_notional_micro_usdc: boundedFill(value?.filled_notional_micro_usdc, maximum),
+    filled_base_size: maximumBase && Number(base) > Number(maximumBase) + 1e-9 ? "0" : base,
     venue_order_reference: safeReference(value?.venue_order_reference),
     slippage_bps: nonnegative(value?.slippage_bps),
     realized_loss_micro_usdc: nonnegative(value?.realized_loss_micro_usdc),
@@ -444,6 +555,7 @@ function publicLeg(leg) {
     symbol: leg.symbol,
     limit_price: leg.limit_price,
     target_notional_micro_usdc: leg.target_notional_micro_usdc,
+    ...(leg.target_base_size ? { target_base_size: leg.target_base_size } : {}),
     order_type: "ioc_limit",
   };
 }
@@ -454,6 +566,7 @@ function publicReceipt(receipt) {
     status: receipt.status,
     sequence: receipt.sequence,
     atomic: false,
+    final_flat_proven: receipt.final_proof?.final_flat_proven === true,
     receipt_commitment: `cross_venue_receipt_${digest({ execution_id: receipt.execution_id, status: receipt.status, sequence: receipt.sequence })}`,
   };
 }
@@ -472,7 +585,39 @@ function validateLeg(leg) {
   if (!(Number(leg.limit_price) > 0)) errors.push("leg limit price is invalid");
   if (leg.order_type !== "ioc_limit") errors.push("leg order type must be ioc_limit");
   if (!safePositive(leg.target_notional_micro_usdc)) errors.push("leg target notional is invalid");
+  if (leg.target_base_size !== undefined && !(Number(safeDecimal(leg.target_base_size)) > 0)) errors.push("leg target base size is invalid");
   return errors;
+}
+
+function residualExposure(fills, legs) {
+  const baseRows = fills.map((fill, index) => ({
+    side: legs[index]?.side,
+    base: decimalNumber(fill?.filled_base_size),
+  }));
+  if (baseRows.every((row) => row.base !== null)) {
+    const signedBase = baseRows.reduce((total, row) => total + (row.side === "buy" ? row.base : -row.base), 0);
+    const base = Math.abs(signedBase);
+    if (base <= 1e-9) return { base_size: "0", notional_micro_usdc: 0, dominant_index: 0 };
+    const price = Math.max(...legs.map((leg) => Number(leg?.limit_price)).filter((value) => Number.isFinite(value) && value > 0));
+    return {
+      base_size: trimDecimal(base),
+      notional_micro_usdc: Math.max(1, Math.ceil(base * price * 1_000_000)),
+      dominant_index: signedBase > 0
+        ? baseRows.findIndex((row) => row.side === "buy" && row.base > 0)
+        : baseRows.findIndex((row) => row.side === "sell" && row.base > 0),
+    };
+  }
+  const signedNotional = fills.reduce(
+    (total, fill, index) => total + (legs[index]?.side === "buy" ? 1 : -1) * nonnegative(fill?.filled_notional_micro_usdc),
+    0,
+  );
+  return {
+    base_size: null,
+    notional_micro_usdc: Math.abs(signedNotional),
+    dominant_index: signedNotional >= 0
+      ? Math.max(0, legs.findIndex((leg) => leg?.side === "buy"))
+      : Math.max(0, legs.findIndex((leg) => leg?.side === "sell")),
+  };
 }
 
 function validateBudget(budget, notional) {
@@ -492,6 +637,12 @@ function nonnegative(value) { return Number.isSafeInteger(value) && value >= 0 ?
 function boundedFill(value, maximum) { return Math.min(maximum, nonnegative(value)); }
 function safeReference(value) { return typeof value === "string" && value.length > 0 && value.length <= 180 ? value : null; }
 function safeDecimal(value) { return typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value) ? value : null; }
+function decimalNumber(value) {
+  if (!safeDecimal(value)) return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+function trimDecimal(value) { return Number(value).toFixed(12).replace(/0+$/, "").replace(/\.$/, ""); }
 function safeError(error) { return /^[a-z0-9_:-]{1,120}$/i.test(String(error?.code || error?.message || "")) ? String(error?.code || error?.message) : "cross_venue_execution_failed"; }
 function digest(value) { return createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 48); }
 function stableJson(value) {

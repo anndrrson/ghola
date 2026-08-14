@@ -4,7 +4,9 @@ const SAFE_FIELDS = new Set([
   "platform_class",
   "execution_mode",
   "operation_class",
+  "execution_id",
   "work_order_commitment",
+  "close_work_order_commitment",
   "claim_status",
   "status",
   "error_code",
@@ -12,6 +14,7 @@ const SAFE_FIELDS = new Set([
   "broadcast_performed",
   "final_venue_execution_proven",
   "final_fill_proven",
+  "final_flat_proven",
 ]);
 const RECENT_ALERTS = new Map();
 
@@ -91,7 +94,7 @@ function safeValue(key, value) {
     const number = Number(value);
     return Number.isFinite(number) && number >= 0 ? Math.round(number) : 0;
   }
-  if (["broadcast_performed", "final_venue_execution_proven", "final_fill_proven"].includes(key)) {
+  if (["broadcast_performed", "final_venue_execution_proven", "final_fill_proven", "final_flat_proven"].includes(key)) {
     return value === true;
   }
   return safeToken(value, "unknown");

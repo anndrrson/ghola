@@ -1005,7 +1005,9 @@ export function createPostgresWorkerState(databaseUrl, { driver = "auto" } = {})
       `;
       const existing = decodeJson(existingRows[0]?.receipt_json);
       if (existing?.execution_request_digest === completionDigest &&
-        existing?.final_proof?.final_fill_proven === true) {
+        (existing?.final_proof?.final_fill_proven === true ||
+          existing?.final_proof?.final_no_broadcast_proven === true ||
+          existing?.final_proof?.final_no_fill_proven === true)) {
         return existing;
       }
       throw executionClaimConflict();
@@ -2705,7 +2707,9 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save, mutate 
         assertTerminalExecutionResolution(receipt);
         const cached = state.idempotency[workOrderCommitment]?.receipt;
         if (cached?.execution_request_digest === completionDigest &&
-          cached?.final_proof?.final_fill_proven === true) {
+          (cached?.final_proof?.final_fill_proven === true ||
+            cached?.final_proof?.final_no_broadcast_proven === true ||
+            cached?.final_proof?.final_no_fill_proven === true)) {
           return cached;
         }
         if (!claim || !["in_progress", "reconcile_required", "completed"].includes(claim.status)) {
@@ -3097,11 +3101,19 @@ function executionCompletionRequestDigest(attempt, receipt) {
 
 function assertTerminalExecutionResolution(receipt) {
   const proof = receipt?.final_proof;
+  const filled = proof?.final_fill_proven === true;
+  const noBroadcast =
+    proof?.final_no_broadcast_proven === true &&
+    proof?.broadcast_performed === false &&
+    ["cancelled", "failed", "no_submit", "rejected"].includes(String(proof?.terminal_status || "").toLowerCase());
+  const terminalNoFill =
+    proof?.final_no_fill_proven === true &&
+    ["cancelled", "canceled", "expired", "failed", "rejected"].includes(String(proof?.terminal_status || "").toLowerCase());
   if (
     !receipt || typeof receipt !== "object" ||
     !proof || typeof proof !== "object" ||
     proof.final_venue_execution_proven !== true ||
-    proof.final_fill_proven !== true ||
+    (!filled && !noBroadcast && !terminalNoFill) ||
     typeof proof.terminal_status !== "string" ||
     !proof.terminal_status.trim()
   ) {

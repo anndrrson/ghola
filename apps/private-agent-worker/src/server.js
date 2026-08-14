@@ -15,6 +15,7 @@ import {
   startAutopilotLoop,
 } from "./execution/autopilot.js";
 import { createCrossVenueCoordinator } from "./execution/cross-venue.js";
+import { createLiveCrossVenueAdapter } from "./execution/cross-venue-live.js";
 import {
   createHyperliquidManagedAllocation,
   executeCoinbaseOrder,
@@ -1836,9 +1837,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
   const recipient = options.recipient || loadRecipient();
   const state = options.state || createConfiguredWorkerState(dataDir());
   const consumerRuntime = options.consumerRuntime || createConsumerRuntime();
+  const crossVenueAdapter = Object.hasOwn(options, "crossVenueAdapter")
+    ? options.crossVenueAdapter
+    : createLiveCrossVenueAdapter({ state });
   const crossVenueCoordinator = createCrossVenueCoordinator({
     state,
-    adapter: options.crossVenueAdapter || null,
+    adapter: crossVenueAdapter,
     callback: options.crossVenueCallback,
     schedule: options.crossVenueSchedule,
   });
@@ -1898,7 +1902,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         }
       }
 
-      const crossVenueCommand = url.pathname.match(/^\/execution\/cross-venue\/(submit|cancel)$/);
+      const crossVenueCommand = url.pathname.match(/^\/execution\/cross-venue\/(submit|cancel|close)$/);
       if (req.method === "POST" && url.pathname === "/execution/cross-venue/ready") {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
@@ -1948,13 +1952,15 @@ export function createPrivateAgentWorkerServer(options = {}) {
         if (action === "submit" && !crossVenueGate.ready) {
           return json(res, 503, { error: crossVenueGate.reason_codes[0] });
         }
-        if (action === "submit" && requirePrivateExecutionClaimStore(res)) return;
+        if (requirePrivateExecutionClaimStore(res)) return;
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
         }
         const result = action === "submit"
           ? await crossVenueCoordinator.submit(authorized.body)
-          : await crossVenueCoordinator.cancel(authorized.body);
+          : action === "close"
+            ? await crossVenueCoordinator.close(authorized.body)
+            : await crossVenueCoordinator.cancel(authorized.body);
         return json(res, result.status, result.ok
           ? { version: 1, accepted: true, replayed: result.replayed, receipt: result.receipt }
           : { error: result.error, details: result.details });

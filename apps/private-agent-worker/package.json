@@ -9,6 +9,7 @@
     "canary:hyperliquid:testnet": "node scripts/hyperliquid-testnet-lifecycle.mjs",
     "canary:hyperliquid:testnet:roundtrip": "node scripts/hyperliquid-testnet-roundtrip.mjs",
     "canary:hyperliquid:mainnet:roundtrip": "node scripts/hyperliquid-mainnet-roundtrip.mjs",
+    "smoke:cross-venue:staging": "node scripts/cross-venue-staging-smoke.mjs",
     "test": "node --test"
   },
   "engines": {

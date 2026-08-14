@@ -40,16 +40,28 @@ local testing.
 - `POST /autopilot/sessions/:id/kill`
 - `POST /execution/cross-venue/submit`
 - `POST /execution/cross-venue/cancel`
+- `POST /execution/cross-venue/close`
 - `POST /execution/cross-venue/ready`
 
-The cross-venue endpoints accept exactly two opposite IOC legs with one durable
-execution id and explicit unhedged-notional, hedge-time, slippage, unwind-loss,
-and daily-loss budgets. The coordinator preflights both legs, submits them
-concurrently, measures residual exposure, then invokes the configured hedge or
-unwind adapter and posts monotonic reports to Ghola. It deliberately returns
-`cross_venue_byo_adapter_unavailable` unless all preflight, submit, hedge,
-unwind, and cancel controls are installed; the presence of the HTTP endpoint
-alone never makes cross-venue live trading ready.
+Cross-venue live execution is restricted to one recovery-proven pair:
+Hyperliquid `SOL` and Backpack `SOL_USDC_PERP`, mainnet, opposite IOC legs,
+one exact base size, and $10-$11 per leg. Parent, child, repair, and paired-close
+operations use durable Postgres claims. The close path sends exact opposite
+reduce-only market exits and reports success only after both venue accounts are
+flat with no target-market open orders. Coinbase, Phoenix, other pairs, resting
+orders, and larger sizes remain unavailable. The endpoint alone never makes
+the path ready; `/execution/cross-venue/ready` exposes every missing gate.
+
+Run the production-shaped, no-exchange-network durability smoke with:
+
+```sh
+PRIVATE_AGENT_STAGING_POSTGRES_URL='postgresql://…' npm run smoke:cross-venue:staging
+```
+
+It proves multi-process duplicate prevention, restart replay, paired close, and
+final-flat receipt handling against Postgres. It does not claim live exchange
+fills; a live mainnet canary additionally requires funded, initially flat
+Hyperliquid and Backpack accounts and exact API credentials.
 
 The Hyperliquid endpoints are for the v1 private execution pilot. They accept
 only commitments plus encrypted execution vault/strategy bundles. Plaintext
@@ -153,9 +165,23 @@ orders.
 - `PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON` or
   `PRIVATE_AGENT_JUPITER_POOLED_VAULT_PATH` for Ghola Vault Mode
 - `PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS=12000`
+- `PRIVATE_AGENT_CROSS_VENUE_PAIR=hyperliquid:backpack`
+- `PRIVATE_AGENT_CROSS_VENUE_MAX_NOTIONAL_USD=10.5` (must be within $10-$11)
+- `PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true` and
+  `PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=tiny_fill`
+- a mainnet `SOL` entry in `PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON`
+  or `PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_PATH`
+- `PRIVATE_AGENT_BACKPACK_POOLED_ENABLED=true`
+- `PRIVATE_AGENT_BACKPACK_API_KEY` and `PRIVATE_AGENT_BACKPACK_API_SECRET`
+- `PRIVATE_AGENT_BACKPACK_LIVE_MODE=tiny_live`
+- `PRIVATE_AGENT_BACKPACK_ALLOWED_SYMBOLS=SOL_USDC_PERP`
+- `PRIVATE_AGENT_BACKPACK_MAX_ORDER_NOTIONAL_USD=10.5` and a bounded daily cap
 - `GHOLA_CROSS_VENUE_RECONCILIATION_URL`, pointing to Ghola's authenticated
   `/api/internal/cross-venue-reconciliation` endpoint
 - `GHOLA_RECONCILIATION_INGEST_TOKEN`, shared only with that callback endpoint
+- `PRIVATE_AGENT_OPERATOR_ALERT_WEBHOOK_URL` and optionally
+  `PRIVATE_AGENT_OPERATOR_ALERT_TOKEN`; critical reconciliation events are
+  redacted and deduplicated before delivery
 
 When `PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE=true`, the worker requests a dstack
 quote over `/var/run/dstack.sock` with report data derived from the published

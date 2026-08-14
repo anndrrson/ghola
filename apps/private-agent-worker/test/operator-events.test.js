@@ -11,7 +11,9 @@ test("operator events expose only allowlisted fields", () => {
   const event = buildOperatorEvent("execution claim", {
     severity: "critical",
     venue_id: "hyperliquid",
+    execution_id: "execution_123",
     work_order_commitment: "work_123",
+    final_flat_proven: true,
     error_code: "TIMEOUT",
     private_key: "secret",
     account_address: "0xsecret",
@@ -24,7 +26,9 @@ test("operator events expose only allowlisted fields", () => {
     event: "execution_claim",
     severity: "critical",
     venue_id: "hyperliquid",
+    execution_id: "execution_123",
     work_order_commitment: "work_123",
+    final_flat_proven: true,
     error_code: "TIMEOUT",
   });
 });

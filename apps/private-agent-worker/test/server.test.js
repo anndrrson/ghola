@@ -684,6 +684,7 @@ describe("private agent worker", () => {
       unwind: async () => ({ filled_notional_micro_usdc: 0 }),
       cancel: async () => { cancelCalls += 1; },
       reconcile: async () => ({ terminal: false }),
+      close: async () => ({ terminal: false }),
     };
     server = createPrivateAgentWorkerServer({
       state,
@@ -761,6 +762,27 @@ describe("private agent worker", () => {
     assert.equal(preflightCalls, 0);
     assert.equal(submitCalls, 0);
     assert.equal(scheduleCalls, 1);
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    process.env.PRIVATE_AGENT_STATE_STORE = "json";
+    const blockedCancelToken = capabilityToken({
+      path: "/execution/cross-venue/cancel",
+      scope: "autopilot:control",
+      body,
+      expected: { operation_class: "cross_venue_byo", owner_commitment: body.owner_commitment },
+    });
+    const blockedCancelResponse = await fetch(`${baseUrl}/execution/cross-venue/cancel`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${blockedCancelToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+    assert.equal(blockedCancelResponse.status, 503);
+    assert.equal(cancelCalls, 0);
+
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "true";
     const cancelToken = capabilityToken({
       path: "/execution/cross-venue/cancel",
       scope: "autopilot:control",

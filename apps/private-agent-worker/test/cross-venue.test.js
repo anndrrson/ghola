@@ -43,6 +43,7 @@ describe("coordinated cross-venue execution", () => {
         unwind: async () => { throw new Error("unwind_should_not_run"); },
         cancel: async () => ({ ok: true }),
         reconcile: async () => ({ terminal: false }),
+        close: async () => ({ terminal: false }),
       },
       callback: async (payload) => { reports.push(payload.report); },
     });
@@ -92,6 +93,31 @@ describe("coordinated cross-venue execution", () => {
     assert.equal(submitCalls, 0);
     await tasks[0]();
     assert.equal(submitCalls, 2);
+  });
+
+  it("treats equal base fills as hedged even when venue fill notionals differ", async () => {
+    resetCrossVenueCoordinatorForTests();
+    const state = memoryState();
+    const reports = [];
+    let repairCalls = 0;
+    const coordinator = createCrossVenueCoordinator({
+      state,
+      adapter: durableAdapter({
+        submit: async ({ leg }) => ({
+          filled_notional_micro_usdc: leg.side === "buy" ? 4_900_000 : 5_100_000,
+          filled_base_size: "0.05",
+          venue_order_reference: `${leg.venue_id}:filled`,
+        }),
+        hedge: async () => { repairCalls += 1; throw new Error("must_not_repair"); },
+        unwind: async () => { repairCalls += 1; throw new Error("must_not_repair"); },
+      }),
+      callback: async (payload) => { reports.push(payload.report); },
+    });
+    const plan = execution();
+    plan.legs = plan.legs.map((leg) => ({ ...leg, target_base_size: "0.05" }));
+    assert.equal((await coordinator.submit(plan)).status, 202);
+    await waitFor(() => reports.some((report) => report.phase === "complete"));
+    assert.equal(repairCalls, 0);
   });
 
   it("resolves a crash-left parent claim from terminal venue evidence after restart", async () => {
@@ -144,7 +170,41 @@ describe("coordinated cross-venue execution", () => {
     assert.equal((await state.getExecutionClaimEvidence(execution().execution_id)).status, "completed");
   });
 
-  it("does not pretend execution is available without all five adapter controls", async () => {
+  it("claims a matched-pair close once and replays the proved flat receipt", async () => {
+    resetCrossVenueCoordinatorForTests();
+    const state = memoryState();
+    const tasks = [];
+    let closeCalls = 0;
+    const plan = execution();
+    const coordinator = createCrossVenueCoordinator({
+      state,
+      adapter: durableAdapter({
+        close: async ({ plan: closePlan }) => {
+          closeCalls += 1;
+          return {
+            terminal: true,
+            status: "closed",
+            legs: closePlan.legs.map((leg) => ({ ...leg, status: "filled" })),
+            final_proof: { final_flat_proven: true },
+          };
+        },
+      }),
+      callback: async () => {},
+      schedule: (task) => tasks.push(task),
+    });
+    assert.equal((await coordinator.submit(plan)).status, 202);
+    await tasks[0]();
+
+    const first = await coordinator.close(plan);
+    const replay = await coordinator.close(plan);
+    assert.equal(first.status, 200);
+    assert.equal(first.replayed, false);
+    assert.equal(replay.status, 200);
+    assert.equal(replay.replayed, true);
+    assert.equal(closeCalls, 1);
+  });
+
+  it("does not pretend execution is available without every durable adapter control", async () => {
     const coordinator = createCrossVenueCoordinator({
       state: memoryState(),
       adapter: null,
@@ -178,6 +238,7 @@ function durableAdapter(overrides = {}) {
     }),
     cancel: async () => ({ ok: true }),
     reconcile: async () => ({ terminal: false }),
+    close: async () => ({ terminal: false }),
     ...overrides,
   };
 }
