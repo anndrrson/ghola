@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import re
 import sys
 import time
 from decimal import Decimal, ROUND_DOWN, InvalidOperation, localcontext
@@ -100,8 +101,8 @@ def main():
                 "fills": [redact_fill(fill) for fill in fills[:25]],
             }))
             return
-    except Exception:
-        fail("hyperliquid request failed", "venue_rejected")
+    except Exception as error:
+        fail(hyperliquid_error_message(error), "venue_rejected")
 
     fail("unsupported hyperliquid operation")
 
@@ -165,6 +166,17 @@ def resolve_limit_order(info, order, account_address):
         "tif": "Ioc",
         "account_state_checked": account_state_checked,
     }
+
+
+def hyperliquid_error_message(error):
+    message = getattr(error, "error_message", None) or getattr(error, "message", None)
+    if not isinstance(message, str) or not message.strip():
+        message = str(error)
+    if not message.strip():
+        return f"hyperliquid request failed ({type(error).__name__})"
+    sanitized = " ".join(message.strip().split())
+    sanitized = re.sub(r"0x[0-9a-fA-F]{64}", "[redacted-secret]", sanitized)
+    return f"hyperliquid request failed ({type(error).__name__}): {sanitized[:240]}"
 
 
 def resolve_market_ioc_order(info, order, account_address):
@@ -264,33 +276,51 @@ def decimal_text(value):
 
 
 def redact_result(status, result, coin=None):
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        fail(hyperliquid_response_error(result), "venue_rejected")
+    statuses = result.get("response", {}).get("data", {}).get("statuses", [])
+    if not isinstance(statuses, list) or not statuses:
+        fail("hyperliquid response did not prove venue acceptance", "venue_rejected")
+    first = statuses[0]
+    if status == "cancelled":
+        if first == "success" or (isinstance(first, dict) and first.get("success") is not None):
+            return {"status": "cancelled", "oid": None, "fills": []}
+        fail(hyperliquid_response_error(first), "venue_rejected")
+    if not isinstance(first, dict):
+        fail(hyperliquid_response_error(first), "venue_rejected")
+    if first.get("error"):
+        fail(hyperliquid_response_error(first), "venue_rejected")
+
     oid = None
     fills = []
     resolved_status = status
-    try:
-        statuses = result.get("response", {}).get("data", {}).get("statuses", [])
-        if statuses:
-            resting = statuses[0].get("resting") or {}
-            filled = statuses[0].get("filled") or {}
-            oid = resting.get("oid") or filled.get("oid")
-            if filled:
-                total_size = filled.get("totalSz") or filled.get("sz")
-                average_price = filled.get("avgPx") or filled.get("px")
-                if total_size and average_price:
-                    fills.append({
-                        "coin": coin,
-                        "px": str(average_price),
-                        "sz": str(total_size),
-                        "fee": "0",
-                        "time": int(time.time() * 1000),
-                    })
-                    resolved_status = "filled"
-            elif not resting:
-                resolved_status = "unfilled"
-    except Exception:
-        oid = None
-        fills = []
+    resting = first.get("resting") or {}
+    filled = first.get("filled") or {}
+    oid = resting.get("oid") or filled.get("oid")
+    if filled:
+        total_size = filled.get("totalSz") or filled.get("sz")
+        average_price = filled.get("avgPx") or filled.get("px")
+        if not total_size or not average_price:
+            fail("hyperliquid fill response is incomplete", "venue_rejected")
+        fills.append({
+            "coin": coin,
+            "px": str(average_price),
+            "sz": str(total_size),
+            "fee": "0",
+            "time": int(time.time() * 1000),
+        })
+        resolved_status = "filled"
+    elif not resting:
+        fail("hyperliquid order response did not prove resting or filled status", "venue_rejected")
     return {"status": resolved_status, "oid": oid, "fills": fills}
+
+
+def hyperliquid_response_error(value):
+    if isinstance(value, dict):
+        value = value.get("error") or value.get("response") or value.get("msg")
+    message = value if isinstance(value, str) else "hyperliquid venue rejected request"
+    sanitized = " ".join(message.strip().split())[:200]
+    return f"hyperliquid venue rejected request: {sanitized}" if sanitized else "hyperliquid venue rejected request"
 
 
 def redact_fill(fill):

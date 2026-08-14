@@ -5,7 +5,39 @@ import {
   hyperliquidMarginUtilizationBucket,
   hyperliquidPositionRiskBuckets,
   readHyperliquidAccountSnapshot,
+  submitHyperliquidExecution,
 } from "../src/venues/hyperliquid.js";
+
+test("live Hyperliquid adapter returns explicit venue-acceptance proof", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    const submitted = await submitHyperliquidExecution({
+      credential: credential("testnet"),
+      instruction: {
+        operation_class: "limit_order",
+        order: { market: "HYPE", side: "buy", quote_size: "11", limit_price: "1", order_type: "limit" },
+      },
+      cloid: `0x${"1".repeat(32)}`,
+      runner: async () => ({ status: "submitted", oid: 42, fills: [] }),
+    });
+    assert.equal(submitted.final_proof.broadcast_performed, true);
+    assert.equal(submitted.final_proof.final_venue_execution_proven, true);
+    assert.equal(submitted.final_proof.final_fill_proven, false);
+
+    const cancelled = await submitHyperliquidExecution({
+      credential: credential("testnet"),
+      instruction: { operation_class: "cancel", cancel: { market: "HYPE", client_order_id: `0x${"1".repeat(32)}` } },
+      cloid: `0x${"2".repeat(32)}`,
+      runner: async () => ({ status: "cancelled", fills: [] }),
+    });
+    assert.equal(cancelled.final_proof.broadcast_performed, true);
+    assert.equal(cancelled.final_proof.final_venue_execution_proven, true);
+    assert.equal(cancelled.final_proof.final_fill_proven, false);
+  } finally {
+    restore(previous);
+  }
+});
 
 test("account margin utilization is privacy-bucketed", () => {
   const state = (accountValue, totalMarginUsed) => ({ marginSummary: { accountValue, totalMarginUsed } });

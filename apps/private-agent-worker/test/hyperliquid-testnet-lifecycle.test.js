@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   fiveSignificant,
+  hyperliquidTestnetCloid,
   testnetCanaryConfig,
 } from "../scripts/hyperliquid-testnet-lifecycle.mjs";
 
@@ -29,4 +30,11 @@ test("canary resting price uses five significant digits", () => {
   assert.equal(fiveSignificant(1234.5678), "1234.6");
   assert.equal(fiveSignificant(0.12345678), "0.12346");
   assert.throws(() => fiveSignificant(0), /invalid/);
+});
+
+test("canary derives a deterministic 16-byte Hyperliquid cloid", () => {
+  const first = hyperliquidTestnetCloid("work-order-1");
+  assert.match(first, /^0x[0-9a-f]{32}$/);
+  assert.equal(first, hyperliquidTestnetCloid("work-order-1"));
+  assert.notEqual(first, hyperliquidTestnetCloid("work-order-2"));
 });

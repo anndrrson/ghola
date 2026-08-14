@@ -49,7 +49,7 @@ export async function runHyperliquidTestnetLifecycle({ env = process.env, fetchI
   const runId = `${Date.now().toString(36)}_${randomBytes(6).toString("hex")}`;
   const placeWorkOrder = `hl_testnet_place_${runId}`;
   const cancelWorkOrder = `hl_testnet_cancel_${runId}`;
-  const placeCloid = cloid(placeWorkOrder);
+  const placeCloid = hyperliquidTestnetCloid(placeWorkOrder);
   let placementStarted = false;
   let cancellationConfirmed = false;
 
@@ -106,7 +106,7 @@ export async function runHyperliquidTestnetLifecycle({ env = process.env, fetchI
       state,
       work_order_commitment: cancelWorkOrder,
       claim_context: cancelContext,
-      submit: () => submitHyperliquidExecution({ credential, instruction: cancelInstruction, cloid: cloid(cancelWorkOrder) }),
+      submit: () => submitHyperliquidExecution({ credential, instruction: cancelInstruction, cloid: hyperliquidTestnetCloid(cancelWorkOrder) }),
       evidence: (result) => executionEvidence(cancelWorkOrder, cancelContext.request_digest, result),
     });
     if (cancelled.status !== "cancelled") throw new Error(`testnet cancellation was not acknowledged: ${cancelled.status}`);
@@ -116,7 +116,7 @@ export async function runHyperliquidTestnetLifecycle({ env = process.env, fetchI
     const venueReconcile = await submitHyperliquidExecution({
       credential,
       instruction: { version: 1, venue_id: "hyperliquid", operation_class: "reconcile", reconcile: {} },
-      cloid: cloid(`reconcile_${runId}`),
+      cloid: hyperliquidTestnetCloid(`reconcile_${runId}`),
     });
     if (venueReconcile.status !== "reconciled") throw new Error("testnet venue reconciliation failed");
     const storedReconcile = await reconcileStoredExecution({
@@ -153,7 +153,7 @@ export async function runHyperliquidTestnetLifecycle({ env = process.env, fetchI
           operation_class: "cancel",
           cancel: { market: config.market, client_order_id: placeCloid },
         },
-        cloid: cloid(`cleanup_${runId}`),
+        cloid: hyperliquidTestnetCloid(`cleanup_${runId}`),
       }).catch(() => {});
     }
     await state.close?.();
@@ -187,10 +187,14 @@ function executionEvidence(workOrder, requestDigest, result) {
       provider_ref_seed: result.provider_ref_seed || null,
       result_seed: result.result_seed || null,
       fills: Array.isArray(result.fills) ? result.fills : [],
+      final_proof: result.final_proof || null,
       execution_request_digest: requestDigest,
       created_at: new Date().toISOString(),
     },
-    receipt,
+    receipt: {
+      ...receipt,
+      final_proof: result.final_proof || null,
+    },
   };
 }
 
@@ -228,8 +232,8 @@ export function fiveSignificant(value) {
   return Number(value.toPrecision(5)).toString();
 }
 
-function cloid(value) {
-  return `0x${sha256(value)}`;
+export function hyperliquidTestnetCloid(value) {
+  return `0x${sha256(value).slice(0, 32)}`;
 }
 
 function sha256(value) {

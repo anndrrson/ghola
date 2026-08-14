@@ -178,6 +178,11 @@ export async function submitHyperliquidExecution({
       status: instruction.operation_class === "cancel" ? "cancelled" : "submitted",
       provider_ref_seed: { venue: "hyperliquid", cloid, dry_run: true },
       result_seed: { kind: "hyperliquid_dry_run", market: instruction.order?.market || instruction.cancel?.market || null },
+      final_proof: hyperliquidFinalProof({
+        status: instruction.operation_class === "cancel" ? "cancelled" : "submitted",
+        network: credential.network,
+        broadcastPerformed: false,
+      }),
     };
   }
   const result = await runner({
@@ -186,8 +191,9 @@ export async function submitHyperliquidExecution({
     cloid,
     timeout_ms: Number.parseInt(process.env.PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS || "12000", 10),
   });
+  const status = result.status || (instruction.operation_class === "cancel" ? "cancelled" : "submitted");
   return {
-    status: result.status || (instruction.operation_class === "cancel" ? "cancelled" : "submitted"),
+    status,
     provider_ref_seed: {
       venue: "hyperliquid",
       cloid,
@@ -200,6 +206,26 @@ export async function submitHyperliquidExecution({
       market: instruction.order?.market || instruction.cancel?.market || null,
     },
     fills: Array.isArray(result.fills) ? result.fills.slice(0, 25) : [],
+    final_proof: hyperliquidFinalProof({
+      status,
+      network: credential.network,
+      broadcastPerformed: !["read", "reconcile"].includes(instruction.operation_class),
+    }),
+  };
+}
+
+function hyperliquidFinalProof({ status, network, broadcastPerformed }) {
+  const venueAccepted = broadcastPerformed && ["submitted", "filled", "cancelled"].includes(status);
+  return {
+    version: 1,
+    proof_kind: "hyperliquid_execution_proof_v1",
+    status,
+    venue_id: "hyperliquid",
+    network,
+    broadcast_performed: broadcastPerformed === true,
+    final_venue_execution_proven: venueAccepted,
+    final_fill_proven: status === "filled",
+    checked_at: new Date().toISOString(),
   };
 }
 
