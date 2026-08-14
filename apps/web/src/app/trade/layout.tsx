@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
 const TRADE_URL = "https://ghola.xyz/trade";
-const TITLE = "Trade Phoenix with a Ghola agent";
+const TITLE = "Ghola Trading Workstation | Charts, Risk, Depth and Execution";
 const DESCRIPTION =
-  "Private AI trading agents for live markets. Capped intent, sealed execution, verifiable receipts.";
+  "Professional multi-venue charts, depth, tape, risk, paper trading, exact plan binding, and private execution controls.";
 const IMAGE = {
   url: "https://ghola.xyz/og/trade-like-a-ghost-v2",
   width: 1200,
