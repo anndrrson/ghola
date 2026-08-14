@@ -4789,8 +4789,8 @@ export default function TradePage() {
                           className={`h-10 rounded-md text-sm font-medium capitalize transition-shadow duration-150 ${
                             side === item
                               ? item === "buy"
-                                ? "border border-emerald-400/60 bg-gradient-to-b from-emerald-400/20 to-emerald-400/8 text-emerald-200 shadow-[inset_0_1px_0_rgba(110,231,183,0.2),0_0_16px_-6px_rgba(52,211,153,0.5)]"
-                                : "border border-rose-400/60 bg-gradient-to-b from-rose-400/20 to-rose-400/8 text-rose-200 shadow-[inset_0_1px_0_rgba(251,113,133,0.2),0_0_16px_-6px_rgba(251,113,133,0.5)]"
+                                ? "border border-emerald-400/60 bg-[#0d1712] text-emerald-200"
+                                : "border border-rose-400/60 bg-[#1a1010] text-rose-200"
                               : "trade-chip"
                           }`}
                         >
@@ -4843,7 +4843,7 @@ export default function TradePage() {
                           onClick={() => setSlippageBps(item)}
                           className={`h-10 rounded-md text-sm tabular-nums transition-shadow duration-150 ${
                             slippageBps === item
-                              ? "border border-[#f8e56b]/70 bg-gradient-to-b from-[#332d12] to-[#231f0c] text-[#fff27a] shadow-[inset_0_1px_0_rgba(248,229,107,0.18),0_0_16px_-6px_rgba(248,229,107,0.45)]"
+                              ? "border border-[#55514a] bg-[#171717] text-[#c7c7c7]"
                               : "trade-chip"
                           }`}
                         >
@@ -5411,23 +5411,23 @@ const MarketChart = memo(function MarketChart({
       >
         <defs>
           <linearGradient id="tradeBand" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#f8e56b" stopOpacity="0.18" />
-            <stop offset="100%" stopColor="#f8e56b" stopOpacity="0.04" />
+            <stop offset="0%" stopColor="#aaa397" stopOpacity="0.06" />
+            <stop offset="100%" stopColor="#aaa397" stopOpacity="0.015" />
           </linearGradient>
         </defs>
-        <rect width={chart.width} height={chart.height} fill="#05070b" />
+        <rect width={chart.width} height={chart.height} fill="#030303" />
         {chart.timeTicks.map((tick) => (
           <g key={`t-${tick.x}`}>
-            <line x1={tick.x} x2={tick.x} y1={chart.padding.top} y2={chart.height - chart.padding.bottom} stroke="#0e1626" strokeWidth="1" />
-            <text x={tick.x} y={chart.height - 12} textAnchor="middle" fill="#8b95a8" fontSize="10" fontFamily={CHART_FONT}>
+            <line x1={tick.x} x2={tick.x} y1={chart.padding.top} y2={chart.height - chart.padding.bottom} stroke="#171717" strokeWidth="1" />
+            <text x={tick.x} y={chart.height - 12} textAnchor="middle" fill="#858585" fontSize="10" fontFamily={CHART_FONT}>
               {tick.label}
             </text>
           </g>
         ))}
         {chart.grid.map((line) => (
           <g key={line.y}>
-            <line x1="0" x2={chart.width} y1={line.y} y2={line.y} stroke="#162033" strokeWidth="1" />
-            <text x={chart.width - 10} y={line.y - 5} textAnchor="end" fill="#8b95a8" fontSize="11" fontFamily={CHART_FONT}>
+            <line x1="0" x2={chart.width} y1={line.y} y2={line.y} stroke="#171717" strokeWidth="1" />
+            <text x={chart.width - 10} y={line.y - 5} textAnchor="end" fill="#858585" fontSize="11" fontFamily={CHART_FONT}>
               {formatPrice(line.price)}
             </text>
           </g>
@@ -5579,7 +5579,7 @@ function DragGrip({ y, chart, color }: { y: number; chart: ReturnType<typeof cha
   const x = chart.width - chart.padding.right - 34;
   return (
     <g>
-      <rect x={x} y={y - 7} width="26" height="14" fill="#070a10" stroke={color} strokeOpacity="0.7" rx="3" />
+      <rect x={x} y={y - 7} width="26" height="14" fill="#070707" stroke={color} strokeOpacity="0.7" rx="3" />
       <line x1={x + 6} x2={x + 20} y1={y - 2.5} y2={y - 2.5} stroke={color} strokeWidth="1.2" />
       <line x1={x + 6} x2={x + 20} y1={y + 2.5} y2={y + 2.5} stroke={color} strokeWidth="1.2" />
     </g>
@@ -5612,7 +5612,7 @@ function PriceTag({
   const tagWidth = chart.padding.right - 6;
   return (
     <g>
-      <rect x={x} y={y - 10} width={tagWidth} height="20" fill={solid ? color : "#0b1322"} stroke={color} strokeWidth="1" rx="2" />
+      <rect x={x} y={y - 10} width={tagWidth} height="20" fill={solid ? color : "#0b0b0b"} stroke={color} strokeWidth="1" rx="2" />
       <text
         x={x + tagWidth / 2}
         y={y + 4}
@@ -5633,8 +5633,8 @@ function TimeTag({ x, chart, text }: { x: number; chart: ReturnType<typeof chart
   const left = Math.min(chart.width - chart.padding.right - width, Math.max(2, x - width / 2));
   return (
     <g>
-      <rect x={left} y={chart.height - chart.padding.bottom + 4} width={width} height="18" fill="#0b1322" stroke="#3a4a64" strokeWidth="1" rx="2" />
-      <text x={left + width / 2} y={chart.height - chart.padding.bottom + 17} textAnchor="middle" fill="#8fa3c4" fontSize="10" fontFamily={CHART_FONT}>
+      <rect x={left} y={chart.height - chart.padding.bottom + 4} width={width} height="18" fill="#0b0b0b" stroke="#343434" strokeWidth="1" rx="2" />
+      <text x={left + width / 2} y={chart.height - chart.padding.bottom + 17} textAnchor="middle" fill="#a8a8a8" fontSize="10" fontFamily={CHART_FONT}>
         {text}
       </text>
     </g>
@@ -5678,8 +5678,8 @@ function OverlaySvg({
 }
 
 function overlayColor(overlay: GholaChartOverlay, side: Side) {
-  if (overlay.id === "agent-entry") return side === "buy" ? "#34d399" : "#fb7185";
-  return overlay.tone === "warn" ? "#f8e56b" : overlay.tone === "good" ? "#62d6a3" : "#9ccfff";
+  if (overlay.id === "agent-entry") return side === "buy" ? "#759985" : "#aa7d7d";
+  return overlay.tone === "warn" ? "#aaa397" : overlay.tone === "good" ? "#86aa96" : "#c4c4c4";
 }
 
 function overlayLabelSlots(
@@ -5713,7 +5713,7 @@ function overlayLabelSlots(
 function Label({ x, y, color, text }: { x: number; y: number; color: string; text: string }) {
   return (
     <g>
-      <rect x={x - 8} y={y - 14} width={Math.max(80, text.length * 6.8 + 16)} height="20" fill="#070a10" fillOpacity="0.92" stroke={color} rx="2" />
+      <rect x={x - 8} y={y - 14} width={Math.max(80, text.length * 6.8 + 16)} height="20" fill="#070707" fillOpacity="0.94" stroke={color} rx="2" />
       <text x={x} y={y} fill={color} fontSize="11" fontFamily={CHART_FONT}>
         {text}
       </text>
@@ -6307,8 +6307,8 @@ const PublicAgentLaunchPanel = memo(function PublicAgentLaunchPanel({
                     onClick={() => onSelectVenue(venue.id)}
                     className={`min-h-[8.5rem] w-[13rem] shrink-0 rounded-md border p-3 text-left transition sm:w-auto ${
                       selected
-                        ? "border-[#5aa7ff]/80 bg-[#10213a] shadow-[inset_0_1px_0_rgba(220,238,255,0.1),0_0_18px_-8px_rgba(90,167,255,0.8)]"
-                        : "border-[#1e2a3a] bg-[#070b12] hover:border-[#33435d]"
+                        ? "border-[#505050] bg-[#141414]"
+                        : "border-[#1e2a3a] bg-[#070b12] hover:border-[#343434]"
                     } ${chartBacked ? "" : "cursor-default opacity-80"}`}
                   >
                     <div className="flex items-center justify-between gap-2">

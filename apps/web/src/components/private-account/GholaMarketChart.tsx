@@ -230,32 +230,32 @@ type ChartTrendLineRender = {
 };
 
 const CHART_STUDIES: ReadonlyArray<{ id: GholaChartStudyId; label: string; color: string }> = [
-  { id: "ema20", label: "EMA 20", color: "#60a5fa" },
-  { id: "ema50", label: "EMA 50", color: "#c084fc" },
-  { id: "vwap", label: "VWAP", color: "#facc15" },
-  { id: "volumeProfile", label: "Profile", color: "#38bdf8" },
-  { id: "structure", label: "Structure", color: "#fb923c" },
-  { id: "orderFlow", label: "Order flow", color: "#22d3ee" },
-  { id: "multiTimeframe", label: "MTF", color: "#93c5fd" },
+  { id: "ema20", label: "EMA 20", color: "#d4d4d4" },
+  { id: "ema50", label: "EMA 50", color: "#9f9f9f" },
+  { id: "vwap", label: "VWAP", color: "#f1f1f1" },
+  { id: "volumeProfile", label: "Profile", color: "#757575" },
+  { id: "structure", label: "Structure", color: "#b0b0b0" },
+  { id: "orderFlow", label: "Order flow", color: "#858585" },
+  { id: "multiTimeframe", label: "MTF", color: "#c2c2c2" },
 ];
-const COMPARE_COLORS = ["#a8d8ff", "#c4b5fd", "#fb923c", "#f472b6", "#2dd4bf", "#a3e635"] as const;
+const COMPARE_COLORS = ["#f0f0f0", "#c8c8c8", "#a8a8a8", "#888888", "#6e6e6e", "#545454"] as const;
 const MAX_TREND_LINES = GHOLA_CHART_TREND_LINE_LIMIT;
 const EMPTY_CHART_OVERLAYS: GholaChartOverlay[] = [];
 const EMPTY_COMPARE_FRAMES: GholaMarketFrame[] = [];
 const EMPTY_CHART_CANDLES: GholaChartCandle[] = [];
 
 const COLORS = {
-  bg: "#05070b",
-  grid: "#102033",
-  axis: "#6f7d9a",
-  text: "#aab5c8",
-  bull: "#6ee7b7",
-  bear: "#fca5a5",
-  accent: "#a8d8ff",
-  warn: "#f8e58b",
-  neutral: "#c4b5fd",
-  bid: "#34d399",
-  ask: "#f87171",
+  bg: "#030303",
+  grid: "#171717",
+  axis: "#707070",
+  text: "#b5b5b5",
+  bull: "#86aa96",
+  bear: "#b48686",
+  accent: "#d4d4d4",
+  warn: "#aaa397",
+  neutral: "#999999",
+  bid: "#759985",
+  ask: "#aa7d7d",
 };
 
 const TONE_COLOR: Record<GholaChartTone, string> = {
@@ -3043,7 +3043,7 @@ function drawSessionMarkers(ctx: CanvasRenderingContext2D, layout: ChartLayout, 
   ctx.font = "9px ui-monospace, SFMono-Regular, Menlo, monospace";
   ctx.textBaseline = "top";
   ctx.fillStyle = "#8b95a8";
-  ctx.strokeStyle = "#26374d";
+  ctx.strokeStyle = "#2a2a2a";
   ctx.setLineDash([2, 5]);
   for (const marker of markers.slice(-12)) {
     const x = xForIndex(marker.index, candles.length, layout);
@@ -3207,7 +3207,7 @@ function structureMarkerBox(
   const height = 16;
   const left = clamp(x, layout.left + 2, layout.left + layout.plotW - width - 2);
   const top = clamp(y - height / 2, layout.top + 2, layout.top + layout.plotH - height - 2);
-  ctx.fillStyle = "#07111ae8";
+  ctx.fillStyle = "#090909e8";
   ctx.fillRect(left, top, width, height);
   ctx.strokeStyle = color;
   ctx.strokeRect(left, top, width, height);
@@ -3235,7 +3235,7 @@ function drawOrderFlowOverlay(
   const laneBottom = layout.top + layout.plotH;
   const candleWidth = layout.plotW / Math.max(1, candles.length - 1);
   ctx.save();
-  ctx.fillStyle = "#07141a";
+  ctx.fillStyle = "#090909";
   ctx.globalAlpha = 0.54;
   ctx.fillRect(layout.left, laneBottom - laneHeight, layout.plotW, laneHeight);
   for (const { bucket, candleIndex: visibleIndex } of visibleBuckets) {
@@ -3297,11 +3297,11 @@ function drawAnchoredVwapOverlay(
     drawAnchoredSeries(ctx, layout, candles.length, points, (point) => point.bands.find((band) => band.multiplier === multiplier)?.upper, COLORS.accent, bandIndex === 0 ? 0.4 : 0.22, [4, 4]);
     drawAnchoredSeries(ctx, layout, candles.length, points, (point) => point.bands.find((band) => band.multiplier === multiplier)?.lower, COLORS.accent, bandIndex === 0 ? 0.4 : 0.22, [4, 4]);
   });
-  drawAnchoredSeries(ctx, layout, candles.length, points, (point) => point.vwap, "#22d3ee", 0.95, []);
+  drawAnchoredSeries(ctx, layout, candles.length, points, (point) => point.vwap, "#b0b0b0", 0.95, []);
   const anchorIndex = indices.get(normalizeTimestamp(anchored.anchorTime));
   if (anchorIndex != null) {
     const anchorX = xForIndex(anchorIndex, candles.length, layout);
-    ctx.strokeStyle = "#22d3ee";
+    ctx.strokeStyle = "#b0b0b0";
     ctx.globalAlpha = 0.52;
     ctx.setLineDash([3, 4]);
     ctx.beginPath();
@@ -3318,7 +3318,7 @@ function drawAnchoredVwapOverlay(
       `A-VWAP ${formatChartPrice(latestVisible.point.vwap)}`,
       xForIndex(latestVisible.candleIndex, candles.length, layout) - 86,
       clamp(yForPrice(latestVisible.point.vwap, layout), layout.top + 10, layout.top + layout.plotH - 10),
-      "#22d3ee",
+      "#b0b0b0",
     );
   }
 }
@@ -3472,7 +3472,7 @@ function drawTrendLineAnchor(
   const index = visibleCandles.findIndex((candle) => normalizeTimestamp(candle.t) === normalizeTimestamp(anchor.time));
   if (index < 0) return;
   ctx.save();
-  ctx.fillStyle = "#05070b";
+  ctx.fillStyle = "#030303";
   ctx.strokeStyle = color;
   ctx.globalAlpha = 1;
   ctx.lineWidth = 1.5;
@@ -3815,7 +3815,7 @@ function labelBox(ctx: CanvasRenderingContext2D, text: string, x: number, y: num
   const height = 20;
   const left = clamp(x, 2, canvasWidth - width - 2);
   const top = clamp(y - height / 2, 2, canvasHeight - height - 2);
-  ctx.fillStyle = "#07111adf";
+  ctx.fillStyle = "#090909df";
   ctx.strokeStyle = color;
   ctx.lineWidth = 1;
   ctx.fillRect(left, top, width, height);
