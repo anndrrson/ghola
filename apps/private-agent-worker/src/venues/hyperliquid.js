@@ -71,6 +71,15 @@ export function assertHyperliquidPilotNetwork(credential, instruction = null) {
     order.reduce_only !== true &&
     positiveDecimal(order.quote_size) &&
     !positiveDecimal(order.base_size);
+  const exactCrossVenueBaseEntry =
+    order.reduce_only !== true &&
+    order.cross_venue_exact_base === true &&
+    String(order.market || "").toUpperCase() === "SOL" &&
+    positiveDecimal(order.base_size) &&
+    !positiveDecimal(order.quote_size) &&
+    positiveDecimal(order.limit_price) &&
+    Number(order.base_size) * Number(order.limit_price) >= 10 &&
+    Number(order.base_size) * Number(order.limit_price) <= 11;
   const exactReduceOnlyExit =
     order.reduce_only === true &&
     positiveDecimal(order.base_size) &&
@@ -78,10 +87,10 @@ export function assertHyperliquidPilotNetwork(credential, instruction = null) {
   if (
     order.live_order_mode !== "tiny_fill" ||
     order.tif !== "Ioc" ||
-    (!quoteSizedEntry && !exactReduceOnlyExit)
+    (!quoteSizedEntry && !exactCrossVenueBaseEntry && !exactReduceOnlyExit)
   ) {
     throw new HyperliquidExecutionError(
-      "hyperliquid mainnet order must use tiny_fill IOC quote-sized entry or exact reduce-only base-sized exit",
+      "hyperliquid mainnet order must use tiny_fill IOC quote-sized entry, exact SOL cross-venue base entry, or exact reduce-only base-sized exit",
       400,
     );
   }
@@ -90,6 +99,32 @@ export function assertHyperliquidPilotNetwork(credential, instruction = null) {
 function positiveDecimal(value) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0;
+}
+
+function finitePositive(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function trimPositiveDecimal(value) {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  return value.toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function exactSignedDecimal(value, label) {
+  const text = String(value ?? "").trim();
+  const parsed = Number(text);
+  if (!/^-?\d+(?:\.\d+)?$/.test(text) || !Number.isFinite(parsed)) {
+    throw new HyperliquidExecutionError(`${label} is invalid`, 502);
+  }
+  if (Math.abs(parsed) < 1e-12) return "0";
+  return parsed.toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function exactNonnegativeDecimal(value, label) {
+  const text = exactSignedDecimal(value, label);
+  if (Number(text) < 0) throw new HyperliquidExecutionError(`${label} is invalid`, 502);
+  return text;
 }
 
 export function hyperliquidManagedAccountRefs() {
@@ -344,6 +379,147 @@ export async function readHyperliquidAccountSnapshot({
     network: credential.network,
     streamStatus: "snapshot",
   });
+}
+
+export async function readHyperliquidExactMarketState({
+  credential,
+  market = "SOL",
+  fetchImpl = fetch,
+}) {
+  assertHyperliquidPilotNetwork(credential, { operation_class: "read" });
+  const coin = String(market || "").trim().toUpperCase();
+  if (!/^[A-Z0-9]{2,12}$/.test(coin)) throw new HyperliquidExecutionError("hyperliquid market is invalid", 400);
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
+    return {
+      version: 1,
+      venue_id: "hyperliquid",
+      network: credential.network,
+      market: coin,
+      status: "ready_to_trade",
+      position_size: "0",
+      open_order_count: 0,
+      account_value: "0",
+      withdrawable: "0",
+      checked_at: new Date().toISOString(),
+    };
+  }
+  const [state, openOrders] = await Promise.all([
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "clearinghouseState",
+      user: hyperliquidExecutionAddress(credential),
+    }),
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "openOrders",
+      user: hyperliquidExecutionAddress(credential),
+    }),
+  ]);
+  if (!Array.isArray(state?.assetPositions) || !Array.isArray(openOrders)) {
+    throw new HyperliquidExecutionError("hyperliquid exact account state is invalid", 502);
+  }
+  const row = state.assetPositions.find((item) => String(item?.position?.coin || "").toUpperCase() === coin);
+  const position = exactSignedDecimal(row?.position?.szi ?? "0", "hyperliquid position size");
+  const accountValue = exactNonnegativeDecimal(state?.marginSummary?.accountValue ?? "0", "hyperliquid account value");
+  const withdrawable = exactNonnegativeDecimal(state?.withdrawable ?? "0", "hyperliquid withdrawable");
+  return {
+    version: 1,
+    venue_id: "hyperliquid",
+    network: credential.network,
+    market: coin,
+    status: Number(accountValue) > 0 ? "ready_to_trade" : "needs_funds",
+    position_size: position,
+    open_order_count: openOrders.filter((order) => String(order?.coin || "").toUpperCase() === coin).length,
+    account_value: accountValue,
+    withdrawable,
+    checked_at: new Date().toISOString(),
+  };
+}
+
+export async function readHyperliquidTopOfBook({
+  credential,
+  market = "SOL",
+  fetchImpl = fetch,
+}) {
+  assertHyperliquidPilotNetwork(credential, { operation_class: "read" });
+  const coin = String(market || "").trim().toUpperCase();
+  if (!/^[A-Z0-9]{2,12}$/.test(coin)) throw new HyperliquidExecutionError("hyperliquid market is invalid", 400);
+  const body = await postHyperliquidInfo(fetchImpl, credential.base_url, { type: "l2Book", coin });
+  const bids = Array.isArray(body?.levels?.[0]) ? body.levels[0] : [];
+  const asks = Array.isArray(body?.levels?.[1]) ? body.levels[1] : [];
+  const bid = bids.reduce((best, level) => Math.max(best, finitePositive(level?.px)), 0);
+  const ask = asks.reduce((best, level) => {
+    const price = finitePositive(level?.px);
+    return price > 0 ? Math.min(best, price) : best;
+  }, Number.POSITIVE_INFINITY);
+  if (!(bid > 0) || !Number.isFinite(ask) || !(ask > bid)) {
+    throw new HyperliquidExecutionError("hyperliquid public book is invalid", 502);
+  }
+  return { bid, ask, checked_at: new Date().toISOString() };
+}
+
+export async function reconcileHyperliquidExecution({
+  credential,
+  cloid,
+  market,
+  fetchImpl = fetch,
+}) {
+  assertHyperliquidPilotNetwork(credential, { operation_class: "reconcile" });
+  if (!/^0x[0-9a-f]{32}$/i.test(String(cloid || ""))) {
+    throw new HyperliquidExecutionError("hyperliquid reconciliation cloid is invalid", 400, "venue_rejected");
+  }
+  const statusResponse = await postHyperliquidInfo(fetchImpl, credential.base_url, {
+    type: "orderStatus",
+    user: hyperliquidExecutionAddress(credential),
+    oid: cloid,
+  });
+  if (statusResponse?.status === "unknownOid") {
+    return {
+      terminal: false,
+      status: "unknown",
+      filled_notional_micro_usdc: 0,
+      filled_base_size: "0",
+      venue_order_reference: `cloid:${cloid}`,
+      fills: [],
+      final_proof: null,
+    };
+  }
+  const orderEnvelope = statusResponse?.order || statusResponse;
+  const order = orderEnvelope?.order || orderEnvelope;
+  const orderStatus = String(orderEnvelope?.status || order?.status || "").trim();
+  const oid = String(order?.oid || "").trim();
+  const rawFills = await postHyperliquidInfo(fetchImpl, credential.base_url, {
+    type: "userFills",
+    user: hyperliquidExecutionAddress(credential),
+    aggregateByTime: false,
+  }).catch(() => []);
+  const fills = (Array.isArray(rawFills) ? rawFills : []).filter((fill) =>
+    String(fill?.oid || "") === oid &&
+    (!market || String(fill?.coin || "").toUpperCase() === String(market).toUpperCase()));
+  const filledBase = fills.reduce((sum, fill) => sum + finitePositive(fill?.sz), 0);
+  const filledNotional = fills.reduce(
+    (sum, fill) => sum + finitePositive(fill?.sz) * finitePositive(fill?.px),
+    0,
+  );
+  const terminal = TERMINAL_HYPERLIQUID_ORDER_STATUSES.has(orderStatus.toLowerCase());
+  const status = filledNotional > 0
+    ? orderStatus.toLowerCase() === "filled" ? "filled" : "partially_filled"
+    : terminal ? "rejected" : "submitted";
+  return {
+    terminal,
+    status,
+    filled_notional_micro_usdc: Math.round(filledNotional * 1_000_000),
+    filled_base_size: trimPositiveDecimal(filledBase),
+    venue_order_reference: oid ? `oid:${oid}` : `cloid:${cloid}`,
+    fills: fills.slice(0, 25),
+    final_proof: terminal ? {
+      ...hyperliquidFinalProof({
+        status: filledNotional > 0 ? "filled" : orderStatus || "rejected",
+        network: credential.network,
+        broadcastPerformed: true,
+      }),
+      terminal_status: orderStatus || "rejected",
+      final_no_fill_proven: filledNotional === 0,
+    } : null,
+  };
 }
 
 export async function createHyperliquidAccountStateStream({

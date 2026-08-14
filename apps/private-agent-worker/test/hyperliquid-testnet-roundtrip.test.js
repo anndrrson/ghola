@@ -98,15 +98,15 @@ test("mainnet tiny-fill permits only quote entry or exact reduce-only base exit"
     assert.throws(() => assertHyperliquidPilotNetwork(
       credential,
       instruction({ ...common, side: "buy", base_size: "0.18", reduce_only: false }),
-    ), /quote-sized entry or exact reduce-only base-sized exit/);
+    ), /quote-sized entry, exact SOL cross-venue base entry, or exact reduce-only base-sized exit/);
     assert.throws(() => assertHyperliquidPilotNetwork(
       credential,
       instruction({ ...common, side: "sell", quote_size: "10.5", reduce_only: true }),
-    ), /quote-sized entry or exact reduce-only base-sized exit/);
+    ), /quote-sized entry, exact SOL cross-venue base entry, or exact reduce-only base-sized exit/);
     assert.throws(() => assertHyperliquidPilotNetwork(
       credential,
       instruction({ ...common, side: "sell", base_size: "0.18", quote_size: "10.5", reduce_only: true }),
-    ), /quote-sized entry or exact reduce-only base-sized exit/);
+    ), /quote-sized entry, exact SOL cross-venue base entry, or exact reduce-only base-sized exit/);
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET = previousAllow;

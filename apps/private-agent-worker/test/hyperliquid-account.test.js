@@ -5,8 +5,40 @@ import {
   hyperliquidMarginUtilizationBucket,
   hyperliquidPositionRiskBuckets,
   readHyperliquidAccountSnapshot,
+  readHyperliquidExactMarketState,
+  readHyperliquidTopOfBook,
+  reconcileHyperliquidExecution,
   submitHyperliquidExecution,
 } from "../src/venues/hyperliquid.js";
+
+test("reconciles Hyperliquid terminal IOC fills by cloid", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    const cloid = `0x${"a".repeat(32)}`;
+    const fetchImpl = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      const value = body.type === "orderStatus"
+        ? { status: "order", order: { order: { coin: "SOL", oid: 77, cloid }, status: "filled", statusTimestamp: 1 } }
+        : [{ coin: "SOL", oid: 77, px: "200", sz: "0.05", side: "B", time: 1 }];
+      return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const result = await reconcileHyperliquidExecution({
+      credential: credential("testnet"),
+      cloid,
+      market: "SOL",
+      fetchImpl,
+    });
+    assert.equal(result.terminal, true);
+    assert.equal(result.status, "filled");
+    assert.equal(result.filled_notional_micro_usdc, 10_000_000);
+    assert.equal(result.filled_base_size, "0.05");
+    assert.equal(result.venue_order_reference, "oid:77");
+    assert.equal(result.final_proof.final_fill_proven, true);
+  } finally {
+    restore(previous);
+  }
+});
 
 test("live Hyperliquid adapter returns explicit venue-acceptance proof", async () => {
   const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
@@ -304,6 +336,43 @@ test("account streams retain the exact credential network", async () => {
     assert.equal(snapshot?.network, "testnet");
   } finally {
     close();
+    restore(previous);
+  }
+});
+
+test("reads exact Hyperliquid target position, orders, and top of book", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    const fetchImpl = async (_url, init) => {
+      const type = JSON.parse(init.body).type;
+      const value = type === "clearinghouseState"
+        ? {
+            marginSummary: { accountValue: "24.5" },
+            withdrawable: "20.1",
+            assetPositions: [{ position: { coin: "SOL", szi: "0.14" } }],
+          }
+        : type === "openOrders"
+          ? [{ coin: "SOL", oid: 1 }, { coin: "BTC", oid: 2 }]
+          : { levels: [[{ px: "75.70", sz: "3" }], [{ px: "75.72", sz: "2" }]] };
+      return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const account = await readHyperliquidExactMarketState({ credential: credential("testnet"), fetchImpl });
+    const book = await readHyperliquidTopOfBook({ credential: credential("testnet"), fetchImpl });
+    assert.deepEqual(account, {
+      version: 1,
+      venue_id: "hyperliquid",
+      network: "testnet",
+      market: "SOL",
+      status: "ready_to_trade",
+      position_size: "0.14",
+      open_order_count: 1,
+      account_value: "24.5",
+      withdrawable: "20.1",
+      checked_at: account.checked_at,
+    });
+    assert.deepEqual(book, { bid: 75.7, ask: 75.72, checked_at: book.checked_at });
+  } finally {
     restore(previous);
   }
 });
