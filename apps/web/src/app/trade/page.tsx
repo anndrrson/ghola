@@ -4006,7 +4006,7 @@ export default function TradePage() {
                     aria-disabled={liveWorking || undefined}
                     className={`px-3 pb-3 sm:px-6 ${liveWorking ? "cursor-wait" : ""}`}
                   >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex items-center gap-3">
                   <div className="flex items-center gap-1" role="group" aria-label="Chart workspace">
                     {(["terminal", "plan"] as const).map((surface) => (
                       <button
@@ -4023,9 +4023,6 @@ export default function TradePage() {
                       </button>
                     ))}
                   </div>
-                  <span className="hidden text-[10px] text-[#566278] sm:inline">
-                    {chartSurface === "terminal" ? "Studies · depth · keyboard inspection" : "Drag entry and plan invalidation"}
-                  </span>
                 </div>
                 {chartSurface === "terminal" ? (
                   <>
@@ -5411,8 +5408,8 @@ const MarketChart = memo(function MarketChart({
       >
         <defs>
           <linearGradient id="tradeBand" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#aaa397" stopOpacity="0.06" />
-            <stop offset="100%" stopColor="#aaa397" stopOpacity="0.015" />
+            <stop offset="0%" stopColor="#f3bd55" stopOpacity="0.07" />
+            <stop offset="100%" stopColor="#f3bd55" stopOpacity="0.015" />
           </linearGradient>
         </defs>
         <rect width={chart.width} height={chart.height} fill="#030303" />
@@ -5678,8 +5675,8 @@ function OverlaySvg({
 }
 
 function overlayColor(overlay: GholaChartOverlay, side: Side) {
-  if (overlay.id === "agent-entry") return side === "buy" ? "#759985" : "#aa7d7d";
-  return overlay.tone === "warn" ? "#aaa397" : overlay.tone === "good" ? "#86aa96" : "#c4c4c4";
+  if (overlay.id === "agent-entry") return side === "buy" ? "#35d399" : "#f06b80";
+  return overlay.tone === "warn" ? "#f3bd55" : overlay.tone === "good" ? "#35d399" : "#56a8ff";
 }
 
 function overlayLabelSlots(
@@ -5753,12 +5750,10 @@ function ChartRPlanReadout({
       role="group"
       aria-label={`Executable R plan. Modeled loss ${loss} of ${budget}, ${utilization} utilization. Modeled notional cap ${safeSize}. Visible public book fill and impact ${book}. Plan invalidation is not an attached stop.`}
       title="Local model from the visible public book; execution is not guaranteed. Plan invalidation is not an attached stop."
-      className="term-chip flex h-7 shrink-0 items-center gap-2 px-2 font-mono text-[9px] uppercase tracking-[0.06em] tabular-nums"
+      className="term-chip flex h-7 shrink-0 items-center gap-1.5 px-2 font-mono text-[9px] uppercase tracking-[0.08em] tabular-nums"
     >
-      <span className="text-[#d6a94e]">R plan</span>
-      <span className={allowed ? "text-emerald-300" : "text-rose-300"}>loss {loss}/{budget} · {utilization}</span>
-      <span className="text-[#9ba8bb]">cap {safeSize}</span>
-      <span className="text-[#6f819b]">book {book}</span>
+      <span className="text-[#f3bd55]">R plan</span>
+      <span className={allowed ? "text-emerald-300" : "text-rose-300"}>{allowed ? "pass" : "block"}</span>
     </div>
   );
 }

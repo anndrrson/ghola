@@ -243,6 +243,11 @@ export function mergeHyperliquidFallbackSnapshot(
   const fallbackMarkAuthoritative = fallbackClocks.mark != null;
   const fallbackCandlesAuthoritative = fallbackClocks.candles != null;
   const fallbackTradesAuthoritative = fallbackClocks.trades != null;
+  const mergedCandles = fallbackCandlesAuthoritative && !usePreferredCandles && fallback.candles.length === 0
+    ? []
+    : usePreferredCandles
+      ? mergeHyperliquidCandleWindows(fallback.candles, preferred.candles)
+      : mergeHyperliquidCandleWindows(preferred.candles, fallback.candles);
   const merged = {
     ...fallback,
     mid: usePreferredMarket
@@ -294,11 +299,7 @@ export function mergeHyperliquidFallbackSnapshot(
     asks: usePreferredBook
       ? preferred.asks
       : fallbackBookAuthoritative ? fallback.asks : fallback.asks.length > 0 ? fallback.asks : preferred.asks,
-    candles: usePreferredCandles
-      ? preferred.candles
-      : fallbackCandlesAuthoritative
-        ? fallback.candles
-        : fallback.candles.length > 0 ? fallback.candles : preferred.candles,
+    candles: mergedCandles,
     recent_trades: usePreferredTrades
       ? preferred.recent_trades
       : fallbackTradesAuthoritative
@@ -317,6 +318,15 @@ export function mergeHyperliquidFallbackSnapshot(
   }, true);
 }
 
+function mergeHyperliquidCandleWindows(
+  older: HyperliquidMarketSnapshot["candles"],
+  newer: HyperliquidMarketSnapshot["candles"],
+) {
+  const byOpenTime = new Map(older.map((candle) => [candle.t, candle]));
+  for (const candle of newer) byOpenTime.set(candle.t, candle);
+  return Array.from(byOpenTime.values()).sort((left, right) => left.t - right.t).slice(-CANDLE_WINDOW);
+}
+
 class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream {
   private active = false;
   private socket: HyperliquidWebSocketLike | null = null;
@@ -326,7 +336,6 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
   private fallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private fallbackInFlight = false;
   private reconnectAttempts = 0;
-  private liveRevision = 0;
   private lastMessageAt = 0;
   private lastBookMessageAt = 0;
   private status: HyperliquidLiveMarketStatus = "connecting";
@@ -399,7 +408,6 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
           this.currentSnapshot = next;
           if (hasAuthoritativeDepthUpdate(next)) this.lastBookMessageAt = this.now();
           if (hasAuthoritativePricingUpdate(next)) {
-            this.liveRevision += 1;
             this.lastMessageAt = this.now();
             if (this.status !== "live") this.emitStatus("live");
           }
@@ -500,17 +508,11 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
 
   private fetchFallbackSnapshot() {
     if (!this.active || this.fallbackInFlight || !this.options.getFallbackSnapshot) return;
-    const liveRevisionAtStart = this.liveRevision;
     this.fallbackInFlight = true;
     if (this.status !== "connecting" && this.status !== "live") this.emitStatus("fallback_polling");
     this.options.getFallbackSnapshot()
       .then((snapshot) => {
         if (!this.active) return;
-        if (
-          this.liveRevision > liveRevisionAtStart &&
-          this.hasHealthySocket() &&
-          this.hasHealthyBookSocket()
-        ) return;
         const merged = this.hasHealthySocket()
           ? mergeHyperliquidFallbackSnapshot(this.currentSnapshot, snapshot)
           : snapshot;

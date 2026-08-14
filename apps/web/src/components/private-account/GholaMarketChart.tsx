@@ -17,10 +17,14 @@ import {
   defaultGholaChartViewport,
   GHOLA_CHART_WORKER_VISIBLE_TIMEOUT_MS,
   GholaChartEngineState,
+  gholaChartCompareFramesCanPreserveVisibleData,
   gholaChartFrameCanUseScalarPatch,
   gholaChartCompareFramesCanUseScalarPatches,
+  gholaChartFrameCanPreserveVisibleData,
+  gholaChartFrameGeometryCanReuse,
   gholaChartFrameScalarPatch,
   gholaChartShouldAwaitWorkerVisibleData,
+  gholaChartVisibleGeometryMatches,
   gholaChartWorkerRequestIsPending,
   gholaChartWorkerResponseIsCurrent,
   nearestGholaCandle,
@@ -230,15 +234,15 @@ type ChartTrendLineRender = {
 };
 
 const CHART_STUDIES: ReadonlyArray<{ id: GholaChartStudyId; label: string; color: string }> = [
-  { id: "ema20", label: "EMA 20", color: "#d4d4d4" },
-  { id: "ema50", label: "EMA 50", color: "#9f9f9f" },
-  { id: "vwap", label: "VWAP", color: "#f1f1f1" },
-  { id: "volumeProfile", label: "Profile", color: "#757575" },
-  { id: "structure", label: "Structure", color: "#b0b0b0" },
-  { id: "orderFlow", label: "Order flow", color: "#858585" },
-  { id: "multiTimeframe", label: "MTF", color: "#c2c2c2" },
+  { id: "ema20", label: "EMA 20", color: "#5bbcff" },
+  { id: "ema50", label: "EMA 50", color: "#c17cff" },
+  { id: "vwap", label: "VWAP", color: "#f3c957" },
+  { id: "volumeProfile", label: "Profile", color: "#32c5d2" },
+  { id: "structure", label: "Structure", color: "#ff9f43" },
+  { id: "orderFlow", label: "Order flow", color: "#2dd4bf" },
+  { id: "multiTimeframe", label: "MTF", color: "#a7b5ff" },
 ];
-const COMPARE_COLORS = ["#f0f0f0", "#c8c8c8", "#a8a8a8", "#888888", "#6e6e6e", "#545454"] as const;
+const COMPARE_COLORS = ["#5bbcff", "#c17cff", "#ff9f43", "#f472b6", "#2dd4bf", "#a3e635"] as const;
 const MAX_TREND_LINES = GHOLA_CHART_TREND_LINE_LIMIT;
 const EMPTY_CHART_OVERLAYS: GholaChartOverlay[] = [];
 const EMPTY_COMPARE_FRAMES: GholaMarketFrame[] = [];
@@ -246,16 +250,16 @@ const EMPTY_CHART_CANDLES: GholaChartCandle[] = [];
 
 const COLORS = {
   bg: "#030303",
-  grid: "#171717",
-  axis: "#707070",
-  text: "#b5b5b5",
-  bull: "#86aa96",
-  bear: "#b48686",
-  accent: "#d4d4d4",
-  warn: "#aaa397",
-  neutral: "#999999",
-  bid: "#759985",
-  ask: "#aa7d7d",
+  grid: "#182028",
+  axis: "#78889b",
+  text: "#d2d8e2",
+  bull: "#35d399",
+  bear: "#f06b80",
+  accent: "#56a8ff",
+  warn: "#f3bd55",
+  neutral: "#b394f5",
+  bid: "#35d399",
+  ask: "#f06b80",
 };
 
 const TONE_COLOR: Record<GholaChartTone, string> = {
@@ -544,20 +548,22 @@ export const GholaMarketChart = memo(function GholaMarketChart({
     workerRequestWatchdogRef.current = null;
     return true;
   }, []);
-  const markVisibleDataDirty = useCallback(() => {
+  const markVisibleDataDirty = useCallback((clearSurface = true) => {
     workerInputRevisionRef.current += 1;
-    visibleDataRef.current = null;
-    layoutRef.current = null;
     needsVisibleDataRef.current = true;
-    baseDirtyRef.current = true;
-    overlayDirtyRef.current = true;
-    const { width, height: currentHeight } = sizeRef.current;
-    const renderer = rendererRef.current;
-    if (renderer) {
-      const dpr = typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 2);
-      clearRendererSurface(renderer, width, currentHeight, dpr);
+    if (clearSurface) {
+      visibleDataRef.current = null;
+      layoutRef.current = null;
+      baseDirtyRef.current = true;
+      overlayDirtyRef.current = true;
+      const { width, height: currentHeight } = sizeRef.current;
+      const renderer = rendererRef.current;
+      if (renderer) {
+        const dpr = typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+        clearRendererSurface(renderer, width, currentHeight, dpr);
+      }
+      overlayRef.current?.getContext("2d")?.clearRect(0, 0, width, currentHeight);
     }
-    overlayRef.current?.getContext("2d")?.clearRect(0, 0, width, currentHeight);
     scheduleDrawRef.current();
   }, []);
   const cancelOverlayPriceDrag = useCallback((suppressPointerUp: boolean) => {
@@ -863,13 +869,15 @@ export const GholaMarketChart = memo(function GholaMarketChart({
       viewport: viewportRef.current,
     });
     needsVisibleDataRef.current = false;
+    baseDirtyRef.current = true;
+    overlayDirtyRef.current = true;
   }, [markVisibleDataDirty]);
 
   const commitViewport = useCallback((viewport: GholaChartViewport) => {
     viewportRef.current = viewport;
     engineRef.current.setViewport(viewport);
     postWorker({ type: "set-viewport", viewport });
-    markVisibleDataDirty();
+    markVisibleDataDirty(false);
   }, [markVisibleDataDirty, postWorker]);
 
   useEffect(() => {
@@ -894,7 +902,7 @@ export const GholaMarketChart = memo(function GholaMarketChart({
             if (needsVisibleDataRef.current) requestVisibleData();
             return;
           }
-          visibleDataRef.current = response.data;
+          visibleDataRef.current = { ...response.data, overlays: overlayDataRef.current };
           baseDirtyRef.current = true;
           overlayDirtyRef.current = true;
           if (needsVisibleDataRef.current) requestVisibleData();
@@ -952,29 +960,39 @@ export const GholaMarketChart = memo(function GholaMarketChart({
   useLayoutEffect(() => {
     const previousWorkerFrame = workerFrameInputRef.current;
     const scalarOnly = chartFrame && gholaChartFrameCanUseScalarPatch(previousWorkerFrame, chartFrame);
+    const geometryReusable = gholaChartFrameGeometryCanReuse(previousWorkerFrame, chartFrame, modeRef.current);
+    const preserveVisibleData = gholaChartFrameCanPreserveVisibleData(previousWorkerFrame, chartFrame, replayActive);
     engineRef.current.ingestFrame(chartFrame);
     frameRef.current = engineRef.current.frame();
-    if (scalarOnly) {
-      postWorker({ type: "patch-frame-scalars", patch: gholaChartFrameScalarPatch(chartFrame) });
+    if (scalarOnly || geometryReusable) {
+      if (scalarOnly && chartFrame) {
+        postWorker({ type: "patch-frame-scalars", patch: gholaChartFrameScalarPatch(chartFrame) });
+      } else {
+        postWorker({ type: "set-frame", frame: chartFrame });
+      }
       workerInputRevisionRef.current += 1;
       const { width, height: currentHeight } = sizeRef.current;
-      visibleDataRef.current = engineRef.current.visibleData({
+      const previousVisibleData = visibleDataRef.current;
+      const nextVisibleData = engineRef.current.visibleData({
         width,
         height: currentHeight,
         mode: modeRef.current,
         viewport: viewportRef.current,
       });
+      visibleDataRef.current = nextVisibleData;
       needsVisibleDataRef.current = false;
       layoutRef.current = null;
-      baseDirtyRef.current = true;
+      baseDirtyRef.current = baseDirtyRef.current
+        || !gholaChartVisibleGeometryMatches(previousVisibleData, nextVisibleData)
+        || (activeStudiesRef.current.includes("orderFlow") && previousWorkerFrame?.trades !== chartFrame?.trades);
       overlayDirtyRef.current = true;
       scheduleDrawRef.current();
     } else {
       postWorker({ type: "set-frame", frame: chartFrame });
-      markVisibleDataDirty();
+      markVisibleDataDirty(!preserveVisibleData);
     }
     workerFrameInputRef.current = chartFrame;
-  }, [chartFrame, markVisibleDataDirty, postWorker]);
+  }, [chartFrame, markVisibleDataDirty, postWorker, replayActive]);
   useLayoutEffect(() => {
     const previousWorkerCompare = workerCompareInputRef.current;
     const scalarOnly = gholaChartCompareFramesCanUseScalarPatches(previousWorkerCompare, compareFrames);
@@ -997,10 +1015,10 @@ export const GholaMarketChart = memo(function GholaMarketChart({
       scheduleDrawRef.current();
     } else {
       postWorker({ type: "set-compare", frames: compareFrames });
-      markVisibleDataDirty();
+      markVisibleDataDirty(!gholaChartCompareFramesCanPreserveVisibleData(previousWorkerCompare, compareFrames, replayActive));
     }
     workerCompareInputRef.current = compareFrames;
-  }, [compareFrames, markVisibleDataDirty, postWorker]);
+  }, [compareFrames, markVisibleDataDirty, postWorker, replayActive]);
   useLayoutEffect(() => {
     modeRef.current = mode;
     engineRef.current.setMode(mode);
@@ -1008,10 +1026,18 @@ export const GholaMarketChart = memo(function GholaMarketChart({
     markVisibleDataDirty();
   }, [mode, markVisibleDataDirty, postWorker]);
   useLayoutEffect(() => {
+    const previousOverlays = overlayDataRef.current;
     overlayDataRef.current = displayedOverlays;
     engineRef.current.setOverlays(displayedOverlays);
     postWorker({ type: "set-overlays", overlays: displayedOverlays });
-    markVisibleDataDirty();
+    if ([...previousOverlays, ...displayedOverlays].some((overlay) => overlay.rangeBehavior === "include")) {
+      markVisibleDataDirty(false);
+      return;
+    }
+    const visibleData = visibleDataRef.current;
+    if (visibleData) visibleDataRef.current = { ...visibleData, overlays: displayedOverlays };
+    overlayDirtyRef.current = true;
+    scheduleDrawRef.current();
   }, [displayedOverlays, markVisibleDataDirty, postWorker]);
   useEffect(() => {
     onSelectPriceRef.current = onSelectPrice;
@@ -1932,7 +1958,7 @@ export const GholaMarketChart = memo(function GholaMarketChart({
           <span className="mx-1 text-[#42506a]">/</span>
           <span>{summary}</span>
         </div>
-        <div className="flex min-w-0 max-w-full flex-nowrap items-center gap-1.5 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
+        <div className="flex min-w-0 max-w-full flex-nowrap items-center gap-1.5 overflow-x-auto pb-1">
           <button
             type="button"
             aria-pressed={chartFullscreen}
@@ -1943,10 +1969,24 @@ export const GholaMarketChart = memo(function GholaMarketChart({
           >
             {chartFullscreen ? "Exit" : "Focus"}
           </button>
-          {toolbarActions}
-          <span className="border border-[#16233a] bg-[#0a0f18] px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-[#7d8aa3]">
-            {engineLabel}
-          </span>
+          {onModeChange && modes.map((option) => (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={option === mode}
+              onClick={() => {
+                if (option !== mode) cancelTrendLineTool();
+                onModeChange(option);
+              }}
+              className={
+                option === mode
+                  ? "term-chip-on h-7 px-2.5 text-xs font-medium"
+                  : "term-chip h-7 px-2.5 text-xs font-medium"
+              }
+            >
+              {modeLabel(option)}
+            </button>
+          ))}
           <button
             type="button"
             onClick={handleFit}
@@ -1955,6 +1995,10 @@ export const GholaMarketChart = memo(function GholaMarketChart({
           >
             Fit
           </button>
+          {toolbarActions}
+          <span className="border border-[#16233a] bg-[#0a0f18] px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-[#7d8aa3]">
+            {engineLabel}
+          </span>
           <button
             type="button"
             aria-pressed={showVolume}
@@ -2135,24 +2179,6 @@ export const GholaMarketChart = memo(function GholaMarketChart({
               style={activeStudies.includes(study.id) ? { borderColor: `${study.color}66`, color: study.color } : undefined}
             >
               {study.label}
-            </button>
-          ))}
-          {onModeChange && modes.map((option) => (
-            <button
-              key={option}
-              type="button"
-              aria-pressed={option === mode}
-              onClick={() => {
-                if (option !== mode) cancelTrendLineTool();
-                onModeChange(option);
-              }}
-              className={
-                option === mode
-                  ? "term-chip-on h-7 px-2.5 text-xs font-medium"
-                  : "term-chip h-7 px-2.5 text-xs font-medium"
-              }
-            >
-              {modeLabel(option)}
             </button>
           ))}
         </div>
@@ -2439,7 +2465,7 @@ function cleanupRenderer(renderer: Renderer) {
 function clearRendererSurface(renderer: Renderer, width: number, height: number, dpr: number) {
   if (renderer.kind === "webgl") {
     renderer.gl.viewport(0, 0, Math.floor(width * dpr), Math.floor(height * dpr));
-    renderer.gl.clearColor(5 / 255, 7 / 255, 11 / 255, 1);
+    renderer.gl.clearColor(3 / 255, 3 / 255, 3 / 255, 1);
     renderer.gl.clear(renderer.gl.COLOR_BUFFER_BIT);
     return;
   }
@@ -2458,7 +2484,7 @@ function drawWebGl(
 ) {
   const { gl, program } = renderer;
   gl.viewport(0, 0, Math.floor(layout.width * layout.dpr), Math.floor(layout.height * layout.dpr));
-  gl.clearColor(5 / 255, 7 / 255, 11 / 255, 1);
+  gl.clearColor(3 / 255, 3 / 255, 3 / 255, 1);
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.useProgram(program);
   gl.enable(gl.BLEND);
@@ -2826,21 +2852,35 @@ function drawOverlays(ctx: CanvasRenderingContext2D, layout: ChartLayout, overla
       const y1 = yForPrice(Number(overlay.price), layout);
       const y2 = yForPrice(Number(overlay.priceEnd), layout);
       ctx.fillStyle = TONE_COLOR[overlay.tone];
-      ctx.globalAlpha = 0.09;
-      ctx.fillRect(layout.left, Math.min(y1, y2), layout.plotW, Math.max(2, Math.abs(y2 - y1)));
+      const top = layout.top + 1;
+      const bottom = layout.top + layout.plotH - 1;
+      if ((y1 < top && y2 < top) || (y1 > bottom && y2 > bottom)) {
+        const edgeY = y1 < top ? top : bottom;
+        ctx.globalAlpha = 0.42;
+        ctx.fillRect(layout.left, edgeY - 1, layout.plotW, 2);
+        return;
+      }
+      const clippedY1 = clamp(y1, top, bottom);
+      const clippedY2 = clamp(y2, top, bottom);
+      ctx.globalAlpha = 0.08;
+      ctx.fillRect(layout.left, Math.min(clippedY1, clippedY2), layout.plotW, Math.max(2, Math.abs(clippedY2 - clippedY1)));
       return;
     }
     if (Number.isFinite(overlay.price)) {
-      const y = yForPrice(Number(overlay.price), layout);
+      const rawY = yForPrice(Number(overlay.price), layout);
+      const y = clamp(rawY, layout.top + 1, layout.top + layout.plotH - 1);
+      const outsideRange = y !== rawY;
       const draggable = overlay.interaction?.kind === "drag_price";
       ctx.strokeStyle = TONE_COLOR[overlay.tone];
-      ctx.globalAlpha = overlay.kind === "visibility" ? 0.42 : draggable ? 0.94 : 0.76;
-      ctx.lineWidth = draggable ? 1.5 : 1;
+      ctx.globalAlpha = outsideRange ? 0.55 : overlay.kind === "visibility" ? 0.48 : draggable ? 1 : 0.82;
+      ctx.lineWidth = outsideRange ? 1 : draggable ? 1.5 : 1;
+      ctx.setLineDash(outsideRange ? [3, 4] : []);
       ctx.beginPath();
       ctx.moveTo(layout.left, y);
       ctx.lineTo(layout.left + layout.plotW, y);
       ctx.stroke();
-      if (draggable) {
+      ctx.setLineDash([]);
+      if (draggable && !outsideRange) {
         ctx.globalAlpha = 1;
         ctx.fillStyle = TONE_COLOR[overlay.tone];
         ctx.beginPath();
@@ -3297,11 +3337,11 @@ function drawAnchoredVwapOverlay(
     drawAnchoredSeries(ctx, layout, candles.length, points, (point) => point.bands.find((band) => band.multiplier === multiplier)?.upper, COLORS.accent, bandIndex === 0 ? 0.4 : 0.22, [4, 4]);
     drawAnchoredSeries(ctx, layout, candles.length, points, (point) => point.bands.find((band) => band.multiplier === multiplier)?.lower, COLORS.accent, bandIndex === 0 ? 0.4 : 0.22, [4, 4]);
   });
-  drawAnchoredSeries(ctx, layout, candles.length, points, (point) => point.vwap, "#b0b0b0", 0.95, []);
+  drawAnchoredSeries(ctx, layout, candles.length, points, (point) => point.vwap, "#2dd4bf", 0.95, []);
   const anchorIndex = indices.get(normalizeTimestamp(anchored.anchorTime));
   if (anchorIndex != null) {
     const anchorX = xForIndex(anchorIndex, candles.length, layout);
-    ctx.strokeStyle = "#b0b0b0";
+    ctx.strokeStyle = "#2dd4bf";
     ctx.globalAlpha = 0.52;
     ctx.setLineDash([3, 4]);
     ctx.beginPath();
@@ -3318,7 +3358,7 @@ function drawAnchoredVwapOverlay(
       `A-VWAP ${formatChartPrice(latestVisible.point.vwap)}`,
       xForIndex(latestVisible.candleIndex, candles.length, layout) - 86,
       clamp(yForPrice(latestVisible.point.vwap, layout), layout.top + 10, layout.top + layout.plotH - 10),
-      "#b0b0b0",
+      "#2dd4bf",
     );
   }
 }

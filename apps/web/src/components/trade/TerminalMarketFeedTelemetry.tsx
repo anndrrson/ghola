@@ -48,7 +48,7 @@ export const TerminalMarketFeedTelemetry = memo(function TerminalMarketFeedTelem
   return (
     <section
       aria-label={fullLabel}
-      className="mx-3 mb-2 rounded-md border border-[#182234] bg-[#080d15]/80 px-3 py-2 sm:mx-6 sm:mb-3"
+      className="mx-3 mb-2 rounded-md border border-[#182234] bg-[#080d15]/80 px-3 py-1.5 sm:mx-6"
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] tabular-nums text-[#7f8da7]">
         <span className="flex items-center gap-1.5" title={`${telemetry.windowMs / 1_000}s rolling health score`}>
@@ -59,27 +59,26 @@ export const TerminalMarketFeedTelemetry = memo(function TerminalMarketFeedTelem
         <span className={recentEvents > 0 ? "text-amber-200" : "text-emerald-300"}>
           {recentEvents > 0 ? `${recentEvents} recent event${recentEvents === 1 ? "" : "s"}` : "clean window"}
         </span>
+        {components ? (
+          <span className="flex flex-wrap items-center gap-1" aria-label="Decision-surface component freshness">
+            {COMPONENTS.map((component) => (
+              <ComponentFreshness key={component} component={component} state={components[component]} />
+            ))}
+          </span>
+        ) : null}
         <button
           type="button"
           aria-expanded={mobileExpanded}
           aria-controls={diagnosticsId}
           onClick={() => setMobileExpanded((value) => !value)}
-          className="ml-auto rounded px-1.5 py-0.5 text-[9px] uppercase tracking-[0.08em] text-sky-200 outline-none hover:bg-sky-400/10 focus-visible:ring-1 focus-visible:ring-sky-300 sm:hidden"
+          className="ml-auto rounded px-1.5 py-0.5 text-[9px] uppercase tracking-[0.08em] text-sky-200 outline-none hover:bg-sky-400/10 focus-visible:ring-1 focus-visible:ring-sky-300"
         >
           {mobileExpanded ? "Less" : "Details"}
         </button>
       </div>
-      {components ? (
-        <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-[#182234] pt-2" aria-label="Decision-surface component freshness">
-          <span className="mr-1 text-[8px] font-semibold uppercase tracking-[0.1em] text-[#566278]">Certified</span>
-          {COMPONENTS.map((component) => (
-            <ComponentFreshness key={component} component={component} state={components[component]} />
-          ))}
-        </div>
-      ) : null}
       <div
         id={diagnosticsId}
-        className={`${mobileExpanded ? "mt-2 flex" : "hidden"} flex-wrap items-center gap-x-4 gap-y-1 border-t border-[#182234] pt-2 font-mono text-[10px] tabular-nums text-[#7f8da7] sm:mt-1 sm:flex sm:border-0 sm:pt-0`}
+        className={`${mobileExpanded ? "mt-2 flex" : "hidden"} flex-wrap items-center gap-x-4 gap-y-1 border-t border-[#182234] pt-2 font-mono text-[10px] tabular-nums text-[#7f8da7]`}
       >
         <TelemetryValue label="Receipt latency" value={formatTelemetryMs(telemetry.receiptLatencyMs)} />
         <TelemetryValue

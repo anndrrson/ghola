@@ -58,18 +58,50 @@ export function gholaChartFrameCanUseScalarPatch(
   next: GholaMarketFrame | null,
 ) {
   return Boolean(
-    previous
+    gholaChartFrameIdentityMatches(previous, next)
+    && previous
     && next
-    && previous.venue === next.venue
-    && previous.network === next.network
-    && previous.product === next.product
-    && previous.interval === next.interval
     && previous.candles === next.candles
     && previous.bids === next.bids
     && previous.asks === next.asks
     && previous.trades === next.trades
     && previous.routeQuotes === next.routeQuotes,
   );
+}
+
+export function gholaChartFrameIdentityMatches(
+  previous: GholaMarketFrame | null,
+  next: GholaMarketFrame | null,
+) {
+  return Boolean(
+    previous
+    && next
+    && previous.venue === next.venue
+    && previous.network === next.network
+    && previous.product === next.product
+    && previous.interval === next.interval
+  );
+}
+
+export function gholaChartFrameGeometryCanReuse(
+  previous: GholaMarketFrame | null,
+  next: GholaMarketFrame | null,
+  mode: GholaChartMode,
+) {
+  if (!gholaChartFrameIdentityMatches(previous, next) || !previous || !next) return false;
+  if (mode === "depth") return previous.bids === next.bids && previous.asks === next.asks;
+  if (mode === "route" || mode === "slippage" || mode === "quote") {
+    return previous.routeQuotes === next.routeQuotes;
+  }
+  return previous.candles === next.candles;
+}
+
+export function gholaChartFrameCanPreserveVisibleData(
+  previous: GholaMarketFrame | null,
+  next: GholaMarketFrame | null,
+  replayActive: boolean,
+) {
+  return !replayActive && gholaChartFrameIdentityMatches(previous, next);
 }
 
 export function gholaChartFrameScalarPatch(frame: GholaMarketFrame): GholaMarketFrameScalarPatch {
@@ -95,6 +127,16 @@ export function gholaChartCompareFramesCanUseScalarPatches(
 ) {
   return previous.length === next.length
     && next.every((frame, index) => gholaChartFrameCanUseScalarPatch(previous[index] ?? null, frame));
+}
+
+export function gholaChartCompareFramesCanPreserveVisibleData(
+  previous: readonly GholaMarketFrame[],
+  next: readonly GholaMarketFrame[],
+  replayActive: boolean,
+) {
+  return !replayActive
+    && previous.length === next.length
+    && next.every((frame, index) => gholaChartFrameIdentityMatches(previous[index] ?? null, frame));
 }
 
 export type GholaChartWorkerRequest =
@@ -140,6 +182,29 @@ export function gholaChartShouldAwaitWorkerVisibleData(
   hasAcceptedVisibleData: boolean,
 ) {
   return workerHealthy && !hasAcceptedVisibleData;
+}
+
+export function gholaChartVisibleGeometryMatches(
+  previous: GholaChartVisibleData | null,
+  next: GholaChartVisibleData,
+) {
+  if (
+    !previous
+    || previous.mode !== next.mode
+    || previous.range.min !== next.range.min
+    || previous.range.max !== next.range.max
+  ) return false;
+  if (next.mode === "depth") return previous.bids === next.bids && previous.asks === next.asks;
+  if (next.mode === "route" || next.mode === "slippage" || next.mode === "quote") {
+    return previous.routeQuotes === next.routeQuotes;
+  }
+  if (next.mode === "line") return previous.lineCandles === next.lineCandles;
+  if (next.mode === "compare") {
+    return previous.lineCandles === next.lineCandles
+      && previous.compareLineCandles.length === next.compareLineCandles.length
+      && previous.compareLineCandles.every((candles, index) => candles === next.compareLineCandles[index]);
+  }
+  return previous.candles === next.candles;
 }
 
 const MIN_ZOOM = 1;
@@ -460,7 +525,7 @@ function chartValueRange(
   collect(frame);
   for (const compare of compareFrames) collect(compare);
   for (const overlay of overlays) {
-    if (overlay.rangeBehavior === "exclude") continue;
+    if (overlay.rangeBehavior !== "include") continue;
     for (const value of [overlay.price, overlay.priceEnd]) {
       if (Number.isFinite(value) && Number(value) > 0) values.push(Number(value));
     }

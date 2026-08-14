@@ -12,21 +12,20 @@ export function TerminalLocalSafetyStrip({ fundedTestnetProofAvailable = false }
     <section
       role="note"
       aria-label={fundedTestnetProofAvailable ? TERMINAL_FUNDED_TESTNET_LABEL : TERMINAL_LOCAL_SAFETY_LABEL}
-      className="border-b border-[#182234] bg-[#070a10] px-3 py-2 sm:px-6 sm:py-3"
+      className="border-b border-[#182234] bg-[#070a10] px-3 py-1.5 sm:px-6"
     >
-      <div className="flex items-center gap-2 rounded-md border border-amber-300/25 bg-amber-300/[0.04] px-3 py-2 sm:flex-wrap sm:justify-between sm:gap-3 sm:px-4 sm:py-3">
-        <div className="flex min-w-0 flex-1 items-center gap-2 sm:items-start sm:gap-3">
+      <div className="flex items-center justify-between gap-2 rounded border border-amber-300/25 bg-amber-300/[0.04] px-2.5 py-1.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           {fundedTestnetProofAvailable
-            ? <TestTube2 aria-hidden className="h-4 w-4 shrink-0 text-cyan-300 sm:mt-0.5" />
-            : <LockKeyhole aria-hidden className="h-4 w-4 shrink-0 text-amber-300 sm:mt-0.5" />}
-          <div className="min-w-0">
-            <p className="text-[11px] font-semibold text-amber-100 sm:text-xs">
-              <span className="sm:hidden">{fundedTestnetProofAvailable ? "Testnet on" : "Local safe"}</span>
-              <span className="hidden sm:inline">{fundedTestnetProofAvailable ? "Funded Hyperliquid testnet enabled" : "Local-safe workstation"}</span>
+            ? <TestTube2 aria-hidden className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
+            : <LockKeyhole aria-hidden className="h-3.5 w-3.5 shrink-0 text-amber-300" />}
+          <div className="flex min-w-0 items-baseline gap-2">
+            <p className="shrink-0 text-[10px] font-semibold text-amber-100 sm:text-[11px]">
+              {fundedTestnetProofAvailable ? "Funded Hyperliquid testnet enabled" : "Local-safe workstation"}
             </p>
-            <p className="text-[10px] leading-4 text-[#8b95a8] sm:mt-0.5 sm:text-[11px] sm:leading-5">
-              <span className="sm:hidden">{fundedTestnetProofAvailable ? "Real testnet fills · mainnet off" : "Analysis + PAPER only · live and agents off"}</span>
-              <span className="hidden sm:inline">{fundedTestnetProofAvailable ? TERMINAL_FUNDED_TESTNET_LABEL : "Charts and order planning stay active. Worker start, remote preview, agent arming, and live submission are disabled."}</span>
+            <p className="truncate text-[9px] text-[#8b95a8] sm:text-[10px]">
+              {fundedTestnetProofAvailable ? "Real testnet fills · mainnet off" : "Analysis + PAPER only · live and agents off"}
+              <span className="sr-only"> {fundedTestnetProofAvailable ? TERMINAL_FUNDED_TESTNET_LABEL : "Charts and order planning stay active. Worker start, remote preview, agent arming, and live submission are disabled."}</span>
             </p>
           </div>
         </div>

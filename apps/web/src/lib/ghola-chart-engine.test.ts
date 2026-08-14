@@ -3,10 +3,14 @@ import {
   defaultGholaChartViewport,
   GHOLA_CHART_WORKER_VISIBLE_TIMEOUT_MS,
   GholaChartEngineState,
+  gholaChartCompareFramesCanPreserveVisibleData,
+  gholaChartFrameCanPreserveVisibleData,
   gholaChartFrameCanUseScalarPatch,
+  gholaChartFrameGeometryCanReuse,
   gholaChartCompareFramesCanUseScalarPatches,
   gholaChartFrameScalarPatch,
   gholaChartShouldAwaitWorkerVisibleData,
+  gholaChartVisibleGeometryMatches,
   gholaChartWorkerResponseIsCurrent,
   gholaChartWorkerRequestIsPending,
   handleGholaChartWorkerRequest,
@@ -16,7 +20,7 @@ import {
 import type { GholaChartCandle, GholaChartOverlay, GholaMarketFrame, GholaRouteQuotePoint } from "./ghola-market-chart";
 
 describe("ghola chart engine", () => {
-  it("returns decimated visible candles and includes agent overlay prices in the range", () => {
+  it("returns decimated visible candles and includes explicitly range-bound overlays", () => {
     const engine = new GholaChartEngineState();
     const overlay: GholaChartOverlay = {
       id: "agent-entry",
@@ -24,6 +28,7 @@ describe("ghola chart engine", () => {
       label: "entry",
       tone: "accent",
       price: 150,
+      rangeBehavior: "include",
       interaction: { kind: "drag_price", ariaLabel: "Drag planned entry price" },
     };
     engine.ingestFrame(marketFrame("hyperliquid", candles(500)));
@@ -41,7 +46,7 @@ describe("ghola chart engine", () => {
     });
   });
 
-  it("draws informational alert levels without distorting automatic price bounds", () => {
+  it("keeps overlays out of automatic price bounds unless explicitly included", () => {
     const engine = new GholaChartEngineState();
     engine.ingestFrame(marketFrame("hyperliquid", [
       candle(0, 98, 102, 96, 100),
@@ -53,12 +58,11 @@ describe("ghola chart engine", () => {
       label: "↑ alert 1000.0",
       tone: "warn",
       price: 1_000,
-      rangeBehavior: "exclude",
     }]);
 
     const visible = engine.visibleData({ width: 500, height: 260, mode: "candles" });
     expect(visible.range.max).toBeLessThan(115);
-    expect(visible.overlays[0]).toMatchObject({ price: 1_000, rangeBehavior: "exclude" });
+    expect(visible.overlays[0]).toMatchObject({ price: 1_000 });
   });
 
   it("does not let non-plotted invalid reference prices collapse the visible series", () => {
@@ -98,10 +102,16 @@ describe("ghola chart engine", () => {
     expect(quoteOnly.candles).toBe(first.candles);
     expect(quoteOnly.lineCandles).toBe(first.lineCandles);
     expect(quoteOnly.range.max).toBeGreaterThan(120);
+    expect(gholaChartVisibleGeometryMatches(first, quoteOnly)).toBe(false);
+
+    engine.ingestFrame({ ...firstFrame, fetchedAt: "2026-06-03T12:00:02.000Z", trades: [{ side: "buy", px: "101", sz: "1", time: 10 }] });
+    const tradeOnly = engine.visibleData({ width: 360, height: 260, mode: "candles" });
+    expect(gholaChartVisibleGeometryMatches(first, tradeOnly)).toBe(true);
 
     engine.ingestFrame({ ...firstFrame, candles: [...firstFrame.candles, candle(501, 100, 103, 99, 102)] });
     const changed = engine.visibleData({ width: 360, height: 260, mode: "candles" });
     expect(changed.candles).not.toBe(first.candles);
+    expect(gholaChartVisibleGeometryMatches(first, changed)).toBe(false);
   });
 
   it("sends scalar-only patches only when every collection and identity is unchanged", () => {
@@ -116,6 +126,24 @@ describe("ghola chart engine", () => {
     expect(patch).not.toHaveProperty("trades");
     expect(gholaChartFrameCanUseScalarPatch(first, { ...quoteOnly, candles: [...first.candles] })).toBe(false);
     expect(gholaChartFrameCanUseScalarPatch(first, { ...quoteOnly, network: "testnet" })).toBe(false);
+  });
+
+  it("reuses price geometry for book or trade updates and preserves only same-live identity", () => {
+    const first = marketFrame("hyperliquid", candles(3));
+    const tradeUpdate = { ...first, trades: [{ side: "buy" as const, px: "101", sz: "1", time: 10 }] };
+    const bookUpdate = { ...first, bids: [{ px: "100", sz: "2", n: 1 }] };
+    const candleUpdate = { ...first, candles: [...first.candles, candle(4, 100, 102, 99, 101)] };
+
+    expect(gholaChartFrameGeometryCanReuse(first, tradeUpdate, "candles")).toBe(true);
+    expect(gholaChartFrameGeometryCanReuse(first, bookUpdate, "candles")).toBe(true);
+    expect(gholaChartFrameGeometryCanReuse(first, bookUpdate, "depth")).toBe(false);
+    expect(gholaChartFrameGeometryCanReuse(first, candleUpdate, "candles")).toBe(false);
+    expect(gholaChartFrameCanPreserveVisibleData(first, candleUpdate, false)).toBe(true);
+    expect(gholaChartFrameCanPreserveVisibleData(first, candleUpdate, true)).toBe(false);
+    expect(gholaChartFrameCanPreserveVisibleData(first, { ...first, product: "ETH" }, false)).toBe(false);
+    expect(gholaChartCompareFramesCanPreserveVisibleData([first], [tradeUpdate], false)).toBe(true);
+    expect(gholaChartCompareFramesCanPreserveVisibleData([first], [tradeUpdate], true)).toBe(false);
+    expect(gholaChartCompareFramesCanPreserveVisibleData([first], [], false)).toBe(false);
   });
 
   it("applies worker scalar patches without replacing collection snapshots", () => {

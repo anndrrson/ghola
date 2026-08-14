@@ -423,6 +423,54 @@ describe("Hyperliquid live market stream", () => {
     });
   });
 
+  it("backfills REST candle history without discarding newer websocket bars", () => {
+    const start = 1_710_000_000_000;
+    const fallback = {
+      ...emptyHyperliquidLiveMarketSnapshot({ network: "mainnet", coin: "BTC", interval: "5m" }),
+      source_timestamp: start + 239 * 300_000,
+      stale: false,
+      candles: Array.from({ length: 240 }, (_, index) => ({
+        t: start + index * 300_000,
+        T: start + index * 300_000 + 299_999,
+        o: String(100 + index),
+        h: String(102 + index),
+        l: String(99 + index),
+        c: String(101 + index),
+        v: "1",
+        n: index,
+      })),
+    } satisfies HyperliquidMarketSnapshot;
+    const preferred = mergeHyperliquidLiveMarketMessage(
+      emptyHyperliquidLiveMarketSnapshot({ network: "mainnet", coin: "BTC", interval: "5m" }),
+      {
+        channel: "candle",
+        data: [238, 239].map((index) => ({
+          s: "BTC",
+          i: "5m",
+          t: start + index * 300_000,
+          T: start + index * 300_000 + 299_999,
+          o: String(100 + index),
+          h: String(103 + index),
+          l: String(98 + index),
+          c: String(102 + index),
+          v: "2",
+          n: index + 1_000,
+        })),
+      },
+    );
+
+    const merged = mergeHyperliquidFallbackSnapshot(preferred, fallback);
+
+    expect(merged.candles).toHaveLength(240);
+    expect(merged.candles[0]?.t).toBe(start);
+    expect(merged.candles.at(-1)).toMatchObject({
+      t: start + 239 * 300_000,
+      c: String(102 + 239),
+      v: "2",
+      n: 1_239,
+    });
+  });
+
   it("keeps active-asset mid and mark clocks independent", () => {
     const start = emptyHyperliquidLiveMarketSnapshot({
       network: "mainnet",
@@ -613,6 +661,91 @@ describe("Hyperliquid live market stream", () => {
 
     await vi.advanceTimersByTimeAsync(500);
     expect(FakeWebSocket.instances).toHaveLength(2);
+    stream.stop();
+  });
+
+  it("hydrates REST candle history when websocket pricing becomes healthy first", async () => {
+    vi.useFakeTimers();
+    const start = 1_710_000_000_000;
+    const now = start + 239 * 300_000 + 5_000;
+    const commits: Array<{
+      snapshot: HyperliquidMarketSnapshot;
+      provenance?: "websocket" | "fallback";
+    }> = [];
+    let resolveFallback: ((snapshot: HyperliquidMarketSnapshot) => void) | undefined;
+    const fallback = {
+      ...emptyHyperliquidLiveMarketSnapshot({
+        network: "mainnet",
+        coin: "BTC",
+        interval: "5m",
+        now: new Date(now),
+      }),
+      source_timestamp: start + 239 * 300_000,
+      stale: false,
+      candles: Array.from({ length: 240 }, (_, index) => ({
+        t: start + index * 300_000,
+        T: start + index * 300_000 + 299_999,
+        o: String(100 + index),
+        h: String(102 + index),
+        l: String(99 + index),
+        c: String(101 + index),
+        v: "1",
+        n: index,
+      })),
+    } satisfies HyperliquidMarketSnapshot;
+    const stream = createHyperliquidLiveMarketStream({
+      network: "mainnet",
+      coin: "BTC",
+      interval: "5m",
+      webSocketCtor: FakeWebSocket as unknown as HyperliquidWebSocketConstructor,
+      getFallbackSnapshot: () => new Promise((resolve) => { resolveFallback = resolve; }),
+      onStatus: () => {},
+      onSnapshot: (snapshot, provenance) => {
+        commits.push({ snapshot, provenance });
+        return true;
+      },
+      now: () => now,
+    });
+
+    stream.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    socket.message(JSON.stringify({
+      channel: "l2Book",
+      data: {
+        coin: "BTC",
+        time: now,
+        levels: [[{ px: "339", sz: "1" }], [{ px: "341", sz: "1" }]],
+      },
+    }));
+    socket.message(JSON.stringify({
+      channel: "candle",
+      data: [238, 239].map((index) => ({
+        s: "BTC",
+        i: "5m",
+        t: start + index * 300_000,
+        T: start + index * 300_000 + 299_999,
+        o: String(100 + index),
+        h: String(103 + index),
+        l: String(98 + index),
+        c: String(102 + index),
+        v: "2",
+        n: index + 1_000,
+      })),
+    }));
+
+    resolveFallback?.(fallback);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(commits.at(-1)?.provenance).toBe("fallback");
+    expect(commits.at(-1)?.snapshot.candles).toHaveLength(240);
+    expect(commits.at(-1)?.snapshot.candles[0]?.t).toBe(start);
+    expect(commits.at(-1)?.snapshot.candles.at(-1)).toMatchObject({
+      c: String(102 + 239),
+      v: "2",
+      n: 1_239,
+    });
     stream.stop();
   });
 

@@ -573,6 +573,7 @@ export function buildGholaExecutableRPlanOverlays(
       tone: "bad",
       price: Math.min(entry, stop),
       priceEnd: Math.max(entry, stop),
+      rangeBehavior: "exclude",
       side: input.side,
       status: "modeled risk",
     });
@@ -584,6 +585,7 @@ export function buildGholaExecutableRPlanOverlays(
       label: `${input.targetRewardMultiple.toFixed(1)}R target · plan`,
       tone: "good",
       price: target,
+      rangeBehavior: "exclude",
       side: input.side,
       status: "modeled target",
     });
@@ -594,6 +596,7 @@ export function buildGholaExecutableRPlanOverlays(
     label: input.entryPinned ? "Entry · pinned" : "Entry · auto",
     tone: "accent",
     price: entry,
+    rangeBehavior: "exclude",
     side: input.side,
     status: "planned entry",
     interaction: { kind: "drag_price", ariaLabel: "Drag planned entry price" },
@@ -605,6 +608,7 @@ export function buildGholaExecutableRPlanOverlays(
       label: input.stopPinned ? "Plan invalidation" : "Plan invalidation · auto",
       tone: "bad",
       price: stop,
+      rangeBehavior: "exclude",
       side: input.side,
       status: input.stopValid ? "plan invalidation" : "invalid side",
       interaction: { kind: "drag_price", ariaLabel: "Drag plan invalidation price" },

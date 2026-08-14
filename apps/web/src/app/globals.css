@@ -101,7 +101,7 @@ body {
   --trade-text: #ededed;
   --trade-text-soft: #b5b5b5;
   --trade-text-muted: #858585;
-  --trade-focus: #b8b8b8;
+  --trade-focus: #56a8ff;
   background: var(--trade-bg);
   color: var(--trade-text);
   color-scheme: dark;
@@ -128,18 +128,18 @@ body {
   background: #050505;
 }
 .trade-chip-on {
-  background: #171717;
-  border: 1px solid #505050;
-  color: #f4f4f4;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  background: #101923;
+  border: 1px solid #356b9f;
+  color: #e9f4ff;
+  box-shadow: inset 0 1px 0 rgba(86, 168, 255, 0.12);
   transition: border-color 120ms ease, background-color 120ms ease;
 }
 .trade-chip-on:hover:not(:disabled) {
-  background: #1c1c1c;
-  border-color: #686868;
+  background: #142232;
+  border-color: #4f91cc;
 }
 .trade-chip-on:active:not(:disabled) {
-  background: #111;
+  background: #0c141d;
 }
 
 .trade-field {
@@ -152,7 +152,7 @@ body {
 .trade-field:focus,
 .trade-field:focus-within {
   border-color: var(--trade-focus);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+  box-shadow: 0 0 0 1px rgba(86, 168, 255, 0.2);
 }
 
 .trade-action {
@@ -229,18 +229,21 @@ body {
   border-color: var(--trade-border);
 }
 
-/* Informational accents are monochrome; gain/loss remains semantic below. */
-.trade-terminal [class*="text-sky-"],
-.trade-terminal [class*="text-cyan-"],
-.trade-terminal [class*="text-amber-"],
+/* Accents stay local and readable without becoming panel-sized color fields. */
+.trade-terminal [class*="text-sky-"] { color: #70b7ff; }
+.trade-terminal [class*="text-cyan-"] { color: #53d7df; }
+.trade-terminal [class*="text-amber-"] { color: #f0bd57; }
 .trade-terminal .text-\[\#3da8ff\],
 .trade-terminal .text-\[\#5aa7ff\],
 .trade-terminal .text-\[\#7fbbff\],
-.trade-terminal .text-\[\#a8d8ff\],
+.trade-terminal .text-\[\#a8d8ff\] {
+  color: #70b7ff;
+}
+
 .trade-terminal .text-\[\#d9bd67\],
 .trade-terminal .text-\[\#f8e58b\],
 .trade-terminal .text-\[\#fff27a\] {
-  color: #c7c7c7;
+  color: #f0bd57;
 }
 
 .trade-terminal [class*="border-sky-"],
@@ -249,19 +252,25 @@ body {
   border-color: #3a3a3a;
 }
 
-.trade-terminal [class*="text-emerald-"] { color: #8caf9b; }
-.trade-terminal [class*="text-rose-"] { color: #ba8c8c; }
-.trade-terminal [class*="border-emerald-"] { border-color: #466354; }
-.trade-terminal [class*="border-rose-"] { border-color: #684646; }
+.trade-terminal [class*="text-emerald-"] { color: #52d89a; }
+.trade-terminal [class*="text-rose-"] { color: #f07183; }
+.trade-terminal [class*="border-emerald-"] { border-color: #34775b; }
+.trade-terminal [class*="border-rose-"] { border-color: #8b4350; }
 
 /* Exact class tokens avoid activating Tailwind hover backgrounds at rest. */
 .trade-terminal [class~="bg-sky-300"],
-.trade-terminal [class~="bg-sky-400"],
+.trade-terminal [class~="bg-sky-400"] {
+  background-color: #56a8ff;
+}
+
 .trade-terminal [class~="bg-cyan-300"],
-.trade-terminal [class~="bg-cyan-400"],
+.trade-terminal [class~="bg-cyan-400"] {
+  background-color: #53d7df;
+}
+
 .trade-terminal [class~="bg-amber-300"],
 .trade-terminal [class~="bg-amber-400"] {
-  background-color: #8d8d8d;
+  background-color: #f0bd57;
 }
 
 .trade-terminal [class~="bg-sky-300/10"],
@@ -285,7 +294,12 @@ body {
 
 .trade-terminal [class~="bg-emerald-300"],
 .trade-terminal [class~="bg-emerald-400"] {
-  background-color: #759985;
+  background-color: #35d399;
+}
+
+.trade-terminal [class~="bg-rose-300"],
+.trade-terminal [class~="bg-rose-400"] {
+  background-color: #f06b80;
 }
 
 .trade-terminal [class~="bg-emerald-300/[0.02]"],

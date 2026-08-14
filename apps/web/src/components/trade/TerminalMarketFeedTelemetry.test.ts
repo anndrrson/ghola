@@ -19,7 +19,7 @@ describe("TerminalMarketFeedTelemetry", () => {
     container.remove();
   });
 
-  it("keeps grade, freshness, rate, and recent warnings visible while mobile details collapse", () => {
+  it("keeps decision-critical health visible while secondary diagnostics collapse", () => {
     render({ rollingEventCount: 2, healthGrade: "C", healthScore: 71 });
 
     expect(container.textContent).toContain("Feed C · 71");

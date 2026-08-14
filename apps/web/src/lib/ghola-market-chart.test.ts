@@ -208,6 +208,7 @@ describe("ghola market chart model", () => {
       "trade-plan-entry",
       "trade-plan-invalidation",
     ]);
+    expect(overlays.every((overlay) => overlay.rangeBehavior === "exclude")).toBe(true);
     expect(overlays[0]).toMatchObject({ kind: "price_band", price: 95, priceEnd: 100 });
     expect(overlays[1]).toMatchObject({ label: "2.0R target · plan", price: 110 });
     expect(overlays[1].interaction).toBeUndefined();
