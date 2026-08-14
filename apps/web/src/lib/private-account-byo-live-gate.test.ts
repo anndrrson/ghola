@@ -93,13 +93,13 @@ describe("BYO live execution gate", () => {
     const blockedEnv = coinbaseEnv("ETH-USD,SOL-USD");
     expect(privateAccountByoExecutionGate(plan, blockedEnv).reason_codes).toEqual(expect.arrayContaining([
       "coinbase_product_not_allowed",
-      "coinbase_live_execution_recovery_unproven",
+      "coinbase_order_mode_recovery_unproven",
     ]));
 
     const allowedEnv = coinbaseEnv("eth-usd, BTC-USD");
     expect(privateAccountByoExecutionGate(plan, allowedEnv)).toMatchObject({
       allowed: false,
-      reason_codes: ["coinbase_live_execution_recovery_unproven"],
+      reason_codes: ["coinbase_order_mode_recovery_unproven"],
     });
 
     const iocPlan = tradePlan({
@@ -109,8 +109,8 @@ describe("BYO live execution gate", () => {
       timeInForce: "ioc",
     });
     expect(privateAccountByoExecutionGate(iocPlan, allowedEnv)).toMatchObject({
-      allowed: false,
-      reason_codes: ["coinbase_live_execution_recovery_unproven"],
+      allowed: true,
+      reason_codes: [],
     });
   });
 
@@ -130,25 +130,25 @@ describe("BYO live execution gate", () => {
       product: "BTC-USD",
     }))).toMatchObject({
       allowed: false,
-      reason_code: "coinbase_live_execution_recovery_unproven",
+      reason_code: "coinbase_order_mode_recovery_unproven",
     });
     expect(privateAccountByoPlanContainment({
       venue_id: "coinbase",
       order_type: "limit",
       time_in_force: "ioc",
       post_only: false,
-    }).reason_code).toBe("coinbase_live_execution_recovery_unproven");
+    })).toEqual({ allowed: true, reason_code: null, message: null });
     expect(privateAccountByoPlanContainment({
       venue_id: "coinbase",
       order_type: "limit",
       time_in_force: "ioc",
       post_only: true,
-    }).reason_code).toBe("coinbase_live_execution_recovery_unproven");
+    }).reason_code).toBe("coinbase_order_mode_recovery_unproven");
     expect(privateAccountByoPlanContainment({
       venue_id: "coinbase",
       order_type: "market",
       time_in_force: "ioc",
-    }).reason_code).toBe("coinbase_live_execution_recovery_unproven");
+    }).reason_code).toBe("coinbase_order_mode_recovery_unproven");
     expect(privateAccountByoPlanContainment({
       venue_id: "phoenix",
       order_type: "limit",

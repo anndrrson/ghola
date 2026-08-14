@@ -129,11 +129,17 @@ export function privateAccountByoPlanContainment(
     };
   }
   if (order.venue_id === "coinbase") {
-    return {
-      allowed: false,
-      reason_code: "coinbase_live_execution_recovery_unproven",
-      message: "Coinbase live execution is unavailable until submit, cancellation, and reservation recovery are proven end to end.",
-    };
+    const recoveryBackedByoLimit =
+      orderType === "limit" &&
+      (tif === "ioc" || tif === "fok") &&
+      order.post_only !== true;
+    if (!recoveryBackedByoLimit) {
+      return {
+        allowed: false,
+        reason_code: "coinbase_order_mode_recovery_unproven",
+        message: "Coinbase live execution supports BYO limit IOC/FOK only; resting, post-only, market, and omnibus modes remain unavailable.",
+      };
+    }
   }
   if (order.venue_id === "phoenix") {
     return {

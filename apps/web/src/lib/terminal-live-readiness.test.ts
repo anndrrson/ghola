@@ -23,7 +23,7 @@ describe("terminal BYO readiness", () => {
     }, "hyperliquid", NOW, NOW)).toBe(false);
   });
 
-  it("allows Hyperliquid IOC and blocks resting terminal plans despite green venue gates", () => {
+  it("allows recovery-backed IOC and blocks resting plans despite green venue gates", () => {
     const status = fixture(["hyperliquid", "coinbase", "phoenix"]);
     expect(terminalByoExecutionReadiness(
       status,
@@ -40,7 +40,7 @@ describe("terminal BYO readiness", () => {
       NOW,
     )).toMatchObject({
       allowed: false,
-      reason_code: "coinbase_live_execution_recovery_unproven",
+      reason_code: "coinbase_order_mode_recovery_unproven",
     });
     expect(terminalByoExecutionReadiness(
       status,
@@ -54,7 +54,7 @@ describe("terminal BYO readiness", () => {
     });
   });
 
-  it("keeps Coinbase visibly unavailable even when both live gates are green", () => {
+  it("allows exact Coinbase BYO limit IOC when both live gates are green", () => {
     const status = fixture(["coinbase"]);
     expect(terminalByoExecutionReadiness(
       status,
@@ -63,8 +63,8 @@ describe("terminal BYO readiness", () => {
       { ...liveOrder("coinbase"), time_in_force: "ioc", post_only: false },
       NOW,
     )).toMatchObject({
-      allowed: false,
-      reason_code: "coinbase_live_execution_recovery_unproven",
+      allowed: true,
+      reason_code: null,
     });
   });
 

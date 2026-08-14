@@ -24,9 +24,9 @@ export function terminalLiveOrderMode(venue: TradeOrderVenueId): TerminalLiveOrd
       operationClass: "spot_limit_order",
       workerVenueId: "coinbase_advanced",
       includeBaseSize: false,
-      liveAvailable: false,
-      label: "Live unavailable",
-      explanation: "Coinbase submit is locked until cancellation and reservation recovery pass production-grade proofs.",
+      liveAvailable: true,
+      label: "Limit · IOC",
+      explanation: "Recovery-backed Coinbase BYO limit IOC: fills within the exact price cap, then cancels any remainder; no unmanaged resting order.",
     };
   }
   if (venue === "phoenix") {

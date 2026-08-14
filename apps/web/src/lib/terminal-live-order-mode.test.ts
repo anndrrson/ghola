@@ -9,8 +9,8 @@ describe("terminal live order mode", () => {
       operationClass: "spot_limit_order",
       workerVenueId: "coinbase_advanced",
       includeBaseSize: false,
-      liveAvailable: false,
-      label: "Live unavailable",
+      liveAvailable: true,
+      label: "Limit · IOC",
     });
   });
 
