@@ -67,9 +67,29 @@ export function assertHyperliquidPilotNetwork(credential, instruction = null) {
     throw new HyperliquidExecutionError("hyperliquid mainnet submit requires tiny_fill live mode", 400);
   }
   const order = instruction?.order || {};
-  if (order.live_order_mode !== "tiny_fill" || order.tif !== "Ioc" || !order.quote_size) {
-    throw new HyperliquidExecutionError("hyperliquid mainnet order must use tiny_fill IOC quote sizing", 400);
+  const quoteSizedEntry =
+    order.reduce_only !== true &&
+    positiveDecimal(order.quote_size) &&
+    !positiveDecimal(order.base_size);
+  const exactReduceOnlyExit =
+    order.reduce_only === true &&
+    positiveDecimal(order.base_size) &&
+    !positiveDecimal(order.quote_size);
+  if (
+    order.live_order_mode !== "tiny_fill" ||
+    order.tif !== "Ioc" ||
+    (!quoteSizedEntry && !exactReduceOnlyExit)
+  ) {
+    throw new HyperliquidExecutionError(
+      "hyperliquid mainnet order must use tiny_fill IOC quote-sized entry or exact reduce-only base-sized exit",
+      400,
+    );
   }
+}
+
+function positiveDecimal(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0;
 }
 
 export function hyperliquidManagedAccountRefs() {

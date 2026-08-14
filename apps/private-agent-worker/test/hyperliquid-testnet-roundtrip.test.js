@@ -4,6 +4,7 @@ import {
   positionSizeForMarket,
   testnetRoundTripConfig,
 } from "../scripts/hyperliquid-testnet-roundtrip.mjs";
+import { assertHyperliquidPilotNetwork } from "../src/venues/hyperliquid.js";
 
 const VALID = {
   PRIVATE_AGENT_TEST_POSTGRES_URL: "postgresql://localhost/ghola_test",
@@ -41,4 +42,42 @@ test("extracts only the exact requested market position", () => {
     () => positionSizeForMarket({ assetPositions: [{ position: { coin: "HYPE", szi: "bad" } }] }, "HYPE"),
     /position size is invalid/,
   );
+});
+
+test("mainnet tiny-fill permits only quote entry or exact reduce-only base exit", () => {
+  const previousAllow = process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE;
+  process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "tiny_fill";
+  const credential = { network: "mainnet" };
+  const instruction = (order) => ({ operation_class: "limit_order", order });
+  const common = { market: "HYPE", tif: "Ioc", live_order_mode: "tiny_fill" };
+
+  try {
+    assert.doesNotThrow(() => assertHyperliquidPilotNetwork(
+      credential,
+      instruction({ ...common, side: "buy", quote_size: "10.5", reduce_only: false }),
+    ));
+    assert.doesNotThrow(() => assertHyperliquidPilotNetwork(
+      credential,
+      instruction({ ...common, side: "sell", base_size: "0.18", reduce_only: true }),
+    ));
+    assert.throws(() => assertHyperliquidPilotNetwork(
+      credential,
+      instruction({ ...common, side: "buy", base_size: "0.18", reduce_only: false }),
+    ), /quote-sized entry or exact reduce-only base-sized exit/);
+    assert.throws(() => assertHyperliquidPilotNetwork(
+      credential,
+      instruction({ ...common, side: "sell", quote_size: "10.5", reduce_only: true }),
+    ), /quote-sized entry or exact reduce-only base-sized exit/);
+    assert.throws(() => assertHyperliquidPilotNetwork(
+      credential,
+      instruction({ ...common, side: "sell", base_size: "0.18", quote_size: "10.5", reduce_only: true }),
+    ), /quote-sized entry or exact reduce-only base-sized exit/);
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = previousMode;
+  }
 });
