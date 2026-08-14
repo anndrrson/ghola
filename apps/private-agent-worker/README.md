@@ -200,11 +200,12 @@ PRIVATE_AGENT_ALLOW_UNATTESTED_DEV=true PRIVATE_AGENT_EXECUTION_TOKEN=dev npm st
 The worker is testnet-only unless `PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true`
 is explicitly set. Managed allocations use worker-local testnet API wallets:
 
-Mainnet submit remains blocked unless
-`PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=tiny_fill`. In that mode the only live
-submit path is a quote-sized Hyperliquid IOC tiny fill with worker-side
-notional, daily cap, and slippage checks. Raw base-size/limit-price mainnet
-submits are not accepted by the live pilot.
+Mainnet submit remains blocked unless `PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE` is
+explicitly `tiny_fill` or `full_ticket`. The bounded canary below uses
+`tiny_fill`: quote-sized IOC entry or exact base-sized reduce-only IOC exit,
+with worker-side notional, daily-cap, and slippage checks. The trader terminal
+uses `full_ticket` only after its signed exact-plan, account, market, and global
+live gates pass.
 
 `POST /hyperliquid/verify` is the no-submit readiness path. It requires
 `x-ghola-no-submit-verify: true`, opens the sealed execution vault and sealed
@@ -213,6 +214,29 @@ Hyperliquid SDK plus market/account reads, builds the capped IOC order request,
 and returns a commitment-only certificate with `transaction_broadcast: false`.
 It does not prove final venue acceptance or a fill; that still requires an
 explicit canary submit.
+
+The funded mainnet round-trip canary requires an initially flat target market,
+an approved trade-only API wallet, shared Postgres claims, and all exact guards
+below. It opens at most $11, observes the exact position, closes that size
+reduce-only, replays both claims without another submit, reconciles the stored
+entry receipt, and requires a final flat account with zero target-market orders.
+
+```bash
+GHOLA_HYPERLIQUID_MAINNET_ROUNDTRIP_CONFIRM=I_UNDERSTAND_THIS_OPENS_AND_CLOSES_A_REAL_MAINNET_POSITION \
+PRIVATE_AGENT_MAINNET_CANARY_POSTGRES_URL=postgresql://... \
+PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true \
+PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=tiny_fill \
+PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD=11 \
+PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD=25 \
+PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS=100 \
+GHOLA_HYPERLIQUID_MAINNET_ACCOUNT_ADDRESS=0x... \
+GHOLA_HYPERLIQUID_MAINNET_API_WALLET_PRIVATE_KEY=0x... \
+npm run canary:hyperliquid:mainnet:roundtrip
+```
+
+The result is written mode `0600` to
+`.dev/hyperliquid-mainnet-roundtrip.json`. A failed run attempts the same exact
+reduce-only flatten path before exit.
 
 ```json
 [
