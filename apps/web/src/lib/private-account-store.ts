@@ -1568,13 +1568,17 @@ export async function getHyperliquidManagedAllocationByAccount(
   if (!sql) {
     return Array.from(hyperliquidManagedAllocations.values())
       .filter((record) => record.account_commitment === accountCommitment)
-      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0] ?? null;
+      .sort((a, b) =>
+        b.updated_at.localeCompare(a.updated_at) ||
+        b.created_at.localeCompare(a.created_at) ||
+        b.allocation_commitment.localeCompare(a.allocation_commitment)
+      )[0] ?? null;
   }
   await ensureSchema(sql);
   const rows = (await sql`
     SELECT * FROM private_account_hyperliquid_allocations
     WHERE account_commitment = ${accountCommitment}
-    ORDER BY updated_at DESC
+    ORDER BY updated_at DESC, created_at DESC, allocation_commitment DESC
     LIMIT 1
   `) as HyperliquidManagedAllocationRow[];
   return rows[0] ? hyperliquidManagedAllocationRow(rows[0]) : null;

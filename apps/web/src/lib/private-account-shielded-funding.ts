@@ -27,6 +27,7 @@ import {
   workerAuthorizationHeader,
   workerCapabilityExpectedFromBody,
 } from "./private-agent-capability";
+import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
 import { shieldedPoolConfig, type ShieldedPoolConfig } from "./private-account-shielded-pool";
 
 /**
@@ -493,7 +494,7 @@ export async function requestWorkerFundingAttestation(
   fetchImpl: typeof fetch = fetch,
   verifyEd25519: (sig: Uint8Array, msg: Uint8Array, spkiDer: Uint8Array) => boolean = defaultEd25519Verify,
 ): Promise<RequestWorkerFundingResult> {
-  if (!config.url) {
+  if (!config.url || !privateAgentTransportAllowed("execute", process.env, fetchImpl)) {
     return {
       ok: false,
       reason: "worker_unconfigured",

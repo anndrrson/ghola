@@ -7,6 +7,7 @@ import {
   submitPublicLivePhoenixOrder,
   verifyPublicLiveWalletProof,
 } from "./private-account-public-live";
+import { brandPrivateAgentMockTransport } from "./private-agent-spend-policy";
 
 describe("public private-account live Phoenix access", () => {
   afterEach(() => {
@@ -70,7 +71,7 @@ describe("public private-account live Phoenix access", () => {
         GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
         GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
       },
-      fetchImpl: fetchImpl as typeof fetch,
+      fetchImpl: brandPrivateAgentMockTransport(fetchImpl as typeof fetch),
       allocation_commitment: "pooled_venue_allocation_abc",
       policy_commitment: "public_live_policy_abc",
       body: {
@@ -110,10 +111,12 @@ describe("public private-account live Phoenix access", () => {
         GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
         GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
       },
-      fetchImpl: (async (...args: unknown[]) => {
-        calls.push(args);
-        return new Response("{}", { status: 202 });
-      }) as typeof fetch,
+      fetchImpl: brandPrivateAgentMockTransport(
+        (async (...args: unknown[]) => {
+          calls.push(args);
+          return new Response("{}", { status: 202 });
+        }) as typeof fetch,
+      ),
       allocation_commitment: "pooled_venue_allocation_abc",
       policy_commitment: "public_live_policy_abc",
       body: {

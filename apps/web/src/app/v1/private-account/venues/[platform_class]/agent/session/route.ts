@@ -4,6 +4,7 @@ import {
   privateAccountLiveGuard,
 } from "../../../../_lib";
 import type { GholaPlatformClass } from "@/lib/private-account";
+import { privateAgentSpendPolicy } from "@/lib/private-agent-spend-policy";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,10 @@ export async function POST(
 ) {
   const platform = platformClass(await params);
   if (!platform) return json({ error: "venue_not_supported" }, 404);
+  const spendPolicy = privateAgentSpendPolicy("session");
+  if (!spendPolicy.allowed && spendPolicy.environment !== "test") {
+    return json({ error: "private_agent_remote_execution_disabled" }, 503);
+  }
   const guarded = await privateAccountLiveGuard(req);
   if (!guarded.ok) return guarded.response;
   const session = await armVenueAgentSessionFromBody(guarded.body, guarded.owner, platform);

@@ -4,6 +4,7 @@ import {
   pooledWorkerVenueGateFromReadiness,
   type PooledWorkerReadiness,
 } from "./private-account-pooled-readiness";
+import { brandPrivateAgentMockTransport } from "./private-agent-spend-policy";
 
 describe("pooled worker per-venue readiness gate", () => {
   it("allows a ready Phoenix venue when unrelated pooled venues are blocked", () => {
@@ -108,7 +109,7 @@ describe("pooled worker per-venue readiness gate", () => {
 
   it("retries legacy workers without unsupported venues instead of failing the whole probe", async () => {
     const requests: unknown[] = [];
-    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl = brandPrivateAgentMockTransport((async (_url: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body ?? "{}"));
       requests.push(body);
       if (Array.isArray(body.venues) && body.venues.includes("backpack")) {
@@ -136,7 +137,7 @@ describe("pooled worker per-venue readiness gate", () => {
         status: 200,
         headers: { "content-type": "application/json" },
       });
-    }) as typeof fetch;
+    }) as typeof fetch);
 
     const readiness = await getPooledWorkerReadiness({
       GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
@@ -159,7 +160,7 @@ describe("pooled worker per-venue readiness gate", () => {
 
   it("prefers an explicit worker URL over Phala discovery env", async () => {
     const urls: string[] = [];
-    const fetchImpl = (async (url: RequestInfo | URL) => {
+    const fetchImpl = brandPrivateAgentMockTransport((async (url: RequestInfo | URL) => {
       urls.push(String(url));
       return new Response(JSON.stringify({
         version: 1,
@@ -178,7 +179,7 @@ describe("pooled worker per-venue readiness gate", () => {
         status: 200,
         headers: { "content-type": "application/json" },
       });
-    }) as typeof fetch;
+    }) as typeof fetch);
 
     const readiness = await getPooledWorkerReadiness({
       GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://explicit-worker.example",
@@ -191,6 +192,31 @@ describe("pooled worker per-venue readiness gate", () => {
     expect(pooledWorkerVenueGateFromReadiness("phoenix", readiness)).toEqual({
       ok: true,
       reason_codes: [],
+    });
+  });
+
+  it("does not discover or probe a worker through an unbranded test transport", async () => {
+    let fetchCalls = 0;
+    const fetchImpl = (async () => {
+      fetchCalls += 1;
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const readiness = await getPooledWorkerReadiness({
+      NODE_ENV: "production",
+      VERCEL_ENV: "production",
+      GHOLA_PRIVATE_AGENT_SPEND_ARMED: "true",
+      GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+      PHALA_CLOUD_API_KEY: "inherited-key",
+    }, fetchImpl);
+
+    expect(fetchCalls).toBe(0);
+    expect(readiness).toMatchObject({
+      ready: false,
+      status: "unavailable",
+      endpoint_configured: true,
+      reason_codes: ["private_agent_transport_blocked"],
     });
   });
 });

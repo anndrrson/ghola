@@ -8,9 +8,11 @@ import {
 } from "./private-account";
 import {
   buildPrivateExecutionPlan,
+  refreshShieldedSettlementEvidence,
   settlePrivateExecutionPlan,
 } from "./private-account-execution-plan";
 import { shieldedPoolHealth } from "./private-account-shielded-pool";
+import { brandPrivateAgentMockTransport } from "./private-agent-spend-policy";
 
 const NOW = new Date("2026-05-27T12:00:00.000Z");
 
@@ -33,10 +35,11 @@ describe("private account production settlement planning", () => {
     delete process.env.GHOLA_SHIELDED_POOL_MAX_STALE_MS;
     delete process.env.GHOLA_PRIVATE_RUNTIME_MEASUREMENT_COMMITMENT;
     delete process.env.GHOLA_PRIVATE_RUNTIME_COMMITMENT;
+    delete process.env.GHOLA_PRIVATE_RUNTIME_TOKEN;
   });
 
   it("does not fall back to local settlement evidence when the sealed runtime is unavailable", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+    const fetchImpl = brandPrivateAgentMockTransport((async (input: string | URL | Request) => {
       const url = typeof input === "string"
         ? input
         : input instanceof URL
@@ -46,14 +49,15 @@ describe("private account production settlement planning", () => {
         return Response.json({ ok: false }, { status: 503 });
       }
       return greenHealth(url);
-    }));
+    }) as typeof fetch);
 
-    const plan = await readyShieldedPlan();
+    const plan = await readyShieldedPlan(fetchImpl);
     const settled = await settlePrivateExecutionPlan({
       plan,
       approval_commitment: "approval_test",
       execution_commitment: "exec_test",
       now: NOW,
+      fetchImpl,
     });
 
     expect(settled).toEqual({
@@ -63,7 +67,7 @@ describe("private account production settlement planning", () => {
   });
 
   it("keeps finality-pending runtime evidence out of finalized status", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+    const fetchImpl = brandPrivateAgentMockTransport((async (input: string | URL | Request) => {
       const url = typeof input === "string"
         ? input
         : input instanceof URL
@@ -83,14 +87,15 @@ describe("private account production settlement planning", () => {
         });
       }
       return greenHealth(url);
-    }));
+    }) as typeof fetch);
 
-    const plan = await readyShieldedPlan();
+    const plan = await readyShieldedPlan(fetchImpl);
     const settled = await settlePrivateExecutionPlan({
       plan,
       approval_commitment: "approval_test",
       execution_commitment: "exec_test",
       now: NOW,
+      fetchImpl,
     });
 
     expect(settled.ok).toBe(true);
@@ -100,9 +105,50 @@ describe("private account production settlement planning", () => {
     expect(settled.evidence.proof_commitment).toBe("proof_test");
     expect(settled.evidence.relay_status.status).toBe("accepted");
   });
+
+  it("does not poll settlement status or forward its runtime token through the default test transport", async () => {
+    const fetchImpl = brandPrivateAgentMockTransport((async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/private-mode/settle")) {
+        return Response.json({
+          ok: true,
+          network: "solana-mainnet",
+          root_commitment: "root_test",
+          proof_commitment: "proof_test",
+          witness_commitment: "witness_test",
+          relay_commitment: "relay_test",
+          finality_commitment: "finality_test",
+          relay_status: "accepted",
+          lifecycle_status: "finality_pending",
+        });
+      }
+      return greenHealth(url);
+    }) as typeof fetch);
+    const plan = await readyShieldedPlan(fetchImpl);
+    const settled = await settlePrivateExecutionPlan({
+      plan,
+      approval_commitment: "approval_test",
+      execution_commitment: "exec_test",
+      now: NOW,
+      fetchImpl,
+    });
+    expect(settled.ok).toBe(true);
+    if (!settled.ok) return;
+
+    process.env.GHOLA_PRIVATE_RUNTIME_TOKEN = "sealed-runtime-token";
+    const fetchSpy = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchSpy);
+    const refreshed = await refreshShieldedSettlementEvidence({
+      evidence: settled.evidence,
+      now: new Date("2026-05-27T12:01:00.000Z"),
+    });
+
+    expect(refreshed).toEqual(settled.evidence);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });
 
-async function readyShieldedPlan() {
+async function readyShieldedPlan(fetchImpl: typeof fetch) {
   const account = createPrivateExecutionAccount({
     sessionId: "session",
     turnkeyWalletId: "wallet",
@@ -144,7 +190,7 @@ async function readyShieldedPlan() {
     require_private_mode_evidence: true,
     now: NOW,
   });
-  const health = await shieldedPoolHealth(NOW);
+  const health = await shieldedPoolHealth(NOW, { fetchImpl });
   const plan = buildPrivateExecutionPlan({
     preview,
     shielded_pool_health: health,

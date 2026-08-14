@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Bot,
   Check,
@@ -26,7 +26,7 @@ import type { PrivateExecutionOrderDraft } from "@/lib/private-execution-instruc
 
 type ArmState =
   | { status: "idle" }
-  | { status: "confirming" }
+  | { status: "confirming"; confirmationKey: string }
   | { status: "arming" }
   | { status: "session"; session: PrivateAutopilotSession; refreshing?: boolean; killing?: boolean }
   | { status: "killed" }
@@ -34,11 +34,13 @@ type ArmState =
 
 export function levelTriggerPlanFromOrderDraft(
   orderDraft: PrivateExecutionOrderDraft,
+  network: "mainnet" | "testnet" = "mainnet",
 ): LevelTriggerPlanInput {
   const entryTrigger = orderDraft.agent_entry_trigger ?? "break_level";
   return {
     side: orderDraft.side,
     venueId: orderDraft.venue_id,
+    network,
     market: orderDraft.market,
     notionalUsd: Number(orderDraft.quote_size) || 0,
     maxSlippageBps: Number(orderDraft.max_slippage_bps) || 50,
@@ -67,23 +69,49 @@ export function ArmAgentButton({
   network?: "mainnet" | "testnet";
 }) {
   const [state, setState] = useState<ArmState>({ status: "idle" });
+  const armingRef = useRef(false);
 
-  const plan = levelTriggerPlanFromOrderDraft(orderDraft);
+  const plan = levelTriggerPlanFromOrderDraft(orderDraft, network);
 
   const supported = levelTriggerSupportsPlan({
     entryTrigger: plan.entryTrigger,
     triggerLevel: plan.triggerLevel,
     invalidationLevel: plan.invalidationLevel,
   });
-  const blocked = !ready || !supported;
+  const exactPlanSupported = plan.venueId === "hyperliquid" &&
+    Number.isFinite(plan.notionalUsd) && plan.notionalUsd > 0 && plan.notionalUsd <= 100 &&
+    ["BTC", "ETH", "SOL", "HYPE"].includes(plan.market.split(/[-/]/)[0]?.toUpperCase() || "");
+  const blocked = !ready || !supported || !exactPlanSupported;
+  const confirmationKey = agentConfirmationKey(plan, network);
   const sideLabel = plan.side === "buy" ? "Buy" : "Sell";
 
+  useEffect(() => {
+    if (state.status !== "confirming") return;
+    if (!blocked && state.confirmationKey === confirmationKey) return;
+    queueMicrotask(() => setState((current) => (
+      current.status === "confirming" && (blocked || current.confirmationKey !== confirmationKey)
+        ? { status: "idle" }
+        : current
+    )));
+  }, [blocked, confirmationKey, state]);
+
   async function confirmAndArm() {
+    if (
+      armingRef.current
+      || state.status !== "confirming"
+      || blocked
+      || state.confirmationKey !== confirmationKey
+    ) {
+      setState({ status: "idle" });
+      return;
+    }
+    armingRef.current = true;
     setState({ status: "arming" });
     try {
       const response = await armLevelTriggerAgent(plan);
       setState({ status: "session", session: response.session });
     } catch (error) {
+      armingRef.current = false;
       setState({
         status: "error",
         message: error instanceof Error ? error.message : "Could not arm the agent.",
@@ -119,13 +147,15 @@ export function ArmAgentButton({
     }
   }
 
-  const hint = !ready
-    ? "Sign in and connect scoped venue access to arm an agent."
-    : !supported
-      ? "Draw an entry level and a stop, with a level-based trigger, to arm an agent."
-      : plan.entryTrigger === "preview_now"
-        ? "The agent will enter now and manage the stop and horizon."
-        : "The agent will watch your level, enter on the trigger, and manage the stop.";
+  const hint = !exactPlanSupported
+    ? "Autonomous arming currently supports exact BTC, ETH, SOL, or HYPE plans on Hyperliquid."
+    : !ready
+      ? "Sign in and connect scoped venue access to arm an agent."
+      : !supported
+        ? "Draw an entry level and a stop, with a level-based trigger, to arm an agent."
+        : plan.entryTrigger === "preview_now"
+          ? "The agent will enter now and manage the stop and horizon."
+          : "The agent will watch your level, enter on the trigger, and manage the stop.";
 
   return (
     <div className="trade-panel mt-4 rounded-md p-4">
@@ -162,7 +192,9 @@ export function ArmAgentButton({
             <button
               type="button"
               onClick={confirmAndArm}
-              className="trade-action flex h-10 flex-1 items-center justify-center gap-2 rounded-md text-sm font-semibold"
+              disabled={blocked || state.confirmationKey !== confirmationKey}
+              aria-disabled={blocked || state.confirmationKey !== confirmationKey}
+              className="trade-action flex h-10 flex-1 items-center justify-center gap-2 rounded-md text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Bot className="h-4 w-4" />
               Yes, arm it
@@ -180,13 +212,15 @@ export function ArmAgentButton({
         <>
           <button
             type="button"
-            onClick={() => setState({ status: "confirming" })}
+            onClick={() => setState({ status: "confirming", confirmationKey })}
             disabled={blocked || state.status === "arming"}
             aria-disabled={blocked || state.status === "arming"}
             className="trade-action flex h-11 w-full items-center justify-center gap-2 rounded-md text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50"
           >
             {state.status === "arming" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bot className="h-4 w-4" />}
-            {state.status === "arming" ? "Arming agent" : "Arm agent for this plan"}
+            {state.status === "arming"
+              ? "Arming agent"
+              : "Arm agent for this plan"}
           </button>
           <p className="mt-2 text-[11px] leading-5 text-[#566278]">{hint}</p>
           {state.status === "error" && (
@@ -199,6 +233,24 @@ export function ArmAgentButton({
       )}
     </div>
   );
+}
+
+function agentConfirmationKey(plan: LevelTriggerPlanInput, network: "mainnet" | "testnet") {
+  return JSON.stringify({
+    network,
+    side: plan.side,
+    venueId: plan.venueId,
+    market: plan.market,
+    notionalUsd: plan.notionalUsd,
+    maxSlippageBps: plan.maxSlippageBps,
+    strategyProfile: plan.strategyProfile,
+    entryTrigger: plan.entryTrigger,
+    exitRule: plan.exitRule,
+    timeHorizon: plan.timeHorizon,
+    triggerLevel: plan.triggerLevel ?? null,
+    invalidationLevel: plan.invalidationLevel ?? null,
+    strategyNote: plan.strategyNote ?? null,
+  });
 }
 
 function AgentSessionStatus({

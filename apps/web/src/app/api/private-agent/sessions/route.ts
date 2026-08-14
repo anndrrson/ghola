@@ -26,6 +26,7 @@ import {
   workerAuthorizationHeader,
   workerCapabilityExpectedFromBody,
 } from "@/lib/private-agent-capability";
+import { privateAgentSpendPolicy } from "@/lib/private-agent-spend-policy";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -199,6 +200,9 @@ export async function POST(req: NextRequest) {
   const validation = validatePrivateAgentSessionRequest(body);
   if (!validation.ok || !validation.request) {
     return json({ error: "invalid private-agent session request", details: validation.errors }, 400);
+  }
+  if (!privateAgentSpendPolicy("session").allowed) {
+    return json({ error: "sealed private-agent execution is unavailable" }, 503);
   }
 
   const billing = await billingTier(req);

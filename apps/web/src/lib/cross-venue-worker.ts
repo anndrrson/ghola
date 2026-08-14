@@ -1,11 +1,12 @@
 import type { CrossVenueExecutionPlan } from "./cross-venue-execution";
 import { workerAuthorizationHeader, workerCapabilityExpectedFromBody } from "./private-agent-capability";
+import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
 
 export function crossVenueExecutionReadiness(env: Record<string, string | undefined> = process.env) {
   const config = workerConfig(env);
-  const enabled = env.GHOLA_CROSS_VENUE_BYO_ENABLED === "true";
+  const enabled = false;
   const reasons = [
-    ...(enabled ? [] : ["cross_venue_byo_flag_disabled"]),
+    "cross_venue_durable_claim_unavailable",
     ...(config.url ? [] : ["execution_worker_url_missing"]),
     ...(config.token ? [] : ["execution_worker_auth_missing"]),
   ];
@@ -27,6 +28,13 @@ export async function probeCrossVenueExecutionReadiness(input: {
 } = {}) {
   const env = input.env ?? process.env;
   const base = crossVenueExecutionReadiness(env);
+  if (!privateAgentTransportAllowed("discover", env, input.fetchImpl)) {
+    return {
+      ...base,
+      ready: false,
+      reason_codes: [...new Set([...base.reason_codes, "private_agent_transport_blocked"])],
+    };
+  }
   if (!base.ready) return base;
   const config = workerConfig(env);
   const path = "/execution/cross-venue/ready";
@@ -88,6 +96,9 @@ async function workerCommand(
   },
 ) {
   const env = input.env ?? process.env;
+  if (!privateAgentTransportAllowed("execute", env, input.fetchImpl)) {
+    return { ok: false as const, status: 403, error: "private_agent_transport_blocked" };
+  }
   const config = workerConfig(env);
   const readiness = crossVenueExecutionReadiness(env);
   const commandReady = action === "cancel" ? Boolean(config.url && config.token) : readiness.ready;

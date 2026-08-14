@@ -3,6 +3,7 @@ import {
   type GholaShieldedPoolHealth,
   type GholaShieldedPoolServiceHealth,
 } from "./private-account";
+import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
 
 export interface ShieldedPoolConfig {
   mode: "http" | "local_test";
@@ -19,38 +20,48 @@ export interface ShieldedPoolConfig {
   max_stale_ms: number;
 }
 
-export function shieldedPoolConfig(): ShieldedPoolConfig {
-  const mode = process.env.GHOLA_SHIELDED_POOL_MODE === "local_test"
+export function shieldedPoolConfig(
+  env: Record<string, string | undefined> = process.env,
+): ShieldedPoolConfig {
+  const mode = env.GHOLA_SHIELDED_POOL_MODE === "local_test"
     ? "local_test" as const
     : "http" as const;
   return {
     mode,
-    indexer_url: process.env.GHOLA_SHIELDED_POOL_INDEXER_URL?.trim() || "",
-    prover_url: process.env.GHOLA_SHIELDED_POOL_PROVER_URL?.trim() || "",
-    relayer_url: process.env.GHOLA_SHIELDED_POOL_RELAYER_URL?.trim() || "",
-    private_runtime_url: process.env.GHOLA_PRIVATE_RUNTIME_URL?.trim() || "",
-    private_runtime_token: process.env.GHOLA_PRIVATE_RUNTIME_TOKEN?.trim() || "",
-    network: process.env.GHOLA_CUSTOM_SHIELDED_NETWORK?.trim() ||
-      process.env.GHOLA_SHIELDED_POOL_NETWORK?.trim() ||
+    indexer_url: env.GHOLA_SHIELDED_POOL_INDEXER_URL?.trim() || "",
+    prover_url: env.GHOLA_SHIELDED_POOL_PROVER_URL?.trim() || "",
+    relayer_url: env.GHOLA_SHIELDED_POOL_RELAYER_URL?.trim() || "",
+    private_runtime_url: env.GHOLA_PRIVATE_RUNTIME_URL?.trim() || "",
+    private_runtime_token: env.GHOLA_PRIVATE_RUNTIME_TOKEN?.trim() || "",
+    network: env.GHOLA_CUSTOM_SHIELDED_NETWORK?.trim() ||
+      env.GHOLA_SHIELDED_POOL_NETWORK?.trim() ||
       "solana-shielded-pool-v1",
-    program_id: process.env.GHOLA_SHIELDED_POOL_PROGRAM_ID?.trim() || "",
-    mint: process.env.GHOLA_SHIELDED_POOL_MINT?.trim() || "",
-    tree_id: process.env.GHOLA_SHIELDED_POOL_TREE_ID?.trim() || "",
+    program_id: env.GHOLA_SHIELDED_POOL_PROGRAM_ID?.trim() || "",
+    mint: env.GHOLA_SHIELDED_POOL_MINT?.trim() || "",
+    tree_id: env.GHOLA_SHIELDED_POOL_TREE_ID?.trim() || "",
     min_confirmations: Math.max(
       1,
-      Number.parseInt(process.env.GHOLA_SHIELDED_POOL_MIN_CONFIRMATIONS || "3", 10) || 3,
+      Number.parseInt(env.GHOLA_SHIELDED_POOL_MIN_CONFIRMATIONS || "3", 10) || 3,
     ),
     max_stale_ms: Math.max(
       1_000,
-      Number.parseInt(process.env.GHOLA_SHIELDED_POOL_MAX_STALE_MS || "300000", 10) || 300_000,
+      Number.parseInt(env.GHOLA_SHIELDED_POOL_MAX_STALE_MS || "300000", 10) || 300_000,
     ),
   };
 }
 
-export async function shieldedPoolHealth(now: Date = new Date()): Promise<GholaShieldedPoolHealth> {
-  const config = shieldedPoolConfig();
+export async function shieldedPoolHealth(
+  now: Date = new Date(),
+  options: {
+    env?: Record<string, string | undefined>;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<GholaShieldedPoolHealth> {
+  const env = options.env ?? process.env;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const config = shieldedPoolConfig(env);
   if (config.mode === "local_test") {
-    if (process.env.NODE_ENV === "production") {
+    if (env.NODE_ENV === "production") {
       return health({
         config,
         now,
@@ -83,13 +94,25 @@ export async function shieldedPoolHealth(now: Date = new Date()): Promise<GholaS
   }
 
   const [indexer, treeState, prover, relayer, sealedRuntime] = await Promise.all([
-    checkHttpService("indexer", joinPath(config.indexer_url, "/healthz"), config, now),
-    checkHttpService("tree_state", joinPath(config.indexer_url, "/tree-state"), config, now),
-    checkHttpService("prover", joinPath(config.prover_url, "/healthz"), config, now),
-    checkHttpService("relayer", joinPath(config.relayer_url, "/healthz"), config, now),
-    checkHttpService("sealed_runtime", joinPath(config.private_runtime_url, "/health"), config, now, {
-      authorization: `Bearer ${config.private_runtime_token}`,
-    }),
+    checkHttpService("indexer", joinPath(config.indexer_url, "/healthz"), config, now, fetchImpl),
+    checkHttpService("tree_state", joinPath(config.indexer_url, "/tree-state"), config, now, fetchImpl),
+    checkHttpService("prover", joinPath(config.prover_url, "/healthz"), config, now, fetchImpl),
+    checkHttpService("relayer", joinPath(config.relayer_url, "/healthz"), config, now, fetchImpl),
+    privateAgentTransportAllowed("discover", env, options.fetchImpl)
+      ? checkHttpService(
+          "sealed_runtime",
+          joinPath(config.private_runtime_url, "/health"),
+          config,
+          now,
+          fetchImpl,
+          { authorization: `Bearer ${config.private_runtime_token}` },
+        )
+      : Promise.resolve(serviceHealth({
+          service: "sealed_runtime",
+          status: "red",
+          configured: true,
+          reason: "sealed runtime health transport is disabled",
+        })),
   ]);
   const services = [indexer, treeState, prover, relayer, sealedRuntime];
   const failed = services.find((item) => item.status !== "green");
@@ -112,13 +135,14 @@ async function checkHttpService(
   url: string,
   config: ShieldedPoolConfig,
   now: Date,
+  fetchImpl: typeof fetch,
   headers: Record<string, string> = {},
 ): Promise<GholaShieldedPoolServiceHealth> {
   try {
     const safeHeaders = Object.fromEntries(
       Object.entries(headers).filter(([, value]) => value && value !== "Bearer "),
     );
-    const res = await fetch(url, {
+    const res = await fetchImpl(url, {
       method: "GET",
       cache: "no-store",
       headers: Object.keys(safeHeaders).length ? safeHeaders : undefined,

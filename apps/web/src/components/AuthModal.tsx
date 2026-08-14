@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { memo, useEffect, useId, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { thumperSignIn, thumperSignUp } from "@/lib/thumper-api";
@@ -33,7 +33,7 @@ function passwordStrength(password: string) {
   return { label: "Fair", score: 2, color: "bg-orange-500" };
 }
 
-export function AuthModal({
+export const AuthModal = memo(function AuthModal({
   mode,
   open,
   onClose,
@@ -50,13 +50,27 @@ export function AuthModal({
   const [loading, setLoading] = useState(false);
   const [mounted, setMounted] = useState(open);
   const [visible, setVisible] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const titleId = useId();
+  const nameId = useId();
+  const emailId = useId();
+  const passwordId = useId();
   const isSignup = mode === "signup";
   const strength = passwordStrength(password);
 
   useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
     if (open) {
       setMounted(true);
-      const raf = requestAnimationFrame(() => setVisible(true));
+      const raf = requestAnimationFrame(() => {
+        setError("");
+        setVisible(true);
+      });
       return () => cancelAnimationFrame(raf);
     }
 
@@ -67,17 +81,50 @@ export function AuthModal({
 
   useEffect(() => {
     if (!mounted) return;
-    setError("");
+    const dialog = dialogRef.current;
+    returnFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const previousOverflow = document.body.style.overflow;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      )).filter((element) => element.offsetParent !== null);
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1) ?? first;
+      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.body.style.overflow = "hidden";
-    window.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown);
+    queueMicrotask(() => {
+      const initialFocus = dialog?.querySelector<HTMLElement>("input:not([disabled])") ?? dialog;
+      initialFocus?.focus();
+    });
     return () => {
-      document.body.style.overflow = "";
-      window.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+      const returnFocus = returnFocusRef.current;
+      returnFocusRef.current = null;
+      if (returnFocus?.isConnected) queueMicrotask(() => returnFocus.focus());
     };
-  }, [mounted, onClose]);
+  }, [mounted]);
 
   if (!mounted) return null;
 
@@ -114,14 +161,19 @@ export function AuthModal({
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center px-4 py-6">
-      <button
-        aria-label="Close auth dialog"
+      <div
+        aria-hidden="true"
         className={`absolute inset-0 bg-black/72 backdrop-blur-sm transition-opacity duration-200 ease-out ${
           visible ? "opacity-100" : "opacity-0"
         }`}
         onClick={onClose}
       />
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
         className={`relative w-full max-w-sm rounded-2xl border border-[#1e2a3a] bg-[#0b0d13] p-6 shadow-[0_28px_90px_rgba(0,0,0,0.72)] transition-all duration-200 ease-out ${
           visible
             ? "translate-y-0 scale-100 opacity-100"
@@ -144,7 +196,7 @@ export function AuthModal({
           </span>
         </div>
 
-        <h2 className="text-lg font-semibold text-[#eef1f8]">
+        <h2 id={titleId} className="text-lg font-semibold text-[#eef1f8]">
           {isSignup ? "Create your account" : "Welcome back"}
         </h2>
         <p className="mt-1 text-sm text-[#8b95a8]">
@@ -156,10 +208,11 @@ export function AuthModal({
         <form onSubmit={submit} className="mt-6 space-y-4">
           {isSignup && (
             <div>
-              <label className="mb-1.5 block text-sm text-[#8b95a8]">
+              <label htmlFor={nameId} className="mb-1.5 block text-sm text-[#8b95a8]">
                 Name
               </label>
               <input
+                id={nameId}
                 type="text"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
@@ -171,10 +224,11 @@ export function AuthModal({
           )}
 
           <div>
-            <label className="mb-1.5 block text-sm text-[#8b95a8]">
+            <label htmlFor={emailId} className="mb-1.5 block text-sm text-[#8b95a8]">
               Email
             </label>
             <input
+              id={emailId}
               type="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
@@ -185,10 +239,11 @@ export function AuthModal({
           </div>
 
           <div>
-            <label className="mb-1.5 block text-sm text-[#8b95a8]">
+            <label htmlFor={passwordId} className="mb-1.5 block text-sm text-[#8b95a8]">
               Password
             </label>
             <input
+              id={passwordId}
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
@@ -214,11 +269,11 @@ export function AuthModal({
             )}
           </div>
 
-          {error && (
-            <div className="rounded-lg border border-red-500/20 bg-red-500/10 p-3">
+          {error ? (
+            <div role="alert" aria-atomic="true" className="rounded-lg border border-red-500/20 bg-red-500/10 p-3">
               <p className="text-sm text-red-400">{error}</p>
             </div>
-          )}
+          ) : null}
 
           <button
             type="submit"
@@ -248,4 +303,4 @@ export function AuthModal({
       </div>
     </div>
   );
-}
+});

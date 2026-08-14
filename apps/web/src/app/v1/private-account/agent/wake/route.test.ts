@@ -1,214 +1,225 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { POST } from "./route";
-import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
 import {
-  getPrivateAgentRuntimeLease,
-  resetPrivateAgentRuntimeLeaseStoreForTests,
-} from "@/lib/private-agent-runtime-lease";
-import * as runtimeServer from "@/lib/private-agent-runtime-server";
+  createPublicAgentWakePost,
+  type PublicAgentWakeDependencies,
+} from "./route";
 
 const ENV_KEYS = [
   "GHOLA_PUBLIC_AGENT_WAKE_ENABLED",
   "GHOLA_PUBLIC_LIVE_WORKER_WAKE_ENABLED",
-  "GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN",
-  "GHOLA_PRIVATE_AGENT_SPEND_ARMED",
-  "GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED",
   "GHOLA_PRIVATE_AGENT_JIT_PROVISIONING",
-  "GHOLA_PRIVATE_AGENT_PROVIDER",
-  "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
-  "GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN",
+  "GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED",
   "PHALA_CLOUD_API_KEY",
-  "PHALA_AGENT_ENDPOINT",
-  "PHALA_API_KEY",
-  "PHALA_ATTESTATION_VERIFIER_URL",
-  "PHALA_CVM_IMAGE_DIGEST",
-  "PHALA_ENCLAVE_KEY_ID",
-  "PHALA_ENCLAVE_X25519_PUB_HEX",
-  "GHOLA_PRIVATE_AGENT_ATTESTED_READY",
-  "GHOLA_PRIVATE_AGENT_LEASE_STORE",
-  "GHOLA_PUBLIC_AGENT_WAKE_LEASE_MS",
-  "VERCEL_ENV",
+  "GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN",
+  "GHOLA_PRIVATE_AGENT_WORKER_IMAGE",
+  "GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST",
+  "GHOLA_PUBLIC_AGENT_WAKE_RATE_LIMIT_PER_MINUTE",
 ] as const;
 
 function wakeRequest(headers: Record<string, string> = {}) {
   return new Request("https://ghola.test/v1/private-account/agent/wake", {
     method: "POST",
     headers: {
-      host: "ghola.test",
       origin: "https://ghola.test",
+      "content-type": "application/json",
+      cookie: "ghola_thumper_session=verified-session",
       ...headers,
     },
+    body: "{}",
   });
 }
 
-describe("public agent wake route", () => {
-  beforeEach(async () => {
-    clearEnv();
-    await resetPrivateAccountStoreForTests();
-    await resetPrivateAgentRuntimeLeaseStoreForTests();
-  });
-
-  afterEach(async () => {
-    vi.restoreAllMocks();
-    clearEnv();
-    await resetPrivateAccountStoreForTests();
-    await resetPrivateAgentRuntimeLeaseStoreForTests();
-  });
-
-  it("is disabled unless explicitly enabled", async () => {
-    const res = await POST(wakeRequest());
-    const body = await res.json();
-
-    expect(res.status).toBe(403);
-    expect(body).toMatchObject({
-      status: "blocked",
-      ready: false,
-      message: "Live agents are temporarily unavailable. Your venue access was not used.",
-    });
-  });
-
-  it("requires same-origin POSTs", async () => {
-    process.env.GHOLA_PUBLIC_AGENT_WAKE_ENABLED = "true";
-
-    const res = await POST(wakeRequest({ origin: "https://evil.example" }));
-    const body = await res.json();
-
-    expect(res.status).toBe(403);
-    expect(body.error).toBe("same_origin_required");
-  });
-
-  it("fails closed without exposing operator blocker codes when spend is locked", async () => {
-    process.env.GHOLA_PUBLIC_AGENT_WAKE_ENABLED = "true";
-    process.env.GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN = "true";
-
-    const res = await POST(wakeRequest());
-    const body = await res.json();
-
-    expect(res.status).toBe(202);
-    expect(body).toMatchObject({
-      status: "blocked",
-      ready: false,
-      message: "Live agents are temporarily unavailable. Your venue access was not used.",
-      action: "wake_checked",
-    });
-    expect(JSON.stringify(body)).not.toContain("operator_spend_lock");
-  });
-
-  it("allows production wake-on-use from configured Phala credentials", async () => {
-    process.env.VERCEL_ENV = "production";
-    process.env.GHOLA_PRIVATE_AGENT_PROVIDER = "phala";
-    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://phala-worker.ghola.example";
-    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "phala-worker-token";
-    process.env.PHALA_AGENT_ENDPOINT = "https://phala-worker.ghola.example";
-    process.env.PHALA_API_KEY = "phala-api-key";
-    process.env.PHALA_ATTESTATION_VERIFIER_URL = "https://verifier.ghola.example";
-    process.env.PHALA_CVM_IMAGE_DIGEST = "sha256:abc";
-    process.env.PHALA_ENCLAVE_KEY_ID = "phala:test";
-    process.env.PHALA_ENCLAVE_X25519_PUB_HEX = "11".repeat(32);
-    process.env.GHOLA_PRIVATE_AGENT_ATTESTED_READY = "true";
-    mockPrivatePaymentRailReady();
-
-    const res = await POST(wakeRequest());
-    const body = await res.json();
-
-    expect(res.status).toBe(202);
-    expect(body).toMatchObject({
-      ready: false,
-      message: "Live agents are temporarily unavailable. Your venue access was not used.",
-      action: expect.stringMatching(/^wake_(checked|requested)$/),
-    });
-    expect(["warming", "blocked"]).toContain(body.status);
-    expect(body.provider).toMatchObject({
-      remote_execution_ready: false,
-    });
-  });
-
-  it("renews the idle lease when Phala is already running", async () => {
-    process.env.GHOLA_PRIVATE_AGENT_LEASE_STORE = "memory";
-    process.env.GHOLA_PUBLIC_AGENT_WAKE_ENABLED = "true";
-    process.env.GHOLA_PUBLIC_AGENT_WAKE_LEASE_MS = "600000";
-    vi.spyOn(runtimeServer, "getPrivateAgentRuntimeStatus").mockResolvedValue(readyPhalaRuntime());
-
-    const res = await POST(wakeRequest());
-    const body = await res.json();
-    const lease = await getPrivateAgentRuntimeLease("phala");
-
-    expect(res.status).toBe(200);
-    expect(body).toMatchObject({
-      status: "ready",
-      ready: true,
-      action: "already_running",
-      lease_ms: 600000,
-    });
-    expect(body.lease_expires_at).toBe(lease?.lease_expires_at);
-    expect(lease).toMatchObject({
-      state: "active",
-      last_reason: "public_agent_byo_wake:already_running",
-    });
-  });
-});
-
-function readyPhalaRuntime(): Awaited<ReturnType<typeof runtimeServer.getPrivateAgentRuntimeStatus>> {
+function authenticatedOwner() {
   return {
-    version: 1,
-    checked_at: "2026-06-22T23:27:00.000Z",
-    sealed_execution_required: true,
-    entitlement_required: "paid_private_agent_plan",
-    preferred_provider: "phala",
-    selected_provider: "phala",
+    user: { id: "web-user-1", email: "trader@example.com" },
+    owner_commitment: "owner_verified_web_user_1",
+  };
+}
+
+function readyPhalaRuntime() {
+  return {
+    version: 1 as const,
+    checked_at: "2026-08-12T12:00:00.000Z",
+    sealed_execution_required: true as const,
+    entitlement_required: "paid_private_agent_plan" as const,
+    preferred_provider: "phala" as const,
+    selected_provider: "phala" as const,
     remote_execution_ready: true,
     shielded_rail_ready: true,
     blocking_reasons: [],
     disclosure: "test",
-    providers: [
-      {
-        id: "phala",
-        label: "Phala TEE",
-        configured: true,
-        available: true,
-        attested: true,
-        supports_sealed_secrets: true,
-        supports_background_agents: true,
-        supports_trading_execution: true,
-        reason: null,
-        execution_url: "https://phala-worker.ghola.example",
-        sealed_recipient: {
-          recipient_id: "phala:test",
-          x25519_pub_hex: "11".repeat(32),
-          tee_kind: "phala",
-          measurement_hex: null,
-          attestation_hash: null,
-          expires_at_unix: null,
-        },
-        evidence: {
-          cvm_status: "running",
-        },
+    providers: [{
+      id: "phala" as const,
+      label: "Phala TEE",
+      configured: true,
+      available: true,
+      attested: true,
+      supports_sealed_secrets: true,
+      supports_background_agents: true,
+      supports_trading_execution: true,
+      reason: null,
+      execution_url: "https://worker.example",
+      sealed_recipient: {
+        recipient_id: "phala:test",
+        x25519_pub_hex: "11".repeat(32),
       },
-    ],
+      evidence: { cvm_status: "running" },
+    }],
   };
 }
 
-function clearEnv() {
-  for (const key of ENV_KEYS) delete process.env[key];
+function wakeDependencies(
+  overrides: Partial<PublicAgentWakeDependencies> = {},
+): PublicAgentWakeDependencies {
+  return {
+    authenticateImpl: vi.fn(async () => authenticatedOwner()),
+    quotaStoreReadyImpl: vi.fn(async () => true),
+    consumeRateLimitImpl: vi.fn(async () => ({ ok: true, count: 1, retry_after_seconds: 60 })),
+    spendPolicyImpl: vi.fn(() => ({
+      allowed: true as const,
+      action: "wake" as const,
+      environment: "production" as const,
+    })),
+    getRuntimeStatusImpl: vi.fn(async () => readyPhalaRuntime()),
+    markActivityImpl: vi.fn(async (input) => ({
+      version: 1 as const,
+      provider_id: "phala",
+      state: "active" as const,
+      last_activity_at: "2026-08-12T12:00:00.000Z",
+      lease_expires_at: "2026-08-12T12:10:00.000Z",
+      last_reason: input.reason,
+      updated_at: "2026-08-12T12:00:00.000Z",
+    })),
+    wakeImpl: vi.fn(async () => ({
+      attempted: true,
+      ready: false,
+      status: "provisioning" as const,
+    })),
+    ...overrides,
+  };
 }
 
-function mockPrivatePaymentRailReady() {
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-    const url = String(input instanceof Request ? input.url : input);
-    if (url.includes("/health/payments")) {
-      return new Response(JSON.stringify({
-        rails: {
-          aleo_usdcx_shielded: {
-            configured: true,
-            ready: true,
-            fallback_allowed: false,
-          },
-        },
-      }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }
-    return new Response("{}", { status: 404 });
+describe("public agent wake route", () => {
+  beforeEach(clearEnv);
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    clearEnv();
   });
+
+  it("stays disabled when Phala JIT is configured but the explicit flag is off", async () => {
+    process.env.GHOLA_PRIVATE_AGENT_JIT_PROVISIONING = "true";
+    process.env.GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED = "true";
+    process.env.PHALA_CLOUD_API_KEY = "phala-key";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
+    process.env.GHOLA_PRIVATE_AGENT_WORKER_IMAGE = "ghola/worker";
+    process.env.GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST = `sha256:${"a".repeat(64)}`;
+    const deps = wakeDependencies();
+
+    const res = await createPublicAgentWakePost(deps)(wakeRequest());
+
+    expect(res.status).toBe(403);
+    expect(deps.authenticateImpl).not.toHaveBeenCalled();
+    expect(deps.getRuntimeStatusImpl).not.toHaveBeenCalled();
+    expect(deps.markActivityImpl).not.toHaveBeenCalled();
+    expect(deps.wakeImpl).not.toHaveBeenCalled();
+  });
+
+  it("does not treat the legacy public-worker flag as wake authorization", async () => {
+    process.env.GHOLA_PUBLIC_LIVE_WORKER_WAKE_ENABLED = "true";
+    const deps = wakeDependencies();
+
+    const res = await createPublicAgentWakePost(deps)(wakeRequest());
+
+    expect(res.status).toBe(403);
+    expect(deps.getRuntimeStatusImpl).not.toHaveBeenCalled();
+    expect(deps.wakeImpl).not.toHaveBeenCalled();
+  });
+
+  it("rejects cross-site or non-JSON requests before authentication", async () => {
+    process.env.GHOLA_PUBLIC_AGENT_WAKE_ENABLED = "true";
+    const deps = wakeDependencies();
+    const handler = createPublicAgentWakePost(deps);
+
+    const crossSite = await handler(wakeRequest({ origin: "https://evil.example" }));
+    const simplePost = await handler(wakeRequest({ "content-type": "text/plain" }));
+
+    expect(crossSite.status).toBe(403);
+    expect(simplePost.status).toBe(403);
+    expect(deps.authenticateImpl).not.toHaveBeenCalled();
+    expect(deps.getRuntimeStatusImpl).not.toHaveBeenCalled();
+    expect(deps.wakeImpl).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unauthenticated or spoofed session before quota/runtime access", async () => {
+    process.env.GHOLA_PUBLIC_AGENT_WAKE_ENABLED = "true";
+    const authenticateImpl = vi.fn(async () => null);
+    const deps = wakeDependencies({ authenticateImpl });
+
+    const res = await createPublicAgentWakePost(deps)(wakeRequest({
+      authorization: "Bearer spoofed-session",
+      cookie: "ghola_thumper_session=spoofed-session",
+    }));
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ version: 1, error: "private_account_auth_required" });
+    expect(deps.quotaStoreReadyImpl).not.toHaveBeenCalled();
+    expect(deps.consumeRateLimitImpl).not.toHaveBeenCalled();
+    expect(deps.getRuntimeStatusImpl).not.toHaveBeenCalled();
+    expect(deps.markActivityImpl).not.toHaveBeenCalled();
+    expect(deps.wakeImpl).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the persistent quota store is unavailable", async () => {
+    process.env.GHOLA_PUBLIC_AGENT_WAKE_ENABLED = "true";
+    const deps = wakeDependencies({ quotaStoreReadyImpl: vi.fn(async () => false) });
+
+    const res = await createPublicAgentWakePost(deps)(wakeRequest());
+
+    expect(res.status).toBe(503);
+    expect(deps.consumeRateLimitImpl).not.toHaveBeenCalled();
+    expect(deps.getRuntimeStatusImpl).not.toHaveBeenCalled();
+    expect(deps.wakeImpl).not.toHaveBeenCalled();
+  });
+
+  it("keys the persistent quota to verified owner identity and blocks overflow", async () => {
+    process.env.GHOLA_PUBLIC_AGENT_WAKE_ENABLED = "true";
+    const consumeRateLimitImpl = vi.fn(async () => ({
+      ok: false,
+      count: 4,
+      retry_after_seconds: 41,
+    }));
+    const deps = wakeDependencies({ consumeRateLimitImpl });
+
+    const res = await createPublicAgentWakePost(deps)(wakeRequest());
+
+    expect(res.status).toBe(429);
+    expect(consumeRateLimitImpl).toHaveBeenCalledWith({
+      key: "private_agent_wake:owner_verified_web_user_1",
+      limit: 3,
+      window_ms: 60_000,
+    });
+    expect(deps.getRuntimeStatusImpl).not.toHaveBeenCalled();
+    expect(deps.wakeImpl).not.toHaveBeenCalled();
+  });
+
+  it("renews an already-ready worker only after auth, policy, and quota pass", async () => {
+    process.env.GHOLA_PUBLIC_AGENT_WAKE_ENABLED = "true";
+    const deps = wakeDependencies();
+
+    const res = await createPublicAgentWakePost(deps)(wakeRequest());
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ status: "ready", ready: true, action: "already_running" });
+    expect(deps.markActivityImpl).toHaveBeenCalledWith({
+      reason: "public_agent_byo_wake:already_running",
+      leaseMs: 600_000,
+    });
+    expect(deps.wakeImpl).not.toHaveBeenCalled();
+  });
+});
+
+function clearEnv() {
+  for (const key of ENV_KEYS) delete process.env[key];
 }

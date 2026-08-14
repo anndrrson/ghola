@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/private-agent-runtime-server", () => ({
+  getPrivateAgentRuntimeStatus: vi.fn(),
+}));
+
 import { GET } from "./route";
+import { getPrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime-server";
 import {
   putPrivateVenueCapability,
   resetPrivateAccountStoreForTests,
@@ -67,6 +73,7 @@ function request(authHeader?: string) {
 describe("public agent startup route", () => {
   beforeEach(async () => {
     clearEnv();
+    vi.mocked(getPrivateAgentRuntimeStatus).mockResolvedValue(blockedRuntime());
     await resetPrivateAccountStoreForTests();
   });
 
@@ -134,6 +141,7 @@ describe("public agent startup route", () => {
     process.env.GHOLA_PRIVATE_AGENT_SPEND_ARMED = "true";
     process.env.GHOLA_ENABLE_MOCK_ATTESTED_PROVIDER = "true";
     process.env.GHOLA_PRIVATE_AGENT_PROVIDER = "mock_attested";
+    vi.mocked(getPrivateAgentRuntimeStatus).mockResolvedValue(readyRuntime());
     enableGreenByoEnv();
     mockPrivatePaymentRailReady();
     const authHeader = auth("agent_startup_user_2");
@@ -163,6 +171,44 @@ describe("public agent startup route", () => {
     expect(body.primary_action.label).toBe("Start Coinbase agent");
   });
 });
+
+function blockedRuntime(): Awaited<ReturnType<typeof getPrivateAgentRuntimeStatus>> {
+  return {
+    version: 1,
+    checked_at: "2026-06-22T23:27:00.000Z",
+    sealed_execution_required: true,
+    entitlement_required: "paid_private_agent_plan",
+    preferred_provider: null,
+    selected_provider: null,
+    remote_execution_ready: false,
+    shielded_rail_ready: false,
+    providers: [],
+    blocking_reasons: ["no_ready_confidential_compute_provider"],
+    disclosure: "test fixture",
+  };
+}
+
+function readyRuntime(): Awaited<ReturnType<typeof getPrivateAgentRuntimeStatus>> {
+  return {
+    ...blockedRuntime(),
+    preferred_provider: "mock_attested",
+    selected_provider: "mock_attested",
+    remote_execution_ready: true,
+    shielded_rail_ready: true,
+    blocking_reasons: [],
+    providers: [{
+      id: "mock_attested",
+      label: "Mock attested provider",
+      configured: true,
+      available: true,
+      attested: true,
+      supports_sealed_secrets: true,
+      supports_background_agents: true,
+      supports_trading_execution: true,
+      reason: null,
+    }],
+  };
+}
 
 function clearEnv() {
   for (const key of ENV_KEYS) delete process.env[key];

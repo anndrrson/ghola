@@ -117,6 +117,7 @@ import {
   workerAuthorizationHeader,
   workerCapabilityExpectedFromBody,
 } from "@/lib/private-agent-capability";
+import { privateAgentTransportAllowed } from "@/lib/private-agent-spend-policy";
 import {
   getPooledWorkerReadiness,
   pooledWorkerVenueId,
@@ -2709,12 +2710,19 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
   };
 }
 
-export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRequestOwner) {
+interface PrivateWorkerTransportOptions {
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
+}
+
+export async function hyperliquidAccountSnapshotForOwner(
+  owner: PrivateAccountRequestOwner,
+  transport: PrivateWorkerTransportOptions = {},
+) {
   const account = await createOrGetStoredPrivateAccount(owner);
-  const [vault, allocation, runtime] = await Promise.all([
+  const [vault, allocation] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
-    getPrivateAgentRuntimeStatus().catch(() => null),
   ]);
   const hasVault = vault?.status === "sealed";
   const hasManaged = allocation?.status === "allocated";
@@ -2729,7 +2737,8 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
       next_step: "Use Ghola Vault Mode or bring an API wallet.",
     });
   }
-  if (localHyperliquidPilotEnabled()) {
+  const env = transport.env ?? process.env;
+  if (localHyperliquidPilotEnabled(env)) {
     return localHyperliquidAccountSnapshot({
       status: "ready_to_trade",
       account_source: accountSource,
@@ -2737,9 +2746,18 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
       next_step: "Preview trade.",
     });
   }
-  const cfg = hyperliquidWorkerConfig();
+  const cfg = hyperliquidWorkerConfig(env);
+  if (!cfg.url || !privateAgentTransportAllowed("session", env, transport.fetchImpl)) {
+    return localHyperliquidAccountSnapshot({
+      status: "worker_unavailable",
+      account_source: accountSource,
+      trading_enabled: false,
+      next_step: "Wait for the private worker to come back online.",
+    });
+  }
+  const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
   const workerReady = Boolean(runtime?.selected_provider);
-  if (!cfg.url || !workerReady) {
+  if (!workerReady) {
     return localHyperliquidAccountSnapshot({
       status: "worker_unavailable",
       account_source: accountSource,
@@ -2775,7 +2793,7 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
         platform_class: "hyperliquid_style_market",
       }),
     });
-    const res = await fetch(new URL(workerPath, cfg.url), {
+    const res = await (transport.fetchImpl ?? fetch)(new URL(workerPath, cfg.url), {
       method: "POST",
       cache: "no-store",
       headers: {
@@ -2825,12 +2843,12 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
 export async function hyperliquidAccountStreamForOwner(
   owner: PrivateAccountRequestOwner,
   req: Request,
+  transport: PrivateWorkerTransportOptions = {},
 ) {
   const account = await createOrGetStoredPrivateAccount(owner);
-  const [vault, allocation, runtime] = await Promise.all([
+  const [vault, allocation] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
-    getPrivateAgentRuntimeStatus().catch(() => null),
   ]);
   const hasVault = vault?.status === "sealed";
   const hasManaged = allocation?.status === "allocated";
@@ -2848,7 +2866,8 @@ export async function hyperliquidAccountStreamForOwner(
       stream_status: "venue_access_required",
     }));
   }
-  if (localHyperliquidPilotEnabled()) {
+  const env = transport.env ?? process.env;
+  if (localHyperliquidPilotEnabled(env)) {
     return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
       status: "ready_to_trade",
       account_source: accountSource,
@@ -2858,9 +2877,19 @@ export async function hyperliquidAccountStreamForOwner(
     }));
   }
 
-  const cfg = hyperliquidWorkerConfig();
+  const cfg = hyperliquidWorkerConfig(env);
+  if (!cfg.url || !privateAgentTransportAllowed("session", env, transport.fetchImpl)) {
+    return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
+      status: "worker_unavailable",
+      account_source: accountSource,
+      trading_enabled: false,
+      next_step: "Wait for the private worker to come back online.",
+      stream_status: "worker_unavailable",
+    }));
+  }
+  const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
   const workerReady = Boolean(runtime?.selected_provider);
-  if (!cfg.url || !workerReady) {
+  if (!workerReady) {
     return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
       status: "worker_unavailable",
       account_source: accountSource,
@@ -2900,7 +2929,7 @@ export async function hyperliquidAccountStreamForOwner(
         platform_class: "hyperliquid_style_market",
       }),
     });
-    const res = await fetch(new URL(workerPath, cfg.url), {
+    const res = await (transport.fetchImpl ?? fetch)(new URL(workerPath, cfg.url), {
       method: "POST",
       cache: "no-store",
       headers: {
@@ -2946,6 +2975,7 @@ export async function hyperliquidAccountStreamForOwner(
 export async function allocateHyperliquidManagedFromBody(
   body: unknown,
   owner: PrivateAccountRequestOwner,
+  transport: PrivateWorkerTransportOptions = {},
 ) {
   const value = objectBody(body);
   const account = await createOrGetStoredPrivateAccount(owner);
@@ -2966,6 +2996,13 @@ export async function allocateHyperliquidManagedFromBody(
       ghola_balance: publicGholaBalanceSnapshot(snapshot),
       ready: true,
     };
+  }
+  const env = transport.env ?? process.env;
+  if (
+    !localHyperliquidPilotEnabled(env) &&
+    !privateAgentTransportAllowed("session", env, transport.fetchImpl)
+  ) {
+    return { error: "connector_endpoint_missing" as const };
   }
   if (requestedMode === "ghola_pooled") {
     const workerGate = await pooledWorkerVenueGate("hyperliquid");
@@ -3037,7 +3074,7 @@ export async function allocateHyperliquidManagedFromBody(
     eligibility_commitment: eligibility?.eligibility_commitment ?? null,
     funding_evidence_commitment: fundingEvidenceCommitment,
     fallback: localAllocation,
-  });
+  }, transport);
   if ("error" in workerAllocation) return workerAllocation;
   const stored = await putHyperliquidManagedAllocation({
     version: 1,
@@ -3207,6 +3244,11 @@ export async function confirmHyperliquidNativeVaultDepositFromBody(
   const existingNative = existing?.allocation.execution_mode === "hyperliquid_native_vault"
     ? existing
     : null;
+  const previousUpdatedAt = existingNative ? Date.parse(existingNative.updated_at) : Number.NaN;
+  const confirmedAt = new Date(Math.max(
+    Date.now(),
+    Number.isFinite(previousUpdatedAt) ? previousUpdatedAt + 1 : 0,
+  ));
   const policy = existingNative?.allocation.session_policy ?? createHyperliquidSessionPolicy({
     market_allowlist: arrayOfStrings(value.market_allowlist),
     max_notional_bucket: isFundingAmountBucket(stringValue(value.max_notional_bucket))
@@ -3229,6 +3271,7 @@ export async function confirmHyperliquidNativeVaultDepositFromBody(
     deposit_status: "confirmed",
     funding_routes: ["hyperliquid_direct", "ghola_balance_bridge"],
     allocation_seed: existingNative?.allocation.allocation_commitment || owner.owner_commitment,
+    now: confirmedAt,
   });
   const stored = await putHyperliquidManagedAllocation({
     version: 1,
@@ -6668,14 +6711,18 @@ async function requestHyperliquidManagedAllocation(input: {
   eligibility_commitment?: string | null;
   funding_evidence_commitment?: string | null;
   fallback: GholaHyperliquidManagedAllocation;
-}): Promise<
+}, transport: PrivateWorkerTransportOptions = {}): Promise<
   | { allocation: GholaHyperliquidManagedAllocation }
   | { error: "connector_endpoint_missing" | "hyperliquid_managed_allocation_failed" | "forbidden_public_field" }
 > {
-  if (localHyperliquidPilotEnabled()) {
+  const env = transport.env ?? process.env;
+  if (localHyperliquidPilotEnabled(env)) {
     return { allocation: input.fallback };
   }
-  const cfg = hyperliquidWorkerConfig();
+  if (!privateAgentTransportAllowed("session", env, transport.fetchImpl)) {
+    return { error: "connector_endpoint_missing" };
+  }
+  const cfg = hyperliquidWorkerConfig(env);
   if (!cfg.url) return { error: "connector_endpoint_missing" };
   try {
     const workerPath = "/hyperliquid/managed/allocations";
@@ -6707,7 +6754,7 @@ async function requestHyperliquidManagedAllocation(input: {
         operation_class: "managed_allocation",
       }),
     });
-    const res = await fetch(new URL(workerPath, cfg.url), {
+    const res = await (transport.fetchImpl ?? fetch)(new URL(workerPath, cfg.url), {
       method: "POST",
       cache: "no-store",
       headers: {
@@ -6827,6 +6874,7 @@ function normalizeHyperliquidAccountSnapshot(
     : "worker_unavailable";
   const source = stringValue(value.account_source);
   const equityBucket = stringValue(value.equity_bucket);
+  const marginUtilizationBucket = stringValue(value.margin_utilization_bucket);
   return {
     version: 1,
     platform_class: "hyperliquid_style_market" as const,
@@ -6840,12 +6888,30 @@ function normalizeHyperliquidAccountSnapshot(
       source === "none"
       ? source
       : fallbackSource,
+    network: stringValue(value.network) === "testnet"
+      ? "testnet" as const
+      : stringValue(value.network) === "mainnet"
+        ? "mainnet" as const
+        : null,
     trading_enabled: value.trading_enabled === true && normalizedStatus === "ready_to_trade",
     equity_bucket: equityBucket === "none" || equityBucket === "low" || equityBucket === "ready"
       ? equityBucket
       : "unknown",
+    margin_utilization_bucket:
+      marginUtilizationBucket === "none" ||
+      marginUtilizationBucket === "<25%" ||
+      marginUtilizationBucket === "25-50%" ||
+      marginUtilizationBucket === "50-75%" ||
+      marginUtilizationBucket === "75-90%" ||
+      marginUtilizationBucket === "90%+"
+        ? marginUtilizationBucket
+        : "unknown" as const,
     position_count: Math.max(0, Math.min(100, Math.floor(numberValue(value.position_count) || 0))),
+    position_total_count: Math.max(0, Math.min(100, Math.floor(numberValue(value.position_total_count) || numberValue(value.position_count) || 0))),
+    positions_truncated: value.positions_truncated === true,
     open_order_count: Math.max(0, Math.min(100, Math.floor(numberValue(value.open_order_count) || 0))),
+    open_order_total_count: Math.max(0, Math.min(100, Math.floor(numberValue(value.open_order_total_count) || numberValue(value.open_order_count) || 0))),
+    open_orders_truncated: value.open_orders_truncated === true,
     last_checked_at: stringValue(value.last_checked_at) || new Date().toISOString(),
     next_step: stringValue(value.next_step) || hyperliquidSnapshotNextStep(normalizedStatus),
   };
@@ -6865,10 +6931,16 @@ function localHyperliquidAccountSnapshot(input: {
     venue_id: "hyperliquid" as const,
     status: input.status,
     account_source: input.account_source,
+    network: null,
     trading_enabled: input.trading_enabled,
     equity_bucket: input.status === "ready_to_trade" ? "ready" as const : "unknown" as const,
+    margin_utilization_bucket: "unknown" as const,
     position_count: 0,
+    position_total_count: 0,
+    positions_truncated: false,
     open_order_count: 0,
+    open_order_total_count: 0,
+    open_orders_truncated: false,
     stream_status: input.stream_status || "snapshot",
     positions: [],
     open_orders: [],
@@ -6912,18 +6984,20 @@ function hyperliquidSnapshotNextStep(status: string) {
   return "Wait for the private worker to come back online.";
 }
 
-function hyperliquidWorkerConfig() {
+function hyperliquidWorkerConfig(
+  env: Record<string, string | undefined> = process.env,
+) {
   return {
     url:
-      process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL?.trim() ||
-      process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() ||
-      process.env.GHOLA_PRIVATE_AGENT_WORKER_URL?.trim() ||
-      process.env.PHALA_AGENT_ENDPOINT?.trim() ||
+      env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL?.trim() ||
+      env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() ||
+      env.GHOLA_PRIVATE_AGENT_WORKER_URL?.trim() ||
+      env.PHALA_AGENT_ENDPOINT?.trim() ||
       "",
     token:
-      process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN?.trim() ||
-      process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
-      process.env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
+      env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN?.trim() ||
+      env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
+      env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
       "",
   };
 }
@@ -6969,8 +7043,10 @@ function hyperliquidStreamCoin(value: unknown) {
   return coin === "ETH" || coin === "SOL" || coin === "HYPE" ? coin : "BTC";
 }
 
-function localHyperliquidPilotEnabled() {
-  return process.env.NODE_ENV === "test" || process.env.GHOLA_CONNECTOR_MODE === "local_test";
+function localHyperliquidPilotEnabled(
+  env: Record<string, string | undefined> = process.env,
+) {
+  return env.NODE_ENV === "test" || env.GHOLA_CONNECTOR_MODE === "local_test";
 }
 
 function publicVenueExecutionVault(record: PrivateVenueExecutionVaultRecordV1) {

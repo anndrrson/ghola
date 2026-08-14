@@ -14,6 +14,7 @@ import {
   wakePhalaPrivateAgentForUse,
 } from "@/lib/private-agent-phala";
 import { getPrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime-server";
+import { privateAgentSpendPolicy } from "@/lib/private-agent-spend-policy";
 import { json, privateAccountOwnerFromRequest, unauthorized } from "../../../_lib";
 
 export const dynamic = "force-dynamic";
@@ -23,6 +24,9 @@ export const maxDuration = 120;
 export async function POST(request: Request) {
   if (!wakeEnabled()) return json({ error: "consumer_worker_wake_disabled" }, 403);
   if (!sameOrigin(request)) return json({ error: "same_origin_required" }, 403);
+  if (!privateAgentSpendPolicy("wake").allowed) {
+    return json({ error: "consumer_worker_wake_disabled" }, 403);
+  }
   const owner = await privateAccountOwnerFromRequest(request);
   if (!owner) return unauthorized();
 

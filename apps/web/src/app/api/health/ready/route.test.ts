@@ -30,6 +30,15 @@ vi.mock("@/lib/consumer-turnkey-treasury", () => ({
   consumerTreasuryConfigured: vi.fn(() => false),
 }));
 
+vi.mock("@/lib/private-agent-worker-readiness", () => ({
+  probeConfiguredAutopilotWorkerReadiness: vi.fn(async () => ({
+    ok: true,
+    error: null,
+    missing: [],
+    status: 200,
+  })),
+}));
+
 import { GET } from "./route";
 
 const ORIGINAL_ENV = { ...process.env };

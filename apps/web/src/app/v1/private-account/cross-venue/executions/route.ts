@@ -8,6 +8,7 @@ import {
 import { probeCrossVenueExecutionReadiness, submitCrossVenueExecution } from "@/lib/cross-venue-worker";
 import { getConsumerCircuitState, haltConsumerCircuit } from "@/lib/consumer-production-store";
 import { getTriVenueMarketBundle } from "@/lib/private-account-tri-venue-arb";
+import { privateAgentSpendPolicy } from "@/lib/private-agent-spend-policy";
 import { json, privateAccountOwnerFromRequest, unauthorized } from "../../_lib";
 import { triVenueLiveGuard } from "../../arb/tri-venue/_lib";
 
@@ -25,6 +26,8 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   if (!sameOrigin(request)) return json({ error: "same_origin_required" }, 403);
+  const spendPolicy = privateAgentSpendPolicy("execute");
+  if (!spendPolicy.allowed) return json({ version: 1, error: spendPolicy.reason }, 403);
   const readiness = await probeCrossVenueExecutionReadiness();
   if (!readiness.ready) return json({ error: "cross_venue_execution_not_ready", readiness }, 409);
   const guarded = await triVenueLiveGuard(request);

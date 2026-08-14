@@ -7,6 +7,10 @@ import {
   privateAgentRuntimeLeaseActive,
 } from "./private-agent-runtime-lease";
 import { countActivePrivateAutopilotSessions } from "./private-account-store";
+import {
+  privateAgentEnvironment,
+  privateAgentSpendPolicy,
+} from "./private-agent-spend-policy";
 
 const DEFAULT_WORKER_IMAGE =
   "ghcr.io/anndrrson/ghola:private-agent-worker-d36f9cc@sha256:f87611da536b4b9ac712829a045d7153e80dc71708739cab95c5b4fefd183eb4";
@@ -396,11 +400,7 @@ export async function markPhalaPrivateAgentActivity(input: {
 }
 
 export function privateAgentRemoteExecutionDisabled(): boolean {
-  return (
-    boolEnv("GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED") ||
-    privateAgentSpendLockdownEnabled() ||
-    !privateAgentSpendArmed()
-  );
+  return !privateAgentSpendPolicy("execute").allowed || !privateAgentSpendArmed();
 }
 
 export function privateAgentSpendLockdownEnabled(): boolean {
@@ -408,6 +408,7 @@ export function privateAgentSpendLockdownEnabled(): boolean {
 }
 
 export function privateAgentSpendArmed(): boolean {
+  if (privateAgentEnvironment() !== "production") return false;
   const explicit = nullableBoolEnv("GHOLA_PRIVATE_AGENT_SPEND_ARMED");
   if (explicit !== null) return explicit;
   const explicitWake = nullableBoolEnv("GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED");
@@ -432,7 +433,7 @@ function phalaWakeOnUseEvidence() {
 
 function productionCredentialWakeOnUseAllowed(): boolean {
   return (
-    (process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production") &&
+    privateAgentEnvironment() === "production" &&
     phalaWakeOnUseConfigPresent()
   );
 }
@@ -642,6 +643,7 @@ function attestationPresent(attestation: unknown): boolean {
 export async function discoverPhalaPrivateAgentProvider(): Promise<
   ConfidentialComputeProviderStatus | null
 > {
+  if (!privateAgentSpendPolicy("discover").allowed) return null;
   const client = await phalaClient();
   if (!client) return null;
 
@@ -761,6 +763,7 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
 }
 
 export async function discoverPhalaPrivateAgentExecutionUrl(): Promise<string | null> {
+  if (!privateAgentSpendPolicy("discover").allowed) return null;
   const client = await phalaClient();
   if (!client) return null;
   const name = phalaCvmName();

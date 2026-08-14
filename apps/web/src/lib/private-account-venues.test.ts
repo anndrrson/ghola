@@ -24,6 +24,7 @@ import {
   submitConnectorWorkOrder,
 } from "./private-account-connectors";
 import { sealedRuntimeHealth } from "./private-account-runtime";
+import { brandPrivateAgentMockTransport } from "./private-agent-spend-policy";
 
 const NOW = new Date("2026-05-27T12:00:00.000Z");
 
@@ -273,6 +274,9 @@ describe("Coinbase Advanced private venue and omnibus model", () => {
         aad: "ghola/private-execution-instruction-v1|work_order:connector_work_order_test|venue:coinbase_advanced|recipient:phala:cvm:test",
       },
       env,
+      fetchImpl: brandPrivateAgentMockTransport(
+        ((...args) => fetchMock(...args)) as typeof fetch,
+      ),
       now: NOW,
     });
 
@@ -411,6 +415,9 @@ describe("Coinbase Advanced private venue and omnibus model", () => {
         aad: "ghola/private-execution-instruction-v1|work_order:connector_work_order_test|venue:phoenix|recipient:phala:cvm:test",
       },
       env,
+      fetchImpl: brandPrivateAgentMockTransport(
+        ((...args) => fetchMock(...args)) as typeof fetch,
+      ),
       now: NOW,
     });
 

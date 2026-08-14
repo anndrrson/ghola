@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createLiveTradingStatusGet } from "./_handler";
 import { GET } from "./route";
 import { POST as POSTCanaryReport } from "../canary-report/route";
 import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
+import { brandPrivateAgentMockTransport } from "@/lib/private-agent-spend-policy";
 
 const ENV_KEYS = [
   "GHOLA_LIVE_TRADING_PUBLIC_ENABLED",
@@ -103,7 +105,7 @@ describe("private account live trading launch gate", () => {
   it("enables BYO mainnet live submit with ready env before pooled pools are configured", async () => {
     enableGreenGateEnv();
 
-    const res = await GET();
+    const res = await testStatusGet()();
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.status).toBe("green");
@@ -136,7 +138,7 @@ describe("private account live trading launch gate", () => {
     enableGreenGateEnv();
     delete process.env.GHOLA_PRIVATE_RUNTIME_URL;
 
-    const res = await GET();
+    const res = await testStatusGet()();
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.status).toBe("green");
@@ -162,7 +164,7 @@ describe("private account live trading launch gate", () => {
     enableGreenGateEnv();
     enablePooledPoolEnv();
 
-    const res = await GET();
+    const res = await testStatusGet()();
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.status).toBe("green");
@@ -175,9 +177,9 @@ describe("private account live trading launch gate", () => {
     enableGreenGateEnv();
     enablePooledPoolEnv();
     enablePooledWorkerEnv();
-    const fetchSpy = mockPooledWorkerReady();
+    const fetchSpy = pooledWorkerReadyMock();
 
-    const res = await GET();
+    const res = await testStatusGet(fetchSpy)();
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toMatchObject({
@@ -214,9 +216,9 @@ describe("private account live trading launch gate", () => {
   it("turns pooled live for the ready venues without blocking on every pooled venue", async () => {
     enableGreenGateEnv();
     enablePooledWorkerEnv();
-    const fetchSpy = mockPooledWorkerPartiallyReady();
+    const fetchSpy = pooledWorkerPartiallyReadyMock();
 
-    const res = await GET();
+    const res = await testStatusGet(fetchSpy)();
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toMatchObject({
@@ -265,8 +267,8 @@ describe("private account live trading launch gate", () => {
       broadcast_performed: false,
     });
 
-    const fetchSpy = mockPooledWorkerPartiallyReady();
-    const res = await GET();
+    const fetchSpy = pooledWorkerPartiallyReadyMock();
+    const res = await testStatusGet(fetchSpy)();
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(fetchSpy).toHaveBeenCalledOnce();
@@ -347,8 +349,14 @@ function enablePooledWorkerEnv() {
   process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "test-worker-capability-secret";
 }
 
-function mockPooledWorkerReady() {
-  return vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+function testStatusGet(fetchImpl: typeof fetch = vi.fn<typeof fetch>()) {
+  return createLiveTradingStatusGet({
+    fetchImpl: brandPrivateAgentMockTransport(fetchImpl),
+  });
+}
+
+function pooledWorkerReadyMock() {
+  return vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
     version: 1,
     status: "ready",
     ready: true,
@@ -369,8 +377,8 @@ function mockPooledWorkerReady() {
   }));
 }
 
-function mockPooledWorkerPartiallyReady() {
-  return vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+function pooledWorkerPartiallyReadyMock() {
+  return vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
     version: 1,
     status: "blocked",
     ready: false,

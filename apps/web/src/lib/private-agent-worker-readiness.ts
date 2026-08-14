@@ -1,3 +1,5 @@
+import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
+
 export interface AutopilotWorkerConfig {
   url: URL | null;
   token: string;
@@ -60,16 +62,36 @@ export async function probeConfiguredAutopilotWorkerReadiness(
       status: null,
     };
   }
+  if (!privateAgentTransportAllowed("discover", env, fetchImpl)) {
+    return {
+      ok: false,
+      error: "worker_not_configured",
+      missing: [],
+      status: null,
+    };
+  }
   return probeAutopilotWorkerReadiness(config.url, fetchImpl, {
     allowUnattestedDevelopmentWorker: allowUnattestedDevelopmentWorker(env),
+    env,
   });
 }
 
 export async function probeAutopilotWorkerReadiness(
   workerUrl: URL,
   fetchImpl: typeof fetch = fetch,
-  options: { allowUnattestedDevelopmentWorker?: boolean } = {},
+  options: {
+    allowUnattestedDevelopmentWorker?: boolean;
+    env?: Record<string, string | undefined>;
+  } = {},
 ): Promise<AutopilotWorkerReadiness> {
+  if (!privateAgentTransportAllowed("discover", options.env ?? process.env, fetchImpl)) {
+    return {
+      ok: false,
+      error: "worker_not_configured",
+      missing: [],
+      status: null,
+    };
+  }
   const response = await fetchImpl(new URL("/ready", workerUrl), {
     method: "GET",
     cache: "no-store",
@@ -85,7 +107,7 @@ export async function probeAutopilotWorkerReadiness(
   }
   const body = asRecord(await response.json().catch(() => null));
   const missing = stringArray(body.missing).slice(0, 20);
-  const expectedUnattestedMissing = ["attestation", "measurement", "attestation_hash"];
+  const expectedUnattestedMissing = ["attestation", "image_digest", "measurement", "attestation_hash"];
   const isExpectedUnattestedDevelopmentWorker =
     options.allowUnattestedDevelopmentWorker === true &&
     missing.length === expectedUnattestedMissing.length &&

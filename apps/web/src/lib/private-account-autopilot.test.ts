@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import bs58 from "bs58";
 import { ed25519 } from "@noble/curves/ed25519";
@@ -16,6 +16,7 @@ import {
 } from "./private-account-store";
 import { createHyperliquidExecutionVault } from "./private-account";
 import {
+  controlAutonomousAutopilotSessionFromBody,
   controlAutopilotSessionFromBody,
   createAutonomousAutopilotSessionFromBody,
   createAutopilotSessionFromBody,
@@ -27,6 +28,7 @@ import {
 } from "./private-account-autopilot";
 import { probeConfiguredAutopilotWorkerReadiness } from "./private-agent-worker-readiness";
 import { privateAccountMobileProofMessage } from "./private-account-mobile-proof";
+import { brandPrivateAgentMockTransport } from "./private-agent-spend-policy";
 
 const owner = { owner_commitment: "owner_a" };
 const authenticatedOwner: PrivateAccountRequestOwner = {
@@ -43,6 +45,7 @@ describe("private account autopilot sessions", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET;
@@ -75,6 +78,8 @@ describe("private account autopilot sessions", () => {
         },
         venue_allowlist: ["hyperliquid"],
         market_allowlist: ["BTC-USD"],
+        execution_network: "mainnet",
+        exact_notional_usd: "5",
         max_notional_bucket: "5",
         max_slippage_bps: 50,
       },
@@ -176,6 +181,371 @@ describe("private account autopilot sessions", () => {
     expect("events" in events && events.events.some((event) => event.message === "Autopilot kill.")).toBe(true);
   });
 
+  it("denies autonomous resume before transport or local session mutation", async () => {
+    const now = new Date("2026-08-12T12:00:00.000Z");
+    const created = await createAutopilotSessionFromBody({}, owner, now);
+    const paused = await controlAutopilotSessionFromBody(
+      created.session.autopilot_session_id,
+      "pause",
+      owner,
+      now,
+    );
+    expect("session" in paused && paused.session.status).toBe("paused");
+    const before = await getAutopilotSessionForOwner(created.session.autopilot_session_id, owner, now);
+    let fetchCalls = 0;
+    const fetchImpl = (async () => {
+      fetchCalls += 1;
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const result = await controlAutonomousAutopilotSessionFromBody(
+      created.session.autopilot_session_id,
+      "resume",
+      owner,
+      new Date("2026-08-12T12:01:00.000Z"),
+      {
+        NODE_ENV: "production",
+        VERCEL_ENV: "production",
+        GHOLA_PRIVATE_AGENT_SPEND_ARMED: "true",
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+      },
+      fetchImpl,
+    );
+    const after = await getAutopilotSessionForOwner(created.session.autopilot_session_id, owner, now);
+
+    expect(result).toEqual({ error: "private_agent_transport_blocked" });
+    expect(fetchCalls).toBe(0);
+    expect(after).toEqual(before);
+  });
+
+  it("keeps the prior live session on worker control failure and commits only after retry acknowledgment", async () => {
+    const createdAt = new Date("2026-08-12T12:00:00.000Z");
+    const env = {
+      GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+    };
+    let killAttempts = 0;
+    const transport = brandPrivateAgentMockTransport((async (input: URL | RequestInfo) => {
+      const url = String(input);
+      if (url.endsWith("/ready")) {
+        return Response.json({ ready: true, missing: [] });
+      }
+      if (url.endsWith("/autopilot/sessions")) {
+        return Response.json({
+          session: {
+            autopilot_session_id: "worker_control_ack",
+            status: "running",
+            execution_enabled: true,
+          },
+          events: [],
+        }, { status: 201 });
+      }
+      if (url.endsWith("/worker_control_ack/kill")) {
+        killAttempts += 1;
+        if (killAttempts === 1) {
+          return Response.json({ error: "worker_busy" }, { status: 503 });
+        }
+        return Response.json({
+          session: {
+            autopilot_session_id: "worker_control_ack",
+            status: "killed",
+            execution_enabled: false,
+            updated_at: "2026-08-12T12:02:00.000Z",
+          },
+          event: {
+            event_id: "worker_kill_ack",
+            type: "session_state",
+            status: "killed",
+            message: "Autopilot kill.",
+            data: { action: "kill" },
+          },
+        });
+      }
+      return Response.json({ error: "unexpected_worker_path" }, { status: 500 });
+    }) as typeof fetch);
+    const created = await createAutonomousAutopilotSessionFromBody(
+      {},
+      owner,
+      createdAt,
+      env,
+      transport,
+    );
+    expect(created.session).toMatchObject({
+      worker_autopilot_session_id: "worker_control_ack",
+      status: "running",
+      execution_enabled: true,
+    });
+    const before = await getAutopilotSessionForOwner(
+      created.session.autopilot_session_id,
+      owner,
+      new Date("2026-08-12T12:01:00.000Z"),
+    );
+
+    const failed = await controlAutonomousAutopilotSessionFromBody(
+      created.session.autopilot_session_id,
+      "kill",
+      owner,
+      new Date("2026-08-12T12:01:00.000Z"),
+      env,
+      transport,
+    );
+    const afterFailure = await getAutopilotSessionForOwner(
+      created.session.autopilot_session_id,
+      owner,
+      new Date("2026-08-12T12:01:00.000Z"),
+    );
+
+    expect(failed).toEqual({
+      error: "autopilot_worker_control_unconfirmed",
+      action: "kill",
+      reason: "worker_busy",
+      retryable: true,
+    });
+    expect(afterFailure).toEqual(before);
+    expect(afterFailure).toMatchObject({ status: "running", execution_enabled: true });
+
+    const retried = await controlAutonomousAutopilotSessionFromBody(
+      created.session.autopilot_session_id,
+      "kill",
+      owner,
+      new Date("2026-08-12T12:02:00.000Z"),
+      env,
+      transport,
+    );
+    expect(retried).toMatchObject({
+      session: { status: "killed", execution_enabled: false },
+      event: { event_id: "worker_kill_ack", status: "killed" },
+    });
+    expect(killAttempts).toBe(2);
+  });
+
+  it("rejects 2xx worker responses with mismatched control state or action", async () => {
+    const env = {
+      GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+    };
+    let controlAttempts = 0;
+    const transport = brandPrivateAgentMockTransport((async (input: URL | RequestInfo) => {
+      const url = String(input);
+      if (url.endsWith("/ready")) return Response.json({ ready: true, missing: [] });
+      if (url.endsWith("/autopilot/sessions")) return Response.json({
+        session: {
+          autopilot_session_id: "worker_bad_ack",
+          status: "running",
+          execution_enabled: true,
+        },
+        events: [],
+      }, { status: 201 });
+      controlAttempts += 1;
+      const stateMismatch = controlAttempts === 1;
+      return Response.json({
+        session: {
+          autopilot_session_id: "worker_bad_ack",
+          status: stateMismatch ? "running" : "killed",
+          execution_enabled: stateMismatch,
+        },
+        event: {
+          event_id: "worker_bad_kill_ack",
+          type: "session_state",
+          status: stateMismatch ? "running" : "killed",
+          message: stateMismatch ? "Still running." : "Wrong action.",
+          data: { action: stateMismatch ? "kill" : "pause" },
+        },
+      });
+    }) as typeof fetch);
+    const created = await createAutonomousAutopilotSessionFromBody(
+      {},
+      owner,
+      new Date("2026-08-12T12:00:00.000Z"),
+      env,
+      transport,
+    );
+
+    const result = await controlAutonomousAutopilotSessionFromBody(
+      created.session.autopilot_session_id,
+      "kill",
+      owner,
+      new Date("2026-08-12T12:01:00.000Z"),
+      env,
+      transport,
+    );
+    const stored = await getAutopilotSessionForOwner(
+      created.session.autopilot_session_id,
+      owner,
+      new Date("2026-08-12T12:01:00.000Z"),
+    );
+
+    expect(result).toMatchObject({
+      error: "autopilot_worker_control_unconfirmed",
+      action: "kill",
+      reason: "worker_kill_not_acknowledged",
+    });
+    await expect(controlAutonomousAutopilotSessionFromBody(
+      created.session.autopilot_session_id,
+      "kill",
+      owner,
+      new Date("2026-08-12T12:02:00.000Z"),
+      env,
+      transport,
+    )).resolves.toMatchObject({
+      error: "autopilot_worker_control_unconfirmed",
+      action: "kill",
+      reason: "worker_control_action_mismatch",
+    });
+    expect(stored).toMatchObject({ status: "running", execution_enabled: true });
+    await expect(getAutopilotSessionForOwner(
+      created.session.autopilot_session_id,
+      owner,
+      new Date("2026-08-12T12:02:00.000Z"),
+    )).resolves.toMatchObject({ status: "running", execution_enabled: true });
+  });
+
+  it("keeps a live session on failed pause and persists only an exact paused acknowledgment", async () => {
+    const env = {
+      GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+    };
+    let pauseAttempts = 0;
+    const transport = brandPrivateAgentMockTransport((async (input: URL | RequestInfo) => {
+      const url = String(input);
+      if (url.endsWith("/ready")) return Response.json({ ready: true, missing: [] });
+      if (url.endsWith("/autopilot/sessions")) {
+        return Response.json({
+          session: {
+            autopilot_session_id: "worker_pause_ack",
+            status: "running",
+            execution_enabled: true,
+          },
+          events: [],
+        }, { status: 201 });
+      }
+      pauseAttempts += 1;
+      if (pauseAttempts === 1) {
+        return Response.json({ error: "worker_timeout" }, { status: 504 });
+      }
+      return Response.json({
+        session: {
+          autopilot_session_id: "worker_pause_ack",
+          status: "paused",
+          execution_enabled: false,
+        },
+        event: {
+          event_id: "worker_pause_ack_event",
+          type: "session_state",
+          status: "paused",
+          message: "Autopilot pause.",
+          data: { action: "pause" },
+        },
+      });
+    }) as typeof fetch);
+    const created = await createAutonomousAutopilotSessionFromBody(
+      {},
+      owner,
+      new Date("2026-08-12T12:00:00.000Z"),
+      env,
+      transport,
+    );
+
+    const failed = await controlAutonomousAutopilotSessionFromBody(
+      created.session.autopilot_session_id,
+      "pause",
+      owner,
+      new Date("2026-08-12T12:01:00.000Z"),
+      env,
+      transport,
+    );
+    const afterFailure = await getAutopilotSessionForOwner(
+      created.session.autopilot_session_id,
+      owner,
+      new Date("2026-08-12T12:01:00.000Z"),
+    );
+    expect(failed).toMatchObject({
+      error: "autopilot_worker_control_unconfirmed",
+      action: "pause",
+      reason: "worker_timeout",
+    });
+    expect(afterFailure).toMatchObject({ status: "running", execution_enabled: true });
+
+    const acknowledged = await controlAutonomousAutopilotSessionFromBody(
+      created.session.autopilot_session_id,
+      "pause",
+      owner,
+      new Date("2026-08-12T12:02:00.000Z"),
+      env,
+      transport,
+    );
+    expect(acknowledged).toMatchObject({
+      session: { status: "paused", execution_enabled: false },
+      event: {
+        status: "paused",
+        data: { action: "pause" },
+      },
+    });
+    expect(pauseAttempts).toBe(2);
+  });
+
+  it("bounds an unresponsive worker control, returns retryable timeout, and leaves local state live", async () => {
+    vi.useFakeTimers();
+    const env = {
+      GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+      GHOLA_AUTOPILOT_CONTROL_TIMEOUT_MS: "1",
+    };
+    const transport = brandPrivateAgentMockTransport((async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/ready")) return Response.json({ ready: true, missing: [] });
+      if (url.endsWith("/autopilot/sessions")) {
+        return Response.json({
+          session: {
+            autopilot_session_id: "worker_control_timeout",
+            status: "running",
+            execution_enabled: true,
+          },
+          events: [],
+        }, { status: 201 });
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+          once: true,
+        });
+      });
+    }) as typeof fetch);
+    const created = await createAutonomousAutopilotSessionFromBody(
+      {},
+      owner,
+      new Date("2026-08-12T12:00:00.000Z"),
+      env,
+      transport,
+    );
+
+    const pending = controlAutonomousAutopilotSessionFromBody(
+      created.session.autopilot_session_id,
+      "kill",
+      owner,
+      new Date("2026-08-12T12:01:00.000Z"),
+      env,
+      transport,
+    );
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(249);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toEqual({
+      error: "autopilot_worker_control_unconfirmed",
+      action: "kill",
+      reason: "worker_control_timeout",
+      retryable: true,
+    });
+    await expect(getAutopilotSessionForOwner(
+      created.session.autopilot_session_id,
+      owner,
+      new Date("2026-08-12T12:01:00.000Z"),
+    )).resolves.toMatchObject({ status: "running", execution_enabled: true });
+    vi.useRealTimers();
+  });
+
   it("arms the private worker and mirrors worker events into the local session", async () => {
     const calls: string[] = [];
     const fetchImpl = async (input: URL | RequestInfo) => {
@@ -256,7 +626,7 @@ describe("private account autopilot sessions", () => {
         GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
         GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
       },
-      fetchImpl,
+      brandPrivateAgentMockTransport(fetchImpl as typeof fetch),
     );
 
     expect(calls).toEqual([
@@ -344,9 +714,10 @@ describe("private account autopilot sessions", () => {
       {
         GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
         GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "false",
+        GHOLA_PRIVATE_AGENT_SPEND_ARMED: "true",
         PHALA_CLOUD_API_KEY: "phala-key",
       },
-      fetchImpl,
+      brandPrivateAgentMockTransport(fetchImpl as typeof fetch),
       {
         wakePhalaForUse: async (input) => {
           wakeReasons.push(input.reason);
@@ -445,7 +816,7 @@ describe("private account autopilot sessions", () => {
         GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
         GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
       },
-      fetchImpl,
+      brandPrivateAgentMockTransport(fetchImpl as typeof fetch),
     );
 
     expect(workerPayload).not.toBeNull();
@@ -475,7 +846,7 @@ describe("private account autopilot sessions", () => {
     const readiness = await probeConfiguredAutopilotWorkerReadiness({
       GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
       GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
-    }, fetchImpl);
+    }, brandPrivateAgentMockTransport(fetchImpl as typeof fetch));
     expect(readiness).toEqual({
       ok: false,
       error: "worker_not_ready:attestation,measurement,attestation_hash",
@@ -496,7 +867,7 @@ describe("private account autopilot sessions", () => {
         GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
         GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
       },
-      fetchImpl,
+      brandPrivateAgentMockTransport(fetchImpl as typeof fetch),
     );
 
     expect(calls).toEqual([
@@ -522,7 +893,7 @@ describe("private account autopilot sessions", () => {
       if (String(input).endsWith("/ready")) {
         return new Response(JSON.stringify({
           ready: false,
-          missing: ["attestation", "measurement", "attestation_hash"],
+          missing: ["attestation", "image_digest", "measurement", "attestation_hash"],
         }), { status: 503 });
       }
       return new Response(JSON.stringify({
@@ -549,7 +920,7 @@ describe("private account autopilot sessions", () => {
         GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
         GHOLA_PRIVATE_AGENT_ALLOW_UNATTESTED_DEV: "true",
       },
-      fetchImpl,
+      brandPrivateAgentMockTransport(fetchImpl as typeof fetch),
     );
 
     expect(calls).toEqual([
@@ -598,12 +969,14 @@ describe("private account autopilot sessions", () => {
         GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
         GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
       },
-      createFetch,
+      brandPrivateAgentMockTransport(createFetch as typeof fetch),
     );
 
-    const missingFetch = async () => new Response(JSON.stringify({
-      error: "autopilot_session_not_found",
-    }), { status: 404 });
+    const missingFetch = brandPrivateAgentMockTransport(
+      (async () => new Response(JSON.stringify({
+        error: "autopilot_session_not_found",
+      }), { status: 404 })) as typeof fetch,
+    );
     const first = await syncWorkerAutopilotSession(
       created.session.autopilot_session_id,
       owner,
@@ -631,6 +1004,40 @@ describe("private account autopilot sessions", () => {
     expect("events" in second && second.events.filter((event) =>
       event.data.error === "autopilot_session_not_found"
     )).toHaveLength(1);
+  });
+
+  it("does not poll an armed worker through the default test transport", async () => {
+    const createFetch = brandPrivateAgentMockTransport((async (input: URL | RequestInfo) => {
+      if (String(input).endsWith("/ready")) {
+        return Response.json({ ready: true, missing: [] });
+      }
+      return Response.json({
+        session: {
+          autopilot_session_id: "worker_autopilot_no_poll",
+          status: "running",
+          execution_enabled: true,
+        },
+        events: [],
+      }, { status: 201 });
+    }) as typeof fetch);
+    const env = {
+      GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+    };
+    const created = await createAutonomousAutopilotSessionFromBody(
+      {},
+      owner,
+      new Date("2026-06-01T12:00:00.000Z"),
+      env,
+      createFetch,
+    );
+    expect(created.session.worker_autopilot_session_id).toBe("worker_autopilot_no_poll");
+
+    const fetchSpy = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchSpy);
+    await syncWorkerAutopilotSession(created.session.autopilot_session_id, owner, env);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("expires sessions without exposing them to other owners", async () => {

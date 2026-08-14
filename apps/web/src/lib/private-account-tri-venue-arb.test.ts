@@ -3,9 +3,11 @@ import {
   buildTriVenueAutopilotPolicy,
   buildTriVenueOpportunities,
   getTriVenueStatus,
+  submitTriVenueWorkerCommand,
   type TriVenueQuote,
 } from "./private-account-tri-venue-arb";
 import type { PooledWorkerReadiness } from "./private-account-pooled-readiness";
+import { brandPrivateAgentMockTransport } from "./private-agent-spend-policy";
 
 describe("tri-venue SOL arb policy", () => {
   it("finds a delta-neutral preflight opportunity after buffers", () => {
@@ -83,6 +85,54 @@ describe("tri-venue SOL arb policy", () => {
     expect(status.worker_readiness.endpoint_configured).toBe(true);
     expect(status.worker_readiness.reason_codes).toContain("worker_probe_not_requested");
     expect(status.can_live_submit).toBe(false);
+  });
+
+  it.each(["run", "market-maker/start"] as const)(
+    "blocks %s transport in tests despite inherited live worker flags",
+    async (action) => {
+      let fetchCalls = 0;
+      const fetchImpl = (async () => {
+        fetchCalls += 1;
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+
+      const result = await submitTriVenueWorkerCommand({
+        action,
+        owner_commitment: "owner_policy_test",
+        env: {
+          NODE_ENV: "production",
+          VERCEL_ENV: "production",
+          GHOLA_PRIVATE_AGENT_SPEND_ARMED: "true",
+          GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+          GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+        },
+        fetchImpl,
+      });
+
+      expect(result).toEqual({ error: "private_agent_transport_blocked", status: 403 });
+      expect(fetchCalls).toBe(0);
+    },
+  );
+
+  it("allows a branded test transport to exercise the sealed worker command", async () => {
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ accepted: true }), {
+      status: 202,
+      headers: { "content-type": "application/json" },
+    }));
+    const fetchImpl = brandPrivateAgentMockTransport(fetchSpy as unknown as typeof fetch);
+
+    const result = await submitTriVenueWorkerCommand({
+      action: "run",
+      owner_commitment: "owner_policy_test",
+      env: {
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+      },
+      fetchImpl,
+    });
+
+    expect(result).toMatchObject({ status: 202, body: { accepted: true } });
+    expect(fetchSpy).toHaveBeenCalledOnce();
   });
 });
 

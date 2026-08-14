@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DELETE as revokeVault,
   GET as vaultStatus,
   POST as sealVault,
-  isTestnetVaultBundle,
 } from "./vault/route";
+import { isTestnetVaultBundle } from "./vault/vault-bundle";
 import { POST as armAgent } from "./agent/session/route";
 import { POST as accountSnapshot } from "./account-snapshot/route";
 import { GET as accountStream } from "./account-stream/route";
@@ -16,6 +16,12 @@ import { GET as nativeVaultStatus } from "./native-vault/status/route";
 import { GET as hyperliquidRoot } from "./route";
 import { GET as hyperliquidStatus } from "./status/route";
 import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
+import {
+  allocateHyperliquidManagedFromBody,
+  hyperliquidAccountSnapshotForOwner,
+  hyperliquidAccountStreamForOwner,
+  privateAccountOwnerFromRequest,
+} from "@/app/v1/private-account/_lib";
 
 function auth(userId: string) {
   return `Bearer ${[
@@ -131,6 +137,8 @@ describe("Hyperliquid private-account routes", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
     delete process.env.GHOLA_ENABLE_MOCK_ATTESTED_PROVIDER;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS;
     delete process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED;
@@ -316,6 +324,8 @@ describe("Hyperliquid private-account routes", () => {
   });
 
   it("keeps Hyperliquid native vault mode pending until deposit proof and agent readiness exist", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-08-12T12:00:00.000Z"));
     const vaultAddress = "0x2222222222222222222222222222222222222222";
     const prepareRes = await prepareNativeVault(
       request("/v1/private-account/hyperliquid/native-vault/prepare", {
@@ -363,12 +373,15 @@ describe("Hyperliquid private-account routes", () => {
     expect(confirmed.ready).toBe(true);
     expect(confirmed.native_vault_allocation.deposit_status).toBe("confirmed");
     expect(confirmed.native_vault_allocation.status).toBe("allocated");
+    expect(Date.parse(confirmed.native_vault_allocation.updated_at)).toBe(
+      Date.parse(prepared.native_vault_allocation.updated_at) + 1,
+    );
 
     const allocateRes = await allocateNativeVault(
       request("/v1/private-account/hyperliquid/native-vault/allocate", {}),
     );
     const allocated = await allocateRes.json();
-    expect(allocateRes.status).toBe(201);
+    expect(allocateRes.status, JSON.stringify(allocated)).toBe(201);
     expect(allocated.ready).toBe(true);
 
     const statusRes = await nativeVaultStatus(
@@ -437,5 +450,50 @@ describe("Hyperliquid private-account routes", () => {
     expect(JSON.stringify(state)).not.toContain("hyperliquid_account_id");
     expect(JSON.stringify(state)).not.toContain("api_wallet_private_key");
     expect(JSON.stringify(state)).not.toContain("\"orders\"");
+  });
+
+  it("blocks direct private-worker account transports before forwarding a sealed vault", async () => {
+    const preflight = await (await vaultStatus(
+      request("/v1/private-account/hyperliquid/vault"),
+    )).json();
+    const sealed = await sealVault(
+      request("/v1/private-account/hyperliquid/vault", {
+        encrypted_execution_vault: {
+          alg: "sealed-provider-v1",
+          ciphertext: "sealed-must-not-forward",
+          recipient: "mock_attested:dev",
+          aad: vaultAad(preflight.account_commitment),
+        },
+      }),
+    );
+    expect(sealed.status).toBe(201);
+    const owner = await privateAccountOwnerFromRequest(
+      request("/v1/private-account/hyperliquid/account-snapshot", {}),
+    );
+    expect(owner).not.toBeNull();
+    if (!owner) return;
+
+    const fetchSpy = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchSpy);
+    const transport = {
+      env: {
+        NODE_ENV: "development",
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
+      },
+    };
+    const snapshot = await hyperliquidAccountSnapshotForOwner(owner, transport);
+    const stream = await hyperliquidAccountStreamForOwner(
+      owner,
+      request("/v1/private-account/hyperliquid/account-stream?coin=BTC"),
+      transport,
+    );
+    const streamState = await readSseEvent(stream, "account_state");
+    const allocation = await allocateHyperliquidManagedFromBody({}, owner, transport);
+
+    expect(snapshot.status).toBe("worker_unavailable");
+    expect(streamState.stream_status).toBe("worker_unavailable");
+    expect(allocation).toEqual({ error: "connector_endpoint_missing" });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

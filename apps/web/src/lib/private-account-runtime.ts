@@ -16,6 +16,7 @@ import type {
   GholaConnectorManifest,
   GholaLinkabilityScore,
 } from "./private-account-connectors";
+import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
 
 export type GholaSealedRuntimeMode = "http" | "local_test";
 export type GholaSealedRuntimeStatus = "green" | "red";
@@ -170,6 +171,9 @@ export async function freshSealedRuntimeHealth(
       runtime_policy_commitment: null,
       reason: "sealed runtime health must use https in production",
     });
+  }
+  if (!privateAgentTransportAllowed("discover", env, fetchImpl)) {
+    return unhealthyFreshRuntime(now, mode, "sealed runtime health transport is disabled");
   }
   const healthUrl = new URL("/health", url);
   const headers = new Headers({ accept: "application/json" });

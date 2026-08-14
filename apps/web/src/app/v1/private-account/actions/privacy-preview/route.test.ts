@@ -6,6 +6,8 @@ import { POST as createFundingInstruction } from "../../funding/instruction/rout
 import { POST as importFunding } from "../../funding/import/route";
 import { POST as runBatchCoordinator } from "../../funding/batch/run/route";
 import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
+import { buildTradeOrderPlan } from "@/lib/trade-order-plan";
+import { verifyTradeOrderPlanBinding } from "@/lib/trade-order-plan-binding.server";
 
 const INTERNAL_TOKEN = "test_internal_private_account_token";
 
@@ -80,6 +82,81 @@ describe("private account privacy preview route", () => {
     delete process.env.GHOLA_SHIELDED_POOL_MODE;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_BATCH_MIN_DELAY_SECONDS;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_BATCH_REQUIRED_SET;
+    delete process.env.GHOLA_ORDER_PLAN_BINDING_SECRET;
+  });
+
+  it("returns a server-authenticated commitment over an exact fresh order plan", async () => {
+    process.env.GHOLA_ORDER_PLAN_BINDING_SECRET = "preview-binding-test-secret";
+    const intentRes = await createIntent(request({
+      action_class: "trade_on_platform",
+      product_bucket: "perps",
+    }));
+    const intent = await intentRes.json();
+    const orderPlan = buildTradeOrderPlan({
+      venueId: "hyperliquid",
+      network: "testnet",
+      coin: "BTC",
+      product: "BTC-PERP",
+      side: "buy",
+      quoteNotionalUsd: 25,
+      baseSize: 0.0004,
+      limitPrice: 62_500,
+      maxSlippageBps: 50,
+      stopLevel: 62_000,
+      strategyProfile: "breakout",
+      entryTrigger: "break_level",
+      exitRule: "exit_on_invalidation",
+      timeHorizon: "intraday",
+      triggerLevel: 62_550,
+      interval: "5m",
+      marketFetchedAt: new Date().toISOString(),
+      executionReferencePrice: 62_490,
+      frameVersion: 1,
+    });
+    expect(orderPlan).not.toBeNull();
+
+    const previewRequest = {
+      intent_id: intent.intent_id,
+      platform_class: "hyperliquid_style_market",
+      safe_input: {
+        action_class: "trade_on_platform",
+        platform_class: "hyperliquid_style_market",
+        product_bucket: "perps",
+        amount_bucket: "25",
+        urgency: "maximum_privacy",
+        destination_class: "platform_subaccount",
+        asset_bucket: "BTC",
+        solver_count_bucket: "1",
+      },
+      order_plan: orderPlan,
+    };
+    const res = await POST(request(previewRequest));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.trade_order_plan_binding).toMatchObject({
+      version: 1,
+      algorithm: "HMAC-SHA256",
+      preview_commitment: body.preview.preview_commitment,
+      order_plan: orderPlan,
+    });
+    expect(verifyTradeOrderPlanBinding(body.trade_order_plan_binding, {
+      secret: "preview-binding-test-secret",
+    })).toMatchObject({ ok: true });
+
+    const beyondCap = await POST(request({
+      ...previewRequest,
+      order_plan: { ...orderPlan!, limit_price: "63000", base_size: "0.00039683" },
+    }));
+    expect(beyondCap.status).toBe(400);
+    expect(await beyondCap.json()).toEqual({ error: "order_plan_slippage_bound_invalid" });
+
+    const oversizedQuantity = await POST(request({
+      ...previewRequest,
+      order_plan: { ...orderPlan!, base_size: "0.004" },
+    }));
+    expect(oversizedQuantity.status).toBe(400);
+    expect(await oversizedQuantity.json()).toEqual({ error: "order_plan_size_notional_mismatch" });
   });
 
   it("does not trust client-submitted vault or anonymity evidence", async () => {

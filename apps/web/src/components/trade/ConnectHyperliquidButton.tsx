@@ -6,7 +6,6 @@ import {
   getHyperliquidExecutionVaultStatus,
   revokeHyperliquidExecutionVault,
   sealHyperliquidExecutionVault,
-  wakePublicAgentWorker,
 } from "@/lib/private-account-client";
 import {
   buildHyperliquidExecutionVaultBundle,
@@ -24,9 +23,8 @@ import {
   type PrivateAgentRuntimeStatus,
 } from "@/lib/private-agent-runtime";
 
-// The agent worker sleeps when idle. Fetch the runtime; if no provider is
-// ready to seal, wake it once (bounded lease — the same flow the arm path
-// uses) and refetch before declaring the runtime offline.
+// Runtime starts are always explicit. Reading connection state must never
+// consume worker time as a side effect.
 async function sealableRuntimeStatus(): Promise<PrivateAgentRuntimeStatus> {
   const hasSealableProvider = (runtime: PrivateAgentRuntimeStatus) =>
     chooseConfidentialComputeProvider(runtime.providers, runtime.preferred_provider) !== null;
@@ -36,12 +34,7 @@ async function sealableRuntimeStatus(): Promise<PrivateAgentRuntimeStatus> {
   } catch {
     // fall through to the wake attempt
   }
-  await wakePublicAgentWorker();
-  const runtime = await fetchPrivateAgentRuntimeStatus();
-  if (!hasSealableProvider(runtime)) {
-    throw new Error("Agent runtime is offline.");
-  }
-  return runtime;
+  throw new Error("Agent runtime is offline.");
 }
 
 type VaultStatus = {
@@ -116,12 +109,15 @@ export function ConnectHyperliquidButton({
   }, [onNetworkChange]);
 
   useEffect(() => {
-    if (ready) void refresh();
+    if (!ready) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void refresh();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [ready, refresh]);
-
-  useEffect(() => {
-    setDraft((current) => ({ ...current, network }));
-  }, [network]);
 
   function handlePaste(event: ClipboardEvent<HTMLInputElement>) {
     const imported = parseHyperliquidCredentialImport(event.clipboardData.getData("text"), draft);
@@ -210,7 +206,7 @@ export function ConnectHyperliquidButton({
       ) : state.status === "runtime_offline" ? (
         <div className="flex items-start gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
           <WifiOff className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>Agent runtime is offline — connecting your account is paused until a sealed worker is live.</span>
+          <span>Agent runtime is offline. Start it explicitly from Agent activity before connecting this account.</span>
         </div>
       ) : state.status === "error" ? (
         <div className="grid gap-2">
@@ -233,7 +229,10 @@ export function ConnectHyperliquidButton({
               <button
                 key={value}
                 type="button"
-                onClick={() => onNetworkChange?.(value)}
+                onClick={() => {
+                  setDraft((current) => ({ ...current, network: value }));
+                  onNetworkChange?.(value);
+                }}
                 className={`trade-chip h-9 rounded-md text-xs font-semibold ${network === value ? "border-[#5aa7ff] text-[#a8d8ff]" : ""}`}
               >
                 {value === "mainnet" ? "Mainnet · real funds" : "Testnet · no real funds"}

@@ -1,4 +1,5 @@
 import { ed25519 } from "@noble/curves/ed25519";
+import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
 
 export const BACKPACK_API_URL = "https://api.backpack.exchange";
 export const BACKPACK_WS_URL = "wss://ws.backpack.exchange";
@@ -135,6 +136,7 @@ export async function submitBackpackOrder(input: {
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
 }) {
+  assertBackpackTransportAllowed(input.env, input.fetchImpl);
   const headers = signedBackpackHeaders({
     env: input.env,
     instruction: "orderExecute",
@@ -159,6 +161,7 @@ export async function cancelBackpackOrder(input: {
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
 }) {
+  assertBackpackTransportAllowed(input.env, input.fetchImpl);
   const headers = signedBackpackHeaders({
     env: input.env,
     instruction: "orderCancel",
@@ -183,6 +186,7 @@ export async function cancelAllBackpackOrders(input: {
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
 }) {
+  assertBackpackTransportAllowed(input.env, input.fetchImpl);
   const body = {
     symbol: input.symbol ?? BACKPACK_SOL_PERP_SYMBOL,
     orderType: "RestingLimitOrder",
@@ -204,6 +208,15 @@ export async function cancelAllBackpackOrders(input: {
   const responseBody = await res.json().catch(() => null);
   if (!res.ok) throw new Error(`backpack_cancel_all_${res.status}`);
   return responseBody;
+}
+
+function assertBackpackTransportAllowed(
+  env: Record<string, string | undefined> = process.env,
+  fetchImpl?: typeof fetch,
+) {
+  if (!privateAgentTransportAllowed("execute", env, fetchImpl)) {
+    throw new Error("private_agent_transport_blocked");
+  }
 }
 
 function orderedQuery(value: Record<string, unknown>): string {
