@@ -11,6 +11,8 @@ export type CrossVenueExecutionStatus =
   | "hedging"
   | "unwinding"
   | "both_filled"
+  | "closing"
+  | "closed"
   | "hedged"
   | "cancelled"
   | "failed"
@@ -32,7 +34,9 @@ export interface CrossVenueExecutionLeg {
   limit_price: string;
   order_type: "ioc_limit";
   target_notional_micro_usdc: number;
+  target_base_size: string | null;
   filled_notional_micro_usdc: number;
+  filled_base_size: string;
   status: CrossVenueLegStatus;
   venue_order_reference_commitment: string | null;
 }
@@ -54,6 +58,9 @@ export interface CrossVenueExecutionPlan {
   unhedged_since_at: string | null;
   hedge_deadline_at: string | null;
   cancel_requested_at: string | null;
+  close_requested_at: string | null;
+  closed_at: string | null;
+  close_receipt_commitment: string | null;
   worker_receipt_commitment: string | null;
   failure_code: string | null;
   created_at: string;
@@ -65,7 +72,37 @@ export interface CrossVenueRepairFill {
   venue_id: CrossVenueId;
   side: "buy" | "sell";
   filled_notional_micro_usdc: number;
+  filled_base_size: string | null;
   venue_order_reference_commitment: string | null;
+}
+
+export function isProvenLiveCrossVenuePair(
+  legs: ReadonlyArray<{ venue_id: string; symbol: string }> | null | undefined,
+): boolean {
+  if (!Array.isArray(legs) || legs.length !== 2) return false;
+  const normalized = legs
+    .map((leg) => `${String(leg.venue_id).toLowerCase()}:${String(leg.symbol).toUpperCase()}`)
+    .sort();
+  return normalized[0] === "backpack:SOL_USDC_PERP" && normalized[1] === "hyperliquid:SOL";
+}
+
+export function provenCrossVenueBaseSize(input: {
+  matchedNotionalMicroUsdc: number;
+  limitPrices: readonly [string, string];
+  maxSlippageBps: number;
+}): string {
+  const target = positiveSafeInteger(input.matchedNotionalMicroUsdc, "matched_notional_micro_usdc") / 1_000_000;
+  const prices = input.limitPrices.map((price) => Number(positiveDecimal(price, "limit_price")));
+  const slippage = input.maxSlippageBps / 10_000;
+  if (!Number.isInteger(input.maxSlippageBps) || input.maxSlippageBps < 1 || input.maxSlippageBps > 100) {
+    throw new Error("max_hedge_slippage_bps_invalid");
+  }
+  const lots = Math.ceil(10 / Math.min(...prices) / 0.01 - 1e-12);
+  const base = lots * 0.01;
+  if (prices.some((price) => base * price * (1 + slippage) > Math.min(target, 11) + 1e-9)) {
+    throw new Error("cross_venue_no_common_base_size_within_cap");
+  }
+  return trimDecimal(base);
 }
 
 export interface CrossVenueWorkerReport {
@@ -75,6 +112,7 @@ export interface CrossVenueWorkerReport {
     leg_id: string;
     status: CrossVenueLegStatus;
     filled_notional_micro_usdc: number;
+    filled_base_size?: string;
     venue_order_reference?: string | null;
   }>;
   repair_fills?: Array<{
@@ -82,6 +120,7 @@ export interface CrossVenueWorkerReport {
     venue_id: CrossVenueId;
     side: "buy" | "sell";
     filled_notional_micro_usdc: number;
+    filled_base_size?: string;
     venue_order_reference?: string | null;
   }>;
   hedge_slippage_bps?: number;
@@ -103,6 +142,7 @@ export function createCrossVenueExecutionPlan(input: {
     side: "buy" | "sell";
     symbol: string;
     limit_price: string;
+    target_base_size?: string;
   }>;
   now?: Date;
 }): CrossVenueExecutionPlan {
@@ -128,7 +168,9 @@ export function createCrossVenueExecutionPlan(input: {
     limit_price: positiveDecimal(leg.limit_price, "limit_price"),
     order_type: "ioc_limit",
     target_notional_micro_usdc: notional,
+    target_base_size: leg.target_base_size ? positiveDecimal(leg.target_base_size, "target_base_size") : null,
     filled_notional_micro_usdc: 0,
+    filled_base_size: "0",
     status: "pending",
     venue_order_reference_commitment: null,
   })) as [CrossVenueExecutionLeg, CrossVenueExecutionLeg];
@@ -149,6 +191,9 @@ export function createCrossVenueExecutionPlan(input: {
     unhedged_since_at: null,
     hedge_deadline_at: null,
     cancel_requested_at: null,
+    close_requested_at: null,
+    closed_at: null,
+    close_receipt_commitment: null,
     worker_receipt_commitment: null,
     failure_code: null,
     created_at: now.toISOString(),
@@ -175,10 +220,16 @@ export function applyCrossVenueWorkerReport(
     const filled = nonnegativeSafeInteger(update.filled_notional_micro_usdc, "filled_notional_micro_usdc");
     if (filled < leg.filled_notional_micro_usdc) throw new Error("filled_notional_regression");
     if (filled > leg.target_notional_micro_usdc) throw new Error("filled_notional_exceeds_target");
+    const filledBase = update.filled_base_size === undefined
+      ? leg.filled_base_size
+      : nonnegativeDecimal(update.filled_base_size, "filled_base_size");
+    if (leg.target_base_size && Number(filledBase) > Number(leg.target_base_size) + 1e-9) throw new Error("filled_base_exceeds_target");
+    if (Number(filledBase) + 1e-9 < Number(leg.filled_base_size)) throw new Error("filled_base_regression");
     return {
       ...leg,
       status: update.status,
       filled_notional_micro_usdc: filled,
+      filled_base_size: filledBase,
       venue_order_reference_commitment: update.venue_order_reference
         ? consumerCommitment("venue_order_reference", update.venue_order_reference)
         : leg.venue_order_reference_commitment,
@@ -237,6 +288,49 @@ export function requestCrossVenueCancellation(current: CrossVenueExecutionPlan, 
   };
 }
 
+export function requestCrossVenueClose(current: CrossVenueExecutionPlan, now = new Date()): CrossVenueExecutionPlan {
+  if (current.status === "closed" || current.status === "closing") return current;
+  if (current.status !== "both_filled" || current.residual_notional_micro_usdc !== 0) {
+    throw new Error("cross_venue_close_requires_completed_pair");
+  }
+  return {
+    ...current,
+    status: "closing",
+    close_requested_at: now.toISOString(),
+    updated_at: now.toISOString(),
+  };
+}
+
+export function completeCrossVenueClose(
+  current: CrossVenueExecutionPlan,
+  workerReceipt: unknown,
+  now = new Date(),
+): CrossVenueExecutionPlan {
+  if (current.status === "closed") return current;
+  if (!new Set<CrossVenueExecutionStatus>(["both_filled", "closing"]).has(current.status)) {
+    throw new Error("cross_venue_close_requires_completed_pair");
+  }
+  const envelope = record(workerReceipt);
+  const receipt = record(envelope?.receipt);
+  if (
+    envelope?.accepted !== true ||
+    receipt?.execution_id !== current.execution_id ||
+    receipt?.status !== "closed" ||
+    receipt?.final_flat_proven !== true
+  ) {
+    throw new Error("cross_venue_close_flat_proof_required");
+  }
+  const timestamp = now.toISOString();
+  return {
+    ...current,
+    status: "closed",
+    close_requested_at: current.close_requested_at ?? timestamp,
+    closed_at: timestamp,
+    close_receipt_commitment: consumerCommitment("cross_venue_close_receipt", workerReceipt),
+    updated_at: timestamp,
+  };
+}
+
 export function validateCrossVenueRiskBudget(input: CrossVenueRiskBudget, matchedNotional: number): CrossVenueRiskBudget {
   const maxUnhedged = positiveSafeInteger(input.max_unhedged_notional_micro_usdc, "max_unhedged_notional_micro_usdc");
   if (maxUnhedged > matchedNotional) throw new Error("unhedged_budget_exceeds_matched_notional");
@@ -286,6 +380,9 @@ function mergeRepairFills(
       venue_id: update.venue_id,
       side: update.side,
       filled_notional_micro_usdc: filled,
+      filled_base_size: update.filled_base_size === undefined
+        ? prior?.filled_base_size ?? null
+        : nonnegativeDecimal(update.filled_base_size, "repair_filled_base_size"),
       venue_order_reference_commitment: update.venue_order_reference
         ? consumerCommitment("venue_order_reference", update.venue_order_reference)
         : prior?.venue_order_reference_commitment ?? null,
@@ -295,6 +392,12 @@ function mergeRepairFills(
 }
 
 function residualNotional(legs: [CrossVenueExecutionLeg, CrossVenueExecutionLeg], repairs: CrossVenueRepairFill[]) {
+  if (legs.every((leg) => leg.target_base_size !== null)) {
+    const signedBase = legs.reduce((total, leg) => total + (leg.side === "buy" ? 1 : -1) * Number(leg.filled_base_size), 0) +
+      repairs.reduce((total, fill) => total + (fill.side === "buy" ? 1 : -1) * Number(fill.filled_base_size ?? 0), 0);
+    const benchmark = Math.max(...legs.map((leg) => Number(leg.limit_price)));
+    return Math.abs(signedBase) <= 1e-9 ? 0 : Math.ceil(Math.abs(signedBase) * benchmark * 1_000_000);
+  }
   const signedLegs = legs.reduce((total, leg) => total + (leg.side === "buy" ? 1 : -1) * leg.filled_notional_micro_usdc, 0);
   const signedRepairs = repairs.reduce((total, fill) => total + (fill.side === "buy" ? 1 : -1) * fill.filled_notional_micro_usdc, 0);
   return Math.abs(signedLegs + signedRepairs);
@@ -304,6 +407,10 @@ function normalizeMarket(value: string) {
   const normalized = String(value || "").trim().toUpperCase();
   if (!/^[A-Z0-9/_:-]{2,32}$/.test(normalized)) throw new Error("market_invalid");
   return normalized;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
 function normalizeSymbol(value: string) {
@@ -317,6 +424,17 @@ function positiveDecimal(value: string, field: string) {
   const parsed = Number(normalized);
   if (!/^\d+(?:\.\d+)?$/.test(normalized) || !Number.isFinite(parsed) || parsed <= 0) throw new Error(`${field}_invalid`);
   return normalized;
+}
+
+function nonnegativeDecimal(value: string, field: string) {
+  const normalized = String(value || "").trim();
+  const parsed = Number(normalized);
+  if (!/^\d+(?:\.\d+)?$/.test(normalized) || !Number.isFinite(parsed) || parsed < 0) throw new Error(`${field}_invalid`);
+  return normalized;
+}
+
+function trimDecimal(value: number) {
+  return value.toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function positiveSafeInteger(value: number, field: string) {

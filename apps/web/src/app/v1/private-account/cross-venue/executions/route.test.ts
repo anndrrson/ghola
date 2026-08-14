@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { POST } from "./route";
 import { POST as cancel } from "./[id]/cancel/route";
+import { POST as close } from "./[id]/close/route";
 
 const original = {
   enabled: process.env.GHOLA_CROSS_VENUE_BYO_ENABLED,
@@ -60,6 +61,21 @@ describe("cross-venue execution submit route", () => {
       version: 1,
       error: "private_agent_test_environment",
     });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("blocks paired close before authentication, store mutation, or worker transport", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("fetch must not run"));
+    const response = await close(
+      new Request("https://ghola.xyz/v1/private-account/cross-venue/executions/execution_1/close", {
+        method: "POST",
+        headers: { origin: "https://ghola.xyz", "content-type": "application/json" },
+        body: "{}",
+      }),
+      { params: Promise.resolve({ id: "execution_1" }) },
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ version: 1, error: "private_agent_test_environment" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

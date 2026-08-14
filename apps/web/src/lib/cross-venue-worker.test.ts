@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createCrossVenueExecutionPlan } from "./cross-venue-execution";
 import {
   cancelCrossVenueExecution,
+  closeCrossVenueExecution,
   crossVenueExecutionReadiness,
   probeCrossVenueExecutionReadiness,
   submitCrossVenueExecution,
@@ -57,9 +58,18 @@ describe("cross-venue worker boundary", () => {
       fetchImpl,
     });
     expect(result.ok).toBe(true);
+    const closed = await closeCrossVenueExecution({
+      plan: execution(),
+      env: {
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "test-token",
+      },
+      fetchImpl,
+    });
+    expect(closed.ok).toBe(true);
   });
 
-  it("blocks probe, submit, and cancel before an unbranded transport is called", async () => {
+  it("blocks probe, submit, cancel, and close before an unbranded transport is called", async () => {
     let fetchCalls = 0;
     const fetchImpl = (async () => {
       fetchCalls += 1;
@@ -78,10 +88,12 @@ describe("cross-venue worker boundary", () => {
     const readiness = await probeCrossVenueExecutionReadiness({ env, fetchImpl });
     const submitted = await submitCrossVenueExecution({ plan, env, fetchImpl });
     const cancelled = await cancelCrossVenueExecution({ plan, env, fetchImpl });
+    const closed = await closeCrossVenueExecution({ plan, env, fetchImpl });
 
     expect(readiness).toMatchObject({ ready: false, reason_codes: expect.arrayContaining(["private_agent_transport_blocked"]) });
     expect(submitted).toEqual({ ok: false, status: 403, error: "private_agent_transport_blocked" });
     expect(cancelled).toEqual({ ok: false, status: 403, error: "private_agent_transport_blocked" });
+    expect(closed).toEqual({ ok: false, status: 403, error: "private_agent_transport_blocked" });
     expect(fetchCalls).toBe(0);
   });
 });

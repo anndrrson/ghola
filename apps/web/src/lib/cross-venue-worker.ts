@@ -1,6 +1,6 @@
 import type { CrossVenueExecutionPlan } from "./cross-venue-execution";
 import { workerAuthorizationHeader, workerCapabilityExpectedFromBody } from "./private-agent-capability";
-import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
+import { privateAgentEmergencyControlTransportAllowed, privateAgentTransportAllowed } from "./private-agent-spend-policy";
 
 export function crossVenueExecutionReadiness(env: Record<string, string | undefined> = process.env) {
   const config = workerConfig(env);
@@ -87,8 +87,19 @@ export async function cancelCrossVenueExecution(input: {
   return workerCommand("cancel", input);
 }
 
+export async function closeCrossVenueExecution(input: {
+  plan: CrossVenueExecutionPlan;
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
+}): Promise<
+  | { ok: true; status: number; worker_receipt: unknown }
+  | { ok: false; status: number; error: string }
+> {
+  return workerCommand("close", input);
+}
+
 async function workerCommand(
-  action: "submit" | "cancel",
+  action: "submit" | "cancel" | "close",
   input: {
     plan: CrossVenueExecutionPlan;
     env?: Record<string, string | undefined>;
@@ -96,12 +107,15 @@ async function workerCommand(
   },
 ) {
   const env = input.env ?? process.env;
-  if (!privateAgentTransportAllowed("execute", env, input.fetchImpl)) {
+  const transportAllowed = action === "submit"
+    ? privateAgentTransportAllowed("execute", env, input.fetchImpl)
+    : privateAgentEmergencyControlTransportAllowed("close", env, input.fetchImpl);
+  if (!transportAllowed) {
     return { ok: false as const, status: 403, error: "private_agent_transport_blocked" };
   }
   const config = workerConfig(env);
   const readiness = crossVenueExecutionReadiness(env);
-  const commandReady = action === "cancel" ? Boolean(config.url && config.token) : readiness.ready;
+  const commandReady = action === "submit" ? readiness.ready : Boolean(config.url && config.token);
   if (!commandReady) return { ok: false as const, status: 503, error: readiness.reason_codes[0] || "cross_venue_not_ready" };
   const path = `/execution/cross-venue/${action}`;
   const payload = {
@@ -120,6 +134,7 @@ async function workerCommand(
       symbol: leg.symbol,
       limit_price: leg.limit_price,
       target_notional_micro_usdc: leg.target_notional_micro_usdc,
+      ...(leg.target_base_size ? { target_base_size: leg.target_base_size } : {}),
       order_type: leg.order_type,
     })),
   };

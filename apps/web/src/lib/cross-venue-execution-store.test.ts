@@ -4,6 +4,9 @@ import {
   applyStoredCrossVenueWorkerReport,
   createStoredCrossVenueExecution,
   getStoredCrossVenueExecution,
+  hasActiveCrossVenueExposure,
+  markStoredCrossVenueExecutionClosed,
+  markStoredCrossVenueExecutionClosing,
   resetCrossVenueExecutionStoreForTests,
 } from "./cross-venue-execution-store";
 
@@ -35,6 +38,35 @@ describe("cross-venue durable store", () => {
     ]);
     expect(reports.filter((result) => result.ok)).toHaveLength(1);
     expect((await getStoredCrossVenueExecution({ execution_id: original.execution_id }))?.last_report_sequence).toBe(1);
+  });
+
+  it("treats both-filled positions as active until a proved close is stored", async () => {
+    const original = execution("ghola_opportunity_close");
+    await createStoredCrossVenueExecution(original);
+    const filled = await applyStoredCrossVenueWorkerReport({
+      execution_id: original.execution_id,
+      owner_commitment: original.owner_commitment,
+      report: {
+        sequence: 1,
+        phase: "complete",
+        legs: original.legs.map((leg) => ({
+          leg_id: leg.leg_id,
+          status: "filled",
+          filled_notional_micro_usdc: leg.target_notional_micro_usdc,
+        })),
+        observed_at: "2026-01-01T00:00:01.000Z",
+      },
+    });
+    expect(filled.ok && filled.plan.status).toBe("both_filled");
+    expect(await hasActiveCrossVenueExposure()).toBe(true);
+    await markStoredCrossVenueExecutionClosing({ execution_id: original.execution_id, owner_commitment: original.owner_commitment });
+    await markStoredCrossVenueExecutionClosed({
+      execution_id: original.execution_id,
+      owner_commitment: original.owner_commitment,
+      worker_receipt: { accepted: true, receipt: { execution_id: original.execution_id, status: "closed", final_flat_proven: true } },
+    });
+    expect((await getStoredCrossVenueExecution({ execution_id: original.execution_id }))?.status).toBe("closed");
+    expect(await hasActiveCrossVenueExposure()).toBe(false);
   });
 });
 

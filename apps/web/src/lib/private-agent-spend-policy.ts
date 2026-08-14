@@ -6,7 +6,7 @@ export type PrivateAgentSpendAction =
   | "session"
   | "wake";
 
-export type PrivateAgentEmergencyControlAction = "pause" | "kill";
+export type PrivateAgentEmergencyControlAction = "pause" | "kill" | "close";
 
 export type PrivateAgentSpendPolicyDecision =
   | { allowed: true; action: PrivateAgentSpendAction; environment: "production" | "development" }
@@ -63,7 +63,7 @@ export function privateAgentSpendPolicy(
 }
 
 /**
- * Pause and kill reduce authority and must remain available in production when
+ * Pause, kill, and reduce-only close reduce authority and must remain available in production when
  * spend is disarmed or locked down. Authentication and session ownership are
  * enforced by the calling control route/service before this transport gate.
  */
