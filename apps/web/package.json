@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/dev-local-safe.mjs",
     "build": "next build && node scripts/build-inline-csp.mjs && node scripts/check-auth-client-bundle.mjs && node scripts/build-sri-manifest.mjs",
     "build:no-sri": "next build && node scripts/check-auth-client-bundle.mjs",
     "start": "next start",
@@ -12,6 +12,8 @@
     "security:check": "npm test && npm run lint",
     "test:auth": "vitest run src/lib/thumper-api.test.ts src/app/api/auth/session/email/signin/route.test.ts src/app/api/auth/session/email/signup/route.test.ts",
     "smoke:auth": "node scripts/smoke-auth.mjs",
+    "smoke:trader-local": "node scripts/ghola-trader-local-e2e.mjs",
+    "smoke:trader-staging": "GHOLA_TRADER_E2E_STATE_STORE=postgres node scripts/ghola-trader-local-e2e.mjs",
     "smoke:auction-local": "node scripts/ghola-auction-local-e2e.mjs",
     "smoke:auction-devnet": "GHOLA_AUCTION_SMOKE_CLUSTER=devnet node scripts/ghola-auction-local-e2e.mjs",
     "verify:live:all": "node scripts/verify-live-all.mjs",
