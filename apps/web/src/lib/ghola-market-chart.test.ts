@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   buildGholaAgentChartOverlays,
+  buildGholaExecutableRPlanOverlays,
   decimateCandles,
   FixedRingBuffer,
   GholaChartStore,
   gholaFrameFromHyperliquid,
   gholaFrameFromJupiter,
+  gholaReplaySelectionMatches,
   type GholaChartCandle,
 } from "./ghola-market-chart";
 import type { MobileMarketJupiter } from "./mobile-market-data";
@@ -13,18 +15,29 @@ import type { HyperliquidMarketSnapshot } from "./private-account-client";
 import type { PrivateExecutionOrderDraft } from "./private-execution-instruction-seal";
 
 describe("ghola market chart model", () => {
+  it("invalidates replay when an otherwise identical market changes network identity", () => {
+    const source = gholaFrameFromHyperliquid(hyperliquidSnapshot());
+    expect(gholaReplaySelectionMatches(source, source, "hyperliquid:mainnet:BTC:5m", "hyperliquid:mainnet:BTC:5m", "candles")).toBe(true);
+    expect(gholaReplaySelectionMatches(source, source, "hyperliquid:mainnet:BTC:5m", "hyperliquid:testnet:BTC:5m", "candles")).toBe(false);
+  });
+
   it("normalizes Hyperliquid snapshots into the shared frame", () => {
     const frame = gholaFrameFromHyperliquid(hyperliquidSnapshot());
 
     expect(frame).toMatchObject({
       version: 1,
       venue: "hyperliquid",
+      network: "mainnet",
       product: "BTC",
       interval: "5m",
       mid: "67120.5",
       markPrice: "67119.8",
       oraclePrice: "67125.1",
       fundingRate: "0.000012",
+      fundingRateUnit: "decimal_fraction",
+      fundingRateSource: "hyperliquid_ws_active_asset_context_received",
+      fundingRateTimeBasis: "received_at",
+      fundingRateUpdatedAt: "2026-06-03T12:00:00.000Z",
       openInterest: "2000000000",
       dayVolume: "6200000000",
     });
@@ -58,6 +71,42 @@ describe("ghola market chart model", () => {
     expect(frame?.candles).toEqual([]);
     expect(frame?.bids).toEqual([]);
     expect(frame?.routeQuotes.map((quote) => quote.price)).toEqual(["169.90", "170.10"]);
+  });
+
+  it("clears rolling buffers when only network identity changes", () => {
+    const store = new GholaChartStore();
+    const first = gholaFrameFromJupiter(jupiterQuote("2026-06-03T12:00:00.000Z", "169.90"));
+    const second = gholaFrameFromJupiter(jupiterQuote("2026-06-03T12:00:01.000Z", "170.10"));
+    if (!first || !second) throw new Error("expected normalized quote frames");
+
+    store.ingest(first);
+    store.ingest({ ...second, network: "testnet" });
+
+    expect(store.frame()?.routeQuotes.map((quote) => quote.price)).toEqual(["170.10"]);
+  });
+
+  it("retains unchanged collection snapshots across quote-only frames", () => {
+    const store = new GholaChartStore();
+    const firstInput = gholaFrameFromHyperliquid(hyperliquidSnapshot());
+    if (!firstInput) throw new Error("expected normalized market frame");
+    store.ingest(firstInput);
+    const first = store.frame();
+
+    store.ingest({
+      ...firstInput,
+      fetchedAt: "2026-06-03T12:00:01.000Z",
+      mid: "67121",
+      bestBid: "67120.5",
+      bestAsk: "67121.5",
+    });
+    const next = store.frame();
+
+    expect(next).not.toBe(first);
+    expect(next?.mid).toBe("67121");
+    expect(next?.candles).toBe(first?.candles);
+    expect(next?.bids).toBe(first?.bids);
+    expect(next?.asks).toBe(first?.asks);
+    expect(next?.trades).toBe(first?.trades);
   });
 
   it("decimates large candle ranges while keeping important extremes and the latest candle", () => {
@@ -140,6 +189,46 @@ describe("ghola market chart model", () => {
     expect(overlays.find((overlay) => overlay.id === "agent-range-low")?.label).toBe("Range low");
     expect(overlays.find((overlay) => overlay.id === "agent-range-high")?.label).toBe("Range high");
   });
+
+  it("builds an executable R plan with only entry and invalidation draggable", () => {
+    const overlays = buildGholaExecutableRPlanOverlays({
+      side: "buy",
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 110,
+      targetRewardMultiple: 2,
+      entryPinned: true,
+      stopPinned: false,
+      stopValid: true,
+    });
+
+    expect(overlays.map((overlay) => overlay.id)).toEqual([
+      "trade-plan-risk-band",
+      "trade-plan-target",
+      "trade-plan-entry",
+      "trade-plan-invalidation",
+    ]);
+    expect(overlays[0]).toMatchObject({ kind: "price_band", price: 95, priceEnd: 100 });
+    expect(overlays[1]).toMatchObject({ label: "2.0R target · plan", price: 110 });
+    expect(overlays[1].interaction).toBeUndefined();
+    expect(overlays[2].interaction?.kind).toBe("drag_price");
+    expect(overlays[3].interaction?.kind).toBe("drag_price");
+    const invalidOverlays = buildGholaExecutableRPlanOverlays({
+      side: "buy",
+      entryPrice: 100,
+      stopPrice: 105,
+      targetPrice: 90,
+      targetRewardMultiple: 2,
+      entryPinned: false,
+      stopPinned: true,
+      stopValid: false,
+    });
+    expect(invalidOverlays.map((overlay) => overlay.id)).toEqual([
+      "trade-plan-entry",
+      "trade-plan-invalidation",
+    ]);
+  });
+
 });
 
 function hyperliquidSnapshot(): HyperliquidMarketSnapshot {
@@ -163,6 +252,10 @@ function hyperliquidSnapshot(): HyperliquidMarketSnapshot {
     day_base_volume: "92500",
     open_interest: "2000000000",
     funding_rate: "0.000012",
+    funding_rate_unit: "decimal_fraction",
+    funding_rate_source: "hyperliquid_ws_active_asset_context_received",
+    funding_time_basis: "received_at",
+    funding_updated_at: "2026-06-03T12:00:00.000Z",
     premium: "0.0001",
     max_leverage: 50,
     candles: [
