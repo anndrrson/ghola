@@ -33,7 +33,8 @@ describe("Coinbase market data", () => {
   });
 
   it("builds a public spot snapshot without account data", async () => {
-    const fetchImpl = vi.fn(async (url: string) => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
       if (url.includes("/product_book")) {
         return json({
           pricebook: {
@@ -92,12 +93,13 @@ describe("Coinbase market data", () => {
     });
 
     expect(snapshot.platform).toBe("coinbase");
+    expect(snapshot.stale).toBe(false);
     expect(snapshot.product_id).toBe("BTC-USD");
     expect(snapshot.price).toBe("73580.35");
     expect(snapshot.mid).toBe("73580.5");
     expect(snapshot.best_bid).toBe("73580");
     expect(snapshot.best_ask).toBe("73581");
-    expect(snapshot.spread_bps).toBe(0.13);
+    expect(snapshot.spread_bps).toBe(0.14);
     expect(snapshot.price_percentage_change_24h).toBe("0.12314625761245");
     expect(snapshot.approximate_quote_24h_volume).toBe("678061410.96");
     expect(snapshot.bids).toHaveLength(20);
@@ -107,7 +109,76 @@ describe("Coinbase market data", () => {
     expect(JSON.stringify(snapshot)).not.toContain("api_key");
     expect(JSON.stringify(snapshot)).not.toContain("wallet_address");
   });
+
+  it("never marks empty successful responses live", async () => {
+    const snapshot = await getCoinbaseMarketSnapshot({
+      now: new Date("2026-05-30T02:07:01.000Z"),
+      fetchImpl: vi.fn(async () => json({})) as never,
+    });
+
+    expect(snapshot.stale).toBe(true);
+    expect(snapshot.source_timestamp).toBeNull();
+    expect(snapshot.bids).toEqual([]);
+    expect(snapshot.candles).toEqual([]);
+  });
+
+  it("rejects crossed books, invalid OHLC, and aged source data", async () => {
+    const now = new Date("2026-05-30T02:07:01.000Z");
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes("/product_book")) {
+        return json({ pricebook: { product_id: "BTC-USD", time: new Date(now.getTime() - 10 * 60_000).toISOString(), bids: [{ price: "101", size: "1" }], asks: [{ price: "100", size: "1" }] } });
+      }
+      if (url.includes("/candles")) {
+        return json({ candles: [{ start: String(Math.floor((now.getTime() - 60_000) / 1000)), open: "100", high: "99", low: "98", close: "101", volume: "1" }] });
+      }
+      if (url.includes("/ticker")) return json({ trades: [] });
+      return json({ product_id: "BTC-USD", price: "100.5" });
+    });
+
+    const snapshot = await getCoinbaseMarketSnapshot({ now, fetchImpl: fetchImpl as never });
+
+    expect(snapshot.stale).toBe(true);
+    expect(snapshot.spread_bps).toBeNull();
+    expect(snapshot.candles).toEqual([]);
+  });
+
+  it("preserves original timestamps when serving a stale fallback", async () => {
+    const firstNow = new Date("2026-05-30T02:07:01.000Z");
+    const first = await getCoinbaseMarketSnapshot({
+      now: firstNow,
+      fetchImpl: minimalLiveFetch(firstNow.getTime()) as never,
+    });
+    const second = await getCoinbaseMarketSnapshot({
+      now: new Date(firstNow.getTime() + 5_000),
+      fetchImpl: vi.fn(async () => { throw new Error("down"); }) as never,
+    });
+
+    expect(first.stale).toBe(false);
+    expect(second.stale).toBe(true);
+    expect(second.fetched_at).toBe(first.fetched_at);
+    expect(second.source_timestamp).toBe(first.source_timestamp);
+  });
 });
+
+function minimalLiveFetch(nowMs: number) {
+  return vi.fn(async (url: string) => {
+    if (url.includes("/product_book")) {
+      return json({
+        pricebook: {
+          product_id: "BTC-USD",
+          time: new Date(nowMs - 1_000).toISOString(),
+          bids: [{ price: "100", size: "1" }],
+          asks: [{ price: "101", size: "1" }],
+        },
+      });
+    }
+    if (url.includes("/candles")) {
+      return json({ candles: [{ start: String(Math.floor((nowMs - 60_000) / 1000)), open: "100", high: "102", low: "99", close: "101", volume: "1" }] });
+    }
+    if (url.includes("/ticker")) return json({ trades: [] });
+    return json({ product_id: "BTC-USD", price: "100.5" });
+  });
+}
 
 function json(body: unknown) {
   return new Response(JSON.stringify(body), {

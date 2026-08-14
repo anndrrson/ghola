@@ -81,6 +81,9 @@ export const BACKPACK_BOOK_LEVEL_WINDOW = 20;
 export const BACKPACK_RECENT_TRADE_WINDOW = 20;
 
 const MARKET_CACHE_TTL_MS = 4_000;
+const MARKET_FETCH_TIMEOUT_MS = 8_000;
+const MAX_SOURCE_AGE_MS = 2 * 60_000;
+const MAX_FUTURE_SKEW_MS = 30_000;
 
 type CacheRecord = {
   fetchedAtMs: number;
@@ -197,7 +200,7 @@ async function fetchFreshBackpackMarketSnapshot(input: {
       ).catch(() => null),
       fetchBackpackJson(input.fetchImpl, `/api/v1/trades?symbol=${input.symbol}&limit=${BACKPACK_RECENT_TRADE_WINDOW}`).catch(() => null),
     ]);
-    return buildBackpackSnapshot({
+    const snapshot = buildBackpackSnapshot({
       symbol: input.symbol,
       interval: input.interval,
       fetchedAt: input.now,
@@ -208,8 +211,11 @@ async function fetchFreshBackpackMarketSnapshot(input: {
       candles,
       trades,
     });
+    return snapshot.stale && input.previous
+      ? { ...input.previous, stale: true }
+      : snapshot;
   } catch {
-    if (input.previous) return { ...input.previous, fetched_at: input.now.toISOString(), stale: true };
+    if (input.previous) return { ...input.previous, stale: true };
     return emptyBackpackMarketSnapshot({
       symbol: input.symbol,
       interval: input.interval,
@@ -220,12 +226,19 @@ async function fetchFreshBackpackMarketSnapshot(input: {
 }
 
 async function fetchBackpackJson(fetchImpl: typeof fetch, path: string) {
-  const res = await fetchImpl(`${BACKPACK_API_URL}${path}`, {
-    headers: { "cache-control": "no-cache" },
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(`backpack_market_${res.status}`);
-  return res.json();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MARKET_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetchImpl(`${BACKPACK_API_URL}${path}`, {
+      headers: { "cache-control": "no-cache" },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`backpack_market_${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function buildBackpackSnapshot(input: {
@@ -243,11 +256,22 @@ function buildBackpackSnapshot(input: {
   const ticker = readRecord(input.ticker);
   const mark = matchingRecord(input.markPrices, input.symbol);
   const oi = matchingRecord(input.openInterest, input.symbol);
-  const bids = normalizeBackpackBookSide(depth?.bids);
-  const asks = normalizeBackpackBookSide(depth?.asks);
+  const bids = sortBookSide(normalizeBackpackBookSide(depth?.bids), "bid")
+    .slice(0, BACKPACK_BOOK_LEVEL_WINDOW);
+  const asks = sortBookSide(normalizeBackpackBookSide(depth?.asks), "ask")
+    .slice(0, BACKPACK_BOOK_LEVEL_WINDOW);
   const bestBid = bids[0]?.px ?? null;
   const bestAsk = asks[0]?.px ?? null;
-  const mid = midFromBook(bestBid, bestAsk) ?? safeDecimalString(mark?.markPrice) ?? safeDecimalString(ticker?.lastPrice);
+  const mid = midFromBook(bestBid, bestAsk)
+    ?? positiveDecimalString(mark?.markPrice)
+    ?? positiveDecimalString(ticker?.lastPrice);
+  const candles = normalizeBackpackCandles(input.candles)
+    .filter((candle) => candle.t <= input.fetchedAt.getTime() + MAX_FUTURE_SKEW_MS);
+  const sourceTimestamp = timeValue(depth?.timestamp);
+  const stale = !mid
+    || !isValidBook(bids, asks)
+    || !isFreshTimestamp(sourceTimestamp, input.fetchedAt.getTime(), MAX_SOURCE_AGE_MS)
+    || !hasFreshCandles(candles, input.fetchedAt.getTime(), input.interval);
   return {
     version: 1,
     platform: "backpack",
@@ -255,23 +279,23 @@ function buildBackpackSnapshot(input: {
     symbol: input.symbol,
     interval: input.interval,
     fetched_at: input.fetchedAt.toISOString(),
-    source_timestamp: timeValue(depth?.timestamp) ?? input.fetchedAt.getTime(),
-    stale: false,
+    source_timestamp: sourceTimestamp,
+    stale,
     mid,
     best_bid: bestBid,
     best_ask: bestAsk,
     spread_bps: spreadBps(bestBid, bestAsk),
-    mark_price: safeDecimalString(mark?.markPrice),
-    index_price: safeDecimalString(mark?.indexPrice),
-    last_price: safeDecimalString(ticker?.lastPrice),
-    prev_day_price: safeDecimalString(ticker?.firstPrice),
+    mark_price: positiveDecimalString(mark?.markPrice),
+    index_price: positiveDecimalString(mark?.indexPrice),
+    last_price: positiveDecimalString(ticker?.lastPrice),
+    prev_day_price: positiveDecimalString(ticker?.firstPrice),
     price_change_percent_24h: safeSignedDecimalString(ticker?.priceChangePercent),
     day_notional_volume: safeDecimalString(ticker?.quoteVolume),
     day_base_volume: safeDecimalString(ticker?.volume),
     open_interest: safeDecimalString(oi?.openInterest),
     funding_rate: safeSignedDecimalString(mark?.fundingRate),
     next_funding_timestamp: numberValue(mark?.nextFundingTimestamp),
-    candles: normalizeBackpackCandles(input.candles),
+    candles,
     bids,
     asks,
     recent_trades: normalizeBackpackTrades(input.trades),
@@ -280,11 +304,11 @@ function buildBackpackSnapshot(input: {
 
 export function normalizeBackpackBookSide(value: unknown): BackpackBookLevel[] {
   if (!Array.isArray(value)) return [];
-  return value.slice(0, BACKPACK_BOOK_LEVEL_WINDOW)
+  return value
     .map((item) => {
       if (!Array.isArray(item)) return null;
-      const px = safeDecimalString(item[0]);
-      const sz = safeDecimalString(item[1]);
+      const px = positiveDecimalString(item[0]);
+      const sz = positiveDecimalString(item[1]);
       return px && sz ? { px, sz, n: null } : null;
     })
     .filter(Boolean) as BackpackBookLevel[];
@@ -298,16 +322,17 @@ export function normalizeBackpackCandles(value: unknown): BackpackCandle[] {
       if (!row) return null;
       const t = timeValue(row.start ?? row.t);
       const end = timeValue(row.end ?? row.T);
-      const o = safeDecimalString(row.open ?? row.o);
-      const h = safeDecimalString(row.high ?? row.h);
-      const l = safeDecimalString(row.low ?? row.l);
-      const c = safeDecimalString(row.close ?? row.c);
+      const o = positiveDecimalString(row.open ?? row.o);
+      const h = positiveDecimalString(row.high ?? row.h);
+      const l = positiveDecimalString(row.low ?? row.l);
+      const c = positiveDecimalString(row.close ?? row.c);
       const v = safeDecimalString(row.volume ?? row.v) ?? "0";
       const n = numberValue(row.trades ?? row.n);
-      return t && o && h && l && c ? { t, T: end, o, h, l, c, v, n } : null;
+      if (!t || !o || !h || !l || !c || (end != null && end < t)) return null;
+      return validOhlc(o, h, l, c) ? { t, T: end, o, h, l, c, v, n } : null;
     })
     .filter(Boolean) as BackpackCandle[];
-  return candles.sort((a, b) => a.t - b.t).slice(-BACKPACK_CANDLE_WINDOW);
+  return dedupeCandles(candles).slice(-BACKPACK_CANDLE_WINDOW);
 }
 
 export function normalizeBackpackTrades(value: unknown): BackpackRecentTrade[] {
@@ -316,8 +341,8 @@ export function normalizeBackpackTrades(value: unknown): BackpackRecentTrade[] {
     .map((item) => {
       const row = readRecord(item);
       if (!row) return null;
-      const px = safeDecimalString(row.price);
-      const sz = safeDecimalString(row.quantity);
+      const px = positiveDecimalString(row.price);
+      const sz = positiveDecimalString(row.quantity);
       const time = timeValue(row.timestamp);
       const side = row.isBuyerMaker === true ? "sell" : "buy";
       const tradeId = row.id === undefined || row.id === null ? null : String(row.id);
@@ -333,7 +358,7 @@ function matchingRecord(value: unknown, symbol: string): Record<string, unknown>
       .find((item) => item?.symbol === symbol) ?? null;
   }
   const record = readRecord(value);
-  return record?.symbol === symbol ? record : record;
+  return typeof record?.symbol !== "string" || record.symbol === symbol ? record : null;
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -384,18 +409,62 @@ function spreadBps(bestBid: string | null, bestAsk: string | null): number | nul
   if (!bestBid || !bestAsk) return null;
   const bid = Number(bestBid);
   const ask = Number(bestAsk);
-  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0) return null;
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0 || bid >= ask) return null;
   const mid = (bid + ask) / 2;
   if (mid <= 0) return null;
-  return Math.max(0, Math.round(((ask - bid) / mid) * 10_000 * 100) / 100);
+  return Math.round(((ask - bid) / mid) * 10_000 * 100) / 100;
 }
 
 function midFromBook(bestBid: string | null, bestAsk: string | null): string | null {
   if (!bestBid || !bestAsk) return null;
   const bid = Number(bestBid);
   const ask = Number(bestAsk);
-  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0) return null;
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0 || bid >= ask) return null;
   return trimNumber((bid + ask) / 2);
+}
+
+function positiveDecimalString(value: unknown): string | null {
+  const normalized = safeDecimalString(value);
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed > 0 ? normalized : null;
+}
+
+function validOhlc(open: string, high: string, low: string, close: string): boolean {
+  const [o, h, l, c] = [open, high, low, close].map(Number);
+  return [o, h, l, c].every((value) => Number.isFinite(value) && value > 0)
+    && h >= Math.max(o, l, c)
+    && l <= Math.min(o, h, c);
+}
+
+function dedupeCandles(candles: BackpackCandle[]): BackpackCandle[] {
+  const byTimestamp = new Map<number, BackpackCandle>();
+  for (const candle of candles.sort((a, b) => a.t - b.t)) byTimestamp.set(candle.t, candle);
+  return [...byTimestamp.values()];
+}
+
+function sortBookSide(levels: BackpackBookLevel[], side: "bid" | "ask"): BackpackBookLevel[] {
+  return levels.sort((a, b) => side === "bid" ? Number(b.px) - Number(a.px) : Number(a.px) - Number(b.px));
+}
+
+function isValidBook(bids: BackpackBookLevel[], asks: BackpackBookLevel[]): boolean {
+  if (!bids.length || !asks.length) return false;
+  return Number(bids[0].px) < Number(asks[0].px);
+}
+
+function isFreshTimestamp(timestamp: number | null, nowMs: number, maxAgeMs: number): boolean {
+  if (timestamp == null || !Number.isFinite(timestamp) || timestamp <= 0) return false;
+  const age = nowMs - timestamp;
+  return age >= -MAX_FUTURE_SKEW_MS && age <= maxAgeMs;
+}
+
+function hasFreshCandles(
+  candles: BackpackCandle[],
+  nowMs: number,
+  interval: BackpackCandleInterval,
+): boolean {
+  const latest = candles.at(-1)?.t ?? null;
+  return isFreshTimestamp(latest, nowMs, Math.max(5 * 60_000, INTERVAL_SECONDS[interval] * 3_000));
 }
 
 function trimNumber(value: number): string {

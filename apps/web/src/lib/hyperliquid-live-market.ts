@@ -1,4 +1,16 @@
 import type { HyperliquidMarketSnapshot } from "./private-account-client";
+import { inspectCanonicalFundingRate } from "./market-funding-rate";
+import {
+  advanceMarketComponent,
+  advanceMarketComponents,
+  attachMarketComponentClocks,
+  carryMarketComponentClocks,
+  hasAuthoritativeDepthUpdate,
+  hasAuthoritativePricingUpdate,
+  marketComponentClocks,
+  normalizeMarketTimestamp,
+  type MarketComponent,
+} from "./market-component-clock";
 
 export type HyperliquidLiveMarketStatus =
   | "connecting"
@@ -44,7 +56,10 @@ export interface HyperliquidLiveMarketStreamOptions {
   initialSnapshot?: HyperliquidMarketSnapshot | null;
   webSocketCtor?: HyperliquidWebSocketConstructor | null;
   getFallbackSnapshot?: () => Promise<HyperliquidMarketSnapshot>;
-  onSnapshot: (snapshot: HyperliquidMarketSnapshot) => void;
+  onSnapshot: (
+    snapshot: HyperliquidMarketSnapshot,
+    provenance?: "websocket" | "fallback",
+  ) => unknown;
   onStatus: (status: HyperliquidLiveMarketStatus) => void;
   isDocumentHidden?: () => boolean;
   now?: () => number;
@@ -117,6 +132,10 @@ export function emptyHyperliquidLiveMarketSnapshot(input: {
     day_base_volume: null,
     open_interest: null,
     funding_rate: null,
+    funding_rate_unit: null,
+    funding_rate_source: null,
+    funding_time_basis: null,
+    funding_updated_at: null,
     premium: null,
     max_leverage: null,
     candles: [],
@@ -136,13 +155,166 @@ export function mergeHyperliquidLiveMarketMessage(
   const channel = typeof message.channel === "string" ? message.channel : "";
   const data = message.data;
 
-  if (channel === "allMids") return mergeAllMids(snapshot, data, now);
-  if (channel === "bbo") return mergeBbo(snapshot, data, now);
-  if (channel === "l2Book") return mergeBook(snapshot, data, now);
-  if (channel === "trades") return mergeTrades(snapshot, data, now);
-  if (channel === "candle") return mergeCandles(snapshot, data, now);
-  if (channel === "activeAssetCtx") return mergeActiveAssetContext(snapshot, data, now);
+  if (channel === "allMids") {
+    return mergeTimestampedComponent(
+      snapshot,
+      "market",
+      messageTimestamp(message, data),
+      () => mergeAllMids(snapshot, data, now),
+    );
+  }
+  if (channel === "bbo") {
+    return mergeTimestampedComponent(
+      snapshot,
+      "quote",
+      messageTimestamp(message, data),
+      () => mergeBbo(snapshot, data, now),
+    );
+  }
+  if (channel === "l2Book") {
+    return mergeBook(snapshot, data, now, messageTimestamp(message, data));
+  }
+  if (channel === "trades") {
+    return mergeTimestampedComponent(
+      snapshot,
+      "trades",
+      latestAcceptedTradeTimestamp(data, snapshot.coin),
+      () => mergeTrades(snapshot, data, now),
+    );
+  }
+  if (channel === "candle") {
+    return mergeTimestampedComponent(
+      snapshot,
+      "candles",
+      latestAcceptedCandleTimestamp(data, snapshot.coin, snapshot.interval),
+      () => mergeCandles(snapshot, data, now),
+    );
+  }
+  if (channel === "activeAssetCtx") {
+    return mergeActiveAssetContext(snapshot, data, now, messageTimestamp(message, data));
+  }
   return snapshot;
+}
+
+export function mergeHyperliquidFallbackSnapshot(
+  preferred: HyperliquidMarketSnapshot,
+  fallback: HyperliquidMarketSnapshot,
+): HyperliquidMarketSnapshot {
+  const preferredClocks = marketComponentClocks(preferred);
+  const fallbackClocks = marketComponentClocks(fallback);
+  const usePreferredQuote = preferSnapshotComponent(
+    preferredClocks.quote,
+    fallbackClocks.quote,
+    preferred.best_bid != null || preferred.best_ask != null,
+  );
+  const usePreferredBook = preferSnapshotComponent(
+    preferredClocks.book,
+    fallbackClocks.book,
+    preferred.bids.length > 0 || preferred.asks.length > 0,
+  );
+  const usePreferredMarket = preferSnapshotComponent(
+    preferredClocks.market,
+    fallbackClocks.market,
+    preferred.mid != null,
+  );
+  const usePreferredMark = preferSnapshotComponent(
+    preferredClocks.mark,
+    fallbackClocks.mark,
+    preferred.mark_price != null,
+  );
+  const usePreferredCandles = preferSnapshotComponent(
+    preferredClocks.candles,
+    fallbackClocks.candles,
+    preferred.candles.length > 0,
+  );
+  const usePreferredTrades = preferSnapshotComponent(
+    preferredClocks.trades,
+    fallbackClocks.trades,
+    preferred.recent_trades.length > 0,
+  );
+  const usePreferredFunding = preferSnapshotComponent(
+    fundingRevisionMs(preferred),
+    fundingRevisionMs(fallback),
+    fundingRevisionMs(preferred) != null,
+  );
+  const fallbackQuoteAuthoritative = fallbackClocks.quote != null;
+  const fallbackBookAuthoritative = fallbackClocks.book != null;
+  const fallbackMarketAuthoritative = fallbackClocks.market != null;
+  const fallbackMarkAuthoritative = fallbackClocks.mark != null;
+  const fallbackCandlesAuthoritative = fallbackClocks.candles != null;
+  const fallbackTradesAuthoritative = fallbackClocks.trades != null;
+  const merged = {
+    ...fallback,
+    mid: usePreferredMarket
+      ? preferred.mid
+      : fallbackMarketAuthoritative ? fallback.mid : fallback.mid ?? preferred.mid,
+    best_bid: usePreferredQuote
+      ? preferred.best_bid
+      : fallbackQuoteAuthoritative ? fallback.best_bid : fallback.best_bid ?? preferred.best_bid,
+    best_ask: usePreferredQuote
+      ? preferred.best_ask
+      : fallbackQuoteAuthoritative ? fallback.best_ask : fallback.best_ask ?? preferred.best_ask,
+    spread_bps: usePreferredQuote
+      ? preferred.spread_bps
+      : fallbackQuoteAuthoritative ? fallback.spread_bps : fallback.spread_bps ?? preferred.spread_bps,
+    mark_price: usePreferredMark
+      ? preferred.mark_price
+      : fallbackMarkAuthoritative ? fallback.mark_price : fallback.mark_price ?? preferred.mark_price,
+    oracle_price: usePreferredMarket
+      ? preferred.oracle_price
+      : fallbackMarketAuthoritative ? fallback.oracle_price : fallback.oracle_price ?? preferred.oracle_price,
+    prev_day_price: usePreferredMarket
+      ? preferred.prev_day_price
+      : fallbackMarketAuthoritative ? fallback.prev_day_price : fallback.prev_day_price ?? preferred.prev_day_price,
+    day_notional_volume: usePreferredMarket
+      ? preferred.day_notional_volume
+      : fallbackMarketAuthoritative
+        ? fallback.day_notional_volume
+        : fallback.day_notional_volume ?? preferred.day_notional_volume,
+    day_base_volume: usePreferredMarket
+      ? preferred.day_base_volume
+      : fallbackMarketAuthoritative ? fallback.day_base_volume : fallback.day_base_volume ?? preferred.day_base_volume,
+    open_interest: usePreferredMarket
+      ? preferred.open_interest
+      : fallbackMarketAuthoritative ? fallback.open_interest : fallback.open_interest ?? preferred.open_interest,
+    funding_rate: usePreferredFunding ? preferred.funding_rate : fallback.funding_rate,
+    funding_rate_unit: usePreferredFunding ? preferred.funding_rate_unit : fallback.funding_rate_unit,
+    funding_rate_source: usePreferredFunding ? preferred.funding_rate_source : fallback.funding_rate_source,
+    funding_time_basis: usePreferredFunding ? preferred.funding_time_basis : fallback.funding_time_basis,
+    funding_updated_at: usePreferredFunding ? preferred.funding_updated_at : fallback.funding_updated_at,
+    premium: usePreferredMarket
+      ? preferred.premium
+      : fallbackMarketAuthoritative ? fallback.premium : fallback.premium ?? preferred.premium,
+    max_leverage: usePreferredMarket
+      ? preferred.max_leverage
+      : fallbackMarketAuthoritative ? fallback.max_leverage : fallback.max_leverage ?? preferred.max_leverage,
+    bids: usePreferredBook
+      ? preferred.bids
+      : fallbackBookAuthoritative ? fallback.bids : fallback.bids.length > 0 ? fallback.bids : preferred.bids,
+    asks: usePreferredBook
+      ? preferred.asks
+      : fallbackBookAuthoritative ? fallback.asks : fallback.asks.length > 0 ? fallback.asks : preferred.asks,
+    candles: usePreferredCandles
+      ? preferred.candles
+      : fallbackCandlesAuthoritative
+        ? fallback.candles
+        : fallback.candles.length > 0 ? fallback.candles : preferred.candles,
+    recent_trades: usePreferredTrades
+      ? preferred.recent_trades
+      : fallbackTradesAuthoritative
+        ? fallback.recent_trades
+        : fallback.recent_trades.length > 0 ? fallback.recent_trades : preferred.recent_trades,
+    source_timestamp: latestOptionalTimestamp(preferred.source_timestamp, fallback.source_timestamp),
+    stale: preferred.stale && fallback.stale,
+  };
+  return attachMarketComponentClocks(merged, {
+    quote: usePreferredQuote ? preferredClocks.quote : fallbackClocks.quote ?? preferredClocks.quote,
+    book: usePreferredBook ? preferredClocks.book : fallbackClocks.book ?? preferredClocks.book,
+    market: usePreferredMarket ? preferredClocks.market : fallbackClocks.market ?? preferredClocks.market,
+    mark: usePreferredMark ? preferredClocks.mark : fallbackClocks.mark ?? preferredClocks.mark,
+    candles: usePreferredCandles ? preferredClocks.candles : fallbackClocks.candles ?? preferredClocks.candles,
+    trades: usePreferredTrades ? preferredClocks.trades : fallbackClocks.trades ?? preferredClocks.trades,
+  }, true);
 }
 
 class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream {
@@ -154,7 +326,9 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
   private fallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private fallbackInFlight = false;
   private reconnectAttempts = 0;
+  private liveRevision = 0;
   private lastMessageAt = 0;
+  private lastBookMessageAt = 0;
   private status: HyperliquidLiveMarketStatus = "connecting";
   private currentSnapshot: HyperliquidMarketSnapshot;
 
@@ -209,23 +383,31 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
         if (!this.active || socket !== this.socket) return;
         this.reconnectAttempts = 0;
         this.lastMessageAt = this.now();
-        this.emitStatus("live");
-        this.clearFallbackTimer();
+        this.lastBookMessageAt = 0;
         this.sendSubscriptions("subscribe");
         this.startHeartbeat();
         this.startStaleMonitor();
       };
       socket.onmessage = (event) => {
         if (!this.active || socket !== this.socket) return;
-        this.lastMessageAt = this.now();
-        if (this.status !== "live") {
-          this.emitStatus("live");
-          this.clearFallbackTimer();
-        }
         const next = mergeHyperliquidLiveMarketMessage(this.currentSnapshot, event.data, new Date(this.now()));
         if (next !== this.currentSnapshot) {
+          if (this.options.onSnapshot(next, "websocket") === false) {
+            this.startFallbackLoop();
+            return;
+          }
           this.currentSnapshot = next;
-          this.options.onSnapshot(next);
+          if (hasAuthoritativeDepthUpdate(next)) this.lastBookMessageAt = this.now();
+          if (hasAuthoritativePricingUpdate(next)) {
+            this.liveRevision += 1;
+            this.lastMessageAt = this.now();
+            if (this.status !== "live") this.emitStatus("live");
+          }
+          if (this.hasHealthySocket() && this.hasHealthyBookSocket()) {
+            this.clearFallbackTimer();
+          } else {
+            this.startFallbackLoop();
+          }
         }
       };
       socket.onerror = () => {
@@ -284,10 +466,12 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
     this.stopStaleMonitor();
     this.staleTimer = setInterval(() => {
       if (!this.active || !this.socket || this.socket.readyState !== WEBSOCKET_OPEN) return;
-      if (this.now() - this.lastMessageAt <= STALE_AFTER_MS) return;
-      this.emitStatus("stale");
-      this.startFallbackLoop();
-      this.sendJson({ method: "ping" });
+      const pricingHealthy = this.now() - this.lastMessageAt <= STALE_AFTER_MS;
+      if (!pricingHealthy) {
+        this.emitStatus("stale");
+        this.sendJson({ method: "ping" });
+      }
+      if (!pricingHealthy || !this.hasHealthyBookSocket()) this.startFallbackLoop();
     }, STALE_CHECK_MS);
   }
 
@@ -316,24 +500,35 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
 
   private fetchFallbackSnapshot() {
     if (!this.active || this.fallbackInFlight || !this.options.getFallbackSnapshot) return;
+    const liveRevisionAtStart = this.liveRevision;
     this.fallbackInFlight = true;
     if (this.status !== "connecting" && this.status !== "live") this.emitStatus("fallback_polling");
     this.options.getFallbackSnapshot()
       .then((snapshot) => {
         if (!this.active) return;
-        this.currentSnapshot = snapshot;
-        this.options.onSnapshot(snapshot);
+        if (
+          this.liveRevision > liveRevisionAtStart &&
+          this.hasHealthySocket() &&
+          this.hasHealthyBookSocket()
+        ) return;
+        const merged = this.hasHealthySocket()
+          ? mergeHyperliquidFallbackSnapshot(this.currentSnapshot, snapshot)
+          : snapshot;
+        if (this.options.onSnapshot(merged, "fallback") !== false) this.currentSnapshot = merged;
       })
       .catch(() => {
         if (!this.active) return;
-        const stale = { ...this.currentSnapshot, fetched_at: new Date(this.now()).toISOString(), stale: true };
-        this.currentSnapshot = stale;
-        this.options.onSnapshot(stale);
+        if (this.hasHealthySocket()) return;
+        const stale = carryMarketComponentClocks(
+          this.currentSnapshot,
+          { ...this.currentSnapshot, stale: true },
+        );
+        if (this.options.onSnapshot(stale, "fallback") !== false) this.currentSnapshot = stale;
       })
       .finally(() => {
         this.fallbackInFlight = false;
         if (!this.active) return;
-        if (this.hasHealthySocket()) {
+        if (this.hasHealthySocket() && this.hasHealthyBookSocket()) {
           this.clearFallbackTimer();
           return;
         }
@@ -350,6 +545,15 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
       this.socket.readyState === WEBSOCKET_OPEN &&
       this.status === "live" &&
       this.now() - this.lastMessageAt <= STALE_AFTER_MS,
+    );
+  }
+
+  private hasHealthyBookSocket() {
+    return Boolean(
+      this.socket &&
+      this.socket.readyState === WEBSOCKET_OPEN &&
+      this.lastBookMessageAt > 0 &&
+      this.now() - this.lastBookMessageAt <= STALE_AFTER_MS,
     );
   }
 
@@ -405,14 +609,11 @@ function mergeBbo(
   if (!Array.isArray(bbo)) return snapshot;
   const bid = normalizeBookLevel(bbo[0]);
   const ask = normalizeBookLevel(bbo[1]);
-  const bids = bid ? replaceTopBookLevel(snapshot.bids, bid) : snapshot.bids;
-  const asks = ask ? replaceTopBookLevel(snapshot.asks, ask) : snapshot.asks;
-  const bestBid = bid?.px ?? snapshot.best_bid;
-  const bestAsk = ask?.px ?? snapshot.best_ask;
+  if (!bid || !ask) return snapshot;
+  const bestBid = bid.px;
+  const bestAsk = ask.px;
   return touchSnapshot(snapshot, now, {
     source_timestamp: numberValue(row.time) ?? snapshot.source_timestamp,
-    bids,
-    asks,
     best_bid: bestBid,
     best_ask: bestAsk,
     spread_bps: spreadBps(bestBid, bestAsk),
@@ -423,23 +624,46 @@ function mergeBook(
   snapshot: HyperliquidMarketSnapshot,
   data: unknown,
   now: Date,
+  sourceTimestamp: unknown,
 ): HyperliquidMarketSnapshot {
   if (!isObjectForCoin(data, snapshot.coin)) return snapshot;
   const row = data as Record<string, unknown>;
   const levels = row.levels;
-  if (!Array.isArray(levels)) return snapshot;
+  if (!Array.isArray(levels) || !Array.isArray(levels[0]) || !Array.isArray(levels[1])) {
+    return snapshot;
+  }
+  const timestamp = normalizeMarketTimestamp(sourceTimestamp);
+  if (timestamp == null) return snapshot;
   const bids = normalizeBookSide(levels[0]);
   const asks = normalizeBookSide(levels[1]);
-  const bestBid = bids[0]?.px ?? snapshot.best_bid;
-  const bestAsk = asks[0]?.px ?? snapshot.best_ask;
-  return touchSnapshot(snapshot, now, {
-    source_timestamp: numberValue(row.time) ?? snapshot.source_timestamp,
-    bids,
-    asks,
-    best_bid: bestBid,
-    best_ask: bestAsk,
-    spread_bps: spreadBps(bestBid, bestAsk),
+  const bestBid = bids[0]?.px ?? null;
+  const bestAsk = asks[0]?.px ?? null;
+  const clocks = marketComponentClocks(snapshot);
+  const updates: Partial<Record<MarketComponent, number>> = {};
+  const patch: Partial<HyperliquidMarketSnapshot> = {};
+
+  if (componentAcceptsTimestamp(clocks.book, timestamp)) {
+    patch.bids = bids;
+    patch.asks = asks;
+    updates.book = timestamp;
+  }
+  if (componentAcceptsTimestamp(clocks.quote, timestamp)) {
+    patch.best_bid = bestBid;
+    patch.best_ask = bestAsk;
+    patch.spread_bps = spreadBps(bestBid, bestAsk);
+    updates.quote = timestamp;
+  }
+  if (componentAcceptsTimestamp(clocks.market, timestamp)) {
+    patch.mid = midFromBook(bestBid, bestAsk);
+    updates.market = timestamp;
+  }
+  if (Object.keys(updates).length === 0) return snapshot;
+
+  const next = touchSnapshot(snapshot, now, {
+    ...patch,
+    source_timestamp: latestSourceTimestamp(snapshot.source_timestamp, timestamp),
   });
+  return advanceMarketComponents(snapshot, next, updates);
 }
 
 function mergeTrades(
@@ -451,7 +675,7 @@ function mergeTrades(
   const incoming = rows.map((item) => normalizeRecentTrade(item, snapshot.coin)).filter(Boolean) as HyperliquidMarketSnapshot["recent_trades"];
   if (incoming.length === 0) return snapshot;
   const seen = new Set<string>();
-  const recent_trades = [...incoming, ...snapshot.recent_trades].filter((trade) => {
+  const recent_trades = [...incoming, ...snapshot.recent_trades].sort(compareRecentTrades).filter((trade) => {
     const key = `${trade.time}:${trade.side}:${trade.px}:${trade.sz}`;
     if (seen.has(key)) return false;
     seen.add(key);
@@ -478,23 +702,139 @@ function mergeActiveAssetContext(
   snapshot: HyperliquidMarketSnapshot,
   data: unknown,
   now: Date,
+  sourceTimestamp: unknown,
 ): HyperliquidMarketSnapshot {
   if (!isObjectForCoin(data, snapshot.coin)) return snapshot;
   const ctx = (data as Record<string, unknown>).ctx;
   if (!ctx || typeof ctx !== "object" || Array.isArray(ctx)) return snapshot;
   const row = ctx as Record<string, unknown>;
-  const mid = safeDecimalString(row.midPx) ?? snapshot.mid;
-  return touchSnapshot(snapshot, now, {
-    mid,
-    mark_price: safeDecimalString(row.markPx) ?? snapshot.mark_price,
-    oracle_price: safeDecimalString(row.oraclePx) ?? snapshot.oracle_price,
-    prev_day_price: safeDecimalString(row.prevDayPx) ?? snapshot.prev_day_price,
-    day_notional_volume: safeDecimalString(row.dayNtlVlm) ?? snapshot.day_notional_volume,
-    day_base_volume: safeDecimalString(row.dayBaseVlm) ?? snapshot.day_base_volume,
-    open_interest: safeDecimalString(row.openInterest) ?? snapshot.open_interest,
-    funding_rate: safeSignedDecimalString(row.funding) ?? snapshot.funding_rate,
-    premium: safeSignedDecimalString(row.premium) ?? snapshot.premium,
+  const mid = safeDecimalString(row.midPx);
+  const markPrice = safeDecimalString(row.markPx);
+  const oraclePrice = safeDecimalString(row.oraclePx);
+  const prevDayPrice = safeDecimalString(row.prevDayPx);
+  const dayNotionalVolume = safeDecimalString(row.dayNtlVlm);
+  const dayBaseVolume = safeDecimalString(row.dayBaseVlm);
+  const openInterest = safeDecimalString(row.openInterest);
+  const fundingRate = safeSignedDecimalString(row.funding);
+  const premium = safeSignedDecimalString(row.premium);
+  if (
+    !mid && !markPrice && !oraclePrice && !prevDayPrice && !dayNotionalVolume &&
+    !dayBaseVolume && !openInterest && !fundingRate && !premium
+  ) return snapshot;
+  const receivedAt = now.getTime();
+  const priorFundingAt = isoTimestampMs(snapshot.funding_updated_at);
+  const fundingIsFresh = fundingRate != null && Number.isFinite(receivedAt) &&
+    (priorFundingAt == null || receivedAt >= priorFundingAt);
+  const timestamp = normalizeMarketTimestamp(sourceTimestamp);
+  const clocks = marketComponentClocks(snapshot);
+  const marketTimestampFresh = timestamp != null && componentAcceptsTimestamp(clocks.market, timestamp);
+  const marketIsFresh = Boolean(mid) && marketTimestampFresh;
+  const markIsFresh = timestamp != null && Boolean(markPrice) && componentAcceptsTimestamp(clocks.mark, timestamp);
+  const hasAncillary = Boolean(
+    oraclePrice || prevDayPrice || dayNotionalVolume || dayBaseVolume ||
+    openInterest || premium,
+  );
+  const ancillaryIsFresh = hasAncillary && marketTimestampFresh;
+  if (!marketIsFresh && !markIsFresh && !ancillaryIsFresh && !fundingIsFresh) return snapshot;
+
+  const patch: Partial<HyperliquidMarketSnapshot> = {
+    ...(marketIsFresh ? { mid } : {}),
+    ...(markIsFresh ? { mark_price: markPrice } : {}),
+    ...(ancillaryIsFresh ? {
+      oracle_price: oraclePrice ?? snapshot.oracle_price,
+      prev_day_price: prevDayPrice ?? snapshot.prev_day_price,
+      day_notional_volume: dayNotionalVolume ?? snapshot.day_notional_volume,
+      day_base_volume: dayBaseVolume ?? snapshot.day_base_volume,
+      open_interest: openInterest ?? snapshot.open_interest,
+      premium: premium ?? snapshot.premium,
+    } : {}),
+    ...(fundingIsFresh ? {
+      funding_rate: fundingRate,
+      funding_rate_unit: "decimal_fraction",
+      funding_rate_source: "hyperliquid_ws_active_asset_context_received",
+      funding_time_basis: "received_at",
+      funding_updated_at: now.toISOString(),
+    } : {}),
+    ...(timestamp == null ? {} : {
+      source_timestamp: latestSourceTimestamp(snapshot.source_timestamp, timestamp),
+    }),
+  };
+  const next = marketIsFresh || markIsFresh || ancillaryIsFresh
+    ? touchSnapshot(snapshot, now, patch)
+    : carryMarketComponentClocks(snapshot, {
+        ...snapshot,
+        ...patch,
+        fetched_at: now.toISOString(),
+      });
+  return advanceMarketComponents(snapshot, next, {
+    ...(marketIsFresh ? { market: timestamp } : {}),
+    ...(markIsFresh ? { mark: timestamp } : {}),
   });
+}
+
+function mergeTimestampedComponent(
+  snapshot: HyperliquidMarketSnapshot,
+  component: MarketComponent,
+  sourceTimestamp: unknown,
+  merge: () => HyperliquidMarketSnapshot,
+): HyperliquidMarketSnapshot {
+  const timestamp = normalizeMarketTimestamp(sourceTimestamp);
+  if (timestamp == null) return snapshot;
+  if (!componentAcceptsTimestamp(marketComponentClocks(snapshot)[component], timestamp)) {
+    return snapshot;
+  }
+  const merged = merge();
+  if (merged === snapshot) return snapshot;
+  const next = {
+    ...merged,
+    source_timestamp: latestSourceTimestamp(snapshot.source_timestamp, timestamp),
+  };
+  return advanceMarketComponent(snapshot, next, component, timestamp);
+}
+
+function componentAcceptsTimestamp(current: number | undefined, incoming: number): boolean {
+  return current == null || incoming >= current;
+}
+
+function preferSnapshotComponent(
+  preferredTimestamp: number | null | undefined,
+  fallbackTimestamp: number | null | undefined,
+  hasPreferredValue: boolean,
+): boolean {
+  if (preferredTimestamp != null) {
+    return fallbackTimestamp == null || preferredTimestamp >= fallbackTimestamp;
+  }
+  return fallbackTimestamp == null && hasPreferredValue;
+}
+
+function latestSourceTimestamp(current: unknown, incoming: number): number {
+  const normalized = normalizeMarketTimestamp(current);
+  return normalized == null ? incoming : Math.max(normalized, incoming);
+}
+
+function latestOptionalTimestamp(left: unknown, right: unknown): number | null {
+  const normalizedLeft = normalizeMarketTimestamp(left);
+  const normalizedRight = normalizeMarketTimestamp(right);
+  if (normalizedLeft == null) return normalizedRight;
+  if (normalizedRight == null) return normalizedLeft;
+  return Math.max(normalizedLeft, normalizedRight);
+}
+
+function isoTimestampMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null;
+}
+
+function fundingRevisionMs(snapshot: HyperliquidMarketSnapshot): number | null {
+  return inspectCanonicalFundingRate({
+    rate: snapshot.funding_rate,
+    unit: snapshot.funding_rate_unit,
+    source: snapshot.funding_rate_source,
+    timeBasis: snapshot.funding_time_basis,
+    updatedAt: snapshot.funding_updated_at,
+    venue: "hyperliquid",
+  })?.updatedAtMs ?? null;
 }
 
 function touchSnapshot(
@@ -508,6 +848,49 @@ function touchSnapshot(
     fetched_at: now.toISOString(),
     stale: false,
   };
+}
+
+function messageTimestamp(message: Record<string, unknown>, data: unknown): unknown {
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const row = data as Record<string, unknown>;
+    return row.time ?? row.timestamp ?? row.ts ?? message.time ?? message.timestamp;
+  }
+  return message.time ?? message.timestamp;
+}
+
+function latestAcceptedTradeTimestamp(
+  value: unknown,
+  coin: HyperliquidMarketCoin,
+): number | null {
+  const rows = Array.isArray(value) ? value : [value];
+  return latestTimestamp(rows.map((row) => normalizeRecentTrade(row, coin)?.time ?? null));
+}
+
+function latestAcceptedCandleTimestamp(
+  value: unknown,
+  coin: HyperliquidMarketCoin,
+  interval: HyperliquidCandleInterval,
+): number | null {
+  const rows = Array.isArray(value) ? value : [value];
+  return latestTimestamp(rows.map((row) => normalizeCandle(row, coin, interval)?.t ?? null));
+}
+
+function latestTimestamp(values: Array<number | null>): number | null {
+  let latest: number | null = null;
+  for (const value of values) {
+    if (value != null && (latest == null || value > latest)) latest = value;
+  }
+  return latest;
+}
+
+function compareRecentTrades(
+  left: HyperliquidMarketSnapshot["recent_trades"][number],
+  right: HyperliquidMarketSnapshot["recent_trades"][number],
+) {
+  return right.time - left.time
+    || left.side.localeCompare(right.side)
+    || left.px.localeCompare(right.px)
+    || left.sz.localeCompare(right.sz);
 }
 
 function parseWebSocketMessage(rawMessage: unknown): Record<string, unknown> | null {
@@ -543,13 +926,6 @@ function normalizeBookLevel(value: unknown): HyperliquidMarketSnapshot["bids"][n
   const sz = safeDecimalString(row.sz);
   const n = numberValue(row.n);
   return px && sz ? { px, sz, n } : null;
-}
-
-function replaceTopBookLevel(
-  levels: HyperliquidMarketSnapshot["bids"],
-  top: HyperliquidMarketSnapshot["bids"][number],
-) {
-  return [top, ...levels.filter((level) => level.px !== top.px)].slice(0, BOOK_LEVEL_WINDOW);
 }
 
 function normalizeRecentTrade(
@@ -615,4 +991,12 @@ function spreadBps(bestBid: string | null, bestAsk: string | null) {
   const mid = (bid + ask) / 2;
   if (mid <= 0) return null;
   return Math.max(0, Math.round(((ask - bid) / mid) * 10_000 * 100) / 100);
+}
+
+function midFromBook(bestBid: string | null, bestAsk: string | null): string | null {
+  if (!bestBid || !bestAsk) return null;
+  const bid = Number(bestBid);
+  const ask = Number(bestAsk);
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0) return null;
+  return String((bid + ask) / 2);
 }
