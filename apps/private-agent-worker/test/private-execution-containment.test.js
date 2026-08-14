@@ -75,8 +75,24 @@ describe("private execution recovery containment", () => {
     }
   });
 
-  it("keeps only Backpack IOC and Hyperliquid paths available", () => {
+  it("keeps recovery-backed Coinbase BYO, Backpack IOC, and Hyperliquid paths available", () => {
     for (const input of [
+      {
+        venue_id: "coinbase_advanced",
+        execution_mode: "byo_api_key",
+        instruction: {
+          operation_class: "spot_limit_order",
+          order: { tif: "Ioc", post_only: false },
+        },
+      },
+      {
+        venue_id: "coinbase_advanced",
+        execution_mode: "byo_api_key",
+        instruction: {
+          operation_class: "spot_limit_order",
+          order: { tif: "Fok", post_only: false },
+        },
+      },
       {
         venue_id: "backpack",
         execution_mode: "ghola_pooled",
@@ -92,23 +108,54 @@ describe("private execution recovery containment", () => {
     }
   });
 
-  it("blocks every Coinbase placement mode until recovery is proven", () => {
-    for (const instruction of [
-      { operation_class: "spot_market_order", order: {} },
-      { operation_class: "spot_limit_order", order: { tif: "Gtc", post_only: false } },
-      { operation_class: "spot_limit_order", order: { tif: "Ioc", post_only: false } },
-      { operation_class: "spot_limit_order", order: { tif: "Fok", post_only: false } },
-      { operation_class: "spot_limit_order", order: { tif: "Ioc", post_only: true } },
+  it("blocks Coinbase modes without exact BYO IOC/FOK recovery", () => {
+    for (const [executionMode, instruction] of [
+      ["byo_api_key", { operation_class: "spot_market_order", order: {} }],
+      ["byo_api_key", { operation_class: "spot_limit_order", order: { tif: "Gtc", post_only: false } }],
+      ["byo_api_key", { operation_class: "spot_limit_order", order: { tif: "Ioc", post_only: true } }],
+      ["partner_omnibus", { operation_class: "spot_limit_order", order: { tif: "Ioc", post_only: false } }],
+      ["partner_omnibus", { operation_class: "spot_limit_order", order: { tif: "Fok", post_only: false } }],
     ]) {
       assert.throws(
         () => assertPrivateExecutionRecoveryInvariant({
           venue_id: "coinbase_advanced",
-          execution_mode: "byo_api_key",
+          execution_mode: executionMode,
           instruction,
         }),
         (error) => error.code === "COINBASE_LIVE_EXECUTION_RECOVERY_UNPROVEN",
       );
     }
+  });
+
+  it("submits a recovery-backed Coinbase BYO IOC through the durable claim", async () => {
+    const { state, calls } = instrumentedState({
+      template: { order: limitOrder("BTC-USD", "Ioc") },
+    });
+    let connectorCalls = 0;
+
+    const receipt = await withEnvironment({
+      PRIVATE_AGENT_VENUE_DRY_RUN: "true",
+      PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE: "0",
+    }, () => executeCoinbaseOrder({
+      body: coinbaseBody(
+        "spot_limit_order",
+        "coinbase_byo_ioc_work_order",
+        "byo_api_key",
+      ),
+      recipient: null,
+      state,
+      submitExecution: async () => {
+        connectorCalls += 1;
+        return adapterResult("submitted");
+      },
+    }));
+
+    assert.equal(receipt.status, "submitted");
+    assert.equal(connectorCalls, 1);
+    assert.equal(calls.claim, 1);
+    assert.equal(calls.allocation, 0);
+    assert.equal(calls.reserve, 0);
+    assert.equal(calls.settle, 0);
   });
 
   it("allows Coinbase cancel without creating an omnibus reservation or settlement", async () => {

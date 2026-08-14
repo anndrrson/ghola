@@ -10,6 +10,7 @@ import {
   assertCoinbaseKeyPermissions,
   coinbaseCredentialFromVault,
   loadPartnerCoinbaseCredential,
+  reconcileCoinbaseExecution,
   submitCoinbaseExecution,
   verifyCoinbaseNoSubmit,
 } from "../venues/coinbase.js";
@@ -67,9 +68,16 @@ export function assertPrivateExecutionRecoveryInvariant({
     venue_id === "coinbase_advanced" &&
     COINBASE_EXPOSURE_CREATING_OPERATIONS.has(operationClass)
   ) {
+    const tif = String(instruction?.order?.tif || "").toLowerCase();
+    const recoveryBackedByoIoc =
+      execution_mode === "byo_api_key" &&
+      operationClass === "spot_limit_order" &&
+      (tif === "ioc" || tif === "fok") &&
+      instruction?.order?.post_only !== true;
+    if (recoveryBackedByoIoc) return;
     throw privateExecutionContainmentError(
       "COINBASE_LIVE_EXECUTION_RECOVERY_UNPROVEN",
-      "coinbase live execution is disabled until submit, cancellation, and reservation recovery are proven",
+      "coinbase live execution is limited to recovery-backed BYO limit IOC/FOK orders",
     );
   }
   if (operationClass !== "perp_limit_order") return;
@@ -1288,6 +1296,83 @@ export async function verifyCoinbaseOrderNoSubmit({ body, recipient, state }) {
     },
     updated_at: new Date().toISOString(),
   };
+}
+
+export async function reconcileCoinbaseClaim({ body, recipient, state }) {
+  const workOrderCommitment = body.work_order_commitment;
+  const evidence = await state.getExecutionClaimEvidence(workOrderCommitment);
+  if (!evidence?.context || evidence.context.venue_id !== "coinbase_advanced") {
+    const error = new PrivateExecutionError("coinbase execution claim was not found", 404);
+    error.code = "COINBASE_EXECUTION_CLAIM_NOT_FOUND";
+    throw error;
+  }
+  if (evidence.receipt?.final_proof?.final_fill_proven === true) {
+    return evidence.receipt;
+  }
+
+  let credential;
+  const executionMode = evidence.context.execution_mode || body.execution_mode || "byo_api_key";
+  if (executionMode === "partner_omnibus") {
+    credential = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true"
+      ? dryRunCoinbaseCredential()
+      : loadPartnerCoinbaseCredential(process.env);
+  } else if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
+    credential = dryRunCoinbaseCredential();
+  } else {
+    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+      aadPrefix: "ghola/coinbase-advanced-execution-vault-v1",
+      expectedKind: "ghola_coinbase_advanced_execution_vault",
+    });
+    credential = coinbaseCredentialFromVault(openedVault.json);
+  }
+
+  const clientOrderId = await state.deriveClientOrderId("ghola", workOrderCommitment);
+  const providerOrderId = evidence.attempt?.provider_ref_seed?.order_id ||
+    evidence.receipt?.final_proof?.provider_order_id ||
+    null;
+  const adapterResult = await reconcileCoinbaseExecution({
+    credential,
+    instruction: {
+      operation_class: "reconcile",
+      reconcile: { product_id: body.product_id || null },
+    },
+    clientOrderId,
+    providerOrderId,
+  });
+  const completed = bindExecutionClaimCompletion({
+    attempt: executionAttempt({
+      venue_id: "coinbase_advanced",
+      platform_class: "coinbase_style_provider",
+      execution_mode: executionMode,
+      adapterResult,
+    }),
+    receipt: executionReceipt({
+      venue_id: "coinbase_advanced",
+      platform_class: "coinbase_style_provider",
+      execution_mode: executionMode,
+      instruction: null,
+      body,
+      status: adapterResult.status,
+      provider_ref_seed: adapterResult.provider_ref_seed,
+      result_seed: adapterResult.result_seed,
+      fills: adapterResult.fills,
+      final_proof: adapterResult.final_proof,
+      visibility_summary: evidence.receipt?.visibility_summary || {
+        main_wallet_exposed: false,
+        ghola_operator_sees: "commitment_and_ciphertext_only",
+        coinbase_sees: executionMode === "partner_omnibus"
+          ? "partner_pooled_account_and_order_activity"
+          : "byo_account_and_order_activity",
+      },
+    }),
+  }, evidence.context);
+  if (adapterResult.final_proof?.final_fill_proven !== true) {
+    return completed.receipt;
+  }
+  if (typeof state.resolveExecutionClaim !== "function") {
+    throw new PrivateExecutionError("durable execution reconciliation is unavailable", 503);
+  }
+  return state.resolveExecutionClaim(workOrderCommitment, completed);
 }
 
 export async function verifyJupiterSwapNoSubmit({ body, recipient, state }) {

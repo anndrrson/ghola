@@ -23,6 +23,7 @@ import {
   executeSolanaPerpsOrder,
   readHyperliquidSnapshot,
   reconcileStoredExecution,
+  reconcileCoinbaseClaim,
   streamHyperliquidAccountState,
   storeCoinbaseSession,
   storeHyperliquidSession,
@@ -1391,8 +1392,16 @@ function validateCoinbaseReconcileRequest(body, recipient) {
     errors.push("request must not contain plaintext Coinbase credentials, strategy, prompt, policy, or order payloads");
   }
   if (body.version !== 1) errors.push("version must be 1");
+  if (body.venue_id !== "coinbase_advanced") errors.push("venue_id must be coinbase_advanced");
+  if (body.platform_class !== "coinbase_style_provider") errors.push("platform_class must be coinbase_style_provider");
+  if (!["byo_api_key", "partner_omnibus"].includes(body.execution_mode)) {
+    errors.push("execution_mode is unsupported");
+  }
   if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
-  if ("encrypted_execution_vault" in body) {
+  if (body.execution_mode === "byo_api_key") {
+    if (!isNonEmptyString(body.vault_commitment)) errors.push("vault_commitment is required");
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  } else if ("encrypted_execution_vault" in body) {
     errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
   }
   if ("encrypted_execution_instruction_bundle" in body) {
@@ -2786,13 +2795,9 @@ export function createPrivateAgentWorkerServer(options = {}) {
             details: errors,
           });
         }
-        return json(res, 200, coinbaseOrderReceipt({
-          ...body,
-          venue_id: "coinbase_advanced",
-          platform_class: "coinbase_style_provider",
-          execution_mode: body.execution_mode || "partner_omnibus",
-          operation_class: "reconcile",
-        }, "reconciled"));
+        const receipt = await reconcileCoinbaseClaim({ body, recipient, state });
+        const reconciled = receipt.final_proof?.final_fill_proven === true;
+        return json(res, reconciled ? 200 : 409, receipt);
       }
 
       if (req.method === "POST" && url.pathname === "/venues/solana-perps/orders") {

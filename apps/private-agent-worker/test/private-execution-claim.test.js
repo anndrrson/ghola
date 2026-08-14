@@ -363,6 +363,48 @@ describe("durable private execution claims", () => {
     assert.deepEqual(reconciled, completed);
   });
 
+  it("atomically resolves a crash-left claim from exact terminal venue proof", async () => {
+    for (const state of [
+      createWorkerState(tempDir()),
+      createSqliteWorkerState(join(tempDir(), "resolved-worker-state.sqlite")),
+    ]) {
+      const context = claimContext("coinbase_advanced", "spot_limit_order", "terminal resolution");
+      const claimed = await state.claimExecution("resolved_work_order", context);
+      assert.equal(claimed.status, "claimed");
+      const proof = {
+        proof_kind: "coinbase_order_state_v1",
+        broadcast_performed: true,
+        final_venue_execution_proven: true,
+        final_fill_proven: true,
+        terminal_status: "filled",
+      };
+      const completed = {
+        attempt: {
+          status: "filled",
+          execution_request_digest: context.request_digest,
+          final_proof: proof,
+        },
+        receipt: {
+          status: "filled",
+          execution_request_digest: context.request_digest,
+          final_proof: proof,
+        },
+      };
+      assert.deepEqual(
+        await state.resolveExecutionClaim("resolved_work_order", completed),
+        completed.receipt,
+      );
+      assert.deepEqual(
+        (await state.getIdempotency("resolved_work_order")).receipt,
+        completed.receipt,
+      );
+      assert.deepEqual(
+        await state.resolveExecutionClaim("resolved_work_order", completed),
+        completed.receipt,
+      );
+    }
+  });
+
   it("serializes JSON claims across adapters sharing a path", async () => {
     let document = {};
     const path = join(tempDir(), "shared-memory-state.json");

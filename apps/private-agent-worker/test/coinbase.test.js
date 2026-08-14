@@ -4,6 +4,7 @@ import { generateKeyPairSync } from "node:crypto";
 import {
   assertCoinbaseKeyPermissions,
   buildCoinbaseJwt,
+  reconcileCoinbaseExecution,
   submitCoinbaseExecution,
 } from "../src/venues/coinbase.js";
 
@@ -313,4 +314,182 @@ describe("coinbase live adapter", () => {
       else process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD = oldCap;
     }
   });
+
+  it("reconciles only the exact client order and exact fills", async () => {
+    const previous = liveCoinbaseEnvironment();
+    const calls = [];
+    try {
+      const result = await reconcileCoinbaseExecution({
+        credential: testCredential(),
+        clientOrderId: "ghola_exact_client",
+        instruction: {
+          operation_class: "reconcile",
+          reconcile: { product_id: "BTC-USD" },
+        },
+        fetchImpl: async (url) => {
+          const value = String(url);
+          calls.push(value);
+          if (value.endsWith("/key_permissions")) {
+            return jsonResponse({ can_view: true, can_trade: true, can_transfer: false });
+          }
+          if (value.includes("/orders/historical/batch?")) {
+            return jsonResponse({
+              orders: [{
+                order_id: "order_exact",
+                client_order_id: "ghola_exact_client",
+                product_id: "BTC-USD",
+                status: "FILLED",
+                filled_size: "0.002",
+              }],
+              has_next: false,
+            });
+          }
+          if (value.includes("/orders/historical/fills?order_ids=order_exact")) {
+            return jsonResponse({
+              fills: [
+                { order_id: "other", size: "9", price: "1" },
+                { order_id: "order_exact", trade_id: "fill_1", size: "0.001", price: "10000", commission: "0.01" },
+                { order_id: "order_exact", trade_id: "fill_2", size: "0.001", price: "10001", commission: "0.01" },
+              ],
+            });
+          }
+          throw new Error(`unexpected request ${value}`);
+        },
+      });
+      assert.equal(result.status, "filled");
+      assert.equal(result.fills.length, 2);
+      assert.equal(result.final_proof.provider_order_id, "order_exact");
+      assert.equal(result.final_proof.final_fill_proven, true);
+      assert.equal(result.final_proof.terminal_status, "filled");
+      assert.equal(calls.some((url) => url.includes("product_ids=BTC-USD")), true);
+    } finally {
+      restoreEnvironment(previous);
+    }
+  });
+
+  it("cancels by resolved provider order id and proves terminal cancellation", async () => {
+    const previous = liveCoinbaseEnvironment();
+    const requests = [];
+    try {
+      const result = await submitCoinbaseExecution({
+        credential: testCredential(),
+        clientOrderId: "cancel_work_order_client",
+        instruction: {
+          operation_class: "cancel",
+          cancel: {
+            market: "BTC-USD",
+            client_order_id: "target_client",
+          },
+        },
+        fetchImpl: async (url, init) => {
+          const value = String(url);
+          requests.push({ value, method: init.method, body: init.body ? JSON.parse(init.body) : null });
+          if (value.endsWith("/key_permissions")) {
+            return jsonResponse({ can_view: true, can_trade: true, can_transfer: false });
+          }
+          if (value.includes("/orders/historical/batch?")) {
+            return jsonResponse({
+              orders: [{
+                order_id: "provider_order_1",
+                client_order_id: "target_client",
+                product_id: "BTC-USD",
+                status: "OPEN",
+                filled_size: "0",
+              }],
+              has_next: false,
+            });
+          }
+          if (value.endsWith("/orders/batch_cancel")) {
+            return jsonResponse({ results: [{ success: true, order_id: "provider_order_1" }] });
+          }
+          if (value.endsWith("/orders/historical/provider_order_1")) {
+            return jsonResponse({
+              order: {
+                order_id: "provider_order_1",
+                client_order_id: "target_client",
+                product_id: "BTC-USD",
+                status: "CANCELLED",
+                filled_size: "0",
+              },
+            });
+          }
+          if (value.includes("/orders/historical/fills?order_ids=provider_order_1")) {
+            return jsonResponse({ fills: [] });
+          }
+          throw new Error(`unexpected request ${value}`);
+        },
+      });
+      assert.equal(result.status, "cancelled");
+      assert.equal(result.final_proof.terminal_status, "cancelled");
+      assert.equal(result.final_proof.final_fill_proven, true);
+      const cancel = requests.find((request) => request.value.endsWith("/orders/batch_cancel"));
+      assert.deepEqual(cancel.body, { order_ids: ["provider_order_1"] });
+    } finally {
+      restoreEnvironment(previous);
+    }
+  });
+
+  it("fails closed when Coinbase reports a per-order cancel failure", async () => {
+    const previous = liveCoinbaseEnvironment();
+    try {
+      await assert.rejects(
+        () => submitCoinbaseExecution({
+          credential: testCredential(),
+          clientOrderId: "cancel_failure_work_order",
+          instruction: {
+            operation_class: "cancel",
+            cancel: { market: "BTC-USD", order_id: "provider_order_failed", client_order_id: "target_client" },
+          },
+          fetchImpl: async (url) => {
+            const value = String(url);
+            if (value.endsWith("/key_permissions")) {
+              return jsonResponse({ can_view: true, can_trade: true, can_transfer: false });
+            }
+            if (value.endsWith("/orders/historical/provider_order_failed")) {
+              return jsonResponse({
+                order: {
+                  order_id: "provider_order_failed",
+                  client_order_id: "target_client",
+                  product_id: "BTC-USD",
+                  status: "OPEN",
+                },
+              });
+            }
+            if (value.endsWith("/orders/batch_cancel")) {
+              return jsonResponse({
+                results: [{ success: false, order_id: "provider_order_failed", failure_reason: "UNKNOWN_CANCEL_ORDER" }],
+              });
+            }
+            throw new Error(`unexpected request ${value}`);
+          },
+        }),
+        (error) => error.code === "COINBASE_CANCEL_NOT_ACCEPTED",
+      );
+    } finally {
+      restoreEnvironment(previous);
+    }
+  });
 });
+
+function liveCoinbaseEnvironment() {
+  const previous = {
+    PRIVATE_AGENT_VENUE_DRY_RUN: process.env.PRIVATE_AGENT_VENUE_DRY_RUN,
+    PRIVATE_AGENT_COINBASE_LIVE_MODE: process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE,
+    PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS: process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS,
+  };
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = "full";
+  process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS = "BTC-USD";
+  return previous;
+}
+
+function restoreEnvironment(previous) {
+  for (const [key, value] of Object.entries(previous)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+}
+
+function jsonResponse(value, status = 200) {
+  return new Response(JSON.stringify(value), { status });
+}

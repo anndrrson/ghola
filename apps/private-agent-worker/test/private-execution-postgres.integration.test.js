@@ -85,6 +85,53 @@ describe("live Postgres execution claims", { skip: !databaseUrl }, () => {
     assert.deepEqual(replay, first);
   });
 
+  it("atomically resolves a crash-left claim from exact terminal venue proof", async () => {
+    const workOrder = unique("resolve");
+    const requestDigest = sha256(workOrder);
+    const context = {
+      venue_id: "coinbase_advanced",
+      platform_class: "coinbase_style_provider",
+      execution_mode: "byo_api_key",
+      operation_class: "spot_limit_order",
+      request_digest: requestDigest,
+    };
+    const crashedState = createPostgresWorkerState(databaseUrl, { driver: "pg" });
+    const claim = await crashedState.claimExecution(workOrder, context);
+    assert.equal(claim.status, "claimed");
+    await crashedState.close();
+
+    const restartedState = createPostgresWorkerState(databaseUrl, { driver: "pg" });
+    const receipt = {
+      version: 1,
+      venue_id: "coinbase_advanced",
+      status: "filled",
+      work_order_commitment: workOrder,
+      execution_request_digest: requestDigest,
+      final_proof: {
+        final_venue_execution_proven: true,
+        final_fill_proven: true,
+        terminal_status: "filled",
+        provider_order_id: `provider_${workOrder}`,
+      },
+    };
+    const resolved = await restartedState.resolveExecutionClaim(workOrder, {
+      attempt: {
+        status: "filled",
+        execution_request_digest: requestDigest,
+        provider_ref_seed: { order_id: receipt.final_proof.provider_order_id },
+      },
+      receipt,
+    });
+    assert.deepEqual(resolved, receipt);
+    await restartedState.close();
+
+    const replayState = createPostgresWorkerState(databaseUrl, { driver: "pg" });
+    const replay = await replayState.claimExecution(workOrder, context);
+    await replayState.close();
+    assert.equal(replay.status, "completed");
+    assert.deepEqual(replay.receipt, receipt);
+  });
+
   it("enforces first-use policy amounts as numbers", async () => {
     const state = createPostgresWorkerState(databaseUrl, { driver: "pg" });
     const key = unique("policy_amount");
