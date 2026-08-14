@@ -3883,7 +3883,9 @@ export default function TradePage() {
           ) : null}
 
           {localPreview ? (
-            <TerminalLocalSafetyStrip />
+            <TerminalLocalSafetyStrip
+              fundedTestnetProofAvailable={process.env.NEXT_PUBLIC_GHOLA_HYPERLIQUID_FUNDED_TESTNET_UI_ENABLED === "true"}
+            />
           ) : (
             <PublicAgentLaunchPanel
               startup={scopedAgentStartup}

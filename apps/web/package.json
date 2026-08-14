@@ -14,6 +14,7 @@
     "smoke:auth": "node scripts/smoke-auth.mjs",
     "smoke:trader-local": "node scripts/ghola-trader-local-e2e.mjs",
     "smoke:trader-staging": "GHOLA_TRADER_E2E_STATE_STORE=postgres node scripts/ghola-trader-local-e2e.mjs",
+    "smoke:trader-testnet-funded": "node scripts/ghola-trader-funded-testnet-e2e.mjs",
     "smoke:auction-local": "node scripts/ghola-auction-local-e2e.mjs",
     "smoke:auction-devnet": "GHOLA_AUCTION_SMOKE_CLUSTER=devnet node scripts/ghola-auction-local-e2e.mjs",
     "verify:live:all": "node scripts/verify-live-all.mjs",

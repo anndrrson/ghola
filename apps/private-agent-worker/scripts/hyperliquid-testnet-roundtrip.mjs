@@ -340,6 +340,7 @@ async function main() {
   mkdirSync(dirname(reportPath), { recursive: true });
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  process.stdout.write(`GHOLA_TESTNET_ROUNDTRIP_RESULT=${JSON.stringify(report)}\n`);
   if (!report.ok) process.exitCode = 1;
 }
 
