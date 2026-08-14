@@ -708,12 +708,15 @@ function requirePrivateExecutionClaimStore(res) {
   return true;
 }
 
-const CROSS_VENUE_DURABLE_CLAIM_UNAVAILABLE = "cross_venue_durable_claim_unavailable";
-
-// Cross-venue submission stays code-disabled until its coordinator acquires
-// one durable atomic claim before either leg can reach a venue adapter.
-function crossVenueDurableClaimReady() {
-  return false;
+function crossVenueSubmissionGate(envInput = process.env) {
+  const reasonCodes = [];
+  if (envInput.PRIVATE_AGENT_CROSS_VENUE_LIVE_SUBMIT !== "true") {
+    reasonCodes.push("cross_venue_live_submit_disabled");
+  }
+  if (!privateExecutionClaimStoreReady(envInput)) {
+    reasonCodes.push("worker_execution_claim_store_not_shared");
+  }
+  return { ready: reasonCodes.length === 0, reason_codes: reasonCodes };
 }
 
 function positiveCap(name, fallbackName = null) {
@@ -1907,22 +1910,23 @@ export function createPrivateAgentWorkerServer(options = {}) {
           expected: () => ({ operation_class: "cross_venue_byo_readiness" }),
         });
         if (authorized.rejected) return;
-        if (!crossVenueDurableClaimReady()) {
+        const crossVenueGate = crossVenueSubmissionGate();
+        if (!crossVenueGate.ready) {
           return json(res, 503, {
             version: 1,
             ready: false,
             execution_mode: "coordinated_byo",
             atomic: false,
-            reason_codes: [CROSS_VENUE_DURABLE_CLAIM_UNAVAILABLE],
+            reason_codes: crossVenueGate.reason_codes,
           });
         }
-        const adapterReady = crossVenueCoordinator.ready();
-        return json(res, adapterReady ? 200 : 503, {
+        const adapterReadiness = crossVenueCoordinator.readiness();
+        return json(res, adapterReadiness.ready ? 200 : 503, {
           version: 1,
-          ready: adapterReady,
+          ready: adapterReadiness.ready,
           execution_mode: "coordinated_byo",
           atomic: false,
-          reason_codes: adapterReady ? [] : ["cross_venue_byo_adapter_unavailable"],
+          reason_codes: adapterReadiness.reason_codes,
         });
       }
       if (req.method === "POST" && crossVenueCommand) {
@@ -1940,8 +1944,9 @@ export function createPrivateAgentWorkerServer(options = {}) {
           }),
         });
         if (authorized.rejected) return;
-        if (action === "submit" && !crossVenueDurableClaimReady()) {
-          return json(res, 503, { error: CROSS_VENUE_DURABLE_CLAIM_UNAVAILABLE });
+        const crossVenueGate = crossVenueSubmissionGate();
+        if (action === "submit" && !crossVenueGate.ready) {
+          return json(res, 503, { error: crossVenueGate.reason_codes[0] });
         }
         if (action === "submit" && requirePrivateExecutionClaimStore(res)) return;
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {

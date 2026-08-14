@@ -4,9 +4,9 @@ import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
 
 export function crossVenueExecutionReadiness(env: Record<string, string | undefined> = process.env) {
   const config = workerConfig(env);
-  const enabled = false;
+  const enabled = env.GHOLA_CROSS_VENUE_LIVE_SUBMIT === "true";
   const reasons = [
-    "cross_venue_durable_claim_unavailable",
+    ...(enabled ? [] : ["cross_venue_live_submit_disabled"]),
     ...(config.url ? [] : ["execution_worker_url_missing"]),
     ...(config.token ? [] : ["execution_worker_auth_missing"]),
   ];

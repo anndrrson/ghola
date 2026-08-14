@@ -665,7 +665,7 @@ describe("private agent worker", () => {
     assert.equal(JSON.stringify(result).includes("test-backpack-api-key"), false);
   });
 
-  it("contains cross-venue submit with a ready adapter while preserving cancel", async () => {
+  it("enables a durable cross-venue adapter behind the explicit live gate", async () => {
     await close(server);
     const state = createWorkerState(dir);
     let preflightCalls = 0;
@@ -673,6 +673,8 @@ describe("private agent worker", () => {
     let scheduleCalls = 0;
     let cancelCalls = 0;
     const crossVenueAdapter = {
+      durable_claims: true,
+      readiness: () => ({ ready: true, reason_codes: [] }),
       preflight: async () => { preflightCalls += 1; },
       submit: async () => {
         submitCalls += 1;
@@ -681,6 +683,7 @@ describe("private agent worker", () => {
       hedge: async () => ({ filled_notional_micro_usdc: 0 }),
       unwind: async () => ({ filled_notional_micro_usdc: 0 }),
       cancel: async () => { cancelCalls += 1; },
+      reconcile: async () => ({ terminal: false }),
     };
     server = createPrivateAgentWorkerServer({
       state,
@@ -729,13 +732,13 @@ describe("private agent worker", () => {
       },
       body: JSON.stringify(readinessBody),
     });
-    assert.equal(readinessResponse.status, 503);
+    assert.equal(readinessResponse.status, 200);
     assert.deepEqual(await readinessResponse.json(), {
       version: 1,
-      ready: false,
+      ready: true,
       execution_mode: "coordinated_byo",
       atomic: false,
-      reason_codes: ["cross_venue_durable_claim_unavailable"],
+      reason_codes: [],
     });
 
     const token = capabilityToken({
@@ -753,19 +756,11 @@ describe("private agent worker", () => {
       },
       body: JSON.stringify(body),
     });
-    assert.equal(response.status, 503);
-    assert.deepEqual(await response.json(), { error: "cross_venue_durable_claim_unavailable" });
+    assert.equal(response.status, 202);
+    assert.equal((await response.json()).accepted, true);
     assert.equal(preflightCalls, 0);
     assert.equal(submitCalls, 0);
-    assert.equal(scheduleCalls, 0);
-
-    await state.putExecutionAttempt(body.execution_id, {
-      version: 1,
-      execution_id: body.execution_id,
-      owner_commitment: body.owner_commitment,
-      status: "accepted",
-      sequence: 1,
-    });
+    assert.equal(scheduleCalls, 1);
     const cancelToken = capabilityToken({
       path: "/execution/cross-venue/cancel",
       scope: "autopilot:control",

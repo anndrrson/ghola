@@ -9,16 +9,16 @@ import {
 import { brandPrivateAgentMockTransport } from "./private-agent-spend-policy";
 
 describe("cross-venue worker boundary", () => {
-  it("fails closed regardless of flags until durable recovery is proven", () => {
+  it("fails closed until the explicit live gate and worker transport are configured", () => {
     expect(crossVenueExecutionReadiness({})).toMatchObject({
       enabled: false,
       ready: false,
       atomic: false,
-      reason_codes: expect.arrayContaining(["cross_venue_durable_claim_unavailable", "execution_worker_url_missing", "execution_worker_auth_missing"]),
+      reason_codes: expect.arrayContaining(["cross_venue_live_submit_disabled", "execution_worker_url_missing", "execution_worker_auth_missing"]),
     });
   });
 
-  it("never sends a two-leg submit even when configured", async () => {
+  it("sends a configured plan only after the explicit live gate is enabled", async () => {
     const fetchMock = vi.fn(async (_url: URL, init?: RequestInit) => {
       void _url;
       void init;
@@ -32,14 +32,14 @@ describe("cross-venue worker boundary", () => {
     const result = await submitCrossVenueExecution({
       plan,
       env: {
-        GHOLA_CROSS_VENUE_BYO_ENABLED: "true",
+        GHOLA_CROSS_VENUE_LIVE_SUBMIT: "true",
         GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
         GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "test-token",
       },
       fetchImpl,
     });
-    expect(result).toEqual({ ok: false, status: 503, error: "cross_venue_durable_claim_unavailable" });
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true, status: 202, worker_receipt: { accepted: true } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("keeps emergency cancellation available after the submit flag is disabled", async () => {
