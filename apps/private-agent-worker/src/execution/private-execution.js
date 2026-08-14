@@ -593,6 +593,17 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
   });
 }
 
+export async function executeHyperliquidBoundInstruction({
+  body,
+  instruction,
+  recipient,
+  state,
+}) {
+  const boundBody = { ...body };
+  boundBody[AUTOPILOT_INTERNAL_INSTRUCTION] = instruction;
+  return executeHyperliquidOrder({ body: boundBody, recipient, state });
+}
+
 export async function readHyperliquidSnapshot({ body, recipient, state }) {
   const { executionMode, credential } = await hyperliquidCredentialForBody({ body, recipient, state });
   return readHyperliquidAccountSnapshot({

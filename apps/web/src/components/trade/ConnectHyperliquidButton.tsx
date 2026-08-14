@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState, type ClipboardEvent } from "react";
 import { Check, ClipboardPaste, Link2, Loader2, ShieldCheck, TriangleAlert, WifiOff } from "lucide-react";
 import {
@@ -230,6 +231,14 @@ export function ConnectHyperliquidButton({
           >
             Replace or switch network
           </button>
+          {state.network === "mainnet" && process.env.NEXT_PUBLIC_GHOLA_HYPERLIQUID_MAINNET_PROOF_UI_ENABLED === "true" ? (
+            <Link
+              href="/trade/mainnet-e2e"
+              className="trade-action flex h-10 items-center justify-center rounded-md px-4 text-xs font-semibold"
+            >
+              Run real $10.50 proof trade
+            </Link>
+          ) : null}
         </div>
       ) : state.status === "runtime_offline" ? (
         <div className="flex items-start gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">

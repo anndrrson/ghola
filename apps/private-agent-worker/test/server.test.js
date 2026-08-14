@@ -968,6 +968,21 @@ describe("private agent worker", () => {
     assert.equal(JSON.stringify(body).includes("sealed-hyperliquid-vault"), false);
   });
 
+  it("keeps the real Hyperliquid proof route hard-off without every live gate", async () => {
+    const response = await fetch(`${baseUrl}/hyperliquid/mainnet-roundtrip`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({}),
+    });
+
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: "hyperliquid_mainnet_roundtrip_disabled" });
+  });
+
   it("submits Hyperliquid orders through commitment and ciphertext ingress", async () => {
     const workOrderCommitment = "connector_work_order_123";
     const previewCommitment = "preview_commitment_123";

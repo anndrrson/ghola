@@ -963,6 +963,19 @@ export async function bindPrivateMobileWallet(input: {
   });
 }
 
+export const HYPERLIQUID_MAINNET_PROOF_CONFIRMATION =
+  "I_UNDERSTAND_THIS_OPENS_AND_CLOSES_A_REAL_MAINNET_POSITION";
+
+export async function runHyperliquidMainnetRoundTrip(options: {
+  proofHeaders: Record<string, string>;
+}) {
+  return privateAccountFetch("/v1/private-account/hyperliquid/mainnet-roundtrip", {
+    method: "POST",
+    headers: options.proofHeaders,
+    body: JSON.stringify({ confirmation: HYPERLIQUID_MAINNET_PROOF_CONFIRMATION }),
+  });
+}
+
 export async function revokeHyperliquidExecutionVault() {
   return privateAccountFetch("/v1/private-account/hyperliquid/vault", {
     method: "DELETE",
@@ -1625,7 +1638,7 @@ const LIVE_GUARDED_MUTATION_PATHS = [
   /^\/v1\/private-account\/autopilot\/sessions\/[^/]+$/,
   /^\/v1\/private-account\/autopilot\/sessions\/[^/]+\/(?:pause|resume|kill)$/,
   /^\/v1\/private-account\/connectors\/(?:submit|verify-no-submit|reconcile)$/,
-  /^\/v1\/private-account\/hyperliquid\/(?:account-snapshot|managed-allocation)$/,
+  /^\/v1\/private-account\/hyperliquid\/(?:account-snapshot|mainnet-roundtrip|managed-allocation)$/,
   /^\/v1\/private-account\/hyperliquid\/agent\/session$/,
   /^\/v1\/private-account\/hyperliquid\/vault$/,
   /^\/v1\/private-account\/omnibus\/(?:allocate|reconcile)$/,

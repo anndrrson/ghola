@@ -35,6 +35,11 @@ import {
   verifyJupiterSwapNoSubmit,
   verifySolanaPerpsOrderNoSubmit,
 } from "./execution/private-execution.js";
+import {
+  hyperliquidMainnetRoundTripEnabled,
+  runSealedHyperliquidMainnetRoundTrip,
+  validateHyperliquidMainnetRoundTripRequest,
+} from "./execution/hyperliquid-mainnet-roundtrip.js";
 import { createConfiguredWorkerState } from "./state/private-state.js";
 import {
   attestFreshCredentialFunded,
@@ -2602,6 +2607,55 @@ export function createPrivateAgentWorkerServer(options = {}) {
         }
         const receipt = await executeHyperliquidOrder({ body, recipient, state });
         return json(res, 202, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/hyperliquid/mainnet-roundtrip") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:submit",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "hyperliquid",
+            platform_class: "hyperliquid_style_market",
+            operation_class: "mainnet_roundtrip_proof",
+          }),
+        });
+        if (authorized.rejected) return;
+        if (!hyperliquidMainnetRoundTripEnabled()) {
+          return json(res, 503, { error: "hyperliquid_mainnet_roundtrip_disabled" });
+        }
+        const errors = validateHyperliquidMainnetRoundTripRequest(authorized.body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid Hyperliquid mainnet round-trip request",
+            details: errors,
+          });
+        }
+        if (requirePrivateExecutionClaimStore(res)) return;
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const report = await runSealedHyperliquidMainnetRoundTrip({
+          body: authorized.body,
+          recipient,
+          state,
+        });
+        console.info(JSON.stringify({
+          level: "info",
+          event: "hyperliquid_mainnet_roundtrip_completed",
+          proof_work_order_commitment: report.proof_work_order_commitment,
+          entry_work_order_commitment: report.entry_work_order_commitment,
+          exit_work_order_commitment: report.exit_work_order_commitment,
+          flat_after_exit: report.flat_after_exit,
+          completed_at: report.completed_at,
+        }));
+        return json(res, 200, report);
       }
 
       if (req.method === "POST" && url.pathname === "/hyperliquid/verify") {

@@ -2610,6 +2610,136 @@ export async function hyperliquidVaultStatusForOwner(owner: PrivateAccountReques
   };
 }
 
+export const HYPERLIQUID_MAINNET_PROOF_CONFIRMATION =
+  "I_UNDERSTAND_THIS_OPENS_AND_CLOSES_A_REAL_MAINNET_POSITION";
+
+export function hyperliquidMainnetProofUiEnabled(
+  env: Record<string, string | undefined> = process.env,
+) {
+  if (env.NODE_ENV === "production" || env.VERCEL_ENV === "production") return false;
+  if (env.GHOLA_HYPERLIQUID_MAINNET_PROOF_UI_ENABLED !== "true") return false;
+  if (env.GHOLA_PRIVATE_AGENT_SPEND_ARMED !== "true") return false;
+  if (env.GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED !== "false") return false;
+  if (env.GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN !== "false") return false;
+  const raw = env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() ||
+    env.GHOLA_PRIVATE_AGENT_WORKER_URL?.trim() || "";
+  try {
+    const url = new URL(raw);
+    return (url.protocol === "http:" || url.protocol === "https:") &&
+      (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]");
+  } catch {
+    return false;
+  }
+}
+
+export async function runHyperliquidMainnetProofForOwner(
+  owner: PrivateAccountRequestOwner,
+  transport: PrivateWorkerTransportOptions = {},
+) {
+  const env = transport.env ?? process.env;
+  if (!hyperliquidMainnetProofUiEnabled(env)) {
+    return { error: "hyperliquid_mainnet_roundtrip_unavailable" as const, status: 404 };
+  }
+  const account = await createOrGetStoredPrivateAccount(owner);
+  const vault = await getHyperliquidExecutionVaultByAccount(account.account_commitment);
+  if (!vault || vault.owner_commitment !== owner.owner_commitment || vault.status !== "sealed") {
+    return { error: "hyperliquid_execution_vault_not_ready" as const, status: 409 };
+  }
+  const vaultNetwork = parseHyperliquidVaultAad(vault.vault.encrypted_execution_vault.aad)?.network;
+  if (vaultNetwork !== "mainnet") {
+    return { error: "hyperliquid_mainnet_vault_required" as const, status: 409 };
+  }
+  const cfg = hyperliquidWorkerConfig(env);
+  if (!cfg.url) return { error: "private_worker_unavailable" as const, status: 503 };
+  const workerPath = "/hyperliquid/mainnet-roundtrip";
+  const body = {
+    version: 1,
+    confirmation: HYPERLIQUID_MAINNET_PROOF_CONFIRMATION,
+    execution_mode: "byo_api_key",
+    account_commitment: account.account_commitment,
+    vault_commitment: vault.vault_commitment,
+    policy_commitment: vault.policy_commitment,
+    encrypted_execution_vault: vault.vault.encrypted_execution_vault,
+    market: "HYPE",
+    notional_usd: 10.5,
+    slippage_bps: 100,
+  };
+  const authorization = workerAuthorizationHeader({
+    fallbackToken: cfg.token,
+    method: "POST",
+    path: workerPath,
+    scope: "order:submit",
+    body,
+    expected: workerCapabilityExpectedFromBody(body, {
+      venue_id: "hyperliquid",
+      platform_class: "hyperliquid_style_market",
+      operation_class: "mainnet_roundtrip_proof",
+    }),
+  });
+  const response = await (transport.fetchImpl ?? fetch)(new URL(workerPath, cfg.url), {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "content-type": "application/json",
+      "x-ghola-sealed-execution-required": "true",
+      ...(authorization ? { authorization } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120_000),
+  }).catch(() => null);
+  if (!response) return { error: "private_worker_unavailable" as const, status: 503 };
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    const value = objectBody(result);
+    return {
+      error: safeHyperliquidMainnetProofError(stringValue(value.error)),
+      status: response.status,
+    };
+  }
+  if (!validHyperliquidMainnetProofReport(result)) {
+    return { error: "hyperliquid_mainnet_roundtrip_invalid_proof" as const, status: 502 };
+  }
+  return { report: result };
+}
+
+function safeHyperliquidMainnetProofError(value: string) {
+  const allowed = new Set([
+    "execution claim is unresolved; reconciliation required",
+    "hyperliquid_mainnet_roundtrip_disabled",
+    "proof trade requires an initially flat HYPE position",
+    "proof trade requires no open HYPE orders",
+    "sealed vault is not bound to Hyperliquid mainnet",
+  ]);
+  return allowed.has(value) ? value : "hyperliquid_mainnet_roundtrip_failed";
+}
+
+function validHyperliquidMainnetProofReport(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const report = value as Record<string, unknown>;
+  return report.ok === true &&
+    report.status === "filled" &&
+    report.network === "mainnet" &&
+    report.market === "HYPE" &&
+    report.notional_usd === 10.5 &&
+    report.max_slippage_bps === 100 &&
+    report.claim_store === "postgres" &&
+    report.entry_status === "filled" &&
+    report.entry_fill_proven === true &&
+    report.duplicate_entry_prevented === true &&
+    report.opened_position_verified === true &&
+    report.exit_status === "filled" &&
+    report.exit_fill_proven === true &&
+    report.duplicate_exit_prevented === true &&
+    report.stored_receipt_replayed === true &&
+    report.flat_after_exit === true &&
+    report.open_orders_after_exit === 0 &&
+    typeof report.proof_work_order_commitment === "string" &&
+    typeof report.entry_work_order_commitment === "string" &&
+    typeof report.exit_work_order_commitment === "string" &&
+    typeof report.completed_at === "string" &&
+    Number.isFinite(Date.parse(report.completed_at));
+}
+
 export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwner) {
   const account = await createOrGetStoredPrivateAccount(owner);
   const [vault, allocation, runtime, evidence, balanceSnapshot] = await Promise.all([
