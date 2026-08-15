@@ -31,6 +31,9 @@ import { TerminalAgentActivity } from "@/components/trade/TerminalAgentActivity"
 import { TerminalBookPressureTape } from "@/components/trade/TerminalBookPressureTape";
 import { TerminalBoundPlanAudit } from "@/components/trade/TerminalBoundPlanAudit";
 import { TerminalChartAlertLevels } from "@/components/trade/TerminalChartAlertLevels";
+import { TerminalClassicMarketChart } from "@/components/trade/TerminalClassicMarketChart";
+import { TerminalClassicMarketMicrostructure } from "@/components/trade/TerminalClassicMarketMicrostructure";
+import { TerminalClassicOrderTicket } from "@/components/trade/TerminalClassicOrderTicket";
 import { TerminalColumnResizeHandle } from "@/components/trade/TerminalColumnResizeHandle";
 import { TerminalEntryPriceStager } from "@/components/trade/TerminalEntryPriceStager";
 import { TerminalEntryOutcomeMatrix } from "@/components/trade/TerminalEntryOutcomeMatrix";
@@ -41,7 +44,6 @@ import { TerminalHeader } from "@/components/trade/TerminalHeader";
 import { TerminalInvalidationPlanner } from "@/components/trade/TerminalInvalidationPlanner";
 import { TerminalLiquidityLadder } from "@/components/trade/TerminalLiquidityLadder";
 import { TerminalLiquidityStress } from "@/components/trade/TerminalLiquidityStress";
-import { TerminalLivePrice } from "@/components/trade/TerminalLivePrice";
 import { TerminalLiveExecutionJournal } from "@/components/trade/TerminalLiveExecutionJournal";
 import { TerminalLiveSubmitReview } from "@/components/trade/TerminalLiveSubmitReview";
 import { TerminalLiveAccountPanel } from "@/components/trade/TerminalLiveAccountBlotter";
@@ -147,6 +149,7 @@ import {
 } from "@/lib/terminal-bound-plan-audit";
 import {
   deriveTerminalLiveMarketContext,
+  TERMINAL_EXECUTION_QUOTE_MAX_AGE_MS,
   terminalLiveMarketContextBlockerLabel,
   type TerminalLiveMarketContextInput,
 } from "@/lib/terminal-live-market-context";
@@ -293,6 +296,7 @@ import {
 } from "@/lib/terminal-workspace";
 import {
   buildTradeOrderPlan,
+  canonicalTradeDecimal,
   tradeOrderPlanIntentMatches,
   tradeOrderPlanMarketContextFresh,
   tradeOrderPlanIdempotencyKey,
@@ -300,6 +304,11 @@ import {
   type TradeOrderPlan,
   type TradeOrderPlanBindingEnvelope,
 } from "@/lib/trade-order-plan";
+import {
+  HYPERLIQUID_MIN_ORDER_NOTIONAL_USD,
+  hyperliquidPerpOrderSizing,
+  quantizeHyperliquidPerpPrice,
+} from "@/lib/hyperliquid-order-precision";
 import {
   inspectHyperliquidSignedActionForTradeOrderPlan,
   parseSignedExecutionPayload,
@@ -523,6 +532,7 @@ export default function TradePage() {
   const [marketSel, setMarketSel] = useState("BTC");
   const [chartInterval, setChartInterval] = useState<ChartInterval>("5m");
   const [chartSurface, setChartSurface] = useState<"terminal" | "plan">("terminal");
+  const [chartPlanning, setChartPlanning] = useState(false);
   const [chartMode, setChartMode] = useState<GholaChartMode>("candles");
   const [chartStudies, setChartStudies] = useState<GholaChartStudyId[]>(["vwap"]);
   const [replayScenario, setReplayScenario] = useState<{
@@ -546,7 +556,7 @@ export default function TradePage() {
   const [horizon, setHorizon] = useState<Horizon>("scalp");
   const [stopRule, setStopRule] = useState<StopRule>("manual_approval");
   const [side, setSide] = useState<Side>("buy");
-  const [notional, setNotional] = useState(10);
+  const [notional, setNotional] = useState(11);
   const scopedLiveStatus = terminalPolledValueForSubject(
     liveStatus,
     liveStatusSubject,
@@ -686,6 +696,7 @@ export default function TradePage() {
   }), [bookOpen, bookView, chartInterval, chartMode, chartStudies, chartSurface, hyperliquidNetwork, marketRailWidthPx, marketSel, notional, riskBudgetUsd, side, slippageBps, targetRewardMultiple, ticketWidthPx, venueId]);
   const currentWorkspaceRef = useRef(currentWorkspace);
   currentWorkspaceRef.current = currentWorkspace;
+  useEffect(() => setChartPlanning(false), [hyperliquidNetwork, marketSel, venueId]);
   const applyWorkspaceState = useCallback((saved: TerminalWorkspace, message?: string) => {
     previewRequestIdRef.current += 1;
     liveExecutionEpochRef.current += 1;
@@ -1052,7 +1063,7 @@ export default function TradePage() {
   );
   const loadingMarket = unifiedMarket.loading;
   const marketError = unifiedMarket.error;
-  const compareWorkspaceActive = chartSurface === "terminal" && chartMode === "compare";
+  const compareWorkspaceActive = chartSurface === "plan" && chartMode === "compare";
   const routeFeedsEnabled = compareWorkspaceActive || routeCheckOpen;
   const crossVenueMarket = useCrossVenueLiveMarket({
     currentVenue: venue.id,
@@ -1148,18 +1159,20 @@ export default function TradePage() {
       window.removeEventListener("focus", refreshObservationClock);
     };
   }, []);
-  const liveMarketContextInput: TerminalLiveMarketContextInput = {
+  const executionMarketContextInput: TerminalLiveMarketContextInput = {
     frame: selectedLiveFrame,
     venue: venue.id,
     network: venue.id === "hyperliquid" ? hyperliquidNetwork : "mainnet",
     market: marketSel,
     interval: chartInterval,
     status: unifiedMarket.status,
+    transport: unifiedMarket.transport,
+    requireWebSocket: true,
     controllerStale: unifiedMarket.stale,
-    maxAgeMs: marketFreshnessLimitMs(chartInterval),
+    maxAgeMs: TERMINAL_EXECUTION_QUOTE_MAX_AGE_MS,
   };
-  const liveMarketContextInputRef = useRef(liveMarketContextInput);
-  liveMarketContextInputRef.current = liveMarketContextInput;
+  const executionMarketContextInputRef = useRef(executionMarketContextInput);
+  executionMarketContextInputRef.current = executionMarketContextInput;
   const liveMarketContext = useMemo(() => deriveTerminalLiveMarketContext({
     frame: selectedLiveFrame,
     venue: venue.id,
@@ -1180,6 +1193,10 @@ export default function TradePage() {
     unifiedMarket.status,
     venue.id,
   ]);
+  const executionMarketContext = deriveTerminalLiveMarketContext({
+    ...executionMarketContextInput,
+    nowMs: liveObservationNowMs,
+  });
   const fundingRateSignal = useMemo(() => deriveTerminalFundingRateSignal({
     frame: selectedLiveFrame,
     marketState: unifiedMarket,
@@ -1204,6 +1221,14 @@ export default function TradePage() {
     liveMarketContext,
   }), [frame, liveMarketContext]);
   const mid = priceAuthority.certifiedMid;
+  const selectedSizeDecimals = selectedLiveFrame?.sizeDecimals;
+  const hyperliquidSizeDecimals = venue.id === "hyperliquid"
+    && typeof selectedSizeDecimals === "number"
+    && Number.isInteger(selectedSizeDecimals)
+    && selectedSizeDecimals >= 0
+    && selectedSizeDecimals <= 6
+    ? selectedSizeDecimals
+    : null;
   const marketFieldAuthority = useMemo(() => deriveTerminalMarketFieldAuthority({
     frame: selectedLiveFrame,
     liveMarketContext,
@@ -1260,7 +1285,7 @@ export default function TradePage() {
       : null
   ), [certifiedBookAsks, certifiedBookBestAsk, certifiedBookBestBid, certifiedBookBids]);
   const recheckLiveMarketContext = useCallback(() => deriveTerminalLiveMarketContext({
-    ...liveMarketContextInputRef.current,
+    ...executionMarketContextInputRef.current,
     nowMs: Date.now(),
   }), []);
 
@@ -1722,14 +1747,39 @@ export default function TradePage() {
   const boundPreviewEntry = preview.status === "done" && !entryPinned
     ? Number(preview.planBinding.order_plan.limit_price)
     : null;
-  const entryLevel = entryPinned ? entryPrice : boundPreviewEntry ?? mid;
-  const stopLevel = stopPinned && stopPrice != null
+  const automaticEntryLevel = venue.id === "hyperliquid" && executionMarketContext.allowed
+    ? side === "buy" ? executionMarketContext.bestAsk : executionMarketContext.bestBid
+    : mid;
+  const rawEntryLevel = entryPinned ? entryPrice : boundPreviewEntry ?? automaticEntryLevel;
+  const entryLevel = venue.id === "hyperliquid" && rawEntryLevel != null
+    ? quantizeHyperliquidPerpPrice(
+        rawEntryLevel,
+        hyperliquidSizeDecimals,
+        entryPinned || boundPreviewEntry != null ? "nearest" : side === "buy" ? "up" : "down",
+      ) ?? rawEntryLevel
+    : rawEntryLevel;
+  const rawStopLevel = stopPinned && stopPrice != null
     ? stopPrice
     : entryLevel != null
       ? side === "buy"
         ? entryLevel * (1 - STOP_DEFAULT_PCT)
         : entryLevel * (1 + STOP_DEFAULT_PCT)
       : null;
+  const stopLevel = venue.id === "hyperliquid" && rawStopLevel != null
+    ? quantizeHyperliquidPerpPrice(rawStopLevel, hyperliquidSizeDecimals) ?? rawStopLevel
+    : rawStopLevel;
+  const executableOrderSizing = useMemo(() => entryLevel == null
+    ? null
+    : venue.id === "hyperliquid"
+      ? hyperliquidPerpOrderSizing({
+          quoteNotionalUsd: notional,
+          limitPrice: entryLevel,
+          sizeDecimals: hyperliquidSizeDecimals,
+        })
+      : {
+          baseSize: notional / entryLevel,
+          effectiveQuoteNotionalUsd: notional,
+        }, [entryLevel, hyperliquidSizeDecimals, notional, venue.id]);
 
   // The agent reads levels off the chart: once the entry is placed, infer the
   // trade idea and trigger from geometry unless the user has overridden them.
@@ -1756,9 +1806,11 @@ export default function TradePage() {
     ));
     setSignedPayloadText("");
     setEntryPinned(true);
-    setEntryPrice(price);
+    setEntryPrice(venue.id === "hyperliquid" && price != null
+      ? quantizeHyperliquidPerpPrice(price, hyperliquidSizeDecimals) ?? price
+      : price);
     return true;
-  }, [allowTerminalPlanMutation]);
+  }, [allowTerminalPlanMutation, hyperliquidSizeDecimals, venue.id]);
   const handleStageTradePrice = useCallback((price: number, expectedIdentityKey: string) => {
     const current = certifiedTradeStageRef.current;
     const decision = terminalTradePrintStageDecision({
@@ -1785,10 +1837,12 @@ export default function TradePage() {
     ));
     setSignedPayloadText("");
     setStopPinned(true);
-    setStopPrice(price);
+    setStopPrice(venue.id === "hyperliquid" && price != null
+      ? quantizeHyperliquidPerpPrice(price, hyperliquidSizeDecimals) ?? price
+      : price);
     if (!stopRuleManual && stopRule !== "exit_on_invalidation") setStopRule("exit_on_invalidation");
     return true;
-  }, [allowTerminalPlanMutation, stopRule, stopRuleManual]);
+  }, [allowTerminalPlanMutation, hyperliquidSizeDecimals, stopRule, stopRuleManual, venue.id]);
 
   function selectIdea(id: StrategyProfile) {
     setStrategy(id);
@@ -1823,10 +1877,10 @@ export default function TradePage() {
       market: productLabel,
       side,
       base_size: liveOrderMode.includeBaseSize
-        ? venue.id === "hyperliquid" ? "0.001" : "0.01"
+        ? venue.id === "hyperliquid" ? canonicalTradeDecimal(executableOrderSizing?.baseSize ?? 0, 8) ?? "" : "0.01"
         : "",
       quote_size: String(notional),
-      limit_price: price > 0 ? price.toFixed(price >= 1_000 ? 1 : 2) : "",
+      limit_price: price > 0 ? canonicalTradeDecimal(price, 8) ?? "" : "",
       max_slippage_bps: String(slippageBps),
       order_type: liveOrderMode.orderType,
       tif: liveOrderMode.timeInForce,
@@ -1835,13 +1889,13 @@ export default function TradePage() {
       agent_entry_trigger: entryTrigger,
       agent_exit_rule: stopRule,
       agent_time_horizon: horizon,
-      agent_trigger_level: conditionLevel ? conditionLevel.toFixed(conditionLevel >= 1_000 ? 1 : 2) : undefined,
-      agent_invalidation_level: stopLevel ? stopLevel.toFixed(stopLevel >= 1_000 ? 1 : 2) : undefined,
+      agent_trigger_level: conditionLevel ? canonicalTradeDecimal(conditionLevel, 8) ?? undefined : undefined,
+      agent_invalidation_level: stopLevel ? canonicalTradeDecimal(stopLevel, 8) ?? undefined : undefined,
       agent_edge_threshold_bps: strategy === "funding_basis" ? "25" : undefined,
       agent_strategy_note: selectedStrategy(STRATEGIES, strategy).condition,
       agent_route_priority: "most_private",
     };
-  }, [conditionLevel, entryLevel, entryTrigger, horizon, liveOrderMode, notional, productLabel, side, slippageBps, stopLevel, stopRule, strategy, venue.id]);
+  }, [conditionLevel, entryLevel, entryTrigger, executableOrderSizing?.baseSize, horizon, liveOrderMode, notional, productLabel, side, slippageBps, stopLevel, stopRule, strategy, venue.id]);
 
   const overlays = useMemo(() => {
     const generated = buildGholaAgentChartOverlays({
@@ -1886,8 +1940,8 @@ export default function TradePage() {
   }), [marketSel, notional, venue.id]);
 
   const selectedLiveFrameVersion = selectedLiveFrame?.version ?? null;
-  const liveExecutionReferencePrice = liveMarketContext.allowed
-    ? side === "buy" ? liveMarketContext.bestAsk : liveMarketContext.bestBid
+  const liveExecutionReferencePrice = executionMarketContext.allowed
+    ? side === "buy" ? executionMarketContext.bestAsk : executionMarketContext.bestBid
     : null;
   const livePlanSlippageBound = tradeOrderPlanSlippageBound({
     side,
@@ -1918,12 +1972,39 @@ export default function TradePage() {
     maxNotionalUsd: MAX_TRADE_NOTIONAL_USD,
     costEvidence: selectedRouteCostEvidence,
   }), [notional, riskBudgetUsd, selectedRouteCostEvidence, slippageBps, tradeRisk.maxLossUsd, tradeRisk.stopDistanceBps]);
+  const venueNativeProtectionConfigured = scopedLiveStatus?.hyperliquid_capabilities.some((capability) =>
+    capability.id === "stop_loss" && capability.visible
+  ) === true && scopedLiveStatus.hyperliquid_capabilities.some((capability) =>
+    capability.id === "take_profit" && capability.visible
+  );
+  const rawTargetPrice = terminalRewardTargetPrice({
+    side,
+    entryPrice: entryLevel,
+    stopPrice: stopLevel,
+    rewardMultiple: targetRewardMultiple,
+  });
+  const targetPrice = venue.id === "hyperliquid" && rawTargetPrice != null
+    ? quantizeHyperliquidPerpPrice(rawTargetPrice, hyperliquidSizeDecimals) ?? rawTargetPrice
+    : rawTargetPrice;
+  const boundTakeProfitLevel = venueNativeProtectionConfigured
+    ? targetPrice
+    : null;
+  const planRiskScale = executableOrderSizing == null
+    ? null
+    : executableOrderSizing.effectiveQuoteNotionalUsd / notional;
+  const hyperliquidOrderSizingBlocker = venue.id === "hyperliquid" && executableOrderSizing == null
+    ? hyperliquidSizeDecimals == null
+      ? "Hyperliquid lot metadata is unavailable"
+      : `Venue-rounded order value must be at least $${HYPERLIQUID_MIN_ORDER_NOTIONAL_USD.toFixed(2)}; increase the requested size`
+    : null;
   const orderPlan = useMemo(() => {
     if (
       !entryLevel
       || !stopLevel
+      || executableOrderSizing == null
+      || planRiskScale == null
       || selectedLiveFrameVersion == null
-      || !liveMarketContext.allowed
+      || !executionMarketContext.allowed
       || liveExecutionReferencePrice == null
       || !planLossEnvelope.ready
       || planLossEnvelope.stopAndSlippageLossUsd == null
@@ -1941,32 +2022,33 @@ export default function TradePage() {
       product: productLabel,
       side,
       timeInForce: liveOrderMode.timeInForce,
-      quoteNotionalUsd: notional,
-      baseSize: notional / entryLevel,
+      quoteNotionalUsd: executableOrderSizing.effectiveQuoteNotionalUsd,
+      baseSize: executableOrderSizing.baseSize,
       limitPrice: entryLevel,
       maxSlippageBps: slippageBps,
       stopLevel,
+      ...(boundTakeProfitLevel == null ? {} : { takeProfitLevel: boundTakeProfitLevel }),
       strategyProfile: strategy,
       entryTrigger,
       exitRule: stopRule,
       timeHorizon: horizon,
       triggerLevel: conditionLevel,
       interval: chartInterval,
-      marketFetchedAt: liveMarketContext.quoteFetchedAt,
+      marketFetchedAt: executionMarketContext.quoteFetchedAt,
       executionReferencePrice: liveExecutionReferencePrice,
       frameVersion: selectedLiveFrameVersion,
       riskEnvelope: {
         riskBudgetUsd,
-        stopAndSlippageLossUsd: planLossEnvelope.stopAndSlippageLossUsd,
-        roundTripCostLossUsd: planLossEnvelope.roundTripCostLossUsd,
-        allInLossUsd: planLossEnvelope.allInLossUsd,
+        stopAndSlippageLossUsd: planLossEnvelope.stopAndSlippageLossUsd * planRiskScale,
+        roundTripCostLossUsd: planLossEnvelope.roundTripCostLossUsd * planRiskScale,
+        allInLossUsd: planLossEnvelope.allInLossUsd * planRiskScale,
         feeBps: planLossEnvelope.feeBps,
         bufferBps: planLossEnvelope.bufferBps,
         feeEvidenceAtMs: selectedRouteCostEvidence.feeUpdatedAtMs,
         bufferEvidenceAtMs: selectedRouteCostEvidence.bufferUpdatedAtMs,
       },
     });
-  }, [chartInterval, conditionLevel, entryLevel, entryTrigger, horizon, hyperliquidNetwork, liveExecutionReferencePrice, liveMarketContext.allowed, liveMarketContext.quoteFetchedAt, liveOrderMode.timeInForce, marketSel, notional, planLossEnvelope, productLabel, riskBudgetUsd, selectedLiveFrameVersion, selectedRouteCostEvidence.bufferUpdatedAtMs, selectedRouteCostEvidence.feeUpdatedAtMs, side, slippageBps, stopLevel, stopRule, strategy, venue.id]);
+  }, [boundTakeProfitLevel, chartInterval, conditionLevel, entryLevel, entryTrigger, executableOrderSizing, executionMarketContext, horizon, hyperliquidNetwork, liveExecutionReferencePrice, liveOrderMode.timeInForce, marketSel, planLossEnvelope, planRiskScale, productLabel, riskBudgetUsd, selectedLiveFrameVersion, selectedRouteCostEvidence.bufferUpdatedAtMs, selectedRouteCostEvidence.feeUpdatedAtMs, side, slippageBps, stopLevel, stopRule, strategy, venue.id]);
   useLayoutEffect(() => {
     currentOrderPlanRef.current = orderPlan;
   }, [orderPlan]);
@@ -2098,7 +2180,7 @@ export default function TradePage() {
       return;
     }
     if (!readyToPreview) {
-      setPreview({ status: "error", message: marketDataLive ? "Set a valid entry and plan invalidation." : "Live market data is required for a preview." });
+      setPreview({ status: "error", message: executionMarketDataLive ? "Set a valid entry and plan invalidation." : "A fresh direct WebSocket quote is required for a preview." });
       return;
     }
     if (!orderPlan) {
@@ -2261,8 +2343,8 @@ export default function TradePage() {
       setLiveExecution({ status: "error", message: exactReadiness.message });
       return;
     }
-    if (!marketDataLive) {
-      setLiveExecution({ status: "error", message: "Live market data is required before execution." });
+    if (!executionMarketDataLive) {
+      setLiveExecution({ status: "error", message: "A fresh direct WebSocket quote is required before execution." });
       return;
     }
     if (!stopOnRiskSide) {
@@ -2549,22 +2631,28 @@ export default function TradePage() {
     !marketError &&
     liveMarketContext.allowed,
   );
+  const executionMarketDataLive = Boolean(
+    !loadingMarket &&
+    !marketError &&
+    executionMarketContext.allowed,
+  );
   const marketStatusValue = loadingMarket
     ? "connecting"
     : unifiedMarket.status === "fallback_polling"
       ? "polling"
       : unifiedMarket.status;
   const marketStatusTone = unifiedMarket.status === "live"
-    ? "good" as const
+    ? executionMarketDataLive ? "good" as const : "warn" as const
     : unifiedMarket.status === "blocked"
       ? "bad" as const
       : "warn" as const;
-  const targetPrice = terminalRewardTargetPrice({
-    side,
-    entryPrice: entryLevel,
-    stopPrice: stopLevel,
-    rewardMultiple: targetRewardMultiple,
-  });
+  const marketQuoteAgeMs = unifiedMarket.telemetry.componentAgesMs.quote
+    ?? (liveMarketContext.allowed ? liveMarketContext.quoteAgeMs : null);
+  const marketFeedLabel = unifiedMarket.transport === "websocket"
+    ? `WS · ${formatMarketAgeCompact(marketQuoteAgeMs)}`
+    : unifiedMarket.transport === "polling"
+      ? `Fallback · ${formatMarketAgeCompact(marketQuoteAgeMs)}`
+      : `Market data ${marketStatusValue}`;
   const planBookIdentity = useMemo<TerminalPlanBookIdentity>(() => ({
     venue: venue.id,
     network: venue.id === "hyperliquid" ? hyperliquidNetwork : "mainnet",
@@ -2787,6 +2875,13 @@ export default function TradePage() {
     tradeOrderPlanMarketContextFresh(preview.planBinding.order_plan) &&
     Date.parse(preview.planBinding.expires_at) > Date.now(),
   );
+  const classicPlanState = liveExecution.status === "working"
+    ? "submitting" as const
+    : liveExecution.status === "done"
+      ? "acknowledged" as const
+      : previewMatchesOrderPlan
+        ? "bound" as const
+        : "draft" as const;
   const liveExecutionJournalSafety = terminalLiveExecutionJournalSafetyState(
     scopedLiveExecutionJournalStorageStatus,
     scopedLiveExecutionJournal,
@@ -2801,18 +2896,41 @@ export default function TradePage() {
     && !scenarioReplayActive
     && !ticketDecimalDraftBlocked
     && thumperAuth.authenticated
-    && marketDataLive
+    && executionMarketDataLive
     && Boolean(orderPlan)
     && stopOnRiskSide
     && planMarketState.allowed
     && riskBudgetInterlock.allowed;
-  const readyToArm = readyToPreview && riskBudgetInterlock.allowed && liveExecutionReadiness.allowed;
+  const limitIocCapabilityLive = scopedLiveStatus?.hyperliquid_capabilities.some((capability) =>
+    capability.id === "limit_order" && capability.state === "live" && capability.visible
+  ) === true;
+  const venueNativeProtectionLive = !venueNativeProtectionConfigured || ["stop_loss", "take_profit"].every((id) =>
+    scopedLiveStatus?.hyperliquid_capabilities.some((capability) =>
+      capability.id === id && capability.state === "live" && capability.visible &&
+      capability.consecutive_mainnet_proofs >= capability.required_mainnet_proofs
+    ) === true
+  );
+  const limitIocLive = limitIocCapabilityLive && venueNativeProtectionLive;
+  const agentLifecycleVisible = scopedLiveStatus?.hyperliquid_capabilities.some((capability) =>
+    capability.id === "agent_lifecycle" && capability.state === "live" && capability.visible
+  ) === true;
+  const selectedNetwork = venue.id === "hyperliquid" ? hyperliquidNetwork : "mainnet";
+  const tradingStatus = venue.id !== "hyperliquid"
+    ? { label: "Trading unavailable", tone: "neutral" as const }
+    : limitIocLive
+      ? { label: "Trading live", tone: "live" as const }
+      : scopedLiveStatus?.launch_state === "canary"
+        ? { label: "Trading verification", tone: "warning" as const }
+        : scopedLiveStatus?.launch_state === "killed"
+          ? { label: "Trading paused", tone: "warning" as const }
+          : { label: "Trading locked", tone: "locked" as const };
+  const readyToArm = agentLifecycleVisible && readyToPreview && riskBudgetInterlock.allowed && liveExecutionReadiness.allowed;
   const readyToExecute = Boolean(
     readyToPreview &&
     riskBudgetInterlock.allowed &&
     previewMatchesOrderPlan &&
     terminalLiveExecutionCanSubmit(liveExecution.status) &&
-    marketDataLive &&
+    executionMarketDataLive &&
     liveExecutionReadiness.allowed &&
     planMarketState.allowed &&
     effectiveLiveAccountRisk.allowed &&
@@ -2834,11 +2952,11 @@ export default function TradePage() {
     localPreview,
     replayActive: scenarioReplayActive,
     authenticated: thumperAuth.authenticated,
-    marketReady: marketDataLive,
-    marketReason: marketDataLive
-      ? "Exact quote identity and freshness certified."
-      : !liveMarketContext.allowed
-        ? terminalLiveMarketContextBlockerLabel(liveMarketContext.blocker)
+    marketReady: executionMarketDataLive,
+    marketReason: executionMarketDataLive
+      ? "Direct WebSocket quote identity and execution freshness certified."
+      : !executionMarketContext.allowed
+        ? terminalLiveMarketContextBlockerLabel(executionMarketContext.blocker)
         : loadingMarket
           ? "Waiting for the selected public market feed."
           : marketError ?? "Selected market data is not certified.",
@@ -2850,6 +2968,8 @@ export default function TradePage() {
       ? "Move the plan invalidation beyond entry on the risk side."
       : !planMarketState.allowed
         ? terminalPlanMarketStateBlockerLabel(planMarketState.blocker)
+        : hyperliquidOrderSizingBlocker
+          ? hyperliquidOrderSizingBlocker
         : !livePlanSlippageBound.allowed && livePlanSlippageBound.limitOffsetBps != null
           ? `Limit reaches ${livePlanSlippageBound.limitOffsetBps.toFixed(1)} bp beyond the executable BBO; reduce it to the ${slippageBps} bp cap.`
         : "A fresh exact order plan is unavailable.",
@@ -2892,7 +3012,7 @@ export default function TradePage() {
           : "missing",
     signatureRecoveryElementId: venue.id === "hyperliquid" ? "signed-live-payload" : null,
     journalState: liveExecutionJournalSafety,
-  }), [effectiveLiveAccountRisk.allowed, effectiveLiveAccountRisk.reason, effectiveLiveAccountRisk.status, executionQuality.fillPct, executionQuality.impactBps, executionQuality.status, executionQuality.unfilledNotionalUsd, liquidityRecovery, liquidityStress.status, liveExecutionJournalSafety, liveExecutionReadiness.allowed, liveExecutionReadiness.message, liveMarketContext.allowed, liveMarketContext.blocker, liveOrderMode.timeInForce, livePlanSlippageBound.allowed, livePlanSlippageBound.limitOffsetBps, loadingMarket, localPreview, marketDataLive, marketError, orderPlanReady, planMarketState.allowed, planMarketState.blocker, preview.status, previewMatchesOrderPlan, riskBudgetInterlock.allowed, riskBudgetInterlock.reason, scenarioReplayActive, signedPayloadPresent, signedPayloadValid, slippageBps, stopOnRiskSide, thumperAuth.authenticated, ticketDraftBlocker, userSignedPayloadRequired, venue.id]);
+  }), [effectiveLiveAccountRisk.allowed, effectiveLiveAccountRisk.reason, effectiveLiveAccountRisk.status, executionMarketContext, executionMarketDataLive, executionQuality.fillPct, executionQuality.impactBps, executionQuality.status, executionQuality.unfilledNotionalUsd, hyperliquidOrderSizingBlocker, liquidityRecovery, liquidityStress.status, liveExecutionJournalSafety, liveExecutionReadiness.allowed, liveExecutionReadiness.message, liveOrderMode.timeInForce, livePlanSlippageBound.allowed, livePlanSlippageBound.limitOffsetBps, loadingMarket, localPreview, marketError, orderPlanReady, planMarketState.allowed, planMarketState.blocker, preview.status, previewMatchesOrderPlan, riskBudgetInterlock.allowed, riskBudgetInterlock.reason, scenarioReplayActive, signedPayloadPresent, signedPayloadValid, slippageBps, stopOnRiskSide, thumperAuth.authenticated, ticketDraftBlocker, userSignedPayloadRequired, venue.id]);
   const workerSleeping = Boolean(scopedLiveStatus && shouldWakePooledWorker(scopedLiveStatus));
   const workerStatusValue = workerWakeState === "waking" ? "starting" : workerSleeping ? "sleeping" : workerLabel;
   const workerStatusTone = workerReady || workerWakeState === "ready" || workerWakeState === "waking"
@@ -2990,8 +3110,10 @@ export default function TradePage() {
       return;
     }
     setTargetRewardMultiple(rewardMultiple);
-    setKeyboardMessage(`${rewardMultiple.toFixed(1)}R target selected at ${formatPrice(row.targetPrice)} for analysis and future attached PAPER OCO only; live one-shot execution is unchanged.`);
-  }, [replayScenario.active]);
+    setKeyboardMessage(venueNativeProtectionConfigured
+      ? `${rewardMultiple.toFixed(1)}R target selected at ${formatPrice(row.targetPrice)} and staged for venue-native stop/take-profit protection. A fresh preview and explicit confirmation are still required.`
+      : `${rewardMultiple.toFixed(1)}R target selected at ${formatPrice(row.targetPrice)} for analysis and future attached PAPER OCO only; live one-shot execution is unchanged.`);
+  }, [replayScenario.active, venueNativeProtectionConfigured]);
   const buildEntryPriceStages = useCallback(() => deriveTerminalEntryPriceStages({
     frame: selectedLiveFrame,
     venue: venue.id,
@@ -3118,8 +3240,10 @@ export default function TradePage() {
       return;
     }
     setTargetRewardMultiple(rewardMultiple);
-    setKeyboardMessage(`${mode} entry ${formatPrice(selection.entryPrice)} with ${rewardMultiple.toFixed(1)}R target ${formatPrice(selection.targetPrice)} staged for analysis and future PAPER OCO; no order previewed or submitted.`);
-  }, [entryLevel, handleStageEntryPrice, replayScenario.active]);
+    setKeyboardMessage(venueNativeProtectionConfigured
+      ? `${mode} entry ${formatPrice(selection.entryPrice)} with ${rewardMultiple.toFixed(1)}R target ${formatPrice(selection.targetPrice)} staged for venue-native stop/take-profit protection; no order previewed or submitted.`
+      : `${mode} entry ${formatPrice(selection.entryPrice)} with ${rewardMultiple.toFixed(1)}R target ${formatPrice(selection.targetPrice)} staged for analysis and future PAPER OCO; no order previewed or submitted.`);
+  }, [entryLevel, handleStageEntryPrice, replayScenario.active, venueNativeProtectionConfigured]);
   const handleStageSafeSizedOutcome = useCallback((
     mode: TerminalEntryPriceMode,
     expectedPrice: number,
@@ -3344,6 +3468,8 @@ export default function TradePage() {
       ? "Live preview, arming, and submit are locked during historical replay"
     : ticketDecimalDraftBlocked
       ? "Finish or correct the highlighted ticket value"
+    : hyperliquidOrderSizingBlocker
+      ? hyperliquidOrderSizingBlocker
     : !thumperAuth.authenticated
       ? "Sign in required"
     : !planMarketState.allowed
@@ -3362,10 +3488,10 @@ export default function TradePage() {
               ? "Run a fresh privacy preview first"
             : !previewMatchesOrderPlan
             ? "Order or market context changed; refresh preview"
-            : !marketDataLive
-              ? liveMarketContext.allowed
-                ? "Waiting for live market data"
-                : `Live execution blocked: ${terminalLiveMarketContextBlockerLabel(liveMarketContext.blocker)}`
+            : !executionMarketDataLive
+              ? executionMarketContext.allowed
+                ? "Waiting for a fresh direct WebSocket quote"
+                : `Live execution blocked: ${terminalLiveMarketContextBlockerLabel(executionMarketContext.blocker)}`
               : !liveExecutionReadiness.allowed
                 ? liveExecutionReadiness.reason_code === "terminal_byo_live_gate_not_ready"
                   ? `Connect ${venue.label} live access`
@@ -3858,23 +3984,38 @@ export default function TradePage() {
       />
 
       <main
-        style={{ "--terminal-ticket-width": `${ticketWidthPx}px` } as CSSProperties}
-        className="grid min-h-[calc(100vh-3.5rem)] grid-cols-1 xl:grid-cols-[minmax(0,1fr)_0.5rem_var(--terminal-ticket-width)]"
+        style={{ "--terminal-ticket-width": `${chartSurface === "terminal" ? 272 : ticketWidthPx}px` } as CSSProperties}
+        className="grid min-h-[calc(100vh-2.5rem)] grid-cols-1 gap-3 bg-[#080a0e] p-3 xl:grid-cols-[minmax(0,1fr)_var(--terminal-ticket-width)] xl:p-4"
       >
-        <section inert={mobileTicketOpen ? true : undefined} className="min-w-0 border-r border-[#182234]">
-          <div inert={liveWorking ? true : undefined} aria-disabled={liveWorking || undefined}>
-            <TerminalMarketToolbar
-              venues={VENUES}
-              venueId={venueId}
-              market={marketSel}
-              network={hyperliquidNetwork}
-              interval={chartInterval}
-              onSelectVenue={selectVenue}
-              onSelectMarket={selectMarket}
-              onSelectInterval={selectInterval}
-            />
-          </div>
+        <section inert={mobileTicketOpen ? true : undefined} className="contents">
+          <section
+            aria-label={`${venue.label}, ${selectedNetwork}, ${marketFeedLabel}, ${tradingStatus.label}`}
+            className="flex min-h-20 flex-wrap items-center justify-between gap-3 border-b border-[#171c25] pb-3 xl:col-span-2"
+          >
+            <div>
+              <p className="text-[8px] font-semibold uppercase tracking-[0.2em] text-[#5daeff]">Unified trading</p>
+              <h1 className="mt-1 text-sm font-semibold text-[#eef2f7]">Perpetuals</h1>
+              <p className="mt-1 text-[10px] text-[#5d6879]">{productLabel} · market context stays in place</p>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2 text-[9px]">
+              <span
+                data-terminal-market-transport={unifiedMarket.transport}
+                data-terminal-execution-market-ready={executionMarketDataLive ? "true" : "false"}
+                title={executionMarketDataLive
+                  ? "Direct venue WebSocket quote is fresh enough for a new order."
+                  : unifiedMarket.transport === "polling"
+                    ? "Fallback data remains visible, but new live exposure is blocked."
+                    : "Market data is not currently fresh enough for a new order."}
+                className={`inline-flex items-center gap-1.5 rounded border px-2 py-1.5 ${executionMarketDataLive ? "border-emerald-400/20 bg-emerald-400/[0.04] text-[#91a0b4]" : "border-amber-400/20 bg-amber-400/[0.04] text-amber-100"}`}
+              >
+                <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${executionMarketDataLive ? "bg-emerald-300" : "bg-amber-300"}`} />
+                {marketFeedLabel}
+              </span>
+              <button type="button" onClick={() => document.getElementById("hyperliquid-connection")?.scrollIntoView({ behavior: "smooth", block: "center" })} className="rounded border border-[#2a3341] bg-[#0b0f15] px-2 py-1.5 text-[#7d899a] hover:text-[#b5c0ce]">{venue.label} setup</button>
+            </div>
+          </section>
 
+          <div className="min-w-0 overflow-hidden rounded-lg border border-[#1a222e] bg-[#090c11]">
           {liveWorking ? (
             <div role="status" aria-live="polite" className="flex items-center gap-2 border-b border-amber-300/30 bg-amber-300/[0.05] px-4 py-2 text-[10px] leading-4 text-amber-100 sm:px-6">
               <LockKeyhole aria-hidden className="h-3.5 w-3.5 shrink-0" />
@@ -3882,11 +4023,11 @@ export default function TradePage() {
             </div>
           ) : null}
 
-          {localPreview ? (
+          {localPreview && process.env.NEXT_PUBLIC_GHOLA_HYPERLIQUID_FUNDED_TESTNET_UI_ENABLED === "true" ? (
             <TerminalLocalSafetyStrip
-              fundedTestnetProofAvailable={process.env.NEXT_PUBLIC_GHOLA_HYPERLIQUID_FUNDED_TESTNET_UI_ENABLED === "true"}
+              fundedTestnetProofAvailable
             />
-          ) : (
+          ) : !localPreview ? (
             <PublicAgentLaunchPanel
               startup={scopedAgentStartup}
               failed={agentStartupFailed}
@@ -3898,7 +4039,7 @@ export default function TradePage() {
               onWake={handleWakeAgentWorker}
               onSelectVenue={handleSelectLaunchVenue}
             />
-          )}
+          ) : null}
 
           {workspaceStorageBlocked ? (
             <div role="alert" className="flex flex-wrap items-center justify-between gap-2 border-b border-rose-300/30 bg-rose-300/[0.04] px-4 py-2 text-[10px] leading-4 text-rose-200 sm:px-6">
@@ -3922,16 +4063,16 @@ export default function TradePage() {
             </div>
           ) : null}
 
-          <TerminalMarketContextRail
+          {chartSurface === "plan" ? <TerminalMarketContextRail
             venue={venue.label}
             product={productLabel}
             side={side}
             notionalUsd={notional}
-            quoteReady={liveMarketContext.allowed}
-            quoteMid={liveMarketContext.allowed ? (liveMarketContext.bestBid + liveMarketContext.bestAsk) / 2 : null}
-            bestBid={liveMarketContext.allowed ? liveMarketContext.bestBid : null}
-            bestAsk={liveMarketContext.allowed ? liveMarketContext.bestAsk : null}
-            quoteAgeMs={liveMarketContext.allowed ? liveMarketContext.quoteAgeMs : null}
+            quoteReady={executionMarketContext.allowed}
+            quoteMid={executionMarketContext.allowed ? (executionMarketContext.bestBid + executionMarketContext.bestAsk) / 2 : null}
+            bestBid={executionMarketContext.allowed ? executionMarketContext.bestBid : null}
+            bestAsk={executionMarketContext.allowed ? executionMarketContext.bestAsk : null}
+            quoteAgeMs={executionMarketContext.allowed ? executionMarketContext.quoteAgeMs : null}
             entryPrice={entryLevel}
             invalidationPrice={stopLevel}
             riskAllowed={riskBudgetInterlock.allowed}
@@ -3940,53 +4081,39 @@ export default function TradePage() {
             onAuto={handleAutoEntryPrice}
             onJoin={handleJoinEntryPrice}
             onCross={handleCrossEntryPrice}
-          />
+          /> : null}
 
           <div
-            style={{ "--terminal-market-rail-width": `${marketRailWidthPx}px` } as CSSProperties}
-            className="grid grid-cols-[minmax(0,1fr)] gap-0 lg:grid-cols-[minmax(0,1fr)_0.5rem_var(--terminal-market-rail-width)]"
+            style={{ "--terminal-market-rail-width": `${chartSurface === "terminal" ? 224 : marketRailWidthPx}px` } as CSSProperties}
+            className="grid grid-cols-[minmax(0,1fr)] gap-0 xl:grid-cols-[minmax(0,1fr)_var(--terminal-market-rail-width)]"
           >
             <div className="min-w-0">
-              <div className="flex flex-wrap items-end justify-between gap-4 px-4 py-4 sm:px-6">
+              <div className="grid gap-3 px-3 pt-3">
+                <div className="flex flex-wrap items-end justify-between gap-3">
                 <div className="min-w-[12rem]">
-                  <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-[#5aa7ff]/80">
-                    <span>{venue.label}</span>
-                    <span aria-hidden className="text-[#344258]">/</span>
-                    <span className={unifiedMarket.status === "live" ? "text-emerald-300" : "text-amber-300"}>
-                      {marketStatusValue}
-                    </span>
-                  </div>
-                  <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                    <h1 className="font-display text-2xl font-semibold tracking-tight text-[#f6f8ff]">{productLabel}</h1>
-                    <TerminalLivePrice
-                      value={mid}
-                      formattedValue={formatPrice(mid)}
-                      className="font-mono text-2xl font-semibold tabular-nums"
-                    />
-                    <span className={`font-mono text-xs tabular-nums ${certifiedSignals.intelligence.sessionChangePct == null ? "text-[#566278]" : certifiedSignals.intelligence.sessionChangePct >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
-                      {formatSignedPercent(certifiedSignals.intelligence.sessionChangePct)} {certifiedSignals.components.candles.ready ? "chart" : "uncertified chart"}
-                    </span>
-                  </div>
-                  <p className="mt-1.5 font-mono text-[10px] tabular-nums text-[#66738c]">
-                    {liveMarketContext.allowed
-                      ? `Bid ${formatPrice(liveMarketContext.bestBid)} · Ask ${formatPrice(liveMarketContext.bestAsk)} · quote age ${formatFeedTelemetryMs(liveMarketContext.quoteAgeMs)} · ${marketFieldAuthority.ready ? `market age ${formatFeedTelemetryMs(marketFieldAuthority.ageMs)}` : "market fields paused"}`
-                      : `Certified BBO paused · ${terminalLiveMarketContextBlockerLabel(liveMarketContext.blocker)}`}
-                  </p>
+                  <p className="text-[8px] text-[#596476]">{venue.label} {hyperliquidNetwork} market · {productLabel}</p>
+                  <p data-terminal-market-price className="mt-1 font-mono text-2xl font-semibold tracking-tight tabular-nums text-[#edf2f7]">${formatPrice(mid)}</p>
+                </div>
+                <div inert={liveWorking ? true : undefined} aria-disabled={liveWorking || undefined}>
+                  <TerminalMarketToolbar venues={VENUES} venueId={venueId} market={marketSel} network={hyperliquidNetwork} interval={chartInterval} onSelectVenue={selectVenue} onSelectMarket={selectMarket} onSelectInterval={selectInterval} />
+                </div>
                 </div>
                 <TerminalMarketSnapshotMetrics
                   mark={formatPrice(marketFieldAuthority.markPrice)}
                   oracle={formatPrice(marketFieldAuthority.oraclePrice)}
                   spread={liveMarketContext.allowed ? `${liveMarketContext.spreadBps.toFixed(2)} bps` : "-"}
+                  dayChange={chartSurface === "terminal" ? formatSignedPercent(certifiedSignals.intelligence.sessionChangePct) : undefined}
+                  dayChangeTone={certifiedSignals.intelligence.sessionChangePct == null ? "neutral" : certifiedSignals.intelligence.sessionChangePct >= 0 ? "good" : "bad"}
                   funding={fundingRateSignal.available ? `${fundingRateSignal.ratePercent.toFixed(4)}%` : "-"}
                   openInterest={formatCompact(marketFieldAuthority.openInterest)}
                   dayVolume={formatCompact(marketFieldAuthority.dayVolume)}
                 />
               </div>
-              <TerminalMarketFeedTelemetry
+              {chartSurface === "plan" ? <TerminalMarketFeedTelemetry
                 telemetry={unifiedMarket.telemetry}
                 peerGrades={marketFeedPeerGrades}
                 components={certifiedSignals.components}
-              />
+              /> : null}
               <TerminalMarketDecisionStack
                 scanner={(
                   <TerminalMarketWatchlist
@@ -4004,27 +4131,39 @@ export default function TradePage() {
                   <div
                     inert={liveWorking ? true : undefined}
                     aria-disabled={liveWorking || undefined}
-                    className={`px-3 pb-3 sm:px-6 ${liveWorking ? "cursor-wait" : ""}`}
+                    className={`${chartSurface === "terminal" ? "px-3 pb-3 pt-2" : "px-3 pb-5 sm:px-6"} ${liveWorking ? "cursor-wait" : ""}`}
                   >
-                <div className="mb-2 flex items-center gap-3">
-                  <div className="flex items-center gap-1" role="group" aria-label="Chart workspace">
-                    {(["terminal", "plan"] as const).map((surface) => (
-                      <button
-                        key={surface}
-                        type="button"
-                        aria-pressed={chartSurface === surface}
-                        onClick={() => {
-                          setChartSurface(surface);
-                          if (surface === "plan") setReplayScenario({ active: false, frame: null, context: null });
-                        }}
-                        className={chartSurface === surface ? "trade-chip-on h-8 rounded-md px-3 text-xs font-medium capitalize" : "trade-chip h-8 rounded-md px-3 text-xs font-medium capitalize"}
-                      >
-                        {surface}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                {chartSurface === "plan" ? <div className="flex h-7 items-center justify-end">
+                  <button
+                    type="button"
+                    aria-pressed={chartSurface === "plan"}
+                    onClick={() => {
+                      setChartSurface("terminal");
+                      setReplayScenario({ active: false, frame: null, context: null });
+                    }}
+                    className="rounded px-2 py-1 text-[9px] font-medium text-[#718097] transition hover:bg-[#111a27] hover:text-[#c9e4ff]"
+                  >
+                    Back to chart
+                  </button>
+                </div> : null}
                 {chartSurface === "terminal" ? (
+                  <TerminalClassicMarketChart
+                    key={certifiedSignals.components.candles.ready ? "certified" : "uncertified"}
+                    frame={frame}
+                    feedLabel={marketDataLive ? "Live" : marketStatusValue}
+                    loading={loadingMarket}
+                    planning={chartPlanning}
+                    planState={classicPlanState}
+                    side={side}
+                    entryPrice={entryLevel}
+                    stopPrice={stopLevel}
+                    targetPrice={targetPrice}
+                    interactionAllowed={!liveWorking && certifiedSignals.components.candles.ready}
+                    onPlanningChange={setChartPlanning}
+                    onEntryDrag={handleEntryDrag}
+                    onStopDrag={handleStopChange}
+                  />
+                ) : (
                   <>
                     <GholaMarketChart
                       frame={frame}
@@ -4051,21 +4190,8 @@ export default function TradePage() {
                       onManage={openTerminalAlertManager}
                     />
                   </>
-                ) : (
-                  <MarketChart
-                    key={certifiedSignals.components.candles.ready ? "certified" : "uncertified"}
-                    frame={frame}
-                    overlays={overlays}
-                    side={side}
-                    entryPrice={entryLevel}
-                    stopPrice={stopLevel}
-                    stopSuggested={!stopPinned}
-                    interactionAllowed={!liveWorking && certifiedSignals.components.candles.ready}
-                    onEntryDrag={handleEntryDrag}
-                    onStopDrag={handleStopChange}
-                  />
                 )}
-                {chartSurface === "terminal" && replayScenario.active && replayScenario.context ? (
+                {chartSurface === "plan" && replayScenario.active && replayScenario.context ? (
                   <ReplayExecutionLab
                     sourceFrame={replayScenario.context.source}
                     cursor={replayScenario.context.cursor}
@@ -4099,7 +4225,7 @@ export default function TradePage() {
             </div>
 
             <TerminalColumnResizeHandle
-              className="hidden lg:block"
+              className="hidden"
               controls="terminal-market-rail"
               cssVariable="--terminal-market-rail-width"
               defaultValue={TERMINAL_MARKET_RAIL_WIDTH_PX.default}
@@ -4109,24 +4235,19 @@ export default function TradePage() {
               value={marketRailWidthPx}
               onChange={setMarketRailWidthPx}
             />
-            <aside id="terminal-market-rail" className="border-t border-[#182234] lg:border-l lg:border-t-0">
-              <div className="border-b border-[#182234] bg-gradient-to-b from-[#0a0e16] to-transparent px-4 py-3">
-                <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#dce6f4]">Agent activity</h2>
-              </div>
-              <TerminalAgentActivity authenticated={thumperAuth.authenticated} authenticatedSubject={thumperAuth.user?.id ?? null} localPreview={localPreview} onSignIn={handleAgentSignIn} />
-              <TerminalLiveAccountPanel
-                authenticated={thumperAuth.authenticated}
-                subjectScope={liveExecutionSubjectScope}
-                selectedVenue={venue.id}
-                expectedNetwork={venue.id === "hyperliquid" ? hyperliquidNetwork : "mainnet"}
-                coin={marketSel === "ETH" || marketSel === "SOL" || marketSel === "HYPE" ? marketSel : "BTC"}
-                market={productLabel}
-                reduceOnly={orderPlan?.execution_policy.reduce_only ?? false}
-                onRiskDecision={handleLiveAccountRiskDecision}
-                onInspectMarket={handleInspectLiveAccountMarket}
-                restartKey={accountStreamRestartKey}
-                onRefresh={thumperAuth.authenticated && venue.id === "hyperliquid" ? refreshLiveAccountEvidence : undefined}
-              />
+            <aside id="terminal-market-rail" className="hidden border-l border-[#182234] xl:block">
+              {chartSurface === "terminal" ? (
+                <TerminalClassicMarketMicrostructure frame={certifiedBookFrame} onSelectPrice={handleEntryDrag} />
+              ) : (
+              <>
+              {!localPreview && agentLifecycleVisible ? (
+                <>
+                  <div className="border-b border-[#182234] bg-gradient-to-b from-[#0a0e16] to-transparent px-4 py-3">
+                    <h2 className="text-xs font-semibold text-[#dce6f4]">Agent activity</h2>
+                  </div>
+                  <TerminalAgentActivity authenticated={thumperAuth.authenticated} authenticatedSubject={thumperAuth.user?.id ?? null} localPreview={false} onSignIn={handleAgentSignIn} />
+                </>
+              ) : null}
               <section
                 id="terminal-market-depth"
                 tabIndex={-1}
@@ -4202,6 +4323,19 @@ export default function TradePage() {
                   synthetic={selectedLiveFrame == null && frame != null}
                 />
               </section>
+              <TerminalLiveAccountPanel
+                authenticated={thumperAuth.authenticated}
+                subjectScope={liveExecutionSubjectScope}
+                selectedVenue={venue.id}
+                expectedNetwork={venue.id === "hyperliquid" ? hyperliquidNetwork : "mainnet"}
+                coin={marketSel === "ETH" || marketSel === "SOL" || marketSel === "HYPE" ? marketSel : "BTC"}
+                market={productLabel}
+                reduceOnly={orderPlan?.execution_policy.reduce_only ?? false}
+                onRiskDecision={handleLiveAccountRiskDecision}
+                onInspectMarket={handleInspectLiveAccountMarket}
+                restartKey={accountStreamRestartKey}
+                onRefresh={thumperAuth.authenticated && venue.id === "hyperliquid" ? refreshLiveAccountEvidence : undefined}
+              />
               <div className="border-y border-[#182234] bg-gradient-to-b from-[#0a0e16] to-transparent px-4 py-3">
                 <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#dce6f4]">Market tape</h2>
               </div>
@@ -4226,7 +4360,10 @@ export default function TradePage() {
                 onSummaryChange={handleAlertSummaryChange}
                 onPriceAlertsChange={handleChartPriceAlertsChange}
               />
+              </>
+              )}
             </aside>
+          </div>
           </div>
         </section>
 
@@ -4241,7 +4378,7 @@ export default function TradePage() {
           />
         ) : null}
         <TerminalColumnResizeHandle
-          className="hidden xl:block"
+          className="hidden"
           controls="order-ticket"
           cssVariable="--terminal-ticket-width"
           defaultValue={TERMINAL_TICKET_WIDTH_PX.default}
@@ -4257,13 +4394,61 @@ export default function TradePage() {
           role={mobileTicketOpen ? "dialog" : undefined}
           aria-modal={mobileTicketOpen ? true : undefined}
           aria-label="Order ticket"
-          className={`${mobileTicketOpen ? "fixed inset-x-0 bottom-0 z-50 flex max-h-[90dvh] flex-col overflow-hidden rounded-t-xl border-t border-[#26354a]" : "hidden"} bg-[#070a10] xl:sticky xl:top-0 xl:z-auto xl:flex xl:h-[calc(100vh-3.5rem)] xl:max-h-none xl:flex-col xl:overflow-hidden xl:rounded-none xl:border-t-0`}
+          className={`${mobileTicketOpen ? "fixed inset-x-0 bottom-0 z-50 flex max-h-[90dvh] flex-col overflow-hidden rounded-t-xl border-t border-[#26354a]" : "hidden"} bg-[#070a10] xl:sticky xl:top-4 xl:z-auto xl:flex xl:h-[calc(100vh-2rem)] xl:max-h-none xl:flex-col xl:overflow-hidden xl:rounded-lg xl:border xl:border-[#1a222e]`}
         >
+          {chartSurface === "terminal" ? (
+            <TerminalClassicOrderTicket
+              venueLabel={venue.label}
+              productLabel={productLabel}
+              authenticated={thumperAuth.authenticated}
+              statusLabel={liveWorking ? "Plan locked" : readyToExecute ? "Submit ready" : readyToPreview ? "Preview ready" : !thumperAuth.authenticated ? "Sign in needed" : "Trading locked"}
+              statusReady={!liveWorking && readyToExecute}
+              side={side}
+              notional={notional}
+              baseSize={executableOrderSizing?.baseSize ?? null}
+              effectiveNotionalUsd={executableOrderSizing?.effectiveQuoteNotionalUsd ?? null}
+              protectionAttached={venueNativeProtectionConfigured}
+              entryPrice={entryLevel}
+              stopPrice={stopLevel}
+              targetPrice={targetPrice}
+              modeledLossUsd={riskBudgetInterlock.modeledLossUsd}
+              riskBudgetUsd={riskBudgetInterlock.riskBudgetUsd ?? riskBudgetUsd}
+              blocker={executionBlocker}
+              onSignIn={() => openAuth("signup")}
+              onSideChange={(nextSide) => {
+                setSide(nextSide);
+                setStopPinned(false);
+              }}
+              onNotionalChange={setNotional}
+              onStopChange={handleStopChange}
+              onOpenAdvanced={() => setChartSurface("plan")}
+              actions={(
+                <div className="grid gap-2">
+                  {thumperAuth.authenticated ? (
+                    <>
+                      <button id="terminal-preview-order" type="button" onClick={handlePreview} disabled={preview.status === "working" || !readyToPreview} className="trade-action flex h-10 items-center justify-center gap-2 rounded text-[10px] font-semibold disabled:cursor-not-allowed disabled:opacity-50">
+                        {preview.status === "working" ? <RefreshCcw className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                        {preview.status === "working" ? "Binding exact plan" : preview.status === "done" ? "Refresh bound preview" : "Bind & preview exact plan"}
+                      </button>
+                      {liveSubmitReview ? (
+                        <TerminalLiveSubmitReview review={liveSubmitReview} liquidity={liveSubmitLiquidityEvidence} decision={liveSubmitReviewDecision} onConfirm={handleConfirmLiveSubmitReview} onCancel={() => setLiveSubmitReview(null)} />
+                      ) : (
+                        <button type="button" onClick={handleOpenLiveSubmitReview} disabled={liveWorking || !readyToExecute} className="flex h-9 items-center justify-center gap-2 rounded border border-emerald-400/25 bg-emerald-400/[0.06] text-[10px] font-semibold text-emerald-200 disabled:cursor-not-allowed disabled:opacity-40">
+                          <ShieldCheck className="h-3.5 w-3.5" />{liveWorking ? "Submitting live order" : localPreview ? "Live unavailable locally" : "Review exact live order"}
+                        </button>
+                      )}
+                    </>
+                  ) : null}
+                  <button id="terminal-refresh-market" type="button" disabled={preview.status === "working" || liveWorking} onClick={handleReconnectMarket} className="h-8 text-[9px] text-[#68778d] hover:text-[#b8c5d8] disabled:opacity-40">Reconnect selected feed</button>
+                </div>
+              )}
+            />
+          ) : (
           <TerminalResponsiveTicketMount
             mobileOpen={mobileTicketOpen}
             render={() => (
               <>
-          <div className="shrink-0 border-b border-[#182234] p-5">
+          <div className="shrink-0 border-b border-[#182234] p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2 text-sm text-[#a8d8ff]">
@@ -4295,7 +4480,7 @@ export default function TradePage() {
           <div
             inert={liveWorking ? true : undefined}
             aria-disabled={liveWorking || undefined}
-            className={`min-h-0 flex-1 overflow-y-auto p-4 xl:p-5 ${liveWorking ? "cursor-wait opacity-70" : ""}`}
+            className={`min-h-0 flex-1 overflow-y-auto p-3 ${liveWorking ? "cursor-wait opacity-70" : ""}`}
           >
             <section aria-labelledby="order-entry-heading" className="mb-4">
               <div className="mb-2 flex items-center justify-between gap-3">
@@ -4530,6 +4715,7 @@ export default function TradePage() {
             <TerminalRewardLadder
               ladder={rewardLadder}
               replay={scenarioReplayActive}
+              liveProtectionConfigured={venueNativeProtectionConfigured}
               selectedMultiple={targetRewardMultiple}
               onStage={handleStageRewardTarget}
             />
@@ -4979,9 +5165,9 @@ export default function TradePage() {
                 />
               </div>
             ) : null}
-            {localPreview ? null : (
+            {!localPreview && agentLifecycleVisible ? (
               <ArmAgentButton orderDraft={orderDraft} ready={readyToArm && !localPreview} network={hyperliquidNetwork} />
-            )}
+            ) : null}
           </div>
 
           <div className="shrink-0 border-t border-[#182234] bg-[#070a10] p-4 xl:p-5">
@@ -5094,6 +5280,7 @@ export default function TradePage() {
               </>
             )}
           />
+          )}
         </aside>
       </main>
       {!mobileTicketOpen ? (
@@ -5244,6 +5431,7 @@ interface MarketChartProps {
   onStopDrag: (price: number) => void;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- retained temporarily for workspace migration compatibility
 const MarketChart = memo(function MarketChart({
   frame,
   overlays,
@@ -6552,12 +6740,6 @@ function EditorResetButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-function formatFeedTelemetryMs(value: number | null) {
-  if (value == null || !Number.isFinite(value)) return "-";
-  if (value < 1_000) return `${Math.round(value)} ms`;
-  return `${(value / 1_000).toFixed(value < 10_000 ? 2 : 1)} s`;
-}
-
 const ReadinessBadge = memo(function ReadinessBadge({ label, ready }: { label: string; ready: boolean }) {
   return (
     <div className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${
@@ -6728,6 +6910,12 @@ function terminalLiveExecutionExternalReviewBlockerLabel(
 
 function marketFreshnessLimitMs(interval: ChartInterval) {
   return Math.min(120_000, Math.max(30_000, chartIntervalMs(interval) / 10));
+}
+
+function formatMarketAgeCompact(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value) || value < 0) return "awaiting quote";
+  if (value < 1_000) return `${Math.round(value)} ms`;
+  return `${(value / 1_000).toFixed(value < 10_000 ? 1 : 0)} s`;
 }
 
 function formatSignedPercent(value: number | null | undefined) {

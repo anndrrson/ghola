@@ -199,6 +199,19 @@ describe("trade order plan binding", () => {
     expect(assertExecutionMatchesTradeOrderPlan({ ...body, venueIds: ["hyperliquid", "phoenix"] }, plan)).toEqual({ ok: false, error: "bound_order_venue_mismatch" });
   });
 
+  it("binds an explicit reduce-only exit without weakening signed-field validation", () => {
+    const exit = fixturePlan(true)!;
+    expect(exit.execution_policy.reduce_only).toBe(true);
+    expect(validateTradeOrderPlan(exit, { nowMs: NOW })).toMatchObject({
+      ok: true,
+      plan: { execution_policy: { reduce_only: true } },
+    });
+    expect(validateTradeOrderPlan({
+      ...exit,
+      execution_policy: { ...exit.execution_policy, reduce_only: "true" },
+    }, { nowMs: NOW })).toEqual({ ok: false, error: "order_plan_execution_policy_invalid" });
+  });
+
   it("binds terminal IOC plans exactly while rejecting unsupported venue TIFs", () => {
     const coinbase = buildTradeOrderPlan({
       venueId: "coinbase",
@@ -233,6 +246,25 @@ describe("trade order plan binding", () => {
       .toEqual({ ok: false, error: "order_plan_order_type_invalid" });
   });
 
+  it("binds optional venue-native OCO protection to the exact stop, target, and slippage", () => {
+    const protectedPlan = fixturePlan(false, 63_500)!;
+    expect(protectedPlan.protection_intent).toEqual({
+      mode: "venue_native_oco",
+      trigger_source: "mark",
+      take_profit_level: "63500",
+      stop_level: "62000",
+      max_slippage_bps: 50,
+    });
+    expect(validateTradeOrderPlan({
+      ...protectedPlan,
+      protection_intent: { ...protectedPlan.protection_intent!, take_profit_level: "62400" },
+    }, { nowMs: NOW })).toEqual({ ok: false, error: "order_plan_protection_invalid" });
+    expect(validateTradeOrderPlan({
+      ...protectedPlan,
+      protection_intent: { ...protectedPlan.protection_intent!, max_slippage_bps: 51 },
+    }, { nowMs: NOW })).toEqual({ ok: false, error: "order_plan_protection_invalid" });
+  });
+
   it("holds exact editable intent stable across feed timestamps and expires market context", () => {
     const bound = fixturePlan()!;
     const nextFrame = {
@@ -250,18 +282,20 @@ describe("trade order plan binding", () => {
   });
 });
 
-function fixturePlan() {
+function fixturePlan(reduceOnly = false, takeProfitLevel?: number) {
   return buildTradeOrderPlan({
     venueId: "hyperliquid",
     network: "testnet",
     coin: "BTC",
     product: "BTC-PERP",
     side: "buy",
+    ...(takeProfitLevel == null ? {} : { timeInForce: "ioc" as const }),
     quoteNotionalUsd: 25,
     baseSize: 0.0004,
     limitPrice: 62_500,
     maxSlippageBps: 50,
     stopLevel: 62_000,
+    takeProfitLevel,
     strategyProfile: "breakout",
     entryTrigger: "break_level",
     exitRule: "exit_on_invalidation",
@@ -272,6 +306,7 @@ function fixturePlan() {
     executionReferencePrice: 62_490,
     frameVersion: 1,
     riskEnvelope: { riskBudgetUsd: 1, stopAndSlippageLossUsd: 0.325, roundTripCostLossUsd: 0.05, allInLossUsd: 0.375, feeBps: 5, bufferBps: 5, feeEvidenceAtMs: NOW - 1_000, bufferEvidenceAtMs: NOW - 1_000 },
+    reduceOnly,
     nowMs: NOW,
   });
 }

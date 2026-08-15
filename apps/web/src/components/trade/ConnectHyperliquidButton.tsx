@@ -231,7 +231,7 @@ export function ConnectHyperliquidButton({
           >
             Replace or switch network
           </button>
-          {state.network === "mainnet" && process.env.NEXT_PUBLIC_GHOLA_HYPERLIQUID_MAINNET_PROOF_UI_ENABLED === "true" ? (
+          {state.network === "mainnet" && process.env.NEXT_PUBLIC_GHOLA_HYPERLIQUID_ACCOUNT_PROOF_ENABLED === "true" ? (
             <Link
               href="/trade/mainnet-e2e"
               className="trade-action flex h-10 items-center justify-center rounded-md px-4 text-xs font-semibold"
@@ -282,7 +282,7 @@ export function ConnectHyperliquidButton({
             </div>
           ) : null}
           <p className="text-[11px] leading-5 text-[#566278]">
-            Connect a <strong>trade-only Hyperliquid API wallet</strong> so the agent can execute your
+            Connect a <strong>trade-only Hyperliquid API wallet</strong> so Ghola can execute your
             plan on your own account. The key is sealed in your browser to the agent worker — it is
             never sent or stored in plaintext, cannot withdraw funds, and is revocable anytime.
           </p>

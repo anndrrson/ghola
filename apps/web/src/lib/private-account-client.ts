@@ -15,6 +15,12 @@ import type { SolanaPerpsEncryptedExecutionVaultBundle } from "./solana-perps-va
 import type { SolanaSwapEncryptedExecutionVaultBundle } from "./solana-swap-vault-seal";
 import type { TradeOrderPlan } from "./trade-order-plan";
 import type { MarketFundingRateFields } from "./market-funding-rate";
+import type {
+  LiveTradingCapabilityStatus,
+  LiveTradingCaps,
+  LiveTradingLaunchState,
+  LiveTradingReleaseIdentity,
+} from "./live-trading-contract";
 
 export type PrivateAccountProductBucket =
   | "stablecoin"
@@ -72,13 +78,37 @@ export type PrivateAutopilotEventType =
 
 export interface PrivateAccountLiveTradingStatus {
   version: 1;
+  contract_version: 2;
   status: "green" | "red";
+  launch_state: LiveTradingLaunchState;
   live_trading_enabled: boolean;
   live_submit_mode: "disabled" | "byo_mainnet" | "pooled_and_byo";
   byo_live_trading_enabled: boolean;
   pooled_live_trading_enabled: boolean;
   public_live_copy_allowed: boolean;
   public_market_data_enabled: boolean;
+  release_identity: LiveTradingReleaseIdentity;
+  live_worker_readiness: {
+    ready: boolean;
+    endpoint_configured: boolean;
+    contract_version: number | null;
+    worker_git_sha: string | null;
+    worker_image_digest: string | null;
+    config_fingerprint: string | null;
+    capabilities: string[];
+    reason_codes: string[];
+    checked_at: string;
+  };
+  effective_caps: LiveTradingCaps;
+  proof_policy: {
+    venue_id: "hyperliquid";
+    network: "mainnet";
+    first_proof_notional_usd: number;
+    required_consecutive_passes: number;
+    final_flat_required: true;
+    zero_open_orders_required: true;
+  };
+  hyperliquid_capabilities: LiveTradingCapabilityStatus[];
   default_access_mode: "ghola_auto_access";
   required_venues: Array<{
     id: "hyperliquid" | "phoenix" | "backpack" | "jupiter" | "coinbase";
@@ -352,6 +382,7 @@ export interface HyperliquidMarketSnapshot extends MarketFundingRateFields {
   open_interest: string | null;
   premium: string | null;
   max_leverage: number | null;
+  size_decimals?: number | null;
   candles: Array<{ t: number; T: number | null; o: string; h: string; l: string; c: string; v: string; n: number | null }>;
   bids: Array<{ px: string; sz: string; n: number | null }>;
   asks: Array<{ px: string; sz: string; n: number | null }>;
@@ -1031,14 +1062,28 @@ export async function getVenueEligibilityStatus(input: {
   });
 }
 
+export async function getHyperliquidLiveAccess() {
+  return privateAccountFetch("/v1/private-account/hyperliquid/live-access", {
+    method: "GET",
+  });
+}
+
 export async function verifyVenueEligibility(input: {
   venue_id: GholaVenueId;
   credential_type?: "self_attested_eligible_user" | "partner_verified_eligible_user";
+  eligible_non_us?: boolean;
+  terms_version?: string;
+  risk_disclosure_version?: string;
+  confirmation?: string;
 }) {
   return privateAccountFetch(`/v1/private-account/venues/${input.venue_id}/eligibility`, {
     method: "POST",
     body: JSON.stringify({
       credential_type: input.credential_type || "self_attested_eligible_user",
+      ...(input.eligible_non_us === true ? { eligible_non_us: true } : {}),
+      ...(input.terms_version ? { terms_version: input.terms_version } : {}),
+      ...(input.risk_disclosure_version ? { risk_disclosure_version: input.risk_disclosure_version } : {}),
+      ...(input.confirmation ? { confirmation: input.confirmation } : {}),
     }),
   });
 }

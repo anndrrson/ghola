@@ -4,6 +4,8 @@ export const TerminalMarketSnapshotMetrics = memo(function TerminalMarketSnapsho
   mark,
   oracle,
   spread,
+  dayChange,
+  dayChangeTone = "neutral",
   funding,
   openInterest,
   dayVolume,
@@ -11,17 +13,19 @@ export const TerminalMarketSnapshotMetrics = memo(function TerminalMarketSnapsho
   mark: string;
   oracle: string;
   spread: string;
+  dayChange?: string;
+  dayChangeTone?: "good" | "bad" | "neutral";
   funding: string;
   openInterest: string;
   dayVolume: string;
 }) {
   const metrics = [
-    ["Mark", mark],
-    ["Oracle", oracle],
-    ["Spread", spread],
-    ["Funding", funding],
-    ["Open interest", openInterest],
-    ["24h volume", dayVolume],
+    ["Mark", mark, "neutral"],
+    ["Oracle", oracle, "neutral"],
+    [dayChange == null ? "Spread" : "24h change", dayChange ?? spread, dayChange == null ? "neutral" : dayChangeTone],
+    ["Funding / 1h", funding, "neutral"],
+    ["Open interest", openInterest, "neutral"],
+    ["24h volume", dayVolume, "neutral"],
   ] as const;
 
   return (
@@ -29,13 +33,13 @@ export const TerminalMarketSnapshotMetrics = memo(function TerminalMarketSnapsho
       role="region"
       aria-label="Scrollable market snapshot metrics"
       tabIndex={0}
-      className="w-full overflow-x-auto overscroll-x-contain outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-sky-300 sm:w-auto sm:overflow-visible"
+      className="w-full outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-sky-300"
     >
-      <dl className="flex min-w-max snap-x snap-mandatory items-start gap-4 pb-1 text-right sm:grid sm:min-w-0 sm:grid-cols-6 sm:gap-x-4 sm:pb-0">
-        {metrics.map(([label, value]) => (
-          <div key={label} className="min-w-[5.25rem] snap-start sm:min-w-0">
-            <dt className="text-[9px] font-medium uppercase tracking-[0.14em] text-[#566278] sm:text-[10px] sm:tracking-[0.16em]">{label}</dt>
-            <dd className="mt-0.5 font-mono text-xs tabular-nums text-[#eef1f8] sm:mt-1 sm:text-sm">{value}</dd>
+      <dl className="grid grid-cols-2 gap-1.5 text-left sm:grid-cols-3 2xl:grid-cols-6">
+        {metrics.map(([label, value, tone]) => (
+          <div key={label} className="rounded border border-[#1d2633] bg-[#0a0d13] px-3 py-2">
+            <dt className="text-[8px] font-semibold uppercase tracking-[0.14em] text-[#59667a]">{label}</dt>
+            <dd className={`trade-market-number mt-1 text-[11px] ${tone === "good" ? "text-emerald-300" : tone === "bad" ? "text-rose-300" : "text-[#dce4ee]"}`}>{value}</dd>
           </div>
         ))}
       </dl>

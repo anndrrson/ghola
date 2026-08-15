@@ -3,6 +3,7 @@ import {
   hyperliquidMainnetProofUiEnabled,
   json,
   privateAccountLiveGuard,
+  releasePrivateAccountLiveRevenueReservation,
   runHyperliquidMainnetProofForOwner,
 } from "../../_lib";
 
@@ -12,16 +13,22 @@ export async function POST(req: Request) {
   if (!hyperliquidMainnetProofUiEnabled()) {
     return json({ error: "hyperliquid_mainnet_roundtrip_unavailable" }, 404);
   }
-  const guarded = await privateAccountLiveGuard(req, { allowMobileWalletProof: true });
+  const guarded = await privateAccountLiveGuard(req, { allowMobileWalletProof: true, requireRevenue: true });
   if (!guarded.ok) return guarded.response;
   if (guarded.request_proof_kind !== "mobile_wallet") {
+    await releasePrivateAccountLiveRevenueReservation(guarded.revenue, "failed");
     return json({ error: "mobile_wallet_step_up_required" }, 403);
   }
   if (!exactConfirmation(guarded.body)) {
+    await releasePrivateAccountLiveRevenueReservation(guarded.revenue, "failed");
     return json({ error: "hyperliquid_mainnet_roundtrip_confirmation_required" }, 400);
   }
   const result = await runHyperliquidMainnetProofForOwner(guarded.owner);
-  if ("error" in result) return json({ error: result.error }, result.status);
+  if ("error" in result) {
+    await releasePrivateAccountLiveRevenueReservation(guarded.revenue, "failed");
+    return json({ error: result.error }, result.status);
+  }
+  await releasePrivateAccountLiveRevenueReservation(guarded.revenue, "completed");
   return json(result.report, 200);
 }
 

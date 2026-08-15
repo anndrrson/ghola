@@ -1,439 +1,297 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLiveTradingStatusGet } from "./_handler";
 import { GET } from "./route";
-import { POST as POSTCanaryReport } from "../canary-report/route";
-import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
+import { POST as postCapabilityEvidence } from "@/app/api/internal/live-trading/capability-evidence/route";
+import { canonicalLiveTradingCaps } from "@/lib/live-trading-contract";
+import { currentLiveTradingReleaseIdentity } from "@/lib/live-trading-release.server";
+import {
+  putLiveTradingCapabilityEvidence,
+  putLiveTradingLaunchControl,
+  resetLiveTradingStoreForTests,
+} from "@/lib/live-trading-store";
 import { brandPrivateAgentMockTransport } from "@/lib/private-agent-spend-policy";
 
+const SHA = "a".repeat(40);
+const DIGEST = `sha256:${"b".repeat(64)}`;
 const ENV_KEYS = [
   "GHOLA_LIVE_TRADING_PUBLIC_ENABLED",
-  "PRIVATE_AGENT_VENUE_DRY_RUN",
-  "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET",
-  "GHOLA_PRIVATE_RUNTIME_URL",
-  "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
-  "GHOLA_PRIVATE_AGENT_WORKER_URL",
-  "GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN",
-  "PRIVATE_AGENT_EXECUTION_TOKEN",
-  "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET",
-  "GHOLA_WORKER_CAPABILITY_SECRET",
-  "GHOLA_POOLED_WORKER_READINESS_TIMEOUT_MS",
-  "GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN",
-  "GHOLA_HYPERLIQUID_POOLED_ACCOUNT_POOL_READY",
-  "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON",
-  "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_PATH",
-  "GHOLA_PHOENIX_POOLED_AUTHORITY_READY",
-  "PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON",
-  "PRIVATE_AGENT_SOLANA_PERPS_POOL_VAULT_JSON",
-  "PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_PATH",
-  "PRIVATE_AGENT_SOLANA_PERPS_POOL_VAULT_PATH",
-  "GHOLA_JUPITER_POOLED_AUTHORITY_READY",
-  "PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON",
-  "PRIVATE_AGENT_SOLANA_SWAP_POOLED_VAULT_JSON",
-  "PRIVATE_AGENT_JUPITER_POOLED_VAULT_PATH",
-  "PRIVATE_AGENT_SOLANA_SWAP_POOLED_VAULT_PATH",
-  "PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON",
-  "PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_PATH",
+  "GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES",
   "GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD",
   "GHOLA_LIVE_TRADING_DAILY_CAP_USD",
   "GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS",
-  "GHOLA_LIVE_TRADING_CANARY_MAX_STALE_MS",
+  "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET",
   "GHOLA_V6_HYPERLIQUID_PILOT_ENABLED",
   "GHOLA_HYPERLIQUID_LIVE_MODE",
+  "PRIVATE_AGENT_VENUE_DRY_RUN",
   "PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE",
+  "PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED",
   "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD",
   "PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS",
-  "GHOLA_VENUE_PHOENIX_PILOT_ENABLED",
-  "GHOLA_SOLANA_PERPS_LIVE_MODE",
-  "PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET",
-  "PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE",
-  "PRIVATE_AGENT_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD",
-  "PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS",
-  "GHOLA_VENUE_JUPITER_PILOT_ENABLED",
-  "GHOLA_JUPITER_LIVE_MODE",
-  "PRIVATE_AGENT_JUPITER_LIVE_MODE",
-  "GHOLA_JUPITER_API_KEY",
-  "GHOLA_JUPITER_API_KEY_READY",
-  "PRIVATE_AGENT_JUPITER_API_KEY",
-  "JUPITER_API_KEY",
-  "GHOLA_JUPITER_ALLOWED_INPUT_MINTS",
-  "PRIVATE_AGENT_JUPITER_ALLOWED_INPUT_MINTS",
-  "GHOLA_JUPITER_ALLOWED_OUTPUT_MINTS",
-  "PRIVATE_AGENT_JUPITER_ALLOWED_OUTPUT_MINTS",
-  "PRIVATE_AGENT_JUPITER_MAX_SLIPPAGE_BPS",
-  "PRIVATE_AGENT_JUPITER_LIVE_MAX_NOTIONAL_USD",
-  "GHOLA_V6_COINBASE_PILOT_ENABLED",
-  "GHOLA_COINBASE_PARTNER_OMNIBUS_ENABLED",
-  "GHOLA_COINBASE_PARTNER_OMNIBUS_POOL_READY",
-  "GHOLA_COINBASE_LIVE_MODE",
-  "PRIVATE_AGENT_COINBASE_LIVE_MODE",
-  "PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS",
-  "PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD",
+  "PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD",
+  "PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD",
+  "PRIVATE_AGENT_STATE_STORE",
+  "PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE",
+  "PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY",
+  "PRIVATE_AGENT_GLOBAL_KILL_SWITCH",
+  "GHOLA_WEB_GIT_SHA",
+  "GHOLA_PRIVATE_AGENT_WORKER_GIT_SHA",
+  "GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST",
+  "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
+  "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET",
+  "GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64",
+  "GHOLA_LIVE_TRADING_CONTROL_TOKEN",
 ] as const;
 
 describe("private account live trading launch gate", () => {
   beforeEach(async () => {
-    clearGateEnv();
-    await resetPrivateAccountStoreForTests();
+    clearEnv();
+    await resetLiveTradingStoreForTests();
   });
+
   afterEach(async () => {
     vi.restoreAllMocks();
-    clearGateEnv();
-    await resetPrivateAccountStoreForTests();
+    clearEnv();
+    await resetLiveTradingStoreForTests();
   });
 
   it("keeps public live trading red by default", async () => {
-    const res = await GET();
-    expect(res.status).toBe(200);
-    const body = await res.json();
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
     expect(body).toMatchObject({
+      contract_version: 2,
       status: "red",
+      launch_state: "disabled",
       live_trading_enabled: false,
       live_submit_mode: "disabled",
-      byo_live_trading_enabled: false,
       pooled_live_trading_enabled: false,
       public_live_copy_allowed: false,
-      public_market_data_enabled: false,
-      default_access_mode: "ghola_auto_access",
     });
     expect(body.reason_codes).toContain("live_trading_public_flag_disabled");
-    expect(body.required_venues).toHaveLength(4);
-    expect(body.required_venues.every((venue: { status: string }) => venue.status === "red")).toBe(true);
   });
 
-  it("enables BYO mainnet live submit with ready env before pooled pools are configured", async () => {
-    enableGreenGateEnv();
+  it("turns green only for the exact public release with three funded proofs", async () => {
+    enableExactEnvironment();
+    await primeLaunch("public", 3);
+    const fetchMock = readyWorkerMock();
 
-    const res = await testStatusGet()();
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.status).toBe("green");
-    expect(body.live_trading_enabled).toBe(true);
-    expect(body.live_submit_mode).toBe("byo_mainnet");
-    expect(body.byo_live_trading_enabled).toBe(true);
-    expect(body.pooled_live_trading_enabled).toBe(false);
-    expect(body.public_live_copy_allowed).toBe(true);
-    expect(body.public_market_data_enabled).toBe(true);
-    expect(body.reason_codes).toEqual([]);
-    expect(body.pooled_reason_codes).toContain("pooled_worker_endpoint_missing");
-    expect(body.byo_live_venues.filter((venue: { status: string }) => venue.status === "green").map((venue: { id: string }) => venue.id)).toEqual([
-      "hyperliquid",
-      "phoenix",
-      "jupiter",
-      "coinbase",
-    ]);
-    expect(body.required_venues.map((venue: { id: string; canary_status: string }) => ({
-      id: venue.id,
-      canary_status: venue.canary_status,
-    }))).toEqual([
-      { id: "hyperliquid", canary_status: "missing" },
-      { id: "phoenix", canary_status: "missing" },
-      { id: "jupiter", canary_status: "missing" },
-      { id: "coinbase", canary_status: "missing" },
-    ]);
-  });
+    const response = await statusGet(fetchMock)();
+    const body = await response.json();
 
-  it("does not require sealed runtime health for BYO scoped-account live submit", async () => {
-    enableGreenGateEnv();
-    delete process.env.GHOLA_PRIVATE_RUNTIME_URL;
-
-    const res = await testStatusGet()();
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.status).toBe("green");
-    expect(body.live_trading_enabled).toBe(true);
-    expect(body.live_submit_mode).toBe("byo_mainnet");
-    expect(body.byo_live_trading_enabled).toBe(true);
-    expect(body.pooled_live_trading_enabled).toBe(false);
-    expect(body.reason_codes).toEqual([]);
-    expect(body.pooled_reason_codes).toContain("pooled_worker_endpoint_missing");
-  });
-
-  it("rejects unauthenticated canary reports", async () => {
-    process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN = "internal_live_canary_token_32_bytes";
-    const res = await POSTCanaryReport(new Request("https://ghola.example/v1/private-account/live-trading/canary-report", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(greenCanaryBody("hyperliquid")),
-    }));
-    expect(res.status).toBe(401);
-  });
-
-  it("does not turn pooled green from pool flags without a worker proof", async () => {
-    enableGreenGateEnv();
-    enablePooledPoolEnv();
-
-    const res = await testStatusGet()();
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.status).toBe("green");
-    expect(body.live_submit_mode).toBe("byo_mainnet");
-    expect(body.pooled_live_trading_enabled).toBe(false);
-    expect(body.pooled_reason_codes).toContain("pooled_worker_endpoint_missing");
-  });
-
-  it("turns pooled green only when the worker proves every venue pool is ready", async () => {
-    enableGreenGateEnv();
-    enablePooledPoolEnv();
-    enablePooledWorkerEnv();
-    const fetchSpy = pooledWorkerReadyMock();
-
-    const res = await testStatusGet(fetchSpy)();
-    expect(res.status).toBe(200);
-    const body = await res.json();
+    expect(response.status).toBe(200);
     expect(body).toMatchObject({
       status: "green",
+      launch_state: "public",
       live_trading_enabled: true,
-      live_submit_mode: "pooled_and_byo",
+      live_submit_mode: "byo_mainnet",
       byo_live_trading_enabled: true,
-      pooled_live_trading_enabled: true,
+      pooled_live_trading_enabled: false,
       public_live_copy_allowed: true,
-      public_market_data_enabled: true,
-      default_access_mode: "ghola_auto_access",
+      effective_caps: canonicalLiveTradingCaps(),
       reason_codes: [],
     });
-    expect(fetchSpy).toHaveBeenCalledOnce();
-    expect(body.pooled_worker_readiness).toMatchObject({
-      status: "ready",
-      ready: true,
-      endpoint_configured: true,
-      reason_codes: [],
-    });
-    expect(body.required_venues.map((venue: { id: string; status: string; canary_status: string; canary_required: boolean }) => ({
-      id: venue.id,
-      status: venue.status,
-      canary_status: venue.canary_status,
-      canary_required: venue.canary_required,
-    }))).toEqual([
-      { id: "hyperliquid", status: "green", canary_status: "missing", canary_required: false },
-      { id: "phoenix", status: "green", canary_status: "missing", canary_required: false },
-      { id: "jupiter", status: "green", canary_status: "missing", canary_required: false },
-      { id: "coinbase", status: "green", canary_status: "missing", canary_required: false },
-    ]);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(body.byo_live_venues.filter((venue: { status: string }) => venue.status === "green"))
+      .toEqual([expect.objectContaining({ id: "hyperliquid" })]);
+    expect(body.hyperliquid_capabilities.find((item: { id: string }) => item.id === "limit_order"))
+      .toMatchObject({ state: "live", visible: true, consecutive_mainnet_proofs: 3 });
+    expect(body.pooled_reason_codes).toEqual(["pooled_execution_not_in_launch"]);
   });
 
-  it("turns pooled live for the ready venues without blocking on every pooled venue", async () => {
-    enableGreenGateEnv();
-    enablePooledWorkerEnv();
-    const fetchSpy = pooledWorkerPartiallyReadyMock();
+  it("keeps a fully proven canary hidden until explicit public activation", async () => {
+    enableExactEnvironment();
+    await primeLaunch("canary", 3);
+    const response = await statusGet(readyWorkerMock())();
+    const body = await response.json();
 
-    const res = await testStatusGet(fetchSpy)();
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body).toMatchObject({
-      status: "green",
-      live_trading_enabled: true,
-      live_submit_mode: "pooled_and_byo",
-      byo_live_trading_enabled: true,
-      pooled_live_trading_enabled: true,
-      pooled_live_venues: ["phoenix"],
-      pooled_reason_codes: [],
-    });
-    expect(fetchSpy).toHaveBeenCalledOnce();
-    expect(body.pooled_unavailable_reason_codes).toEqual(expect.arrayContaining([
-      "hyperliquid:hyperliquid_pooled_account_pool_missing",
-      "jupiter:jupiter_api_key_missing",
-      "coinbase:coinbase_omnibus_pool_not_ready",
+    expect(body.status).toBe("red");
+    expect(body.launch_state).toBe("canary");
+    expect(body.public_live_copy_allowed).toBe(false);
+    expect(body.reason_codes).toContain("live_trading_launch_state_invalid");
+    expect(body.hyperliquid_capabilities.find((item: { id: string }) => item.id === "limit_order"))
+      .toMatchObject({ state: "verifying", visible: false, consecutive_mainnet_proofs: 3 });
+  });
+
+  it("resets the consecutive proof sequence after a red canary result", async () => {
+    enableExactEnvironment();
+    await primeLaunch("public", 3);
+    await putEvidence("red", 10);
+
+    const body = await (await statusGet(readyWorkerMock())()).json();
+    const limit = body.hyperliquid_capabilities.find((item: { id: string }) => item.id === "limit_order");
+    expect(body.status).toBe("red");
+    expect(limit).toMatchObject({ state: "disabled", consecutive_mainnet_proofs: 0 });
+  });
+
+  it("fails closed on release drift and durable kill", async () => {
+    enableExactEnvironment();
+    await primeLaunch("public", 3);
+    process.env.GHOLA_WEB_GIT_SHA = "c".repeat(40);
+
+    let body = await (await statusGet(readyWorkerMock())()).json();
+    expect(body.status).toBe("red");
+    expect(body.reason_codes).toEqual(expect.arrayContaining([
+      "web_worker_release_mismatch",
+      "launch_release_binding_mismatch",
     ]));
-    expect(body.required_venues.map((venue: { id: string; status: string }) => ({
-      id: venue.id,
-      status: venue.status,
-    }))).toEqual([
-      { id: "hyperliquid", status: "red" },
-      { id: "phoenix", status: "green" },
-      { id: "jupiter", status: "red" },
-      { id: "coinbase", status: "red" },
-    ]);
+
+    process.env.GHOLA_WEB_GIT_SHA = SHA;
+    await primeLaunch("killed", 3);
+    body = await (await statusGet(readyWorkerMock())()).json();
+    expect(body.status).toBe("red");
+    expect(body.reason_codes).toContain("live_trading_killed");
   });
 
-  it("surfaces a capital-free no-submit proof without treating it as a funded broadcast canary", async () => {
-    enableGreenGateEnv();
-    enablePooledWorkerEnv();
-    const reportRes = await POSTCanaryReport(new Request("https://ghola.example/v1/private-account/live-trading/canary-report", {
+  it("rejects legacy live mode and manual green evidence", async () => {
+    enableExactEnvironment();
+    await primeLaunch("canary", 0);
+    process.env.GHOLA_HYPERLIQUID_LIVE_MODE = "full_ticket";
+    let body = await (await statusGet(readyWorkerMock())()).json();
+    expect(body.reason_codes).toContain("legacy_hyperliquid_live_mode_present");
+
+    process.env.GHOLA_LIVE_TRADING_CONTROL_TOKEN = "control-token-strong-value-123456789";
+    const release = currentLiveTradingReleaseIdentity();
+    const response = await postCapabilityEvidence(new Request("https://ghola.test/api/internal/live-trading/capability-evidence", {
       method: "POST",
       headers: {
-        authorization: "Bearer internal_live_canary_token_32_bytes",
-        "Content-Type": "application/json",
+        authorization: `Bearer ${process.env.GHOLA_LIVE_TRADING_CONTROL_TOKEN}`,
+        "content-type": "application/json",
       },
-      body: JSON.stringify(capitalFreeCanaryBody("phoenix")),
+      body: JSON.stringify({
+        capability: "limit_order",
+        status: "green",
+        venue_id: "hyperliquid",
+        network: "mainnet",
+        broadcast_performed: true,
+        reconciled: true,
+        final_flat: true,
+        open_order_count: 0,
+        order_notional_usd: 10.5,
+        web_git_sha: release.web_git_sha,
+        worker_git_sha: release.worker_git_sha,
+        worker_image_digest: release.worker_image_digest,
+        config_fingerprint: release.config_fingerprint,
+        receipt_commitment: "receipt_commitment_manual",
+        result_commitment: "result_commitment_manual",
+        observed_at: new Date().toISOString(),
+      }),
     }));
-    expect(reportRes.status).toBe(202);
-    const reportBody = await reportRes.json();
-    expect(reportBody.report).toMatchObject({
-      venue_id: "phoenix",
-      live_mode: "no_submit",
-      canary_kind: "capital_free_no_submit",
-      broadcast_performed: false,
-    });
-
-    const fetchSpy = pooledWorkerPartiallyReadyMock();
-    const res = await testStatusGet(fetchSpy)();
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(fetchSpy).toHaveBeenCalledOnce();
-    expect(body.live_submit_mode).toBe("pooled_and_byo");
-    expect(body.pooled_live_venues).toEqual(["phoenix"]);
-    expect(body.pooled_capital_free_proven_venues).toEqual(["phoenix"]);
-
-    const phoenix = body.required_venues.find((venue: { id: string }) => venue.id === "phoenix");
-    expect(phoenix).toMatchObject({
-      id: "phoenix",
-      status: "green",
-      canary_status: "missing",
-      capital_free_proof_status: "green",
-      capital_free_proof_reason_codes: [],
-    });
-    expect(phoenix.capital_free_proof_report).toMatchObject({
-      venue_id: "phoenix",
-      live_mode: "no_submit",
-      canary_kind: "capital_free_no_submit",
-      broadcast_performed: false,
-      reconcile_status: "reconciled",
-      order_notional_usd: 5,
-    });
+    body = await response.json();
+    expect(response.status).toBe(400);
+    expect(body.reason_codes).toContain("green_evidence_must_be_worker_recorded");
   });
 });
 
-function clearGateEnv() {
-  for (const key of ENV_KEYS) delete process.env[key];
-}
-
-function enableGreenGateEnv() {
-  process.env.GHOLA_LIVE_TRADING_PUBLIC_ENABLED = "true";
-  process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET = "secure_private_account_request_proof_secret_32bytes";
-  process.env.GHOLA_PRIVATE_RUNTIME_URL = "https://runtime.ghola.example";
-  process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN = "internal_live_canary_token_32_bytes";
-  process.env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD = "1000";
-  process.env.GHOLA_LIVE_TRADING_DAILY_CAP_USD = "5000";
-  process.env.GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS = "100";
-  process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED = "true";
-  process.env.GHOLA_HYPERLIQUID_LIVE_MODE = "full_ticket";
-  process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET = "true";
-  process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "full_ticket";
-  process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD = "1000";
-  process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD = "5000";
-  process.env.PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS = "100";
-  process.env.GHOLA_VENUE_PHOENIX_PILOT_ENABLED = "true";
-  process.env.GHOLA_SOLANA_PERPS_LIVE_MODE = "full_ticket";
-  process.env.PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET = "true";
-  process.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE = "full_ticket";
-  process.env.PRIVATE_AGENT_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD = "1000";
-  process.env.PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS = "100";
-  process.env.GHOLA_VENUE_JUPITER_PILOT_ENABLED = "true";
-  process.env.GHOLA_JUPITER_LIVE_MODE = "full";
-  process.env.PRIVATE_AGENT_JUPITER_LIVE_MODE = "full";
-  process.env.GHOLA_JUPITER_API_KEY = "jupiter-api-key";
-  process.env.GHOLA_JUPITER_ALLOWED_INPUT_MINTS = "So11111111111111111111111111111111111111112";
-  process.env.GHOLA_JUPITER_ALLOWED_OUTPUT_MINTS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-  process.env.PRIVATE_AGENT_JUPITER_MAX_SLIPPAGE_BPS = "100";
-  process.env.PRIVATE_AGENT_JUPITER_LIVE_MAX_NOTIONAL_USD = "1000";
-  process.env.GHOLA_V6_COINBASE_PILOT_ENABLED = "true";
-  process.env.GHOLA_COINBASE_PARTNER_OMNIBUS_ENABLED = "true";
-  process.env.GHOLA_COINBASE_LIVE_MODE = "full";
-  process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = "full";
-  process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS = "BTC-USD,ETH-USD,SOL-USD";
-  process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD = "1000";
-}
-
-function enablePooledPoolEnv() {
-  process.env.GHOLA_HYPERLIQUID_POOLED_ACCOUNT_POOL_READY = "true";
-  process.env.GHOLA_PHOENIX_POOLED_AUTHORITY_READY = "true";
-  process.env.GHOLA_JUPITER_POOLED_AUTHORITY_READY = "true";
-  process.env.GHOLA_JUPITER_API_KEY_READY = "true";
-  process.env.GHOLA_COINBASE_PARTNER_OMNIBUS_POOL_READY = "true";
-}
-
-function enablePooledWorkerEnv() {
-  process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.ghola.example";
-  process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "test-worker-capability-secret";
-}
-
-function testStatusGet(fetchImpl: typeof fetch = vi.fn<typeof fetch>()) {
-  return createLiveTradingStatusGet({
-    fetchImpl: brandPrivateAgentMockTransport(fetchImpl),
+function enableExactEnvironment() {
+  Object.assign(process.env, {
+    GHOLA_LIVE_TRADING_PUBLIC_ENABLED: "true",
+    GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES: "limit_order",
+    GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD: "100",
+    GHOLA_LIVE_TRADING_DAILY_CAP_USD: "500",
+    GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS: "100",
+    GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET: "secure_private_account_request_proof_secret_value",
+    GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
+    PRIVATE_AGENT_VENUE_DRY_RUN: "false",
+    PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET: "true",
+    PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "full_ticket",
+    PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED: "true",
+    PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD: "100",
+    PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD: "500",
+    PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS: "100",
+    PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD: "100",
+    PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD: "500",
+    PRIVATE_AGENT_STATE_STORE: "postgres",
+    PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE: "true",
+    PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY: "true",
+    PRIVATE_AGENT_GLOBAL_KILL_SWITCH: "false",
+    GHOLA_WEB_GIT_SHA: SHA,
+    GHOLA_PRIVATE_AGENT_WORKER_GIT_SHA: SHA,
+    GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST: DIGEST,
+    GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.ghola.test",
+    PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "worker-capability-secret-value-123456789",
+    GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64: Buffer.alloc(44, 7).toString("base64"),
   });
 }
 
-function pooledWorkerReadyMock() {
-  return vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
-    version: 1,
-    status: "ready",
+async function primeLaunch(state: "canary" | "public" | "killed", proofCount: number) {
+  const release = currentLiveTradingReleaseIdentity();
+  const now = new Date().toISOString();
+  await putLiveTradingLaunchControl({
+    version: 2,
+    state,
+    contract_version: 2,
+    web_git_sha: release.web_git_sha,
+    worker_git_sha: release.worker_git_sha,
+    worker_image_digest: release.worker_image_digest,
+    config_fingerprint: release.config_fingerprint,
+    public_capabilities: ["limit_order"],
+    caps: canonicalLiveTradingCaps(),
+    evidence_commitment: "launch_evidence_commitment",
+    updated_by: "test-operator",
+    created_at: now,
+    updated_at: now,
+  });
+  for (let index = 0; index < proofCount; index += 1) await putEvidence("green", index);
+}
+
+async function putEvidence(status: "green" | "red", offset: number) {
+  const release = currentLiveTradingReleaseIdentity();
+  const observed = new Date(Date.now() - 60_000 + offset * 1_000);
+  await putLiveTradingCapabilityEvidence({
+    version: 2,
+    evidence_id: `evidence_${status}_${offset}_${observed.getTime()}`,
+    capability: "limit_order",
+    venue_id: "hyperliquid",
+    network: "mainnet",
+    status,
+    broadcast_performed: status === "green",
+    reconciled: status === "green",
+    final_flat: status === "green",
+    open_order_count: status === "green" ? 0 : -1,
+    order_notional_usd: 10.5,
+    web_git_sha: release.web_git_sha as string,
+    worker_git_sha: release.worker_git_sha as string,
+    worker_image_digest: release.worker_image_digest as string,
+    config_fingerprint: release.config_fingerprint,
+    receipt_commitment: status === "green" ? `receipt_commitment_${offset}` : null,
+    result_commitment: status === "green" ? `result_commitment_${offset}` : null,
+    proof_subject_commitment: status === "green" ? `proof_subject_commitment_${offset}` : null,
+    reason: status === "red" ? "canary_failure" : null,
+    observed_at: observed.toISOString(),
+    expires_at: new Date(observed.getTime() + 60 * 60_000).toISOString(),
+    created_at: observed.toISOString(),
+  });
+}
+
+function readyWorkerMock() {
+  const release = currentLiveTradingReleaseIdentity();
+  return vi.fn<typeof fetch>().mockResolvedValue(Response.json({
     ready: true,
-    operation_class: "pooled_readiness",
-    state_store: { mode: "postgres", shared: true },
-    venues: [
-      { venue_id: "hyperliquid", status: "ready", ready: true, reason_codes: [], credential_count: 1 },
-      { venue_id: "phoenix", status: "ready", ready: true, reason_codes: [], authority_commitment: "phoenix_authority_commitment" },
-      { venue_id: "backpack", status: "ready", ready: true, reason_codes: [], credential_commitment: "backpack_credential_commitment" },
-      { venue_id: "jupiter", status: "ready", ready: true, reason_codes: [], authority_commitment: "jupiter_authority_commitment" },
-      { venue_id: "coinbase", status: "ready", ready: true, reason_codes: [], credential_commitment: "coinbase_credential_commitment" },
-    ],
-    reason_codes: [],
-    checked_at: new Date().toISOString(),
-  }), {
-    status: 200,
-    headers: { "content-type": "application/json" },
+    missing: [],
+    live_trading: {
+      ready: true,
+      reason_codes: [],
+      contract_version: 2,
+      worker_git_sha: release.worker_git_sha,
+      worker_image_digest: release.worker_image_digest,
+      config_fingerprint: release.config_fingerprint,
+      caps: {
+        max_order_notional_usd: 100,
+        rolling_24h_notional_usd: 500,
+        max_slippage_bps: 100,
+      },
+      capabilities: ["limit_order", "cancel", "reduce_only"],
+    },
   }));
 }
 
-function pooledWorkerPartiallyReadyMock() {
-  return vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
-    version: 1,
-    status: "blocked",
-    ready: false,
-    operation_class: "pooled_readiness",
-    state_store: { mode: "postgres", shared: true },
-    venues: [
-      { venue_id: "hyperliquid", status: "blocked", ready: false, reason_codes: ["hyperliquid_pooled_account_pool_missing"] },
-      { venue_id: "phoenix", status: "ready", ready: true, reason_codes: [], authority_commitment: "phoenix_authority_commitment" },
-      { venue_id: "jupiter", status: "blocked", ready: false, reason_codes: ["jupiter_api_key_missing", "jupiter_pooled_authority_missing"] },
-      { venue_id: "coinbase", status: "blocked", ready: false, reason_codes: ["coinbase_omnibus_pool_not_ready"] },
-    ],
-    reason_codes: [],
-    checked_at: new Date().toISOString(),
-  }), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  }));
+function statusGet(fetchImpl: typeof fetch) {
+  return createLiveTradingStatusGet({ fetchImpl: brandPrivateAgentMockTransport(fetchImpl) });
 }
 
-function greenCanaryBody(venueId: "hyperliquid" | "phoenix" | "jupiter" | "coinbase") {
-  return {
-    report_id: `canary_${venueId}_full_ticket_green`,
-    venue_id: venueId,
-    network: "mainnet",
-    status: "green",
-    live_mode: "full_ticket",
-    canary_kind: "full_ticket_broadcast",
-    broadcast_performed: true,
-    reconcile_status: "reconciled",
-    order_notional_usd: 5,
-    max_order_notional_usd: 1000,
-    daily_cap_usd: 5000,
-    max_slippage_bps: 100,
-    receipt_commitment: `receipt_${venueId}_commitment`,
-    result_commitment: `result_${venueId}_commitment`,
-    observed_at: new Date().toISOString(),
-  };
-}
-
-function capitalFreeCanaryBody(venueId: "hyperliquid" | "phoenix" | "jupiter" | "coinbase") {
-  return {
-    report_id: `canary_${venueId}_capital_free_green`,
-    venue_id: venueId,
-    network: "mainnet",
-    status: "green",
-    live_mode: "no_submit",
-    canary_kind: "capital_free_no_submit",
-    broadcast_performed: false,
-    reconcile_status: "reconciled",
-    order_notional_usd: 5,
-    max_order_notional_usd: 1000,
-    daily_cap_usd: 5000,
-    max_slippage_bps: 100,
-    receipt_commitment: `receipt_${venueId}_capital_free_commitment`,
-    result_commitment: `result_${venueId}_capital_free_commitment`,
-    observed_at: new Date().toISOString(),
-  };
+function clearEnv() {
+  for (const key of ENV_KEYS) delete process.env[key];
 }

@@ -94,12 +94,13 @@ describe("BYO live execution gate", () => {
     expect(privateAccountByoExecutionGate(plan, blockedEnv).reason_codes).toEqual(expect.arrayContaining([
       "coinbase_product_not_allowed",
       "coinbase_order_mode_recovery_unproven",
+      "venue_execution_not_in_launch",
     ]));
 
     const allowedEnv = coinbaseEnv("eth-usd, BTC-USD");
     expect(privateAccountByoExecutionGate(plan, allowedEnv)).toMatchObject({
       allowed: false,
-      reason_codes: ["coinbase_order_mode_recovery_unproven"],
+      reason_codes: ["coinbase_order_mode_recovery_unproven", "venue_execution_not_in_launch"],
     });
 
     const iocPlan = tradePlan({
@@ -109,8 +110,8 @@ describe("BYO live execution gate", () => {
       timeInForce: "ioc",
     });
     expect(privateAccountByoExecutionGate(iocPlan, allowedEnv)).toMatchObject({
-      allowed: true,
-      reason_codes: [],
+      allowed: false,
+      reason_codes: ["venue_execution_not_in_launch"],
     });
   });
 
@@ -206,15 +207,16 @@ function hyperliquidEnv(): Record<string, string | undefined> {
     GHOLA_LIVE_TRADING_PUBLIC_ENABLED: "true",
     PRIVATE_AGENT_VENUE_DRY_RUN: "false",
     GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET: "a-secure-request-proof-secret-value-123456789",
-    GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD: "1000",
-    GHOLA_LIVE_TRADING_DAILY_CAP_USD: "5000",
+    GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD: "100",
+    GHOLA_LIVE_TRADING_DAILY_CAP_USD: "500",
     GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS: "100",
     GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
     PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET: "true",
     PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "full_ticket",
-    PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD: "1000",
-    PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD: "5000",
+    PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD: "100",
+    PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD: "500",
     PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS: "100",
+    GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64: Buffer.alloc(44, 7).toString("base64"),
   };
 }
 
@@ -244,8 +246,8 @@ function globalEnv(): Record<string, string | undefined> {
     GHOLA_LIVE_TRADING_PUBLIC_ENABLED: "true",
     PRIVATE_AGENT_VENUE_DRY_RUN: "false",
     GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET: "a-secure-request-proof-secret-value-123456789",
-    GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD: "1000",
-    GHOLA_LIVE_TRADING_DAILY_CAP_USD: "5000",
+    GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD: "100",
+    GHOLA_LIVE_TRADING_DAILY_CAP_USD: "500",
     GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS: "100",
   };
 }

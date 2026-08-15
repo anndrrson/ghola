@@ -1,12 +1,16 @@
 import type { GholaMarketFrame } from "./ghola-market-chart";
 import { normalizeMarketTimestamp } from "./market-component-clock";
 import { terminalFrameMatchesSelection, type TerminalMarketVenue } from "./terminal-market-identity";
-import type { UnifiedLiveMarketStatus } from "./unified-live-market";
+import type { UnifiedLiveMarketStatus, UnifiedMarketTransport } from "./unified-live-market";
+
+/** New-risk submissions use a venue quote, not the chart interval, as their clock. */
+export const TERMINAL_EXECUTION_QUOTE_MAX_AGE_MS = 2_000;
 
 export type TerminalLiveMarketContextBlocker =
   | "frame_unavailable"
   | "identity_mismatch"
   | "transport_unavailable"
+  | "websocket_required"
   | "controller_stale"
   | "quote_clock_missing"
   | "quote_clock_future"
@@ -20,6 +24,8 @@ export interface TerminalLiveMarketContextInput {
   market: string;
   interval: string;
   status: UnifiedLiveMarketStatus;
+  transport?: UnifiedMarketTransport;
+  requireWebSocket?: boolean;
   controllerStale: boolean;
   maxAgeMs: number;
   nowMs?: number;
@@ -54,6 +60,7 @@ export function deriveTerminalLiveMarketContext(
   input: TerminalLiveMarketContextInput,
 ): TerminalLiveMarketContext {
   if (!USABLE_STATUSES.has(input.status)) return blocked("transport_unavailable");
+  if (input.requireWebSocket && input.transport !== "websocket") return blocked("websocket_required");
   if (!input.frame) return blocked("frame_unavailable");
   if (
     !terminalFrameMatchesSelection(input.frame, input)
@@ -93,6 +100,7 @@ export function terminalLiveMarketContextBlockerLabel(
 ): string {
   if (blocker === "identity_mismatch") return "selected market identity changed";
   if (blocker === "transport_unavailable") return "public market transport is not live";
+  if (blocker === "websocket_required") return "direct WebSocket market data is required; fallback data is view-only";
   if (blocker === "controller_stale") return "public market controller is stale";
   if (blocker === "quote_clock_missing") return "authoritative quote clock is missing";
   if (blocker === "quote_clock_future") return "authoritative quote clock is too far ahead";

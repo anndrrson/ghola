@@ -21,6 +21,9 @@
     "verify:prod:trading": "node scripts/verify-prod-trading.mjs",
     "verify:prod:hyperliquid": "node scripts/verify-prod-hyperliquid.mjs",
     "verify:prod:hyperliquid:live": "GHOLA_VERIFY_LIVE_SUBMIT=true node scripts/verify-prod-hyperliquid.mjs",
+    "certify:charts": "vitest run src/lib/hyperliquid-market-data.test.ts src/lib/hyperliquid-live-market.test.ts src/lib/market-component-clock.test.ts src/lib/terminal-certified-market-signals.test.ts src/lib/unified-live-market.test.ts src/lib/ghola-chart-engine.test.ts src/lib/ghola-market-chart.test.ts && node scripts/certify-hyperliquid-charts.mjs",
+    "certify:terminal:local": "node scripts/certify-terminal-local.mjs",
+    "certify:terminal:local:quick": "node scripts/certify-terminal-local.mjs --quick",
     "guard:auth-bundle": "node scripts/check-auth-client-bundle.mjs"
   },
   "overrides": {

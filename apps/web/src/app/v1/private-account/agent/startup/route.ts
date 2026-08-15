@@ -21,6 +21,11 @@ interface AgentStartupLiveStatus {
     id?: string;
     status?: "green" | "red" | string;
   }>;
+  hyperliquid_capabilities?: Array<{
+    id?: string;
+    state?: string;
+    visible?: boolean;
+  }>;
 }
 
 const PUBLIC_VENUES: Array<{
@@ -165,7 +170,13 @@ function publicVenueStartup(input: {
   liveStatus: AgentStartupLiveStatus;
 }) {
   const liveVenue = (input.liveStatus.byo_live_venues ?? []).find((venue: { id?: string }) => venue.id === input.venue.id);
-  const liveGate = liveVenue?.status === "green" ? "green" as const : "blocked" as const;
+  const agentLifecycleLive = input.venue.id === "hyperliquid" &&
+    input.liveStatus.hyperliquid_capabilities?.some((capability) =>
+      capability.id === "agent_lifecycle" && capability.state === "live" && capability.visible === true
+    ) === true;
+  const liveGate = liveVenue?.status === "green" && agentLifecycleLive
+    ? "green" as const
+    : "blocked" as const;
   const passportVenue = input.venue.passport_id
     ? input.passport?.venues.find((venue) => venue.venue_id === input.venue.passport_id)
     : null;

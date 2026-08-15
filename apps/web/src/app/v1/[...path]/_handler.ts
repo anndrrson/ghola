@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchSessionUser, sameOrigin } from "../../api/auth/session/_lib";
 import { gholaCommitment } from "@/lib/private-account";
-import { privateAgentTransportAllowed } from "@/lib/private-agent-spend-policy";
+import {
+  privateAgentEmergencyControlTransportAllowed,
+  privateAgentTransportAllowed,
+} from "@/lib/private-agent-spend-policy";
 import {
   assertExecutionMatchesTradeOrderPlan,
   tradeOrderPlanIdempotencyKey,
@@ -17,6 +20,9 @@ import {
   assertSignedExecutionMaterialMatchesTradeOrderPlan,
   configuredHyperliquidAssetIndex,
 } from "@/lib/signed-execution-material";
+import { authorizeLiveTradingMutation } from "@/lib/live-trading-authorization.server";
+import { settleLiveTradingNotionalReservation } from "@/lib/live-trading-store";
+import { dispatchLiveTradingOrder } from "@/lib/live-trading-worker-dispatch.server";
 
 const THUMPER_API_BASE =
   process.env.NEXT_PUBLIC_THUMPER_API_URL ||
@@ -100,6 +106,9 @@ export type V1ProxyDependencies = {
   fetchImpl: typeof fetch;
   fetchSessionUserImpl: typeof fetchSessionUser;
   byoExecutionGateImpl?: typeof privateAccountByoExecutionGate;
+  liveAuthorizationImpl?: typeof authorizeLiveTradingMutation;
+  settleNotionalReservationImpl?: typeof settleLiveTradingNotionalReservation;
+  liveDispatchImpl?: typeof dispatchLiveTradingOrder;
 };
 
 export type V1ProxyContext = { params: Promise<{ path: string[] }> };
@@ -129,6 +138,7 @@ async function handle(req: NextRequest, pathParts: string[], dependencies: V1Pro
     pathParts.length === 2 &&
     pathParts[0] === "chat" &&
     pathParts[1] === "completions";
+  const declaredRiskReducingAppRequest = isAppExecute && await appRequestDeclaresReduceOnly(req);
   if (!isReadOnly && !isAppExecute && !isChatCompletion) {
     return NextResponse.json(
       { error: "upstream_mutation_route_not_allowed" },
@@ -138,6 +148,7 @@ async function handle(req: NextRequest, pathParts: string[], dependencies: V1Pro
   if (
     upstreamTarget.sessionCookieAuth === false
     && !isReadOnly
+    && !declaredRiskReducingAppRequest
     && !privateAgentTransportAllowed("execute", process.env, dependencies.fetchImpl)
   ) {
     return NextResponse.json(
@@ -194,6 +205,8 @@ async function handle(req: NextRequest, pathParts: string[], dependencies: V1Pro
   const bodyAllowed = !["GET", "HEAD"].includes(method);
   let body: ArrayBuffer | undefined;
   let verifiedExecutionPlanDigest: string | null = null;
+  let liveReservationId: string | null = null;
+  let liveDispatchResponse: Response | null = null;
   if (bodyAllowed && isAppExecute) {
     const parsed = await req.json().catch(() => null);
     const verification = await verifyTradingAppOrderPlan(
@@ -207,37 +220,79 @@ async function handle(req: NextRequest, pathParts: string[], dependencies: V1Pro
         { status: verification.status, headers: EXECUTION_NOT_DISPATCHED_HEADERS },
       );
     }
+    const executionTransportAllowed = verification.orderPlan.execution_policy.reduce_only
+      ? privateAgentEmergencyControlTransportAllowed("close", process.env, dependencies.fetchImpl)
+      : privateAgentTransportAllowed("execute", process.env, dependencies.fetchImpl);
+    if (!executionTransportAllowed) {
+      return NextResponse.json(
+        { error: "private execution mutations are disabled outside armed production" },
+        { status: 503, headers: EXECUTION_NOT_DISPATCHED_HEADERS },
+      );
+    }
     const liveGate = (dependencies.byoExecutionGateImpl ?? privateAccountByoExecutionGate)(
       verification.orderPlan,
       process.env,
     );
-    if (!liveGate.allowed) {
+    if (!liveGate.allowed && !verification.orderPlan.execution_policy.reduce_only) {
       return NextResponse.json(
         { error: "live_trading_gate_closed", reason_codes: liveGate.reason_codes },
         { status: 503, headers: EXECUTION_NOT_DISPATCHED_HEADERS },
       );
     }
-    headers.set("idempotency-key", verification.upstream.idempotencyKey);
-    headers.set("x-ghola-account-id", verification.upstream.accountId);
-    headers.set("x-ghola-venue", verification.upstream.venue);
+    const liveAuthorization = await (dependencies.liveAuthorizationImpl ?? authorizeLiveTradingMutation)({
+      owner_commitment: verification.ownerCommitment,
+      web_session_token: verification.webSessionToken,
+      order_plan: verification.orderPlan,
+      idempotency_key: verification.upstream.idempotencyKey,
+      plan_digest: verification.planDigest,
+      fetchImpl: dependencies.fetchImpl,
+      env: process.env,
+    });
+    if (!liveAuthorization.ok) {
+      return NextResponse.json(
+        { error: liveAuthorization.error, reason_codes: liveAuthorization.reason_codes },
+        { status: liveAuthorization.status, headers: EXECUTION_NOT_DISPATCHED_HEADERS },
+      );
+    }
+    liveReservationId = liveAuthorization.reservation?.reservation_id ?? null;
     verifiedExecutionPlanDigest = verification.planDigest;
-    body = new TextEncoder().encode(JSON.stringify(parsed)).buffer as ArrayBuffer;
+    liveDispatchResponse = await (dependencies.liveDispatchImpl ?? dispatchLiveTradingOrder)({
+      owner_commitment: verification.ownerCommitment,
+      account_commitment: liveAuthorization.account_commitment,
+      vault_commitment: liveAuthorization.vault_commitment,
+      idempotency_key: verification.upstream.idempotencyKey,
+      plan_digest: verification.planDigest,
+      order_plan: verification.orderPlan,
+      fetchImpl: dependencies.fetchImpl,
+      env: process.env,
+    });
   } else {
     body = bodyAllowed ? await req.arrayBuffer() : undefined;
   }
   let upstream: Response;
-  try {
-    upstream = await dependencies.fetchImpl(upstreamTarget.url, {
-      method,
-      headers,
-      body,
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-    });
-  } catch {
-    return NextResponse.json(
-      { error: "upstream unavailable" },
-      { status: 503, headers: NO_STORE_HEADERS },
-    );
+  if (liveDispatchResponse) {
+    upstream = liveDispatchResponse;
+  } else {
+    try {
+      upstream = await dependencies.fetchImpl(upstreamTarget.url, {
+        method,
+        headers,
+        body,
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      });
+    } catch {
+      return NextResponse.json(
+        { error: "upstream unavailable" },
+        { status: 503, headers: NO_STORE_HEADERS },
+      );
+    }
+  }
+
+  if (liveReservationId && (upstream.ok || (upstream.status >= 400 && upstream.status < 500))) {
+    await (dependencies.settleNotionalReservationImpl ?? settleLiveTradingNotionalReservation)({
+      reservation_id: liveReservationId,
+      status: upstream.ok ? "filled" : "released",
+    }).catch(() => undefined);
   }
 
   const outHeaders = new Headers();
@@ -272,6 +327,8 @@ async function verifyTradingAppOrderPlan(
       ok: true;
       orderPlan: TradeOrderPlan;
       planDigest: string;
+      ownerCommitment: string;
+      webSessionToken: string;
       upstream: { accountId: string; venue: string; idempotencyKey: string };
     }
   | { ok: false; error: string; status: number }
@@ -314,6 +371,8 @@ async function verifyTradingAppOrderPlan(
     ok: true,
     orderPlan,
     planDigest: verification.binding.plan_digest,
+    ownerCommitment: subjectCommitment,
+    webSessionToken,
     upstream: {
       accountId: executionIdentity.upstreamAccountId,
       venue: orderPlan.venue_id,
@@ -351,6 +410,20 @@ function buildV1Url(baseUrl: string, safePath: string, search: string): string {
   const cleanBase = baseUrl.trim().replace(/\/+$/, "");
   const v1Base = cleanBase.endsWith("/v1") ? cleanBase : `${cleanBase}/v1`;
   return `${v1Base}/${safePath}${search}`;
+}
+
+async function appRequestDeclaresReduceOnly(request: NextRequest) {
+  const body = await request.clone().json().catch(() => null) as Record<string, unknown> | null;
+  const binding = body && typeof body.tradeOrderPlanBinding === "object" && body.tradeOrderPlanBinding
+    ? body.tradeOrderPlanBinding as Record<string, unknown>
+    : null;
+  const plan = binding && typeof binding.order_plan === "object" && binding.order_plan
+    ? binding.order_plan as Record<string, unknown>
+    : null;
+  const policy = plan && typeof plan.execution_policy === "object" && plan.execution_policy
+    ? plan.execution_policy as Record<string, unknown>
+    : null;
+  return policy?.reduce_only === true;
 }
 
 function encodeSafePath(pathParts: string[]): string | null {

@@ -6,7 +6,19 @@ import { shieldedPoolHealth } from "@/lib/private-account-shielded-pool";
 import { consumerTreasuryConfigured } from "@/lib/consumer-turnkey-treasury";
 import { getCrossVenueReconciliationHealth } from "@/lib/cross-venue-execution-store";
 import { probeCrossVenueExecutionReadiness } from "@/lib/cross-venue-worker";
-import { probeConfiguredAutopilotWorkerReadiness } from "@/lib/private-agent-worker-readiness";
+import {
+  probeConfiguredAutopilotWorkerReadiness,
+  probeLiveTradingWorkerReadiness,
+} from "@/lib/private-agent-worker-readiness";
+import {
+  configuredLiveTradingPublicCapabilities,
+  currentLiveTradingReleaseIdentity,
+  liveTradingLaunchBindingFailures,
+} from "@/lib/live-trading-release.server";
+import {
+  evaluateLiveTradingCapability,
+  getLiveTradingLaunchControl,
+} from "@/lib/live-trading-store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -14,11 +26,13 @@ export const maxDuration = 30;
 
 export async function GET() {
   const checkedAt = new Date().toISOString();
+  const liveRelease = currentLiveTradingReleaseIdentity();
+  const publicCapabilities = configuredLiveTradingPublicCapabilities();
   const launchProfile = process.env.GHOLA_CONSUMER_LAUNCH_PROFILE === "byo_hyperliquid"
     ? "byo_hyperliquid" as const
     : "pooled_consumer" as const;
   const pooledRequired = launchProfile === "pooled_consumer";
-  const [database, circuit, reconciliation, crossVenueReconciliation, crossVenue, runtime, verifier, shieldedPool, consumerWorker, autopilotWorker] = await Promise.all([
+  const [database, circuit, reconciliation, crossVenueReconciliation, crossVenue, runtime, verifier, shieldedPool, consumerWorker, autopilotWorker, liveLaunch, liveWorker] = await Promise.all([
     consumerProductionStoreReady().catch(() => false),
     getConsumerCircuitState().catch(() => null),
     getConsumerReconciliationHealth().catch(() => null),
@@ -34,6 +48,11 @@ export async function GET() {
       missing: [],
       status: null,
     })),
+    getLiveTradingLaunchControl().catch(() => null),
+    probeLiveTradingWorkerReadiness({
+      expectedRelease: liveRelease,
+      requiredCapabilities: publicCapabilities,
+    }).catch(() => null),
   ]);
   const phala = runtime?.providers.find((provider) => provider.id === "phala");
   const cvmStatus = phala?.evidence && typeof phala.evidence === "object"
@@ -48,16 +67,20 @@ export async function GET() {
   const vercelObservabilityConfigured = process.env.GHOLA_OBSERVABILITY_PROVIDER === "vercel" &&
     process.env.VERCEL_ENV === "production";
   const observabilityConfigured = sentryConfigured || vercelObservabilityConfigured;
-  const byoHyperliquidReady = process.env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket" &&
-    process.env.GHOLA_HYPERLIQUID_ALLOW_MAINNET === "true" &&
-    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE === "full_ticket" &&
-    process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET === "true" &&
-    Number(process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD) === 1_000 &&
-    Number(process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD) === 5_000 &&
-    Number(process.env.PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS) <= 100 &&
-    Boolean(process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL) &&
-    Boolean(process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN) &&
-    workerState !== "blocked";
+  const liveCapabilities = liveLaunch ? await Promise.all(publicCapabilities.map((capability) =>
+    evaluateLiveTradingCapability({
+      capability,
+      release: liveRelease,
+      launch_state: liveLaunch.state,
+      visible: true,
+    }).catch(() => null)
+  )) : [];
+  const launchBindingFailures = liveLaunch
+    ? liveTradingLaunchBindingFailures(liveLaunch, liveRelease, publicCapabilities)
+    : ["live_launch_state_unavailable"];
+  const byoHyperliquidReady = liveRelease.valid && liveWorker?.ready === true &&
+    launchBindingFailures.length === 0 && liveCapabilities.length === publicCapabilities.length &&
+    liveCapabilities.every((capability) => capability?.state === "live") && workerState !== "blocked";
   const checks = {
     database: database ? "ready" : "blocked",
     trading_circuit: circuit?.status === "open" ? "ready" : "halted",
@@ -106,6 +129,19 @@ export async function GET() {
       status: autopilotWorker.status,
       error: autopilotWorker.error,
       missing: autopilotWorker.missing,
+    },
+    live_trading: {
+      contract_version: liveRelease.contract_version,
+      launch_state: liveLaunch?.state ?? "unavailable",
+      release_valid: liveRelease.valid,
+      worker_ready: liveWorker?.ready === true,
+      public_capabilities: publicCapabilities,
+      reason_codes: [...new Set([
+        ...liveRelease.reason_codes,
+        ...launchBindingFailures,
+        ...(liveWorker?.reason_codes ?? ["live_worker_unavailable"]),
+        ...liveCapabilities.flatMap((capability) => capability?.reason_codes ?? ["capability_evidence_unavailable"]),
+      ])],
     },
     reason_codes: Object.entries(checks).filter(([, value]) => value === "blocked" || value === "halted").map(([key, value]) => `${key}:${value}`),
     checked_at: checkedAt,

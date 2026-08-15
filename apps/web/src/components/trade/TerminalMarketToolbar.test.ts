@@ -34,10 +34,14 @@ describe("TerminalMarketToolbar", () => {
     const onSelectInterval = vi.fn();
     act(() => root.render(createElement(TerminalMarketToolbar, props({ onSelectVenue, onSelectMarket, onSelectInterval }))));
 
-    click(buttonNamed("Phoenix"));
+    const venueSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Venue"]');
+    if (!venueSelect) throw new Error("venue_select_missing");
+    venueSelect.value = "phoenix";
+    act(() => venueSelect.dispatchEvent(new Event("change", { bubbles: true })));
     click(buttonNamed("1h"));
-    const select = container.querySelector("select");
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Market"]');
     if (!select) throw new Error("market_select_missing");
+    expect(select.getAttribute("aria-label")).toBe("Market");
     select.value = "ETH";
     act(() => select.dispatchEvent(new Event("change", { bubbles: true })));
 

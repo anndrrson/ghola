@@ -13,6 +13,10 @@ import {
 } from "./terminal-workspace";
 
 describe("terminal workspace", () => {
+  it("defaults above the Hyperliquid minimum so lot flooring remains executable", () => {
+    expect(defaultTerminalWorkspace().notionalUsd).toBe(11);
+  });
+
   it("uses exact guest/account namespaces and fails closed for malformed scopes", () => {
     const left = `subject_${"a".repeat(32)}`;
     const right = `subject_${"b".repeat(32)}`;

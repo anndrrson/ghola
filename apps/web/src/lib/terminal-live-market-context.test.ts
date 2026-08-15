@@ -40,6 +40,19 @@ describe("terminal live market context", () => {
     expect(result).toMatchObject({ allowed: true, quoteAgeMs: 100, referencePrice: 100 });
   });
 
+  it("makes polling view-only when an executable WebSocket quote is required", () => {
+    expect(derive({
+      status: "fallback_polling",
+      transport: "polling",
+      requireWebSocket: true,
+    })).toMatchObject({ allowed: false, blocker: "websocket_required" });
+    expect(derive({
+      transport: "websocket",
+      requireWebSocket: true,
+      maxAgeMs: 2_000,
+    })).toMatchObject({ allowed: true, quoteAgeMs: 250 });
+  });
+
   it.each([
     ["future tolerance", NOW + 5_000, 0],
     ["freshness boundary", NOW - 30_000, 30_000],

@@ -38,8 +38,8 @@ describe("Hyperliquid market data", () => {
         return json([
           {
             universe: [
-              { name: "BTC", maxLeverage: 40 },
-              { name: "ETH", maxLeverage: 25 },
+              { name: "BTC", maxLeverage: 40, szDecimals: 5 },
+              { name: "ETH", maxLeverage: 25, szDecimals: 4 },
             ],
           },
           [
@@ -111,6 +111,7 @@ describe("Hyperliquid market data", () => {
     });
     expect(snapshot.premium).toBe("-0.0001");
     expect(snapshot.max_leverage).toBe(40);
+    expect(snapshot.size_decimals).toBe(5);
     expect(snapshot.candles).toHaveLength(240);
     expect(snapshot.candles[0]).toMatchObject({
       t: candleStart + 20 * 300_000,

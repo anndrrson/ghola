@@ -9,11 +9,13 @@ import type {
 export const TerminalRewardLadder = memo(function TerminalRewardLadder({
   ladder,
   replay,
+  liveProtectionConfigured = false,
   selectedMultiple,
   onStage,
 }: {
   ladder: RewardLadder;
   replay: boolean;
+  liveProtectionConfigured?: boolean;
   selectedMultiple: TerminalRewardMultiple;
   onStage: (rewardMultiple: TerminalRewardMultiple, expectedTargetPrice: number) => void;
 }) {
@@ -74,7 +76,9 @@ export const TerminalRewardLadder = memo(function TerminalRewardLadder({
         </div>
       ) : null}
       <p className="border-t border-[#141d2e] px-3 py-2 text-[9px] leading-4 text-[#566278]">
-        {replay ? "Revealed replay prefix · target staging disabled" : "Latest certified history"} · selecting a row changes analysis and future attached PAPER OCO only; it never changes or submits the one-shot live order. Fixed current entry and invalidation; non-overlapping resolved episodes with Wilson 95% intervals. Newest, ambiguous, and unresolved bars are excluded. Slippage is modeled; fees, gaps, queue, and venue failure are not. Descriptive only—not a target recommendation, probability, forecast, or execution gate.
+        {replay ? "Revealed replay prefix · target staging disabled" : "Latest certified history"} · {liveProtectionConfigured
+          ? "selecting a row stages the venue-native take-profit bound to the stop; submission still requires a fresh preview and explicit confirmation."
+          : "selecting a row changes analysis and future attached PAPER OCO only; it never changes or submits the one-shot live order."} Fixed current entry and invalidation; non-overlapping resolved episodes with Wilson 95% intervals. Newest, ambiguous, and unresolved bars are excluded. Slippage is modeled; fees, gaps, queue, and venue failure are not. Descriptive only—not a target recommendation, probability, forecast, or execution gate.
       </p>
     </section>
   );

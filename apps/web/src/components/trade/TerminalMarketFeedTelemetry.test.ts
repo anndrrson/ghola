@@ -19,11 +19,12 @@ describe("TerminalMarketFeedTelemetry", () => {
     container.remove();
   });
 
-  it("keeps decision-critical health visible while secondary diagnostics collapse", () => {
+  it("keeps plain-language health visible while detailed diagnostics collapse", () => {
     render({ rollingEventCount: 2, healthGrade: "C", healthScore: 71 });
 
-    expect(container.textContent).toContain("Feed C · 71");
-    expect(container.textContent).toContain("2 recent events");
+    expect(container.textContent).toContain("Market feed degraded");
+    expect(container.textContent).toContain("Updated 220 ms ago");
+    expect(container.textContent).toContain("2 health events · 60s window");
     const button = container.querySelector("button");
     const diagnostics = document.getElementById(button?.getAttribute("aria-controls") ?? "");
     expect(button?.getAttribute("aria-expanded")).toBe("false");
@@ -32,7 +33,15 @@ describe("TerminalMarketFeedTelemetry", () => {
     act(() => button?.click());
     expect(button?.getAttribute("aria-expanded")).toBe("true");
     expect(diagnostics?.className).toContain("flex");
+    expect(diagnostics?.textContent).toContain("HealthC · 71");
     expect(diagnostics?.textContent).toContain("Reconnect / fallback / stale");
+  });
+
+  it("describes a resolved event as recovered when the feed is healthy", () => {
+    render({ rollingEventCount: 1, healthGrade: "A", healthScore: 96 });
+
+    expect(container.textContent).toContain("Market feed healthy");
+    expect(container.textContent).toContain("1 recovered event · 60s window");
   });
 
   it("announces full diagnostics even while visually compact", () => {

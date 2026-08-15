@@ -46,12 +46,12 @@ export const TerminalMarketContextRail = memo(function TerminalMarketContextRail
     <section
       id="terminal-market-context"
       aria-label="Persistent market and staged plan context"
-      className="sticky top-0 z-30 border-y border-[#1a273b] bg-[#070b12]/95 shadow-[0_8px_24px_rgba(0,0,0,0.32)] backdrop-blur-md"
+      className="sticky top-0 z-30 border-y border-[#1a273b] bg-[#070b12]/95 shadow-[0_8px_24px_rgba(0,0,0,0.32)] backdrop-blur-md xl:hidden"
     >
-      <div className="flex h-11 min-w-0 items-center gap-3 overflow-x-auto overscroll-x-contain px-3 font-mono text-[9px] tabular-nums sm:px-6">
+      <div className="flex h-11 min-w-0 items-center gap-3 overflow-x-auto overscroll-x-contain px-3 text-[10px] tabular-nums sm:px-6">
         <div className="shrink-0">
-          <span className="block uppercase tracking-[0.12em] text-[#65738a]">{venue}</span>
-          <span className="block font-semibold text-[#dce6f4]">{product}</span>
+          <span className="block text-[#718097]">{venue}</span>
+          <span className="block font-mono font-semibold text-[#dce6f4]">{product}</span>
         </div>
         <RailDivider />
         <RailMetric label="BBO mid" value={quoteReady ? formatPrice(quoteMid) : "PAUSED"} tone={quoteReady ? "good" : "bad"} />
@@ -78,10 +78,15 @@ export const TerminalMarketContextRail = memo(function TerminalMarketContextRail
 });
 
 function RailMetric({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "neutral" | "good" | "bad" }) {
+  const valueClass = tone === "good"
+    ? "text-emerald-300"
+    : tone === "bad"
+      ? "text-rose-300"
+      : "text-[#c3cede]";
   return (
     <div className="shrink-0">
-      <span className="block uppercase tracking-[0.1em] text-[#65738a]">{label}</span>
-      <span className={tone === "good" ? "block text-emerald-300" : tone === "bad" ? "block text-rose-300" : "block text-[#c3cede]"}>{value}</span>
+      <span className="block text-[#65738a]">{label}</span>
+      <span className={`trade-market-number block ${valueClass}`}>{value}</span>
     </div>
   );
 }
@@ -93,7 +98,7 @@ function RailButton({ label, shortcut, disabled = false, onClick }: { label: str
       aria-keyshortcuts={shortcut}
       disabled={disabled}
       onClick={onClick}
-      className="h-7 rounded border border-[#2b3a52] bg-[#0b121d] px-2 text-[8px] font-semibold uppercase text-sky-200 hover:border-sky-300/45 disabled:cursor-not-allowed disabled:text-[#566278]"
+      className="h-7 rounded border border-[#2b3a52] bg-[#0b121d] px-2 text-[9px] font-semibold text-sky-200 hover:border-sky-300/45 disabled:cursor-not-allowed disabled:text-[#566278]"
     >
       {label} <kbd className="ml-0.5 text-[7px] opacity-65">{shortcut}</kbd>
     </button>

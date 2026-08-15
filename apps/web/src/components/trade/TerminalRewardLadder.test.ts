@@ -77,6 +77,18 @@ describe("TerminalRewardLadder", () => {
     act(() => target?.click());
     expect(onStage).toHaveBeenCalledWith(1, 102);
   });
+
+  it("describes venue-native protection only when it is configured", () => {
+    act(() => root.render(createElement(TerminalRewardLadder, {
+      ladder: ready(),
+      replay: false,
+      liveProtectionConfigured: true,
+      selectedMultiple: 2,
+      onStage: vi.fn(),
+    })));
+    expect(container.textContent).toContain("venue-native take-profit bound to the stop");
+    expect(container.textContent).toContain("explicit confirmation");
+  });
 });
 
 function ready(): RewardLadder {

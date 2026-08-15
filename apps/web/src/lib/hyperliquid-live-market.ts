@@ -138,6 +138,7 @@ export function emptyHyperliquidLiveMarketSnapshot(input: {
     funding_updated_at: null,
     premium: null,
     max_leverage: null,
+    size_decimals: null,
     candles: [],
     bids: [],
     asks: [],
@@ -293,6 +294,7 @@ export function mergeHyperliquidFallbackSnapshot(
     max_leverage: usePreferredMarket
       ? preferred.max_leverage
       : fallbackMarketAuthoritative ? fallback.max_leverage : fallback.max_leverage ?? preferred.max_leverage,
+    size_decimals: preferred.size_decimals ?? fallback.size_decimals ?? null,
     bids: usePreferredBook
       ? preferred.bids
       : fallbackBookAuthoritative ? fallback.bids : fallback.bids.length > 0 ? fallback.bids : preferred.bids,

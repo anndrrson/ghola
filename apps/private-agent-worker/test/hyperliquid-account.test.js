@@ -4,6 +4,7 @@ import {
   createHyperliquidAccountStateStream,
   hyperliquidMarginUtilizationBucket,
   hyperliquidPositionRiskBuckets,
+  hyperliquidProtectionCloids,
   readHyperliquidAccountSnapshot,
   readHyperliquidExactMarketState,
   readHyperliquidTopOfBook,
@@ -40,6 +41,71 @@ test("reconciles Hyperliquid terminal IOC fills by cloid", async () => {
   }
 });
 
+test("treats venue-declared IOC rejection statuses as terminal no-fill outcomes", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    const cloid = `0x${"b".repeat(32)}`;
+    const fetchImpl = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      const value = body.type === "orderStatus"
+        ? { status: "order", order: { order: { coin: "BTC", oid: 78, cloid }, status: "iocCancelRejected", statusTimestamp: 1 } }
+        : [];
+      return Response.json(value);
+    };
+    const result = await reconcileHyperliquidExecution({
+      credential: credential("testnet"),
+      cloid,
+      market: "BTC",
+      fetchImpl,
+    });
+    assert.equal(result.terminal, true);
+    assert.equal(result.status, "rejected");
+    assert.equal(result.final_proof.final_no_fill_proven, true);
+    assert.equal(result.final_proof.terminal_status, "iocCancelRejected");
+  } finally {
+    restore(previous);
+  }
+});
+
+test("reconciles both deterministic OCO children before resolving a protected fill", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    const cloid = `0x${"c".repeat(32)}`;
+    const children = hyperliquidProtectionCloids(cloid);
+    const fetchImpl = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      if (body.type === "userFills") {
+        return Response.json([{ coin: "BTC", oid: 79, px: "63000", sz: "0.001", side: "B", time: 1 }]);
+      }
+      if (body.oid === cloid) {
+        return Response.json({ status: "order", order: { order: { coin: "BTC", oid: 79, cloid }, status: "filled" } });
+      }
+      if (body.oid === children.take_profit_cloid || body.oid === children.stop_loss_cloid) {
+        return Response.json({
+          status: "order",
+          order: { order: { coin: "BTC", cloid: body.oid, reduceOnly: true, isTrigger: true }, status: "open" },
+        });
+      }
+      throw new Error("unexpected info request");
+    };
+    const result = await reconcileHyperliquidExecution({
+      credential: credential("testnet"),
+      cloid,
+      market: "BTC",
+      protection: { max_slippage_bps: "50" },
+      fetchImpl,
+    });
+    assert.equal(result.terminal, true);
+    assert.equal(result.protection.state, "both_open");
+    assert.equal(result.final_proof.position_protection_proven, true);
+    assert.equal(result.final_proof.protection_max_slippage_bps, 50);
+  } finally {
+    restore(previous);
+  }
+});
+
 test("live Hyperliquid adapter returns explicit venue-acceptance proof", async () => {
   const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
   delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
@@ -51,21 +117,229 @@ test("live Hyperliquid adapter returns explicit venue-acceptance proof", async (
         order: { market: "HYPE", side: "buy", quote_size: "11", limit_price: "1", order_type: "limit" },
       },
       cloid: `0x${"1".repeat(32)}`,
-      runner: async () => ({ status: "submitted", oid: 42, fills: [] }),
+      runner: async () => ({
+        status: "submitted",
+        oid: 42,
+        fills: [],
+        execution_configuration: { margin_mode: "isolated", leverage: 1, venue_accepted: true },
+        execution_market_gate: {
+          source_time_ms: 1_786_800_000_000,
+          source_age_ms: 350,
+          max_age_ms: 2_000,
+          freshness_proven: true,
+          slippage_bound_proven: true,
+        },
+        expires_after_ms: 1_786_800_015_000,
+        action_expiry_enforced: true,
+        venue_order_readback: {
+          verified: true,
+          status: "open",
+          oid: 42,
+          cloid: `0x${"1".repeat(32)}`,
+        },
+      }),
     });
     assert.equal(submitted.final_proof.broadcast_performed, true);
     assert.equal(submitted.final_proof.final_venue_execution_proven, true);
     assert.equal(submitted.final_proof.final_fill_proven, false);
+    assert.equal(submitted.final_proof.market_data_freshness_proven, true);
+    assert.equal(submitted.final_proof.action_expiry_proven, true);
+    assert.equal(submitted.final_proof.venue_order_readback_proven, true);
+    assert.equal(submitted.final_proof.venue_order_status, "open");
 
     const cancelled = await submitHyperliquidExecution({
       credential: credential("testnet"),
-      instruction: { operation_class: "cancel", cancel: { market: "HYPE", client_order_id: `0x${"1".repeat(32)}` } },
+      instruction: {
+        operation_class: "cancel",
+        expires_at: new Date(Date.now() + 90_000).toISOString(),
+        cancel: { market: "HYPE", client_order_id: `0x${"1".repeat(32)}` },
+      },
       cloid: `0x${"2".repeat(32)}`,
-      runner: async () => ({ status: "cancelled", fills: [] }),
+      runner: async () => ({
+        status: "cancelled",
+        fills: [],
+        broadcast_performed: true,
+        expires_after_ms: Date.now() + 90_000,
+        action_expiry_enforced: true,
+        venue_cancel_readback: {
+          verified: true,
+          status: "canceled",
+          oid: 42,
+          cloid: `0x${"1".repeat(32)}`,
+        },
+      }),
     });
     assert.equal(cancelled.final_proof.broadcast_performed, true);
     assert.equal(cancelled.final_proof.final_venue_execution_proven, true);
     assert.equal(cancelled.final_proof.final_fill_proven, false);
+    assert.equal(cancelled.final_proof.cancellation_readback_proven, true);
+    assert.equal(cancelled.final_proof.action_expiry_proven, true);
+  } finally {
+    restore(previous);
+  }
+});
+
+test("live Hyperliquid cancel proves already-terminal children without rebroadcast", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  const target = `0x${"7".repeat(32)}`;
+  try {
+    const result = await submitHyperliquidExecution({
+      credential: credential("testnet"),
+      instruction: {
+        operation_class: "cancel",
+        expires_at: new Date(Date.now() + 90_000).toISOString(),
+        cancel: { market: "HYPE", client_order_id: target },
+      },
+      cloid: `0x${"8".repeat(32)}`,
+      runner: async () => ({
+        status: "cancelled",
+        broadcast_performed: false,
+        expires_after_ms: Date.now() + 90_000,
+        action_expiry_enforced: true,
+        venue_cancel_readback: { verified: true, status: "canceled", oid: 77, cloid: target },
+      }),
+    });
+    assert.equal(result.final_proof.broadcast_performed, false);
+    assert.equal(result.final_proof.final_no_broadcast_proven, true);
+    assert.equal(result.final_proof.final_venue_execution_proven, true);
+
+    await assert.rejects(() => submitHyperliquidExecution({
+      credential: credential("testnet"),
+      instruction: {
+        operation_class: "cancel",
+        expires_at: new Date(Date.now() + 90_000).toISOString(),
+        cancel: { market: "HYPE", client_order_id: target },
+      },
+      cloid: `0x${"9".repeat(32)}`,
+      runner: async () => ({
+        status: "cancelled",
+        broadcast_performed: true,
+        expires_after_ms: Date.now() + 90_000,
+        action_expiry_enforced: true,
+        venue_cancel_readback: {
+          verified: true,
+          status: "canceled",
+          oid: 77,
+          cloid: `0x${"6".repeat(32)}`,
+        },
+      }),
+    }), /cancellation readback proof is missing/);
+  } finally {
+    restore(previous);
+  }
+});
+
+test("live Hyperliquid adapter fails closed without worker-side freshness and expiry proof", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    await assert.rejects(() => submitHyperliquidExecution({
+      credential: credential("testnet"),
+      instruction: {
+        operation_class: "limit_order",
+        order: { market: "HYPE", side: "buy", quote_size: "11", limit_price: "1", order_type: "limit" },
+      },
+      cloid: `0x${"3".repeat(32)}`,
+      runner: async () => ({
+        status: "submitted",
+        oid: 43,
+        fills: [],
+        execution_configuration: { margin_mode: "isolated", leverage: 1, venue_accepted: true },
+      }),
+    }), /execution freshness proof is missing/);
+    await assert.rejects(() => submitHyperliquidExecution({
+      credential: credential("testnet"),
+      instruction: {
+        operation_class: "limit_order",
+        order: { market: "HYPE", side: "buy", quote_size: "11", limit_price: "1", order_type: "limit" },
+      },
+      cloid: `0x${"3".repeat(32)}`,
+      runner: async () => ({
+        status: "submitted",
+        oid: 43,
+        fills: [],
+        execution_configuration: { margin_mode: "isolated", leverage: 1, venue_accepted: true },
+        execution_market_gate: {
+          source_time_ms: 1_786_800_000_000,
+          source_age_ms: 350,
+          max_age_ms: 2_000,
+          freshness_proven: true,
+          slippage_bound_proven: true,
+        },
+        expires_after_ms: 1_786_800_015_000,
+        action_expiry_enforced: true,
+      }),
+    }), /venue order readback proof is missing/);
+  } finally {
+    restore(previous);
+  }
+});
+
+test("live Hyperliquid adapter requires venue-accepted OCO proof when protection is bound", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  const instruction = {
+    operation_class: "limit_order",
+    order: { market: "HYPE", side: "buy", base_size: "0.1", limit_price: "100", order_type: "limit" },
+    position_protection: {
+      mode: "normal_tpsl",
+      trigger_source: "mark",
+      take_profit_trigger_price: "110",
+      stop_loss_trigger_price: "95",
+      max_slippage_bps: "50",
+    },
+  };
+  const baseRunnerResult = {
+    status: "filled",
+    oid: 44,
+    fills: [{ coin: "HYPE", px: "100", sz: "0.1", fee: "0", time: 1 }],
+    execution_configuration: { margin_mode: "isolated", leverage: 1, venue_accepted: true },
+    execution_market_gate: {
+      source_time_ms: 1_786_800_000_000,
+      source_age_ms: 350,
+      max_age_ms: 2_000,
+      freshness_proven: true,
+      slippage_bound_proven: true,
+    },
+    expires_after_ms: 1_786_800_015_000,
+    action_expiry_enforced: true,
+    venue_order_readback: {
+      verified: true,
+      status: "filled",
+      oid: 44,
+      cloid: `0x${"4".repeat(32)}`,
+    },
+  };
+  try {
+    await assert.rejects(() => submitHyperliquidExecution({
+      credential: credential("testnet"),
+      instruction,
+      cloid: `0x${"4".repeat(32)}`,
+      runner: async () => baseRunnerResult,
+    }), /position protection proof is missing/);
+    const submitted = await submitHyperliquidExecution({
+      credential: credential("testnet"),
+      instruction,
+      cloid: `0x${"4".repeat(32)}`,
+      runner: async () => ({
+        ...baseRunnerResult,
+        position_protection: {
+          venue_accepted: true,
+          grouping: "normalTpsl",
+          trigger_source: "mark",
+          trigger_order_type: "bounded_limit",
+          take_profit_cloid: `0x${"5".repeat(32)}`,
+          stop_loss_cloid: `0x${"6".repeat(32)}`,
+          take_profit_oid: 51,
+          stop_loss_oid: 52,
+          max_slippage_bps: 50,
+        },
+      }),
+    });
+    assert.equal(submitted.final_proof.position_protection_proven, true);
+    assert.equal(submitted.final_proof.protection_grouping, "normalTpsl");
+    assert.equal(submitted.final_proof.protection_max_slippage_bps, 50);
   } finally {
     restore(previous);
   }

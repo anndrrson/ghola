@@ -74,6 +74,22 @@ function privateMutationPost(
         },
       };
     },
+    liveAuthorizationImpl: async ({ owner_commitment, order_plan }) => ({
+      ok: true,
+      capability: order_plan.execution_policy.reduce_only ? "reduce_only" : "limit_order",
+      account_commitment: tradeExecutionIdentityCommitments("web-user-1", order_plan.venue_id).upstreamAccountId,
+      vault_commitment: "test-vault",
+      reservation: null,
+    }),
+    liveDispatchImpl: async ({ idempotency_key, account_commitment, vault_commitment, plan_digest }) => {
+      const headers = new Headers();
+      headers.set("idempotency-key", idempotency_key);
+      return fetchImpl("https://worker.ghola.test/hyperliquid/orders", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ account_commitment, vault_commitment, plan_digest }),
+      });
+    },
   });
 }
 
@@ -370,7 +386,7 @@ describe("v1 execution proxy routing", () => {
     expect(forwardedHeaders(fetchSpy).get("accept")).toBe("application/json");
   });
 
-  it("derives execute identity headers from the verified session and bound plan", async () => {
+  it("dispatches only the verified execution identity to the live worker adapter", async () => {
     process.env.GHOLA_ORDER_PLAN_BINDING_SECRET = "proxy-binding-test-secret";
     const sessionToken = sessionJwt("web-user-1");
     const plan = orderPlan();
@@ -413,20 +429,24 @@ describe("v1 execution proxy routing", () => {
     expect(res.headers.get("x-ghola-execution-dispatch")).toBe("dispatched");
     expect(res.headers.get("x-ghola-execution-plan-digest")).toBe(binding.plan_digest);
     expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
-      "https://ghola-gateway.onrender.com/v1/trading/app/execute",
+      "https://worker.ghola.test/hyperliquid/orders",
     );
     const headers = new Headers((fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined)?.headers);
-    expect(headers.get("cookie")).toBe("ghola_session=exec-session-token");
+    expect(headers.get("cookie")).toBeNull();
     expect(headers.get("authorization")).toBeNull();
     expect(headers.get("idempotency-key")).toBe(body.idempotencyKey);
     expect(headers.get("x-idempotency-key")).toBeNull();
     expect(headers.get("x-ghola-idempotency-key")).toBeNull();
-    expect(headers.get("x-ghola-account-id")).toBe(body.hyperliquidAccountCommitment);
+    expect(headers.get("x-ghola-account-id")).toBeNull();
     expect(headers.get("x-ghola-api-key")).toBeNull();
-    expect(headers.get("x-ghola-venue")).toBe("hyperliquid");
+    expect(headers.get("x-ghola-venue")).toBeNull();
     expect(headers.get("x-request-id")).toBeNull();
     const init = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
-    expect(new TextDecoder().decode(init?.body as ArrayBuffer)).toBe(JSON.stringify(body));
+    expect(JSON.parse(String(init?.body))).toEqual({
+      account_commitment: body.hyperliquidAccountCommitment,
+      vault_commitment: "test-vault",
+      plan_digest: binding.plan_digest,
+    });
   });
 
   it("fails closed when the server-issued app session is unavailable", async () => {
@@ -594,6 +614,55 @@ describe("v1 execution proxy routing", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("keeps a signed reduce-only close available through a closed exposure gate", async () => {
+    process.env.GHOLA_ORDER_PLAN_BINDING_SECRET = "proxy-binding-test-secret";
+    const fetchSpy = brandPrivateAgentMockTransport(vi.fn<typeof fetch>());
+    const authorizationSpy = vi.fn<NonNullable<V1ProxyDependencies["liveAuthorizationImpl"]>>(async ({ order_plan }) => ({
+      ok: true,
+      capability: "reduce_only",
+      account_commitment: tradeExecutionIdentityCommitments("web-user-1", order_plan.venue_id).upstreamAccountId,
+      vault_commitment: "test-vault",
+      reservation: null,
+    }));
+    const dispatchSpy = vi.fn<NonNullable<V1ProxyDependencies["liveDispatchImpl"]>>(async () =>
+      Response.json({ appLiveTradingExecutionRun: { status: "submitted" } }, { status: 202 }));
+    const proxyPost = createV1ProxyHandler({
+      fetchImpl: fetchSpy,
+      fetchSessionUserImpl: sessionLookup("web-user-1"),
+      byoExecutionGateImpl: (plan) => ({
+        allowed: false,
+        reason_codes: ["live_trading_killed"],
+        venue: {
+          id: plan.venue_id,
+          label: plan.venue_id,
+          submit_source: "user_scoped_credential",
+          status: "red",
+          reason_codes: ["live_trading_killed"],
+        },
+      }),
+      liveAuthorizationImpl: authorizationSpy,
+      liveDispatchImpl: dispatchSpy,
+    });
+    const sessionToken = sessionJwt("web-user-1");
+    const plan = orderPlan(true);
+    const response = await proxyPost(
+      request("https://ghola.test/v1/trading/app/execute", {
+        method: "POST",
+        headers: {
+          origin: "https://ghola.test",
+          "content-type": "application/json",
+          cookie: `ghola_exec_session=exec-session-token; ghola_thumper_session=${sessionToken}`,
+        },
+        body: JSON.stringify(executionBody(plan, orderPlanBinding(plan, "web-user-1"))),
+      }),
+      { params: Promise.resolve({ path: ["trading", "app", "execute"] }) },
+    );
+
+    expect(response.status).toBe(202);
+    expect(authorizationSpy).toHaveBeenCalledOnce();
+    expect(dispatchSpy).toHaveBeenCalledOnce();
+  });
+
   it("rejects a changed limit before forwarding app execution", async () => {
     process.env.GHOLA_ORDER_PLAN_BINDING_SECRET = "proxy-binding-test-secret";
     const fetchSpy = vi.fn<typeof fetch>();
@@ -717,7 +786,7 @@ function sessionJwt(userId: string) {
   ].join(".");
 }
 
-function orderPlan(): TradeOrderPlan {
+function orderPlan(reduceOnly = false): TradeOrderPlan {
   const nowMs = Date.now();
   const plan = buildTradeOrderPlan({
     venueId: "hyperliquid",
@@ -741,6 +810,7 @@ function orderPlan(): TradeOrderPlan {
     executionReferencePrice: 62_490,
     frameVersion: 1,
     riskEnvelope: testRiskEnvelope(nowMs),
+    reduceOnly,
     nowMs,
   });
   if (!plan) throw new Error("test_order_plan_invalid");

@@ -120,6 +120,7 @@ orders.
 - `PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE=true`
 - `PHALA_CVM_IMAGE_DIGEST`
 - `PRIVATE_AGENT_FUNDING_SIGNING_KEY` as base64 PKCS8 Ed25519 private key
+- `GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64` containing its pinned SPKI public key
 - `PRIVATE_AGENT_GLOBAL_KILL_SWITCH=false`
 - `PRIVATE_AGENT_VENUE_DRY_RUN=false`
 - `PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT=false` until production venue vaults are funded
@@ -136,9 +137,11 @@ orders.
 - `PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD=50`
 - `PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD=250`
 - `PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS=50`
-- `PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD=1000` and
-  `PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD=5000` for
-  full-ticket launch mode
+- For the public BYO launch only: `PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true`,
+  `PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=full_ticket`,
+  `PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED=true`,
+  `PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD=100`, and
+  `PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD=500`
 - `PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON` or
   `PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_PATH` for managed testnet
   allocations
@@ -164,7 +167,7 @@ orders.
 - `PRIVATE_AGENT_JUPITER_LIVE_MAX_NOTIONAL_USD=1000`
 - `PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON` or
   `PRIVATE_AGENT_JUPITER_POOLED_VAULT_PATH` for Ghola Vault Mode
-- `PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS=12000`
+- `PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS=30000`
 - `PRIVATE_AGENT_CROSS_VENUE_PAIR=hyperliquid:backpack`
 - `PRIVATE_AGENT_CROSS_VENUE_MAX_NOTIONAL_USD=10.5` (must be within $10-$11)
 - `PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true` and
@@ -227,11 +230,10 @@ The worker is testnet-only unless `PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true`
 is explicitly set. Managed allocations use worker-local testnet API wallets:
 
 Mainnet submit remains blocked unless `PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE` is
-explicitly `tiny_fill` or `full_ticket`. The bounded canary below uses
-`tiny_fill`: quote-sized IOC entry or exact base-sized reduce-only IOC exit,
-with worker-side notional, daily-cap, and slippage checks. The trader terminal
-uses `full_ticket` only after its signed exact-plan, account, market, and global
-live gates pass.
+explicitly `tiny_fill` or `full_ticket`. Public trading uses only `full_ticket`
+after its signed exact-plan, account, market, release, and global gates pass.
+`tiny_fill` remains an order-level marker for the bounded $10.50 proof; the
+worker itself must be in `full_ticket` mode.
 
 `POST /hyperliquid/verify` is the no-submit readiness path. It requires
 `x-ghola-no-submit-verify: true`, opens the sealed execution vault and sealed
@@ -241,19 +243,44 @@ and returns a commitment-only certificate with `transaction_broadcast: false`.
 It does not prove final venue acceptance or a fill; that still requires an
 explicit canary submit.
 
-The funded mainnet round-trip canary requires an initially flat target market,
-an approved trade-only API wallet, shared Postgres claims, and all exact guards
-below. It opens at most $11, observes the exact position, closes that size
-reduce-only, replays both claims without another submit, reconciles the stored
-entry receipt, and requires a final flat account with zero target-market orders.
+The public funded proof requires an initially flat HYPE position, an approved
+trade-only API wallet, shared Postgres claims, and all exact guards. It opens
+exactly $10.50 with atomic venue-native TP/SL, proves isolated 1×, observes the
+exact position, closes that size reduce-only, terminally cancels both protection
+children, and replays both claims without another submit. It then independently
+re-queries every order, fill, account state, and open order, recording public
+oids, cloids, transaction hashes, fees, protection cleanup, and final-flat proof.
+
+Run the zero-broadcast readiness certificate first. It independently checks the
+approved API wallet and expiry, funding, flat state, fresh executable book,
+venue precision/minimums, exact order packet, and Postgres durability. The
+redacted result is written mode `0600` to
+`.dev/hyperliquid-mainnet-readiness.json`.
 
 ```bash
-GHOLA_HYPERLIQUID_MAINNET_ROUNDTRIP_CONFIRM=I_UNDERSTAND_THIS_OPENS_AND_CLOSES_A_REAL_MAINNET_POSITION \
-PRIVATE_AGENT_MAINNET_CANARY_POSTGRES_URL=postgresql://... \
+PRIVATE_AGENT_PYTHON=../../.dev/hyperliquid-venv/bin/python \
+PRIVATE_AGENT_VENUE_DRY_RUN=false \
 PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true \
-PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=tiny_fill \
-PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD=11 \
-PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD=25 \
+PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=full_ticket \
+PRIVATE_AGENT_MAINNET_CANARY_POSTGRES_URL=postgresql://127.0.0.1:55432/ghola_mainnet_canary \
+GHOLA_HYPERLIQUID_MAINNET_ACCOUNT_ADDRESS=0x... \
+GHOLA_HYPERLIQUID_MAINNET_API_WALLET_PRIVATE_KEY=0x... \
+npm run certify:hyperliquid:mainnet:readiness
+```
+
+After readiness succeeds, the hardened local canary runs the same sealed,
+Postgres-claimed worker core used by the guarded endpoint. It requires every
+exact live gate and a second explicit funded-action confirmation.
+
+```bash
+GHOLA_MAINNET_FUNDED_CANARY_CONFIRMATION=I_UNDERSTAND_THIS_OPENS_AND_CLOSES_A_REAL_MAINNET_POSITION \
+PRIVATE_AGENT_MAINNET_CANARY_POSTGRES_URL=postgresql://127.0.0.1:55432/ghola_mainnet_canary \
+PRIVATE_AGENT_VENUE_DRY_RUN=false \
+PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED=true \
+PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true \
+PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=full_ticket \
+PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD=100 \
+PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD=500 \
 PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS=100 \
 GHOLA_HYPERLIQUID_MAINNET_ACCOUNT_ADDRESS=0x... \
 GHOLA_HYPERLIQUID_MAINNET_API_WALLET_PRIVATE_KEY=0x... \
@@ -261,8 +288,18 @@ npm run canary:hyperliquid:mainnet:roundtrip
 ```
 
 The result is written mode `0600` to
-`.dev/hyperliquid-mainnet-roundtrip.json`. A failed run attempts the same exact
-reduce-only flatten path before exit.
+`.dev/hyperliquid-mainnet-hardened-roundtrip.json`. A failed run uses bounded
+fresh-state reduce-only recovery. An atomic mode-`0600` active-canary manifest
+also forces crash-left recovery before any later canary can start. Re-query and
+seal the local audit dossier with:
+
+```bash
+GHOLA_HYPERLIQUID_MAINNET_ACCOUNT_ADDRESS=0x... \
+npm run certify:hyperliquid:mainnet:funded-proof
+```
+
+The dossier is `.dev/hyperliquid-mainnet-funded-proof.json`. It explicitly says
+that local proof is not proof of deployment to `ghola.xyz`.
 
 ```json
 [

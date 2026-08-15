@@ -1,121 +1,95 @@
-# Worker Deploy Runbook (free, dev-attestation)
+# Attested Worker Deploy Runbook
 
-Stand up the private-agent worker so the agent can run and users can connect accounts.
-**Cost: $0** (Fly.io free volume + machine). ~15 min. Nothing here funds a trading account.
+Public live trading requires a Phala-attested worker. Unattested development workers are never launch
+eligible.
 
-The worker is a Docker image (`apps/private-agent-worker/Dockerfile`): Node 20 + Python HL SDK,
-listens on **8787**, persists its X25519 recipient key to **`/data`** (`server.js`), and refuses
-unauthenticated execution unless `PRIVATE_AGENT_EXECUTION_TOKEN` is set.
+## Build identity
 
-> Persistent volume matters: the recipient key lives in `/data`. On an ephemeral host it regenerates
-> every restart, which invalidates already-connected users. Fly free volumes solve this. (For a one-off
-> demo recording, ephemeral is fine.)
+Build one immutable image from the same commit as the web release. Record:
 
-## 0. Two secrets (run locally, save them)
-```sh
-# shared worker<->web bearer token
-openssl rand -hex 32      # -> EXEC_TOKEN
-# web request-proof HMAC secret (no "dev"/"test" substrings)
-openssl rand -hex 32      # -> PROOF_SECRET
+- `PRIVATE_AGENT_BUILD_GIT_SHA`
+- `PRIVATE_AGENT_IMAGE_DIGEST` and `PHALA_CVM_IMAGE_DIGEST`
+- `GHOLA_WEB_GIT_SHA` and `GHOLA_PRIVATE_AGENT_WORKER_GIT_SHA` on the web
+- `GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST` on the web
+
+The two SHAs must match. The digest must match the deployed image and recipient metadata.
+
+## Worker contract
+
+Generate the env file with `scripts/build-phala-worker-env.mjs`. Live mode fails generation unless
+these values are exact:
+
+```text
+PRIVATE_AGENT_STATE_STORE=postgres
+PRIVATE_AGENT_STATE_POSTGRES_URL=<durable database>
+PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE=true
+PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY=true
+PRIVATE_AGENT_VENUE_DRY_RUN=false
+PRIVATE_AGENT_GLOBAL_KILL_SWITCH=false
+PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true
+PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=full_ticket
+PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED=true
+PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD=100
+PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD=500
+PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS=100
+PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD=100
+PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD=500
+PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES=limit_order
+PRIVATE_AGENT_BUILD_GIT_SHA=<release SHA>
+PRIVATE_AGENT_IMAGE_DIGEST=sha256:<image digest>
+GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64=<funding signer SPKI public key>
 ```
 
-## 1. Deploy the worker — Render (recommended; auto-binds Render's $PORT)
-1. Render dashboard → **New → Web Service** → connect the `ghola` repo.
-2. **Root Directory:** `apps/private-agent-worker` (it has a Dockerfile — Render auto-detects it).
-3. **Instance Type:** Free.
-4. **Environment variables:**
-   ```
-   PRIVATE_AGENT_EXECUTION_TOKEN = <EXEC_TOKEN>
-   PRIVATE_AGENT_ALLOW_UNATTESTED_DEV = true
-   PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET = true
-   PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = full_ticket
-   PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD = 1000
-   PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD = 5000
-   PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS = 100
-   # leave PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT off until the no-submit canary passes
-   ```
-5. Create. When live, open `https://<service>.onrender.com/.well-known/private-agent-recipient` →
-   a JSON blob with `x25519_pub_hex` means it's working.
+The env builder verifies that the pinned public key matches `PRIVATE_AGENT_FUNDING_SIGNING_KEY`.
+Also configure strong execution/capability secrets and rate limits. Never set legacy
+`GHOLA_HYPERLIQUID_LIVE_MODE`.
 
-> Free-tier caveat: it sleeps after ~15 min idle and **regenerates its identity key on wake** — fine
-> for first deploy + demo. To make it permanent (so connected users don't break), pin the identity by
-> generating an X25519 keypair once and setting `PRIVATE_AGENT_RECIPIENT_ID`,
-> `PRIVATE_AGENT_X25519_PUB_HEX`, `PRIVATE_AGENT_X25519_PRIVATE_KEY_PKCS8_PEM`
-> (`loadRecipient`, `server.js:189`). A small paid disk mounted at `/data` also works.
+## Web contract
 
-## 1-alt. Deploy the worker (Fly.io)
-```sh
-# one-time: brew install flyctl && fly auth signup   (free)
-cd apps/private-agent-worker
-fly launch --no-deploy --copy-config --name ghola-agent-worker   # detects the Dockerfile; pick a region
-fly volumes create data --size 1 --region <same-region>          # free 1GB volume for /data
-```
-In the generated `fly.toml` set the internal port and mount:
-```toml
-[http_service]
-  internal_port = 8787
-  force_https = true
-
-[[mounts]]
-  source = "data"
-  destination = "/data"
-```
-Set env (secrets):
-```sh
-fly secrets set \
-  PRIVATE_AGENT_EXECUTION_TOKEN=<EXEC_TOKEN> \
-  PRIVATE_AGENT_ALLOW_UNATTESTED_DEV=true \
-  PRIVATE_AGENT_DATA_DIR=/data \
-  PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true \
-  PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=full_ticket \
-  PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD=1000 \
-  PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD=5000 \
-  PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS=100
-# Leave PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT OFF until the no-submit canary passes.
-fly deploy
-```
-Verify the worker is serving its key:
-```sh
-curl https://ghola-agent-worker.fly.dev/.well-known/private-agent-recipient
-# -> { "recipient_id": "...", "x25519_pub_hex": "..." }
-```
-(Render works too but its free tier has no persistent disk — recipient regenerates on restart.)
-
-## 2. Point the web at it (Vercel env)
-```
-GHOLA_PRIVATE_AGENT_EXECUTION_URL = https://ghola-agent-worker.fly.dev
-GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = <EXEC_TOKEN>        # same token as the worker
-GHOLA_PRIVATE_AGENT_SPEND_ARMED = true
-# do NOT set GHOLA_PRIVATE_AGENT_JIT_PROVISIONING (no Phala)
-GHOLA_SEEKER_AUTOPILOT_REQUIRED = false
-
-# BYO Hyperliquid live gate (exact values required by live-trading/status):
-GHOLA_LIVE_TRADING_PUBLIC_ENABLED = true
-GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET = <PROOF_SECRET>
-GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD = 1000
-GHOLA_LIVE_TRADING_DAILY_CAP_USD = 5000
-GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS = 100
-GHOLA_V6_HYPERLIQUID_PILOT_ENABLED = true
-PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET = true
-PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = full_ticket
-PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD = 1000
-PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD = 5000
-PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS = 100
-```
-Redeploy the web.
-
-## 3. Confirm green (no funds yet)
-```sh
-# from a signed-in browser session (or with the request-proof), check:
-GET /api/private-agent/status                         -> a ready provider with sealed_recipient
-GET /v1/private-account/live-trading/status           -> hyperliquid not red
-GET /v1/private-account/autopilot/readiness?product_id=BTC-USD  -> can_arm: true
+```text
+GHOLA_LIVE_TRADING_PUBLIC_ENABLED=true
+GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES=limit_order
+GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD=100
+GHOLA_LIVE_TRADING_DAILY_CAP_USD=500
+GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS=100
+GHOLA_V6_HYPERLIQUID_PILOT_ENABLED=true
+GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET=<strong secret>
+GHOLA_LIVE_TRADING_CONTROL_TOKEN=<strong operator secret>
+GHOLA_PRIVATE_AGENT_EXECUTION_URL=https://<worker>
+GHOLA_PRIVATE_AGENT_SPEND_ARMED=true
+GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED=false
+GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN=false
+GHOLA_HYPERLIQUID_ACCOUNT_PROOF_ENABLED=true
+NEXT_PUBLIC_GHOLA_HYPERLIQUID_ACCOUNT_PROOF_ENABLED=true
+PRIVATE_AGENT_STATE_STORE=postgres
+PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE=true
+PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY=true
+PRIVATE_AGENT_GLOBAL_KILL_SWITCH=false
+PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED=true
+PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD=100
+PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD=500
+GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64=<same pinned public key>
 ```
 
-When `/api/private-agent/status` returns a recipient, the worker is live — that unblocks the
-Connect-Hyperliquid UI build (it seals user keys to that recipient).
+Mirror every worker contract value and release identity field on the web. Keep public launch state
+disabled until the operator starts the canary; the proof UI remains required for each new account's
+$10.50 graduation.
 
-## Next (after this)
-1. I build the Connect-Hyperliquid UI against the live recipient.
-2. Verify $0: testnet fill (private) + mainnet **no-submit** canary (`LIVE_SUBMIT` off).
-3. One tiny real fill (a few $), then flip `PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT=true` and promote.
+## Checks
+
+1. `GET <worker>/ready`: overall and `live_trading.ready` are true; SHA, digest, fingerprint, caps,
+   and `limit_order` match the web.
+2. `GET <worker>/.well-known/private-agent-recipient`: `attested_ready=true`; image digest and
+   report-data binding match.
+3. `GET /api/health/ready`: `checks.byo_hyperliquid=ready` only after public activation and proofs.
+4. `GET /api/internal/live-trading/launch`: inspect exact durable state and proof counts.
+5. Restart the worker and web; confirm state, idempotency receipts, and kill state persist.
+
+## Canary and rollback
+
+Set durable state to `canary`. Each proof spends real user funds and needs separate authorization.
+Three distinct eligible accounts must pass before public activation; repeated proofs from one account
+do not count toward the launch threshold.
+
+For any mismatch or incident, set durable state to `killed`, set the worker global kill switch, and
+roll back the exact image. Risk-reducing orders remain available through their separate server gate.

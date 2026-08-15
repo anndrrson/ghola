@@ -20,6 +20,7 @@ import {
   hyperliquidCredentialFromVault,
   loadManagedHyperliquidCredential,
   readHyperliquidAccountSnapshot,
+  reconcileHyperliquidExecution,
   submitHyperliquidExecution,
   verifyHyperliquidNoSubmit,
 } from "../venues/hyperliquid.js";
@@ -569,6 +570,7 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
         result_seed: adapterResult.result_seed,
         fills: adapterResult.fills,
         final_proof: adapterResult.final_proof,
+        execution_configuration: adapterResult.execution_configuration,
         visibility_summary: {
           main_wallet_exposed: false,
           ghola_operator_sees: "commitment_and_ciphertext_only",
@@ -598,10 +600,33 @@ export async function executeHyperliquidBoundInstruction({
   instruction,
   recipient,
   state,
+  executeOrder = executeHyperliquidOrder,
+  reconcileClaim = reconcileHyperliquidClaim,
 }) {
   const boundBody = { ...body };
   boundBody[AUTOPILOT_INTERNAL_INSTRUCTION] = instruction;
-  return executeHyperliquidOrder({ body: boundBody, recipient, state });
+  try {
+    return await executeOrder({ body: boundBody, recipient, state });
+  } catch (error) {
+    try {
+      const reconciled = await reconcileClaim({ body: boundBody, recipient, state });
+      if (terminalExecutionProof(reconciled?.final_proof)) return reconciled;
+    } catch {
+      // Preserve the original ambiguous-submit error; the durable claim still blocks rebroadcast.
+    }
+    throw error;
+  }
+}
+
+export async function verifyHyperliquidBoundInstruction({
+  body,
+  instruction,
+  recipient,
+  state,
+}) {
+  const boundBody = { ...body };
+  boundBody[AUTOPILOT_INTERNAL_INSTRUCTION] = instruction;
+  return verifyHyperliquidOrderNoSubmit({ body: boundBody, recipient, state });
 }
 
 export async function readHyperliquidSnapshot({ body, recipient, state }) {
@@ -1386,6 +1411,95 @@ export async function reconcileCoinbaseClaim({ body, recipient, state }) {
   return state.resolveExecutionClaim(workOrderCommitment, completed);
 }
 
+export async function reconcileHyperliquidClaim({
+  body,
+  recipient,
+  state,
+  reconcileExecution = reconcileHyperliquidExecution,
+}) {
+  const workOrderCommitment = body.work_order_commitment;
+  const cached = (await state.getIdempotency(workOrderCommitment))?.receipt || null;
+  if (cached) return cached;
+  const evidence = await state.getExecutionClaimEvidence(workOrderCommitment);
+  if (!evidence?.context || evidence.context.venue_id !== "hyperliquid") {
+    const error = new PrivateExecutionError("hyperliquid execution claim was not found", 404);
+    error.code = "HYPERLIQUID_EXECUTION_CLAIM_NOT_FOUND";
+    throw error;
+  }
+  if (terminalExecutionProof(evidence.receipt?.final_proof)) {
+    if (typeof state.resolveExecutionClaim !== "function" || !evidence.attempt) {
+      throw new PrivateExecutionError("durable execution reconciliation is unavailable", 503);
+    }
+    return state.resolveExecutionClaim(workOrderCommitment, {
+      attempt: evidence.attempt,
+      receipt: evidence.receipt,
+    });
+  }
+
+  const { executionMode, credential } = await hyperliquidCredentialForBody({ body, recipient, state });
+  const cloid = await state.deriveHyperliquidCloid(workOrderCommitment);
+  const instruction = body[AUTOPILOT_INTERNAL_INSTRUCTION] || body.encrypted_execution_instruction_bundle
+    ? await instructionForBody({ body, recipient, venue_id: "hyperliquid", session: null })
+    : null;
+  const market = body.market || body.coin || instruction?.order?.market ||
+    evidence.attempt?.result_seed?.market || null;
+  const venueResult = await reconcileExecution({
+    credential,
+    cloid,
+    market,
+    protection: instruction?.position_protection || null,
+  });
+  const adapterResult = {
+    status: venueResult.status,
+    provider_ref_seed: {
+      venue: "hyperliquid",
+      cloid,
+      venue_order_reference: venueResult.venue_order_reference || null,
+      take_profit_cloid: venueResult.protection?.take_profit_cloid || null,
+      stop_loss_cloid: venueResult.protection?.stop_loss_cloid || null,
+    },
+    result_seed: {
+      kind: "hyperliquid_reconciliation",
+      status: venueResult.status,
+      market,
+      terminal: venueResult.terminal === true,
+    },
+    fills: Array.isArray(venueResult.fills) ? venueResult.fills : [],
+    final_proof: venueResult.final_proof || null,
+  };
+  const completed = bindExecutionClaimCompletion({
+    attempt: executionAttempt({
+      venue_id: "hyperliquid",
+      platform_class: "hyperliquid_style_market",
+      execution_mode: executionMode,
+      adapterResult,
+    }),
+    receipt: executionReceipt({
+      venue_id: "hyperliquid",
+      platform_class: "hyperliquid_style_market",
+      execution_mode: executionMode,
+      instruction: null,
+      body,
+      status: adapterResult.status,
+      provider_ref_seed: adapterResult.provider_ref_seed,
+      result_seed: adapterResult.result_seed,
+      fills: adapterResult.fills,
+      final_proof: adapterResult.final_proof,
+      visibility_summary: evidence.receipt?.visibility_summary || {
+        main_wallet_exposed: false,
+        ghola_operator_sees: "commitment_and_ciphertext_only",
+        hyperliquid_sees: "execution_account_and_order_activity",
+        public_chain_sees: "venue_order_status_reconciled_by_cloid",
+      },
+    }),
+  }, evidence.context);
+  if (venueResult.terminal !== true) return completed.receipt;
+  if (typeof state.resolveExecutionClaim !== "function") {
+    throw new PrivateExecutionError("durable execution reconciliation is unavailable", 503);
+  }
+  return state.resolveExecutionClaim(workOrderCommitment, completed);
+}
+
 export async function verifyJupiterSwapNoSubmit({ body, recipient, state }) {
   const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
   const credential = executionMode === "ghola_pooled"
@@ -1822,6 +1936,14 @@ function executionClaimRejection(rejection) {
   return error;
 }
 
+function terminalExecutionProof(proof) {
+  return proof?.final_venue_execution_proven === true && (
+    proof?.final_fill_proven === true ||
+    proof?.final_no_fill_proven === true ||
+    proof?.final_no_broadcast_proven === true
+  );
+}
+
 function executionReceipt(input) {
   const providerRefCommitment = commitment(`${input.venue_id}_provider_ref`, input.provider_ref_seed);
   const fillCommitments = Array.isArray(input.fills)
@@ -1862,6 +1984,7 @@ function executionReceipt(input) {
     fill_commitments: fillCommitments,
     fill_summary: fillSummary,
     final_proof: input.final_proof || null,
+    execution_configuration: input.execution_configuration || null,
     visibility_summary: input.visibility_summary,
     updated_at: new Date().toISOString(),
   };

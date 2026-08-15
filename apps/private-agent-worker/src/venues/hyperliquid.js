@@ -229,6 +229,9 @@ export async function submitHyperliquidExecution({
 }) {
   assertHyperliquidPilotNetwork(credential, instruction);
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
+    const executionConfiguration = instruction.operation_class === "limit_order"
+      ? { margin_mode: "isolated", leverage: 1, venue_accepted: false }
+      : null;
     return {
       status: instruction.operation_class === "cancel" ? "cancelled" : "submitted",
       provider_ref_seed: { venue: "hyperliquid", cloid, dry_run: true },
@@ -237,16 +240,52 @@ export async function submitHyperliquidExecution({
         status: instruction.operation_class === "cancel" ? "cancelled" : "submitted",
         network: credential.network,
         broadcastPerformed: false,
+        executionConfiguration,
       }),
+      execution_configuration: executionConfiguration,
     };
   }
   const result = await runner({
     credential,
     instruction,
     cloid,
-    timeout_ms: Number.parseInt(process.env.PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS || "12000", 10),
+    timeout_ms: Number.parseInt(process.env.PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS || "30000", 10),
   });
   const status = result.status || (instruction.operation_class === "cancel" ? "cancelled" : "submitted");
+  const executionConfiguration = normalizeExecutionConfiguration(result.execution_configuration);
+  const executionMarketGate = normalizeExecutionMarketGate({
+    marketGate: result.execution_market_gate,
+    expiresAfterMs: result.expires_after_ms,
+    actionExpiryEnforced: result.action_expiry_enforced,
+  });
+  const actionExpiryProof = normalizeActionExpiryProof({
+    expiresAfterMs: result.expires_after_ms,
+    actionExpiryEnforced: result.action_expiry_enforced,
+  });
+  const positionProtection = normalizePositionProtectionProof(result.position_protection);
+  const venueOrderReadback = normalizeVenueOrderReadback(result.venue_order_readback, cloid);
+  const cancelOrderReadback = normalizeVenueCancelReadback(
+    result.venue_cancel_readback,
+    instruction.cancel?.client_order_id,
+  );
+  if (instruction.operation_class === "limit_order" && !executionConfiguration) {
+    throw new HyperliquidExecutionError("hyperliquid isolated 1x configuration proof is missing", 502);
+  }
+  if (instruction.operation_class === "limit_order" && !executionMarketGate) {
+    throw new HyperliquidExecutionError("hyperliquid execution freshness proof is missing", 502);
+  }
+  if (instruction.operation_class === "limit_order" && !venueOrderReadback) {
+    throw new HyperliquidExecutionError("hyperliquid venue order readback proof is missing", 502);
+  }
+  if (instruction.position_protection && !positionProtection) {
+    throw new HyperliquidExecutionError("hyperliquid position protection proof is missing", 502);
+  }
+  if (instruction.operation_class === "cancel" && !cancelOrderReadback) {
+    throw new HyperliquidExecutionError("hyperliquid cancellation readback proof is missing", 502);
+  }
+  if (instruction.operation_class === "cancel" && !actionExpiryProof) {
+    throw new HyperliquidExecutionError("hyperliquid cancellation expiry proof is missing", 502);
+  }
   return {
     status,
     provider_ref_seed: {
@@ -254,6 +293,11 @@ export async function submitHyperliquidExecution({
       cloid,
       oid: result.oid || null,
       fills_count: Array.isArray(result.fills) ? result.fills.length : 0,
+      market_source_time_ms: executionMarketGate?.source_time_ms || null,
+      venue_order_status: venueOrderReadback?.status || null,
+      cancel_target_cloid: cancelOrderReadback?.cloid || null,
+      take_profit_cloid: positionProtection?.take_profit_cloid || null,
+      stop_loss_cloid: positionProtection?.stop_loss_cloid || null,
     },
     result_seed: {
       kind: "hyperliquid_result",
@@ -264,13 +308,37 @@ export async function submitHyperliquidExecution({
     final_proof: hyperliquidFinalProof({
       status,
       network: credential.network,
-      broadcastPerformed: !["read", "reconcile"].includes(instruction.operation_class),
+      broadcastPerformed: !["read", "reconcile"].includes(instruction.operation_class) &&
+        result.broadcast_performed !== false,
+      executionConfiguration,
+      executionMarketGate,
+      venueOrderReadback,
+      positionProtection,
+      cancelOrderReadback,
+      actionExpiryProof,
     }),
+    execution_configuration: executionConfiguration,
+    venue_order_readback: venueOrderReadback,
+    position_protection: positionProtection,
+    cancel_order_readback: cancelOrderReadback,
+    action_expiry_proof: actionExpiryProof,
   };
 }
 
-function hyperliquidFinalProof({ status, network, broadcastPerformed }) {
+function hyperliquidFinalProof({
+  status,
+  network,
+  broadcastPerformed,
+  executionConfiguration = null,
+  executionMarketGate = null,
+  venueOrderReadback = null,
+  positionProtection = null,
+  cancelOrderReadback = null,
+  actionExpiryProof = null,
+}) {
+  const terminalCancelProven = status === "cancelled" && cancelOrderReadback?.verified === true;
   const venueAccepted = broadcastPerformed && ["submitted", "filled", "cancelled"].includes(status);
+  const orderReadback = venueOrderReadback || cancelOrderReadback;
   return {
     version: 1,
     proof_kind: "hyperliquid_execution_proof_v1",
@@ -278,9 +346,137 @@ function hyperliquidFinalProof({ status, network, broadcastPerformed }) {
     venue_id: "hyperliquid",
     network,
     broadcast_performed: broadcastPerformed === true,
-    final_venue_execution_proven: venueAccepted,
+    final_venue_execution_proven: venueAccepted || terminalCancelProven,
     final_fill_proven: status === "filled",
+    execution_configuration_proven: executionConfiguration?.venue_accepted === true,
+    margin_mode: executionConfiguration?.margin_mode || null,
+    leverage: executionConfiguration?.leverage || null,
+    market_data_freshness_proven: executionMarketGate?.freshness_proven === true,
+    market_slippage_bound_proven: executionMarketGate?.slippage_bound_proven === true,
+    market_source_age_ms: executionMarketGate?.source_age_ms ?? null,
+    market_max_age_ms: executionMarketGate?.max_age_ms ?? null,
+    action_expiry_proven: actionExpiryProof?.action_expiry_enforced === true ||
+      executionMarketGate?.action_expiry_enforced === true,
+    expires_after_ms: actionExpiryProof?.expires_after_ms ?? executionMarketGate?.expires_after_ms ?? null,
+    venue_order_readback_proven: venueOrderReadback?.verified === true,
+    venue_order_status: venueOrderReadback?.status || null,
+    venue_order_oid: orderReadback?.oid != null ? String(orderReadback.oid) : null,
+    venue_order_cloid: orderReadback?.cloid || null,
+    cancellation_readback_proven: cancelOrderReadback?.verified === true,
+    cancellation_terminal_status: cancelOrderReadback?.status || null,
+    final_no_broadcast_proven: broadcastPerformed === false && terminalCancelProven,
+    position_protection_proven: positionProtection?.venue_accepted === true,
+    protection_grouping: positionProtection?.grouping || null,
+    protection_trigger_source: positionProtection?.trigger_source || null,
+    protection_trigger_order_type: positionProtection?.trigger_order_type || null,
+    protection_max_slippage_bps: positionProtection?.max_slippage_bps ?? null,
+    take_profit_oid: positionProtection?.take_profit_oid != null ? String(positionProtection.take_profit_oid) : null,
+    stop_loss_oid: positionProtection?.stop_loss_oid != null ? String(positionProtection.stop_loss_oid) : null,
+    take_profit_cloid: positionProtection?.take_profit_cloid || null,
+    stop_loss_cloid: positionProtection?.stop_loss_cloid || null,
     checked_at: new Date().toISOString(),
+  };
+}
+
+function normalizeVenueOrderReadback(value, expectedCloid) {
+  const cloid = String(value?.cloid || "").toLowerCase();
+  const expected = String(expectedCloid || "").toLowerCase();
+  const status = String(value?.status || "").toLowerCase();
+  const oid = value?.oid;
+  if (
+    value?.verified !== true ||
+    (status !== "open" && status !== "filled") ||
+    !/^0x[0-9a-f]{32}$/u.test(cloid) ||
+    cloid !== expected ||
+    (typeof oid !== "number" && typeof oid !== "string") ||
+    !String(oid).trim()
+  ) return null;
+  return { verified: true, status, oid, cloid };
+}
+
+function normalizeVenueCancelReadback(value, expectedCloid) {
+  const cloid = String(value?.cloid || "").toLowerCase();
+  const expected = String(expectedCloid || "").toLowerCase();
+  const oid = value?.oid;
+  const status = String(value?.status || "").toLowerCase();
+  if (value?.verified !== true || status !== "canceled" ||
+      !/^0x[0-9a-f]{32}$/u.test(cloid) || cloid !== expected ||
+      (typeof oid !== "number" && typeof oid !== "string") || !String(oid).trim()) {
+    return null;
+  }
+  return { verified: true, status: "canceled", oid, cloid };
+}
+
+function normalizeExecutionConfiguration(value) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    value.margin_mode !== "isolated" ||
+    value.leverage !== 1 ||
+    value.venue_accepted !== true
+  ) return null;
+  return { margin_mode: "isolated", leverage: 1, venue_accepted: true };
+}
+
+function normalizeExecutionMarketGate({ marketGate, expiresAfterMs, actionExpiryEnforced }) {
+  const sourceTimeMs = Number(marketGate?.source_time_ms);
+  const sourceAgeMs = Number(marketGate?.source_age_ms);
+  const maxAgeMs = Number(marketGate?.max_age_ms);
+  const expiryMs = Number(expiresAfterMs);
+  if (
+    !Number.isInteger(sourceTimeMs) || sourceTimeMs <= 0 ||
+    !Number.isInteger(sourceAgeMs) || sourceAgeMs < 0 ||
+    maxAgeMs !== 2_000 || sourceAgeMs > maxAgeMs ||
+    marketGate?.freshness_proven !== true ||
+    marketGate?.slippage_bound_proven !== true ||
+    actionExpiryEnforced !== true ||
+    !Number.isInteger(expiryMs) || expiryMs <= sourceTimeMs
+  ) return null;
+  return {
+    source_time_ms: sourceTimeMs,
+    source_age_ms: sourceAgeMs,
+    max_age_ms: maxAgeMs,
+    freshness_proven: true,
+    slippage_bound_proven: true,
+    action_expiry_enforced: true,
+    expires_after_ms: expiryMs,
+  };
+}
+
+function normalizeActionExpiryProof({ expiresAfterMs, actionExpiryEnforced }) {
+  const expiryMs = Number(expiresAfterMs);
+  const now = Date.now();
+  if (!Number.isInteger(expiryMs) || expiryMs <= now || expiryMs > now + 5 * 60_000 ||
+      actionExpiryEnforced !== true) return null;
+  return { action_expiry_enforced: true, expires_after_ms: expiryMs };
+}
+
+function normalizePositionProtectionProof(value) {
+  const takeProfitCloid = String(value?.take_profit_cloid || "").toLowerCase();
+  const stopLossCloid = String(value?.stop_loss_cloid || "").toLowerCase();
+  const takeProfitOid = String(value?.take_profit_oid || "");
+  const stopLossOid = String(value?.stop_loss_oid || "");
+  const maxSlippageBps = Number(value?.max_slippage_bps);
+  if (
+    value?.venue_accepted !== true ||
+    value?.grouping !== "normalTpsl" ||
+    value?.trigger_source !== "mark" ||
+    value?.trigger_order_type !== "bounded_limit" ||
+    !/^0x[0-9a-f]{32}$/u.test(takeProfitCloid) ||
+    !/^0x[0-9a-f]{32}$/u.test(stopLossCloid) ||
+    !/^\d+$/u.test(takeProfitOid) || !/^\d+$/u.test(stopLossOid) ||
+    !Number.isInteger(maxSlippageBps) || maxSlippageBps < 1 || maxSlippageBps > 100
+  ) return null;
+  return {
+    venue_accepted: true,
+    grouping: "normalTpsl",
+    trigger_source: "mark",
+    trigger_order_type: "bounded_limit",
+    take_profit_cloid: takeProfitCloid,
+    stop_loss_cloid: stopLossCloid,
+    take_profit_oid: takeProfitOid,
+    stop_loss_oid: stopLossOid,
+    max_slippage_bps: maxSlippageBps,
   };
 }
 
@@ -303,9 +499,12 @@ export async function verifyHyperliquidNoSubmit({
       runnerResult: {
         sdk_checked: true,
         api_wallet_loaded: true,
+        api_wallet_authorized: false,
+        api_wallet_not_expired: false,
         market_data_checked: true,
         account_state_checked: true,
         order_request_checked: true,
+        simulated: true,
       },
     });
   }
@@ -314,7 +513,7 @@ export async function verifyHyperliquidNoSubmit({
     instruction,
     cloid,
     verify_no_submit: true,
-    timeout_ms: Number.parseInt(process.env.PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS || "12000", 10),
+    timeout_ms: Number.parseInt(process.env.PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS || "30000", 10),
   });
   return hyperliquidNoSubmitResult({
     instruction,
@@ -460,6 +659,7 @@ export async function reconcileHyperliquidExecution({
   credential,
   cloid,
   market,
+  protection = null,
   fetchImpl = fetch,
 }) {
   assertHyperliquidPilotNetwork(credential, { operation_class: "reconcile" });
@@ -485,6 +685,7 @@ export async function reconcileHyperliquidExecution({
   const orderEnvelope = statusResponse?.order || statusResponse;
   const order = orderEnvelope?.order || orderEnvelope;
   const orderStatus = String(orderEnvelope?.status || order?.status || "").trim();
+  const normalizedOrderStatus = normalizeHyperliquidOrderStatus(orderStatus);
   const oid = String(order?.oid || "").trim();
   const rawFills = await postHyperliquidInfo(fetchImpl, credential.base_url, {
     type: "userFills",
@@ -499,26 +700,91 @@ export async function reconcileHyperliquidExecution({
     (sum, fill) => sum + finitePositive(fill?.sz) * finitePositive(fill?.px),
     0,
   );
-  const terminal = TERMINAL_HYPERLIQUID_ORDER_STATUSES.has(orderStatus.toLowerCase());
+  const terminal = TERMINAL_HYPERLIQUID_ORDER_STATUSES.has(normalizedOrderStatus);
   const status = filledNotional > 0
-    ? orderStatus.toLowerCase() === "filled" ? "filled" : "partially_filled"
+    ? normalizedOrderStatus === "filled" ? "filled" : "partially_filled"
     : terminal ? "rejected" : "submitted";
+  const protectionProof = terminal && filledNotional > 0 && protection
+    ? await reconcileHyperliquidProtection({ credential, cloid, market, protection, fetchImpl })
+    : null;
+  const terminalAndContained = terminal && (!protection || filledNotional === 0 || protectionProof?.proven === true);
   return {
-    terminal,
-    status,
+    terminal: terminalAndContained,
+    protection: protectionProof,
+    ...(terminal && !terminalAndContained ? { status: "protection_unconfirmed" } : { status }),
     filled_notional_micro_usdc: Math.round(filledNotional * 1_000_000),
     filled_base_size: trimPositiveDecimal(filledBase),
     venue_order_reference: oid ? `oid:${oid}` : `cloid:${cloid}`,
     fills: fills.slice(0, 25),
-    final_proof: terminal ? {
+    final_proof: terminalAndContained ? {
       ...hyperliquidFinalProof({
         status: filledNotional > 0 ? "filled" : orderStatus || "rejected",
         network: credential.network,
         broadcastPerformed: true,
+        positionProtection: protectionProof?.proven ? {
+          venue_accepted: true,
+          grouping: "normalTpsl",
+          trigger_source: "mark",
+          trigger_order_type: "bounded_limit",
+          max_slippage_bps: protectionProof.max_slippage_bps,
+        } : null,
       }),
+      final_venue_execution_proven: true,
       terminal_status: orderStatus || "rejected",
       final_no_fill_proven: filledNotional === 0,
     } : null,
+  };
+}
+
+async function reconcileHyperliquidProtection({ credential, cloid, market, protection, fetchImpl }) {
+  const childCloids = hyperliquidProtectionCloids(cloid);
+  const responses = await Promise.all([
+    childCloids.take_profit_cloid,
+    childCloids.stop_loss_cloid,
+  ].map((oid) => postHyperliquidInfo(fetchImpl, credential.base_url, {
+    type: "orderStatus",
+    user: hyperliquidExecutionAddress(credential),
+    oid,
+  }).catch(() => null)));
+  const accepted = responses.map((response) => {
+    if (!response || response.status === "unknownOid") return false;
+    const envelope = response.order || response;
+    const child = envelope.order || envelope;
+    return normalizeHyperliquidOrderStatus(envelope.status || child.status) === "open" &&
+      child.reduceOnly === true &&
+      child.isTrigger === true &&
+      (!market || String(child.coin || "").toUpperCase() === String(market).toUpperCase());
+  });
+  let state = accepted.every(Boolean) ? "both_open" : "unconfirmed";
+  if (state === "unconfirmed") {
+    const clearinghouse = await postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "clearinghouseState",
+      user: hyperliquidExecutionAddress(credential),
+    }).catch(() => null);
+    const position = (Array.isArray(clearinghouse?.assetPositions) ? clearinghouse.assetPositions : [])
+      .map((item) => item?.position || item)
+      .find((item) => String(item?.coin || "").toUpperCase() === String(market || "").toUpperCase());
+    if (Math.abs(Number(position?.szi || 0)) < 1e-12) state = "position_flat";
+  }
+  const maxSlippageBps = Number(protection?.max_slippage_bps);
+  return {
+    ...childCloids,
+    state,
+    proven: state === "both_open" || state === "position_flat",
+    max_slippage_bps: Number.isInteger(maxSlippageBps) ? maxSlippageBps : null,
+  };
+}
+
+export function hyperliquidProtectionCloids(parentCloid) {
+  const normalized = String(parentCloid || "").toLowerCase().replace(/^0x/u, "");
+  if (!/^[0-9a-f]{32}$/u.test(normalized)) {
+    throw new HyperliquidExecutionError("hyperliquid parent cloid is invalid", 400, "venue_rejected");
+  }
+  const parent = Buffer.from(normalized, "hex");
+  const child = (purpose) => `0x${createHash("sha256").update(parent).update(purpose).digest("hex").slice(0, 32)}`;
+  return {
+    take_profit_cloid: child("take_profit"),
+    stop_loss_cloid: child("stop_loss"),
   };
 }
 
@@ -745,7 +1011,7 @@ function mergeHyperliquidOpenOrderUpdates(current, data) {
     const key = hyperliquidOpenOrderKey(order);
     if (!key) continue;
     next = next.filter((candidate) => hyperliquidOpenOrderKey(candidate) !== key);
-    const status = stringValue(update?.status ?? order?.status).toLowerCase();
+    const status = normalizeHyperliquidOrderStatus(update?.status ?? order?.status);
     if (!TERMINAL_HYPERLIQUID_ORDER_STATUSES.has(status)) {
       next.push({ ...order, status: status || "open" });
     }
@@ -758,10 +1024,38 @@ const TERMINAL_HYPERLIQUID_ORDER_STATUSES = new Set([
   "canceled",
   "cancelled",
   "rejected",
-  "margin_canceled",
   "margincanceled",
   "expired",
+  "triggered",
+  "vaultwithdrawalcanceled",
+  "openinterestcapcanceled",
+  "selftradecanceled",
+  "reduceonlycanceled",
+  "siblingfilledcanceled",
+  "delistedcanceled",
+  "liquidatedcanceled",
+  "scheduledcancel",
+  "tickrejected",
+  "mintradentlrejected",
+  "mintradespotntlrejected",
+  "perpmarginrejected",
+  "reduceonlyrejected",
+  "badalopxrejected",
+  "ioccancelrejected",
+  "badtriggerpxrejected",
+  "marketordernoliquidityrejected",
+  "positionincreaseatopeninterestcaprejected",
+  "positionflipatopeninterestcaprejected",
+  "tooaggressiveatopeninterestcaprejected",
+  "openinterestincreaserejected",
+  "insufficientspotbalancerejected",
+  "oraclerejected",
+  "perpmaxpositionrejected",
 ]);
+
+function normalizeHyperliquidOrderStatus(value) {
+  return stringValue(value).toLowerCase().replace(/[^a-z0-9]+/gu, "");
+}
 
 function hyperliquidOpenOrderKey(order) {
   const oid = stringValue(order?.oid);
@@ -1065,11 +1359,23 @@ function hyperliquidExecutionAddress(credential) {
 
 function hyperliquidNoSubmitResult({ instruction, cloid, executionMode, runnerResult }) {
   const market = instruction.order?.market || instruction.cancel?.market || null;
+  const apiWalletAddress = /^0x[0-9a-f]{40}$/iu.test(String(runnerResult.api_wallet_address || ""))
+    ? String(runnerResult.api_wallet_address).toLowerCase()
+    : null;
   const checks = {
     sealed_vault_opened: true,
     sealed_instruction_opened: true,
-    authority_derived: runnerResult.api_wallet_loaded === true,
+    authority_derived: runnerResult.api_wallet_loaded === true &&
+      runnerResult.api_wallet_authorized === true &&
+      runnerResult.api_wallet_not_expired === true,
     api_wallet_loaded: runnerResult.api_wallet_loaded === true,
+    api_wallet_authorized: runnerResult.api_wallet_authorized === true,
+    api_wallet_not_expired: runnerResult.api_wallet_not_expired === true,
+    api_wallet_address: apiWalletAddress,
+    api_wallet_valid_until_ms: Number.isInteger(runnerResult.api_wallet_valid_until_ms)
+      ? runnerResult.api_wallet_valid_until_ms
+      : null,
+    verification_simulated: runnerResult.simulated === true,
     policy_enforced: true,
     live_gate_enforced: true,
     rpc_reachable: runnerResult.market_data_checked === true,
@@ -1079,6 +1385,11 @@ function hyperliquidNoSubmitResult({ instruction, cloid, executionMode, runnerRe
     account_read_checked: runnerResult.account_state_checked === true,
     order_packet_built: runnerResult.order_request_checked === true,
     order_request_built: runnerResult.order_request_checked === true,
+    position_protection_checked: runnerResult.position_protection_checked === true,
+    action_expiry_checked: runnerResult.action_expiry_checked === true,
+    expires_after_ms: Number.isInteger(runnerResult.expires_after_ms)
+      ? runnerResult.expires_after_ms
+      : null,
     transaction_broadcast: false,
   };
   return {
@@ -1232,7 +1543,7 @@ function defaultRunner(payload) {
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
       reject(new HyperliquidExecutionError("hyperliquid runner timed out", 504));
-    }, payload.timeout_ms || 12000);
+    }, payload.timeout_ms || 30000);
     const stdout = [];
     const stderr = [];
     child.stdout.on("data", (chunk) => stdout.push(chunk));

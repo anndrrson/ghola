@@ -1,7 +1,6 @@
 "use client";
 
 import { memo } from "react";
-import { ChevronDown, Command } from "lucide-react";
 
 export type TerminalMarketToolbarVenueId = "hyperliquid" | "phoenix" | "coinbase";
 export type TerminalMarketToolbarInterval = "1m" | "5m" | "15m" | "1h";
@@ -37,41 +36,29 @@ export const TerminalMarketToolbar = memo(function TerminalMarketToolbar({
 }: TerminalMarketToolbarProps) {
   const venue = venues.find((item) => item.id === venueId) ?? venues[0];
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#182234] px-4 py-3 sm:px-6">
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <div className="flex items-center gap-1" role="group" aria-label="Trading venue">
-          {venues.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              aria-pressed={venueId === item.id}
-              onClick={() => onSelectVenue(item.id)}
-              className={`h-9 rounded-md px-3 text-sm font-medium ${venueId === item.id ? "trade-chip-on" : "trade-chip"}`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-        <label className="relative">
-          <span className="sr-only">Market</span>
+    <div className="flex flex-wrap items-end gap-2">
+        <label className="grid gap-1 text-[8px] font-semibold uppercase tracking-[0.12em] text-[#596476]">
+          Market
           <select
+            aria-label="Market"
             value={market}
             onChange={(event) => onSelectMarket(event.target.value)}
-            className="trade-field h-9 appearance-none rounded-md pl-3 pr-8 text-sm font-semibold text-[#eef1f8] outline-none"
+            className="h-7 min-w-32 rounded border border-[#222b38] bg-[#090d13] px-2 text-[10px] font-medium normal-case tracking-normal text-[#dce5f0] outline-none"
           >
             {(venue?.markets ?? []).map((item) => (
-              <option key={item} value={item}>{productLabel(venueId, item)}</option>
+              <option key={item} value={item}>{item}</option>
             ))}
           </select>
-          <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#6f7d9a]" />
         </label>
-        {venueId === "hyperliquid" ? (
-          <span className="rounded border border-[#1e2a3a] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#6f7d9a]">
-            {network}
-          </span>
-        ) : null}
-      </div>
-      <div className="flex items-center gap-1" role="group" aria-label="Chart interval">
+        <label className="grid gap-1 text-[8px] font-semibold uppercase tracking-[0.12em] text-[#596476]">
+          Venue
+          <select aria-label="Venue" title={`${network} venue`} value={venueId} onChange={(event) => onSelectVenue(event.target.value as TerminalMarketToolbarVenueId)} className="h-7 min-w-40 rounded border border-[#28496d] bg-[#10213a] px-2 text-[10px] font-medium normal-case tracking-normal text-[#9bcfff] outline-none">
+            {venues.map((item) => <option key={item.id} value={item.id}>{item.label}{item.id === "hyperliquid" ? " · BYO live" : " · live"}</option>)}
+          </select>
+        </label>
+      <div>
+        <p className="mb-1 text-right text-[8px] font-semibold uppercase tracking-[0.12em] text-[#596476]">Interval</p>
+        <div className="flex items-center gap-1" role="group" aria-label="Chart interval">
         {INTERVALS.map((item, index) => (
           <button
             key={item}
@@ -80,14 +67,12 @@ export const TerminalMarketToolbar = memo(function TerminalMarketToolbar({
             aria-keyshortcuts={String(index + 1)}
             title={`Select ${item} chart · shortcut ${index + 1}`}
             onClick={() => onSelectInterval(item)}
-            className={`h-8 w-12 rounded-md text-sm tabular-nums ${item === interval ? "trade-chip-on" : "trade-chip"}`}
+            className={`h-7 min-w-8 rounded border px-2 text-[9px] tabular-nums ${item === interval ? "border-[#88bfff] bg-[#dbeaff] text-[#101722]" : "border-[#202a39] bg-[#0a0e15] text-[#718097]"}`}
           >
             {item}
           </button>
         ))}
-        <span className="ml-2 hidden items-center gap-1.5 text-[10px] text-[#566278] 2xl:inline-flex">
-          <Command className="h-3 w-3" aria-hidden /> B/S side · 1–4 interval · D book · J/X price · ⇧J/⇧X risk
-        </span>
+        </div>
       </div>
     </div>
   );
@@ -105,8 +90,4 @@ export function terminalMarketToolbarPropsEqual(
     && previous.onSelectVenue === next.onSelectVenue
     && previous.onSelectMarket === next.onSelectMarket
     && previous.onSelectInterval === next.onSelectInterval;
-}
-
-function productLabel(venue: TerminalMarketToolbarVenueId, market: string) {
-  return venue === "coinbase" ? `${market}-USD` : `${market}-PERP`;
 }

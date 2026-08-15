@@ -25,7 +25,7 @@ export const TerminalMarketFeedTelemetry = memo(function TerminalMarketFeedTelem
   peerGrades: Array<{ venue: string; grade: MarketFeedTelemetry["healthGrade"] }>;
   components?: TerminalCertifiedMarketSignals["components"];
 }) {
-  const [mobileExpanded, setMobileExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const diagnosticsId = useId();
   const gradeTone = telemetry.healthGrade === "A" || telemetry.healthGrade === "B"
     ? "text-emerald-300"
@@ -33,13 +33,19 @@ export const TerminalMarketFeedTelemetry = memo(function TerminalMarketFeedTelem
       ? "text-amber-300"
       : "text-rose-300";
   const recentEvents = telemetry.rollingEventCount;
+  const healthy = telemetry.healthGrade === "A" || telemetry.healthGrade === "B";
+  const healthLabel = healthy
+    ? "Market feed healthy"
+    : telemetry.healthGrade === "C"
+      ? "Market feed degraded"
+      : "Market feed unstable";
   const componentLabels = components ? COMPONENTS.map((component) => componentAriaLabel(component, components[component])) : [];
   const fullLabel = [
     `Public market feed grade ${telemetry.healthGrade}, score ${telemetry.healthScore}`,
     `source age ${formatTelemetryMs(telemetry.sourceAgeMs)}`,
     `receipt latency ${formatTelemetryMs(telemetry.receiptLatencyMs)}`,
     `update rate ${telemetry.updateRateHz.toFixed(2)} hertz`,
-    `${recentEvents} recent health events`,
+    `${recentEvents} health events in the last ${Math.round(telemetry.windowMs / 1_000)} seconds`,
     `reconnect, fallback, stale counters ${telemetry.reconnectCount}, ${telemetry.fallbackCount}, ${telemetry.staleCount}`,
     `sequence, timestamp, gap rejection counters ${telemetry.sequenceRegressionCount}, ${telemetry.timestampRegressionCount}, ${telemetry.gapRejectCount}`,
     ...componentLabels,
@@ -48,38 +54,38 @@ export const TerminalMarketFeedTelemetry = memo(function TerminalMarketFeedTelem
   return (
     <section
       aria-label={fullLabel}
-      className="mx-3 mb-2 rounded-md border border-[#182234] bg-[#080d15]/80 px-3 py-1.5 sm:mx-6"
+      className="mx-3 mb-2 rounded-md border border-[#182234] bg-[#080d15]/70 px-3 py-2 sm:mx-6"
     >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] tabular-nums text-[#7f8da7]">
-        <span className="flex items-center gap-1.5" title={`${telemetry.windowMs / 1_000}s rolling health score`}>
-          Feed <b className={`font-semibold ${gradeTone}`}>{telemetry.healthGrade} · {telemetry.healthScore}</b>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#7f8da7]">
+        <span className={`flex items-center gap-1.5 font-medium ${gradeTone}`} title={`${telemetry.windowMs / 1_000}s rolling health score`}>
+          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${telemetry.healthGrade === "A" || telemetry.healthGrade === "B" ? "bg-emerald-300" : telemetry.healthGrade === "C" ? "bg-amber-300" : "bg-rose-300"}`} />
+          {healthLabel}
         </span>
-        <TelemetryValue label="Age" value={formatTelemetryMs(telemetry.sourceAgeMs)} />
-        <TelemetryValue label="Rate" value={`${telemetry.updateRateHz.toFixed(2)} Hz`} />
-        <span className={recentEvents > 0 ? "text-amber-200" : "text-emerald-300"}>
-          {recentEvents > 0 ? `${recentEvents} recent event${recentEvents === 1 ? "" : "s"}` : "clean window"}
+        <span>
+          Updated <span className="trade-market-number text-[#c7d2e4]">{formatTelemetryMs(telemetry.sourceAgeMs)} ago</span>
         </span>
-        {components ? (
-          <span className="flex flex-wrap items-center gap-1" aria-label="Decision-surface component freshness">
-            {COMPONENTS.map((component) => (
-              <ComponentFreshness key={component} component={component} state={components[component]} />
-            ))}
+        {recentEvents > 0 ? (
+          <span className={healthy ? "text-[#75839a]" : "text-amber-200"}>
+            {recentEvents} {healthy ? "recovered " : "health "}event{recentEvents === 1 ? "" : "s"} · {Math.round(telemetry.windowMs / 1_000)}s window
           </span>
         ) : null}
         <button
           type="button"
-          aria-expanded={mobileExpanded}
+          aria-expanded={expanded}
           aria-controls={diagnosticsId}
-          onClick={() => setMobileExpanded((value) => !value)}
-          className="ml-auto rounded px-1.5 py-0.5 text-[9px] uppercase tracking-[0.08em] text-sky-200 outline-none hover:bg-sky-400/10 focus-visible:ring-1 focus-visible:ring-sky-300"
+          onClick={() => setExpanded((value) => !value)}
+          className="ml-auto rounded px-2 py-1 text-xs text-sky-200 outline-none hover:bg-sky-400/10 focus-visible:ring-1 focus-visible:ring-sky-300"
         >
-          {mobileExpanded ? "Less" : "Details"}
+          {expanded ? "Hide details" : "Details"}
         </button>
       </div>
       <div
         id={diagnosticsId}
-        className={`${mobileExpanded ? "mt-2 flex" : "hidden"} flex-wrap items-center gap-x-4 gap-y-1 border-t border-[#182234] pt-2 font-mono text-[10px] tabular-nums text-[#7f8da7]`}
+        className={`${expanded ? "mt-2 flex" : "hidden"} flex-wrap items-center gap-x-4 gap-y-2 border-t border-[#182234] pt-2 text-[10px] text-[#7f8da7]`}
       >
+        <TelemetryValue label="Health" value={`${telemetry.healthGrade} · ${telemetry.healthScore}`} />
+        <TelemetryValue label="Source age" value={formatTelemetryMs(telemetry.sourceAgeMs)} />
+        <TelemetryValue label="Update rate" value={`${telemetry.updateRateHz.toFixed(2)} Hz`} />
         <TelemetryValue label="Receipt latency" value={formatTelemetryMs(telemetry.receiptLatencyMs)} />
         <TelemetryValue
           label="Reconnect / fallback / stale"
@@ -95,6 +101,13 @@ export const TerminalMarketFeedTelemetry = memo(function TerminalMarketFeedTelem
             value={peerGrades.map((item) => `${item.venue} ${item.grade}`).join(" · ")}
           />
         ) : null}
+        {components ? (
+          <span className="flex flex-wrap items-center gap-1" aria-label="Decision-surface component freshness">
+            {COMPONENTS.map((component) => (
+              <ComponentFreshness key={component} component={component} state={components[component]} />
+            ))}
+          </span>
+        ) : null}
       </div>
     </section>
   );
@@ -104,7 +117,7 @@ function TelemetryValue({ label, value }: { label: string; value: string }) {
   return (
     <span className="flex items-center gap-1.5">
       <span>{label}</span>
-      <span className="text-[#c7d2e4]">{value}</span>
+      <span className="trade-market-number text-[#c7d2e4]">{value}</span>
     </span>
   );
 }

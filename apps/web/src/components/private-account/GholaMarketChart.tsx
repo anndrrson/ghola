@@ -372,6 +372,7 @@ export const GholaMarketChart = memo(function GholaMarketChart({
   const [undoneTrendLines, setUndoneTrendLines] = useState<ChartTrendLineDrawing[]>([]);
   const [drawingStorageBlocked, setDrawingStorageBlocked] = useState(false);
   const [drawingStorageConflict, setDrawingStorageConflict] = useState(false);
+  const [advancedToolsOpen, setAdvancedToolsOpen] = useState(false);
   const [chartFullscreen, setChartFullscreen] = useState(false);
   const [fullscreenSupported, setFullscreenSupported] = useState(true);
   const [fullscreenMessage, setFullscreenMessage] = useState("");
@@ -393,7 +394,7 @@ export const GholaMarketChart = memo(function GholaMarketChart({
   const chartHeight = chartFullscreen
     ? "max(280px, calc(100dvh - 11rem))"
     : height === "auto"
-      ? "clamp(280px, 55dvh, 720px)"
+      ? "clamp(360px, 62cqi, 760px)"
     : height ?? (size === "large" ? 520 : 280);
   const modes = allowedModes ?? chartModesForFrame(frame, mode);
   const replayBaseFrame = replayEnabled ? replaySource : frame;
@@ -1943,22 +1944,49 @@ export const GholaMarketChart = memo(function GholaMarketChart({
     .join(", ");
   const engineLabel = chartEngineLabel(chartFrame, rendererKind, engineKind);
   const latestTrendLine = renderedTrendLines.at(-1)?.geometry ?? null;
+  const advancedToolsVisible = advancedToolsOpen
+    || measurementMode
+    || trendLineTool
+    || replayActive
+    || anchoredVwapArmed
+    || anchoredVwapSelected;
   return (
     <div
       ref={rootRef}
       data-chart-focus-mode={chartFullscreen ? "active" : "inline"}
       className={chartFullscreen
-        ? "grid h-screen min-w-0 max-w-full gap-2 overflow-y-auto bg-[#05070b] p-3 sm:p-5"
-        : "grid min-w-0 max-w-full gap-2 overflow-hidden"}
+        ? "ghola-market-chart grid h-screen min-w-0 max-w-full gap-2 overflow-y-auto bg-[#05070b] p-3 sm:p-5"
+        : "ghola-market-chart grid min-w-0 max-w-full gap-2 overflow-hidden"}
     >
       <p className="sr-only" role="status" aria-live="polite">{fullscreenMessage}</p>
-      <div className="flex min-h-7 min-w-0 max-w-full flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0 truncate text-xs text-[#8b95a8]">
-          <span className="font-medium text-[#eef1f8]">{title}</span>
-          <span className="mx-1 text-[#42506a]">/</span>
-          <span>{summary}</span>
+      <div className="grid min-w-0 max-w-full gap-2">
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs text-[#8b95a8]">
+            <span className="shrink-0 font-medium text-[#eef1f8]">{title}</span>
+            <span className="text-[#42506a]">/</span>
+            <span className="min-w-0 text-[#7f8ca3]">{summary}</span>
+          </div>
+          <div
+            role="group"
+            aria-label="Chart status"
+            className="flex shrink-0 select-none items-center gap-1 rounded border border-[#1c293b] bg-[#090e16] p-1"
+          >
+            {toolbarActions}
+            <span className="shrink-0 whitespace-nowrap border border-[#1d2b40] bg-[#0a1019] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] text-[#73829a]">
+              {engineLabel}
+            </span>
+          </div>
         </div>
-        <div className="flex min-w-0 max-w-full flex-nowrap items-center gap-1.5 overflow-x-auto pb-1">
+        <div
+          data-chart-toolbar="responsive"
+          className="flex min-w-0 max-w-full select-none flex-wrap items-center gap-1.5 rounded-lg border border-[#192536] bg-[#070b12] px-2 py-1.5"
+        >
+          <div
+            role="group"
+            aria-label="Chart view"
+            className="flex max-w-full flex-wrap items-center gap-1 [&>button]:shrink-0 [&>button]:whitespace-nowrap"
+          >
+            <span aria-hidden className="px-1 text-[8px] font-semibold uppercase tracking-[0.16em] text-[#536078]">View</span>
           <button
             type="button"
             aria-pressed={chartFullscreen}
@@ -1995,10 +2023,13 @@ export const GholaMarketChart = memo(function GholaMarketChart({
           >
             Fit
           </button>
-          {toolbarActions}
-          <span className="border border-[#16233a] bg-[#0a0f18] px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-[#7d8aa3]">
-            {engineLabel}
-          </span>
+          </div>
+          <div
+            role="group"
+            aria-label="Chart display"
+            className="flex shrink-0 items-center gap-1 border-l border-[#253044] pl-1.5 [&>button]:shrink-0 [&>button]:whitespace-nowrap"
+          >
+            <span aria-hidden className="px-1 text-[8px] font-semibold uppercase tracking-[0.16em] text-[#536078]">Display</span>
           <button
             type="button"
             aria-pressed={showVolume}
@@ -2019,6 +2050,25 @@ export const GholaMarketChart = memo(function GholaMarketChart({
           >
             Overlays
           </button>
+          </div>
+          <button
+            type="button"
+            aria-expanded={advancedToolsVisible}
+            onClick={() => setAdvancedToolsOpen((current) => !current)}
+            className={advancedToolsVisible
+              ? "term-chip-on h-7 shrink-0 px-2.5 text-xs font-medium"
+              : "term-chip h-7 shrink-0 px-2.5 text-xs font-medium"}
+          >
+            Tools
+          </button>
+          {advancedToolsVisible ? (
+            <div className="flex w-full flex-wrap items-center gap-1.5 border-t border-[#192536] pt-1.5">
+          <div
+            role="group"
+            aria-label="Chart drawing tools"
+            className="flex max-w-full flex-wrap items-center gap-1 rounded border border-[#1c293b] bg-[#090e16] p-1 [&>button]:shrink-0 [&>button]:whitespace-nowrap"
+          >
+            <span aria-hidden className="px-1 text-[8px] font-semibold uppercase tracking-[0.16em] text-[#536078]">Draw</span>
           <button
             type="button"
             onClick={handleAddLevel}
@@ -2149,6 +2199,12 @@ export const GholaMarketChart = memo(function GholaMarketChart({
               </button>
             </>
           ) : null}
+          </div>
+          <div
+            role="group"
+            aria-label="Chart history"
+            className="flex shrink-0 items-center gap-1 rounded border border-[#1c293b] bg-[#090e16] p-1 [&>button]:shrink-0 [&>button]:whitespace-nowrap"
+          >
           <button
             type="button"
             aria-pressed={replayActive}
@@ -2167,7 +2223,15 @@ export const GholaMarketChart = memo(function GholaMarketChart({
               <button type="button" onClick={clearLevels} className="term-chip h-7 px-2 text-[10px] font-medium text-[#8b95a8]">Clear</button>
             </>
           ) : null}
-          {isPriceMode(mode) && CHART_STUDIES.map((study) => (
+          </div>
+          {isPriceMode(mode) ? (
+            <div
+              role="group"
+              aria-label="Chart studies"
+              className="flex max-w-full flex-wrap items-center gap-1 rounded border border-[#1c293b] bg-[#090e16] p-1 [&>button]:shrink-0 [&>button]:whitespace-nowrap"
+            >
+              <span aria-hidden className="px-1 text-[8px] font-semibold uppercase tracking-[0.16em] text-[#536078]">Studies</span>
+              {CHART_STUDIES.map((study) => (
             <button
               key={study.id}
               type="button"
@@ -2180,7 +2244,11 @@ export const GholaMarketChart = memo(function GholaMarketChart({
             >
               {study.label}
             </button>
-          ))}
+              ))}
+            </div>
+          ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
       {drawingStorageBlocked ? (
@@ -2362,8 +2430,12 @@ export const GholaMarketChart = memo(function GholaMarketChart({
           <button type="button" onClick={clearMeasurement} aria-label="Clear measured range" className="ml-auto text-[#7d8aa3] hover:text-white">×</button>
         </div>
       ) : measurementMode ? (
-        <div className="border border-dashed border-[#284463] bg-[#07111a] px-2.5 py-1.5 font-mono text-[10px] text-[#7ba8cc]">
-          {measurementSelection ? "Choose the second point to pin range stats." : "Choose an anchor point on the chart."}
+        <div role="status" className="flex select-none flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-[#284463] bg-[#07111a] px-2.5 py-2 text-[11px] text-[#8fb9dc]">
+          <span className="rounded border border-[#31597c] bg-[#0b1b2a] px-1.5 py-0.5 font-mono text-[8px] font-semibold uppercase tracking-[0.14em] text-[#b9dfff]">
+            Measure
+          </span>
+          <span>{measurementSelection ? "Select the second candle to pin the range." : "Select the first candle to begin a range."}</span>
+          <span className="ml-auto hidden font-mono text-[9px] text-[#617994] sm:inline">Click chart or press Enter</span>
         </div>
       ) : null}
       {replayActive && replaySource ? (
@@ -2387,7 +2459,7 @@ export const GholaMarketChart = memo(function GholaMarketChart({
         </div>
       ) : null}
       <div
-        className="term-subpanel relative w-full min-w-0 overflow-hidden"
+        className="ghola-chart-canvas relative w-full min-w-0 overflow-hidden rounded-xl border border-[#24282e] bg-[#030405] shadow-[inset_0_1px_0_rgba(255,255,255,0.035),0_18px_48px_-38px_rgba(126,181,226,0.38)]"
         role="region"
         aria-label={accessibleSummary}
       >
@@ -2427,7 +2499,6 @@ export const GholaMarketChart = memo(function GholaMarketChart({
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerCancel}
         />
-        <span aria-hidden className="term-corners pointer-events-none absolute inset-0" />
       </div>
     </div>
   );
@@ -2957,10 +3028,15 @@ function drawOverlay(
     ctx.globalAlpha = 1;
     labelBox(ctx, formatChartPrice(latest), layout.width - layout.right + 6, y, latestColor);
   }
-  const labelYs = overlayLabelYs(layout, renderedOverlays);
-  renderedOverlays.slice(0, 8).forEach((overlay, index) => {
+  // Shaded bands are already visually distinct; labeling their boundaries
+  // duplicates nearby entry/risk tags and makes the chart harder to scan.
+  const labeledOverlays = renderedOverlays
+    .filter((overlay) => overlay.kind !== "price_band")
+    .slice(0, 6);
+  const labelYs = overlayLabelYs(layout, labeledOverlays);
+  labeledOverlays.forEach((overlay, index) => {
     if (!Number.isFinite(overlay.price)) return;
-    labelBox(ctx, overlay.label, layout.left + 8, labelYs[index] ?? layout.top + 14, TONE_COLOR[overlay.tone]);
+    overlayTag(ctx, overlay.label, layout.left + 8, labelYs[index] ?? layout.top + 12, TONE_COLOR[overlay.tone]);
   });
   if (pointer.active && pointer.x >= layout.left && pointer.x <= layout.left + layout.plotW && pointer.y >= layout.top && pointer.y <= layout.top + layout.plotH) {
     const price = priceAtY(pointer.y, layout);
@@ -3697,18 +3773,18 @@ function chartPricePlot(layout: ChartLayout) {
 
 function overlayLabelYs(layout: ChartLayout, overlays: GholaChartOverlay[]) {
   const volumeTop = layout.top + layout.plotH * 0.8;
-  const laneTop = layout.top + 12;
-  const laneBottom = Math.max(laneTop, volumeTop - 14);
+  const laneTop = layout.top + 10;
+  const laneBottom = Math.max(laneTop, volumeTop - 10);
   const used: number[] = [];
   return overlays.slice(0, 8).map((overlay) => {
     const preferred = Number.isFinite(overlay.price)
       ? clamp(yForPrice(Number(overlay.price), layout), laneTop, laneBottom)
       : laneTop;
     let y = preferred;
-    for (let attempt = 0; attempt < 8 && used.some((value) => Math.abs(value - y) < 22); attempt += 1) {
-      y = clamp(preferred - (attempt + 1) * 22, laneTop, laneBottom);
-      if (!used.some((value) => Math.abs(value - y) < 22)) break;
-      y = clamp(preferred + (attempt + 1) * 22, laneTop, laneBottom);
+    for (let attempt = 0; attempt < 8 && used.some((value) => Math.abs(value - y) < 18); attempt += 1) {
+      y = clamp(preferred - (attempt + 1) * 18, laneTop, laneBottom);
+      if (!used.some((value) => Math.abs(value - y) < 18)) break;
+      y = clamp(preferred + (attempt + 1) * 18, laneTop, laneBottom);
     }
     used.push(y);
     return y;
@@ -3862,6 +3938,31 @@ function labelBox(ctx: CanvasRenderingContext2D, text: string, x: number, y: num
   ctx.strokeRect(left, top, width, height);
   ctx.fillStyle = color;
   ctx.fillText(text.length > 56 ? `${text.slice(0, 53)}...` : text, left + paddingX, top + height / 2);
+}
+
+function overlayTag(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, color: string) {
+  ctx.save();
+  ctx.font = "500 9px ui-monospace, SFMono-Regular, Menlo, monospace";
+  const displayText = text.length > 38 ? `${text.slice(0, 35)}...` : text;
+  const paddingLeft = 8;
+  const paddingRight = 5;
+  const canvasWidth = ctx.canvas.clientWidth || ctx.canvas.width;
+  const canvasHeight = ctx.canvas.clientHeight || ctx.canvas.height;
+  const width = Math.max(22, Math.min(250, canvasWidth - 4, ctx.measureText(displayText).width + paddingLeft + paddingRight));
+  const height = 16;
+  const left = clamp(x, 2, canvasWidth - width - 2);
+  const top = clamp(y - height / 2, 2, canvasHeight - height - 2);
+  ctx.globalAlpha = 0.94;
+  ctx.fillStyle = "#070a0f";
+  ctx.fillRect(left, top, width, height);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = color;
+  ctx.fillRect(left, top, 2, height);
+  ctx.fillStyle = "#e5eaf1";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(displayText, left + paddingLeft, top + height / 2);
+  ctx.restore();
 }
 
 function rgba(hex: string, opacity = 1): [number, number, number, number] {

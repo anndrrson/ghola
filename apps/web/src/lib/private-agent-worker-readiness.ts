@@ -1,4 +1,12 @@
 import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
+import {
+  LIVE_TRADING_CONTRACT_VERSION,
+  LIVE_TRADING_MAX_ORDER_NOTIONAL_USD,
+  LIVE_TRADING_MAX_SLIPPAGE_BPS,
+  LIVE_TRADING_ROLLING_24H_NOTIONAL_USD,
+  type LiveTradingCapabilityId,
+  type LiveTradingReleaseIdentity,
+} from "./live-trading-contract";
 
 export interface AutopilotWorkerConfig {
   url: URL | null;
@@ -11,6 +19,18 @@ export interface AutopilotWorkerReadiness {
   error: string | null;
   missing: string[];
   status: number | null;
+}
+
+export interface LiveTradingWorkerReadiness {
+  ready: boolean;
+  endpoint_configured: boolean;
+  contract_version: number | null;
+  worker_git_sha: string | null;
+  worker_image_digest: string | null;
+  config_fingerprint: string | null;
+  capabilities: LiveTradingCapabilityId[];
+  reason_codes: string[];
+  checked_at: string;
 }
 
 function allowUnattestedDevelopmentWorker(
@@ -74,6 +94,62 @@ export async function probeConfiguredAutopilotWorkerReadiness(
     allowUnattestedDevelopmentWorker: allowUnattestedDevelopmentWorker(env),
     env,
   });
+}
+
+export async function probeLiveTradingWorkerReadiness(input: {
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
+  expectedRelease: LiveTradingReleaseIdentity;
+  requiredCapabilities: LiveTradingCapabilityId[];
+}): Promise<LiveTradingWorkerReadiness> {
+  const env = input.env ?? process.env;
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const config = autopilotWorkerConfig(env);
+  const checkedAt = new Date().toISOString();
+  if (!config.url || !config.authConfigured || !privateAgentTransportAllowed("discover", env, fetchImpl)) {
+    return liveUnavailable("live_worker_not_configured", Boolean(config.url), checkedAt);
+  }
+  const response = await fetchImpl(new URL("/ready", config.url), {
+    method: "GET",
+    cache: "no-store",
+    signal: AbortSignal.timeout(5_000),
+  }).catch(() => null);
+  if (!response) return liveUnavailable("live_worker_unavailable", true, checkedAt);
+  const body = asRecord(await response.json().catch(() => null));
+  const live = asRecord(body.live_trading);
+  const caps = asRecord(live.caps);
+  const capabilities = stringArray(live.capabilities)
+    .filter((value): value is LiveTradingCapabilityId => input.requiredCapabilities.includes(value as LiveTradingCapabilityId));
+  const reasonCodes = stringArray(body.missing).map((reason) => `worker_missing:${reason}`);
+  reasonCodes.push(...stringArray(live.reason_codes));
+  const contractVersion = finiteInteger(live.contract_version);
+  const workerGitSha = safeString(live.worker_git_sha);
+  const workerImageDigest = safeString(live.worker_image_digest);
+  const configFingerprint = safeString(live.config_fingerprint);
+  if (!response.ok || body.ready !== true) reasonCodes.push("live_worker_not_ready");
+  if (live.ready !== true) reasonCodes.push("worker_live_contract_not_ready");
+  if (contractVersion !== LIVE_TRADING_CONTRACT_VERSION) reasonCodes.push("worker_contract_version_mismatch");
+  if (!workerGitSha || workerGitSha !== input.expectedRelease.worker_git_sha) reasonCodes.push("worker_git_sha_mismatch");
+  if (!workerImageDigest || workerImageDigest !== input.expectedRelease.worker_image_digest) reasonCodes.push("worker_image_digest_mismatch");
+  if (!configFingerprint || configFingerprint !== input.expectedRelease.config_fingerprint) reasonCodes.push("worker_config_fingerprint_mismatch");
+  if (!sameNumber(Number(caps.max_order_notional_usd), LIVE_TRADING_MAX_ORDER_NOTIONAL_USD)) reasonCodes.push("worker_max_order_cap_mismatch");
+  if (!sameNumber(Number(caps.rolling_24h_notional_usd), LIVE_TRADING_ROLLING_24H_NOTIONAL_USD)) reasonCodes.push("worker_daily_cap_mismatch");
+  if (!sameNumber(Number(caps.max_slippage_bps), LIVE_TRADING_MAX_SLIPPAGE_BPS)) reasonCodes.push("worker_slippage_cap_mismatch");
+  for (const capability of input.requiredCapabilities) {
+    if (!stringArray(live.capabilities).includes(capability)) reasonCodes.push(`worker_capability_missing:${capability}`);
+  }
+  const uniqueReasons = [...new Set(reasonCodes)];
+  return {
+    ready: uniqueReasons.length === 0,
+    endpoint_configured: true,
+    contract_version: contractVersion,
+    worker_git_sha: workerGitSha,
+    worker_image_digest: workerImageDigest,
+    config_fingerprint: configFingerprint,
+    capabilities,
+    reason_codes: uniqueReasons,
+    checked_at: checkedAt,
+  };
 }
 
 export async function probeAutopilotWorkerReadiness(
@@ -147,4 +223,30 @@ function asRecord(value: unknown): Record<string, unknown> {
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function liveUnavailable(reason: string, endpointConfigured: boolean, checkedAt: string): LiveTradingWorkerReadiness {
+  return {
+    ready: false,
+    endpoint_configured: endpointConfigured,
+    contract_version: null,
+    worker_git_sha: null,
+    worker_image_digest: null,
+    config_fingerprint: null,
+    capabilities: [],
+    reason_codes: [reason],
+    checked_at: checkedAt,
+  };
+}
+
+function safeString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function finiteInteger(value: unknown): number | null {
+  return Number.isInteger(value) ? value as number : null;
+}
+
+function sameNumber(left: number, right: number) {
+  return Number.isFinite(left) && Math.abs(left - right) < 0.000001;
 }

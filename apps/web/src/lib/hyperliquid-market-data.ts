@@ -52,6 +52,7 @@ export interface HyperliquidMarketSnapshot extends MarketFundingRateFields {
   open_interest: string | null;
   premium: string | null;
   max_leverage: number | null;
+  size_decimals?: number | null;
   candles: HyperliquidCandle[];
   bids: HyperliquidBookLevel[];
   asks: HyperliquidBookLevel[];
@@ -319,6 +320,7 @@ function emptySnapshot(input: {
     funding_updated_at: null,
     premium: null,
     max_leverage: null,
+    size_decimals: null,
     candles: [],
     bids: [],
     asks: [],
@@ -378,6 +380,7 @@ function normalizeAssetContext(value: unknown, coin: HyperliquidMarketCoin) {
     funding_rate: null,
     premium: null,
     max_leverage: null,
+    size_decimals: null,
   };
   if (!Array.isArray(value) || value.length < 2) return empty;
   const [meta, contexts] = value;
@@ -394,7 +397,9 @@ function normalizeAssetContext(value: unknown, coin: HyperliquidMarketCoin) {
     return empty;
   }
   const row = context as Record<string, unknown>;
-  const maxLeverage = (asset as Record<string, unknown>).maxLeverage;
+  const assetRow = asset as Record<string, unknown>;
+  const maxLeverage = assetRow.maxLeverage;
+  const sizeDecimals = assetRow.szDecimals;
   return {
     mark_price: safeDecimalString(row.markPx),
     oracle_price: safeDecimalString(row.oraclePx),
@@ -405,6 +410,9 @@ function normalizeAssetContext(value: unknown, coin: HyperliquidMarketCoin) {
     funding_rate: safeSignedDecimalString(row.funding),
     premium: safeSignedDecimalString(row.premium),
     max_leverage: typeof maxLeverage === "number" && Number.isFinite(maxLeverage) ? Math.floor(maxLeverage) : null,
+    size_decimals: typeof sizeDecimals === "number" && Number.isInteger(sizeDecimals) && sizeDecimals >= 0 && sizeDecimals <= 6
+      ? sizeDecimals
+      : null,
   };
 }
 

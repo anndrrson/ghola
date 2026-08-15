@@ -56,7 +56,7 @@ export function defaultTerminalWorkspace(): TerminalWorkspace {
     chartMode: "candles",
     chartStudies: ["vwap"],
     side: "buy",
-    notionalUsd: 10,
+    notionalUsd: 11,
     riskBudgetUsd: 1,
     slippageBps: 50,
     targetRewardMultiple: 2,

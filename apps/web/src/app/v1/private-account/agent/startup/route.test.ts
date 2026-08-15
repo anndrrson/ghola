@@ -35,6 +35,7 @@ const ENV_KEYS = [
   "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD",
   "PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS",
+  "GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64",
   "GHOLA_VENUE_PHOENIX_PILOT_ENABLED",
   "GHOLA_SOLANA_PERPS_LIVE_MODE",
   "PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET",
@@ -106,7 +107,7 @@ describe("public agent startup route", () => {
     expect(JSON.stringify(body)).not.toContain("pooled_worker_probe_failed");
   });
 
-  it("shows authenticated venue choices without marking missing credentials green", async () => {
+  it("keeps every unproven agent venue blocked for an authenticated user", async () => {
     process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
     process.env.GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN = "true";
     enableGreenByoEnv();
@@ -116,13 +117,13 @@ describe("public agent startup route", () => {
 
     expect(res.status).toBe(200);
     expect(body.authenticated).toBe(true);
-    expect(body.live_trading.byo_live_trading_enabled).toBe(true);
+    expect(body.live_trading.byo_live_trading_enabled).toBe(false);
     expect(body.agent_passport.status).toBe("blocked");
     expect(body.venues.map((venue: { id: string; live_gate: string }) => [venue.id, venue.live_gate])).toEqual([
-      ["coinbase", "green"],
-      ["jupiter", "green"],
-      ["phoenix", "green"],
-      ["hyperliquid", "green"],
+      ["coinbase", "blocked"],
+      ["jupiter", "blocked"],
+      ["phoenix", "blocked"],
+      ["hyperliquid", "blocked"],
     ]);
     expect(body.venues.find((venue: { id: string }) => venue.id === "coinbase")).toMatchObject({
       user_access: "connect_required",
@@ -131,12 +132,12 @@ describe("public agent startup route", () => {
     });
     expect(body.venues.find((venue: { id: string }) => venue.id === "phoenix")).toMatchObject({
       user_access: "wallet_required",
-      can_prepare: true,
+      can_prepare: false,
       can_start_live: false,
     });
   });
 
-  it("marks a venue live only when runtime, live gate, and access are ready", async () => {
+  it("does not expose an agent lifecycle from runtime and credential readiness alone", async () => {
     process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
     process.env.GHOLA_PRIVATE_AGENT_SPEND_ARMED = "true";
     process.env.GHOLA_ENABLE_MOCK_ATTESTED_PROVIDER = "true";
@@ -157,18 +158,18 @@ describe("public agent startup route", () => {
       selected_provider: "mock_attested",
     });
     expect(body.venues.find((venue: { id: string }) => venue.id === "coinbase")).toMatchObject({
-      live_gate: "green",
+      live_gate: "blocked",
       user_access: "ready",
-      can_prepare: true,
-      can_start_live: true,
-      status_label: "Agent ready",
+      can_prepare: false,
+      can_start_live: false,
+      status_label: "Venue live gate not ready",
     });
     expect(body.venues.find((venue: { id: string }) => venue.id === "phoenix")).toMatchObject({
       user_access: "wallet_required",
-      can_prepare: true,
+      can_prepare: false,
       can_start_live: false,
     });
-    expect(body.primary_action.label).toBe("Start Coinbase agent");
+    expect(body.primary_action.label).toBe("Connect a venue");
   });
 });
 
@@ -219,16 +220,16 @@ function enableGreenByoEnv() {
   process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET = "secure_private_account_request_proof_secret_32bytes";
   process.env.GHOLA_PRIVATE_RUNTIME_URL = "https://runtime.ghola.example";
   process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN = "internal_live_canary_token_32_bytes";
-  process.env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD = "1000";
-  process.env.GHOLA_LIVE_TRADING_DAILY_CAP_USD = "5000";
+  process.env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD = "100";
+  process.env.GHOLA_LIVE_TRADING_DAILY_CAP_USD = "500";
   process.env.GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS = "100";
   process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED = "true";
-  process.env.GHOLA_HYPERLIQUID_LIVE_MODE = "full_ticket";
   process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET = "true";
   process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "full_ticket";
-  process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD = "1000";
-  process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD = "5000";
+  process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD = "100";
+  process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD = "500";
   process.env.PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS = "100";
+  process.env.GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64 = Buffer.alloc(44, 7).toString("base64");
   process.env.GHOLA_VENUE_PHOENIX_PILOT_ENABLED = "true";
   process.env.GHOLA_SOLANA_PERPS_LIVE_MODE = "full_ticket";
   process.env.PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET = "true";

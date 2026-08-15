@@ -449,6 +449,11 @@ export interface GholaVenueEligibilityCredential {
   platform_class: GholaPlatformClass;
   credential_type: "self_attested_eligible_user" | "partner_verified_eligible_user";
   credential_scope: "eligible_venue_access_only";
+  eligibility_basis?: "self_attested_non_us" | "partner_verified";
+  eligible_non_us?: true;
+  terms_version?: string;
+  risk_disclosure_version?: string;
+  accepted_at?: string;
   status: "verified" | "revoked" | "expired";
   expires_at: string;
   created_at: string;
@@ -2683,6 +2688,11 @@ export function createVenueEligibilityCredential(input: {
   account_commitment: string;
   venue_id: GholaVenueId;
   credential_type?: GholaVenueEligibilityCredential["credential_type"];
+  eligibility_basis?: GholaVenueEligibilityCredential["eligibility_basis"];
+  eligible_non_us?: true;
+  terms_version?: string;
+  risk_disclosure_version?: string;
+  accepted_at?: string;
   ttl_ms?: number;
   now?: Date;
 }): GholaVenueEligibilityCredential {
@@ -2696,6 +2706,11 @@ export function createVenueEligibilityCredential(input: {
     platform_class: platformClass,
     credential_type: input.credential_type ?? "self_attested_eligible_user",
     credential_scope: "eligible_venue_access_only",
+    eligibility_basis: input.eligibility_basis ?? null,
+    eligible_non_us: input.eligible_non_us ?? null,
+    terms_version: input.terms_version ?? null,
+    risk_disclosure_version: input.risk_disclosure_version ?? null,
+    accepted_at: input.accepted_at ?? null,
     expires_at: expiresAt,
   };
   return {
@@ -2707,6 +2722,11 @@ export function createVenueEligibilityCredential(input: {
     platform_class: platformClass,
     credential_type: input.credential_type ?? "self_attested_eligible_user",
     credential_scope: "eligible_venue_access_only",
+    ...(input.eligibility_basis ? { eligibility_basis: input.eligibility_basis } : {}),
+    ...(input.eligible_non_us ? { eligible_non_us: true as const } : {}),
+    ...(input.terms_version ? { terms_version: input.terms_version } : {}),
+    ...(input.risk_disclosure_version ? { risk_disclosure_version: input.risk_disclosure_version } : {}),
+    ...(input.accepted_at ? { accepted_at: input.accepted_at } : {}),
     status: "verified",
     expires_at: expiresAt,
     created_at: now.toISOString(),

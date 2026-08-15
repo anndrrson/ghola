@@ -37,6 +37,25 @@ vi.mock("@/lib/private-agent-worker-readiness", () => ({
     missing: [],
     status: 200,
   })),
+  probeLiveTradingWorkerReadiness: vi.fn(async () => ({
+    ready: true,
+    reason_codes: [],
+  })),
+}));
+
+vi.mock("@/lib/live-trading-release.server", () => ({
+  configuredLiveTradingPublicCapabilities: vi.fn(() => ["limit_order"]),
+  currentLiveTradingReleaseIdentity: vi.fn(() => ({
+    contract_version: 2,
+    valid: true,
+    reason_codes: [],
+  })),
+  liveTradingLaunchBindingFailures: vi.fn(() => []),
+}));
+
+vi.mock("@/lib/live-trading-store", () => ({
+  getLiveTradingLaunchControl: vi.fn(async () => ({ state: "public" })),
+  evaluateLiveTradingCapability: vi.fn(async () => ({ state: "live", reason_codes: [] })),
 }));
 
 import { GET } from "./route";
@@ -45,8 +64,6 @@ const ORIGINAL_ENV = { ...process.env };
 const TEST_KEYS = [
   "GHOLA_CONSUMER_LAUNCH_PROFILE",
   "GHOLA_OBSERVABILITY_PROVIDER",
-  "GHOLA_HYPERLIQUID_LIVE_MODE",
-  "GHOLA_HYPERLIQUID_ALLOW_MAINNET",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE",
   "PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET",
   "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD",
@@ -76,15 +93,6 @@ describe("consumer production readiness", () => {
     Object.assign(process.env, {
       GHOLA_CONSUMER_LAUNCH_PROFILE: "byo_hyperliquid",
       GHOLA_OBSERVABILITY_PROVIDER: "vercel",
-      GHOLA_HYPERLIQUID_LIVE_MODE: "full_ticket",
-      GHOLA_HYPERLIQUID_ALLOW_MAINNET: "true",
-      PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "full_ticket",
-      PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET: "true",
-      PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD: "1000",
-      PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD: "5000",
-      PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS: "100",
-      GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL: "https://worker.example",
-      GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN: "connector-token",
       GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
       GHOLA_TRADING_CONTROL_TOKEN: "control-token",
       GHOLA_RECONCILIATION_INGEST_TOKEN: "reconciliation-token",

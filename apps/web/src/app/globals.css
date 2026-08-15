@@ -112,6 +112,14 @@ body {
   color: #fff;
 }
 
+/* Market figures should read like instruments, not source code. */
+.trade-market-number {
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "zero" 0;
+  font-kerning: normal;
+}
+
 .trade-chip {
   background: var(--trade-surface-1);
   border: 1px solid var(--trade-border);
@@ -140,6 +148,92 @@ body {
 }
 .trade-chip-on:active:not(:disabled) {
   background: #0c141d;
+}
+
+@layer components {
+  .ghola-market-chart {
+    container-type: inline-size;
+  }
+
+  .ghola-chart-inspection {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  @container (min-width: 34rem) {
+    .ghola-chart-inspection {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+  }
+
+  @container (min-width: 44rem) {
+    .ghola-chart-inspection {
+      grid-template-columns: minmax(8.5rem, 1.2fr) repeat(6, minmax(0, 1fr));
+    }
+  }
+
+  .term-chip,
+  .term-chip-on {
+    border-radius: 0.25rem;
+    border-style: solid;
+    border-width: 1px;
+    outline: none;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+  }
+
+  .term-chip {
+    background: #090909;
+    border-color: #292929;
+    color: #949aa5;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  }
+
+  .term-chip:hover:not(:disabled) {
+    background: #111111;
+    border-color: #404040;
+    color: #eceff4;
+  }
+
+  .term-chip:active:not(:disabled) {
+    background: #060606;
+  }
+
+  .term-chip-on {
+    background: #111d29;
+    border-color: #3772a8;
+    color: #edf7ff;
+    box-shadow: inset 0 1px 0 rgba(110, 190, 255, 0.14);
+  }
+
+  .term-chip-on:hover:not(:disabled) {
+    background: #16283a;
+    border-color: #58a1df;
+  }
+
+  .term-chip:focus-visible,
+  .term-chip-on:focus-visible {
+    border-color: #6bb6f5;
+    box-shadow: 0 0 0 2px rgba(86, 168, 255, 0.2);
+  }
+
+  .term-subpanel {
+    border: 1px solid #1c2938;
+    border-radius: 0.375rem;
+    background: #040608;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  }
+
+  .term-corners {
+    background:
+      linear-gradient(#4b87b4, #4b87b4) left top / 10px 1px no-repeat,
+      linear-gradient(#4b87b4, #4b87b4) left top / 1px 10px no-repeat,
+      linear-gradient(#4b87b4, #4b87b4) right top / 10px 1px no-repeat,
+      linear-gradient(#4b87b4, #4b87b4) right top / 1px 10px no-repeat,
+      linear-gradient(#4b87b4, #4b87b4) left bottom / 10px 1px no-repeat,
+      linear-gradient(#4b87b4, #4b87b4) left bottom / 1px 10px no-repeat,
+      linear-gradient(#4b87b4, #4b87b4) right bottom / 10px 1px no-repeat,
+      linear-gradient(#4b87b4, #4b87b4) right bottom / 1px 10px no-repeat;
+    opacity: 0.28;
+  }
 }
 
 .trade-field {

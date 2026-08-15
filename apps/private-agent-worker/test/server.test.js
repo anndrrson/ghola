@@ -845,7 +845,7 @@ describe("private agent worker", () => {
     assert.ok(readiness.reason_codes.includes("worker_state_store_not_shared"));
   });
 
-  it("does not submit Hyperliquid orders from reconcile requests", async () => {
+  it("does not submit or query Hyperliquid for an unclaimed reconcile request", async () => {
     const vault = await encryptedHyperliquidVault(baseUrl);
     const workOrderCommitment = "connector_work_order_hl_reconcile_read_only_123";
     const response = await fetch(`${baseUrl}/hyperliquid/reconcile`, {
@@ -876,11 +876,9 @@ describe("private agent worker", () => {
       }),
     });
 
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 404);
     const body = await response.json();
-    assert.equal(body.status, "reconcile_required");
-    assert.equal(body.final_proof.broadcast_performed, false);
-    assert.equal(body.final_proof.final_venue_execution_proven, false);
+    assert.equal(body.error_code, "HYPERLIQUID_EXECUTION_CLAIM_NOT_FOUND");
     assert.notEqual(body.status, "submitted");
   });
 

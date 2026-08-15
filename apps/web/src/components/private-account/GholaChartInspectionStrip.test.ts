@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { GholaChartInspectionStrip } from "./GholaChartInspectionStrip";
 
 describe("GholaChartInspectionStrip", () => {
-  it("renders one keyboard-scrollable mobile rail and the full desktop grid", () => {
+  it("renders every statistic once in the no-overflow responsive grid", () => {
     const stats = [
       { label: "Time", value: "12:34" },
       { label: "Open", value: "100" },
@@ -19,11 +19,10 @@ describe("GholaChartInspectionStrip", () => {
     for (const stat of stats) {
       expect(markup.match(new RegExp(`>${stat.label}<`, "gu"))).toHaveLength(1);
     }
-    expect(markup).toContain('aria-label="Scrollable chart inspection statistics"');
-    expect(markup).toContain('tabindex="0"');
-    expect(markup).toContain("overflow-x-auto");
-    expect(markup).toContain("snap-mandatory");
-    expect(markup).toContain("sm:grid-cols-4");
-    expect(markup).toContain("lg:grid-cols-7");
+    expect(markup).toContain('role="region"');
+    expect(markup).toContain('aria-label="Chart inspection statistics"');
+    expect(markup).toContain('data-chart-inspection-strip="responsive"');
+    expect(markup).toContain("overflow-hidden");
+    expect(markup).toContain('title="2.4M"');
   });
 });

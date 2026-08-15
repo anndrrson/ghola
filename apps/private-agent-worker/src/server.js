@@ -23,6 +23,7 @@ import {
   executeJupiterSwapOrder,
   executeSolanaPerpsOrder,
   readHyperliquidSnapshot,
+  reconcileHyperliquidClaim,
   reconcileStoredExecution,
   reconcileCoinbaseClaim,
   streamHyperliquidAccountState,
@@ -99,6 +100,11 @@ const PLAINTEXT_LEAK_KEYS = new Set([
   "wallet_private_key",
 ]);
 const RECIPIENT_REPORT_DOMAIN = "ghola-private-agent-recipient-v1";
+const LIVE_TRADING_CONTRACT_VERSION = 2;
+const LIVE_TRADING_MAX_ORDER_NOTIONAL_USD = 100;
+const LIVE_TRADING_ROLLING_24H_NOTIONAL_USD = 500;
+const LIVE_TRADING_MAX_SLIPPAGE_BPS = 100;
+const LIVE_TRADING_SUPPORTED_CAPABILITIES = ["limit_order", "cancel", "reduce_only", "stop_loss", "take_profit"];
 const DSTACK_QUOTE_PATHS = [
   {
     socketPath: "/var/run/dstack.sock",
@@ -240,6 +246,102 @@ function stableJson(value) {
 
 function gholaCommitment(prefix, value) {
   return `${prefix}_${sha256Hex(stableJson(value)).slice(0, 48)}`;
+}
+
+export function liveTradingReadinessContract(envInput = process.env) {
+  const configuredCapabilities = String(
+    envInput.PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES ||
+    envInput.GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES ||
+    "limit_order",
+  ).split(",").map((value) => value.trim()).filter(Boolean).sort();
+  const fundingSignerKeys = [...new Set(String(
+    envInput.GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64 || "",
+  ).split(",").map((value) => value.trim()).filter(Boolean))].sort();
+  const snapshot = {
+    contract_version: LIVE_TRADING_CONTRACT_VERSION,
+    venue: "hyperliquid",
+    network: "mainnet",
+    live_mode: String(envInput.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE || "").trim() || null,
+    mainnet_proof_enabled: String(envInput.PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED || "").trim() || null,
+    max_order_notional_usd: finiteNumberOrNull(envInput.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD),
+    rolling_24h_notional_usd: finiteNumberOrNull(envInput.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD),
+    max_slippage_bps: finiteNumberOrNull(envInput.PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS),
+    live_max_order_notional_usd: finiteNumberOrNull(envInput.PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD),
+    live_rolling_24h_notional_usd: finiteNumberOrNull(envInput.PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD),
+    venue_dry_run: String(envInput.PRIVATE_AGENT_VENUE_DRY_RUN || "").trim() || null,
+    state_store: String(envInput.PRIVATE_AGENT_STATE_STORE || "").trim().toLowerCase() || null,
+    require_dstack_quote: String(envInput.PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE || "").trim() || null,
+    require_worker_capability: String(envInput.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY || "").trim() || null,
+    position_protection_enabled: String(envInput.GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED || "").trim() || null,
+    public_capabilities: [...new Set(configuredCapabilities)],
+    funding_signer_keys_b64: fundingSignerKeys,
+  };
+  const reasonCodes = [];
+  if (envInput.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET !== "true") reasonCodes.push("hyperliquid_mainnet_worker_disabled");
+  if (String(envInput.GHOLA_HYPERLIQUID_LIVE_MODE || "").trim()) reasonCodes.push("legacy_hyperliquid_live_mode_present");
+  if (snapshot.live_mode !== "full_ticket") reasonCodes.push("hyperliquid_worker_full_ticket_disabled");
+  if (snapshot.mainnet_proof_enabled !== "true") reasonCodes.push("hyperliquid_mainnet_proof_disabled");
+  if (snapshot.max_order_notional_usd !== LIVE_TRADING_MAX_ORDER_NOTIONAL_USD) reasonCodes.push("hyperliquid_max_order_cap_mismatch");
+  if (snapshot.rolling_24h_notional_usd !== LIVE_TRADING_ROLLING_24H_NOTIONAL_USD) reasonCodes.push("hyperliquid_daily_cap_mismatch");
+  if (snapshot.max_slippage_bps !== LIVE_TRADING_MAX_SLIPPAGE_BPS) reasonCodes.push("hyperliquid_slippage_cap_mismatch");
+  if (snapshot.live_max_order_notional_usd !== LIVE_TRADING_MAX_ORDER_NOTIONAL_USD) reasonCodes.push("worker_live_max_order_cap_mismatch");
+  if (snapshot.live_rolling_24h_notional_usd !== LIVE_TRADING_ROLLING_24H_NOTIONAL_USD) reasonCodes.push("worker_live_daily_cap_mismatch");
+  if (snapshot.venue_dry_run !== "false") reasonCodes.push("venue_dry_run_configuration_invalid");
+  if (envInput.PRIVATE_AGENT_HYPERLIQUID_NO_SUBMIT_LOCAL_CHECKS === "true") {
+    reasonCodes.push("hyperliquid_no_submit_simulation_enabled");
+  }
+  if (snapshot.state_store !== "postgres") reasonCodes.push("worker_state_store_not_postgres");
+  if (!String(envInput.PRIVATE_AGENT_STATE_POSTGRES_URL || "").trim()) reasonCodes.push("worker_state_postgres_url_missing");
+  if (snapshot.require_dstack_quote !== "true") reasonCodes.push("worker_dstack_quote_not_required");
+  if (snapshot.require_worker_capability !== "true") reasonCodes.push("worker_capability_auth_not_required");
+  if (envInput.PRIVATE_AGENT_GLOBAL_KILL_SWITCH === "true") reasonCodes.push("worker_global_kill_active");
+  if (!normalizedGitSha(envInput.PRIVATE_AGENT_BUILD_GIT_SHA || envInput.VERCEL_GIT_COMMIT_SHA)) reasonCodes.push("worker_release_identity_missing");
+  if (!normalizedImageDigest(envInput.PRIVATE_AGENT_IMAGE_DIGEST || envInput.PHALA_CVM_IMAGE_DIGEST)) reasonCodes.push("worker_image_digest_missing");
+  if (fundingSignerKeys.length === 0) reasonCodes.push("funding_worker_signer_pin_missing");
+  else if (fundingSignerKeys.some((key) => !validBase64PublicKey(key))) reasonCodes.push("funding_worker_signer_pin_invalid");
+  const implementedCapabilities = snapshot.position_protection_enabled === "true"
+    ? ["limit_order", "stop_loss", "take_profit"]
+    : ["limit_order"];
+  if (
+    configuredCapabilities.length !== implementedCapabilities.length ||
+    implementedCapabilities.some((capability) => !configuredCapabilities.includes(capability))
+  ) {
+    reasonCodes.push("public_capability_not_implemented");
+  }
+  return {
+    ready: reasonCodes.length === 0,
+    reason_codes: reasonCodes,
+    contract_version: LIVE_TRADING_CONTRACT_VERSION,
+    worker_git_sha: normalizedGitSha(envInput.PRIVATE_AGENT_BUILD_GIT_SHA || envInput.VERCEL_GIT_COMMIT_SHA),
+    worker_image_digest: normalizedImageDigest(envInput.PRIVATE_AGENT_IMAGE_DIGEST || envInput.PHALA_CVM_IMAGE_DIGEST),
+    config_fingerprint: gholaCommitment("live_trading_config", snapshot),
+    caps: {
+      max_order_notional_usd: snapshot.max_order_notional_usd,
+      rolling_24h_notional_usd: snapshot.rolling_24h_notional_usd,
+      max_slippage_bps: snapshot.max_slippage_bps,
+    },
+    capabilities: configuredCapabilities.filter((capability) => LIVE_TRADING_SUPPORTED_CAPABILITIES.includes(capability)),
+  };
+}
+
+function validBase64PublicKey(value) {
+  return value.length >= 40 && value.length <= 256 &&
+    /^[A-Za-z0-9+/]+={0,2}$/.test(value) && value.length % 4 === 0;
+}
+
+function finiteNumberOrNull(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizedGitSha(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return /^[a-f0-9]{7,64}$/.test(normalized) ? normalized : null;
+}
+
+function normalizedImageDigest(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return /^(?:sha256:)?[a-f0-9]{64}$/.test(normalized) ? normalized : null;
 }
 
 function postUnixJson({ socketPath, path, body }) {
@@ -1995,6 +2097,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return json(res, ready.ready ? 200 : 503, {
           ready: ready.ready,
           missing: ready.missing,
+          live_trading: liveTradingReadinessContract(),
         });
       }
 
@@ -2718,16 +2821,15 @@ export function createPrivateAgentWorkerServer(options = {}) {
             error_code: hyperliquidValidationErrorCode(errors),
           });
         }
-        return json(res, 200, await reconcileStoredExecution({
+        return json(res, 200, await reconcileHyperliquidClaim({
           body: {
             ...body,
             vault_commitment: body.vault_commitment || "vault_commitment_redacted",
             policy_commitment: body.policy_commitment || "policy_commitment_redacted",
             operation_class: "reconcile",
           },
+          recipient,
           state,
-          venue_id: "hyperliquid",
-          platform_class: "hyperliquid_style_market",
         }));
       }
 

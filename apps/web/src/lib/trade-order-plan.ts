@@ -28,6 +28,8 @@ export interface TradeOrderPlan {
     stop_level: string;
     scope: "agent_plan_invalidation_only";
   };
+  /** Optional venue-native OCO protection; public launch remains capability-gated. */
+  protection_intent?: TradeOrderProtectionIntent;
   agent_mandate: {
     strategy_profile: string;
     entry_trigger: string;
@@ -41,7 +43,7 @@ export interface TradeOrderPlan {
     refresh_after_submit: true;
     fetch_fills: true;
     cancel_if_open: false;
-    reduce_only: false;
+    reduce_only: boolean;
   };
   market_context: {
     frame_version: 1;
@@ -67,6 +69,14 @@ export interface TradeOrderRiskEnvelope {
   scope: "account_local_cost_assumption_v1";
 }
 
+export interface TradeOrderProtectionIntent {
+  mode: "venue_native_oco";
+  trigger_source: "mark";
+  take_profit_level: string;
+  stop_level: string;
+  max_slippage_bps: number;
+}
+
 export interface TradeOrderPlanBindingEnvelope {
   version: 1;
   algorithm: "HMAC-SHA256";
@@ -90,6 +100,7 @@ export interface TradeOrderPlanBuildInput {
   limitPrice: number;
   maxSlippageBps: number;
   stopLevel: number;
+  takeProfitLevel?: number;
   strategyProfile: string;
   entryTrigger: string;
   exitRule: string;
@@ -109,6 +120,7 @@ export interface TradeOrderPlanBuildInput {
     feeEvidenceAtMs: number;
     bufferEvidenceAtMs: number;
   };
+  reduceOnly?: boolean;
   nowMs?: number;
 }
 
@@ -132,11 +144,13 @@ const PLAN_KEYS = [
   "max_slippage_bps",
   "risk_envelope",
   "stop_intent",
+  "protection_intent",
   "agent_mandate",
   "execution_policy",
   "market_context",
 ] as const;
 const STOP_KEYS = ["stop_level", "scope"] as const;
+const PROTECTION_KEYS = ["mode", "trigger_source", "take_profit_level", "stop_level", "max_slippage_bps"] as const;
 const MANDATE_KEYS = [
   "strategy_profile",
   "entry_trigger",
@@ -161,8 +175,9 @@ export function buildTradeOrderPlan(input: TradeOrderPlanBuildInput): TradeOrder
   const baseSize = canonicalTradeDecimal(input.baseSize, 8);
   const executionReferencePrice = canonicalTradeDecimal(input.executionReferencePrice);
   const triggerLevel = input.triggerLevel == null ? null : canonicalTradeDecimal(input.triggerLevel);
+  const takeProfitLevel = input.takeProfitLevel == null ? null : canonicalTradeDecimal(input.takeProfitLevel);
   const riskEnvelope = input.riskEnvelope ? canonicalRiskEnvelope(input.riskEnvelope) : null;
-  if (!limitPrice || !stopLevel || !quoteNotional || !baseSize || !executionReferencePrice || (input.triggerLevel != null && !triggerLevel) || (input.riskEnvelope && !riskEnvelope)) return null;
+  if (!limitPrice || !stopLevel || !quoteNotional || !baseSize || !executionReferencePrice || (input.triggerLevel != null && !triggerLevel) || (input.takeProfitLevel != null && !takeProfitLevel) || (input.riskEnvelope && !riskEnvelope)) return null;
   const slippageBound = tradeOrderPlanSlippageBound({
     side: input.side,
     limitPrice: Number(limitPrice),
@@ -191,6 +206,15 @@ export function buildTradeOrderPlan(input: TradeOrderPlanBuildInput): TradeOrder
       stop_level: stopLevel,
       scope: "agent_plan_invalidation_only",
     },
+    ...(takeProfitLevel ? {
+      protection_intent: {
+        mode: "venue_native_oco" as const,
+        trigger_source: "mark" as const,
+        take_profit_level: takeProfitLevel,
+        stop_level: stopLevel,
+        max_slippage_bps: Math.trunc(input.maxSlippageBps),
+      },
+    } : {}),
     agent_mandate: {
       strategy_profile: input.strategyProfile,
       entry_trigger: input.entryTrigger,
@@ -204,7 +228,7 @@ export function buildTradeOrderPlan(input: TradeOrderPlanBuildInput): TradeOrder
       refresh_after_submit: true,
       fetch_fills: true,
       cancel_if_open: false,
-      reduce_only: false,
+      reduce_only: input.reduceOnly === true,
     },
     market_context: {
       frame_version: input.frameVersion === 1 ? 1 : input.frameVersion as 1,
@@ -276,11 +300,10 @@ export function validateTradeOrderPlan(
   options: { nowMs?: number; requireFresh?: boolean; allowLegacySlippageReference?: boolean } = {},
 ): TradeOrderPlanValidation {
   const plan = objectValue(input);
-  const legacyShape = Boolean(plan
-    && !("risk_envelope" in plan)
-    && Object.keys(plan).length === PLAN_KEYS.length - 1
-    && Object.keys(plan).every((key) => PLAN_KEYS.includes(key as typeof PLAN_KEYS[number])));
-  if (!plan || (!hasOnlyKeys(plan, PLAN_KEYS) && !legacyShape)) return invalid("order_plan_shape_invalid");
+  const expectedPlanKeys = PLAN_KEYS.filter((key) =>
+    (key !== "risk_envelope" || Boolean(plan && "risk_envelope" in plan)) &&
+    (key !== "protection_intent" || Boolean(plan && "protection_intent" in plan)));
+  if (!plan || !hasOnlyKeys(plan, expectedPlanKeys)) return invalid("order_plan_shape_invalid");
   if (plan.version !== TRADE_ORDER_PLAN_VERSION || plan.kind !== TRADE_ORDER_PLAN_KIND) return invalid("order_plan_version_invalid");
   if (typeof plan.venue_id !== "string" || !VENUES.has(plan.venue_id as TradeOrderVenueId)) return invalid("order_plan_venue_invalid");
   const venueId = plan.venue_id as TradeOrderVenueId;
@@ -319,6 +342,30 @@ export function validateTradeOrderPlan(
     return invalid("order_plan_stop_side_invalid");
   }
 
+  const protection = plan.protection_intent == null ? null : objectValue(plan.protection_intent);
+  let protectionIntent: TradeOrderProtectionIntent | null = null;
+  if (protection) {
+    const takeProfitLevel = strictCanonicalDecimal(protection.take_profit_level, 8);
+    if (
+      venueId !== "hyperliquid" ||
+      plan.time_in_force !== "ioc" ||
+      !hasOnlyKeys(protection, PROTECTION_KEYS) ||
+      protection.mode !== "venue_native_oco" ||
+      protection.trigger_source !== "mark" ||
+      protection.stop_level !== stopLevel ||
+      !takeProfitLevel ||
+      (plan.side === "buy" ? Number(takeProfitLevel) <= Number(limitPrice) : Number(takeProfitLevel) >= Number(limitPrice)) ||
+      protection.max_slippage_bps !== plan.max_slippage_bps
+    ) return invalid("order_plan_protection_invalid");
+    protectionIntent = {
+      mode: "venue_native_oco",
+      trigger_source: "mark",
+      take_profit_level: takeProfitLevel,
+      stop_level: stopLevel,
+      max_slippage_bps: Number(plan.max_slippage_bps),
+    };
+  }
+
   const riskEnvelope = plan.risk_envelope == null ? null : validateRiskEnvelope(plan.risk_envelope, {
     quoteNotionalUsd: Number(quoteNotional),
     limitPrice: Number(limitPrice),
@@ -343,7 +390,7 @@ export function validateTradeOrderPlan(
     execution.refresh_after_submit !== true ||
     execution.fetch_fills !== true ||
     execution.cancel_if_open !== false ||
-    execution.reduce_only !== false
+    typeof execution.reduce_only !== "boolean"
   ) return invalid("order_plan_execution_policy_invalid");
 
   const market = objectValue(plan.market_context);
@@ -400,6 +447,7 @@ export function validateTradeOrderPlan(
       max_slippage_bps: Number(plan.max_slippage_bps),
       ...(riskEnvelope ? { risk_envelope: riskEnvelope } : {}),
       stop_intent: { stop_level: stopLevel, scope: "agent_plan_invalidation_only" },
+      ...(protectionIntent ? { protection_intent: protectionIntent } : {}),
       agent_mandate: {
         strategy_profile: mandate.strategy_profile as string,
         entry_trigger: mandate.entry_trigger as string,
@@ -413,7 +461,7 @@ export function validateTradeOrderPlan(
         refresh_after_submit: true,
         fetch_fills: true,
         cancel_if_open: false,
-        reduce_only: false,
+        reduce_only: execution.reduce_only as boolean,
       },
       market_context: {
         frame_version: 1,

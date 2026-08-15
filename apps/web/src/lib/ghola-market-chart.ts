@@ -72,6 +72,7 @@ export interface GholaMarketFrame {
   fundingRateUpdatedAt?: string | null;
   openInterest: string | null;
   dayVolume: string | null;
+  sizeDecimals?: number | null;
   candles: GholaChartCandle[];
   bids: GholaChartBookLevel[];
   asks: GholaChartBookLevel[];
@@ -304,6 +305,7 @@ export function gholaFrameFromHyperliquid(snapshot: HyperliquidMarketSnapshot | 
     fundingRateUpdatedAt: snapshot.funding_updated_at,
     openInterest: snapshot.open_interest,
     dayVolume: snapshot.day_notional_volume,
+    sizeDecimals: snapshot.size_decimals ?? null,
     candles: snapshot.candles.map(normalizeCandle),
     bids: snapshot.bids.map(normalizeBookLevel),
     asks: snapshot.asks.map(normalizeBookLevel),

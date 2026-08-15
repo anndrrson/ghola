@@ -1,4 +1,9 @@
 import type { TradeOrderPlan, TradeOrderVenueId } from "./trade-order-plan";
+import {
+  LIVE_TRADING_MAX_ORDER_NOTIONAL_USD,
+  LIVE_TRADING_MAX_SLIPPAGE_BPS,
+  LIVE_TRADING_ROLLING_24H_NOTIONAL_USD,
+} from "./live-trading-contract";
 
 export type PrivateAccountByoVenueId = TradeOrderVenueId | "jupiter";
 
@@ -8,6 +13,7 @@ export type PrivateAccountByoLiveOrderShape = {
   time_in_force: string;
   live_order_mode?: string | null;
   post_only?: boolean;
+  protection_intent?: unknown;
 };
 
 export type PrivateAccountByoPlanContainment =
@@ -42,15 +48,16 @@ export function privateAccountByoGlobalFailures(
   if (!validRequestProofSecret(env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET || "")) {
     failures.push("request_proof_secret_missing");
   }
-  if (!capEquals(env, ["GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD"], 1_000)) {
+  if (!capEquals(env, ["GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD"], LIVE_TRADING_MAX_ORDER_NOTIONAL_USD)) {
     failures.push("launch_max_order_cap_missing");
   }
-  if (!capEquals(env, ["GHOLA_LIVE_TRADING_DAILY_CAP_USD"], 5_000)) {
+  if (!capEquals(env, ["GHOLA_LIVE_TRADING_DAILY_CAP_USD"], LIVE_TRADING_ROLLING_24H_NOTIONAL_USD)) {
     failures.push("launch_daily_cap_missing");
   }
-  if (!capAtMost(env, ["GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS"], 100)) {
+  if (!capEquals(env, ["GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS"], LIVE_TRADING_MAX_SLIPPAGE_BPS)) {
     failures.push("launch_slippage_cap_missing");
   }
+  if (env.GHOLA_HYPERLIQUID_LIVE_MODE?.trim()) failures.push("legacy_hyperliquid_live_mode_present");
   return failures;
 }
 
@@ -63,9 +70,9 @@ export function privateAccountByoVenueGate(
     if (!envIs(env, "GHOLA_V6_HYPERLIQUID_PILOT_ENABLED", "true")) reasonCodes.push("hyperliquid_pilot_disabled");
     if (!envIs(env, "PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", "true")) reasonCodes.push("hyperliquid_mainnet_worker_disabled");
     if (!envIs(env, "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", "full_ticket")) reasonCodes.push("hyperliquid_worker_full_ticket_disabled");
-    if (!capEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD"], 1_000)) reasonCodes.push("hyperliquid_max_order_cap_missing");
-    if (!capEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD"], 5_000)) reasonCodes.push("hyperliquid_daily_cap_missing");
-    if (!capAtMost(env, ["PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS"], 100)) reasonCodes.push("hyperliquid_slippage_cap_missing");
+    if (!capEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD"], LIVE_TRADING_MAX_ORDER_NOTIONAL_USD)) reasonCodes.push("hyperliquid_max_order_cap_missing");
+    if (!capEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD"], LIVE_TRADING_ROLLING_24H_NOTIONAL_USD)) reasonCodes.push("hyperliquid_daily_cap_missing");
+    if (!capEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS"], LIVE_TRADING_MAX_SLIPPAGE_BPS)) reasonCodes.push("hyperliquid_slippage_cap_missing");
   }
   if (id === "phoenix") {
     if (!envIs(env, "GHOLA_VENUE_PHOENIX_PILOT_ENABLED", "true")) reasonCodes.push("phoenix_pilot_disabled");
@@ -112,6 +119,7 @@ export function privateAccountByoExecutionGate(
     ...venue.reason_codes,
     ...tradeOrderPlanFailures(plan, env),
     ...(containment.allowed ? [] : [containment.reason_code]),
+    ...(plan.venue_id === "hyperliquid" ? [] : ["venue_execution_not_in_launch"]),
   ])];
   return { allowed: reasonCodes.length === 0, venue, reason_codes: reasonCodes };
 }
