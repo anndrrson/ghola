@@ -47,6 +47,12 @@ const TEST_ENV_KEYS = [
   "GHOLA_HYPERLIQUID_LIVE_MODE",
   "GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD",
   "GHOLA_HYPERLIQUID_LIVE_MAX_SLIPPAGE_BPS",
+  "GHOLA_LIVE_TRADING_DAILY_CAP_USD",
+  "GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD",
+  "GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED",
+  "GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES",
+  "GHOLA_PRIVATE_AGENT_WORKER_GIT_SHA",
+  "GHOLA_WEB_GIT_SHA",
   "GHOLA_JUPITER_API_KEY",
   "GHOLA_WORKER_CAPABILITY_SECRET",
   "DATABASE_URL",
@@ -58,13 +64,19 @@ const TEST_ENV_KEYS = [
   "PRIVATE_AGENT_FUNDING_SIGNING_KEY",
   "PRIVATE_AGENT_STATE_STORE",
   "PRIVATE_AGENT_STATE_POSTGRES_URL",
+  "PRIVATE_AGENT_BUILD_GIT_SHA",
   "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD",
+  "PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED",
   "PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS",
   "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON",
+  "PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD",
+  "PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD",
+  "PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES",
+  "PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY",
   "PRIVATE_AGENT_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS",
   "PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON",
@@ -103,6 +115,7 @@ describe("private-agent Phala provisioning", () => {
     expect(compose).toContain("ghcr.io/example/worker@sha256:abc");
     expect(compose).toContain("/var/run/dstack.sock:/var/run/dstack.sock");
     expect(compose).toContain('PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE: "true"');
+    expect(compose).toContain('PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY: "true"');
     expect(compose).toContain(
       'PRIVATE_AGENT_EXECUTION_TOKEN: "${PRIVATE_AGENT_EXECUTION_TOKEN}"',
     );
@@ -113,6 +126,7 @@ describe("private-agent Phala provisioning", () => {
       'PRIVATE_AGENT_FUNDING_SIGNING_KEY: "${PRIVATE_AGENT_FUNDING_SIGNING_KEY:-}"',
     );
     expect(compose).toContain('PRIVATE_AGENT_STATE_STORE: "json"');
+    expect(compose).toContain('PRIVATE_AGENT_IMAGE_DIGEST: "sha256:abc"');
     expect(compose).toContain(
       'PRIVATE_AGENT_STATE_POSTGRES_URL: "${PRIVATE_AGENT_STATE_POSTGRES_URL:-}"',
     );
@@ -217,6 +231,31 @@ describe("private-agent Phala provisioning", () => {
     expect(compose).toContain(
       'PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS: "25"',
     );
+  });
+
+  it("passes the identity-bound live trading contract into the worker compose", () => {
+    const sha = "a".repeat(40);
+    setTestEnv({
+      GHOLA_WEB_GIT_SHA: sha,
+      GHOLA_LIVE_TRADING_DAILY_CAP_USD: "500",
+      GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD: "100",
+      GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED: "true",
+      GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES: "limit_order,stop_loss,take_profit",
+      PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED: "true",
+    });
+
+    const compose = buildPhalaWorkerCompose({
+      image: `ghcr.io/example/worker:${sha}`,
+      imageDigest: `sha256:${"b".repeat(64)}`,
+    });
+
+    expect(compose).toContain(`PRIVATE_AGENT_BUILD_GIT_SHA: "${sha}"`);
+    expect(compose).toContain(`PRIVATE_AGENT_IMAGE_DIGEST: "sha256:${"b".repeat(64)}"`);
+    expect(compose).toContain('PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED: "true"');
+    expect(compose).toContain('PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD: "100"');
+    expect(compose).toContain('PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD: "500"');
+    expect(compose).toContain('PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES: "limit_order,stop_loss,take_profit"');
+    expect(compose).toContain('GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED: "true"');
   });
 
   it("refuses live JIT provisioning without an explicit fresh worker image", () => {
