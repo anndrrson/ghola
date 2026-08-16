@@ -3,11 +3,16 @@ import {
   getTriVenueStatus,
   submitTriVenueWorkerCommand,
 } from "@/lib/private-account-tri-venue-arb";
+import { privateAgentSpendPolicy } from "@/lib/private-agent-spend-policy";
 import { triVenueLiveGuard } from "../../_lib";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  const spendPolicy = privateAgentSpendPolicy("execute");
+  if (!spendPolicy.allowed) {
+    return json({ version: 1, error: spendPolicy.reason }, 403);
+  }
   const guarded = await triVenueLiveGuard(req);
   if (!guarded.ok) return guarded.response;
   const status = await getTriVenueStatus({ probeWorker: true });

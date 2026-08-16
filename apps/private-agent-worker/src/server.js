@@ -15,6 +15,7 @@ import {
   startAutopilotLoop,
 } from "./execution/autopilot.js";
 import { createCrossVenueCoordinator } from "./execution/cross-venue.js";
+import { createLiveCrossVenueAdapter } from "./execution/cross-venue-live.js";
 import {
   createHyperliquidManagedAllocation,
   executeCoinbaseOrder,
@@ -22,7 +23,9 @@ import {
   executeJupiterSwapOrder,
   executeSolanaPerpsOrder,
   readHyperliquidSnapshot,
+  reconcileHyperliquidClaim,
   reconcileStoredExecution,
+  reconcileCoinbaseClaim,
   streamHyperliquidAccountState,
   storeCoinbaseSession,
   storeHyperliquidSession,
@@ -33,6 +36,11 @@ import {
   verifyJupiterSwapNoSubmit,
   verifySolanaPerpsOrderNoSubmit,
 } from "./execution/private-execution.js";
+import {
+  hyperliquidMainnetRoundTripEnabled,
+  runSealedHyperliquidMainnetRoundTrip,
+  validateHyperliquidMainnetRoundTripRequest,
+} from "./execution/hyperliquid-mainnet-roundtrip.js";
 import { createConfiguredWorkerState } from "./state/private-state.js";
 import {
   attestFreshCredentialFunded,
@@ -92,6 +100,11 @@ const PLAINTEXT_LEAK_KEYS = new Set([
   "wallet_private_key",
 ]);
 const RECIPIENT_REPORT_DOMAIN = "ghola-private-agent-recipient-v1";
+const LIVE_TRADING_CONTRACT_VERSION = 2;
+const LIVE_TRADING_MAX_ORDER_NOTIONAL_USD = 100;
+const LIVE_TRADING_ROLLING_24H_NOTIONAL_USD = 500;
+const LIVE_TRADING_MAX_SLIPPAGE_BPS = 100;
+const LIVE_TRADING_SUPPORTED_CAPABILITIES = ["limit_order", "cancel", "reduce_only", "stop_loss", "take_profit"];
 const DSTACK_QUOTE_PATHS = [
   {
     socketPath: "/var/run/dstack.sock",
@@ -233,6 +246,102 @@ function stableJson(value) {
 
 function gholaCommitment(prefix, value) {
   return `${prefix}_${sha256Hex(stableJson(value)).slice(0, 48)}`;
+}
+
+export function liveTradingReadinessContract(envInput = process.env) {
+  const configuredCapabilities = String(
+    envInput.PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES ||
+    envInput.GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES ||
+    "limit_order",
+  ).split(",").map((value) => value.trim()).filter(Boolean).sort();
+  const fundingSignerKeys = [...new Set(String(
+    envInput.GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64 || "",
+  ).split(",").map((value) => value.trim()).filter(Boolean))].sort();
+  const snapshot = {
+    contract_version: LIVE_TRADING_CONTRACT_VERSION,
+    venue: "hyperliquid",
+    network: "mainnet",
+    live_mode: String(envInput.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE || "").trim() || null,
+    mainnet_proof_enabled: String(envInput.PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED || "").trim() || null,
+    max_order_notional_usd: finiteNumberOrNull(envInput.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD),
+    rolling_24h_notional_usd: finiteNumberOrNull(envInput.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD),
+    max_slippage_bps: finiteNumberOrNull(envInput.PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS),
+    live_max_order_notional_usd: finiteNumberOrNull(envInput.PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD),
+    live_rolling_24h_notional_usd: finiteNumberOrNull(envInput.PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD),
+    venue_dry_run: String(envInput.PRIVATE_AGENT_VENUE_DRY_RUN || "").trim() || null,
+    state_store: String(envInput.PRIVATE_AGENT_STATE_STORE || "").trim().toLowerCase() || null,
+    require_dstack_quote: String(envInput.PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE || "").trim() || null,
+    require_worker_capability: String(envInput.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY || "").trim() || null,
+    position_protection_enabled: String(envInput.GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED || "").trim() || null,
+    public_capabilities: [...new Set(configuredCapabilities)],
+    funding_signer_keys_b64: fundingSignerKeys,
+  };
+  const reasonCodes = [];
+  if (envInput.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET !== "true") reasonCodes.push("hyperliquid_mainnet_worker_disabled");
+  if (String(envInput.GHOLA_HYPERLIQUID_LIVE_MODE || "").trim()) reasonCodes.push("legacy_hyperliquid_live_mode_present");
+  if (snapshot.live_mode !== "full_ticket") reasonCodes.push("hyperliquid_worker_full_ticket_disabled");
+  if (snapshot.mainnet_proof_enabled !== "true") reasonCodes.push("hyperliquid_mainnet_proof_disabled");
+  if (snapshot.max_order_notional_usd !== LIVE_TRADING_MAX_ORDER_NOTIONAL_USD) reasonCodes.push("hyperliquid_max_order_cap_mismatch");
+  if (snapshot.rolling_24h_notional_usd !== LIVE_TRADING_ROLLING_24H_NOTIONAL_USD) reasonCodes.push("hyperliquid_daily_cap_mismatch");
+  if (snapshot.max_slippage_bps !== LIVE_TRADING_MAX_SLIPPAGE_BPS) reasonCodes.push("hyperliquid_slippage_cap_mismatch");
+  if (snapshot.live_max_order_notional_usd !== LIVE_TRADING_MAX_ORDER_NOTIONAL_USD) reasonCodes.push("worker_live_max_order_cap_mismatch");
+  if (snapshot.live_rolling_24h_notional_usd !== LIVE_TRADING_ROLLING_24H_NOTIONAL_USD) reasonCodes.push("worker_live_daily_cap_mismatch");
+  if (snapshot.venue_dry_run !== "false") reasonCodes.push("venue_dry_run_configuration_invalid");
+  if (envInput.PRIVATE_AGENT_HYPERLIQUID_NO_SUBMIT_LOCAL_CHECKS === "true") {
+    reasonCodes.push("hyperliquid_no_submit_simulation_enabled");
+  }
+  if (snapshot.state_store !== "postgres") reasonCodes.push("worker_state_store_not_postgres");
+  if (!String(envInput.PRIVATE_AGENT_STATE_POSTGRES_URL || "").trim()) reasonCodes.push("worker_state_postgres_url_missing");
+  if (snapshot.require_dstack_quote !== "true") reasonCodes.push("worker_dstack_quote_not_required");
+  if (snapshot.require_worker_capability !== "true") reasonCodes.push("worker_capability_auth_not_required");
+  if (envInput.PRIVATE_AGENT_GLOBAL_KILL_SWITCH === "true") reasonCodes.push("worker_global_kill_active");
+  if (!normalizedGitSha(envInput.PRIVATE_AGENT_BUILD_GIT_SHA || envInput.VERCEL_GIT_COMMIT_SHA)) reasonCodes.push("worker_release_identity_missing");
+  if (!normalizedImageDigest(envInput.PRIVATE_AGENT_IMAGE_DIGEST || envInput.PHALA_CVM_IMAGE_DIGEST)) reasonCodes.push("worker_image_digest_missing");
+  if (fundingSignerKeys.length === 0) reasonCodes.push("funding_worker_signer_pin_missing");
+  else if (fundingSignerKeys.some((key) => !validBase64PublicKey(key))) reasonCodes.push("funding_worker_signer_pin_invalid");
+  const implementedCapabilities = snapshot.position_protection_enabled === "true"
+    ? ["limit_order", "stop_loss", "take_profit"]
+    : ["limit_order"];
+  if (
+    configuredCapabilities.length !== implementedCapabilities.length ||
+    implementedCapabilities.some((capability) => !configuredCapabilities.includes(capability))
+  ) {
+    reasonCodes.push("public_capability_not_implemented");
+  }
+  return {
+    ready: reasonCodes.length === 0,
+    reason_codes: reasonCodes,
+    contract_version: LIVE_TRADING_CONTRACT_VERSION,
+    worker_git_sha: normalizedGitSha(envInput.PRIVATE_AGENT_BUILD_GIT_SHA || envInput.VERCEL_GIT_COMMIT_SHA),
+    worker_image_digest: normalizedImageDigest(envInput.PRIVATE_AGENT_IMAGE_DIGEST || envInput.PHALA_CVM_IMAGE_DIGEST),
+    config_fingerprint: gholaCommitment("live_trading_config", snapshot),
+    caps: {
+      max_order_notional_usd: snapshot.max_order_notional_usd,
+      rolling_24h_notional_usd: snapshot.rolling_24h_notional_usd,
+      max_slippage_bps: snapshot.max_slippage_bps,
+    },
+    capabilities: configuredCapabilities.filter((capability) => LIVE_TRADING_SUPPORTED_CAPABILITIES.includes(capability)),
+  };
+}
+
+function validBase64PublicKey(value) {
+  return value.length >= 40 && value.length <= 256 &&
+    /^[A-Za-z0-9+/]+={0,2}$/.test(value) && value.length % 4 === 0;
+}
+
+function finiteNumberOrNull(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizedGitSha(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return /^[a-f0-9]{7,64}$/.test(normalized) ? normalized : null;
+}
+
+function normalizedImageDigest(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return /^(?:sha256:)?[a-f0-9]{64}$/.test(normalized) ? normalized : null;
 }
 
 function postUnixJson({ socketPath, path, body }) {
@@ -686,6 +795,36 @@ function sharedStateReady() {
     mode,
     reason_codes: ready ? [] : ["worker_state_store_not_shared"],
   };
+}
+
+export function privateExecutionClaimStoreReady(envInput = process.env) {
+  if (envInput.PRIVATE_AGENT_VENUE_DRY_RUN === "true") return true;
+  const mode = String(
+    envInput.PRIVATE_AGENT_STATE_STORE ||
+    envInput.GHOLA_PRIVATE_AGENT_STATE_STORE ||
+    "json",
+  ).trim().toLowerCase();
+  return ["postgres", "postgresql", "neon"].includes(mode);
+}
+
+function requirePrivateExecutionClaimStore(res) {
+  if (privateExecutionClaimStoreReady()) return false;
+  json(res, 503, {
+    error: "durable shared execution claim store is required",
+    error_code: "worker_execution_claim_store_not_shared",
+  });
+  return true;
+}
+
+function crossVenueSubmissionGate(envInput = process.env) {
+  const reasonCodes = [];
+  if (envInput.PRIVATE_AGENT_CROSS_VENUE_LIVE_SUBMIT !== "true") {
+    reasonCodes.push("cross_venue_live_submit_disabled");
+  }
+  if (!privateExecutionClaimStoreReady(envInput)) {
+    reasonCodes.push("worker_execution_claim_store_not_shared");
+  }
+  return { ready: reasonCodes.length === 0, reason_codes: reasonCodes };
 }
 
 function positiveCap(name, fallbackName = null) {
@@ -1364,8 +1503,16 @@ function validateCoinbaseReconcileRequest(body, recipient) {
     errors.push("request must not contain plaintext Coinbase credentials, strategy, prompt, policy, or order payloads");
   }
   if (body.version !== 1) errors.push("version must be 1");
+  if (body.venue_id !== "coinbase_advanced") errors.push("venue_id must be coinbase_advanced");
+  if (body.platform_class !== "coinbase_style_provider") errors.push("platform_class must be coinbase_style_provider");
+  if (!["byo_api_key", "partner_omnibus"].includes(body.execution_mode)) {
+    errors.push("execution_mode is unsupported");
+  }
   if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
-  if ("encrypted_execution_vault" in body) {
+  if (body.execution_mode === "byo_api_key") {
+    if (!isNonEmptyString(body.vault_commitment)) errors.push("vault_commitment is required");
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  } else if ("encrypted_execution_vault" in body) {
     errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
   }
   if ("encrypted_execution_instruction_bundle" in body) {
@@ -1797,13 +1944,19 @@ export function createPrivateAgentWorkerServer(options = {}) {
   const recipient = options.recipient || loadRecipient();
   const state = options.state || createConfiguredWorkerState(dataDir());
   const consumerRuntime = options.consumerRuntime || createConsumerRuntime();
+  const crossVenueAdapter = Object.hasOwn(options, "crossVenueAdapter")
+    ? options.crossVenueAdapter
+    : createLiveCrossVenueAdapter({ state });
   const crossVenueCoordinator = createCrossVenueCoordinator({
     state,
-    adapter: options.crossVenueAdapter || null,
+    adapter: crossVenueAdapter,
     callback: options.crossVenueCallback,
     schedule: options.crossVenueSchedule,
   });
-  if (options.startConsumerRuntime !== false) consumerRuntime.start();
+  if (
+    options.startConsumerRuntime !== false &&
+    process.env.PRIVATE_AGENT_CONSUMER_RUNTIME_ENABLED !== "false"
+  ) consumerRuntime.start();
   if (options.resumeAutopilotLoops !== false) {
     queueMicrotask(() => {
       resumeAutopilotLoops({ state, recipient }).catch((error) => {
@@ -1856,7 +2009,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         }
       }
 
-      const crossVenueCommand = url.pathname.match(/^\/execution\/cross-venue\/(submit|cancel)$/);
+      const crossVenueCommand = url.pathname.match(/^\/execution\/cross-venue\/(submit|cancel|close)$/);
       if (req.method === "POST" && url.pathname === "/execution/cross-venue/ready") {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
@@ -1868,13 +2021,23 @@ export function createPrivateAgentWorkerServer(options = {}) {
           expected: () => ({ operation_class: "cross_venue_byo_readiness" }),
         });
         if (authorized.rejected) return;
-        const adapterReady = crossVenueCoordinator.ready();
-        return json(res, adapterReady ? 200 : 503, {
+        const crossVenueGate = crossVenueSubmissionGate();
+        if (!crossVenueGate.ready) {
+          return json(res, 503, {
+            version: 1,
+            ready: false,
+            execution_mode: "coordinated_byo",
+            atomic: false,
+            reason_codes: crossVenueGate.reason_codes,
+          });
+        }
+        const adapterReadiness = crossVenueCoordinator.readiness();
+        return json(res, adapterReadiness.ready ? 200 : 503, {
           version: 1,
-          ready: adapterReady,
+          ready: adapterReadiness.ready,
           execution_mode: "coordinated_byo",
           atomic: false,
-          reason_codes: adapterReady ? [] : ["cross_venue_byo_adapter_unavailable"],
+          reason_codes: adapterReadiness.reason_codes,
         });
       }
       if (req.method === "POST" && crossVenueCommand) {
@@ -1892,12 +2055,19 @@ export function createPrivateAgentWorkerServer(options = {}) {
           }),
         });
         if (authorized.rejected) return;
+        const crossVenueGate = crossVenueSubmissionGate();
+        if (action === "submit" && !crossVenueGate.ready) {
+          return json(res, 503, { error: crossVenueGate.reason_codes[0] });
+        }
+        if (requirePrivateExecutionClaimStore(res)) return;
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
         }
         const result = action === "submit"
           ? await crossVenueCoordinator.submit(authorized.body)
-          : await crossVenueCoordinator.cancel(authorized.body);
+          : action === "close"
+            ? await crossVenueCoordinator.close(authorized.body)
+            : await crossVenueCoordinator.cancel(authorized.body);
         return json(res, result.status, result.ok
           ? { version: 1, accepted: true, replayed: result.replayed, receipt: result.receipt }
           : { error: result.error, details: result.details });
@@ -1927,6 +2097,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return json(res, ready.ready ? 200 : 503, {
           ready: ready.ready,
           missing: ready.missing,
+          live_trading: liveTradingReadinessContract(),
         });
       }
 
@@ -2530,6 +2701,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
             error_code: hyperliquidValidationErrorCode(errors),
           });
         }
+        if (requirePrivateExecutionClaimStore(res)) return;
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, {
             error: "attested sealed execution is unavailable",
@@ -2538,6 +2710,55 @@ export function createPrivateAgentWorkerServer(options = {}) {
         }
         const receipt = await executeHyperliquidOrder({ body, recipient, state });
         return json(res, 202, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/hyperliquid/mainnet-roundtrip") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:submit",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "hyperliquid",
+            platform_class: "hyperliquid_style_market",
+            operation_class: "mainnet_roundtrip_proof",
+          }),
+        });
+        if (authorized.rejected) return;
+        if (!hyperliquidMainnetRoundTripEnabled()) {
+          return json(res, 503, { error: "hyperliquid_mainnet_roundtrip_disabled" });
+        }
+        const errors = validateHyperliquidMainnetRoundTripRequest(authorized.body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid Hyperliquid mainnet round-trip request",
+            details: errors,
+          });
+        }
+        if (requirePrivateExecutionClaimStore(res)) return;
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const report = await runSealedHyperliquidMainnetRoundTrip({
+          body: authorized.body,
+          recipient,
+          state,
+        });
+        console.info(JSON.stringify({
+          level: "info",
+          event: "hyperliquid_mainnet_roundtrip_completed",
+          proof_work_order_commitment: report.proof_work_order_commitment,
+          entry_work_order_commitment: report.entry_work_order_commitment,
+          exit_work_order_commitment: report.exit_work_order_commitment,
+          flat_after_exit: report.flat_after_exit,
+          completed_at: report.completed_at,
+        }));
+        return json(res, 200, report);
       }
 
       if (req.method === "POST" && url.pathname === "/hyperliquid/verify") {
@@ -2600,16 +2821,15 @@ export function createPrivateAgentWorkerServer(options = {}) {
             error_code: hyperliquidValidationErrorCode(errors),
           });
         }
-        return json(res, 200, await reconcileStoredExecution({
+        return json(res, 200, await reconcileHyperliquidClaim({
           body: {
             ...body,
             vault_commitment: body.vault_commitment || "vault_commitment_redacted",
             policy_commitment: body.policy_commitment || "policy_commitment_redacted",
             operation_class: "reconcile",
           },
+          recipient,
           state,
-          venue_id: "hyperliquid",
-          platform_class: "hyperliquid_style_market",
         }));
       }
 
@@ -2672,6 +2892,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
             details: errors,
           });
         }
+        if (requirePrivateExecutionClaimStore(res)) return;
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, {
             error: "attested sealed execution is unavailable",
@@ -2741,13 +2962,9 @@ export function createPrivateAgentWorkerServer(options = {}) {
             details: errors,
           });
         }
-        return json(res, 200, coinbaseOrderReceipt({
-          ...body,
-          venue_id: "coinbase_advanced",
-          platform_class: "coinbase_style_provider",
-          execution_mode: body.execution_mode || "partner_omnibus",
-          operation_class: "reconcile",
-        }, "reconciled"));
+        const receipt = await reconcileCoinbaseClaim({ body, recipient, state });
+        const reconciled = receipt.final_proof?.final_fill_proven === true;
+        return json(res, reconciled ? 200 : 409, receipt);
       }
 
       if (req.method === "POST" && url.pathname === "/venues/solana-perps/orders") {
@@ -2772,6 +2989,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
             details: errors,
           });
         }
+        if (requirePrivateExecutionClaimStore(res)) return;
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, {
             error: "attested sealed execution is unavailable",
@@ -2911,6 +3129,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
             details: errors,
           });
         }
+        if (requirePrivateExecutionClaimStore(res)) return;
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, {
             error: "attested sealed execution is unavailable",
@@ -3108,6 +3327,7 @@ export async function resumeAutopilotLoops({ state, recipient, now = new Date() 
     : [];
   let resumed = 0;
   for (const session of sessions) {
+    if (session?.control_latch) continue;
     const shouldResume = (session?.status === "running" && session.execution_enabled === true) ||
       session?.status === "risk_halted";
     if (!shouldResume) continue;

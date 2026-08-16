@@ -114,6 +114,7 @@ const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const DEFAULT_JUPITER_QUOTE_URL = "https://lite-api.jup.ag/swap/v1/quote";
 const JUPITER_SOL_AMOUNT_LAMPORTS = "1000000000";
 const JUPITER_SLIPPAGE_BPS = 50;
+const MARKET_FETCH_TIMEOUT_MS = 8_000;
 
 export function normalizeMobileMarketInput(input: MobileMarketSnapshotInput): {
   productId: MobileMarketProductId;
@@ -210,26 +211,42 @@ async function fetchJupiterRouteQuote(now: Date, fetchImpl: typeof fetch): Promi
   quoteUrl.searchParams.set("outputMint", USDC_MINT);
   quoteUrl.searchParams.set("amount", JUPITER_SOL_AMOUNT_LAMPORTS);
   quoteUrl.searchParams.set("slippageBps", String(JUPITER_SLIPPAGE_BPS));
-  const response = await fetchImpl(quoteUrl, {
-    headers: { "cache-control": "no-cache" },
-    cache: "no-store",
-  });
-  if (!response.ok) {
-    throw new Error(`jupiter_quote_${response.status}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MARKET_FETCH_TIMEOUT_MS);
+  let body: Record<string, unknown> | null;
+  try {
+    const response = await fetchImpl(quoteUrl, {
+      headers: { "cache-control": "no-cache" },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`jupiter_quote_${response.status}`);
+    body = readRecord(await response.json());
+  } finally {
+    clearTimeout(timeout);
   }
-  const body = readRecord(await response.json());
-  const outAmount = safeDecimalString(body?.outAmount);
+  const inputAmount = positiveDecimalString(body?.inAmount);
+  const outAmount = positiveDecimalString(body?.outAmount);
   const routePlan = Array.isArray(body?.routePlan) ? body.routePlan : [];
+  const routeSummary = routePlan.map(routeLabel).filter(Boolean).slice(0, 4) as string[];
+  const price = outAmount ? Number(outAmount) / 1_000_000 : Number.NaN;
+  if (inputAmount !== JUPITER_SOL_AMOUNT_LAMPORTS || !outAmount || !Number.isFinite(price) || price <= 0 || !routeSummary.length) {
+    throw new Error("jupiter_quote_malformed");
+  }
+  const responseSlippage = Number(body?.slippageBps);
+  const slippageBps = Number.isInteger(responseSlippage) && responseSlippage > 0 && responseSlippage <= 5_000
+    ? responseSlippage
+    : JUPITER_SLIPPAGE_BPS;
   return {
     platform: "jupiter",
     input_mint: SOL_MINT,
     output_mint: USDC_MINT,
-    input_amount: safeDecimalString(body?.inAmount) ?? JUPITER_SOL_AMOUNT_LAMPORTS,
+    input_amount: inputAmount,
     output_amount: outAmount,
-    price: outAmount ? trimNumber(Number(outAmount) / 1_000_000) : null,
+    price: trimNumber(price),
     price_impact_pct: safeSignedDecimalString(body?.priceImpactPct),
-    slippage_bps: Number(body?.slippageBps) || JUPITER_SLIPPAGE_BPS,
-    route_summary: routePlan.map(routeLabel).filter(Boolean).slice(0, 4) as string[],
+    slippage_bps: slippageBps,
+    route_summary: routeSummary,
     fetched_at: now.toISOString(),
     stale: false,
   };
@@ -295,6 +312,13 @@ function safeDecimalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return /^\d+(?:\.\d+)?$/.test(trimmed) ? trimmed : null;
+}
+
+function positiveDecimalString(value: unknown): string | null {
+  const normalized = safeDecimalString(value);
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed > 0 ? normalized : null;
 }
 
 function safeSignedDecimalString(value: unknown): string | null {

@@ -3,6 +3,7 @@ import {
   discoverPhalaPrivateAgentExecutionUrl,
   wakePhalaPrivateAgentForUse,
 } from "@/lib/private-agent-phala";
+import { privateAgentSpendPolicy } from "@/lib/private-agent-spend-policy";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -18,6 +19,13 @@ export async function POST(req: NextRequest) {
   const token = process.env.GHOLA_PRIVATE_AGENT_PROVISION_TOKEN?.trim();
   if (!token || bearer(req) !== token) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+  const policy = privateAgentSpendPolicy("provision");
+  if (!policy.allowed) {
+    return NextResponse.json(
+      { error: "private_agent_runtime_unavailable" },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
   }
 
   const provisioning = await wakePhalaPrivateAgentForUse({

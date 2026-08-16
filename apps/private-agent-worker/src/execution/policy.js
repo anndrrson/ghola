@@ -115,12 +115,19 @@ export function normalizeInstruction(value, { venue_id, operation_class }) {
   }
   if (["limit_order", "spot_limit_order", "spot_market_order", "preview_order", "perp_limit_order"].includes(op)) {
     if (!order) throw new ExecutionPolicyError("execution instruction order is required");
+    const normalizedOrder = normalizeOrder(order, venue_id, op);
+    const positionProtection = normalizePositionProtection(value.position_protection, {
+      venueId: venue_id,
+      operationClass: op,
+      order: normalizedOrder,
+    });
     return {
       version: 1,
       venue_id,
       operation_class: op,
       expires_at: stringOrNull(value.expires_at),
-      order: normalizeOrder(order, venue_id, op),
+      order: normalizedOrder,
+      ...(positionProtection ? { position_protection: positionProtection } : {}),
       ...(mandate ? { mandate } : {}),
     };
   }
@@ -176,17 +183,23 @@ function normalizeOrder(order, venueId, operationClass) {
   if (!baseSize && !quoteSize) {
     throw new ExecutionPolicyError("execution instruction size is required");
   }
-  if (hyperliquidTinyFill && !quoteSize) {
+  if (hyperliquidTinyFill && !quoteSize && order.reduce_only !== true) {
     throw new ExecutionPolicyError("hyperliquid tiny fill requires quote size");
   }
   const tif = stringValue(order.tif || order.time_in_force || "Gtc");
   const normalizedTif = hyperliquidTinyFill ? "Ioc" : normalizeTif(tif, venueId);
   const maxSlippageBps = integerString(order.max_slippage_bps ?? order.slippage_bps);
+  const marginMode = venueId === "hyperliquid"
+    ? normalizeHyperliquidMarginMode(order.margin_mode)
+    : null;
+  const leverage = venueId === "hyperliquid"
+    ? normalizeHyperliquidLeverage(order.leverage)
+    : null;
   return {
     market: normalizeMarket(market, venueId),
     side,
-    base_size: baseSize,
-    quote_size: quoteSize,
+    base_size: sizeMode === "base" ? baseSize : null,
+    quote_size: sizeMode === "quote" ? quoteSize : null,
     limit_price: limitPrice,
     order_type: orderType,
     size_mode: sizeMode,
@@ -195,6 +208,58 @@ function normalizeOrder(order, venueId, operationClass) {
     max_slippage_bps: maxSlippageBps,
     post_only: order.post_only === true,
     reduce_only: order.reduce_only === true,
+    ...(venueId === "hyperliquid" ? { margin_mode: marginMode, leverage } : {}),
+  };
+}
+
+function normalizePositionProtection(value, { venueId, operationClass, order }) {
+  if (value == null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ExecutionPolicyError("position protection is invalid");
+  }
+  if (
+    venueId !== "hyperliquid" ||
+    operationClass !== "limit_order" ||
+    order.reduce_only === true ||
+    order.tif !== "Ioc" ||
+    value.mode !== "normal_tpsl" ||
+    value.trigger_source !== "mark"
+  ) {
+    throw new ExecutionPolicyError("position protection is unsupported for this order");
+  }
+  const takeProfit = decimalString(value.take_profit_trigger_price);
+  const stopLoss = decimalString(value.stop_loss_trigger_price);
+  const entryReference = decimalString(value.entry_reference_price);
+  const maxSlippageBps = integerString(value.max_slippage_bps);
+  const marketEntry = order.order_type === "market";
+  const entry = Number(marketEntry ? entryReference : order.limit_price);
+  if (!takeProfit || !stopLoss || !maxSlippageBps || !Number.isFinite(entry) || entry <= 0) {
+    throw new ExecutionPolicyError("position protection levels are invalid");
+  }
+  const takeProfitNumber = Number(takeProfit);
+  const stopLossNumber = Number(stopLoss);
+  const slippage = Number.parseInt(maxSlippageBps, 10);
+  const adverseEntry = order.side === "buy"
+    ? entry * (1 + slippage / 10_000)
+    : entry * (1 - slippage / 10_000);
+  if (
+    !Number.isInteger(slippage) ||
+    slippage < 1 ||
+    slippage > 100 ||
+    maxSlippageBps !== order.max_slippage_bps ||
+    (order.side === "buy"
+      ? !(stopLossNumber < entry && takeProfitNumber > adverseEntry)
+      : !(stopLossNumber > entry && takeProfitNumber < adverseEntry))
+  ) {
+    throw new ExecutionPolicyError("position protection levels are outside the bound order");
+  }
+  return {
+    mode: "normal_tpsl",
+    trigger_source: "mark",
+    take_profit_trigger_price: takeProfit,
+    stop_loss_trigger_price: stopLoss,
+    ...(marketEntry ? { entry_reference_price: entryReference } : {}),
+    max_slippage_bps: maxSlippageBps,
   };
 }
 
@@ -267,7 +332,8 @@ function normalizeCancel(cancel, venueId) {
 }
 
 export async function enforceInstructionPolicy({ body, instruction, session, state }) {
-  if (process.env.PRIVATE_AGENT_GLOBAL_KILL_SWITCH === "true") {
+  const allowedDuringKill = riskReducingInstruction(instruction);
+  if (process.env.PRIVATE_AGENT_GLOBAL_KILL_SWITCH === "true" && !allowedDuringKill) {
     throw new ExecutionPolicyError("private execution kill switch is active", 503);
   }
   const now = Date.now();
@@ -275,13 +341,13 @@ export async function enforceInstructionPolicy({ body, instruction, session, sta
     throw new ExecutionPolicyError("execution instruction is expired");
   }
   const policy = body.session_policy || session?.session_policy || null;
-  if (policy?.kill_switch === true) {
+  if (policy?.kill_switch === true && !allowedDuringKill) {
     throw new ExecutionPolicyError("session policy kill switch is active");
   }
   if (policy?.expires_at && new Date(policy.expires_at).getTime() <= now) {
     throw new ExecutionPolicyError("session policy is expired");
   }
-  enforceAgentMandatePolicy({ body, instruction, liveSubmit: Boolean(state), now });
+  if (!allowedDuringKill) enforceAgentMandatePolicy({ body, instruction, liveSubmit: Boolean(state), now });
   if (instruction.order) {
     const allowlist = Array.isArray(policy?.market_allowlist)
       ? policy.market_allowlist.map((item) => String(item).toUpperCase())
@@ -296,21 +362,27 @@ export async function enforceInstructionPolicy({ body, instruction, session, sta
     const maxNotional = bucketToUsd(policy?.max_notional_bucket);
     const notional = estimateOrderNotionalUsd(instruction.order);
     const minNotional = bucketToUsd(process.env.PRIVATE_AGENT_MIN_ORDER_NOTIONAL_USD || "0");
-    if (notional <= 0) {
+    if (notional <= 0 && !unpricedHyperliquidReduceOnlyMarketExit(instruction)) {
       throw new ExecutionPolicyError("execution instruction notional must be positive");
     }
-    if (minNotional > 0 && notional < minNotional) {
+    if (!allowedDuringKill && minNotional > 0 && notional < minNotional) {
       throw new ExecutionPolicyError("execution instruction is below min notional");
     }
     if (instruction.order.reduce_only !== true && maxNotional > 0 && notional > maxNotional) {
       throw new ExecutionPolicyError("execution instruction exceeds max notional bucket");
+    }
+    if (policy?.strategy_id === "level_trigger_v1") {
+      const exactNotional = Number(policy.exact_notional_usd);
+      if (!Number.isFinite(exactNotional) || Math.abs(notional - exactNotional) > 1e-8) {
+        throw new ExecutionPolicyError("level trigger exact notional mismatch");
+      }
     }
     await enforceGlobalSessionDailyNotional({ body, instruction, state, policy, notional });
     await enforceHyperliquidTinyFillPolicy({ body, instruction, state, notional });
     await enforceHyperliquidFullTicketPolicy({ body, instruction, state, notional });
   }
   const rateLimit = Number.parseInt(process.env.PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE || "0", 10);
-  if (state && Number.isInteger(rateLimit) && rateLimit > 0) {
+  if (!allowedDuringKill && state && Number.isInteger(rateLimit) && rateLimit > 0) {
     const minute = Math.floor(Date.now() / 60_000);
     const count = await state.incrementPolicyCount(
       `rate:${instruction.venue_id}:${minute}`,
@@ -325,6 +397,23 @@ export async function enforceInstructionPolicy({ body, instruction, session, sta
       if (!count.ok) throw new ExecutionPolicyError("session policy order count exceeded");
     }
   }
+}
+
+function riskReducingInstruction(instruction) {
+  return instruction?.order?.reduce_only === true ||
+    ["cancel", "read", "reconcile"].includes(instruction?.operation_class);
+}
+
+function unpricedHyperliquidReduceOnlyMarketExit(instruction) {
+  const order = instruction?.order;
+  const baseSize = Number.parseFloat(order?.base_size || "");
+  return instruction?.venue_id === "hyperliquid" &&
+    instruction?.operation_class === "limit_order" &&
+    order?.reduce_only === true &&
+    order?.order_type === "market" &&
+    !order?.quote_size &&
+    Number.isFinite(baseSize) &&
+    baseSize > 0;
 }
 
 export function normalizeAgentMandate(value) {
@@ -576,6 +665,12 @@ async function enforceHyperliquidFullTicketPolicy({ body, instruction, state, no
   if (process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE !== "full_ticket") {
     return;
   }
+  if (
+    instruction.position_protection &&
+    process.env.GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED !== "true"
+  ) {
+    throw new ExecutionPolicyError("hyperliquid position protection is not enabled");
+  }
   const maxSlippageBps = Number.parseInt(instruction.order.max_slippage_bps || "50", 10);
   const allowedSlippageBps = Math.min(
     capBps(
@@ -701,6 +796,22 @@ function normalizeLiveOrderMode(value) {
   if (!normalized) return null;
   if (normalized === "tiny_fill") return "tiny_fill";
   throw new ExecutionPolicyError("execution instruction live order mode is unsupported");
+}
+
+function normalizeHyperliquidMarginMode(value) {
+  const normalized = stringValue(value || "isolated").toLowerCase();
+  if (normalized !== "isolated") {
+    throw new ExecutionPolicyError("hyperliquid live trading requires isolated margin");
+  }
+  return "isolated";
+}
+
+function normalizeHyperliquidLeverage(value) {
+  const normalized = value == null || value === "" ? 1 : Number(value);
+  if (!Number.isInteger(normalized) || normalized !== 1) {
+    throw new ExecutionPolicyError("hyperliquid live trading requires 1x leverage");
+  }
+  return 1;
 }
 
 function decimalString(value) {

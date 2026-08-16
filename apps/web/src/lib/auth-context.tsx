@@ -40,6 +40,7 @@ const AuthContext = createContext<AuthContextValue>({
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/v1";
+const profileBackendConfigured = process.env.NODE_ENV === "production" || Boolean(process.env.NEXT_PUBLIC_API_URL);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({
@@ -65,6 +66,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // localStorage, the helper below hands it to the server which
       // re-emits a proper Set-Cookie and we purge the localStorage entry.
       await runTokenMigration();
+
+      // A standalone local UI has no legacy SAID backend to query. Treat it
+      // as signed out without generating a refused localhost request; local
+      // trading auth continues through ThumperAuthProvider.
+      if (!profileBackendConfigured) {
+        if (!cancelled) {
+          setState({
+            authenticated: false,
+            loading: false,
+            user: null,
+            authMethod: null,
+            walletUser: null,
+          });
+        }
+        return;
+      }
 
       // We use getProfile() — the lightest authenticated GET on the SAID
       // API. A 401 (or any non-2xx) means "no session"; we don't need to

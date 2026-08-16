@@ -23,5 +23,5 @@ export async function GET(
   if (!owner) return unauthorized();
   const result = await syncWorkerAutopilotSession(id, owner);
   if ("error" in result) return json({ error: result.error }, 404);
-  return json({ version: 1, session: result.session });
+  return json({ version: 1, session: result.session, events: result.events });
 }

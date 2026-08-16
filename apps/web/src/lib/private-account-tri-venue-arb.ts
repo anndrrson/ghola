@@ -24,6 +24,7 @@ import {
   workerAuthorizationHeader,
   workerCapabilityExpectedFromBody,
 } from "./private-agent-capability";
+import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
 import type { AutopilotSessionPolicy } from "./private-account-autopilot";
 
 export type TriVenueId = "phoenix" | "hyperliquid" | "backpack";
@@ -329,6 +330,9 @@ export async function submitTriVenueWorkerCommand(input: {
   fetchImpl?: typeof fetch;
 }) {
   const env = input.env ?? process.env;
+  if (!privateAgentTransportAllowed("execute", env, input.fetchImpl)) {
+    return { error: "private_agent_transport_blocked" as const, status: 403 };
+  }
   const cfg = workerConfig(env);
   if (!cfg.url) return { error: "worker_not_configured" as const, status: 503 };
   const path = `/autopilot/tri-venue/${input.action}`;

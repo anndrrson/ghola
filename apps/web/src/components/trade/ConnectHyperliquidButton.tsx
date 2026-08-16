@@ -1,12 +1,14 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState, type ClipboardEvent } from "react";
 import { Check, ClipboardPaste, Link2, Loader2, ShieldCheck, TriangleAlert, WifiOff } from "lucide-react";
 import {
+  bindPrivateMobileWallet,
+  getPrivateMobileWalletBindingChallenge,
   getHyperliquidExecutionVaultStatus,
   revokeHyperliquidExecutionVault,
   sealHyperliquidExecutionVault,
-  wakePublicAgentWorker,
 } from "@/lib/private-account-client";
 import {
   buildHyperliquidExecutionVaultBundle,
@@ -23,10 +25,15 @@ import {
   chooseConfidentialComputeProvider,
   type PrivateAgentRuntimeStatus,
 } from "@/lib/private-agent-runtime";
+import {
+  connectSolanaWallet,
+  privateAccountMobileProofHeaders,
+  requiredSolanaProvider,
+  walletSignBytes,
+} from "@/lib/wallet-request-proof";
 
-// The agent worker sleeps when idle. Fetch the runtime; if no provider is
-// ready to seal, wake it once (bounded lease — the same flow the arm path
-// uses) and refetch before declaring the runtime offline.
+// Runtime starts are always explicit. Reading connection state must never
+// consume worker time as a side effect.
 async function sealableRuntimeStatus(): Promise<PrivateAgentRuntimeStatus> {
   const hasSealableProvider = (runtime: PrivateAgentRuntimeStatus) =>
     chooseConfidentialComputeProvider(runtime.providers, runtime.preferred_provider) !== null;
@@ -36,12 +43,7 @@ async function sealableRuntimeStatus(): Promise<PrivateAgentRuntimeStatus> {
   } catch {
     // fall through to the wake attempt
   }
-  await wakePublicAgentWorker();
-  const runtime = await fetchPrivateAgentRuntimeStatus();
-  if (!hasSealableProvider(runtime)) {
-    throw new Error("Agent runtime is offline.");
-  }
-  return runtime;
+  throw new Error("Agent runtime is offline.");
 }
 
 type VaultStatus = {
@@ -116,12 +118,15 @@ export function ConnectHyperliquidButton({
   }, [onNetworkChange]);
 
   useEffect(() => {
-    if (ready) void refresh();
+    if (!ready) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void refresh();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [ready, refresh]);
-
-  useEffect(() => {
-    setDraft((current) => ({ ...current, network }));
-  }, [network]);
 
   function handlePaste(event: ClipboardEvent<HTMLInputElement>) {
     const imported = parseHyperliquidCredentialImport(event.clipboardData.getData("text"), draft);
@@ -141,6 +146,19 @@ export function ConnectHyperliquidButton({
     setFormError(null);
     setState({ status: "sealing", accountCommitment: state.accountCommitment, runtime: state.runtime });
     try {
+      const authorizationWallet = await connectSolanaWallet();
+      const walletProvider = requiredSolanaProvider();
+      const bindingChallenge = await getPrivateMobileWalletBindingChallenge(authorizationWallet);
+      const bindingSignature = await walletSignBytes(
+        walletProvider,
+        new TextEncoder().encode(bindingChallenge.message),
+      );
+      await bindPrivateMobileWallet({
+        wallet_pubkey: authorizationWallet,
+        message: bindingChallenge.message,
+        signature_b64: signatureBase64(bindingSignature),
+      });
+
       // Hyperliquid users authenticate with an EVM wallet. The sealed-envelope
       // format itself uses an Ed25519 sender DID, so create a short-lived local
       // signing identity for the envelope instead of incorrectly requiring the
@@ -153,9 +171,16 @@ export function ConnectHyperliquidButton({
         runtimeStatus: state.runtime,
         signBytes: async (bytes) => signBrowserEd25519Bytes(envelopeSigner.secretKeyHex, bytes),
       });
-      await sealHyperliquidExecutionVault({
+      const vaultBody = {
         encrypted_execution_vault: bundle.encrypted_execution_vault,
+      };
+      const proofHeaders = await privateAccountMobileProofHeaders({
+        path: "/v1/private-account/hyperliquid/vault",
+        body: vaultBody,
+        wallet: authorizationWallet,
+        signBytes: async (bytes) => walletSignBytes(walletProvider, bytes),
       });
+      await sealHyperliquidExecutionVault(vaultBody, { proofHeaders });
       setDraft(EMPTY_DRAFT);
       setState({ status: "connected", network: draft.network });
     } catch (error) {
@@ -165,6 +190,36 @@ export function ConnectHyperliquidButton({
         message: error instanceof Error ? error.message : "Could not seal the venue credential.",
       });
     }
+  }
+
+  async function replaceConnectedVault(network: "mainnet" | "testnet" | null) {
+    if (network === "testnet") {
+      await revokeHyperliquidExecutionVault();
+      await refresh();
+      return;
+    }
+    const authorizationWallet = await connectSolanaWallet();
+    const walletProvider = requiredSolanaProvider();
+    const bindingChallenge = await getPrivateMobileWalletBindingChallenge(authorizationWallet);
+    const bindingSignature = await walletSignBytes(
+      walletProvider,
+      new TextEncoder().encode(bindingChallenge.message),
+    );
+    await bindPrivateMobileWallet({
+      wallet_pubkey: authorizationWallet,
+      message: bindingChallenge.message,
+      signature_b64: signatureBase64(bindingSignature),
+    });
+    const body = {};
+    const proofHeaders = await privateAccountMobileProofHeaders({
+      method: "DELETE",
+      path: "/v1/private-account/hyperliquid/vault",
+      body,
+      wallet: authorizationWallet,
+      signBytes: async (bytes) => walletSignBytes(walletProvider, bytes),
+    });
+    await revokeHyperliquidExecutionVault({ proofHeaders });
+    await refresh();
   }
 
   if (!ready || state.status === "signed_out") return null;
@@ -196,8 +251,7 @@ export function ConnectHyperliquidButton({
             type="button"
             onClick={async () => {
               try {
-                await revokeHyperliquidExecutionVault();
-                await refresh();
+                await replaceConnectedVault(state.network);
               } catch (error) {
                 setState({ status: "error", message: error instanceof Error ? error.message : "Could not replace the credential." });
               }
@@ -206,11 +260,19 @@ export function ConnectHyperliquidButton({
           >
             Replace or switch network
           </button>
+          {state.network === "mainnet" && process.env.NEXT_PUBLIC_GHOLA_HYPERLIQUID_ACCOUNT_PROOF_ENABLED === "true" ? (
+            <Link
+              href="/trade/mainnet-e2e"
+              className="trade-action flex h-10 items-center justify-center rounded-md px-4 text-xs font-semibold"
+            >
+              Run real $10.50 proof trade
+            </Link>
+          ) : null}
         </div>
       ) : state.status === "runtime_offline" ? (
         <div className="flex items-start gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
           <WifiOff className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>Agent runtime is offline — connecting your account is paused until a sealed worker is live.</span>
+          <span>Agent runtime is offline. Start it explicitly from Agent activity before connecting this account.</span>
         </div>
       ) : state.status === "error" ? (
         <div className="grid gap-2">
@@ -233,7 +295,10 @@ export function ConnectHyperliquidButton({
               <button
                 key={value}
                 type="button"
-                onClick={() => onNetworkChange?.(value)}
+                onClick={() => {
+                  setDraft((current) => ({ ...current, network: value }));
+                  onNetworkChange?.(value);
+                }}
                 className={`trade-chip h-9 rounded-md text-xs font-semibold ${network === value ? "border-[#5aa7ff] text-[#a8d8ff]" : ""}`}
               >
                 {value === "mainnet" ? "Mainnet · real funds" : "Testnet · no real funds"}
@@ -246,9 +311,13 @@ export function ConnectHyperliquidButton({
             </div>
           ) : null}
           <p className="text-[11px] leading-5 text-[#566278]">
-            Connect a <strong>trade-only Hyperliquid API wallet</strong> so the agent can execute your
+            Connect a <strong>trade-only Hyperliquid API wallet</strong> so Ghola can execute your
             plan on your own account. The key is sealed in your browser to the agent worker — it is
             never sent or stored in plaintext, cannot withdraw funds, and is revocable anytime.
+          </p>
+          <p className="text-[10px] leading-4 text-[#69758a]">
+            Your Solana wallet signs two authorization messages. No transaction is created and no
+            Solana funds move.
           </p>
           <label className="grid gap-1 text-[11px] text-[#8b95a8]">
             Hyperliquid account address
@@ -311,4 +380,10 @@ export function ConnectHyperliquidButton({
       )}
     </div>
   );
+}
+
+function signatureBase64(value: Uint8Array): string {
+  let binary = "";
+  for (const byte of value) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }

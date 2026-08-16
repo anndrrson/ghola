@@ -25,6 +25,7 @@ import {
   workerAuthorizationHeader,
   workerCapabilityExpectedFromBody,
 } from "./private-agent-capability";
+import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
 
 export type GholaConnectorStatus = "ready" | "missing" | "stale" | "blocked";
 export type GholaConnectorMode = "http" | "local_test";
@@ -799,6 +800,7 @@ export async function submitConnectorWorkOrder(input: {
     status?: string;
   } | null;
   encrypted_execution_instruction_bundle?: unknown;
+  fetchImpl?: typeof fetch;
   now?: Date;
   env?: Record<string, string | undefined>;
 }): Promise<
@@ -826,6 +828,9 @@ export async function submitConnectorWorkOrder(input: {
       }),
     };
   }
+  if (!privateAgentTransportAllowed("execute", input.env ?? process.env, input.fetchImpl)) {
+    return { ok: false, error: "connector_submit_blocked" };
+  }
   const cfg = connectorEnvConfig(input.manifest.platform_class, input.env ?? process.env);
   if (!cfg.url) return { ok: false, error: "connector_not_ready" };
   try {
@@ -842,7 +847,7 @@ export async function submitConnectorWorkOrder(input: {
         venue_id: payload.venue_id || venueIdForPlatformClass(input.manifest.platform_class),
       }),
     });
-    const res = await fetch(new URL(submitPath, cfg.url), {
+    const res = await (input.fetchImpl ?? fetch)(new URL(submitPath, cfg.url), {
       method: "POST",
       cache: "no-store",
       headers: {
@@ -902,6 +907,7 @@ export async function verifyConnectorNoSubmit(input: {
   site_origin?: string | null;
   now?: Date;
   env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
 }): Promise<GholaConnectorNoFundsVerification> {
   const now = input.now ?? new Date();
   const base = {
@@ -931,6 +937,9 @@ export async function verifyConnectorNoSubmit(input: {
       checks: defaultNoFundsChecks(true),
       site_origin: input.site_origin,
     });
+  }
+  if (!privateAgentTransportAllowed("execute", input.env ?? process.env, input.fetchImpl)) {
+    return failedNoFundsVerification(base, "private_agent_transport_blocked", "failed", input.site_origin);
   }
   const cfg = connectorEnvConfig(input.platform_class, input.env ?? process.env);
   if (!cfg.url) return failedNoFundsVerification(base, "connector_endpoint_missing", "failed", input.site_origin);
@@ -971,7 +980,7 @@ export async function verifyConnectorNoSubmit(input: {
       body: payload,
       expected: workerCapabilityExpectedFromBody(payload),
     });
-    const res = await fetch(new URL(verifyPath, cfg.url), {
+    const res = await (input.fetchImpl ?? fetch)(new URL(verifyPath, cfg.url), {
       method: "POST",
       cache: "no-store",
       headers: {
@@ -1004,6 +1013,7 @@ export async function reconcileConnectorResult(input: {
   existing_result?: GholaConnectorResult | null;
   now?: Date;
   env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
 }): Promise<GholaConnectorResult> {
   const now = input.now ?? new Date();
   const mode = connectorMode(input.env ?? process.env);
@@ -1014,6 +1024,16 @@ export async function reconcileConnectorResult(input: {
       status: "reconciled",
       provider_ref_seed: input.existing_result?.provider_ref_commitment ?? input.work_order.work_order_commitment,
       reason: null,
+      now,
+    });
+  }
+  if (!privateAgentTransportAllowed("execute", input.env ?? process.env, input.fetchImpl)) {
+    return connectorResult({
+      work_order: input.work_order,
+      manifest: input.manifest,
+      status: "failed",
+      provider_ref_seed: input.existing_result?.provider_ref_commitment ?? input.work_order.work_order_commitment,
+      reason: "private_agent_transport_blocked",
       now,
     });
   }
@@ -1048,7 +1068,7 @@ export async function reconcileConnectorResult(input: {
         operation_class: "reconcile",
       }),
     });
-    const res = await fetch(new URL(reconcilePath, cfg.url), {
+    const res = await (input.fetchImpl ?? fetch)(new URL(reconcilePath, cfg.url), {
       method: "POST",
       cache: "no-store",
       headers: {

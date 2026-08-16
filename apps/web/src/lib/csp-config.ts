@@ -42,6 +42,10 @@ export const CONNECT_SRC_HOSTS: readonly string[] = [
   // Public Coinbase Advanced market data stream. This is market-only data;
   // account/order submission still goes through Ghola's sealed connector.
   "wss://advanced-trade-ws.coinbase.com",
+  // Public Phoenix market metadata and stream. No wallet or order credentials
+  // are sent to either origin.
+  "https://perp-api.phoenix.trade",
+  "wss://perp-api.phoenix.trade",
   // Private voice / in-browser model runtime asset hosts. Microphone
   // audio + transcripts stay client-side until the user submits text.
   "https://cdn.jsdelivr.net",

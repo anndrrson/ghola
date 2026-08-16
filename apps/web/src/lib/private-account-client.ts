@@ -13,6 +13,14 @@ import type { HyperliquidEncryptedExecutionVaultBundle } from "./hyperliquid-vau
 import type { CoinbaseEncryptedExecutionVaultBundle, CoinbaseExecutionMode } from "./coinbase-vault-seal";
 import type { SolanaPerpsEncryptedExecutionVaultBundle } from "./solana-perps-vault-seal";
 import type { SolanaSwapEncryptedExecutionVaultBundle } from "./solana-swap-vault-seal";
+import type { TradeOrderPlan } from "./trade-order-plan";
+import type { MarketFundingRateFields } from "./market-funding-rate";
+import type {
+  LiveTradingCapabilityStatus,
+  LiveTradingCaps,
+  LiveTradingLaunchState,
+  LiveTradingReleaseIdentity,
+} from "./live-trading-contract";
 
 export type PrivateAccountProductBucket =
   | "stablecoin"
@@ -70,13 +78,37 @@ export type PrivateAutopilotEventType =
 
 export interface PrivateAccountLiveTradingStatus {
   version: 1;
+  contract_version: 2;
   status: "green" | "red";
+  launch_state: LiveTradingLaunchState;
   live_trading_enabled: boolean;
   live_submit_mode: "disabled" | "byo_mainnet" | "pooled_and_byo";
   byo_live_trading_enabled: boolean;
   pooled_live_trading_enabled: boolean;
   public_live_copy_allowed: boolean;
   public_market_data_enabled: boolean;
+  release_identity: LiveTradingReleaseIdentity;
+  live_worker_readiness: {
+    ready: boolean;
+    endpoint_configured: boolean;
+    contract_version: number | null;
+    worker_git_sha: string | null;
+    worker_image_digest: string | null;
+    config_fingerprint: string | null;
+    capabilities: string[];
+    reason_codes: string[];
+    checked_at: string;
+  };
+  effective_caps: LiveTradingCaps;
+  proof_policy: {
+    venue_id: "hyperliquid";
+    network: "mainnet";
+    first_proof_notional_usd: number;
+    required_consecutive_passes: number;
+    final_flat_required: true;
+    zero_open_orders_required: true;
+  };
+  hyperliquid_capabilities: LiveTradingCapabilityStatus[];
   default_access_mode: "ghola_auto_access";
   required_venues: Array<{
     id: "hyperliquid" | "phoenix" | "backpack" | "jupiter" | "coinbase";
@@ -204,6 +236,8 @@ export interface PrivateAutopilotSessionPolicy {
     | "level_trigger_v1";
   agent_mandate?: PrivateAutopilotAgentMandate | null;
   agent_side?: "buy" | "sell";
+  execution_network?: "mainnet" | "testnet";
+  exact_notional_usd?: string;
   decision_model: "rules_plus_ai_score" | "ai_direct_order_v1" | "deterministic_level_trigger";
   ai_direct_enabled: boolean;
   venue_allowlist: PrivateAutopilotVenueId[];
@@ -278,6 +312,8 @@ export interface PrivateAutopilotSession {
   expires_at: string;
   next_step: string;
   execution_enabled: boolean;
+  autonomous_live_submit_enabled?: boolean;
+  autonomous_execution_mode?: "no_submit" | "live";
   control_plane: "android" | "worker";
   visibility_summary: {
     main_wallet_prompts_per_trade: false;
@@ -325,7 +361,7 @@ export interface PrivateAutopilotReadiness {
   }>;
 }
 
-export interface HyperliquidMarketSnapshot {
+export interface HyperliquidMarketSnapshot extends MarketFundingRateFields {
   version: 1;
   platform: "hyperliquid";
   network: "mainnet" | "testnet";
@@ -344,9 +380,9 @@ export interface HyperliquidMarketSnapshot {
   day_notional_volume: string | null;
   day_base_volume: string | null;
   open_interest: string | null;
-  funding_rate: string | null;
   premium: string | null;
   max_leverage: number | null;
+  size_decimals?: number | null;
   candles: Array<{ t: number; T: number | null; o: string; h: string; l: string; c: string; v: string; n: number | null }>;
   bids: Array<{ px: string; sz: string; n: number | null }>;
   asks: Array<{ px: string; sz: string; n: number | null }>;
@@ -364,10 +400,16 @@ export interface HyperliquidAccountSnapshot {
     | "worker_unavailable"
     | "private_mode_waiting";
   account_source: "sealed_byo" | "ghola_managed" | "ghola_pooled" | "hyperliquid_native_vault" | "none";
+  network: "mainnet" | "testnet" | null;
   trading_enabled: boolean;
   equity_bucket: "none" | "low" | "ready" | "unknown";
+  margin_utilization_bucket: "none" | "unknown" | "<25%" | "25-50%" | "50-75%" | "75-90%" | "90%+";
   position_count: number;
+  position_total_count: number;
+  positions_truncated: boolean;
   open_order_count: number;
+  open_order_total_count: number;
+  open_orders_truncated: boolean;
   stream_status?:
     | "connecting"
     | "live"
@@ -384,6 +426,8 @@ export interface HyperliquidAccountSnapshot {
     size_bucket: string;
     entry_price_bucket: string;
     unrealized_pnl_bucket: string;
+    leverage_bucket: "unknown" | "0-2x" | "2-5x" | "5-10x" | "10-20x" | "20x+";
+    liquidation_distance_bucket: "none" | "unknown" | "at_or_beyond" | "<2%" | "2-5%" | "5-10%" | "10-25%" | "25%+";
   }>;
   open_orders?: Array<{
     order_handle_commitment: string;
@@ -511,9 +555,10 @@ export function openHyperliquidAccountStream(input: {
   };
 }
 
-export async function listPrivateAutopilotSessions(): Promise<PrivateAutopilotListResponse> {
+export async function listPrivateAutopilotSessions(options: { signal?: AbortSignal } = {}): Promise<PrivateAutopilotListResponse> {
   return privateAccountFetch("/v1/private-account/autopilot/sessions", {
     method: "GET",
+    signal: options.signal,
   }) as Promise<PrivateAutopilotListResponse>;
 }
 
@@ -555,6 +600,7 @@ const LEVEL_TRIGGER_SUPPORTED_ENTRIES = new Set([
 export interface LevelTriggerPlanInput {
   side: "buy" | "sell";
   venueId: string;
+  network: "mainnet" | "testnet";
   market: string;
   notionalUsd: number;
   maxSlippageBps: number;
@@ -591,17 +637,23 @@ export function mandateFromPlan(plan: LevelTriggerPlanInput): PrivateAutopilotAg
   };
 }
 
+export function levelTriggerSessionPolicyFromPlan(plan: LevelTriggerPlanInput): Partial<PrivateAutopilotSessionPolicy> {
+  return {
+    strategy_id: "level_trigger_v1",
+    agent_side: plan.side,
+    agent_mandate: mandateFromPlan(plan),
+    venue_allowlist: [levelTriggerVenue(plan.venueId)],
+    market_allowlist: [levelTriggerMarket(plan.market)],
+    max_notional_bucket: levelTriggerNotionalBucket(plan.notionalUsd),
+    execution_network: plan.network,
+    exact_notional_usd: exactUsd(plan.notionalUsd),
+    max_slippage_bps: Math.max(1, Math.min(100, Math.round(plan.maxSlippageBps) || 50)),
+  };
+}
+
 export async function armLevelTriggerAgent(plan: LevelTriggerPlanInput): Promise<PrivateAutopilotCreateResponse> {
   return createPrivateAutopilotSession({
-    session_policy: {
-      strategy_id: "level_trigger_v1",
-      agent_side: plan.side,
-      agent_mandate: mandateFromPlan(plan),
-      venue_allowlist: [levelTriggerVenue(plan.venueId)],
-      market_allowlist: [levelTriggerMarket(plan.market)],
-      max_notional_bucket: levelTriggerNotionalBucket(plan.notionalUsd),
-      max_slippage_bps: Math.max(1, Math.min(100, Math.round(plan.maxSlippageBps) || 50)),
-    } as Partial<PrivateAutopilotSessionPolicy>,
+    session_policy: levelTriggerSessionPolicyFromPlan(plan),
   });
 }
 
@@ -612,7 +664,12 @@ function levelTriggerVenue(venueId: string): PrivateAutopilotVenueId {
 
 function levelTriggerMarket(market: string): string {
   const base = String(market || "SOL-USD").split("-")[0].split("/")[0].toUpperCase();
-  return ["BTC", "ETH", "SOL"].includes(base) ? `${base}-USD` : "SOL-USD";
+  return ["BTC", "ETH", "SOL", "HYPE"].includes(base) ? `${base}-USD` : "";
+}
+
+function exactUsd(value: number): string {
+  if (!Number.isFinite(value) || value <= 0 || value > 100) return "";
+  return value.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function levelTriggerNotionalBucket(usd: number): "5" | "10" | "25" | "50" | "100" {
@@ -797,9 +854,10 @@ export async function getPrivateAccountLiveTradingStatus(): Promise<PrivateAccou
   });
 }
 
-export async function getPublicAgentStartupStatus(): Promise<PublicAgentStartupStatus> {
+export async function getPublicAgentStartupStatus(options: { signal?: AbortSignal } = {}): Promise<PublicAgentStartupStatus> {
   return privateAccountFetch("/v1/private-account/agent/startup", {
     method: "GET",
+    signal: options.signal,
   });
 }
 
@@ -897,18 +955,66 @@ export async function allocateHyperliquidNativeVault() {
 
 export async function sealHyperliquidExecutionVault(input: {
   encrypted_execution_vault: HyperliquidEncryptedExecutionVaultBundle;
-}) {
+}, options: {
+  proofHeaders?: Record<string, string>;
+} = {}) {
   return privateAccountFetch("/v1/private-account/hyperliquid/vault", {
     method: "POST",
+    headers: options.proofHeaders,
     body: JSON.stringify({
       encrypted_execution_vault: input.encrypted_execution_vault,
     }),
   });
 }
 
-export async function revokeHyperliquidExecutionVault() {
+export interface PrivateMobileWalletBindingChallengeResponse {
+  version: 1;
+  wallet_pubkey: string;
+  message: string;
+  timestamp_ms: string;
+  nonce: string;
+  expires_at: string;
+}
+
+export async function getPrivateMobileWalletBindingChallenge(walletPubkey: string) {
+  return privateAccountFetch(
+    `/v1/private-account/wallet-bindings/challenge?wallet_pubkey=${encodeURIComponent(walletPubkey)}`,
+    { method: "GET" },
+  ) as Promise<PrivateMobileWalletBindingChallengeResponse>;
+}
+
+export async function bindPrivateMobileWallet(input: {
+  wallet_pubkey: string;
+  message: string;
+  signature_b64: string;
+}) {
+  return privateAccountFetch("/v1/private-account/wallet-bindings", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export const HYPERLIQUID_MAINNET_PROOF_CONFIRMATION =
+  "I_UNDERSTAND_THIS_OPENS_AND_CLOSES_A_REAL_MAINNET_POSITION";
+
+export async function runHyperliquidMainnetRoundTrip(options: {
+  proofHeaders: Record<string, string>;
+}) {
+  return privateAccountFetch("/v1/private-account/hyperliquid/mainnet-roundtrip", {
+    method: "POST",
+    headers: options.proofHeaders,
+    body: JSON.stringify({ confirmation: HYPERLIQUID_MAINNET_PROOF_CONFIRMATION }),
+  });
+}
+
+export async function revokeHyperliquidExecutionVault(options: {
+  proofHeaders?: Record<string, string>;
+} = {}) {
+  const body = {};
   return privateAccountFetch("/v1/private-account/hyperliquid/vault", {
     method: "DELETE",
+    headers: options.proofHeaders,
+    ...(options.proofHeaders ? { body: JSON.stringify(body) } : {}),
   });
 }
 
@@ -961,14 +1067,28 @@ export async function getVenueEligibilityStatus(input: {
   });
 }
 
+export async function getHyperliquidLiveAccess() {
+  return privateAccountFetch("/v1/private-account/hyperliquid/live-access", {
+    method: "GET",
+  });
+}
+
 export async function verifyVenueEligibility(input: {
   venue_id: GholaVenueId;
   credential_type?: "self_attested_eligible_user" | "partner_verified_eligible_user";
+  eligible_non_us?: boolean;
+  terms_version?: string;
+  risk_disclosure_version?: string;
+  confirmation?: string;
 }) {
   return privateAccountFetch(`/v1/private-account/venues/${input.venue_id}/eligibility`, {
     method: "POST",
     body: JSON.stringify({
       credential_type: input.credential_type || "self_attested_eligible_user",
+      ...(input.eligible_non_us === true ? { eligible_non_us: true } : {}),
+      ...(input.terms_version ? { terms_version: input.terms_version } : {}),
+      ...(input.risk_disclosure_version ? { risk_disclosure_version: input.risk_disclosure_version } : {}),
+      ...(input.confirmation ? { confirmation: input.confirmation } : {}),
     }),
   });
 }
@@ -1227,6 +1347,7 @@ export async function previewPrivateAccountAction(input: {
   safe_input: PrivateAccountSafeInput;
   requested_rail?: GholaRailKind;
   runtime_envelope_commitment?: string;
+  order_plan?: TradeOrderPlan;
 }) {
   return privateAccountFetch("/v1/private-account/actions/privacy-preview", {
     method: "POST",
@@ -1236,6 +1357,7 @@ export async function previewPrivateAccountAction(input: {
       requested_rail: input.requested_rail,
       runtime_envelope_commitment: input.runtime_envelope_commitment,
       safe_input: input.safe_input,
+      order_plan: input.order_plan,
     }),
   });
 }
@@ -1566,7 +1688,7 @@ const LIVE_GUARDED_MUTATION_PATHS = [
   /^\/v1\/private-account\/autopilot\/sessions\/[^/]+$/,
   /^\/v1\/private-account\/autopilot\/sessions\/[^/]+\/(?:pause|resume|kill)$/,
   /^\/v1\/private-account\/connectors\/(?:submit|verify-no-submit|reconcile)$/,
-  /^\/v1\/private-account\/hyperliquid\/(?:account-snapshot|managed-allocation)$/,
+  /^\/v1\/private-account\/hyperliquid\/(?:account-snapshot|mainnet-roundtrip|managed-allocation)$/,
   /^\/v1\/private-account\/hyperliquid\/agent\/session$/,
   /^\/v1\/private-account\/hyperliquid\/vault$/,
   /^\/v1\/private-account\/omnibus\/(?:allocate|reconcile)$/,

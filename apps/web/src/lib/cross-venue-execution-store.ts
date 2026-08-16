@@ -1,6 +1,8 @@
 import {
   applyCrossVenueWorkerReport,
+  completeCrossVenueClose,
   requestCrossVenueCancellation,
+  requestCrossVenueClose,
   type CrossVenueExecutionPlan,
   type CrossVenueWorkerReport,
 } from "./cross-venue-execution";
@@ -90,7 +92,7 @@ export async function listStoredCrossVenueExecutions(input: {
 }
 
 export async function hasActiveCrossVenueExposure(): Promise<boolean> {
-  const active = ["planned", "submitting", "legs_open", "unhedged", "partially_hedged", "hedging", "unwinding", "manual_intervention_required"];
+  const active = ["planned", "submitting", "legs_open", "unhedged", "partially_hedged", "hedging", "unwinding", "both_filled", "closing", "manual_intervention_required"];
   const sql = await getSql();
   if (!sql) return Array.from(memory.values()).some((plan) => active.includes(plan.status));
   await ensureSchema(sql);
@@ -168,6 +170,23 @@ export async function cancelStoredCrossVenueExecution(input: {
   return mutate(input, (current) => requestCrossVenueCancellation(current, input.now));
 }
 
+export async function markStoredCrossVenueExecutionClosing(input: {
+  execution_id: string;
+  owner_commitment: string;
+  now?: Date;
+}): Promise<CrossVenueExecutionPlan | null> {
+  return retryStateMutation(input, (current) => requestCrossVenueClose(current, input.now));
+}
+
+export async function markStoredCrossVenueExecutionClosed(input: {
+  execution_id: string;
+  owner_commitment: string;
+  worker_receipt: unknown;
+  now?: Date;
+}): Promise<CrossVenueExecutionPlan | null> {
+  return retryStateMutation(input, (current) => completeCrossVenueClose(current, input.worker_receipt, input.now));
+}
+
 export function resetCrossVenueExecutionStoreForTests() {
   memory.clear();
   idempotency.clear();
@@ -197,6 +216,7 @@ async function mutate(
   if (!current) return null;
   const next = update(current);
   const expectedSequence = current.last_report_sequence;
+  const expectedUpdatedAt = current.updated_at;
   const rows = await sql`
     WITH lock_guard AS (
       SELECT pg_advisory_xact_lock(hashtextextended(${input.execution_id}, 0))
@@ -204,6 +224,7 @@ async function mutate(
       SELECT plan FROM cross_venue_execution_plans, lock_guard
       WHERE execution_id = ${input.execution_id} AND owner_commitment = ${input.owner_commitment}
         AND COALESCE((plan->>'last_report_sequence')::integer, 0) = ${expectedSequence}
+        AND plan->>'updated_at' = ${expectedUpdatedAt}
       FOR UPDATE
     ), updated AS (
       UPDATE cross_venue_execution_plans p
@@ -223,6 +244,20 @@ async function mutate(
   return planRow(rows[0].plan);
 }
 
+async function retryStateMutation(
+  input: { execution_id: string; owner_commitment: string },
+  update: (current: CrossVenueExecutionPlan) => CrossVenueExecutionPlan,
+): Promise<CrossVenueExecutionPlan | null> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await mutate(input, update);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "execution_state_conflict" || attempt === 2) throw error;
+    }
+  }
+  return null;
+}
+
 function sameRequest(left: CrossVenueExecutionPlan, right: CrossVenueExecutionPlan) {
   return left.opportunity_commitment === right.opportunity_commitment &&
     left.matched_notional_micro_usdc === right.matched_notional_micro_usdc &&
@@ -230,7 +265,19 @@ function sameRequest(left: CrossVenueExecutionPlan, right: CrossVenueExecutionPl
 }
 
 function planRow(value: CrossVenueExecutionPlan | string): CrossVenueExecutionPlan {
-  return typeof value === "string" ? JSON.parse(value) as CrossVenueExecutionPlan : value;
+  const parsed = typeof value === "string" ? JSON.parse(value) as CrossVenueExecutionPlan : value;
+  return {
+    ...parsed,
+    close_requested_at: parsed.close_requested_at ?? null,
+    closed_at: parsed.closed_at ?? null,
+    close_receipt_commitment: parsed.close_receipt_commitment ?? null,
+    legs: parsed.legs.map((leg) => ({
+      ...leg,
+      target_base_size: leg.target_base_size ?? null,
+      filled_base_size: leg.filled_base_size ?? "0",
+    })) as [CrossVenueExecutionPlan["legs"][0], CrossVenueExecutionPlan["legs"][1]],
+    repair_fills: (parsed.repair_fills || []).map((fill) => ({ ...fill, filled_base_size: fill.filled_base_size ?? null })),
+  };
 }
 
 function receiptCommitment(value: unknown) {

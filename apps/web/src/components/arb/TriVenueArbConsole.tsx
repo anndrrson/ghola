@@ -30,6 +30,7 @@ import {
   buildPrivateExecutionInstructionBundle,
   type PrivateExecutionOrderDraft,
 } from "@/lib/private-execution-instruction-seal";
+import { isProvenLiveCrossVenuePair } from "@/lib/cross-venue-execution";
 import {
   publicKeyString,
   requiredSolanaProvider,
@@ -138,7 +139,7 @@ export function TriVenueArbConsole() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<LiveResult | null>(null);
   const [workerProbeEnabled, setWorkerProbeEnabled] = useState(false);
-  const [orderUsd, setOrderUsd] = useState("5");
+  const [orderUsd, setOrderUsd] = useState("11");
   const [fundingRail, setFundingRail] = useState<"solana_usdc" | "solana_shielded_usdcx">("solana_usdc");
   const [fundingUsd, setFundingUsd] = useState("5");
   const [depositIntent, setDepositIntent] = useState<DepositIntentResult | null>(null);
@@ -212,7 +213,9 @@ export function TriVenueArbConsole() {
     .filter(Boolean) as GholaMarketFrame[];
   const quotes = bundle?.quotes ?? [];
   const opportunities = bundle?.opportunities ?? [];
-  const bestOpportunity = opportunities.find((item) => item.status === "preflight_pass") ?? opportunities[0] ?? null;
+  const bestOpportunity = opportunities.find((item) =>
+    item.status === "preflight_pass" && isProvenLiveCrossVenuePair(item.leg_plan)) ?? null;
+  const crossVenueExposureOpen = Boolean(crossVenueExecution && !["closed", "cancelled", "failed", "hedged"].includes(crossVenueExecution.status));
   const ready = status?.can_live_submit === true;
   const phoenixQuote = quotes.find((quote) => quote.venue_id === "phoenix") ?? null;
   const phoenixLimit = phoenixTinyFillLimit(phoenixQuote, phoenixSide);
@@ -221,12 +224,9 @@ export function TriVenueArbConsole() {
   const workerOnline = workerReady || workerStandby;
   const liveQuoteCount = quotes.filter((quote) => quote.status === "live").length;
   const marketLive = status?.public_market_data_enabled === true || liveQuoteCount > 0;
-  const phoenixGate = status?.gates.find((gate) => gate.id === "phoenix");
   const hyperliquidGate = status?.gates.find((gate) => gate.id === "hyperliquid");
   const backpackGate = status?.gates.find((gate) => gate.id === "backpack");
-  const phoenixConfigured = phoenixGate
-    ? phoenixGate.status === "green" || phoenixGate.reason_codes.every((reason) => reason === "worker_probe_not_requested")
-    : workerOnline;
+  const phoenixConfigured = false;
   const venueCredentialGateCount = [hyperliquidGate, backpackGate].filter((gate) => gate?.status === "red").length;
   const launchTone = ready ? "good" : marketLive && (workerOnline || phoenixConfigured) ? "accent" : "warn";
   const launchTitle = ready
@@ -241,10 +241,10 @@ export function TriVenueArbConsole() {
       : "credential gated";
   const launchCopy = ready
     ? "The agent can sign, arm, submit bounded consumer orders, start maker quotes, and kill resting orders under the consumer's prepaid balance and risk policy."
-    : "Ghola is reading live Phoenix, Hyperliquid, and Backpack books, building arb and market-maker plans, and keeping multi-venue submit fail-closed until real venue credentials are sealed into the worker.";
+    : "Ghola reads all three public books. Live paired execution is restricted to the recovery-proven Hyperliquid + Backpack SOL perpetual path.";
   const acknowledgementsReady = acceptedTerms && acceptedRisk && notProhibited;
   const canSign = Boolean(wallet && acknowledgementsReady);
-  const phoenixCanSubmit = canSign && phoenixConfigured && Boolean(phoenixLimit);
+  const phoenixCanSubmit = false;
   const gateReasons = status?.gates.flatMap((gate) => gate.reason_codes.map((reason) => `${gate.id}:${reason}`)) ?? [];
 
   async function connectWallet() {
@@ -381,8 +381,8 @@ export function TriVenueArbConsole() {
   async function runCrossVenueExecution() {
     if (!canSign) return setError("Connect a wallet and accept the live execution checks.");
     if (!crossVenueReadiness?.ready) return setError(`Cross-venue execution is gated: ${crossVenueReadiness?.reason_codes.map(formatReason).join(", ") || "not configured"}.`);
-    if (!bestOpportunity || bestOpportunity.status !== "preflight_pass" || !bestOpportunity.leg_plan) {
-      return setError("No fresh cross-venue opportunity currently passes the edge and market-data checks.");
+    if (!bestOpportunity || bestOpportunity.status !== "preflight_pass" || !isProvenLiveCrossVenuePair(bestOpportunity.leg_plan)) {
+      return setError("No fresh Hyperliquid + Backpack opportunity currently passes the edge and market-data checks.");
     }
     setWorking("cross-venue-submit");
     setError(null);
@@ -425,6 +425,23 @@ export function TriVenueArbConsole() {
       setCrossVenueExecution(response.execution);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not cancel and unwind the cross-venue execution.");
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  async function closeCrossVenueMatchedPair() {
+    if (!crossVenueExecution || !["both_filled", "closing"].includes(crossVenueExecution.status)) return;
+    setWorking("cross-venue-close");
+    setError(null);
+    try {
+      const response = await postJson<CrossVenueExecutionResult>(
+        `/v1/private-account/cross-venue/executions/${encodeURIComponent(crossVenueExecution.execution_id)}/close`,
+        {},
+      );
+      setCrossVenueExecution(response.execution);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not close both cross-venue legs and prove the accounts flat.");
     } finally {
       setWorking(null);
     }
@@ -718,8 +735,8 @@ export function TriVenueArbConsole() {
 
               <div className="mt-4 grid gap-2">
                 <PlanRow label="Market" value="SOL-USD" />
-                <PlanRow label="Venues" value="Phoenix + Hype + Backpack" />
-                <PlanRow label="Live submit" value={ready ? "tri-venue enabled" : "Phoenix path; multi-venue gated"} />
+                <PlanRow label="Venues" value="Hyperliquid + Backpack live; Phoenix observe-only" />
+                <PlanRow label="Live submit" value={crossVenueReadiness?.ready ? "durable pair enabled" : "credential gated"} />
                 <PlanRow label="Phoenix ticket" value={`${phoenixSide} $${orderUsd}${phoenixLimit ? ` @ ${phoenixLimit}` : ""}`} />
                 <PlanRow label="Edge filter" value="25 bps net" />
                 <PlanRow label="Hedge state" value="zero net SOL target" />
@@ -770,7 +787,7 @@ export function TriVenueArbConsole() {
                 <button
                   type="button"
                   onClick={() => void runCrossVenueExecution()}
-                  disabled={!canSign || !crossVenueReadiness?.ready || bestOpportunity?.status !== "preflight_pass" || working !== null}
+                  disabled={!canSign || !crossVenueReadiness?.ready || bestOpportunity?.status !== "preflight_pass" || crossVenueExposureOpen || working !== null}
                   className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-cyan-300/30 bg-cyan-300/12 px-3 text-sm font-medium text-cyan-50 transition hover:bg-cyan-300/18 disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   <Crosshair className="h-4 w-4" />
@@ -781,10 +798,18 @@ export function TriVenueArbConsole() {
                     {crossVenueExecution.status} · residual ${(crossVenueExecution.residual_notional_micro_usdc / 1_000_000).toFixed(2)} · {crossVenueExecution.execution_id}
                   </p>
                 )}
-                {crossVenueExecution && !["both_filled", "hedged", "cancelled", "failed", "manual_intervention_required"].includes(crossVenueExecution.status) && (
+                {crossVenueExecution && !["both_filled", "closing", "closed", "hedged", "cancelled", "failed", "manual_intervention_required"].includes(crossVenueExecution.status) && (
                   <button type="button" onClick={() => void cancelCrossVenueExecution()} disabled={working !== null} className="mt-2 h-9 w-full rounded-md border border-rose-300/25 bg-rose-300/10 text-xs text-rose-50 disabled:opacity-45">
                     {working === "cross-venue-cancel" ? "Cancelling and unwinding" : "Cancel / unwind both legs"}
                   </button>
+                )}
+                {crossVenueExecution && ["both_filled", "closing"].includes(crossVenueExecution.status) && (
+                  <button type="button" onClick={() => void closeCrossVenueMatchedPair()} disabled={working !== null} className="mt-2 h-10 w-full rounded-md border border-amber-300/30 bg-amber-300/10 text-xs font-medium text-amber-50 disabled:opacity-45">
+                    {working === "cross-venue-close" || crossVenueExecution.status === "closing" ? "Closing both legs and proving flat" : "Close both positions"}
+                  </button>
+                )}
+                {crossVenueExecution?.status === "closed" && (
+                  <p className="mt-2 text-xs text-emerald-200">Closed: both reduce-only exits filled and both venue accounts were proved flat.</p>
                 )}
                 {!crossVenueReadiness?.ready && (
                   <p className="mt-2 text-[11px] leading-5 text-amber-100">{crossVenueReadiness?.reason_codes.map(formatReason).join(" · ") || "Checking the execution worker."}</p>
@@ -794,9 +819,9 @@ export function TriVenueArbConsole() {
               <div className="mt-4 rounded-md border border-emerald-300/20 bg-emerald-300/5 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <div className="text-sm font-semibold text-white">Phoenix prepaid perpetual order</div>
+                    <div className="text-sm font-semibold text-white">Phoenix perpetual order — unavailable</div>
                     <div className="mt-1 font-mono text-xs text-[#8ea1bf]">
-                      {phoenixLimit ? `$${orderUsd} ${phoenixSide} IOC @ ${phoenixLimit}` : "waiting for Phoenix quote"}
+                      Recovery and exact cancellation are not yet proven; public quote remains visible only.
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-1">
@@ -829,7 +854,7 @@ export function TriVenueArbConsole() {
                   className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-emerald-300/30 bg-emerald-300/12 px-3 text-sm font-medium text-emerald-50 transition hover:bg-emerald-300/18 disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   <Send className="h-4 w-4" />
-                  {working === "phoenix-submit" ? "Submitting Phoenix" : `Submit Phoenix $${orderUsd}`}
+                  Phoenix live submit unavailable
                 </button>
               </div>
 

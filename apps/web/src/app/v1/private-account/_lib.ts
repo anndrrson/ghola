@@ -14,6 +14,24 @@ import {
 } from "@/lib/private-account-mobile-proof";
 import { privateAgentTradingMeterEvent } from "@/lib/private-agent-trading-billing";
 import {
+  LIVE_TRADING_ELIGIBILITY_CONFIRMATION,
+  LIVE_TRADING_EVIDENCE_MAX_AGE_MS,
+  LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD,
+  LIVE_TRADING_RISK_DISCLOSURE_VERSION,
+  LIVE_TRADING_TERMS_VERSION,
+} from "@/lib/live-trading-contract";
+import {
+  getLiveTradingLaunchControl,
+  putLiveTradingAccountGraduation,
+  putLiveTradingCapabilityEvidence,
+} from "@/lib/live-trading-store";
+import {
+  configuredLiveTradingPublicCapabilities,
+  currentLiveTradingReleaseIdentity,
+  liveTradingControlBindingFailures,
+} from "@/lib/live-trading-release.server";
+import { probeLiveTradingWorkerReadiness } from "@/lib/private-agent-worker-readiness";
+import {
   mobileWalletCommitment,
 } from "@/lib/private-account-wallet-binding";
 import {
@@ -117,6 +135,7 @@ import {
   workerAuthorizationHeader,
   workerCapabilityExpectedFromBody,
 } from "@/lib/private-agent-capability";
+import { privateAgentTransportAllowed } from "@/lib/private-agent-spend-policy";
 import {
   getPooledWorkerReadiness,
   pooledWorkerVenueId,
@@ -625,6 +644,7 @@ type PrivateAccountLiveGuardResult =
       ok: true;
       body: unknown;
       owner: PrivateAccountRequestOwner;
+      request_proof_kind: PrivateAccountRequestProofKind;
       revenue?: PrivateAccountLiveRevenueReservation;
     }
   | {
@@ -649,6 +669,12 @@ type PrivateAccountLiveRevenueGuardResult =
       response: Response;
     };
 
+type PrivateAccountRequestProofKind = "mobile_wallet" | "server_hmac" | "report_only";
+
+type PrivateAccountRequestProofResult =
+  | { ok: true; kind: PrivateAccountRequestProofKind }
+  | { ok: false; response: Response };
+
 export async function privateAccountLiveGuard(
   req: Request,
   options: PrivateAccountLiveGuardOptions = {},
@@ -670,16 +696,42 @@ export async function privateAccountLiveGuard(
   const rateLimited = await consumeLiveGuardRateLimit(req, owner);
   if (rateLimited) return { ok: false, response: rateLimited };
 
-  const proofRejected = await verifyLiveGuardRequestProof(req, owner, body, options);
-  if (proofRejected) return { ok: false, response: proofRejected };
+  const proof = await verifyLiveGuardRequestProof(req, owner, body, options);
+  if (!proof.ok) return { ok: false, response: proof.response };
+
+  const legacyMutationBlock = canonicalLiveTradingLegacyMutationBlock(req);
+  if (legacyMutationBlock) return { ok: false, response: legacyMutationBlock };
 
   if (options.requireRevenue) {
     const revenue = await verifyLiveRevenueGuard(req, owner, body);
     if (!revenue.ok) return { ok: false, response: revenue.response };
-    return { ok: true, body, owner, revenue: revenue.reservation };
+    return {
+      ok: true,
+      body,
+      owner,
+      request_proof_kind: proof.kind,
+      revenue: revenue.reservation,
+    };
   }
 
-  return { ok: true, body, owner };
+  return { ok: true, body, owner, request_proof_kind: proof.kind };
+}
+
+function canonicalLiveTradingLegacyMutationBlock(req: Request): Response | null {
+  if (process.env.GHOLA_LIVE_TRADING_PUBLIC_ENABLED !== "true") return null;
+  const pathname = new URL(req.url).pathname;
+  const blocked = [
+    /^\/v1\/private-account\/actions\/execute$/,
+    /^\/v1\/private-account\/connectors\/submit$/,
+    /^\/v1\/private-account\/autopilot\/sessions$/,
+    /^\/v1\/private-account\/autopilot\/sessions\/[^/]+\/resume$/,
+    /^\/v1\/private-account\/hyperliquid\/agent\/session$/,
+    /^\/v1\/private-account\/venues\/[^/]+\/agent\/session$/,
+    /^\/v1\/private-account\/arb\/tri-venue\/(?:run|arm|market-maker\/start)$/,
+  ].some((pattern) => pattern.test(pathname));
+  return blocked
+    ? json({ error: "live_execution_requires_terminal_contract_v2", reason_codes: ["legacy_live_mutation_path_disabled"] }, 409)
+    : null;
 }
 
 function isJsonContentType(req: Request): boolean {
@@ -710,22 +762,23 @@ async function verifyLiveGuardRequestProof(
   owner: PrivateAccountRequestOwner,
   body: unknown,
   options: PrivateAccountLiveGuardOptions,
-): Promise<Response | null> {
-  const mode = privateAccountRequestProofMode();
-  if (mode === "report_only") return null;
-
+): Promise<PrivateAccountRequestProofResult> {
   if (options.allowMobileWalletProof && hasPrivateAccountMobileProofHeaders(req)) {
     const mobile = verifyPrivateAccountMobileProof({
       req,
       body,
       maxSkewMs: positiveIntegerEnv("GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MAX_SKEW_MS", 5 * 60_000),
     });
-    if (!mobile.ok) return json({ error: mobile.error }, mobile.status);
+    if (!mobile.ok) {
+      return { ok: false, response: json({ error: mobile.error }, mobile.status) };
+    }
     const binding = await getActivePrivateMobileWalletBinding({
       owner_commitment: owner.owner_commitment,
       wallet_commitment: mobileWalletCommitment(mobile.wallet),
     });
-    if (!binding) return json({ error: "mobile_wallet_not_bound" }, 403);
+    if (!binding) {
+      return { ok: false, response: json({ error: "mobile_wallet_not_bound" }, 403) };
+    }
     const consumed = await consumeConsumerNonce({
       namespace: "private_mobile_proof",
       owner_commitment: owner.owner_commitment,
@@ -736,28 +789,34 @@ async function verifyLiveGuardRequestProof(
       ),
     });
     if (!consumed) {
-      return json({ error: "mobile_proof_replayed" }, 403);
+      return { ok: false, response: json({ error: "mobile_proof_replayed" }, 403) };
     }
-    return null;
+    return { ok: true, kind: "mobile_wallet" };
   }
+
+  const mode = privateAccountRequestProofMode();
+  if (mode === "report_only") return { ok: true, kind: "report_only" };
 
   const secret = process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET?.trim() ?? "";
   if (!validLiveGuardProofSecret(secret)) {
-    return json({ error: "private_account_request_proof_unconfigured" }, 503);
+    return {
+      ok: false,
+      response: json({ error: "private_account_request_proof_unconfigured" }, 503),
+    };
   }
   const timestamp = req.headers.get("x-ghola-request-timestamp")?.trim() ?? "";
   const nonce = req.headers.get("x-ghola-request-nonce")?.trim() ?? "";
   const proof = req.headers.get("x-ghola-request-proof")?.trim() ?? "";
   if (!timestamp || !nonce || !proof) {
-    return json({ error: "request_proof_required" }, 403);
+    return { ok: false, response: json({ error: "request_proof_required" }, 403) };
   }
   if (!/^[A-Za-z0-9._:-]{8,128}$/.test(nonce)) {
-    return json({ error: "request_proof_invalid" }, 403);
+    return { ok: false, response: json({ error: "request_proof_invalid" }, 403) };
   }
   const timestampMs = Number.parseInt(timestamp, 10);
   const maxSkewMs = positiveIntegerEnv("GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MAX_SKEW_MS", 5 * 60_000);
   if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > maxSkewMs) {
-    return json({ error: "request_proof_stale" }, 403);
+    return { ok: false, response: json({ error: "request_proof_stale" }, 403) };
   }
   const pathname = new URL(req.url).pathname;
   const canonicalBody = stableJson(body);
@@ -772,7 +831,7 @@ async function verifyLiveGuardRequestProof(
   ].join("\n");
   const expected = createHmac("sha256", secret).update(message).digest("hex");
   if (!timingSafeHexEqual(proof, expected)) {
-    return json({ error: "request_proof_invalid" }, 403);
+    return { ok: false, response: json({ error: "request_proof_invalid" }, 403) };
   }
   const consumed = await consumeConsumerNonce({
     namespace: "private_request_proof",
@@ -780,8 +839,10 @@ async function verifyLiveGuardRequestProof(
     nonce,
     expires_at_ms: timestampMs + maxSkewMs,
   });
-  if (!consumed) return json({ error: "request_proof_replayed" }, 403);
-  return null;
+  if (!consumed) {
+    return { ok: false, response: json({ error: "request_proof_replayed" }, 403) };
+  }
+  return { ok: true, kind: "server_hmac" };
 }
 
 function privateAccountRequestProofMode(): "enforce" | "report_only" {
@@ -2587,6 +2648,359 @@ export async function hyperliquidVaultStatusForOwner(owner: PrivateAccountReques
   };
 }
 
+export const HYPERLIQUID_MAINNET_PROOF_CONFIRMATION =
+  "I_UNDERSTAND_THIS_OPENS_AND_CLOSES_A_REAL_MAINNET_POSITION";
+
+export function hyperliquidMainnetProofUiEnabled(
+  env: Record<string, string | undefined> = process.env,
+) {
+  const production = env.NODE_ENV === "production" || env.VERCEL_ENV === "production";
+  if (production) {
+    if (env.GHOLA_HYPERLIQUID_ACCOUNT_PROOF_ENABLED !== "true") return false;
+  } else if (env.GHOLA_HYPERLIQUID_MAINNET_PROOF_UI_ENABLED !== "true" &&
+    env.GHOLA_HYPERLIQUID_ACCOUNT_PROOF_ENABLED !== "true") return false;
+  if (env.GHOLA_PRIVATE_AGENT_SPEND_ARMED !== "true") return false;
+  if (env.GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED !== "false") return false;
+  if (env.GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN !== "false") return false;
+  const raw = env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() ||
+    env.GHOLA_PRIVATE_AGENT_WORKER_URL?.trim() || "";
+  try {
+    const url = new URL(raw);
+    if (production) return url.protocol === "https:";
+    return (url.protocol === "http:" || url.protocol === "https:") &&
+      (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]");
+  } catch {
+    return false;
+  }
+}
+
+export async function runHyperliquidMainnetProofForOwner(
+  owner: PrivateAccountRequestOwner,
+  transport: PrivateWorkerTransportOptions = {},
+) {
+  const env = transport.env ?? process.env;
+  if (!hyperliquidMainnetProofUiEnabled(env)) {
+    return { error: "hyperliquid_mainnet_roundtrip_unavailable" as const, status: 404 };
+  }
+  const account = await createOrGetStoredPrivateAccount(owner);
+  const [vault, eligibility, launch] = await Promise.all([
+    getHyperliquidExecutionVaultByAccount(account.account_commitment),
+    getLatestVenueEligibilityByAccount({ account_commitment: account.account_commitment, venue_id: "hyperliquid" }),
+    getLiveTradingLaunchControl(),
+  ]);
+  if (launch.state !== "canary" && launch.state !== "public") {
+    return { error: "live_trading_not_in_canary" as const, status: 409 };
+  }
+  const release = currentLiveTradingReleaseIdentity(env);
+  const publicCapabilities = configuredLiveTradingPublicCapabilities(env);
+  const bindingFailures = liveTradingControlBindingFailures(
+    launch,
+    release,
+    publicCapabilities,
+    ["canary", "public"],
+  );
+  if (!release.valid || bindingFailures.length) {
+    return { error: "live_trading_release_binding_invalid" as const, status: 409 };
+  }
+  const workerReadiness = await probeLiveTradingWorkerReadiness({
+    env,
+    fetchImpl: transport.fetchImpl,
+    expectedRelease: release,
+    requiredCapabilities: ["limit_order"],
+  });
+  if (!workerReadiness.ready) {
+    return { error: "live_trading_worker_not_ready" as const, status: 503 };
+  }
+  const credential = eligibility?.credential;
+  if (!(eligibility?.owner_commitment === owner.owner_commitment && eligibility.status === "verified" &&
+    Date.parse(eligibility.expires_at) > Date.now() && credential?.credential_type === "self_attested_eligible_user" &&
+    credential.eligibility_basis === "self_attested_non_us" && credential.eligible_non_us === true &&
+    credential.terms_version === LIVE_TRADING_TERMS_VERSION &&
+    credential.risk_disclosure_version === LIVE_TRADING_RISK_DISCLOSURE_VERSION && credential.accepted_at)) {
+    return { error: "live_trading_eligibility_required" as const, status: 451 };
+  }
+  if (!vault || vault.owner_commitment !== owner.owner_commitment || vault.status !== "sealed") {
+    return { error: "hyperliquid_execution_vault_not_ready" as const, status: 409 };
+  }
+  const vaultNetwork = parseHyperliquidVaultAad(vault.vault.encrypted_execution_vault.aad)?.network;
+  if (vaultNetwork !== "mainnet") {
+    return { error: "hyperliquid_mainnet_vault_required" as const, status: 409 };
+  }
+  const cfg = hyperliquidWorkerConfig(env);
+  if (!cfg.url) return { error: "private_worker_unavailable" as const, status: 503 };
+  const workerPath = "/hyperliquid/mainnet-roundtrip";
+  const body = {
+    version: 1,
+    confirmation: HYPERLIQUID_MAINNET_PROOF_CONFIRMATION,
+    execution_mode: "byo_api_key",
+    account_commitment: account.account_commitment,
+    vault_commitment: vault.vault_commitment,
+    policy_commitment: vault.policy_commitment,
+    encrypted_execution_vault: vault.vault.encrypted_execution_vault,
+    market: "HYPE",
+    notional_usd: LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD,
+    slippage_bps: 100,
+  };
+  const authorization = workerAuthorizationHeader({
+    fallbackToken: cfg.token,
+    method: "POST",
+    path: workerPath,
+    scope: "order:submit",
+    body,
+    expected: workerCapabilityExpectedFromBody(body, {
+      venue_id: "hyperliquid",
+      platform_class: "hyperliquid_style_market",
+      operation_class: "mainnet_roundtrip_proof",
+    }),
+  });
+  const response = await (transport.fetchImpl ?? fetch)(new URL(workerPath, cfg.url), {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "content-type": "application/json",
+      "x-ghola-sealed-execution-required": "true",
+      ...(authorization ? { authorization } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120_000),
+  }).catch(() => null);
+  if (!response) return { error: "private_worker_unavailable" as const, status: 503 };
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    const value = objectBody(result);
+    if (launch.state === "canary") {
+      await recordMainnetCapabilityEvidence({
+        release,
+        status: "red",
+        reason: safeHyperliquidMainnetProofError(stringValue(value.error)),
+      });
+    }
+    return {
+      error: safeHyperliquidMainnetProofError(stringValue(value.error)),
+      status: response.status,
+    };
+  }
+  if (!validHyperliquidMainnetProofReport(result)) {
+    if (launch.state === "canary") {
+      await recordMainnetCapabilityEvidence({
+        release,
+        status: "red",
+        reason: "hyperliquid_mainnet_roundtrip_invalid_proof",
+      });
+    }
+    return { error: "hyperliquid_mainnet_roundtrip_invalid_proof" as const, status: 502 };
+  }
+  const report = result as Record<string, unknown>;
+  const completedAt = String(report.completed_at);
+  const venueAccountCommitment = hyperliquidVenueAccountCommitment(report);
+  const proofEvidenceCommitment = gholaCommitment("hyperliquid_account_graduation_proof", {
+    owner_commitment: owner.owner_commitment,
+    account_commitment: account.account_commitment,
+    vault_commitment: vault.vault_commitment,
+    proof_work_order_commitment: report.proof_work_order_commitment,
+    entry_work_order_commitment: report.entry_work_order_commitment,
+    exit_work_order_commitment: report.exit_work_order_commitment,
+    venue_account_commitment: venueAccountCommitment,
+    completed_at: completedAt,
+  });
+  const graduation = await putLiveTradingAccountGraduation({
+    version: 2,
+    graduation_id: gholaCommitment("hyperliquid_account_graduation", {
+      owner_commitment: owner.owner_commitment,
+      account_commitment: account.account_commitment,
+      vault_commitment: vault.vault_commitment,
+    }),
+    owner_commitment: owner.owner_commitment,
+    account_commitment: account.account_commitment,
+    vault_commitment: vault.vault_commitment,
+    proof_evidence_commitment: proofEvidenceCommitment,
+    proof_notional_usd: LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD,
+    status: "active",
+    completed_at: completedAt,
+    revoked_at: null,
+    created_at: completedAt,
+    updated_at: completedAt,
+  });
+  await recordMainnetCapabilityEvidence({
+    release,
+    status: "green",
+    completedAt,
+    receiptCommitment: proofEvidenceCommitment,
+    resultCommitment: gholaCommitment("hyperliquid_mainnet_roundtrip_result", report),
+    venueAccountCommitment,
+  });
+  return { report: { ...report, account_graduated: true, graduation_id: graduation.graduation_id } };
+}
+
+async function recordMainnetCapabilityEvidence(input: {
+  release: ReturnType<typeof currentLiveTradingReleaseIdentity>;
+  status: "green" | "red";
+  completedAt?: string;
+  receiptCommitment?: string;
+  resultCommitment?: string;
+  venueAccountCommitment?: string;
+  reason?: string;
+}) {
+  if (!input.release.valid || !input.release.web_git_sha || !input.release.worker_git_sha ||
+    !input.release.worker_image_digest) return;
+  const observedAt = input.completedAt && Number.isFinite(Date.parse(input.completedAt))
+    ? new Date(input.completedAt)
+    : new Date();
+  const seed = {
+    capability: "limit_order" as const,
+    status: input.status,
+    observed_at: observedAt.toISOString(),
+    receipt_commitment: input.receiptCommitment ?? null,
+    result_commitment: input.resultCommitment ?? null,
+    venue_account_commitment: input.venueAccountCommitment ?? null,
+    proof_subject_commitment: input.venueAccountCommitment ?? null,
+    config_fingerprint: input.release.config_fingerprint,
+  };
+  await putLiveTradingCapabilityEvidence({
+    version: 2,
+    evidence_id: gholaCommitment("live_capability_evidence", seed),
+    capability: "limit_order",
+    venue_id: "hyperliquid",
+    network: "mainnet",
+    status: input.status,
+    broadcast_performed: input.status === "green",
+    reconciled: input.status === "green",
+    final_flat: input.status === "green",
+    open_order_count: input.status === "green" ? 0 : -1,
+    order_notional_usd: LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD,
+    web_git_sha: input.release.web_git_sha,
+    worker_git_sha: input.release.worker_git_sha,
+    worker_image_digest: input.release.worker_image_digest,
+    config_fingerprint: input.release.config_fingerprint,
+    receipt_commitment: input.receiptCommitment ?? null,
+    result_commitment: input.resultCommitment ?? null,
+    venue_account_commitment: input.venueAccountCommitment ?? null,
+    proof_subject_commitment: input.venueAccountCommitment ?? null,
+    reason: input.reason ?? null,
+    observed_at: observedAt.toISOString(),
+    expires_at: new Date(observedAt.getTime() + LIVE_TRADING_EVIDENCE_MAX_AGE_MS).toISOString(),
+    created_at: new Date().toISOString(),
+  });
+}
+
+function safeHyperliquidMainnetProofError(value: string) {
+  const allowed = new Set([
+    "execution claim is unresolved; reconciliation required",
+    "hyperliquid_mainnet_roundtrip_disabled",
+    "proof trade requires an initially flat HYPE position",
+    "proof trade requires no open HYPE orders",
+    "sealed vault is not bound to Hyperliquid mainnet",
+  ]);
+  return allowed.has(value) ? value : "hyperliquid_mainnet_roundtrip_failed";
+}
+
+function validHyperliquidMainnetProofReport(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const report = value as Record<string, unknown>;
+  return report.ok === true &&
+    report.status === "filled" &&
+    report.network === "mainnet" &&
+    report.market === "HYPE" &&
+    report.notional_usd === 10.5 &&
+    report.max_slippage_bps === 100 &&
+    report.claim_store === "postgres" &&
+    report.entry_status === "filled" &&
+    report.preflight_verified === true &&
+    report.api_wallet_authorization_verified === true &&
+    /^0x[0-9a-f]{40}$/u.test(String(report.api_wallet_address || "").toLowerCase()) &&
+    typeof report.api_wallet_valid_until === "string" &&
+    Number.isFinite(Date.parse(report.api_wallet_valid_until)) &&
+    report.preflight_transaction_broadcast === false &&
+    report.preflight_action_expiry_proven === true &&
+    report.entry_order_readback_proven === true &&
+    report.entry_fill_proven === true &&
+    report.duplicate_entry_prevented === true &&
+    report.opened_position_verified === true &&
+    report.venue_position_protection_proven === true &&
+    /^\d+$/u.test(String(report.take_profit_oid || "")) &&
+    /^\d+$/u.test(String(report.stop_loss_oid || "")) &&
+    /^0x[0-9a-f]{32}$/u.test(String(report.take_profit_cloid || "").toLowerCase()) &&
+    /^0x[0-9a-f]{32}$/u.test(String(report.stop_loss_cloid || "").toLowerCase()) &&
+    report.protection_cleanup_confirmed === true &&
+    report.protection_children_terminal === true &&
+    report.default_margin_mode === "isolated" &&
+    report.default_leverage === 1 &&
+    report.exit_status === "filled" &&
+    report.exit_order_readback_proven === true &&
+    report.exit_fill_proven === true &&
+    report.duplicate_exit_prevented === true &&
+    report.stored_receipt_replayed === true &&
+    report.independent_venue_evidence_proven === true &&
+    typeof report.venue_evidence_commitment === "string" &&
+    /^sha256:[0-9a-f]{64}$/u.test(report.venue_evidence_commitment) &&
+    validHyperliquidVenueEvidence(report.venue_evidence) &&
+    validHyperliquidVenueEvidenceLeg(report.entry_order_reference, false) &&
+    validHyperliquidVenueEvidenceLeg(report.exit_order_reference, true) &&
+    report.flat_after_exit === true &&
+    report.open_orders_after_exit === 0 &&
+    typeof report.proof_work_order_commitment === "string" &&
+    typeof report.entry_work_order_commitment === "string" &&
+    typeof report.exit_work_order_commitment === "string" &&
+    typeof report.completed_at === "string" &&
+    Number.isFinite(Date.parse(report.completed_at));
+}
+
+function validHyperliquidVenueEvidence(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const evidence = value as Record<string, unknown>;
+  return evidence.proof_kind === "hyperliquid_mainnet_public_venue_evidence_v1" &&
+    evidence.independently_queried === true &&
+    evidence.network === "mainnet" &&
+    evidence.market === "HYPE" &&
+    /^sha256:[0-9a-f]{64}$/u.test(String(evidence.account_address_commitment || "")) &&
+    evidence.entry_exit_sizes_match === true &&
+    evidence.entry_before_exit === true &&
+    evidence.reduce_only_exit_proven === true &&
+    evidence.position_protection_proven === true &&
+    evidence.protection_children_terminal === true &&
+    validHyperliquidProtectionEvidenceLeg((evidence.protection as Record<string, unknown> | undefined)?.take_profit) &&
+    validHyperliquidProtectionEvidenceLeg((evidence.protection as Record<string, unknown> | undefined)?.stop_loss) &&
+    evidence.transaction_hashes_distinct === true &&
+    evidence.flat_after_exit === true &&
+    evidence.open_orders_after_exit === 0 &&
+    validHyperliquidVenueEvidenceLeg(evidence.entry, false) &&
+    validHyperliquidVenueEvidenceLeg(evidence.exit, true) &&
+    typeof evidence.verified_at === "string" &&
+    Number.isFinite(Date.parse(evidence.verified_at));
+}
+
+function hyperliquidVenueAccountCommitment(report: Record<string, unknown>) {
+  const venueEvidence = report.venue_evidence as Record<string, unknown>;
+  return String(venueEvidence.account_address_commitment);
+}
+
+function validHyperliquidProtectionEvidenceLeg(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const leg = value as Record<string, unknown>;
+  return /^\d+$/u.test(String(leg.oid || "")) &&
+    /^0x[0-9a-f]{32}$/u.test(String(leg.cloid || "").toLowerCase()) &&
+    leg.order_status === "canceled" &&
+    leg.side === "sell" &&
+    leg.reduce_only === true &&
+    leg.trigger_order === true;
+}
+
+function validHyperliquidVenueEvidenceLeg(value: unknown, reduceOnly: boolean) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const leg = value as Record<string, unknown>;
+  return /^\d+$/u.test(String(leg.oid || "")) &&
+    /^0x[0-9a-f]{32}$/u.test(String(leg.cloid || "").toLowerCase()) &&
+    leg.order_status === "filled" &&
+    leg.reduce_only === reduceOnly &&
+    Number(leg.filled_base_size) > 0 &&
+    Number(leg.average_fill_price) > 0 &&
+    Number(leg.filled_notional_usd) >= 10 &&
+    Number(leg.fee_usd) > 0 &&
+    leg.fee_token === "USDC" &&
+    Array.isArray(leg.transaction_hashes) && leg.transaction_hashes.length > 0 &&
+    leg.transaction_hashes.every((hash) => /^0x[0-9a-f]{64}$/u.test(String(hash).toLowerCase()));
+}
+
 export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwner) {
   const account = await createOrGetStoredPrivateAccount(owner);
   const [vault, allocation, runtime, evidence, balanceSnapshot] = await Promise.all([
@@ -2709,12 +3123,19 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
   };
 }
 
-export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRequestOwner) {
+interface PrivateWorkerTransportOptions {
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
+}
+
+export async function hyperliquidAccountSnapshotForOwner(
+  owner: PrivateAccountRequestOwner,
+  transport: PrivateWorkerTransportOptions = {},
+) {
   const account = await createOrGetStoredPrivateAccount(owner);
-  const [vault, allocation, runtime] = await Promise.all([
+  const [vault, allocation] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
-    getPrivateAgentRuntimeStatus().catch(() => null),
   ]);
   const hasVault = vault?.status === "sealed";
   const hasManaged = allocation?.status === "allocated";
@@ -2729,7 +3150,8 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
       next_step: "Use Ghola Vault Mode or bring an API wallet.",
     });
   }
-  if (localHyperliquidPilotEnabled()) {
+  const env = transport.env ?? process.env;
+  if (localHyperliquidPilotEnabled(env)) {
     return localHyperliquidAccountSnapshot({
       status: "ready_to_trade",
       account_source: accountSource,
@@ -2737,9 +3159,18 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
       next_step: "Preview trade.",
     });
   }
-  const cfg = hyperliquidWorkerConfig();
+  const cfg = hyperliquidWorkerConfig(env);
+  if (!cfg.url || !privateAgentTransportAllowed("session", env, transport.fetchImpl)) {
+    return localHyperliquidAccountSnapshot({
+      status: "worker_unavailable",
+      account_source: accountSource,
+      trading_enabled: false,
+      next_step: "Wait for the private worker to come back online.",
+    });
+  }
+  const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
   const workerReady = Boolean(runtime?.selected_provider);
-  if (!cfg.url || !workerReady) {
+  if (!workerReady) {
     return localHyperliquidAccountSnapshot({
       status: "worker_unavailable",
       account_source: accountSource,
@@ -2775,7 +3206,7 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
         platform_class: "hyperliquid_style_market",
       }),
     });
-    const res = await fetch(new URL(workerPath, cfg.url), {
+    const res = await (transport.fetchImpl ?? fetch)(new URL(workerPath, cfg.url), {
       method: "POST",
       cache: "no-store",
       headers: {
@@ -2825,12 +3256,12 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
 export async function hyperliquidAccountStreamForOwner(
   owner: PrivateAccountRequestOwner,
   req: Request,
+  transport: PrivateWorkerTransportOptions = {},
 ) {
   const account = await createOrGetStoredPrivateAccount(owner);
-  const [vault, allocation, runtime] = await Promise.all([
+  const [vault, allocation] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
-    getPrivateAgentRuntimeStatus().catch(() => null),
   ]);
   const hasVault = vault?.status === "sealed";
   const hasManaged = allocation?.status === "allocated";
@@ -2848,7 +3279,8 @@ export async function hyperliquidAccountStreamForOwner(
       stream_status: "venue_access_required",
     }));
   }
-  if (localHyperliquidPilotEnabled()) {
+  const env = transport.env ?? process.env;
+  if (localHyperliquidPilotEnabled(env)) {
     return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
       status: "ready_to_trade",
       account_source: accountSource,
@@ -2858,9 +3290,19 @@ export async function hyperliquidAccountStreamForOwner(
     }));
   }
 
-  const cfg = hyperliquidWorkerConfig();
+  const cfg = hyperliquidWorkerConfig(env);
+  if (!cfg.url || !privateAgentTransportAllowed("session", env, transport.fetchImpl)) {
+    return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
+      status: "worker_unavailable",
+      account_source: accountSource,
+      trading_enabled: false,
+      next_step: "Wait for the private worker to come back online.",
+      stream_status: "worker_unavailable",
+    }));
+  }
+  const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
   const workerReady = Boolean(runtime?.selected_provider);
-  if (!cfg.url || !workerReady) {
+  if (!workerReady) {
     return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
       status: "worker_unavailable",
       account_source: accountSource,
@@ -2900,7 +3342,7 @@ export async function hyperliquidAccountStreamForOwner(
         platform_class: "hyperliquid_style_market",
       }),
     });
-    const res = await fetch(new URL(workerPath, cfg.url), {
+    const res = await (transport.fetchImpl ?? fetch)(new URL(workerPath, cfg.url), {
       method: "POST",
       cache: "no-store",
       headers: {
@@ -2946,6 +3388,7 @@ export async function hyperliquidAccountStreamForOwner(
 export async function allocateHyperliquidManagedFromBody(
   body: unknown,
   owner: PrivateAccountRequestOwner,
+  transport: PrivateWorkerTransportOptions = {},
 ) {
   const value = objectBody(body);
   const account = await createOrGetStoredPrivateAccount(owner);
@@ -2966,6 +3409,13 @@ export async function allocateHyperliquidManagedFromBody(
       ghola_balance: publicGholaBalanceSnapshot(snapshot),
       ready: true,
     };
+  }
+  const env = transport.env ?? process.env;
+  if (
+    !localHyperliquidPilotEnabled(env) &&
+    !privateAgentTransportAllowed("session", env, transport.fetchImpl)
+  ) {
+    return { error: "connector_endpoint_missing" as const };
   }
   if (requestedMode === "ghola_pooled") {
     const workerGate = await pooledWorkerVenueGate("hyperliquid");
@@ -3037,7 +3487,7 @@ export async function allocateHyperliquidManagedFromBody(
     eligibility_commitment: eligibility?.eligibility_commitment ?? null,
     funding_evidence_commitment: fundingEvidenceCommitment,
     fallback: localAllocation,
-  });
+  }, transport);
   if ("error" in workerAllocation) return workerAllocation;
   const stored = await putHyperliquidManagedAllocation({
     version: 1,
@@ -3207,6 +3657,11 @@ export async function confirmHyperliquidNativeVaultDepositFromBody(
   const existingNative = existing?.allocation.execution_mode === "hyperliquid_native_vault"
     ? existing
     : null;
+  const previousUpdatedAt = existingNative ? Date.parse(existingNative.updated_at) : Number.NaN;
+  const confirmedAt = new Date(Math.max(
+    Date.now(),
+    Number.isFinite(previousUpdatedAt) ? previousUpdatedAt + 1 : 0,
+  ));
   const policy = existingNative?.allocation.session_policy ?? createHyperliquidSessionPolicy({
     market_allowlist: arrayOfStrings(value.market_allowlist),
     max_notional_bucket: isFundingAmountBucket(stringValue(value.max_notional_bucket))
@@ -3229,6 +3684,7 @@ export async function confirmHyperliquidNativeVaultDepositFromBody(
     deposit_status: "confirmed",
     funding_routes: ["hyperliquid_direct", "ghola_balance_bridge"],
     allocation_seed: existingNative?.allocation.allocation_commitment || owner.owner_commitment,
+    now: confirmedAt,
   });
   const stored = await putHyperliquidManagedAllocation({
     version: 1,
@@ -3700,11 +4156,30 @@ export async function verifyVenueEligibilityFromBody(
   const credentialType = stringValue(value.credential_type) === "partner_verified_eligible_user"
     ? "partner_verified_eligible_user" as const
     : "self_attested_eligible_user" as const;
+  const liveSelfAttestation = venueId === "hyperliquid" && credentialType === "self_attested_eligible_user";
+  if (liveSelfAttestation) {
+    const reasonCodes: string[] = [];
+    if (value.eligible_non_us !== true) reasonCodes.push("eligible_non_us_attestation_required");
+    if (stringValue(value.terms_version) !== LIVE_TRADING_TERMS_VERSION) reasonCodes.push("live_trading_terms_acceptance_required");
+    if (stringValue(value.risk_disclosure_version) !== LIVE_TRADING_RISK_DISCLOSURE_VERSION) reasonCodes.push("live_trading_risk_acceptance_required");
+    if (stringValue(value.confirmation) !== LIVE_TRADING_ELIGIBILITY_CONFIRMATION) reasonCodes.push("live_trading_attestation_confirmation_required");
+    if (reasonCodes.length) {
+      return { version: 1, ready: false, error: "live_trading_eligibility_attestation_invalid" as const, reason_codes: reasonCodes };
+    }
+  }
+  const acceptedAt = new Date().toISOString();
   const credential = createVenueEligibilityCredential({
     owner_commitment: owner.owner_commitment,
     account_commitment: account.account_commitment,
     venue_id: venueId,
     credential_type: credentialType,
+    ...(liveSelfAttestation ? {
+      eligibility_basis: "self_attested_non_us" as const,
+      eligible_non_us: true as const,
+      terms_version: stringValue(value.terms_version),
+      risk_disclosure_version: stringValue(value.risk_disclosure_version),
+      accepted_at: acceptedAt,
+    } : {}),
     ttl_ms: numberValue(value.ttl_ms) || undefined,
   });
   const stored = await putVenueEligibilityCredential({
@@ -6668,14 +7143,18 @@ async function requestHyperliquidManagedAllocation(input: {
   eligibility_commitment?: string | null;
   funding_evidence_commitment?: string | null;
   fallback: GholaHyperliquidManagedAllocation;
-}): Promise<
+}, transport: PrivateWorkerTransportOptions = {}): Promise<
   | { allocation: GholaHyperliquidManagedAllocation }
   | { error: "connector_endpoint_missing" | "hyperliquid_managed_allocation_failed" | "forbidden_public_field" }
 > {
-  if (localHyperliquidPilotEnabled()) {
+  const env = transport.env ?? process.env;
+  if (localHyperliquidPilotEnabled(env)) {
     return { allocation: input.fallback };
   }
-  const cfg = hyperliquidWorkerConfig();
+  if (!privateAgentTransportAllowed("session", env, transport.fetchImpl)) {
+    return { error: "connector_endpoint_missing" };
+  }
+  const cfg = hyperliquidWorkerConfig(env);
   if (!cfg.url) return { error: "connector_endpoint_missing" };
   try {
     const workerPath = "/hyperliquid/managed/allocations";
@@ -6707,7 +7186,7 @@ async function requestHyperliquidManagedAllocation(input: {
         operation_class: "managed_allocation",
       }),
     });
-    const res = await fetch(new URL(workerPath, cfg.url), {
+    const res = await (transport.fetchImpl ?? fetch)(new URL(workerPath, cfg.url), {
       method: "POST",
       cache: "no-store",
       headers: {
@@ -6827,6 +7306,7 @@ function normalizeHyperliquidAccountSnapshot(
     : "worker_unavailable";
   const source = stringValue(value.account_source);
   const equityBucket = stringValue(value.equity_bucket);
+  const marginUtilizationBucket = stringValue(value.margin_utilization_bucket);
   return {
     version: 1,
     platform_class: "hyperliquid_style_market" as const,
@@ -6840,12 +7320,30 @@ function normalizeHyperliquidAccountSnapshot(
       source === "none"
       ? source
       : fallbackSource,
+    network: stringValue(value.network) === "testnet"
+      ? "testnet" as const
+      : stringValue(value.network) === "mainnet"
+        ? "mainnet" as const
+        : null,
     trading_enabled: value.trading_enabled === true && normalizedStatus === "ready_to_trade",
     equity_bucket: equityBucket === "none" || equityBucket === "low" || equityBucket === "ready"
       ? equityBucket
       : "unknown",
+    margin_utilization_bucket:
+      marginUtilizationBucket === "none" ||
+      marginUtilizationBucket === "<25%" ||
+      marginUtilizationBucket === "25-50%" ||
+      marginUtilizationBucket === "50-75%" ||
+      marginUtilizationBucket === "75-90%" ||
+      marginUtilizationBucket === "90%+"
+        ? marginUtilizationBucket
+        : "unknown" as const,
     position_count: Math.max(0, Math.min(100, Math.floor(numberValue(value.position_count) || 0))),
+    position_total_count: Math.max(0, Math.min(100, Math.floor(numberValue(value.position_total_count) || numberValue(value.position_count) || 0))),
+    positions_truncated: value.positions_truncated === true,
     open_order_count: Math.max(0, Math.min(100, Math.floor(numberValue(value.open_order_count) || 0))),
+    open_order_total_count: Math.max(0, Math.min(100, Math.floor(numberValue(value.open_order_total_count) || numberValue(value.open_order_count) || 0))),
+    open_orders_truncated: value.open_orders_truncated === true,
     last_checked_at: stringValue(value.last_checked_at) || new Date().toISOString(),
     next_step: stringValue(value.next_step) || hyperliquidSnapshotNextStep(normalizedStatus),
   };
@@ -6865,10 +7363,16 @@ function localHyperliquidAccountSnapshot(input: {
     venue_id: "hyperliquid" as const,
     status: input.status,
     account_source: input.account_source,
+    network: null,
     trading_enabled: input.trading_enabled,
     equity_bucket: input.status === "ready_to_trade" ? "ready" as const : "unknown" as const,
+    margin_utilization_bucket: "unknown" as const,
     position_count: 0,
+    position_total_count: 0,
+    positions_truncated: false,
     open_order_count: 0,
+    open_order_total_count: 0,
+    open_orders_truncated: false,
     stream_status: input.stream_status || "snapshot",
     positions: [],
     open_orders: [],
@@ -6912,18 +7416,20 @@ function hyperliquidSnapshotNextStep(status: string) {
   return "Wait for the private worker to come back online.";
 }
 
-function hyperliquidWorkerConfig() {
+function hyperliquidWorkerConfig(
+  env: Record<string, string | undefined> = process.env,
+) {
   return {
     url:
-      process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL?.trim() ||
-      process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() ||
-      process.env.GHOLA_PRIVATE_AGENT_WORKER_URL?.trim() ||
-      process.env.PHALA_AGENT_ENDPOINT?.trim() ||
+      env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL?.trim() ||
+      env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() ||
+      env.GHOLA_PRIVATE_AGENT_WORKER_URL?.trim() ||
+      env.PHALA_AGENT_ENDPOINT?.trim() ||
       "",
     token:
-      process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN?.trim() ||
-      process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
-      process.env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
+      env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN?.trim() ||
+      env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
+      env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
       "",
   };
 }
@@ -6969,8 +7475,10 @@ function hyperliquidStreamCoin(value: unknown) {
   return coin === "ETH" || coin === "SOL" || coin === "HYPE" ? coin : "BTC";
 }
 
-function localHyperliquidPilotEnabled() {
-  return process.env.NODE_ENV === "test" || process.env.GHOLA_CONNECTOR_MODE === "local_test";
+function localHyperliquidPilotEnabled(
+  env: Record<string, string | undefined> = process.env,
+) {
+  return env.NODE_ENV === "test" || env.GHOLA_CONNECTOR_MODE === "local_test";
 }
 
 function publicVenueExecutionVault(record: PrivateVenueExecutionVaultRecordV1) {

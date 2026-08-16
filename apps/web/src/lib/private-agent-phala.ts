@@ -7,6 +7,10 @@ import {
   privateAgentRuntimeLeaseActive,
 } from "./private-agent-runtime-lease";
 import { countActivePrivateAutopilotSessions } from "./private-account-store";
+import {
+  privateAgentEnvironment,
+  privateAgentSpendPolicy,
+} from "./private-agent-spend-policy";
 
 const DEFAULT_WORKER_IMAGE =
   "ghcr.io/anndrrson/ghola:private-agent-worker-d36f9cc@sha256:f87611da536b4b9ac712829a045d7153e80dc71708739cab95c5b4fefd183eb4";
@@ -268,9 +272,9 @@ type PhalaComposeDrift = {
 
 // The CVM's compose (and its plaintext env lines — venue live modes, caps) is
 // baked at provision time; starting a stopped CVM never re-applies it. Detect
-// drift against the compose we would provision today and push a compose-file
-// update so operator env changes actually reach the worker. Fails open: any
-// error leaves the CVM running its existing compose.
+// drift against the compose and encrypted-env allowlist we would provision
+// today, then update both atomically. Fails open: any error leaves readiness
+// closed and the CVM running its existing release.
 export async function ensurePhalaWorkerComposeCurrent(
   client: PhalaCloudClient,
   name: string,
@@ -291,10 +295,39 @@ export async function ensurePhalaWorkerComposeCurrent(
     return { checked: false, updated: false, reason: "compose_file_missing" };
   }
   const desired = buildPhalaWorkerCompose();
-  if (normalizedCompose(currentText) === normalizedCompose(desired)) {
+  const encryptedWorkerEnv = phalaEncryptedWorkerEnv(token);
+  const desiredEnvKeys = encryptedWorkerEnv.map((item) => item.key).sort();
+  const currentEnvKeys = Array.isArray(currentCompose.allowed_envs)
+    ? currentCompose.allowed_envs
+        .filter((item): item is string => typeof item === "string")
+        .sort()
+    : [];
+  const composeMatches = normalizedCompose(currentText) === normalizedCompose(desired);
+  const envKeysMatch =
+    currentEnvKeys.length === desiredEnvKeys.length &&
+    currentEnvKeys.every((key, index) => key === desiredEnvKeys[index]);
+  if (composeMatches && envKeysMatch) {
     return { checked: true, updated: false, reason: null };
   }
   try {
+    const info = await client.getCvmInfo({ id: name }, { schema: false });
+    const infoRecord =
+      info && typeof info === "object" && !Array.isArray(info)
+        ? (info as Record<string, unknown>)
+        : null;
+    const kmsInfo =
+      infoRecord?.kms_info && typeof infoRecord.kms_info === "object"
+        ? (infoRecord.kms_info as Record<string, unknown>)
+        : null;
+    const envEncryptPubkey =
+      typeof kmsInfo?.encrypted_env_pubkey === "string"
+        ? kmsInfo.encrypted_env_pubkey
+        : "";
+    if (!envEncryptPubkey) {
+      return { checked: true, updated: false, reason: "env_encrypt_pubkey_missing" };
+    }
+    const { encryptEnvVars } = await import("@phala/cloud");
+    const encryptedEnv = await encryptEnvVars(encryptedWorkerEnv, envEncryptPubkey);
     // Send the stored app_compose back with only the compose file and env
     // allowlist replaced — the API requires the full object, and this keeps
     // every server-required field at its current value.
@@ -304,7 +337,7 @@ export async function ensurePhalaWorkerComposeCurrent(
         app_compose: {
           ...currentCompose,
           docker_compose_file: desired,
-          allowed_envs: phalaEncryptedWorkerEnv(token).map((item) => item.key),
+          allowed_envs: desiredEnvKeys,
         },
       },
       { schema: false },
@@ -313,12 +346,15 @@ export async function ensurePhalaWorkerComposeCurrent(
     if (!composeHash) {
       return { checked: true, updated: false, reason: "compose_update_provision_failed" };
     }
-    // update_env_vars: false — the KMS-encrypted env is unchanged; only the
-    // compose (plaintext env lines) is being refreshed.
+    // Commit the compose and its complete KMS-encrypted environment together.
+    // Updating only the YAML can otherwise leave newly referenced secrets
+    // absent and put the worker into a restart loop.
     await client.commitCvmComposeFileUpdate({
       id: name,
       compose_hash: composeHash,
-      update_env_vars: false,
+      encrypted_env: encryptedEnv,
+      env_keys: desiredEnvKeys,
+      update_env_vars: true,
     });
     return { checked: true, updated: true, reason: null };
   } catch (error) {
@@ -396,11 +432,7 @@ export async function markPhalaPrivateAgentActivity(input: {
 }
 
 export function privateAgentRemoteExecutionDisabled(): boolean {
-  return (
-    boolEnv("GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED") ||
-    privateAgentSpendLockdownEnabled() ||
-    !privateAgentSpendArmed()
-  );
+  return !privateAgentSpendPolicy("execute").allowed || !privateAgentSpendArmed();
 }
 
 export function privateAgentSpendLockdownEnabled(): boolean {
@@ -408,6 +440,7 @@ export function privateAgentSpendLockdownEnabled(): boolean {
 }
 
 export function privateAgentSpendArmed(): boolean {
+  if (privateAgentEnvironment() !== "production") return false;
   const explicit = nullableBoolEnv("GHOLA_PRIVATE_AGENT_SPEND_ARMED");
   if (explicit !== null) return explicit;
   const explicitWake = nullableBoolEnv("GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED");
@@ -432,7 +465,7 @@ function phalaWakeOnUseEvidence() {
 
 function productionCredentialWakeOnUseAllowed(): boolean {
   return (
-    (process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production") &&
+    privateAgentEnvironment() === "production" &&
     phalaWakeOnUseConfigPresent()
   );
 }
@@ -499,6 +532,7 @@ export function buildPhalaWorkerCompose(input: {
     '      PRIVATE_AGENT_EXECUTION_TOKEN: "${PRIVATE_AGENT_EXECUTION_TOKEN}"',
     '      PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "${PRIVATE_AGENT_WORKER_CAPABILITY_SECRET}"',
     '      PRIVATE_AGENT_FUNDING_SIGNING_KEY: "${PRIVATE_AGENT_FUNDING_SIGNING_KEY:-}"',
+    composeEnvLine("GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64", workerEnv("GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64", "")),
     composeEnvLine("PRIVATE_AGENT_STATE_STORE", phalaWorkerStateStore()),
     composeEnvLine("PRIVATE_AGENT_STATE_SINGLE_CVM_OK", workerEnv("PRIVATE_AGENT_STATE_SINGLE_CVM_OK", "false", ["GHOLA_PRIVATE_AGENT_STATE_SINGLE_CVM_OK"])),
     '      PRIVATE_AGENT_STATE_POSTGRES_URL: "${PRIVATE_AGENT_STATE_POSTGRES_URL:-}"',
@@ -512,7 +546,10 @@ export function buildPhalaWorkerCompose(input: {
     composeEncryptedEnvLine("PRIVATE_AGENT_CONSUMER_SOLANA_USDC_MINT"),
     composeEncryptedEnvLine("PRIVATE_AGENT_VERCEL_SPEND_WEBHOOK_SECRET"),
     '      PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE: "true"',
+    composeEnvLine("PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY", workerEnv("PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY", "true")),
     `      PHALA_CVM_IMAGE_DIGEST: "${imageDigest}"`,
+    `      PRIVATE_AGENT_IMAGE_DIGEST: "${imageDigest}"`,
+    composeEnvLine("PRIVATE_AGENT_BUILD_GIT_SHA", workerEnv("PRIVATE_AGENT_BUILD_GIT_SHA", "", ["GHOLA_PRIVATE_AGENT_WORKER_GIT_SHA", "GHOLA_WEB_GIT_SHA", "VERCEL_GIT_COMMIT_SHA"])),
     composeEnvLine("PRIVATE_AGENT_VENUE_DRY_RUN", workerEnv("PRIVATE_AGENT_VENUE_DRY_RUN", "false")),
     composeEnvLine("PRIVATE_AGENT_GLOBAL_KILL_SWITCH", workerEnv("PRIVATE_AGENT_GLOBAL_KILL_SWITCH", "false")),
     composeEnvLine("PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE", workerEnv("PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE", "60")),
@@ -524,11 +561,16 @@ export function buildPhalaWorkerCompose(input: {
     composeEnvLine("PRIVATE_AGENT_AI_MODEL", workerEnv("PRIVATE_AGENT_AI_MODEL", "", ["GHOLA_PRIVATE_AGENT_AI_MODEL"])),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", workerEnv("PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", "false", ["GHOLA_HYPERLIQUID_ALLOW_MAINNET"])),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", "disabled")),
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED", workerEnv("PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED", "false")),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", "5")),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", "25", ["GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD"])),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD", "", ["GHOLA_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD"])),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD", "", ["GHOLA_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD"])),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS", workerEnv("PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS", "50", ["GHOLA_HYPERLIQUID_LIVE_MAX_SLIPPAGE_BPS"])),
+    composeEnvLine("PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD", "100", ["GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD"])),
+    composeEnvLine("PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD", "500", ["GHOLA_LIVE_TRADING_DAILY_CAP_USD"])),
+    composeEnvLine("PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES", workerEnv("PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES", "limit_order", ["GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES"])),
+    composeEnvLine("GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED", workerEnv("GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED", "")),
     composeEncryptedEnvLine("PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON"),
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE", "disabled", ["GHOLA_SOLANA_PERPS_LIVE_MODE"])),
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET", "false", ["GHOLA_SOLANA_PERPS_ALLOW_MAINNET"])),
@@ -549,7 +591,7 @@ export function buildPhalaWorkerCompose(input: {
     composeEnvLine("PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS", workerEnv("PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS", "", ["GHOLA_COINBASE_ALLOWED_PRODUCTS"])),
     composeEnvLine("PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD", "", ["GHOLA_COINBASE_LIVE_MAX_NOTIONAL_USD"])),
     composeEncryptedEnvLine("PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON"),
-    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", workerEnv("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", "12000")),
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", workerEnv("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", "30000")),
     "    volumes:",
     "      - /var/run/dstack.sock:/var/run/dstack.sock",
     "      - private-agent-data:/data",
@@ -642,6 +684,7 @@ function attestationPresent(attestation: unknown): boolean {
 export async function discoverPhalaPrivateAgentProvider(): Promise<
   ConfidentialComputeProviderStatus | null
 > {
+  if (!privateAgentSpendPolicy("discover").allowed) return null;
   const client = await phalaClient();
   if (!client) return null;
 
@@ -761,6 +804,7 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
 }
 
 export async function discoverPhalaPrivateAgentExecutionUrl(): Promise<string | null> {
+  if (!privateAgentSpendPolicy("discover").allowed) return null;
   const client = await phalaClient();
   if (!client) return null;
   const name = phalaCvmName();

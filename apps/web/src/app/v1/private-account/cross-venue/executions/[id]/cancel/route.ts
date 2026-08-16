@@ -1,11 +1,14 @@
 import { cancelStoredCrossVenueExecution, getStoredCrossVenueExecution } from "@/lib/cross-venue-execution-store";
 import { cancelCrossVenueExecution } from "@/lib/cross-venue-worker";
+import { privateAgentEmergencyControlPolicy } from "@/lib/private-agent-spend-policy";
 import { json, privateAccountOwnerFromRequest, unauthorized } from "../../../../_lib";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   if (!sameOrigin(request)) return json({ error: "same_origin_required" }, 403);
+  const controlPolicy = privateAgentEmergencyControlPolicy("close");
+  if (!controlPolicy.allowed) return json({ version: 1, error: controlPolicy.reason }, 403);
   const owner = await privateAccountOwnerFromRequest(request);
   if (!owner) return unauthorized();
   const { id } = await context.params;

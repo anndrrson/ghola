@@ -16,6 +16,18 @@ describe("middleware security hardening", () => {
     expect(prodCsp).toContain("frame-ancestors 'none'");
   });
 
+  it("permits only the pinned public market-data WebSockets", () => {
+    const csp = buildContentSecurityPolicy(false);
+
+    expect(csp).toContain("wss://api.hyperliquid.xyz");
+    expect(csp).toContain("wss://api.hyperliquid-testnet.xyz");
+    expect(csp).toContain("wss://advanced-trade-ws.coinbase.com");
+    expect(csp).toContain("https://perp-api.phoenix.trade");
+    expect(csp).toContain("wss://perp-api.phoenix.trade");
+    expect(csp).not.toContain("wss://*.hyperliquid.xyz");
+    expect(csp).not.toContain("wss://*.coinbase.com");
+  });
+
   it("sets HSTS only for https requests", () => {
     const httpsHeaders = new Headers();
     applySecurityHeaders(httpsHeaders, { isDev: false, isHttps: true });

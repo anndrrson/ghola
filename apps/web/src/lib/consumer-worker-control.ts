@@ -1,15 +1,24 @@
+import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
+
 export async function proxyConsumerWorker(input: {
   path: string;
   method?: "GET" | "POST";
   tokenEnv: "GHOLA_TRADING_CONTROL_TOKEN" | "GHOLA_RECONCILIATION_INGEST_TOKEN";
   body?: unknown;
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
 }) {
-  const base = process.env.PRIVATE_AGENT_WORKER_URL?.trim() || process.env.GHOLA_PRIVATE_AGENT_WORKER_URL?.trim();
-  const token = process.env[input.tokenEnv]?.trim();
+  const env = input.env ?? process.env;
+  const fetchImpl = input.fetchImpl ?? fetch;
+  if (!privateAgentTransportAllowed("execute", env, input.fetchImpl)) {
+    return { status: 503, body: { error: "private_agent_consumer_control_unconfigured" } };
+  }
+  const base = env.PRIVATE_AGENT_WORKER_URL?.trim() || env.GHOLA_PRIVATE_AGENT_WORKER_URL?.trim();
+  const token = env[input.tokenEnv]?.trim();
   if (!base || !token || token.length < 32) {
     return { status: 503, body: { error: "private_agent_consumer_control_unconfigured" } };
   }
-  const response = await fetch(new URL(input.path, base), {
+  const response = await fetchImpl(new URL(input.path, base), {
     method: input.method ?? "POST",
     cache: "no-store",
     headers: {

@@ -7,6 +7,7 @@ import {
   workerCapabilityExpectedFromBody,
 } from "./private-agent-capability";
 import { discoverPhalaPrivateAgentExecutionUrl } from "./private-agent-phala";
+import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
 
 const POOLED_VENUES = ["hyperliquid", "phoenix", "backpack", "jupiter", "coinbase"] as const;
 
@@ -32,6 +33,12 @@ export async function getPooledWorkerReadiness(
   env: Record<string, string | undefined> = process.env,
   fetchImpl: typeof fetch = fetch,
 ): Promise<PooledWorkerReadiness> {
+  if (!privateAgentTransportAllowed("discover", env, fetchImpl)) {
+    return unavailableReadiness(
+      ["private_agent_transport_blocked"],
+      Boolean(explicitPooledWorkerUrl(env)),
+    );
+  }
   const cfg = await pooledWorkerConfig(env);
   if (!cfg.url) return unavailableReadiness(["pooled_worker_endpoint_missing"], false);
 
@@ -145,14 +152,7 @@ export function pooledWorkerVenueGateFromReadiness(
 }
 
 async function pooledWorkerConfig(env: Record<string, string | undefined>) {
-  const explicitUrl = firstEnv(env, [
-    "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
-    "GHOLA_PRIVATE_AGENT_WORKER_URL",
-    "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL",
-    "GHOLA_CONNECTOR_SOLANA_PERPS_MARKET_URL",
-    "GHOLA_CONNECTOR_SOLANA_SWAP_AGGREGATOR_URL",
-    "GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_URL",
-  ]);
+  const explicitUrl = explicitPooledWorkerUrl(env);
   const discoveredUrl = explicitUrl ? "" : await discoverCurrentPhalaWorkerUrl(env);
   const url = explicitUrl || discoveredUrl;
   const token = firstEnv(env, [
@@ -164,6 +164,17 @@ async function pooledWorkerConfig(env: Record<string, string | undefined>) {
     "GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_TOKEN",
   ]);
   return { url, token };
+}
+
+function explicitPooledWorkerUrl(env: Record<string, string | undefined>) {
+  return firstEnv(env, [
+    "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
+    "GHOLA_PRIVATE_AGENT_WORKER_URL",
+    "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL",
+    "GHOLA_CONNECTOR_SOLANA_PERPS_MARKET_URL",
+    "GHOLA_CONNECTOR_SOLANA_SWAP_AGGREGATOR_URL",
+    "GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_URL",
+  ]);
 }
 
 async function discoverCurrentPhalaWorkerUrl(env: Record<string, string | undefined>) {

@@ -13,6 +13,7 @@ import {
   privateAgentSpendArmed,
   phalaWorkerImageConfiguredForRequestedMode,
   stopIdlePhalaPrivateAgent,
+  wakePhalaPrivateAgentForUse,
 } from "./private-agent-phala";
 import { resetPrivateAgentRuntimeLeaseStoreForTests } from "./private-agent-runtime-lease";
 
@@ -46,6 +47,12 @@ const TEST_ENV_KEYS = [
   "GHOLA_HYPERLIQUID_LIVE_MODE",
   "GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD",
   "GHOLA_HYPERLIQUID_LIVE_MAX_SLIPPAGE_BPS",
+  "GHOLA_LIVE_TRADING_DAILY_CAP_USD",
+  "GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD",
+  "GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED",
+  "GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES",
+  "GHOLA_PRIVATE_AGENT_WORKER_GIT_SHA",
+  "GHOLA_WEB_GIT_SHA",
   "GHOLA_JUPITER_API_KEY",
   "GHOLA_WORKER_CAPABILITY_SECRET",
   "DATABASE_URL",
@@ -57,13 +64,19 @@ const TEST_ENV_KEYS = [
   "PRIVATE_AGENT_FUNDING_SIGNING_KEY",
   "PRIVATE_AGENT_STATE_STORE",
   "PRIVATE_AGENT_STATE_POSTGRES_URL",
+  "PRIVATE_AGENT_BUILD_GIT_SHA",
   "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD",
+  "PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED",
   "PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS",
   "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON",
+  "PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD",
+  "PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD",
+  "PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES",
+  "PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY",
   "PRIVATE_AGENT_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS",
   "PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON",
@@ -71,6 +84,7 @@ const TEST_ENV_KEYS = [
   "PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON",
   "PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON",
   "VERCEL_ENV",
+  "NODE_ENV",
 ];
 
 afterEach(() => {
@@ -101,6 +115,7 @@ describe("private-agent Phala provisioning", () => {
     expect(compose).toContain("ghcr.io/example/worker@sha256:abc");
     expect(compose).toContain("/var/run/dstack.sock:/var/run/dstack.sock");
     expect(compose).toContain('PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE: "true"');
+    expect(compose).toContain('PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY: "true"');
     expect(compose).toContain(
       'PRIVATE_AGENT_EXECUTION_TOKEN: "${PRIVATE_AGENT_EXECUTION_TOKEN}"',
     );
@@ -111,6 +126,7 @@ describe("private-agent Phala provisioning", () => {
       'PRIVATE_AGENT_FUNDING_SIGNING_KEY: "${PRIVATE_AGENT_FUNDING_SIGNING_KEY:-}"',
     );
     expect(compose).toContain('PRIVATE_AGENT_STATE_STORE: "json"');
+    expect(compose).toContain('PRIVATE_AGENT_IMAGE_DIGEST: "sha256:abc"');
     expect(compose).toContain(
       'PRIVATE_AGENT_STATE_POSTGRES_URL: "${PRIVATE_AGENT_STATE_POSTGRES_URL:-}"',
     );
@@ -217,6 +233,31 @@ describe("private-agent Phala provisioning", () => {
     );
   });
 
+  it("passes the identity-bound live trading contract into the worker compose", () => {
+    const sha = "a".repeat(40);
+    setTestEnv({
+      GHOLA_WEB_GIT_SHA: sha,
+      GHOLA_LIVE_TRADING_DAILY_CAP_USD: "500",
+      GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD: "100",
+      GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED: "true",
+      GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES: "limit_order,stop_loss,take_profit",
+      PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED: "true",
+    });
+
+    const compose = buildPhalaWorkerCompose({
+      image: `ghcr.io/example/worker:${sha}`,
+      imageDigest: `sha256:${"b".repeat(64)}`,
+    });
+
+    expect(compose).toContain(`PRIVATE_AGENT_BUILD_GIT_SHA: "${sha}"`);
+    expect(compose).toContain(`PRIVATE_AGENT_IMAGE_DIGEST: "sha256:${"b".repeat(64)}"`);
+    expect(compose).toContain('PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED: "true"');
+    expect(compose).toContain('PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD: "100"');
+    expect(compose).toContain('PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD: "500"');
+    expect(compose).toContain('PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES: "limit_order,stop_loss,take_profit"');
+    expect(compose).toContain('GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED: "true"');
+  });
+
   it("refuses live JIT provisioning without an explicit fresh worker image", () => {
     setTestEnv({
       GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
@@ -255,7 +296,7 @@ describe("private-agent Phala provisioning", () => {
 
   it("uses a bounded idle lease and allows explicit idle shutdown disable", () => {
     setTestEnv({
-      GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "true",
+      GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN: "true",
       GHOLA_PRIVATE_AGENT_IDLE_AFTER_MINUTES: "10",
     });
 
@@ -266,7 +307,7 @@ describe("private-agent Phala provisioning", () => {
     expect(phalaIdleShutdownEnabled()).toBe(false);
   });
 
-  it("auto-arms production wake-on-use when Phala credentials are configured", () => {
+  it("does not auto-arm inside the test process even with production-shaped credentials", () => {
     setTestEnv({
       GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
       GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "false",
@@ -274,17 +315,17 @@ describe("private-agent Phala provisioning", () => {
       VERCEL_ENV: "production",
     });
 
-    expect(privateAgentSpendArmed()).toBe(true);
-    expect(privateAgentRemoteExecutionDisabled()).toBe(false);
-    expect(phalaWakeOnUseEnabled()).toBe(true);
-    expect(phalaJitProvisioningEnabled()).toBe(true);
-    expect(phalaIdleShutdownEnabled()).toBe(true);
+    expect(privateAgentSpendArmed()).toBe(false);
+    expect(privateAgentRemoteExecutionDisabled()).toBe(true);
+    expect(phalaWakeOnUseEnabled()).toBe(false);
+    expect(phalaJitProvisioningEnabled()).toBe(false);
+    expect(phalaIdleShutdownEnabled()).toBe(false);
 
     process.env.GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED = "false";
-    expect(privateAgentSpendArmed()).toBe(true);
-    expect(privateAgentRemoteExecutionDisabled()).toBe(false);
-    expect(phalaWakeOnUseEnabled()).toBe(true);
-    expect(phalaJitProvisioningEnabled()).toBe(true);
+    expect(privateAgentSpendArmed()).toBe(false);
+    expect(privateAgentRemoteExecutionDisabled()).toBe(true);
+    expect(phalaWakeOnUseEnabled()).toBe(false);
+    expect(phalaJitProvisioningEnabled()).toBe(false);
 
     process.env.GHOLA_PRIVATE_AGENT_SPEND_ARMED = "false";
     expect(privateAgentSpendArmed()).toBe(false);
@@ -293,7 +334,7 @@ describe("private-agent Phala provisioning", () => {
     expect(phalaJitProvisioningEnabled()).toBe(false);
   });
 
-  it("keeps explicit production spend locks authoritative", () => {
+  it("keeps explicit spend locks authoritative", () => {
     setTestEnv({
       GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
       PHALA_CLOUD_API_KEY: "phala-key",
@@ -301,10 +342,27 @@ describe("private-agent Phala provisioning", () => {
       VERCEL_ENV: "production",
     });
 
-    expect(privateAgentSpendArmed()).toBe(true);
+    expect(privateAgentSpendArmed()).toBe(false);
     expect(privateAgentRemoteExecutionDisabled()).toBe(true);
     expect(phalaWakeOnUseEnabled()).toBe(false);
     expect(phalaJitProvisioningEnabled()).toBe(false);
+  });
+
+  it("fails closed before any Phala wake or provisioning call outside production", async () => {
+    setTestEnv({
+      NODE_ENV: "development",
+      GHOLA_PRIVATE_AGENT_SPEND_ARMED: "true",
+      GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED: "true",
+      GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "true",
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
+      PHALA_CLOUD_API_KEY: "phala-key",
+    });
+
+    const result = await wakePhalaPrivateAgentForUse({ reason: "localhost_test" });
+
+    expect(result).toMatchObject({ attempted: false, ready: false, status: "disabled" });
+    expect(privateAgentSpendArmed()).toBe(false);
+    expect(privateAgentRemoteExecutionDisabled()).toBe(true);
   });
 
   it("does not stop Phala while a private-agent lease is active", async () => {

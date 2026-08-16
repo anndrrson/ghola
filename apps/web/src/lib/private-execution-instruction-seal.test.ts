@@ -13,6 +13,18 @@ function base64ToBytes(value: string) {
   return new Uint8Array(Buffer.from(value, "base64"));
 }
 
+function expectOpaqueBundle(bundle: {
+  alg: string;
+  ciphertext: string;
+  recipient: string;
+  aad: string;
+}) {
+  expect(Object.keys(bundle).sort()).toEqual(["aad", "alg", "ciphertext", "recipient"]);
+  expect(bundle.alg).toBe("sealed-provider-v1");
+  expect(bundle.ciphertext).toMatch(/^[A-Za-z0-9+/]+={0,2}$/u);
+  expect(base64ToBytes(bundle.ciphertext).byteLength).toBeGreaterThan(64);
+}
+
 function runtimeWithRecipient(recipientId: string, recipientPub: Uint8Array): PrivateAgentRuntimeStatus {
   return {
     version: 1,
@@ -103,8 +115,7 @@ describe("private execution instruction sealing", () => {
 
     expect(built.associated_data).toBe(aad);
     expect(built.encrypted_execution_instruction_bundle.aad).toBe(aad);
-    expect(JSON.stringify(built.encrypted_execution_instruction_bundle)).not.toContain("BTC-USD");
-    expect(JSON.stringify(built.encrypted_execution_instruction_bundle)).not.toContain("10000");
+    expectOpaqueBundle(built.encrypted_execution_instruction_bundle);
 
     const opened = await open(
       base64ToBytes(built.encrypted_execution_instruction_bundle.ciphertext),
@@ -172,7 +183,7 @@ describe("private execution instruction sealing", () => {
       now: new Date("2026-05-28T00:00:00Z"),
     });
 
-    expect(JSON.stringify(built.encrypted_execution_instruction_bundle)).not.toContain("quote_size");
+    expectOpaqueBundle(built.encrypted_execution_instruction_bundle);
 
     const opened = await open(
       base64ToBytes(built.encrypted_execution_instruction_bundle.ciphertext),
@@ -244,7 +255,7 @@ describe("private execution instruction sealing", () => {
     });
 
     expect(built.encrypted_execution_instruction_bundle.aad).toContain("venue:phoenix");
-    expect(JSON.stringify(built.encrypted_execution_instruction_bundle)).not.toContain("250");
+    expectOpaqueBundle(built.encrypted_execution_instruction_bundle);
 
     const opened = await open(
       base64ToBytes(built.encrypted_execution_instruction_bundle.ciphertext),

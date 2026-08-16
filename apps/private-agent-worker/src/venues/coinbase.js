@@ -143,7 +143,21 @@ export async function submitCoinbaseExecution({
   }
   if (instruction.operation_class === "cancel") {
     const cancel = instruction.cancel;
-    const orderIds = [cancel.order_id || cancel.client_order_id].filter(Boolean);
+    const target = await resolveCoinbaseOrder({
+      credential,
+      orderId: cancel.order_id,
+      clientOrderId: cancel.client_order_id,
+      productId: cancel.market,
+      fetchImpl,
+    });
+    if (!target?.order_id) {
+      throw coinbaseRecoveryError(
+        "coinbase cancel target could not be resolved exactly",
+        "COINBASE_CANCEL_TARGET_UNRESOLVED",
+        409,
+      );
+    }
+    const orderIds = [target.order_id];
     const body = await coinbaseRequest({
       credential,
       method: "POST",
@@ -151,10 +165,49 @@ export async function submitCoinbaseExecution({
       body: { order_ids: orderIds },
       fetchImpl,
     });
+    const result = Array.isArray(body.results)
+      ? body.results.find((item) => item?.order_id === target.order_id)
+      : null;
+    if (!result || result.success !== true) {
+      throw coinbaseRecoveryError(
+        "coinbase did not accept the exact cancel request",
+        "COINBASE_CANCEL_NOT_ACCEPTED",
+        409,
+      );
+    }
+    const reconciled = await reconcileCoinbaseExecution({
+      credential,
+      instruction: {
+        operation_class: "reconcile",
+        reconcile: { product_id: target.product_id || cancel.market || null },
+      },
+      clientOrderId: target.client_order_id || cancel.client_order_id,
+      providerOrderId: target.order_id,
+      fetchImpl,
+    });
+    if (reconciled.final_proof?.terminal_status !== "cancelled") {
+      throw coinbaseRecoveryError(
+        "coinbase cancellation is not terminal; reconciliation is required",
+        "COINBASE_CANCEL_RECONCILIATION_REQUIRED",
+        409,
+      );
+    }
     return {
       status: "cancelled",
-      provider_ref_seed: { venue: "coinbase_advanced", client_order_id: clientOrderId, cancel: orderIds },
-      result_seed: { kind: "coinbase_cancel", success_count: Array.isArray(body.results) ? body.results.length : 0 },
+      provider_ref_seed: {
+        ...reconciled.provider_ref_seed,
+        cancel: orderIds,
+      },
+      result_seed: {
+        ...reconciled.result_seed,
+        kind: "coinbase_cancel",
+        success_count: 1,
+      },
+      fills: reconciled.fills,
+      final_proof: {
+        ...reconciled.final_proof,
+        cancel_request_accepted: true,
+      },
     };
   }
   if (instruction.operation_class === "fills" || instruction.operation_class === "reconcile") {
@@ -186,17 +239,37 @@ export async function submitCoinbaseExecution({
     body: payload,
     fetchImpl,
   });
+  const orderId = body.order_id || body.success_response?.order_id || null;
+  if (body.success !== true || !safeIdentifier(orderId)) {
+    const errorCode = safeIdentifier(body.error_response?.error) || "COINBASE_ORDER_REJECTED";
+    throw coinbaseRecoveryError(
+      "coinbase rejected the order before accepting it",
+      errorCode,
+      422,
+    );
+  }
   return {
-    status: body.success === false ? "failed" : "submitted",
+    status: "submitted",
     provider_ref_seed: {
       venue: "coinbase_advanced",
       client_order_id: clientOrderId,
-      order_id: body.order_id || body.success_response?.order_id || null,
+      order_id: orderId,
     },
     result_seed: {
       kind: "coinbase_order",
-      success: body.success !== false,
+      success: true,
       product_id: payload.product_id,
+    },
+    final_proof: {
+      version: 1,
+      proof_kind: "coinbase_create_order_acceptance_v1",
+      broadcast_performed: true,
+      final_venue_execution_proven: true,
+      final_fill_proven: false,
+      provider_order_id: orderId,
+      client_order_id: clientOrderId,
+      terminal_status: null,
+      checked_at: new Date().toISOString(),
     },
   };
 }
@@ -235,6 +308,9 @@ export async function verifyCoinbaseNoSubmit({
 }
 
 function assertCoinbaseLiveEnabled(credential, instruction) {
+  const sizeFields = instruction?.order
+    ? coinbaseOrderSizeFields(instruction.order)
+    : null;
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") return;
   if (process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE !== "full") {
     throw new CoinbaseExecutionError("coinbase live submit is disabled", 503);
@@ -255,7 +331,7 @@ function assertCoinbaseLiveEnabled(credential, instruction) {
   if (productAllowlist.size === 0 && process.env.NODE_ENV === "production") {
     throw new CoinbaseExecutionError("coinbase product allowlist is not configured", 503);
   }
-  const notional = estimateCoinbaseNotionalUsd(instruction.order);
+  const notional = estimateCoinbaseNotionalUsd(instruction.order, sizeFields);
   const maxNotional = Math.min(
     capUsd(
       process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD ||
@@ -272,25 +348,75 @@ function assertCoinbaseLiveEnabled(credential, instruction) {
   }
 }
 
-export async function reconcileCoinbaseExecution({ credential, instruction, clientOrderId, fetchImpl = fetch }) {
+export async function reconcileCoinbaseExecution({
+  credential,
+  instruction,
+  clientOrderId,
+  providerOrderId = null,
+  fetchImpl = fetch,
+}) {
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
     await assertCoinbaseKeyPermissions(credential, fetchImpl);
   }
   const product = instruction.order?.market || instruction.cancel?.market || instruction.reconcile?.product_id || null;
+  const order = await resolveCoinbaseOrder({
+    credential,
+    orderId: providerOrderId || instruction.cancel?.order_id,
+    clientOrderId,
+    productId: product,
+    fetchImpl,
+  });
+  if (!order) {
+    return {
+      status: "reconcile_required",
+      provider_ref_seed: {
+        venue: "coinbase_advanced",
+        client_order_id: clientOrderId,
+        order_id: providerOrderId || null,
+      },
+      result_seed: {
+        kind: "coinbase_reconcile",
+        status: "unresolved",
+        product_id: product,
+      },
+      fills: [],
+      final_proof: {
+        version: 1,
+        proof_kind: "coinbase_order_state_v1",
+        broadcast_performed: false,
+        final_venue_execution_proven: false,
+        final_fill_proven: false,
+        provider_order_id: providerOrderId || null,
+        client_order_id: clientOrderId,
+        terminal_status: null,
+        checked_at: new Date().toISOString(),
+      },
+    };
+  }
   const query = new URLSearchParams();
-  if (product) query.set("product_id", product);
+  query.append("order_ids", order.order_id);
   const path = `/orders/historical/fills${query.size ? `?${query.toString()}` : ""}`;
   const body = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true"
     ? { fills: [] }
     : await coinbaseRequest({ credential, method: "GET", path, fetchImpl });
-  const fills = Array.isArray(body.fills) ? body.fills : [];
+  const fills = Array.isArray(body.fills)
+    ? body.fills.filter((fill) => fill?.order_id === order.order_id)
+    : [];
+  const terminalStatus = terminalCoinbaseOrderStatus(order.status);
+  const fillsProven = terminalStatus !== null && coinbaseFillTotalMatches(order, fills);
   return {
-    status: "reconciled",
-    provider_ref_seed: { venue: "coinbase_advanced", client_order_id: clientOrderId, fills: fills.length },
+    status: terminalStatus && fillsProven ? terminalStatus : terminalStatus ? "reconcile_required" : "submitted",
+    provider_ref_seed: {
+      venue: "coinbase_advanced",
+      client_order_id: order.client_order_id,
+      order_id: order.order_id,
+      fills: fills.length,
+    },
     result_seed: {
       kind: "coinbase_reconcile",
+      status: String(order.status || "UNKNOWN").toUpperCase(),
       fills_count: fills.length,
-      product_id: product,
+      product_id: order.product_id || product,
     },
     fills: fills.slice(0, 25).map((fill) => ({
       trade_id: fill.trade_id || fill.order_id || fill.entry_id || null,
@@ -299,11 +425,130 @@ export async function reconcileCoinbaseExecution({ credential, instruction, clie
       price: fill.price || null,
       fee: fill.commission || fill.fee || null,
     })),
+    final_proof: {
+      version: 1,
+      proof_kind: "coinbase_order_state_v1",
+      broadcast_performed: true,
+      final_venue_execution_proven: true,
+      final_fill_proven: fillsProven,
+      provider_order_id: order.order_id,
+      client_order_id: order.client_order_id,
+      terminal_status: terminalStatus,
+      venue_status: String(order.status || "UNKNOWN").toUpperCase(),
+      filled_size: canonicalDecimal(order.filled_size || "0"),
+      checked_at: new Date().toISOString(),
+    },
   };
+}
+
+async function resolveCoinbaseOrder({ credential, orderId, clientOrderId, productId, fetchImpl }) {
+  const exactOrderId = safeIdentifier(orderId);
+  const exactClientOrderId = safeIdentifier(clientOrderId);
+  if (exactOrderId) {
+    const body = await coinbaseRequest({
+      credential,
+      method: "GET",
+      path: `/orders/historical/${encodeURIComponent(exactOrderId)}`,
+      fetchImpl,
+    });
+    return exactCoinbaseOrder(body.order, { exactOrderId, exactClientOrderId, productId });
+  }
+  if (!exactClientOrderId) return null;
+  let cursor = "";
+  for (let page = 0; page < 10; page += 1) {
+    const query = new URLSearchParams();
+    query.set("limit", "100");
+    if (productId) query.append("product_ids", String(productId).toUpperCase());
+    if (cursor) query.set("cursor", cursor);
+    const body = await coinbaseRequest({
+      credential,
+      method: "GET",
+      path: `/orders/historical/batch?${query.toString()}`,
+      fetchImpl,
+    });
+    const matches = (Array.isArray(body.orders) ? body.orders : [])
+      .filter((order) => order?.client_order_id === exactClientOrderId);
+    if (matches.length > 1) {
+      throw coinbaseRecoveryError(
+        "coinbase returned multiple orders for one client order id",
+        "COINBASE_CLIENT_ORDER_ID_COLLISION",
+        409,
+      );
+    }
+    if (matches[0]) {
+      return exactCoinbaseOrder(matches[0], { exactClientOrderId, productId });
+    }
+    const next = safeIdentifier(body.cursor);
+    if (!body.has_next || !next || next === cursor) break;
+    cursor = next;
+  }
+  return null;
+}
+
+function exactCoinbaseOrder(order, { exactOrderId = null, exactClientOrderId = null, productId = null }) {
+  if (!order || typeof order !== "object") return null;
+  const orderId = safeIdentifier(order.order_id);
+  const clientOrderId = safeIdentifier(order.client_order_id);
+  const product = safeIdentifier(order.product_id)?.toUpperCase() || null;
+  if (!orderId || !clientOrderId) return null;
+  if (exactOrderId && orderId !== exactOrderId) return null;
+  if (exactClientOrderId && clientOrderId !== exactClientOrderId) return null;
+  if (productId && product !== String(productId).toUpperCase()) return null;
+  return { ...order, order_id: orderId, client_order_id: clientOrderId, product_id: product };
+}
+
+function terminalCoinbaseOrderStatus(value) {
+  const status = String(value || "").toUpperCase();
+  if (status === "FILLED") return "filled";
+  if (status === "CANCELLED") return "cancelled";
+  if (status === "EXPIRED") return "expired";
+  if (status === "FAILED") return "failed";
+  return null;
+}
+
+function coinbaseFillTotalMatches(order, fills) {
+  const expected = fixedDecimalUnits(order.filled_size || "0");
+  if (expected == null) return false;
+  let actual = 0n;
+  for (const fill of fills) {
+    const size = fixedDecimalUnits(fill?.size || fill?.base_size || "0");
+    if (size == null) return false;
+    actual += size;
+  }
+  return actual === expected;
+}
+
+function fixedDecimalUnits(value) {
+  const canonical = canonicalDecimal(value);
+  if (canonical == null) return null;
+  const [whole, fraction = ""] = canonical.split(".");
+  if (fraction.length > 18) return null;
+  return BigInt(whole) * 10n ** 18n + BigInt((fraction + "0".repeat(18)).slice(0, 18));
+}
+
+function canonicalDecimal(value) {
+  const text = String(value ?? "").trim();
+  if (!/^\d+(?:\.\d+)?$/.test(text)) return null;
+  const [wholeRaw, fractionRaw = ""] = text.split(".");
+  const whole = wholeRaw.replace(/^0+(?=\d)/, "") || "0";
+  const fraction = fractionRaw.replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+
+function safeIdentifier(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text && text.length <= 200 && /^[A-Za-z0-9_.:-]+$/.test(text) ? text : null;
+}
+
+function coinbaseRecoveryError(message, code, status) {
+  const error = new CoinbaseExecutionError(message, status);
+  error.code = code;
+  return error;
 }
 
 function buildCoinbaseOrderPayload(instruction, clientOrderId, credential) {
   const order = instruction.order;
+  const sizeFields = coinbaseOrderSizeFields(order);
   const side = order.side === "buy" ? "BUY" : "SELL";
   const payload = {
     client_order_id: clientOrderId,
@@ -316,8 +561,7 @@ function buildCoinbaseOrderPayload(instruction, clientOrderId, credential) {
   }
   if (instruction.operation_class === "spot_market_order") {
     payload.order_configuration.market_market_ioc = {
-      ...(order.quote_size ? { quote_size: order.quote_size } : {}),
-      ...(order.base_size ? { base_size: order.base_size } : {}),
+      ...sizeFields,
     };
     return payload;
   }
@@ -327,13 +571,35 @@ function buildCoinbaseOrderPayload(instruction, clientOrderId, credential) {
       ? "limit_limit_fok"
       : "limit_limit_gtc";
   payload.order_configuration[key] = {
-    ...(order.quote_size ? { quote_size: order.quote_size } : {}),
-    ...(order.base_size ? { base_size: order.base_size } : {}),
+    ...sizeFields,
     limit_price: order.limit_price,
     ...(key === "limit_limit_gtc" ? { post_only: order.post_only === true } : {}),
     rfq_disabled: true,
   };
   return payload;
+}
+
+function coinbaseOrderSizeFields(order) {
+  const quoteSize = positiveDecimalText(order.quote_size);
+  const baseSize = positiveDecimalText(order.base_size);
+  const sizeMode = order.size_mode === "quote" || order.size_mode === "base"
+    ? order.size_mode
+    : quoteSize && !baseSize
+      ? "quote"
+      : baseSize && !quoteSize
+        ? "base"
+        : null;
+  if (sizeMode === "quote" && quoteSize) return { quote_size: quoteSize };
+  if (sizeMode === "base" && baseSize) return { base_size: baseSize };
+  throw new CoinbaseExecutionError("coinbase order requires one authoritative size mode", 400);
+}
+
+function positiveDecimalText(value) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const text = String(value).trim();
+  if (!/^\d+(?:\.\d+)?$/.test(text)) return null;
+  const parsed = Number(text);
+  return text && Number.isFinite(parsed) && parsed > 0 ? text : null;
 }
 
 async function coinbaseRequest({ credential, method, path, body, fetchImpl }) {
@@ -386,10 +652,10 @@ function coinbaseProductAllowlist() {
   );
 }
 
-function estimateCoinbaseNotionalUsd(order) {
-  const quote = Number.parseFloat(String(order.quote_size || ""));
+function estimateCoinbaseNotionalUsd(order, sizeFields) {
+  const quote = Number.parseFloat(String(sizeFields?.quote_size || ""));
   if (Number.isFinite(quote) && quote > 0) return quote;
-  const base = Number.parseFloat(String(order.base_size || ""));
+  const base = Number.parseFloat(String(sizeFields?.base_size || ""));
   const price = Number.parseFloat(String(order.limit_price || ""));
   if (Number.isFinite(base) && Number.isFinite(price) && base > 0 && price > 0) return base * price;
   return 0;

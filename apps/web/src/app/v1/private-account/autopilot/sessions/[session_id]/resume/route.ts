@@ -2,7 +2,11 @@ import {
   json,
   privateAccountLiveGuard,
 } from "../../../../_lib";
-import { controlAutonomousAutopilotSessionFromBody } from "@/lib/private-account-autopilot";
+import {
+  autopilotControlErrorStatus,
+  controlAutonomousAutopilotSessionFromBody,
+} from "@/lib/private-account-autopilot";
+import { privateAgentSpendPolicy } from "@/lib/private-agent-spend-policy";
 
 export const dynamic = "force-dynamic";
 
@@ -16,11 +20,15 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<unknown> },
 ) {
+  const spendPolicy = privateAgentSpendPolicy("session");
+  if (!spendPolicy.allowed) {
+    return json({ version: 1, error: spendPolicy.reason }, 403);
+  }
   const id = sessionId(await params);
   if (!id) return json({ error: "autopilot_session_not_found" }, 404);
   const guarded = await privateAccountLiveGuard(req, { allowMobileWalletProof: true });
   if (!guarded.ok) return guarded.response;
   const result = await controlAutonomousAutopilotSessionFromBody(id, "resume", guarded.owner);
-  if ("error" in result) return json({ error: result.error }, 404);
+  if ("error" in result) return json({ version: 1, ...result }, autopilotControlErrorStatus(result.error));
   return json({ version: 1, ...result });
 }

@@ -6,6 +6,7 @@ import {
   workerAuthorizationHeader,
   workerCapabilityExpectedFromBody,
 } from "@/lib/private-agent-capability";
+import { privateAgentTransportAllowed } from "@/lib/private-agent-spend-policy";
 
 const PUBLIC_LIVE_PREFIX = "ghola_public_live_v1";
 const PUBLIC_LIVE_PURPOSE = "phoenix_pooled_live_trade";
@@ -213,6 +214,9 @@ export async function submitPublicLivePhoenixOrder(input: {
     deadline_ms: number;
   };
 }) {
+  if (!privateAgentTransportAllowed("execute", input.env ?? process.env, input.fetchImpl)) {
+    return { error: "private_agent_remote_execution_disabled" as const, status: 503 };
+  }
   const value = input.body;
   if (value.ack_live_order !== true) return { error: "live_order_ack_required" as const, status: 400 };
   const workOrderCommitment = stringValue(value.work_order_commitment);

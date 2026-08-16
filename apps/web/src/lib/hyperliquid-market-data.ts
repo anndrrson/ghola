@@ -1,3 +1,8 @@
+import {
+  CANONICAL_FUNDING_RATE_UNIT,
+  type MarketFundingRateFields,
+} from "./market-funding-rate";
+
 export type HyperliquidNetwork = "mainnet" | "testnet";
 export type HyperliquidMarketCoin = "BTC" | "ETH" | "SOL" | "HYPE";
 export type HyperliquidCandleInterval = "1m" | "5m" | "15m" | "1h";
@@ -26,7 +31,7 @@ export interface HyperliquidRecentTrade {
   time: number;
 }
 
-export interface HyperliquidMarketSnapshot {
+export interface HyperliquidMarketSnapshot extends MarketFundingRateFields {
   version: 1;
   platform: "hyperliquid";
   network: HyperliquidNetwork;
@@ -45,9 +50,9 @@ export interface HyperliquidMarketSnapshot {
   day_notional_volume: string | null;
   day_base_volume: string | null;
   open_interest: string | null;
-  funding_rate: string | null;
   premium: string | null;
   max_leverage: number | null;
+  size_decimals?: number | null;
   candles: HyperliquidCandle[];
   bids: HyperliquidBookLevel[];
   asks: HyperliquidBookLevel[];
@@ -79,6 +84,9 @@ const CANDLE_WINDOW = 240;
 const BOOK_LEVEL_WINDOW = 20;
 const RECENT_TRADE_WINDOW = 20;
 const MARKET_CACHE_TTL_MS = 4_000;
+const MARKET_FETCH_TIMEOUT_MS = 8_000;
+const MAX_SOURCE_AGE_MS = 2 * 60_000;
+const MAX_FUTURE_SKEW_MS = 30_000;
 
 type CacheRecord = {
   fetchedAtMs: number;
@@ -113,7 +121,9 @@ export async function getHyperliquidMarketSnapshot(
   input: HyperliquidMarketSnapshotInput = {},
 ): Promise<HyperliquidMarketSnapshot> {
   const normalized = normalizeHyperliquidMarketInput(input);
-  const now = input.now ?? new Date();
+  const providedNow = input.now;
+  const now = providedNow ?? new Date();
+  const receiptClock = providedNow ? () => providedNow : () => new Date();
   const nowMs = now.getTime();
   const key = `${normalized.network}:${normalized.coin}:${normalized.interval}`;
   const cached = snapshotCache.get(key);
@@ -126,6 +136,7 @@ export async function getHyperliquidMarketSnapshot(
   const promise = fetchFreshHyperliquidMarketSnapshot({
     ...normalized,
     now,
+    receiptClock,
     fetchImpl: input.fetchImpl ?? fetch,
     previous: cached?.snapshot ?? null,
   }).then((snapshot) => {
@@ -153,6 +164,7 @@ async function fetchFreshHyperliquidMarketSnapshot(input: {
   now: Date;
   fetchImpl: typeof fetch;
   previous: HyperliquidMarketSnapshot | null;
+  receiptClock: () => Date;
 }): Promise<HyperliquidMarketSnapshot> {
   const baseUrl = API_URLS[input.network];
   const endTime = input.now.getTime();
@@ -173,11 +185,12 @@ async function fetchFreshHyperliquidMarketSnapshot(input: {
       postInfo(input.fetchImpl, baseUrl, { type: "metaAndAssetCtxs" }).catch(() => null),
       postInfo(input.fetchImpl, baseUrl, { type: "recentTrades", coin: input.coin }).catch(() => null),
     ]);
-    return buildSnapshot({
+    const snapshot = buildSnapshot({
       network: input.network,
       coin: input.coin,
       interval: input.interval,
       fetchedAt: input.now,
+      fundingReceivedAt: input.receiptClock(),
       mids,
       book,
       candles,
@@ -185,13 +198,12 @@ async function fetchFreshHyperliquidMarketSnapshot(input: {
       recentTrades,
       stale: false,
     });
+    return snapshot.stale && input.previous
+      ? { ...input.previous, stale: true }
+      : snapshot;
   } catch {
     if (input.previous) {
-      return {
-        ...input.previous,
-        fetched_at: input.now.toISOString(),
-        stale: true,
-      };
+      return { ...input.previous, stale: true };
     }
     return emptySnapshot({
       network: input.network,
@@ -204,14 +216,21 @@ async function fetchFreshHyperliquidMarketSnapshot(input: {
 }
 
 async function postInfo(fetchImpl: typeof fetch, baseUrl: string, body: Record<string, unknown>) {
-  const res = await fetchImpl(`${baseUrl}/info`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(`hyperliquid_info_${res.status}`);
-  return res.json();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MARKET_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetchImpl(`${baseUrl}/info`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`hyperliquid_info_${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function buildSnapshot(input: {
@@ -219,6 +238,7 @@ function buildSnapshot(input: {
   coin: HyperliquidMarketCoin;
   interval: HyperliquidCandleInterval;
   fetchedAt: Date;
+  fundingReceivedAt: Date;
   mids: unknown;
   book: unknown;
   candles: unknown;
@@ -226,12 +246,22 @@ function buildSnapshot(input: {
   recentTrades: unknown;
   stale: boolean;
 }): HyperliquidMarketSnapshot {
-  const bids = normalizeBookSide(input.book, 0);
-  const asks = normalizeBookSide(input.book, 1);
-  const mid = normalizeMid(input.mids, input.coin);
+  const bids = sortBookSide(normalizeBookSide(input.book, 0), "bid").slice(0, BOOK_LEVEL_WINDOW);
+  const asks = sortBookSide(normalizeBookSide(input.book, 1), "ask").slice(0, BOOK_LEVEL_WINDOW);
+  const mid = positiveDecimalString(normalizeMid(input.mids, input.coin));
   const bestBid = bids[0]?.px ?? null;
   const bestAsk = asks[0]?.px ?? null;
+  const candles = normalizeCandles(input.candles)
+    .filter((candle) => candle.t <= input.fetchedAt.getTime() + MAX_FUTURE_SKEW_MS);
+  const sourceTimestamp = normalizeSourceTimestamp(input.book);
   const assetContext = normalizeAssetContext(input.metaAndAssetCtxs, input.coin);
+  const fundingRate = assetContext.funding_rate;
+  const validBook = isValidBook(bids, asks);
+  const stale = input.stale
+    || !mid
+    || !validBook
+    || !isFreshTimestamp(sourceTimestamp, input.fetchedAt.getTime(), MAX_SOURCE_AGE_MS)
+    || !hasFreshCandles(candles, input.fetchedAt.getTime(), input.interval);
   return {
     version: 1,
     platform: "hyperliquid",
@@ -239,14 +269,18 @@ function buildSnapshot(input: {
     coin: input.coin,
     interval: input.interval,
     fetched_at: input.fetchedAt.toISOString(),
-    source_timestamp: normalizeSourceTimestamp(input.book),
-    stale: input.stale,
+    source_timestamp: sourceTimestamp,
+    stale,
     mid,
     best_bid: bestBid,
     best_ask: bestAsk,
     spread_bps: spreadBps(bestBid, bestAsk),
     ...assetContext,
-    candles: normalizeCandles(input.candles),
+    funding_rate_unit: fundingRate == null ? null : CANONICAL_FUNDING_RATE_UNIT,
+    funding_rate_source: fundingRate == null ? null : "hyperliquid_rest_asset_context_received",
+    funding_time_basis: fundingRate == null ? null : "received_at",
+    funding_updated_at: fundingRate == null ? null : input.fundingReceivedAt.toISOString(),
+    candles,
     bids,
     asks,
     recent_trades: normalizeRecentTrades(input.recentTrades),
@@ -280,8 +314,13 @@ function emptySnapshot(input: {
     day_base_volume: null,
     open_interest: null,
     funding_rate: null,
+    funding_rate_unit: null,
+    funding_rate_source: null,
+    funding_time_basis: null,
+    funding_updated_at: null,
     premium: null,
     max_leverage: null,
+    size_decimals: null,
     candles: [],
     bids: [],
     asks: [],
@@ -301,11 +340,11 @@ function normalizeBookSide(book: unknown, sideIndex: 0 | 1): HyperliquidBookLeve
   if (!Array.isArray(levels)) return [];
   const side = levels[sideIndex];
   if (!Array.isArray(side)) return [];
-  return side.slice(0, BOOK_LEVEL_WINDOW).map((level) => {
+  return side.map((level) => {
     if (!level || typeof level !== "object" || Array.isArray(level)) return null;
     const row = level as Record<string, unknown>;
-    const px = safeDecimalString(row.px);
-    const sz = safeDecimalString(row.sz);
+    const px = positiveDecimalString(row.px);
+    const sz = positiveDecimalString(row.sz);
     const n = numberValue(row.n);
     return px && sz ? { px, sz, n } : null;
   }).filter(Boolean) as HyperliquidBookLevel[];
@@ -313,19 +352,21 @@ function normalizeBookSide(book: unknown, sideIndex: 0 | 1): HyperliquidBookLeve
 
 function normalizeCandles(value: unknown): HyperliquidCandle[] {
   if (!Array.isArray(value)) return [];
-  return value.slice(-CANDLE_WINDOW).map((item) => {
+  const candles = value.map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return null;
     const row = item as Record<string, unknown>;
     const t = numberValue(row.t);
     const T = numberValue(row.T);
-    const o = safeDecimalString(row.o);
-    const h = safeDecimalString(row.h);
-    const l = safeDecimalString(row.l);
-    const c = safeDecimalString(row.c);
+    const o = positiveDecimalString(row.o);
+    const h = positiveDecimalString(row.h);
+    const l = positiveDecimalString(row.l);
+    const c = positiveDecimalString(row.c);
     const v = safeDecimalString(row.v) || "0";
     const n = numberValue(row.n);
-    return t && o && h && l && c ? { t, T, o, h, l, c, v, n } : null;
+    if (!t || !o || !h || !l || !c || (T != null && T < t)) return null;
+    return validOhlc(o, h, l, c) ? { t, T, o, h, l, c, v, n } : null;
   }).filter(Boolean) as HyperliquidCandle[];
+  return dedupeCandles(candles).slice(-CANDLE_WINDOW);
 }
 
 function normalizeAssetContext(value: unknown, coin: HyperliquidMarketCoin) {
@@ -339,6 +380,7 @@ function normalizeAssetContext(value: unknown, coin: HyperliquidMarketCoin) {
     funding_rate: null,
     premium: null,
     max_leverage: null,
+    size_decimals: null,
   };
   if (!Array.isArray(value) || value.length < 2) return empty;
   const [meta, contexts] = value;
@@ -355,7 +397,9 @@ function normalizeAssetContext(value: unknown, coin: HyperliquidMarketCoin) {
     return empty;
   }
   const row = context as Record<string, unknown>;
-  const maxLeverage = (asset as Record<string, unknown>).maxLeverage;
+  const assetRow = asset as Record<string, unknown>;
+  const maxLeverage = assetRow.maxLeverage;
+  const sizeDecimals = assetRow.szDecimals;
   return {
     mark_price: safeDecimalString(row.markPx),
     oracle_price: safeDecimalString(row.oraclePx),
@@ -366,20 +410,37 @@ function normalizeAssetContext(value: unknown, coin: HyperliquidMarketCoin) {
     funding_rate: safeSignedDecimalString(row.funding),
     premium: safeSignedDecimalString(row.premium),
     max_leverage: typeof maxLeverage === "number" && Number.isFinite(maxLeverage) ? Math.floor(maxLeverage) : null,
+    size_decimals: typeof sizeDecimals === "number" && Number.isInteger(sizeDecimals) && sizeDecimals >= 0 && sizeDecimals <= 6
+      ? sizeDecimals
+      : null,
   };
 }
 
 function normalizeRecentTrades(value: unknown): HyperliquidRecentTrade[] {
   if (!Array.isArray(value)) return [];
-  return value.slice(0, RECENT_TRADE_WINDOW).map((item) => {
+  const seen = new Set<string>();
+  const normalized = value.map((item): HyperliquidRecentTrade | null => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return null;
     const row = item as Record<string, unknown>;
-    const px = safeDecimalString(row.px);
-    const sz = safeDecimalString(row.sz);
+    const px = positiveDecimalString(row.px);
+    const sz = positiveDecimalString(row.sz);
     const time = numberValue(row.time);
     const side = row.side === "B" ? "buy" : row.side === "A" ? "sell" : null;
     return px && sz && time && side ? { px, sz, time, side } : null;
-  }).filter(Boolean) as HyperliquidRecentTrade[];
+  }).filter((trade): trade is HyperliquidRecentTrade => trade != null);
+  return normalized.sort(compareRecentTrades).filter((trade) => {
+    const key = `${trade.time}:${trade.side}:${trade.px}:${trade.sz}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, RECENT_TRADE_WINDOW);
+}
+
+function compareRecentTrades(left: HyperliquidRecentTrade, right: HyperliquidRecentTrade) {
+  return right.time - left.time
+    || left.side.localeCompare(right.side)
+    || left.px.localeCompare(right.px)
+    || left.sz.localeCompare(right.sz);
 }
 
 function normalizeSourceTimestamp(book: unknown) {
@@ -388,7 +449,7 @@ function normalizeSourceTimestamp(book: unknown) {
 }
 
 function safeDecimalString(value: unknown) {
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return String(value);
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!/^\d+(?:\.\d+)?$/.test(trimmed)) return null;
@@ -409,12 +470,61 @@ function numberValue(value: unknown) {
   return null;
 }
 
+function positiveDecimalString(value: unknown): string | null {
+  const normalized = typeof value === "string" || typeof value === "number"
+    ? safeDecimalString(value)
+    : null;
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed > 0 ? normalized : null;
+}
+
+function validOhlc(open: string, high: string, low: string, close: string): boolean {
+  const [o, h, l, c] = [open, high, low, close].map(Number);
+  return [o, h, l, c].every((value) => Number.isFinite(value) && value > 0)
+    && h >= Math.max(o, l, c)
+    && l <= Math.min(o, h, c);
+}
+
+function dedupeCandles(candles: HyperliquidCandle[]): HyperliquidCandle[] {
+  const byTimestamp = new Map<number, HyperliquidCandle>();
+  for (const candle of candles.sort((a, b) => a.t - b.t)) byTimestamp.set(candle.t, candle);
+  return [...byTimestamp.values()];
+}
+
+function sortBookSide(
+  levels: HyperliquidBookLevel[],
+  side: "bid" | "ask",
+): HyperliquidBookLevel[] {
+  return levels.sort((a, b) => side === "bid" ? Number(b.px) - Number(a.px) : Number(a.px) - Number(b.px));
+}
+
+function isValidBook(bids: HyperliquidBookLevel[], asks: HyperliquidBookLevel[]): boolean {
+  if (!bids.length || !asks.length) return false;
+  return Number(bids[0].px) < Number(asks[0].px);
+}
+
+function isFreshTimestamp(timestamp: number | null, nowMs: number, maxAgeMs: number): boolean {
+  if (timestamp == null || !Number.isFinite(timestamp) || timestamp <= 0) return false;
+  const age = nowMs - timestamp;
+  return age >= -MAX_FUTURE_SKEW_MS && age <= maxAgeMs;
+}
+
+function hasFreshCandles(
+  candles: HyperliquidCandle[],
+  nowMs: number,
+  interval: HyperliquidCandleInterval,
+): boolean {
+  const latest = candles.at(-1)?.t ?? null;
+  return isFreshTimestamp(latest, nowMs, Math.max(5 * 60_000, INTERVAL_MS[interval] * 3));
+}
+
 function spreadBps(bestBid: string | null, bestAsk: string | null) {
   if (!bestBid || !bestAsk) return null;
   const bid = Number(bestBid);
   const ask = Number(bestAsk);
-  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0) return null;
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0 || bid >= ask) return null;
   const mid = (bid + ask) / 2;
   if (mid <= 0) return null;
-  return Math.max(0, Math.round(((ask - bid) / mid) * 10_000 * 100) / 100);
+  return Math.round(((ask - bid) / mid) * 10_000 * 100) / 100;
 }

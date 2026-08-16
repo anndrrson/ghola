@@ -35,6 +35,19 @@ describe("autopilot run risk", () => {
     });
   });
 
+  it("refreshes a Hyperliquid base-coin position from its exact USD market", () => {
+    const opened = {
+      ...applyEstimatedFill(null, fill("buy", 26, 100)),
+      market: "HYPE",
+    };
+    const marked = markRunPositions([opened], { product_id: "HYPE-USD", price: 101 }, now);
+    const summary = summarizeRunRisk(marked, { now, maxMarkAgeMs: 10_000 });
+
+    assert.equal(marked[0].last_mark_price, 101);
+    assert.equal(marked[0].mark_updated_at, now.toISOString());
+    assert.equal(summary.complete, true);
+  });
+
   it("fails closed when an open position has no fresh mark", () => {
     const opened = applyEstimatedFill(null, fill("buy", 100, 100));
     const summary = summarizeRunRisk([opened], {

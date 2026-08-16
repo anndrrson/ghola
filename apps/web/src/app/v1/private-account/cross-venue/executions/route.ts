@@ -1,4 +1,4 @@
-import { createCrossVenueExecutionPlan, type CrossVenueId, type CrossVenueRiskBudget } from "@/lib/cross-venue-execution";
+import { createCrossVenueExecutionPlan, isProvenLiveCrossVenuePair, provenCrossVenueBaseSize, type CrossVenueId, type CrossVenueRiskBudget } from "@/lib/cross-venue-execution";
 import {
   applyStoredCrossVenueWorkerReport,
   createStoredCrossVenueExecution,
@@ -8,6 +8,7 @@ import {
 import { probeCrossVenueExecutionReadiness, submitCrossVenueExecution } from "@/lib/cross-venue-worker";
 import { getConsumerCircuitState, haltConsumerCircuit } from "@/lib/consumer-production-store";
 import { getTriVenueMarketBundle } from "@/lib/private-account-tri-venue-arb";
+import { privateAgentSpendPolicy } from "@/lib/private-agent-spend-policy";
 import { json, privateAccountOwnerFromRequest, unauthorized } from "../../_lib";
 import { triVenueLiveGuard } from "../../arb/tri-venue/_lib";
 
@@ -25,6 +26,8 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   if (!sameOrigin(request)) return json({ error: "same_origin_required" }, 403);
+  const spendPolicy = privateAgentSpendPolicy("execute");
+  if (!spendPolicy.allowed) return json({ version: 1, error: spendPolicy.reason }, 403);
   const readiness = await probeCrossVenueExecutionReadiness();
   if (!readiness.ready) return json({ error: "cross_venue_execution_not_ready", readiness }, 409);
   const guarded = await triVenueLiveGuard(request);
@@ -37,27 +40,37 @@ export async function POST(request: Request) {
   const opportunityCommitment = stringValue(body.opportunity_commitment);
   const requestedNotional = Number(body.matched_notional_micro_usdc);
   if (!opportunityCommitment) return json({ error: "opportunity_commitment_required" }, 400);
-  if (!Number.isSafeInteger(requestedNotional) || requestedNotional < 1_000_000 || requestedNotional > 5_000_000) {
-    return json({ error: "matched_notional_outside_initial_1_to_5_usdc_cap" }, 400);
+  if (!Number.isSafeInteger(requestedNotional) || requestedNotional < 10_000_000 || requestedNotional > 11_000_000) {
+    return json({ error: "matched_notional_outside_proven_10_to_11_usdc_cap" }, 400);
   }
   const bundle = await getTriVenueMarketBundle();
   const opportunity = bundle.opportunities.find((item) => item.commitment === opportunityCommitment);
   if (!opportunity || opportunity.status !== "preflight_pass" || !opportunity.leg_plan || opportunity.leg_plan.length !== 2) {
     return json({ error: "fresh_preflight_opportunity_required" }, 409);
   }
+  if (!isProvenLiveCrossVenuePair(opportunity.leg_plan)) {
+    return json({ error: "proven_hyperliquid_backpack_pair_required" }, 409);
+  }
   try {
+    const budget = riskBudget(body.risk_budget, requestedNotional);
+    const targetBaseSize = provenCrossVenueBaseSize({
+      matchedNotionalMicroUsdc: requestedNotional,
+      limitPrices: [opportunity.leg_plan[0].price, opportunity.leg_plan[1].price],
+      maxSlippageBps: budget.max_hedge_slippage_bps,
+    });
     const plan = createCrossVenueExecutionPlan({
       owner_commitment: guarded.owner.owner_commitment,
       idempotency_key: idempotencyKey,
       opportunity_commitment: opportunity.commitment,
       market: opportunity.market,
       matched_notional_micro_usdc: requestedNotional,
-      risk_budget: riskBudget(body.risk_budget, requestedNotional),
+      risk_budget: budget,
       legs: opportunity.leg_plan.map((leg) => ({
         venue_id: leg.venue_id as CrossVenueId,
         side: leg.side,
         symbol: leg.symbol,
         limit_price: leg.price,
+        target_base_size: targetBaseSize,
       })),
     });
     const stored = await createStoredCrossVenueExecution(plan);

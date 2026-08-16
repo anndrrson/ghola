@@ -6,10 +6,15 @@ import {
   rejectForbiddenFields,
   unauthorized,
 } from "../../../_lib";
+import { privateAgentSpendPolicy } from "@/lib/private-agent-spend-policy";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  const spendPolicy = privateAgentSpendPolicy("session");
+  if (!spendPolicy.allowed && spendPolicy.environment !== "test") {
+    return json({ error: "private_agent_remote_execution_disabled" }, 503);
+  }
   const body = await readJson(req);
   const forbidden = rejectForbiddenFields(body);
   if (forbidden) return forbidden;

@@ -10,6 +10,7 @@ import {
   assertCoinbaseKeyPermissions,
   coinbaseCredentialFromVault,
   loadPartnerCoinbaseCredential,
+  reconcileCoinbaseExecution,
   submitCoinbaseExecution,
   verifyCoinbaseNoSubmit,
 } from "../venues/coinbase.js";
@@ -19,6 +20,7 @@ import {
   hyperliquidCredentialFromVault,
   loadManagedHyperliquidCredential,
   readHyperliquidAccountSnapshot,
+  reconcileHyperliquidExecution,
   submitHyperliquidExecution,
   verifyHyperliquidNoSubmit,
 } from "../venues/hyperliquid.js";
@@ -35,6 +37,7 @@ import {
   submitJupiterSwapExecution,
   verifyJupiterSwapNoSubmit as verifyJupiterSwapNoSubmitAdapter,
 } from "../venues/jupiter.js";
+import { emitOperatorEvent } from "../observability/operator-events.js";
 
 export class PrivateExecutionError extends Error {
   constructor(message, status = 400) {
@@ -45,9 +48,192 @@ export class PrivateExecutionError extends Error {
 }
 
 const AUTOPILOT_INTERNAL_INSTRUCTION = Symbol("ghola.autopilot.internal_instruction");
+const COINBASE_EXPOSURE_CREATING_OPERATIONS = new Set([
+  "spot_limit_order",
+  "spot_market_order",
+]);
 
 export function commitment(prefix, value) {
   return `${prefix}_${sha256Hex(canonicalJson(value)).slice(0, 48)}`;
+}
+
+export function assertPrivateExecutionRecoveryInvariant({
+  venue_id,
+  execution_mode,
+  instruction,
+  dry_run = false,
+}) {
+  if (dry_run) return;
+  const operationClass = instruction?.operation_class;
+  if (
+    venue_id === "coinbase_advanced" &&
+    COINBASE_EXPOSURE_CREATING_OPERATIONS.has(operationClass)
+  ) {
+    const tif = String(instruction?.order?.tif || "").toLowerCase();
+    const recoveryBackedByoIoc =
+      execution_mode === "byo_api_key" &&
+      operationClass === "spot_limit_order" &&
+      (tif === "ioc" || tif === "fok") &&
+      instruction?.order?.post_only !== true;
+    if (recoveryBackedByoIoc) return;
+    throw privateExecutionContainmentError(
+      "COINBASE_LIVE_EXECUTION_RECOVERY_UNPROVEN",
+      "coinbase live execution is limited to recovery-backed BYO limit IOC/FOK orders",
+    );
+  }
+  if (operationClass !== "perp_limit_order") return;
+  const tif = String(instruction?.order?.tif || "").toLowerCase();
+  if (venue_id === "phoenix") {
+    throw privateExecutionContainmentError(
+      "PHOENIX_LIVE_EXECUTION_RECOVERY_UNPROVEN",
+      "phoenix live execution is disabled until exact submit and cancellation recovery are proven",
+    );
+  }
+  if (venue_id === "backpack" && tif !== "ioc") {
+    throw privateExecutionContainmentError(
+      "BACKPACK_RESTING_ORDER_RECOVERY_UNPROVEN",
+      "backpack live resting orders are disabled until deterministic cancellation is proven",
+    );
+  }
+}
+
+export async function executeClaimedPrivateSubmission({
+  state,
+  work_order_commitment,
+  claim_context,
+  prepare,
+  submit,
+  evidence,
+  finalize,
+}) {
+  const startedAt = Date.now();
+  const operatorFields = {
+    venue_id: claim_context?.venue_id,
+    platform_class: claim_context?.platform_class,
+    execution_mode: claim_context?.execution_mode,
+    operation_class: claim_context?.operation_class,
+    work_order_commitment,
+  };
+  const claim = await state.claimExecution(work_order_commitment, claim_context);
+  if (claim?.status === "completed" && claim.receipt) {
+    void emitOperatorEvent("execution_claim_replayed", {
+      ...operatorFields,
+      severity: "info",
+      claim_status: "completed",
+      duration_ms: Date.now() - startedAt,
+    });
+    return claim.receipt;
+  }
+  if (claim?.status === "rejected" && claim.rejection) {
+    void emitOperatorEvent("execution_claim_rejected_replay", {
+      ...operatorFields,
+      severity: "warn",
+      claim_status: "rejected",
+      error_code: claim.rejection.error_code,
+      duration_ms: Date.now() - startedAt,
+    });
+    throw executionClaimRejection(claim.rejection);
+  }
+  if (claim?.status === "context_mismatch") {
+    void emitOperatorEvent("execution_claim_context_mismatch", {
+      ...operatorFields,
+      severity: "error",
+      claim_status: "context_mismatch",
+      error_code: "EXECUTION_CLAIM_CONTEXT_MISMATCH",
+      duration_ms: Date.now() - startedAt,
+    });
+    throw executionClaimContextMismatch();
+  }
+  if (claim?.status !== "claimed" || !claim.claim_token) {
+    const error = new PrivateExecutionError(
+      "execution claim is unresolved; reconciliation required",
+      409,
+    );
+    error.code = "EXECUTION_CLAIM_RECONCILE_REQUIRED";
+    void emitOperatorEvent("execution_claim_unresolved", {
+      ...operatorFields,
+      severity: "critical",
+      claim_status: claim?.status || "unknown",
+      error_code: error.code,
+      duration_ms: Date.now() - startedAt,
+    });
+    throw error;
+  }
+  void emitOperatorEvent("execution_claim_acquired", {
+    ...operatorFields,
+    severity: "info",
+    claim_status: "claimed",
+    duration_ms: Date.now() - startedAt,
+  });
+  let submissionStarted = false;
+  let completedEvidence = null;
+  try {
+    if (typeof evidence !== "function") {
+      throw new Error("execution evidence builder is required");
+    }
+    if (prepare) await prepare();
+    submissionStarted = true;
+    const adapterResult = await submit();
+    completedEvidence = structuredClone(
+      bindExecutionClaimCompletion(
+        await evidence(adapterResult),
+        claim_context,
+      ),
+    );
+    await state.recordExecutionClaimEvidence(
+      work_order_commitment,
+      claim.claim_token,
+      completedEvidence,
+    );
+    if (finalize) await finalize(adapterResult, structuredClone(completedEvidence));
+    const receipt = await state.completeExecutionClaim(
+      work_order_commitment,
+      claim.claim_token,
+      completedEvidence,
+    );
+    void emitOperatorEvent("execution_claim_completed", {
+      ...operatorFields,
+      severity: "info",
+      claim_status: "completed",
+      status: receipt?.status || completedEvidence?.receipt?.status || "completed",
+      broadcast_performed: completedEvidence?.receipt?.final_proof?.broadcast_performed === true,
+      final_venue_execution_proven: completedEvidence?.receipt?.final_proof?.final_venue_execution_proven === true,
+      final_fill_proven: completedEvidence?.receipt?.final_proof?.final_fill_proven === true,
+      duration_ms: Date.now() - startedAt,
+    });
+    return receipt;
+  } catch (error) {
+    try {
+      const failure = executionClaimFailure(claim_context, error);
+      if (submissionStarted) {
+        await state.markExecutionClaimReconcileRequired(
+          work_order_commitment,
+          claim.claim_token,
+          failure,
+          completedEvidence,
+        );
+      } else {
+        await state.rejectExecutionClaim(
+          work_order_commitment,
+          claim.claim_token,
+          failure,
+        );
+      }
+    } catch {
+      // The durable in-progress claim still prevents any rebroadcast.
+    }
+    void emitOperatorEvent(
+      submissionStarted ? "execution_reconciliation_required" : "execution_claim_rejected",
+      {
+        ...operatorFields,
+        severity: submissionStarted ? "critical" : "warn",
+        claim_status: submissionStarted ? "reconcile_required" : "rejected",
+        error_code: safeExecutionErrorCode(error),
+        duration_ms: Date.now() - startedAt,
+      },
+    );
+    throw error;
+  }
 }
 
 export async function storePrivateAgentSession({ body, recipient, state, provider }) {
@@ -287,19 +473,32 @@ export async function storeCoinbaseSession({ body, recipient, state, provider })
 }
 
 export async function executeHyperliquidOrder({ body, recipient, state }) {
-  const cached = await state.getIdempotency(body.work_order_commitment);
-  if (cached?.receipt) return cached.receipt;
   const executionMode = hyperliquidExecutionMode(body);
+  const claimContext = executionClaimContext({
+    body,
+    venue_id: "hyperliquid",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: executionMode,
+  });
+  const cached = await boundCachedExecutionReceipt({
+    state,
+    work_order_commitment: body.work_order_commitment,
+    claim_context: claimContext,
+  });
+  if (cached) return cached;
   let credential;
   let allocation = null;
+  let pendingManagedAllocation = null;
   if (isHyperliquidAllocationMode(executionMode)) {
     const allocationCommitment = body.managed_allocation?.allocation_commitment ||
       body.managed_allocation_commitment ||
       body.allocation_commitment;
     if (body.managed_allocation?.allocation_commitment) {
-      await state.putHyperliquidManagedAllocation(body.managed_allocation);
+      pendingManagedAllocation = body.managed_allocation;
     }
-    const record = await state.getHyperliquidManagedAllocation(allocationCommitment);
+    const record = pendingManagedAllocation
+      ? { allocation: pendingManagedAllocation }
+      : await state.getHyperliquidManagedAllocation(allocationCommitment);
     if (!record?.allocation || record.allocation.status !== "allocated") {
       throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
     }
@@ -316,6 +515,10 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
       credential = hyperliquidCredentialFromVault(openedVault.json);
     }
   }
+  const expectedNetwork = body.session_policy?.execution_network;
+  if (expectedNetwork && credential.network !== expectedNetwork) {
+    throw new PrivateExecutionError("hyperliquid execution network does not match session policy", 409);
+  }
   const session = await state.findSession({
     venue_id: "hyperliquid",
     vault_commitment: executionMode === "byo_api_key" ? body.vault_commitment : undefined,
@@ -330,56 +533,100 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     venue_id: "hyperliquid",
     session,
   }), { state, venue_id: "hyperliquid" });
-  await enforceInstructionPolicy({ body, instruction, session, state });
+  await enforceInstructionPolicy({ body, instruction, session, state: null });
   const cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
-  const adapterResult = await submitHyperliquidExecution({
-    credential,
-    instruction,
-    cloid,
-  });
-  await state.putExecutionAttempt(body.work_order_commitment, {
-    venue_id: "hyperliquid",
-    platform_class: "hyperliquid_style_market",
-    execution_mode: executionMode,
-    provider_ref_seed: adapterResult.provider_ref_seed,
-    result_seed: adapterResult.result_seed,
-    fills: adapterResult.fills,
-    final_proof: adapterResult.final_proof || null,
-    status: adapterResult.status,
-    created_at: new Date().toISOString(),
-  });
-  const receipt = executionReceipt({
-    venue_id: "hyperliquid",
-    platform_class: "hyperliquid_style_market",
-    execution_mode: executionMode,
-    instruction,
-    body,
-    status: adapterResult.status,
-    provider_ref_seed: adapterResult.provider_ref_seed,
-    result_seed: adapterResult.result_seed,
-    fills: adapterResult.fills,
-    final_proof: adapterResult.final_proof,
-    visibility_summary: {
-      main_wallet_exposed: false,
-      ghola_operator_sees: "commitment_and_ciphertext_only",
-      hyperliquid_sees: executionMode === "hyperliquid_native_vault"
-        ? "vault_address_and_order_activity"
-        : "execution_account_and_order_activity",
-      venue_access_source: hyperliquidVenueAccessSource(executionMode),
-      ghola_access_role: "private_execution_router",
-      venue_gate: "venue_accepts_or_rejects_credentials",
-      public_chain_sees: executionMode === "hyperliquid_native_vault"
-        ? "hyperliquid_vault_deposit_and_order_activity"
-        : executionMode === "ghola_pooled"
-        ? "private_funding_evidence_required"
-        : allocation
-        ? "no_public_wallet_settlement"
-        : instruction.order?.live_order_mode === "tiny_fill"
-          ? "no_ghola_public_settlement"
-          : "private_funding_evidence_required",
+  return executeClaimedPrivateSubmission({
+    state,
+    work_order_commitment: body.work_order_commitment,
+    claim_context: claimContext,
+    prepare: async () => {
+      if (body.autopilot_session_id) {
+        const autopilot = await state.getAutopilotSession(body.autopilot_session_id);
+        if (!autopilot || autopilot.control_latch || autopilot.status !== "running" || autopilot.execution_enabled !== true) {
+          throw new PrivateExecutionError("autopilot execution permit is unavailable", 409);
+        }
+      }
+      await enforceInstructionPolicy({ body, instruction, session, state });
+      if (pendingManagedAllocation) {
+        await state.putHyperliquidManagedAllocation(pendingManagedAllocation);
+      }
     },
+    submit: () => submitHyperliquidExecution({ credential, instruction, cloid }),
+    evidence: async (adapterResult) => ({
+      attempt: executionAttempt({
+        venue_id: "hyperliquid",
+        platform_class: "hyperliquid_style_market",
+        execution_mode: executionMode,
+        adapterResult,
+      }),
+      receipt: executionReceipt({
+        venue_id: "hyperliquid",
+        platform_class: "hyperliquid_style_market",
+        execution_mode: executionMode,
+        instruction,
+        body,
+        status: adapterResult.status,
+        provider_ref_seed: adapterResult.provider_ref_seed,
+        result_seed: adapterResult.result_seed,
+        fills: adapterResult.fills,
+        final_proof: adapterResult.final_proof,
+        execution_configuration: adapterResult.execution_configuration,
+        visibility_summary: {
+          main_wallet_exposed: false,
+          ghola_operator_sees: "commitment_and_ciphertext_only",
+          hyperliquid_sees: executionMode === "hyperliquid_native_vault"
+            ? "vault_address_and_order_activity"
+            : "execution_account_and_order_activity",
+          venue_access_source: hyperliquidVenueAccessSource(executionMode),
+          ghola_access_role: "private_execution_router",
+          venue_gate: "venue_accepts_or_rejects_credentials",
+          public_chain_sees: executionMode === "hyperliquid_native_vault"
+            ? "hyperliquid_vault_deposit_and_order_activity"
+            : executionMode === "ghola_pooled"
+            ? "private_funding_evidence_required"
+            : allocation
+            ? "no_public_wallet_settlement"
+            : instruction.order?.live_order_mode === "tiny_fill"
+              ? "no_ghola_public_settlement"
+              : "private_funding_evidence_required",
+        },
+      }),
+    }),
   });
-  return state.putIdempotency(body.work_order_commitment, receipt);
+}
+
+export async function executeHyperliquidBoundInstruction({
+  body,
+  instruction,
+  recipient,
+  state,
+  executeOrder = executeHyperliquidOrder,
+  reconcileClaim = reconcileHyperliquidClaim,
+}) {
+  const boundBody = { ...body };
+  boundBody[AUTOPILOT_INTERNAL_INSTRUCTION] = instruction;
+  try {
+    return await executeOrder({ body: boundBody, recipient, state });
+  } catch (error) {
+    try {
+      const reconciled = await reconcileClaim({ body: boundBody, recipient, state });
+      if (terminalExecutionProof(reconciled?.final_proof)) return reconciled;
+    } catch {
+      // Preserve the original ambiguous-submit error; the durable claim still blocks rebroadcast.
+    }
+    throw error;
+  }
+}
+
+export async function verifyHyperliquidBoundInstruction({
+  body,
+  instruction,
+  recipient,
+  state,
+}) {
+  const boundBody = { ...body };
+  boundBody[AUTOPILOT_INTERNAL_INSTRUCTION] = instruction;
+  return verifyHyperliquidOrderNoSubmit({ body: boundBody, recipient, state });
 }
 
 export async function readHyperliquidSnapshot({ body, recipient, state }) {
@@ -493,9 +740,24 @@ async function hyperliquidCredentialForBody({ body, recipient, state }) {
   return { executionMode, credential };
 }
 
-export async function executeCoinbaseOrder({ body, recipient, state }) {
-  const cached = await state.getIdempotency(body.work_order_commitment);
-  if (cached?.receipt) return cached.receipt;
+export async function executeCoinbaseOrder({
+  body,
+  recipient,
+  state,
+  submitExecution = submitCoinbaseExecution,
+}) {
+  const claimContext = executionClaimContext({
+    body,
+    venue_id: "coinbase_advanced",
+    platform_class: "coinbase_style_provider",
+    execution_mode: body.execution_mode,
+  });
+  const cached = await boundCachedExecutionReceipt({
+    state,
+    work_order_commitment: body.work_order_commitment,
+    claim_context: claimContext,
+  });
+  if (cached) return cached;
   const session = await state.findSession({
     venue_id: "coinbase_advanced",
     vault_commitment: body.vault_commitment || undefined,
@@ -508,22 +770,19 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
     venue_id: "coinbase_advanced",
     session,
   }), { state, venue_id: "coinbase_advanced" });
-  await enforceInstructionPolicy({ body, instruction, session, state });
+  assertPrivateExecutionRecoveryInvariant({
+    venue_id: "coinbase_advanced",
+    execution_mode: body.execution_mode,
+    instruction,
+    dry_run: process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true",
+  });
+  await enforceInstructionPolicy({ body, instruction, session, state: null });
 
   let credential;
   if (body.execution_mode === "partner_omnibus") {
     credential = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true"
       ? dryRunCoinbaseCredential()
       : loadPartnerCoinbaseCredential(process.env);
-    if (body.omnibus_allocation) {
-      await state.putOmnibusAllocation(body.omnibus_allocation);
-      await state.reserveOmnibus({
-        allocation_commitment: body.omnibus_allocation.allocation_commitment,
-        allocation: body.omnibus_allocation,
-        work_order_commitment: body.work_order_commitment,
-        notional_bucket: String(bucketToUsd(body.session_policy?.max_notional_bucket || "0")),
-      });
-    }
   } else {
     if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
       credential = dryRunCoinbaseCredential();
@@ -537,83 +796,96 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
   }
 
   const clientOrderId = await state.deriveClientOrderId("ghola", body.work_order_commitment);
-  let adapterResult;
-  try {
-    adapterResult = await submitCoinbaseExecution({
-      credential,
-      instruction,
-      clientOrderId,
-    });
-  } catch (error) {
-    if (body.execution_mode === "partner_omnibus" && body.omnibus_allocation?.allocation_commitment) {
-      await state.releaseOmnibus({
-        allocation_commitment: body.omnibus_allocation.allocation_commitment,
-        work_order_commitment: body.work_order_commitment,
+  return executeClaimedPrivateSubmission({
+    state,
+    work_order_commitment: body.work_order_commitment,
+    claim_context: claimContext,
+    prepare: async () => {
+      await enforceInstructionPolicy({ body, instruction, session, state });
+      if (
+        body.execution_mode === "partner_omnibus" &&
+        body.omnibus_allocation &&
+        coinbaseOperationCreatesExposure(instruction.operation_class)
+      ) {
+        await state.putOmnibusAllocation(body.omnibus_allocation);
+        await state.reserveOmnibus({
+          allocation_commitment: body.omnibus_allocation.allocation_commitment,
+          allocation: body.omnibus_allocation,
+          work_order_commitment: body.work_order_commitment,
+          notional_bucket: String(bucketToUsd(body.session_policy?.max_notional_bucket || "0")),
+        });
+      }
+    },
+    submit: () => submitExecution({ credential, instruction, clientOrderId }),
+    evidence: async (adapterResult) => {
+      const receipt = executionReceipt({
+        venue_id: "coinbase_advanced",
+        platform_class: "coinbase_style_provider",
+        execution_mode: body.execution_mode,
+        instruction,
+        body,
+        status: adapterResult.status,
+        provider_ref_seed: adapterResult.provider_ref_seed,
+        result_seed: adapterResult.result_seed,
+        fills: adapterResult.fills,
+        final_proof: adapterResult.final_proof,
+        visibility_summary: {
+          main_wallet_exposed: false,
+          ghola_operator_sees: "commitment_and_ciphertext_only",
+          coinbase_sees: body.execution_mode === "partner_omnibus"
+            ? "partner_pooled_account_and_order_activity"
+            : "byo_account_and_order_activity",
+        },
       });
-    }
-    throw error;
-  }
-
-  const receipt = executionReceipt({
-    venue_id: "coinbase_advanced",
-    platform_class: "coinbase_style_provider",
-    execution_mode: body.execution_mode,
-    instruction,
-    body,
-    status: adapterResult.status,
-    provider_ref_seed: adapterResult.provider_ref_seed,
-    result_seed: adapterResult.result_seed,
-    fills: adapterResult.fills,
-    final_proof: adapterResult.final_proof,
-    visibility_summary: {
-      main_wallet_exposed: false,
-      ghola_operator_sees: "commitment_and_ciphertext_only",
-      coinbase_sees: body.execution_mode === "partner_omnibus"
-        ? "partner_pooled_account_and_order_activity"
-        : "byo_account_and_order_activity",
+      return {
+        attempt: executionAttempt({
+          venue_id: "coinbase_advanced",
+          platform_class: "coinbase_style_provider",
+          execution_mode: body.execution_mode,
+          adapterResult,
+        }),
+        receipt,
+      };
+    },
+    finalize: async (_adapterResult, completed) => {
+      if (
+        body.execution_mode === "partner_omnibus" &&
+        body.omnibus_allocation?.allocation_commitment &&
+        coinbaseOperationCreatesExposure(instruction.operation_class)
+      ) {
+        for (const fill of completed.receipt.fill_commitments || []) {
+          await state.settleOmnibusFill({
+            allocation_commitment: body.omnibus_allocation.allocation_commitment,
+            work_order_commitment: body.work_order_commitment,
+            fill_commitment: fill,
+            notional_bucket: String(Math.ceil(estimateOrderNotionalUsd(instruction.order || {}))),
+          });
+        }
+      }
     },
   });
-  await state.putExecutionAttempt(body.work_order_commitment, {
-    venue_id: "coinbase_advanced",
-    platform_class: "coinbase_style_provider",
-    execution_mode: body.execution_mode,
-    provider_ref_seed: adapterResult.provider_ref_seed,
-    result_seed: adapterResult.result_seed,
-    fills: adapterResult.fills,
-    final_proof: adapterResult.final_proof || null,
-    status: adapterResult.status,
-    created_at: new Date().toISOString(),
-  });
-  if (body.execution_mode === "partner_omnibus" && body.omnibus_allocation?.allocation_commitment) {
-    for (const fill of receipt.fill_commitments || []) {
-      await state.settleOmnibusFill({
-        allocation_commitment: body.omnibus_allocation.allocation_commitment,
-        work_order_commitment: body.work_order_commitment,
-        fill_commitment: fill,
-        notional_bucket: String(Math.ceil(estimateOrderNotionalUsd(instruction.order || {}))),
-      });
-    }
-  }
-  return state.putIdempotency(body.work_order_commitment, receipt);
 }
 
-export async function executeSolanaPerpsOrder({ body, recipient, state }) {
-  const cached = await state.getIdempotency(body.work_order_commitment);
-  if (cached?.receipt) return cached.receipt;
+export async function executeSolanaPerpsOrder({
+  body,
+  recipient,
+  state,
+  submitExecution = submitSolanaPerpsExecution,
+}) {
   const venueId = normalizeSolanaPerpsVenueId(body.venue_id);
   const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
-  let credential = null;
-  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
-    if (executionMode === "ghola_pooled") {
-      credential = loadPooledSolanaPerpsCredential(venueId);
-    } else {
-      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/solana-perps-execution-vault-v1",
-        expectedKind: "ghola_solana_perps_execution_vault",
-      });
-      credential = solanaPerpsCredentialFromVault(openedVault.json);
-    }
-  }
+  const claimContext = executionClaimContext({
+    body,
+    venue_id: venueId,
+    platform_class: "solana_perps_market",
+    execution_mode: executionMode,
+  });
+  const cached = await boundCachedExecutionReceipt({
+    state,
+    work_order_commitment: body.work_order_commitment,
+    claim_context: claimContext,
+  });
+  if (cached) return cached;
   const session = await state.findSession({
     venue_id: venueId,
     vault_commitment: body.vault_commitment || undefined,
@@ -626,56 +898,88 @@ export async function executeSolanaPerpsOrder({ body, recipient, state }) {
     venue_id: venueId,
     session,
   }), { state, venue_id: venueId });
-  await enforceInstructionPolicy({ body, instruction, session, state });
+  assertPrivateExecutionRecoveryInvariant({
+    venue_id: venueId,
+    execution_mode: executionMode,
+    instruction,
+    dry_run: process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true",
+  });
+  await enforceInstructionPolicy({ body, instruction, session, state: null });
+  let credential = null;
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
+    if (executionMode === "ghola_pooled") {
+      credential = loadPooledSolanaPerpsCredential(venueId);
+    } else {
+      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+        aadPrefix: "ghola/solana-perps-execution-vault-v1",
+        expectedKind: "ghola_solana_perps_execution_vault",
+      });
+      credential = solanaPerpsCredentialFromVault(openedVault.json);
+    }
+  }
   const clientOrderId = await state.deriveClientOrderId(venueId, body.work_order_commitment);
-  const adapterResult = await submitSolanaPerpsExecution({
-    credential,
-    instruction,
-    clientOrderId,
-    venueId,
-    executionMode,
-  });
-  await state.putExecutionAttempt(body.work_order_commitment, {
-    venue_id: venueId,
-    platform_class: "solana_perps_market",
-    execution_mode: executionMode,
-    provider_ref_seed: adapterResult.provider_ref_seed,
-    result_seed: adapterResult.result_seed,
-    fills: adapterResult.fills,
-    final_proof: adapterResult.final_proof || null,
-    status: adapterResult.status,
-    created_at: new Date().toISOString(),
-  });
-  const receipt = executionReceipt({
-    venue_id: venueId,
-    platform_class: "solana_perps_market",
-    execution_mode: executionMode,
-    instruction,
-    body,
-    status: adapterResult.status,
-    provider_ref_seed: adapterResult.provider_ref_seed,
-    result_seed: adapterResult.result_seed,
-    fills: adapterResult.fills,
-    final_proof: adapterResult.final_proof,
-    visibility_summary: {
-      main_wallet_exposed: false,
-      ghola_operator_sees: "commitment_and_ciphertext_only",
-      solana_perps_sees: executionMode === "ghola_pooled"
-        ? "pooled_venue_account_and_order_activity"
-        : "stealth_venue_account_and_order_activity",
-      venue_access_source: executionMode,
-      ghola_access_role: "sealed_private_execution_router",
-      venue_gate: "venue_accepts_or_rejects_account_and_order",
-      public_chain_sees: "venue_account_activity_visible_if_public_settlement",
+  return executeClaimedPrivateSubmission({
+    state,
+    work_order_commitment: body.work_order_commitment,
+    claim_context: claimContext,
+    prepare: () => enforceInstructionPolicy({ body, instruction, session, state }),
+    submit: () => {
+      return submitExecution({
+        credential,
+        instruction,
+        clientOrderId,
+        venueId,
+        executionMode,
+      });
     },
+    evidence: async (adapterResult) => ({
+      attempt: executionAttempt({
+        venue_id: venueId,
+        platform_class: "solana_perps_market",
+        execution_mode: executionMode,
+        adapterResult,
+      }),
+      receipt: executionReceipt({
+        venue_id: venueId,
+        platform_class: "solana_perps_market",
+        execution_mode: executionMode,
+        instruction,
+        body,
+        status: adapterResult.status,
+        provider_ref_seed: adapterResult.provider_ref_seed,
+        result_seed: adapterResult.result_seed,
+        fills: adapterResult.fills,
+        final_proof: adapterResult.final_proof,
+        visibility_summary: {
+          main_wallet_exposed: false,
+          ghola_operator_sees: "commitment_and_ciphertext_only",
+          solana_perps_sees: executionMode === "ghola_pooled"
+            ? "pooled_venue_account_and_order_activity"
+            : "stealth_venue_account_and_order_activity",
+          venue_access_source: executionMode,
+          ghola_access_role: "sealed_private_execution_router",
+          venue_gate: "venue_accepts_or_rejects_account_and_order",
+          public_chain_sees: "venue_account_activity_visible_if_public_settlement",
+        },
+      }),
+    }),
   });
-  return state.putIdempotency(body.work_order_commitment, receipt);
 }
 
 export async function executeJupiterSwapOrder({ body, recipient, state }) {
-  const cached = await state.getIdempotency(body.work_order_commitment);
-  if (cached?.receipt) return cached.receipt;
   const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
+  const claimContext = executionClaimContext({
+    body,
+    venue_id: "jupiter",
+    platform_class: "solana_swap_aggregator",
+    execution_mode: executionMode,
+  });
+  const cached = await boundCachedExecutionReceipt({
+    state,
+    work_order_commitment: body.work_order_commitment,
+    claim_context: claimContext,
+  });
+  if (cached) return cached;
   let credential = null;
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
     if (executionMode === "ghola_pooled") {
@@ -700,49 +1004,53 @@ export async function executeJupiterSwapOrder({ body, recipient, state }) {
     venue_id: "jupiter",
     session,
   });
-  await enforceInstructionPolicy({ body, instruction, session, state });
+  await enforceInstructionPolicy({ body, instruction, session, state: null });
   const clientOrderId = await state.deriveClientOrderId("jupiter", body.work_order_commitment);
-  const adapterResult = await submitJupiterSwapExecution({
-    credential,
-    instruction,
-    clientOrderId,
-    executionMode,
-  });
-  await state.putExecutionAttempt(body.work_order_commitment, {
-    venue_id: "jupiter",
-    platform_class: "solana_swap_aggregator",
-    execution_mode: executionMode,
-    provider_ref_seed: adapterResult.provider_ref_seed,
-    result_seed: adapterResult.result_seed,
-    fills: adapterResult.fills,
-    final_proof: adapterResult.final_proof || null,
-    status: adapterResult.status,
-    created_at: new Date().toISOString(),
-  });
-  const receipt = executionReceipt({
-    venue_id: "jupiter",
-    platform_class: "solana_swap_aggregator",
-    execution_mode: executionMode,
-    instruction,
-    body,
-    status: adapterResult.status,
-    provider_ref_seed: adapterResult.provider_ref_seed,
-    result_seed: adapterResult.result_seed,
-    fills: adapterResult.fills,
-    final_proof: adapterResult.final_proof,
-    visibility_summary: {
-      main_wallet_exposed: false,
-      ghola_operator_sees: "commitment_and_ciphertext_only",
-      jupiter_sees: executionMode === "ghola_pooled"
-        ? "pooled_swap_authority_and_route"
-        : "stealth_swap_authority_and_route",
-      venue_access_source: executionMode,
-      ghola_access_role: "sealed_private_execution_router",
-      venue_gate: "jupiter_accepts_or_rejects_swap",
-      public_chain_sees: "swap_authority_activity_visible_if_public_settlement",
+  return executeClaimedPrivateSubmission({
+    state,
+    work_order_commitment: body.work_order_commitment,
+    claim_context: claimContext,
+    prepare: () => enforceInstructionPolicy({ body, instruction, session, state }),
+    submit: () => {
+      return submitJupiterSwapExecution({
+        credential,
+        instruction,
+        clientOrderId,
+        executionMode,
+      });
     },
+    evidence: async (adapterResult) => ({
+      attempt: executionAttempt({
+        venue_id: "jupiter",
+        platform_class: "solana_swap_aggregator",
+        execution_mode: executionMode,
+        adapterResult,
+      }),
+      receipt: executionReceipt({
+        venue_id: "jupiter",
+        platform_class: "solana_swap_aggregator",
+        execution_mode: executionMode,
+        instruction,
+        body,
+        status: adapterResult.status,
+        provider_ref_seed: adapterResult.provider_ref_seed,
+        result_seed: adapterResult.result_seed,
+        fills: adapterResult.fills,
+        final_proof: adapterResult.final_proof,
+        visibility_summary: {
+          main_wallet_exposed: false,
+          ghola_operator_sees: "commitment_and_ciphertext_only",
+          jupiter_sees: executionMode === "ghola_pooled"
+            ? "pooled_swap_authority_and_route"
+            : "stealth_swap_authority_and_route",
+          venue_access_source: executionMode,
+          ghola_access_role: "sealed_private_execution_router",
+          venue_gate: "jupiter_accepts_or_rejects_swap",
+          public_chain_sees: "swap_authority_activity_visible_if_public_settlement",
+        },
+      }),
+    }),
   });
-  return state.putIdempotency(body.work_order_commitment, receipt);
 }
 
 export async function executeAutopilotOrder({
@@ -1026,6 +1334,172 @@ export async function verifyCoinbaseOrderNoSubmit({ body, recipient, state }) {
   };
 }
 
+export async function reconcileCoinbaseClaim({ body, recipient, state }) {
+  const workOrderCommitment = body.work_order_commitment;
+  const evidence = await state.getExecutionClaimEvidence(workOrderCommitment);
+  if (!evidence?.context || evidence.context.venue_id !== "coinbase_advanced") {
+    const error = new PrivateExecutionError("coinbase execution claim was not found", 404);
+    error.code = "COINBASE_EXECUTION_CLAIM_NOT_FOUND";
+    throw error;
+  }
+  if (evidence.receipt?.final_proof?.final_fill_proven === true) {
+    return evidence.receipt;
+  }
+
+  let credential;
+  const executionMode = evidence.context.execution_mode || body.execution_mode || "byo_api_key";
+  if (executionMode === "partner_omnibus") {
+    credential = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true"
+      ? dryRunCoinbaseCredential()
+      : loadPartnerCoinbaseCredential(process.env);
+  } else if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
+    credential = dryRunCoinbaseCredential();
+  } else {
+    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+      aadPrefix: "ghola/coinbase-advanced-execution-vault-v1",
+      expectedKind: "ghola_coinbase_advanced_execution_vault",
+    });
+    credential = coinbaseCredentialFromVault(openedVault.json);
+  }
+
+  const clientOrderId = await state.deriveClientOrderId("ghola", workOrderCommitment);
+  const providerOrderId = evidence.attempt?.provider_ref_seed?.order_id ||
+    evidence.receipt?.final_proof?.provider_order_id ||
+    null;
+  const adapterResult = await reconcileCoinbaseExecution({
+    credential,
+    instruction: {
+      operation_class: "reconcile",
+      reconcile: { product_id: body.product_id || null },
+    },
+    clientOrderId,
+    providerOrderId,
+  });
+  const completed = bindExecutionClaimCompletion({
+    attempt: executionAttempt({
+      venue_id: "coinbase_advanced",
+      platform_class: "coinbase_style_provider",
+      execution_mode: executionMode,
+      adapterResult,
+    }),
+    receipt: executionReceipt({
+      venue_id: "coinbase_advanced",
+      platform_class: "coinbase_style_provider",
+      execution_mode: executionMode,
+      instruction: null,
+      body,
+      status: adapterResult.status,
+      provider_ref_seed: adapterResult.provider_ref_seed,
+      result_seed: adapterResult.result_seed,
+      fills: adapterResult.fills,
+      final_proof: adapterResult.final_proof,
+      visibility_summary: evidence.receipt?.visibility_summary || {
+        main_wallet_exposed: false,
+        ghola_operator_sees: "commitment_and_ciphertext_only",
+        coinbase_sees: executionMode === "partner_omnibus"
+          ? "partner_pooled_account_and_order_activity"
+          : "byo_account_and_order_activity",
+      },
+    }),
+  }, evidence.context);
+  if (adapterResult.final_proof?.final_fill_proven !== true) {
+    return completed.receipt;
+  }
+  if (typeof state.resolveExecutionClaim !== "function") {
+    throw new PrivateExecutionError("durable execution reconciliation is unavailable", 503);
+  }
+  return state.resolveExecutionClaim(workOrderCommitment, completed);
+}
+
+export async function reconcileHyperliquidClaim({
+  body,
+  recipient,
+  state,
+  reconcileExecution = reconcileHyperliquidExecution,
+}) {
+  const workOrderCommitment = body.work_order_commitment;
+  const cached = (await state.getIdempotency(workOrderCommitment))?.receipt || null;
+  if (cached) return cached;
+  const evidence = await state.getExecutionClaimEvidence(workOrderCommitment);
+  if (!evidence?.context || evidence.context.venue_id !== "hyperliquid") {
+    const error = new PrivateExecutionError("hyperliquid execution claim was not found", 404);
+    error.code = "HYPERLIQUID_EXECUTION_CLAIM_NOT_FOUND";
+    throw error;
+  }
+  if (terminalExecutionProof(evidence.receipt?.final_proof)) {
+    if (typeof state.resolveExecutionClaim !== "function" || !evidence.attempt) {
+      throw new PrivateExecutionError("durable execution reconciliation is unavailable", 503);
+    }
+    return state.resolveExecutionClaim(workOrderCommitment, {
+      attempt: evidence.attempt,
+      receipt: evidence.receipt,
+    });
+  }
+
+  const { executionMode, credential } = await hyperliquidCredentialForBody({ body, recipient, state });
+  const cloid = await state.deriveHyperliquidCloid(workOrderCommitment);
+  const instruction = body[AUTOPILOT_INTERNAL_INSTRUCTION] || body.encrypted_execution_instruction_bundle
+    ? await instructionForBody({ body, recipient, venue_id: "hyperliquid", session: null })
+    : null;
+  const market = body.market || body.coin || instruction?.order?.market ||
+    evidence.attempt?.result_seed?.market || null;
+  const venueResult = await reconcileExecution({
+    credential,
+    cloid,
+    market,
+    protection: instruction?.position_protection || null,
+  });
+  const adapterResult = {
+    status: venueResult.status,
+    provider_ref_seed: {
+      venue: "hyperliquid",
+      cloid,
+      venue_order_reference: venueResult.venue_order_reference || null,
+      take_profit_cloid: venueResult.protection?.take_profit_cloid || null,
+      stop_loss_cloid: venueResult.protection?.stop_loss_cloid || null,
+    },
+    result_seed: {
+      kind: "hyperliquid_reconciliation",
+      status: venueResult.status,
+      market,
+      terminal: venueResult.terminal === true,
+    },
+    fills: Array.isArray(venueResult.fills) ? venueResult.fills : [],
+    final_proof: venueResult.final_proof || null,
+  };
+  const completed = bindExecutionClaimCompletion({
+    attempt: executionAttempt({
+      venue_id: "hyperliquid",
+      platform_class: "hyperliquid_style_market",
+      execution_mode: executionMode,
+      adapterResult,
+    }),
+    receipt: executionReceipt({
+      venue_id: "hyperliquid",
+      platform_class: "hyperliquid_style_market",
+      execution_mode: executionMode,
+      instruction: null,
+      body,
+      status: adapterResult.status,
+      provider_ref_seed: adapterResult.provider_ref_seed,
+      result_seed: adapterResult.result_seed,
+      fills: adapterResult.fills,
+      final_proof: adapterResult.final_proof,
+      visibility_summary: evidence.receipt?.visibility_summary || {
+        main_wallet_exposed: false,
+        ghola_operator_sees: "commitment_and_ciphertext_only",
+        hyperliquid_sees: "execution_account_and_order_activity",
+        public_chain_sees: "venue_order_status_reconciled_by_cloid",
+      },
+    }),
+  }, evidence.context);
+  if (venueResult.terminal !== true) return completed.receipt;
+  if (typeof state.resolveExecutionClaim !== "function") {
+    throw new PrivateExecutionError("durable execution reconciliation is unavailable", 503);
+  }
+  return state.resolveExecutionClaim(workOrderCommitment, completed);
+}
+
 export async function verifyJupiterSwapNoSubmit({ body, recipient, state }) {
   const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
   const credential = executionMode === "ghola_pooled"
@@ -1176,31 +1650,43 @@ export async function verifyHyperliquidOrderNoSubmit({ body, recipient, state })
 }
 
 export async function reconcileStoredExecution({ body, state, venue_id, platform_class }) {
-  const attempted = await state.getExecutionAttempt(body.work_order_commitment);
   const cached = (await state.getIdempotency(body.work_order_commitment))?.receipt || null;
-  const status = attempted?.status === "failed" ? "failed" : "reconciled";
+  if (cached) return cached;
+  const evidence = typeof state.getExecutionClaimEvidence === "function"
+    ? await state.getExecutionClaimEvidence(body.work_order_commitment)
+    : null;
+  if (evidence?.receipt) return evidence.receipt;
+  const attempted = evidence?.attempt || await state.getExecutionAttempt(body.work_order_commitment);
+  const storedProof = attempted?.final_proof && typeof attempted.final_proof === "object"
+    ? attempted.final_proof
+    : {};
+  const broadcastPerformed = storedProof.broadcast_performed === true;
+  const finalVenueExecutionProven = storedProof.final_venue_execution_proven === true;
+  const finalFillProven = storedProof.final_fill_proven === true;
+  const status = attempted?.status === "failed"
+    ? "failed"
+    : finalVenueExecutionProven ? "reconciled" : "reconcile_required";
   const providerRefSeed = attempted?.provider_ref_seed ||
-    cached?.provider_ref_commitment ||
     {
       venue: venue_id,
       work_order_commitment: body.work_order_commitment,
       reconciliation_only: true,
     };
   const resultSeed = attempted?.result_seed ||
-    cached?.result_commitment ||
     {
       kind: `${venue_id}_reconcile`,
       status,
       work_order_commitment: body.work_order_commitment,
     };
-  const finalProof = attempted?.final_proof || {
+  const finalProof = {
+    ...storedProof,
     version: 1,
-    proof_kind: "connector_execution_reconciliation_v1",
+    proof_kind: storedProof.proof_kind || "connector_execution_reconciliation_v1",
     status,
     venue_id,
-    broadcast_performed: Boolean(attempted || cached),
-    final_venue_execution_proven: Boolean(attempted || cached),
-    final_fill_proven: Array.isArray(attempted?.fills) && attempted.fills.length > 0,
+    broadcast_performed: broadcastPerformed,
+    final_venue_execution_proven: finalVenueExecutionProven,
+    final_fill_proven: finalFillProven,
     checked_at: new Date().toISOString(),
   };
   return executionReceipt({
@@ -1214,9 +1700,9 @@ export async function reconcileStoredExecution({ body, state, venue_id, platform
     status,
     provider_ref_seed: providerRefSeed,
     result_seed: resultSeed,
-    fills: attempted?.fills || cached?.fill_commitments || [],
+    fills: attempted?.fills || [],
     final_proof: finalProof,
-    visibility_summary: cached?.visibility_summary || {
+    visibility_summary: {
       main_wallet_exposed: false,
       ghola_operator_sees: "commitment_and_ciphertext_only",
       public_chain_sees: "reconciled_from_worker_state",
@@ -1269,7 +1755,12 @@ async function resolvePrivateCancelTarget(instruction, { state, venue_id }) {
   const target = instruction?.cancel?.target_work_order_commitment;
   if (instruction?.operation_class !== "cancel" || !target) return instruction;
   if (!(await state.getIdempotency(target))?.receipt) {
-    throw new PrivateExecutionError("cancel target work order is unknown");
+    const error = new PrivateExecutionError(
+      "cancel target work order is unresolved; reconciliation required",
+      400,
+    );
+    error.code = "EXECUTION_CANCEL_TARGET_UNRESOLVED";
+    throw error;
   }
   const clientOrderId = venue_id === "hyperliquid"
     ? await state.deriveHyperliquidCloid(target)
@@ -1281,6 +1772,16 @@ async function resolvePrivateCancelTarget(instruction, { state, venue_id }) {
       client_order_id: clientOrderId,
     },
   };
+}
+
+function coinbaseOperationCreatesExposure(operationClass) {
+  return COINBASE_EXPOSURE_CREATING_OPERATIONS.has(operationClass);
+}
+
+function privateExecutionContainmentError(code, message) {
+  const error = new PrivateExecutionError(message, 503);
+  error.code = code;
+  return error;
 }
 
 function hyperliquidExecutionMode(body) {
@@ -1320,6 +1821,127 @@ function managedCredentialIndex(seed, length) {
 function publicHyperliquidManagedAllocation(allocation) {
   const { credential_ref: _credentialRef, ...publicAllocation } = allocation;
   return publicAllocation;
+}
+
+function executionClaimContext({ body, venue_id, platform_class, execution_mode }) {
+  return {
+    venue_id,
+    platform_class,
+    execution_mode,
+    operation_class: body.operation_class,
+    request_digest: executionRequestDigest({
+      body,
+      venue_id,
+      platform_class,
+      execution_mode,
+    }),
+  };
+}
+
+function executionRequestDigest({ body, venue_id, platform_class, execution_mode }) {
+  const publicBody = Object.fromEntries(Object.entries(body || {}));
+  return sha256Hex(stableExecutionJson({
+    venue_id,
+    platform_class,
+    execution_mode,
+    operation_class: body?.operation_class || null,
+    body: publicBody,
+    internal_instruction: body?.[AUTOPILOT_INTERNAL_INSTRUCTION] || null,
+  }));
+}
+
+async function boundCachedExecutionReceipt({
+  state,
+  work_order_commitment,
+  claim_context,
+}) {
+  const receipt = (await state.getIdempotency(work_order_commitment))?.receipt || null;
+  if (!receipt) return null;
+  if (
+    typeof claim_context?.request_digest !== "string" ||
+    receipt.execution_request_digest !== claim_context.request_digest
+  ) {
+    throw executionClaimContextMismatch();
+  }
+  return receipt;
+}
+
+function bindExecutionClaimCompletion(completed, claimContext) {
+  if (!completed || typeof completed !== "object") {
+    throw new PrivateExecutionError("execution completion is invalid", 500);
+  }
+  const requestDigest = claimContext?.request_digest;
+  if (typeof requestDigest !== "string") throw executionClaimContextMismatch();
+  return {
+    ...completed,
+    attempt: {
+      ...(completed.attempt || {}),
+      execution_request_digest: requestDigest,
+    },
+    receipt: {
+      ...(completed.receipt || {}),
+      execution_request_digest: requestDigest,
+    },
+  };
+}
+
+function executionClaimContextMismatch() {
+  const error = new PrivateExecutionError(
+    "work order is bound to a different execution request",
+    409,
+  );
+  error.code = "EXECUTION_CLAIM_CONTEXT_MISMATCH";
+  return error;
+}
+
+function executionAttempt({ venue_id, platform_class, execution_mode, adapterResult }) {
+  return {
+    venue_id,
+    platform_class,
+    execution_mode,
+    provider_ref_seed: adapterResult.provider_ref_seed,
+    result_seed: adapterResult.result_seed,
+    fills: adapterResult.fills,
+    final_proof: adapterResult.final_proof || null,
+    status: adapterResult.status,
+    created_at: new Date().toISOString(),
+  };
+}
+
+function safeExecutionErrorCode(error) {
+  const raw = typeof error?.code === "string"
+    ? error.code
+    : typeof error?.name === "string"
+      ? error.name
+      : "execution_error";
+  return raw.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96) || "execution_error";
+}
+
+function executionClaimFailure(context, error) {
+  return {
+    ...context,
+    error_code: safeExecutionErrorCode(error),
+    error_message: String(error?.message || "execution rejected").slice(0, 240),
+    error_status: Number.isInteger(error?.status) ? error.status : 400,
+    created_at: new Date().toISOString(),
+  };
+}
+
+function executionClaimRejection(rejection) {
+  const error = new PrivateExecutionError(
+    String(rejection.error_message || "execution rejected"),
+    Number.isInteger(rejection.error_status) ? rejection.error_status : 400,
+  );
+  error.code = String(rejection.error_code || "EXECUTION_CLAIM_REJECTED");
+  return error;
+}
+
+function terminalExecutionProof(proof) {
+  return proof?.final_venue_execution_proven === true && (
+    proof?.final_fill_proven === true ||
+    proof?.final_no_fill_proven === true ||
+    proof?.final_no_broadcast_proven === true
+  );
 }
 
 function executionReceipt(input) {
@@ -1362,6 +1984,7 @@ function executionReceipt(input) {
     fill_commitments: fillCommitments,
     fill_summary: fillSummary,
     final_proof: input.final_proof || null,
+    execution_configuration: input.execution_configuration || null,
     visibility_summary: input.visibility_summary,
     updated_at: new Date().toISOString(),
   };
@@ -1440,6 +2063,9 @@ function publicSessionPolicy(policy, policyCommitment) {
     market_allowlist: Array.isArray(policy.market_allowlist) ? policy.market_allowlist.map(String) : [],
     max_notional_bucket: typeof policy.max_notional_bucket === "string" ? policy.max_notional_bucket : "25",
     max_order_count: Number.isInteger(policy.max_order_count) ? policy.max_order_count : 10,
+    strategy_id: typeof policy.strategy_id === "string" ? policy.strategy_id : null,
+    execution_network: policy.execution_network === "testnet" ? "testnet" : policy.execution_network === "mainnet" ? "mainnet" : null,
+    exact_notional_usd: typeof policy.exact_notional_usd === "string" ? policy.exact_notional_usd : null,
     kill_switch: policy.kill_switch === true,
     expires_at: typeof policy.expires_at === "string" ? policy.expires_at : null,
   };
@@ -1498,4 +2124,14 @@ function sha256Hex(value) {
 
 function canonicalJson(value) {
   return JSON.stringify(value, Object.keys(value || {}).sort());
+}
+
+function stableExecutionJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableExecutionJson).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, item]) => item !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableExecutionJson(item)}`)
+    .join(",")}}`;
 }

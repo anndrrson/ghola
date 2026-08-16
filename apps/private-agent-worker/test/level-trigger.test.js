@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAutopilotSession, runAutopilotTick } from "../src/execution/autopilot.js";
+import {
+  createAutopilotSession,
+  resetAutopilotExecutionControlsForTests,
+  runAutopilotTick,
+} from "../src/execution/autopilot.js";
 import {
   evaluateEntryTrigger,
   evaluateExit,
@@ -30,7 +34,27 @@ function levelMandate(overrides = {}) {
   };
 }
 
-async function armLevelSession(state, recipient, now, { mandate = levelMandate(), side = "buy" } = {}) {
+function legacyOpenDirective(now) {
+  return {
+    phase: "in_position",
+    side: "buy",
+    entry_filled: true,
+    entry_price: 101,
+    entry_notional: 50,
+    entry_at: now.toISOString(),
+    deadline_at: new Date(now.getTime() + 15 * 60_000).toISOString(),
+    armed_at: now.toISOString(),
+  };
+}
+
+async function armLevelSession(state, recipient, now, {
+  mandate = levelMandate(),
+  side = "buy",
+  venue = "jupiter",
+  market = "SOL-USD",
+  network = "mainnet",
+  notional = "26",
+} = {}) {
   return createAutopilotSession({
     body: {
       owner_commitment: "owner_level_trigger_test",
@@ -38,8 +62,10 @@ async function armLevelSession(state, recipient, now, { mandate = levelMandate()
         strategy_id: "level_trigger_v1",
         agent_side: side,
         agent_mandate: mandate,
-        venue_allowlist: ["jupiter"],
-        market_allowlist: ["SOL-USD"],
+        execution_network: network,
+        exact_notional_usd: notional,
+        venue_allowlist: [venue],
+        market_allowlist: [market],
         max_notional_bucket: "50",
         max_daily_notional_bucket: "250",
         max_order_count: 10,
@@ -55,7 +81,7 @@ async function armLevelSession(state, recipient, now, { mandate = levelMandate()
   });
 }
 
-function tickAt(state, recipient, session, now, price) {
+function tickAt(state, recipient, session, now, price, overrides = {}) {
   process.env.PRIVATE_AGENT_AUTOPILOT_FORCE_PRICE = String(price);
   return runAutopilotTick({
     sessionId: session.autopilot_session_id,
@@ -63,6 +89,7 @@ function tickAt(state, recipient, session, now, price) {
     recipient,
     now,
     env: process.env,
+    ...overrides,
   });
 }
 
@@ -79,6 +106,7 @@ describe("level_trigger_v1 directional strategy", () => {
   });
 
   afterEach(() => {
+    resetAutopilotExecutionControlsForTests();
     resetEnv();
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
@@ -91,10 +119,11 @@ describe("level_trigger_v1 directional strategy", () => {
     assert.equal(session.session_policy.agent_side, "buy");
     assert.equal(session.session_policy.agent_mandate.entry_trigger, "break_level");
     assert.equal(session.session_policy.agent_mandate.trigger_level, "100");
+    assert.equal(session.session_policy.exact_notional_usd, "26");
     assert.equal(session.status, "running");
   });
 
-  it("holds while the level is not broken, then fires exactly one entry on break", async () => {
+  it("holds while the level is not broken, then proves the entry without submitting", async () => {
     const state = createWorkerState(dir);
     const now = new Date(Date.now() + 60_000);
     const session = await armLevelSession(state, recipient, now);
@@ -104,26 +133,29 @@ describe("level_trigger_v1 directional strategy", () => {
     assert.equal(watch.error, "entry_not_triggered");
     assert.equal((await state.getAutopilotSession(session.autopilot_session_id)).order_count, 0);
 
-    const entry = await tickAt(state, recipient, session, new Date(now.getTime() + 120_000), 101);
+    let executeCalls = 0;
+    const entry = await tickAt(state, recipient, session, new Date(now.getTime() + 120_000), 101, {
+      executeOrder: async () => { executeCalls += 1; throw new Error("live submit must remain contained"); },
+    });
     assert.equal(entry.ok, true);
-    assert.equal(entry.phase, "in_position");
+    assert.equal(entry.mode, "no_submit");
+    assert.equal(executeCalls, 0);
 
     const stored = await state.getAutopilotSession(session.autopilot_session_id);
-    assert.equal(stored.order_count, 1);
-    assert.equal(stored.directive.phase, "in_position");
-    assert.equal(stored.directive.entry_filled, true);
+    assert.equal(stored.order_count, 0);
+    assert.equal(stored.directive.phase, "watching");
+    assert.equal(stored.directive.proved_once, true);
 
     const positions = await state.listAutopilotPositions(session.autopilot_session_id);
-    assert.equal(positions.length, 1);
-    assert.equal(positions[0].side, "buy");
+    assert.equal(positions.length, 0);
 
     const events = (await state.listAutopilotEvents(session.autopilot_session_id)).map((e) => e.type);
-    assert.equal(events.includes("live_order_submitted"), true);
+    assert.equal(events.includes("live_order_submitted"), false);
     assert.equal(events.includes("receipt"), true);
-    assert.equal(events.includes("venue_reconcile"), true);
+    assert.equal(events.includes("venue_reconcile"), false);
   });
 
-  it("enters immediately for preview_now without requiring a trigger level", async () => {
+  it("proves preview_now without requiring a trigger level", async () => {
     const state = createWorkerState(dir);
     const now = new Date(Date.now() + 60_000);
     const mandate = levelMandate({ entry_trigger: "preview_now" });
@@ -132,49 +164,59 @@ describe("level_trigger_v1 directional strategy", () => {
 
     const entry = await tickAt(state, recipient, session, new Date(now.getTime() + 60_000), 101);
     assert.equal(entry.ok, true);
-    assert.equal(entry.phase, "in_position");
-    assert.equal((await state.getAutopilotSession(session.autopilot_session_id)).order_count, 1);
+    assert.equal(entry.mode, "no_submit");
+    assert.equal((await state.getAutopilotSession(session.autopilot_session_id)).order_count, 0);
   });
 
-  it("is idempotent: a second tick after entry does not open another position", async () => {
+  it("is idempotent: a second proof does not submit", async () => {
     const state = createWorkerState(dir);
     const now = new Date(Date.now() + 60_000);
     const session = await armLevelSession(state, recipient, now);
 
     await tickAt(state, recipient, session, new Date(now.getTime() + 60_000), 101);
     const hold = await tickAt(state, recipient, session, new Date(now.getTime() + 120_000), 102);
-    assert.equal(hold.ok, true);
-    assert.equal(hold.action, "hold");
-    assert.equal((await state.getAutopilotSession(session.autopilot_session_id)).order_count, 1);
+    assert.equal(hold.ok, false);
+    assert.equal(hold.error, "autonomous_live_submit_contained");
+    assert.equal((await state.getAutopilotSession(session.autopilot_session_id)).order_count, 0);
   });
 
-  it("exits and completes when the invalidation level is hit", async () => {
+  it("pauses a legacy position for manual close when invalidation is hit", async () => {
     const state = createWorkerState(dir);
     const now = new Date(Date.now() + 60_000);
     const session = await armLevelSession(state, recipient, now);
 
-    await tickAt(state, recipient, session, new Date(now.getTime() + 60_000), 101);
-    const exit = await tickAt(state, recipient, session, new Date(now.getTime() + 120_000), 94);
-    assert.equal(exit.ok, true);
-    assert.equal(exit.phase, "done");
+    const armed = await state.getAutopilotSession(session.autopilot_session_id);
+    armed.directive = legacyOpenDirective(now);
+    await state.putAutopilotSession(armed);
+    let executeCalls = 0;
+    const exit = await tickAt(state, recipient, session, new Date(now.getTime() + 120_000), 94, {
+      executeOrder: async () => { executeCalls += 1; throw new Error("live submit must remain contained"); },
+    });
+    assert.equal(exit.ok, false);
+    assert.equal(exit.error, "autonomous_live_submit_contained");
+    assert.equal(exit.phase, "exit_blocked");
     assert.equal(exit.reason, "invalidation_level");
+    assert.equal(executeCalls, 0);
 
     const stored = await state.getAutopilotSession(session.autopilot_session_id);
-    assert.equal(stored.status, "done");
+    assert.equal(stored.status, "paused");
     assert.equal(stored.execution_enabled, false);
-    assert.equal(stored.order_count, 2);
+    assert.equal(stored.order_count, 0);
+    assert.equal(stored.directive.phase, "exit_blocked");
   });
 
-  it("exits when the time horizon elapses", async () => {
+  it("does not claim a legacy position closed when its horizon elapses", async () => {
     const state = createWorkerState(dir);
     const now = new Date(Date.now() + 60_000);
     const session = await armLevelSession(state, recipient, now);
 
-    await tickAt(state, recipient, session, new Date(now.getTime() + 60_000), 101);
-    // scalp horizon is 15m; tick past it with price still above the stop
+    const armed = await state.getAutopilotSession(session.autopilot_session_id);
+    armed.directive = legacyOpenDirective(now);
+    await state.putAutopilotSession(armed);
     const exit = await tickAt(state, recipient, session, new Date(now.getTime() + 60_000 + 16 * 60_000), 101);
-    assert.equal(exit.ok, true);
-    assert.equal(exit.phase, "done");
+    assert.equal(exit.ok, false);
+    assert.equal(exit.error, "autonomous_live_submit_contained");
+    assert.equal(exit.phase, "exit_blocked");
     assert.equal(exit.reason, "time_horizon");
   });
 
@@ -193,7 +235,7 @@ describe("level_trigger_v1 directional strategy", () => {
     // tick 2: price returns into the band around the level -> retest fires
     const entry = await tickAt(state, recipient, session, new Date(now.getTime() + 120_000), 100);
     assert.equal(entry.ok, true);
-    assert.equal(entry.phase, "in_position");
+    assert.equal(entry.mode, "no_submit");
   });
 
   it("proves the entry without broadcasting when live submit is disabled", async () => {
@@ -212,6 +254,37 @@ describe("level_trigger_v1 directional strategy", () => {
     const events = (await state.listAutopilotEvents(session.autopilot_session_id)).map((e) => e.type);
     assert.equal(events.includes("live_order_submitted"), false);
     assert.equal(events.includes("receipt"), true);
+  });
+
+  it("submits one exact $26 HYPE testnet plan on the shared claim store", async () => {
+    const state = createWorkerState(dir);
+    state.path = "postgres";
+    const now = new Date(Date.now() + 60_000);
+    const session = await armLevelSession(state, recipient, now, {
+      venue: "hyperliquid",
+      market: "HYPE-USD",
+      network: "testnet",
+      notional: "26",
+    });
+    assert.equal(session.autonomous_live_submit_enabled, true);
+    let submitted = null;
+    const entry = await tickAt(state, recipient, session, new Date(now.getTime() + 60_000), 101, {
+      executeOrder: async (body) => {
+        submitted = body;
+        return {
+          status: "submitted",
+          work_order_commitment: body.work_order_commitment,
+          provider_ref_commitment: "provider_hype_testnet",
+          result_commitment: "result_hype_testnet",
+        };
+      },
+    });
+    assert.equal(entry.ok, true);
+    assert.equal(submitted.instruction.order.market, "HYPE");
+    assert.equal(submitted.instruction.order.quote_size, "26");
+    assert.equal(submitted.session_policy.execution_network, "testnet");
+    assert.equal(submitted.session_policy.exact_notional_usd, "26");
+    assert.equal((await state.getAutopilotSession(session.autopilot_session_id)).order_count, 1);
   });
 });
 
@@ -252,17 +325,23 @@ describe("level_trigger hyperliquid order mode", () => {
 });
 
 describe("level_trigger entry/exit evaluators", () => {
-  it("allows the Hyperliquid testnet pilot without weakening mainnet or other venues", () => {
-    assert.equal(levelTriggerLiveSubmitEnabled({ env: {}, venue: "hyperliquid" }), true);
+  it("enables only exact Hyperliquid plans on the shared claim store", () => {
+    const policy = {
+      strategy_id: "level_trigger_v1",
+      venue_allowlist: ["hyperliquid"],
+      market_allowlist: ["HYPE-USD"],
+      execution_network: "testnet",
+      exact_notional_usd: "26",
+      max_notional_bucket: "50",
+    };
+    assert.equal(levelTriggerLiveSubmitEnabled({ state: { path: "postgres" }, policy, venue: "hyperliquid" }), true);
+    assert.equal(levelTriggerLiveSubmitEnabled({ state: { path: "json" }, policy, venue: "hyperliquid" }), false);
     assert.equal(levelTriggerLiveSubmitEnabled({
-      env: { PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET: "true" },
+      state: { path: "postgres" },
+      policy: { ...policy, exact_notional_usd: null },
       venue: "hyperliquid",
     }), false);
-    assert.equal(levelTriggerLiveSubmitEnabled({ env: {}, venue: "jupiter" }), false);
-    assert.equal(levelTriggerLiveSubmitEnabled({
-      env: { PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT: " true " },
-      venue: "jupiter",
-    }), true);
+    assert.equal(levelTriggerLiveSubmitEnabled({ state: { path: "postgres" }, policy, venue: "jupiter" }), false);
   });
 
   it("break_level fires on the correct side", () => {

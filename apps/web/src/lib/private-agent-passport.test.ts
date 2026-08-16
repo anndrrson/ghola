@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { POST as postArbCanaryReport } from "@/app/v1/private-account/agent-passport/arb-canary-report/route";
-import { POST as armArbRoute } from "@/app/v1/private-account/agent-passport/arm-arb/route";
+import { postArmArb as armArbRoute } from "@/app/v1/private-account/agent-passport/arm-arb/handler";
 import {
   privateAccountOwnerFromRequest,
   type PrivateAccountRequestOwner,
@@ -10,6 +10,7 @@ import {
   linkAgentPlatformFromBody,
 } from "./private-agent-passport";
 import { resetPrivateAccountStoreForTests } from "./private-account-store";
+import { brandPrivateAgentMockTransport } from "./private-agent-spend-policy";
 
 const owner: PrivateAccountRequestOwner = {
   owner_commitment: "owner_passport_test",
@@ -21,6 +22,7 @@ const owner: PrivateAccountRequestOwner = {
 
 describe("agent passport venue linking", () => {
   afterEach(async () => {
+    vi.unstubAllGlobals();
     await resetPrivateAccountStoreForTests();
     delete process.env.PRIVATE_AGENT_ARB_LIVE_SUBMIT;
     delete process.env.PRIVATE_AGENT_ARB_MAX_LEG_NOTIONAL_USD;
@@ -34,6 +36,22 @@ describe("agent passport venue linking", () => {
     delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN;
     delete process.env.GHOLA_ARB_CANARY_MAX_STALE_MS;
+  });
+
+  it("does not forward a sealed platform credential through the default test transport", async () => {
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
+    const fetchSpy = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const linked = await linkAgentPlatformFromBody({
+      venue_id: "hyperliquid",
+      permission_attestation: { scopes: ["read", "trade"] },
+      encrypted_execution_vault: sealedVault("never-forwarded"),
+    }, owner);
+
+    expect(linked).toEqual({ error: "credential_verifier_unavailable" });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("records sealed trade-only venue capabilities and blocks withdrawal scopes", async () => {
@@ -191,28 +209,26 @@ describe("agent passport venue linking", () => {
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "token";
 
-    const oldFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const fetchMock = (async (input: RequestInfo | URL) => {
+      if (String(input) === "https://worker.example/ready") {
+        return new Response(JSON.stringify({ ready: true, missing: [] }), { status: 200 });
+      }
       if (String(input) === "https://worker.example/autopilot/sessions") {
         return new Response(JSON.stringify({ error: "worker_booting" }), { status: 503 });
       }
-      return oldFetch(input);
+      throw new Error(`unexpected test fetch: ${String(input)}`);
     }) as typeof fetch;
 
-    try {
-      const res = await armArbRoute(authedPost("/v1/private-account/agent-passport/arm-arb", {
+    const res = await armArbRoute(authedPost("/v1/private-account/agent-passport/arm-arb", {
         mode: "no_submit",
         market: "SOL-USD",
-      }));
-      const body = await res.json();
+      }), { fetchImpl: brandPrivateAgentMockTransport(fetchMock) });
+    const body = await res.json();
 
-      expect(res.status, JSON.stringify(body)).toBe(502);
-      expect(body.error).toBe("worker_arb_not_armed");
-      expect(body.session.status).toBe("pending_worker");
-      expect(body.session.worker_autopilot_session_id).toBeNull();
-    } finally {
-      globalThis.fetch = oldFetch;
-    }
+    expect(res.status, JSON.stringify(body)).toBe(502);
+    expect(body.error).toBe("worker_arb_not_armed");
+    expect(body.session.status).toBe("pending_worker");
+    expect(body.session.worker_autopilot_session_id).toBeNull();
   });
 
   it("arms a guarded arbitrage worker session from Agent Passport venues", async () => {
@@ -244,8 +260,10 @@ describe("agent passport venue linking", () => {
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "token";
 
-    const oldFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const fetchMock = (async (input: RequestInfo | URL) => {
+      if (String(input) === "https://worker.example/ready") {
+        return new Response(JSON.stringify({ ready: true, missing: [] }), { status: 200 });
+      }
       if (String(input) === "https://worker.example/autopilot/sessions") {
         return new Response(JSON.stringify({
           version: 1,
@@ -291,24 +309,20 @@ describe("agent passport venue linking", () => {
           events: [],
         }), { status: 201 });
       }
-      return oldFetch(input);
+      throw new Error(`unexpected test fetch: ${String(input)}`);
     }) as typeof fetch;
 
-    try {
-      const res = await armArbRoute(authedPost("/v1/private-account/agent-passport/arm-arb", {
+    const res = await armArbRoute(authedPost("/v1/private-account/agent-passport/arm-arb", {
         mode: "tiny_live",
         market: "SOL-USD",
-      }));
-      const body = await res.json();
+      }), { fetchImpl: brandPrivateAgentMockTransport(fetchMock) });
+    const body = await res.json();
 
-      expect(res.status, JSON.stringify(body)).toBe(201);
-      expect(body.session.status).toBe("running");
-      expect(body.session.worker_autopilot_session_id).toBe("worker_arb_123");
-      expect(body.session.session_policy.strategy_id).toBe("hedged_spread_arbitrage_v1");
-      expect(body.readiness.can_live_submit).toBe(true);
-    } finally {
-      globalThis.fetch = oldFetch;
-    }
+    expect(res.status, JSON.stringify(body)).toBe(201);
+    expect(body.session.status).toBe("running");
+    expect(body.session.worker_autopilot_session_id).toBe("worker_arb_123");
+    expect(body.session.session_policy.strategy_id).toBe("hedged_spread_arbitrage_v1");
+    expect(body.readiness.can_live_submit).toBe(true);
   });
 });
 

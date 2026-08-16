@@ -313,6 +313,168 @@ export async function verifySolanaPerpsNoSubmit({
   }
 }
 
+export async function reconcileBackpackExecution({
+  credential,
+  instruction,
+  clientOrderId,
+  fetchImpl = fetch,
+}) {
+  assertBackpackLiveEnabled({ operation_class: "reconcile", order: instruction?.order }, credential);
+  const symbol = backpackSymbol(instruction?.order?.market || instruction?.cancel?.market);
+  const clientId = clientOrderIdNumber(clientOrderId);
+  const common = { symbol, limit: 100, offset: 0, sortDirection: "Desc" };
+  const [ordersResult, fillsResult] = await Promise.all([
+    backpackRequest({
+      credential,
+      instruction: "orderHistoryQueryAll",
+      method: "GET",
+      path: "/wapi/v1/history/orders",
+      params: { ...common, marketType: "PERP" },
+      fetchImpl,
+    }),
+    backpackRequest({
+      credential,
+      instruction: "fillHistoryQueryAll",
+      method: "GET",
+      path: "/wapi/v1/history/fills",
+      params: { ...common, fillType: "User", marketType: "PERP" },
+      fetchImpl,
+    }),
+  ]);
+  const orders = Array.isArray(ordersResult) ? ordersResult : [];
+  const fills = (Array.isArray(fillsResult) ? fillsResult : []).filter((fill) =>
+    Number(fill?.clientId) === clientId && String(fill?.symbol || "").toUpperCase() === symbol);
+  const order = orders.find((item) =>
+    Number(item?.clientId) === clientId && String(item?.symbol || "").toUpperCase() === symbol) || null;
+  if (!order && fills.length === 0) {
+    return {
+      terminal: false,
+      status: "unknown",
+      filled_notional_micro_usdc: 0,
+      filled_base_size: "0",
+      venue_order_reference: `client_id:${clientId}`,
+      fills: [],
+      final_proof: null,
+    };
+  }
+  const orderStatus = String(order?.status || (fills.length ? "Filled" : "Unknown"));
+  const terminal = new Set(["filled", "cancelled", "canceled", "expired", "rejected"]).has(orderStatus.toLowerCase());
+  const fillBase = fills.reduce((sum, fill) => sum + finitePositive(fill?.quantity), 0);
+  const fillNotionalFromFills = fills.reduce((sum, fill) => {
+    const quote = finitePositive(fill?.quoteQuantity);
+    return sum + (quote || finitePositive(fill?.price) * finitePositive(fill?.quantity));
+  }, 0);
+  const fillNotional = fillNotionalFromFills || finitePositive(order?.executedQuoteQuantity);
+  const executedBase = fillBase || finitePositive(order?.executedQuantity);
+  const providerOrderId = String(order?.id || fills[0]?.orderId || "").trim();
+  return {
+    terminal,
+    status: fillNotional > 0 ? terminal ? "filled" : "partially_filled" : terminal ? "rejected" : "submitted",
+    filled_notional_micro_usdc: Math.round(fillNotional * 1_000_000),
+    filled_base_size: trimDecimal(executedBase),
+    venue_order_reference: providerOrderId ? `order_id:${providerOrderId}` : `client_id:${clientId}`,
+    provider_order_id: providerOrderId || null,
+    fills: fills.slice(0, 25),
+    final_proof: terminal ? {
+      version: 1,
+      proof_kind: "backpack_execution_proof_v1",
+      status: fillNotional > 0 ? "filled" : orderStatus.toLowerCase(),
+      terminal_status: orderStatus,
+      venue_id: "backpack",
+      network: "mainnet",
+      broadcast_performed: true,
+      final_venue_execution_proven: true,
+      final_fill_proven: fillNotional > 0,
+      final_no_broadcast_proven: false,
+      final_no_fill_proven: fillNotional === 0,
+      checked_at: new Date().toISOString(),
+    } : null,
+  };
+}
+
+export async function readBackpackAccountSnapshot({
+  credential,
+  symbol = BACKPACK_SOL_PERP_SYMBOL,
+  fetchImpl = fetch,
+}) {
+  if (!credential?.apiKey || !credential?.privateSeed || !credential?.apiUrl) {
+    throw new SolanaPerpsExecutionError("backpack execution credentials are unavailable", 400, "venue_access_required");
+  }
+  const market = backpackSymbol(symbol);
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
+    return {
+      version: 1,
+      venue_id: "backpack",
+      network: "mainnet",
+      symbol: market,
+      status: "ready_to_trade",
+      position_size: "0",
+      open_order_count: 0,
+      net_equity_available: "0",
+      checked_at: new Date().toISOString(),
+    };
+  }
+  const [account, collateral, positionsResult, ordersResult] = await Promise.all([
+    backpackRequest({ credential, instruction: "accountQuery", method: "GET", path: "/api/v1/account", fetchImpl }),
+    backpackRequest({ credential, instruction: "collateralQuery", method: "GET", path: "/api/v1/capital/collateral", fetchImpl }),
+    backpackRequest({
+      credential,
+      instruction: "positionQuery",
+      method: "GET",
+      path: "/api/v1/position",
+      params: { marketType: "PERP" },
+      fetchImpl,
+    }),
+    backpackRequest({
+      credential,
+      instruction: "orderQueryAll",
+      method: "GET",
+      path: "/api/v1/orders",
+      params: { marketType: "PERP", symbol: market },
+      fetchImpl,
+    }),
+  ]);
+  const positions = Array.isArray(positionsResult) ? positionsResult : [];
+  const orders = Array.isArray(ordersResult) ? ordersResult : [];
+  const positionSize = positions
+    .filter((position) => String(position?.symbol || "").toUpperCase() === market)
+    .reduce((total, position) => total + finiteSigned(position?.netQuantity), 0);
+  const openOrders = orders.filter((order) => String(order?.symbol || "").toUpperCase() === market);
+  const equity = finiteNonnegative(collateral?.netEquityAvailable);
+  const tradingEnabled = account?.liquidating !== true && equity > 0;
+  return {
+    version: 1,
+    venue_id: "backpack",
+    network: "mainnet",
+    symbol: market,
+    status: tradingEnabled ? "ready_to_trade" : account?.liquidating === true ? "liquidating" : "needs_funds",
+    position_size: trimSignedDecimal(positionSize),
+    open_order_count: openOrders.length,
+    net_equity_available: trimDecimal(equity),
+    checked_at: new Date().toISOString(),
+  };
+}
+
+export async function readBackpackTopOfBook({
+  credential = null,
+  symbol = BACKPACK_SOL_PERP_SYMBOL,
+  fetchImpl = fetch,
+}) {
+  const market = backpackSymbol(symbol);
+  const baseUrl = credential?.apiUrl || DEFAULT_BACKPACK_API_URL;
+  const response = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/api/v1/depth?symbol=${encodeURIComponent(market)}&limit=5`, {
+    cache: "no-store",
+    headers: { "cache-control": "no-cache" },
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) throw new SolanaPerpsExecutionError("backpack public book is unavailable", 502);
+  const body = await response.json().catch(() => null);
+  const bid = bestBookPrice(body?.bids, "bid");
+  const ask = bestBookPrice(body?.asks, "ask");
+  if (!(bid > 0) || !(ask > bid)) throw new SolanaPerpsExecutionError("backpack public book is invalid", 502);
+  return { bid, ask, checked_at: new Date().toISOString() };
+}
+
 async function checkPhoenixNoSubmit({ credential, instruction, clientOrderId }) {
   if (process.env.PRIVATE_AGENT_SOLANA_PERPS_NO_SUBMIT_LOCAL_CHECKS === "true") {
     return {
@@ -421,10 +583,10 @@ function assertBackpackLiveEnabled(instruction, credential) {
   if (!credential?.apiKey || !credential.privateSeed || !credential.apiUrl) {
     throw new SolanaPerpsExecutionError("backpack execution credentials are unavailable", 400, "venue_access_required");
   }
-  if (instruction.operation_class !== "perp_limit_order" && instruction.operation_class !== "cancel") {
-    throw new SolanaPerpsExecutionError("backpack live pilot only supports perp limit orders and cancels", 400);
+  if (!new Set(["perp_limit_order", "cancel", "reconcile"]).has(instruction.operation_class)) {
+    throw new SolanaPerpsExecutionError("backpack live pilot only supports perp limit orders, cancels, and reconciliation", 400);
   }
-  if (instruction.operation_class === "cancel") return;
+  if (instruction.operation_class === "cancel" || instruction.operation_class === "reconcile") return;
   const order = instruction.order || {};
   const symbol = backpackSymbol(order.market);
   const allowedSymbols = (credential.allowedSymbols || []).map((item) => String(item).toUpperCase());
@@ -438,12 +600,15 @@ function assertBackpackLiveEnabled(instruction, credential) {
     throw new SolanaPerpsExecutionError("backpack post-only market making is disabled", 400, "venue_rejected");
   }
   const notional = estimateOrderNotionalUsd(order);
-  const cap = Math.min(
-    positiveNumber(credential.maxOrderNotionalUsd, 5),
-    capUsd(process.env.PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD || process.env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD, 5),
-    5,
-  );
-  if (notional <= 0) {
+  const cap = order.reduce_only === true
+    ? Number.MAX_SAFE_INTEGER
+    : Math.min(
+      positiveNumber(credential.maxOrderNotionalUsd, 5),
+      capUsd(process.env.PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD || process.env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD, 5),
+      11,
+    );
+  const exactReduceOnlyBaseExit = order.reduce_only === true && positiveNumber(order.base_size, 0) > 0;
+  if (notional <= 0 && !exactReduceOnlyBaseExit) {
     throw new SolanaPerpsExecutionError("backpack live order notional must be positive", 400);
   }
   if (notional > cap) {
@@ -567,15 +732,17 @@ async function checkBackpackNoSubmit({ credential, instruction, clientOrderId })
   };
 }
 
-function backpackOrderRequest(order, clientOrderId) {
+export function backpackOrderRequest(order, clientOrderId) {
   const price = Number.parseFloat(order.limit_price || "");
+  const marketOrder = String(order.order_type || "").toLowerCase() === "market";
   const request = {
     symbol: backpackSymbol(order.market),
     side: order.side === "sell" ? "Ask" : "Bid",
-    orderType: "Limit",
+    orderType: marketOrder ? "Market" : "Limit",
     quantity: order.base_size ? trimDecimal(Number.parseFloat(order.base_size)) : orderBaseUnits(order, order.limit_price),
-    price: Number.isFinite(price) && price > 0 ? trimDecimal(price) : undefined,
+    price: !marketOrder && Number.isFinite(price) && price > 0 ? trimDecimal(price) : undefined,
     postOnly: order.post_only === true,
+    reduceOnly: order.reduce_only === true,
     timeInForce: backpackTimeInForce(order.tif),
     selfTradePrevention: "RejectTaker",
     clientId: clientOrderIdNumber(clientOrderId),
@@ -583,8 +750,9 @@ function backpackOrderRequest(order, clientOrderId) {
   return Object.fromEntries(Object.entries(request).filter(([, value]) => value !== undefined && value !== ""));
 }
 
-async function backpackRequest({ credential, instruction, method, path, params = {}, body = null }) {
-  const response = await fetch(`${credential.apiUrl.replace(/\/$/, "")}${path}`, {
+async function backpackRequest({ credential, instruction, method, path, params = {}, body = null, fetchImpl = fetch }) {
+  const query = method === "GET" ? orderedQuery(params) : "";
+  const response = await fetchImpl(`${credential.apiUrl.replace(/\/$/, "")}${path}${query ? `?${query}` : ""}`, {
     method,
     cache: "no-store",
     headers: {
@@ -665,7 +833,7 @@ function backpackTimeInForce(value) {
 }
 
 function clientOrderIdNumber(value) {
-  const hex = createHash("sha256").update(String(value || "backpack")).digest("hex").slice(0, 13);
+  const hex = createHash("sha256").update(String(value || "backpack")).digest("hex").slice(0, 8);
   return Number.parseInt(hex, 16);
 }
 
@@ -880,6 +1048,35 @@ function readPooledVaultPath(path) {
 
 function sha256Hex(value) {
   return createHash("sha256").update(String(value)).digest("hex");
+}
+
+function finitePositive(value) {
+  const parsed = Number.parseFloat(String(value ?? ""));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function finiteSigned(value) {
+  const parsed = Number.parseFloat(String(value ?? ""));
+  if (!Number.isFinite(parsed)) throw new SolanaPerpsExecutionError("backpack position quantity is invalid", 502);
+  return parsed;
+}
+
+function finiteNonnegative(value) {
+  const parsed = Number.parseFloat(String(value ?? ""));
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function trimSignedDecimal(value) {
+  if (!Number.isFinite(value)) return "0";
+  if (Math.abs(value) < 1e-12) return "0";
+  return value.toFixed(9).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function bestBookPrice(levels, side) {
+  if (!Array.isArray(levels)) return 0;
+  const prices = levels.map((level) => finitePositive(Array.isArray(level) ? level[0] : level?.price || level?.px)).filter((price) => price > 0);
+  if (!prices.length) return 0;
+  return side === "bid" ? Math.max(...prices) : Math.min(...prices);
 }
 
 function trimDecimal(value) {

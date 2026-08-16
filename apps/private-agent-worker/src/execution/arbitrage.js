@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { autonomousLiveSubmitEnabled } from "./autonomous-submit-containment.js";
 
 const SUPPORTED_MARKETS = new Set(["BTC-USD", "ETH-USD", "SOL-USD"]);
 const SPOT_VENUES = new Set(["coinbase_advanced", "jupiter"]);
@@ -26,6 +27,8 @@ export async function runGuardedArbitrageTick({
   appendEvent,
   executeOrder,
   verifyOrder,
+  checkpoint = async () => {},
+  commitExecution = async (task) => task(),
 }) {
   const markets = session.session_policy.market_allowlist.filter((market) => SUPPORTED_MARKETS.has(normalizeMarket(market)));
   await appendEvent(state, session, "arb_scan", "Guarded arbitrage scan started.", {
@@ -34,6 +37,7 @@ export async function runGuardedArbitrageTick({
   }, now);
 
   const opportunity = await bestArbitrageOpportunity({ session, env, fetchImpl, now });
+  await checkpoint();
   await state.appendAutopilotOpportunity?.(session.autopilot_session_id, publicOpportunity(opportunity));
 
   if (!opportunity.ok) {
@@ -45,30 +49,10 @@ export async function runGuardedArbitrageTick({
 
   const config = enforceArbitrageLiveConfig({ session, env, requestedNotionalUsd: opportunity.leg_notional_usd });
   if (!config.ok) {
-    await appendEvent(state, session, "arb_reject", "Arbitrage live config is not armed.", {
+    await appendEvent(state, session, "arb_reject", "Arbitrage safety caps are incomplete.", {
       reason_codes: config.reason_codes,
     }, now);
     return { ok: false, error: "arb_live_config_blocked", reason_codes: config.reason_codes };
-  }
-
-  const dayKey = now.toISOString().slice(0, 10);
-  const daily = await state.incrementPolicyAmount(
-    `arb_daily_notional:${session.session_policy.policy_commitment}:${dayKey}`,
-    opportunity.leg_notional_usd * 2,
-    config.daily_cap_usd,
-  );
-  if (!daily.ok) {
-    await appendEvent(state, session, "arb_reject", "Arbitrage daily notional cap exceeded.", {
-      daily_cap_usd: config.daily_cap_usd,
-    }, now);
-    return { ok: false, error: "arb_daily_cap_exceeded" };
-  }
-
-  if (env.PRIVATE_AGENT_ARB_LIVE_SUBMIT !== "true" && env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
-    await appendEvent(state, session, "arb_reject", "Arbitrage live submit gate is disabled.", {
-      required_env: "PRIVATE_AGENT_ARB_LIVE_SUBMIT=true",
-    }, now);
-    return { ok: false, error: "arb_live_submit_disabled" };
   }
 
   const pairCommitment = `arb_pair_${digest({ session: session.autopilot_session_id, opportunity: opportunity.opportunity_id, now: now.toISOString() })}`;
@@ -120,6 +104,7 @@ export async function runGuardedArbitrageTick({
       }),
     ]);
     preflightReceipts = await withTimeout(preflight, config.max_execution_skew_ms, "arb_pair_preflight_timeout");
+    await checkpoint();
     const latencyMs = Date.now() - started;
     if (latencyMs > config.max_execution_skew_ms) throw new Error("arb_pair_preflight_skew_exceeded");
   } catch (error) {
@@ -139,35 +124,67 @@ export async function runGuardedArbitrageTick({
     })),
     max_execution_skew_ms: config.max_execution_skew_ms,
   }, now);
-  const buyLeg = executeOrder({
-    venue_id: opportunity.buy_venue,
-    operation_class: operationForVenue(opportunity.buy_venue),
-    work_order_commitment: buyWorkOrder,
-    policy_commitment: session.session_policy.policy_commitment,
-    session_policy: workerSessionPolicy(session),
-    instruction: buyInstruction,
-    execution: executionForVenue(session, opportunity.buy_venue),
-    recipient,
-    state,
-  });
-  const sellLeg = executeOrder({
-    venue_id: opportunity.sell_venue,
-    operation_class: operationForVenue(opportunity.sell_venue),
-    work_order_commitment: sellWorkOrder,
-    policy_commitment: session.session_policy.policy_commitment,
-    session_policy: workerSessionPolicy(session),
-    instruction: sellInstruction,
-    execution: executionForVenue(session, opportunity.sell_venue),
-    recipient,
-    state,
-  });
+  if (!autonomousLiveSubmitEnabled()) {
+    await appendEvent(state, session, "guardrail", "Autonomous arbitrage broadcasting is disabled by worker safety containment; both legs remain no-submit proofs.", {
+      pair_commitment: pairCommitment,
+      containment: "distributed_execution_claim_unavailable",
+      broadcast_performed: false,
+    }, now);
+    return {
+      ok: true,
+      mode: "no_submit",
+      opportunity,
+      receipts: preflightReceipts,
+      pair_commitment: pairCommitment,
+    };
+  }
 
+  const dayKey = now.toISOString().slice(0, 10);
+  const daily = await state.incrementPolicyAmount(
+    `arb_daily_notional:${session.session_policy.policy_commitment}:${dayKey}`,
+    opportunity.leg_notional_usd * 2,
+    config.daily_cap_usd,
+  );
+  if (!daily.ok) {
+    await appendEvent(state, session, "arb_reject", "Arbitrage daily notional cap exceeded.", {
+      daily_cap_usd: config.daily_cap_usd,
+    }, now);
+    return { ok: false, error: "arb_daily_cap_exceeded" };
+  }
+  if (env.PRIVATE_AGENT_ARB_LIVE_SUBMIT !== "true" && env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
+    return { ok: false, error: "arb_live_submit_disabled" };
+  }
   let receipts;
   try {
-    const started = Date.now();
-    receipts = await withTimeout(Promise.all([buyLeg, sellLeg]), config.max_execution_skew_ms, "arb_pair_submit_timeout");
-    const latencyMs = Date.now() - started;
-    if (latencyMs > config.max_execution_skew_ms) throw new Error("arb_pair_submit_skew_exceeded");
+    receipts = await commitExecution(async () => {
+      const started = Date.now();
+      const buyLeg = Promise.resolve().then(() => executeOrder({
+        venue_id: opportunity.buy_venue,
+        operation_class: operationForVenue(opportunity.buy_venue),
+        work_order_commitment: buyWorkOrder,
+        policy_commitment: session.session_policy.policy_commitment,
+        session_policy: workerSessionPolicy(session),
+        instruction: buyInstruction,
+        execution: executionForVenue(session, opportunity.buy_venue),
+        recipient,
+        state,
+      }));
+      const sellLeg = Promise.resolve().then(() => executeOrder({
+        venue_id: opportunity.sell_venue,
+        operation_class: operationForVenue(opportunity.sell_venue),
+        work_order_commitment: sellWorkOrder,
+        policy_commitment: session.session_policy.policy_commitment,
+        session_policy: workerSessionPolicy(session),
+        instruction: sellInstruction,
+        execution: executionForVenue(session, opportunity.sell_venue),
+        recipient,
+        state,
+      }));
+      const pair = await settleExecutionPair([buyLeg, sellLeg], config.max_execution_skew_ms);
+      const latencyMs = Date.now() - started;
+      if (latencyMs > config.max_execution_skew_ms) throw new Error("arb_pair_submit_skew_exceeded");
+      return pair;
+    });
   } catch (error) {
     await appendEvent(state, session, "unhedged_leg_requires_human", "One arbitrage leg failed before pair reconciliation.", {
       pair_commitment: pairCommitment,
@@ -283,9 +300,6 @@ export function enforceArbitrageLiveConfig({ session, env = process.env, request
   const daily = capUsd(env.PRIVATE_AGENT_ARB_DAILY_NOTIONAL_CAP_USD, 0);
   const minEdge = capBps(env.PRIVATE_AGENT_ARB_MIN_NET_EDGE_BPS, 0);
   const maxSkew = capMs(env.PRIVATE_AGENT_ARB_MAX_EXECUTION_SKEW_MS, 0);
-  if (env.PRIVATE_AGENT_ARB_LIVE_SUBMIT !== "true" && env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
-    reasonCodes.push("arb_live_submit_disabled");
-  }
   if (maxLeg <= 0) reasonCodes.push("max_leg_notional_required");
   if (daily <= 0) reasonCodes.push("daily_notional_cap_required");
   if (minEdge <= 0) reasonCodes.push("min_net_edge_required");
@@ -668,4 +682,22 @@ function withTimeout(promise, timeoutMs, message) {
     timer.unref?.();
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function settleExecutionPair(legs, timeoutMs) {
+  let timer;
+  const allSettled = Promise.allSettled(legs);
+  const first = await Promise.race([
+    allSettled.then((results) => ({ timed_out: false, results })),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ timed_out: true, results: null }), timeoutMs);
+      timer.unref?.();
+    }),
+  ]);
+  clearTimeout(timer);
+  const results = first.results || await allSettled;
+  if (first.timed_out) throw new Error("arb_pair_submit_timeout");
+  const rejected = results.find((result) => result.status === "rejected");
+  if (rejected) throw rejected.reason;
+  return results.map((result) => result.value);
 }

@@ -3,10 +3,12 @@ import {
   decimateCandles,
   frameMidNumber,
   GholaChartStore,
+  type GholaChartBookLevel,
   type GholaChartCandle,
   type GholaChartMode,
   type GholaChartOverlay,
   type GholaMarketFrame,
+  type GholaMarketFrameScalarPatch,
 } from "./ghola-market-chart";
 
 export interface GholaChartViewport {
@@ -51,9 +53,97 @@ export interface GholaChartVisibleOptions {
   viewport?: GholaChartViewport;
 }
 
+export function gholaChartFrameCanUseScalarPatch(
+  previous: GholaMarketFrame | null,
+  next: GholaMarketFrame | null,
+) {
+  return Boolean(
+    gholaChartFrameIdentityMatches(previous, next)
+    && previous
+    && next
+    && previous.candles === next.candles
+    && previous.bids === next.bids
+    && previous.asks === next.asks
+    && previous.trades === next.trades
+    && previous.routeQuotes === next.routeQuotes,
+  );
+}
+
+export function gholaChartFrameIdentityMatches(
+  previous: GholaMarketFrame | null,
+  next: GholaMarketFrame | null,
+) {
+  return Boolean(
+    previous
+    && next
+    && previous.venue === next.venue
+    && previous.network === next.network
+    && previous.product === next.product
+    && previous.interval === next.interval
+  );
+}
+
+export function gholaChartFrameGeometryCanReuse(
+  previous: GholaMarketFrame | null,
+  next: GholaMarketFrame | null,
+  mode: GholaChartMode,
+) {
+  if (!gholaChartFrameIdentityMatches(previous, next) || !previous || !next) return false;
+  if (mode === "depth") return previous.bids === next.bids && previous.asks === next.asks;
+  if (mode === "route" || mode === "slippage" || mode === "quote") {
+    return previous.routeQuotes === next.routeQuotes;
+  }
+  return previous.candles === next.candles;
+}
+
+export function gholaChartFrameCanPreserveVisibleData(
+  previous: GholaMarketFrame | null,
+  next: GholaMarketFrame | null,
+  replayActive: boolean,
+) {
+  return !replayActive && gholaChartFrameIdentityMatches(previous, next);
+}
+
+export function gholaChartFrameScalarPatch(frame: GholaMarketFrame): GholaMarketFrameScalarPatch {
+  const {
+    candles: _candles,
+    bids: _bids,
+    asks: _asks,
+    trades: _trades,
+    routeQuotes: _routeQuotes,
+    ...scalars
+  } = frame;
+  void _candles;
+  void _bids;
+  void _asks;
+  void _trades;
+  void _routeQuotes;
+  return scalars;
+}
+
+export function gholaChartCompareFramesCanUseScalarPatches(
+  previous: readonly GholaMarketFrame[],
+  next: readonly GholaMarketFrame[],
+) {
+  return previous.length === next.length
+    && next.every((frame, index) => gholaChartFrameCanUseScalarPatch(previous[index] ?? null, frame));
+}
+
+export function gholaChartCompareFramesCanPreserveVisibleData(
+  previous: readonly GholaMarketFrame[],
+  next: readonly GholaMarketFrame[],
+  replayActive: boolean,
+) {
+  return !replayActive
+    && previous.length === next.length
+    && next.every((frame, index) => gholaChartFrameIdentityMatches(previous[index] ?? null, frame));
+}
+
 export type GholaChartWorkerRequest =
   | { id?: number; type: "set-frame"; frame: GholaMarketFrame | null }
+  | { id?: number; type: "patch-frame-scalars"; patch: GholaMarketFrameScalarPatch }
   | { id?: number; type: "set-compare"; frames: GholaMarketFrame[] }
+  | { id?: number; type: "patch-compare-scalars"; patches: GholaMarketFrameScalarPatch[] }
   | { id?: number; type: "set-overlays"; overlays: GholaChartOverlay[] }
   | { id?: number; type: "set-mode"; mode: GholaChartMode }
   | { id?: number; type: "set-viewport"; viewport: GholaChartViewport }
@@ -64,8 +154,65 @@ export type GholaChartWorkerResponse =
   | { id: number; type: "visible-data"; data: GholaChartVisibleData }
   | { id?: number; type: "error"; message: string };
 
+export interface GholaChartWorkerVisibleRequest {
+  id: number;
+  inputRevision: number;
+}
+
+export const GHOLA_CHART_WORKER_VISIBLE_TIMEOUT_MS = 1_000;
+
+export function gholaChartWorkerRequestIsPending(
+  requestId: number | undefined,
+  pending: GholaChartWorkerVisibleRequest | null,
+): pending is GholaChartWorkerVisibleRequest {
+  return requestId != null && pending != null && requestId === pending.id;
+}
+
+export function gholaChartWorkerResponseIsCurrent(
+  response: GholaChartWorkerResponse,
+  pending: GholaChartWorkerVisibleRequest | null,
+  inputRevision: number,
+): boolean {
+  return gholaChartWorkerRequestIsPending(response.id, pending)
+    && pending.inputRevision === inputRevision;
+}
+
+export function gholaChartShouldAwaitWorkerVisibleData(
+  workerHealthy: boolean,
+  hasAcceptedVisibleData: boolean,
+) {
+  return workerHealthy && !hasAcceptedVisibleData;
+}
+
+export function gholaChartVisibleGeometryMatches(
+  previous: GholaChartVisibleData | null,
+  next: GholaChartVisibleData,
+) {
+  if (
+    !previous
+    || previous.mode !== next.mode
+    || previous.range.min !== next.range.min
+    || previous.range.max !== next.range.max
+  ) return false;
+  if (next.mode === "depth") return previous.bids === next.bids && previous.asks === next.asks;
+  if (next.mode === "route" || next.mode === "slippage" || next.mode === "quote") {
+    return previous.routeQuotes === next.routeQuotes;
+  }
+  if (next.mode === "line") return previous.lineCandles === next.lineCandles;
+  if (next.mode === "compare") {
+    return previous.lineCandles === next.lineCandles
+      && previous.compareLineCandles.length === next.compareLineCandles.length
+      && previous.compareLineCandles.every((candles, index) => candles === next.compareLineCandles[index]);
+  }
+  return previous.candles === next.candles;
+}
+
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 80;
+const WINDOW_SAMPLE_CACHE = new WeakMap<readonly unknown[], Map<string, readonly unknown[]>>();
+const CANDLE_DECIMATION_CACHE = new WeakMap<readonly GholaChartCandle[], Map<number, GholaChartCandle[]>>();
+const CANDLE_RANGE_CACHE = new WeakMap<readonly GholaChartCandle[], { min: number; max: number } | null>();
+const DEPTH_CACHE = new WeakMap<readonly GholaChartBookLevel[], Partial<Record<"bid" | "ask", GholaDepthPoint[]>>>();
 
 export class GholaChartEngineState {
   private store = new GholaChartStore();
@@ -80,8 +227,31 @@ export class GholaChartEngineState {
     this.revision += 1;
   }
 
+  patchFrameScalars(patch: GholaMarketFrameScalarPatch) {
+    this.store.patchScalars(patch);
+    this.revision += 1;
+  }
+
   setCompareFrames(frames: GholaMarketFrame[]) {
     this.compareFrames = frames.slice(0, 6);
+    this.revision += 1;
+  }
+
+  patchCompareFrameScalars(patches: GholaMarketFrameScalarPatch[]) {
+    if (patches.length !== this.compareFrames.length) {
+      throw new Error("ghola_chart_compare_patch_identity_mismatch");
+    }
+    this.compareFrames = patches.map((patch, index) => {
+      const current = this.compareFrames[index];
+      if (
+        !current
+        || current.venue !== patch.venue
+        || current.network !== patch.network
+        || current.product !== patch.product
+        || current.interval !== patch.interval
+      ) throw new Error("ghola_chart_compare_patch_identity_mismatch");
+      return { ...current, ...patch };
+    });
     this.revision += 1;
   }
 
@@ -119,11 +289,12 @@ export class GholaChartEngineState {
     const activeFrame = windowFrame(this.store.frame(), mode, viewport, width);
     const activeCompare = this.compareFrames.map((frame) => windowFrame(frame, mode, viewport, width)).filter(Boolean) as GholaMarketFrame[];
     const candleBudget = Math.max(80, Math.floor(width / (mode === "candles" ? 3 : 2)));
-    const candles = activeFrame ? decimateCandles(activeFrame.candles, candleBudget) : [];
-    const lineCandles = activeFrame ? decimateCandles(activeFrame.candles, Math.max(120, Math.floor(width / 2))) : [];
-    const compareLineCandles = activeCompare.map((compare) => decimateCandles(compare.candles, Math.max(120, Math.floor(width / 2))));
-    const bids = activeFrame ? cumulativeDepth(activeFrame.bids, "bid") : [];
-    const asks = activeFrame ? cumulativeDepth(activeFrame.asks, "ask") : [];
+    const candles = activeFrame ? cachedDecimateCandles(activeFrame.candles, candleBudget) : [];
+    const lineBudget = Math.max(120, Math.floor(width / 2));
+    const lineCandles = activeFrame ? cachedDecimateCandles(activeFrame.candles, lineBudget) : [];
+    const compareLineCandles = activeCompare.map((compare) => cachedDecimateCandles(compare.candles, lineBudget));
+    const bids = activeFrame ? cachedCumulativeDepth(activeFrame.bids, "bid") : [];
+    const asks = activeFrame ? cachedCumulativeDepth(activeFrame.asks, "ask") : [];
     return {
       revision: this.revision,
       mode,
@@ -135,7 +306,7 @@ export class GholaChartEngineState {
       compareLineCandles,
       bids,
       asks,
-      routeQuotes: activeFrame?.routeQuotes.slice() ?? [],
+      routeQuotes: activeFrame?.routeQuotes ?? [],
       range: chartValueRange(activeFrame, mode, this.overlays, activeCompare, viewport),
       viewport,
     };
@@ -210,8 +381,16 @@ export function handleGholaChartWorkerRequest(engine: GholaChartEngineState, req
       engine.ingestFrame(request.frame);
       return { id: request.id, type: "ack", revision: engine.getRevision() };
     }
+    if (request.type === "patch-frame-scalars") {
+      engine.patchFrameScalars(request.patch);
+      return { id: request.id, type: "ack", revision: engine.getRevision() };
+    }
     if (request.type === "set-compare") {
       engine.setCompareFrames(request.frames);
+      return { id: request.id, type: "ack", revision: engine.getRevision() };
+    }
+    if (request.type === "patch-compare-scalars") {
+      engine.patchCompareFrameScalars(request.patches);
       return { id: request.id, type: "ack", revision: engine.getRevision() };
     }
     if (request.type === "set-overlays") {
@@ -266,12 +445,43 @@ function windowFrame(frame: GholaMarketFrame | null, mode: GholaChartMode, viewp
 }
 
 function windowSamples<T>(samples: T[], viewport: GholaChartViewport, width: number): T[] {
-  if (samples.length === 0 || viewport.zoom <= MIN_ZOOM) return samples.slice();
+  if (samples.length === 0 || viewport.zoom <= MIN_ZOOM) return samples;
+  const key = `${viewport.zoom}:${viewport.offset}:${viewport.followLatest ? 1 : 0}:${Math.floor(width)}`;
+  const cachedByWindow = WINDOW_SAMPLE_CACHE.get(samples);
+  const cached = cachedByWindow?.get(key);
+  if (cached) return cached as T[];
   const visibleCount = clamp(Math.ceil(samples.length / viewport.zoom), Math.min(samples.length, Math.max(8, Math.floor(width / 18))), samples.length);
   const maxStart = Math.max(0, samples.length - visibleCount);
   const offset = clamp(Math.round(viewport.offset), 0, maxStart);
   const start = viewport.followLatest ? maxStart : Math.max(0, maxStart - offset);
-  return samples.slice(start, start + visibleCount);
+  const result = samples.slice(start, start + visibleCount);
+  const nextCache = cachedByWindow ?? new Map<string, readonly unknown[]>();
+  nextCache.set(key, result);
+  if (!cachedByWindow) WINDOW_SAMPLE_CACHE.set(samples, nextCache);
+  return result;
+}
+
+function cachedDecimateCandles(candles: GholaChartCandle[], maxPoints: number) {
+  if (candles.length <= maxPoints || maxPoints <= 0) return candles;
+  const cachedByBudget = CANDLE_DECIMATION_CACHE.get(candles);
+  const cached = cachedByBudget?.get(maxPoints);
+  if (cached) return cached;
+  const result = decimateCandles(candles, maxPoints);
+  const nextCache = cachedByBudget ?? new Map<number, GholaChartCandle[]>();
+  nextCache.set(maxPoints, result);
+  if (!cachedByBudget) CANDLE_DECIMATION_CACHE.set(candles, nextCache);
+  return result;
+}
+
+function cachedCumulativeDepth(levels: GholaChartBookLevel[], side: "bid" | "ask") {
+  const cachedBySide = DEPTH_CACHE.get(levels);
+  const cached = cachedBySide?.[side];
+  if (cached) return cached;
+  const result = cumulativeDepth(levels, side);
+  const nextCache = cachedBySide ?? {};
+  nextCache[side] = result;
+  if (!cachedBySide) DEPTH_CACHE.set(levels, nextCache);
+  return result;
 }
 
 function chartValueRange(
@@ -290,35 +500,34 @@ function chartValueRange(
     if (mode === "depth") {
       for (const level of [...active.bids, ...active.asks]) {
         const px = Number(level.px);
-        if (Number.isFinite(px)) values.push(px);
+        if (Number.isFinite(px) && px > 0) values.push(px);
       }
       return;
     }
     if (mode === "route" || mode === "slippage" || mode === "quote") {
       for (const quote of active.routeQuotes) {
         const px = Number(quote.price);
-        if (Number.isFinite(px)) values.push(px);
+        if (Number.isFinite(px) && px > 0) values.push(px);
       }
       const mid = frameMidNumber(active);
       if (mid != null) values.push(mid);
       return;
     }
-    for (const candle of active.candles) {
-      const high = Number(candle.h);
-      const low = Number(candle.l);
-      if (Number.isFinite(high)) values.push(high);
-      if (Number.isFinite(low)) values.push(low);
-    }
-    for (const value of [active.mid, active.bestBid, active.bestAsk, active.markPrice, active.oraclePrice]) {
+    const candleRange = cachedCandleRange(active.candles);
+    if (candleRange) values.push(candleRange.min, candleRange.max);
+    // Mark/oracle are informational references, not chart primitives. They
+    // must not collapse the plotted series when an upstream reference is bad.
+    for (const value of [active.mid, active.bestBid, active.bestAsk]) {
       const number = Number(value);
-      if (Number.isFinite(number)) values.push(number);
+      if (Number.isFinite(number) && number > 0) values.push(number);
     }
   };
   collect(frame);
   for (const compare of compareFrames) collect(compare);
   for (const overlay of overlays) {
+    if (overlay.rangeBehavior !== "include") continue;
     for (const value of [overlay.price, overlay.priceEnd]) {
-      if (Number.isFinite(value)) values.push(Number(value));
+      if (Number.isFinite(value) && Number(value) > 0) values.push(Number(value));
     }
   }
   if (values.length === 0) return { min: 0, max: 1 };
@@ -334,6 +543,21 @@ function chartValueRange(
     max += pad;
   }
   return { min, max };
+}
+
+function cachedCandleRange(candles: GholaChartCandle[]) {
+  if (CANDLE_RANGE_CACHE.has(candles)) return CANDLE_RANGE_CACHE.get(candles) ?? null;
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const candle of candles) {
+    const high = Number(candle.h);
+    const low = Number(candle.l);
+    if (Number.isFinite(high) && high > 0) max = Math.max(max, high);
+    if (Number.isFinite(low) && low > 0) min = Math.min(min, low);
+  }
+  const result = Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
+  CANDLE_RANGE_CACHE.set(candles, result);
+  return result;
 }
 
 function finitePositiveOrNull(value: number | null) {

@@ -1,0 +1,500 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
+import test from "node:test";
+
+test("Hyperliquid runner proves accepted outcomes and rejects ambiguous responses", () => {
+  const runnerPath = resolve("src/venues/hyperliquid_runner.py");
+  const source = `
+import contextlib
+import importlib.util
+import io
+import json
+import time
+from datetime import datetime, timezone
+
+spec = importlib.util.spec_from_file_location("hyperliquid_runner", ${JSON.stringify(runnerPath)})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+resting = module.redact_result("submitted", {
+    "status": "ok",
+    "response": {"data": {"statuses": [{"resting": {"oid": 42}}]}},
+}, "HYPE")
+assert resting == {"status": "submitted", "oid": 42, "fills": []}
+
+filled = module.redact_result("submitted", {
+    "status": "ok",
+    "response": {"data": {"statuses": [{"filled": {"oid": 43, "totalSz": "1", "avgPx": "10"}}]}},
+}, "HYPE")
+assert filled["status"] == "filled"
+assert filled["oid"] == 43
+assert filled["fills"][0]["sz"] == "1"
+
+class FakeExchange:
+    def __init__(self):
+        self.calls = []
+        self.expires_after = None
+    def update_leverage(self, leverage, market, is_cross):
+        self.calls.append((leverage, market, is_cross))
+        return {"status": "ok"}
+    def set_expires_after(self, value):
+        self.expires_after = value
+
+exchange = FakeExchange()
+configured = module.configure_isolated_leverage(exchange, {
+    "market": "HYPE", "margin_mode": "isolated", "leverage": 1,
+})
+assert exchange.calls == [(1, "HYPE", False)]
+assert configured == {"margin_mode": "isolated", "leverage": 1, "venue_accepted": True}
+
+expiry = int(time.time() * 1000) + 5000
+configured_expiry = module.configure_action_expiry(exchange, {
+    "expires_at": datetime.fromtimestamp(expiry / 1000, tz=timezone.utc).isoformat(),
+})
+assert configured_expiry == expiry
+assert exchange.expires_after == expiry
+
+class FakeAgentInfo:
+    def __init__(self, valid_until):
+        self.valid_until = valid_until
+    def extra_agents(self, account):
+        assert account == "0x" + "a" * 40
+        return [{
+            "name": "ghola-proof",
+            "address": "0x" + "b" * 40,
+            "validUntil": self.valid_until,
+        }]
+
+authorization = module.verify_api_wallet_authorization(
+    FakeAgentInfo(int(time.time() * 1000) + 600000),
+    "0x" + "a" * 40,
+    "0x" + "b" * 40,
+)
+assert authorization["authorized"] is True
+
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    try:
+        module.verify_api_wallet_authorization(
+            FakeAgentInfo(int(time.time() * 1000) + 60000),
+            "0x" + "a" * 40,
+            "0x" + "b" * 40,
+        )
+    except SystemExit:
+        pass
+expired_agent = json.loads(output.getvalue())
+assert expired_agent["error_code"] == "venue_access_required"
+assert "expires too soon" in expired_agent["error"]
+
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    try:
+        module.verify_api_wallet_authorization(
+            FakeAgentInfo(int(time.time() * 1000) + 600000),
+            "0x" + "a" * 40,
+            "0x" + "a" * 40,
+        )
+    except SystemExit:
+        pass
+master_key = json.loads(output.getvalue())
+assert master_key["error_code"] == "venue_access_required"
+assert "master-wallet" in master_key["error"]
+
+class FakeCloid:
+    @staticmethod
+    def from_str(value):
+        assert value.startswith("0x") and len(value) == 34
+        return value
+
+class FakeProtectionInfo:
+    def __init__(self, parent_oid=50):
+        self.parent_oid = parent_oid
+    def post(self, path, body):
+        assert path == "/info"
+        assert body["type"] == "orderStatus"
+        child = body["oid"]
+        if child == "0x" + "1" * 32:
+            return {
+                "status": "order",
+                "order": {
+                    "order": {
+                        "coin": "HYPE",
+                        "oid": self.parent_oid,
+                        "cloid": child,
+                        "origSz": "0.1",
+                        "reduceOnly": False,
+                    },
+                    "status": "filled",
+                },
+            }
+        return {
+            "status": "order",
+            "order": {
+                "order": {
+                    "coin": "HYPE",
+                    "oid": 61 if child.endswith("09") else 62,
+                    "cloid": child,
+                    "reduceOnly": True,
+                    "isTrigger": True,
+                },
+                "status": "open",
+            },
+        }
+
+class FakeProtectedExchange:
+    def __init__(self):
+        self.orders = None
+        self.grouping = None
+    def bulk_orders(self, orders, grouping):
+        self.orders = orders
+        self.grouping = grouping
+        return {
+            "status": "ok",
+            "response": {"data": {"statuses": [
+                {"filled": {"oid": 50, "totalSz": "0.1", "avgPx": "100"}},
+                {"resting": {"oid": 51}},
+                {"resting": {"oid": 52}},
+            ]}},
+        }
+
+protected_exchange = FakeProtectedExchange()
+protected = module.submit_protected_limit_order(
+    protected_exchange,
+    FakeProtectionInfo(),
+    "0x" + "a" * 40,
+    {"market": "HYPE", "side": "buy", "reduce_only": False},
+    {"base_size": "0.1", "limit_price": "100", "tif": "Ioc", "size_decimals": 2},
+    {
+        "mode": "normal_tpsl",
+        "trigger_source": "mark",
+        "take_profit_trigger_price": "110",
+        "stop_loss_trigger_price": "95",
+        "max_slippage_bps": "50",
+    },
+    "0x" + "1" * 32,
+    FakeCloid,
+)
+assert protected_exchange.grouping == "normalTpsl"
+assert len(protected_exchange.orders) == 3
+assert protected_exchange.orders[1]["reduce_only"] is True
+assert protected_exchange.orders[1]["order_type"]["trigger"]["tpsl"] == "tp"
+assert protected_exchange.orders[2]["order_type"]["trigger"]["tpsl"] == "sl"
+assert protected_exchange.orders[2]["limit_px"] < 95
+assert protected["position_protection"]["venue_accepted"] is True
+assert protected["venue_order_readback"] == {
+    "verified": True,
+    "status": "filled",
+    "oid": 50,
+    "cloid": "0x" + "1" * 32,
+}
+assert protected["position_protection"]["take_profit_oid"] == 61
+assert protected["position_protection"]["stop_loss_oid"] == 62
+assert protected["position_protection"]["take_profit_cloid"] != protected["position_protection"]["stop_loss_cloid"]
+assert protected["position_protection"]["take_profit_cloid"] == "0x6d8f5b3364447cf319e70007e1e9bb09"
+assert protected["position_protection"]["stop_loss_cloid"] == "0x5197b14ce6d43a2816442fd709b29006"
+
+class FakeWaitingProtectedExchange(FakeProtectedExchange):
+    def bulk_orders(self, orders, grouping):
+        self.orders = orders
+        self.grouping = grouping
+        return {
+            "status": "ok",
+            "response": {"data": {"statuses": [
+                {"filled": {"oid": 60, "totalSz": "0.1", "avgPx": "100"}},
+                "waitingForFill",
+                "waitingForTrigger",
+            ]}},
+        }
+
+waiting_exchange = FakeWaitingProtectedExchange()
+waiting_protected = module.submit_protected_limit_order(
+    waiting_exchange,
+    FakeProtectionInfo(60),
+    "0x" + "a" * 40,
+    {"market": "HYPE", "side": "buy", "reduce_only": False},
+    {"base_size": "0.1", "limit_price": "100", "tif": "Ioc", "size_decimals": 2},
+    {
+        "mode": "normal_tpsl",
+        "trigger_source": "mark",
+        "take_profit_trigger_price": "110",
+        "stop_loss_trigger_price": "95",
+        "max_slippage_bps": "50",
+    },
+    "0x" + "1" * 32,
+    FakeCloid,
+)
+assert waiting_protected["position_protection"]["take_profit_oid"] == 61
+assert waiting_protected["position_protection"]["stop_loss_oid"] == 62
+
+assert module.hyperliquid_perp_price_valid(module.Decimal("63034"), 5)
+assert not module.hyperliquid_perp_price_valid(module.Decimal("63033.5"), 5)
+assert module.hyperliquid_perp_price_valid(module.Decimal("56.365"), 2)
+assert not module.hyperliquid_perp_price_valid(module.Decimal("56.3645"), 2)
+assert module.quantize_hyperliquid_perp_price(module.Decimal("56.3645"), 2, module.ROUND_UP) == module.Decimal("56.365")
+
+class FakePrecisionInfo:
+    def meta(self):
+        return {"universe": [{"name": "HYPE", "szDecimals": 2}]}
+    def user_state(self, _address):
+        return {"marginSummary": {"accountValue": "1000"}, "withdrawable": "1000"}
+
+valid_order = module.resolve_limit_order(FakePrecisionInfo(), {
+    "market": "HYPE",
+    "side": "buy",
+    "order_type": "limit",
+    "live_order_mode": "full_ticket",
+    "base_size": "0.19",
+    "quote_size": "10.71",
+    "limit_price": "56.365",
+    "tif": "Ioc",
+}, "0x" + "a" * 40)
+assert valid_order["size_decimals"] == 2
+
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    try:
+        module.resolve_limit_order(FakePrecisionInfo(), {
+            "market": "HYPE",
+            "side": "buy",
+            "order_type": "limit",
+            "live_order_mode": "full_ticket",
+            "base_size": "0.17",
+            "limit_price": "56.365",
+            "tif": "Ioc",
+        }, "0x" + "a" * 40)
+    except SystemExit:
+        pass
+minimum_failure = json.loads(output.getvalue())
+assert minimum_failure["error_code"] == "venue_rejected"
+assert "minimum notional" in minimum_failure["error"]
+
+class FakeReduceInfo(FakePrecisionInfo):
+    def user_state(self, _address):
+        raise AssertionError("reduce-only must not require opening margin")
+
+reduce_only = module.resolve_limit_order(FakeReduceInfo(), {
+    "market": "HYPE",
+    "side": "sell",
+    "order_type": "limit",
+    "live_order_mode": "full_ticket",
+    "base_size": "0.01",
+    "limit_price": "56.365",
+    "reduce_only": True,
+    "tif": "Ioc",
+}, "0x" + "a" * 40)
+assert reduce_only["base_size"] == "0.01"
+assert reduce_only["account_state_checked"] is True
+
+class FakeMarketExitInfo(FakeReduceInfo):
+    def post(self, path, body):
+        assert path == "/info"
+        assert body == {"type": "l2Book", "coin": "HYPE"}
+        return {
+            "time": int(time.time() * 1000) - 100,
+            "levels": [
+                [{"px": "56.99", "sz": "1", "n": 1}],
+                [{"px": "57", "sz": "1", "n": 1}],
+            ],
+        }
+
+market_exit = module.resolve_limit_order(FakeMarketExitInfo(), {
+    "market": "HYPE",
+    "side": "sell",
+    "order_type": "market",
+    "live_order_mode": "tiny_fill",
+    "base_size": "0.18",
+    "reduce_only": True,
+    "max_slippage_bps": "100",
+}, "0x" + "a" * 40)
+assert market_exit["base_size"] == "0.18"
+assert market_exit["tif"] == "Ioc"
+assert module.Decimal(market_exit["limit_price"]) < module.Decimal("56.99")
+assert market_exit["account_state_checked"] is True
+market_exit_gate = module.verify_fresh_execution_book(
+    FakeMarketExitInfo(),
+    {"market": "HYPE", "side": "sell", "max_slippage_bps": "100"},
+    market_exit,
+)
+assert market_exit_gate["slippage_bound_proven"] is True
+
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    try:
+        module.resolve_limit_order(FakePrecisionInfo(), {
+            "market": "HYPE",
+            "side": "buy",
+            "order_type": "limit",
+            "live_order_mode": "full_ticket",
+            "base_size": "0.191",
+            "quote_size": "10.77",
+            "limit_price": "56.3645",
+            "tif": "Ioc",
+        }, "0x" + "a" * 40)
+    except SystemExit:
+        pass
+precision_failure = json.loads(output.getvalue())
+assert precision_failure["error_code"] == "venue_rejected"
+assert "tick precision" in precision_failure["error"]
+
+class FakeInfo:
+    def __init__(self, age_ms=350):
+        self.age_ms = age_ms
+    def post(self, path, body):
+        assert path == "/info"
+        assert body == {"type": "l2Book", "coin": "HYPE"}
+        return {
+            "time": int(time.time() * 1000) - self.age_ms,
+            "levels": [
+                [{"px": "99", "sz": "1", "n": 1}],
+                [{"px": "101", "sz": "1", "n": 1}],
+            ],
+        }
+
+market_gate = module.verify_fresh_execution_book(
+    FakeInfo(),
+    {"market": "HYPE", "side": "buy", "max_slippage_bps": "50"},
+    {"limit_price": "101.5"},
+)
+assert market_gate["freshness_proven"] is True
+assert market_gate["slippage_bound_proven"] is True
+assert market_gate["source_age_ms"] <= 2000
+
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    try:
+        module.verify_fresh_execution_book(
+            FakeInfo(2501),
+            {"market": "HYPE", "side": "buy", "max_slippage_bps": "50"},
+            {"limit_price": "101.5"},
+        )
+    except SystemExit:
+        pass
+stale_failure = json.loads(output.getvalue())
+assert stale_failure["error_code"] == "venue_rejected"
+assert "stale" in stale_failure["error"]
+
+cancel_target = "0x" + "7" * 32
+
+class FakeCancelInfo:
+    def __init__(self, status="open", returned_cloid=cancel_target):
+        self.status = status
+        self.returned_cloid = returned_cloid
+    def post(self, path, body):
+        assert path == "/info"
+        assert body == {"type": "orderStatus", "user": "0x" + "a" * 40, "oid": cancel_target}
+        return {
+            "status": "order",
+            "order": {
+                "order": {"coin": "HYPE", "oid": 77, "cloid": self.returned_cloid},
+                "status": self.status,
+            },
+        }
+
+class FakeCancelExchange:
+    def __init__(self, info):
+        self.info = info
+        self.calls = []
+    def cancel_by_cloid(self, market, cloid):
+        self.calls.append((market, cloid))
+        self.info.status = "canceled"
+        return {"status": "ok", "response": {"data": {"statuses": ["success"]}}}
+
+cancel_info = FakeCancelInfo()
+cancel_exchange = FakeCancelExchange(cancel_info)
+cancel_proof = module.cancel_by_cloid_with_readback(
+    cancel_exchange, cancel_info, "0x" + "a" * 40, "HYPE", cancel_target, FakeCloid,
+)
+assert cancel_exchange.calls == [("HYPE", cancel_target)]
+assert cancel_proof["broadcast_performed"] is True
+assert cancel_proof["venue_cancel_readback"]["status"] == "canceled"
+
+already_canceled_info = FakeCancelInfo("canceled")
+already_canceled_exchange = FakeCancelExchange(already_canceled_info)
+already_canceled = module.cancel_by_cloid_with_readback(
+    already_canceled_exchange,
+    already_canceled_info,
+    "0x" + "a" * 40,
+    "HYPE",
+    cancel_target,
+    FakeCloid,
+)
+assert already_canceled_exchange.calls == []
+assert already_canceled["broadcast_performed"] is False
+
+reduce_only_canceled_info = FakeCancelInfo("reduceOnlyCanceled")
+reduce_only_canceled_exchange = FakeCancelExchange(reduce_only_canceled_info)
+reduce_only_canceled = module.cancel_by_cloid_with_readback(
+    reduce_only_canceled_exchange,
+    reduce_only_canceled_info,
+    "0x" + "a" * 40,
+    "HYPE",
+    cancel_target,
+    FakeCloid,
+)
+assert reduce_only_canceled_exchange.calls == []
+assert reduce_only_canceled["broadcast_performed"] is False
+assert reduce_only_canceled["venue_cancel_readback"]["status"] == "canceled"
+
+class FakeCancelRaceExchange:
+    def __init__(self, info):
+        self.info = info
+        self.calls = []
+    def cancel_by_cloid(self, market, cloid):
+        self.calls.append((market, cloid))
+        self.info.status = "reduceOnlyCanceled"
+        return {
+            "status": "ok",
+            "response": {"data": {"statuses": [{
+                "error": "Order was never placed, already canceled, or filled."
+            }]}},
+        }
+
+race_info = FakeCancelInfo()
+race_exchange = FakeCancelRaceExchange(race_info)
+race_proof = module.cancel_by_cloid_with_readback(
+    race_exchange, race_info, "0x" + "a" * 40, "HYPE", cancel_target, FakeCloid,
+)
+assert race_exchange.calls == [("HYPE", cancel_target)]
+assert race_proof["broadcast_performed"] is False
+assert race_proof["venue_cancel_readback"]["status"] == "canceled"
+
+bad_info = FakeCancelInfo("open", "0x" + "6" * 32)
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    try:
+        module.cancel_by_cloid_with_readback(
+            FakeCancelExchange(bad_info), bad_info, "0x" + "a" * 40, "HYPE", cancel_target, FakeCloid,
+        )
+    except SystemExit:
+        pass
+bad_cancel = json.loads(output.getvalue())
+assert bad_cancel["error_code"] == "venue_rejected"
+assert "readback" in bad_cancel["error"]
+
+cancelled = module.redact_result("cancelled", {
+    "status": "ok",
+    "response": {"data": {"statuses": ["success"]}},
+})
+assert cancelled == {"status": "cancelled", "oid": None, "fills": []}
+
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    try:
+        module.redact_result("submitted", {
+            "status": "ok",
+            "response": {"data": {"statuses": [{"error": "minimum order value"}]}},
+        })
+    except SystemExit:
+        pass
+failure = json.loads(output.getvalue())
+assert failure["status"] == "failed"
+assert failure["error_code"] == "venue_rejected"
+assert "minimum order value" in failure["error"]
+`;
+  const result = spawnSync(process.env.PRIVATE_AGENT_PYTHON || "python3", ["-c", source], {
+    cwd: resolve("."),
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});

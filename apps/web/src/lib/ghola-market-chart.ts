@@ -4,10 +4,17 @@ import type { CoinbaseMarketSnapshot } from "./coinbase-market-data";
 import type { PhoenixMarketSnapshot } from "./phoenix-market-data";
 import type { MobileMarketJupiter } from "./mobile-market-data";
 import type { PrivateExecutionOrderDraft } from "./private-execution-instruction-seal";
+import type { MarketComponentClocks } from "./market-component-clock";
+import type {
+  MarketFundingRateSource,
+  MarketFundingRateUnit,
+  MarketFundingTimeBasis,
+} from "./market-funding-rate";
 
 export type GholaChartVenue = "hyperliquid" | "phoenix" | "backpack" | "coinbase" | "jupiter";
 export type GholaChartMode = "candles" | "line" | "depth" | "compare" | "route" | "slippage" | "quote";
 export type GholaChartTone = "good" | "bad" | "warn" | "accent" | "neutral";
+export type GholaFundingRateUnit = MarketFundingRateUnit;
 
 export interface GholaChartCandle {
   t: number;
@@ -27,6 +34,7 @@ export interface GholaChartBookLevel {
 }
 
 export interface GholaChartTrade {
+  id?: string;
   side: "buy" | "sell";
   px: string;
   sz: string;
@@ -46,6 +54,7 @@ export interface GholaRouteQuotePoint {
 export interface GholaMarketFrame {
   version: 1;
   venue: GholaChartVenue;
+  network?: string | null;
   product: string;
   interval: string;
   fetchedAt: string | null;
@@ -57,13 +66,40 @@ export interface GholaMarketFrame {
   markPrice: string | null;
   oraclePrice: string | null;
   fundingRate: string | null;
+  fundingRateUnit?: GholaFundingRateUnit | null;
+  fundingRateSource?: MarketFundingRateSource | null;
+  fundingRateTimeBasis?: MarketFundingTimeBasis | null;
+  fundingRateUpdatedAt?: string | null;
   openInterest: string | null;
   dayVolume: string | null;
+  sizeDecimals?: number | null;
   candles: GholaChartCandle[];
   bids: GholaChartBookLevel[];
   asks: GholaChartBookLevel[];
   trades: GholaChartTrade[];
   routeQuotes: GholaRouteQuotePoint[];
+  componentTimestamps?: MarketComponentClocks;
+}
+
+type GholaMarketFrameCollectionKey = "candles" | "bids" | "asks" | "trades" | "routeQuotes";
+export type GholaMarketFrameScalarPatch = Omit<GholaMarketFrame, GholaMarketFrameCollectionKey>;
+
+export function gholaReplaySelectionMatches(
+  source: GholaMarketFrame | null,
+  current: GholaMarketFrame | null,
+  sourceIdentityKey: string | null,
+  currentIdentityKey: string,
+  mode: GholaChartMode,
+): boolean {
+  return Boolean(
+    source &&
+    current &&
+    source.venue === current.venue &&
+    source.product === current.product &&
+    source.interval === current.interval &&
+    sourceIdentityKey === currentIdentityKey &&
+    (mode === "candles" || mode === "line"),
+  );
 }
 
 export interface GholaChartOverlay {
@@ -77,6 +113,12 @@ export interface GholaChartOverlay {
   status?: string | null;
   detail?: string | null;
   side?: "buy" | "sell" | null;
+  /** Excluded overlays remain drawable but never distort automatic price bounds. */
+  rangeBehavior?: "include" | "exclude";
+  interaction?: {
+    kind: "drag_price";
+    ariaLabel: string;
+  };
 }
 
 export interface GholaAgentOverlayInput {
@@ -86,6 +128,17 @@ export interface GholaAgentOverlayInput {
   accountReady?: boolean;
   venueLabel: string;
   receiptCommitment?: string | null;
+}
+
+export interface GholaExecutableRPlanOverlayInput {
+  side: "buy" | "sell";
+  entryPrice: number | null;
+  stopPrice: number | null;
+  targetPrice: number | null;
+  targetRewardMultiple: 1 | 1.5 | 2 | 3;
+  entryPinned: boolean;
+  stopPinned: boolean;
+  stopValid: boolean;
 }
 
 export class FixedRingBuffer<T> {
@@ -129,13 +182,23 @@ export class GholaChartStore {
   private bids = new FixedRingBuffer<GholaChartBookLevel>(100);
   private asks = new FixedRingBuffer<GholaChartBookLevel>(100);
   private routeQuotes = new FixedRingBuffer<GholaRouteQuotePoint>(600);
+  private candleSource: GholaChartCandle[] | null = null;
+  private tradeSource: GholaChartTrade[] | null = null;
+  private bidSource: GholaChartBookLevel[] | null = null;
+  private askSource: GholaChartBookLevel[] | null = null;
+  private routeQuoteSource: GholaRouteQuotePoint[] | null = null;
+  private candleSnapshot: GholaChartCandle[] = [];
+  private tradeSnapshot: GholaChartTrade[] = [];
+  private bidSnapshot: GholaChartBookLevel[] = [];
+  private askSnapshot: GholaChartBookLevel[] = [];
+  private routeQuoteSnapshot: GholaRouteQuotePoint[] = [];
 
   ingest(frame: GholaMarketFrame | null) {
     if (!frame) {
       this.latest = null;
       return;
     }
-    const nextKey = `${frame.venue}:${frame.product}:${frame.interval}`;
+    const nextKey = `${frame.venue}:${frame.network ?? "unknown"}:${frame.product}:${frame.interval}`;
     if (nextKey !== this.key) {
       this.key = nextKey;
       this.candles.clear();
@@ -143,30 +206,75 @@ export class GholaChartStore {
       this.bids.clear();
       this.asks.clear();
       this.routeQuotes.clear();
+      this.candleSource = null;
+      this.tradeSource = null;
+      this.bidSource = null;
+      this.askSource = null;
+      this.routeQuoteSource = null;
+      this.candleSnapshot = [];
+      this.tradeSnapshot = [];
+      this.bidSnapshot = [];
+      this.askSnapshot = [];
+      this.routeQuoteSnapshot = [];
     }
-    this.candles.replace(frame.candles);
-    this.trades.replace(frame.trades);
-    this.bids.replace(frame.bids);
-    this.asks.replace(frame.asks);
-    if (frame.routeQuotes.length > 1) {
-      this.routeQuotes.replace(frame.routeQuotes);
-    } else if (frame.routeQuotes.length === 1) {
-      const quote = frame.routeQuotes[0];
-      const last = this.routeQuotes.last();
-      if (!last || last.t !== quote.t || last.price !== quote.price || last.outputAmount !== quote.outputAmount) {
-        this.routeQuotes.push(quote);
+    if (frame.candles !== this.candleSource) {
+      this.candles.replace(frame.candles);
+      this.candleSource = frame.candles;
+      this.candleSnapshot = this.candles.toArray();
+    }
+    if (frame.trades !== this.tradeSource) {
+      this.trades.replace(frame.trades);
+      this.tradeSource = frame.trades;
+      this.tradeSnapshot = this.trades.toArray();
+    }
+    if (frame.bids !== this.bidSource) {
+      this.bids.replace(frame.bids);
+      this.bidSource = frame.bids;
+      this.bidSnapshot = this.bids.toArray();
+    }
+    if (frame.asks !== this.askSource) {
+      this.asks.replace(frame.asks);
+      this.askSource = frame.asks;
+      this.askSnapshot = this.asks.toArray();
+    }
+    if (frame.routeQuotes !== this.routeQuoteSource) {
+      let routeQuotesChanged = false;
+      if (frame.routeQuotes.length > 1) {
+        this.routeQuotes.replace(frame.routeQuotes);
+        routeQuotesChanged = true;
+      } else if (frame.routeQuotes.length === 1) {
+        const quote = frame.routeQuotes[0];
+        const last = this.routeQuotes.last();
+        if (!last || last.t !== quote.t || last.price !== quote.price || last.outputAmount !== quote.outputAmount) {
+          this.routeQuotes.push(quote);
+          routeQuotesChanged = true;
+        }
+      } else if (frame.venue !== "jupiter" && this.routeQuoteSnapshot.length > 0) {
+        this.routeQuotes.clear();
+        routeQuotesChanged = true;
       }
-    } else if (frame.venue !== "jupiter") {
-      this.routeQuotes.clear();
+      this.routeQuoteSource = frame.routeQuotes;
+      if (routeQuotesChanged) this.routeQuoteSnapshot = this.routeQuotes.toArray();
     }
     this.latest = {
       ...frame,
-      candles: this.candles.toArray(),
-      trades: this.trades.toArray(),
-      bids: this.bids.toArray(),
-      asks: this.asks.toArray(),
-      routeQuotes: this.routeQuotes.toArray(),
+      candles: this.candleSnapshot,
+      trades: this.tradeSnapshot,
+      bids: this.bidSnapshot,
+      asks: this.askSnapshot,
+      routeQuotes: this.routeQuoteSnapshot,
     };
+  }
+
+  patchScalars(patch: GholaMarketFrameScalarPatch) {
+    if (
+      !this.latest
+      || this.latest.venue !== patch.venue
+      || this.latest.network !== patch.network
+      || this.latest.product !== patch.product
+      || this.latest.interval !== patch.interval
+    ) throw new Error("ghola_chart_frame_patch_identity_mismatch");
+    this.latest = { ...this.latest, ...patch };
   }
 
   frame() {
@@ -179,6 +287,7 @@ export function gholaFrameFromHyperliquid(snapshot: HyperliquidMarketSnapshot | 
   return {
     version: 1,
     venue: "hyperliquid",
+    network: snapshot.network,
     product: snapshot.coin,
     interval: snapshot.interval,
     fetchedAt: snapshot.fetched_at,
@@ -190,8 +299,13 @@ export function gholaFrameFromHyperliquid(snapshot: HyperliquidMarketSnapshot | 
     markPrice: snapshot.mark_price,
     oraclePrice: snapshot.oracle_price,
     fundingRate: snapshot.funding_rate,
+    fundingRateUnit: snapshot.funding_rate_unit,
+    fundingRateSource: snapshot.funding_rate_source,
+    fundingRateTimeBasis: snapshot.funding_time_basis,
+    fundingRateUpdatedAt: snapshot.funding_updated_at,
     openInterest: snapshot.open_interest,
     dayVolume: snapshot.day_notional_volume,
+    sizeDecimals: snapshot.size_decimals ?? null,
     candles: snapshot.candles.map(normalizeCandle),
     bids: snapshot.bids.map(normalizeBookLevel),
     asks: snapshot.asks.map(normalizeBookLevel),
@@ -210,6 +324,7 @@ export function gholaFrameFromPhoenix(snapshot: PhoenixMarketSnapshot | null): G
   return {
     version: 1,
     venue: "phoenix",
+    network: snapshot.network,
     product: `${snapshot.symbol}-PERP`,
     interval: snapshot.interval,
     fetchedAt: snapshot.fetched_at,
@@ -221,12 +336,17 @@ export function gholaFrameFromPhoenix(snapshot: PhoenixMarketSnapshot | null): G
     markPrice: snapshot.mark_price,
     oraclePrice: snapshot.oracle_price,
     fundingRate: snapshot.funding_rate,
+    fundingRateUnit: snapshot.funding_rate_unit,
+    fundingRateSource: snapshot.funding_rate_source,
+    fundingRateTimeBasis: snapshot.funding_time_basis,
+    fundingRateUpdatedAt: snapshot.funding_updated_at,
     openInterest: snapshot.open_interest,
     dayVolume: snapshot.day_notional_volume,
     candles: snapshot.candles.map(normalizeCandle),
     bids: snapshot.bids.map(normalizeBookLevel),
     asks: snapshot.asks.map(normalizeBookLevel),
     trades: snapshot.recent_trades.map((trade) => ({
+      id: trade.slot == null ? undefined : `${trade.slot}:${trade.time}:${trade.side}:${trade.px}:${trade.sz}`,
       side: trade.side,
       px: trade.px,
       sz: trade.sz,
@@ -241,6 +361,7 @@ export function gholaFrameFromBackpack(snapshot: BackpackMarketSnapshot | null):
   return {
     version: 1,
     venue: "backpack",
+    network: snapshot.network,
     product: snapshot.symbol,
     interval: snapshot.interval,
     fetchedAt: snapshot.fetched_at,
@@ -258,6 +379,7 @@ export function gholaFrameFromBackpack(snapshot: BackpackMarketSnapshot | null):
     bids: snapshot.bids.map(normalizeBookLevel),
     asks: snapshot.asks.map(normalizeBookLevel),
     trades: snapshot.recent_trades.map((trade) => ({
+      id: trade.trade_id ?? undefined,
       side: trade.side,
       px: trade.px,
       sz: trade.sz,
@@ -272,6 +394,7 @@ export function gholaFrameFromCoinbase(snapshot: CoinbaseMarketSnapshot | null):
   return {
     version: 1,
     venue: "coinbase",
+    network: "mainnet",
     product: snapshot.product_id,
     interval: snapshot.interval,
     fetchedAt: snapshot.fetched_at,
@@ -289,6 +412,7 @@ export function gholaFrameFromCoinbase(snapshot: CoinbaseMarketSnapshot | null):
     bids: snapshot.bids.map(normalizeBookLevel),
     asks: snapshot.asks.map(normalizeBookLevel),
     trades: snapshot.recent_trades.map((trade) => ({
+      id: trade.trade_id ?? undefined,
       side: trade.side,
       px: trade.px,
       sz: trade.sz,
@@ -303,6 +427,7 @@ export function gholaFrameFromJupiter(quote: MobileMarketJupiter | null): GholaM
   return {
     version: 1,
     venue: "jupiter",
+    network: "mainnet",
     product: "SOL/USDC",
     interval: "quote",
     fetchedAt: quote.fetched_at,
@@ -428,6 +553,67 @@ export function buildGholaAgentChartOverlays(input: GholaAgentOverlayInput): Gho
       detail: input.receiptCommitment,
       side,
       status: "receipt issued",
+    });
+  }
+  return overlays;
+}
+
+export function buildGholaExecutableRPlanOverlays(
+  input: GholaExecutableRPlanOverlayInput,
+): GholaChartOverlay[] {
+  const entry = Number(input.entryPrice);
+  if (!Number.isFinite(entry) || entry <= 0) return [];
+  const stop = Number(input.stopPrice);
+  const hasStop = Number.isFinite(stop) && stop > 0;
+  const target = Number(input.targetPrice);
+  const overlays: GholaChartOverlay[] = [];
+  if (input.stopValid && hasStop) {
+    overlays.push({
+      id: "trade-plan-risk-band",
+      kind: "price_band",
+      label: "1R risk band",
+      tone: "bad",
+      price: Math.min(entry, stop),
+      priceEnd: Math.max(entry, stop),
+      rangeBehavior: "exclude",
+      side: input.side,
+      status: "modeled risk",
+    });
+  }
+  if (input.stopValid && Number.isFinite(target) && target > 0) {
+    overlays.push({
+      id: "trade-plan-target",
+      kind: "price_line",
+      label: `${input.targetRewardMultiple.toFixed(1)}R target · plan`,
+      tone: "good",
+      price: target,
+      rangeBehavior: "exclude",
+      side: input.side,
+      status: "modeled target",
+    });
+  }
+  overlays.push({
+    id: "trade-plan-entry",
+    kind: "price_line",
+    label: input.entryPinned ? "Entry · pinned" : "Entry · auto",
+    tone: "accent",
+    price: entry,
+    rangeBehavior: "exclude",
+    side: input.side,
+    status: "planned entry",
+    interaction: { kind: "drag_price", ariaLabel: "Drag planned entry price" },
+  });
+  if (hasStop) {
+    overlays.push({
+      id: "trade-plan-invalidation",
+      kind: "price_line",
+      label: input.stopPinned ? "Plan invalidation" : "Plan invalidation · auto",
+      tone: "bad",
+      price: stop,
+      rangeBehavior: "exclude",
+      side: input.side,
+      status: input.stopValid ? "plan invalidation" : "invalid side",
+      interaction: { kind: "drag_price", ariaLabel: "Drag plan invalidation price" },
     });
   }
   return overlays;

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   backpackPooledReadiness,
+  BACKPACK_SOL_PERP_SYMBOL,
   buildBackpackSigningString,
+  cancelAllBackpackOrders,
+  cancelBackpackOrder,
+  submitBackpackOrder,
 } from "./backpack-exchange";
 
 describe("Backpack exchange helpers", () => {
@@ -39,5 +43,41 @@ describe("Backpack exchange helpers", () => {
     });
     expect(ready.ready).toBe(true);
     expect(ready.reason_codes).toEqual([]);
+  });
+
+  it("blocks direct order signing and transport outside the private-agent policy", async () => {
+    let fetchCalls = 0;
+    const fetchImpl = (async () => {
+      fetchCalls += 1;
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    const env = {
+      NODE_ENV: "production",
+      VERCEL_ENV: "production",
+      GHOLA_PRIVATE_AGENT_SPEND_ARMED: "true",
+      GHOLA_BACKPACK_API_KEY: "pub",
+      GHOLA_BACKPACK_API_SECRET: Buffer.from(new Uint8Array(32).fill(7)).toString("base64"),
+    };
+
+    await expect(submitBackpackOrder({
+      order: {
+        symbol: BACKPACK_SOL_PERP_SYMBOL,
+        side: "Bid",
+        orderType: "Limit",
+        quantity: "0.01",
+        price: "100",
+      },
+      env,
+      fetchImpl,
+    })).rejects.toThrow("private_agent_transport_blocked");
+    await expect(cancelBackpackOrder({
+      order: { symbol: BACKPACK_SOL_PERP_SYMBOL, orderId: "order_1" },
+      env,
+      fetchImpl,
+    })).rejects.toThrow("private_agent_transport_blocked");
+    await expect(cancelAllBackpackOrders({ env, fetchImpl })).rejects.toThrow(
+      "private_agent_transport_blocked",
+    );
+    expect(fetchCalls).toBe(0);
   });
 });

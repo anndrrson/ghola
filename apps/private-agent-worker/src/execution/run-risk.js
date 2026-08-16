@@ -159,6 +159,7 @@ function signedQuantity(position) {
 function normalizeMarket(value) {
   const market = String(value || "").toUpperCase();
   if (market === "SOL/USDC" || market === "SOL-USDC") return "SOL-USD";
+  if (["BTC", "ETH", "SOL", "HYPE"].includes(market)) return `${market}-USD`;
   return market;
 }
 

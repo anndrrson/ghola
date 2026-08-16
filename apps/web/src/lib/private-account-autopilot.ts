@@ -7,6 +7,10 @@ import {
   wakePhalaPrivateAgentForUse,
 } from "./private-agent-phala";
 import {
+  privateAgentEmergencyControlTransportAllowed,
+  privateAgentTransportAllowed,
+} from "./private-agent-spend-policy";
+import {
   autopilotWorkerConfig,
   probeAutopilotWorkerReadiness,
 } from "./private-agent-worker-readiness";
@@ -121,6 +125,8 @@ export interface AutopilotSessionPolicy {
   timezone: string | null;
   agent_mandate?: AutopilotAgentMandate | null;
   agent_side?: "buy" | "sell";
+  execution_network?: "mainnet" | "testnet";
+  exact_notional_usd?: string;
   policy_commitment: string;
 }
 
@@ -157,6 +163,8 @@ export interface AutopilotSession {
   expires_at: string;
   next_step: string;
   execution_enabled: boolean;
+  autonomous_live_submit_enabled: boolean;
+  autonomous_execution_mode: "no_submit" | "live";
   control_plane: "android" | "worker";
   visibility_summary: {
     main_wallet_prompts_per_trade: false;
@@ -191,6 +199,24 @@ export interface AutopilotCreateResult {
   events: AutopilotEvent[];
 }
 
+export type AutopilotControlAction = "pause" | "resume" | "kill";
+
+export type AutonomousAutopilotControlFailure =
+  | { error: "autopilot_session_not_found" }
+  | { error: "private_agent_transport_blocked" }
+  | {
+      error: "autopilot_control_conflict";
+      action: AutopilotControlAction;
+      status: AutopilotStatus;
+      retryable: false;
+    }
+  | {
+      error: "autopilot_worker_control_unconfirmed";
+      action: AutopilotControlAction;
+      reason: string;
+      retryable: true;
+    };
+
 export interface AutopilotVenueReadiness {
   venue_id: AutopilotVenueId;
   status: "ready" | "needs_funds" | "blocked";
@@ -216,6 +242,10 @@ interface AutopilotWorkerRuntime {
   discoverPhalaExecutionUrl?: typeof discoverPhalaPrivateAgentExecutionUrl;
 }
 
+const DEFAULT_AUTOPILOT_CONTROL_TIMEOUT_MS = 8_000;
+const MIN_AUTOPILOT_CONTROL_TIMEOUT_MS = 250;
+const MAX_AUTOPILOT_CONTROL_TIMEOUT_MS = 15_000;
+
 const DEFAULT_VENUES: AutopilotVenueId[] = ["jupiter", "phoenix", "hyperliquid", "coinbase_advanced"];
 const SUPPORTED_VENUE_LIST: AutopilotVenueId[] = [
   "jupiter",
@@ -235,6 +265,7 @@ const SUPPORTED_MARKETS = new Set([
   "ETH",
   "SOL",
   "HYPE",
+  "HYPE-USD",
 ]);
 const AUTOPILOT_STATUSES = new Set<AutopilotStatus>([
   "armed",
@@ -273,6 +304,7 @@ const AUTOPILOT_EVENT_TYPES = new Set<AutopilotEventType>([
   "emergency_hedge",
   "unhedged_leg_requires_human",
 ]);
+const autopilotControlLocks = new Map<string, Promise<void>>();
 
 export async function createAutopilotSessionFromBody(
   body: unknown,
@@ -308,6 +340,8 @@ export async function createAutopilotSessionFromBody(
       ? "Kill switch is active. Create a new session to resume autopilot."
       : "Waiting for the private worker to arm autonomous execution.",
     execution_enabled: false,
+    autonomous_live_submit_enabled: false,
+    autonomous_execution_mode: "no_submit",
     control_plane: "android",
     visibility_summary: {
       main_wallet_prompts_per_trade: false,
@@ -425,7 +459,7 @@ export async function listAutopilotSessionsForOwner(
 
 export async function controlAutopilotSessionFromBody(
   sessionId: string,
-  action: "pause" | "resume" | "kill",
+  action: AutopilotControlAction,
   owner: AutopilotOwner,
   now: Date = new Date(),
 ): Promise<{ session: AutopilotSession; event: AutopilotEvent } | { error: "autopilot_session_not_found" }> {
@@ -464,41 +498,92 @@ export async function controlAutopilotSessionFromBody(
 
 export async function controlAutonomousAutopilotSessionFromBody(
   sessionId: string,
-  action: "pause" | "resume" | "kill",
+  action: AutopilotControlAction,
   owner: AutopilotOwner,
   now: Date = new Date(),
   env: Record<string, string | undefined> = process.env,
   fetchImpl: typeof fetch = fetch,
 ): Promise<
   | { session: AutopilotSession; event: AutopilotEvent }
-  | { error: "autopilot_session_not_found" }
+  | AutonomousAutopilotControlFailure
 > {
-  const local = await controlAutopilotSessionFromBody(sessionId, action, owner, now);
-  if ("error" in local) return local;
-  const workerSessionId = local.session.worker_autopilot_session_id;
-  if (!workerSessionId) return local;
+  if (action === "resume" && !privateAgentTransportAllowed("session", env, fetchImpl)) {
+    return { error: "private_agent_transport_blocked" };
+  }
+  return withAutopilotControlLock(sessionId, async () => {
+    const local = await loadSession(sessionId);
+    if (!local || local.owner_commitment !== owner.owner_commitment) {
+      return { error: "autopilot_session_not_found" };
+    }
+    if (
+      action !== "kill"
+      && ["killed", "expired", "blocked", "risk_halted"].includes(local.status)
+    ) {
+      return {
+        error: "autopilot_control_conflict",
+        action,
+        status: local.status,
+        retryable: false,
+      };
+    }
 
-  const worker = await controlWorkerAutopilotSession(workerSessionId, action, env, fetchImpl);
-  if (worker.ok) {
+    const workerSessionId = local.worker_autopilot_session_id;
+    if (!workerSessionId) {
+      return controlAutopilotSessionFromBody(sessionId, action, owner, now);
+    }
+
+    // Worker acknowledgment is the authority for worker-backed sessions. The
+    // local session is deliberately unchanged until this call returns a
+    // matching, action-consistent worker state.
+    const worker = await controlWorkerAutopilotSession(workerSessionId, action, env, fetchImpl);
+    if (!worker.ok) {
+      await appendEvent(makeEvent(local, "guardrail", "Worker control command could not be confirmed.", {
+        action,
+        error: worker.error,
+        retryable: true,
+        worker_autopilot_session_id: workerSessionId,
+      }, now), local.owner_commitment);
+      return {
+        error: "autopilot_worker_control_unconfirmed",
+        action,
+        reason: worker.error,
+        retryable: true,
+      };
+    }
+
     const merged = await mergeWorkerSession(sessionId, worker.session, now);
-    for (const event of worker.events) {
-      await appendEvent(workerEventToLocal(merged, event, now), merged.owner_commitment);
+    let acknowledgedEvent: AutopilotEvent | null = null;
+    for (const workerEvent of worker.events) {
+      const event = workerEventToLocal(merged, workerEvent, now);
+      await appendEvent(event, merged.owner_commitment);
+      acknowledgedEvent ??= event;
+    }
+    if (!acknowledgedEvent) {
+      acknowledgedEvent = makeEvent(
+        merged,
+        "session_state",
+        `Autopilot ${action} acknowledged by worker.`,
+        {
+          action,
+          worker_acknowledged: true,
+          worker_autopilot_session_id: workerSessionId,
+        },
+        now,
+      );
+      await appendEvent(acknowledgedEvent, merged.owner_commitment);
     }
     return {
       session: publicSession(merged),
-      event: local.event,
+      event: acknowledgedEvent,
     };
-  }
+  });
+}
 
-  const session = await loadSession(sessionId);
-  if (session) {
-    await appendEvent(makeEvent(session, "guardrail", "Worker control command could not be confirmed.", {
-      action,
-      error: worker.error,
-      worker_autopilot_session_id: workerSessionId,
-    }, now), session.owner_commitment);
-  }
-  return local;
+export function autopilotControlErrorStatus(error: AutonomousAutopilotControlFailure["error"]): number {
+  if (error === "autopilot_session_not_found") return 404;
+  if (error === "private_agent_transport_blocked") return 403;
+  if (error === "autopilot_control_conflict") return 409;
+  return 502;
 }
 
 export async function listAutopilotEventsForOwner(
@@ -537,6 +622,7 @@ export async function listAutopilotOpportunitiesForOwner(
 }
 
 export function resetAutopilotSessionsForTests() {
+  autopilotControlLocks.clear();
   resetPrivateAutopilotStoreForTests();
 }
 
@@ -671,6 +757,9 @@ async function armWorkerAutopilotSession(input: {
   | { ok: false; error: string }
 > {
   let cfg = autopilotWorkerConfig(input.env);
+  if (!privateAgentTransportAllowed("session", input.env, input.fetchImpl)) {
+    return { ok: false, error: "worker_not_configured" };
+  }
   let wakeAttempted = false;
   if (phalaAutopilotWakeEnabled(input.env)) {
     const resolved = await wakeAndResolvePhalaWorker({
@@ -685,6 +774,7 @@ async function armWorkerAutopilotSession(input: {
   const readiness = await probeAutopilotWorkerReadiness(cfg.url, input.fetchImpl, {
     allowUnattestedDevelopmentWorker:
       input.env.GHOLA_PRIVATE_AGENT_ALLOW_UNATTESTED_DEV?.trim().toLowerCase() === "true",
+    env: input.env,
   });
   if (!readiness.ok) {
     return {
@@ -810,6 +900,9 @@ async function fetchWorkerAutopilotSession(
   | { ok: true; session: Record<string, unknown>; events: Record<string, unknown>[] }
   | { ok: false; error: string }
 > {
+  if (!privateAgentTransportAllowed("session", env, fetchImpl)) {
+    return { ok: false, error: "worker_not_configured" };
+  }
   const cfg = await resolveAutopilotWorkerConfig(env);
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
   const workerPath = `/autopilot/sessions/${encodeURIComponent(workerSessionId)}`;
@@ -860,6 +953,9 @@ async function fetchWorkerAutopilotOpportunities(
   | { ok: true; session: Record<string, unknown>; opportunities: Record<string, unknown>[] }
   | { ok: false; error: "worker_not_configured" | "worker_unavailable" | string }
 > {
+  if (!privateAgentTransportAllowed("session", env, fetchImpl)) {
+    return { ok: false, error: "worker_not_configured" };
+  }
   const cfg = autopilotWorkerConfig(env);
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
   const workerPath = `/autopilot/sessions/${encodeURIComponent(workerSessionId)}/opportunities`;
@@ -897,13 +993,19 @@ async function fetchWorkerAutopilotOpportunities(
 
 async function controlWorkerAutopilotSession(
   workerSessionId: string,
-  action: "pause" | "resume" | "kill",
+  action: AutopilotControlAction,
   env: Record<string, string | undefined>,
   fetchImpl: typeof fetch,
 ): Promise<
   | { ok: true; session: Record<string, unknown>; events: Record<string, unknown>[] }
   | { ok: false; error: string }
 > {
+  const transportAllowed = action === "resume"
+    ? privateAgentTransportAllowed("execute", env, fetchImpl)
+    : privateAgentEmergencyControlTransportAllowed(action, env, fetchImpl);
+  if (!transportAllowed) {
+    return { ok: false, error: "worker_not_configured" };
+  }
   const cfg = autopilotWorkerConfig(env);
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
   const workerPath = `/autopilot/sessions/${encodeURIComponent(workerSessionId)}/${action}`;
@@ -920,6 +1022,11 @@ async function controlWorkerAutopilotSession(
     },
   });
   if (!authorization) return { ok: false, error: "worker_not_configured" };
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    autopilotControlTimeoutMs(env),
+  );
   const response = await fetchImpl(
     new URL(workerPath, cfg.url),
     {
@@ -931,19 +1038,96 @@ async function controlWorkerAutopilotSession(
         "x-ghola-sealed-execution-required": "true",
       },
       body: "{}",
+      signal: controller.signal,
     },
-  ).catch(() => null);
-  if (!response) return { ok: false, error: "worker_unavailable" };
+  ).catch(() => null).finally(() => clearTimeout(timeout));
+  if (!response) {
+    return { ok: false, error: controller.signal.aborted ? "worker_control_timeout" : "worker_unavailable" };
+  }
   const body = record(await response.json().catch(() => null));
   if (!response.ok) return { ok: false, error: stringValue(body.error) ?? `worker_${response.status}` };
   const session = record(body.session);
   if (!session.autopilot_session_id) return { ok: false, error: "worker_session_missing" };
   const event = optionalRecord(body.event);
+  if (!event) return { ok: false, error: "worker_control_ack_invalid" };
+  const acknowledgmentError = workerControlAcknowledgmentError(
+    workerSessionId,
+    action,
+    session,
+    event,
+  );
+  if (acknowledgmentError) return { ok: false, error: acknowledgmentError };
   return {
     ok: true,
     session,
-    events: event ? [event] : [],
+    events: [event],
   };
+}
+
+function workerControlAcknowledgmentError(
+  expectedSessionId: string,
+  action: AutopilotControlAction,
+  session: Record<string, unknown>,
+  event: Record<string, unknown>,
+): string | null {
+  if (stringValue(session.autopilot_session_id) !== expectedSessionId) {
+    return "worker_session_mismatch";
+  }
+  const status = statusValue(session.status);
+  if (!status || typeof session.execution_enabled !== "boolean") {
+    return "worker_control_ack_invalid";
+  }
+  if (stringValue(record(event.data).action) !== action) {
+    return "worker_control_action_mismatch";
+  }
+  if (statusValue(event.status) !== status) {
+    return "worker_control_status_mismatch";
+  }
+  if (action === "kill") {
+    return status === "killed" && session.execution_enabled === false
+      ? null
+      : "worker_kill_not_acknowledged";
+  }
+  if (action === "pause") {
+    return status === "paused" && session.execution_enabled === false
+      ? null
+      : "worker_pause_not_acknowledged";
+  }
+  if (["running", "armed", "watching"].includes(status)) {
+    return session.execution_enabled === true ? null : "worker_resume_not_acknowledged";
+  }
+  if (["pending_worker", "pending_funding"].includes(status)) {
+    return session.execution_enabled === false ? null : "worker_resume_not_acknowledged";
+  }
+  return "worker_resume_not_acknowledged";
+}
+
+function autopilotControlTimeoutMs(env: Record<string, string | undefined>) {
+  const parsed = Number.parseInt(env.GHOLA_AUTOPILOT_CONTROL_TIMEOUT_MS ?? "", 10);
+  if (!Number.isInteger(parsed)) return DEFAULT_AUTOPILOT_CONTROL_TIMEOUT_MS;
+  return Math.min(MAX_AUTOPILOT_CONTROL_TIMEOUT_MS, Math.max(MIN_AUTOPILOT_CONTROL_TIMEOUT_MS, parsed));
+}
+
+async function withAutopilotControlLock<T>(
+  sessionId: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  const previous = autopilotControlLocks.get(sessionId) ?? Promise.resolve();
+  let release = () => {};
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.catch(() => undefined).then(() => current);
+  autopilotControlLocks.set(sessionId, queued);
+  await previous.catch(() => undefined);
+  try {
+    return await task();
+  } finally {
+    release();
+    if (autopilotControlLocks.get(sessionId) === queued) {
+      autopilotControlLocks.delete(sessionId);
+    }
+  }
 }
 
 async function mergeWorkerSession(
@@ -973,6 +1157,11 @@ async function mergeWorkerSession(
     expires_at: stringValue(workerSession.expires_at) ?? local.expires_at,
     next_step: stringValue(workerSession.next_step) ?? local.next_step,
     execution_enabled: workerSession.execution_enabled === true,
+    autonomous_live_submit_enabled: workerSession.autonomous_live_submit_enabled === true,
+    autonomous_execution_mode: workerSession.autonomous_live_submit_enabled === true &&
+      stringValue(workerSession.autonomous_execution_mode) === "live"
+      ? "live"
+      : "no_submit",
     control_plane: "worker",
   };
   await persistSession(merged);
@@ -1258,15 +1447,14 @@ function phalaAutopilotWakeEnabled(env: Record<string, string | undefined>): boo
   ) return false;
 
   const spendArmed = boolEnvValue(env.GHOLA_PRIVATE_AGENT_SPEND_ARMED);
-  if (spendArmed === false) return false;
+  if (spendArmed !== true) return false;
 
   const wakeOnUse = boolEnvValue(env.GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED);
   if (wakeOnUse !== null) return wakeOnUse;
 
   if (boolEnvValue(env.GHOLA_PRIVATE_AGENT_JIT_PROVISIONING) === true) return true;
 
-  if (spendArmed === true) return true;
-  return Boolean(phalaApiKeyForEnv(env) && phalaWorkerTokenForEnv(env));
+  return true;
 }
 
 function boolEnvValue(value: string | undefined): boolean | null {
@@ -1274,16 +1462,6 @@ function boolEnvValue(value: string | undefined): boolean | null {
   if (lowered === "true") return true;
   if (lowered === "false") return false;
   return null;
-}
-
-function phalaApiKeyForEnv(env: Record<string, string | undefined>): string | null {
-  return env.PHALA_CLOUD_API_KEY?.trim() || env.PHALA_API_KEY?.trim() || null;
-}
-
-function phalaWorkerTokenForEnv(env: Record<string, string | undefined>): string | null {
-  return env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
-    env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
-    null;
 }
 
 function boundedIntEnv(
@@ -1408,6 +1586,17 @@ function normalizePolicy(value: Record<string, unknown>): AutopilotSessionPolicy
   const markets = stringArray(rawPolicy.market_allowlist)
     .map(normalizeMarket)
     .filter((market) => SUPPORTED_MARKETS.has(market));
+  const executionNetwork = stringValue(rawPolicy.execution_network);
+  const exactNotionalUsd = canonicalExactNotional(rawPolicy.exact_notional_usd);
+  const requestedMaxNotional = Number(stringValue(rawPolicy.max_notional_bucket));
+  if (strategyId === "level_trigger_v1" && (
+    venues.length !== 1 || venues[0] !== "hyperliquid" ||
+    markets.length !== 1 || !executionNetwork ||
+    !["mainnet", "testnet"].includes(executionNetwork) || !exactNotionalUsd ||
+    (Number.isFinite(requestedMaxNotional) && requestedMaxNotional > 0 && Number(exactNotionalUsd) > requestedMaxNotional)
+  )) {
+    throw new Error("level_trigger_exact_plan_required");
+  }
   const policy: Omit<AutopilotSessionPolicy, "policy_commitment"> = {
     strategy_id: strategyId,
     decision_model: aiDirectEnabled ? "ai_direct_order_v1" : "rules_plus_ai_score",
@@ -1444,13 +1633,24 @@ function normalizePolicy(value: Record<string, unknown>): AutopilotSessionPolicy
     locale_hint: localeHint(rawPolicy.locale_hint),
     timezone: stringValue(rawPolicy.timezone)?.slice(0, 64) ?? null,
     ...(strategyId === "level_trigger_v1"
-      ? { agent_mandate: agentMandate, agent_side: agentSide }
+      ? {
+          agent_mandate: agentMandate,
+          agent_side: agentSide,
+          execution_network: executionNetwork as "mainnet" | "testnet",
+          exact_notional_usd: exactNotionalUsd,
+        }
       : {}),
   };
   return {
     ...policy,
     policy_commitment: `autopilot_policy_${digest(policy)}`,
   };
+}
+
+function canonicalExactNotional(value: unknown): string | undefined {
+  const number = Number(stringValue(value));
+  if (!Number.isFinite(number) || number <= 0 || number > 100) return undefined;
+  return number.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 // Structural pass-through of a drawn directional mandate. The worker
@@ -1593,6 +1793,11 @@ function sessionFromRecord(stored: PrivateAutopilotSessionRecordV1): AutopilotSe
     expires_at: stringValue(raw.expires_at) ?? stored.expires_at,
     next_step: stringValue(raw.next_step) ?? "Autopilot session is awaiting review.",
     execution_enabled: raw.execution_enabled === true,
+    autonomous_live_submit_enabled: raw.autonomous_live_submit_enabled === true,
+    autonomous_execution_mode: raw.autonomous_live_submit_enabled === true &&
+      stringValue(raw.autonomous_execution_mode) === "live"
+      ? "live"
+      : "no_submit",
     control_plane: stringValue(raw.control_plane) === "worker" ? "worker" : "android",
     visibility_summary: {
       main_wallet_prompts_per_trade: false,

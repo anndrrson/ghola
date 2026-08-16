@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   levelTriggerSupportsPlan,
+  levelTriggerSessionPolicyFromPlan,
   mandateFromPlan,
   type LevelTriggerPlanInput,
 } from "./private-account-client";
@@ -8,6 +9,7 @@ import {
 const basePlan: LevelTriggerPlanInput = {
   side: "buy",
   venueId: "hyperliquid",
+  network: "mainnet",
   market: "BTC-USD",
   notionalUsd: 5,
   maxSlippageBps: 50,
@@ -41,5 +43,21 @@ describe("level_trigger plan -> worker mandate mapping", () => {
     expect(levelTriggerSupportsPlan({ ...basePlan, triggerLevel: undefined })).toBe(false);
     expect(levelTriggerSupportsPlan({ ...basePlan, entryTrigger: "book_imbalance" })).toBe(false);
     expect(levelTriggerSupportsPlan({ ...basePlan, entryTrigger: "preview_now", triggerLevel: undefined })).toBe(true);
+  });
+
+  it("binds exact network, HYPE identity, and $26 without bucket inflation", () => {
+    const policy = levelTriggerSessionPolicyFromPlan({
+      ...basePlan,
+      network: "testnet",
+      market: "HYPE-PERP",
+      notionalUsd: 26,
+    });
+    expect(policy).toMatchObject({
+      venue_allowlist: ["hyperliquid"],
+      market_allowlist: ["HYPE-USD"],
+      execution_network: "testnet",
+      exact_notional_usd: "26",
+      max_notional_bucket: "50",
+    });
   });
 });

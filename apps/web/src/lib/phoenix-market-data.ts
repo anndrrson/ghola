@@ -11,6 +11,10 @@
 // produced by interpolation in `PhoenixLiveChart`, not by sub-slot data here.
 
 import { createPhoenixClient } from "@ellipsis-labs/rise";
+import {
+  CANONICAL_FUNDING_RATE_UNIT,
+  type MarketFundingRateFields,
+} from "./market-funding-rate";
 
 export type PhoenixMarketSymbol = "SOL";
 export type PhoenixCandleInterval = "1m" | "5m" | "15m" | "1h";
@@ -40,7 +44,7 @@ export interface PhoenixRecentTrade {
   slot: number | null;
 }
 
-export interface PhoenixMarketSnapshot {
+export interface PhoenixMarketSnapshot extends MarketFundingRateFields {
   version: 1;
   platform: "phoenix";
   network: "mainnet";
@@ -63,7 +67,6 @@ export interface PhoenixMarketSnapshot {
   spread_bps: number | null;
   prev_day_price: string | null;
   day_notional_volume: string | null;
-  funding_rate: string | null;
   open_interest: string | null;
   candles: PhoenixCandle[];
   bids: PhoenixBookLevel[];
@@ -95,6 +98,8 @@ export const PHOENIX_CANDLE_WINDOW = 240;
 export const PHOENIX_BOOK_LEVEL_WINDOW = 20;
 export const PHOENIX_RECENT_TRADE_WINDOW = 20;
 const MARKET_CACHE_TTL_MS = 4_000;
+const MARKET_FETCH_TIMEOUT_MS = 8_000;
+const MAX_FUTURE_SKEW_MS = 30_000;
 
 type CacheRecord = { fetchedAtMs: number; snapshot: PhoenixMarketSnapshot };
 
@@ -155,6 +160,10 @@ export function emptyPhoenixMarketSnapshot(input: {
     prev_day_price: null,
     day_notional_volume: null,
     funding_rate: null,
+    funding_rate_unit: null,
+    funding_rate_source: null,
+    funding_time_basis: null,
+    funding_updated_at: null,
     open_interest: null,
     candles: [],
     bids: [],
@@ -242,7 +251,7 @@ async function fetchFreshPhoenixMarketSnapshot(input: {
         }).catch(() => null),
       );
     const oneDayMs = 24 * 60 * 60_000;
-    const [candles, book, market, fills, statsHistory, fundingHistory, volumeCandles] = await Promise.all([
+    const [candles, book, market, fills, statsHistory, fundingHistory, volumeCandles] = await withTimeout(Promise.all([
       candlesPromise,
       api.orderbook().getOrderbook(input.symbol).catch(() => null),
       api.markets().getMarket(input.symbol).catch(() => null),
@@ -260,8 +269,8 @@ async function fetchFreshPhoenixMarketSnapshot(input: {
         timeframe: "1h",
         limit: 24,
       }).catch(() => null),
-    ]);
-    return buildSnapshot({
+    ]), MARKET_FETCH_TIMEOUT_MS);
+    const snapshot = buildSnapshot({
       symbol: input.symbol,
       interval: input.interval,
       fetchedAt: input.now,
@@ -274,9 +283,12 @@ async function fetchFreshPhoenixMarketSnapshot(input: {
       fundingHistory,
       volumeCandles,
     });
+    return snapshot.stale && input.previous
+      ? { ...input.previous, stale: true }
+      : snapshot;
   } catch {
     if (input.previous) {
-      return { ...input.previous, fetched_at: input.now.toISOString(), stale: true };
+      return { ...input.previous, stale: true };
     }
     return emptyPhoenixMarketSnapshot({ symbol: input.symbol, interval: input.interval, now: input.now, stale: true });
   } finally {
@@ -298,22 +310,43 @@ function buildSnapshot(input: {
   volumeCandles?: unknown;
 }): PhoenixMarketSnapshot {
   const fetchedAt = input.fetchedAt.toISOString();
-  const bids = normalizeBookTuples(readRecord(input.book)?.bids).slice(0, PHOENIX_BOOK_LEVEL_WINDOW);
-  const asks = normalizeBookTuples(readRecord(input.book)?.asks).slice(0, PHOENIX_BOOK_LEVEL_WINDOW);
+  const bookRecord = readRecord(input.book);
+  const bids = sortBookSide(normalizeBookTuples(bookRecord?.bids), "bid").slice(0, PHOENIX_BOOK_LEVEL_WINDOW);
+  const asks = sortBookSide(normalizeBookTuples(bookRecord?.asks), "ask").slice(0, PHOENIX_BOOK_LEVEL_WINDOW);
   const bestBid = bids[0]?.px ?? null;
   const bestAsk = asks[0]?.px ?? null;
-  const bookMid = safeDecimalString(readRecord(input.book)?.mid);
+  const bookMid = positiveDecimalString(bookRecord?.mid);
   const stats = normalizeMarketStats(input.market, input.statsHistory);
-  const fundingRate = normalizeFundingRate(input.fundingHistory) ?? stats.funding_rate;
+  const funding = normalizeFundingRate(input.fundingHistory, input.fetchedAt.getTime());
   const dayNotionalVolume =
     stats.day_notional_volume ??
     sumCandleQuoteVolume(input.volumeCandles) ??
     sumCandleQuoteVolume(input.candles);
-  const candles = normalizeApiCandles(input.candles);
+  const candles = normalizeApiCandles(input.candles)
+    .filter((candle) => candle.t <= input.fetchedAt.getTime() + MAX_FUTURE_SKEW_MS);
   const recentTrades = normalizeMarketFills(input.fills);
+  const validBook = isValidBook(bids, asks);
+  const mid = bookMid ?? midFromBook(bestBid, bestAsk) ?? stats.mark_price;
+  const bookTimestamp = recordTimestamp(bookRecord);
+  const marketTimestamp = maxTimestamp(
+    recordTimestamp(readRecord(input.market)),
+    latestHistoryTimestamp(readRecord(input.statsHistory)?.stats),
+  );
+  const candleTimestamp = candles.at(-1)?.t ?? null;
+  const tradesTimestamp = latestTradeTimestamp(recentTrades);
+  const sourceTimestamp = maxTimestamp(bookTimestamp, marketTimestamp, candleTimestamp, tradesTimestamp);
   const hasBook = bids.length > 0 || asks.length > 0;
   const hasMarket =
-    Boolean(stats.mark_price || stats.oracle_price || stats.open_interest || fundingRate || dayNotionalVolume);
+    Boolean(stats.mark_price || stats.oracle_price || stats.open_interest || funding?.rate || dayNotionalVolume);
+  const hasData = hasBook || hasMarket || candles.length > 0 || recentTrades.length > 0;
+  const stale = !mid
+    || !validBook
+    || !isFreshTimestamp(
+      sourceTimestamp,
+      input.fetchedAt.getTime(),
+      Math.max(5 * 60_000, INTERVAL_MS[input.interval] * 3),
+    )
+    || !hasFreshCandles(candles, input.fetchedAt.getTime(), input.interval);
   return {
     version: 1,
     platform: "phoenix",
@@ -321,15 +354,15 @@ function buildSnapshot(input: {
     symbol: input.symbol,
     interval: input.interval,
     fetched_at: fetchedAt,
-    source: input.source,
-    source_timestamp: input.fetchedAt.getTime(),
-    book_updated_at: hasBook ? fetchedAt : null,
-    market_updated_at: hasMarket ? fetchedAt : null,
-    candles_updated_at: candles.length > 0 ? fetchedAt : null,
-    trades_updated_at: recentTrades.length > 0 ? fetchedAt : null,
-    slot: numberValue(readRecord(input.book)?.slot),
-    stale: false,
-    mid: bookMid ?? midFromBook(bestBid, bestAsk) ?? stats.mark_price,
+    source: hasData ? input.source : null,
+    source_timestamp: sourceTimestamp,
+    book_updated_at: hasBook ? isoTimestamp(bookTimestamp) : null,
+    market_updated_at: hasMarket ? isoTimestamp(marketTimestamp) : null,
+    candles_updated_at: candles.length > 0 ? isoTimestamp(candleTimestamp) : null,
+    trades_updated_at: recentTrades.length > 0 ? isoTimestamp(tradesTimestamp) : null,
+    slot: numberValue(bookRecord?.slot),
+    stale,
+    mid,
     mark_price: stats.mark_price,
     oracle_price: stats.oracle_price,
     best_bid: bestBid,
@@ -337,7 +370,11 @@ function buildSnapshot(input: {
     spread_bps: spreadBps(bestBid, bestAsk),
     prev_day_price: stats.prev_day_price,
     day_notional_volume: dayNotionalVolume,
-    funding_rate: fundingRate,
+    funding_rate: funding?.rate ?? null,
+    funding_rate_unit: funding ? CANONICAL_FUNDING_RATE_UNIT : null,
+    funding_rate_source: funding ? "phoenix_rest_funding_history" : null,
+    funding_time_basis: funding ? "venue_event_time" : null,
+    funding_updated_at: funding?.updatedAt ?? null,
     open_interest: stats.open_interest,
     candles,
     bids,
@@ -353,14 +390,14 @@ export function normalizeBookTuples(value: unknown): PhoenixBookLevel[] {
   return value
     .map((level) => {
       if (Array.isArray(level)) {
-        const px = safeDecimalString(level[0]);
-        const sz = safeDecimalString(level[1]);
+        const px = positiveDecimalString(level[0]);
+        const sz = positiveDecimalString(level[1]);
         return px && sz ? { px, sz } : null;
       }
       const row = readRecord(level);
       if (!row) return null;
-      const px = safeDecimalString(row.px ?? row.price);
-      const sz = safeDecimalString(row.sz ?? row.size);
+      const px = positiveDecimalString(row.px ?? row.price);
+      const sz = positiveDecimalString(row.sz ?? row.size);
       return px && sz ? { px, sz } : null;
     })
     .filter(Boolean) as PhoenixBookLevel[];
@@ -368,21 +405,22 @@ export function normalizeBookTuples(value: unknown): PhoenixBookLevel[] {
 
 export function normalizeApiCandles(value: unknown): PhoenixCandle[] {
   if (!Array.isArray(value)) return [];
-  return value
-    .slice(-PHOENIX_CANDLE_WINDOW)
+  const candles = value
     .map((item) => {
       const row = readRecord(item);
       if (!row) return null;
-      const t = numberValue(row.time ?? row.t);
-      const o = safeDecimalString(row.open ?? row.o);
-      const h = safeDecimalString(row.high ?? row.h);
-      const l = safeDecimalString(row.low ?? row.l);
-      const c = safeDecimalString(row.close ?? row.c);
+      const t = timeValue(row.time ?? row.t);
+      const o = positiveDecimalString(row.open ?? row.o);
+      const h = positiveDecimalString(row.high ?? row.h);
+      const l = positiveDecimalString(row.low ?? row.l);
+      const c = positiveDecimalString(row.close ?? row.c);
       const v = safeDecimalString(row.volume ?? row.v) ?? "0";
       const n = numberValue(row.tradeCount ?? row.n);
-      return t && o && h && l && c ? { t, T: null, o, h, l, c, v, n } : null;
+      if (!t || !o || !h || !l || !c || !validOhlc(o, h, l, c)) return null;
+      return { t, T: null, o, h, l, c, v, n };
     })
     .filter(Boolean) as PhoenixCandle[];
+  return dedupeCandles(candles).slice(-PHOENIX_CANDLE_WINDOW);
 }
 
 export function normalizeMarketFills(value: unknown): PhoenixRecentTrade[] {
@@ -393,13 +431,13 @@ export function normalizeMarketFills(value: unknown): PhoenixRecentTrade[] {
     .map((item) => {
       const row = readRecord(item);
       if (!row) return null;
-      const px = safeDecimalString(row.price ?? row.px);
-      const time = numberValue(row.timestamp ?? row.time);
+      const px = positiveDecimalString(row.price ?? row.px);
+      const time = timeValue(row.timestamp ?? row.time);
       // Phoenix fills carry a SIGNED base quantity (negative = sell); size must be
       // its magnitude and the sign drives the side.
       const rawBase = row.baseQty ?? row.sz ?? row.size ?? row.baseAmount;
       const baseNum = typeof rawBase === "number" ? rawBase : Number(String(rawBase ?? ""));
-      const sz = Number.isFinite(baseNum) ? safeDecimalString(Math.abs(baseNum)) : null;
+      const sz = Number.isFinite(baseNum) ? positiveDecimalString(Math.abs(baseNum)) : null;
       if (!px || !sz || !time) return null;
       return { side: inferFillSide(row, baseNum), px, sz, time, slot: numberValue(row.slot) };
     })
@@ -418,7 +456,6 @@ function normalizeMarketStats(value: unknown, statsHistory?: unknown): {
   oracle_price: string | null;
   prev_day_price: string | null;
   day_notional_volume: string | null;
-  funding_rate: string | null;
   open_interest: string | null;
 } {
   const row = readRecord(value);
@@ -429,7 +466,6 @@ function normalizeMarketStats(value: unknown, statsHistory?: unknown): {
       oracle_price: safeDecimalString(latestStats?.spot_price ?? latestStats?.spotPrice),
       prev_day_price: null,
       day_notional_volume: null,
-      funding_rate: null,
       open_interest: safeDecimalString(latestStats?.open_interest ?? latestStats?.openInterest),
     };
   }
@@ -440,7 +476,6 @@ function normalizeMarketStats(value: unknown, statsHistory?: unknown): {
     oracle_price: safeDecimalString(row.oraclePx ?? spotPrice?.price ?? row.oraclePrice ?? latestStats?.spot_price),
     prev_day_price: safeDecimalString(row.prevDayPx ?? row.prevDayMarkPrice),
     day_notional_volume: safeDecimalString(row.dayNtlVlm ?? row.dayVolumeUsd),
-    funding_rate: safeSignedDecimalString(row.funding ?? row.currentFundingRatePercentage ?? row.currentFundingRate),
     open_interest: safeDecimalString(readRecord(row.openInterest)?.amount ?? row.openInterest ?? latestStats?.open_interest),
   };
 }
@@ -462,9 +497,48 @@ function latestHistoryRow(value: unknown): Record<string, unknown> | null {
   return latest;
 }
 
-function normalizeFundingRate(value: unknown): string | null {
-  const latest = latestHistoryRow(readRecord(value)?.rates ?? readRecord(value)?.points ?? value);
-  return safeSignedDecimalString(latest?.fundingRatePercentage ?? latest?.fundingRate ?? latest?.rate);
+function normalizeFundingRate(
+  value: unknown,
+  nowMs: number,
+): { rate: string; updatedAt: string } | null {
+  const rows = readRecord(value)?.rates ?? readRecord(value)?.points ?? value;
+  if (!Array.isArray(rows)) return null;
+  let latest: { rate: string; timestamp: number } | null = null;
+  for (const item of rows) {
+    const row = readRecord(item);
+    if (!row || !("fundingRatePercentage" in row)) continue;
+    const timestamp = timeValue(row.timestamp ?? row.time ?? row.t);
+    const rate = percentagePointsToFraction(row.fundingRatePercentage);
+    if (
+      timestamp == null ||
+      timestamp <= 0 ||
+      timestamp > nowMs + MAX_FUTURE_SKEW_MS ||
+      rate == null
+    ) continue;
+    if (!latest || timestamp >= latest.timestamp) latest = { rate, timestamp };
+  }
+  return latest
+    ? { rate: latest.rate, updatedAt: new Date(latest.timestamp).toISOString() }
+    : null;
+}
+
+function percentagePointsToFraction(value: unknown): string | null {
+  const normalized = safeSignedDecimalString(value);
+  if (normalized == null) return null;
+  const negative = normalized.startsWith("-");
+  const unsigned = negative ? normalized.slice(1) : normalized;
+  const [whole, fractional = ""] = unsigned.split(".");
+  const digits = `${whole}${fractional}`;
+  const decimalIndex = whole.length - 2;
+  const scaled = decimalIndex > 0
+    ? `${digits.slice(0, decimalIndex)}.${digits.slice(decimalIndex)}`
+    : `0.${"0".repeat(Math.abs(decimalIndex))}${digits}`;
+  const trimmed = scaled
+    .replace(/(\.\d*?[1-9])0+$/u, "$1")
+    .replace(/\.0+$/u, "")
+    .replace(/^0+(?=\d)/u, "");
+  const canonical = trimmed === "" || /^0(?:\.0*)?$/u.test(trimmed) ? "0" : trimmed;
+  return negative && canonical !== "0" ? `-${canonical}` : canonical;
 }
 
 function sumCandleQuoteVolume(value: unknown): string | null {
@@ -483,14 +557,15 @@ function sumCandleQuoteVolume(value: unknown): string | null {
 function timeValue(value: unknown): number | null {
   if (value instanceof Date) return value.getTime();
   if (typeof value === "number" && Number.isFinite(value)) {
-    return value < 10_000_000_000 ? value * 1000 : value;
+    return value < 10_000_000_000 ? Math.floor(value * 1000) : Math.floor(value);
   }
   if (typeof value === "string") {
-    if (/^\d+$/.test(value)) {
-      const parsed = Number(value);
+    const trimmed = value.trim();
+    if (/^\d+$/.test(trimmed)) {
+      const parsed = Number(trimmed);
       return parsed < 10_000_000_000 ? parsed * 1000 : parsed;
     }
-    const parsed = Date.parse(value);
+    const parsed = Date.parse(trimmed);
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
@@ -500,7 +575,7 @@ function midFromBook(bestBid: string | null, bestAsk: string | null): string | n
   if (!bestBid || !bestAsk) return null;
   const bid = Number(bestBid);
   const ask = Number(bestAsk);
-  if (!Number.isFinite(bid) || !Number.isFinite(ask)) return null;
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || bid >= ask) return null;
   return String((bid + ask) / 2);
 }
 
@@ -508,10 +583,10 @@ export function spreadBps(bestBid: string | null, bestAsk: string | null): numbe
   if (!bestBid || !bestAsk) return null;
   const bid = Number(bestBid);
   const ask = Number(bestAsk);
-  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0) return null;
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0 || bid >= ask) return null;
   const mid = (bid + ask) / 2;
   if (mid <= 0) return null;
-  return Math.max(0, Math.round(((ask - bid) / mid) * 10_000 * 100) / 100);
+  return Math.round(((ask - bid) / mid) * 10_000 * 100) / 100;
 }
 
 export function readRecord(value: unknown): Record<string, unknown> | null {
@@ -543,6 +618,93 @@ export function numberValue(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return Math.floor(value);
   if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
   return null;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error("phoenix_market_timeout")), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, deadline]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function positiveDecimalString(value: unknown): string | null {
+  const normalized = safeDecimalString(value);
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed > 0 ? normalized : null;
+}
+
+function validOhlc(open: string, high: string, low: string, close: string): boolean {
+  const [o, h, l, c] = [open, high, low, close].map(Number);
+  return [o, h, l, c].every((value) => Number.isFinite(value) && value > 0)
+    && h >= Math.max(o, l, c)
+    && l <= Math.min(o, h, c);
+}
+
+function dedupeCandles(candles: PhoenixCandle[]): PhoenixCandle[] {
+  const byTimestamp = new Map<number, PhoenixCandle>();
+  for (const candle of candles.sort((a, b) => a.t - b.t)) byTimestamp.set(candle.t, candle);
+  return [...byTimestamp.values()];
+}
+
+function sortBookSide(levels: PhoenixBookLevel[], side: "bid" | "ask"): PhoenixBookLevel[] {
+  return levels.sort((a, b) => side === "bid" ? Number(b.px) - Number(a.px) : Number(a.px) - Number(b.px));
+}
+
+function isValidBook(bids: PhoenixBookLevel[], asks: PhoenixBookLevel[]): boolean {
+  if (!bids.length || !asks.length) return false;
+  return Number(bids[0].px) < Number(asks[0].px);
+}
+
+function recordTimestamp(record: Record<string, unknown> | null): number | null {
+  if (!record) return null;
+  return timeValue(
+    record.timestamp
+      ?? record.time
+      ?? record.updatedAt
+      ?? record.updated_at
+      ?? record.lastUpdatedAt,
+  );
+}
+
+function latestHistoryTimestamp(value: unknown): number | null {
+  const row = latestHistoryRow(value);
+  return timeValue(row?.timestamp ?? row?.time ?? row?.t);
+}
+
+function latestTradeTimestamp(trades: PhoenixRecentTrade[]): number | null {
+  return trades.reduce<number | null>((latest, trade) => latest == null || trade.time > latest ? trade.time : latest, null);
+}
+
+function maxTimestamp(...timestamps: Array<number | null | undefined>): number | null {
+  const valid = timestamps.filter((timestamp): timestamp is number => (
+    typeof timestamp === "number" && Number.isFinite(timestamp) && timestamp > 0
+  ));
+  return valid.length > 0 ? Math.max(...valid) : null;
+}
+
+function isoTimestamp(timestamp: number | null): string | null {
+  return timestamp == null || !Number.isFinite(timestamp) ? null : new Date(timestamp).toISOString();
+}
+
+function isFreshTimestamp(timestamp: number | null, nowMs: number, maxAgeMs: number): boolean {
+  if (timestamp == null || !Number.isFinite(timestamp) || timestamp <= 0) return false;
+  const age = nowMs - timestamp;
+  return age >= -MAX_FUTURE_SKEW_MS && age <= maxAgeMs;
+}
+
+function hasFreshCandles(
+  candles: PhoenixCandle[],
+  nowMs: number,
+  interval: PhoenixCandleInterval,
+): boolean {
+  const latest = candles.at(-1)?.t ?? null;
+  return isFreshTimestamp(latest, nowMs, Math.max(5 * 60_000, INTERVAL_MS[interval] * 3));
 }
 
 function trimNumber(value: number): string {

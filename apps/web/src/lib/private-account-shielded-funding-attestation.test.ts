@@ -9,6 +9,7 @@ import {
   type SignedWorkerFundingAttestation,
   type WorkerFundingAttestation,
 } from "./private-account-shielded-funding";
+import { brandPrivateAgentMockTransport } from "./private-agent-spend-policy";
 
 const VERSION = "ghola-shielded-funding-attestation-v1";
 
@@ -60,6 +61,7 @@ describe("verifyWorkerFundingAttestation", () => {
     delete process.env.GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64;
   });
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.unstubAllEnvs();
     process.env = { ...OLD };
   });
@@ -150,10 +152,10 @@ describe("requestWorkerFundingAttestation", () => {
   it("posts to the attest route, verifies the response, and returns the commitment", async () => {
     const { signed } = makeSigned();
     let captured: { url: string; init: RequestInit } | null = null;
-    const fetchImpl = (async (url: string, init: RequestInit) => {
+    const fetchImpl = brandPrivateAgentMockTransport((async (url: string, init: RequestInit) => {
       captured = { url, init };
       return { ok: true, status: 200, json: async () => signed } as Response;
-    }) as unknown as typeof fetch;
+    }) as unknown as typeof fetch);
 
     const res = await requestWorkerFundingAttestation(input, cfg, 3, fetchImpl, defaultEd25519Verify);
     expect(res.ok).toBe(true);
@@ -172,17 +174,29 @@ describe("requestWorkerFundingAttestation", () => {
     if (!res.ok) expect(res.reason).toBe("worker_unconfigured");
   });
 
+  it("does not forward a withdraw bundle through the default test transport", async () => {
+    const fetchSpy = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const res = await requestWorkerFundingAttestation(input, cfg, 3);
+
+    expect(res).toMatchObject({ ok: false, reason: "worker_unconfigured" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("maps a non-2xx worker response to worker_rejected", async () => {
-    const fetchImpl = (async () => ({ ok: false, status: 503, json: async () => ({}) } as Response)) as unknown as typeof fetch;
+    const fetchImpl = brandPrivateAgentMockTransport((async () => (
+      { ok: false, status: 503, json: async () => ({}) } as Response
+    )) as unknown as typeof fetch);
     const res = await requestWorkerFundingAttestation(input, cfg, 3, fetchImpl, defaultEd25519Verify);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("worker_rejected");
   });
 
   it("maps a network throw to worker_unavailable", async () => {
-    const fetchImpl = (async () => {
+    const fetchImpl = brandPrivateAgentMockTransport((async () => {
       throw new Error("network");
-    }) as unknown as typeof fetch;
+    }) as unknown as typeof fetch);
     const res = await requestWorkerFundingAttestation(input, cfg, 3, fetchImpl, defaultEd25519Verify);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("worker_unavailable");
@@ -194,7 +208,9 @@ describe("requestWorkerFundingAttestation", () => {
       ...signed,
       attestation: { ...signed.attestation, amount_bucket: "100" },
     };
-    const fetchImpl = (async () => ({ ok: true, status: 200, json: async () => tampered } as Response)) as unknown as typeof fetch;
+    const fetchImpl = brandPrivateAgentMockTransport((async () => (
+      { ok: true, status: 200, json: async () => tampered } as Response
+    )) as unknown as typeof fetch);
     const res = await requestWorkerFundingAttestation(input, cfg, 3, fetchImpl, defaultEd25519Verify);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("signature_invalid");
@@ -202,7 +218,9 @@ describe("requestWorkerFundingAttestation", () => {
 
   it("rejects a response bound to a different destination", async () => {
     const { signed } = makeSigned({ destination_commitment: "dest-OTHER" });
-    const fetchImpl = (async () => ({ ok: true, status: 200, json: async () => signed } as Response)) as unknown as typeof fetch;
+    const fetchImpl = brandPrivateAgentMockTransport((async () => (
+      { ok: true, status: 200, json: async () => signed } as Response
+    )) as unknown as typeof fetch);
     const res = await requestWorkerFundingAttestation(input, cfg, 3, fetchImpl, defaultEd25519Verify);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("destination_mismatch");

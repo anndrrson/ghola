@@ -16,6 +16,7 @@ import {
   shieldedPoolConfig,
   shieldedPoolHealth,
 } from "./private-account-shielded-pool";
+import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
 
 export type GholaPrivateSettlementError =
   | "private_execution_plan_not_ready"
@@ -135,6 +136,8 @@ export async function settlePrivateExecutionPlan(input: {
   approval_commitment: string;
   execution_commitment: string;
   now?: Date;
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
 }): Promise<
   | { ok: true; evidence: GholaShieldedSettlementEvidence }
   | { ok: false; error: GholaPrivateSettlementError }
@@ -148,11 +151,14 @@ export async function settlePrivateExecutionPlan(input: {
     };
   }
 
-  const health = await shieldedPoolHealth(now);
+  const health = await shieldedPoolHealth(now, {
+    env: input.env,
+    fetchImpl: input.fetchImpl,
+  });
   if (health.status !== "green") return { ok: false, error: "shielded_pool_unhealthy" };
   if (health.sealed_runtime.status !== "green") return { ok: false, error: "sealed_runtime_unavailable" };
 
-  const config = shieldedPoolConfig();
+  const config = shieldedPoolConfig(input.env ?? process.env);
   if (config.mode === "local_test") {
     return {
       ok: true,
@@ -168,9 +174,12 @@ export async function settlePrivateExecutionPlan(input: {
 export async function refreshShieldedSettlementEvidence(input: {
   evidence: GholaShieldedSettlementEvidence;
   now?: Date;
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
 }): Promise<GholaShieldedSettlementEvidence> {
   const now = input.now ?? new Date();
-  const config = shieldedPoolConfig();
+  const env = input.env ?? process.env;
+  const config = shieldedPoolConfig(env);
   if (config.mode === "local_test" || !config.private_runtime_url) {
     return {
       ...input.evidence,
@@ -188,8 +197,12 @@ export async function refreshShieldedSettlementEvidence(input: {
     };
   }
 
+  if (!privateAgentTransportAllowed("execute", env, input.fetchImpl)) {
+    return input.evidence;
+  }
+
   try {
-    const res = await fetch(new URL("/private-mode/settlement-status", config.private_runtime_url), {
+    const res = await (input.fetchImpl ?? fetch)(new URL("/private-mode/settlement-status", config.private_runtime_url), {
       method: "POST",
       cache: "no-store",
       headers: {
@@ -307,13 +320,17 @@ async function sealedRuntimeSettlementEvidence(
     plan: GholaPrivateExecutionPlan;
     approval_commitment: string;
     execution_commitment: string;
+    env?: Record<string, string | undefined>;
+    fetchImpl?: typeof fetch;
   },
   now: Date,
 ): Promise<GholaShieldedSettlementEvidence | null> {
-  const config = shieldedPoolConfig();
+  const env = input.env ?? process.env;
+  const config = shieldedPoolConfig(env);
   if (config.mode === "local_test" || !config.private_runtime_url) return null;
+  if (!privateAgentTransportAllowed("execute", env, input.fetchImpl)) return null;
   try {
-    const res = await fetch(new URL("/private-mode/settle", config.private_runtime_url), {
+    const res = await (input.fetchImpl ?? fetch)(new URL("/private-mode/settle", config.private_runtime_url), {
       method: "POST",
       cache: "no-store",
       headers: {

@@ -32,6 +32,7 @@ const SOCIAL_IMAGE_URL = `${SITE_URL}/og-onchain-markets-v1.png`;
 
 const SHARED_TITLE = "ghola | Private execution for onchain markets";
 const SHARED_DESCRIPTION = "Private execution for onchain markets.";
+const productionTelemetry = process.env.NODE_ENV === "production";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -136,8 +137,8 @@ export default function RootLayout({
             </AppWalletProvider>
           </ThumperAuthProvider>
         </AuthProvider>
-        <Analytics />
-        <SpeedInsights />
+        {productionTelemetry ? <Analytics /> : null}
+        {productionTelemetry ? <SpeedInsights /> : null}
       </body>
     </html>
   );

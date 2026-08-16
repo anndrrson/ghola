@@ -28,6 +28,7 @@ import {
   type PrivateAccountRequestOwner,
 } from "@/app/v1/private-account/_lib";
 import { workerAuthorizationHeader } from "./private-agent-capability";
+import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
 
 const AGENT_VENUES: PrivateAgentVenueId[] = ["hyperliquid", "coinbase_advanced", "jupiter"];
 const AUTOPILOT_VENUES = new Set(["hyperliquid", "phoenix", "jupiter", "coinbase_advanced"]);
@@ -70,6 +71,10 @@ export async function linkAgentPlatformFromBody(
   body: unknown,
   owner: PrivateAccountRequestOwner,
   now: Date = new Date(),
+  transport: {
+    env?: Record<string, string | undefined>;
+    fetchImpl?: typeof fetch;
+  } = {},
 ) {
   const value = record(body);
   const venueId = agentVenueId(value.venue_id) ?? agentVenueForPlatform(value.platform_class);
@@ -135,7 +140,7 @@ export async function linkAgentPlatformFromBody(
     venue_id: venueId,
     execution_mode: executionMode,
     encrypted_execution_vault: encryptedVault,
-  });
+  }, transport);
   if (!serverVerification.ok) return { error: serverVerification.error };
 
   const capability = buildCapability({
@@ -516,6 +521,9 @@ async function verifyCredentialServerSide(input: {
   venue_id: PrivateAgentVenueId;
   execution_mode: GholaVenueExecutionMode;
   encrypted_execution_vault: Record<string, unknown> | null;
+}, transport: {
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
 }): Promise<
   | { ok: true; can_read: boolean; can_trade: boolean }
   | { ok: false; error: "server_credential_verification_required" | "credential_verifier_unavailable" | "credential_verification_failed" | "withdraw_permission_blocked" }
@@ -523,11 +531,15 @@ async function verifyCredentialServerSide(input: {
   if (!input.encrypted_execution_vault) {
     return { ok: false, error: "server_credential_verification_required" };
   }
-  const cfg = workerConfig(process.env);
+  const env = transport.env ?? process.env;
+  const cfg = workerConfig(env);
   if (!cfg.url) {
-    if (localCredentialVerificationBypassAllowed()) {
+    if (localCredentialVerificationBypassAllowed(env)) {
       return { ok: true, can_read: true, can_trade: true };
     }
+    return { ok: false, error: "credential_verifier_unavailable" };
+  }
+  if (!privateAgentTransportAllowed("session", env, transport.fetchImpl)) {
     return { ok: false, error: "credential_verifier_unavailable" };
   }
   const path = "/venues/credentials/verify";
@@ -553,7 +565,7 @@ async function verifyCredentialServerSide(input: {
     },
   });
   if (!authorization) return { ok: false, error: "credential_verifier_unavailable" };
-  const response = await fetch(new URL(path, cfg.url), {
+  const response = await (transport.fetchImpl ?? fetch)(new URL(path, cfg.url), {
     method: "POST",
     cache: "no-store",
     headers: {
@@ -574,10 +586,12 @@ async function verifyCredentialServerSide(input: {
   };
 }
 
-function localCredentialVerificationBypassAllowed(): boolean {
-  return process.env.NODE_ENV === "test" ||
-    process.env.GHOLA_CONNECTOR_MODE === "local_test" ||
-    process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true";
+function localCredentialVerificationBypassAllowed(
+  env: Record<string, string | undefined>,
+): boolean {
+  return env.NODE_ENV === "test" ||
+    env.GHOLA_CONNECTOR_MODE === "local_test" ||
+    env.PRIVATE_AGENT_VENUE_DRY_RUN === "true";
 }
 
 function workerConfig(env: Record<string, string | undefined>) {

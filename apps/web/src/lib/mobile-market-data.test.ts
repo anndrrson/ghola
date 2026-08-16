@@ -19,21 +19,22 @@ describe("mobile market data fusion", () => {
   });
 
   it("fuses SOL Coinbase, Phoenix, and Jupiter context", async () => {
+    const fetchImpl = vi.fn(async (_url: URL, _init?: RequestInit) => json({
+      inAmount: "1000000000",
+      outAmount: "151230000",
+      priceImpactPct: "0.012",
+      slippageBps: 50,
+      routePlan: [
+        { percent: 100, swapInfo: { label: "Meteora DLMM" } },
+      ],
+    }));
     const snapshot = await getMobileMarketSnapshot({
       productId: "SOL-USD",
       interval: "1m",
       now: new Date("2026-06-01T12:00:00.000Z"),
       getCoinbaseSnapshot: vi.fn(async () => coinbaseSnapshot("SOL-USD")),
       getPhoenixSnapshot: vi.fn(async () => phoenixSnapshot()),
-      fetchImpl: vi.fn(async () => json({
-        inAmount: "1000000000",
-        outAmount: "151230000",
-        priceImpactPct: "0.012",
-        slippageBps: 50,
-        routePlan: [
-          { percent: 100, swapInfo: { label: "Meteora DLMM" } },
-        ],
-      })) as never,
+      fetchImpl: fetchImpl as never,
     });
 
     expect(snapshot.product_id).toBe("SOL-USD");
@@ -43,6 +44,7 @@ describe("mobile market data fusion", () => {
     expect(snapshot.solana_dex?.phoenix?.best_bid).toBe("151.19");
     expect(snapshot.solana_dex?.jupiter?.price).toBe("151.23");
     expect(snapshot.solana_dex?.jupiter?.route_summary).toEqual(["Meteora DLMM 100%"]);
+    expect(fetchImpl.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("keeps Coinbase data when Solana DEX sources degrade", async () => {
@@ -60,6 +62,27 @@ describe("mobile market data fusion", () => {
     expect(snapshot.warnings).toContain("phoenix_limited");
     expect(snapshot.warnings).toContain("jupiter_limited");
     expect(snapshot.solana_dex?.jupiter).toBeNull();
+  });
+
+  it("treats a successful but malformed Jupiter quote as degraded", async () => {
+    const fetchImpl = vi.fn(async (_url: URL, _init?: RequestInit) => json({
+      inAmount: "1000000000",
+      outAmount: "0",
+      routePlan: [],
+    }));
+    const snapshot = await getMobileMarketSnapshot({
+      productId: "SOL-USD",
+      interval: "1m",
+      now: new Date("2026-06-01T12:00:00.000Z"),
+      getCoinbaseSnapshot: vi.fn(async () => coinbaseSnapshot("SOL-USD")),
+      getPhoenixSnapshot: vi.fn(async () => phoenixSnapshot()),
+      fetchImpl: fetchImpl as never,
+    });
+
+    expect(snapshot.live_status).toBe("degraded");
+    expect(snapshot.warnings).toContain("jupiter_limited");
+    expect(snapshot.solana_dex?.jupiter).toBeNull();
+    expect(fetchImpl.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("does not attach Solana DEX panels to BTC", async () => {
@@ -137,6 +160,10 @@ function phoenixSnapshot(): PhoenixMarketSnapshot {
     prev_day_price: "148",
     day_notional_volume: "500000",
     funding_rate: "0.001",
+    funding_rate_unit: "decimal_fraction",
+    funding_rate_source: "phoenix_rest_funding_history",
+    funding_time_basis: "venue_event_time",
+    funding_updated_at: "2026-06-01T12:00:00.000Z",
     open_interest: "10000",
     candles: [{ t: 1780315200000, T: null, o: "150", h: "152", l: "149", c: "151.2", v: "10", n: 1 }],
     bids: [{ px: "151.19", sz: "11" }],

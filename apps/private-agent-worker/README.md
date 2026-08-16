@@ -40,16 +40,28 @@ local testing.
 - `POST /autopilot/sessions/:id/kill`
 - `POST /execution/cross-venue/submit`
 - `POST /execution/cross-venue/cancel`
+- `POST /execution/cross-venue/close`
 - `POST /execution/cross-venue/ready`
 
-The cross-venue endpoints accept exactly two opposite IOC legs with one durable
-execution id and explicit unhedged-notional, hedge-time, slippage, unwind-loss,
-and daily-loss budgets. The coordinator preflights both legs, submits them
-concurrently, measures residual exposure, then invokes the configured hedge or
-unwind adapter and posts monotonic reports to Ghola. It deliberately returns
-`cross_venue_byo_adapter_unavailable` unless all preflight, submit, hedge,
-unwind, and cancel controls are installed; the presence of the HTTP endpoint
-alone never makes cross-venue live trading ready.
+Cross-venue live execution is restricted to one recovery-proven pair:
+Hyperliquid `SOL` and Backpack `SOL_USDC_PERP`, mainnet, opposite IOC legs,
+one exact base size, and $10-$11 per leg. Parent, child, repair, and paired-close
+operations use durable Postgres claims. The close path sends exact opposite
+reduce-only market exits and reports success only after both venue accounts are
+flat with no target-market open orders. Coinbase, Phoenix, other pairs, resting
+orders, and larger sizes remain unavailable. The endpoint alone never makes
+the path ready; `/execution/cross-venue/ready` exposes every missing gate.
+
+Run the production-shaped, no-exchange-network durability smoke with:
+
+```sh
+PRIVATE_AGENT_STAGING_POSTGRES_URL='postgresql://…' npm run smoke:cross-venue:staging
+```
+
+It proves multi-process duplicate prevention, restart replay, paired close, and
+final-flat receipt handling against Postgres. It does not claim live exchange
+fills; a live mainnet canary additionally requires funded, initially flat
+Hyperliquid and Backpack accounts and exact API credentials.
 
 The Hyperliquid endpoints are for the v1 private execution pilot. They accept
 only commitments plus encrypted execution vault/strategy bundles. Plaintext
@@ -108,6 +120,7 @@ orders.
 - `PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE=true`
 - `PHALA_CVM_IMAGE_DIGEST`
 - `PRIVATE_AGENT_FUNDING_SIGNING_KEY` as base64 PKCS8 Ed25519 private key
+- `GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64` containing its pinned SPKI public key
 - `PRIVATE_AGENT_GLOBAL_KILL_SWITCH=false`
 - `PRIVATE_AGENT_VENUE_DRY_RUN=false`
 - `PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT=false` until production venue vaults are funded
@@ -124,9 +137,11 @@ orders.
 - `PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD=50`
 - `PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD=250`
 - `PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS=50`
-- `PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD=1000` and
-  `PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD=5000` for
-  full-ticket launch mode
+- For the public BYO launch only: `PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true`,
+  `PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=full_ticket`,
+  `PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED=true`,
+  `PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD=100`, and
+  `PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD=500`
 - `PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON` or
   `PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_PATH` for managed testnet
   allocations
@@ -152,10 +167,24 @@ orders.
 - `PRIVATE_AGENT_JUPITER_LIVE_MAX_NOTIONAL_USD=1000`
 - `PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON` or
   `PRIVATE_AGENT_JUPITER_POOLED_VAULT_PATH` for Ghola Vault Mode
-- `PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS=12000`
+- `PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS=30000`
+- `PRIVATE_AGENT_CROSS_VENUE_PAIR=hyperliquid:backpack`
+- `PRIVATE_AGENT_CROSS_VENUE_MAX_NOTIONAL_USD=10.5` (must be within $10-$11)
+- `PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true` and
+  `PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=tiny_fill`
+- a mainnet `SOL` entry in `PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON`
+  or `PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_PATH`
+- `PRIVATE_AGENT_BACKPACK_POOLED_ENABLED=true`
+- `PRIVATE_AGENT_BACKPACK_API_KEY` and `PRIVATE_AGENT_BACKPACK_API_SECRET`
+- `PRIVATE_AGENT_BACKPACK_LIVE_MODE=tiny_live`
+- `PRIVATE_AGENT_BACKPACK_ALLOWED_SYMBOLS=SOL_USDC_PERP`
+- `PRIVATE_AGENT_BACKPACK_MAX_ORDER_NOTIONAL_USD=10.5` and a bounded daily cap
 - `GHOLA_CROSS_VENUE_RECONCILIATION_URL`, pointing to Ghola's authenticated
   `/api/internal/cross-venue-reconciliation` endpoint
 - `GHOLA_RECONCILIATION_INGEST_TOKEN`, shared only with that callback endpoint
+- `PRIVATE_AGENT_OPERATOR_ALERT_WEBHOOK_URL` and optionally
+  `PRIVATE_AGENT_OPERATOR_ALERT_TOKEN`; critical reconciliation events are
+  redacted and deduplicated before delivery
 
 When `PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE=true`, the worker requests a dstack
 quote over `/var/run/dstack.sock` with report data derived from the published
@@ -200,11 +229,11 @@ PRIVATE_AGENT_ALLOW_UNATTESTED_DEV=true PRIVATE_AGENT_EXECUTION_TOKEN=dev npm st
 The worker is testnet-only unless `PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true`
 is explicitly set. Managed allocations use worker-local testnet API wallets:
 
-Mainnet submit remains blocked unless
-`PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=tiny_fill`. In that mode the only live
-submit path is a quote-sized Hyperliquid IOC tiny fill with worker-side
-notional, daily cap, and slippage checks. Raw base-size/limit-price mainnet
-submits are not accepted by the live pilot.
+Mainnet submit remains blocked unless `PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE` is
+explicitly `tiny_fill` or `full_ticket`. Public trading uses only `full_ticket`
+after its signed exact-plan, account, market, release, and global gates pass.
+`tiny_fill` remains an order-level marker for the bounded $10.50 proof; the
+worker itself must be in `full_ticket` mode.
 
 `POST /hyperliquid/verify` is the no-submit readiness path. It requires
 `x-ghola-no-submit-verify: true`, opens the sealed execution vault and sealed
@@ -213,6 +242,64 @@ Hyperliquid SDK plus market/account reads, builds the capped IOC order request,
 and returns a commitment-only certificate with `transaction_broadcast: false`.
 It does not prove final venue acceptance or a fill; that still requires an
 explicit canary submit.
+
+The public funded proof requires an initially flat HYPE position, an approved
+trade-only API wallet, shared Postgres claims, and all exact guards. It opens
+exactly $10.50 with atomic venue-native TP/SL, proves isolated 1×, observes the
+exact position, closes that size reduce-only, terminally cancels both protection
+children, and replays both claims without another submit. It then independently
+re-queries every order, fill, account state, and open order, recording public
+oids, cloids, transaction hashes, fees, protection cleanup, and final-flat proof.
+
+Run the zero-broadcast readiness certificate first. It independently checks the
+approved API wallet and expiry, funding, flat state, fresh executable book,
+venue precision/minimums, exact order packet, and Postgres durability. The
+redacted result is written mode `0600` to
+`.dev/hyperliquid-mainnet-readiness.json`.
+
+```bash
+PRIVATE_AGENT_PYTHON=../../.dev/hyperliquid-venv/bin/python \
+PRIVATE_AGENT_VENUE_DRY_RUN=false \
+PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true \
+PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=full_ticket \
+PRIVATE_AGENT_MAINNET_CANARY_POSTGRES_URL=postgresql://127.0.0.1:55432/ghola_mainnet_canary \
+GHOLA_HYPERLIQUID_MAINNET_ACCOUNT_ADDRESS=0x... \
+GHOLA_HYPERLIQUID_MAINNET_API_WALLET_PRIVATE_KEY=0x... \
+npm run certify:hyperliquid:mainnet:readiness
+```
+
+After readiness succeeds, the hardened local canary runs the same sealed,
+Postgres-claimed worker core used by the guarded endpoint. It requires every
+exact live gate and a second explicit funded-action confirmation.
+
+```bash
+GHOLA_MAINNET_FUNDED_CANARY_CONFIRMATION=I_UNDERSTAND_THIS_OPENS_AND_CLOSES_A_REAL_MAINNET_POSITION \
+PRIVATE_AGENT_MAINNET_CANARY_POSTGRES_URL=postgresql://127.0.0.1:55432/ghola_mainnet_canary \
+PRIVATE_AGENT_VENUE_DRY_RUN=false \
+PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED=true \
+PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true \
+PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=full_ticket \
+PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD=100 \
+PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD=500 \
+PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS=100 \
+GHOLA_HYPERLIQUID_MAINNET_ACCOUNT_ADDRESS=0x... \
+GHOLA_HYPERLIQUID_MAINNET_API_WALLET_PRIVATE_KEY=0x... \
+npm run canary:hyperliquid:mainnet:roundtrip
+```
+
+The result is written mode `0600` to
+`.dev/hyperliquid-mainnet-hardened-roundtrip.json`. A failed run uses bounded
+fresh-state reduce-only recovery. An atomic mode-`0600` active-canary manifest
+also forces crash-left recovery before any later canary can start. Re-query and
+seal the local audit dossier with:
+
+```bash
+GHOLA_HYPERLIQUID_MAINNET_ACCOUNT_ADDRESS=0x... \
+npm run certify:hyperliquid:mainnet:funded-proof
+```
+
+The dossier is `.dev/hyperliquid-mainnet-funded-proof.json`. It explicitly says
+that local proof is not proof of deployment to `ghola.xyz`.
 
 ```json
 [
