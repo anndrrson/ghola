@@ -8,6 +8,7 @@ import {
   unauthorized,
 } from "../../_lib";
 import { verifyConsumerStepUp } from "@/lib/consumer-step-up";
+import { hasPrivateAccountMobileProofHeaders } from "@/lib/private-account-mobile-proof";
 import { isTestnetVaultBundle } from "./vault-bundle";
 import { hyperliquidMainnetVaultAuthError } from "./vault-auth";
 
@@ -50,8 +51,16 @@ export async function DELETE(req: Request) {
   if (!replacingTestnetVault && !verifiedEmail(owner.user.email_verified)) {
     return json({ error: "verified_email_required" }, 403);
   }
-  if (!replacingTestnetVault && !await verifyConsumerStepUp(req)) {
-    return json({ error: "step_up_authentication_required" }, 403);
+  if (!replacingTestnetVault) {
+    if (hasPrivateAccountMobileProofHeaders(req)) {
+      const guarded = await privateAccountLiveGuard(req, { allowMobileWalletProof: true });
+      if (!guarded.ok) return guarded.response;
+      if (guarded.request_proof_kind !== "mobile_wallet") {
+        return json({ error: "step_up_authentication_required" }, 403);
+      }
+    } else if (!await verifyConsumerStepUp(req)) {
+      return json({ error: "step_up_authentication_required" }, 403);
+    }
   }
   const revoked = await revokeHyperliquidVaultForOwner(owner);
   if ("error" in revoked) return json({ error: revoked.error }, 404);

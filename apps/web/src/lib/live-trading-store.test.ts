@@ -26,9 +26,9 @@ describe("durable live-trading state", () => {
   beforeEach(() => resetLiveTradingStoreForTests());
   afterEach(() => resetLiveTradingStoreForTests());
 
-  it("requires three fresh, release-bound proofs from distinct accounts", async () => {
+  it("requires three fresh, release-bound proofs from distinct venue accounts", async () => {
     await Promise.all([0, 1, 2].map((index) => putLiveTradingCapabilityEvidence(
-      evidence({ index, subject: `account_${index}` }),
+      evidence({ index }),
     )));
     expect(await status()).toMatchObject({
       state: "live",
@@ -40,16 +40,26 @@ describe("durable live-trading state", () => {
     expect(await status()).toMatchObject({ state: "disabled", consecutive_mainnet_proofs: 0 });
 
     await Promise.all([4, 5, 6].map((index) => putLiveTradingCapabilityEvidence(
-      evidence({ index, subject: `account_${index}` }),
+      evidence({ index }),
     )));
     expect((await status()).state).toBe("live");
   });
 
   it("does not count a repeated account or mismatched proof amount/release", async () => {
     await Promise.all([0, 1, 2].map((index) => putLiveTradingCapabilityEvidence(
-      evidence({ index, subject: "same_account" }),
+      evidence({
+        index,
+        venueAccount: venueAccountCommitment(9),
+      }),
     )));
     expect(await status()).toMatchObject({ state: "disabled", consecutive_mainnet_proofs: 1 });
+
+    resetLiveTradingStoreForTests();
+    await putLiveTradingCapabilityEvidence(evidence({
+      index: 0,
+      subject: "not_the_validated_venue_account",
+    }));
+    expect((await status()).reason_codes).toContain("capability_proof_failed");
 
     resetLiveTradingStoreForTests();
     await putLiveTradingCapabilityEvidence(evidence({ index: 0, notional: 10 }));
@@ -138,10 +148,14 @@ function evidence(input: {
   index: number;
   status?: "green" | "red";
   subject?: string | null;
+  venueAccount?: string | null;
   notional?: number;
 }): LiveTradingCapabilityEvidence {
   const status = input.status ?? "green";
   const observed = new Date(NOW.getTime() - 60_000 + input.index * 1_000);
+  const venueAccount = status === "green"
+    ? (input.venueAccount ?? venueAccountCommitment(input.index))
+    : null;
   return {
     version: 2,
     evidence_id: `evidence_${input.index}_${status}`,
@@ -160,12 +174,17 @@ function evidence(input: {
     config_fingerprint: RELEASE.config_fingerprint,
     receipt_commitment: status === "green" ? `receipt_${input.index}` : null,
     result_commitment: status === "green" ? `result_${input.index}` : null,
-    proof_subject_commitment: status === "green" ? (input.subject ?? `account_${input.index}`) : null,
+    venue_account_commitment: venueAccount,
+    proof_subject_commitment: status === "green" ? (input.subject ?? venueAccount) : null,
     reason: status === "red" ? "proof_failed" : null,
     observed_at: observed.toISOString(),
     expires_at: new Date(NOW.getTime() + 60 * 60_000).toISOString(),
     created_at: observed.toISOString(),
   };
+}
+
+function venueAccountCommitment(index: number) {
+  return `sha256:${index.toString(16).padStart(64, "0")}`;
 }
 
 function status(release = RELEASE) {

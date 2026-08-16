@@ -2792,6 +2792,7 @@ export async function runHyperliquidMainnetProofForOwner(
   }
   const report = result as Record<string, unknown>;
   const completedAt = String(report.completed_at);
+  const venueAccountCommitment = hyperliquidVenueAccountCommitment(report);
   const proofEvidenceCommitment = gholaCommitment("hyperliquid_account_graduation_proof", {
     owner_commitment: owner.owner_commitment,
     account_commitment: account.account_commitment,
@@ -2799,6 +2800,7 @@ export async function runHyperliquidMainnetProofForOwner(
     proof_work_order_commitment: report.proof_work_order_commitment,
     entry_work_order_commitment: report.entry_work_order_commitment,
     exit_work_order_commitment: report.exit_work_order_commitment,
+    venue_account_commitment: venueAccountCommitment,
     completed_at: completedAt,
   });
   const graduation = await putLiveTradingAccountGraduation({
@@ -2825,10 +2827,7 @@ export async function runHyperliquidMainnetProofForOwner(
     completedAt,
     receiptCommitment: proofEvidenceCommitment,
     resultCommitment: gholaCommitment("hyperliquid_mainnet_roundtrip_result", report),
-    proofSubjectCommitment: gholaCommitment("hyperliquid_mainnet_proof_subject", {
-      account_commitment: account.account_commitment,
-      vault_commitment: vault.vault_commitment,
-    }),
+    venueAccountCommitment,
   });
   return { report: { ...report, account_graduated: true, graduation_id: graduation.graduation_id } };
 }
@@ -2839,7 +2838,7 @@ async function recordMainnetCapabilityEvidence(input: {
   completedAt?: string;
   receiptCommitment?: string;
   resultCommitment?: string;
-  proofSubjectCommitment?: string;
+  venueAccountCommitment?: string;
   reason?: string;
 }) {
   if (!input.release.valid || !input.release.web_git_sha || !input.release.worker_git_sha ||
@@ -2853,7 +2852,8 @@ async function recordMainnetCapabilityEvidence(input: {
     observed_at: observedAt.toISOString(),
     receipt_commitment: input.receiptCommitment ?? null,
     result_commitment: input.resultCommitment ?? null,
-    proof_subject_commitment: input.proofSubjectCommitment ?? null,
+    venue_account_commitment: input.venueAccountCommitment ?? null,
+    proof_subject_commitment: input.venueAccountCommitment ?? null,
     config_fingerprint: input.release.config_fingerprint,
   };
   await putLiveTradingCapabilityEvidence({
@@ -2874,7 +2874,8 @@ async function recordMainnetCapabilityEvidence(input: {
     config_fingerprint: input.release.config_fingerprint,
     receipt_commitment: input.receiptCommitment ?? null,
     result_commitment: input.resultCommitment ?? null,
-    proof_subject_commitment: input.proofSubjectCommitment ?? null,
+    venue_account_commitment: input.venueAccountCommitment ?? null,
+    proof_subject_commitment: input.venueAccountCommitment ?? null,
     reason: input.reason ?? null,
     observed_at: observedAt.toISOString(),
     expires_at: new Date(observedAt.getTime() + LIVE_TRADING_EVIDENCE_MAX_AGE_MS).toISOString(),
@@ -2951,6 +2952,7 @@ function validHyperliquidVenueEvidence(value: unknown) {
     evidence.independently_queried === true &&
     evidence.network === "mainnet" &&
     evidence.market === "HYPE" &&
+    /^sha256:[0-9a-f]{64}$/u.test(String(evidence.account_address_commitment || "")) &&
     evidence.entry_exit_sizes_match === true &&
     evidence.entry_before_exit === true &&
     evidence.reduce_only_exit_proven === true &&
@@ -2965,6 +2967,11 @@ function validHyperliquidVenueEvidence(value: unknown) {
     validHyperliquidVenueEvidenceLeg(evidence.exit, true) &&
     typeof evidence.verified_at === "string" &&
     Number.isFinite(Date.parse(evidence.verified_at));
+}
+
+function hyperliquidVenueAccountCommitment(report: Record<string, unknown>) {
+  const venueEvidence = report.venue_evidence as Record<string, unknown>;
+  return String(venueEvidence.account_address_commitment);
 }
 
 function validHyperliquidProtectionEvidenceLeg(value: unknown) {

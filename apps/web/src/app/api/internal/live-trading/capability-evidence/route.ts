@@ -73,6 +73,7 @@ export async function POST(request: Request) {
     config_fingerprint: release.config_fingerprint,
     receipt_commitment: receiptCommitment,
     result_commitment: resultCommitment,
+    venue_account_commitment: null,
     proof_subject_commitment: null,
     reason: safeReason(body.reason),
     observed_at: observedAt.toISOString(),

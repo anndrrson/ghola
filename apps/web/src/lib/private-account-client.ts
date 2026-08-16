@@ -1007,9 +1007,14 @@ export async function runHyperliquidMainnetRoundTrip(options: {
   });
 }
 
-export async function revokeHyperliquidExecutionVault() {
+export async function revokeHyperliquidExecutionVault(options: {
+  proofHeaders?: Record<string, string>;
+} = {}) {
+  const body = {};
   return privateAccountFetch("/v1/private-account/hyperliquid/vault", {
     method: "DELETE",
+    headers: options.proofHeaders,
+    ...(options.proofHeaders ? { body: JSON.stringify(body) } : {}),
   });
 }
 

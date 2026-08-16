@@ -89,7 +89,8 @@ $10.50 graduation.
 
 Set durable state to `canary`. Each proof spends real user funds and needs separate authorization.
 Three distinct eligible accounts must pass before public activation; repeated proofs from one account
-do not count toward the launch threshold.
+do not count toward the launch threshold. The durable gate deduplicates the validated Hyperliquid
+account commitment from independent venue evidence, not Ghola account, vault, or API-wallet identifiers.
 
 For any mismatch or incident, set durable state to `killed`, set the worker global kill switch, and
 roll back the exact image. Risk-reducing orders remain available through their separate server gate.

@@ -47,6 +47,7 @@ export interface LiveTradingCapabilityEvidence {
   config_fingerprint: string;
   receipt_commitment: string | null;
   result_commitment: string | null;
+  venue_account_commitment: string | null;
   proof_subject_commitment: string | null;
   reason: string | null;
   observed_at: string;
@@ -155,7 +156,7 @@ export async function evaluateLiveTradingCapability(input: {
   let consecutive = 0;
   let lastProvenAt: string | null = null;
   const reasons: string[] = [];
-  const proofSubjects = new Set<string>();
+  const venueAccounts = new Set<string>();
 
   for (const report of evidence) {
     const valid = evidenceMatchesRelease(report, input.release, now);
@@ -163,8 +164,8 @@ export async function evaluateLiveTradingCapability(input: {
       if (consecutive === 0) reasons.push(...valid.reason_codes);
       break;
     }
-    if (!report.proof_subject_commitment || proofSubjects.has(report.proof_subject_commitment)) continue;
-    proofSubjects.add(report.proof_subject_commitment);
+    if (!report.venue_account_commitment || venueAccounts.has(report.venue_account_commitment)) continue;
+    venueAccounts.add(report.venue_account_commitment);
     consecutive += 1;
     if (!lastProvenAt) lastProvenAt = report.observed_at;
     if (consecutive >= LIVE_TRADING_REQUIRED_CONSECUTIVE_PROOFS) break;
@@ -417,7 +418,9 @@ function evidenceMatchesRelease(
   const reasons: string[] = [];
   if (evidence.status !== "green" || !evidence.broadcast_performed || !evidence.reconciled ||
     !evidence.final_flat || evidence.open_order_count !== 0 || !evidence.receipt_commitment ||
-    !evidence.result_commitment || !evidence.proof_subject_commitment ||
+    !evidence.result_commitment ||
+    !/^sha256:[0-9a-f]{64}$/u.test(evidence.venue_account_commitment ?? "") ||
+    evidence.proof_subject_commitment !== evidence.venue_account_commitment ||
     !sameNumber(evidence.order_notional_usd, LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD)) {
     reasons.push("capability_proof_failed");
   }

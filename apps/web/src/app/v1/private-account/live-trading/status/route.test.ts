@@ -258,7 +258,12 @@ async function putEvidence(status: "green" | "red", offset: number) {
     config_fingerprint: release.config_fingerprint,
     receipt_commitment: status === "green" ? `receipt_commitment_${offset}` : null,
     result_commitment: status === "green" ? `result_commitment_${offset}` : null,
-    proof_subject_commitment: status === "green" ? `proof_subject_commitment_${offset}` : null,
+    venue_account_commitment: status === "green"
+      ? `sha256:${offset.toString(16).padStart(64, "0")}`
+      : null,
+    proof_subject_commitment: status === "green"
+      ? `sha256:${offset.toString(16).padStart(64, "0")}`
+      : null,
     reason: status === "red" ? "canary_failure" : null,
     observed_at: observed.toISOString(),
     expires_at: new Date(observed.getTime() + 60 * 60_000).toISOString(),

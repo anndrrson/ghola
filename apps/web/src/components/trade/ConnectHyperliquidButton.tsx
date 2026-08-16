@@ -192,6 +192,36 @@ export function ConnectHyperliquidButton({
     }
   }
 
+  async function replaceConnectedVault(network: "mainnet" | "testnet" | null) {
+    if (network === "testnet") {
+      await revokeHyperliquidExecutionVault();
+      await refresh();
+      return;
+    }
+    const authorizationWallet = await connectSolanaWallet();
+    const walletProvider = requiredSolanaProvider();
+    const bindingChallenge = await getPrivateMobileWalletBindingChallenge(authorizationWallet);
+    const bindingSignature = await walletSignBytes(
+      walletProvider,
+      new TextEncoder().encode(bindingChallenge.message),
+    );
+    await bindPrivateMobileWallet({
+      wallet_pubkey: authorizationWallet,
+      message: bindingChallenge.message,
+      signature_b64: signatureBase64(bindingSignature),
+    });
+    const body = {};
+    const proofHeaders = await privateAccountMobileProofHeaders({
+      method: "DELETE",
+      path: "/v1/private-account/hyperliquid/vault",
+      body,
+      wallet: authorizationWallet,
+      signBytes: async (bytes) => walletSignBytes(walletProvider, bytes),
+    });
+    await revokeHyperliquidExecutionVault({ proofHeaders });
+    await refresh();
+  }
+
   if (!ready || state.status === "signed_out") return null;
 
   return (
@@ -221,8 +251,7 @@ export function ConnectHyperliquidButton({
             type="button"
             onClick={async () => {
               try {
-                await revokeHyperliquidExecutionVault();
-                await refresh();
+                await replaceConnectedVault(state.network);
               } catch (error) {
                 setState({ status: "error", message: error instanceof Error ? error.message : "Could not replace the credential." });
               }

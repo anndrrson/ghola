@@ -57,6 +57,7 @@ export function publicKeyString(value: unknown): string {
 }
 
 export interface PrivateAccountMobileProofHeadersInput {
+  method?: "POST" | "DELETE";
   path: string;
   body: unknown;
   wallet: string;
@@ -79,9 +80,10 @@ export async function privateAccountMobileProofHeaders(
     throw new Error("Private-account proof nonce is invalid.");
   }
   const bodyHash = await sha256Hex(stableJson(input.body));
+  const method = input.method ?? "POST";
   const message = [
     "ghola_mobile_live_proof_v1",
-    "method:POST",
+    `method:${method}`,
     `path:${input.path}`,
     `timestamp_ms:${timestamp}`,
     `nonce:${nonce}`,

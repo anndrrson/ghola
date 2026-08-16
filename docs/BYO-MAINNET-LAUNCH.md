@@ -11,7 +11,9 @@ their own proof gates pass.
 - First account proof: exactly $10.50 HYPE entry and reduce-only exit.
 - Public order: limit IOC, isolated margin, 1× leverage.
 - Caps: $100/order, $500 rolling 24 hours, 50 bps default, 100 bps hard maximum.
-- Three fresh, consecutive, funded mainnet round trips from distinct accounts per visible capability.
+- Three fresh, consecutive, funded mainnet round trips from distinct actual venue accounts per
+  visible capability. Distinctness is the validated Hyperliquid account commitment in independently
+  queried worker evidence; rotating Ghola accounts, vaults, or API wallets does not create another subject.
 - Web SHA, worker SHA, worker image digest, config fingerprint, caps, and capabilities must match.
 - Durable launch states: `disabled`, `canary`, `public`, `killed`.
 - Risk-reducing orders bypass launch, eligibility, billing, and opening caps after identity and vault checks.

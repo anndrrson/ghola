@@ -47,4 +47,42 @@ describe("privateAccountMobileProofHeaders", () => {
       signBytes: async () => new Uint8Array(64),
     })).rejects.toThrow("proof path is invalid");
   });
+
+  it("binds a DELETE proof to its method and empty JSON body", async () => {
+    const secret = ed25519.utils.randomPrivateKey();
+    const wallet = bs58.encode(ed25519.getPublicKey(secret));
+    const body = {};
+    const nowMs = 1_782_000_000_000;
+    const headers = await privateAccountMobileProofHeaders({
+      method: "DELETE",
+      path: "/v1/private-account/hyperliquid/vault",
+      body,
+      wallet,
+      nowMs,
+      nonce: "vault-delete-proof-0001",
+      signBytes: async (bytes) => ed25519.sign(bytes, secret),
+    });
+    const request = new Request("https://ghola.test/v1/private-account/hyperliquid/vault", {
+      method: "DELETE",
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    expect(verifyPrivateAccountMobileProof({
+      req: request,
+      body,
+      maxSkewMs: 60_000,
+      nowMs,
+    })).toMatchObject({ ok: true, wallet, nonce: "vault-delete-proof-0001", timestampMs: nowMs });
+    expect(verifyPrivateAccountMobileProof({
+      req: new Request("https://ghola.test/v1/private-account/hyperliquid/vault", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      }),
+      body,
+      maxSkewMs: 60_000,
+      nowMs,
+    })).toEqual({ ok: false, error: "mobile_proof_invalid", status: 403 });
+  });
 });
