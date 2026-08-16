@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -27,8 +28,10 @@ const storeVaultConfirm = env("GHOLA_VERIFY_STORE_HYPERLIQUID_VAULT_CONFIRM");
 const liveSubmit = boolEnv("GHOLA_VERIFY_LIVE_SUBMIT");
 const liveSubmitConfirm = env("GHOLA_VERIFY_LIVE_SUBMIT_CONFIRM");
 const reportPath = resolve(REPO_ROOT, env("GHOLA_VERIFY_REPORT_PATH", ".dev/ghola-prod-hyperliquid-verify.json"));
+const requestProofSecret = env("GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET");
 
 const cookies = new Map();
+let requestOwnerCommitment = "";
 const senderSecret = ed25519.utils.randomPrivateKey();
 const senderPublic = ed25519.getPublicKey(senderSecret);
 const senderDid = didKeyFromVerifying(senderPublic);
@@ -53,9 +56,22 @@ const report = {
     : "No order is sent. This verifies production routes, auth, sealed vault storage, worker account read, account SSE, and sealed Hyperliquid order construction.",
 };
 
+const FORBIDDEN_PUBLIC_FIELDS = [
+  "api_wallet_private_key",
+  "private_key",
+  "secret_key",
+  "hyperliquid_account_address",
+  "hyperliquid_account_id",
+  "signature",
+  "raw_order",
+  "raw_payload",
+  "provider_payload",
+  "transaction",
+];
+
 try {
   await checkHead("landing", "/");
-  await checkHead("account_page", "/app/account");
+  await checkHead("trading_terminal", "/trade");
   await getJson("/v1/private-account/products");
   await getJson("/v1/private-account/hyperliquid/market-snapshot?coin=BTC&interval=1m");
   record("public_hyperliquid_market_snapshot", true);
@@ -67,6 +83,7 @@ try {
 
   await postJson("/api/auth/session/email/signin", { email, password }, { sameOrigin: true });
   const session = await getJson("/api/auth/session/me");
+  requestOwnerCommitment = commitment("owner", session.user?.id);
   record("auth_session", session.authenticated === true, {
     authenticated: session.authenticated === true,
     user_id_present: Boolean(session.user?.id),
@@ -74,20 +91,28 @@ try {
 
   const rootStatus = await getJson("/v1/private-account/hyperliquid");
   const status = await getJson("/v1/private-account/hyperliquid/status");
+  const liveStatus = await getJson("/v1/private-account/live-trading/status");
   report.route_probe = {
     root_status: rootStatus.platform_class,
     status_platform: status.platform_class,
-    pilot_stage: status.pilot_stage,
+    launch_state: liveStatus.launch_state,
+    release_valid: liveStatus.release_identity?.valid === true,
+    worker_ready: liveStatus.live_worker_readiness?.ready === true,
   };
   report.connector_status = sanitizePublicArtifact(status);
   record("hyperliquid_routes_deployed", rootStatus.platform_class === "hyperliquid_style_market", report.route_probe);
-  record("hyperliquid_live_pilot_enabled", status.pilot_stage === "live_pilot", {
-    pilot_stage: status.pilot_stage,
-    reason_codes: status.gates?.reason_codes || [],
+  record("canonical_live_canary_ready", (
+    liveStatus.launch_state === "canary" || liveStatus.launch_state === "public"
+  ) && liveStatus.release_identity?.valid === true && liveStatus.live_worker_readiness?.ready === true, {
+    launch_state: liveStatus.launch_state,
+    release_valid: liveStatus.release_identity?.valid === true,
+    worker_ready: liveStatus.live_worker_readiness?.ready === true,
+    reason_codes: liveStatus.reason_codes || [],
   });
 
   assertSafeArtifact("runtime_status", runtime);
   assertSafeArtifact("hyperliquid_status", status);
+  assertSafeArtifact("live_trading_status", liveStatus);
 
   if (!accountAddress || !apiWalletPrivateKey) {
     record("hyperliquid_credentials_supplied", false, {
@@ -363,10 +388,24 @@ async function postJson(path, body, options = {}) {
     method: "POST",
     headers: {
       "content-type": "application/json",
+      ...requestProofHeaders(path, body),
       ...(options.sameOrigin ? { origin: baseUrl } : {}),
     },
     body: JSON.stringify(body),
   });
+}
+
+function requestProofHeaders(path, body) {
+  if (!requestOwnerCommitment || !requestProofSecret) return {};
+  const timestamp = String(Date.now());
+  const nonce = `verify_${randomBytes(16).toString("hex")}`;
+  const bodyHash = createHash("sha256").update(stableJson(body)).digest("hex");
+  const message = ["POST", new URL(path, baseUrl).pathname, requestOwnerCommitment, timestamp, nonce, bodyHash].join("\n");
+  return {
+    "x-ghola-request-timestamp": timestamp,
+    "x-ghola-request-nonce": nonce,
+    "x-ghola-request-proof": createHmac("sha256", requestProofSecret).update(message).digest("hex"),
+  };
 }
 
 async function requestJson(path, init) {
@@ -500,19 +539,6 @@ function validateHyperliquidCredentialInputs(input) {
   }
 }
 
-const FORBIDDEN_PUBLIC_FIELDS = [
-  "api_wallet_private_key",
-  "private_key",
-  "secret_key",
-  "hyperliquid_account_address",
-  "hyperliquid_account_id",
-  "signature",
-  "raw_order",
-  "raw_payload",
-  "provider_payload",
-  "transaction",
-];
-
 function assertSafeArtifact(name, value) {
   const text = JSON.stringify(value).toLowerCase();
   const hit = FORBIDDEN_PUBLIC_FIELDS.find((field) => text.includes(field));
@@ -576,6 +602,21 @@ function required(name) {
 
 function stringValue(value) {
   return typeof value === "string" ? value : "";
+}
+
+function commitment(prefix, value) {
+  if (typeof value !== "string" || !value) return "";
+  return `${prefix}_${createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 48)}`;
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, item]) => item !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+    .join(",")}}`;
 }
 
 function short(value) {

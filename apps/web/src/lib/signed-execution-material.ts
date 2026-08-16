@@ -61,6 +61,46 @@ const HEX_COMMITMENT = /^[0-9a-f]{64}$/;
 const STRICT_POSITIVE_DECIMAL = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
 
 /**
+ * Validates the browser request for the sealed Hyperliquid worker path.
+ * The worker signs only the HMAC-bound plan with the user's sealed trade-only
+ * API wallet, so browser-supplied signed actions are intentionally forbidden.
+ */
+export function assertSealedHyperliquidExecutionRequestMatchesTradeOrderPlan(
+  input: unknown,
+  plan: TradeOrderPlan,
+): SignedExecutionMaterialResult {
+  const request = objectValue(input);
+  if (!request || plan.venue_id !== "hyperliquid") {
+    return invalid("sealed_execution_request_shape_invalid");
+  }
+  if (!hasExactKeys(request, [...REQUEST_BASE_KEYS, "hyperliquidAccountCommitment"])) {
+    return invalid("sealed_execution_request_shape_invalid");
+  }
+  if (typeof request.csrfToken !== "string" || request.csrfToken.length < 1 || request.csrfToken.length > 512) {
+    return invalid("sealed_execution_request_shape_invalid");
+  }
+  if (request.ensureWallet !== false || singleVenueArray(request.venueIds) !== "hyperliquid") {
+    return invalid("sealed_execution_venue_mismatch");
+  }
+  const intent = objectValue(request.orderIntent);
+  if (!intent || !hasExactKeys(intent, INTENT_KEYS) || singleVenueArray(intent.venueIds) !== "hyperliquid") {
+    return invalid("sealed_execution_intent_shape_invalid");
+  }
+  const credentialCommitments = objectValue(request.executionCredentialHandleCommitmentsByVenue);
+  if (
+    !credentialCommitments ||
+    !hasExactKeys(credentialCommitments, ["hyperliquid"]) ||
+    !HEX_COMMITMENT.test(String(credentialCommitments.hyperliquid ?? ""))
+  ) {
+    return invalid("sealed_execution_credential_commitment_invalid");
+  }
+  if (!HEX_COMMITMENT.test(String(request.hyperliquidAccountCommitment ?? ""))) {
+    return invalid("hyperliquid_account_commitment_invalid");
+  }
+  return { ok: true };
+}
+
+/**
  * Parses only the one signed-material envelope the app can validate. This is
  * syntax handling, not execution authorization; the server validator below is
  * the authority.

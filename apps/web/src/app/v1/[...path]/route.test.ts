@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { GET, POST } from "./route";
 import { createV1ProxyHandler, type V1ProxyDependencies } from "./_handler";
@@ -24,15 +24,10 @@ const POLICY_ENV_KEYS = [
   "GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED",
   "GHOLA_PRIVATE_AGENT_SPEND_ARMED",
   "GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN",
-  "GHOLA_HYPERLIQUID_TESTNET_BTC_ASSET_INDEX",
 ] as const;
 const ORIGINAL_POLICY_ENV = Object.fromEntries(
   POLICY_ENV_KEYS.map((key) => [key, process.env[key]]),
 ) as Record<(typeof POLICY_ENV_KEYS)[number], string | undefined>;
-
-beforeEach(() => {
-  process.env.GHOLA_HYPERLIQUID_TESTNET_BTC_ASSET_INDEX = "7";
-});
 
 afterEach(() => {
   for (const key of POLICY_ENV_KEYS) {
@@ -74,7 +69,7 @@ function privateMutationPost(
         },
       };
     },
-    liveAuthorizationImpl: async ({ owner_commitment, order_plan }) => ({
+    liveAuthorizationImpl: async ({ order_plan }) => ({
       ok: true,
       capability: order_plan.execution_policy.reduce_only ? "reduce_only" : "limit_order",
       account_commitment: tradeExecutionIdentityCommitments("web-user-1", order_plan.venue_id).upstreamAccountId,
@@ -690,7 +685,7 @@ describe("v1 execution proxy routing", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("rejects hidden signed orders before session lookup or app execution", async () => {
+  it("rejects browser-supplied signed actions before session lookup or worker dispatch", async () => {
     process.env.GHOLA_ORDER_PLAN_BINDING_SECRET = "proxy-binding-test-secret";
     const fetchSpy = vi.fn<typeof fetch>();
     const sessionUser = sessionLookup("web-user-1");
@@ -698,9 +693,13 @@ describe("v1 execution proxy routing", () => {
     const sessionToken = sessionJwt("web-user-1");
     const plan = orderPlan();
     const body = executionBody(plan, orderPlanBinding(plan, "web-user-1"));
-    body.signedAction.action.orders.push({
-      ...body.signedAction.action.orders[0],
-      a: 8,
+    Object.assign(body, {
+      signedAction: {
+        action: { type: "order", orders: [], grouping: "na" },
+        nonce: Date.now(),
+        signature: { r: `0x${"1".repeat(64)}`, s: `0x${"2".repeat(64)}`, v: 27 },
+        network: plan.network,
+      },
     });
 
     const res = await proxyPost(
@@ -717,19 +716,20 @@ describe("v1 execution proxy routing", () => {
     );
 
     expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({
-      error: "hyperliquid_signed_action_order_count_mismatch",
-    });
+    expect(await res.json()).toEqual({ error: "sealed_execution_request_shape_invalid" });
     expect(sessionUser).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("fails closed when the signed asset identity is not configured", async () => {
+  it("dispatches the bound sealed plan without browser signing or asset-index configuration", async () => {
     process.env.GHOLA_ORDER_PLAN_BINDING_SECRET = "proxy-binding-test-secret";
-    delete process.env.GHOLA_HYPERLIQUID_TESTNET_BTC_ASSET_INDEX;
-    const fetchSpy = vi.fn<typeof fetch>();
-    const sessionUser = sessionLookup("web-user-1");
-    const proxyPost = privateMutationPost(fetchSpy, sessionUser);
+    const fetchSpy = vi.fn<typeof fetch>(async () => Response.json({
+      appLiveTradingExecutionRun: {
+        status: "submitted",
+        gholaAppLiveTradingExecutionRunCommitment: "sealed_worker_receipt",
+      },
+    }, { status: 202 }));
+    const proxyPost = privateMutationPost(fetchSpy);
     const sessionToken = sessionJwt("web-user-1");
     const plan = orderPlan();
 
@@ -746,10 +746,11 @@ describe("v1 execution proxy routing", () => {
       { params: Promise.resolve({ path: ["trading", "app", "execute"] }) },
     );
 
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: "hyperliquid_asset_identity_unconfigured" });
-    expect(sessionUser).not.toHaveBeenCalled();
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(res.status).toBe(202);
+    expect(await res.json()).toMatchObject({
+      appLiveTradingExecutionRun: { status: "submitted" },
+    });
+    expect(fetchSpy).toHaveBeenCalledOnce();
   });
 
   it("rejects cross-site app-session trading posts before proxying", async () => {
@@ -864,27 +865,6 @@ function executionBody(plan: TradeOrderPlan, binding: ReturnType<typeof orderPla
       baseSize: plan.base_size,
       limitPrice: plan.limit_price,
       slippageBps: String(plan.max_slippage_bps),
-    },
-    signedAction: {
-      action: {
-        type: "order",
-        orders: [{
-          a: 7,
-          b: plan.side === "buy",
-          p: plan.limit_price,
-          s: plan.base_size,
-          r: plan.execution_policy.reduce_only,
-          t: { limit: { tif: plan.time_in_force === "ioc" ? "Ioc" : "Gtc" } },
-        }],
-        grouping: "na",
-      },
-      nonce: 1_786_534_420_000,
-      signature: {
-        r: `0x${"1".repeat(64)}`,
-        s: `0x${"2".repeat(64)}`,
-        v: 27,
-      },
-      network: plan.network,
     },
     hyperliquidAccountCommitment: accountCommitment,
   };

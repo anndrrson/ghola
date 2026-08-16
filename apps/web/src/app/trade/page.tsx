@@ -310,10 +310,6 @@ import {
   quantizeHyperliquidPerpPrice,
 } from "@/lib/hyperliquid-order-precision";
 import {
-  inspectHyperliquidSignedActionForTradeOrderPlan,
-  parseSignedExecutionPayload,
-} from "@/lib/signed-execution-material";
-import {
   createTerminalSingleFlightPoller,
   terminalPolledValueForSubject,
 } from "@/lib/terminal-single-flight-poller";
@@ -631,7 +627,6 @@ export default function TradePage() {
   const mobileTicketRef = useRef<HTMLElement>(null);
   const restoreMobileTicketFocusRef = useRef(true);
   const paperSurfaceFocusAbortRef = useRef<AbortController | null>(null);
-  const [signedPayloadText, setSignedPayloadText] = useState("");
   const [bookOpen, setBookOpen] = useState(true);
   const [bookView, setBookView] = useState<"ladder" | "book">("ladder");
   const [marketRailWidthPx, setMarketRailWidthPx] = useState<number>(TERMINAL_MARKET_RAIL_WIDTH_PX.default);
@@ -661,7 +656,6 @@ export default function TradePage() {
     liveExecutionEpochRef.current += 1;
     setPreview({ status: "idle" });
     setBoundPlanAuditSnapshot(null);
-    setSignedPayloadText("");
     setLiveExecution({ status: "idle" });
   }, [authenticatedSubject]);
   const [alertSummary, setAlertSummary] = useState<TerminalAlertSummary>(EMPTY_ALERT_SUMMARY);
@@ -724,7 +718,6 @@ export default function TradePage() {
     setPreview({ status: "idle" });
     setBoundPlanAuditSnapshot(null);
     setLiveExecution({ status: "idle" });
-    setSignedPayloadText("");
     setReplayScenario({ active: false, frame: null, context: null });
     setRouteCheckOpen(false);
     if (message) setKeyboardMessage(message);
@@ -742,7 +735,7 @@ export default function TradePage() {
     }
     applyWorkspaceState(
       saved,
-      `Workspace ${saved.market} ${saved.interval} loaded · bound preview, signature, replay, and pinned levels cleared; no order submitted`,
+      `Workspace ${saved.market} ${saved.interval} loaded · execution binding, replay, and pinned levels cleared; no order submitted`,
     );
     return true;
   }, [applyWorkspaceState]);
@@ -789,7 +782,7 @@ export default function TradePage() {
       setWorkspaceStorageBlocked(false);
       setWorkspaceStorageConflict(false);
       setKeyboardMessage(source === "stored"
-        ? "Loaded the workspace stored by the other tab; preview, signature, replay, and pinned levels were cleared."
+        ? "Loaded the workspace stored by the other tab; execution binding, replay, and pinned levels were cleared."
         : "This tab's complete workspace replaced the conflicting stored version; no order submitted.");
     } catch {
       setKeyboardMessage("Workspace conflict recovery failed. Automatic layout writes remain locked.");
@@ -835,9 +828,8 @@ export default function TradePage() {
     setPreview({ status: "idle" });
     setBoundPlanAuditSnapshot(null);
     setLiveExecution({ status: "idle" });
-    setSignedPayloadText("");
     setReplayScenario({ active: false, frame: null, context: null });
-    setKeyboardMessage(`Inspecting ${target.market} on Hyperliquid ${target.network}; bound preview, signature, replay, and pinned levels cleared. Awaiting fresh market data. No order submitted.`);
+    setKeyboardMessage(`Inspecting ${target.market} on Hyperliquid ${target.network}; execution binding, replay, and pinned levels cleared. Awaiting fresh market data. No order submitted.`);
   }, [hyperliquidNetwork, marketSel, venueId]);
   const handleAlertSummaryChange = useCallback((next: TerminalAlertSummary) => {
     setAlertSummary((current) => terminalAlertSummaryEqual(current, next) ? current : next);
@@ -915,7 +907,6 @@ export default function TradePage() {
       previewRequestIdRef.current += 1;
       liveExecutionEpochRef.current += 1;
       setPreview((current) => current.status === "idle" ? current : { status: "idle" });
-      setSignedPayloadText("");
     }
   }, []);
   const handleRiskBudgetDraftStatus = useCallback(
@@ -973,7 +964,6 @@ export default function TradePage() {
     setTicketDecimalBlocks({ notional: false, risk_budget: false, entry: false, invalidation: false });
     setPreview({ status: "idle" });
     setBoundPlanAuditSnapshot(null);
-    setSignedPayloadText("");
     setLiveExecution({ status: "idle" });
     setReplayScenario({ active: false, frame: null, context: null });
     setRouteCheckOpen(false);
@@ -1007,7 +997,6 @@ export default function TradePage() {
     setPreview({ status: "idle" });
     setBoundPlanAuditSnapshot(null);
     setLiveExecution({ status: "idle" });
-    setSignedPayloadText("");
     setReplayScenario({ active: false, frame: null, context: null });
     setKeyboardMessage(`Loading ${target.product} on ${target.venueId} ${target.network}. Awaiting a fresh PAPER mark; pinned levels and bound preview cleared. No order submitted.`);
     return true;
@@ -1034,7 +1023,6 @@ export default function TradePage() {
     setStopPinned(false);
     setPreview({ status: "idle" });
     setBoundPlanAuditSnapshot(null);
-    setSignedPayloadText("");
     setLiveExecution({ status: "idle" });
     setReplayScenario({ active: false, frame: null, context: null });
     setKeyboardMessage(`Inspecting ${identity.product} on ${identity.venue} ${identity.network} ${identity.interval}; execution bindings and pinned levels cleared. Awaiting fresh certification; no plan restored or order submitted.`);
@@ -1401,7 +1389,7 @@ export default function TradePage() {
         workspaceExpectedRawRef.current = event.newValue;
         applyWorkspaceState(
           inspection.workspace,
-          "Workspace synchronized from another tab; preview, signature, replay, and pinned levels cleared. No order submitted.",
+          "Workspace synchronized from another tab; execution binding, replay, and pinned levels cleared. No order submitted.",
         );
         setWorkspaceStorageBlocked(false);
         setWorkspaceStorageConflict(false);
@@ -1737,13 +1725,6 @@ export default function TradePage() {
     ));
   }, [venueId, marketSel, hyperliquidNetwork, chartInterval, side, notional, riskBudgetUsd, slippageBps, strategy, entryTrigger, horizon, stopRule, entryPrice, stopPrice, entryPinned, stopPinned, scenarioReplayActive, routeCostPolicy.inspection.raw, routeCostPolicy.inspection.status, routeCostPolicy.loadedStorageKey, routeCostPolicy.nowMs, routeCostPolicy.ready]);
 
-  useEffect(() => {
-    liveExecutionEpochRef.current += 1;
-    setLiveExecution((current) => (
-      current.status === "idle" || current.status === "working" ? current : { status: "idle" }
-    ));
-  }, [signedPayloadText]);
-
   const boundPreviewEntry = preview.status === "done" && !entryPinned
     ? Number(preview.planBinding.order_plan.limit_price)
     : null;
@@ -1804,7 +1785,6 @@ export default function TradePage() {
     setLiveExecution((current) => (
       current.status === "idle" || current.status === "working" ? current : { status: "idle" }
     ));
-    setSignedPayloadText("");
     setEntryPinned(true);
     setEntryPrice(venue.id === "hyperliquid" && price != null
       ? quantizeHyperliquidPerpPrice(price, hyperliquidSizeDecimals) ?? price
@@ -1824,7 +1804,7 @@ export default function TradePage() {
       return;
     }
     if (!handleEntryDrag(decision.price)) return;
-    setKeyboardMessage(`Certified print ${formatPrice(decision.price)} staged as the limit entry; preview and signed payload cleared. No order submitted.`);
+    setKeyboardMessage(`Certified print ${formatPrice(decision.price)} staged as the limit entry; execution binding cleared. No order submitted.`);
   }, [handleEntryDrag]);
 
   const handleStopChange = useCallback((price: number | null) => {
@@ -1835,7 +1815,6 @@ export default function TradePage() {
     setLiveExecution((current) => (
       current.status === "idle" || current.status === "working" ? current : { status: "idle" }
     ));
-    setSignedPayloadText("");
     setStopPinned(true);
     setStopPrice(venue.id === "hyperliquid" && price != null
       ? quantizeHyperliquidPerpPrice(price, hyperliquidSizeDecimals) ?? price
@@ -2365,10 +2344,6 @@ export default function TradePage() {
     let submitDispatched = false;
     setLiveExecution({ status: "working", stage: "session" });
     try {
-      const signedMaterial = parseSignedExecutionPayload(venue.id, signedPayloadText);
-      if (venue.id !== "coinbase" && Object.keys(signedMaterial).length === 0) {
-        throw new Error(`${venue.label} requires a signed payload before live submit.`);
-      }
       const sessionRiskRecheck = recheckRiskBudget();
       if (!sessionRiskRecheck.allowed) throw new Error(sessionRiskRecheck.reason);
       const sessionAccountRiskRecheck = recheckLiveAccountRisk();
@@ -2417,7 +2392,6 @@ export default function TradePage() {
         notional,
         entryPrice: entryLevel,
         slippageBps,
-        signedMaterial,
         tradeOrderPlanBinding: preview.planBinding,
       });
       if (executionEpoch !== liveExecutionEpochRef.current || isLocalPreviewRuntime()) {
@@ -2601,20 +2575,6 @@ export default function TradePage() {
     scopedLiveStatusReceivedAt,
     orderPlan,
   );
-  const userSignedPayloadRequired = venue.id !== "coinbase";
-  const signedPayloadValid = useMemo(() => {
-    if (!userSignedPayloadRequired) return true;
-    if (venue.id === "phoenix" || !orderPlan) return false;
-    try {
-      const material = parseSignedExecutionPayload(venue.id, signedPayloadText);
-      return inspectHyperliquidSignedActionForTradeOrderPlan(
-        material.signedAction,
-        orderPlan,
-      ).ok;
-    } catch {
-      return false;
-    }
-  }, [orderPlan, signedPayloadText, userSignedPayloadRequired, venue.id]);
   const liveWorking = liveExecution.status === "working";
   const stopOnRiskSide = Boolean(
     entryLevel && stopLevel && (side === "buy" ? stopLevel < entryLevel : stopLevel > entryLevel),
@@ -2728,9 +2688,8 @@ export default function TradePage() {
     setTargetRewardMultiple(plan.targetRewardMultiple);
     setPreview({ status: "idle" });
     setBoundPlanAuditSnapshot(null);
-    setSignedPayloadText("");
     setLiveExecution({ status: "idle" });
-    setKeyboardMessage(`${plan.name} restored from the local plan book; preview, signature, and live result cleared. No order submitted.`);
+    setKeyboardMessage(`${plan.name} restored from the local plan book; execution binding and live result cleared. No order submitted.`);
     return true;
   }, []);
   const watchTerminalPlan = useCallback((plan: TerminalPlanSnapshot) => {
@@ -2822,7 +2781,7 @@ export default function TradePage() {
     const candidate = current.candidates.find((item) => item.multiplier === multiplier);
     if (!candidate) return;
     handleStopChange(candidate.invalidationPrice);
-    setKeyboardMessage(`${multiplier.toFixed(1)} ATR plan invalidation staged at ${formatPrice(candidate.invalidationPrice)}. Bound preview and signature cleared; no order submitted.`);
+    setKeyboardMessage(`${multiplier.toFixed(1)} ATR plan invalidation staged at ${formatPrice(candidate.invalidationPrice)}. Execution binding cleared; no order submitted.`);
   }, [handleStopChange]);
   const riskBudgetInterlock = useMemo(() => deriveTerminalRiskBudgetInterlock({
     riskBudgetUsd,
@@ -2934,7 +2893,6 @@ export default function TradePage() {
     liveExecutionReadiness.allowed &&
     planMarketState.allowed &&
     effectiveLiveAccountRisk.allowed &&
-    signedPayloadValid &&
     liveExecutionJournalSafety === "ready" &&
     !localPreview,
   );
@@ -2947,7 +2905,6 @@ export default function TradePage() {
   });
   const ticketDraftBlocker = TICKET_DECIMAL_FIELD_ORDER.find((field) => ticketDecimalBlocks[field]) ?? null;
   const orderPlanReady = orderPlan != null;
-  const signedPayloadPresent = signedPayloadText.trim().length > 0;
   const executionFlightCheck = useMemo(() => deriveTerminalExecutionFlightCheck({
     localPreview,
     replayActive: scenarioReplayActive,
@@ -3003,16 +2960,10 @@ export default function TradePage() {
         : preview.status === "done"
           ? "stale"
           : "missing",
-    signatureState: !userSignedPayloadRequired
-      ? "not_required"
-      : signedPayloadValid
-        ? "ready"
-        : signedPayloadPresent
-          ? "invalid"
-          : "missing",
-    signatureRecoveryElementId: venue.id === "hyperliquid" ? "signed-live-payload" : null,
+    signatureState: "not_required",
+    signatureRecoveryElementId: null,
     journalState: liveExecutionJournalSafety,
-  }), [effectiveLiveAccountRisk.allowed, effectiveLiveAccountRisk.reason, effectiveLiveAccountRisk.status, executionMarketContext, executionMarketDataLive, executionQuality.fillPct, executionQuality.impactBps, executionQuality.status, executionQuality.unfilledNotionalUsd, hyperliquidOrderSizingBlocker, liquidityRecovery, liquidityStress.status, liveExecutionJournalSafety, liveExecutionReadiness.allowed, liveExecutionReadiness.message, liveOrderMode.timeInForce, livePlanSlippageBound.allowed, livePlanSlippageBound.limitOffsetBps, loadingMarket, localPreview, marketError, orderPlanReady, planMarketState.allowed, planMarketState.blocker, preview.status, previewMatchesOrderPlan, riskBudgetInterlock.allowed, riskBudgetInterlock.reason, scenarioReplayActive, signedPayloadPresent, signedPayloadValid, slippageBps, stopOnRiskSide, thumperAuth.authenticated, ticketDraftBlocker, userSignedPayloadRequired, venue.id]);
+  }), [effectiveLiveAccountRisk.allowed, effectiveLiveAccountRisk.reason, effectiveLiveAccountRisk.status, executionMarketContext, executionMarketDataLive, executionQuality.fillPct, executionQuality.impactBps, executionQuality.status, executionQuality.unfilledNotionalUsd, hyperliquidOrderSizingBlocker, liquidityRecovery, liquidityStress.status, liveExecutionJournalSafety, liveExecutionReadiness.allowed, liveExecutionReadiness.message, liveOrderMode.timeInForce, livePlanSlippageBound.allowed, livePlanSlippageBound.limitOffsetBps, loadingMarket, localPreview, marketError, orderPlanReady, planMarketState.allowed, planMarketState.blocker, preview.status, previewMatchesOrderPlan, riskBudgetInterlock.allowed, riskBudgetInterlock.reason, scenarioReplayActive, slippageBps, stopOnRiskSide, thumperAuth.authenticated, ticketDraftBlocker, venue.id]);
   const workerSleeping = Boolean(scopedLiveStatus && shouldWakePooledWorker(scopedLiveStatus));
   const workerStatusValue = workerWakeState === "waking" ? "starting" : workerSleeping ? "sleeping" : workerLabel;
   const workerStatusTone = workerReady || workerWakeState === "ready" || workerWakeState === "waking"
@@ -3191,7 +3142,6 @@ export default function TradePage() {
     setEntryPinned(false);
     setPreview({ status: "idle" });
     setLiveExecution((current) => current.status === "working" ? current : { status: "idle" });
-    setSignedPayloadText("");
     setKeyboardMessage("Entry returned to certified BBO midpoint tracking; it waits when BBO is unavailable. No order submitted.");
   }, []);
   const handleStageEntryPrice = useCallback((mode: TerminalEntryPriceMode) => {
@@ -3445,10 +3395,9 @@ export default function TradePage() {
     setStopPinned(false);
     setPreview({ status: "idle" });
     setLiveExecution({ status: "idle" });
-    setSignedPayloadText("");
     setReplayScenario({ active: false, frame: null, context: null });
     setRouteCheckOpen(false);
-    setKeyboardMessage(`Staged ${target.market} on ${nextVenue.label} from the certified route matrix. Bound preview, signature, and pinned levels cleared; awaiting its fresh book. No order submitted.`);
+    setKeyboardMessage(`Staged ${target.market} on ${nextVenue.label} from the certified route matrix. Execution binding and pinned levels cleared; awaiting its fresh book. No order submitted.`);
     window.requestAnimationFrame(() => {
       terminalTicketFocusRestoreTarget({
         returnFocus: null,
@@ -3498,9 +3447,7 @@ export default function TradePage() {
                   : liveExecutionReadiness.message
                 : !stopOnRiskSide
                   ? "Plan invalidation must be beyond entry risk"
-                  : !signedPayloadValid
-                      ? `Valid ${venue.label} signature required`
-                      : null;
+                  : null;
 
 
   useEffect(() => {
@@ -3661,10 +3608,9 @@ export default function TradePage() {
     liveExecutionEpochRef.current += 1;
     setPreview({ status: "idle" });
     setBoundPlanAuditSnapshot(null);
-    setSignedPayloadText("");
     setLiveExecution({ status: "idle" });
     setAccountStreamRestartKey((current) => current + 1);
-    setKeyboardMessage("Refreshing the sealed Hyperliquid account stream and authoritative snapshot; preview and signature cleared. No order submitted.");
+    setKeyboardMessage("Refreshing the sealed Hyperliquid account stream and authoritative snapshot; execution binding cleared. No order submitted.");
   }, [thumperAuth.authenticated, venue.id]);
 
   const handleExternalExecutionReview = useCallback((planDigest: string) => {
@@ -3695,9 +3641,8 @@ export default function TradePage() {
     previewRequestIdRef.current += 1;
     setPreview({ status: "idle" });
     setBoundPlanAuditSnapshot(null);
-    setSignedPayloadText("");
     setLiveExecution({ status: "idle" });
-    setKeyboardMessage("External account review recorded · preview and signature cleared · no reconciliation claimed");
+    setKeyboardMessage("External account review recorded · execution binding cleared · no reconciliation claimed");
   }, [effectiveLiveAccountRisk.accountStreamCurrent, effectiveLiveAccountRisk.accountStreamObservedAtMs, hyperliquidNetwork, recordLiveExecutionJournalEntry, venue.id]);
 
   const handleReconnectMarket = useCallback(() => {
@@ -3709,9 +3654,8 @@ export default function TradePage() {
     liveExecutionEpochRef.current += 1;
     setPreview({ status: "idle" });
     setLiveExecution((current) => current.status === "working" ? current : { status: "idle" });
-    setSignedPayloadText("");
     setMarketRestartKey((current) => current + 1);
-    setKeyboardMessage("Selected public market feed reconnecting · bound preview and signature cleared; workspace and staged levels preserved.");
+    setKeyboardMessage("Selected public market feed reconnecting · execution binding cleared; workspace and staged levels preserved.");
   }, []);
 
   const openRouteCheck = useCallback(() => {
@@ -3959,7 +3903,7 @@ export default function TradePage() {
         open={authOpen}
         onClose={closeAuth}
         onModeChange={setAuthMode}
-        redirectTo={`/account?flow=${venueId === "coinbase" ? "coinbase" : venueId === "phoenix" ? "phoenix-live" : "hyperliquid-live"}`}
+        redirectTo={`/trade?flow=${venueId === "coinbase" ? "coinbase" : venueId === "phoenix" ? "phoenix-live" : "hyperliquid-live"}`}
       />
       <span data-terminal-keyboard-message className="sr-only" aria-live="polite" aria-atomic="true">{keyboardMessage}</span>
       <TerminalHeader
@@ -5126,36 +5070,6 @@ export default function TradePage() {
                 <VisibilityRow label={`${venue.label} sees`} value="venue account + order" tone="warn" />
               </div>
             </div>
-            {userSignedPayloadRequired && (
-              <div className="mt-5 border-t border-[#141d2e] pt-4">
-                {venue.id === "phoenix" ? (
-                  <p role="alert" className="text-[10px] leading-4 text-amber-200">
-                    Phoenix GTC/full-ticket submit is unavailable. The worker accepts only tiny-fill IOC, and this terminal does not yet build and verify that exact mode.
-                  </p>
-                ) : (
-                  <>
-                    <label className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#6b7997]" htmlFor="signed-live-payload">
-                      Signed payload
-                    </label>
-                    <textarea
-                      id="signed-live-payload"
-                      value={signedPayloadText}
-                      onChange={(event) => setSignedPayloadText(event.target.value)}
-                      spellCheck={false}
-                      className="trade-field mt-2 h-24 w-full resize-none rounded-md px-3 py-2 font-mono text-xs leading-5 text-[#eef1f8] outline-none"
-                      placeholder="Exact signedAction JSON with network"
-                    />
-                    {signedPayloadText.trim() ? (
-                      <p className={`mt-1.5 text-[10px] ${signedPayloadValid ? "text-emerald-300" : "text-rose-300"}`}>
-                        {signedPayloadValid
-                          ? "One signed IOC action matches the bound plan; the server rechecks configured asset identity."
-                          : "Action must exactly match the bound side, price, size, TIF, reduce-only, and network."}
-                      </p>
-                    ) : null}
-                  </>
-                )}
-              </div>
-            )}
             {venue.id === "hyperliquid" && !localPreview ? (
               <div id="hyperliquid-connection" className="scroll-mt-4">
                 <ConnectHyperliquidButton
@@ -5334,7 +5248,6 @@ interface BuildLiveExecutionBodyInput {
   notional: number;
   entryPrice: number | null;
   slippageBps: number;
-  signedMaterial: Record<string, unknown>;
   tradeOrderPlanBinding: TradeOrderPlanBindingEnvelope;
 }
 
@@ -5354,7 +5267,6 @@ async function buildLiveExecutionBody(input: BuildLiveExecutionBodyInput): Promi
   }
 
   const body: Record<string, unknown> = {
-    ...input.signedMaterial,
     csrfToken: input.csrfToken,
     venueIds: input.venueIds,
     ensureWallet: input.venueIds.includes("phoenix"),

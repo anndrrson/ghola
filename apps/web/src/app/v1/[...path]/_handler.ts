@@ -17,6 +17,7 @@ import {
 } from "@/lib/trade-order-plan-binding.server";
 import { privateAccountByoExecutionGate } from "@/lib/private-account-byo-live-gate";
 import {
+  assertSealedHyperliquidExecutionRequestMatchesTradeOrderPlan,
   assertSignedExecutionMaterialMatchesTradeOrderPlan,
   configuredHyperliquidAssetIndex,
 } from "@/lib/signed-execution-material";
@@ -344,10 +345,12 @@ async function verifyTradingAppOrderPlan(
   const orderPlan = verification.binding.order_plan;
   const match = assertExecutionMatchesTradeOrderPlan(body, orderPlan);
   if (!match.ok) return { ok: false, error: match.error, status: 409 };
-  const signedMaterial = assertSignedExecutionMaterialMatchesTradeOrderPlan(body, orderPlan, {
-    hyperliquidAssetIndex: configuredHyperliquidAssetIndex(orderPlan, process.env),
-  });
-  if (!signedMaterial.ok) return { ok: false, error: signedMaterial.error, status: 409 };
+  const executionMaterial = orderPlan.venue_id === "hyperliquid"
+    ? assertSealedHyperliquidExecutionRequestMatchesTradeOrderPlan(body, orderPlan)
+    : assertSignedExecutionMaterialMatchesTradeOrderPlan(body, orderPlan, {
+        hyperliquidAssetIndex: configuredHyperliquidAssetIndex(orderPlan, process.env),
+      });
+  if (!executionMaterial.ok) return { ok: false, error: executionMaterial.error, status: 409 };
   if (!webSessionToken) return { ok: false, error: "web_session_required", status: 401 };
   const session = await fetchSessionUserImpl(webSessionToken).catch(() => null);
   const verifiedUser = session?.ok ? session.user : null;

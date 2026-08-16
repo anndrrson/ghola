@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildTradeOrderPlan, type TradeOrderPlan, type TradeOrderVenueId } from "./trade-order-plan";
 import {
+  assertSealedHyperliquidExecutionRequestMatchesTradeOrderPlan,
   assertSignedExecutionMaterialMatchesTradeOrderPlan,
   configuredHyperliquidAssetIndex,
   inspectHyperliquidSignedActionForTradeOrderPlan,
@@ -8,6 +9,22 @@ import {
 } from "./signed-execution-material";
 
 describe("signed execution material binding", () => {
+  it("accepts a sealed Hyperliquid request with no browser-supplied action", () => {
+    const plan = fixturePlan("hyperliquid");
+    const body = request(plan) as unknown as Record<string, unknown>;
+    delete body.signedAction;
+    expect(assertSealedHyperliquidExecutionRequestMatchesTradeOrderPlan(body, plan)).toEqual({ ok: true });
+  });
+
+  it("forbids browser-supplied signed or sibling execution material on the sealed path", () => {
+    const plan = fixturePlan("hyperliquid");
+    const body = request(plan);
+    expect(assertSealedHyperliquidExecutionRequestMatchesTradeOrderPlan(body, plan)).toEqual({
+      ok: false,
+      error: "sealed_execution_request_shape_invalid",
+    });
+  });
+
   it("accepts exactly one Hyperliquid IOC order matching every bound field", () => {
     const plan = fixturePlan("hyperliquid");
     expect(validate(request(plan))).toEqual({ ok: true, hyperliquid_asset_index: 7 });
