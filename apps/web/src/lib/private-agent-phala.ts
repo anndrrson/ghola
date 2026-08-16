@@ -272,9 +272,9 @@ type PhalaComposeDrift = {
 
 // The CVM's compose (and its plaintext env lines — venue live modes, caps) is
 // baked at provision time; starting a stopped CVM never re-applies it. Detect
-// drift against the compose we would provision today and push a compose-file
-// update so operator env changes actually reach the worker. Fails open: any
-// error leaves the CVM running its existing compose.
+// drift against the compose and encrypted-env allowlist we would provision
+// today, then update both atomically. Fails open: any error leaves readiness
+// closed and the CVM running its existing release.
 export async function ensurePhalaWorkerComposeCurrent(
   client: PhalaCloudClient,
   name: string,
@@ -295,10 +295,39 @@ export async function ensurePhalaWorkerComposeCurrent(
     return { checked: false, updated: false, reason: "compose_file_missing" };
   }
   const desired = buildPhalaWorkerCompose();
-  if (normalizedCompose(currentText) === normalizedCompose(desired)) {
+  const encryptedWorkerEnv = phalaEncryptedWorkerEnv(token);
+  const desiredEnvKeys = encryptedWorkerEnv.map((item) => item.key).sort();
+  const currentEnvKeys = Array.isArray(currentCompose.allowed_envs)
+    ? currentCompose.allowed_envs
+        .filter((item): item is string => typeof item === "string")
+        .sort()
+    : [];
+  const composeMatches = normalizedCompose(currentText) === normalizedCompose(desired);
+  const envKeysMatch =
+    currentEnvKeys.length === desiredEnvKeys.length &&
+    currentEnvKeys.every((key, index) => key === desiredEnvKeys[index]);
+  if (composeMatches && envKeysMatch) {
     return { checked: true, updated: false, reason: null };
   }
   try {
+    const info = await client.getCvmInfo({ id: name }, { schema: false });
+    const infoRecord =
+      info && typeof info === "object" && !Array.isArray(info)
+        ? (info as Record<string, unknown>)
+        : null;
+    const kmsInfo =
+      infoRecord?.kms_info && typeof infoRecord.kms_info === "object"
+        ? (infoRecord.kms_info as Record<string, unknown>)
+        : null;
+    const envEncryptPubkey =
+      typeof kmsInfo?.encrypted_env_pubkey === "string"
+        ? kmsInfo.encrypted_env_pubkey
+        : "";
+    if (!envEncryptPubkey) {
+      return { checked: true, updated: false, reason: "env_encrypt_pubkey_missing" };
+    }
+    const { encryptEnvVars } = await import("@phala/cloud");
+    const encryptedEnv = await encryptEnvVars(encryptedWorkerEnv, envEncryptPubkey);
     // Send the stored app_compose back with only the compose file and env
     // allowlist replaced — the API requires the full object, and this keeps
     // every server-required field at its current value.
@@ -308,7 +337,7 @@ export async function ensurePhalaWorkerComposeCurrent(
         app_compose: {
           ...currentCompose,
           docker_compose_file: desired,
-          allowed_envs: phalaEncryptedWorkerEnv(token).map((item) => item.key),
+          allowed_envs: desiredEnvKeys,
         },
       },
       { schema: false },
@@ -317,12 +346,15 @@ export async function ensurePhalaWorkerComposeCurrent(
     if (!composeHash) {
       return { checked: true, updated: false, reason: "compose_update_provision_failed" };
     }
-    // update_env_vars: false — the KMS-encrypted env is unchanged; only the
-    // compose (plaintext env lines) is being refreshed.
+    // Commit the compose and its complete KMS-encrypted environment together.
+    // Updating only the YAML can otherwise leave newly referenced secrets
+    // absent and put the worker into a restart loop.
     await client.commitCvmComposeFileUpdate({
       id: name,
       compose_hash: composeHash,
-      update_env_vars: false,
+      encrypted_env: encryptedEnv,
+      env_keys: desiredEnvKeys,
+      update_env_vars: true,
     });
     return { checked: true, updated: true, reason: null };
   } catch (error) {

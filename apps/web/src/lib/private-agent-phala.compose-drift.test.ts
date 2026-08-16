@@ -37,11 +37,15 @@ function fakeClient(overrides: Partial<FakeClient> = {}): FakeClient & DriftClie
   } as FakeClient & DriftClient;
 }
 
+const envEncryptPubkey = "11".repeat(32);
+const matchingAllowedEnvs = ["PRIVATE_AGENT_EXECUTION_TOKEN"];
+
 describe("ensurePhalaWorkerComposeCurrent", () => {
   it("does not update when the stored compose matches what we would provision today", async () => {
     const client = fakeClient({
       getCvmComposeFile: vi.fn().mockResolvedValue({
         docker_compose_file: buildPhalaWorkerCompose(),
+        allowed_envs: matchingAllowedEnvs,
       }),
     });
     const result = await ensurePhalaWorkerComposeCurrent(client, "cvm-test", "token");
@@ -56,7 +60,10 @@ describe("ensurePhalaWorkerComposeCurrent", () => {
       .map((line) => `${line}  `)
       .join("\n");
     const client = fakeClient({
-      getCvmComposeFile: vi.fn().mockResolvedValue({ docker_compose_file: stored }),
+      getCvmComposeFile: vi.fn().mockResolvedValue({
+        docker_compose_file: stored,
+        allowed_envs: matchingAllowedEnvs,
+      }),
     });
     const result = await ensurePhalaWorkerComposeCurrent(client, "cvm-test", "token");
     expect(result.updated).toBe(false);
@@ -70,6 +77,9 @@ describe("ensurePhalaWorkerComposeCurrent", () => {
         manifest_version: 2,
         kms_enabled: true,
         docker_compose_file: 'services:\n  worker:\n    environment:\n      PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD: ""\n',
+      }),
+      getCvmInfo: vi.fn().mockResolvedValue({
+        kms_info: { encrypted_env_pubkey: envEncryptPubkey },
       }),
       provisionCvmComposeFileUpdate: vi.fn().mockResolvedValue({ compose_hash: "hash123" }),
       commitCvmComposeFileUpdate: vi.fn().mockResolvedValue(undefined),
@@ -90,8 +100,33 @@ describe("ensurePhalaWorkerComposeCurrent", () => {
     expect(commitArgs).toMatchObject({
       id: "cvm-test",
       compose_hash: "hash123",
-      update_env_vars: false,
+      env_keys: matchingAllowedEnvs,
+      update_env_vars: true,
     });
+    expect(commitArgs.encrypted_env).toEqual(expect.any(String));
+  });
+
+  it("refreshes encrypted env when its allowlist drifted even if compose matches", async () => {
+    const client = fakeClient({
+      getCvmComposeFile: vi.fn().mockResolvedValue({
+        docker_compose_file: buildPhalaWorkerCompose(),
+        allowed_envs: [],
+      }),
+      getCvmInfo: vi.fn().mockResolvedValue({
+        kms_info: { encrypted_env_pubkey: envEncryptPubkey },
+      }),
+      provisionCvmComposeFileUpdate: vi.fn().mockResolvedValue({ compose_hash: "hash-env" }),
+      commitCvmComposeFileUpdate: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const result = await ensurePhalaWorkerComposeCurrent(client, "cvm-test", "token");
+    expect(result).toEqual({ checked: true, updated: true, reason: null });
+    expect(client.commitCvmComposeFileUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      compose_hash: "hash-env",
+      env_keys: matchingAllowedEnvs,
+      update_env_vars: true,
+      encrypted_env: expect.any(String),
+    }));
   });
 
   it("fails open when the compose cannot be fetched", async () => {
@@ -106,6 +141,9 @@ describe("ensurePhalaWorkerComposeCurrent", () => {
   it("reports failure without committing when provision returns no compose hash", async () => {
     const client = fakeClient({
       getCvmComposeFile: vi.fn().mockResolvedValue({ docker_compose_file: "services: {}" }),
+      getCvmInfo: vi.fn().mockResolvedValue({
+        kms_info: { encrypted_env_pubkey: envEncryptPubkey },
+      }),
       provisionCvmComposeFileUpdate: vi.fn().mockResolvedValue({}),
     });
     const result = await ensurePhalaWorkerComposeCurrent(client, "cvm-test", "token");
