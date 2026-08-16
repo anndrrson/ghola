@@ -71,8 +71,17 @@ export function liveTradingControlBindingFailures(
   if (JSON.stringify([...control.public_capabilities].sort()) !== JSON.stringify([...configuredCapabilities].sort())) {
     failures.push("launch_capability_binding_mismatch");
   }
-  if (JSON.stringify(control.caps) !== JSON.stringify(canonicalLiveTradingCaps())) failures.push("launch_caps_binding_mismatch");
+  if (!sameCanonicalCaps(control.caps)) failures.push("launch_caps_binding_mismatch");
   return failures;
+}
+
+function sameCanonicalCaps(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = value as Record<string, unknown>;
+  const expected = canonicalLiveTradingCaps();
+  const expectedEntries = Object.entries(expected);
+  return Object.keys(actual).length === expectedEntries.length &&
+    expectedEntries.every(([key, expectedValue]) => actual[key] === expectedValue);
 }
 
 export function configuredLiveTradingPublicCapabilities(
