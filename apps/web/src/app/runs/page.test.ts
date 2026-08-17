@@ -90,7 +90,7 @@ describe("runs kill-and-flat controls", () => {
         ...finalFlatSession(running).final_flat_evidence,
         open_order_count: 1,
       },
-    } as PrivateAutopilotSession;
+    } as unknown as PrivateAutopilotSession;
     const halted = session({
       status: "risk_halted",
       execution_enabled: false,
