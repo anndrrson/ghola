@@ -46,7 +46,7 @@ type MainnetRoundTripReport = {
   ok: true;
   network: "mainnet";
   market: "HYPE";
-  notional_usd: 10.5;
+  notional_usd: 11;
   max_slippage_bps: 100;
   claim_store: "postgres";
   preflight_verified: true;
@@ -153,7 +153,7 @@ export function FundedMainnetRoundTrip() {
               Hyperliquid mainnet · real funds
             </span>
           </div>
-          <h1 className="mt-3 text-xl font-semibold text-white sm:text-2xl">$10.50 filled round trip</h1>
+          <h1 className="mt-3 text-xl font-semibold text-white sm:text-2xl">$11.00 filled round trip</h1>
           <p className="mt-2 max-w-3xl text-xs leading-5 text-[#8d9bb1] sm:text-sm">
             A protected HYPE IOC entry and reduce-only exit through the sealed trade-only wallet,
             with venue-native TP/SL, exact cleanup, Postgres claims, duplicate-submit protection,
@@ -164,7 +164,7 @@ export function FundedMainnetRoundTrip() {
         <div className="grid gap-3 p-5 sm:grid-cols-4 sm:p-7">
           <Metric label="Network" value="mainnet" />
           <Metric label="Market" value="HYPE-PERP" />
-          <Metric label="Hard notional" value="$10.50" />
+          <Metric label="Hard notional" value="$11.00" />
           <Metric label="Max slippage" value="100 bp" />
         </div>
 
@@ -175,7 +175,7 @@ export function FundedMainnetRoundTrip() {
             <div className="rounded-md border border-rose-300/40 bg-rose-300/[0.06] p-4">
               <p className="flex items-start gap-2 text-sm leading-6 text-rose-100">
                 <ShieldAlert aria-hidden className="mt-1 h-4 w-4 shrink-0 text-rose-300" />
-                This broadcasts real mainnet orders. The worker refuses non-HYPE, more than $10.50,
+                This broadcasts real mainnet orders. The worker refuses non-HYPE, more than $11.00,
                 more than 100 bp slippage, a pre-existing HYPE position, or open HYPE orders.
               </p>
               <label className="mt-4 flex items-start gap-2 text-xs leading-5 text-[#c5cfde]">
@@ -189,7 +189,7 @@ export function FundedMainnetRoundTrip() {
               </label>
               <div className="mt-4 flex flex-wrap gap-2">
                 <button type="button" disabled={!eligibleNonUs} onClick={() => void run()} className="rounded bg-rose-300 px-4 py-2 text-sm font-semibold text-black hover:bg-rose-200 disabled:cursor-not-allowed disabled:opacity-50">
-                  Confirm real $10.50 round trip
+                  Confirm real $11.00 round trip
                 </button>
                 <button type="button" onClick={() => setState({ status: "idle" })} className="rounded border border-[#48536a] px-4 py-2 text-sm text-[#c5cfde] hover:border-[#76839c]">
                   Cancel

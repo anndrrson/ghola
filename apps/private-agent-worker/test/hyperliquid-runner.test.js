@@ -48,6 +48,33 @@ configured = module.configure_isolated_leverage(exchange, {
 assert exchange.calls == [(1, "HYPE", False)]
 assert configured == {"margin_mode": "isolated", "leverage": 1, "venue_accepted": True}
 
+live_prepare_events = []
+original_resolve = module.resolve_limit_order
+original_configure = module.configure_isolated_leverage
+original_verify_book = module.verify_fresh_execution_book
+try:
+    def ordered_resolve(_info, _order, _address):
+        live_prepare_events.append("resolve")
+        return {"base_size": "0.18", "limit_price": "60", "size_decimals": 2}
+    def ordered_configure(_exchange, _order):
+        live_prepare_events.append("update_leverage")
+        time.sleep(0.01)
+        return {"margin_mode": "isolated", "leverage": 1, "venue_accepted": True}
+    def ordered_verify(_info, _order, resolved, _address):
+        live_prepare_events.append("final_market_gate")
+        assert resolved["base_size"] == "0.18"
+        return {"freshness_proven": True}
+    module.resolve_limit_order = ordered_resolve
+    module.configure_isolated_leverage = ordered_configure
+    module.verify_fresh_execution_book = ordered_verify
+    prepared = module.prepare_live_limit_order(object(), object(), {"market": "HYPE"}, "0x" + "a" * 40)
+finally:
+    module.resolve_limit_order = original_resolve
+    module.configure_isolated_leverage = original_configure
+    module.verify_fresh_execution_book = original_verify_book
+assert live_prepare_events == ["resolve", "update_leverage", "final_market_gate"]
+assert prepared[2] == {"freshness_proven": True}
+
 expiry = int(time.time() * 1000) + 5000
 configured_expiry = module.configure_action_expiry(exchange, {
     "expires_at": datetime.fromtimestamp(expiry / 1000, tz=timezone.utc).isoformat(),
@@ -255,12 +282,105 @@ freshness_gate = module.verify_fresh_execution_book(
             "best_bid": module.Decimal("99"),
             "best_ask": module.Decimal("100"),
         },
+        "base_size": "0.11",
         "limit_price": "101",
     },
 )
 assert freshness_info.calls == 1
 assert freshness_gate["freshness_proven"] is True
 assert freshness_gate["source_age_ms"] <= module.EXECUTION_BOOK_MAX_AGE_MS
+
+class ProofNotionalInfo:
+    def meta(self):
+        return {"universe": [{"name": "HYPE", "szDecimals": 2}]}
+    def query_user_abstraction_state(self, _address):
+        return "default"
+    def user_state(self, _address):
+        return {"marginSummary": {"accountValue": "1000"}, "withdrawable": "1000"}
+    def post(self, path, body):
+        assert path == "/info"
+        if body == {"type": "l2Book", "coin": "HYPE"}:
+            return {
+                "time": int(time.time() * 1000),
+                "levels": [[{"px": "58.743"}], [{"px": "58.744"}]],
+            }
+        assert body == {
+            "type": "activeAssetData",
+            "user": "0x" + "a" * 40,
+            "coin": "HYPE",
+        }
+        return {
+            "user": "0x" + "a" * 40,
+            "coin": "HYPE",
+            "markPx": "58.744",
+        }
+
+old_proof_order = {
+    "market": "HYPE", "side": "buy", "order_type": "market",
+    "quote_size": "10.5", "reduce_only": False, "max_slippage_bps": "100",
+}
+old_proof_resolved = module.resolve_limit_order(
+    ProofNotionalInfo(), old_proof_order, "0x" + "a" * 40,
+)
+assert old_proof_resolved["base_size"] == "0.17"
+assert old_proof_resolved["limit_price"] == "59.331"
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    try:
+        module.verify_fresh_execution_book(
+            ProofNotionalInfo(), old_proof_order, old_proof_resolved, "0x" + "a" * 40,
+        )
+    except SystemExit:
+        pass
+old_proof_failure = json.loads(output.getvalue())
+assert old_proof_failure["error_code"] == "venue_rejected"
+assert "too close to the venue minimum notional" in old_proof_failure["error"]
+
+new_proof_order = {**old_proof_order, "quote_size": "11"}
+new_proof_resolved = module.resolve_limit_order(
+    ProofNotionalInfo(), new_proof_order, "0x" + "a" * 40,
+)
+assert new_proof_resolved["base_size"] == "0.18"
+assert new_proof_resolved["limit_price"] == "59.331"
+new_proof_gate = module.verify_fresh_execution_book(
+    ProofNotionalInfo(), new_proof_order, new_proof_resolved, "0x" + "a" * 40,
+)
+assert new_proof_gate["minimum_notional_proven"] is True
+
+class DelayedActiveReferenceInfo:
+    def post(self, path, body):
+        assert path == "/info"
+        if body.get("type") == "activeAssetData":
+            return {
+                "user": "0x" + "a" * 40,
+                "coin": "HYPE",
+                "markPx": "100",
+            }
+        time.sleep(0.01)
+        return {
+            "time": int(time.time() * 1000),
+            "levels": [[{"px": "99.99"}], [{"px": "100"}]],
+        }
+
+previous_book_max_age = module.EXECUTION_BOOK_MAX_AGE_MS
+module.EXECUTION_BOOK_MAX_AGE_MS = 5
+try:
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        try:
+            module.verify_fresh_execution_book(
+                DelayedActiveReferenceInfo(),
+                {"market": "HYPE", "side": "buy", "max_slippage_bps": "50"},
+                {"base_size": "0.11", "limit_price": "100.5"},
+                "0x" + "a" * 40,
+            )
+        except SystemExit:
+            pass
+    delayed_reference_failure = json.loads(output.getvalue())
+    assert delayed_reference_failure["error_code"] == "venue_rejected"
+    assert "active market reference is stale" in delayed_reference_failure["error"]
+finally:
+    module.EXECUTION_BOOK_MAX_AGE_MS = previous_book_max_age
 
 class FakePrecisionInfo:
     def meta(self):
@@ -346,7 +466,7 @@ assert module.Decimal(market_exit["limit_price"]) < module.Decimal("56.99")
 assert market_exit["account_state_checked"] is True
 market_exit_gate = module.verify_fresh_execution_book(
     FakeMarketExitInfo(),
-    {"market": "HYPE", "side": "sell", "max_slippage_bps": "100"},
+    {"market": "HYPE", "side": "sell", "reduce_only": True, "max_slippage_bps": "100"},
     market_exit,
 )
 assert market_exit_gate["slippage_bound_proven"] is True
@@ -387,11 +507,102 @@ class FakeInfo:
 market_gate = module.verify_fresh_execution_book(
     FakeInfo(),
     {"market": "HYPE", "side": "buy", "max_slippage_bps": "50"},
-    {"limit_price": "101.5"},
+    {"base_size": "0.11", "limit_price": "101.5"},
 )
 assert market_gate["freshness_proven"] is True
 assert market_gate["slippage_bound_proven"] is True
 assert market_gate["source_age_ms"] <= 2000
+
+class RepricedMarketInfo:
+    def __init__(self, ask="90", bid="89"):
+        self.ask = ask
+        self.bid = bid
+    def post(self, path, body):
+        assert path == "/info"
+        assert body == {"type": "l2Book", "coin": "HYPE"}
+        return {
+            "time": int(time.time() * 1000),
+            "levels": [[{"px": self.bid}], [{"px": self.ask}]],
+        }
+
+repriced_resolution = {
+    "base_size": "0.12",
+    "limit_price": "91",
+    "size_decimals": 2,
+}
+module.verify_fresh_execution_book(
+    RepricedMarketInfo(),
+    {
+        "market": "HYPE", "side": "buy", "order_type": "market",
+        "quote_size": "11", "max_slippage_bps": "50",
+    },
+    repriced_resolution,
+)
+assert repriced_resolution["limit_price"] == "90.45"
+
+base_opening_resolution = {
+    "base_size": "0.12",
+    "limit_price": "90.4",
+    "size_decimals": 2,
+}
+module.verify_fresh_execution_book(
+    RepricedMarketInfo(),
+    {
+        "market": "HYPE", "side": "buy", "order_type": "market",
+        "base_size": "0.12", "max_slippage_bps": "50",
+    },
+    base_opening_resolution,
+)
+assert base_opening_resolution["limit_price"] == "90.4"
+
+reduce_only_resolution = {
+    "base_size": "0.11",
+    "limit_price": "88.6",
+    "size_decimals": 2,
+}
+module.verify_fresh_execution_book(
+    RepricedMarketInfo(),
+    {
+        "market": "HYPE", "side": "sell", "order_type": "market",
+        "base_size": "0.11", "reduce_only": True, "max_slippage_bps": "50",
+    },
+    reduce_only_resolution,
+)
+assert reduce_only_resolution["limit_price"] == "88.555"
+
+explicit_limit_resolution = {
+    "base_size": "0.12",
+    "limit_price": "90.4",
+    "size_decimals": 2,
+}
+module.verify_fresh_execution_book(
+    RepricedMarketInfo(),
+    {
+        "market": "HYPE", "side": "buy", "order_type": "limit",
+        "base_size": "0.12", "max_slippage_bps": "50",
+    },
+    explicit_limit_resolution,
+)
+assert explicit_limit_resolution["limit_price"] == "90.4"
+
+output = io.StringIO()
+lot_boundary_resolution = {"base_size": "0.12", "limit_price": "91", "size_decimals": 2}
+with contextlib.redirect_stdout(output):
+    try:
+        module.verify_fresh_execution_book(
+            RepricedMarketInfo("80", "79"),
+            {
+                "market": "HYPE", "side": "buy", "order_type": "market",
+                "quote_size": "11", "max_slippage_bps": "50",
+            },
+            lot_boundary_resolution,
+        )
+    except SystemExit:
+        pass
+lot_boundary_failure = json.loads(output.getvalue())
+assert lot_boundary_failure["error_code"] == "venue_rejected"
+assert "lot boundary" in lot_boundary_failure["error"]
+assert lot_boundary_resolution["limit_price"] == "91"
 
 output = io.StringIO()
 with contextlib.redirect_stdout(output):
@@ -399,13 +610,64 @@ with contextlib.redirect_stdout(output):
         module.verify_fresh_execution_book(
             FakeInfo(2501),
             {"market": "HYPE", "side": "buy", "max_slippage_bps": "50"},
-            {"limit_price": "101.5"},
+            {"base_size": "0.11", "limit_price": "101.5"},
         )
     except SystemExit:
         pass
 stale_failure = json.loads(output.getvalue())
 assert stale_failure["error_code"] == "venue_rejected"
 assert "stale" in stale_failure["error"]
+
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    try:
+        module.verify_fresh_execution_book(
+            FakeInfo(),
+            {"market": "HYPE", "side": "buy", "max_slippage_bps": "50"},
+            {"base_size": "0.099", "limit_price": "101.5"},
+        )
+    except SystemExit:
+        pass
+minimum_notional_failure = json.loads(output.getvalue())
+assert minimum_notional_failure["error_code"] == "venue_rejected"
+assert "too close to the venue minimum notional" in minimum_notional_failure["error"]
+
+class ExactMinimumInfo:
+    def post(self, path, body):
+        assert path == "/info"
+        assert body == {"type": "l2Book", "coin": "HYPE"}
+        return {
+            "time": int(time.time() * 1000),
+            "levels": [[{"px": "99.99"}], [{"px": "100"}]],
+        }
+
+exact_minimum_gate = module.verify_fresh_execution_book(
+    ExactMinimumInfo(),
+    {"market": "HYPE", "side": "buy", "max_slippage_bps": "50"},
+    {"base_size": "0.1005", "limit_price": "100.5"},
+)
+assert exact_minimum_gate["minimum_notional_proven"] is True
+
+for unsafe_base in ("0.100499", "NaN"):
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        try:
+            module.verify_fresh_execution_book(
+                ExactMinimumInfo(),
+                {"market": "HYPE", "side": "buy", "max_slippage_bps": "50"},
+                {"base_size": unsafe_base, "limit_price": "100.5"},
+            )
+        except SystemExit:
+            pass
+    unsafe_minimum = json.loads(output.getvalue())
+    assert unsafe_minimum["error_code"] == "venue_rejected"
+
+reduce_only_minimum_gate = module.verify_fresh_execution_book(
+    ExactMinimumInfo(),
+    {"market": "HYPE", "side": "sell", "reduce_only": True, "max_slippage_bps": "50"},
+    {"base_size": "0.01", "limit_price": "99.5"},
+)
+assert reduce_only_minimum_gate["minimum_notional_proven"] is True
 
 cancel_target = "0x" + "7" * 32
 

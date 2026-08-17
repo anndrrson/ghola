@@ -119,11 +119,11 @@ describe("durable live-trading state", () => {
     const completedAt = NOW.toISOString();
     await putLiveTradingAccountGraduation({
       version: 2,
-      graduation_id: "graduation_test",
+      graduation_id: "graduation_old_notional",
       owner_commitment: "owner_test",
       account_commitment: "account_test",
       vault_commitment: "vault_test",
-      proof_evidence_commitment: "proof_test",
+      proof_evidence_commitment: "proof_old",
       proof_notional_usd: 10.5,
       status: "active",
       completed_at: completedAt,
@@ -135,7 +135,26 @@ describe("durable live-trading state", () => {
       owner_commitment: "owner_test",
       account_commitment: "account_test",
       vault_commitment: "vault_test",
-    })).toMatchObject({ graduation_id: "graduation_test", proof_notional_usd: 10.5 });
+    })).toBeNull();
+    await putLiveTradingAccountGraduation({
+      version: 2,
+      graduation_id: "graduation_test",
+      owner_commitment: "owner_test",
+      account_commitment: "account_test",
+      vault_commitment: "vault_test",
+      proof_evidence_commitment: "proof_test",
+      proof_notional_usd: 11,
+      status: "active",
+      completed_at: completedAt,
+      revoked_at: null,
+      created_at: completedAt,
+      updated_at: completedAt,
+    });
+    expect(await getActiveLiveTradingAccountGraduation({
+      owner_commitment: "owner_test",
+      account_commitment: "account_test",
+      vault_commitment: "vault_test",
+    })).toMatchObject({ graduation_id: "graduation_test", proof_notional_usd: 11 });
     expect(await getActiveLiveTradingAccountGraduation({
       owner_commitment: "owner_test",
       account_commitment: "account_test",
@@ -167,7 +186,7 @@ function evidence(input: {
     reconciled: status === "green",
     final_flat: status === "green",
     open_order_count: status === "green" ? 0 : -1,
-    order_notional_usd: input.notional ?? 10.5,
+    order_notional_usd: input.notional ?? 11,
     web_git_sha: RELEASE.web_git_sha as string,
     worker_git_sha: RELEASE.worker_git_sha as string,
     worker_image_digest: RELEASE.worker_image_digest as string,

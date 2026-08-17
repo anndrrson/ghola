@@ -75,7 +75,7 @@ GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64=<same pinned public key>
 
 Mirror every worker contract value and release identity field on the web. Keep public launch state
 disabled until the operator starts the canary; the proof UI remains required for each new account's
-$10.50 graduation.
+$11.00 graduation.
 
 ## Checks
 

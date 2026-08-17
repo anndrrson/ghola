@@ -2913,7 +2913,7 @@ function validHyperliquidMainnetProofReport(value: unknown) {
     report.status === "filled" &&
     report.network === "mainnet" &&
     report.market === "HYPE" &&
-    report.notional_usd === 10.5 &&
+    report.notional_usd === LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD &&
     report.max_slippage_bps === 100 &&
     report.claim_store === "postgres" &&
     report.entry_status === "filled" &&

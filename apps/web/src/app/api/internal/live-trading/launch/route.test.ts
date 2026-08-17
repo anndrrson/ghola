@@ -96,7 +96,7 @@ async function recordProof(index: number) {
     reconciled: true,
     final_flat: true,
     open_order_count: 0,
-    order_notional_usd: 10.5,
+    order_notional_usd: 11,
     web_git_sha: release.web_git_sha as string,
     worker_git_sha: release.worker_git_sha as string,
     worker_image_digest: release.worker_image_digest as string,

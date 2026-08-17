@@ -12,6 +12,7 @@ EXECUTION_BOOK_MAX_AGE_MS = 2000
 EXECUTION_EXPIRY_MAX_TTL_MS = 5 * 60 * 1000
 API_WALLET_MIN_VALIDITY_MS = 5 * 60 * 1000
 MIN_ORDER_NOTIONAL_USD = Decimal("10")
+MIN_OPENING_REFERENCE_NOTIONAL_USD = Decimal("10.05")
 
 
 def fail(message, error_code="connector_submit_failed"):
@@ -104,7 +105,7 @@ def main():
             order = instruction["order"]
             expires_after_ms = configure_action_expiry(exchange, instruction)
             resolved = resolve_limit_order(info, order, execution_address)
-            market_gate = verify_fresh_execution_book(info, order, resolved)
+            market_gate = verify_fresh_execution_book(info, order, resolved, execution_address)
             Cloid.from_str(cloid)
             protection_checked = False
             if instruction.get("position_protection"):
@@ -137,9 +138,12 @@ def main():
         if op == "limit_order":
             order = instruction["order"]
             expires_after_ms = configure_action_expiry(exchange, instruction)
-            resolved = resolve_limit_order(info, order, execution_address)
-            market_gate = verify_fresh_execution_book(info, order, resolved)
-            execution_configuration = configure_isolated_leverage(exchange, order)
+            resolved, execution_configuration, market_gate = prepare_live_limit_order(
+                info,
+                exchange,
+                order,
+                execution_address,
+            )
             protection = instruction.get("position_protection")
             if protection:
                 redacted = submit_protected_limit_order(
@@ -216,6 +220,15 @@ def main():
         fail(hyperliquid_error_message(error), "venue_rejected")
 
     fail("unsupported hyperliquid operation")
+
+
+def prepare_live_limit_order(info, exchange, order, execution_address):
+    resolved = resolve_limit_order(info, order, execution_address)
+    # Leverage is a signed venue mutation and can block. Complete it before the
+    # final market proof so no network mutation can age the proven BBO/mark.
+    execution_configuration = configure_isolated_leverage(exchange, order)
+    market_gate = verify_fresh_execution_book(info, order, resolved, execution_address)
+    return resolved, execution_configuration, market_gate
 
 
 def resolve_limit_order(info, order, account_address):
@@ -659,8 +672,30 @@ def derived_cloid(parent_cloid, purpose):
     return f"0x{digest[:32]}"
 
 
-def verify_fresh_execution_book(info, order, resolved):
+def verify_fresh_execution_book(info, order, resolved, account_address=None):
     coin = order.get("market")
+    opening_order = not bool(order.get("reduce_only"))
+    mark_price = None
+    active_reference_received_at_ms = None
+    if opening_order and account_address is not None:
+        try:
+            active = info.post("/info", {
+                "type": "activeAssetData",
+                "user": account_address,
+                "coin": coin,
+            })
+            if (
+                not isinstance(active, dict)
+                or str(active.get("user") or "").lower() != str(account_address).lower()
+                or active.get("coin") != coin
+            ):
+                raise ValueError("invalid active asset identity")
+            mark_price = Decimal(str(active.get("markPx")))
+            if not mark_price.is_finite() or mark_price <= 0:
+                raise ValueError("invalid active asset mark price")
+            active_reference_received_at_ms = int(time.time() * 1000)
+        except (AttributeError, InvalidOperation, TypeError, ValueError):
+            fail("hyperliquid active market reference is unavailable", "venue_rejected")
     # Account/capacity preflights can take long enough for the book used to
     # size the order to age out. Re-read immediately before acceptance and
     # prove the already-bounded limit against the current executable book.
@@ -672,6 +707,11 @@ def verify_fresh_execution_book(info, order, resolved):
     source_age_ms = now_ms - source_time_ms
     if source_age_ms < -1000 or source_age_ms > EXECUTION_BOOK_MAX_AGE_MS:
         fail("hyperliquid executable book is stale", "venue_rejected")
+    if (
+        active_reference_received_at_ms is not None
+        and now_ms - active_reference_received_at_ms > EXECUTION_BOOK_MAX_AGE_MS
+    ):
+        fail("hyperliquid active market reference is stale", "venue_rejected")
     if best_ask <= best_bid:
         fail("hyperliquid executable book is crossed", "venue_rejected")
     try:
@@ -682,6 +722,49 @@ def verify_fresh_execution_book(info, order, resolved):
     if limit_price <= 0 or max_slippage_bps <= 0 or max_slippage_bps > 100:
         fail("hyperliquid execution slippage bound is invalid", "venue_rejected")
     reference = best_ask if order.get("side") == "buy" else best_bid
+    if order.get("order_type") == "market":
+        try:
+            size_decimals = resolved.get("size_decimals")
+            if type(size_decimals) is not int or size_decimals < 0:
+                raise ValueError("invalid market size precision")
+            slippage = max_slippage_bps / Decimal("10000")
+            fresh_limit = reference * (
+                Decimal("1") + slippage
+                if order.get("side") == "buy"
+                else Decimal("1") - slippage
+            )
+            fresh_price = quantize_hyperliquid_perp_price(
+                fresh_limit,
+                size_decimals,
+                ROUND_DOWN if order.get("side") == "buy" else ROUND_UP,
+            )
+            quote_size = Decimal(str(order.get("quote_size") or "0"))
+            if quote_size > 0:
+                previous_base = Decimal(str(resolved.get("base_size")))
+                fresh_base = floor_decimal(quote_size / fresh_price, size_decimals)
+                if fresh_base <= 0 or fresh_base != previous_base:
+                    fail("hyperliquid market moved across an order lot boundary", "venue_rejected")
+                resolved["limit_price"] = decimal_text(fresh_price)
+                limit_price = fresh_price
+            elif bool(order.get("reduce_only")):
+                resolved["limit_price"] = decimal_text(fresh_price)
+                limit_price = fresh_price
+        except SystemExit:
+            raise
+        except (AttributeError, InvalidOperation, TypeError, ValueError):
+            fail("hyperliquid fresh market resolution is invalid", "venue_rejected")
+    if opening_order:
+        try:
+            base_size = Decimal(str(resolved.get("base_size")))
+        except (InvalidOperation, TypeError, ValueError):
+            fail("hyperliquid opening order size is invalid", "venue_rejected")
+        minimum_reference = min(reference, mark_price) if mark_price is not None else reference
+        if (
+            not base_size.is_finite()
+            or base_size <= 0
+            or base_size * minimum_reference < MIN_OPENING_REFERENCE_NOTIONAL_USD
+        ):
+            fail("hyperliquid opening order is too close to the venue minimum notional", "venue_rejected")
     adverse_bps = (
         (limit_price - reference) / reference * Decimal("10000")
         if order.get("side") == "buy"
@@ -695,6 +778,7 @@ def verify_fresh_execution_book(info, order, resolved):
         "max_age_ms": EXECUTION_BOOK_MAX_AGE_MS,
         "freshness_proven": True,
         "slippage_bound_proven": True,
+        "minimum_notional_proven": True,
     }
 
 

@@ -8,7 +8,7 @@ their own proof gates pass.
 
 - Eligible paid, non-US users only; explicit terms and risk attestation required.
 - Trade-only sealed API wallet; no withdrawal authority.
-- First account proof: exactly $10.50 HYPE entry and reduce-only exit.
+- First account proof: exactly $11.00 HYPE entry and reduce-only exit.
 - Public order: limit IOC, isolated margin, 1× leverage.
 - Caps: $100/order, $500 rolling 24 hours, 50 bps default, 100 bps hard maximum.
 - Three fresh, consecutive, funded mainnet round trips from distinct actual venue accounts per
@@ -23,7 +23,7 @@ their own proof gates pass.
 1. Deploy the exact web and attested worker release with durable Postgres state.
 2. Keep launch state `disabled`; verify `/ready` identities and configuration.
 3. Set launch state to `canary` through the internal control route.
-4. Three authorized canary accounts each complete the funded $10.50 round trip. Successful worker
+4. Three authorized canary accounts each complete the funded $11.00 round trip. Successful worker
    reports record capability evidence automatically; a failed canary attempt records red evidence and
    resets the consecutive sequence.
 5. Verify restart/idempotency, rejection, timeout, reconciliation, kill, and reduce-only behavior.

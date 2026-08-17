@@ -1,7 +1,7 @@
 import type { TradeOrderPlan } from "./trade-order-plan";
 
 export const LIVE_TRADING_CONTRACT_VERSION = 2 as const;
-export const LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD = 10.5;
+export const LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD = 11;
 export const LIVE_TRADING_MAX_ORDER_NOTIONAL_USD = 100;
 export const LIVE_TRADING_ROLLING_24H_NOTIONAL_USD = 500;
 export const LIVE_TRADING_DEFAULT_SLIPPAGE_BPS = 50;

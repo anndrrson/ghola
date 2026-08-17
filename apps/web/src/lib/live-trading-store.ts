@@ -229,7 +229,8 @@ export async function getActiveLiveTradingAccountGraduation(input: {
     return Array.from(graduationMemory.values())
       .filter((record) => record.owner_commitment === input.owner_commitment &&
         record.account_commitment === input.account_commitment &&
-        record.vault_commitment === input.vault_commitment && record.status === "active")
+        record.vault_commitment === input.vault_commitment &&
+        activeGraduationMatchesContract(record))
       .sort((left, right) => right.updated_at.localeCompare(left.updated_at))[0] ?? null;
   }
   await ensureSchema(sql);
@@ -239,9 +240,11 @@ export async function getActiveLiveTradingAccountGraduation(input: {
       AND account_commitment = ${input.account_commitment}
       AND vault_commitment = ${input.vault_commitment}
       AND status = 'active'
-    ORDER BY updated_at DESC LIMIT 1
+    ORDER BY updated_at DESC
   ` as Array<{ graduation: LiveTradingAccountGraduation | string }>;
-  return rows[0] ? parseJsonRow(rows[0].graduation) : null;
+  return rows
+    .map((row) => parseJsonRow<LiveTradingAccountGraduation>(row.graduation))
+    .find(activeGraduationMatchesContract) ?? null;
 }
 
 export async function reserveLiveTradingNotional(input: {
@@ -476,6 +479,11 @@ function parseJsonRow<T>(value: T | string): T {
 
 function sameNumber(left: number, right: number) {
   return Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) < 0.000001;
+}
+
+function activeGraduationMatchesContract(record: LiveTradingAccountGraduation) {
+  return record.status === "active" &&
+    sameNumber(record.proof_notional_usd, LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD);
 }
 
 function replayableReservation(

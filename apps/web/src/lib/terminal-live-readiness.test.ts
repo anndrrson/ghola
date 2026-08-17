@@ -216,7 +216,7 @@ function fixture(
       checked_at: new Date(NOW).toISOString(),
     },
     effective_caps: {
-      first_proof_notional_usd: 10.5,
+      first_proof_notional_usd: 11,
       max_order_notional_usd: 100,
       rolling_24h_notional_usd: 500,
       default_slippage_bps: 50,
@@ -225,7 +225,7 @@ function fixture(
     proof_policy: {
       venue_id: "hyperliquid",
       network: "mainnet",
-      first_proof_notional_usd: 10.5,
+      first_proof_notional_usd: 11,
       required_consecutive_passes: 3,
       final_flat_required: true,
       zero_open_orders_required: true,

@@ -283,7 +283,7 @@ export function ConnectHyperliquidButton({
               href="/trade/mainnet-e2e"
               className="trade-action flex h-10 items-center justify-center rounded-md px-4 text-xs font-semibold"
             >
-              Run real $10.50 proof trade
+              Run real $11.00 proof trade
             </Link>
           ) : null}
         </div>

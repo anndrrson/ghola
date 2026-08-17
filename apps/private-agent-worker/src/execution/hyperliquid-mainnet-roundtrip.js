@@ -18,6 +18,13 @@ import { buildHyperliquidMainnetProtection } from "./hyperliquid-mainnet-protect
 export const MAINNET_PROOF_CONFIRMATION =
   "I_UNDERSTAND_THIS_OPENS_AND_CLOSES_A_REAL_MAINNET_POSITION";
 
+const MAINNET_PROOF_WORK_ORDER_PATTERN =
+  /^hl_mainnet_investor_proof_(?:v2_)?[0-9a-f]{32}$/u;
+
+export function isHyperliquidMainnetProofWorkOrder(value) {
+  return MAINNET_PROOF_WORK_ORDER_PATTERN.test(String(value || ""));
+}
+
 export function validateHyperliquidMainnetRoundTripRequest(body, recipient) {
   const errors = [];
   if (!body || typeof body !== "object" || Array.isArray(body)) return ["request body must be an object"];
@@ -28,7 +35,7 @@ export function validateHyperliquidMainnetRoundTripRequest(body, recipient) {
     if (typeof body[field] !== "string" || !body[field].trim()) errors.push(`${field} is required`);
   }
   if (body.market !== "HYPE") errors.push("market must be HYPE");
-  if (body.notional_usd !== 10.5) errors.push("notional_usd must be 10.5");
+  if (body.notional_usd !== 11) errors.push("notional_usd must be 11");
   if (body.slippage_bps !== 100) errors.push("slippage_bps must be 100");
   const bundle = body.encrypted_execution_vault;
   if (!bundle || typeof bundle !== "object" || Array.isArray(bundle)) {
@@ -71,7 +78,7 @@ export async function recoverHyperliquidMainnetCanary({
   submitRecovery = submitHyperliquidExecution,
 }) {
   if (credential?.network !== "mainnet" || market !== "HYPE" || slippageBps !== 100 ||
-      !/^hl_mainnet_investor_proof_[0-9a-f]{32}$/u.test(String(proofWorkOrder || ""))) {
+      !isHyperliquidMainnetProofWorkOrder(proofWorkOrder)) {
     throw proofError("mainnet canary recovery scope is invalid", 400);
   }
   const entryWorkOrder = `${proofWorkOrder}_entry`;
@@ -147,7 +154,7 @@ export async function runSealedHyperliquidMainnetRoundTrip({
   const credential = hyperliquidCredentialFromVault(opened.json);
   if (credential.network !== "mainnet") throw proofError("sealed vault is not bound to Hyperliquid mainnet", 409);
 
-  const proofWorkOrder = `hl_mainnet_investor_proof_${sha256(body.vault_commitment).slice(0, 32)}`;
+  const proofWorkOrder = `hl_mainnet_investor_proof_v2_${sha256(body.vault_commitment).slice(0, 32)}`;
   const claimContext = {
     venue_id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
@@ -529,6 +536,13 @@ async function performRoundTrip({
 }
 
 function orderBody(body, workOrderCommitment) {
+  const proofPolicyCommitment = `hl_mainnet_investor_proof_v2_policy_${sha256(stableJson({
+    vault_policy_commitment: body.policy_commitment,
+    vault_commitment: body.vault_commitment,
+    proof_kind: "hl_mainnet_investor_proof_v2",
+    notional_usd: 11,
+    slippage_bps: 100,
+  })).slice(0, 40)}`;
   return {
     version: 1,
     execution_mode: "byo_api_key",
@@ -539,7 +553,9 @@ function orderBody(body, workOrderCommitment) {
     work_order_commitment: workOrderCommitment,
     operation_class: "limit_order",
     session_policy: {
-      policy_commitment: body.policy_commitment,
+      // Keep the external vault policy binding above unchanged, while isolating
+      // this explicitly re-authorized v2 proof from a consumed v1 order quota.
+      policy_commitment: proofPolicyCommitment,
       market_allowlist: [body.market],
       max_notional_bucket: "25",
       max_daily_notional_bucket: "25",

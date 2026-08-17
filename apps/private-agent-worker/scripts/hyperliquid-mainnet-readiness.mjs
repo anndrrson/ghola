@@ -69,7 +69,7 @@ export async function certifyHyperliquidMainnetReadiness({
     order: {
       market: "HYPE",
       side: "buy",
-      quote_size: "10.5",
+      quote_size: "11",
       size_mode: "quote",
       order_type: "market",
       tif: "Ioc",
@@ -139,7 +139,7 @@ export async function certifyHyperliquidMainnetReadiness({
     status: "ready_for_funded_canary",
     network: "mainnet",
     market: "HYPE",
-    notional_usd: 10.5,
+    notional_usd: 11,
     max_slippage_bps: 100,
     account_commitment: `hyperliquid_account_${sha256(config.accountAddress).slice(0, 40)}`,
     account_ready: true,

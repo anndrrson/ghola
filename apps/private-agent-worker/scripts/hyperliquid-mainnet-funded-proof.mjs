@@ -49,7 +49,7 @@ export async function createFundedProofDossier({
       take_profit: { oid: report.take_profit_oid, cloid: report.take_profit_cloid },
       stop_loss: { oid: report.stop_loss_oid, cloid: report.stop_loss_cloid },
     },
-    expectedNotionalUsd: 10.5,
+    expectedNotionalUsd: 11,
     fetchImpl,
   });
   assertSameVenueEvidence(report.venue_evidence, freshEvidence);
@@ -73,7 +73,7 @@ export async function createFundedProofDossier({
     market: "HYPE",
     real_funds: true,
     execution_account_address: config.accountAddress,
-    notional_usd: 10.5,
+    notional_usd: 11,
     entry_order: freshEvidence.entry,
     exit_order: freshEvidence.exit,
     round_trip: {
@@ -137,7 +137,7 @@ export async function createFundedProofDossier({
 
 function assertHardenedReport(report) {
   if (report?.ok !== true || report?.status !== "filled" || report?.network !== "mainnet" ||
-      report?.market !== "HYPE" || report?.notional_usd !== 10.5 || report?.claim_store !== "postgres" ||
+      report?.market !== "HYPE" || report?.notional_usd !== 11 || report?.claim_store !== "postgres" ||
       report?.preflight_verified !== true || report?.api_wallet_authorization_verified !== true ||
       !/^0x[0-9a-f]{40}$/u.test(String(report?.api_wallet_address || "").toLowerCase()) ||
       report?.preflight_transaction_broadcast !== false || report?.independent_venue_evidence_proven !== true ||
