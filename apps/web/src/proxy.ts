@@ -133,6 +133,9 @@ export function proxy(request: NextRequest) {
       "Cross-Origin-Opener-Policy",
       "same-origin-allow-popups",
     );
+    // COEP require-corp blocks the Google Identity Services iframe because
+    // that third-party frame does not opt into Ghola's isolation policy.
+    response.headers.set("Cross-Origin-Embedder-Policy", "unsafe-none");
   }
 
   // Sensitive pages: noindex + nofollow

@@ -67,7 +67,16 @@ describe("middleware security hardening", () => {
       proxy(requestFor("/signup")).headers.get("Cross-Origin-Opener-Policy"),
     ).toBe("same-origin-allow-popups");
     expect(
+      proxy(requestFor("/signin")).headers.get("Cross-Origin-Embedder-Policy"),
+    ).toBe("unsafe-none");
+    expect(
+      proxy(requestFor("/signup")).headers.get("Cross-Origin-Embedder-Policy"),
+    ).toBe("unsafe-none");
+    expect(
       proxy(requestFor("/trade")).headers.get("Cross-Origin-Opener-Policy"),
     ).toBe("same-origin");
+    expect(
+      proxy(requestFor("/trade")).headers.get("Cross-Origin-Embedder-Policy"),
+    ).toBeNull();
   });
 });

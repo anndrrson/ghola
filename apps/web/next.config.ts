@@ -19,10 +19,17 @@ const LOCKED_PERMISSIONS_POLICY =
 const INTENT_PERMISSIONS_POLICY =
   "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(self), payment=(), usb=()";
 
-const OAUTH_POPUP_HEADERS = [
+export const OAUTH_POPUP_HEADERS = [
   {
     key: "Cross-Origin-Opener-Policy",
     value: "same-origin-allow-popups",
+  },
+  {
+    // Google Identity Services embeds a cross-origin iframe that does not
+    // opt into our site-wide COEP isolation. Keep this narrowly disabled on
+    // the two auth entry pages; the trading/runtime surfaces stay isolated.
+    key: "Cross-Origin-Embedder-Policy",
+    value: "unsafe-none",
   },
 ];
 

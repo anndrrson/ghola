@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { SECURITY_HEADERS } from "../../next.config";
+import { OAUTH_POPUP_HEADERS, SECURITY_HEADERS } from "../../next.config";
 
 function headerMap(headers: Array<{ key: string; value: string }>) {
   const m = new Map<string, string>();
@@ -36,5 +36,16 @@ describe("security headers (next.config)", () => {
 
     expect(m.has("content-security-policy")).toBe(false);
     expect(m.has("content-security-policy-report-only")).toBe(false);
+  });
+
+  it("disables embedder isolation only for Google OAuth entry pages", () => {
+    const site = headerMap(SECURITY_HEADERS);
+    const oauth = headerMap(OAUTH_POPUP_HEADERS);
+
+    expect(site.get("cross-origin-embedder-policy")).toBe("require-corp");
+    expect(oauth.get("cross-origin-opener-policy")).toBe(
+      "same-origin-allow-popups",
+    );
+    expect(oauth.get("cross-origin-embedder-policy")).toBe("unsafe-none");
   });
 });
