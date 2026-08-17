@@ -1,4 +1,8 @@
-import { privateAgentTransportAllowed } from "./private-agent-spend-policy";
+import {
+  privateAgentEmergencyControlTransportAllowed,
+  privateAgentTransportAllowed,
+  type PrivateAgentEmergencyControlAction,
+} from "./private-agent-spend-policy";
 import {
   LIVE_TRADING_CONTRACT_VERSION,
   LIVE_TRADING_MAX_ORDER_NOTIONAL_USD,
@@ -104,9 +108,48 @@ export async function probeLiveTradingWorkerReadiness(input: {
 }): Promise<LiveTradingWorkerReadiness> {
   const env = input.env ?? process.env;
   const fetchImpl = input.fetchImpl ?? fetch;
+  return probePinnedLiveTradingWorkerReadiness({
+    ...input,
+    env,
+    fetchImpl,
+    transportAllowed: privateAgentTransportAllowed("discover", env, fetchImpl),
+  });
+}
+
+/**
+ * Emergency risk reduction may cross the worker transport while production
+ * spend is disarmed or locked down. The response is still checked against the
+ * same exact release, attestation readiness, caps, and capabilities as normal
+ * live execution.
+ */
+export async function probeEmergencyLiveTradingWorkerReadiness(input: {
+  action: Extract<PrivateAgentEmergencyControlAction, "close" | "kill_and_flat">;
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
+  expectedRelease: LiveTradingReleaseIdentity;
+  requiredCapabilities: LiveTradingCapabilityId[];
+}): Promise<LiveTradingWorkerReadiness> {
+  const env = input.env ?? process.env;
+  const fetchImpl = input.fetchImpl ?? fetch;
+  return probePinnedLiveTradingWorkerReadiness({
+    ...input,
+    env,
+    fetchImpl,
+    transportAllowed: privateAgentEmergencyControlTransportAllowed(input.action, env, fetchImpl),
+  });
+}
+
+async function probePinnedLiveTradingWorkerReadiness(input: {
+  env: Record<string, string | undefined>;
+  fetchImpl: typeof fetch;
+  expectedRelease: LiveTradingReleaseIdentity;
+  requiredCapabilities: LiveTradingCapabilityId[];
+  transportAllowed: boolean;
+}): Promise<LiveTradingWorkerReadiness> {
+  const { env, fetchImpl } = input;
   const config = autopilotWorkerConfig(env);
   const checkedAt = new Date().toISOString();
-  if (!config.url || !config.authConfigured || !privateAgentTransportAllowed("discover", env, fetchImpl)) {
+  if (!config.url || !config.authConfigured || !input.transportAllowed) {
     return liveUnavailable("live_worker_not_configured", Boolean(config.url), checkedAt);
   }
   const response = await fetchImpl(new URL("/ready", config.url), {

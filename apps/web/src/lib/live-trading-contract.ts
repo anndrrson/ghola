@@ -101,6 +101,7 @@ export function liveTradingConfigSnapshot(env: Record<string, string | undefined
     require_dstack_quote: env.PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE?.trim() || null,
     require_worker_capability: env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY?.trim() || null,
     position_protection_enabled: env.GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED?.trim() || null,
+    risk_reduction_enabled: env.PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED?.trim() || null,
     public_capabilities: configuredLiveTradingCapabilities(env).sort(),
     funding_signer_keys_b64: configuredLiveTradingFundingSignerKeys(env).sort(),
   };
@@ -119,6 +120,7 @@ export function liveTradingConfigurationFailures(
   env: Record<string, string | undefined>,
 ): string[] {
   const failures: string[] = [];
+  const publicCapabilities = configuredLiveTradingCapabilities(env);
   if (env.GHOLA_LIVE_TRADING_PUBLIC_ENABLED?.trim() !== "true") failures.push("live_trading_public_flag_disabled");
   if (env.PRIVATE_AGENT_VENUE_DRY_RUN?.trim() === "true") failures.push("venue_dry_run_enabled");
   if (env.PRIVATE_AGENT_HYPERLIQUID_NO_SUBMIT_LOCAL_CHECKS?.trim() === "true") {
@@ -142,6 +144,10 @@ export function liveTradingConfigurationFailures(
   if (env.PRIVATE_AGENT_STATE_STORE?.trim().toLowerCase() !== "postgres") failures.push("worker_state_store_not_postgres");
   if (env.PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE?.trim() !== "true") failures.push("worker_dstack_quote_not_required");
   if (env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY?.trim() !== "true") failures.push("worker_capability_auth_not_required");
+  const riskReductionPublic = publicCapabilities.includes("cancel") || publicCapabilities.includes("reduce_only");
+  if (riskReductionPublic && env.PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED?.trim() !== "true") {
+    failures.push("hyperliquid_risk_reduction_disabled");
+  }
   const fundingSignerKeys = configuredLiveTradingFundingSignerKeys(env);
   if (fundingSignerKeys.length === 0) failures.push("funding_worker_signer_pin_missing");
   else if (fundingSignerKeys.some((key) => !validBase64PublicKey(key))) failures.push("funding_worker_signer_pin_invalid");
@@ -154,6 +160,10 @@ export function liveTradingConfigurationFailures(
     failures.push("public_capability_configuration_invalid");
   }
   const implementedCapabilities = new Set<LiveTradingCapabilityId>(["limit_order"]);
+  if (env.PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED?.trim() === "true") {
+    implementedCapabilities.add("cancel");
+    implementedCapabilities.add("reduce_only");
+  }
   if (env.GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED?.trim() === "true") {
     implementedCapabilities.add("stop_loss");
     implementedCapabilities.add("take_profit");
@@ -166,6 +176,10 @@ export function liveTradingConfigurationFailures(
     env.GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED?.trim() === "true" &&
     !["limit_order", "stop_loss", "take_profit"].every((capability) => configuredCapabilities.includes(capability as LiveTradingCapabilityId))
   ) failures.push("position_protection_capabilities_missing");
+  if (
+    env.PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED?.trim() === "true" &&
+    !["limit_order", "cancel", "reduce_only"].every((capability) => configuredCapabilities.includes(capability as LiveTradingCapabilityId))
+  ) failures.push("risk_reduction_capabilities_missing");
   return [...new Set(failures)];
 }
 

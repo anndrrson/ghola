@@ -4,7 +4,7 @@ import { liveTradingReadinessContract } from "../src/server.js";
 
 const SHA = "a".repeat(40);
 const DIGEST = `sha256:${"b".repeat(64)}`;
-const FINGERPRINT = "live_trading_config_f67a7172be960ff2abd87d4d889c09546ee06d419e9a35c5";
+const FINGERPRINT = "live_trading_config_f5a5cd665ace3270ef47a360b104600b292b669512a777f9";
 
 test("worker live readiness exposes only the exact canonical limit-order contract", () => {
   const readiness = liveTradingReadinessContract(exactEnv());
@@ -46,6 +46,20 @@ test("worker live readiness fails closed on durability, attestation, capability,
     "legacy_hyperliquid_live_mode_present",
     "hyperliquid_no_submit_simulation_enabled",
   ]) assert.ok(readiness.reason_codes.includes(reason), reason);
+});
+
+test("worker advertises cancel and reduce-only only behind the exact risk-reduction flag", () => {
+  const readiness = liveTradingReadinessContract({
+    ...exactEnv(),
+    PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED: "true",
+    PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES: "limit_order,cancel,reduce_only",
+  });
+  assert.equal(readiness.ready, true);
+  assert.deepEqual(readiness.capabilities, ["cancel", "limit_order", "reduce_only"]);
+  assert.equal(liveTradingReadinessContract({
+    ...exactEnv(),
+    PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES: "limit_order,cancel,reduce_only",
+  }).ready, false);
 });
 
 function exactEnv() {

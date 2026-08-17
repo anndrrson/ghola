@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
 import {
+  SESSION_COOKIE_NAME,
+  THUMPER_API_BASE,
+} from "@/app/api/auth/session/_lib";
+import {
   markPhalaPrivateAgentActivity,
   wakePhalaPrivateAgentForUse,
 } from "@/lib/private-agent-phala";
+import { hasPrivateAgentEntitlement } from "@/lib/private-agent-runtime";
 import { getPrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime-server";
 import { privateAgentSpendPolicy } from "@/lib/private-agent-spend-policy";
 import {
@@ -17,6 +22,7 @@ export const maxDuration = 120;
 
 export interface PublicAgentWakeDependencies {
   authenticateImpl: typeof privateAccountOwnerFromRequest;
+  entitlementImpl: typeof publicAgentWakeEntitlement;
   quotaStoreReadyImpl: typeof consumerProductionStoreReady;
   consumeRateLimitImpl: typeof consumeConsumerRateLimit;
   spendPolicyImpl: typeof privateAgentSpendPolicy;
@@ -27,6 +33,7 @@ export interface PublicAgentWakeDependencies {
 
 const dependencies: PublicAgentWakeDependencies = {
   authenticateImpl: privateAccountOwnerFromRequest,
+  entitlementImpl: publicAgentWakeEntitlement,
   quotaStoreReadyImpl: consumerProductionStoreReady,
   consumeRateLimitImpl: consumeConsumerRateLimit,
   spendPolicyImpl: privateAgentSpendPolicy,
@@ -55,6 +62,22 @@ async function handlePost(request: Request, deps: PublicAgentWakeDependencies) {
   const owner = await deps.authenticateImpl(request).catch(() => null);
   if (!owner) {
     return json({ version: 1, error: "private_account_auth_required" }, 401);
+  }
+  const entitlement = await deps.entitlementImpl(request).catch(() => ({
+    ok: false as const,
+    status: 503,
+    error: "billing_unavailable",
+  }));
+  if (!entitlement.ok) {
+    return json({
+      version: 1,
+      status: "blocked",
+      ready: false,
+      error: entitlement.error,
+      message: entitlement.status === 402
+        ? "Private-agent access is required to start secure setup compute."
+        : "Private-agent access could not be verified. The worker was not started.",
+    }, entitlement.status);
   }
   if (!deps.spendPolicyImpl("wake").allowed) {
     return blocked(202, "wake_checked");
@@ -164,6 +187,50 @@ function json(body: unknown, status = 200) {
 
 function publicWakeEnabled() {
   return process.env.GHOLA_PUBLIC_AGENT_WAKE_ENABLED === "true";
+}
+
+export async function publicAgentWakeEntitlement(
+  request: Request,
+  fetchImpl: typeof fetch = fetch,
+): Promise<
+  | { ok: true }
+  | { ok: false; status: number; error: string }
+> {
+  const authorization = billingAuthorization(request);
+  if (!authorization) {
+    return { ok: false, status: 401, error: "private_account_auth_required" };
+  }
+  const response = await fetchImpl(`${THUMPER_API_BASE}/api/billing/status`, {
+    method: "GET",
+    headers: { authorization, accept: "application/json" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(5_000),
+  }).catch(() => null);
+  if (!response) return { ok: false, status: 503, error: "billing_unavailable" };
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status === 401 || response.status === 403 ? 401 : 503,
+      error: "billing_entitlement_unavailable",
+    };
+  }
+  const body = await response.json().catch(() => null) as { tier?: string | null } | null;
+  return hasPrivateAgentEntitlement(body?.tier)
+    ? { ok: true }
+    : { ok: false, status: 402, error: "private_agent_subscription_required" };
+}
+
+function billingAuthorization(request: Request): string | null {
+  const authorization = request.headers.get("authorization")?.trim();
+  if (authorization?.startsWith("Bearer ")) return authorization;
+  const cookie = request.headers.get("cookie") ?? "";
+  for (const part of cookie.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 0 || part.slice(0, separator).trim() !== SESSION_COOKIE_NAME) continue;
+    const value = part.slice(separator + 1).trim();
+    if (value) return `Bearer ${value}`;
+  }
+  return null;
 }
 
 /** Same-origin JSON is the route's CSRF contract; the session is SameSite=Strict. */

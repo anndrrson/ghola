@@ -68,6 +68,7 @@ const TEST_ENV_KEYS = [
   "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD",
   "PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED",
+  "PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED",
   "PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD",
@@ -256,6 +257,29 @@ describe("private-agent Phala provisioning", () => {
     expect(compose).toContain('PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD: "500"');
     expect(compose).toContain('PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES: "limit_order,stop_loss,take_profit"');
     expect(compose).toContain('GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED: "true"');
+  });
+
+  it("propagates and cleans up the exact Hyperliquid risk-reduction contract", () => {
+    setTestEnv({
+      GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES: "limit_order,cancel,reduce_only",
+      PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED: "true",
+    });
+
+    const compose = buildPhalaWorkerCompose({
+      image: "ghcr.io/example/worker@sha256:abc",
+      imageDigest: "sha256:abc",
+    });
+
+    expect(compose).toContain('PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED: "true"');
+    expect(compose).toContain('PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES: "limit_order,cancel,reduce_only"');
+
+    setTestEnv({});
+    const resetCompose = buildPhalaWorkerCompose({
+      image: "ghcr.io/example/worker@sha256:abc",
+      imageDigest: "sha256:abc",
+    });
+    expect(resetCompose).toContain('PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED: "false"');
+    expect(resetCompose).not.toContain('PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES: "limit_order,cancel,reduce_only"');
   });
 
   it("refuses live JIT provisioning without an explicit fresh worker image", () => {

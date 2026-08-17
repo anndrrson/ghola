@@ -320,6 +320,107 @@ describe("private account autopilot sessions", () => {
     expect(killAttempts).toBe(2);
   });
 
+  it("persists kill-and-flat only after exact venue final-flat acknowledgement", async () => {
+    const env = {
+      GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+    };
+    const evidence = {
+      proof_kind: "hyperliquid_kill_and_flat_v1",
+      status: "reconciled",
+      final_flat_proven: true,
+      account_flat: true,
+      open_order_count: 0,
+      reduce_only_exit_proven: true,
+      cancellations_terminal: true,
+      cancellations: [{
+        terminal_status: "canceled",
+        venue_readback_proven: true,
+        replay_protected: true,
+        venue_order_oid: "87654321",
+        work_order_commitment: "hl_cancel_work_123456",
+      }],
+      closes: [{
+        terminal_status: "filled",
+        reduce_only: true,
+        venue_readback_proven: true,
+        replay_protected: true,
+        venue_order_oid: "12345678",
+        work_order_commitment: "hl_close_work_123456",
+        fill_count_bucket: "1",
+        fill_evidence_commitment: "hl_fill_evidence_1234567890",
+        fill_summary: { filled_base_size: "0.001", filled_notional_usd: 65.2, average_price: 65_200 },
+      }],
+      evidence_commitment: "hl_risk_evidence_1234567890",
+      root_work_order_commitment: "hl_kill_flat_root_1234567890",
+      reconciled_at: "2026-08-12T12:01:00.000Z",
+      completed_at: "2026-08-12T12:01:01.000Z",
+    };
+    const paths: string[] = [];
+    const transport = brandPrivateAgentMockTransport((async (input: URL | RequestInfo) => {
+      const url = String(input);
+      paths.push(url);
+      if (url.endsWith("/ready")) return Response.json({ ready: true, missing: [] });
+      if (url.endsWith("/autopilot/sessions")) return Response.json({
+        session: {
+          autopilot_session_id: "worker_flat_ack",
+          status: "running",
+          execution_enabled: true,
+        },
+        events: [],
+      }, { status: 201 });
+      return Response.json({
+        session: {
+          autopilot_session_id: "worker_flat_ack",
+          status: "killed",
+          execution_enabled: false,
+          final_flat_evidence: evidence,
+        },
+        event: {
+          event_id: "worker_flat_event",
+          type: "session_state",
+          status: "killed",
+          message: "Autopilot kill_and_flat.",
+          data: {
+            action: "kill_and_flat",
+            final_flat_proven: true,
+            evidence_commitment: evidence.evidence_commitment,
+          },
+        },
+      });
+    }) as typeof fetch);
+    const created = await createAutonomousAutopilotSessionFromBody(
+      {},
+      owner,
+      new Date("2026-08-12T12:00:00.000Z"),
+      env,
+      transport,
+    );
+    const result = await controlAutonomousAutopilotSessionFromBody(
+      created.session.autopilot_session_id,
+      "kill_and_flat",
+      owner,
+      new Date("2026-08-12T12:01:00.000Z"),
+      env,
+      transport,
+    );
+    expect(paths.at(-1)).toBe("https://worker.example/autopilot/sessions/worker_flat_ack/kill-and-flat");
+    expect(result).toMatchObject({
+      session: {
+        status: "killed",
+        execution_enabled: false,
+        final_flat_evidence: {
+          final_flat_proven: true,
+          open_order_count: 0,
+          evidence_commitment: evidence.evidence_commitment,
+        },
+      },
+      event: { event_id: "worker_flat_event" },
+    });
+    expect(JSON.stringify(result)).not.toContain("fill_summary");
+    expect(JSON.stringify(result)).not.toContain("filled_notional_usd");
+  });
+
   it("rejects 2xx worker responses with mismatched control state or action", async () => {
     const env = {
       GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",

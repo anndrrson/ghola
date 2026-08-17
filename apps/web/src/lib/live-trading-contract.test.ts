@@ -8,7 +8,7 @@ import { currentLiveTradingReleaseIdentity } from "./live-trading-release.server
 const SHA = "a".repeat(40);
 const DIGEST = `sha256:${"b".repeat(64)}`;
 const SIGNER = Buffer.alloc(44, 7).toString("base64");
-const FINGERPRINT = "live_trading_config_f67a7172be960ff2abd87d4d889c09546ee06d419e9a35c5";
+const FINGERPRINT = "live_trading_config_f5a5cd665ace3270ef47a360b104600b292b669512a777f9";
 
 describe("canonical live-trading contract", () => {
   it("accepts only the exact Hyperliquid mainnet launch contract", () => {
@@ -48,6 +48,22 @@ describe("canonical live-trading contract", () => {
     });
     expect(liveTradingConfigSnapshot(exactEnv()).funding_signer_keys_b64).toEqual([SIGNER]);
     expect(second.config_fingerprint).not.toBe(first.config_fingerprint);
+  });
+
+  it("exposes cancel and reduce-only only with the risk-reduction release flag", () => {
+    const enabled = {
+      ...exactEnv(),
+      PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED: "true",
+      GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES: "limit_order,cancel,reduce_only",
+    };
+    expect(liveTradingConfigurationFailures(enabled)).toEqual([]);
+    expect(liveTradingConfigurationFailures({
+      ...enabled,
+      PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED: "false",
+    })).toEqual(expect.arrayContaining([
+      "hyperliquid_risk_reduction_disabled",
+      "public_capability_not_implemented",
+    ]));
   });
 });
 

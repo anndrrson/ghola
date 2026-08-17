@@ -18,18 +18,21 @@ import {
   armLevelTriggerAgent,
   controlPrivateAutopilotSession,
   getPrivateAutopilotSession,
+  killAndFlatPrivateAutopilotSession,
   levelTriggerSupportsPlan,
   type LevelTriggerPlanInput,
   type PrivateAutopilotSession,
 } from "@/lib/private-account-client";
+import { authorizePrivateAccountWalletRequest } from "@/lib/private-account-wallet-step-up";
 import type { PrivateExecutionOrderDraft } from "@/lib/private-execution-instruction-seal";
 
 type ArmState =
   | { status: "idle" }
   | { status: "confirming"; confirmationKey: string }
   | { status: "arming" }
-  | { status: "session"; session: PrivateAutopilotSession; refreshing?: boolean; killing?: boolean }
-  | { status: "killed" }
+  | { status: "session"; session: PrivateAutopilotSession; refreshing?: boolean; killing?: boolean; confirmingFlat?: boolean; flattening?: boolean; controlError?: string }
+  | { status: "uncertain"; session: PrivateAutopilotSession; message: string; refreshing?: boolean; flattening?: boolean }
+  | { status: "killed"; session?: PrivateAutopilotSession }
   | { status: "error"; message: string };
 
 export function levelTriggerPlanFromOrderDraft(
@@ -120,16 +123,23 @@ export function ArmAgentButton({
   }
 
   async function handleRefreshSession() {
-    if (state.status !== "session") return;
-    setState({ ...state, refreshing: true });
+    if (state.status !== "session" && state.status !== "uncertain") return;
+    const current = state;
+    setState({ ...current, refreshing: true });
     try {
-      const response = await getPrivateAutopilotSession(state.session.autopilot_session_id);
-      setState({ status: "session", session: response.session });
+      const response = await getPrivateAutopilotSession(current.session.autopilot_session_id);
+      if (finalFlatProven(response.session)) {
+        setState({ status: "killed", session: response.session });
+      } else if (current.status === "uncertain") {
+        setState({ ...current, session: response.session, refreshing: false });
+      } else {
+        setState({ status: "session", session: response.session });
+      }
     } catch (error) {
-      setState({
-        status: "error",
-        message: error instanceof Error ? error.message : "Could not refresh the agent.",
-      });
+      const message = error instanceof Error ? error.message : "Could not refresh the agent.";
+      setState(current.status === "uncertain"
+        ? { ...current, refreshing: false, message }
+        : { status: "session", session: current.session, controlError: message });
     }
   }
 
@@ -141,8 +151,44 @@ export function ArmAgentButton({
       setState({ status: "killed" });
     } catch (error) {
       setState({
-        status: "error",
-        message: error instanceof Error ? error.message : "Could not stop the agent.",
+        status: "session",
+        session: state.session,
+        controlError: error instanceof Error ? error.message : "Could not stop the agent.",
+      });
+    }
+  }
+
+  async function handleKillAndFlatSession() {
+    if (state.status !== "session" && state.status !== "uncertain") return;
+    const session = state.session;
+    const path = `/v1/private-account/autopilot/sessions/${encodeURIComponent(session.autopilot_session_id)}/kill-and-flat`;
+    try {
+      setState(state.status === "uncertain"
+        ? { ...state, flattening: true }
+        : { status: "session", session, flattening: true });
+      const proofHeaders = await authorizePrivateAccountWalletRequest({ path, body: {} });
+      const result = await killAndFlatPrivateAutopilotSession(session.autopilot_session_id, { proofHeaders });
+      if (!finalFlatProven(result.session)) {
+        throw new Error("Worker did not return venue-proven final-flat evidence.");
+      }
+      setState({ status: "killed", session: result.session });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not kill and flatten the agent.";
+      let latest = session;
+      try {
+        const refreshed = await getPrivateAutopilotSession(session.autopilot_session_id);
+        latest = refreshed.session;
+        if (finalFlatProven(latest)) {
+          setState({ status: "killed", session: latest });
+          return;
+        }
+      } catch {
+        // Preserve the last known session and keep the UI fail-closed.
+      }
+      setState({
+        status: "uncertain",
+        session: latest,
+        message,
       });
     }
   }
@@ -164,18 +210,37 @@ export function ArmAgentButton({
         <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#a8d8ff]">Autonomous agent</span>
       </div>
 
-      {state.status === "session" ? (
+      {state.status === "uncertain" ? (
+        <KillAndFlatUncertainStatus
+          session={state.session}
+          message={state.message}
+          refreshing={state.refreshing === true}
+          flattening={state.flattening === true}
+          onRefresh={handleRefreshSession}
+          onRetry={handleKillAndFlatSession}
+        />
+      ) : state.status === "session" ? (
         <AgentSessionStatus
           session={state.session}
           refreshing={state.refreshing === true}
           killing={state.killing === true}
+          confirmingFlat={state.confirmingFlat === true}
+          flattening={state.flattening === true}
           onRefresh={handleRefreshSession}
           onKill={handleKillSession}
+          onRequestKillAndFlat={() => setState({ status: "session", session: state.session, confirmingFlat: true })}
+          onCancelKillAndFlat={() => setState({ status: "session", session: state.session })}
+          onKillAndFlat={handleKillAndFlatSession}
+          controlError={state.controlError}
         />
       ) : state.status === "killed" ? (
-        <div className="flex items-center gap-2 rounded-md border border-[#1e2a3a] bg-[#090d14] px-3 py-2 text-xs text-[#8b95a8]">
-          <OctagonX className="h-3.5 w-3.5 shrink-0" />
-          Agent stopped. Draw a new plan to arm another.
+        <div className="rounded-md border border-[#1e2a3a] bg-[#090d14] px-3 py-2 text-xs text-[#8b95a8]">
+          <p className="flex items-center gap-2"><OctagonX className="h-3.5 w-3.5 shrink-0" />Agent stopped. Draw a new plan to arm another.</p>
+          {state.session?.final_flat_evidence ? (
+            <p className="mt-2 font-mono text-[9px] text-emerald-200">
+              Venue final-flat · zero open orders · {state.session.final_flat_evidence.closes.length} reduce-only fill{state.session.final_flat_evidence.closes.length === 1 ? "" : "s"} · evidence {state.session.final_flat_evidence.evidence_commitment.slice(0, 12)}…
+            </p>
+          ) : null}
         </div>
       ) : state.status === "confirming" ? (
         <div className="grid gap-3 rounded-md border border-amber-500/30 bg-amber-500/[0.06] p-3">
@@ -253,18 +318,93 @@ function agentConfirmationKey(plan: LevelTriggerPlanInput, network: "mainnet" | 
   });
 }
 
+function finalFlatProven(session: PrivateAutopilotSession) {
+  const evidence = session.final_flat_evidence;
+  return session.status === "killed" && session.execution_enabled === false &&
+    evidence?.final_flat_proven === true && evidence.account_flat === true &&
+    evidence.open_order_count === 0 && Boolean(evidence.evidence_commitment);
+}
+
+function KillAndFlatUncertainStatus({
+  session,
+  message,
+  refreshing,
+  flattening,
+  onRefresh,
+  onRetry,
+}: {
+  session: PrivateAutopilotSession;
+  message: string;
+  refreshing: boolean;
+  flattening: boolean;
+  onRefresh: () => void;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="rounded-md border border-rose-400/40 bg-rose-400/10 px-3 py-3 text-xs" role="alert">
+      <div className="flex items-start gap-2">
+        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-rose-200" />
+        <div className="min-w-0 flex-1">
+          <p className="font-semibold text-rose-100">Flatten outcome unconfirmed</p>
+          <p className="mt-1 leading-5 text-rose-100/80">
+            This screen treats execution as halted and will not allow another agent to arm until venue final-flat evidence is available.
+          </p>
+          <p className="mt-2 font-mono text-[10px] text-rose-200/80">
+            Last worker state: {session.status} · {message}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={onRetry}
+              disabled={refreshing || flattening}
+              className="trade-chip inline-flex h-8 items-center gap-1.5 rounded-md px-3 font-semibold text-rose-100 disabled:opacity-60"
+            >
+              {flattening ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldAlert className="h-3.5 w-3.5" />}
+              {flattening ? "Retrying flatten" : "Retry kill + flatten"}
+            </button>
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={refreshing || flattening}
+              className="trade-chip inline-flex h-8 items-center gap-1.5 rounded-md px-3 disabled:opacity-60"
+            >
+              <RefreshCcw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+              Refresh safety state
+            </button>
+          </div>
+          <p className="mt-3 leading-5 text-amber-100">
+            If retry cannot reconcile, use each position&apos;s Close · RO control and verify zero open orders before doing anything else.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AgentSessionStatus({
   session,
   refreshing,
   killing,
+  confirmingFlat,
+  flattening,
   onRefresh,
   onKill,
+  onRequestKillAndFlat,
+  onCancelKillAndFlat,
+  onKillAndFlat,
+  controlError,
 }: {
   session: PrivateAutopilotSession;
   refreshing: boolean;
   killing: boolean;
+  confirmingFlat: boolean;
+  flattening: boolean;
   onRefresh: () => void;
   onKill: () => void;
+  onRequestKillAndFlat: () => void;
+  onCancelKillAndFlat: () => void;
+  onKillAndFlat: () => void;
+  controlError?: string;
 }) {
   const view = sessionStatusView(session);
   const Icon = view.icon;
@@ -303,7 +443,7 @@ function AgentSessionStatus({
             <button
               type="button"
               onClick={onRefresh}
-              disabled={refreshing || killing}
+              disabled={refreshing || killing || flattening}
               className="trade-chip inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs disabled:cursor-not-allowed disabled:opacity-60"
             >
               <RefreshCcw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
@@ -313,14 +453,40 @@ function AgentSessionStatus({
               <button
                 type="button"
                 onClick={onKill}
-                disabled={killing || refreshing}
+                disabled={killing || refreshing || flattening}
                 className="trade-chip inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs text-rose-200 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {killing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <OctagonX className="h-3.5 w-3.5" />}
                 {killing ? "Stopping" : "Kill agent"}
               </button>
             )}
+            {view.terminal ? null : (
+              <button
+                type="button"
+                onClick={onRequestKillAndFlat}
+                disabled={killing || refreshing || flattening}
+                className="trade-chip inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-semibold text-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {flattening ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldAlert className="h-3.5 w-3.5" />}
+                {flattening ? "Flattening" : "Kill + flatten"}
+              </button>
+            )}
           </div>
+          {confirmingFlat ? (
+            <div className="mt-3 rounded-md border border-rose-400/30 bg-rose-400/[0.06] p-2 text-[10px] leading-4 text-rose-100" role="alert">
+              <p>This disables execution first, cancels every allowed Hyperliquid order, closes allowed positions reduce-only, then waits for venue proof of zero positions and zero open orders.</p>
+              <div className="mt-2 flex gap-2">
+                <button type="button" onClick={onKillAndFlat} className="trade-chip h-8 px-3 font-semibold text-rose-100">Sign + kill + flatten</button>
+                <button type="button" onClick={onCancelKillAndFlat} className="trade-chip h-8 px-3">Cancel</button>
+              </div>
+            </div>
+          ) : null}
+          {controlError ? (
+            <p className="mt-3 flex items-center gap-1.5 text-[10px] leading-4 text-rose-200" role="alert">
+              <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
+              {controlError}
+            </p>
+          ) : null}
         </div>
       </div>
     </div>

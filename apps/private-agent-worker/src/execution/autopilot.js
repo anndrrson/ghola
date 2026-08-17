@@ -12,6 +12,7 @@ import { decideAiDirectOrder, publicDecisionRecord } from "./ai-direct-order.js"
 import { autonomousLiveSubmitEnabled } from "./autonomous-submit-containment.js";
 import { executeAutopilotOrder, verifyAutopilotOrder } from "./private-execution.js";
 import { normalizeAgentMandate } from "./policy.js";
+import { killAndFlatHyperliquidSession } from "./hyperliquid-risk-reduction.js";
 import {
   applyEstimatedFill,
   lossCircuitDecision,
@@ -133,8 +134,15 @@ export async function createAutopilotSession({ body, recipient, state, provider,
   return publicSession(session);
 }
 
-export async function controlAutopilotSession({ sessionId, action, state, recipient = null, now = new Date() }) {
-  if (action !== "kill" && action !== "pause" && action !== "resume") {
+export async function controlAutopilotSession({
+  sessionId,
+  action,
+  state,
+  recipient = null,
+  now = new Date(),
+  killAndFlat = killAndFlatHyperliquidSession,
+}) {
+  if (action !== "kill" && action !== "kill_and_flat" && action !== "pause" && action !== "resume") {
     const error = new Error("autopilot_control_action_invalid");
     error.code = "autopilot_control_action_invalid";
     error.status = 400;
@@ -172,17 +180,27 @@ export async function controlAutopilotSession({ sessionId, action, state, recipi
       }
 
       if (refreshed.control_latch && refreshed.control_latch.action !== action) {
-        if (action !== "kill") throw controlError("autopilot_control_latch_unresolved", 409);
+        if (action !== "kill" && action !== "kill_and_flat") {
+          throw controlError("autopilot_control_latch_unresolved", 409);
+        }
       }
-      controlEpoch = refreshed.control_latch?.action === action
+      const sameLatchedAction = refreshed.control_latch?.action === action;
+      const retryingRiskHaltedKillAndFlat = action === "kill_and_flat" &&
+        refreshed.status === "risk_halted" && sameLatchedAction;
+      // A failed flatten may have consumed every deterministic IOC claim while
+      // leaving a residual position. A retry stays execution-disabled but gets
+      // a fresh epoch, and therefore fresh replay-protected work orders.
+      controlEpoch = sameLatchedAction && !retryingRiskHaltedKillAndFlat
         ? Number(refreshed.control_epoch || 0)
         : Number(refreshed.control_epoch || 0) + 1;
       refreshed.control_epoch = controlEpoch;
       refreshed.control_latch = { action, requested_at: request.requested_at };
       refreshed.execution_enabled = false;
       refreshed.updated_at = now.toISOString();
-      refreshed.next_step = action === "kill"
-        ? "Kill requested; waiting for any committed execution to reconcile before acknowledgement."
+      refreshed.next_step = action === "kill_and_flat"
+        ? "Kill-and-flat requested; execution is disabled while orders cancel and positions close reduce-only."
+        : action === "kill"
+          ? "Kill requested; waiting for any committed execution to reconcile before acknowledgement."
         : "Pause requested; waiting for any committed execution to reconcile before acknowledgement.";
       latched = await state.putAutopilotSession(refreshed);
     });
@@ -217,6 +235,54 @@ export async function controlAutopilotSession({ sessionId, action, state, recipi
       }
     }
 
+    let finalFlatEvidence = null;
+    if (action === "kill_and_flat") {
+      if (!recipient) throw controlError("autopilot_kill_and_flat_recipient_required", 503);
+      try {
+        finalFlatEvidence = await killAndFlat({
+          session: latched,
+          recipient,
+          state,
+        });
+        await appendEvent(state, latched, "execution", "Kill-and-flat risk reduction completed.", {
+          operation: "kill_and_flat",
+          cancellation_count: finalFlatEvidence.cancellations.length,
+          reduce_only_close_count: finalFlatEvidence.closes.length,
+          root_work_order_commitment: finalFlatEvidence.root_work_order_commitment,
+        }, now);
+        await appendEvent(state, latched, "receipt", "Venue-backed kill-and-flat receipt recorded.", {
+          operation: "kill_and_flat",
+          evidence_commitment: finalFlatEvidence.evidence_commitment,
+          cancellations: finalFlatEvidence.cancellations,
+          closes: finalFlatEvidence.closes,
+        }, now);
+        await appendEvent(state, latched, "venue_reconcile", "Hyperliquid account reconciled final-flat with zero open orders.", {
+          operation: "kill_and_flat",
+          final_flat_proven: true,
+          account_flat: true,
+          open_order_count: 0,
+          evidence_commitment: finalFlatEvidence.evidence_commitment,
+          reconciled_at: finalFlatEvidence.reconciled_at,
+        }, now);
+      } catch (error) {
+        await withSessionWriteLock(sessionId, async () => {
+          const current = await state.getAutopilotSession(sessionId);
+          if (!current || Number(current.control_epoch || 0) !== controlEpoch) return;
+          current.status = "risk_halted";
+          current.execution_enabled = false;
+          current.next_step = "Kill is latched, but venue final-flat evidence is incomplete. Retry kill-and-flat or close manually.";
+          current.updated_at = now.toISOString();
+          await state.putAutopilotSession(current);
+        });
+        await appendEvent(state, latched, "risk_reject", "Kill-and-flat failed closed before final-flat acknowledgement.", {
+          operation: "kill_and_flat",
+          error: String(error?.code || error?.message || "kill_and_flat_failed"),
+          final_flat_proven: false,
+        }, now);
+        throw error;
+      }
+    }
+
     let finalized;
     await withSessionWriteLock(sessionId, async () => {
       const current = await state.getAutopilotSession(sessionId);
@@ -224,11 +290,14 @@ export async function controlAutopilotSession({ sessionId, action, state, recipi
       if (Number(current.control_epoch || 0) !== controlEpoch || current.control_latch?.action !== action) {
         throw controlError("autopilot_control_epoch_changed", 409);
       }
-      current.status = action === "kill" ? "killed" : "paused";
+      current.status = action === "kill" || action === "kill_and_flat" ? "killed" : "paused";
       current.execution_enabled = false;
       current.control_latch = null;
-      current.next_step = action === "kill"
-        ? "Kill switch active. No autonomous execution is allowed."
+      current.final_flat_evidence = finalFlatEvidence;
+      current.next_step = action === "kill_and_flat"
+        ? "Kill switch active. Hyperliquid is venue-proven flat with zero open orders."
+        : action === "kill"
+          ? "Kill switch active. No autonomous execution is allowed."
         : "Autopilot paused.";
       current.updated_at = now.toISOString();
       finalized = await state.putAutopilotSession(current);
@@ -238,6 +307,8 @@ export async function controlAutopilotSession({ sessionId, action, state, recipi
       action,
       control_epoch: controlEpoch,
       acknowledged: true,
+      final_flat_proven: finalFlatEvidence?.final_flat_proven === true,
+      evidence_commitment: finalFlatEvidence?.evidence_commitment || null,
     }, now);
     return { session: publicSession(finalized), event };
   } finally {
@@ -1005,6 +1076,7 @@ function normalizeVenueAccess(raw, policy) {
           ? "ready"
           : value.status || "needs_funds",
         execution_mode: value.execution_mode || defaultExecutionMode(venue),
+        account_commitment: value.account_commitment || null,
         vault_commitment: value.vault_commitment || null,
         encrypted_vault_commitment: value.encrypted_vault_commitment || null,
         encrypted_execution_vault: value.encrypted_execution_vault || null,

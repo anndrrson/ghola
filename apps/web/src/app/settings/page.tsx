@@ -665,6 +665,8 @@ function TelegramTab() {
 
 function PlanTab() {
   const [billing, setBilling] = useState<ThumperBillingStatusResponse | null>(null);
+  const [billingLoading, setBillingLoading] = useState(true);
+  const [billingError, setBillingError] = useState(false);
   const [upgrading, setUpgrading] = useState<string | null>(null);
   const [savingCap, setSavingCap] = useState(false);
   const [capUsd, setCapUsd] = useState("");
@@ -677,7 +679,8 @@ function PlanTab() {
           setCapUsd(String(status.private_agent_trading.monthly_fee_cap_micro_usd / 1_000_000));
         }
       })
-      .catch(() => {});
+      .catch(() => setBillingError(true))
+      .finally(() => setBillingLoading(false));
   }, []);
 
   const handleSaveCap = async () => {
@@ -798,8 +801,32 @@ function PlanTab() {
     },
   ];
 
+  const currentPlan = plans.find((plan) => plan.id === billing?.tier);
+  const complimentaryAccess = billing?.access_source === "complimentary_pass";
+
   return (
     <div className="space-y-4">
+      {billingLoading && (
+        <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-4 text-sm text-[#8b95a8]" aria-live="polite">
+          Checking current access…
+        </div>
+      )}
+      {billingError && (
+        <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.05] p-4 text-sm text-amber-100" role="status">
+          Current access could not be verified. Refresh before changing plans.
+        </div>
+      )}
+      {complimentaryAccess && (
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] p-5">
+          <h3 className="text-sm font-medium text-emerald-200">
+            Complimentary {currentPlan?.name ?? "plan"} access active
+          </h3>
+          <p className="mt-1 text-xs text-emerald-100/70">
+            No subscription charge
+            {billing?.expires_at ? ` · active until ${new Date(billing.expires_at).toLocaleString()}` : ""}
+          </p>
+        </div>
+      )}
       {billing?.private_agent_compute && (
         <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5">
           <div className="flex items-baseline justify-between gap-4">
@@ -871,6 +898,7 @@ function PlanTab() {
       )}
       {plans.map((plan) => {
         const isCurrent = billing?.tier === plan.id;
+        const isComplimentaryCurrent = isCurrent && complimentaryAccess;
         return (
           <div
             key={plan.id}
@@ -893,14 +921,14 @@ function PlanTab() {
                   )}
                   {isCurrent && (
                     <span className="ml-2 text-[10px] font-medium text-[#3da8ff] bg-[#3da8ff]/10 px-2 py-0.5 rounded-full">
-                      Current
+                      {isComplimentaryCurrent ? "Active pass" : "Current"}
                     </span>
                   )}
                 </h3>
               </div>
               <p className="text-lg font-medium text-[#eef1f8]">
-                {plan.price}
-                <span className="text-xs text-[#4a5568]">{plan.period}</span>
+                {isComplimentaryCurrent ? "Complimentary" : plan.price}
+                {!isComplimentaryCurrent && <span className="text-xs text-[#4a5568]">{plan.period}</span>}
               </p>
             </div>
             <ul className="space-y-1.5 mb-3">

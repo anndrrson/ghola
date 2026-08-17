@@ -194,8 +194,13 @@ def main():
                     Cloid,
                 )
             else:
-                result = exchange.cancel(cancel["market"], int(cancel["order_id"]))
-                redacted = redact_result("cancelled", result)
+                redacted = cancel_by_oid_with_readback(
+                    exchange,
+                    info,
+                    execution_address,
+                    cancel["market"],
+                    int(cancel["order_id"]),
+                )
             redacted["expires_after_ms"] = expires_after_ms
             redacted["action_expiry_enforced"] = True
             print(json.dumps(redacted))
@@ -522,6 +527,31 @@ def cancel_by_cloid_with_readback(exchange, info, execution_address, market, chi
     fail("hyperliquid cancellation readback is unconfirmed", "venue_rejected")
 
 
+def cancel_by_oid_with_readback(exchange, info, execution_address, market, oid):
+    existing = order_status_by_oid(info, execution_address, oid)
+    if existing and terminal_cancel_status(existing["status"]):
+        return terminal_cancel_readback(existing, existing.get("cloid"), False)
+    try:
+        result = exchange.cancel(market, oid)
+    except Exception:
+        current = order_status_by_oid(info, execution_address, oid)
+        if current and terminal_cancel_status(current["status"]):
+            return terminal_cancel_readback(current, current.get("cloid"), False)
+        raise
+    if not cancel_response_accepted(result):
+        current = order_status_by_oid(info, execution_address, oid)
+        if current and terminal_cancel_status(current["status"]):
+            return terminal_cancel_readback(current, current.get("cloid"), False)
+    redact_result("cancelled", result)
+    for delay_seconds in (0, 0.05, 0.15, 0.3, 0.5):
+        if delay_seconds:
+            time.sleep(delay_seconds)
+        current = order_status_by_oid(info, execution_address, oid)
+        if current and terminal_cancel_status(current["status"]):
+            return terminal_cancel_readback(current, current.get("cloid"), True)
+    fail("hyperliquid cancellation readback is unconfirmed", "venue_rejected")
+
+
 def terminal_cancel_status(status):
     return status in ("canceled", "cancelled", "reduceonlycanceled")
 
@@ -546,7 +576,7 @@ def terminal_cancel_readback(current, child_cloid, broadcast_performed):
             "verified": True,
             "status": "canceled",
             "oid": current["oid"],
-            "cloid": child_cloid.lower(),
+            "cloid": child_cloid.lower() if child_cloid else None,
         },
     }
 
@@ -568,6 +598,29 @@ def order_status_by_cloid(info, execution_address, child_cloid):
         if returned_cloid != str(child_cloid).lower() or oid is None:
             return None
         return {"status": status, "oid": oid}
+    except Exception:
+        return None
+
+
+def order_status_by_oid(info, execution_address, expected_oid):
+    try:
+        response = info.post("/info", {
+            "type": "orderStatus",
+            "user": execution_address,
+            "oid": expected_oid,
+        })
+        if not isinstance(response, dict) or response.get("status") == "unknownOid":
+            return None
+        envelope = response.get("order") or response
+        order = envelope.get("order") or envelope
+        oid = order.get("oid")
+        if str(oid) != str(expected_oid):
+            return None
+        status = re.sub(r"[^a-z0-9]", "", str(envelope.get("status") or order.get("status") or "").lower())
+        cloid = str(order.get("cloid") or "").lower() or None
+        if cloid and not re.fullmatch(r"0x[0-9a-f]{32}", cloid):
+            return None
+        return {"status": status, "oid": oid, "cloid": cloid}
     except Exception:
         return None
 

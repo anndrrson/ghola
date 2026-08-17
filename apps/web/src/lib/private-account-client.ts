@@ -314,12 +314,27 @@ export interface PrivateAutopilotSession {
   execution_enabled: boolean;
   autonomous_live_submit_enabled?: boolean;
   autonomous_execution_mode?: "no_submit" | "live";
+  final_flat_evidence?: HyperliquidFinalFlatEvidence | null;
   control_plane: "android" | "worker";
   visibility_summary: {
     main_wallet_prompts_per_trade: false;
     execution_boundary: "bounded_session_policy" | "bounded_delegated_worker_policy";
     user_can_kill_anytime: true;
   };
+}
+
+export interface HyperliquidFinalFlatEvidence {
+  proof_kind: "hyperliquid_kill_and_flat_v1";
+  status: "reconciled";
+  final_flat_proven: true;
+  account_flat: true;
+  open_order_count: 0;
+  cancellations: Array<Record<string, unknown>>;
+  closes: Array<Record<string, unknown>>;
+  evidence_commitment: string;
+  root_work_order_commitment: string;
+  reconciled_at: string;
+  completed_at: string;
 }
 
 export interface PrivateAutopilotEvent {
@@ -702,6 +717,16 @@ export async function controlPrivateAutopilotSession(
   ) as Promise<{ version: 1; session: PrivateAutopilotSession; event: PrivateAutopilotEvent }>;
 }
 
+export async function killAndFlatPrivateAutopilotSession(
+  autopilotSessionId: string,
+  options: { proofHeaders: Record<string, string> },
+): Promise<{ version: 1; session: PrivateAutopilotSession; event: PrivateAutopilotEvent }> {
+  return privateAccountFetch(
+    `/v1/private-account/autopilot/sessions/${encodeURIComponent(autopilotSessionId)}/kill-and-flat`,
+    { method: "POST", headers: options.proofHeaders, body: "{}" },
+  ) as Promise<{ version: 1; session: PrivateAutopilotSession; event: PrivateAutopilotEvent }>;
+}
+
 export async function getPrivateAutopilotReadiness(productId = "BTC-USD"): Promise<PrivateAutopilotReadiness> {
   const params = new URLSearchParams({ product_id: productId });
   return privateAccountFetch(`/v1/private-account/autopilot/readiness?${params.toString()}`, {
@@ -1004,6 +1029,27 @@ export async function runHyperliquidMainnetRoundTrip(options: {
     method: "POST",
     headers: options.proofHeaders,
     body: JSON.stringify({ confirmation: HYPERLIQUID_MAINNET_PROOF_CONFIRMATION }),
+  });
+}
+
+export const HYPERLIQUID_CLOSE_CONFIRMATION =
+  "I_UNDERSTAND_THIS_CLOSES_A_REAL_POSITION_REDUCE_ONLY";
+
+export async function closeHyperliquidPosition(input: {
+  market: "BTC" | "ETH" | "SOL" | "HYPE";
+  idempotencyKey: string;
+  proofHeaders: Record<string, string>;
+}) {
+  const body = {
+    version: 1 as const,
+    market: input.market,
+    idempotency_key: input.idempotencyKey,
+    confirmation: HYPERLIQUID_CLOSE_CONFIRMATION,
+  };
+  return privateAccountFetch("/v1/private-account/hyperliquid/positions/close", {
+    method: "POST",
+    headers: input.proofHeaders,
+    body: JSON.stringify(body),
   });
 }
 
@@ -1686,9 +1732,9 @@ const LIVE_GUARDED_MUTATION_PATHS = [
   /^\/v1\/private-account\/actions\/execute$/,
   /^\/v1\/private-account\/autopilot\/sessions$/,
   /^\/v1\/private-account\/autopilot\/sessions\/[^/]+$/,
-  /^\/v1\/private-account\/autopilot\/sessions\/[^/]+\/(?:pause|resume|kill)$/,
+  /^\/v1\/private-account\/autopilot\/sessions\/[^/]+\/(?:pause|resume|kill|kill-and-flat)$/,
   /^\/v1\/private-account\/connectors\/(?:submit|verify-no-submit|reconcile)$/,
-  /^\/v1\/private-account\/hyperliquid\/(?:account-snapshot|mainnet-roundtrip|managed-allocation)$/,
+  /^\/v1\/private-account\/hyperliquid\/(?:account-snapshot|mainnet-roundtrip|managed-allocation|positions\/close)$/,
   /^\/v1\/private-account\/hyperliquid\/agent\/session$/,
   /^\/v1\/private-account\/hyperliquid\/vault$/,
   /^\/v1\/private-account\/omnibus\/(?:allocate|reconcile)$/,

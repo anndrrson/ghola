@@ -230,6 +230,7 @@ export async function agentPassportVenueAccessForWorker(
     if (!vault || vault.status !== "sealed") continue;
     out[capability.venue_id] = {
       status: "ready",
+      account_commitment: account.account_commitment,
       execution_mode: capability.execution_mode,
       vault_commitment: vault.vault_commitment,
       encrypted_vault_commitment: vault.encrypted_vault_commitment,
@@ -255,6 +256,7 @@ export async function storedVenueAccessForWorker(
     if (vault?.status === "sealed") {
       out.hyperliquid = {
         status: "ready",
+        account_commitment: account.account_commitment,
         execution_mode: "byo_api_key",
         vault_commitment: vault.vault_commitment,
         encrypted_vault_commitment: vault.encrypted_vault_commitment,
@@ -273,6 +275,7 @@ export async function storedVenueAccessForWorker(
     if (!vault || vault.status !== "sealed") continue;
     out[venue] = {
       status: "ready",
+      account_commitment: account.account_commitment,
       execution_mode: vault.execution_mode,
       vault_commitment: vault.vault_commitment,
       encrypted_vault_commitment: vault.encrypted_vault_commitment,

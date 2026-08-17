@@ -7,6 +7,7 @@ import {
   bindPrivateMobileWallet,
   getPrivateMobileWalletBindingChallenge,
   getHyperliquidExecutionVaultStatus,
+  getHyperliquidLiveAccess,
   revokeHyperliquidExecutionVault,
   sealHyperliquidExecutionVault,
 } from "@/lib/private-account-client";
@@ -56,6 +57,7 @@ type VaultStatus = {
 type ConnectState =
   | { status: "loading" }
   | { status: "runtime_offline" }
+  | { status: "eligibility_required" }
   | { status: "signed_out" }
   | { status: "connected"; network: "mainnet" | "testnet" | null }
   | { status: "form"; accountCommitment: string; runtime: PrivateAgentRuntimeStatus }
@@ -107,6 +109,20 @@ export function ConnectHyperliquidButton({
       const connectedNetwork = vault.hyperliquid_execution_vault.network ?? null;
       setState({ status: "connected", network: connectedNetwork });
       if (connectedNetwork) onNetworkChange?.(connectedNetwork);
+      return;
+    }
+    try {
+      const access = await getHyperliquidLiveAccess() as { eligibility_ready?: boolean };
+      if (access.eligibility_ready !== true) {
+        setState({ status: "eligibility_required" });
+        return;
+      }
+    } catch (error) {
+      const status = (error as { status?: number }).status;
+      setState(status === 401 ? { status: "signed_out" } : {
+        status: "error",
+        message: error instanceof Error ? error.message : "Could not verify live-trading eligibility.",
+      });
       return;
     }
     try {
@@ -272,7 +288,17 @@ export function ConnectHyperliquidButton({
       ) : state.status === "runtime_offline" ? (
         <div className="flex items-start gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
           <WifiOff className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>Agent runtime is offline. Start it explicitly from Agent activity before connecting this account.</span>
+          <span>Agent runtime is offline. Start the secure worker explicitly, then retry this connection.</span>
+        </div>
+      ) : state.status === "eligibility_required" ? (
+        <div className="grid gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-3 text-xs text-amber-100">
+          <p>Accept the current eligibility, terms, and risk disclosure before entering a trade-only credential.</p>
+          <Link
+            href="/account?flow=trade#eligibility-consent"
+            className="trade-chip flex h-9 items-center justify-center rounded-md px-4 text-xs"
+          >
+            Review eligibility and terms
+          </Link>
         </div>
       ) : state.status === "error" ? (
         <div className="grid gap-2">

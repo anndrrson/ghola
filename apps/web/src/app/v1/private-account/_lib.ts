@@ -1206,6 +1206,10 @@ export async function privateAccountOwnerFromRequest(
   return null;
 }
 
+export function privateAccountSessionTokenFromRequest(req: Request): string | null {
+  return bearerToken(req) || sessionCookie(req);
+}
+
 function localPrivateAccountAuthBypassAllowed(): boolean {
   return process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS === "true" &&
     process.env.NODE_ENV !== "production";
@@ -2846,41 +2850,49 @@ async function recordMainnetCapabilityEvidence(input: {
   const observedAt = input.completedAt && Number.isFinite(Date.parse(input.completedAt))
     ? new Date(input.completedAt)
     : new Date();
-  const seed = {
-    capability: "limit_order" as const,
-    status: input.status,
-    observed_at: observedAt.toISOString(),
-    receipt_commitment: input.receiptCommitment ?? null,
-    result_commitment: input.resultCommitment ?? null,
-    venue_account_commitment: input.venueAccountCommitment ?? null,
-    proof_subject_commitment: input.venueAccountCommitment ?? null,
-    config_fingerprint: input.release.config_fingerprint,
-  };
-  await putLiveTradingCapabilityEvidence({
-    version: 2,
-    evidence_id: gholaCommitment("live_capability_evidence", seed),
-    capability: "limit_order",
-    venue_id: "hyperliquid",
-    network: "mainnet",
-    status: input.status,
-    broadcast_performed: input.status === "green",
-    reconciled: input.status === "green",
-    final_flat: input.status === "green",
-    open_order_count: input.status === "green" ? 0 : -1,
-    order_notional_usd: LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD,
-    web_git_sha: input.release.web_git_sha,
-    worker_git_sha: input.release.worker_git_sha,
-    worker_image_digest: input.release.worker_image_digest,
-    config_fingerprint: input.release.config_fingerprint,
-    receipt_commitment: input.receiptCommitment ?? null,
-    result_commitment: input.resultCommitment ?? null,
-    venue_account_commitment: input.venueAccountCommitment ?? null,
-    proof_subject_commitment: input.venueAccountCommitment ?? null,
-    reason: input.reason ?? null,
-    observed_at: observedAt.toISOString(),
-    expires_at: new Date(observedAt.getTime() + LIVE_TRADING_EVIDENCE_MAX_AGE_MS).toISOString(),
-    created_at: new Date().toISOString(),
-  });
+  const advertised = configuredLiveTradingPublicCapabilities();
+  const webGitSha = input.release.web_git_sha;
+  const workerGitSha = input.release.worker_git_sha;
+  const workerImageDigest = input.release.worker_image_digest;
+  const provenCapabilities = (["limit_order", "cancel", "reduce_only"] as const)
+    .filter((capability) => capability === "limit_order" || advertised.includes(capability));
+  await Promise.all(provenCapabilities.map((capability) => {
+    const seed = {
+      capability,
+      status: input.status,
+      observed_at: observedAt.toISOString(),
+      receipt_commitment: input.receiptCommitment ?? null,
+      result_commitment: input.resultCommitment ?? null,
+      venue_account_commitment: input.venueAccountCommitment ?? null,
+      proof_subject_commitment: input.venueAccountCommitment ?? null,
+      config_fingerprint: input.release.config_fingerprint,
+    };
+    return putLiveTradingCapabilityEvidence({
+      version: 2,
+      evidence_id: gholaCommitment("live_capability_evidence", seed),
+      capability,
+      venue_id: "hyperliquid",
+      network: "mainnet",
+      status: input.status,
+      broadcast_performed: input.status === "green",
+      reconciled: input.status === "green",
+      final_flat: input.status === "green",
+      open_order_count: input.status === "green" ? 0 : -1,
+      order_notional_usd: LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD,
+      web_git_sha: webGitSha,
+      worker_git_sha: workerGitSha,
+      worker_image_digest: workerImageDigest,
+      config_fingerprint: input.release.config_fingerprint,
+      receipt_commitment: input.receiptCommitment ?? null,
+      result_commitment: input.resultCommitment ?? null,
+      venue_account_commitment: input.venueAccountCommitment ?? null,
+      proof_subject_commitment: input.venueAccountCommitment ?? null,
+      reason: input.reason ?? null,
+      observed_at: observedAt.toISOString(),
+      expires_at: new Date(observedAt.getTime() + LIVE_TRADING_EVIDENCE_MAX_AGE_MS).toISOString(),
+      created_at: new Date().toISOString(),
+    });
+  }));
 }
 
 function safeHyperliquidMainnetProofError(value: string) {

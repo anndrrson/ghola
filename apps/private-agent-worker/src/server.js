@@ -41,6 +41,10 @@ import {
   runSealedHyperliquidMainnetRoundTrip,
   validateHyperliquidMainnetRoundTripRequest,
 } from "./execution/hyperliquid-mainnet-roundtrip.js";
+import {
+  closeSealedHyperliquidPosition,
+  validateHyperliquidCloseRequest,
+} from "./execution/hyperliquid-risk-reduction.js";
 import { createConfiguredWorkerState } from "./state/private-state.js";
 import {
   attestFreshCredentialFunded,
@@ -273,6 +277,7 @@ export function liveTradingReadinessContract(envInput = process.env) {
     require_dstack_quote: String(envInput.PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE || "").trim() || null,
     require_worker_capability: String(envInput.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY || "").trim() || null,
     position_protection_enabled: String(envInput.GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED || "").trim() || null,
+    risk_reduction_enabled: String(envInput.PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED || "").trim() || null,
     public_capabilities: [...new Set(configuredCapabilities)],
     funding_signer_keys_b64: fundingSignerKeys,
   };
@@ -299,9 +304,15 @@ export function liveTradingReadinessContract(envInput = process.env) {
   if (!normalizedImageDigest(envInput.PRIVATE_AGENT_IMAGE_DIGEST || envInput.PHALA_CVM_IMAGE_DIGEST)) reasonCodes.push("worker_image_digest_missing");
   if (fundingSignerKeys.length === 0) reasonCodes.push("funding_worker_signer_pin_missing");
   else if (fundingSignerKeys.some((key) => !validBase64PublicKey(key))) reasonCodes.push("funding_worker_signer_pin_invalid");
-  const implementedCapabilities = snapshot.position_protection_enabled === "true"
-    ? ["limit_order", "stop_loss", "take_profit"]
-    : ["limit_order"];
+  const implementedCapabilities = [
+    "limit_order",
+    ...(snapshot.risk_reduction_enabled === "true"
+      ? ["cancel", "reduce_only"]
+      : []),
+    ...(snapshot.position_protection_enabled === "true"
+      ? ["stop_loss", "take_profit"]
+      : []),
+  ];
   if (
     configuredCapabilities.length !== implementedCapabilities.length ||
     implementedCapabilities.some((capability) => !configuredCapabilities.includes(capability))
@@ -2269,11 +2280,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
         });
       }
 
-      const autopilotControl = url.pathname.match(/^\/autopilot\/sessions\/([^/]+)\/(pause|resume|kill)$/);
+      const autopilotControl = url.pathname.match(/^\/autopilot\/sessions\/([^/]+)\/(pause|resume|kill|kill-and-flat)$/);
       if (req.method === "POST" && autopilotControl) {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
+        const action = autopilotControl[2] === "kill-and-flat" ? "kill_and_flat" : autopilotControl[2];
         const rejected = await authorizeWorkerRequest(req, {
           path: url.pathname,
           scope: "autopilot:control",
@@ -2281,13 +2293,16 @@ export function createPrivateAgentWorkerServer(options = {}) {
           state,
           expected: {
             autopilot_session_id: autopilotControl[1],
-            action: autopilotControl[2],
+            action,
           },
         });
         if (authJson(res, rejected)) return;
+        if (action === "kill_and_flat" && !boolEnv("PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED")) {
+          return json(res, 503, { error: "hyperliquid_risk_reduction_disabled" });
+        }
         const result = await controlAutopilotSession({
           sessionId: autopilotControl[1],
-          action: autopilotControl[2],
+          action,
           state,
           recipient,
         });
@@ -2710,6 +2725,46 @@ export function createPrivateAgentWorkerServer(options = {}) {
         }
         const receipt = await executeHyperliquidOrder({ body, recipient, state });
         return json(res, 202, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/hyperliquid/positions/close") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:submit",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "hyperliquid",
+            platform_class: "hyperliquid_style_market",
+            operation_class: "reduce_only_close",
+          }),
+        });
+        if (authorized.rejected) return;
+        if (!boolEnv("PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED")) {
+          return json(res, 503, { error: "hyperliquid_risk_reduction_disabled" });
+        }
+        const errors = validateHyperliquidCloseRequest(authorized.body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid Hyperliquid reduce-only close request",
+            details: errors,
+          });
+        }
+        if (requirePrivateExecutionClaimStore(res)) return;
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const report = await closeSealedHyperliquidPosition({
+          body: authorized.body,
+          recipient,
+          state,
+        });
+        return json(res, 200, report);
       }
 
       if (req.method === "POST" && url.pathname === "/hyperliquid/mainnet-roundtrip") {

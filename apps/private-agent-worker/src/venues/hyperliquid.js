@@ -113,18 +113,27 @@ function trimPositiveDecimal(value) {
 
 function exactSignedDecimal(value, label) {
   const text = String(value ?? "").trim();
-  const parsed = Number(text);
-  if (!/^-?\d+(?:\.\d+)?$/.test(text) || !Number.isFinite(parsed)) {
+  if (text.length > 80 || !/^-?\d+(?:\.\d+)?$/.test(text)) {
     throw new HyperliquidExecutionError(`${label} is invalid`, 502);
   }
-  if (Math.abs(parsed) < 1e-12) return "0";
-  return parsed.toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
+  const negative = text.startsWith("-");
+  const unsigned = negative ? text.slice(1) : text;
+  const [integerRaw, fractionRaw = ""] = unsigned.split(".");
+  const integer = integerRaw.replace(/^0+(?=\d)/u, "") || "0";
+  const fraction = fractionRaw.replace(/0+$/u, "");
+  const normalized = fraction ? `${integer}.${fraction}` : integer;
+  return /^0(?:\.0*)?$/u.test(normalized) ? "0" : `${negative ? "-" : ""}${normalized}`;
 }
 
 function exactNonnegativeDecimal(value, label) {
   const text = exactSignedDecimal(value, label);
   if (Number(text) < 0) throw new HyperliquidExecutionError(`${label} is invalid`, 502);
   return text;
+}
+
+function exactAbsoluteDecimal(value, label) {
+  const text = exactSignedDecimal(value, label);
+  return text.startsWith("-") ? text.slice(1) : text;
 }
 
 export function hyperliquidManagedAccountRefs() {
@@ -266,7 +275,10 @@ export async function submitHyperliquidExecution({
   const venueOrderReadback = normalizeVenueOrderReadback(result.venue_order_readback, cloid);
   const cancelOrderReadback = normalizeVenueCancelReadback(
     result.venue_cancel_readback,
-    instruction.cancel?.client_order_id,
+    {
+      expectedCloid: instruction.cancel?.client_order_id,
+      expectedOid: instruction.cancel?.order_id,
+    },
   );
   if (instruction.operation_class === "limit_order" && !executionConfiguration) {
     throw new HyperliquidExecutionError("hyperliquid isolated 1x configuration proof is missing", 502);
@@ -394,17 +406,22 @@ function normalizeVenueOrderReadback(value, expectedCloid) {
   return { verified: true, status, oid, cloid };
 }
 
-function normalizeVenueCancelReadback(value, expectedCloid) {
+function normalizeVenueCancelReadback(value, { expectedCloid, expectedOid }) {
   const cloid = String(value?.cloid || "").toLowerCase();
   const expected = String(expectedCloid || "").toLowerCase();
+  const oidExpected = String(expectedOid || "");
   const oid = value?.oid;
   const status = String(value?.status || "").toLowerCase();
+  const oidText = String(oid ?? "");
+  const cloidMatches = expected && /^0x[0-9a-f]{32}$/u.test(cloid) && cloid === expected;
+  const oidMatches = oidExpected && /^\d+$/u.test(oidText) && oidText === oidExpected;
   if (value?.verified !== true || status !== "canceled" ||
-      !/^0x[0-9a-f]{32}$/u.test(cloid) || cloid !== expected ||
-      (typeof oid !== "number" && typeof oid !== "string") || !String(oid).trim()) {
+      (!cloidMatches && !oidMatches) ||
+      !/^\d+$/u.test(oidText) ||
+      (cloid && !/^0x[0-9a-f]{32}$/u.test(cloid))) {
     return null;
   }
-  return { verified: true, status: "canceled", oid, cloid };
+  return { verified: true, status: "canceled", oid, cloid: cloid || null };
 }
 
 function normalizeExecutionConfiguration(value) {
@@ -629,6 +646,61 @@ export async function readHyperliquidExactMarketState({
     open_order_count: openOrders.filter((order) => String(order?.coin || "").toUpperCase() === coin).length,
     account_value: accountValue,
     withdrawable,
+    checked_at: new Date().toISOString(),
+  };
+}
+
+// Exact values stay inside the sealed worker and are only used to build
+// reduce-only exits and deterministic cancellation requests. Public account
+// surfaces continue to receive the bucketed snapshot above.
+export async function readHyperliquidRiskReductionState({
+  credential,
+  fetchImpl = fetch,
+}) {
+  assertHyperliquidPilotNetwork(credential, { operation_class: "read" });
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
+    return {
+      positions: [],
+      open_orders: [],
+      checked_at: new Date().toISOString(),
+    };
+  }
+  const [state, openOrders] = await Promise.all([
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "clearinghouseState",
+      user: hyperliquidExecutionAddress(credential),
+    }),
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "openOrders",
+      user: hyperliquidExecutionAddress(credential),
+    }),
+  ]);
+  if (!Array.isArray(state?.assetPositions) || !Array.isArray(openOrders)) {
+    throw new HyperliquidExecutionError("hyperliquid risk-reduction state is invalid", 502);
+  }
+  const positions = state.assetPositions
+    .map((row) => row?.position || row)
+    .map((position) => ({
+      market: stringValue(position?.coin).toUpperCase(),
+      position_size: exactSignedDecimal(position?.szi ?? "0", "hyperliquid position size"),
+      position_value: exactAbsoluteDecimal(position?.positionValue ?? "0", "hyperliquid position value"),
+    }))
+    .filter((position) => position.market && position.position_size !== "0");
+  const exactOrders = openOrders.map((order) => {
+    const market = stringValue(order?.coin).toUpperCase();
+    const oid = stringValue(order?.oid);
+    const cloid = stringValue(order?.cloid).toLowerCase();
+    if (!market || !/^\d+$/u.test(oid)) {
+      throw new HyperliquidExecutionError("hyperliquid open order identity is invalid", 502);
+    }
+    if (cloid && !/^0x[0-9a-f]{32}$/u.test(cloid)) {
+      throw new HyperliquidExecutionError("hyperliquid open order cloid is invalid", 502);
+    }
+    return { market, oid, cloid: cloid || null };
+  });
+  return {
+    positions,
+    open_orders: exactOrders,
     checked_at: new Date().toISOString(),
   };
 }

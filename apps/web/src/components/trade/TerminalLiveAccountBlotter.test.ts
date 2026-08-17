@@ -5,11 +5,24 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TerminalLiveAccountView } from "@/lib/terminal-live-account";
 import type { TerminalLiveAccountRiskDecision } from "@/lib/terminal-live-account-risk";
+
+const closeMocks = vi.hoisted(() => ({ close: vi.fn(), authorize: vi.fn() }));
+
+vi.mock("@/lib/private-account-client", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/private-account-client")>(),
+  closeHyperliquidPosition: closeMocks.close,
+}));
+vi.mock("@/lib/private-account-wallet-step-up", () => ({
+  authorizePrivateAccountWalletRequest: closeMocks.authorize,
+}));
+
 import { TerminalLiveAccountBlotter } from "./TerminalLiveAccountBlotter";
 
 let host: HTMLDivElement | null = null;
 
 afterEach(() => {
+  closeMocks.close.mockReset();
+  closeMocks.authorize.mockReset();
   host?.remove();
   host = null;
 });
@@ -82,7 +95,42 @@ describe("TerminalLiveAccountBlotter", () => {
     expect(error.mock.calls.flat().join(" ")).not.toContain("same key");
     error.mockRestore();
   });
+
+  it("shows only venue-reconciled reduce-only close evidence", async () => {
+    closeMocks.authorize.mockResolvedValue({ "x-ghola-mobile-proof-version": "1" });
+    closeMocks.close.mockResolvedValue({
+      market_flat: true,
+      final_flat_proven: true,
+      evidence_commitment: "hl_risk_evidence_1234567890",
+      closes: [{
+        venue_order_oid: "987654321",
+        terminal_status: "filled",
+        reduce_only: true,
+        venue_readback_proven: true,
+      }],
+    });
+    host = document.createElement("div");
+    document.body.append(host);
+    await act(async () => createRoot(host as HTMLDivElement).render(createElement(TerminalLiveAccountBlotter, { view: liveView() })));
+    await act(async () => findButton(host as HTMLDivElement, "Close BTC · RO").click());
+    expect(host.textContent).toContain("real reduce-only market close");
+    await act(async () => findButton(host as HTMLDivElement, "Sign + close").click());
+    expect(closeMocks.authorize).toHaveBeenCalledWith(expect.objectContaining({
+      path: "/v1/private-account/hyperliquid/positions/close",
+      body: expect.objectContaining({ market: "BTC" }),
+    }));
+    expect(closeMocks.close).toHaveBeenCalledWith(expect.objectContaining({ market: "BTC" }));
+    expect(host.textContent).toContain("BTC flat · reduce-only fill verified");
+    expect(host.textContent).toContain("hl_risk_evi");
+  });
 });
+
+function findButton(container: HTMLElement, label: string) {
+  const button = [...container.querySelectorAll<HTMLButtonElement>("button")]
+    .find((item) => item.textContent?.includes(label));
+  if (!button) throw new Error(`button_not_found:${label}`);
+  return button;
+}
 
 function liveView(): TerminalLiveAccountView {
   return {

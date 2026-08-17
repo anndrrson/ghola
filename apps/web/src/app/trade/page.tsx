@@ -3955,7 +3955,7 @@ export default function TradePage() {
                 <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${executionMarketDataLive ? "bg-emerald-300" : "bg-amber-300"}`} />
                 {marketFeedLabel}
               </span>
-              <button type="button" onClick={() => document.getElementById("hyperliquid-connection")?.scrollIntoView({ behavior: "smooth", block: "center" })} className="rounded border border-[#2a3341] bg-[#0b0f15] px-2 py-1.5 text-[#7d899a] hover:text-[#b5c0ce]">{venue.label} setup</button>
+              <button type="button" onClick={() => router.push("/account?flow=trade#hyperliquid-setup")} className="rounded border border-[#2a3341] bg-[#0b0f15] px-2 py-1.5 text-[#7d899a] hover:text-[#b5c0ce]">Hyperliquid setup</button>
             </div>
           </section>
 

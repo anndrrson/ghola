@@ -25,7 +25,10 @@ import {
   getLatestVenueEligibilityByAccount,
   getPrivateAccountByOwner,
 } from "./private-account-store";
-import { probeLiveTradingWorkerReadiness } from "./private-agent-worker-readiness";
+import {
+  probeEmergencyLiveTradingWorkerReadiness,
+  probeLiveTradingWorkerReadiness,
+} from "./private-agent-worker-readiness";
 import { hasPrivateAgentEntitlement } from "./private-agent-runtime";
 import type { TradeOrderPlan } from "./trade-order-plan";
 
@@ -38,6 +41,62 @@ export type LiveTradingAuthorizationResult =
       reservation: LiveTradingNotionalReservation | null;
     }
   | { ok: false; error: string; status: number; reason_codes: string[] };
+
+export type LiveTradingRiskReductionAuthorizationResult =
+  | {
+      ok: true;
+      account_commitment: string;
+      vault_commitment: string;
+    }
+  | { ok: false; error: string; status: number; reason_codes: string[] };
+
+export async function authorizeLiveTradingRiskReduction(input: {
+  owner_commitment: string;
+  web_session_token: string;
+  emergency_action: "close" | "kill_and_flat";
+  required_capabilities: Array<Extract<LiveTradingCapabilityId, "cancel" | "reduce_only">>;
+  fetchImpl?: typeof fetch;
+  env?: Record<string, string | undefined>;
+}): Promise<LiveTradingRiskReductionAuthorizationResult> {
+  const env = input.env ?? process.env;
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const requiredCapabilities = [...new Set(input.required_capabilities)];
+  if (!requiredCapabilities.length) return denied("live_capability_not_supported", 409);
+  const account = await getPrivateAccountByOwner(input.owner_commitment);
+  if (!account) return denied("private_account_required", 409);
+  const vault = await getHyperliquidExecutionVaultByAccount(account.account_commitment);
+  if (!vault || vault.owner_commitment !== input.owner_commitment || vault.status !== "sealed") {
+    return denied("sealed_hyperliquid_vault_required", 409);
+  }
+  const publicCapabilities = configuredLiveTradingCapabilities(env);
+  if (!requiredCapabilities.every((required) => publicCapabilities.includes(required))) {
+    return denied("live_capability_not_public", 503);
+  }
+  const release = currentLiveTradingReleaseIdentity(env);
+  const worker = await probeEmergencyLiveTradingWorkerReadiness({
+    action: input.emergency_action,
+    env,
+    fetchImpl,
+    expectedRelease: release,
+    requiredCapabilities,
+  });
+  const reasonCodes = [...new Set([
+    ...release.reason_codes,
+    ...worker.reason_codes,
+  ])];
+  // Emergency authority reduces exposure. Launch state, proof promotion,
+  // billing, eligibility and graduation must never strand an existing
+  // position, but release identity and the attested worker contract remain
+  // exact and fail closed.
+  if (!release.valid || !worker.ready || reasonCodes.length) {
+    return { ok: false, error: "live_trading_gate_closed", status: 503, reason_codes: reasonCodes };
+  }
+  return {
+    ok: true,
+    account_commitment: account.account_commitment,
+    vault_commitment: vault.vault_commitment,
+  };
+}
 
 export async function authorizeLiveTradingMutation(input: {
   owner_commitment: string;

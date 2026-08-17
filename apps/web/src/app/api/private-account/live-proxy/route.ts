@@ -20,9 +20,9 @@ const LIVE_GUARDED_MUTATION_PATHS = [
   /^\/v1\/private-account\/actions\/execute$/,
   /^\/v1\/private-account\/autopilot\/sessions$/,
   /^\/v1\/private-account\/autopilot\/sessions\/[^/]+$/,
-  /^\/v1\/private-account\/autopilot\/sessions\/[^/]+\/(?:pause|resume|kill)$/,
+  /^\/v1\/private-account\/autopilot\/sessions\/[^/]+\/(?:pause|resume|kill|kill-and-flat)$/,
   /^\/v1\/private-account\/connectors\/(?:submit|verify-no-submit|reconcile)$/,
-  /^\/v1\/private-account\/hyperliquid\/(?:account-snapshot|mainnet-roundtrip|managed-allocation)$/,
+  /^\/v1\/private-account\/hyperliquid\/(?:account-snapshot|mainnet-roundtrip|managed-allocation|positions\/close)$/,
   /^\/v1\/private-account\/hyperliquid\/agent\/session$/,
   /^\/v1\/private-account\/hyperliquid\/vault$/,
   /^\/v1\/private-account\/omnibus\/(?:allocate|reconcile)$/,
@@ -111,7 +111,11 @@ export async function POST(req: NextRequest) {
     body: JSON.stringify(body),
     cache: "no-store",
     signal: AbortSignal.timeout(
-      target.pathname === "/v1/private-account/hyperliquid/mainnet-roundtrip" ? 120_000 : 15_000,
+      target.pathname === "/v1/private-account/hyperliquid/mainnet-roundtrip" ||
+        target.pathname === "/v1/private-account/hyperliquid/positions/close" ||
+        target.pathname.endsWith("/kill-and-flat")
+        ? 120_000
+        : 15_000,
     ),
   }).catch(() => null);
   if (!upstream) return json({ error: "live_proxy_upstream_unavailable" }, 503);

@@ -48,6 +48,7 @@ export class PrivateExecutionError extends Error {
 }
 
 const AUTOPILOT_INTERNAL_INSTRUCTION = Symbol("ghola.autopilot.internal_instruction");
+const INTERNAL_RISK_REDUCTION = Symbol("ghola.internal.risk_reduction");
 const COINBASE_EXPOSURE_CREATING_OPERATIONS = new Set([
   "spot_limit_order",
   "spot_market_order",
@@ -532,7 +533,11 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     recipient,
     venue_id: "hyperliquid",
     session,
-  }), { state, venue_id: "hyperliquid" });
+  }), {
+    state,
+    venue_id: "hyperliquid",
+    internalRiskReduction: body[INTERNAL_RISK_REDUCTION] === true,
+  });
   await enforceInstructionPolicy({ body, instruction, session, state: null });
   const cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
   return executeClaimedPrivateSubmission({
@@ -542,7 +547,13 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     prepare: async () => {
       if (body.autopilot_session_id) {
         const autopilot = await state.getAutopilotSession(body.autopilot_session_id);
-        if (!autopilot || autopilot.control_latch || autopilot.status !== "running" || autopilot.execution_enabled !== true) {
+        const internalRiskReduction = body[INTERNAL_RISK_REDUCTION] === true &&
+          isRiskReducingHyperliquidInstruction(instruction);
+        if (!autopilot || (!internalRiskReduction && (
+          autopilot.control_latch ||
+          autopilot.status !== "running" ||
+          autopilot.execution_enabled !== true
+        ))) {
           throw new PrivateExecutionError("autopilot execution permit is unavailable", 409);
         }
       }
@@ -613,6 +624,36 @@ export async function executeHyperliquidBoundInstruction({
       if (terminalExecutionProof(reconciled?.final_proof)) return reconciled;
     } catch {
       // Preserve the original ambiguous-submit error; the durable claim still blocks rebroadcast.
+    }
+    throw error;
+  }
+}
+
+// Only worker-owned lifecycle code can set this symbol. It keeps emergency
+// cancellation and reduce-only exits on the normal sealed-vault, policy,
+// durable-claim, slippage, and venue-readback path after execution is latched.
+export async function executeHyperliquidRiskReduction({
+  body,
+  instruction,
+  recipient,
+  state,
+  executeOrder = executeHyperliquidOrder,
+  reconcileClaim = reconcileHyperliquidClaim,
+}) {
+  if (!isRiskReducingHyperliquidInstruction(instruction)) {
+    throw new PrivateExecutionError("internal risk reduction instruction is invalid", 400);
+  }
+  const boundBody = { ...body };
+  boundBody[AUTOPILOT_INTERNAL_INSTRUCTION] = instruction;
+  boundBody[INTERNAL_RISK_REDUCTION] = true;
+  try {
+    return await executeOrder({ body: boundBody, recipient, state });
+  } catch (error) {
+    try {
+      const reconciled = await reconcileClaim({ body: boundBody, recipient, state });
+      if (terminalExecutionProof(reconciled?.final_proof)) return reconciled;
+    } catch {
+      // The durable execution claim prevents an ambiguous rebroadcast.
     }
     throw error;
   }
@@ -1751,9 +1792,10 @@ async function instructionForBody({ body, recipient, venue_id, session }) {
   throw new PrivateExecutionError("encrypted execution instruction is required");
 }
 
-async function resolvePrivateCancelTarget(instruction, { state, venue_id }) {
+async function resolvePrivateCancelTarget(instruction, { state, venue_id, internalRiskReduction = false }) {
   const target = instruction?.cancel?.target_work_order_commitment;
   if (instruction?.operation_class !== "cancel" || !target) return instruction;
+  if (internalRiskReduction && instruction.cancel?.order_id) return instruction;
   if (!(await state.getIdempotency(target))?.receipt) {
     const error = new PrivateExecutionError(
       "cancel target work order is unresolved; reconciliation required",
@@ -1772,6 +1814,18 @@ async function resolvePrivateCancelTarget(instruction, { state, venue_id }) {
       client_order_id: clientOrderId,
     },
   };
+}
+
+function isRiskReducingHyperliquidInstruction(instruction) {
+  return instruction?.venue_id === "hyperliquid" && (
+    instruction.operation_class === "cancel" ||
+    (
+      instruction.operation_class === "limit_order" &&
+      instruction.order?.reduce_only === true &&
+      instruction.order?.order_type === "market" &&
+      instruction.order?.tif === "Ioc"
+    )
+  );
 }
 
 function coinbaseOperationCreatesExposure(operationClass) {

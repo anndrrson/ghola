@@ -24,6 +24,14 @@ test("Phala env builder validates the exact live contract and signer binding", (
     assert.match(built, /PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS=30000/);
     assert.match(built, new RegExp(`GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64=${escapeRegex(publicKey)}`));
 
+    writeFileSync(input, liveEnv(privateKey, publicKey).replace(
+      "PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES=limit_order\n",
+      "PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED=true\nPRIVATE_AGENT_LIVE_TRADING_CAPABILITIES=limit_order,cancel,reduce_only\n",
+    ));
+    const riskReduction = runBuilder(input, output);
+    assert.equal(riskReduction.status, 0, riskReduction.stderr || riskReduction.stdout);
+    assert.match(readFileSync(output, "utf8"), /PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED=true/);
+
     writeFileSync(input, liveEnv(privateKey, Buffer.alloc(44, 9).toString("base64")));
     const wrongSigner = runBuilder(input, output);
     assert.equal(wrongSigner.status, 1);

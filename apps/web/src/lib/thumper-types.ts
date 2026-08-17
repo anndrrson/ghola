@@ -169,6 +169,7 @@ export interface ThumperTemplateResponse {
 
 export interface ThumperBillingStatusResponse {
   tier: "free" | "pro" | "trial_pack" | "starter" | "private_agent" | "unlimited" | "enterprise";
+  access_source?: "free" | "stripe" | "complimentary_pass";
   stripe_customer_id: string | null;
   expires_at?: string | null;
   portal_url?: string | null;
