@@ -114,9 +114,11 @@ export function HyperliquidAccountSetup() {
   if (!auth.authenticated) {
     return (
       <SetupNotice message="Sign in before connecting venue access.">
-        <Link href="/signin?redirect=%2Faccount%3Fflow%3Dtrade" className="trade-action inline-flex h-10 items-center justify-center rounded-md px-4 text-sm font-semibold">
+        {/* A full navigation is required so /signin receives its scoped
+            Google OAuth COOP/COEP response headers. */}
+        <a href="/signin?redirect=%2Faccount%3Fflow%3Dtrade" className="trade-action inline-flex h-10 items-center justify-center rounded-md px-4 text-sm font-semibold">
           Sign in
-        </Link>
+        </a>
       </SetupNotice>
     );
   }
