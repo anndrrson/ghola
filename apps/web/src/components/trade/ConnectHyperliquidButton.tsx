@@ -168,6 +168,7 @@ export function ConnectHyperliquidButton({
       const bindingSignature = await walletSignBytes(
         walletProvider,
         new TextEncoder().encode(bindingChallenge.message),
+        authorizationWallet,
       );
       await bindPrivateMobileWallet({
         wallet_pubkey: authorizationWallet,
@@ -194,7 +195,7 @@ export function ConnectHyperliquidButton({
         path: "/v1/private-account/hyperliquid/vault",
         body: vaultBody,
         wallet: authorizationWallet,
-        signBytes: async (bytes) => walletSignBytes(walletProvider, bytes),
+        signBytes: async (bytes) => walletSignBytes(walletProvider, bytes, authorizationWallet),
       });
       await sealHyperliquidExecutionVault(vaultBody, { proofHeaders });
       setDraft(EMPTY_DRAFT);
@@ -220,6 +221,7 @@ export function ConnectHyperliquidButton({
     const bindingSignature = await walletSignBytes(
       walletProvider,
       new TextEncoder().encode(bindingChallenge.message),
+      authorizationWallet,
     );
     await bindPrivateMobileWallet({
       wallet_pubkey: authorizationWallet,
@@ -232,7 +234,7 @@ export function ConnectHyperliquidButton({
       path: "/v1/private-account/hyperliquid/vault",
       body,
       wallet: authorizationWallet,
-      signBytes: async (bytes) => walletSignBytes(walletProvider, bytes),
+      signBytes: async (bytes) => walletSignBytes(walletProvider, bytes, authorizationWallet),
     });
     await revokeHyperliquidExecutionVault({ proofHeaders });
     await refresh();

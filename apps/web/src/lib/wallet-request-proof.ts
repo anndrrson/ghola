@@ -1,9 +1,14 @@
 // Shared browser Solana-wallet helpers for flows that seal or sign with the
-// user's injected wallet (window.solana). Extracted from TriVenueArbConsole so
+// user's injected wallet. Extracted from TriVenueArbConsole so
 // connect/seal components don't duplicate provider plumbing.
 
+type SolanaConnectOptions = { onlyIfTrusted?: boolean };
+type SolanaProviderEvent = "connect" | "accountChanged" | "disconnect";
+type SolanaProviderListener = (value?: unknown) => void;
+
 export type SolanaProvider = {
-  connect?: () => Promise<{ publicKey?: unknown } | unknown>;
+  connect?: (options?: SolanaConnectOptions) => Promise<{ publicKey?: unknown } | unknown>;
+  disconnect?: () => Promise<unknown>;
   signMessage?: (
     message: Uint8Array,
     encoding?: string,
@@ -11,15 +16,32 @@ export type SolanaProvider = {
   signTransaction?: <T>(transaction: T) => Promise<T>;
   signAndSendTransaction?: <T>(transaction: T) => Promise<{ signature?: string } | string>;
   publicKey?: unknown;
+  isConnected?: boolean;
+  isPhantom?: boolean;
+  on?: (event: SolanaProviderEvent, listener: SolanaProviderListener) => void;
 };
 
 type SolanaWindow = Window & {
+  phantom?: { solana?: SolanaProvider };
   solana?: SolanaProvider;
 };
 
+type ProviderConnectionState = {
+  wallet: string;
+  disconnected: boolean;
+  accountEventSeen: boolean;
+};
+
+const connectInFlight = new WeakMap<SolanaProvider, Promise<string>>();
+const providerConnectionStates = new WeakMap<SolanaProvider, ProviderConnectionState>();
+
 export function solanaProvider(): SolanaProvider | undefined {
   if (typeof window === "undefined") return undefined;
-  return (window as SolanaWindow).solana;
+  const walletWindow = window as SolanaWindow;
+  const canonical = walletWindow.phantom?.solana;
+  if (canonical?.isPhantom === true) return trackedProvider(canonical);
+  const legacy = walletWindow.solana;
+  return legacy ? trackedProvider(legacy) : undefined;
 }
 
 export function requiredSolanaProvider(): SolanaProvider {
@@ -31,19 +53,187 @@ export function requiredSolanaProvider(): SolanaProvider {
 export async function connectSolanaWallet(): Promise<string> {
   const provider = solanaProvider();
   if (!provider?.connect) throw new Error("Open this page with a Solana wallet installed.");
-  const connected = await provider.connect();
-  const pubkey = publicKeyString((connected as { publicKey?: unknown })?.publicKey || provider.publicKey);
-  if (!pubkey) throw new Error("No Solana public key was returned.");
-  return pubkey;
+
+  const pending = connectInFlight.get(provider);
+  if (pending) return pending;
+  const currentWallet = connectedProviderWallet(provider);
+  if (currentWallet && provider.isPhantom !== true) return currentWallet;
+
+  const promise = provider.isPhantom === true
+    ? connectPhantomProvider(provider)
+    : connectInjectedProvider(provider);
+  connectInFlight.set(provider, promise);
+  try {
+    return await promise;
+  } finally {
+    if (connectInFlight.get(provider) === promise) connectInFlight.delete(provider);
+  }
 }
 
-export async function walletSignBytes(provider: SolanaProvider, bytes: Uint8Array): Promise<Uint8Array> {
+export async function walletSignBytes(
+  provider: SolanaProvider,
+  bytes: Uint8Array,
+  expectedWallet?: string,
+): Promise<Uint8Array> {
   if (!provider.signMessage) throw new Error("Wallet message signing is required.");
+  if (expectedWallet) assertCurrentSolanaWallet(provider, expectedWallet);
   const signed = await provider.signMessage(bytes, "utf8");
+  const signingWallet = publicKeyString((signed as { publicKey?: unknown } | undefined)?.publicKey);
+  if (expectedWallet && signingWallet && signingWallet !== expectedWallet) {
+    throw new Error(`${providerName(provider)} account changed. Reconnect the intended account and try again.`);
+  }
+  if (expectedWallet) assertCurrentSolanaWallet(provider, expectedWallet);
   if (signed instanceof Uint8Array) return signed;
   if (signed?.signature instanceof Uint8Array) return signed.signature;
   if (Array.isArray(signed?.signature)) return Uint8Array.from(signed.signature);
   throw new Error("Wallet did not return a message signature.");
+}
+
+function trackedProvider(provider: SolanaProvider): SolanaProvider {
+  if (providerConnectionStates.has(provider)) return provider;
+  const state: ProviderConnectionState = {
+    wallet: provider.isConnected === true ? publicKeyString(provider.publicKey) : "",
+    disconnected: provider.isConnected === false,
+    accountEventSeen: false,
+  };
+  providerConnectionStates.set(provider, state);
+  provider.on?.("connect", (publicKey) => {
+    state.wallet = publicKeyString(publicKey) || publicKeyString(provider.publicKey);
+    state.disconnected = false;
+    state.accountEventSeen = false;
+  });
+  provider.on?.("accountChanged", (publicKey) => {
+    state.wallet = publicKeyString(publicKey);
+    state.disconnected = !state.wallet;
+    state.accountEventSeen = true;
+  });
+  provider.on?.("disconnect", () => {
+    state.wallet = "";
+    state.disconnected = true;
+    state.accountEventSeen = true;
+  });
+  return provider;
+}
+
+async function connectPhantomProvider(provider: SolanaProvider): Promise<string> {
+  let staleSessionReset = false;
+  try {
+    return rememberConnectedWallet(provider, await provider.connect?.({ onlyIfTrusted: true }));
+  } catch (error) {
+    const code = providerErrorCode(error);
+    if (code === -32603) {
+      await resetStaleProviderSession(provider);
+      staleSessionReset = true;
+    } else if (code !== 4001 && code !== 4100) {
+      throw usefulProviderError(error, provider);
+    }
+  }
+
+  try {
+    return rememberConnectedWallet(provider, await provider.connect?.());
+  } catch (error) {
+    if (providerErrorCode(error) !== -32603 || staleSessionReset) {
+      throw usefulProviderError(error, provider);
+    }
+    await resetStaleProviderSession(provider);
+    try {
+      return rememberConnectedWallet(provider, await provider.connect?.());
+    } catch (retryError) {
+      throw usefulProviderError(retryError, provider);
+    }
+  }
+}
+
+async function connectInjectedProvider(provider: SolanaProvider): Promise<string> {
+  try {
+    return rememberConnectedWallet(provider, await provider.connect?.());
+  } catch (error) {
+    throw usefulProviderError(error, provider);
+  }
+}
+
+async function resetStaleProviderSession(provider: SolanaProvider): Promise<void> {
+  try {
+    await provider.disconnect?.();
+  } catch {
+    // Phantom can reject disconnect when its stale session is already gone.
+  }
+  const state = providerConnectionStates.get(provider);
+  if (state) {
+    state.wallet = "";
+    state.disconnected = true;
+    state.accountEventSeen = true;
+  }
+  await Promise.resolve();
+}
+
+function rememberConnectedWallet(provider: SolanaProvider, connected: unknown): string {
+  const responseWallet = publicKeyString((connected as { publicKey?: unknown } | undefined)?.publicKey);
+  const wallet = responseWallet || publicKeyString(provider.publicKey);
+  if (!wallet) throw new Error(`${providerName(provider)} did not return a Solana public key.`);
+  const state = providerConnectionStates.get(provider);
+  if (state) {
+    state.wallet = wallet;
+    state.disconnected = false;
+    state.accountEventSeen = false;
+  }
+  return wallet;
+}
+
+function connectedProviderWallet(provider: SolanaProvider): string {
+  if (provider.isConnected !== true) return "";
+  const wallet = publicKeyString(provider.publicKey);
+  if (!wallet) return "";
+  const state = providerConnectionStates.get(provider);
+  if (state) {
+    state.wallet = wallet;
+    state.disconnected = false;
+    state.accountEventSeen = false;
+  }
+  return wallet;
+}
+
+function assertCurrentSolanaWallet(provider: SolanaProvider, expectedWallet: string): void {
+  const state = providerConnectionStates.get(provider);
+  if (provider.isConnected === false || state?.disconnected) {
+    throw new Error(`${providerName(provider)} disconnected. Reconnect it and try again.`);
+  }
+  const currentWallet = state?.accountEventSeen
+    ? state.wallet
+    : publicKeyString(provider.publicKey) || state?.wallet || "";
+  if (!currentWallet) throw new Error(`${providerName(provider)} disconnected. Reconnect it and try again.`);
+  if (currentWallet !== expectedWallet) {
+    throw new Error(`${providerName(provider)} account changed. Reconnect the intended account and try again.`);
+  }
+}
+
+function providerErrorCode(error: unknown): number | undefined {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === "number") return code;
+  if (typeof code === "string" && /^-?\d+$/u.test(code)) return Number(code);
+  return undefined;
+}
+
+function usefulProviderError(error: unknown, provider?: SolanaProvider): Error {
+  const name = providerName(provider);
+  switch (providerErrorCode(error)) {
+    case 4001:
+      return new Error(`${name} connection was cancelled.`);
+    case 4100:
+      return new Error(`${name} has not authorized this account. Reconnect it and try again.`);
+    case 4900:
+      return new Error(`${name} is disconnected from Solana. Reconnect it and try again.`);
+    case -32002:
+      return new Error(`A ${name} approval is already open. Finish or close it, then try again.`);
+    case -32603:
+      return new Error(`${name} could not refresh its connection. Unlock ${name}, switch to the intended account, reload this page, and try again.`);
+    default:
+      return error instanceof Error ? error : new Error(`${name} could not connect.`);
+  }
+}
+
+function providerName(provider?: SolanaProvider): "Phantom" | "Wallet" {
+  return provider?.isPhantom === true ? "Phantom" : "Wallet";
 }
 
 export function publicKeyString(value: unknown): string {
