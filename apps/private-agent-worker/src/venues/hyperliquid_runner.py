@@ -244,7 +244,14 @@ def resolve_limit_order(info, order, account_address):
         reduce_only = bool(order.get("reduce_only"))
         if not reduce_only and notional < MIN_ORDER_NOTIONAL_USD:
             fail("hyperliquid opening order is below the venue minimum notional", "venue_rejected")
-        account_state_checked = True if reduce_only else check_account_value(info, account_address, notional)
+        account_state_checked = True if reduce_only else check_account_value(
+            info,
+            account_address,
+            notional,
+            order.get("market"),
+            order.get("side"),
+            base,
+        )
         return {
             "base_size": decimal_text(base),
             "limit_price": decimal_text(price),
@@ -270,7 +277,6 @@ def resolve_limit_order(info, order, account_address):
     if mid <= 0:
         fail("hyperliquid market data unavailable")
 
-    account_state_checked = check_account_value(info, account_address, quote_size)
     slippage = slippage_bps / Decimal("10000")
     limit = mid * (Decimal("1") + slippage if order.get("side") == "buy" else Decimal("1") - slippage)
     if limit <= 0:
@@ -281,6 +287,14 @@ def resolve_limit_order(info, order, account_address):
     base_size = floor_decimal(quote_size / price, size_decimals)
     if base_size <= 0:
         fail("hyperliquid tiny fill size is below venue minimum", "venue_rejected")
+    account_state_checked = check_account_value(
+        info,
+        account_address,
+        quote_size,
+        coin,
+        order.get("side"),
+        base_size,
+    )
     return {
         "base_size": decimal_text(base_size),
         "limit_price": decimal_text(price),
@@ -647,9 +661,10 @@ def derived_cloid(parent_cloid, purpose):
 
 def verify_fresh_execution_book(info, order, resolved):
     coin = order.get("market")
-    execution_book = resolved.get("execution_book")
-    if not isinstance(execution_book, dict):
-        execution_book = fresh_execution_book(info, coin)
+    # Account/capacity preflights can take long enough for the book used to
+    # size the order to age out. Re-read immediately before acceptance and
+    # prove the already-bounded limit against the current executable book.
+    execution_book = fresh_execution_book(info, coin)
     source_time_ms = execution_book["source_time_ms"]
     best_bid = execution_book["best_bid"]
     best_ask = execution_book["best_ask"]
@@ -759,6 +774,9 @@ def resolve_market_ioc_order(info, order, account_address):
         info,
         account_address,
         max(requested_notional, effective_notional),
+        coin,
+        order.get("side"),
+        base_size,
     )
     return {
         "base_size": decimal_text(base_size),
@@ -770,18 +788,184 @@ def resolve_market_ioc_order(info, order, account_address):
     }
 
 
-def check_account_value(info, account_address, quote_size):
+def check_account_value(info, account_address, quote_size, market, side, base_size):
     try:
-        state = info.user_state(account_address)
-        withdrawable = Decimal(str(state.get("withdrawable") or "0"))
-        fee_buffer = max(Decimal("0.01"), quote_size * Decimal("0.001"))
-        if withdrawable < quote_size + fee_buffer:
+        abstraction = hyperliquid_account_abstraction(info, account_address)
+        if abstraction in ("default", "disabled"):
+            state = info.user_state(account_address)
+            available = exact_nonnegative_account_decimal(
+                state.get("withdrawable") or "0",
+            )
+        elif abstraction == "unifiedAccount":
+            available = unified_account_available_usdc(info, account_address)
+        elif abstraction == "portfolioMargin":
+            fail("hyperliquid portfolio margin accounts are unsupported", "venue_rejected")
+        else:
+            fail("hyperliquid account abstraction mode is unsupported", "venue_rejected")
+        with localcontext() as ctx:
+            ctx.prec = exact_account_decimal_precision(quote_size, available)
+            fee_buffer = max(Decimal("0.01"), quote_size * Decimal("0.001"))
+            required = quote_size + fee_buffer
+        if available < required:
             fail("hyperliquid account has insufficient available value", "venue_rejected")
+        if abstraction == "unifiedAccount":
+            verify_unified_active_asset_capacity(
+                info,
+                account_address,
+                market,
+                side,
+                base_size,
+                required,
+            )
         return True
     except SystemExit:
         raise
     except Exception:
         fail("hyperliquid account state unavailable", "venue_rejected")
+
+
+def hyperliquid_account_abstraction(info, account_address):
+    query = getattr(info, "query_user_abstraction_state", None)
+    abstraction = (
+        query(account_address)
+        if callable(query)
+        else info.post("/info", {"type": "userAbstraction", "user": account_address})
+    )
+    if not isinstance(abstraction, str):
+        raise ValueError("invalid Hyperliquid account abstraction response")
+    return abstraction
+
+
+def unified_account_available_usdc(info, account_address):
+    query = getattr(info, "spot_user_state", None)
+    state = (
+        query(account_address)
+        if callable(query)
+        else info.post("/info", {"type": "spotClearinghouseState", "user": account_address})
+    )
+    if not isinstance(state, dict) or not isinstance(state.get("balances"), list):
+        raise ValueError("invalid Hyperliquid spot account state")
+    balances = state["balances"]
+    if any(not isinstance(balance, dict) for balance in balances):
+        raise ValueError("invalid Hyperliquid spot balance")
+    usdc_balances = [
+        balance
+        for balance in balances
+        if balance.get("coin") == "USDC" or balance.get("token") == 0
+    ]
+    if not usdc_balances:
+        return Decimal("0")
+    if (
+        len(usdc_balances) != 1
+        or usdc_balances[0].get("coin") != "USDC"
+        or usdc_balances[0].get("token") != 0
+    ):
+        raise ValueError("invalid Hyperliquid USDC spot balance")
+    total = exact_nonnegative_account_decimal(usdc_balances[0].get("total"))
+    hold = exact_nonnegative_account_decimal(usdc_balances[0].get("hold"))
+    if hold > total:
+        raise ValueError("invalid Hyperliquid USDC spot hold")
+    with localcontext() as ctx:
+        ctx.prec = exact_account_decimal_precision(total, hold)
+        return total - hold
+
+
+def verify_unified_active_asset_capacity(
+    info,
+    account_address,
+    market,
+    side,
+    base_size,
+    required,
+):
+    if (
+        not isinstance(account_address, str)
+        or not re.fullmatch(r"0x[0-9a-fA-F]{40}", account_address)
+        or not isinstance(market, str)
+        or not market
+        or len(market) > 128
+        or market.strip() != market
+        or side not in ("buy", "sell")
+        or not isinstance(base_size, Decimal)
+        or not base_size.is_finite()
+        or base_size <= 0
+        or not isinstance(required, Decimal)
+        or not required.is_finite()
+        or required <= 0
+    ):
+        raise ValueError("invalid Hyperliquid active asset request")
+    state = info.post("/info", {
+        "type": "activeAssetData",
+        "user": account_address,
+        "coin": market,
+    })
+    if not isinstance(state, dict):
+        raise ValueError("invalid Hyperliquid active asset state")
+    returned_user = state.get("user")
+    returned_coin = state.get("coin")
+    if (
+        not isinstance(returned_user, str)
+        or not re.fullmatch(r"0x[0-9a-fA-F]{40}", returned_user)
+        or returned_user.lower() != account_address.lower()
+        or not isinstance(returned_coin, str)
+        or returned_coin != market
+    ):
+        raise ValueError("invalid Hyperliquid active asset identity")
+    leverage = state.get("leverage")
+    if (
+        not isinstance(leverage, dict)
+        or not isinstance(leverage.get("type"), str)
+        or type(leverage.get("value")) is not int
+    ):
+        raise ValueError("invalid Hyperliquid active asset leverage")
+    if leverage["type"] == "isolated":
+        exact_signed_account_decimal(leverage.get("rawUsd"))
+    if leverage["type"] != "isolated" or leverage["value"] != 1:
+        fail("hyperliquid active market must already use isolated 1x leverage", "venue_rejected")
+    available_raw = state.get("availableToTrade")
+    max_size_raw = state.get("maxTradeSzs")
+    if (
+        not isinstance(available_raw, list)
+        or len(available_raw) != 2
+        or not isinstance(max_size_raw, list)
+        or len(max_size_raw) != 2
+    ):
+        raise ValueError("invalid Hyperliquid active asset capacity")
+    available = [exact_nonnegative_account_decimal(value) for value in available_raw]
+    max_sizes = [exact_nonnegative_account_decimal(value) for value in max_size_raw]
+    side_index = 0 if side == "buy" else 1
+    if available[side_index] < required:
+        fail("hyperliquid active market has insufficient available value", "venue_rejected")
+    if base_size > max_sizes[side_index]:
+        fail("hyperliquid order exceeds the active market maximum size", "venue_rejected")
+    return True
+
+
+def exact_nonnegative_account_decimal(value):
+    if (
+        not isinstance(value, str)
+        or len(value) > 128
+        or not re.fullmatch(r"\d+(?:\.\d+)?", value)
+    ):
+        raise ValueError("invalid Hyperliquid account decimal")
+    return Decimal(value)
+
+
+def exact_signed_account_decimal(value):
+    if (
+        not isinstance(value, str)
+        or len(value) > 128
+        or not re.fullmatch(r"-?\d+(?:\.\d+)?", value)
+    ):
+        raise ValueError("invalid Hyperliquid account decimal")
+    return Decimal(value)
+
+
+def exact_account_decimal_precision(*values):
+    return max(
+        40,
+        *(len(value.as_tuple().digits) + abs(value.as_tuple().exponent) + 2 for value in values),
+    )
 
 
 def configure_isolated_leverage(exchange, order):

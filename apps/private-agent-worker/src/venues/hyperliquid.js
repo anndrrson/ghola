@@ -131,6 +131,37 @@ function exactNonnegativeDecimal(value, label) {
   return text;
 }
 
+function exactUnsignedDecimal(value, label) {
+  const canonical = exactNonnegativeDecimal(value, label);
+  const [whole, fraction = ""] = canonical.split(".");
+  return {
+    units: BigInt(`${whole}${fraction}`),
+    scale: fraction.length,
+  };
+}
+
+function alignExactUnsignedDecimals(left, right) {
+  const scale = Math.max(left.scale, right.scale);
+  return {
+    left: left.units * (10n ** BigInt(scale - left.scale)),
+    right: right.units * (10n ** BigInt(scale - right.scale)),
+    scale,
+  };
+}
+
+function compareExactUnsignedDecimals(left, right) {
+  const aligned = alignExactUnsignedDecimals(left, right);
+  return aligned.left === aligned.right ? 0 : aligned.left > aligned.right ? 1 : -1;
+}
+
+function subtractExactUnsignedDecimals(left, right, label) {
+  const aligned = alignExactUnsignedDecimals(left, right);
+  if (aligned.left < aligned.right) {
+    throw new HyperliquidExecutionError(`${label} is invalid`, 502);
+  }
+  return { units: aligned.left - aligned.right, scale: aligned.scale };
+}
+
 function exactAbsoluteDecimal(value, label) {
   const text = exactSignedDecimal(value, label);
   return text.startsWith("-") ? text.slice(1) : text;
@@ -540,6 +571,46 @@ export async function verifyHyperliquidNoSubmit({
   });
 }
 
+async function readHyperliquidAccountParts(fetchImpl, credential) {
+  const accountAddress = hyperliquidExecutionAddress(credential);
+  const abstraction = await postHyperliquidInfo(fetchImpl, credential.base_url, {
+    type: "userAbstraction",
+    user: accountAddress,
+  });
+  if (!["default", "disabled", "unifiedAccount"].includes(abstraction)) {
+    throw new HyperliquidExecutionError("hyperliquid account abstraction mode is unsupported", 502);
+  }
+  const unified = abstraction === "unifiedAccount";
+  const [state, openOrders, userFills, spotState] = await Promise.all([
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "clearinghouseState",
+      user: accountAddress,
+    }),
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "openOrders",
+      user: accountAddress,
+    }),
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "userFills",
+      user: accountAddress,
+      aggregateByTime: true,
+    }).catch(() => []),
+    unified
+      ? postHyperliquidInfo(fetchImpl, credential.base_url, {
+          type: "spotClearinghouseState",
+          user: accountAddress,
+        })
+      : Promise.resolve(null),
+  ]);
+  return {
+    state,
+    openOrders,
+    userFills,
+    abstraction,
+    spotState,
+  };
+}
+
 export async function readHyperliquidAccountSnapshot({
   credential,
   accountSource = "sealed_byo",
@@ -572,25 +643,9 @@ export async function readHyperliquidAccountSnapshot({
       next_step: "Preview trade",
     };
   }
-  const [state, openOrders, userFills] = await Promise.all([
-    postHyperliquidInfo(fetchImpl, credential.base_url, {
-      type: "clearinghouseState",
-      user: hyperliquidExecutionAddress(credential),
-    }),
-    postHyperliquidInfo(fetchImpl, credential.base_url, {
-      type: "openOrders",
-      user: hyperliquidExecutionAddress(credential),
-    }),
-    postHyperliquidInfo(fetchImpl, credential.base_url, {
-      type: "userFills",
-      user: hyperliquidExecutionAddress(credential),
-      aggregateByTime: true,
-    }).catch(() => []),
-  ]);
+  const parts = await readHyperliquidAccountParts(fetchImpl, credential);
   return hyperliquidAccountStateFromParts({
-    state,
-    openOrders,
-    userFills,
+    ...parts,
     accountSource,
     network: credential.network,
     streamStatus: "snapshot",
@@ -917,27 +972,17 @@ export async function createHyperliquidAccountStateStream({
   let currentState = null;
   let currentOpenOrders = [];
   let currentFills = [];
+  let currentAbstraction = null;
+  let currentSpotState = null;
 
   async function backfill(status = "backfilling") {
     onEvent({ event: "stream_status", data: accountStreamStatus(status) });
-    const [state, openOrders, userFills] = await Promise.all([
-      postHyperliquidInfo(fetchImpl, credential.base_url, {
-        type: "clearinghouseState",
-        user: hyperliquidExecutionAddress(credential),
-      }),
-      postHyperliquidInfo(fetchImpl, credential.base_url, {
-        type: "openOrders",
-        user: hyperliquidExecutionAddress(credential),
-      }),
-      postHyperliquidInfo(fetchImpl, credential.base_url, {
-        type: "userFills",
-        user: hyperliquidExecutionAddress(credential),
-        aggregateByTime: true,
-      }).catch(() => []),
-    ]);
-    currentState = state;
-    currentOpenOrders = Array.isArray(openOrders) ? openOrders : [];
-    currentFills = Array.isArray(userFills) ? userFills : [];
+    const parts = await readHyperliquidAccountParts(fetchImpl, credential);
+    currentState = parts.state;
+    currentOpenOrders = Array.isArray(parts.openOrders) ? parts.openOrders : [];
+    currentFills = Array.isArray(parts.userFills) ? parts.userFills : [];
+    currentAbstraction = parts.abstraction;
+    currentSpotState = parts.spotState;
     emitAccountState("backfilling");
   }
 
@@ -948,6 +993,8 @@ export async function createHyperliquidAccountStateStream({
         state: currentState,
         openOrders: currentOpenOrders,
         userFills: currentFills,
+        abstraction: currentAbstraction,
+        spotState: currentSpotState,
         accountSource,
         network: credential.network,
         streamStatus,
@@ -965,6 +1012,9 @@ export async function createHyperliquidAccountStateStream({
       { type: "userFundings", user: hyperliquidExecutionAddress(credential) },
       { type: "activeAssetData", user: hyperliquidExecutionAddress(credential), coin },
     ];
+    if (currentAbstraction === "unifiedAccount") {
+      subscriptions.push({ type: "spotState", user: hyperliquidExecutionAddress(credential) });
+    }
     for (const subscription of subscriptions) {
       socket?.send(JSON.stringify({ method: "subscribe", subscription }));
     }
@@ -988,8 +1038,12 @@ export async function createHyperliquidAccountStateStream({
       heartbeatTimer.unref?.();
     };
     socket.onmessage = (event) => {
-      const changed = mergeHyperliquidAccountStreamMessage(String(event.data));
-      if (changed) emitAccountState("live");
+      try {
+        const changed = mergeHyperliquidAccountStreamMessage(String(event.data));
+        if (changed) emitAccountState("live");
+      } catch (error) {
+        onEvent({ event: "error", data: safeStreamError(error) });
+      }
     };
     socket.onerror = () => {
       onEvent({ event: "stream_status", data: accountStreamStatus("reconnecting") });
@@ -1053,6 +1107,27 @@ export async function createHyperliquidAccountStateStream({
     if (channel === "userFundings") {
       onEvent({ event: "account_event", data: sanitizeFundingUpdate(data) });
       return false;
+    }
+    if (channel === "spotState") {
+      if (currentAbstraction !== "unifiedAccount") return false;
+      const accountAddress = hyperliquidExecutionAddress(credential);
+      if (
+        !data ||
+        typeof data !== "object" ||
+        typeof data.user !== "string" ||
+        !/^0x[0-9a-f]{40}$/iu.test(data.user) ||
+        data.user.toLowerCase() !== accountAddress ||
+        !data.spotState ||
+        typeof data.spotState !== "object"
+      ) {
+        throw new HyperliquidExecutionError("hyperliquid unified spot update identity is invalid", 502);
+      }
+      const nextSpotState = data.spotState;
+      hyperliquidUnifiedReadiness({
+        spotState: nextSpotState,
+      });
+      currentSpotState = nextSpotState;
+      return true;
     }
     if (channel === "activeAssetData") {
       onEvent({ event: "account_event", data: sanitizeActiveAssetData(data) });
@@ -1136,10 +1211,49 @@ function hyperliquidOpenOrderKey(order) {
   return cloid ? `cloid:${cloid}` : "";
 }
 
+function hyperliquidUnifiedReadiness({ spotState }) {
+  if (!spotState || typeof spotState !== "object" || !Array.isArray(spotState.balances)) {
+    throw new HyperliquidExecutionError("hyperliquid unified spot state is invalid", 502);
+  }
+  if (spotState.balances.some((balance) => !balance || typeof balance !== "object" || Array.isArray(balance))) {
+    throw new HyperliquidExecutionError("hyperliquid unified spot balance is invalid", 502);
+  }
+  const usdcBalances = spotState.balances.filter((balance) => balance.coin === "USDC" || balance.token === 0);
+  let spotAvailable = { units: 0n, scale: 0 };
+  if (usdcBalances.length > 0) {
+    const usdc = usdcBalances[0];
+    if (usdcBalances.length !== 1 || usdc.coin !== "USDC" || usdc.token !== 0) {
+      throw new HyperliquidExecutionError("hyperliquid unified USDC balance is invalid", 502);
+    }
+    if (typeof usdc.total !== "string" || typeof usdc.hold !== "string") {
+      throw new HyperliquidExecutionError("hyperliquid unified USDC balance is invalid", 502);
+    }
+    spotAvailable = subtractExactUnsignedDecimals(
+      exactUnsignedDecimal(usdc.total, "hyperliquid unified USDC total"),
+      exactUnsignedDecimal(usdc.hold, "hyperliquid unified USDC hold"),
+      "hyperliquid unified USDC hold",
+    );
+  }
+
+  const zero = { units: 0n, scale: 0 };
+  const readyThreshold = { units: 5n, scale: 0 };
+  const spotComparison = compareExactUnsignedDecimals(spotAvailable, readyThreshold);
+  return {
+    ready: spotComparison >= 0,
+    equityBucket: compareExactUnsignedDecimals(spotAvailable, zero) === 0
+      ? "none"
+      : spotComparison < 0
+        ? "low"
+        : "ready",
+  };
+}
+
 function hyperliquidAccountStateFromParts({
   state,
   openOrders,
   userFills,
+  abstraction,
+  spotState,
   accountSource,
   network,
   streamStatus = "snapshot",
@@ -1156,7 +1270,12 @@ function hyperliquidAccountStateFromParts({
   const recentFills = sanitizeFills(userFills);
   const positionCount = positions.length;
   const openOrderCount = sanitizedOpenOrders.length;
-  const status = accountValue >= 5 ? "ready_to_trade" : "needs_funds";
+  const unifiedReadiness = abstraction === "unifiedAccount"
+    ? hyperliquidUnifiedReadiness({ spotState })
+    : null;
+  const status = unifiedReadiness
+    ? unifiedReadiness.ready ? "ready_to_trade" : "needs_funds"
+    : accountValue >= 5 ? "ready_to_trade" : "needs_funds";
   return {
     version: 1,
     platform_class: "hyperliquid_style_market",
@@ -1165,12 +1284,12 @@ function hyperliquidAccountStateFromParts({
     account_source: accountSource,
     network: network === "testnet" ? "testnet" : "mainnet",
     trading_enabled: status === "ready_to_trade",
-    equity_bucket: accountValue <= 0
+    equity_bucket: unifiedReadiness?.equityBucket ?? (accountValue <= 0
       ? "none"
       : accountValue < 5
         ? "low"
-        : "ready",
-    margin_utilization_bucket: hyperliquidMarginUtilizationBucket(state),
+        : "ready"),
+    margin_utilization_bucket: unifiedReadiness ? "unknown" : hyperliquidMarginUtilizationBucket(state),
     position_count: positionCount,
     position_total_count: positionTotalCount,
     positions_truncated: positionTotalCount > positionCount,

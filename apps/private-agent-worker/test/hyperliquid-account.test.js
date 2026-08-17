@@ -398,7 +398,9 @@ test("provider pong refreshes account stream liveness without fabricating state"
   }
   const fetchImpl = async (_url, init) => {
     const type = JSON.parse(init.body).type;
-    const value = type === "clearinghouseState"
+    const value = type === "userAbstraction"
+      ? "default"
+      : type === "clearinghouseState"
       ? { marginSummary: { accountValue: "100" }, assetPositions: [] }
       : [];
     return { ok: true, json: async () => value };
@@ -435,7 +437,9 @@ test("incremental order updates reconcile the streamed open-order set", async ()
   }
   const fetchImpl = async (_url, init) => {
     const type = JSON.parse(init.body).type;
-    const value = type === "clearinghouseState"
+    const value = type === "userAbstraction"
+      ? "default"
+      : type === "clearinghouseState"
       ? { marginSummary: { accountValue: "100" }, assetPositions: [] }
       : [];
     return { ok: true, json: async () => value };
@@ -485,13 +489,114 @@ test("account snapshots bind exact public venue and network identity", async () 
   }
 });
 
+test("unified account snapshots use exact spot collateral without leaking values", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    const requests = [];
+    const snapshot = await readHyperliquidAccountSnapshot({
+      credential: credential("testnet"),
+      accountSource: "sealed_byo",
+      fetchImpl: unifiedAccountFetch({ requests }),
+    });
+    assert.equal(snapshot.status, "ready_to_trade");
+    assert.equal(snapshot.trading_enabled, true);
+    assert.equal(snapshot.equity_bucket, "ready");
+    assert.equal(snapshot.margin_utilization_bucket, "unknown");
+    assert.equal(snapshot.position_count, 0);
+    assert.equal(snapshot.open_order_count, 0);
+    assert.deepEqual(new Set(requests), new Set([
+      "userAbstraction",
+      "clearinghouseState",
+      "openOrders",
+      "userFills",
+      "spotClearinghouseState",
+    ]));
+    const serialized = JSON.stringify(snapshot);
+    assert.equal(serialized.includes("21.75"), false);
+  } finally {
+    restore(previous);
+  }
+});
+
+test("unified account snapshots fail closed on unsupported modes and malformed spot state", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    await assert.rejects(() => readHyperliquidAccountSnapshot({
+      credential: credential("testnet"),
+      fetchImpl: unifiedAccountFetch({ abstraction: "portfolioMargin" }),
+    }), /account abstraction mode is unsupported/);
+    await assert.rejects(() => readHyperliquidAccountSnapshot({
+      credential: credential("testnet"),
+      fetchImpl: unifiedAccountFetch({ total: "10", hold: "10.01" }),
+    }), /USDC hold is invalid/);
+  } finally {
+    restore(previous);
+  }
+});
+
+test("unified account streams update exact spot collateral and reject cross-user state", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  const events = [];
+  const subscriptions = [];
+  let socket = null;
+  class FakeWebSocket {
+    constructor() { socket = this; queueMicrotask(() => this.onopen?.()); }
+    send(raw) {
+      const message = JSON.parse(raw);
+      if (message.method === "subscribe") subscriptions.push(message.subscription);
+    }
+    close() {}
+  }
+  let stop = () => {};
+  try {
+    stop = await createHyperliquidAccountStateStream({
+      credential: credential("testnet"),
+      fetchImpl: unifiedAccountFetch(),
+      webSocketCtor: FakeWebSocket,
+      onEvent: (event) => events.push(event),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(subscriptions.some((row) => row.type === "spotState"), true);
+    assert.equal(subscriptions.some((row) => row.type === "activeAssetData" && row.coin === "BTC"), true);
+    assert.equal(events.filter((event) => event.event === "account_state").at(-1)?.data?.status, "ready_to_trade");
+
+    const accountStateCount = events.filter((event) => event.event === "account_state").length;
+    socket.onmessage({ data: JSON.stringify({
+      channel: "spotState",
+      data: {
+        user: "0x0000000000000000000000000000000000000002",
+        spotState: { balances: [{ coin: "USDC", token: 0, total: "100", hold: "0" }] },
+      },
+    }) });
+    assert.equal(events.at(-1)?.event, "error");
+    assert.equal(events.filter((event) => event.event === "account_state").length, accountStateCount);
+
+    socket.onmessage({ data: JSON.stringify({
+      channel: "spotState",
+      data: {
+        user: credential("testnet").account_address,
+        spotState: { balances: [{ coin: "USDC", token: 0, total: "2", hold: "0" }] },
+      },
+    }) });
+    assert.equal(events.filter((event) => event.event === "account_state").at(-1)?.data?.status, "needs_funds");
+  } finally {
+    stop();
+    restore(previous);
+  }
+});
+
 test("account snapshots disclose bounded open-order truncation", async () => {
   const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
   delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
   try {
     const fetchImpl = async (_url, init) => {
       const type = JSON.parse(init.body).type;
-      const value = type === "clearinghouseState"
+      const value = type === "userAbstraction"
+        ? "default"
+        : type === "clearinghouseState"
         ? { marginSummary: { accountValue: "100" }, assetPositions: [] }
         : type === "openOrders"
           ? Array.from({ length: 13 }, (_, index) => ({ oid: index, coin: "BTC", side: "B", sz: "1", limitPx: "100" }))
@@ -514,7 +619,9 @@ test("account snapshots retain the riskiest bounded positions without leaking om
   try {
     const fetchImpl = async (_url, init) => {
       const type = JSON.parse(init.body).type;
-      const value = type === "clearinghouseState"
+      const value = type === "userAbstraction"
+        ? "default"
+        : type === "clearinghouseState"
         ? {
             marginSummary: { accountValue: "100", totalMarginUsed: "10" },
             assetPositions: Array.from({ length: 13 }, (_, index) => ({ position: {
@@ -553,7 +660,9 @@ test("account snapshots expose only bounded position risk, never exact liquidati
   try {
     const fetchImpl = async (_url, init) => {
       const type = JSON.parse(init.body).type;
-      const value = type === "clearinghouseState"
+      const value = type === "userAbstraction"
+        ? "default"
+        : type === "clearinghouseState"
         ? {
             marginSummary: { accountValue: "100", totalMarginUsed: "10" },
             assetPositions: [{ position: {
@@ -657,6 +766,26 @@ function credential(network) {
     base_url: network === "testnet" ? "https://api.hyperliquid-testnet.xyz" : "https://api.hyperliquid.xyz",
     account_address: "0x0000000000000000000000000000000000000001",
     api_wallet_private_key: `0x${"1".repeat(64)}`,
+  };
+}
+
+function unifiedAccountFetch({
+  abstraction = "unifiedAccount",
+  total = "21.75",
+  hold = "0.0",
+  requests = [],
+} = {}) {
+  return async (_url, init) => {
+    const body = JSON.parse(init.body);
+    requests.push(body.type);
+    const value = body.type === "userAbstraction"
+      ? abstraction
+      : body.type === "clearinghouseState"
+        ? { marginSummary: { accountValue: "0", totalMarginUsed: "0" }, assetPositions: [] }
+        : body.type === "spotClearinghouseState"
+          ? { balances: [{ coin: "USDC", token: 0, total, hold }] }
+          : [];
+    return Response.json(value);
   };
 }
 
