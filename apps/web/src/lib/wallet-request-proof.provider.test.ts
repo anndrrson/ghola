@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const standardRegistry = vi.hoisted(() => ({
   wallets: [] as unknown[],
+  registerListeners: new Set<(...wallets: unknown[]) => void>(),
   unregisterListeners: new Set<(...wallets: unknown[]) => void>(),
 }));
 
@@ -13,11 +14,19 @@ vi.mock("@wallet-standard/app", () => ({
   getWallets: () => ({
     get: () => standardRegistry.wallets,
     on: (event: string, listener: (...wallets: unknown[]) => void) => {
-      if (event === "unregister") standardRegistry.unregisterListeners.add(listener);
-      return () => standardRegistry.unregisterListeners.delete(listener);
+      const listeners = event === "register"
+        ? standardRegistry.registerListeners
+        : standardRegistry.unregisterListeners;
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
   }),
 }));
+
+function registerStandardWallet(wallet: unknown) {
+  standardRegistry.wallets = [...standardRegistry.wallets, wallet];
+  for (const listener of standardRegistry.registerListeners) listener(wallet);
+}
 
 function unregisterStandardWallet(wallet: unknown) {
   standardRegistry.wallets = standardRegistry.wallets.filter((candidate) => candidate !== wallet);
@@ -55,9 +64,19 @@ function setUserActivation(isActive: boolean) {
 }
 
 async function expectSiwsRetryRequired(connect: (options?: { deferPhantomSiws?: boolean }) => Promise<string>) {
-  await expect(connect({ deferPhantomSiws: true })).rejects.toMatchObject({
-    code: "phantom_siws_retry_required",
+  await expectDeferredStageCode(connect, "phantom_siws_retry_required");
+}
+
+async function expectDeferredStageCode(
+  connect: (options?: { deferPhantomSiws?: boolean }) => Promise<string>,
+  code: string,
+) {
+  vi.useFakeTimers();
+  const result = expect(connect({ deferPhantomSiws: true })).rejects.toMatchObject({
+    code,
   });
+  await vi.advanceTimersByTimeAsync(1_600);
+  await result;
 }
 
 function publicKey(value: string) {
@@ -150,7 +169,9 @@ afterEach(() => {
   Reflect.deleteProperty(window, "solana");
   Reflect.deleteProperty(navigator, "userActivation");
   standardRegistry.wallets = [];
+  standardRegistry.registerListeners.clear();
   standardRegistry.unregisterListeners.clear();
+  vi.useRealTimers();
   vi.resetModules();
   vi.restoreAllMocks();
 });
@@ -339,6 +360,136 @@ describe("Phantom provider connection", () => {
     expect(provider.disconnect).not.toHaveBeenCalled();
   });
 
+  it.each([400, 1_490])(
+    "waits through readiness for a late exact direct connection at %ims",
+    async (settleAtMs) => {
+    vi.useFakeTimers();
+    const listeners = new Map<string, (value?: unknown) => void>();
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      disconnect: vi.fn(),
+      on: vi.fn((event: string, listener: (value?: unknown) => void) => listeners.set(event, listener)),
+      signMessage: vi.fn(),
+    };
+    const standard = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    provider.connect = vi.fn()
+      .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
+      .mockImplementationOnce(async () => {
+        setTimeout(() => {
+          provider.isConnected = true;
+          provider.publicKey = publicKey(standard.account.address);
+          listeners.get("connect")?.(provider.publicKey);
+          standard.change([standard.account]);
+        }, settleAtMs);
+        throw { code: -32603, message: "Unexpected error" };
+      });
+    standardRegistry.wallets = [standard.wallet];
+    installProviders(provider);
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
+
+    const result = connectSolanaWallet({ deferPhantomSiws: true });
+    await vi.advanceTimersByTimeAsync(1_700);
+
+    await expect(result).resolves.toBe(standard.account.address);
+    expect(provider.connect).toHaveBeenCalledTimes(2);
+    expect(standard.signIn).not.toHaveBeenCalled();
+    expect(standard.connect).not.toHaveBeenCalled();
+    expect(standardRegistry.registerListeners.size).toBe(0);
+    expect(provider.disconnect).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts an exact late Wallet Standard registration without prompting or duplicating connect", async () => {
+    vi.useFakeTimers();
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      connect: vi.fn()
+        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
+        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
+      signMessage: vi.fn(),
+    };
+    const standard = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    installProviders(provider);
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
+
+    setTimeout(() => registerStandardWallet(standard.wallet), 200);
+    const first = connectSolanaWallet({ deferPhantomSiws: true });
+    const second = connectSolanaWallet({ deferPhantomSiws: true });
+    const firstResult = expect(first).rejects.toMatchObject({ code: "phantom_siws_retry_required" });
+    const secondResult = expect(second).rejects.toMatchObject({ code: "phantom_siws_retry_required" });
+    await vi.advanceTimersByTimeAsync(1_600);
+
+    await firstResult;
+    await secondResult;
+    expect(provider.connect).toHaveBeenCalledTimes(2);
+    expect(standard.signIn).not.toHaveBeenCalled();
+    expect(standard.connect).not.toHaveBeenCalled();
+    expect(standardRegistry.registerListeners.size).toBe(0);
+    expect(standardRegistry.unregisterListeners.size).toBe(0);
+  });
+
+  it("times out safely when Wallet Standard never registers", async () => {
+    vi.useFakeTimers();
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      connect: vi.fn()
+        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
+        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
+      signMessage: vi.fn(),
+    };
+    const unregistered = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    installProviders(provider);
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
+
+    const result = expect(connectSolanaWallet({ deferPhantomSiws: true })).rejects.toMatchObject({
+      code: "phantom_siws_readiness_timeout",
+    });
+    await vi.advanceTimersByTimeAsync(1_600);
+
+    await result;
+    expect(provider.connect).toHaveBeenCalledTimes(2);
+    expect(unregistered.signIn).not.toHaveBeenCalled();
+    expect(standardRegistry.registerListeners.size).toBe(0);
+  });
+
+  it("allows zero-account SIWS after a coherent empty disconnect event", async () => {
+    const listeners = new Map<string, (value?: unknown) => void>();
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      disconnect: vi.fn(),
+      on: vi.fn((event: string, listener: (value?: unknown) => void) => listeners.set(event, listener)),
+      signMessage: vi.fn(),
+    };
+    provider.connect = vi.fn()
+      .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
+      .mockImplementationOnce(async () => {
+        listeners.get("disconnect")?.();
+        throw { code: -32603, message: "Unexpected error" };
+      });
+    const standard = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    const signIn = standard.signIn.getMockImplementation() as TestSignIn;
+    standard.signIn.mockImplementation(async (...inputs: readonly SolanaSignInInput[]) => {
+      const outputs = await signIn(...inputs);
+      listeners.get("connect")?.(provider.publicKey);
+      return outputs;
+    });
+    standardRegistry.wallets = [standard.wallet];
+    installProviders(provider);
+    const { connectSolanaWallet, retryPhantomSiwsWalletConnection } = await import("./wallet-request-proof");
+
+    await expectSiwsRetryRequired(connectSolanaWallet);
+    setUserActivation(true);
+
+    await expect(retryPhantomSiwsWalletConnection()).resolves.toBe(standard.account.address);
+    expect(standard.signIn).toHaveBeenCalledOnce();
+    expect(standard.connect).not.toHaveBeenCalled();
+    expect(provider.disconnect).not.toHaveBeenCalled();
+  });
+
   it("bootstraps exact Phantom Wallet Standard 0→1 state with SIWS, then uses the direct signer", async () => {
     const provider: TestProvider = {
       isPhantom: true,
@@ -409,7 +560,10 @@ describe("Phantom provider connection", () => {
     installProviders(automaticProvider);
     const { connectSolanaWallet } = await import("./wallet-request-proof");
 
-    await expect(connectSolanaWallet()).resolves.toBe(automatic.account.address);
+    vi.useFakeTimers();
+    const automaticResult = expect(connectSolanaWallet()).resolves.toBe(automatic.account.address);
+    await vi.advanceTimersByTimeAsync(1_600);
+    await automaticResult;
     expect(automatic.signIn).toHaveBeenCalledOnce();
 
     vi.resetModules();
@@ -463,7 +617,7 @@ describe("Phantom provider connection", () => {
     installProviders(provider);
     const { connectSolanaWallet } = await import("./wallet-request-proof");
 
-    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
+    await expectDeferredStageCode(connectSolanaWallet, "phantom_siws_account_state_invalid");
     expect(standard.signIn).not.toHaveBeenCalled();
     expect(standard.connect).not.toHaveBeenCalled();
   });
@@ -483,7 +637,7 @@ describe("Phantom provider connection", () => {
     installProviders(provider);
     const { connectSolanaWallet } = await import("./wallet-request-proof");
 
-    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
+    await expectDeferredStageCode(connectSolanaWallet, "phantom_siws_registration_ambiguous");
     expect(first.signIn).not.toHaveBeenCalled();
     expect(second.signIn).not.toHaveBeenCalled();
   });
@@ -502,7 +656,7 @@ describe("Phantom provider connection", () => {
     installProviders(provider);
     const { connectSolanaWallet } = await import("./wallet-request-proof");
 
-    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
+    await expectDeferredStageCode(connectSolanaWallet, "phantom_siws_registration_unbound");
     expect(unbound.signIn).not.toHaveBeenCalled();
   });
 

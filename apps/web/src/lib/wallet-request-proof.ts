@@ -60,7 +60,7 @@ type StandardWallet = {
 type StandardWalletRegistry = {
   readonly get: () => readonly unknown[];
   readonly on: (
-    event: "unregister",
+    event: "register" | "unregister",
     listener: (...wallets: readonly unknown[]) => void,
   ) => () => void;
 };
@@ -90,6 +90,10 @@ export type WalletConnectionStageCode =
   | "phantom_siws_retry_expired"
   | "phantom_siws_user_activation_required"
   | "phantom_siws_registration_unavailable"
+  | "phantom_siws_registration_ambiguous"
+  | "phantom_siws_registration_unbound"
+  | "phantom_siws_readiness_timeout"
+  | "phantom_siws_direct_state_unsettled"
   | "phantom_siws_account_state_invalid"
   | "phantom_siws_response_invalid"
   | "phantom_siws_verification_failed"
@@ -117,6 +121,23 @@ type PhantomStandardRetryTicket = {
   readonly signIn: StandardSignInFeature["signIn"];
 };
 
+type PhantomPostErrorReadiness =
+  | { readonly kind: "connected"; readonly wallet: string }
+  | { readonly kind: "siws"; readonly ticket: PhantomStandardRetryTicket };
+
+type PhantomReadinessWaitReason =
+  | "registration_missing"
+  | "registration_ambiguous"
+  | "registration_unbound"
+  | "registration_invalid"
+  | "provider_capability_missing"
+  | "direct_state_unsettled"
+  | "standard_account_pending"
+  | "standard_account_invalid";
+
+type PhantomReadinessObservation = PhantomPostErrorReadiness
+  | { readonly kind: "waiting"; readonly reason: PhantomReadinessWaitReason };
+
 const connectInFlight = new WeakMap<SolanaProvider, { deferSiws: boolean; promise: Promise<string> }>();
 const phantomSiwsInFlight = new WeakMap<SolanaProvider, Promise<string>>();
 const phantomSiwsRetryTickets = new WeakMap<SolanaProvider, PhantomStandardRetryTicket>();
@@ -125,6 +146,8 @@ const providerConnectionStates = new WeakMap<SolanaProvider, ProviderConnectionS
 let standardWalletRegistry: StandardWalletRegistry | undefined;
 const PHANTOM_RECOVERY_ATTEMPTS = 5;
 const PHANTOM_RECOVERY_DELAY_MS = 75;
+const PHANTOM_POST_ERROR_READINESS_MS = 1_500;
+const PHANTOM_POST_ERROR_STABILITY_MS = 75;
 const PHANTOM_SIWS_RETRY_TTL_MS = 60_000;
 const PHANTOM_SIGN_IN_TTL_MS = 2 * 60_000;
 const PHANTOM_SIGN_IN_STATEMENT = "This sign-in message alone cannot move funds or place trades.";
@@ -279,15 +302,15 @@ async function connectPhantomProvider(provider: SolanaProvider, deferSiws: boole
     return rememberDirectConnectedWallet(provider, await provider.connect?.());
   } catch (error) {
     if (providerErrorCode(error) === -32603) {
-      const recovered = await recoverConnectedPhantomWallet(provider);
-      if (recovered) return recovered;
-      let ticket: PhantomStandardRetryTicket;
+      let readiness: PhantomPostErrorReadiness;
       try {
-        ticket = preparePhantomStandardRetry(provider);
+        readiness = await waitForPhantomPostErrorReadiness(provider);
       } catch (stageError) {
         if (deferSiws) throw stageError;
         throw usefulProviderError(error, provider);
       }
+      if (readiness.kind === "connected") return readiness.wallet;
+      const { ticket } = readiness;
       if (deferSiws) {
         phantomSiwsRetryTickets.set(provider, ticket);
         throw walletStageError("phantom_siws_retry_required");
@@ -373,33 +396,197 @@ async function recoverConnectedPhantomWallet(provider: SolanaProvider): Promise<
   return "";
 }
 
-function preparePhantomStandardRetry(injectedProvider: SolanaProvider): PhantomStandardRetryTicket {
+async function waitForPhantomPostErrorReadiness(
+  injectedProvider: SolanaProvider,
+): Promise<PhantomPostErrorReadiness> {
+  let wakeRegistryWait: (() => void) | undefined;
+  let registryOff: () => void = () => undefined;
   try {
-    if (!isCanonicalPhantomProvider(injectedProvider) || typeof injectedProvider.signMessage !== "function") {
+    if (!isCanonicalPhantomProvider(injectedProvider)) {
       throw walletStageError("phantom_siws_provider_mismatch");
     }
     const registry = cachedStandardWalletRegistry();
-    const injectedState = coherentCanonicalProviderWallet(injectedProvider);
-    const namedWallets = registry.get().filter(isNamedPhantomStandardWallet);
-    if (!injectedState.coherent || injectedState.wallet || namedWallets.length !== 1) {
+    const off = registry.on("register", () => wakeRegistryWait?.());
+    if (typeof off !== "function") {
       throw walletStageError("phantom_siws_registration_unavailable");
     }
-    const wallet = namedWallets[0];
-    if (!isUsablePhantomStandardWallet(wallet) || !isBoundPhantomStandardWallet(wallet, injectedProvider)) {
-      throw walletStageError("phantom_siws_registration_unavailable");
+    registryOff = off;
+
+    const deadline = Date.now() + PHANTOM_POST_ERROR_READINESS_MS;
+    let directCandidate: { readonly wallet: string; readonly firstSeenAt: number } | undefined;
+    let siwsCandidate: { readonly ticket: PhantomStandardRetryTicket; readonly firstSeenAt: number } | undefined;
+    let waitReason: PhantomReadinessWaitReason = "registration_missing";
+
+    while (true) {
+      const now = Date.now();
+      const observation = observePhantomPostErrorReadiness(injectedProvider, registry, now);
+      if (observation.kind === "connected") {
+        siwsCandidate = undefined;
+        if (directCandidate?.wallet === observation.wallet) {
+          if (now - directCandidate.firstSeenAt >= PHANTOM_POST_ERROR_STABILITY_MS) return observation;
+        } else {
+          directCandidate = { wallet: observation.wallet, firstSeenAt: now };
+        }
+        waitReason = "direct_state_unsettled";
+      } else if (observation.kind === "siws") {
+        directCandidate = undefined;
+        if (siwsCandidate && samePhantomStandardRetryTicket(siwsCandidate.ticket, observation.ticket)) {
+          if (
+            now >= deadline
+            && now - siwsCandidate.firstSeenAt >= PHANTOM_POST_ERROR_STABILITY_MS
+          ) {
+            establishPhantomSiwsEmptyBaseline(injectedProvider);
+            return observation;
+          }
+        } else {
+          siwsCandidate = { ticket: observation.ticket, firstSeenAt: now };
+        }
+        waitReason = "registration_missing";
+      } else {
+        directCandidate = undefined;
+        siwsCandidate = undefined;
+        waitReason = observation.reason;
+      }
+
+      const directStabilityDeadline = observation.kind === "connected" && directCandidate
+        ? directCandidate.firstSeenAt + PHANTOM_POST_ERROR_STABILITY_MS
+        : deadline;
+      const remainingMs = Math.max(deadline, directStabilityDeadline) - now;
+      if (remainingMs <= 0) throw phantomReadinessTimeoutError(waitReason);
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (wakeRegistryWait === finish) wakeRegistryWait = undefined;
+          resolve();
+        };
+        const timer = setTimeout(finish, Math.min(PHANTOM_POST_ERROR_STABILITY_MS, remainingMs));
+        wakeRegistryWait = finish;
+      });
     }
-    if (wallet.accounts.length !== 0) throw walletStageError("phantom_siws_account_state_invalid");
+  } catch (error) {
+    if (error instanceof WalletConnectionStageError) throw error;
+    throw walletStageError("phantom_siws_registration_unavailable");
+  } finally {
+    const wake = wakeRegistryWait;
+    wakeRegistryWait = undefined;
+    wake?.();
+    safeOff(registryOff);
+  }
+}
+
+function observePhantomPostErrorReadiness(
+  injectedProvider: SolanaProvider,
+  registry: StandardWalletRegistry,
+  nowMs: number,
+): PhantomReadinessObservation {
+  if (!isCanonicalPhantomProvider(injectedProvider)) {
+    throw walletStageError("phantom_siws_provider_mismatch");
+  }
+  const connectedWallet = connectedProviderWallet(injectedProvider);
+  if (connectedWallet) return { kind: "connected", wallet: connectedWallet };
+  if (typeof injectedProvider.signMessage !== "function") {
+    return { kind: "waiting", reason: "provider_capability_missing" };
+  }
+
+  const injectedState = coherentCanonicalProviderWalletForSiwsReadiness(injectedProvider);
+  const namedWallets = registry.get().filter(isNamedPhantomStandardWallet);
+  if (namedWallets.length > 1) {
+    return { kind: "waiting", reason: "registration_ambiguous" };
+  }
+  if (namedWallets.length === 0) {
     return {
-      expiresAt: Date.now() + PHANTOM_SIWS_RETRY_TTL_MS,
+      kind: "waiting",
+      reason: !injectedState.coherent || injectedState.wallet
+        ? "direct_state_unsettled"
+        : "registration_missing",
+    };
+  }
+
+  const wallet = namedWallets[0];
+  if (!isUsablePhantomStandardWallet(wallet)) {
+    return { kind: "waiting", reason: "registration_invalid" };
+  }
+  if (!isBoundPhantomStandardWallet(wallet, injectedProvider)) {
+    return { kind: "waiting", reason: "registration_unbound" };
+  }
+  if (wallet.accounts.length > 1) {
+    return { kind: "waiting", reason: "standard_account_invalid" };
+  }
+  if (!injectedState.coherent || injectedState.wallet) {
+    return { kind: "waiting", reason: "direct_state_unsettled" };
+  }
+  if (wallet.accounts.length !== 0) {
+    return { kind: "waiting", reason: "standard_account_pending" };
+  }
+  return {
+    kind: "siws",
+    ticket: {
+      expiresAt: nowMs + PHANTOM_SIWS_RETRY_TTL_MS,
       registry,
       wallet,
       eventsOn: standardEventsFeature(wallet).on,
       signIn: standardSignInFeature(wallet).signIn,
-    };
-  } catch (error) {
-    if (error instanceof WalletConnectionStageError) throw error;
-    throw walletStageError("phantom_siws_registration_unavailable");
+    },
+  };
+}
+
+function samePhantomStandardRetryTicket(
+  first: PhantomStandardRetryTicket,
+  second: PhantomStandardRetryTicket,
+): boolean {
+  return first.registry === second.registry
+    && first.wallet === second.wallet
+    && first.eventsOn === second.eventsOn
+    && first.signIn === second.signIn;
+}
+
+function coherentCanonicalProviderWalletForSiwsReadiness(
+  provider: SolanaProvider,
+): { coherent: boolean; wallet: string } {
+  const strict = coherentCanonicalProviderWallet(provider);
+  if (strict.coherent) return strict;
+  const state = providerConnectionStates.get(provider);
+  return isCanonicalPhantomProvider(provider)
+      && state?.disconnected === true
+      && !state.wallet
+      && !publicKeyString(provider.publicKey)
+    ? { coherent: true, wallet: "" }
+    : strict;
+}
+
+function establishPhantomSiwsEmptyBaseline(provider: SolanaProvider): void {
+  const state = providerConnectionStates.get(provider);
+  if (!state?.disconnected) return;
+  if (state.wallet || publicKeyString(provider.publicKey)) {
+    throw walletStageError("phantom_siws_direct_state_unsettled");
   }
+  state.disconnected = false;
+  state.accountEventSeen = false;
+}
+
+function phantomReadinessTimeoutError(reason: PhantomReadinessWaitReason): WalletConnectionStageError {
+  if (reason === "registration_ambiguous") {
+    return walletStageError("phantom_siws_registration_ambiguous");
+  }
+  if (reason === "registration_unbound") {
+    return walletStageError("phantom_siws_registration_unbound");
+  }
+  if (reason === "registration_invalid") {
+    return walletStageError("phantom_siws_registration_unavailable");
+  }
+  if (reason === "provider_capability_missing") {
+    return walletStageError("phantom_siws_provider_mismatch");
+  }
+  if (reason === "direct_state_unsettled") {
+    return walletStageError("phantom_siws_direct_state_unsettled");
+  }
+  if (reason === "standard_account_pending" || reason === "standard_account_invalid") {
+    return walletStageError("phantom_siws_account_state_invalid");
+  }
+  return walletStageError("phantom_siws_readiness_timeout");
 }
 
 async function connectPhantomStandardWallet(
@@ -664,6 +851,10 @@ function walletStageError(code: WalletConnectionStageCode): WalletConnectionStag
     phantom_siws_retry_expired: "The Phantom recovery step expired. Start wallet authorization again.",
     phantom_siws_user_activation_required: "Click Continue with Phantom directly to approve the safe sign-in step.",
     phantom_siws_registration_unavailable: "Phantom's secure sign-in bridge is unavailable. Reload the page with Phantom unlocked.",
+    phantom_siws_registration_ambiguous: "More than one Phantom secure wallet registration was detected. Reload with only the intended Phantom extension enabled.",
+    phantom_siws_registration_unbound: "Phantom's secure wallet registration did not match the active provider. Reload the page with Phantom unlocked.",
+    phantom_siws_readiness_timeout: "Phantom's secure wallet bridge did not become ready. Keep Phantom unlocked, reload, and try again.",
+    phantom_siws_direct_state_unsettled: "Phantom's account connection did not finish settling. Reload and reconnect the intended account.",
     phantom_siws_account_state_invalid: "Phantom changed state during sign-in. Reload and reconnect the intended account.",
     phantom_siws_response_invalid: "Phantom returned an incomplete sign-in response. Reload and try again.",
     phantom_siws_verification_failed: "Phantom sign-in could not be verified. Reload before trying again.",
