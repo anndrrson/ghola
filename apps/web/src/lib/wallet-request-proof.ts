@@ -8,9 +8,11 @@ import type {
   SolanaSignInOutput,
 } from "@solana/wallet-standard-features";
 import { parseSignInMessage, verifySignIn } from "@solana/wallet-standard-util";
+import { getWallets } from "@wallet-standard/app";
 import bs58 from "bs58";
 
 type SolanaConnectOptions = { onlyIfTrusted?: boolean };
+type GholaConnectOptions = { deferPhantomSiws?: boolean };
 type SolanaProviderEvent = "connect" | "accountChanged" | "disconnect";
 type SolanaProviderListener = (value?: unknown) => void;
 
@@ -83,12 +85,47 @@ type StandardSignInFeature = {
   readonly signIn: (...inputs: readonly SolanaSignInInput[]) => Promise<readonly SolanaSignInOutput[]>;
 };
 
-const connectInFlight = new WeakMap<SolanaProvider, Promise<string>>();
+export type WalletConnectionStageCode =
+  | "phantom_siws_retry_required"
+  | "phantom_siws_retry_expired"
+  | "phantom_siws_user_activation_required"
+  | "phantom_siws_registration_unavailable"
+  | "phantom_siws_account_state_invalid"
+  | "phantom_siws_response_invalid"
+  | "phantom_siws_verification_failed"
+  | "phantom_siws_provider_mismatch"
+  | "phantom_siws_cancelled"
+  | "phantom_siws_approval_pending"
+  | "phantom_siws_rejected"
+  | "prepared_wallet_changed";
+
+export class WalletConnectionStageError extends Error {
+  readonly code: WalletConnectionStageCode;
+
+  constructor(code: WalletConnectionStageCode, message: string) {
+    super(message);
+    this.name = "WalletConnectionStageError";
+    this.code = code;
+  }
+}
+
+type PhantomStandardRetryTicket = {
+  readonly expiresAt: number;
+  readonly registry: StandardWalletRegistry;
+  readonly wallet: StandardWallet;
+  readonly eventsOn: StandardEventsFeature["on"];
+  readonly signIn: StandardSignInFeature["signIn"];
+};
+
+const connectInFlight = new WeakMap<SolanaProvider, { deferSiws: boolean; promise: Promise<string> }>();
+const phantomSiwsInFlight = new WeakMap<SolanaProvider, Promise<string>>();
+const phantomSiwsRetryTickets = new WeakMap<SolanaProvider, PhantomStandardRetryTicket>();
+const phantomSiwsPoisoned = new WeakSet<SolanaProvider>();
 const providerConnectionStates = new WeakMap<SolanaProvider, ProviderConnectionState>();
+let standardWalletRegistry: StandardWalletRegistry | undefined;
 const PHANTOM_RECOVERY_ATTEMPTS = 5;
 const PHANTOM_RECOVERY_DELAY_MS = 75;
-const PHANTOM_STANDARD_RECOVERY_ATTEMPTS = 10;
-const PHANTOM_STANDARD_RECOVERY_DELAY_MS = 50;
+const PHANTOM_SIWS_RETRY_TTL_MS = 60_000;
 const PHANTOM_SIGN_IN_TTL_MS = 2 * 60_000;
 const PHANTOM_SIGN_IN_STATEMENT = "This sign-in message alone cannot move funds or place trades.";
 
@@ -107,24 +144,77 @@ export function requiredSolanaProvider(): SolanaProvider {
   return provider;
 }
 
-export async function connectSolanaWallet(): Promise<string> {
+export function walletConnectionStageCode(error: unknown): WalletConnectionStageCode | undefined {
+  return error instanceof WalletConnectionStageError ? error.code : undefined;
+}
+
+export function requirePreparedSolanaProvider(
+  expectedProvider: SolanaProvider,
+  expectedWallet: string,
+): SolanaProvider {
+  const provider = requiredSolanaProvider();
+  if (provider !== expectedProvider || phantomSiwsPoisoned.has(provider)) {
+    throw walletStageError("prepared_wallet_changed");
+  }
+  try {
+    assertCurrentSolanaWallet(provider, expectedWallet);
+  } catch {
+    throw walletStageError("prepared_wallet_changed");
+  }
+  return provider;
+}
+
+export async function connectSolanaWallet(options: GholaConnectOptions = {}): Promise<string> {
   const provider = solanaProvider();
   if (!provider?.connect) throw new Error("Open this page with a Solana wallet installed.");
+  if (phantomSiwsPoisoned.has(provider)) throw walletStageError("phantom_siws_verification_failed");
 
+  const deferSiws = options.deferPhantomSiws === true;
   const pending = connectInFlight.get(provider);
-  if (pending) return pending;
+  if (pending) {
+    if (pending.deferSiws === deferSiws) return pending.promise;
+    throw new Error("Another wallet authorization step is already in progress.");
+  }
   const currentWallet = connectedProviderWallet(provider);
   if (currentWallet) return currentWallet;
 
   const promise = provider.isPhantom === true
-    ? connectPhantomProvider(provider)
+    ? connectPhantomProvider(provider, deferSiws)
     : connectInjectedProvider(provider);
-  connectInFlight.set(provider, promise);
+  connectInFlight.set(provider, { deferSiws, promise });
   try {
     return await promise;
   } finally {
-    if (connectInFlight.get(provider) === promise) connectInFlight.delete(provider);
+    if (connectInFlight.get(provider)?.promise === promise) connectInFlight.delete(provider);
   }
+}
+
+export function retryPhantomSiwsWalletConnection(): Promise<string> {
+  const provider = solanaProvider();
+  if (!provider?.connect || provider.isPhantom !== true || !isCanonicalPhantomProvider(provider)) {
+    return Promise.reject(walletStageError("phantom_siws_provider_mismatch"));
+  }
+  const pending = phantomSiwsInFlight.get(provider);
+  if (pending) return pending;
+  if (phantomSiwsPoisoned.has(provider)) {
+    return Promise.reject(walletStageError("phantom_siws_verification_failed"));
+  }
+  const ticket = phantomSiwsRetryTickets.get(provider);
+  if (!ticket || ticket.expiresAt < Date.now()) {
+    phantomSiwsRetryTickets.delete(provider);
+    return Promise.reject(walletStageError("phantom_siws_retry_expired"));
+  }
+  if (!hasActiveUserGesture()) {
+    return Promise.reject(walletStageError("phantom_siws_user_activation_required"));
+  }
+
+  phantomSiwsRetryTickets.delete(provider);
+  const promise = connectPhantomStandardWallet(provider, ticket);
+  phantomSiwsInFlight.set(provider, promise);
+  void promise.finally(() => {
+    if (phantomSiwsInFlight.get(provider) === promise) phantomSiwsInFlight.delete(provider);
+  }).catch(() => undefined);
+  return promise;
 }
 
 export async function walletSignBytes(
@@ -172,7 +262,7 @@ function trackedProvider(provider: SolanaProvider): SolanaProvider {
   return provider;
 }
 
-async function connectPhantomProvider(provider: SolanaProvider): Promise<string> {
+async function connectPhantomProvider(provider: SolanaProvider, deferSiws: boolean): Promise<string> {
   try {
     return rememberDirectConnectedWallet(provider, await provider.connect?.({ onlyIfTrusted: true }));
   } catch (error) {
@@ -191,8 +281,27 @@ async function connectPhantomProvider(provider: SolanaProvider): Promise<string>
     if (providerErrorCode(error) === -32603) {
       const recovered = await recoverConnectedPhantomWallet(provider);
       if (recovered) return recovered;
-      const standardWallet = await connectPhantomStandardWallet(provider);
-      if (standardWallet) return standardWallet;
+      let ticket: PhantomStandardRetryTicket;
+      try {
+        ticket = preparePhantomStandardRetry(provider);
+      } catch (stageError) {
+        if (deferSiws) throw stageError;
+        throw usefulProviderError(error, provider);
+      }
+      if (deferSiws) {
+        phantomSiwsRetryTickets.set(provider, ticket);
+        throw walletStageError("phantom_siws_retry_required");
+      }
+      try {
+        return await connectPhantomStandardWallet(provider, ticket);
+      } catch (stageError) {
+        const code = walletConnectionStageCode(stageError);
+        if (code === "phantom_siws_cancelled") throw new Error("Phantom connection was cancelled.");
+        if (code === "phantom_siws_approval_pending") {
+          throw new Error("A Phantom approval is already open. Finish or close it, then try again.");
+        }
+        throw usefulProviderError(error, provider);
+      }
     }
     throw usefulProviderError(error, provider);
   }
@@ -264,105 +373,169 @@ async function recoverConnectedPhantomWallet(provider: SolanaProvider): Promise<
   return "";
 }
 
-async function connectPhantomStandardWallet(injectedProvider: SolanaProvider): Promise<string> {
-  if (!isCanonicalPhantomProvider(injectedProvider) || typeof injectedProvider.signMessage !== "function") return "";
-  const { getWallets } = await import("@wallet-standard/app");
-  const registry = getWallets() as unknown as StandardWalletRegistry;
-  let selectedWallet: StandardWallet | undefined;
+function preparePhantomStandardRetry(injectedProvider: SolanaProvider): PhantomStandardRetryTicket {
+  try {
+    if (!isCanonicalPhantomProvider(injectedProvider) || typeof injectedProvider.signMessage !== "function") {
+      throw walletStageError("phantom_siws_provider_mismatch");
+    }
+    const registry = cachedStandardWalletRegistry();
+    const injectedState = coherentCanonicalProviderWallet(injectedProvider);
+    const namedWallets = registry.get().filter(isNamedPhantomStandardWallet);
+    if (!injectedState.coherent || injectedState.wallet || namedWallets.length !== 1) {
+      throw walletStageError("phantom_siws_registration_unavailable");
+    }
+    const wallet = namedWallets[0];
+    if (!isUsablePhantomStandardWallet(wallet) || !isBoundPhantomStandardWallet(wallet, injectedProvider)) {
+      throw walletStageError("phantom_siws_registration_unavailable");
+    }
+    if (wallet.accounts.length !== 0) throw walletStageError("phantom_siws_account_state_invalid");
+    return {
+      expiresAt: Date.now() + PHANTOM_SIWS_RETRY_TTL_MS,
+      registry,
+      wallet,
+      eventsOn: standardEventsFeature(wallet).on,
+      signIn: standardSignInFeature(wallet).signIn,
+    };
+  } catch (error) {
+    if (error instanceof WalletConnectionStageError) throw error;
+    throw walletStageError("phantom_siws_registration_unavailable");
+  }
+}
+
+async function connectPhantomStandardWallet(
+  injectedProvider: SolanaProvider,
+  ticket: PhantomStandardRetryTicket,
+): Promise<string> {
   let off: () => void = () => undefined;
   let eventAccount: StandardWalletAccount | undefined;
   let accountEventCount = 0;
   let eventPoisoned = false;
   let registryPoisoned = false;
-  let eventsOn: StandardEventsFeature["on"] | undefined;
-  let signIn: StandardSignInFeature["signIn"] | undefined;
 
   try {
-    for (let attempt = 0; attempt < PHANTOM_STANDARD_RECOVERY_ATTEMPTS; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, PHANTOM_STANDARD_RECOVERY_DELAY_MS));
-      const injectedState = coherentCanonicalProviderWallet(injectedProvider);
-      if (!injectedState.coherent) return "";
+    const { registry, wallet, eventsOn, signIn } = ticket;
+    if (ticket.expiresAt < Date.now()) throw walletStageError("phantom_siws_retry_expired");
+    const injectedState = coherentCanonicalProviderWallet(injectedProvider);
+    if (
+      !injectedState.coherent
+      || injectedState.wallet
+      || wallet.accounts.length !== 0
+      || !standardWalletRegistrationIsStable(
+        registry,
+        wallet,
+        injectedProvider,
+        eventsOn,
+        signIn,
+      )
+    ) throw poisonPhantomSiws(injectedProvider, "phantom_siws_account_state_invalid");
 
-      const namedWallets = (registry.get() as readonly unknown[]).filter(isNamedPhantomStandardWallet);
-      if (namedWallets.length > 1) return "";
-      const candidate = namedWallets[0];
-      if (!candidate) {
-        if (selectedWallet) return "";
-        continue;
+    const accountOff = eventsOn("change", (properties) => {
+      if (properties.accounts === undefined) return;
+      accountEventCount += 1;
+      const account = singleCoherentStandardAccount(properties.accounts);
+      if (!account || accountEventCount !== 1) {
+        eventPoisoned = true;
+        return;
       }
-      if (!isUsablePhantomStandardWallet(candidate) || !isBoundPhantomStandardWallet(candidate, injectedProvider)) {
-        return "";
-      }
-      const wallet = candidate;
-
-      if (selectedWallet && wallet !== selectedWallet) return "";
-
-      if (wallet !== selectedWallet) {
-        safeOff(off);
-        selectedWallet = wallet;
-        eventAccount = undefined;
-        accountEventCount = 0;
-        eventPoisoned = false;
-        registryPoisoned = false;
-        if (wallet.accounts.length !== 0) return "";
-        const events = standardEventsFeature(wallet);
-        const signInFeature = standardSignInFeature(wallet);
-        eventsOn = events.on;
-        signIn = signInFeature.signIn;
-        const accountOff = events.on("change", (properties) => {
-          if (properties.accounts === undefined) return;
-          accountEventCount += 1;
-          const account = singleCoherentStandardAccount(properties.accounts);
-          if (!account || accountEventCount !== 1) {
-            eventPoisoned = true;
-            return;
-          }
-          eventAccount = account;
-        });
-        if (typeof accountOff !== "function") return "";
-        let registryOff: (() => void) | undefined;
-        try {
-          registryOff = registry.on("unregister", (...wallets) => {
-            if (!wallets.includes(wallet)) return;
-            registryPoisoned = true;
-          });
-        } catch {
-          safeOff(accountOff);
-          return "";
-        }
-        if (typeof registryOff !== "function") {
-          safeOff(accountOff);
-          return "";
-        }
-        off = combinedOff(accountOff, registryOff);
-      }
-      if (eventPoisoned || registryPoisoned) return "";
-      if (injectedState.wallet || wallet.accounts.length !== 0 || eventAccount || accountEventCount !== 0) return "";
-      if (!eventsOn || !signIn) return "";
-      if (!standardWalletRegistrationIsStable(registry, wallet, injectedProvider, eventsOn, signIn)) return "";
-
-      const input = phantomStandardSignInInput();
-      let outputs: readonly SolanaSignInOutput[];
-      try {
-        outputs = await signIn(input);
-      } catch (error) {
-        throw usefulProviderError(error, injectedProvider);
-      }
-      if (!Array.isArray(outputs) || outputs.length !== 1) return "";
-      const output = outputs[0];
-      if (!output || eventPoisoned || registryPoisoned || !exactlyOne(accountEventCount)) return "";
-      const account = verifiedPhantomStandardSignIn(input, output);
-      if (!account || eventAccount !== output.account || account !== output.account) return "";
-      const currentAccounts = wallet.accounts;
-      if (currentAccounts.length !== 1 || currentAccounts[0] !== output.account) return "";
-      if (!standardWalletRegistrationIsStable(registry, wallet, injectedProvider, eventsOn, signIn)) return "";
-      if (window.location.host !== input.domain || window.location.origin !== input.uri) return "";
-      if (connectedProviderWallet(injectedProvider) !== account.address) return "";
-      const finalState = coherentCanonicalProviderWallet(injectedProvider);
-      if (!finalState.coherent || finalState.wallet !== account.address) return "";
-      return account.address;
+      eventAccount = account;
+    });
+    if (typeof accountOff !== "function") {
+      throw poisonPhantomSiws(injectedProvider, "phantom_siws_account_state_invalid");
     }
-    return "";
+    let registryOff: (() => void) | undefined;
+    try {
+      registryOff = registry.on("unregister", (...wallets) => {
+        if (wallets.includes(wallet)) registryPoisoned = true;
+      });
+    } catch {
+      safeOff(accountOff);
+      throw poisonPhantomSiws(injectedProvider, "phantom_siws_account_state_invalid");
+    }
+    if (typeof registryOff !== "function") {
+      safeOff(accountOff);
+      throw poisonPhantomSiws(injectedProvider, "phantom_siws_account_state_invalid");
+    }
+    off = combinedOff(accountOff, registryOff);
+    if (
+      eventPoisoned
+      || registryPoisoned
+      || wallet.accounts.length !== 0
+      || eventAccount
+      || accountEventCount !== 0
+      || !standardWalletRegistrationIsStable(
+        registry,
+        wallet,
+        injectedProvider,
+        eventsOn,
+        signIn,
+      )
+    ) throw poisonPhantomSiws(injectedProvider, "phantom_siws_account_state_invalid");
+
+    const input = phantomStandardSignInInput();
+    let outputs: readonly SolanaSignInOutput[];
+    try {
+      // Deliberately invoked before this function's first await so Phantom sees
+      // the fresh user gesture from the explicit recovery button.
+      outputs = await signIn(input);
+    } catch (error) {
+      let cleanRejection = false;
+      try {
+        const canonical = coherentCanonicalProviderWallet(injectedProvider);
+        cleanRejection = !eventPoisoned
+          && !registryPoisoned
+          && accountEventCount === 0
+          && !eventAccount
+          && wallet.accounts.length === 0
+          && canonical.coherent
+          && canonical.wallet === ""
+          && standardWalletRegistrationIsStable(registry, wallet, injectedProvider, eventsOn, signIn);
+      } catch {
+        cleanRejection = false;
+      }
+      const code = providerErrorCode(error);
+      if (cleanRejection && (code === 4001 || code === -32002)) {
+        phantomSiwsRetryTickets.set(injectedProvider, {
+          ...ticket,
+          expiresAt: Date.now() + PHANTOM_SIWS_RETRY_TTL_MS,
+        });
+        throw walletStageError(code === 4001 ? "phantom_siws_cancelled" : "phantom_siws_approval_pending");
+      }
+      phantomSiwsPoisoned.add(injectedProvider);
+      throw walletStageError("phantom_siws_rejected");
+    }
+    if (!Array.isArray(outputs) || outputs.length !== 1) {
+      throw poisonPhantomSiws(injectedProvider, "phantom_siws_response_invalid");
+    }
+    const output = outputs[0];
+    if (!output || eventPoisoned || registryPoisoned || !exactlyOne(accountEventCount)) {
+      throw poisonPhantomSiws(injectedProvider, "phantom_siws_response_invalid");
+    }
+    const account = verifiedPhantomStandardSignIn(input, output);
+    if (!account || eventAccount !== output.account || account !== output.account) {
+      throw poisonPhantomSiws(injectedProvider, "phantom_siws_verification_failed");
+    }
+    const currentAccounts = wallet.accounts;
+    if (
+      currentAccounts.length !== 1
+      || currentAccounts[0] !== output.account
+      || !standardWalletRegistrationIsStable(
+        registry,
+        wallet,
+        injectedProvider,
+        eventsOn,
+        signIn,
+      )
+    ) throw poisonPhantomSiws(injectedProvider, "phantom_siws_account_state_invalid");
+    if (
+      window.location.host !== input.domain
+      || window.location.origin !== input.uri
+      || connectedProviderWallet(injectedProvider) !== account.address
+    ) throw poisonPhantomSiws(injectedProvider, "phantom_siws_provider_mismatch");
+    const finalState = coherentCanonicalProviderWallet(injectedProvider);
+    if (!finalState.coherent || finalState.wallet !== account.address) {
+      throw poisonPhantomSiws(injectedProvider, "phantom_siws_provider_mismatch");
+    }
+    return account.address;
   } finally {
     safeOff(off);
   }
@@ -463,6 +636,44 @@ function standardWalletRegistrationIsStable(
   } catch {
     return false;
   }
+}
+
+function cachedStandardWalletRegistry(): StandardWalletRegistry {
+  if (typeof window === "undefined") throw walletStageError("phantom_siws_registration_unavailable");
+  standardWalletRegistry ??= getWallets() as unknown as StandardWalletRegistry;
+  return standardWalletRegistry;
+}
+
+function hasActiveUserGesture(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return (navigator as Navigator & { userActivation?: { readonly isActive?: boolean } })
+    .userActivation?.isActive === true;
+}
+
+function poisonPhantomSiws(
+  provider: SolanaProvider,
+  code: Exclude<WalletConnectionStageCode, "phantom_siws_retry_required" | "phantom_siws_retry_expired" | "phantom_siws_user_activation_required" | "prepared_wallet_changed">,
+): WalletConnectionStageError {
+  phantomSiwsPoisoned.add(provider);
+  return walletStageError(code);
+}
+
+function walletStageError(code: WalletConnectionStageCode): WalletConnectionStageError {
+  const messages: Record<WalletConnectionStageCode, string> = {
+    phantom_siws_retry_required: "Phantom needs one fresh confirmation. Continue with Phantom below; no trade will run yet.",
+    phantom_siws_retry_expired: "The Phantom recovery step expired. Start wallet authorization again.",
+    phantom_siws_user_activation_required: "Click Continue with Phantom directly to approve the safe sign-in step.",
+    phantom_siws_registration_unavailable: "Phantom's secure sign-in bridge is unavailable. Reload the page with Phantom unlocked.",
+    phantom_siws_account_state_invalid: "Phantom changed state during sign-in. Reload and reconnect the intended account.",
+    phantom_siws_response_invalid: "Phantom returned an incomplete sign-in response. Reload and try again.",
+    phantom_siws_verification_failed: "Phantom sign-in could not be verified. Reload before trying again.",
+    phantom_siws_provider_mismatch: "Phantom's connected account did not match the verified sign-in. Reload and reconnect.",
+    phantom_siws_cancelled: "Phantom sign-in was cancelled. Click Continue with Phantom when ready.",
+    phantom_siws_approval_pending: "A Phantom approval is already open. Finish or close it, then continue.",
+    phantom_siws_rejected: "Phantom sign-in was not approved.",
+    prepared_wallet_changed: "The prepared Phantom account changed or disconnected. Start wallet authorization again.",
+  };
+  return new WalletConnectionStageError(code, messages[code]);
 }
 
 function coherentCanonicalProviderWallet(provider: SolanaProvider): { coherent: boolean; wallet: string } {

@@ -47,6 +47,19 @@ function installProviders(phantom?: TestProvider, legacy?: TestProvider) {
   });
 }
 
+function setUserActivation(isActive: boolean) {
+  Object.defineProperty(navigator, "userActivation", {
+    configurable: true,
+    value: { isActive },
+  });
+}
+
+async function expectSiwsRetryRequired(connect: (options?: { deferPhantomSiws?: boolean }) => Promise<string>) {
+  await expect(connect({ deferPhantomSiws: true })).rejects.toMatchObject({
+    code: "phantom_siws_retry_required",
+  });
+}
+
 function publicKey(value: string) {
   return { toBase58: () => value };
 }
@@ -135,6 +148,7 @@ function standardPhantom(
 afterEach(() => {
   Reflect.deleteProperty(window, "phantom");
   Reflect.deleteProperty(window, "solana");
+  Reflect.deleteProperty(navigator, "userActivation");
   standardRegistry.wallets = [];
   standardRegistry.unregisterListeners.clear();
   vi.resetModules();
@@ -340,9 +354,17 @@ describe("Phantom provider connection", () => {
     const standard = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
     standardRegistry.wallets = [standard.wallet];
     installProviders(provider);
-    const { connectSolanaWallet, requiredSolanaProvider, walletSignBytes } = await import("./wallet-request-proof");
+    const {
+      connectSolanaWallet,
+      requiredSolanaProvider,
+      retryPhantomSiwsWalletConnection,
+      walletSignBytes,
+    } = await import("./wallet-request-proof");
 
-    const wallet = await connectSolanaWallet();
+    await expectSiwsRetryRequired(connectSolanaWallet);
+    expect(standard.signIn).not.toHaveBeenCalled();
+    setUserActivation(true);
+    const wallet = await retryPhantomSiwsWalletConnection();
     await expect(walletSignBytes(requiredSolanaProvider(), new Uint8Array([1]), wallet)).resolves.toHaveLength(64);
 
     expect(wallet).toBe(standard.account.address);
@@ -371,6 +393,41 @@ describe("Phantom provider connection", () => {
 
     await expect(connectSolanaWallet()).resolves.toBe(wallet);
     expect(standard.signIn).toHaveBeenCalledOnce();
+  });
+
+  it("keeps automatic SIWS for default shared callers while deferred mode waits for a second click", async () => {
+    const automaticProvider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      connect: vi.fn()
+        .mockRejectedValueOnce({ code: 4100 })
+        .mockRejectedValueOnce({ code: -32603 }),
+      signMessage: vi.fn(),
+    };
+    const automatic = standardPhantom(automaticProvider, new Uint8Array(32).fill(7), { connected: false });
+    standardRegistry.wallets = [automatic.wallet];
+    installProviders(automaticProvider);
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
+
+    await expect(connectSolanaWallet()).resolves.toBe(automatic.account.address);
+    expect(automatic.signIn).toHaveBeenCalledOnce();
+
+    vi.resetModules();
+    const deferredProvider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      connect: vi.fn()
+        .mockRejectedValueOnce({ code: 4100 })
+        .mockRejectedValueOnce({ code: -32603 }),
+      signMessage: vi.fn(),
+    };
+    const deferred = standardPhantom(deferredProvider, new Uint8Array(32).fill(8), { connected: false });
+    standardRegistry.wallets = [deferred.wallet];
+    installProviders(deferredProvider);
+    const deferredModule = await import("./wallet-request-proof");
+
+    await expectSiwsRetryRequired(deferredModule.connectSolanaWallet);
+    expect(deferred.signIn).not.toHaveBeenCalled();
   });
 
   it("never calls SIWS unless the interactive direct connection returns exact -32603", async () => {
@@ -467,9 +524,13 @@ describe("Phantom provider connection", () => {
     });
     standardRegistry.wallets = [standard.wallet];
     installProviders(provider);
-    const { connectSolanaWallet } = await import("./wallet-request-proof");
+    const { connectSolanaWallet, retryPhantomSiwsWalletConnection } = await import("./wallet-request-proof");
 
-    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
+    await expectSiwsRetryRequired(connectSolanaWallet);
+    setUserActivation(true);
+    await expect(retryPhantomSiwsWalletConnection()).rejects.toMatchObject({
+      code: "phantom_siws_verification_failed",
+    });
     expect(standard.connect).not.toHaveBeenCalled();
     expect(standard.unsubscribes[0]).toHaveBeenCalledOnce();
     expect(standardRegistry.unregisterListeners.size).toBe(0);
@@ -492,9 +553,13 @@ describe("Phantom provider connection", () => {
     });
     standardRegistry.wallets = [standard.wallet];
     installProviders(provider);
-    const { connectSolanaWallet } = await import("./wallet-request-proof");
+    const { connectSolanaWallet, retryPhantomSiwsWalletConnection } = await import("./wallet-request-proof");
 
-    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
+    await expectSiwsRetryRequired(connectSolanaWallet);
+    setUserActivation(true);
+    await expect(retryPhantomSiwsWalletConnection()).rejects.toMatchObject({
+      code: "phantom_siws_verification_failed",
+    });
     expect(standard.connect).not.toHaveBeenCalled();
   });
 
@@ -517,9 +582,13 @@ describe("Phantom provider connection", () => {
     });
     standardRegistry.wallets = [standard.wallet];
     installProviders(provider);
-    const { connectSolanaWallet } = await import("./wallet-request-proof");
+    const { connectSolanaWallet, retryPhantomSiwsWalletConnection } = await import("./wallet-request-proof");
 
-    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
+    await expectSiwsRetryRequired(connectSolanaWallet);
+    setUserActivation(true);
+    await expect(retryPhantomSiwsWalletConnection()).rejects.toMatchObject({
+      code: "phantom_siws_response_invalid",
+    });
     expect(standard.connect).not.toHaveBeenCalled();
   });
 
@@ -545,15 +614,19 @@ describe("Phantom provider connection", () => {
     });
     standardRegistry.wallets = [standard.wallet];
     installProviders(provider);
-    const { connectSolanaWallet } = await import("./wallet-request-proof");
+    const { connectSolanaWallet, retryPhantomSiwsWalletConnection } = await import("./wallet-request-proof");
 
-    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
+    await expectSiwsRetryRequired(connectSolanaWallet);
+    setUserActivation(true);
+    await expect(retryPhantomSiwsWalletConnection()).rejects.toMatchObject({
+      code: "phantom_siws_response_invalid",
+    });
     expect(standard.connect).not.toHaveBeenCalled();
     expect(standard.unsubscribes[0]).toHaveBeenCalledOnce();
     expect(standardRegistry.unregisterListeners.size).toBe(0);
   });
 
-  it("propagates an exact SIWS rejection instead of masking it as the earlier connect error", async () => {
+  it("keeps a clean cancelled SIWS retryable without exposing raw provider text", async () => {
     const provider: TestProvider = {
       isPhantom: true,
       isConnected: false,
@@ -566,12 +639,82 @@ describe("Phantom provider connection", () => {
     standard.signIn.mockRejectedValueOnce({ code: 4001, message: "Cancelled" });
     standardRegistry.wallets = [standard.wallet];
     installProviders(provider);
-    const { connectSolanaWallet } = await import("./wallet-request-proof");
+    const { connectSolanaWallet, retryPhantomSiwsWalletConnection } = await import("./wallet-request-proof");
 
-    await expect(connectSolanaWallet()).rejects.toThrow("Phantom connection was cancelled.");
+    await expectSiwsRetryRequired(connectSolanaWallet);
+    setUserActivation(true);
+    await expect(retryPhantomSiwsWalletConnection()).rejects.toMatchObject({
+      code: "phantom_siws_cancelled",
+      message: "Phantom sign-in was cancelled. Click Continue with Phantom when ready.",
+    });
+    const retry = retryPhantomSiwsWalletConnection();
+    expect(standard.signIn).toHaveBeenCalledTimes(2);
+    await expect(retry).resolves.toBe(standard.account.address);
     expect(standard.connect).not.toHaveBeenCalled();
     expect(standard.unsubscribes[0]).toHaveBeenCalledOnce();
+    expect(standard.unsubscribes[1]).toHaveBeenCalledOnce();
     expect(standardRegistry.unregisterListeners.size).toBe(0);
+  });
+
+  it("requires a fresh user activation and single-flights the explicit SIWS retry", async () => {
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      connect: vi.fn()
+        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
+        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
+      signMessage: vi.fn(),
+    };
+    const standard = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    standardRegistry.wallets = [standard.wallet];
+    installProviders(provider);
+    const { connectSolanaWallet, retryPhantomSiwsWalletConnection } = await import("./wallet-request-proof");
+
+    await expectSiwsRetryRequired(connectSolanaWallet);
+    setUserActivation(false);
+    await expect(retryPhantomSiwsWalletConnection()).rejects.toMatchObject({
+      code: "phantom_siws_user_activation_required",
+    });
+    expect(standard.signIn).not.toHaveBeenCalled();
+
+    setUserActivation(true);
+    const first = retryPhantomSiwsWalletConnection();
+    expect(standard.signIn).toHaveBeenCalledOnce();
+    const second = retryPhantomSiwsWalletConnection();
+    expect(second).toBe(first);
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      standard.account.address,
+      standard.account.address,
+    ]);
+  });
+
+  it("keeps a clean pending approval retryable but poisons a partial rejected SIWS", async () => {
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      connect: vi.fn()
+        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
+        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
+      signMessage: vi.fn(),
+    };
+    const standard = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    standard.signIn.mockRejectedValueOnce({ code: -32002, message: "raw text" });
+    standardRegistry.wallets = [standard.wallet];
+    installProviders(provider);
+    const { connectSolanaWallet, retryPhantomSiwsWalletConnection } = await import("./wallet-request-proof");
+
+    await expectSiwsRetryRequired(connectSolanaWallet);
+    setUserActivation(true);
+    await expect(retryPhantomSiwsWalletConnection()).rejects.toMatchObject({
+      code: "phantom_siws_approval_pending",
+      message: "A Phantom approval is already open. Finish or close it, then continue.",
+    });
+    standard.signIn.mockImplementationOnce(async () => {
+      standard.change([standard.account]);
+      throw { code: 4001, message: "raw cancellation" };
+    });
+    await expect(retryPhantomSiwsWalletConnection()).rejects.toMatchObject({ code: "phantom_siws_rejected" });
+    await expect(connectSolanaWallet()).rejects.toMatchObject({ code: "phantom_siws_verification_failed" });
   });
   it("surfaces an actionable error without disconnecting when internal-error state stays disconnected", async () => {
     const connect = vi.fn().mockRejectedValue({ code: -32603, message: "Unexpected error" });
