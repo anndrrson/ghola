@@ -3,6 +3,11 @@
 // connect/seal components don't duplicate provider plumbing.
 
 import { ed25519 } from "@noble/curves/ed25519";
+import type {
+  SolanaSignInInput,
+  SolanaSignInOutput,
+} from "@solana/wallet-standard-features";
+import { parseSignInMessage, verifySignIn } from "@solana/wallet-standard-util";
 import bs58 from "bs58";
 
 type SolanaConnectOptions = { onlyIfTrusted?: boolean };
@@ -73,40 +78,19 @@ type StandardEventsFeature = {
   ) => () => void;
 };
 
-type StandardSignMessageFeature = {
-  readonly version: string;
-  readonly signMessage: (...inputs: readonly {
-    readonly account: StandardWalletAccount;
-    readonly message: Uint8Array;
-  }[]) => Promise<readonly {
-    readonly signedMessage: Uint8Array;
-    readonly signature: Uint8Array;
-    readonly signatureType?: "ed25519";
-  }[]>;
-};
-
-type StandardWalletSession = {
-  readonly wallet: StandardWallet;
-  readonly account: StandardWalletAccount;
-  readonly address: string;
-  readonly publicKey: Uint8Array;
-  readonly injectedProvider: SolanaProvider;
-  readonly registryGet: () => readonly unknown[];
-  readonly eventsOn: StandardEventsFeature["on"];
-  readonly signMessage: StandardSignMessageFeature["signMessage"];
-  provider: SolanaProvider;
-  off: () => void;
-  poisoned: boolean;
-  unregistered: boolean;
+type StandardSignInFeature = {
+  readonly version: "1.0.0";
+  readonly signIn: (...inputs: readonly SolanaSignInInput[]) => Promise<readonly SolanaSignInOutput[]>;
 };
 
 const connectInFlight = new WeakMap<SolanaProvider, Promise<string>>();
 const providerConnectionStates = new WeakMap<SolanaProvider, ProviderConnectionState>();
-const standardWalletSessions = new WeakMap<SolanaProvider, StandardWalletSession>();
 const PHANTOM_RECOVERY_ATTEMPTS = 5;
 const PHANTOM_RECOVERY_DELAY_MS = 75;
 const PHANTOM_STANDARD_RECOVERY_ATTEMPTS = 10;
 const PHANTOM_STANDARD_RECOVERY_DELAY_MS = 50;
+const PHANTOM_SIGN_IN_TTL_MS = 2 * 60_000;
+const PHANTOM_SIGN_IN_STATEMENT = "This sign-in message alone cannot move funds or place trades.";
 
 export function solanaProvider(): SolanaProvider | undefined {
   if (typeof window === "undefined") return undefined;
@@ -118,10 +102,7 @@ export function solanaProvider(): SolanaProvider | undefined {
 }
 
 export function requiredSolanaProvider(): SolanaProvider {
-  const injectedProvider = solanaProvider();
-  const provider = injectedProvider
-    ? standardWalletSessions.get(injectedProvider)?.provider ?? injectedProvider
-    : undefined;
+  const provider = solanaProvider();
   if (!provider?.signMessage) throw new Error("Wallet message signing is required.");
   return provider;
 }
@@ -133,13 +114,7 @@ export async function connectSolanaWallet(): Promise<string> {
   const pending = connectInFlight.get(provider);
   if (pending) return pending;
   const currentWallet = connectedProviderWallet(provider);
-  if (currentWallet) {
-    clearStandardWalletSession(provider);
-    return currentWallet;
-  }
-  const standardSession = standardWalletSessions.get(provider);
-  if (standardSession && standardSessionIsCoherent(standardSession)) return standardSession.address;
-  if (standardSession) clearStandardWalletSession(provider);
+  if (currentWallet) return currentWallet;
 
   const promise = provider.isPhantom === true
     ? connectPhantomProvider(provider)
@@ -224,9 +199,7 @@ async function connectPhantomProvider(provider: SolanaProvider): Promise<string>
 }
 
 function rememberDirectConnectedWallet(provider: SolanaProvider, connected: unknown): string {
-  const wallet = rememberConnectedWallet(provider, connected);
-  clearStandardWalletSession(provider);
-  return wallet;
+  return rememberConnectedWallet(provider, connected);
 }
 
 async function connectInjectedProvider(provider: SolanaProvider): Promise<string> {
@@ -292,17 +265,17 @@ async function recoverConnectedPhantomWallet(provider: SolanaProvider): Promise<
 }
 
 async function connectPhantomStandardWallet(injectedProvider: SolanaProvider): Promise<string> {
-  if (!isCanonicalPhantomProvider(injectedProvider)) return "";
+  if (!isCanonicalPhantomProvider(injectedProvider) || typeof injectedProvider.signMessage !== "function") return "";
   const { getWallets } = await import("@wallet-standard/app");
   const registry = getWallets() as unknown as StandardWalletRegistry;
   let selectedWallet: StandardWallet | undefined;
   let off: () => void = () => undefined;
-  let eventWallet: string | undefined;
+  let eventAccount: StandardWalletAccount | undefined;
+  let accountEventCount = 0;
   let eventPoisoned = false;
   let registryPoisoned = false;
-  let pinnedWallet = "";
-  let stableWallet = "";
-  let retainedSession: StandardWalletSession | undefined;
+  let eventsOn: StandardEventsFeature["on"] | undefined;
+  let signIn: StandardSignInFeature["signIn"] | undefined;
 
   try {
     for (let attempt = 0; attempt < PHANTOM_STANDARD_RECOVERY_ATTEMPTS; attempt += 1) {
@@ -315,7 +288,6 @@ async function connectPhantomStandardWallet(injectedProvider: SolanaProvider): P
       const candidate = namedWallets[0];
       if (!candidate) {
         if (selectedWallet) return "";
-        stableWallet = "";
         continue;
       }
       if (!isUsablePhantomStandardWallet(candidate) || !isBoundPhantomStandardWallet(candidate, injectedProvider)) {
@@ -328,26 +300,24 @@ async function connectPhantomStandardWallet(injectedProvider: SolanaProvider): P
       if (wallet !== selectedWallet) {
         safeOff(off);
         selectedWallet = wallet;
-        eventWallet = undefined;
+        eventAccount = undefined;
+        accountEventCount = 0;
         eventPoisoned = false;
-        stableWallet = "";
+        registryPoisoned = false;
+        if (wallet.accounts.length !== 0) return "";
         const events = standardEventsFeature(wallet);
+        const signInFeature = standardSignInFeature(wallet);
+        eventsOn = events.on;
+        signIn = signInFeature.signIn;
         const accountOff = events.on("change", (properties) => {
           if (properties.accounts === undefined) return;
+          accountEventCount += 1;
           const account = singleCoherentStandardAccount(properties.accounts);
-          if (!account) {
+          if (!account || accountEventCount !== 1) {
             eventPoisoned = true;
-            if (retainedSession) retainedSession.poisoned = true;
             return;
           }
-          if (eventWallet && eventWallet !== account.address) {
-            eventPoisoned = true;
-            if (retainedSession) retainedSession.poisoned = true;
-          }
-          if (retainedSession && !sameStandardAccount(retainedSession, account)) {
-            retainedSession.poisoned = true;
-          }
-          eventWallet = account.address;
+          eventAccount = account;
         });
         if (typeof accountOff !== "function") return "";
         let registryOff: (() => void) | undefined;
@@ -355,10 +325,6 @@ async function connectPhantomStandardWallet(injectedProvider: SolanaProvider): P
           registryOff = registry.on("unregister", (...wallets) => {
             if (!wallets.includes(wallet)) return;
             registryPoisoned = true;
-            if (retainedSession) {
-              retainedSession.unregistered = true;
-              safeOff(retainedSession.off);
-            }
           });
         } catch {
           safeOff(accountOff);
@@ -371,42 +337,30 @@ async function connectPhantomStandardWallet(injectedProvider: SolanaProvider): P
         off = combinedOff(accountOff, registryOff);
       }
       if (eventPoisoned || registryPoisoned) return "";
+      if (injectedState.wallet || wallet.accounts.length !== 0 || eventAccount || accountEventCount !== 0) return "";
+      if (!eventsOn || !signIn) return "";
+      if (!standardWalletRegistrationIsStable(registry, wallet, injectedProvider, eventsOn, signIn)) return "";
 
-      const account = singleCoherentStandardAccount(wallet.accounts);
-      if (!account || (injectedState.wallet && injectedState.wallet !== account.address)) {
-        stableWallet = "";
-        continue;
+      const input = phantomStandardSignInInput();
+      let outputs: readonly SolanaSignInOutput[];
+      try {
+        outputs = await signIn(input);
+      } catch (error) {
+        throw usefulProviderError(error, injectedProvider);
       }
-      if ((eventWallet && eventWallet !== account.address) || (pinnedWallet && pinnedWallet !== account.address)) {
-        return "";
-      }
-      if (!pinnedWallet) pinnedWallet = eventWallet || account.address;
-      if (stableWallet !== account.address) {
-        stableWallet = account.address;
-        continue;
-      }
-
-      const signMessage = standardSignMessageFeature(wallet).signMessage;
-      const session: StandardWalletSession = {
-        wallet,
-        account,
-        address: account.address,
-        publicKey: new Uint8Array(account.publicKey),
-        injectedProvider,
-        registryGet: () => registry.get() as readonly unknown[],
-        eventsOn: standardEventsFeature(wallet).on,
-        signMessage,
-        provider: {} as SolanaProvider,
-        off,
-        poisoned: false,
-        unregistered: false,
-      };
-      retainedSession = session;
-      off = () => undefined;
-      session.provider = standardSessionProvider(session);
-      clearStandardWalletSession(injectedProvider);
-      standardWalletSessions.set(injectedProvider, session);
-      return session.address;
+      if (!Array.isArray(outputs) || outputs.length !== 1) return "";
+      const output = outputs[0];
+      if (!output || eventPoisoned || registryPoisoned || !exactlyOne(accountEventCount)) return "";
+      const account = verifiedPhantomStandardSignIn(input, output);
+      if (!account || eventAccount !== output.account || account !== output.account) return "";
+      const currentAccounts = wallet.accounts;
+      if (currentAccounts.length !== 1 || currentAccounts[0] !== output.account) return "";
+      if (!standardWalletRegistrationIsStable(registry, wallet, injectedProvider, eventsOn, signIn)) return "";
+      if (window.location.host !== input.domain || window.location.origin !== input.uri) return "";
+      if (connectedProviderWallet(injectedProvider) !== account.address) return "";
+      const finalState = coherentCanonicalProviderWallet(injectedProvider);
+      if (!finalState.coherent || finalState.wallet !== account.address) return "";
+      return account.address;
     }
     return "";
   } finally {
@@ -414,81 +368,100 @@ async function connectPhantomStandardWallet(injectedProvider: SolanaProvider): P
   }
 }
 
-function standardSessionProvider(session: StandardWalletSession): SolanaProvider {
+function phantomStandardSignInInput(nowMs = Date.now()): SolanaSignInInput {
+  const nonceBytes = crypto.getRandomValues(new Uint8Array(16));
+  const nonce = Array.from(nonceBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const issuedAt = new Date(nowMs).toISOString();
   return {
-    isPhantom: true,
-    isConnected: true,
-    get publicKey() {
-      return { toBase58: () => session.address };
-    },
-    signMessage: async (message) => {
-      assertStandardSessionCoherent(session);
-      const expectedMessage = new Uint8Array(message);
-      const output = await session.signMessage({ account: session.account, message: new Uint8Array(expectedMessage) });
-      assertStandardSessionCoherent(session);
-      if (!Array.isArray(output) || output.length !== 1) {
-        session.poisoned = true;
-        throw new Error("Phantom returned an invalid message signature.");
-      }
-      const [{ signedMessage, signature, signatureType }] = output;
-      let verified = false;
-      try {
-        verified = signature instanceof Uint8Array
-          && signature.length === 64
-          && ed25519.verify(signature, expectedMessage, session.publicKey);
-      } catch {
-        verified = false;
-      }
-      if (
-        !(signedMessage instanceof Uint8Array)
-        || !bytesEqual(signedMessage, expectedMessage)
-        || (signatureType !== undefined && signatureType !== "ed25519")
-        || !verified
-      ) {
-        session.poisoned = true;
-        throw new Error("Phantom returned an invalid message signature.");
-      }
-      return {
-        signature: new Uint8Array(signature),
-        publicKey: { toBase58: () => session.address },
-      };
-    },
+    domain: window.location.host,
+    statement: PHANTOM_SIGN_IN_STATEMENT,
+    uri: window.location.origin,
+    version: "1",
+    chainId: "mainnet",
+    nonce,
+    issuedAt,
+    notBefore: issuedAt,
+    expirationTime: new Date(nowMs + PHANTOM_SIGN_IN_TTL_MS).toISOString(),
   };
 }
 
-function standardSessionIsCoherent(session: StandardWalletSession): boolean {
+function verifiedPhantomStandardSignIn(
+  input: SolanaSignInInput,
+  output: SolanaSignInOutput,
+  nowMs = Date.now(),
+): StandardWalletAccount | undefined {
+  const account = singleCoherentStandardAccount([output.account as StandardWalletAccount]);
+  const publicKey = account ? byteArrayCopy(account.publicKey) : undefined;
+  const signedMessage = byteArrayCopy(output.signedMessage);
+  const signature = byteArrayCopy(output.signature);
+  if (
+    !account
+    || !account.features.includes("solana:signIn")
+    || !publicKey
+    || !signedMessage
+    || !signature
+    || signature.length !== 64
+    || (output.signatureType !== undefined && output.signatureType !== "ed25519")
+  ) return undefined;
+
   try {
-    assertStandardSessionCoherent(session);
-    return true;
+    const parsed = parseSignInMessage(signedMessage);
+    const issuedAtMs = Date.parse(input.issuedAt ?? "");
+    const notBeforeMs = Date.parse(input.notBefore ?? "");
+    const expirationTimeMs = Date.parse(input.expirationTime ?? "");
+    const normalizedOutput = {
+      ...output,
+      account: { ...output.account, publicKey },
+      signedMessage,
+      signature,
+    } as SolanaSignInOutput;
+    if (
+      !parsed
+      || parsed.domain !== input.domain
+      || parsed.address !== account.address
+      || parsed.statement !== input.statement
+      || parsed.uri !== input.uri
+      || parsed.version !== input.version
+      || parsed.chainId !== input.chainId
+      || parsed.nonce !== input.nonce
+      || parsed.issuedAt !== input.issuedAt
+      || parsed.notBefore !== input.notBefore
+      || parsed.expirationTime !== input.expirationTime
+      || parsed.requestId !== undefined
+      || parsed.resources !== undefined
+      || !verifySignIn(input, normalizedOutput)
+      || !ed25519.verify(signature, signedMessage, publicKey)
+      || !Number.isFinite(issuedAtMs)
+      || !Number.isFinite(notBeforeMs)
+      || !Number.isFinite(expirationTimeMs)
+      || notBeforeMs !== issuedAtMs
+      || expirationTimeMs - issuedAtMs !== PHANTOM_SIGN_IN_TTL_MS
+      || nowMs < notBeforeMs
+      || nowMs > expirationTimeMs
+    ) return undefined;
   } catch {
-    return false;
+    return undefined;
   }
+  return account;
 }
 
-function assertStandardSessionCoherent(session: StandardWalletSession): void {
-  if (session.unregistered) throw new Error("Phantom disconnected. Reconnect it and try again.");
-  if (session.poisoned) throw new Error("Phantom account changed. Reconnect the intended account and try again.");
-  const registered = session.registryGet().filter(isNamedPhantomStandardWallet);
-  if (
-    registered.length !== 1
-    || registered[0] !== session.wallet
-    || !isUsablePhantomStandardWallet(session.wallet)
-    || !isBoundPhantomStandardWallet(session.wallet, session.injectedProvider)
-    || standardEventsFeature(session.wallet).on !== session.eventsOn
-    || standardSignMessageFeature(session.wallet).signMessage !== session.signMessage
-  ) {
-    throw new Error("Phantom disconnected. Reconnect it and try again.");
-  }
-  const injectedState = coherentCanonicalProviderWallet(session.injectedProvider);
-  if (!injectedState.coherent) {
-    throw new Error("Phantom disconnected. Reconnect it and try again.");
-  }
-  if (injectedState.wallet && injectedState.wallet !== session.address) {
-    throw new Error("Phantom account changed. Reconnect the intended account and try again.");
-  }
-  const current = singleCoherentStandardAccount(session.wallet.accounts);
-  if (!current || !sameStandardAccount(session, current)) {
-    throw new Error("Phantom account changed. Reconnect the intended account and try again.");
+function standardWalletRegistrationIsStable(
+  registry: StandardWalletRegistry,
+  wallet: StandardWallet,
+  injectedProvider: SolanaProvider,
+  eventsOn: StandardEventsFeature["on"],
+  signIn: StandardSignInFeature["signIn"],
+): boolean {
+  try {
+    const registered = registry.get().filter(isNamedPhantomStandardWallet);
+    return registered.length === 1
+      && registered[0] === wallet
+      && isUsablePhantomStandardWallet(wallet)
+      && isBoundPhantomStandardWallet(wallet, injectedProvider)
+      && standardEventsFeature(wallet).on === eventsOn
+      && standardSignInFeature(wallet).signIn === signIn;
+  } catch {
+    return false;
   }
 }
 
@@ -528,13 +501,13 @@ function isUsablePhantomStandardWallet(value: unknown): value is StandardWallet 
   ) return false;
   const connect = wallet.features["standard:connect"] as Partial<StandardConnectFeature> | undefined;
   const events = wallet.features["standard:events"] as Partial<StandardEventsFeature> | undefined;
-  const signMessage = wallet.features["solana:signMessage"] as Partial<StandardSignMessageFeature> | undefined;
+  const signIn = wallet.features["solana:signIn"] as Partial<StandardSignInFeature> | undefined;
   return connect?.version === "1.0.0"
     && typeof connect.connect === "function"
     && events?.version === "1.0.0"
     && typeof events.on === "function"
-    && (signMessage?.version === "1.0.0" || signMessage?.version === "1.1.0")
-    && typeof signMessage.signMessage === "function";
+    && signIn?.version === "1.0.0"
+    && typeof signIn.signIn === "function";
 }
 
 function isBoundPhantomStandardWallet(wallet: StandardWallet, provider: SolanaProvider): boolean {
@@ -546,8 +519,8 @@ function standardEventsFeature(wallet: StandardWallet): StandardEventsFeature {
   return wallet.features["standard:events"] as StandardEventsFeature;
 }
 
-function standardSignMessageFeature(wallet: StandardWallet): StandardSignMessageFeature {
-  return wallet.features["solana:signMessage"] as StandardSignMessageFeature;
+function standardSignInFeature(wallet: StandardWallet): StandardSignInFeature {
+  return wallet.features["solana:signIn"] as StandardSignInFeature;
 }
 
 function singleCoherentStandardAccount(
@@ -558,26 +531,33 @@ function singleCoherentStandardAccount(
   if (
     !account
     || !validSolanaPublicKey(account.address)
-    || !(account.publicKey instanceof Uint8Array)
-    || account.publicKey.length !== 32
+    || byteArrayCopy(account.publicKey)?.length !== 32
     || !account.chains.includes("solana:mainnet")
     || !account.features.includes("solana:signMessage")
   ) return undefined;
-  return bytesEqual(bs58.decode(account.address), account.publicKey) ? account : undefined;
+  const publicKey = byteArrayCopy(account.publicKey);
+  return publicKey && bytesEqual(bs58.decode(account.address), publicKey) ? account : undefined;
 }
 
-function sameStandardAccount(session: StandardWalletSession, account: StandardWalletAccount): boolean {
-  return account.address === session.address && bytesEqual(account.publicKey, session.publicKey);
+function byteArrayCopy(value: unknown): Uint8Array | undefined {
+  try {
+    if (
+      !ArrayBuffer.isView(value)
+      || Object.prototype.toString.call(value) !== "[object Uint8Array]"
+      || (value as Uint8Array).BYTES_PER_ELEMENT !== 1
+    ) return undefined;
+    return Uint8Array.from(value as Uint8Array);
+  } catch {
+    return undefined;
+  }
+}
+
+function exactlyOne(value: number): boolean {
+  return value === 1;
 }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function clearStandardWalletSession(provider: SolanaProvider): void {
-  const session = standardWalletSessions.get(provider);
-  if (session) safeOff(session.off);
-  standardWalletSessions.delete(provider);
 }
 
 function safeOff(off: () => void): void {

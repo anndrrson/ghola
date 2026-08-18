@@ -1,4 +1,6 @@
 import { ed25519 } from "@noble/curves/ed25519";
+import type { SolanaSignInInput, SolanaSignInOutput } from "@solana/wallet-standard-features";
+import { createSignInMessage } from "@solana/wallet-standard-util";
 import bs58 from "bs58";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -32,6 +34,8 @@ type TestProvider = {
   on?: ReturnType<typeof vi.fn>;
 };
 
+type TestSignIn = (...inputs: readonly SolanaSignInInput[]) => Promise<readonly SolanaSignInOutput[]>;
+
 function installProviders(phantom?: TestProvider, legacy?: TestProvider) {
   Object.defineProperty(window, "phantom", {
     configurable: true,
@@ -51,14 +55,18 @@ const VALID_WALLET = bs58.encode(new Uint8Array(32));
 const VALID_WALLET_A = bs58.encode(new Uint8Array(32).fill(1));
 const VALID_WALLET_B = bs58.encode(new Uint8Array(32).fill(2));
 
-function standardPhantom(provider: TestProvider, secretKey = new Uint8Array(32).fill(7)) {
+function standardPhantom(
+  provider: TestProvider,
+  secretKey = new Uint8Array(32).fill(7),
+  options: { connected?: boolean } = {},
+) {
   const account = {
     address: bs58.encode(ed25519.getPublicKey(secretKey)),
     publicKey: ed25519.getPublicKey(secretKey),
-    chains: ["solana:mainnet"],
-    features: ["solana:signMessage"],
+    chains: ["solana:mainnet"] as const,
+    features: ["solana:signMessage", "solana:signIn"] as const,
   };
-  let accounts = [account];
+  let accounts = options.connected === false ? [] : [account];
   const listeners = new Set<(properties: { accounts?: typeof accounts }) => void>();
   const unsubscribes: ReturnType<typeof vi.fn>[] = [];
   const connect = vi.fn();
@@ -67,6 +75,26 @@ function standardPhantom(provider: TestProvider, secretKey = new Uint8Array(32).
     signature: ed25519.sign(message, secretKey),
     signatureType: "ed25519" as const,
   }]);
+  const signIn = vi.fn(async (...inputs: readonly SolanaSignInInput[]): Promise<readonly SolanaSignInOutput[]> => {
+    const outputs = inputs.map((input) => {
+      const signedMessage = createSignInMessage({
+        ...input,
+        domain: input.domain ?? window.location.host,
+        address: account.address,
+      });
+      return {
+        account,
+        signedMessage,
+        signature: ed25519.sign(signedMessage, secretKey),
+        signatureType: "ed25519" as const,
+      };
+    });
+    provider.isConnected = true;
+    provider.publicKey = publicKey(account.address);
+    accounts = [account];
+    for (const listener of listeners) listener({ accounts });
+    return outputs;
+  });
   const wallet = {
     version: "1.0.0",
     name: "Phantom",
@@ -87,11 +115,13 @@ function standardPhantom(provider: TestProvider, secretKey = new Uint8Array(32).
         }),
       },
       "solana:signMessage": { version: "1.0.0", signMessage },
+      "solana:signIn": { version: "1.0.0", signIn },
     },
   };
   return {
     account,
     connect,
+    signIn,
     signMessage,
     unsubscribes,
     wallet,
@@ -295,306 +325,254 @@ describe("Phantom provider connection", () => {
     expect(provider.disconnect).not.toHaveBeenCalled();
   });
 
-  it("uses the bound Phantom Wallet Standard session after interactive internal error", async () => {
+  it("bootstraps exact Phantom Wallet Standard 0→1 state with SIWS, then uses the direct signer", async () => {
     const provider: TestProvider = {
       isPhantom: true,
       isConnected: false,
-      disconnect: vi.fn(),
+      connect: vi.fn()
+        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
+        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
+      signMessage: vi.fn().mockImplementation(async () => ({
+        publicKey: provider.publicKey,
+        signature: new Uint8Array(64),
+      })),
     };
-    const standard = standardPhantom(provider);
-    provider.publicKey = publicKey(standard.account.address);
-    provider.connect = vi.fn()
-      .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
-      .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" });
+    const standard = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    standardRegistry.wallets = [standard.wallet];
     installProviders(provider);
-    setTimeout(() => {
-      standardRegistry.wallets = [standard.wallet];
-    }, 100);
     const { connectSolanaWallet, requiredSolanaProvider, walletSignBytes } = await import("./wallet-request-proof");
 
     const wallet = await connectSolanaWallet();
-    const message = new Uint8Array([1, 2, 3]);
-    await expect(walletSignBytes(requiredSolanaProvider(), message, wallet)).resolves.toHaveLength(64);
+    await expect(walletSignBytes(requiredSolanaProvider(), new Uint8Array([1]), wallet)).resolves.toHaveLength(64);
+
     expect(wallet).toBe(standard.account.address);
     expect(provider.connect).toHaveBeenCalledTimes(2);
     expect(standard.connect).not.toHaveBeenCalled();
-    expect(standard.signMessage).toHaveBeenCalledOnce();
-    expect(provider.disconnect).not.toHaveBeenCalled();
-
-    await expect(connectSolanaWallet()).resolves.toBe(wallet);
-    expect(provider.connect).toHaveBeenCalledTimes(2);
-    provider.isConnected = true;
-    await expect(connectSolanaWallet()).resolves.toBe(wallet);
+    expect(standard.signIn).toHaveBeenCalledOnce();
+    expect(standard.signMessage).not.toHaveBeenCalled();
+    expect(provider.signMessage).toHaveBeenCalledOnce();
     expect(standard.unsubscribes[0]).toHaveBeenCalledOnce();
-  });
+    expect(standardRegistry.unregisterListeners.size).toBe(0);
 
-  it("does not repin a Wallet Standard fallback when its account changes during polling", async () => {
-    const provider: TestProvider = {
-      isPhantom: true,
-      isConnected: false,
-      connect: vi.fn()
-        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
-        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
-    };
-    const standard = standardPhantom(provider);
-    const otherKey = ed25519.getPublicKey(new Uint8Array(32).fill(8));
-    const otherAccount = {
-      address: bs58.encode(otherKey),
-      publicKey: otherKey,
-      chains: ["solana:mainnet"],
-      features: ["solana:signMessage"],
-    };
-    let accountReads = 0;
-    Object.defineProperty(standard.wallet, "accounts", {
-      configurable: true,
-      get: () => (++accountReads <= 2 ? [standard.account] : [otherAccount]),
+    const input = standard.signIn.mock.calls[0]?.[0] as SolanaSignInInput;
+    expect(input).toMatchObject({
+      domain: window.location.host,
+      statement: "This sign-in message alone cannot move funds or place trades.",
+      uri: window.location.origin,
+      version: "1",
+      chainId: "mainnet",
     });
-    standardRegistry.wallets = [standard.wallet];
-    installProviders(provider);
-    const { connectSolanaWallet } = await import("./wallet-request-proof");
+    expect(input.address).toBeUndefined();
+    expect(input.nonce).toMatch(/^[0-9a-f]{32}$/u);
+    expect(input.notBefore).toBe(input.issuedAt);
+    expect(Date.parse(input.expirationTime ?? "") - Date.parse(input.issuedAt ?? "")).toBe(120_000);
+    expect(input.requestId).toBeUndefined();
+    expect(input.resources).toBeUndefined();
 
-    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
-    expect(standard.connect).not.toHaveBeenCalled();
+    await expect(connectSolanaWallet()).resolves.toBe(wallet);
+    expect(standard.signIn).toHaveBeenCalledOnce();
   });
 
-  it("rejects a Phantom Wallet Standard object replacement during discovery", async () => {
+  it("never calls SIWS unless the interactive direct connection returns exact -32603", async () => {
     const provider: TestProvider = {
       isPhantom: true,
       isConnected: false,
       connect: vi.fn()
         .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
-        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
-    };
-    const first = standardPhantom(provider);
-    const replacement = standardPhantom(provider);
-    let accountReads = 0;
-    Object.defineProperty(first.wallet, "accounts", {
-      configurable: true,
-      get: () => {
-        accountReads += 1;
-        if (accountReads === 2) standardRegistry.wallets = [replacement.wallet];
-        return [first.account];
-      },
-    });
-    standardRegistry.wallets = [first.wallet];
-    installProviders(provider);
-    const { connectSolanaWallet } = await import("./wallet-request-proof");
-
-    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
-    expect(first.connect).not.toHaveBeenCalled();
-    expect(replacement.connect).not.toHaveBeenCalled();
-    expect(first.unsubscribes[0]).toHaveBeenCalledOnce();
-  });
-
-  it("pins Wallet Standard recovery to a canonical connect-event account", async () => {
-    const listeners = new Map<string, (value?: unknown) => void>();
-    const provider: TestProvider = {
-      isPhantom: true,
-      isConnected: false,
-      on: vi.fn((event: string, listener: (value?: unknown) => void) => listeners.set(event, listener)),
-    };
-    provider.connect = vi.fn()
-      .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
-      .mockImplementationOnce(async () => {
-        listeners.get("connect")?.(publicKey(VALID_WALLET_A));
-        throw { code: -32603, message: "Unexpected error" };
-      });
-    const standard = standardPhantom(provider);
-    standardRegistry.wallets = [standard.wallet];
-    installProviders(provider);
-    const { connectSolanaWallet } = await import("./wallet-request-proof");
-
-    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
-    expect(standard.signMessage).not.toHaveBeenCalled();
-  });
-
-  it("does not trust a Wallet Standard Phantom entry that is not bound to the canonical provider", async () => {
-    const provider: TestProvider = {
-      isPhantom: true,
-      isConnected: false,
-      connect: vi.fn()
-        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
-        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
-    };
-    const standard = standardPhantom({ isPhantom: true });
-    provider.publicKey = publicKey(standard.account.address);
-    standardRegistry.wallets = [standard.wallet];
-    installProviders(provider);
-    const { connectSolanaWallet } = await import("./wallet-request-proof");
-
-    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
-    expect(standard.connect).not.toHaveBeenCalled();
-    expect(standard.signMessage).not.toHaveBeenCalled();
-  });
-
-  it("poisons the Wallet Standard signer when its authorized account changes", async () => {
-    const provider: TestProvider = {
-      isPhantom: true,
-      isConnected: false,
-      connect: vi.fn()
-        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
-        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
-    };
-    const standard = standardPhantom(provider);
-    provider.publicKey = publicKey(standard.account.address);
-    standardRegistry.wallets = [standard.wallet];
-    installProviders(provider);
-    const { connectSolanaWallet, requiredSolanaProvider, walletSignBytes } = await import("./wallet-request-proof");
-    const wallet = await connectSolanaWallet();
-    const otherKey = ed25519.getPublicKey(new Uint8Array(32).fill(8));
-    standard.change([{
-      address: bs58.encode(otherKey),
-      publicKey: otherKey,
-      chains: ["solana:mainnet"],
-      features: ["solana:signMessage"],
-    }]);
-
-    await expect(walletSignBytes(requiredSolanaProvider(), new Uint8Array([1]), wallet)).rejects.toThrow(
-      "Phantom account changed",
-    );
-    expect(standard.signMessage).not.toHaveBeenCalled();
-  });
-
-  it("rejects a Wallet Standard signature that is not valid for the pinned account", async () => {
-    const provider: TestProvider = {
-      isPhantom: true,
-      isConnected: false,
-      connect: vi.fn()
-        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
-        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
-    };
-    const standard = standardPhantom(provider);
-    provider.publicKey = publicKey(standard.account.address);
-    standard.signMessage.mockImplementationOnce(async ({ message }: { message: Uint8Array }) => [{
-      signedMessage: message,
-      signature: ed25519.sign(message, new Uint8Array(32).fill(9)),
-      signatureType: "ed25519" as const,
-    }]);
-    standardRegistry.wallets = [standard.wallet];
-    installProviders(provider);
-    const { connectSolanaWallet, requiredSolanaProvider, walletSignBytes } = await import("./wallet-request-proof");
-    const wallet = await connectSolanaWallet();
-
-    await expect(walletSignBytes(requiredSolanaProvider(), new Uint8Array([1]), wallet)).rejects.toThrow(
-      "Phantom returned an invalid message signature.",
-    );
-  });
-
-  it("rejects a Wallet Standard signer that mutates the message before signing", async () => {
-    const provider: TestProvider = {
-      isPhantom: true,
-      isConnected: false,
-      connect: vi.fn()
-        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
-        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
-    };
-    const secretKey = new Uint8Array(32).fill(7);
-    const standard = standardPhantom(provider, secretKey);
-    provider.publicKey = publicKey(standard.account.address);
-    standard.signMessage.mockImplementationOnce(async ({ message }: { message: Uint8Array }) => {
-      message[0] = 9;
-      return [{
-        signedMessage: message,
-        signature: ed25519.sign(message, secretKey),
-        signatureType: "ed25519" as const,
-      }];
-    });
-    standardRegistry.wallets = [standard.wallet];
-    installProviders(provider);
-    const { connectSolanaWallet, requiredSolanaProvider, walletSignBytes } = await import("./wallet-request-proof");
-    const wallet = await connectSolanaWallet();
-
-    await expect(walletSignBytes(requiredSolanaProvider(), new Uint8Array([1]), wallet)).rejects.toThrow(
-      "Phantom returned an invalid message signature.",
-    );
-  });
-
-  it("rejects the Wallet Standard signer if its feature function changes", async () => {
-    const provider: TestProvider = {
-      isPhantom: true,
-      isConnected: false,
-      connect: vi.fn()
-        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
-        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
-    };
-    const standard = standardPhantom(provider);
-    provider.publicKey = publicKey(standard.account.address);
-    standardRegistry.wallets = [standard.wallet];
-    installProviders(provider);
-    const { connectSolanaWallet, requiredSolanaProvider, walletSignBytes } = await import("./wallet-request-proof");
-    const wallet = await connectSolanaWallet();
-    standard.wallet.features["solana:signMessage"] = {
-      version: "1.0.0",
+        .mockRejectedValueOnce({ code: 4001, message: "Cancelled" }),
       signMessage: vi.fn(),
     };
+    const standard = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    standardRegistry.wallets = [standard.wallet];
+    installProviders(provider);
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
 
-    await expect(walletSignBytes(requiredSolanaProvider(), new Uint8Array([1]), wallet)).rejects.toThrow(
-      "Phantom disconnected",
-    );
-    expect(standard.signMessage).not.toHaveBeenCalled();
+    await expect(connectSolanaWallet()).rejects.toThrow("Phantom connection was cancelled.");
+    expect(standard.signIn).not.toHaveBeenCalled();
+    expect(standard.connect).not.toHaveBeenCalled();
   });
 
-  it("rejects the Wallet Standard signer if Phantom unregisters before signing", async () => {
+  it("requires the Wallet Standard account set to start at exactly zero", async () => {
     const provider: TestProvider = {
       isPhantom: true,
       isConnected: false,
       connect: vi.fn()
         .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
         .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
+      signMessage: vi.fn(),
     };
     const standard = standardPhantom(provider);
-    provider.publicKey = publicKey(standard.account.address);
     standardRegistry.wallets = [standard.wallet];
     installProviders(provider);
-    const { connectSolanaWallet, requiredSolanaProvider, walletSignBytes } = await import("./wallet-request-proof");
-    const wallet = await connectSolanaWallet();
-    unregisterStandardWallet(standard.wallet);
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
 
-    await expect(walletSignBytes(requiredSolanaProvider(), new Uint8Array([1]), wallet)).rejects.toThrow(
-      "Phantom disconnected",
-    );
-    expect(standard.signMessage).not.toHaveBeenCalled();
-    expect(standard.unsubscribes[0]).toHaveBeenCalledOnce();
-    expect(standardRegistry.unregisterListeners.size).toBe(0);
+    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
+    expect(standard.signIn).not.toHaveBeenCalled();
+    expect(standard.connect).not.toHaveBeenCalled();
   });
 
-  it("rejects a Wallet Standard signature if Phantom unregisters while signing", async () => {
+  it("rejects ambiguous Phantom registrations without SIWS", async () => {
     const provider: TestProvider = {
       isPhantom: true,
       isConnected: false,
       connect: vi.fn()
         .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
         .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
+      signMessage: vi.fn(),
     };
-    const secretKey = new Uint8Array(32).fill(7);
-    const standard = standardPhantom(provider, secretKey);
-    provider.publicKey = publicKey(standard.account.address);
-    let finishSigning: (() => void) | undefined;
-    const signingGate = new Promise<void>((resolve) => {
-      finishSigning = resolve;
-    });
-    standard.signMessage.mockImplementationOnce(async ({ message }: { message: Uint8Array }) => {
-      await signingGate;
-      return [{
-        signedMessage: message,
-        signature: ed25519.sign(message, secretKey),
-        signatureType: "ed25519" as const,
-      }];
+    const first = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    const second = standardPhantom(provider, new Uint8Array(32).fill(8), { connected: false });
+    standardRegistry.wallets = [first.wallet, second.wallet];
+    installProviders(provider);
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
+
+    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
+    expect(first.signIn).not.toHaveBeenCalled();
+    expect(second.signIn).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-canonically-bound Phantom registration without SIWS", async () => {
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      connect: vi.fn()
+        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
+        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
+      signMessage: vi.fn(),
+    };
+    const unbound = standardPhantom({ isPhantom: true }, new Uint8Array(32).fill(9), { connected: false });
+    standardRegistry.wallets = [unbound.wallet];
+    installProviders(provider);
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
+
+    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
+    expect(unbound.signIn).not.toHaveBeenCalled();
+  });
+
+  it("requires the exact event, wallet account, and SIWS output account object", async () => {
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      connect: vi.fn()
+        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
+        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
+      signMessage: vi.fn(),
+    };
+    const standard = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    const implementation = standard.signIn.getMockImplementation() as TestSignIn | undefined;
+    standard.signIn.mockImplementationOnce(async (...inputs: readonly SolanaSignInInput[]) => {
+      const outputs = await implementation!(...inputs);
+      const output = outputs[0]!;
+      return [{ ...output, account: { ...output.account } }];
     });
     standardRegistry.wallets = [standard.wallet];
     installProviders(provider);
-    const { connectSolanaWallet, requiredSolanaProvider, walletSignBytes } = await import("./wallet-request-proof");
-    const wallet = await connectSolanaWallet();
-    const signing = walletSignBytes(requiredSolanaProvider(), new Uint8Array([1]), wallet);
-    expect(standard.signMessage).toHaveBeenCalledOnce();
-    unregisterStandardWallet(standard.wallet);
-    finishSigning?.();
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
 
-    await expect(signing).rejects.toThrow("Phantom disconnected");
+    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
+    expect(standard.connect).not.toHaveBeenCalled();
     expect(standard.unsubscribes[0]).toHaveBeenCalledOnce();
     expect(standardRegistry.unregisterListeners.size).toBe(0);
   });
 
+  it("rejects invalid SIWS signatures even when the account transition is coherent", async () => {
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      connect: vi.fn()
+        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
+        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
+      signMessage: vi.fn(),
+    };
+    const standard = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    const implementation = standard.signIn.getMockImplementation() as TestSignIn | undefined;
+    standard.signIn.mockImplementationOnce(async (...inputs: readonly SolanaSignInInput[]) => {
+      const outputs = await implementation!(...inputs);
+      return [{ ...outputs[0]!, signature: new Uint8Array(64).fill(1) }];
+    });
+    standardRegistry.wallets = [standard.wallet];
+    installProviders(provider);
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
+
+    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
+    expect(standard.connect).not.toHaveBeenCalled();
+  });
+
+  it("poisons SIWS on a second account event or direct-provider account mismatch", async () => {
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      connect: vi.fn()
+        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
+        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
+      signMessage: vi.fn(),
+    };
+    const standard = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    const implementation = standard.signIn.getMockImplementation() as TestSignIn | undefined;
+    standard.signIn.mockImplementationOnce(async (...inputs: readonly SolanaSignInInput[]) => {
+      const outputs = await implementation!(...inputs);
+      standard.change([standard.account]);
+      provider.publicKey = publicKey(VALID_WALLET_B);
+      return outputs;
+    });
+    standardRegistry.wallets = [standard.wallet];
+    installProviders(provider);
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
+
+    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
+    expect(standard.connect).not.toHaveBeenCalled();
+  });
+
+  it("rejects wallet unregister or feature replacement during SIWS and cleans up listeners", async () => {
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      connect: vi.fn()
+        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
+        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
+      signMessage: vi.fn(),
+    };
+    const standard = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    const implementation = standard.signIn.getMockImplementation() as TestSignIn | undefined;
+    standard.signIn.mockImplementationOnce(async (...inputs: readonly SolanaSignInInput[]) => {
+      const outputs = await implementation!(...inputs);
+      standard.wallet.features["solana:signIn"] = {
+        version: "1.0.0",
+        signIn: vi.fn(),
+      };
+      unregisterStandardWallet(standard.wallet);
+      return outputs;
+    });
+    standardRegistry.wallets = [standard.wallet];
+    installProviders(provider);
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
+
+    await expect(connectSolanaWallet()).rejects.toThrow("Phantom could not refresh its connection.");
+    expect(standard.connect).not.toHaveBeenCalled();
+    expect(standard.unsubscribes[0]).toHaveBeenCalledOnce();
+    expect(standardRegistry.unregisterListeners.size).toBe(0);
+  });
+
+  it("propagates an exact SIWS rejection instead of masking it as the earlier connect error", async () => {
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      connect: vi.fn()
+        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
+        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
+      signMessage: vi.fn(),
+    };
+    const standard = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    standard.signIn.mockRejectedValueOnce({ code: 4001, message: "Cancelled" });
+    standardRegistry.wallets = [standard.wallet];
+    installProviders(provider);
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
+
+    await expect(connectSolanaWallet()).rejects.toThrow("Phantom connection was cancelled.");
+    expect(standard.connect).not.toHaveBeenCalled();
+    expect(standard.unsubscribes[0]).toHaveBeenCalledOnce();
+    expect(standardRegistry.unregisterListeners.size).toBe(0);
+  });
   it("surfaces an actionable error without disconnecting when internal-error state stays disconnected", async () => {
     const connect = vi.fn().mockRejectedValue({ code: -32603, message: "Unexpected error" });
     const disconnect = vi.fn();
