@@ -36,6 +36,8 @@ type ProviderConnectionState = {
 
 const connectInFlight = new WeakMap<SolanaProvider, Promise<string>>();
 const providerConnectionStates = new WeakMap<SolanaProvider, ProviderConnectionState>();
+const PHANTOM_RECOVERY_ATTEMPTS = 5;
+const PHANTOM_RECOVERY_DELAY_MS = 75;
 
 export function solanaProvider(): SolanaProvider | undefined {
   if (typeof window === "undefined") return undefined;
@@ -95,7 +97,7 @@ function trackedProvider(provider: SolanaProvider): SolanaProvider {
   if (providerConnectionStates.has(provider)) return provider;
   const state: ProviderConnectionState = {
     wallet: provider.isConnected === true ? publicKeyString(provider.publicKey) : "",
-    disconnected: provider.isConnected === false,
+    disconnected: false,
     accountEventSeen: false,
   };
   providerConnectionStates.set(provider, state);
@@ -118,14 +120,13 @@ function trackedProvider(provider: SolanaProvider): SolanaProvider {
 }
 
 async function connectPhantomProvider(provider: SolanaProvider): Promise<string> {
-  let staleSessionReset = false;
   try {
     return rememberConnectedWallet(provider, await provider.connect?.({ onlyIfTrusted: true }));
   } catch (error) {
     const code = providerErrorCode(error);
     if (code === -32603) {
-      await resetStaleProviderSession(provider);
-      staleSessionReset = true;
+      const recovered = await recoverConnectedPhantomWallet(provider);
+      if (recovered) return recovered;
     } else if (code !== 4001 && code !== 4100) {
       throw usefulProviderError(error, provider);
     }
@@ -134,15 +135,11 @@ async function connectPhantomProvider(provider: SolanaProvider): Promise<string>
   try {
     return rememberConnectedWallet(provider, await provider.connect?.());
   } catch (error) {
-    if (providerErrorCode(error) !== -32603 || staleSessionReset) {
-      throw usefulProviderError(error, provider);
+    if (providerErrorCode(error) === -32603) {
+      const recovered = await recoverConnectedPhantomWallet(provider);
+      if (recovered) return recovered;
     }
-    await resetStaleProviderSession(provider);
-    try {
-      return rememberConnectedWallet(provider, await provider.connect?.());
-    } catch (retryError) {
-      throw usefulProviderError(retryError, provider);
-    }
+    throw usefulProviderError(error, provider);
   }
 }
 
@@ -154,26 +151,23 @@ async function connectInjectedProvider(provider: SolanaProvider): Promise<string
   }
 }
 
-async function resetStaleProviderSession(provider: SolanaProvider): Promise<void> {
-  try {
-    await provider.disconnect?.();
-  } catch {
-    // Phantom can reject disconnect when its stale session is already gone.
-  }
-  const state = providerConnectionStates.get(provider);
-  if (state) {
-    state.wallet = "";
-    state.disconnected = true;
-    state.accountEventSeen = true;
-  }
-  await Promise.resolve();
-}
-
 function rememberConnectedWallet(provider: SolanaProvider, connected: unknown): string {
   const responseWallet = publicKeyString((connected as { publicKey?: unknown } | undefined)?.publicKey);
-  const wallet = responseWallet || publicKeyString(provider.publicKey);
+  const providerWallet = publicKeyString(provider.publicKey);
+  const wallet = responseWallet || providerWallet;
   if (!wallet) throw new Error(`${providerName(provider)} did not return a Solana public key.`);
   const state = providerConnectionStates.get(provider);
+  if (provider.isPhantom === true) {
+    if (!validSolanaPublicKey(wallet)) {
+      throw new Error("Phantom did not return a valid Solana public key.");
+    }
+    if (state?.disconnected) {
+      throw new Error("Phantom disconnected. Reconnect it and try again.");
+    }
+    if ((providerWallet && providerWallet !== wallet) || (state?.accountEventSeen && state.wallet !== wallet)) {
+      throw new Error("Phantom account changed. Reconnect the intended account and try again.");
+    }
+  }
   if (state) {
     state.wallet = wallet;
     state.disconnected = false;
@@ -196,9 +190,25 @@ function connectedProviderWallet(provider: SolanaProvider): string {
   return wallet;
 }
 
+async function recoverConnectedPhantomWallet(provider: SolanaProvider): Promise<string> {
+  let candidate = "";
+  for (let attempt = 0; attempt < PHANTOM_RECOVERY_ATTEMPTS; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, PHANTOM_RECOVERY_DELAY_MS));
+    if (!isCanonicalPhantomProvider(provider)) {
+      candidate = "";
+      continue;
+    }
+    const wallet = connectedProviderWallet(provider);
+    if (wallet && wallet === candidate) return wallet;
+    candidate = wallet;
+  }
+  return "";
+}
+
 function isCanonicalPhantomProvider(provider: SolanaProvider): boolean {
   if (typeof window === "undefined") return false;
-  return (window as SolanaWindow).phantom?.solana === provider;
+  const canonical = (window as SolanaWindow).phantom?.solana;
+  return canonical === provider && canonical?.isPhantom === true;
 }
 
 function validSolanaPublicKey(value: string): boolean {
