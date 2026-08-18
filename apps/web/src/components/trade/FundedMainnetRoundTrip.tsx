@@ -104,6 +104,7 @@ export function FundedMainnetRoundTrip() {
       const bindingSignature = await walletSignBytes(
         provider,
         new TextEncoder().encode(challenge.message),
+        wallet,
       );
       await bindPrivateMobileWallet({
         wallet_pubkey: wallet,
@@ -122,7 +123,7 @@ export function FundedMainnetRoundTrip() {
         path: "/v1/private-account/hyperliquid/mainnet-roundtrip",
         body: REQUEST_BODY,
         wallet,
-        signBytes: async (bytes) => walletSignBytes(provider, bytes),
+        signBytes: async (bytes) => walletSignBytes(provider, bytes, wallet),
       });
       setState({ status: "running" });
       const report = await runHyperliquidMainnetRoundTrip({ proofHeaders }) as MainnetRoundTripReport;

@@ -1,3 +1,4 @@
+import bs58 from "bs58";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 type TestProvider = {
@@ -24,6 +25,10 @@ function installProviders(phantom?: TestProvider, legacy?: TestProvider) {
 function publicKey(value: string) {
   return { toBase58: () => value };
 }
+
+const VALID_WALLET = bs58.encode(new Uint8Array(32));
+const VALID_WALLET_A = bs58.encode(new Uint8Array(32).fill(1));
+const VALID_WALLET_B = bs58.encode(new Uint8Array(32).fill(2));
 
 afterEach(() => {
   Reflect.deleteProperty(window, "phantom");
@@ -66,33 +71,100 @@ describe("Phantom provider connection", () => {
     const connect = vi.fn();
     installProviders(undefined, {
       isConnected: true,
-      publicKey: publicKey("wallet-a"),
+      publicKey: publicKey(VALID_WALLET),
       connect,
     });
     const { connectSolanaWallet } = await import("./wallet-request-proof");
 
-    await expect(connectSolanaWallet()).resolves.toBe("wallet-a");
+    await expect(connectSolanaWallet()).resolves.toBe(VALID_WALLET);
     expect(connect).not.toHaveBeenCalled();
   });
 
-  it("refreshes Phantom even when a stale provider claims it is connected", async () => {
-    const connect = vi.fn()
-      .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" })
-      .mockResolvedValueOnce({ publicKey: publicKey("wallet-a") });
-    const disconnect = vi.fn().mockResolvedValue(undefined);
+  it("reuses a valid existing Phantom connection without refreshing it", async () => {
+    const connect = vi.fn();
+    const disconnect = vi.fn();
     installProviders({
       isPhantom: true,
       isConnected: true,
-      publicKey: publicKey("stale-wallet"),
+      publicKey: publicKey(VALID_WALLET),
       connect,
       disconnect,
     });
     const { connectSolanaWallet } = await import("./wallet-request-proof");
 
-    await expect(connectSolanaWallet()).resolves.toBe("wallet-a");
-    expect(disconnect).toHaveBeenCalledOnce();
-    expect(connect).toHaveBeenNthCalledWith(1, { onlyIfTrusted: true });
-    expect(connect).toHaveBeenNthCalledWith(2);
+    await expect(connectSolanaWallet()).resolves.toBe(VALID_WALLET);
+    expect(connect).not.toHaveBeenCalled();
+    expect(disconnect).not.toHaveBeenCalled();
+  });
+
+  it("does not reuse a legacy provider merely claiming to be Phantom", async () => {
+    const connect = vi.fn().mockResolvedValue({ publicKey: publicKey(VALID_WALLET) });
+    installProviders(undefined, {
+      isPhantom: true,
+      isConnected: true,
+      publicKey: publicKey(VALID_WALLET),
+      connect,
+    });
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
+
+    await expect(connectSolanaWallet()).resolves.toBe(VALID_WALLET);
+    expect(connect).toHaveBeenCalledOnce();
+    expect(connect).toHaveBeenCalledWith({ onlyIfTrusted: true });
+  });
+
+  it("does not reuse an invalid connected Phantom public-key string", async () => {
+    const connect = vi.fn().mockResolvedValue({ publicKey: publicKey(VALID_WALLET) });
+    installProviders({
+      isPhantom: true,
+      isConnected: true,
+      publicKey: publicKey("not-a-solana-public-key"),
+      connect,
+    });
+    const { connectSolanaWallet } = await import("./wallet-request-proof");
+
+    await expect(connectSolanaWallet()).resolves.toBe(VALID_WALLET);
+    expect(connect).toHaveBeenCalledOnce();
+    expect(connect).toHaveBeenCalledWith({ onlyIfTrusted: true });
+  });
+
+  it("does not reuse Phantom after a disconnect event even if its public flag is stale", async () => {
+    const listeners = new Map<string, (value?: unknown) => void>();
+    const connect = vi.fn().mockResolvedValue({ publicKey: publicKey(VALID_WALLET_A) });
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: true,
+      publicKey: publicKey(VALID_WALLET_A),
+      connect,
+      on: vi.fn((event: string, listener: (value?: unknown) => void) => listeners.set(event, listener)),
+    };
+    installProviders(provider);
+    const { connectSolanaWallet, solanaProvider } = await import("./wallet-request-proof");
+    solanaProvider();
+    listeners.get("disconnect")?.();
+
+    await expect(connectSolanaWallet()).resolves.toBe(VALID_WALLET_A);
+    expect(connect).toHaveBeenCalledOnce();
+    expect(connect).toHaveBeenCalledWith({ onlyIfTrusted: true });
+  });
+
+  it("does not reuse a Phantom public key that contradicts its account event", async () => {
+    const listeners = new Map<string, (value?: unknown) => void>();
+    const connect = vi.fn().mockResolvedValue({ publicKey: publicKey(VALID_WALLET_B) });
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: true,
+      publicKey: publicKey(VALID_WALLET_A),
+      connect,
+      on: vi.fn((event: string, listener: (value?: unknown) => void) => listeners.set(event, listener)),
+    };
+    installProviders(provider);
+    const { connectSolanaWallet, solanaProvider } = await import("./wallet-request-proof");
+    solanaProvider();
+    listeners.get("accountChanged")?.(publicKey(VALID_WALLET_B));
+
+    await expect(connectSolanaWallet()).resolves.toBe(VALID_WALLET_B);
+    expect(connect).toHaveBeenCalledOnce();
+    expect(connect).toHaveBeenCalledWith({ onlyIfTrusted: true });
   });
 
   it("single-flights concurrent trusted connection requests", async () => {

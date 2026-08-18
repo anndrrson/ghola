@@ -2,6 +2,8 @@
 // user's injected wallet. Extracted from TriVenueArbConsole so
 // connect/seal components don't duplicate provider plumbing.
 
+import bs58 from "bs58";
+
 type SolanaConnectOptions = { onlyIfTrusted?: boolean };
 type SolanaProviderEvent = "connect" | "accountChanged" | "disconnect";
 type SolanaProviderListener = (value?: unknown) => void;
@@ -57,7 +59,7 @@ export async function connectSolanaWallet(): Promise<string> {
   const pending = connectInFlight.get(provider);
   if (pending) return pending;
   const currentWallet = connectedProviderWallet(provider);
-  if (currentWallet && provider.isPhantom !== true) return currentWallet;
+  if (currentWallet) return currentWallet;
 
   const promise = provider.isPhantom === true
     ? connectPhantomProvider(provider)
@@ -181,16 +183,30 @@ function rememberConnectedWallet(provider: SolanaProvider, connected: unknown): 
 }
 
 function connectedProviderWallet(provider: SolanaProvider): string {
-  if (provider.isConnected !== true) return "";
-  const wallet = publicKeyString(provider.publicKey);
-  if (!wallet) return "";
+  if (provider.isPhantom === true && !isCanonicalPhantomProvider(provider)) return "";
   const state = providerConnectionStates.get(provider);
+  if (provider.isConnected !== true || state?.disconnected) return "";
+  const wallet = publicKeyString(provider.publicKey);
+  if (!validSolanaPublicKey(wallet)) return "";
+  if (state?.accountEventSeen && state.wallet !== wallet) return "";
   if (state) {
     state.wallet = wallet;
     state.disconnected = false;
-    state.accountEventSeen = false;
   }
   return wallet;
+}
+
+function isCanonicalPhantomProvider(provider: SolanaProvider): boolean {
+  if (typeof window === "undefined") return false;
+  return (window as SolanaWindow).phantom?.solana === provider;
+}
+
+function validSolanaPublicKey(value: string): boolean {
+  try {
+    return bs58.decode(value).length === 32;
+  } catch {
+    return false;
+  }
 }
 
 function assertCurrentSolanaWallet(provider: SolanaProvider, expectedWallet: string): void {

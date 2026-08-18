@@ -16,7 +16,11 @@ export async function authorizePrivateAccountWalletRequest(input: {
   const wallet = await connectSolanaWallet();
   const provider = requiredSolanaProvider();
   const challenge = await getPrivateMobileWalletBindingChallenge(wallet);
-  const signature = await walletSignBytes(provider, new TextEncoder().encode(challenge.message));
+  const signature = await walletSignBytes(
+    provider,
+    new TextEncoder().encode(challenge.message),
+    wallet,
+  );
   await bindPrivateMobileWallet({
     wallet_pubkey: wallet,
     message: challenge.message,
@@ -26,7 +30,7 @@ export async function authorizePrivateAccountWalletRequest(input: {
     path: input.path,
     body: input.body,
     wallet,
-    signBytes: async (bytes) => walletSignBytes(provider, bytes),
+    signBytes: async (bytes) => walletSignBytes(provider, bytes, wallet),
   });
 }
 
