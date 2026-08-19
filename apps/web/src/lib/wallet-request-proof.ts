@@ -492,7 +492,9 @@ function observePhantomPostErrorReadiness(
   }
 
   const injectedState = coherentCanonicalProviderWalletForSiwsReadiness(injectedProvider);
-  const namedWallets = registry.get().filter(isNamedPhantomStandardWallet);
+  const namedWallets = registry.get().filter((wallet) => (
+    isSolanaLikePhantomStandardWallet(wallet, injectedProvider)
+  ));
   if (namedWallets.length > 1) {
     return { kind: "waiting", reason: "registration_ambiguous" };
   }
@@ -813,7 +815,9 @@ function standardWalletRegistrationIsStable(
   signIn: StandardSignInFeature["signIn"],
 ): boolean {
   try {
-    const registered = registry.get().filter(isNamedPhantomStandardWallet);
+    const registered = registry.get().filter((candidate) => (
+      isSolanaLikePhantomStandardWallet(candidate, injectedProvider)
+    ));
     return registered.length === 1
       && registered[0] === wallet
       && isUsablePhantomStandardWallet(wallet)
@@ -888,6 +892,25 @@ function coherentCanonicalProviderWallet(provider: SolanaProvider): { coherent: 
 
 function isNamedPhantomStandardWallet(value: unknown): value is { readonly name: "Phantom" } {
   return !!value && typeof value === "object" && (value as { readonly name?: unknown }).name === "Phantom";
+}
+
+function isSolanaLikePhantomStandardWallet(
+  value: unknown,
+  provider: SolanaProvider,
+): value is { readonly name: "Phantom" } {
+  if (!isNamedPhantomStandardWallet(value)) return false;
+  const candidate = value as {
+    readonly chains?: unknown;
+    readonly features?: unknown;
+  };
+  const chains = Array.isArray(candidate.chains) ? candidate.chains : [];
+  const features = candidate.features && typeof candidate.features === "object"
+    ? candidate.features as Record<string, unknown>
+    : {};
+  const phantom = features["phantom:"] as { readonly phantom?: unknown } | undefined;
+  return chains.some((chain) => typeof chain === "string" && chain.startsWith("solana:"))
+    || Object.keys(features).some((feature) => feature.startsWith("solana:"))
+    || phantom?.phantom === provider;
 }
 
 function isUsablePhantomStandardWallet(value: unknown): value is StandardWallet {

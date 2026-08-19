@@ -642,6 +642,40 @@ describe("Phantom provider connection", () => {
     expect(second.signIn).not.toHaveBeenCalled();
   });
 
+  it("ignores Phantom's separate Sui Wallet Standard registration", async () => {
+    const provider: TestProvider = {
+      isPhantom: true,
+      isConnected: false,
+      connect: vi.fn()
+        .mockRejectedValueOnce({ code: 4100, message: "Not trusted" })
+        .mockRejectedValueOnce({ code: -32603, message: "Unexpected error" }),
+      signMessage: vi.fn(),
+    };
+    const solana = standardPhantom(provider, new Uint8Array(32).fill(7), { connected: false });
+    const suiConnect = vi.fn();
+    const sui = {
+      version: "1.0.0",
+      name: "Phantom",
+      chains: ["sui:mainnet", "sui:testnet"],
+      accounts: [],
+      features: {
+        "phantom:": { version: "1.0.0", phantom: { isPhantom: true } },
+        "standard:connect": { version: "1.0.0", connect: suiConnect },
+        "standard:events": { version: "1.0.0", on: vi.fn() },
+        "sui:signPersonalMessage": { version: "1.0.0", signPersonalMessage: vi.fn() },
+      },
+    };
+    standardRegistry.wallets = [solana.wallet, sui];
+    installProviders(provider);
+    const { connectSolanaWallet, retryPhantomSiwsWalletConnection } = await import("./wallet-request-proof");
+
+    await expectSiwsRetryRequired(connectSolanaWallet);
+    setUserActivation(true);
+    await expect(retryPhantomSiwsWalletConnection()).resolves.toBe(solana.account.address);
+    expect(solana.signIn).toHaveBeenCalledOnce();
+    expect(suiConnect).not.toHaveBeenCalled();
+  });
+
   it("rejects a non-canonically-bound Phantom registration without SIWS", async () => {
     const provider: TestProvider = {
       isPhantom: true,
