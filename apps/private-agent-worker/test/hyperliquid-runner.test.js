@@ -48,6 +48,33 @@ configured = module.configure_isolated_leverage(exchange, {
 assert exchange.calls == [(1, "HYPE", False)]
 assert configured == {"margin_mode": "isolated", "leverage": 1, "venue_accepted": True}
 
+live_prepare_events = []
+original_resolve = module.resolve_limit_order
+original_configure = module.configure_isolated_leverage
+original_verify_book = module.verify_fresh_execution_book
+try:
+    def ordered_resolve(_info, _order, _address):
+        live_prepare_events.append("resolve")
+        return {"base_size": "0.18", "limit_price": "60", "size_decimals": 2}
+    def ordered_configure(_exchange, _order):
+        live_prepare_events.append("update_leverage")
+        time.sleep(0.01)
+        return {"margin_mode": "isolated", "leverage": 1, "venue_accepted": True}
+    def ordered_verify(_info, _order, resolved, _address):
+        live_prepare_events.append("final_market_gate")
+        assert resolved["base_size"] == "0.18"
+        return {"freshness_proven": True}
+    module.resolve_limit_order = ordered_resolve
+    module.configure_isolated_leverage = ordered_configure
+    module.verify_fresh_execution_book = ordered_verify
+    prepared = module.prepare_live_limit_order(object(), object(), {"market": "HYPE"}, "0x" + "a" * 40)
+finally:
+    module.resolve_limit_order = original_resolve
+    module.configure_isolated_leverage = original_configure
+    module.verify_fresh_execution_book = original_verify_book
+assert live_prepare_events == ["resolve", "update_leverage", "final_market_gate"]
+assert prepared[2] == {"freshness_proven": True}
+
 expiry = int(time.time() * 1000) + 5000
 configured_expiry = module.configure_action_expiry(exchange, {
     "expires_at": datetime.fromtimestamp(expiry / 1000, tz=timezone.utc).isoformat(),
@@ -233,9 +260,133 @@ assert module.hyperliquid_perp_price_valid(module.Decimal("56.365"), 2)
 assert not module.hyperliquid_perp_price_valid(module.Decimal("56.3645"), 2)
 assert module.quantize_hyperliquid_perp_price(module.Decimal("56.3645"), 2, module.ROUND_UP) == module.Decimal("56.365")
 
+class FreshnessInfo:
+    def __init__(self):
+        self.calls = 0
+    def post(self, path, body):
+        assert path == "/info"
+        assert body == {"type": "l2Book", "coin": "HYPE"}
+        self.calls += 1
+        return {
+            "time": int(time.time() * 1000),
+            "levels": [[{"px": "100"}], [{"px": "100.01"}]],
+        }
+
+freshness_info = FreshnessInfo()
+freshness_gate = module.verify_fresh_execution_book(
+    freshness_info,
+    {"market": "HYPE", "side": "buy", "max_slippage_bps": "100"},
+    {
+        "execution_book": {
+            "source_time_ms": int(time.time() * 1000) - 10_000,
+            "best_bid": module.Decimal("99"),
+            "best_ask": module.Decimal("100"),
+        },
+        "base_size": "0.11",
+        "limit_price": "101",
+    },
+)
+assert freshness_info.calls == 1
+assert freshness_gate["freshness_proven"] is True
+assert freshness_gate["source_age_ms"] <= module.EXECUTION_BOOK_MAX_AGE_MS
+
+class ProofNotionalInfo:
+    def meta(self):
+        return {"universe": [{"name": "HYPE", "szDecimals": 2}]}
+    def query_user_abstraction_state(self, _address):
+        return "default"
+    def user_state(self, _address):
+        return {"marginSummary": {"accountValue": "1000"}, "withdrawable": "1000"}
+    def post(self, path, body):
+        assert path == "/info"
+        if body == {"type": "l2Book", "coin": "HYPE"}:
+            return {
+                "time": int(time.time() * 1000),
+                "levels": [[{"px": "58.743"}], [{"px": "58.744"}]],
+            }
+        assert body == {
+            "type": "activeAssetData",
+            "user": "0x" + "a" * 40,
+            "coin": "HYPE",
+        }
+        return {
+            "user": "0x" + "a" * 40,
+            "coin": "HYPE",
+            "markPx": "58.744",
+        }
+
+old_proof_order = {
+    "market": "HYPE", "side": "buy", "order_type": "market",
+    "quote_size": "10.5", "reduce_only": False, "max_slippage_bps": "100",
+}
+old_proof_resolved = module.resolve_limit_order(
+    ProofNotionalInfo(), old_proof_order, "0x" + "a" * 40,
+)
+assert old_proof_resolved["base_size"] == "0.17"
+assert old_proof_resolved["limit_price"] == "59.331"
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    try:
+        module.verify_fresh_execution_book(
+            ProofNotionalInfo(), old_proof_order, old_proof_resolved, "0x" + "a" * 40,
+        )
+    except SystemExit:
+        pass
+old_proof_failure = json.loads(output.getvalue())
+assert old_proof_failure["error_code"] == "venue_rejected"
+assert "too close to the venue minimum notional" in old_proof_failure["error"]
+
+new_proof_order = {**old_proof_order, "quote_size": "11"}
+new_proof_resolved = module.resolve_limit_order(
+    ProofNotionalInfo(), new_proof_order, "0x" + "a" * 40,
+)
+assert new_proof_resolved["base_size"] == "0.18"
+assert new_proof_resolved["limit_price"] == "59.331"
+new_proof_gate = module.verify_fresh_execution_book(
+    ProofNotionalInfo(), new_proof_order, new_proof_resolved, "0x" + "a" * 40,
+)
+assert new_proof_gate["minimum_notional_proven"] is True
+
+class DelayedActiveReferenceInfo:
+    def post(self, path, body):
+        assert path == "/info"
+        if body.get("type") == "activeAssetData":
+            return {
+                "user": "0x" + "a" * 40,
+                "coin": "HYPE",
+                "markPx": "100",
+            }
+        time.sleep(0.01)
+        return {
+            "time": int(time.time() * 1000),
+            "levels": [[{"px": "99.99"}], [{"px": "100"}]],
+        }
+
+previous_book_max_age = module.EXECUTION_BOOK_MAX_AGE_MS
+module.EXECUTION_BOOK_MAX_AGE_MS = 5
+try:
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        try:
+            module.verify_fresh_execution_book(
+                DelayedActiveReferenceInfo(),
+                {"market": "HYPE", "side": "buy", "max_slippage_bps": "50"},
+                {"base_size": "0.11", "limit_price": "100.5"},
+                "0x" + "a" * 40,
+            )
+        except SystemExit:
+            pass
+    delayed_reference_failure = json.loads(output.getvalue())
+    assert delayed_reference_failure["error_code"] == "venue_rejected"
+    assert "active market reference is stale" in delayed_reference_failure["error"]
+finally:
+    module.EXECUTION_BOOK_MAX_AGE_MS = previous_book_max_age
+
 class FakePrecisionInfo:
     def meta(self):
         return {"universe": [{"name": "HYPE", "szDecimals": 2}]}
+    def query_user_abstraction_state(self, _address):
+        return "default"
     def user_state(self, _address):
         return {"marginSummary": {"accountValue": "1000"}, "withdrawable": "1000"}
 
@@ -270,6 +421,8 @@ assert minimum_failure["error_code"] == "venue_rejected"
 assert "minimum notional" in minimum_failure["error"]
 
 class FakeReduceInfo(FakePrecisionInfo):
+    def query_user_abstraction_state(self, _address):
+        raise AssertionError("reduce-only must not query account abstraction")
     def user_state(self, _address):
         raise AssertionError("reduce-only must not require opening margin")
 
@@ -313,7 +466,7 @@ assert module.Decimal(market_exit["limit_price"]) < module.Decimal("56.99")
 assert market_exit["account_state_checked"] is True
 market_exit_gate = module.verify_fresh_execution_book(
     FakeMarketExitInfo(),
-    {"market": "HYPE", "side": "sell", "max_slippage_bps": "100"},
+    {"market": "HYPE", "side": "sell", "reduce_only": True, "max_slippage_bps": "100"},
     market_exit,
 )
 assert market_exit_gate["slippage_bound_proven"] is True
@@ -354,11 +507,102 @@ class FakeInfo:
 market_gate = module.verify_fresh_execution_book(
     FakeInfo(),
     {"market": "HYPE", "side": "buy", "max_slippage_bps": "50"},
-    {"limit_price": "101.5"},
+    {"base_size": "0.11", "limit_price": "101.5"},
 )
 assert market_gate["freshness_proven"] is True
 assert market_gate["slippage_bound_proven"] is True
 assert market_gate["source_age_ms"] <= 2000
+
+class RepricedMarketInfo:
+    def __init__(self, ask="90", bid="89"):
+        self.ask = ask
+        self.bid = bid
+    def post(self, path, body):
+        assert path == "/info"
+        assert body == {"type": "l2Book", "coin": "HYPE"}
+        return {
+            "time": int(time.time() * 1000),
+            "levels": [[{"px": self.bid}], [{"px": self.ask}]],
+        }
+
+repriced_resolution = {
+    "base_size": "0.12",
+    "limit_price": "91",
+    "size_decimals": 2,
+}
+module.verify_fresh_execution_book(
+    RepricedMarketInfo(),
+    {
+        "market": "HYPE", "side": "buy", "order_type": "market",
+        "quote_size": "11", "max_slippage_bps": "50",
+    },
+    repriced_resolution,
+)
+assert repriced_resolution["limit_price"] == "90.45"
+
+base_opening_resolution = {
+    "base_size": "0.12",
+    "limit_price": "90.4",
+    "size_decimals": 2,
+}
+module.verify_fresh_execution_book(
+    RepricedMarketInfo(),
+    {
+        "market": "HYPE", "side": "buy", "order_type": "market",
+        "base_size": "0.12", "max_slippage_bps": "50",
+    },
+    base_opening_resolution,
+)
+assert base_opening_resolution["limit_price"] == "90.4"
+
+reduce_only_resolution = {
+    "base_size": "0.11",
+    "limit_price": "88.6",
+    "size_decimals": 2,
+}
+module.verify_fresh_execution_book(
+    RepricedMarketInfo(),
+    {
+        "market": "HYPE", "side": "sell", "order_type": "market",
+        "base_size": "0.11", "reduce_only": True, "max_slippage_bps": "50",
+    },
+    reduce_only_resolution,
+)
+assert reduce_only_resolution["limit_price"] == "88.555"
+
+explicit_limit_resolution = {
+    "base_size": "0.12",
+    "limit_price": "90.4",
+    "size_decimals": 2,
+}
+module.verify_fresh_execution_book(
+    RepricedMarketInfo(),
+    {
+        "market": "HYPE", "side": "buy", "order_type": "limit",
+        "base_size": "0.12", "max_slippage_bps": "50",
+    },
+    explicit_limit_resolution,
+)
+assert explicit_limit_resolution["limit_price"] == "90.4"
+
+output = io.StringIO()
+lot_boundary_resolution = {"base_size": "0.12", "limit_price": "91", "size_decimals": 2}
+with contextlib.redirect_stdout(output):
+    try:
+        module.verify_fresh_execution_book(
+            RepricedMarketInfo("80", "79"),
+            {
+                "market": "HYPE", "side": "buy", "order_type": "market",
+                "quote_size": "11", "max_slippage_bps": "50",
+            },
+            lot_boundary_resolution,
+        )
+    except SystemExit:
+        pass
+lot_boundary_failure = json.loads(output.getvalue())
+assert lot_boundary_failure["error_code"] == "venue_rejected"
+assert "lot boundary" in lot_boundary_failure["error"]
+assert lot_boundary_resolution["limit_price"] == "91"
 
 output = io.StringIO()
 with contextlib.redirect_stdout(output):
@@ -366,13 +610,64 @@ with contextlib.redirect_stdout(output):
         module.verify_fresh_execution_book(
             FakeInfo(2501),
             {"market": "HYPE", "side": "buy", "max_slippage_bps": "50"},
-            {"limit_price": "101.5"},
+            {"base_size": "0.11", "limit_price": "101.5"},
         )
     except SystemExit:
         pass
 stale_failure = json.loads(output.getvalue())
 assert stale_failure["error_code"] == "venue_rejected"
 assert "stale" in stale_failure["error"]
+
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    try:
+        module.verify_fresh_execution_book(
+            FakeInfo(),
+            {"market": "HYPE", "side": "buy", "max_slippage_bps": "50"},
+            {"base_size": "0.099", "limit_price": "101.5"},
+        )
+    except SystemExit:
+        pass
+minimum_notional_failure = json.loads(output.getvalue())
+assert minimum_notional_failure["error_code"] == "venue_rejected"
+assert "too close to the venue minimum notional" in minimum_notional_failure["error"]
+
+class ExactMinimumInfo:
+    def post(self, path, body):
+        assert path == "/info"
+        assert body == {"type": "l2Book", "coin": "HYPE"}
+        return {
+            "time": int(time.time() * 1000),
+            "levels": [[{"px": "99.99"}], [{"px": "100"}]],
+        }
+
+exact_minimum_gate = module.verify_fresh_execution_book(
+    ExactMinimumInfo(),
+    {"market": "HYPE", "side": "buy", "max_slippage_bps": "50"},
+    {"base_size": "0.1005", "limit_price": "100.5"},
+)
+assert exact_minimum_gate["minimum_notional_proven"] is True
+
+for unsafe_base in ("0.100499", "NaN"):
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        try:
+            module.verify_fresh_execution_book(
+                ExactMinimumInfo(),
+                {"market": "HYPE", "side": "buy", "max_slippage_bps": "50"},
+                {"base_size": unsafe_base, "limit_price": "100.5"},
+            )
+        except SystemExit:
+            pass
+    unsafe_minimum = json.loads(output.getvalue())
+    assert unsafe_minimum["error_code"] == "venue_rejected"
+
+reduce_only_minimum_gate = module.verify_fresh_execution_book(
+    ExactMinimumInfo(),
+    {"market": "HYPE", "side": "sell", "reduce_only": True, "max_slippage_bps": "50"},
+    {"base_size": "0.01", "limit_price": "99.5"},
+)
+assert reduce_only_minimum_gate["minimum_notional_proven"] is True
 
 cancel_target = "0x" + "7" * 32
 
@@ -491,6 +786,293 @@ failure = json.loads(output.getvalue())
 assert failure["status"] == "failed"
 assert failure["error_code"] == "venue_rejected"
 assert "minimum order value" in failure["error"]
+`;
+  const result = spawnSync(process.env.PRIVATE_AGENT_PYTHON || "python3", ["-c", source], {
+    cwd: resolve("."),
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+test("Hyperliquid runner selects collateral by account abstraction mode and fails closed", () => {
+  const runnerPath = resolve("src/venues/hyperliquid_runner.py");
+  const source = `
+import contextlib
+import importlib.util
+import io
+import json
+
+spec = importlib.util.spec_from_file_location("hyperliquid_runner", ${JSON.stringify(runnerPath)})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+ACCOUNT = "0x" + "a" * 40
+
+def rejection(info, quote="10", side="buy", base_size="0.2"):
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        try:
+            module.check_account_value(
+                info,
+                ACCOUNT,
+                module.Decimal(quote),
+                "HYPE",
+                side,
+                module.Decimal(base_size),
+            )
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("expected account preflight rejection")
+    return json.loads(output.getvalue())
+
+class StandardInfo:
+    def __init__(self, mode, withdrawable):
+        self.mode = mode
+        self.withdrawable = withdrawable
+        self.calls = []
+    def query_user_abstraction_state(self, address):
+        self.calls.append(("abstraction", address))
+        return self.mode
+    def user_state(self, address):
+        self.calls.append(("perp", address))
+        return {"withdrawable": self.withdrawable}
+    def spot_user_state(self, _address):
+        raise AssertionError("standard mode must not query spot collateral")
+
+for standard_mode in ("default", "disabled"):
+    standard = StandardInfo(standard_mode, "10.0100000000000000000001")
+    assert module.check_account_value(
+        standard, ACCOUNT, module.Decimal("10"), "HYPE", "buy", module.Decimal("0.2")
+    ) is True
+    assert standard.calls == [("abstraction", ACCOUNT), ("perp", ACCOUNT)]
+
+standard_short = StandardInfo("default", "10.0099999999999999999999")
+standard_failure = rejection(standard_short)
+assert standard_failure["error_code"] == "venue_rejected"
+assert "insufficient" in standard_failure["error"]
+assert standard_short.calls == [("abstraction", ACCOUNT), ("perp", ACCOUNT)]
+
+def active_asset(available=None, max_sizes=None, leverage=None, user=ACCOUNT, coin="HYPE"):
+    return {
+        "user": user,
+        "coin": coin,
+        "leverage": leverage if leverage is not None else {"type": "isolated", "value": 1, "rawUsd": "-1.25"},
+        "availableToTrade": available if available is not None else ["10.01", "0"],
+        "maxTradeSzs": max_sizes if max_sizes is not None else ["0.2", "0"],
+    }
+
+class UnifiedInfo:
+    def __init__(self, balances, active=None):
+        self.balances = balances
+        self.active = active_asset() if active is None else active
+        self.calls = []
+    def query_user_abstraction_state(self, address):
+        self.calls.append(("abstraction", address))
+        return "unifiedAccount"
+    def spot_user_state(self, address):
+        self.calls.append(("spot", address))
+        return {"balances": self.balances}
+    def post(self, path, body):
+        self.calls.append(("active", path, body))
+        assert path == "/info"
+        assert body == {"type": "activeAssetData", "user": ACCOUNT, "coin": "HYPE"}
+        return self.active
+    def user_state(self, _address):
+        raise AssertionError("unified mode must not query perp withdrawable")
+
+unified = UnifiedInfo([
+    {"coin": "HYPE", "token": 150, "total": "200", "hold": "0"},
+    {
+        "coin": "USDC",
+        "token": 0,
+        "total": "10.01000000000000000000000000000000000000009",
+        "hold": "0.00000000000000000000000000000000000000008",
+    },
+])
+assert module.check_account_value(
+    unified, ACCOUNT, module.Decimal("10"), "HYPE", "buy", module.Decimal("0.2")
+) is True
+assert unified.calls == [
+    ("abstraction", ACCOUNT),
+    ("spot", ACCOUNT),
+    ("active", "/info", {"type": "activeAssetData", "user": ACCOUNT, "coin": "HYPE"}),
+]
+
+held = UnifiedInfo([
+    {
+        "coin": "USDC",
+        "token": 0,
+        "total": "10.01000000000000000000000000000000000000007",
+        "hold": "0.00000000000000000000000000000000000000008",
+    },
+])
+held_failure = rejection(held)
+assert "insufficient" in held_failure["error"]
+
+missing_usdc = UnifiedInfo([
+    {"coin": "HYPE", "token": 150, "total": "200", "hold": "0"},
+])
+assert "insufficient" in rejection(missing_usdc)["error"]
+
+sell = UnifiedInfo(
+    [{"coin": "USDC", "token": 0, "total": "20", "hold": "0"}],
+    active_asset(available=["0", "10.01"], max_sizes=["0", "0.2"]),
+)
+assert module.check_account_value(
+    sell, ACCOUNT, module.Decimal("10"), "HYPE", "sell", module.Decimal("0.2")
+) is True
+
+wrong_buy_index = UnifiedInfo(
+    [{"coin": "USDC", "token": 0, "total": "20", "hold": "0"}],
+    active_asset(available=["10.00999999999999999999999999999", "20"]),
+)
+assert "active market has insufficient" in rejection(wrong_buy_index)["error"]
+
+wrong_sell_index = UnifiedInfo(
+    [{"coin": "USDC", "token": 0, "total": "20", "hold": "0"}],
+    active_asset(available=["20", "10.00999999999999999999999999999"], max_sizes=["1", "1"]),
+)
+assert "active market has insufficient" in rejection(wrong_sell_index, side="sell")["error"]
+
+max_size_short = UnifiedInfo(
+    [{"coin": "USDC", "token": 0, "total": "20", "hold": "0"}],
+    active_asset(max_sizes=["0.19999999999999999999999999999", "0"]),
+)
+assert "maximum size" in rejection(max_size_short)["error"]
+
+for leverage in ({"type": "cross", "value": 1}, {"type": "isolated", "value": 2, "rawUsd": "0"}):
+    wrong_leverage = UnifiedInfo(
+        [{"coin": "USDC", "token": 0, "total": "20", "hold": "0"}],
+        active_asset(leverage=leverage),
+    )
+    assert "isolated 1x" in rejection(wrong_leverage)["error"]
+
+malformed_active_states = [
+    {},
+    active_asset(user="not-an-address"),
+    active_asset(user="0x" + "b" * 40),
+    active_asset(coin="BTC"),
+    active_asset(leverage={"type": "isolated", "value": "1"}),
+    active_asset(leverage={"type": "isolated", "value": 1}),
+    active_asset(leverage={"type": "isolated", "value": 1, "rawUsd": "NaN"}),
+    active_asset(available=["20"]),
+    active_asset(available=["20", 20]),
+    active_asset(available=["20", "-1"]),
+    active_asset(max_sizes=["1"]),
+    active_asset(max_sizes=["NaN", "1"]),
+]
+for active in malformed_active_states:
+    malformed_active = UnifiedInfo(
+        [{"coin": "USDC", "token": 0, "total": "20", "hold": "0"}],
+        active,
+    )
+    assert rejection(malformed_active)["error"] == "hyperliquid account state unavailable"
+
+class ModeOnlyInfo:
+    def __init__(self, mode):
+        self.mode = mode
+        self.calls = []
+    def query_user_abstraction_state(self, address):
+        self.calls.append(("abstraction", address))
+        return self.mode
+    def user_state(self, _address):
+        raise AssertionError("unsupported mode must not query perp collateral")
+    def spot_user_state(self, _address):
+        raise AssertionError("unsupported mode must not query spot collateral")
+
+portfolio = ModeOnlyInfo("portfolioMargin")
+portfolio_failure = rejection(portfolio)
+assert "portfolio margin" in portfolio_failure["error"]
+assert portfolio.calls == [("abstraction", ACCOUNT)]
+
+for unsupported_mode in ("dexAbstraction", "futureMode", None, {"mode": "unifiedAccount"}):
+    unsupported = ModeOnlyInfo(unsupported_mode)
+    unsupported_failure = rejection(unsupported)
+    assert unsupported_failure["error_code"] == "venue_rejected"
+    assert "unsupported" in unsupported_failure["error"] or "unavailable" in unsupported_failure["error"]
+    assert unsupported.calls == [("abstraction", ACCOUNT)]
+
+malformed_spot_states = [
+    None,
+    {},
+    {"balances": "not-a-list"},
+    {"balances": [None]},
+    {"balances": [
+        {"coin": "USDC", "token": 0, "total": "10.02", "hold": "0"},
+        {"coin": "USDC", "token": 0, "total": "10.02", "hold": "0"},
+    ]},
+    {"balances": [{"coin": "USDC", "token": 9, "total": "10.02", "hold": "0"}]},
+    {"balances": [{"coin": "USDC", "token": 0, "total": "10", "hold": "10.01"}]},
+    {"balances": [{"coin": "USDC", "token": 0, "total": "NaN", "hold": "0"}]},
+    {"balances": [{"coin": "USDC", "token": 0, "total": "1e100000000", "hold": "0"}]},
+]
+
+class MalformedUnifiedInfo(UnifiedInfo):
+    def __init__(self, state):
+        self.state = state
+        self.calls = []
+    def spot_user_state(self, address):
+        self.calls.append(("spot", address))
+        return self.state
+
+for state in malformed_spot_states:
+    malformed = MalformedUnifiedInfo(state)
+    malformed_failure = rejection(malformed)
+    assert malformed_failure["error"] == "hyperliquid account state unavailable"
+
+class ApiFallbackInfo:
+    def __init__(self):
+        self.calls = []
+    def post(self, path, body):
+        self.calls.append((path, body))
+        if body["type"] == "userAbstraction":
+            return "unifiedAccount"
+        if body["type"] == "spotClearinghouseState":
+            return {"balances": [
+                {"coin": "USDC", "token": 0, "total": "10.02", "hold": "0.01"},
+            ]}
+        if body["type"] == "activeAssetData":
+            return active_asset()
+        raise AssertionError("unexpected info request")
+
+fallback = ApiFallbackInfo()
+assert module.check_account_value(
+    fallback, ACCOUNT, module.Decimal("10"), "HYPE", "buy", module.Decimal("0.2")
+) is True
+assert fallback.calls == [
+    ("/info", {"type": "userAbstraction", "user": ACCOUNT}),
+    ("/info", {"type": "spotClearinghouseState", "user": ACCOUNT}),
+    ("/info", {"type": "activeAssetData", "user": ACCOUNT, "coin": "HYPE"}),
+]
+
+class TinyOrderingInfo:
+    def __init__(self):
+        self.calls = []
+    def all_mids(self):
+        self.calls.append("mids")
+        return {"HYPE": "100"}
+    def meta(self):
+        self.calls.append("meta")
+        return {"universe": [{"name": "HYPE", "szDecimals": 2}]}
+    def query_user_abstraction_state(self, _address):
+        self.calls.append("abstraction")
+        return "default"
+    def user_state(self, _address):
+        self.calls.append("perp")
+        return {"withdrawable": "20"}
+
+tiny_info = TinyOrderingInfo()
+tiny = module.resolve_limit_order(tiny_info, {
+    "market": "HYPE",
+    "side": "buy",
+    "order_type": "limit",
+    "live_order_mode": "tiny_fill",
+    "quote_size": "10.1",
+    "max_slippage_bps": "50",
+}, ACCOUNT)
+assert tiny["base_size"] == "0.1"
+assert tiny_info.calls == ["mids", "meta", "abstraction", "perp"]
 `;
   const result = spawnSync(process.env.PRIVATE_AGENT_PYTHON || "python3", ["-c", source], {
     cwd: resolve("."),

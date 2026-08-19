@@ -62,15 +62,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.ref }}
 
-      - uses: actions/setup-node@v6.4.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
 
-      - uses: actions/setup-python@v6.2.0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
 
@@ -272,8 +272,7 @@ jobs:
           npm init -y >/dev/null
           npm install --no-audit --no-fund @phala/cloud >/dev/null
           out=$(PHALA_CLOUD_MODULE_DIR="$work" node "$GITHUB_WORKSPACE/scripts/stop-ghola-phala-cvms.mjs" \
-            --names "$CVM_NAME" \
-            --prefixes "ghola-")
+            --names "$CVM_NAME")
           echo "$out"
           OUT="$out" node <<'NODE'
           const { appendFileSync } = require("node:fs");

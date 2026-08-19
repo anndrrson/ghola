@@ -18,6 +18,12 @@ describe("terminal live submit review", () => {
       side: "buy",
       quoteNotionalUsd: "100",
       limitPrice: "101",
+      venueProtection: {
+        mode: "venue_native_oco",
+        takeProfitLevel: "110",
+        stopLossLevel: "95",
+        maxSlippageBps: 50,
+      },
       executionReferencePrice: "100.5",
       stopAndSlippageLossUsd: "5",
       roundTripCostLossUsd: "0.25",
@@ -76,6 +82,9 @@ describe("terminal live submit review", () => {
     const missingEvidence = binding();
     delete missingEvidence.order_plan.risk_envelope?.fee_evidence_at;
     expect(captureTerminalLiveSubmitReview(missingEvidence, 0)).toBeNull();
+    const mismatchedProtection = binding();
+    mismatchedProtection.order_plan.protection_intent!.stop_level = "94";
+    expect(captureTerminalLiveSubmitReview(mismatchedProtection, 0)).toBeNull();
   });
 
   it("sanitizes current certified visible-book evidence without binding it", () => {
@@ -171,6 +180,13 @@ function binding(): TradeOrderPlanBindingEnvelope {
         scope: "account_local_cost_assumption_v1",
       },
       stop_intent: { stop_level: "95", scope: "agent_plan_invalidation_only" },
+      protection_intent: {
+        mode: "venue_native_oco",
+        trigger_source: "mark",
+        take_profit_level: "110",
+        stop_level: "95",
+        max_slippage_bps: 50,
+      },
       agent_mandate: {
         strategy_profile: "manual",
         entry_trigger: "preview_now",

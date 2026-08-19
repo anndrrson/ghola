@@ -21,6 +21,10 @@ pub struct CloudConfig {
     pub stripe_price_private_agent_trial_pack: Option<String>,
     pub stripe_price_private_agent: Option<String>,
     pub stripe_price_unlimited: Option<String>,
+    pub investor_pass_admin_secret: Option<String>,
+    pub investor_canary_secret: Option<String>,
+    pub investor_web_origin: String,
+    pub admin_emails: Vec<String>,
     pub base_url: String,
     pub encryption_key: [u8; 32],
     pub telegram_bot_token: Option<String>,
@@ -86,6 +90,13 @@ impl CloudConfig {
             .ok(),
             stripe_price_private_agent: env::var("STRIPE_PRICE_PRIVATE_AGENT").ok(),
             stripe_price_unlimited: env::var("STRIPE_PRICE_UNLIMITED").ok(),
+            investor_pass_admin_secret: env::var("GHOLA_INVESTOR_PASS_ADMIN_SECRET").ok(),
+            investor_canary_secret: env::var("GHOLA_INVESTOR_CANARY_SECRET").ok(),
+            investor_web_origin: validate_investor_web_origin(
+                &env::var("GHOLA_INVESTOR_WEB_ORIGIN")
+                    .expect("GHOLA_INVESTOR_WEB_ORIGIN must be set to https://ghola.xyz"),
+            ),
+            admin_emails: parse_admin_emails(&env::var("ADMIN_EMAILS").unwrap_or_default()),
             base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()),
             encryption_key,
             telegram_bot_token: env::var("TELEGRAM_BOT_TOKEN").ok(),
@@ -125,6 +136,68 @@ impl CloudConfig {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(3600),
         }
+    }
+}
+
+fn validate_investor_web_origin(value: &str) -> String {
+    let url = reqwest::Url::parse(value.trim())
+        .expect("GHOLA_INVESTOR_WEB_ORIGIN must be a valid URL");
+    assert!(
+        url.scheme() == "https"
+            && url.host_str() == Some("ghola.xyz")
+            && url.port().is_none()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.path() == "/"
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "GHOLA_INVESTOR_WEB_ORIGIN must be exactly https://ghola.xyz"
+    );
+    "https://ghola.xyz".to_string()
+}
+
+fn parse_admin_emails(value: &str) -> Vec<String> {
+    let mut emails = value
+        .split(',')
+        .map(|email| email.trim().to_ascii_lowercase())
+        .filter(|email| {
+            let mut parts = email.split('@');
+            !parts.next().unwrap_or_default().is_empty()
+                && !parts.next().unwrap_or_default().is_empty()
+                && parts.next().is_none()
+                && email.is_ascii()
+                && !email.bytes().any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+        })
+        .collect::<Vec<_>>();
+    emails.sort();
+    emails.dedup();
+    emails
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_admin_emails, validate_investor_web_origin};
+
+    #[test]
+    fn investor_origin_is_pinned() {
+        assert_eq!(
+            validate_investor_web_origin("https://ghola.xyz"),
+            "https://ghola.xyz"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "must be exactly")]
+    fn investor_origin_rejects_lookalikes() {
+        validate_investor_web_origin("https://ghola.xyz.attacker.test");
+    }
+
+    #[test]
+    fn admin_emails_are_normalized_and_deduplicated() {
+        assert_eq!(
+            parse_admin_emails(" Operator@Ghola.Test,operator@ghola.test,invalid "),
+            vec!["operator@ghola.test"]
+        );
     }
 }
 

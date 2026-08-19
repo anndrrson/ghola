@@ -1,5 +1,9 @@
 import { sha256 } from "@noble/hashes/sha256";
-import type { TerminalLiveExecutionReceipt } from "./terminal-live-execution-receipt";
+import {
+  inspectTerminalLiveExecutionProvenFill,
+  type TerminalLiveExecutionProvenFill,
+  type TerminalLiveExecutionReceipt,
+} from "./terminal-live-execution-receipt";
 import { validateTradeOrderPlan, type TradeOrderPlan } from "./trade-order-plan";
 
 export const TERMINAL_LIVE_EXECUTION_JOURNAL_LIMIT = 12;
@@ -17,17 +21,18 @@ export type TerminalLiveExecutionJournalSummaryState =
   | "submitted"
   | "reconciled"
   | "externally_reviewed";
-export type TerminalLiveExecutionExternalReviewBlocker =
-  | "account_context_mismatch"
-  | "account_stream_not_current"
-  | "account_snapshot_predates_submit";
 
 export interface TerminalLiveExecutionJournalEntry {
   planDigest: string;
   outcome: "acknowledged" | "unknown" | "externally_reviewed";
-  status: "submitted" | "reconciled" | "unknown" | "externally_reviewed";
+  status: "submitted" | "reconciled" | "no_fill" | "not_dispatched" | "unknown" | "externally_reviewed";
   commitment: string | null;
   orderId: string | null;
+  /** Exact server-derived worker order; absent only on legacy/transport-unknown rows. */
+  workOrderCommitment?: string;
+  provenFill?: TerminalLiveExecutionProvenFill;
+  /** Marks rows created after server write-before-worker recovery became mandatory. */
+  recoveryProtocol?: "durable_work_order_v1";
   venue: TradeOrderPlan["venue_id"];
   network: TradeOrderPlan["network"];
   product: string;
@@ -65,6 +70,7 @@ export interface TerminalLiveExecutionJournalSummary {
 
 const SAFE_REASON = /^[a-z0-9_:-]{3,100}$/u;
 const PLAN_DIGEST = /^sha256:[a-f0-9]{64}$/u;
+const WORK_ORDER_COMMITMENT = /^live_trade_work_order_[a-f0-9]{48}$/u;
 const SUBJECT_SCOPE = /^subject_[a-f0-9]{32}$/u;
 
 export function terminalLiveExecutionSubjectScope(subject: string | null | undefined) {
@@ -97,6 +103,9 @@ export function terminalLiveExecutionJournalEntryFromReceipt(
     status: receipt.status,
     commitment: receipt.commitment,
     orderId: receipt.orderId,
+    workOrderCommitment: receipt.workOrderCommitment,
+    ...(receipt.provenFill ? { provenFill: receipt.provenFill } : {}),
+    recoveryProtocol: "durable_work_order_v1",
     recordedAt: receipt.receivedAt,
     reviewedAt: null,
     reason: null,
@@ -118,6 +127,7 @@ export function terminalLiveExecutionUnknownJournalEntry(input: {
     status: "unknown",
     commitment: null,
     orderId: null,
+    recoveryProtocol: "durable_work_order_v1",
     recordedAt,
     reviewedAt: null,
     reason: input.reason,
@@ -127,7 +137,7 @@ export function terminalLiveExecutionUnknownJournalEntry(input: {
 export function terminalLiveExecutionJournalHasUnresolved(
   entries: readonly TerminalLiveExecutionJournalEntry[],
 ) {
-  return entries.some((entry) => entry.status === "unknown" || entry.status === "submitted");
+  return entries.some((entry) => unresolvedEntry(entry));
 }
 
 export function terminalLiveExecutionJournalSafetyState(
@@ -146,9 +156,9 @@ export function terminalLiveExecutionJournalSummary(
   const byNewest = entries.slice().sort((left, right) => (
     Date.parse(right.recordedAt) - Date.parse(left.recordedAt) || right.planDigest.localeCompare(left.planDigest)
   ));
-  const unresolved = byNewest.filter((entry) => entry.status === "unknown" || entry.status === "submitted");
-  const unknownCount = unresolved.filter((entry) => entry.status === "unknown").length;
-  const submittedCount = unresolved.length - unknownCount;
+  const unresolved = byNewest.filter((entry) => unresolvedEntry(entry));
+  const submittedCount = unresolved.filter((entry) => entry.status === "submitted").length;
+  const unknownCount = unresolved.length - submittedCount;
   const primaryUnresolved = unresolved.slice().sort((left, right) => (
     Date.parse(left.recordedAt) - Date.parse(right.recordedAt) || left.planDigest.localeCompare(right.planDigest)
   ))[0] ?? null;
@@ -161,73 +171,35 @@ export function terminalLiveExecutionJournalSummary(
         ? "unknown"
         : submittedCount > 0
           ? "submitted"
-          : latest?.status === "reconciled"
+          : latest?.status === "reconciled" || latest?.status === "no_fill" || latest?.status === "not_dispatched"
             ? "reconciled"
-            : latest?.status === "externally_reviewed"
-              ? "externally_reviewed"
-              : "empty";
+            : "empty";
   return { state, unresolvedCount: unresolved.length, unknownCount, submittedCount, primaryUnresolved, latest, orderedEntries: byNewest };
 }
 
-export function terminalLiveExecutionExternalReviewDecision(input: {
-  entry: TerminalLiveExecutionJournalEntry;
-  selectedVenue: string;
-  selectedNetwork: "mainnet" | "testnet";
-  accountStreamCurrent: boolean;
-  accountStreamObservedAtMs: number | null;
-}): { allowed: boolean; blocker: TerminalLiveExecutionExternalReviewBlocker | null } {
-  if (input.selectedVenue !== input.entry.venue || input.selectedNetwork !== input.entry.network) {
-    return { allowed: false, blocker: "account_context_mismatch" };
-  }
-  if (input.entry.venue !== "hyperliquid") return { allowed: true, blocker: null };
-  if (!input.accountStreamCurrent) return { allowed: false, blocker: "account_stream_not_current" };
-  const accountCheckedAt = input.accountStreamObservedAtMs ?? Number.NaN;
-  const submittedAt = Date.parse(input.entry.recordedAt);
-  if (!Number.isFinite(accountCheckedAt) || accountCheckedAt < submittedAt) {
-    return { allowed: false, blocker: "account_snapshot_predates_submit" };
-  }
-  return { allowed: true, blocker: null };
-}
-
-export function terminalLiveExecutionReviewEvidenceCrossed(
-  entries: readonly TerminalLiveExecutionJournalEntry[],
-  previousObservedAtMs: number | null,
-  nextObservedAtMs: number | null,
-) {
-  if (nextObservedAtMs == null || !Number.isFinite(nextObservedAtMs)) return false;
-  const previous = previousObservedAtMs != null && Number.isFinite(previousObservedAtMs)
-    ? previousObservedAtMs
-    : Number.NEGATIVE_INFINITY;
-  return entries.some((entry) => {
-    if (entry.venue !== "hyperliquid" || (entry.status !== "unknown" && entry.status !== "submitted")) return false;
-    const submittedAt = Date.parse(entry.recordedAt);
-    return Number.isFinite(submittedAt) && previous < submittedAt && nextObservedAtMs >= submittedAt;
-  });
-}
-
-export function externallyReviewTerminalLiveExecutionJournalEntry(
-  entries: readonly TerminalLiveExecutionJournalEntry[],
-  planDigest: string,
-  reviewedAt = new Date().toISOString(),
-) {
-  const canonicalReviewedAt = canonicalIso(reviewedAt);
-  if (!PLAN_DIGEST.test(planDigest) || !canonicalReviewedAt) return entries;
-  let changed = false;
-  const next = entries.map((entry) => {
-    if (
-      entry.planDigest !== planDigest
-      || (entry.status !== "unknown" && entry.status !== "submitted")
-    ) return entry;
-    changed = true;
-    return {
-      ...entry,
-      outcome: "externally_reviewed" as const,
-      status: "externally_reviewed" as const,
-      reviewedAt: canonicalReviewedAt,
-      reason: "external_account_review",
-    };
-  });
-  return changed ? next : entries;
+/** Only a strict terminal receipt for this exact plan/work order may clear a lock. */
+export function terminalLiveExecutionJournalEntryFromReconciliationReceipt(
+  receipt: TerminalLiveExecutionReceipt,
+  entry: TerminalLiveExecutionJournalEntry,
+): TerminalLiveExecutionJournalEntry | null {
+  if (
+    !unresolvedEntry(entry) ||
+    (receipt.status !== "reconciled" && receipt.status !== "no_fill" && receipt.status !== "not_dispatched") ||
+    receipt.planDigest !== entry.planDigest ||
+    (entry.workOrderCommitment != null && entry.workOrderCommitment !== receipt.workOrderCommitment)
+  ) return null;
+  return {
+    ...entry,
+    outcome: "acknowledged",
+    status: receipt.status,
+    commitment: receipt.commitment,
+    orderId: receipt.orderId,
+    workOrderCommitment: receipt.workOrderCommitment,
+    ...(receipt.provenFill ? { provenFill: receipt.provenFill } : {}),
+    recordedAt: receipt.receivedAt,
+    reviewedAt: null,
+    reason: null,
+  };
 }
 
 export function serializeTerminalLiveExecutionJournal(
@@ -361,7 +333,7 @@ export function persistTerminalLiveExecutionJournalEntry(
   const journalKey = terminalLiveExecutionJournalStorageKey(subjectScope);
   const lockKey = terminalLiveExecutionLockStorageKey(subjectScope, entry.planDigest);
   if (!journalKey || !lockKey || !inspectJournalEntry(entry)) return { ok: false, entries: [] };
-  const unresolved = entry.status === "unknown" || entry.status === "submitted";
+  const unresolved = unresolvedEntry(entry);
   try {
     if (unresolved) storage.setItem(lockKey, serializeTerminalLiveExecutionLock(entry));
     const stored = readTerminalLiveExecutionJournalStorage(storage, subjectScope);
@@ -396,6 +368,45 @@ export function discardTerminalLiveExecutionPendingEntry(
     storage.removeItem(lockKey);
     const verified = readTerminalLiveExecutionJournalStorage(storage, subjectScope);
     return verified.status === "ready" && !verified.entries.some((entry) => entry.planDigest === planDigest)
+      ? { ok: true, entries: verified.entries }
+      : { ok: false, entries: [] };
+  } catch {
+    return { ok: false, entries: [] };
+  }
+}
+
+/** Clears a current-protocol transport lock only after the server's delayed absence proof. */
+export function discardTerminalLiveExecutionAfterAbsenceProof(
+  storage: Pick<Storage, "length" | "key" | "getItem" | "setItem" | "removeItem">,
+  subjectScope: string,
+  proof: {
+    planDigest: string;
+    proofCommitment: string;
+    firstCheckedAt: string;
+    checkedAt: string;
+  },
+): { ok: true; entries: readonly TerminalLiveExecutionJournalEntry[] } | { ok: false; entries: [] } {
+  const journalKey = terminalLiveExecutionJournalStorageKey(subjectScope);
+  const lockKey = terminalLiveExecutionLockStorageKey(subjectScope, proof.planDigest);
+  const firstCheckedAt = canonicalIso(proof.firstCheckedAt);
+  const checkedAt = canonicalIso(proof.checkedAt);
+  if (
+    !journalKey || !lockKey || !PLAN_DIGEST.test(proof.planDigest) ||
+    !/^live_trade_absence_proof_[a-f0-9]{48}$/u.test(proof.proofCommitment) ||
+    !firstCheckedAt || !checkedAt || Date.parse(checkedAt) - Date.parse(firstCheckedAt) < 30_000
+  ) return { ok: false, entries: [] };
+  try {
+    const stored = readTerminalLiveExecutionJournalStorage(storage, subjectScope);
+    if (stored.status !== "ready") return { ok: false, entries: [] };
+    const target = stored.entries.find((entry) => entry.planDigest === proof.planDigest);
+    if (!target || target.status !== "unknown" || target.workOrderCommitment != null || target.recoveryProtocol !== "durable_work_order_v1") {
+      return { ok: false, entries: [] };
+    }
+    const entries = stored.entries.filter((entry) => entry.planDigest !== proof.planDigest);
+    storage.setItem(journalKey, serializeTerminalLiveExecutionJournal(entries));
+    storage.removeItem(lockKey);
+    const verified = readTerminalLiveExecutionJournalStorage(storage, subjectScope);
+    return verified.status === "ready" && !verified.entries.some((entry) => entry.planDigest === proof.planDigest)
       ? { ok: true, entries: verified.entries }
       : { ok: false, entries: [] };
   } catch {
@@ -451,8 +462,7 @@ function planSummary(planDigest: string, plan: TradeOrderPlan) {
 }
 
 function outcomeRank(entry: TerminalLiveExecutionJournalEntry) {
-  if (entry.status === "reconciled") return 4;
-  if (entry.status === "externally_reviewed") return 3;
+  if (entry.status === "reconciled" || entry.status === "no_fill" || entry.status === "not_dispatched") return 4;
   if (entry.status === "submitted") return 2;
   return 1;
 }
@@ -463,6 +473,9 @@ function entryEqual(left: TerminalLiveExecutionJournalEntry, right: TerminalLive
     && left.status === right.status
     && left.commitment === right.commitment
     && left.orderId === right.orderId
+    && left.workOrderCommitment === right.workOrderCommitment
+    && JSON.stringify(left.provenFill ?? null) === JSON.stringify(right.provenFill ?? null)
+    && left.recoveryProtocol === right.recoveryProtocol
     && left.orderType === right.orderType
     && left.timeInForce === right.timeInForce
     && left.baseSize === right.baseSize
@@ -480,6 +493,10 @@ function entryEqual(left: TerminalLiveExecutionJournalEntry, right: TerminalLive
     && left.reason === right.reason;
 }
 
+function unresolvedEntry(entry: TerminalLiveExecutionJournalEntry) {
+  return entry.status === "unknown" || entry.status === "submitted" || entry.status === "externally_reviewed";
+}
+
 function validJournal(entries: readonly TerminalLiveExecutionJournalEntry[]) {
   return entries.length <= TERMINAL_LIVE_EXECUTION_JOURNAL_LIMIT
     && new Set(entries.map((entry) => entry.planDigest)).size === entries.length
@@ -490,9 +507,25 @@ function inspectJournalEntry(value: unknown): TerminalLiveExecutionJournalEntry 
   const row = record(value);
   if (!row || !PLAN_DIGEST.test(string(row.planDigest))) return null;
   const outcome = row.outcome === "acknowledged" || row.outcome === "unknown" || row.outcome === "externally_reviewed" ? row.outcome : null;
-  const status = row.status === "submitted" || row.status === "reconciled" || row.status === "unknown" || row.status === "externally_reviewed" ? row.status : null;
+  const status = row.status === "submitted" || row.status === "reconciled" || row.status === "no_fill" ||
+    row.status === "not_dispatched" || row.status === "unknown" || row.status === "externally_reviewed"
+    ? row.status
+    : null;
   const commitment = nullableIdentifier(row.commitment);
   const orderId = nullableIdentifier(row.orderId);
+  const workOrderCommitment = row.workOrderCommitment === undefined
+    ? undefined
+    : typeof row.workOrderCommitment === "string" && WORK_ORDER_COMMITMENT.test(row.workOrderCommitment)
+      ? row.workOrderCommitment
+      : null;
+  const recoveryProtocol = row.recoveryProtocol === undefined
+    ? undefined
+    : row.recoveryProtocol === "durable_work_order_v1"
+      ? row.recoveryProtocol
+      : null;
+  const provenFill = row.provenFill === undefined
+    ? undefined
+    : inspectTerminalLiveExecutionProvenFill(row.provenFill);
   const venue = row.venue === "hyperliquid" || row.venue === "phoenix" || row.venue === "coinbase" ? row.venue : null;
   const network = row.network === "mainnet" || row.network === "testnet" ? row.network : null;
   const product = typeof row.product === "string" && /^[A-Z0-9]{1,12}-(?:PERP|USD)$/u.test(row.product) ? row.product : null;
@@ -513,9 +546,10 @@ function inspectJournalEntry(value: unknown): TerminalLiveExecutionJournalEntry 
   const recordedAt = typeof row.recordedAt === "string" ? canonicalIso(row.recordedAt) : null;
   const reviewedAt = row.reviewedAt == null ? null : typeof row.reviewedAt === "string" ? canonicalIso(row.reviewedAt) : null;
   const reason = row.reason == null ? null : typeof row.reason === "string" && SAFE_REASON.test(row.reason) ? row.reason : null;
-  if (!outcome || !status || commitment === undefined || orderId === undefined || !venue || !network || !product || !side || orderType === null || timeInForce === null || baseSize === null || executionReferencePrice === null || riskEvidence === null || !quoteNotionalUsd || !limitPrice || !recordedAt || (row.reviewedAt != null && !reviewedAt) || (row.reason != null && !reason)) return null;
+  if (!outcome || !status || commitment === undefined || orderId === undefined || workOrderCommitment === null || recoveryProtocol === null || provenFill === null || (provenFill && status !== "reconciled") || !venue || !network || !product || !side || orderType === null || timeInForce === null || baseSize === null || executionReferencePrice === null || riskEvidence === null || !quoteNotionalUsd || !limitPrice || !recordedAt || (row.reviewedAt != null && !reviewedAt) || (row.reason != null && !reason)) return null;
   const shapeValid = outcome === "acknowledged"
-    ? (status === "submitted" || status === "reconciled") && commitment != null && reason == null && reviewedAt == null
+    ? (status === "submitted" || status === "reconciled" || status === "no_fill" || status === "not_dispatched") &&
+      commitment != null && reason == null && reviewedAt == null
     : outcome === "unknown"
       ? status === "unknown" && commitment == null && orderId == null && reason != null && reviewedAt == null
       : status === "externally_reviewed" && reason === "external_account_review" && reviewedAt != null;
@@ -526,6 +560,9 @@ function inspectJournalEntry(value: unknown): TerminalLiveExecutionJournalEntry 
     status,
     commitment,
     orderId,
+    ...(workOrderCommitment ? { workOrderCommitment } : {}),
+    ...(recoveryProtocol ? { recoveryProtocol } : {}),
+    ...(provenFill ? { provenFill } : {}),
     venue,
     network,
     product,

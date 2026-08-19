@@ -1,7 +1,7 @@
 import type { TradeOrderPlan } from "./trade-order-plan";
 
 export const LIVE_TRADING_CONTRACT_VERSION = 2 as const;
-export const LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD = 10.5;
+export const LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD = 11;
 export const LIVE_TRADING_MAX_ORDER_NOTIONAL_USD = 100;
 export const LIVE_TRADING_ROLLING_24H_NOTIONAL_USD = 500;
 export const LIVE_TRADING_DEFAULT_SLIPPAGE_BPS = 50;
@@ -12,6 +12,7 @@ export const LIVE_TRADING_TERMS_VERSION = "2026-08-14";
 export const LIVE_TRADING_RISK_DISCLOSURE_VERSION = "2026-08-14";
 export const LIVE_TRADING_ELIGIBILITY_CONFIRMATION =
   "I attest that I am an eligible non-US user and accept the live-trading terms and risk disclosure.";
+const COMPILED_WEB_GIT_SHA = process.env.GHOLA_BAKED_WEB_GIT_SHA;
 
 export const LIVE_TRADING_CAPABILITIES = [
   "market_order",
@@ -31,6 +32,14 @@ export const LIVE_TRADING_CAPABILITIES = [
   "agent_lifecycle",
   "dead_man",
 ] as const;
+
+export const LIVE_TRADING_REQUIRED_CAPABILITIES = [
+  "limit_order",
+  "cancel",
+  "reduce_only",
+  "stop_loss",
+  "take_profit",
+] as const satisfies readonly LiveTradingCapabilityId[];
 
 export type LiveTradingCapabilityId = (typeof LIVE_TRADING_CAPABILITIES)[number];
 export type LiveTradingLaunchState = "disabled" | "canary" | "public" | "killed";
@@ -101,6 +110,7 @@ export function liveTradingConfigSnapshot(env: Record<string, string | undefined
     require_dstack_quote: env.PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE?.trim() || null,
     require_worker_capability: env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY?.trim() || null,
     position_protection_enabled: env.GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED?.trim() || null,
+    risk_reduction_enabled: env.PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED?.trim() || null,
     public_capabilities: configuredLiveTradingCapabilities(env).sort(),
     funding_signer_keys_b64: configuredLiveTradingFundingSignerKeys(env).sort(),
   };
@@ -119,12 +129,23 @@ export function liveTradingConfigurationFailures(
   env: Record<string, string | undefined>,
 ): string[] {
   const failures: string[] = [];
+  const workerImageDigestPin = configuredWorkerImageDigestPin(env);
   if (env.GHOLA_LIVE_TRADING_PUBLIC_ENABLED?.trim() !== "true") failures.push("live_trading_public_flag_disabled");
   if (env.PRIVATE_AGENT_VENUE_DRY_RUN?.trim() === "true") failures.push("venue_dry_run_enabled");
   if (env.PRIVATE_AGENT_HYPERLIQUID_NO_SUBMIT_LOCAL_CHECKS?.trim() === "true") {
     failures.push("hyperliquid_no_submit_simulation_enabled");
   }
   if (!strongSecret(env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET || "")) failures.push("request_proof_secret_missing");
+  const controlToken = env.GHOLA_LIVE_TRADING_CONTROL_TOKEN?.trim() || "";
+  const resetToken = env.GHOLA_LIVE_TRADING_RESET_TOKEN?.trim() || "";
+  if (!strongWorkerSecret(controlToken)) {
+    failures.push("live_trading_control_token_weak");
+  }
+  if (!strongWorkerSecret(resetToken)) failures.push("live_trading_reset_token_weak");
+  else if (resetToken === controlToken) failures.push("live_trading_reset_token_not_distinct");
+  if (!strongWorkerSecret(env.GHOLA_INVESTOR_CANARY_SECRET || "")) {
+    failures.push("investor_canary_secret_weak");
+  }
   if (!exactNumber(env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD, LIVE_TRADING_MAX_ORDER_NOTIONAL_USD)) failures.push("launch_max_order_cap_mismatch");
   if (!exactNumber(env.GHOLA_LIVE_TRADING_DAILY_CAP_USD, LIVE_TRADING_ROLLING_24H_NOTIONAL_USD)) failures.push("launch_daily_cap_mismatch");
   if (!exactNumber(env.GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS, LIVE_TRADING_MAX_SLIPPAGE_BPS)) failures.push("launch_slippage_cap_mismatch");
@@ -140,8 +161,79 @@ export function liveTradingConfigurationFailures(
   if (!exactNumber(env.PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD, LIVE_TRADING_ROLLING_24H_NOTIONAL_USD)) failures.push("worker_live_daily_cap_mismatch");
   if (env.PRIVATE_AGENT_VENUE_DRY_RUN?.trim() !== "false") failures.push("venue_dry_run_configuration_invalid");
   if (env.PRIVATE_AGENT_STATE_STORE?.trim().toLowerCase() !== "postgres") failures.push("worker_state_store_not_postgres");
+  if (env.GHOLA_PRIVATE_ACCOUNT_STORE?.trim().toLowerCase() !== "postgres") {
+    failures.push("app_state_store_not_postgres");
+  }
+  if (env.GHOLA_PRIVATE_AGENT_PROVISIONING_MUTATIONS_ENABLED?.trim() !== "false") {
+    failures.push("private_agent_provisioning_mutations_not_disabled");
+  }
+  if (!(env.GHOLA_PRIVATE_ACCOUNT_DATABASE_URL?.trim() || env.DATABASE_URL?.trim() || env.POSTGRES_URL?.trim())) {
+    failures.push("app_state_database_not_configured");
+  }
+  const executionUrl = env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() || "";
+  if (!executionUrl) failures.push("worker_execution_url_missing");
+  else if (!isStablePublicHttpsOrigin(executionUrl)) failures.push("worker_execution_url_not_stable_https");
+  const canonicalExecutionOrigin = stablePublicHttpsOrigin(executionUrl);
+  const executionUrlAliases = [
+    env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL,
+    env.GHOLA_PRIVATE_AGENT_WORKER_URL,
+    env.PHALA_AGENT_ENDPOINT,
+  ].map((value) => value?.trim() || "").filter(Boolean);
+  if (executionUrlAliases.some((value) => stablePublicHttpsOrigin(value) !== canonicalExecutionOrigin)) {
+    failures.push("worker_execution_url_alias_mismatch");
+  }
+  if (!env.NEXT_PUBLIC_GOOGLE_CLIENT_ID?.trim()) failures.push("google_client_id_missing");
+  const canonicalExecutionToken = env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() || "";
+  if (!strongWorkerSecret(canonicalExecutionToken)) {
+    failures.push("worker_execution_token_weak");
+  }
+  const requiredWorkerExecutionToken = env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() || "";
+  const executionTokenAliases = [
+    requiredWorkerExecutionToken,
+    env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN?.trim() || "",
+    env.PRIVATE_AGENT_WORKER_TOKEN?.trim() || "",
+  ].filter(Boolean);
+  if (!requiredWorkerExecutionToken ||
+      executionTokenAliases.some((value) => value !== canonicalExecutionToken)) {
+    failures.push("worker_execution_token_alias_mismatch");
+  }
+  if (!strongWorkerSecret(env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET || env.GHOLA_WORKER_CAPABILITY_SECRET || "")) {
+    failures.push("worker_capability_secret_weak");
+  }
+  const configuredWebGitSha = normalizedSha(env.GHOLA_WEB_GIT_SHA);
+  const bakedWebGitSha = normalizedSha(
+    env === process.env
+      ? COMPILED_WEB_GIT_SHA || (env.NODE_ENV === "test" ? env.GHOLA_BAKED_WEB_GIT_SHA : undefined)
+      : env.GHOLA_BAKED_WEB_GIT_SHA,
+  );
+  const platformWebGitSha = normalizedSha(env.VERCEL_GIT_COMMIT_SHA);
+  if (!configuredWebGitSha) failures.push("web_release_pin_missing");
+  if (!bakedWebGitSha) failures.push("web_baked_release_pin_missing");
+  else if (!configuredWebGitSha || bakedWebGitSha !== configuredWebGitSha) {
+    failures.push("web_baked_release_mismatch");
+  }
+  if (!platformWebGitSha) failures.push("web_platform_release_pin_missing");
+  else if (!configuredWebGitSha || platformWebGitSha !== configuredWebGitSha ||
+      (bakedWebGitSha && platformWebGitSha !== bakedWebGitSha)) {
+    failures.push("web_platform_release_mismatch");
+  }
+  const workerGitSha = normalizedSha(env.GHOLA_PRIVATE_AGENT_WORKER_GIT_SHA || env.PRIVATE_AGENT_BUILD_GIT_SHA);
+  const workerImage = env.GHOLA_PRIVATE_AGENT_WORKER_IMAGE?.trim() || "";
+  if (!workerImage) failures.push("worker_image_tag_missing");
+  else if (!workerGitSha || workerImage !== `ghcr.io/anndrrson/ghola:private-agent-worker-${workerGitSha}`) {
+    failures.push("worker_image_tag_release_mismatch");
+  }
+  if (workerImageDigestPin.configured && !workerImageDigestPin.valid) {
+    failures.push("worker_image_digest_pin_mismatch");
+  }
   if (env.PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE?.trim() !== "true") failures.push("worker_dstack_quote_not_required");
   if (env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY?.trim() !== "true") failures.push("worker_capability_auth_not_required");
+  if (env.PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED?.trim() !== "true") {
+    failures.push("hyperliquid_risk_reduction_disabled");
+  }
+  if (env.GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED?.trim() !== "true") {
+    failures.push("position_protection_disabled");
+  }
   const fundingSignerKeys = configuredLiveTradingFundingSignerKeys(env);
   if (fundingSignerKeys.length === 0) failures.push("funding_worker_signer_pin_missing");
   else if (fundingSignerKeys.some((key) => !validBase64PublicKey(key))) failures.push("funding_worker_signer_pin_invalid");
@@ -154,6 +246,10 @@ export function liveTradingConfigurationFailures(
     failures.push("public_capability_configuration_invalid");
   }
   const implementedCapabilities = new Set<LiveTradingCapabilityId>(["limit_order"]);
+  if (env.PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED?.trim() === "true") {
+    implementedCapabilities.add("cancel");
+    implementedCapabilities.add("reduce_only");
+  }
   if (env.GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED?.trim() === "true") {
     implementedCapabilities.add("stop_loss");
     implementedCapabilities.add("take_profit");
@@ -166,18 +262,24 @@ export function liveTradingConfigurationFailures(
     env.GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED?.trim() === "true" &&
     !["limit_order", "stop_loss", "take_profit"].every((capability) => configuredCapabilities.includes(capability as LiveTradingCapabilityId))
   ) failures.push("position_protection_capabilities_missing");
+  if (
+    env.PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED?.trim() === "true" &&
+    !["limit_order", "cancel", "reduce_only"].every((capability) => configuredCapabilities.includes(capability as LiveTradingCapabilityId))
+  ) failures.push("risk_reduction_capabilities_missing");
+  if (
+    requested.length !== LIVE_TRADING_REQUIRED_CAPABILITIES.length ||
+    new Set(requested).size !== requested.length ||
+    LIVE_TRADING_REQUIRED_CAPABILITIES.some((capability) => !requested.includes(capability))
+  ) failures.push("required_live_capabilities_mismatch");
   return [...new Set(failures)];
 }
 
 export function liveTradingReleaseFields(env: Record<string, string | undefined>) {
+  const workerImageDigestPin = configuredWorkerImageDigestPin(env);
   return {
-    web_git_sha: normalizedSha(env.GHOLA_WEB_GIT_SHA || env.VERCEL_GIT_COMMIT_SHA),
+    web_git_sha: normalizedSha(env.GHOLA_WEB_GIT_SHA),
     worker_git_sha: normalizedSha(env.GHOLA_PRIVATE_AGENT_WORKER_GIT_SHA || env.PRIVATE_AGENT_BUILD_GIT_SHA),
-    worker_image_digest: normalizedDigest(
-      env.GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST ||
-      env.PRIVATE_AGENT_IMAGE_DIGEST ||
-      env.PHALA_CVM_IMAGE_DIGEST,
-    ),
+    worker_image_digest: workerImageDigestPin.valid ? workerImageDigestPin.digest : null,
   };
 }
 
@@ -228,17 +330,79 @@ function strongSecret(value: string) {
     .some((item) => lowered === item || lowered.includes(item));
 }
 
+function strongWorkerSecret(value: string) {
+  const trimmed = value.trim();
+  const lowered = trimmed.toLowerCase();
+  return trimmed.length >= 32 && new Set(trimmed).size >= 8 &&
+    !["dev", "test", "default", "local", "changeme", "example", "placeholder", "secret"]
+      .some((item) => lowered === item || lowered.includes(item));
+}
+
 function validBase64PublicKey(value: string) {
   return value.length >= 40 && value.length <= 256 &&
     /^[A-Za-z0-9+/]+={0,2}$/u.test(value) && value.length % 4 === 0;
 }
 
+function isStablePublicHttpsOrigin(value: string) {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash ||
+      (url.pathname && url.pathname !== "/") || (url.port && url.port !== "443")) return false;
+  const hostname = url.hostname.trim().toLowerCase().replace(/^\[|\]$/gu, "");
+  if (!hostname || !hostname.includes(".") ||
+      ["localhost", ".localhost", ".local", ".internal", ".test", ".example", ".invalid"]
+        .some((suffix) => hostname === suffix.replace(/^\./u, "") || hostname.endsWith(suffix))) return false;
+  const ipv4 = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/u);
+  if (!ipv4) return !hostname.includes(":");
+  const [, aRaw, bRaw, cRaw] = ipv4;
+  const [a, b, c] = [Number(aRaw), Number(bRaw), Number(cRaw)];
+  if ([...ipv4.slice(1)].some((part) => Number(part) > 255)) return false;
+  return !(
+    a === 0 || a === 10 || a === 127 || a >= 224 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 192 && b === 0 && c === 2) ||
+    (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
+    (a === 203 && b === 0 && c === 113)
+  );
+}
+
+function stablePublicHttpsOrigin(value: string) {
+  if (!isStablePublicHttpsOrigin(value)) return null;
+  return new URL(value).origin;
+}
+
 function normalizedSha(value: string | undefined): string | null {
   const normalized = value?.trim().toLowerCase() || "";
-  return /^[a-f0-9]{7,64}$/.test(normalized) ? normalized : null;
+  return /^[a-f0-9]{40}$/.test(normalized) ? normalized : null;
 }
 
 function normalizedDigest(value: string | undefined): string | null {
   const normalized = value?.trim() || "";
-  return /^(?:sha256:)?[a-f0-9]{64}$/i.test(normalized) ? normalized.toLowerCase() : null;
+  return /^sha256:[a-f0-9]{64}$/.test(normalized) ? normalized : null;
+}
+
+function configuredWorkerImageDigestPin(env: Record<string, string | undefined>) {
+  const required = [
+    env.GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST,
+    env.PRIVATE_AGENT_IMAGE_DIGEST,
+    env.PHALA_CVM_IMAGE_DIGEST,
+  ].map((value) => value?.trim() || "");
+  const configured = [
+    ...required,
+    env.GHOLA_PRIVATE_AGENT_IMAGE_DIGEST?.trim() || "",
+  ].filter(Boolean);
+  const canonical = configured.map((value) => normalizedDigest(value));
+  const valid = required.every(Boolean) && canonical.every(Boolean) && new Set(configured).size === 1;
+  return {
+    configured: configured.length > 0,
+    valid,
+    digest: valid ? canonical[0] as string : null,
+  };
 }

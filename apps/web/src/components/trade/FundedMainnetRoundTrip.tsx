@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { CheckCircle2, Loader2, ShieldAlert, TriangleAlert, Zap } from "lucide-react";
 import {
   HYPERLIQUID_MAINNET_PROOF_CONFIRMATION,
@@ -18,9 +18,18 @@ import {
 import {
   connectSolanaWallet,
   privateAccountMobileProofHeaders,
+  requirePreparedSolanaProvider,
   requiredSolanaProvider,
+  retryPhantomSiwsWalletConnection,
+  walletConnectionStageCode,
   walletSignBytes,
+  type SolanaProvider,
+  type WalletConnectionStageCode,
 } from "@/lib/wallet-request-proof";
+import {
+  InvestorAccessGate,
+  type InvestorAccessControl,
+} from "./InvestorAccessGate";
 
 type FillSummary = {
   filled_base_size: string;
@@ -46,7 +55,7 @@ type MainnetRoundTripReport = {
   ok: true;
   network: "mainnet";
   market: "HYPE";
-  notional_usd: 10.5;
+  notional_usd: 11;
   max_slippage_bps: 100;
   claim_store: "postgres";
   preflight_verified: true;
@@ -84,27 +93,96 @@ type MainnetRoundTripReport = {
 };
 
 type State =
-  | { status: "idle" | "confirming" | "authorizing" | "running" }
+  | { status: "idle" | "confirming" | "wallet_connecting" | "siws_authorizing" | "proof_signing" | "running" }
+  | { status: "siws_retry"; code: WalletConnectionStageCode; message: string }
+  | { status: "wallet_ready"; wallet: string; provider: SolanaProvider }
   | { status: "complete"; report: MainnetRoundTripReport }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string; code?: WalletConnectionStageCode };
 
 const REQUEST_BODY = { confirmation: HYPERLIQUID_MAINNET_PROOF_CONFIRMATION };
 
 export function FundedMainnetRoundTrip() {
+  return (
+    <InvestorAccessGate requireComplimentaryPass>
+      {(access) => <FundedMainnetRoundTripContent access={access} />}
+    </InvestorAccessGate>
+  );
+}
+
+function FundedMainnetRoundTripContent({ access }: { access: InvestorAccessControl }) {
   const [state, setState] = useState<State>({ status: "idle" });
   const [eligibleNonUs, setEligibleNonUs] = useState(false);
+  const actionInFlight = useRef(false);
+
+  async function prepareWallet() {
+    if (state.status !== "confirming" || !eligibleNonUs) return;
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
+    try {
+      if (!await access.ensureReady()) return;
+      setState({ status: "wallet_connecting" });
+      const wallet = await connectSolanaWallet({ deferPhantomSiws: true });
+      const provider = requiredSolanaProvider();
+      setState({ status: "wallet_ready", wallet, provider });
+    } catch (error) {
+      const code = walletConnectionStageCode(error);
+      if (code === "phantom_siws_retry_required") {
+        setState({ status: "siws_retry", code, message: errorMessage(error, "Phantom needs a fresh confirmation.") });
+      } else {
+        setState({ status: "error", message: errorMessage(error, "Wallet authorization failed."), ...(code ? { code } : {}) });
+      }
+    } finally {
+      actionInFlight.current = false;
+    }
+  }
+
+  async function continuePhantomSiws() {
+    if (state.status !== "siws_retry" || actionInFlight.current) return;
+    actionInFlight.current = true;
+    try {
+      if (!await access.ensureReady()) return;
+      setState({ status: "siws_authorizing" });
+      const wallet = await retryPhantomSiwsWalletConnection();
+      const provider = requiredSolanaProvider();
+      setState({ status: "wallet_ready", wallet, provider });
+    } catch (error) {
+      const code = walletConnectionStageCode(error);
+      if (
+        code === "phantom_siws_user_activation_required"
+        || code === "phantom_siws_cancelled"
+        || code === "phantom_siws_approval_pending"
+      ) {
+        setState({ status: "siws_retry", code, message: errorMessage(error, "Click Continue with Phantom again.") });
+      } else {
+        setState({ status: "error", message: errorMessage(error, "Phantom sign-in failed."), ...(code ? { code } : {}) });
+      }
+    } finally {
+      actionInFlight.current = false;
+    }
+  }
 
   async function run() {
-    if (state.status !== "confirming" || !eligibleNonUs) return;
+    if (state.status !== "wallet_ready" || !eligibleNonUs || actionInFlight.current) return;
+    actionInFlight.current = true;
+    const prepared = state;
     try {
-      setState({ status: "authorizing" });
-      const wallet = await connectSolanaWallet();
-      const provider = requiredSolanaProvider();
+      if (!await access.ensureReady()) return;
+      setState({ status: "proof_signing" });
+      const wallet = prepared.wallet;
+      const provider = requirePreparedSolanaProvider(prepared.provider, wallet);
       const challenge = await getPrivateMobileWalletBindingChallenge(wallet);
       const bindingSignature = await walletSignBytes(
         provider,
         new TextEncoder().encode(challenge.message),
+        wallet,
       );
+      const proofHeaders = await privateAccountMobileProofHeaders({
+        path: "/v1/private-account/hyperliquid/mainnet-roundtrip",
+        body: REQUEST_BODY,
+        wallet,
+        signBytes: async (bytes) => walletSignBytes(provider, bytes, wallet),
+      });
+      requirePreparedSolanaProvider(prepared.provider, wallet);
       await bindPrivateMobileWallet({
         wallet_pubkey: wallet,
         message: challenge.message,
@@ -118,12 +196,7 @@ export function FundedMainnetRoundTrip() {
         risk_disclosure_version: LIVE_TRADING_RISK_DISCLOSURE_VERSION,
         confirmation: LIVE_TRADING_ELIGIBILITY_CONFIRMATION,
       });
-      const proofHeaders = await privateAccountMobileProofHeaders({
-        path: "/v1/private-account/hyperliquid/mainnet-roundtrip",
-        body: REQUEST_BODY,
-        wallet,
-        signBytes: async (bytes) => walletSignBytes(provider, bytes),
-      });
+      requirePreparedSolanaProvider(prepared.provider, wallet);
       setState({ status: "running" });
       const report = await runHyperliquidMainnetRoundTrip({ proofHeaders }) as MainnetRoundTripReport;
       if (!report.ok || !report.flat_after_exit || report.open_orders_after_exit !== 0 ||
@@ -133,14 +206,19 @@ export function FundedMainnetRoundTrip() {
       }
       setState({ status: "complete", report });
     } catch (error) {
+      const code = walletConnectionStageCode(error);
       setState({
         status: "error",
-        message: error instanceof Error ? error.message : "Hyperliquid mainnet proof failed.",
+        message: errorMessage(error, "Hyperliquid mainnet proof failed."),
+        ...(code ? { code } : {}),
       });
+    } finally {
+      actionInFlight.current = false;
     }
   }
 
-  const working = state.status === "authorizing" || state.status === "running";
+  const working = state.status === "wallet_connecting" || state.status === "siws_authorizing" ||
+    state.status === "proof_signing" || state.status === "running";
   return (
     <main className="min-h-screen bg-[#05070b] p-4 font-mono text-[#dce6f4] sm:p-8">
       <section className="mx-auto max-w-5xl overflow-hidden rounded-lg border border-[#2d3342] bg-[#090d14] shadow-2xl shadow-black/40">
@@ -153,7 +231,7 @@ export function FundedMainnetRoundTrip() {
               Hyperliquid mainnet · real funds
             </span>
           </div>
-          <h1 className="mt-3 text-xl font-semibold text-white sm:text-2xl">$10.50 filled round trip</h1>
+          <h1 className="mt-3 text-xl font-semibold text-white sm:text-2xl">$11.00 filled round trip</h1>
           <p className="mt-2 max-w-3xl text-xs leading-5 text-[#8d9bb1] sm:text-sm">
             A protected HYPE IOC entry and reduce-only exit through the sealed trade-only wallet,
             with venue-native TP/SL, exact cleanup, Postgres claims, duplicate-submit protection,
@@ -164,7 +242,7 @@ export function FundedMainnetRoundTrip() {
         <div className="grid gap-3 p-5 sm:grid-cols-4 sm:p-7">
           <Metric label="Network" value="mainnet" />
           <Metric label="Market" value="HYPE-PERP" />
-          <Metric label="Hard notional" value="$10.50" />
+          <Metric label="Hard notional" value="$11.00" />
           <Metric label="Max slippage" value="100 bp" />
         </div>
 
@@ -175,7 +253,7 @@ export function FundedMainnetRoundTrip() {
             <div className="rounded-md border border-rose-300/40 bg-rose-300/[0.06] p-4">
               <p className="flex items-start gap-2 text-sm leading-6 text-rose-100">
                 <ShieldAlert aria-hidden className="mt-1 h-4 w-4 shrink-0 text-rose-300" />
-                This broadcasts real mainnet orders. The worker refuses non-HYPE, more than $10.50,
+                This broadcasts real mainnet orders. The worker refuses non-HYPE, more than $11.00,
                 more than 100 bp slippage, a pre-existing HYPE position, or open HYPE orders.
               </p>
               <label className="mt-4 flex items-start gap-2 text-xs leading-5 text-[#c5cfde]">
@@ -188,13 +266,29 @@ export function FundedMainnetRoundTrip() {
                 <span>I attest that I am an eligible non-US user and accept the live-trading terms and risk disclosure.</span>
               </label>
               <div className="mt-4 flex flex-wrap gap-2">
-                <button type="button" disabled={!eligibleNonUs} onClick={() => void run()} className="rounded bg-rose-300 px-4 py-2 text-sm font-semibold text-black hover:bg-rose-200 disabled:cursor-not-allowed disabled:opacity-50">
-                  Confirm real $10.50 round trip
+                <button type="button" disabled={!eligibleNonUs} onClick={() => void prepareWallet()} className="rounded bg-rose-300 px-4 py-2 text-sm font-semibold text-black hover:bg-rose-200 disabled:cursor-not-allowed disabled:opacity-50">
+                  Authorize wallet only
                 </button>
                 <button type="button" onClick={() => setState({ status: "idle" })} className="rounded border border-[#48536a] px-4 py-2 text-sm text-[#c5cfde] hover:border-[#76839c]">
                   Cancel
                 </button>
               </div>
+            </div>
+          ) : state.status === "siws_retry" ? (
+            <div data-wallet-stage={state.code} className="rounded-md border border-amber-300/40 bg-amber-300/[0.06] p-4">
+              <p className="text-sm leading-6 text-amber-100">{state.message}</p>
+              <button type="button" onClick={() => void continuePhantomSiws()} className="mt-4 rounded bg-amber-300 px-4 py-2 text-sm font-semibold text-black hover:bg-amber-200">
+                Continue with Phantom
+              </button>
+            </div>
+          ) : state.status === "wallet_ready" ? (
+            <div className="rounded-md border border-emerald-300/35 bg-emerald-300/[0.05] p-4">
+              <p className="text-sm leading-6 text-emerald-100">
+                Wallet verified. No order has been submitted. The next click requests two scoped message signatures before any live mutation.
+              </p>
+              <button type="button" onClick={() => void run()} className="mt-4 rounded bg-rose-300 px-4 py-2 text-sm font-semibold text-black hover:bg-rose-200">
+                Sign and run real $11.00 round trip
+              </button>
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-3">
@@ -205,8 +299,12 @@ export function FundedMainnetRoundTrip() {
                 className="flex min-h-11 items-center gap-2 rounded bg-amber-300 px-4 py-2 text-sm font-semibold text-black hover:bg-amber-200 disabled:cursor-wait disabled:opacity-60"
               >
                 {working ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <Zap aria-hidden className="h-4 w-4" />}
-                {state.status === "authorizing"
-                  ? "Authorizing with Solana wallet…"
+                {state.status === "wallet_connecting"
+                  ? "Connecting wallet…"
+                  : state.status === "siws_authorizing"
+                    ? "Confirming safe Phantom sign-in…"
+                  : state.status === "proof_signing"
+                    ? "Collecting two scoped signatures…"
                   : state.status === "running"
                     ? "Opening, filling, and flattening…"
                     : "Run real Hyperliquid proof trade"}
@@ -217,11 +315,12 @@ export function FundedMainnetRoundTrip() {
             </div>
           )}
           <p role="status" data-testid="funded-mainnet-state" aria-live="polite" className="mt-3 text-xs text-[#8d9bb1]">
-            State: {state.status === "complete" ? "flat" : state.status}
+            State: {stateLabel(state.status)}
           </p>
           {state.status === "error" ? (
-            <p role="alert" className="mt-3 flex items-start gap-2 text-xs leading-5 text-rose-300">
-              <TriangleAlert aria-hidden className="mt-0.5 h-4 w-4 shrink-0" /> {state.message}
+            <p role="alert" data-wallet-stage={state.code} className="mt-3 flex items-start gap-2 text-xs leading-5 text-rose-300">
+              <TriangleAlert aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{state.message}</span>
             </p>
           ) : null}
         </div>
@@ -255,6 +354,12 @@ function Complete({ report }: { report: MainnetRoundTripReport }) {
       <p className="mt-4 break-all text-[10px] leading-5 text-[#8d9bb1]">Proof claim: {report.proof_work_order_commitment}</p>
       <p className="break-all text-[10px] leading-5 text-[#8d9bb1]">Entry claim: {report.entry_work_order_commitment}</p>
       <p className="break-all text-[10px] leading-5 text-[#8d9bb1]">Exit claim: {report.exit_work_order_commitment}</p>
+      <Link
+        href="/trade?flow=hyperliquid-live"
+        className="mt-4 inline-flex h-10 items-center justify-center rounded bg-emerald-300 px-4 text-sm font-semibold text-black hover:bg-emerald-200"
+      >
+        Open the live terminal
+      </Link>
     </div>
   );
 }
@@ -287,6 +392,26 @@ function formatFee(value: number) {
 
 function shortRef(value: string) {
   return value.length > 12 ? `${value.slice(0, 6)}…${value.slice(-4)}` : value;
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function stateLabel(status: State["status"]) {
+  const labels: Record<State["status"], string> = {
+    idle: "idle",
+    confirming: "awaiting risk confirmation",
+    wallet_connecting: "connecting wallet",
+    siws_authorizing: "confirming safe Phantom sign-in",
+    siws_retry: "waiting for a fresh Phantom confirmation",
+    wallet_ready: "wallet verified · no trade submitted",
+    proof_signing: "awaiting two scoped signatures",
+    running: "opening, filling, and flattening",
+    error: "stopped safely",
+    complete: "flat",
+  };
+  return labels[status];
 }
 
 function bytesToBase64(value: Uint8Array) {

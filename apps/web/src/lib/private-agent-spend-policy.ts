@@ -6,7 +6,7 @@ export type PrivateAgentSpendAction =
   | "session"
   | "wake";
 
-export type PrivateAgentEmergencyControlAction = "pause" | "kill" | "close";
+export type PrivateAgentEmergencyControlAction = "pause" | "kill" | "kill_and_flat" | "close";
 
 export type PrivateAgentSpendPolicyDecision =
   | { allowed: true; action: PrivateAgentSpendAction; environment: "production" | "development" }

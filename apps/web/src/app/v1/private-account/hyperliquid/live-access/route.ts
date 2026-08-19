@@ -3,6 +3,9 @@ import {
   LIVE_TRADING_TERMS_VERSION,
 } from "@/lib/live-trading-contract";
 import { getActiveLiveTradingAccountGraduation } from "@/lib/live-trading-store";
+import { currentLiveTradingReleaseIdentity } from "@/lib/live-trading-release.server";
+import { parseHyperliquidVaultAssociatedData } from "@/lib/hyperliquid-vault-seal";
+import { isCurrentHyperliquidVaultAuthorization } from "@/lib/hyperliquid-vault-scope";
 import {
   getHyperliquidExecutionVaultByAccount,
   getLatestVenueEligibilityByAccount,
@@ -29,11 +32,19 @@ export async function GET(request: Request) {
     credential.terms_version === LIVE_TRADING_TERMS_VERSION &&
     credential.risk_disclosure_version === LIVE_TRADING_RISK_DISCLOSURE_VERSION && credential.accepted_at,
   );
-  const vaultReady = vault?.owner_commitment === owner.owner_commitment && vault.status === "sealed";
+  const vaultScope = vault
+    ? parseHyperliquidVaultAssociatedData(vault.vault.encrypted_execution_vault.aad)
+    : null;
+  const vaultReady = vault?.owner_commitment === owner.owner_commitment && vault.status === "sealed" &&
+    vault.account_commitment === account.account_commitment &&
+    vaultScope?.network === "mainnet" && vaultScope.account_commitment === account.account_commitment &&
+    isCurrentHyperliquidVaultAuthorization(vault);
+  const release = currentLiveTradingReleaseIdentity();
   const graduation = vaultReady ? await getActiveLiveTradingAccountGraduation({
     owner_commitment: owner.owner_commitment,
     account_commitment: account.account_commitment,
     vault_commitment: vault.vault_commitment,
+    release,
   }) : null;
   const reasonCodes = [
     ...(vaultReady ? [] : ["sealed_hyperliquid_vault_required"]),

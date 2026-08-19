@@ -5,7 +5,7 @@ import { localEd25519Signer, open } from "./envelope";
 import {
   buildHyperliquidExecutionVaultBundle,
   hyperliquidVaultAssociatedData,
-  parseHyperliquidCredentialImport,
+  parseHyperliquidVaultAssociatedData,
   validateHyperliquidExecutionCredentialDraft,
 } from "./hyperliquid-vault-seal";
 import type { PrivateAgentRuntimeStatus } from "./private-agent-runtime";
@@ -24,6 +24,40 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 describe("Hyperliquid vault sealing", () => {
+  it("parses only an exact network-bound vault scope", () => {
+    const value = "ghola/hyperliquid-execution-vault-v1|account:acct_test|recipient:phala:test|network:mainnet";
+    expect(parseHyperliquidVaultAssociatedData(value)).toEqual({
+      version: 1,
+      account_commitment: "acct_test",
+      recipient: "phala:test",
+      network: "mainnet",
+      venue_account_commitment: null,
+      agent_wallet_commitment: null,
+    });
+    expect(parseHyperliquidVaultAssociatedData(`${value}|extra:bad`)).toBeNull();
+    expect(parseHyperliquidVaultAssociatedData(value.replace("mainnet", "devnet"))).toBeNull();
+  });
+
+  it("binds generated-agent vaults to committed master and agent identities", () => {
+    const value = hyperliquidVaultAssociatedData({
+      accountCommitment: "acct_test",
+      recipientId: "phala:test",
+      network: "mainnet",
+      venueAccountAddress: "0x1111111111111111111111111111111111111111",
+      agentWalletAddress: "0x2222222222222222222222222222222222222222",
+    });
+    expect(value).toMatch(/^ghola\/hyperliquid-execution-vault-v2\|/);
+    expect(value).not.toContain("0x1111111111111111111111111111111111111111");
+    expect(value).not.toContain("0x2222222222222222222222222222222222222222");
+    expect(parseHyperliquidVaultAssociatedData(value)).toMatchObject({
+      version: 2,
+      account_commitment: "acct_test",
+      network: "mainnet",
+      venue_account_commitment: expect.stringMatching(/^hyperliquid_venue_account_[0-9a-f]{48}$/),
+      agent_wallet_commitment: expect.stringMatching(/^hyperliquid_agent_wallet_[0-9a-f]{48}$/),
+    });
+  });
+
   it("seals raw execution credentials to the attested TEE recipient only", async () => {
     const userSecret = ed25519.utils.randomPrivateKey();
     const walletAddress = bs58.encode(ed25519.getPublicKey(userSecret));
@@ -127,35 +161,4 @@ describe("Hyperliquid vault sealing", () => {
     ]));
   });
 
-  it("parses common paste/import shapes into a local credential draft", () => {
-    const jsonImport = parseHyperliquidCredentialImport(JSON.stringify({
-      network: "testnet",
-      accountAddress: "0x2222222222222222222222222222222222222222",
-      agentPrivateKey: `0x${"cd".repeat(32)}`,
-      agentName: "ghola-api",
-    }));
-
-    expect(jsonImport.fields).toEqual(expect.arrayContaining([
-      "network",
-      "hyperliquid_account_address",
-      "api_wallet_private_key",
-      "agent_name",
-    ]));
-    expect(jsonImport.draft.network).toBe("testnet");
-    expect(jsonImport.draft.hyperliquid_account_address).toBe("0x2222222222222222222222222222222222222222");
-    expect(jsonImport.draft.api_wallet_private_key).toBe(`0x${"cd".repeat(32)}`);
-    expect(jsonImport.draft.agent_name).toBe("ghola-api");
-
-    const envImport = parseHyperliquidCredentialImport([
-      "HYPERLIQUID_ACCOUNT_ADDRESS=0x3333333333333333333333333333333333333333",
-      `API_WALLET_PRIVATE_KEY=0x${"ef".repeat(32)}`,
-    ].join("\n"));
-
-    expect(envImport.draft.hyperliquid_account_address).toBe("0x3333333333333333333333333333333333333333");
-    expect(envImport.draft.api_wallet_private_key).toBe(`0x${"ef".repeat(32)}`);
-
-    const rawKeyImport = parseHyperliquidCredentialImport(`0x${"12".repeat(32)}`);
-    expect(rawKeyImport.fields).toEqual(["api_wallet_private_key"]);
-    expect(rawKeyImport.draft.api_wallet_private_key).toBe(`0x${"12".repeat(32)}`);
-  });
 });

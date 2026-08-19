@@ -7,8 +7,11 @@ import {
   ArrowRight,
   Bot,
   Gauge,
+  Loader2,
   Pause,
   Play,
+  RefreshCcw,
+  ShieldAlert,
   ShieldCheck,
   Skull,
   Square,
@@ -19,17 +22,26 @@ import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import {
   controlPrivateAutopilotSession,
   createPrivateAutopilotSession,
+  getPrivateAutopilotSession,
+  killAndFlatPrivateAutopilotSession,
   listPrivateAutopilotSessions,
   openPrivateAutopilotEventStream,
   type PrivateAutopilotEvent,
   type PrivateAutopilotSession,
   type PrivateAutopilotSessionPolicy,
 } from "@/lib/private-account-client";
+import { authorizePrivateAccountWalletRequest } from "@/lib/private-account-wallet-step-up";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 
 type RunMode = "active" | "aggressive" | "unchained";
 type CapitalBucket = "50" | "100" | "250" | "500";
 type LossBucket = "5" | "10" | "25" | "50";
+
+type FlattenControlState =
+  | { phase: "confirming"; message?: string; restoreUncertain: boolean }
+  | { phase: "pending"; message?: string }
+  | { phase: "refreshing"; message: string }
+  | { phase: "uncertain"; message: string };
 
 const MODES: ReadonlyArray<{
   id: RunMode;
@@ -74,23 +86,32 @@ export default function RunsPage() {
   const [maxLoss, setMaxLoss] = useState<LossBucket>("10");
   const [creating, setCreating] = useState(false);
   const [controlling, setControlling] = useState<string | null>(null);
+  const [flattenControls, setFlattenControls] = useState<Record<string, FlattenControlState>>({});
+  const [sessionListStatus, setSessionListStatus] = useState<"loading" | "ready" | "uncertain">("loading");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedEvents, setSelectedEvents] = useState<PrivateAutopilotEvent[]>([]);
   const [streamStatus, setStreamStatus] = useState<"connecting" | "live" | "reconnecting" | "closed">("closed");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!auth.authenticated) return;
+    if (!auth.authenticated) {
+      setSessionListStatus("loading");
+      return;
+    }
     let cancelled = false;
     async function refresh() {
       try {
         const response = await listPrivateAutopilotSessions();
         if (!cancelled) {
           setSessions(response.autopilot_sessions);
+          setSessionListStatus("ready");
           setError(null);
         }
       } catch (refreshError) {
-        if (!cancelled) setError(messageForError(refreshError));
+        if (!cancelled) {
+          setSessionListStatus("uncertain");
+          setError(messageForError(refreshError));
+        }
       }
     }
     void refresh();
@@ -127,6 +148,10 @@ export default function RunsPage() {
       setAuthOpen(true);
       return;
     }
+    if (newRunBlockReason) {
+      setError(newRunBlockReason);
+      return;
+    }
     setCreating(true);
     setError(null);
     try {
@@ -142,6 +167,10 @@ export default function RunsPage() {
   }
 
   async function controlRun(session: PrivateAutopilotSession, action: "pause" | "resume" | "kill") {
+    if (action === "resume" && newRunBlockReason) {
+      setError(newRunBlockReason);
+      return;
+    }
     setControlling(session.autopilot_session_id);
     setError(null);
     try {
@@ -154,8 +183,120 @@ export default function RunsPage() {
     }
   }
 
+  function updateSession(next: PrivateAutopilotSession) {
+    setSessions((current) => current.map((item) =>
+      item.autopilot_session_id === next.autopilot_session_id ? next : item));
+  }
+
+  function requestKillAndFlat(session: PrivateAutopilotSession) {
+    const id = session.autopilot_session_id;
+    setFlattenControls((current) => {
+      const previous = current[id];
+      return {
+        ...current,
+        [id]: {
+          phase: "confirming",
+          message: previous?.message,
+          restoreUncertain: previous?.phase === "uncertain" || previous?.phase === "refreshing",
+        },
+      };
+    });
+  }
+
+  function cancelKillAndFlat(session: PrivateAutopilotSession) {
+    const id = session.autopilot_session_id;
+    setFlattenControls((current) => {
+      const previous = current[id];
+      const next = { ...current };
+      if (previous?.phase === "confirming" && previous.restoreUncertain && previous.message) {
+        next[id] = { phase: "uncertain", message: previous.message };
+      } else {
+        delete next[id];
+      }
+      return next;
+    });
+  }
+
+  async function killAndFlat(session: PrivateAutopilotSession) {
+    const id = session.autopilot_session_id;
+    const path = `/v1/private-account/autopilot/sessions/${encodeURIComponent(id)}/kill-and-flat`;
+    const priorMessage = flattenControls[id]?.message;
+    setFlattenControls((current) => ({
+      ...current,
+      [id]: { phase: "pending", message: priorMessage },
+    }));
+    try {
+      const proofHeaders = await authorizePrivateAccountWalletRequest({ path, body: {} });
+      const response = await killAndFlatPrivateAutopilotSession(id, { proofHeaders });
+      if (response.session.autopilot_session_id !== id || !finalFlatProven(response.session)) {
+        throw new Error("Worker did not return venue-proven final-flat evidence.");
+      }
+      updateSession(response.session);
+      setFlattenControls((current) => withoutKey(current, id));
+    } catch (flattenError) {
+      const message = messageForError(flattenError);
+      let latest = session;
+      try {
+        const refreshed = await getPrivateAutopilotSession(id);
+        latest = refreshed.session;
+        updateSession(latest);
+        if (finalFlatProven(latest)) {
+          setFlattenControls((current) => withoutKey(current, id));
+          return;
+        }
+      } catch {
+        // Keep the last known session visible and fail closed until a later refresh.
+      }
+      setFlattenControls((current) => ({
+        ...current,
+        [id]: { phase: "uncertain", message },
+      }));
+    }
+  }
+
+  async function refreshFlattenOutcome(session: PrivateAutopilotSession) {
+    const id = session.autopilot_session_id;
+    const message = flattenControls[id]?.message ?? "Venue final-flat evidence is still unavailable.";
+    setFlattenControls((current) => ({
+      ...current,
+      [id]: { phase: "refreshing", message },
+    }));
+    try {
+      const refreshed = await getPrivateAutopilotSession(id);
+      updateSession(refreshed.session);
+      if (finalFlatProven(refreshed.session)) {
+        setFlattenControls((current) => withoutKey(current, id));
+        return;
+      }
+      setFlattenControls((current) => ({
+        ...current,
+        [id]: { phase: "uncertain", message: "The worker has not supplied venue final-flat evidence." },
+      }));
+    } catch (refreshError) {
+      setFlattenControls((current) => ({
+        ...current,
+        [id]: { phase: "uncertain", message: messageForError(refreshError) },
+      }));
+    }
+  }
+
   const liveRuns = sessions.filter((session) => !["killed", "expired"].includes(session.status));
   const totalOrders = liveRuns.reduce((sum, session) => sum + session.order_count, 0);
+  const unresolvedFlatten = Object.entries(flattenControls).some(([id, control]) => {
+    const session = sessions.find((item) => item.autopilot_session_id === id);
+    if (control.phase === "pending" || control.phase === "refreshing") return true;
+    return !session || !finalFlatProven(session);
+  });
+  const riskHalted = sessions.some((session) => session.status === "risk_halted" && !finalFlatProven(session));
+  const newRunBlockReason = !auth.authenticated
+    ? null
+    : sessionListStatus !== "ready"
+      ? "Run safety state is unavailable. Refresh before starting or resuming execution."
+      : riskHalted
+        ? "Resolve every risk-halted session with venue final-flat evidence before starting or resuming execution."
+        : unresolvedFlatten
+          ? "Finish or reconcile the pending kill-and-flat control before starting or resuming execution."
+          : null;
 
   return (
     <main className="min-h-screen bg-[#05070b] pt-16 text-[#eef1f8]">
@@ -272,12 +413,17 @@ export default function RunsPage() {
               <button
                 type="button"
                 onClick={createRun}
-                disabled={creating}
+                disabled={creating || Boolean(newRunBlockReason)}
                 className="mt-6 inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-[#eaf3ff] text-sm font-semibold text-[#07101e] transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Play className="h-4 w-4 fill-current" />
                 {creating ? "Sealing mandate…" : auth.authenticated ? "Start run" : "Create account to start"}
               </button>
+              {newRunBlockReason && (
+                <p role="status" className="mt-3 text-xs leading-5 text-amber-100">
+                  {newRunBlockReason}
+                </p>
+              )}
             </div>
 
             <div className="mt-4 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.04] p-4">
@@ -310,9 +456,15 @@ export default function RunsPage() {
                     <RunCard
                       session={session}
                       busy={controlling === session.autopilot_session_id}
+                      flattenControl={flattenControls[session.autopilot_session_id]}
+                      resumeBlocked={Boolean(newRunBlockReason)}
                       selected={selectedRunId === session.autopilot_session_id}
                       onSelect={() => setSelectedRunId((current) => current === session.autopilot_session_id ? null : session.autopilot_session_id)}
                       onControl={(action) => controlRun(session, action)}
+                      onRequestKillAndFlat={() => requestKillAndFlat(session)}
+                      onCancelKillAndFlat={() => cancelKillAndFlat(session)}
+                      onKillAndFlat={() => killAndFlat(session)}
+                      onRefreshFlattenOutcome={() => refreshFlattenOutcome(session)}
                     />
                     {selectedRunId === session.autopilot_session_id && (
                       <RunActivity
@@ -341,16 +493,41 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function RunCard({ session, busy, selected, onSelect, onControl }: {
+function RunCard({
+  session,
+  busy,
+  flattenControl,
+  resumeBlocked,
+  selected,
+  onSelect,
+  onControl,
+  onRequestKillAndFlat,
+  onCancelKillAndFlat,
+  onKillAndFlat,
+  onRefreshFlattenOutcome,
+}: {
   session: PrivateAutopilotSession;
   busy: boolean;
+  flattenControl?: FlattenControlState;
+  resumeBlocked: boolean;
   selected: boolean;
   onSelect: () => void;
   onControl: (action: "pause" | "resume" | "kill") => void;
+  onRequestKillAndFlat: () => void;
+  onCancelKillAndFlat: () => void;
+  onKillAndFlat: () => void;
+  onRefreshFlattenOutcome: () => void;
 }) {
   const active = ["armed", "watching", "running", "pending_worker", "pending_funding"].includes(session.status);
   const resumable = session.status === "paused";
   const riskHalted = session.status === "risk_halted";
+  const finalFlat = finalFlatProven(session);
+  const confirmingFlat = flattenControl?.phase === "confirming";
+  const flattening = flattenControl?.phase === "pending";
+  const refreshingFlat = flattenControl?.phase === "refreshing";
+  const flattenUncertain = flattenControl?.phase === "uncertain" || refreshingFlat;
+  const flatControlBusy = flattening || refreshingFlat;
+  const hyperliquidSession = session.session_policy.venue_allowlist.includes("hyperliquid");
   return (
     <article className="rounded-xl border border-[#1a2639] bg-[#090d14] p-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -383,10 +560,89 @@ function RunCard({ session, busy, selected, onSelect, onControl }: {
       </button>
 
       {!(["killed", "expired"].includes(session.status)) && (
-        <div className="mt-5 flex gap-2">
-          {active && <ControlButton label="Pause" icon={Pause} disabled={busy} onClick={() => onControl("pause")} />}
-          {resumable && <ControlButton label="Resume" icon={Play} disabled={busy} onClick={() => onControl("resume")} />}
-          <ControlButton label="Kill run" icon={Square} disabled={busy} destructive onClick={() => onControl("kill")} />
+        <div className="mt-5 flex flex-wrap gap-2">
+          {active && <ControlButton label="Pause" icon={Pause} disabled={busy || flatControlBusy} onClick={() => onControl("pause")} />}
+          {resumable && <ControlButton label="Resume" icon={Play} disabled={busy || flatControlBusy || resumeBlocked} onClick={() => onControl("resume")} />}
+          <ControlButton label="Kill execution" icon={Square} disabled={busy || flatControlBusy} destructive onClick={() => onControl("kill")} />
+        </div>
+      )}
+
+      {!finalFlat && hyperliquidSession && !confirmingFlat && !flattenUncertain && !riskHalted && (
+        <div className="mt-2">
+          <ControlButton
+            label={flattening ? "Flattening at venue" : "Kill + flatten"}
+            icon={flattening ? Loader2 : ShieldAlert}
+            disabled={busy || flatControlBusy}
+            destructive
+            onClick={onRequestKillAndFlat}
+          />
+        </div>
+      )}
+
+      {!finalFlat && ["killed", "expired"].includes(session.status) && !flattenUncertain && !riskHalted && (
+        <p className="mt-3 text-xs leading-5 text-amber-100">
+          Execution is stopped. Venue flatness is unconfirmed; a stopped run is not proof of zero positions or orders.
+        </p>
+      )}
+
+      {confirmingFlat && !finalFlat && (
+        <div role="alert" className="mt-3 rounded-lg border border-rose-400/30 bg-rose-400/[0.06] p-3 text-xs leading-5 text-rose-100">
+          <p>
+            This disables execution, cancels allowed Hyperliquid orders, closes allowed positions reduce-only, and waits for venue proof of zero positions and zero open orders.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button type="button" onClick={onKillAndFlat} className="rounded-md border border-rose-300/30 px-3 py-2 font-semibold hover:bg-rose-300/10">
+              Sign + kill + flatten
+            </button>
+            <button type="button" onClick={onCancelKillAndFlat} className="rounded-md border border-[#293950] px-3 py-2 text-[#a8b6cb] hover:bg-[#111824]">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {(flattenUncertain || riskHalted) && !finalFlat && (
+        <div role="alert" className="mt-3 rounded-lg border border-rose-400/40 bg-rose-400/10 p-3 text-xs">
+          <p className="font-semibold text-rose-100">Flatten outcome unconfirmed</p>
+          <p className="mt-1 leading-5 text-rose-100/80">
+            New runs and resumes remain disabled until this session has venue final-flat evidence.
+          </p>
+          {flattenControl?.message && (
+            <p className="mt-2 font-mono text-[10px] text-rose-200/80">
+              Last result: {flattenControl.message}
+            </p>
+          )}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={onRefreshFlattenOutcome}
+              disabled={flatControlBusy}
+              className="inline-flex items-center gap-1.5 rounded-md border border-rose-300/25 px-3 py-2 font-medium text-rose-100 disabled:opacity-50"
+            >
+              <RefreshCcw className={`h-3.5 w-3.5 ${refreshingFlat ? "animate-spin" : ""}`} />
+              {refreshingFlat ? "Checking venue safety" : "Refresh safety state"}
+            </button>
+            {hyperliquidSession && !confirmingFlat && !flatControlBusy && (
+              <button type="button" onClick={onRequestKillAndFlat} className="rounded-md border border-rose-300/25 px-3 py-2 font-semibold text-rose-100">
+                Retry kill + flatten
+              </button>
+            )}
+          </div>
+          <p className="mt-3 leading-5 text-amber-100">
+            If retry cannot reconcile, open the terminal, use each position&apos;s Close · RO control, then verify zero positions and zero open orders at Hyperliquid.
+          </p>
+          <Link href="/trade" className="mt-2 inline-flex text-xs font-semibold text-[#8fbfff] hover:text-white">
+            Open terminal for manual close
+          </Link>
+        </div>
+      )}
+
+      {finalFlat && session.final_flat_evidence && (
+        <div role="status" className="mt-3 rounded-lg border border-emerald-400/25 bg-emerald-400/[0.06] p-3 text-xs text-emerald-100">
+          <p className="font-semibold">Venue final-flat proven · zero open orders</p>
+          <p className="mt-1 font-mono text-[10px] text-emerald-200/80">
+            {session.final_flat_evidence.closes.length} reduce-only fill{session.final_flat_evidence.closes.length === 1 ? "" : "s"} · evidence {shortCommitment(session.final_flat_evidence.evidence_commitment)}
+          </p>
         </div>
       )}
     </article>
@@ -525,6 +781,24 @@ function strategyLabel(session: PrivateAutopilotSession) {
 
 function shortCommitment(value: string) {
   return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value;
+}
+
+function finalFlatProven(session: PrivateAutopilotSession) {
+  const evidence = session.final_flat_evidence;
+  return session.status === "killed" && session.execution_enabled === false &&
+    session.control_plane === "worker" && Boolean(session.worker_autopilot_session_id) &&
+    evidence?.proof_kind === "hyperliquid_kill_and_flat_v1" &&
+    evidence.status === "reconciled" && evidence.final_flat_proven === true &&
+    evidence.account_flat === true && evidence.open_order_count === 0 &&
+    Array.isArray(evidence.cancellations) && Array.isArray(evidence.closes) &&
+    Boolean(evidence.evidence_commitment) && Boolean(evidence.root_work_order_commitment) &&
+    Boolean(evidence.reconciled_at) && Boolean(evidence.completed_at);
+}
+
+function withoutKey<T>(value: Record<string, T>, key: string): Record<string, T> {
+  const next = { ...value };
+  delete next[key];
+  return next;
 }
 
 function messageForError(error: unknown) {

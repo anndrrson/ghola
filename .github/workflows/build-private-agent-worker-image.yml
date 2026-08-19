@@ -12,11 +12,21 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+  attestations: write
   packages: write
+
+concurrency:
+  # GitHub normalizes this from the workflow ref itself, so alternate input
+  # casing cannot create a second concurrency lane for the same source SHA.
+  group: investor-worker-release-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: investor-worker-release
     steps:
       # Validate the operator-supplied image tag BEFORE it reaches any
       # build/push step. We require a ghcr.io image owned by this
@@ -90,33 +100,110 @@ jobs:
             echo "::error::internal: validated value diverged from input; refusing."
             exit 1
           fi
+          printf 'name=%s\n' "${expected_prefix}" >> "${GITHUB_OUTPUT}"
           printf 'tag=%s\n' "${validated}" >> "${GITHUB_OUTPUT}"
           echo "Validated image tag: ${validated}"
 
       - name: Checkout
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.ref_to_build }}
 
+      - name: Bind exact source identity
+        id: source
+        env:
+          REQUESTED_REF: ${{ inputs.ref_to_build }}
+          VALIDATED_IMAGE: ${{ steps.image.outputs.tag }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          if [ "${RUN_ATTEMPT}" != "1" ]; then
+            echo "::error::paid worker builds are single-attempt; do not rerun a failed job"
+            exit 1
+          fi
+          requested="$(printf '%s' "${REQUESTED_REF}" | tr '[:upper:]' '[:lower:]')"
+          actual="$(git rev-parse HEAD)"
+          workflow_sha="$(printf '%s' "${WORKFLOW_SHA}" | tr '[:upper:]' '[:lower:]')"
+          if [[ ! "${requested}" =~ ^[0-9a-f]{40}$ ]] || [ "${requested}" != "${actual}" ] || [ "${actual}" != "${workflow_sha}" ]; then
+            echo "::error::ref_to_build, checked-out HEAD, and the workflow attestation source SHA must be the same exact 40-character commit"
+            exit 1
+          fi
+          repository="$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          expected_image="ghcr.io/${repository}:private-agent-worker-${actual}"
+          if [ "${VALIDATED_IMAGE}" != "${expected_image}" ]; then
+            echo "::error::image must be the source-bound immutable tag ${expected_image}"
+            exit 1
+          fi
+          printf 'git_sha=%s\n' "${actual}" >> "${GITHUB_OUTPUT}"
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.1.0
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Refuse an existing immutable image tag
+        env:
+          IMAGE: ${{ steps.image.outputs.tag }}
+        run: |
+          set -euo pipefail
+          set +e
+          inspection="$(docker buildx imagetools inspect "${IMAGE}" 2>&1)"
+          status=$?
+          set -e
+          if [ "${status}" -eq 0 ]; then
+            echo "::error::immutable image tag already exists; stop instead of rebuilding or overwriting"
+            exit 1
+          fi
+          if ! printf '%s' "${inspection}" | grep -Eqi 'manifest unknown|name unknown|not found|404'; then
+            echo "::error::could not prove the immutable image tag is absent; refusing to build"
+            exit 1
+          fi
+
       - name: Build and push image
         id: build
-        uses: docker/build-push-action@v7.2.0
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: ./apps/private-agent-worker
           file: ./apps/private-agent-worker/Dockerfile
           platforms: linux/amd64
           push: true
           tags: ${{ steps.image.outputs.tag }}
+          build-args: |
+            PRIVATE_AGENT_BUILD_GIT_SHA=${{ steps.source.outputs.git_sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.source.outputs.git_sha }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Verify pushed image identity
+        env:
+          IMAGE: ${{ steps.image.outputs.tag }}
+          EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
+          EXPECTED_SHA: ${{ steps.source.outputs.git_sha }}
+        run: |
+          set -euo pipefail
+          docker pull "${IMAGE}@${EXPECTED_DIGEST}"
+          revision="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${IMAGE}@${EXPECTED_DIGEST}")"
+          identity="$(docker run --rm --entrypoint cat "${IMAGE}@${EXPECTED_DIGEST}" /app/build-identity.json)"
+          if [ "${revision}" != "${EXPECTED_SHA}" ] || ! printf '%s' "${identity}" | jq -e --arg sha "${EXPECTED_SHA}" '.git_sha == $sha and (keys == ["git_sha"])' >/dev/null; then
+            echo "::error::pushed image label or baked identity does not match the approved source SHA"
+            exit 1
+          fi
+
+      - name: Sign GitHub artifact attestation
+        id: attestation
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
 
       - name: Summarize image digest
         run: |
@@ -125,5 +212,7 @@ jobs:
             echo ""
             echo "image=${{ steps.image.outputs.tag }}"
             echo "digest=${{ steps.build.outputs.digest }}"
+            echo "source_sha=${{ steps.source.outputs.git_sha }}"
             echo "pinned=${{ steps.image.outputs.tag }}@${{ steps.build.outputs.digest }}"
+            echo "attestation=${{ steps.attestation.outputs.attestation-url }}"
           } >> "$GITHUB_STEP_SUMMARY"

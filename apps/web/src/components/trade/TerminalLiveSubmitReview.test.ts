@@ -35,7 +35,10 @@ describe("TerminalLiveSubmitReview", () => {
     expect(container.textContent).toContain("Eligible fill62.5% · partial");
     expect(container.textContent).toContain("Move since binding+10.00 bp adverse");
     expect(container.textContent).toContain("Current displayed depth only");
-    expect(container.textContent).toContain("Plan invalidation is not a venue stop or bracket");
+    expect(container.textContent).toContain("Venue take-profit$110");
+    expect(container.textContent).toContain("Venue stop-loss$95");
+    expect(container.textContent).toContain("Protection modeHyperliquid native TP/SL");
+    expect(container.textContent).toContain("Submits the bound entry plus venue-native take-profit and stop-loss protection");
     const confirm = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("Confirm"));
     expect(confirm?.disabled).toBe(false);
     act(() => confirm?.click());
@@ -69,6 +72,12 @@ function snapshot(): TerminalLiveSubmitReviewSnapshot {
     baseSize: "0.99009901",
     limitPrice: "101",
     invalidationLevel: "95",
+    venueProtection: {
+      mode: "venue_native_oco",
+      takeProfitLevel: "110",
+      stopLossLevel: "95",
+      maxSlippageBps: 50,
+    },
     maxSlippageBps: 50,
     executionReferencePrice: "100.5",
     riskBudgetUsd: "10",

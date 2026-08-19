@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { PrivateAccountLiveTradingStatus } from "./private-account-client";
+import type {
+  PrivateAccountLiveTradingStatus,
+  PrivateAccountTerminalAccessStatus,
+} from "./private-account-client";
 import {
+  inspectTerminalAccountAccessStatus,
   inspectTerminalLiveTradingStatus,
+  terminalAccountAccessChronologyDecision,
+  terminalAccountCanaryVenueReady,
   terminalByoExecutionReadiness,
   terminalByoVenueReady,
   terminalLiveStatusChronologyDecision,
@@ -21,6 +27,90 @@ describe("terminal BYO readiness", () => {
       ...status,
       checked_at: new Date(NOW - 30_001).toISOString(),
     }, "hyperliquid", NOW, NOW)).toBe(false);
+  });
+
+  it("allows only fresh owner-bound canary access while the public gate stays red", () => {
+    const globalCanary: PrivateAccountLiveTradingStatus = {
+      ...fixture(),
+      status: "red",
+      launch_state: "canary",
+      live_trading_enabled: false,
+      live_submit_mode: "disabled",
+      byo_live_trading_enabled: false,
+      hyperliquid_capabilities: fixture().hyperliquid_capabilities.map((capability) => ({
+        ...capability,
+        state: "verifying",
+        visible: false,
+      })),
+      byo_live_venues: fixture().byo_live_venues.map((venue) => ({
+        ...venue,
+        status: "red",
+        reason_codes: ["live_trading_not_public"],
+      })),
+      reason_codes: ["live_trading_not_public"],
+    };
+    const access = accountAccess();
+    expect(terminalByoVenueReady(globalCanary, "hyperliquid", NOW, NOW)).toBe(false);
+    expect(terminalAccountCanaryVenueReady(access, "hyperliquid", NOW, NOW)).toBe(true);
+    expect(terminalByoExecutionReadiness(
+      globalCanary,
+      "hyperliquid",
+      NOW,
+      liveOrder("hyperliquid"),
+      NOW,
+      access,
+      NOW,
+    ).allowed).toBe(true);
+
+    const ungraduated = accountAccess({
+      status: "red",
+      opening_orders_enabled: false,
+      access_mode: "blocked",
+      authorized_capabilities: [],
+      account_requirements: {
+        ...access.account_requirements,
+        graduation_ready: false,
+      },
+      graduation_completed_at: null,
+      reason_codes: ["funded_account_proof_required"],
+    });
+    expect(terminalByoExecutionReadiness(
+      globalCanary,
+      "hyperliquid",
+      NOW,
+      liveOrder("hyperliquid"),
+      NOW,
+      ungraduated,
+      NOW,
+    )).toMatchObject({ allowed: false, reason_code: "terminal_byo_live_gate_not_ready" });
+    expect(terminalAccountCanaryVenueReady(access, "hyperliquid", NOW - 30_001, NOW)).toBe(false);
+  });
+
+  it("requires every configured canary protection capability and an exact protected plan", () => {
+    const globalCanary = { ...fixture(), status: "red" as const, launch_state: "canary" as const };
+    const protectedAccess = accountAccess({
+      configured_capabilities: ["limit_order", "stop_loss", "take_profit"],
+      required_capabilities: ["limit_order", "stop_loss", "take_profit"],
+      authorized_capabilities: ["limit_order", "stop_loss", "take_profit"],
+    });
+    expect(terminalByoExecutionReadiness(
+      globalCanary,
+      "hyperliquid",
+      NOW,
+      liveOrder("hyperliquid"),
+      NOW,
+      protectedAccess,
+      NOW,
+    )).toMatchObject({ allowed: false, reason_code: "terminal_live_protection_plan_required" });
+    expect(terminalByoExecutionReadiness(
+      globalCanary,
+      "hyperliquid",
+      NOW,
+      { ...liveOrder("hyperliquid"), protection_intent: {} },
+      NOW,
+      protectedAccess,
+      NOW,
+    ).allowed).toBe(true);
   });
 
   it("allows recovery-backed IOC and blocks resting plans despite green venue gates", () => {
@@ -179,6 +269,22 @@ describe("terminal BYO readiness", () => {
       nowMs: NOW,
     })).toEqual({ action: "block", status: null, checkedAtMs: NOW });
   });
+
+  it("validates account-access payload coherence and blocks equal-clock contradictions", () => {
+    const access = accountAccess();
+    expect(inspectTerminalAccountAccessStatus(access)).toEqual(access);
+    expect(inspectTerminalAccountAccessStatus({ ...access, launch_state: "public" })).toBeNull();
+    expect(inspectTerminalAccountAccessStatus({
+      ...access,
+      account_requirements: { ...access.account_requirements, entitlement_ready: false },
+    })).toBeNull();
+    expect(terminalAccountAccessChronologyDecision({
+      current: access,
+      latestCheckedAtMs: NOW,
+      candidate: { ...access, access_commitment: "contradictory-gate" },
+      nowMs: NOW,
+    })).toEqual({ action: "block", status: null, checkedAtMs: NOW });
+  });
 });
 
 function fixture(
@@ -216,7 +322,7 @@ function fixture(
       checked_at: new Date(NOW).toISOString(),
     },
     effective_caps: {
-      first_proof_notional_usd: 10.5,
+      first_proof_notional_usd: 11,
       max_order_notional_usd: 100,
       rolling_24h_notional_usd: 500,
       default_slippage_bps: 50,
@@ -225,7 +331,7 @@ function fixture(
     proof_policy: {
       venue_id: "hyperliquid",
       network: "mainnet",
-      first_proof_notional_usd: 10.5,
+      first_proof_notional_usd: 11,
       required_consecutive_passes: 3,
       final_flat_required: true,
       zero_open_orders_required: true,
@@ -260,6 +366,39 @@ function liveOrder(venue_id: "hyperliquid" | "phoenix" | "coinbase") {
     venue_id,
     order_type: "limit",
     time_in_force: venue_id === "hyperliquid" ? "ioc" : "gtc",
+  };
+}
+
+function accountAccess(
+  overrides: Partial<PrivateAccountTerminalAccessStatus> = {},
+): PrivateAccountTerminalAccessStatus {
+  const global = fixture();
+  return {
+    version: 1,
+    status: "green",
+    venue_id: "hyperliquid",
+    network: "mainnet",
+    opening_orders_enabled: true,
+    access_mode: "account_canary",
+    launch_state: "canary",
+    release_identity: global.release_identity,
+    live_worker_readiness: global.live_worker_readiness,
+    effective_caps: global.effective_caps,
+    configured_capabilities: ["limit_order"],
+    required_capabilities: ["limit_order"],
+    authorized_capabilities: ["limit_order"],
+    account_requirements: {
+      account_ready: true,
+      vault_ready: true,
+      eligibility_ready: true,
+      entitlement_ready: true,
+      graduation_ready: true,
+    },
+    graduation_completed_at: new Date(NOW).toISOString(),
+    reason_codes: [],
+    access_commitment: "account-canary-gate",
+    checked_at: new Date(NOW).toISOString(),
+    ...overrides,
   };
 }
 

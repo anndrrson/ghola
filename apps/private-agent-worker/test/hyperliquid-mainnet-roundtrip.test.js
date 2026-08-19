@@ -13,11 +13,13 @@ import {
 import {
   MAINNET_PROOF_CONFIRMATION,
   hyperliquidMainnetRoundTripEnabled,
+  isHyperliquidMainnetProofWorkOrder,
   recoverHyperliquidMainnetCanary,
   runSealedHyperliquidMainnetRoundTrip,
   validateHyperliquidMainnetRoundTripRequest,
 } from "../src/execution/hyperliquid-mainnet-roundtrip.js";
 import { verifyHyperliquidMainnetVenueEvidence } from "../src/execution/hyperliquid-mainnet-evidence.js";
+import { enforceInstructionPolicy } from "../src/execution/policy.js";
 import { hyperliquidProtectionCloids } from "../src/venues/hyperliquid.js";
 import { createWorkerState } from "../src/state/private-state.js";
 
@@ -94,6 +96,20 @@ describe("sealed Hyperliquid mainnet proof round trip", () => {
     }
   });
 
+  it("rejects recovery work orders outside the legacy and v2 proof namespaces", async () => {
+    assert.equal(isHyperliquidMainnetProofWorkOrder(`hl_mainnet_investor_proof_${"e".repeat(32)}`), true);
+    assert.equal(isHyperliquidMainnetProofWorkOrder(`hl_mainnet_investor_proof_v2_${"e".repeat(32)}`), true);
+    assert.equal(isHyperliquidMainnetProofWorkOrder(`hl_mainnet_investor_proof_v3_${"e".repeat(32)}`), false);
+    await assert.rejects(
+      recoverHyperliquidMainnetCanary({
+        credential: { network: "mainnet" },
+        state: {},
+        proofWorkOrder: `hl_mainnet_investor_proof_v3_${"e".repeat(32)}`,
+      }),
+      /recovery scope is invalid/u,
+    );
+  });
+
   it("persists the proof receipt and replays it after a worker-state restart without another submit", async () => {
     const fixture = await sealedFixture();
     const dir = mkdtempSync(join(tmpdir(), "ghola-mainnet-proof."));
@@ -106,7 +122,8 @@ describe("sealed Hyperliquid mainnet proof round trip", () => {
     const protectionCloids = hyperliquidProtectionCloids(entryCloid);
     const openProtection = new Set();
     const verifiedInstructions = [];
-    const executeOrder = async ({ body, instruction }) => {
+    let entryPolicyCommitment = null;
+    const executeOrder = async ({ body, instruction, state: executionState }) => {
       orderCalls += 1;
       assert.ok(Date.parse(instruction.expires_at) > Date.now());
       const previousExpiry = instructionExpiries.get(body.work_order_commitment);
@@ -115,6 +132,8 @@ describe("sealed Hyperliquid mainnet proof round trip", () => {
       const existing = receipts.get(body.work_order_commitment);
       if (existing) return structuredClone(existing);
       const entry = body.work_order_commitment.endsWith("_entry");
+      await enforceInstructionPolicy({ body, instruction, session: null, state: executionState });
+      if (entry) entryPolicyCommitment = body.session_policy.policy_commitment;
       positionSize = entry ? "0.18" : "0";
       if (entry) Object.values(protectionCloids).forEach((cloid) => openProtection.add(cloid));
       const oid = entry ? "101" : "102";
@@ -126,7 +145,7 @@ describe("sealed Hyperliquid mainnet proof round trip", () => {
         fill_summary: {
           fill_count: 1,
           filled_base_size: "0.18",
-          filled_notional_usd: 10.5,
+          filled_notional_usd: 11,
           average_fill_price: entry ? 58.31 : 58.32,
           fee_usd: 0.004,
         },
@@ -187,8 +206,28 @@ describe("sealed Hyperliquid mainnet proof round trip", () => {
       },
       verifyVenueEvidence: async () => venueEvidence(protectionCloids),
     };
+    const previousMaxSlippage = process.env.PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS;
+    process.env.PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS = "100";
     try {
       const firstState = createWorkerState(dir);
+      const legacyPolicyCount = await firstState.incrementPolicyCount(fixture.body.policy_commitment, 1);
+      assert.deepEqual(legacyPolicyCount, { ok: true, count: 1 });
+      const legacyClaim = await firstState.claimExecution(
+        `hl_mainnet_investor_proof_${"c".repeat(32)}`,
+        {
+          venue_id: "hyperliquid",
+          platform_class: "hyperliquid_style_market",
+          execution_mode: "byo_api_key",
+          operation_class: "mainnet_roundtrip_proof",
+          request_digest: "c".repeat(64),
+        },
+      );
+      assert.equal(legacyClaim.status, "claimed");
+      await firstState.markExecutionClaimReconcileRequired(
+        `hl_mainnet_investor_proof_${"c".repeat(32)}`,
+        legacyClaim.claim_token,
+        { message: "legacy venue rejection" },
+      );
       const first = await runSealedHyperliquidMainnetRoundTrip({
         body: fixture.body,
         recipient: fixture.recipient,
@@ -221,6 +260,14 @@ describe("sealed Hyperliquid mainnet proof round trip", () => {
       assert.equal(first.take_profit_cloid, protectionCloids.take_profit_cloid);
       assert.equal(first.protection_cleanup_confirmed, true);
       assert.equal(first.protection_children_terminal, true);
+      assert.equal(first.protection_children_no_fill_proven, true);
+      assert.deepEqual(first.release_binding, fixture.body.release_binding);
+      assert.equal(first.protection_acceptance.take_profit.venue_order_readback_proven, true);
+      assert.equal(first.protection_cleanup.stop_loss.final_cancellation_proven, true);
+      assert.match(first.proof_work_order_commitment, /^hl_mainnet_investor_proof_v2_[0-9a-f]{32}$/u);
+      assert.match(entryPolicyCommitment, /^hl_mainnet_investor_proof_v2_policy_[0-9a-f]{40}$/u);
+      assert.notEqual(entryPolicyCommitment, fixture.body.policy_commitment);
+      assert.deepEqual(await firstState.incrementPolicyCount(entryPolicyCommitment, 1), { ok: false, count: 1 });
       assert.match(first.venue_evidence_commitment, /^sha256:[0-9a-f]{64}$/);
       assert.equal(first.entry_order_reference.oid, "101");
       assert.equal(first.exit_order_reference.reduce_only, true);
@@ -236,6 +283,11 @@ describe("sealed Hyperliquid mainnet proof round trip", () => {
       assert.equal(positionSize, "0");
       assert.equal(openProtection.size, 0);
     } finally {
+      if (previousMaxSlippage === undefined) {
+        delete process.env.PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS;
+      } else {
+        process.env.PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS = previousMaxSlippage;
+      }
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -450,6 +502,7 @@ describe("sealed Hyperliquid mainnet proof round trip", () => {
     const takeProfitCloid = `0x${"c".repeat(32)}`;
     const stopLossCloid = `0x${"d".repeat(32)}`;
     const requests = [];
+    let protectionFill = null;
     const fetchImpl = async (_url, init) => {
       const body = JSON.parse(String(init.body));
       requests.push(body.type);
@@ -491,6 +544,15 @@ describe("sealed Hyperliquid mainnet proof round trip", () => {
         return Response.json([
           fundedFill({ oid: 102, cloid: exitCloid, side: "A", dir: "Close Long", time: 2, hash: `0x${"d".repeat(64)}`, tid: 12, px: "58.32" }),
           fundedFill({ oid: 101, cloid: entryCloid, side: "B", dir: "Open Long", time: 1, hash: `0x${"c".repeat(64)}`, tid: 11, px: "58.31" }),
+          ...(protectionFill ? [fundedFill({
+            ...protectionFill,
+            side: "A",
+            dir: "Close Long",
+            time: 3,
+            hash: `0x${"e".repeat(64)}`,
+            tid: 13,
+            px: "60",
+          })] : []),
         ]);
       }
       if (body.type === "openOrders") return Response.json([]);
@@ -506,7 +568,7 @@ describe("sealed Hyperliquid mainnet proof round trip", () => {
         take_profit: { oid: "201", cloid: takeProfitCloid },
         stop_loss: { oid: "202", cloid: stopLossCloid },
       },
-      expectedNotionalUsd: 10.5,
+      expectedNotionalUsd: 11,
       fetchImpl,
       attempts: 1,
     });
@@ -516,8 +578,13 @@ describe("sealed Hyperliquid mainnet proof round trip", () => {
     assert.equal(evidence.exit.reduce_only, true);
     assert.equal(evidence.entry.fee_usd, 0.0045);
     assert.equal(evidence.protection_children_terminal, true);
+    assert.equal(evidence.protection_children_no_fill_proven, true);
     assert.equal(evidence.protection.stop_loss.order_status, "canceled");
     assert.equal(evidence.protection.stop_loss.venue_order_status, "reduceOnlyCanceled");
+    assert.equal(evidence.protection.stop_loss.venue_accepted, true);
+    assert.equal(evidence.protection.stop_loss.venue_order_readback_proven, true);
+    assert.equal(evidence.protection.stop_loss.final_cancellation_proven, true);
+    assert.equal(evidence.protection.stop_loss.final_no_fill_proven, true);
     assert.equal(evidence.flat_after_exit, true);
     assert.deepEqual(requests.sort(), [
       "clearinghouseState",
@@ -528,6 +595,26 @@ describe("sealed Hyperliquid mainnet proof round trip", () => {
       "orderStatus",
       "userFills",
     ].sort());
+    for (const child of [
+      { oid: 201, cloid: takeProfitCloid },
+      { oid: 202, cloid: stopLossCloid },
+    ]) {
+      protectionFill = child;
+      await assert.rejects(verifyHyperliquidMainnetVenueEvidence({
+        baseUrl: "https://api.hyperliquid.xyz",
+        accountAddress: account,
+        market: "HYPE",
+        entry: { oid: "101", cloid: entryCloid, filled_base_size: "0.18", average_fill_price: 58.31 },
+        exit: { oid: "102", cloid: exitCloid, filled_base_size: "0.18", average_fill_price: 58.32 },
+        protection: {
+          take_profit: { oid: "201", cloid: takeProfitCloid },
+          stop_loss: { oid: "202", cloid: stopLossCloid },
+        },
+        expectedNotionalUsd: 11,
+        fetchImpl,
+        attempts: 1,
+      }), /protection has fill evidence/);
+    }
   });
 });
 
@@ -576,11 +663,18 @@ function venueEvidence(protectionCloids = hyperliquidProtectionCloids(`0x${"a".r
     reduce_only_exit_proven: true,
     position_protection_proven: true,
     protection_children_terminal: true,
+    protection_children_no_fill_proven: true,
     protection: {
       take_profit: {
         oid: "201",
         cloid: protectionCloids.take_profit_cloid,
         order_status: "canceled",
+        venue_accepted: true,
+        venue_order_readback_proven: true,
+        final_cancellation_proven: true,
+        final_no_fill_proven: true,
+        fill_count: 0,
+        filled_base_size: "0",
         reduce_only: true,
         trigger_order: true,
       },
@@ -588,6 +682,12 @@ function venueEvidence(protectionCloids = hyperliquidProtectionCloids(`0x${"a".r
         oid: "202",
         cloid: protectionCloids.stop_loss_cloid,
         order_status: "canceled",
+        venue_accepted: true,
+        venue_order_readback_proven: true,
+        final_cancellation_proven: true,
+        final_no_fill_proven: true,
+        fill_count: 0,
+        filled_base_size: "0",
         reduce_only: true,
         trigger_order: true,
       },
@@ -633,7 +733,7 @@ function fundedReceipt({ entry, entryCloid, children }) {
     fill_summary: {
       fill_count: 1,
       filled_base_size: "0.18",
-      filled_notional_usd: 10.5,
+      filled_notional_usd: 11,
       average_fill_price: entry ? 58.31 : 58.32,
       fee_usd: 0.004,
     },
@@ -721,9 +821,25 @@ async function sealedFixture() {
       aad,
     },
     market: "HYPE",
-    notional_usd: 10.5,
+    notional_usd: 11,
     slippage_bps: 100,
+    release_binding: {
+      contract_version: 2,
+      web_git_sha: "a".repeat(40),
+      worker_git_sha: "a".repeat(40),
+      worker_image_digest: `sha256:${"b".repeat(64)}`,
+      config_fingerprint: `live_trading_config_${"c".repeat(48)}`,
+    },
   };
   assert.deepEqual(validateHyperliquidMainnetRoundTripRequest(body, recipient), []);
+  assert.deepEqual(validateHyperliquidMainnetRoundTripRequest(body, recipient, {
+    ready: true,
+    ...body.release_binding,
+  }), []);
+  assert.ok(validateHyperliquidMainnetRoundTripRequest(body, recipient, {
+    ready: true,
+    ...body.release_binding,
+    worker_image_digest: `sha256:${"d".repeat(64)}`,
+  }).includes("release_binding does not match the running worker"));
   return { body, recipient };
 }

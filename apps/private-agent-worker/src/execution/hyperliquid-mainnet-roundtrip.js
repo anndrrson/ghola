@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { openSealedBundle } from "../crypto/envelope.js";
+import {
+  HYPERLIQUID_EXECUTION_VAULT_AAD_PREFIXES,
+  openSealedBundle,
+} from "../crypto/envelope.js";
 import {
   executeClaimedPrivateSubmission,
   executeHyperliquidBoundInstruction,
@@ -18,7 +21,14 @@ import { buildHyperliquidMainnetProtection } from "./hyperliquid-mainnet-protect
 export const MAINNET_PROOF_CONFIRMATION =
   "I_UNDERSTAND_THIS_OPENS_AND_CLOSES_A_REAL_MAINNET_POSITION";
 
-export function validateHyperliquidMainnetRoundTripRequest(body, recipient) {
+const MAINNET_PROOF_WORK_ORDER_PATTERN =
+  /^hl_mainnet_investor_proof_(?:v2_)?[0-9a-f]{32}$/u;
+
+export function isHyperliquidMainnetProofWorkOrder(value) {
+  return MAINNET_PROOF_WORK_ORDER_PATTERN.test(String(value || ""));
+}
+
+export function validateHyperliquidMainnetRoundTripRequest(body, recipient, expectedRelease = null) {
   const errors = [];
   if (!body || typeof body !== "object" || Array.isArray(body)) return ["request body must be an object"];
   if (body.version !== 1) errors.push("version must be 1");
@@ -28,8 +38,27 @@ export function validateHyperliquidMainnetRoundTripRequest(body, recipient) {
     if (typeof body[field] !== "string" || !body[field].trim()) errors.push(`${field} is required`);
   }
   if (body.market !== "HYPE") errors.push("market must be HYPE");
-  if (body.notional_usd !== 10.5) errors.push("notional_usd must be 10.5");
+  if (body.notional_usd !== 11) errors.push("notional_usd must be 11");
   if (body.slippage_bps !== 100) errors.push("slippage_bps must be 100");
+  const release = body.release_binding;
+  if (!release || typeof release !== "object" || Array.isArray(release) ||
+      release.contract_version !== 2 ||
+      !/^[a-f0-9]{40}$/u.test(String(release.web_git_sha || "")) ||
+      !/^[a-f0-9]{40}$/u.test(String(release.worker_git_sha || "")) ||
+      release.web_git_sha !== release.worker_git_sha ||
+      !/^sha256:[a-f0-9]{64}$/u.test(String(release.worker_image_digest || "")) ||
+      !/^live_trading_config_[a-f0-9]{48}$/u.test(String(release.config_fingerprint || ""))) {
+    errors.push("release_binding is invalid");
+  } else if (expectedRelease && (
+    expectedRelease.ready !== true ||
+    release.contract_version !== expectedRelease.contract_version ||
+    release.worker_git_sha !== expectedRelease.worker_git_sha ||
+    release.web_git_sha !== expectedRelease.worker_git_sha ||
+    release.worker_image_digest !== expectedRelease.worker_image_digest ||
+    release.config_fingerprint !== expectedRelease.config_fingerprint
+  )) {
+    errors.push("release_binding does not match the running worker");
+  }
   const bundle = body.encrypted_execution_vault;
   if (!bundle || typeof bundle !== "object" || Array.isArray(bundle)) {
     errors.push("encrypted_execution_vault is required");
@@ -71,7 +100,7 @@ export async function recoverHyperliquidMainnetCanary({
   submitRecovery = submitHyperliquidExecution,
 }) {
   if (credential?.network !== "mainnet" || market !== "HYPE" || slippageBps !== 100 ||
-      !/^hl_mainnet_investor_proof_[0-9a-f]{32}$/u.test(String(proofWorkOrder || ""))) {
+      !isHyperliquidMainnetProofWorkOrder(proofWorkOrder)) {
     throw proofError("mainnet canary recovery scope is invalid", 400);
   }
   const entryWorkOrder = `${proofWorkOrder}_entry`;
@@ -141,13 +170,13 @@ export async function runSealedHyperliquidMainnetRoundTrip({
   buildProtection = buildHyperliquidMainnetProtection,
 }) {
   const opened = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-    aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+    aadPrefixes: HYPERLIQUID_EXECUTION_VAULT_AAD_PREFIXES,
     expectedKind: "ghola_hyperliquid_execution_vault",
   });
   const credential = hyperliquidCredentialFromVault(opened.json);
   if (credential.network !== "mainnet") throw proofError("sealed vault is not bound to Hyperliquid mainnet", 409);
 
-  const proofWorkOrder = `hl_mainnet_investor_proof_${sha256(body.vault_commitment).slice(0, 32)}`;
+  const proofWorkOrder = `hl_mainnet_investor_proof_v2_${sha256(body.vault_commitment).slice(0, 32)}`;
   const claimContext = {
     venue_id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
@@ -160,6 +189,7 @@ export async function runSealedHyperliquidMainnetRoundTrip({
       market: body.market,
       notional_usd: body.notional_usd,
       slippage_bps: body.slippage_bps,
+      release_binding: body.release_binding,
     })),
   };
 
@@ -401,6 +431,7 @@ async function performRoundTrip({
       market: body.market,
       notional_usd: body.notional_usd,
       max_slippage_bps: body.slippage_bps,
+      release_binding: structuredClone(body.release_binding),
       claim_store: state.path === "postgres" ? "postgres" : "unverified",
       proof_work_order_commitment: proofWorkOrder,
       entry_work_order_commitment: entryWorkOrder,
@@ -420,6 +451,7 @@ async function performRoundTrip({
       opened_position_verified: true,
       venue_position_protection_proven: true,
       protection_reference: prepared.protectionReference,
+      protection_acceptance: receiptProtectionAcceptance(entry),
       take_profit_oid: entry.final_proof.take_profit_oid,
       take_profit_cloid: entry.final_proof.take_profit_cloid,
       stop_loss_oid: entry.final_proof.stop_loss_oid,
@@ -427,6 +459,7 @@ async function performRoundTrip({
       protection_cleanup_confirmed: true,
       protection_cleanup: protectionCleanup,
       protection_children_terminal: venueEvidence.protection_children_terminal,
+      protection_children_no_fill_proven: venueEvidence.protection_children_no_fill_proven,
       default_margin_mode: openedPosition.marginMode,
       default_leverage: openedPosition.leverage,
       exit_preflight_verified: true,
@@ -456,6 +489,7 @@ async function performRoundTrip({
         exit_preflight_proven: true,
         protection_cleanup_proven: true,
         protection_children_terminal: true,
+        protection_children_no_fill_proven: true,
         margin_mode: openedPosition.marginMode,
         leverage: openedPosition.leverage,
         flat_after_exit: true,
@@ -529,6 +563,13 @@ async function performRoundTrip({
 }
 
 function orderBody(body, workOrderCommitment) {
+  const proofPolicyCommitment = `hl_mainnet_investor_proof_v2_policy_${sha256(stableJson({
+    vault_policy_commitment: body.policy_commitment,
+    vault_commitment: body.vault_commitment,
+    proof_kind: "hl_mainnet_investor_proof_v2",
+    notional_usd: 11,
+    slippage_bps: 100,
+  })).slice(0, 40)}`;
   return {
     version: 1,
     execution_mode: "byo_api_key",
@@ -539,7 +580,9 @@ function orderBody(body, workOrderCommitment) {
     work_order_commitment: workOrderCommitment,
     operation_class: "limit_order",
     session_policy: {
-      policy_commitment: body.policy_commitment,
+      // Keep the external vault policy binding above unchanged, while isolating
+      // this explicitly re-authorized v2 proof from a consumed v1 order quota.
+      policy_commitment: proofPolicyCommitment,
       market_allowlist: [body.market],
       max_notional_bucket: "25",
       max_daily_notional_bucket: "25",
@@ -713,6 +756,8 @@ async function cancelProtectionOrders({
         oid: String(receipt.final_proof.venue_order_oid),
         cloid: targetCloid,
         terminal_status: "canceled",
+        cancellation_readback_proven: true,
+        final_cancellation_proven: true,
         broadcast_performed: receipt.final_proof.broadcast_performed === true,
         already_terminal: receipt.final_proof.final_no_broadcast_proven === true,
         action_expiry_proven: true,
@@ -847,6 +892,29 @@ function receiptProtectionReference(receipt) {
   };
 }
 
+function receiptProtectionAcceptance(receipt) {
+  const reference = receiptProtectionReference(receipt);
+  return Object.fromEntries(Object.entries(reference).map(([kind, leg]) => [kind, {
+    ...leg,
+    venue_accepted: true,
+    venue_order_readback_proven: true,
+  }]));
+}
+
+function independentProtectionLegProven(value) {
+  return /^\d+$/u.test(String(value?.oid || "")) &&
+    /^0x[0-9a-f]{32}$/u.test(String(value?.cloid || "").toLowerCase()) &&
+    value?.order_status === "canceled" &&
+    value?.venue_accepted === true &&
+    value?.venue_order_readback_proven === true &&
+    value?.final_cancellation_proven === true &&
+    value?.final_no_fill_proven === true &&
+    value?.fill_count === 0 &&
+    String(value?.filled_base_size) === "0" &&
+    value?.reduce_only === true &&
+    value?.trigger_order === true;
+}
+
 function assertIndependentVenueEvidence(value) {
   if (value?.proof_kind !== "hyperliquid_mainnet_public_venue_evidence_v1" ||
       value?.independently_queried !== true ||
@@ -855,6 +923,9 @@ function assertIndependentVenueEvidence(value) {
       value?.reduce_only_exit_proven !== true ||
       value?.position_protection_proven !== true ||
       value?.protection_children_terminal !== true ||
+      value?.protection_children_no_fill_proven !== true ||
+      !independentProtectionLegProven(value?.protection?.take_profit) ||
+      !independentProtectionLegProven(value?.protection?.stop_loss) ||
       value?.transaction_hashes_distinct !== true ||
       value?.flat_after_exit !== true ||
       value?.open_orders_after_exit !== 0 ||

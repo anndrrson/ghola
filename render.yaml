@@ -7,6 +7,7 @@ databases:
 services:
   - type: web
     name: ghola-api
+    autoDeployTrigger: off
     runtime: docker
     plan: free
     dockerfilePath: ./Dockerfile
@@ -71,6 +72,7 @@ services:
 
   - type: web
     name: ghola-gateway
+    autoDeployTrigger: off
     runtime: docker
     plan: free
     dockerfilePath: ./Dockerfile.gateway
@@ -95,4 +97,53 @@ services:
         value: "60"
       - key: PLATFORM_FEE_BPS
         value: "300"
+    healthCheckPath: /health
+
+  - type: web
+    name: thumper-cloud
+    autoDeployTrigger: off
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile.thumper
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ghola-db
+          property: connectionString
+      - key: THUMPER_CLOUD_BIND
+        value: "0.0.0.0:10000"
+      - key: JWT_SECRET
+        sync: false
+      - key: THUMPER_ENCRYPTION_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: APPLE_CLIENT_ID
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_PRO
+        sync: false
+      - key: STRIPE_PRICE_PRIVATE_AGENT_STARTER
+        sync: false
+      - key: STRIPE_PRICE_PRIVATE_AGENT_TRIAL_PACK
+        sync: false
+      - key: STRIPE_PRICE_PRIVATE_AGENT
+        sync: false
+      - key: STRIPE_PRICE_UNLIMITED
+        sync: false
+      - key: BASE_URL
+        value: "https://thumper-cloud.onrender.com"
+      - key: GHOLA_INVESTOR_WEB_ORIGIN
+        value: "https://ghola.xyz"
+      - key: GHOLA_INVESTOR_PASS_ADMIN_SECRET
+        sync: false
+      - key: GHOLA_INVESTOR_CANARY_SECRET
+        sync: false
+      - key: ADMIN_EMAILS
+        sync: false
     healthCheckPath: /health

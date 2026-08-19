@@ -270,7 +270,7 @@ pub fn encrypt_token(plaintext: &str, key: &[u8; 32]) -> Result<Vec<u8>, CloudEr
     Ok(result)
 }
 
-fn decrypt_token(data: &[u8], key: &[u8; 32]) -> Result<String, CloudError> {
+pub(crate) fn decrypt_token(data: &[u8], key: &[u8; 32]) -> Result<String, CloudError> {
     use aes_gcm::{
         aead::{Aead, KeyInit},
         Aes256Gcm, Nonce,

@@ -15,7 +15,6 @@ describe("terminal live execution recovery dossier", () => {
       accountContext: "verified",
       accountStream: "current",
       postSubmitSnapshot: "verified",
-      reviewAllowed: true,
       providerReference: null,
       ticketEvidence: "exact",
       quantityAuthority: "base",
@@ -43,16 +42,13 @@ describe("terminal live execution recovery dossier", () => {
       accountContext: "mismatch",
       accountStream: "waiting",
       postSubmitSnapshot: "waiting",
-      reviewAllowed: false,
     });
     expect(deriveTerminalLiveExecutionRecoveryDossier({ ...base, accountStreamCurrent: false })).toMatchObject({
       accountStream: "waiting",
       postSubmitSnapshot: "waiting",
-      reviewAllowed: false,
     });
     expect(deriveTerminalLiveExecutionRecoveryDossier({ ...base, accountStreamObservedAtMs: Date.parse("2026-08-13T11:59:59.000Z") })).toMatchObject({
       postSubmitSnapshot: "waiting",
-      reviewAllowed: false,
     });
   });
 
@@ -83,7 +79,6 @@ describe("terminal live execution recovery dossier", () => {
       accountContext: "mismatch",
       accountStream: "waiting",
       postSubmitSnapshot: "waiting",
-      reviewAllowed: false,
     });
   });
 

@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { openSealedBundle } from "../crypto/envelope.js";
+import {
+  HYPERLIQUID_EXECUTION_VAULT_AAD_PREFIXES,
+  openSealedBundle,
+} from "../crypto/envelope.js";
 import {
   bucketToUsd,
   enforceInstructionPolicy,
@@ -48,10 +51,13 @@ export class PrivateExecutionError extends Error {
 }
 
 const AUTOPILOT_INTERNAL_INSTRUCTION = Symbol("ghola.autopilot.internal_instruction");
+const INTERNAL_RISK_REDUCTION = Symbol("ghola.internal.risk_reduction");
 const COINBASE_EXPOSURE_CREATING_OPERATIONS = new Set([
   "spot_limit_order",
   "spot_market_order",
 ]);
+const HYPERLIQUID_UNKNOWN_OID_PROPAGATION_GRACE_MS = 30_000;
+const HYPERLIQUID_UNKNOWN_OID_OBSERVATION_SPACING_MS = 5_000;
 
 export function commitment(prefix, value) {
   return `${prefix}_${sha256Hex(canonicalJson(value)).slice(0, 48)}`;
@@ -265,7 +271,7 @@ export async function storeHyperliquidSession({ body, recipient, state, provider
   const executionMode = hyperliquidExecutionMode(body);
   if (executionMode === "byo_api_key") {
     await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+      aadPrefixes: HYPERLIQUID_EXECUTION_VAULT_AAD_PREFIXES,
       expectedKind: "ghola_hyperliquid_execution_vault",
     });
   } else if (body.managed_allocation?.allocation_commitment) {
@@ -489,60 +495,71 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
   let credential;
   let allocation = null;
   let pendingManagedAllocation = null;
-  if (isHyperliquidAllocationMode(executionMode)) {
-    const allocationCommitment = body.managed_allocation?.allocation_commitment ||
-      body.managed_allocation_commitment ||
-      body.allocation_commitment;
-    if (body.managed_allocation?.allocation_commitment) {
-      pendingManagedAllocation = body.managed_allocation;
-    }
-    const record = pendingManagedAllocation
-      ? { allocation: pendingManagedAllocation }
-      : await state.getHyperliquidManagedAllocation(allocationCommitment);
-    if (!record?.allocation || record.allocation.status !== "allocated") {
-      throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
-    }
-    allocation = record.allocation;
-    credential = loadManagedHyperliquidCredential(allocation);
-  } else {
-    if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
-      credential = dryRunHyperliquidCredential();
-    } else {
-      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/hyperliquid-execution-vault-v1",
-        expectedKind: "ghola_hyperliquid_execution_vault",
-      });
-      credential = hyperliquidCredentialFromVault(openedVault.json);
-    }
-  }
-  const expectedNetwork = body.session_policy?.execution_network;
-  if (expectedNetwork && credential.network !== expectedNetwork) {
-    throw new PrivateExecutionError("hyperliquid execution network does not match session policy", 409);
-  }
-  const session = await state.findSession({
-    venue_id: "hyperliquid",
-    vault_commitment: executionMode === "byo_api_key" ? body.vault_commitment : undefined,
-    allocation_commitment: isHyperliquidAllocationMode(executionMode)
-      ? body.managed_allocation_commitment || body.allocation_commitment
-      : undefined,
-    policy_commitment: body.policy_commitment,
-  });
-  const instruction = await resolvePrivateCancelTarget(await instructionForBody({
-    body,
-    recipient,
-    venue_id: "hyperliquid",
-    session,
-  }), { state, venue_id: "hyperliquid" });
-  await enforceInstructionPolicy({ body, instruction, session, state: null });
-  const cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
+  let session = null;
+  let instruction = null;
+  let cloid = null;
   return executeClaimedPrivateSubmission({
     state,
     work_order_commitment: body.work_order_commitment,
     claim_context: claimContext,
     prepare: async () => {
+      if (isHyperliquidAllocationMode(executionMode)) {
+        const allocationCommitment = body.managed_allocation?.allocation_commitment ||
+          body.managed_allocation_commitment ||
+          body.allocation_commitment;
+        if (body.managed_allocation?.allocation_commitment) {
+          pendingManagedAllocation = body.managed_allocation;
+        }
+        const record = pendingManagedAllocation
+          ? { allocation: pendingManagedAllocation }
+          : await state.getHyperliquidManagedAllocation(allocationCommitment);
+        if (!record?.allocation || record.allocation.status !== "allocated") {
+          throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
+        }
+        allocation = record.allocation;
+        credential = loadManagedHyperliquidCredential(allocation);
+      } else if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
+        credential = dryRunHyperliquidCredential();
+      } else {
+        const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+          aadPrefixes: HYPERLIQUID_EXECUTION_VAULT_AAD_PREFIXES,
+          expectedKind: "ghola_hyperliquid_execution_vault",
+        });
+        credential = hyperliquidCredentialFromVault(openedVault.json);
+      }
+      const expectedNetwork = body.session_policy?.execution_network;
+      if (expectedNetwork && credential.network !== expectedNetwork) {
+        throw new PrivateExecutionError("hyperliquid execution network does not match session policy", 409);
+      }
+      session = await state.findSession({
+        venue_id: "hyperliquid",
+        vault_commitment: executionMode === "byo_api_key" ? body.vault_commitment : undefined,
+        allocation_commitment: isHyperliquidAllocationMode(executionMode)
+          ? body.managed_allocation_commitment || body.allocation_commitment
+          : undefined,
+        policy_commitment: body.policy_commitment,
+      });
+      instruction = await resolvePrivateCancelTarget(await instructionForBody({
+        body,
+        recipient,
+        venue_id: "hyperliquid",
+        session,
+      }), {
+        state,
+        venue_id: "hyperliquid",
+        internalRiskReduction: body[INTERNAL_RISK_REDUCTION] === true,
+      });
+      await enforceInstructionPolicy({ body, instruction, session, state: null });
+      cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
       if (body.autopilot_session_id) {
         const autopilot = await state.getAutopilotSession(body.autopilot_session_id);
-        if (!autopilot || autopilot.control_latch || autopilot.status !== "running" || autopilot.execution_enabled !== true) {
+        const internalRiskReduction = body[INTERNAL_RISK_REDUCTION] === true &&
+          isRiskReducingHyperliquidInstruction(instruction);
+        if (!autopilot || (!internalRiskReduction && (
+          autopilot.control_latch ||
+          autopilot.status !== "running" ||
+          autopilot.execution_enabled !== true
+        ))) {
           throw new PrivateExecutionError("autopilot execution permit is unavailable", 409);
         }
       }
@@ -618,6 +635,36 @@ export async function executeHyperliquidBoundInstruction({
   }
 }
 
+// Only worker-owned lifecycle code can set this symbol. It keeps emergency
+// cancellation and reduce-only exits on the normal sealed-vault, policy,
+// durable-claim, slippage, and venue-readback path after execution is latched.
+export async function executeHyperliquidRiskReduction({
+  body,
+  instruction,
+  recipient,
+  state,
+  executeOrder = executeHyperliquidOrder,
+  reconcileClaim = reconcileHyperliquidClaim,
+}) {
+  if (!isRiskReducingHyperliquidInstruction(instruction)) {
+    throw new PrivateExecutionError("internal risk reduction instruction is invalid", 400);
+  }
+  const boundBody = { ...body };
+  boundBody[AUTOPILOT_INTERNAL_INSTRUCTION] = instruction;
+  boundBody[INTERNAL_RISK_REDUCTION] = true;
+  try {
+    return await executeOrder({ body: boundBody, recipient, state });
+  } catch (error) {
+    try {
+      const reconciled = await reconcileClaim({ body: boundBody, recipient, state });
+      if (terminalExecutionProof(reconciled?.final_proof)) return reconciled;
+    } catch {
+      // The durable execution claim prevents an ambiguous rebroadcast.
+    }
+    throw error;
+  }
+}
+
 export async function verifyHyperliquidBoundInstruction({
   body,
   instruction,
@@ -671,7 +718,7 @@ export async function verifyVenueCredential({ body, recipient }) {
   }
   if (venueId === "hyperliquid") {
     const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+      aadPrefixes: HYPERLIQUID_EXECUTION_VAULT_AAD_PREFIXES,
       expectedKind: "ghola_hyperliquid_execution_vault",
     });
     const credential = hyperliquidCredentialFromVault(openedVault.json);
@@ -731,7 +778,7 @@ async function hyperliquidCredentialForBody({ body, recipient, state }) {
       credential = dryRunHyperliquidCredential();
     } else {
       const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+        aadPrefixes: HYPERLIQUID_EXECUTION_VAULT_AAD_PREFIXES,
         expectedKind: "ghola_hyperliquid_execution_vault",
       });
       credential = hyperliquidCredentialFromVault(openedVault.json);
@@ -1416,16 +1463,18 @@ export async function reconcileHyperliquidClaim({
   recipient,
   state,
   reconcileExecution = reconcileHyperliquidExecution,
+  resolveInstruction = instructionForBody,
 }) {
   const workOrderCommitment = body.work_order_commitment;
-  const cached = (await state.getIdempotency(workOrderCommitment))?.receipt || null;
-  if (cached) return cached;
   const evidence = await state.getExecutionClaimEvidence(workOrderCommitment);
   if (!evidence?.context || evidence.context.venue_id !== "hyperliquid") {
     const error = new PrivateExecutionError("hyperliquid execution claim was not found", 404);
     error.code = "HYPERLIQUID_EXECUTION_CLAIM_NOT_FOUND";
     throw error;
   }
+  assertHyperliquidReconciliationBinding(body, evidence.context);
+  const cached = (await state.getIdempotency(workOrderCommitment))?.receipt || null;
+  if (cached && terminalExecutionProof(cached.final_proof)) return cached;
   if (terminalExecutionProof(evidence.receipt?.final_proof)) {
     if (typeof state.resolveExecutionClaim !== "function" || !evidence.attempt) {
       throw new PrivateExecutionError("durable execution reconciliation is unavailable", 503);
@@ -1435,11 +1484,23 @@ export async function reconcileHyperliquidClaim({
       receipt: evidence.receipt,
     });
   }
+  if (evidence.status === "rejected") {
+    if (typeof state.resolveExecutionClaim !== "function") {
+      throw new PrivateExecutionError("durable execution reconciliation is unavailable", 503);
+    }
+    const completed = hyperliquidNoBroadcastCompletion({
+      body,
+      context: evidence.context,
+      status: "rejected",
+      reason: "pre_submit_rejection",
+    });
+    return state.resolveExecutionClaim(workOrderCommitment, completed);
+  }
 
   const { executionMode, credential } = await hyperliquidCredentialForBody({ body, recipient, state });
   const cloid = await state.deriveHyperliquidCloid(workOrderCommitment);
   const instruction = body[AUTOPILOT_INTERNAL_INSTRUCTION] || body.encrypted_execution_instruction_bundle
-    ? await instructionForBody({ body, recipient, venue_id: "hyperliquid", session: null })
+    ? await resolveInstruction({ body, recipient, venue_id: "hyperliquid", session: null })
     : null;
   const market = body.market || body.coin || instruction?.order?.market ||
     evidence.attempt?.result_seed?.market || null;
@@ -1448,7 +1509,40 @@ export async function reconcileHyperliquidClaim({
     cloid,
     market,
     protection: instruction?.position_protection || null,
+    expectedOrder: instruction?.order || null,
   });
+  if (venueResult.exact_unknown_oid === true &&
+      typeof state.recordExecutionClaimNoBroadcastObservation === "function") {
+    const instructionExpiresAt = String(instruction?.expires_at || "");
+    const instructionExpiresAtMs = Date.parse(instructionExpiresAt);
+    const observedAt = String(venueResult.checked_at || "");
+    const observedAtMs = Date.parse(observedAt);
+    if (Number.isFinite(instructionExpiresAtMs) && Number.isFinite(observedAtMs) &&
+        observedAtMs >= instructionExpiresAtMs) {
+      const probe = await state.recordExecutionClaimNoBroadcastObservation(workOrderCommitment, {
+        cloid,
+        instruction_expires_at: instructionExpiresAt,
+        observed_at: observedAt,
+      });
+      const firstObservedAtMs = Date.parse(String(probe?.first_observed_at || ""));
+      const lastObservedAtMs = Date.parse(String(probe?.last_observed_at || ""));
+      if (Number(probe?.observation_count || 0) >= 2 &&
+          Number.isFinite(firstObservedAtMs) && Number.isFinite(lastObservedAtMs) &&
+          lastObservedAtMs - firstObservedAtMs >= HYPERLIQUID_UNKNOWN_OID_OBSERVATION_SPACING_MS &&
+          observedAtMs - instructionExpiresAtMs >= HYPERLIQUID_UNKNOWN_OID_PROPAGATION_GRACE_MS) {
+        if (typeof state.resolveExecutionClaim !== "function") {
+          throw new PrivateExecutionError("durable execution reconciliation is unavailable", 503);
+        }
+        const noBroadcast = hyperliquidNoBroadcastCompletion({
+          body,
+          context: evidence.context,
+          status: "no_submit",
+          reason: "expired_instruction_unknown_oid",
+        });
+        return state.resolveExecutionClaim(workOrderCommitment, noBroadcast);
+      }
+    }
+  }
   const adapterResult = {
     status: venueResult.status,
     provider_ref_seed: {
@@ -1585,7 +1679,7 @@ export async function verifyHyperliquidOrderNoSubmit({ body, recipient, state })
       credential = dryRunHyperliquidCredential();
     } else {
       const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+        aadPrefixes: HYPERLIQUID_EXECUTION_VAULT_AAD_PREFIXES,
         expectedKind: "ghola_hyperliquid_execution_vault",
       });
       credential = hyperliquidCredentialFromVault(openedVault.json);
@@ -1751,9 +1845,10 @@ async function instructionForBody({ body, recipient, venue_id, session }) {
   throw new PrivateExecutionError("encrypted execution instruction is required");
 }
 
-async function resolvePrivateCancelTarget(instruction, { state, venue_id }) {
+async function resolvePrivateCancelTarget(instruction, { state, venue_id, internalRiskReduction = false }) {
   const target = instruction?.cancel?.target_work_order_commitment;
   if (instruction?.operation_class !== "cancel" || !target) return instruction;
+  if (internalRiskReduction && instruction.cancel?.order_id) return instruction;
   if (!(await state.getIdempotency(target))?.receipt) {
     const error = new PrivateExecutionError(
       "cancel target work order is unresolved; reconciliation required",
@@ -1772,6 +1867,18 @@ async function resolvePrivateCancelTarget(instruction, { state, venue_id }) {
       client_order_id: clientOrderId,
     },
   };
+}
+
+function isRiskReducingHyperliquidInstruction(instruction) {
+  return instruction?.venue_id === "hyperliquid" && (
+    instruction.operation_class === "cancel" ||
+    (
+      instruction.operation_class === "limit_order" &&
+      instruction.order?.reduce_only === true &&
+      instruction.order?.order_type === "market" &&
+      instruction.order?.tif === "Ioc"
+    )
+  );
 }
 
 function coinbaseOperationCreatesExposure(operationClass) {
@@ -1824,6 +1931,32 @@ function publicHyperliquidManagedAllocation(allocation) {
 }
 
 function executionClaimContext({ body, venue_id, platform_class, execution_mode }) {
+  const internalInstruction = body?.[AUTOPILOT_INTERNAL_INSTRUCTION];
+  const hyperliquidBinding = venue_id === "hyperliquid"
+    ? {
+        owner_commitment: body.owner_commitment,
+        account_commitment: body.account_commitment,
+        vault_commitment: body.vault_commitment,
+        policy_commitment: body.policy_commitment,
+        order_policy_commitment: body.order_policy_commitment || body.session_policy?.policy_commitment,
+        plan_digest: body.plan_digest,
+        request_commitment: body.request_commitment,
+        market: body.market || internalInstruction?.order?.market || internalInstruction?.cancel?.market,
+      }
+    : {};
+  const reconciliationBinding = venue_id === "hyperliquid" && body.reconciliation_binding_version === 1
+    ? {
+        reconciliation_binding_version: 1,
+        original_request_digest: `sha256:${sha256Hex(stableExecutionJson(
+          Object.fromEntries(Object.entries(body || {})),
+        ))}`,
+        sealed_request_digest: sha256Hex(stableExecutionJson({
+          encrypted_execution_vault: body.encrypted_execution_vault,
+          encrypted_execution_instruction_bundle: body.encrypted_execution_instruction_bundle,
+          session_policy: body.session_policy,
+        })),
+      }
+    : {};
   return {
     venue_id,
     platform_class,
@@ -1835,7 +1968,42 @@ function executionClaimContext({ body, venue_id, platform_class, execution_mode 
       platform_class,
       execution_mode,
     }),
+    ...hyperliquidBinding,
+    ...reconciliationBinding,
   };
+}
+
+function assertHyperliquidReconciliationBinding(body, context) {
+  const storedVersion = context?.reconciliation_binding_version;
+  const requestedVersion = body?.reconciliation_binding_version;
+  if (storedVersion !== 1 && requestedVersion !== 1) return;
+  const sealedRequestDigest = sha256Hex(stableExecutionJson({
+    encrypted_execution_vault: body?.encrypted_execution_vault,
+    encrypted_execution_instruction_bundle: body?.encrypted_execution_instruction_bundle,
+    session_policy: body?.session_policy,
+  }));
+  const exactBindings = [
+    [requestedVersion, storedVersion],
+    [body?.venue_id, context?.venue_id],
+    [body?.platform_class, context?.platform_class],
+    [body?.execution_mode, context?.execution_mode],
+    [body?.owner_commitment, context?.owner_commitment],
+    [body?.account_commitment, context?.account_commitment],
+    [body?.vault_commitment, context?.vault_commitment],
+    [body?.policy_commitment, context?.policy_commitment],
+    [body?.order_policy_commitment, context?.order_policy_commitment],
+    [body?.plan_digest, context?.plan_digest],
+    [body?.request_commitment, context?.request_commitment],
+    [body?.market, context?.market],
+    [body?.original_operation_class, context?.operation_class],
+    [body?.original_request_digest, context?.original_request_digest],
+    [sealedRequestDigest, context?.sealed_request_digest],
+  ];
+  if (exactBindings.some(([requested, stored]) => (
+    (typeof requested !== "string" && requested !== 1) ||
+    (typeof stored !== "string" && stored !== 1) ||
+    requested !== stored
+  ))) throw executionClaimContextMismatch();
 }
 
 function executionRequestDigest({ body, venue_id, platform_class, execution_mode }) {
@@ -1942,6 +2110,67 @@ function terminalExecutionProof(proof) {
     proof?.final_no_fill_proven === true ||
     proof?.final_no_broadcast_proven === true
   );
+}
+
+function hyperliquidNoBroadcastCompletion({ body, context, status, reason }) {
+  const executionMode = context.execution_mode || body.execution_mode || "byo_api_key";
+  const adapterResult = {
+    status,
+    provider_ref_seed: {
+      venue: "hyperliquid",
+      cloid: null,
+      venue_order_reference: null,
+    },
+    result_seed: {
+      kind: "hyperliquid_no_broadcast_resolution",
+      status,
+      reason,
+      market: context.market || body.market || null,
+    },
+    fills: [],
+    final_proof: {
+      proof_kind: "hyperliquid_execution_proof_v1",
+      venue_id: "hyperliquid",
+      network: body.session_policy?.execution_network || "mainnet",
+      status,
+      terminal_status: status,
+      venue_order_status: null,
+      venue_order_oid: null,
+      venue_order_cloid: null,
+      broadcast_performed: false,
+      final_venue_execution_proven: true,
+      final_fill_proven: false,
+      final_no_fill_proven: false,
+      final_no_broadcast_proven: true,
+      venue_order_readback_proven: false,
+    },
+  };
+  return bindExecutionClaimCompletion({
+    attempt: executionAttempt({
+      venue_id: "hyperliquid",
+      platform_class: "hyperliquid_style_market",
+      execution_mode: executionMode,
+      adapterResult,
+    }),
+    receipt: executionReceipt({
+      venue_id: "hyperliquid",
+      platform_class: "hyperliquid_style_market",
+      execution_mode: executionMode,
+      instruction: null,
+      body,
+      status: adapterResult.status,
+      provider_ref_seed: adapterResult.provider_ref_seed,
+      result_seed: adapterResult.result_seed,
+      fills: adapterResult.fills,
+      final_proof: adapterResult.final_proof,
+      visibility_summary: {
+        main_wallet_exposed: false,
+        ghola_operator_sees: "commitment_and_ciphertext_only",
+        hyperliquid_sees: "no_order_request",
+        public_chain_sees: "no_venue_broadcast",
+      },
+    }),
+  }, context);
 }
 
 function executionReceipt(input) {

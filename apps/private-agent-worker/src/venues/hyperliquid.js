@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  TERMINAL_HYPERLIQUID_ORDER_STATUSES,
+  normalizeHyperliquidOrderStatus,
+} from "./hyperliquid-status.js";
 
 const MAINNET_API_URL = "https://api.hyperliquid.xyz";
 const TESTNET_API_URL = "https://api.hyperliquid-testnet.xyz";
@@ -113,18 +117,72 @@ function trimPositiveDecimal(value) {
 
 function exactSignedDecimal(value, label) {
   const text = String(value ?? "").trim();
-  const parsed = Number(text);
-  if (!/^-?\d+(?:\.\d+)?$/.test(text) || !Number.isFinite(parsed)) {
+  if (text.length > 80 || !/^-?\d+(?:\.\d+)?$/.test(text)) {
     throw new HyperliquidExecutionError(`${label} is invalid`, 502);
   }
-  if (Math.abs(parsed) < 1e-12) return "0";
-  return parsed.toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
+  const negative = text.startsWith("-");
+  const unsigned = negative ? text.slice(1) : text;
+  const [integerRaw, fractionRaw = ""] = unsigned.split(".");
+  const integer = integerRaw.replace(/^0+(?=\d)/u, "") || "0";
+  const fraction = fractionRaw.replace(/0+$/u, "");
+  const normalized = fraction ? `${integer}.${fraction}` : integer;
+  return /^0(?:\.0*)?$/u.test(normalized) ? "0" : `${negative ? "-" : ""}${normalized}`;
 }
 
 function exactNonnegativeDecimal(value, label) {
   const text = exactSignedDecimal(value, label);
   if (Number(text) < 0) throw new HyperliquidExecutionError(`${label} is invalid`, 502);
   return text;
+}
+
+function exactUnsignedDecimal(value, label) {
+  const canonical = exactNonnegativeDecimal(value, label);
+  const [whole, fraction = ""] = canonical.split(".");
+  return {
+    units: BigInt(`${whole}${fraction}`),
+    scale: fraction.length,
+  };
+}
+
+function alignExactUnsignedDecimals(left, right) {
+  const scale = Math.max(left.scale, right.scale);
+  return {
+    left: left.units * (10n ** BigInt(scale - left.scale)),
+    right: right.units * (10n ** BigInt(scale - right.scale)),
+    scale,
+  };
+}
+
+function compareExactUnsignedDecimals(left, right) {
+  const aligned = alignExactUnsignedDecimals(left, right);
+  return aligned.left === aligned.right ? 0 : aligned.left > aligned.right ? 1 : -1;
+}
+
+function subtractExactUnsignedDecimals(left, right, label) {
+  const aligned = alignExactUnsignedDecimals(left, right);
+  if (aligned.left < aligned.right) {
+    throw new HyperliquidExecutionError(`${label} is invalid`, 502);
+  }
+  return { units: aligned.left - aligned.right, scale: aligned.scale };
+}
+
+function addExactUnsignedDecimals(left, right) {
+  const aligned = alignExactUnsignedDecimals(left, right);
+  return { units: aligned.left + aligned.right, scale: aligned.scale };
+}
+
+function exactUnsignedDecimalText(value) {
+  if (value.units === 0n) return "0";
+  if (value.scale === 0) return value.units.toString();
+  const digits = value.units.toString().padStart(value.scale + 1, "0");
+  const whole = digits.slice(0, -value.scale);
+  const fraction = digits.slice(-value.scale).replace(/0+$/u, "");
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+
+function exactAbsoluteDecimal(value, label) {
+  const text = exactSignedDecimal(value, label);
+  return text.startsWith("-") ? text.slice(1) : text;
 }
 
 export function hyperliquidManagedAccountRefs() {
@@ -266,7 +324,10 @@ export async function submitHyperliquidExecution({
   const venueOrderReadback = normalizeVenueOrderReadback(result.venue_order_readback, cloid);
   const cancelOrderReadback = normalizeVenueCancelReadback(
     result.venue_cancel_readback,
-    instruction.cancel?.client_order_id,
+    {
+      expectedCloid: instruction.cancel?.client_order_id,
+      expectedOid: instruction.cancel?.order_id,
+    },
   );
   if (instruction.operation_class === "limit_order" && !executionConfiguration) {
     throw new HyperliquidExecutionError("hyperliquid isolated 1x configuration proof is missing", 502);
@@ -394,17 +455,22 @@ function normalizeVenueOrderReadback(value, expectedCloid) {
   return { verified: true, status, oid, cloid };
 }
 
-function normalizeVenueCancelReadback(value, expectedCloid) {
+function normalizeVenueCancelReadback(value, { expectedCloid, expectedOid }) {
   const cloid = String(value?.cloid || "").toLowerCase();
   const expected = String(expectedCloid || "").toLowerCase();
+  const oidExpected = String(expectedOid || "");
   const oid = value?.oid;
   const status = String(value?.status || "").toLowerCase();
+  const oidText = String(oid ?? "");
+  const cloidMatches = expected && /^0x[0-9a-f]{32}$/u.test(cloid) && cloid === expected;
+  const oidMatches = oidExpected && /^\d+$/u.test(oidText) && oidText === oidExpected;
   if (value?.verified !== true || status !== "canceled" ||
-      !/^0x[0-9a-f]{32}$/u.test(cloid) || cloid !== expected ||
-      (typeof oid !== "number" && typeof oid !== "string") || !String(oid).trim()) {
+      (!cloidMatches && !oidMatches) ||
+      !/^\d+$/u.test(oidText) ||
+      (cloid && !/^0x[0-9a-f]{32}$/u.test(cloid))) {
     return null;
   }
-  return { verified: true, status: "canceled", oid, cloid };
+  return { verified: true, status: "canceled", oid, cloid: cloid || null };
 }
 
 function normalizeExecutionConfiguration(value) {
@@ -523,6 +589,46 @@ export async function verifyHyperliquidNoSubmit({
   });
 }
 
+async function readHyperliquidAccountParts(fetchImpl, credential) {
+  const accountAddress = hyperliquidExecutionAddress(credential);
+  const abstraction = await postHyperliquidInfo(fetchImpl, credential.base_url, {
+    type: "userAbstraction",
+    user: accountAddress,
+  });
+  if (!["default", "disabled", "unifiedAccount"].includes(abstraction)) {
+    throw new HyperliquidExecutionError("hyperliquid account abstraction mode is unsupported", 502);
+  }
+  const unified = abstraction === "unifiedAccount";
+  const [state, openOrders, userFills, spotState] = await Promise.all([
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "clearinghouseState",
+      user: accountAddress,
+    }),
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "openOrders",
+      user: accountAddress,
+    }),
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "userFills",
+      user: accountAddress,
+      aggregateByTime: true,
+    }).catch(() => []),
+    unified
+      ? postHyperliquidInfo(fetchImpl, credential.base_url, {
+          type: "spotClearinghouseState",
+          user: accountAddress,
+        })
+      : Promise.resolve(null),
+  ]);
+  return {
+    state,
+    openOrders,
+    userFills,
+    abstraction,
+    spotState,
+  };
+}
+
 export async function readHyperliquidAccountSnapshot({
   credential,
   accountSource = "sealed_byo",
@@ -555,25 +661,9 @@ export async function readHyperliquidAccountSnapshot({
       next_step: "Preview trade",
     };
   }
-  const [state, openOrders, userFills] = await Promise.all([
-    postHyperliquidInfo(fetchImpl, credential.base_url, {
-      type: "clearinghouseState",
-      user: hyperliquidExecutionAddress(credential),
-    }),
-    postHyperliquidInfo(fetchImpl, credential.base_url, {
-      type: "openOrders",
-      user: hyperliquidExecutionAddress(credential),
-    }),
-    postHyperliquidInfo(fetchImpl, credential.base_url, {
-      type: "userFills",
-      user: hyperliquidExecutionAddress(credential),
-      aggregateByTime: true,
-    }).catch(() => []),
-  ]);
+  const parts = await readHyperliquidAccountParts(fetchImpl, credential);
   return hyperliquidAccountStateFromParts({
-    state,
-    openOrders,
-    userFills,
+    ...parts,
     accountSource,
     network: credential.network,
     streamStatus: "snapshot",
@@ -633,6 +723,61 @@ export async function readHyperliquidExactMarketState({
   };
 }
 
+// Exact values stay inside the sealed worker and are only used to build
+// reduce-only exits and deterministic cancellation requests. Public account
+// surfaces continue to receive the bucketed snapshot above.
+export async function readHyperliquidRiskReductionState({
+  credential,
+  fetchImpl = fetch,
+}) {
+  assertHyperliquidPilotNetwork(credential, { operation_class: "read" });
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
+    return {
+      positions: [],
+      open_orders: [],
+      checked_at: new Date().toISOString(),
+    };
+  }
+  const [state, openOrders] = await Promise.all([
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "clearinghouseState",
+      user: hyperliquidExecutionAddress(credential),
+    }),
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "openOrders",
+      user: hyperliquidExecutionAddress(credential),
+    }),
+  ]);
+  if (!Array.isArray(state?.assetPositions) || !Array.isArray(openOrders)) {
+    throw new HyperliquidExecutionError("hyperliquid risk-reduction state is invalid", 502);
+  }
+  const positions = state.assetPositions
+    .map((row) => row?.position || row)
+    .map((position) => ({
+      market: stringValue(position?.coin).toUpperCase(),
+      position_size: exactSignedDecimal(position?.szi ?? "0", "hyperliquid position size"),
+      position_value: exactAbsoluteDecimal(position?.positionValue ?? "0", "hyperliquid position value"),
+    }))
+    .filter((position) => position.market && position.position_size !== "0");
+  const exactOrders = openOrders.map((order) => {
+    const market = stringValue(order?.coin).toUpperCase();
+    const oid = stringValue(order?.oid);
+    const cloid = stringValue(order?.cloid).toLowerCase();
+    if (!market || !/^\d+$/u.test(oid)) {
+      throw new HyperliquidExecutionError("hyperliquid open order identity is invalid", 502);
+    }
+    if (cloid && !/^0x[0-9a-f]{32}$/u.test(cloid)) {
+      throw new HyperliquidExecutionError("hyperliquid open order cloid is invalid", 502);
+    }
+    return { market, oid, cloid: cloid || null };
+  });
+  return {
+    positions,
+    open_orders: exactOrders,
+    checked_at: new Date().toISOString(),
+  };
+}
+
 export async function readHyperliquidTopOfBook({
   credential,
   market = "SOL",
@@ -660,6 +805,7 @@ export async function reconcileHyperliquidExecution({
   cloid,
   market,
   protection = null,
+  expectedOrder = null,
   fetchImpl = fetch,
 }) {
   assertHyperliquidPilotNetwork(credential, { operation_class: "reconcile" });
@@ -675,6 +821,8 @@ export async function reconcileHyperliquidExecution({
     return {
       terminal: false,
       status: "unknown",
+      exact_unknown_oid: true,
+      checked_at: new Date().toISOString(),
       filled_notional_micro_usdc: 0,
       filled_base_size: "0",
       venue_order_reference: `cloid:${cloid}`,
@@ -687,38 +835,70 @@ export async function reconcileHyperliquidExecution({
   const orderStatus = String(orderEnvelope?.status || order?.status || "").trim();
   const normalizedOrderStatus = normalizeHyperliquidOrderStatus(orderStatus);
   const oid = String(order?.oid || "").trim();
+  const returnedCloid = String(order?.cloid || "").trim().toLowerCase();
+  const orderSizeEvidence = hyperliquidOrderSizeEvidence(order);
+  const orderReadbackProven = /^[1-9]\d*$/u.test(oid) &&
+    returnedCloid === String(cloid).toLowerCase() &&
+    (!market || String(order?.coin || "").toUpperCase() === String(market).toUpperCase()) &&
+    String(order?.tif || "").trim().toLowerCase() === "ioc" &&
+    orderSizeEvidence !== null &&
+    hyperliquidOrderMatchesExpected(order, orderSizeEvidence, expectedOrder);
   const rawFills = await postHyperliquidInfo(fetchImpl, credential.base_url, {
     type: "userFills",
     user: hyperliquidExecutionAddress(credential),
     aggregateByTime: false,
-  }).catch(() => []);
-  const fills = (Array.isArray(rawFills) ? rawFills : []).filter((fill) =>
-    String(fill?.oid || "") === oid &&
-    (!market || String(fill?.coin || "").toUpperCase() === String(market).toUpperCase()));
-  const filledBase = fills.reduce((sum, fill) => sum + finitePositive(fill?.sz), 0);
+  }).catch(() => null);
+  const exactOidFills = (Array.isArray(rawFills) ? rawFills : []).filter((fill) =>
+    String(fill?.oid || "") === oid);
+  let exactFillSize = { units: 0n, scale: 0 };
+  const exactOidFillsCoherent = exactOidFills.every((fill) => {
+    try {
+      const size = exactUnsignedDecimal(fill?.sz, "hyperliquid fill size");
+      const price = exactUnsignedDecimal(fill?.px, "hyperliquid fill price");
+      if (size.units === 0n || price.units === 0n ||
+          (market && String(fill?.coin || "").toUpperCase() !== String(market).toUpperCase())) return false;
+      exactFillSize = addExactUnsignedDecimals(exactFillSize, size);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  const fillsReadbackProven = Array.isArray(rawFills) && exactOidFillsCoherent &&
+    orderSizeEvidence !== null &&
+    compareExactUnsignedDecimals(exactFillSize, orderSizeEvidence.filled) === 0;
+  const fills = fillsReadbackProven ? exactOidFills : [];
+  const venueFilledSize = orderSizeEvidence?.filled ?? { units: 0n, scale: 0 };
+  const filledBase = fillsReadbackProven ? exactUnsignedDecimalText(venueFilledSize) : "0";
   const filledNotional = fills.reduce(
     (sum, fill) => sum + finitePositive(fill?.sz) * finitePositive(fill?.px),
     0,
   );
+  const venueFilled = venueFilledSize.units > 0n;
   const terminal = TERMINAL_HYPERLIQUID_ORDER_STATUSES.has(normalizedOrderStatus);
-  const status = filledNotional > 0
+  const fillOutcomeCoherent = fillsReadbackProven && (normalizedOrderStatus !== "filled" || venueFilled);
+  const status = venueFilled
     ? normalizedOrderStatus === "filled" ? "filled" : "partially_filled"
     : terminal ? "rejected" : "submitted";
-  const protectionProof = terminal && filledNotional > 0 && protection
+  const protectionProof = terminal && venueFilled && protection
     ? await reconcileHyperliquidProtection({ credential, cloid, market, protection, fetchImpl })
     : null;
-  const terminalAndContained = terminal && (!protection || filledNotional === 0 || protectionProof?.proven === true);
+  const terminalAndContained = terminal && orderReadbackProven && fillOutcomeCoherent &&
+    (!protection || !venueFilled || protectionProof?.proven === true);
+  const unresolvedStatus = !orderReadbackProven || !fillsReadbackProven ||
+      (normalizedOrderStatus === "filled" && !venueFilled)
+    ? "fill_readback_unconfirmed"
+    : "protection_unconfirmed";
   return {
     terminal: terminalAndContained,
     protection: protectionProof,
-    ...(terminal && !terminalAndContained ? { status: "protection_unconfirmed" } : { status }),
+    ...(terminal && !terminalAndContained ? { status: unresolvedStatus } : { status }),
     filled_notional_micro_usdc: Math.round(filledNotional * 1_000_000),
-    filled_base_size: trimPositiveDecimal(filledBase),
+    filled_base_size: filledBase,
     venue_order_reference: oid ? `oid:${oid}` : `cloid:${cloid}`,
     fills: fills.slice(0, 25),
     final_proof: terminalAndContained ? {
       ...hyperliquidFinalProof({
-        status: filledNotional > 0 ? "filled" : orderStatus || "rejected",
+        status: venueFilled ? "filled" : orderStatus || "rejected",
         network: credential.network,
         broadcastPerformed: true,
         positionProtection: protectionProof?.proven ? {
@@ -731,9 +911,54 @@ export async function reconcileHyperliquidExecution({
       }),
       final_venue_execution_proven: true,
       terminal_status: orderStatus || "rejected",
-      final_no_fill_proven: filledNotional === 0,
+      final_no_fill_proven: !venueFilled,
+      venue_order_readback_proven: orderReadbackProven,
+      venue_order_status: orderStatus || "rejected",
+      venue_order_oid: orderReadbackProven ? oid : null,
+      venue_order_cloid: cloid,
+      venue_order_original_size: orderReadbackProven
+        ? exactUnsignedDecimalText(orderSizeEvidence.original)
+        : null,
+      venue_order_remaining_size: orderReadbackProven
+        ? exactUnsignedDecimalText(orderSizeEvidence.remaining)
+        : null,
+      venue_order_filled_size: orderReadbackProven
+        ? exactUnsignedDecimalText(orderSizeEvidence.filled)
+        : null,
     } : null,
   };
+}
+
+function hyperliquidOrderSizeEvidence(order) {
+  try {
+    const original = exactUnsignedDecimal(order?.origSz, "hyperliquid original order size");
+    const remaining = exactUnsignedDecimal(order?.sz, "hyperliquid remaining order size");
+    if (original.units === 0n || compareExactUnsignedDecimals(remaining, original) > 0) return null;
+    return {
+      original,
+      remaining,
+      filled: subtractExactUnsignedDecimals(original, remaining, "hyperliquid filled order size"),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function hyperliquidOrderMatchesExpected(order, sizeEvidence, expectedOrder) {
+  if (!expectedOrder) return true;
+  try {
+    const expectedSize = exactUnsignedDecimal(expectedOrder.base_size, "expected Hyperliquid order size");
+    const expectedPrice = exactUnsignedDecimal(expectedOrder.limit_price, "expected Hyperliquid limit price");
+    const venuePrice = exactUnsignedDecimal(order?.limitPx, "Hyperliquid limit price");
+    const expectedSide = expectedOrder.side === "buy" ? "B" : expectedOrder.side === "sell" ? "A" : null;
+    return expectedSize.units > 0n && expectedPrice.units > 0n && expectedSide !== null &&
+      compareExactUnsignedDecimals(sizeEvidence.original, expectedSize) === 0 &&
+      compareExactUnsignedDecimals(venuePrice, expectedPrice) === 0 &&
+      String(order?.side || "").trim().toUpperCase() === expectedSide &&
+      order?.reduceOnly === (expectedOrder.reduce_only === true);
+  } catch {
+    return false;
+  }
 }
 
 async function reconcileHyperliquidProtection({ credential, cloid, market, protection, fetchImpl }) {
@@ -845,27 +1070,17 @@ export async function createHyperliquidAccountStateStream({
   let currentState = null;
   let currentOpenOrders = [];
   let currentFills = [];
+  let currentAbstraction = null;
+  let currentSpotState = null;
 
   async function backfill(status = "backfilling") {
     onEvent({ event: "stream_status", data: accountStreamStatus(status) });
-    const [state, openOrders, userFills] = await Promise.all([
-      postHyperliquidInfo(fetchImpl, credential.base_url, {
-        type: "clearinghouseState",
-        user: hyperliquidExecutionAddress(credential),
-      }),
-      postHyperliquidInfo(fetchImpl, credential.base_url, {
-        type: "openOrders",
-        user: hyperliquidExecutionAddress(credential),
-      }),
-      postHyperliquidInfo(fetchImpl, credential.base_url, {
-        type: "userFills",
-        user: hyperliquidExecutionAddress(credential),
-        aggregateByTime: true,
-      }).catch(() => []),
-    ]);
-    currentState = state;
-    currentOpenOrders = Array.isArray(openOrders) ? openOrders : [];
-    currentFills = Array.isArray(userFills) ? userFills : [];
+    const parts = await readHyperliquidAccountParts(fetchImpl, credential);
+    currentState = parts.state;
+    currentOpenOrders = Array.isArray(parts.openOrders) ? parts.openOrders : [];
+    currentFills = Array.isArray(parts.userFills) ? parts.userFills : [];
+    currentAbstraction = parts.abstraction;
+    currentSpotState = parts.spotState;
     emitAccountState("backfilling");
   }
 
@@ -876,6 +1091,8 @@ export async function createHyperliquidAccountStateStream({
         state: currentState,
         openOrders: currentOpenOrders,
         userFills: currentFills,
+        abstraction: currentAbstraction,
+        spotState: currentSpotState,
         accountSource,
         network: credential.network,
         streamStatus,
@@ -893,6 +1110,9 @@ export async function createHyperliquidAccountStateStream({
       { type: "userFundings", user: hyperliquidExecutionAddress(credential) },
       { type: "activeAssetData", user: hyperliquidExecutionAddress(credential), coin },
     ];
+    if (currentAbstraction === "unifiedAccount") {
+      subscriptions.push({ type: "spotState", user: hyperliquidExecutionAddress(credential) });
+    }
     for (const subscription of subscriptions) {
       socket?.send(JSON.stringify({ method: "subscribe", subscription }));
     }
@@ -916,8 +1136,12 @@ export async function createHyperliquidAccountStateStream({
       heartbeatTimer.unref?.();
     };
     socket.onmessage = (event) => {
-      const changed = mergeHyperliquidAccountStreamMessage(String(event.data));
-      if (changed) emitAccountState("live");
+      try {
+        const changed = mergeHyperliquidAccountStreamMessage(String(event.data));
+        if (changed) emitAccountState("live");
+      } catch (error) {
+        onEvent({ event: "error", data: safeStreamError(error) });
+      }
     };
     socket.onerror = () => {
       onEvent({ event: "stream_status", data: accountStreamStatus("reconnecting") });
@@ -982,6 +1206,27 @@ export async function createHyperliquidAccountStateStream({
       onEvent({ event: "account_event", data: sanitizeFundingUpdate(data) });
       return false;
     }
+    if (channel === "spotState") {
+      if (currentAbstraction !== "unifiedAccount") return false;
+      const accountAddress = hyperliquidExecutionAddress(credential);
+      if (
+        !data ||
+        typeof data !== "object" ||
+        typeof data.user !== "string" ||
+        !/^0x[0-9a-f]{40}$/iu.test(data.user) ||
+        data.user.toLowerCase() !== accountAddress ||
+        !data.spotState ||
+        typeof data.spotState !== "object"
+      ) {
+        throw new HyperliquidExecutionError("hyperliquid unified spot update identity is invalid", 502);
+      }
+      const nextSpotState = data.spotState;
+      hyperliquidUnifiedReadiness({
+        spotState: nextSpotState,
+      });
+      currentSpotState = nextSpotState;
+      return true;
+    }
     if (channel === "activeAssetData") {
       onEvent({ event: "account_event", data: sanitizeActiveAssetData(data) });
       return false;
@@ -1019,44 +1264,6 @@ function mergeHyperliquidOpenOrderUpdates(current, data) {
   return next;
 }
 
-const TERMINAL_HYPERLIQUID_ORDER_STATUSES = new Set([
-  "filled",
-  "canceled",
-  "cancelled",
-  "rejected",
-  "margincanceled",
-  "expired",
-  "triggered",
-  "vaultwithdrawalcanceled",
-  "openinterestcapcanceled",
-  "selftradecanceled",
-  "reduceonlycanceled",
-  "siblingfilledcanceled",
-  "delistedcanceled",
-  "liquidatedcanceled",
-  "scheduledcancel",
-  "tickrejected",
-  "mintradentlrejected",
-  "mintradespotntlrejected",
-  "perpmarginrejected",
-  "reduceonlyrejected",
-  "badalopxrejected",
-  "ioccancelrejected",
-  "badtriggerpxrejected",
-  "marketordernoliquidityrejected",
-  "positionincreaseatopeninterestcaprejected",
-  "positionflipatopeninterestcaprejected",
-  "tooaggressiveatopeninterestcaprejected",
-  "openinterestincreaserejected",
-  "insufficientspotbalancerejected",
-  "oraclerejected",
-  "perpmaxpositionrejected",
-]);
-
-function normalizeHyperliquidOrderStatus(value) {
-  return stringValue(value).toLowerCase().replace(/[^a-z0-9]+/gu, "");
-}
-
 function hyperliquidOpenOrderKey(order) {
   const oid = stringValue(order?.oid);
   if (oid) return `oid:${oid}`;
@@ -1064,10 +1271,49 @@ function hyperliquidOpenOrderKey(order) {
   return cloid ? `cloid:${cloid}` : "";
 }
 
+function hyperliquidUnifiedReadiness({ spotState }) {
+  if (!spotState || typeof spotState !== "object" || !Array.isArray(spotState.balances)) {
+    throw new HyperliquidExecutionError("hyperliquid unified spot state is invalid", 502);
+  }
+  if (spotState.balances.some((balance) => !balance || typeof balance !== "object" || Array.isArray(balance))) {
+    throw new HyperliquidExecutionError("hyperliquid unified spot balance is invalid", 502);
+  }
+  const usdcBalances = spotState.balances.filter((balance) => balance.coin === "USDC" || balance.token === 0);
+  let spotAvailable = { units: 0n, scale: 0 };
+  if (usdcBalances.length > 0) {
+    const usdc = usdcBalances[0];
+    if (usdcBalances.length !== 1 || usdc.coin !== "USDC" || usdc.token !== 0) {
+      throw new HyperliquidExecutionError("hyperliquid unified USDC balance is invalid", 502);
+    }
+    if (typeof usdc.total !== "string" || typeof usdc.hold !== "string") {
+      throw new HyperliquidExecutionError("hyperliquid unified USDC balance is invalid", 502);
+    }
+    spotAvailable = subtractExactUnsignedDecimals(
+      exactUnsignedDecimal(usdc.total, "hyperliquid unified USDC total"),
+      exactUnsignedDecimal(usdc.hold, "hyperliquid unified USDC hold"),
+      "hyperliquid unified USDC hold",
+    );
+  }
+
+  const zero = { units: 0n, scale: 0 };
+  const readyThreshold = { units: 5n, scale: 0 };
+  const spotComparison = compareExactUnsignedDecimals(spotAvailable, readyThreshold);
+  return {
+    ready: spotComparison >= 0,
+    equityBucket: compareExactUnsignedDecimals(spotAvailable, zero) === 0
+      ? "none"
+      : spotComparison < 0
+        ? "low"
+        : "ready",
+  };
+}
+
 function hyperliquidAccountStateFromParts({
   state,
   openOrders,
   userFills,
+  abstraction,
+  spotState,
   accountSource,
   network,
   streamStatus = "snapshot",
@@ -1084,7 +1330,12 @@ function hyperliquidAccountStateFromParts({
   const recentFills = sanitizeFills(userFills);
   const positionCount = positions.length;
   const openOrderCount = sanitizedOpenOrders.length;
-  const status = accountValue >= 5 ? "ready_to_trade" : "needs_funds";
+  const unifiedReadiness = abstraction === "unifiedAccount"
+    ? hyperliquidUnifiedReadiness({ spotState })
+    : null;
+  const status = unifiedReadiness
+    ? unifiedReadiness.ready ? "ready_to_trade" : "needs_funds"
+    : accountValue >= 5 ? "ready_to_trade" : "needs_funds";
   return {
     version: 1,
     platform_class: "hyperliquid_style_market",
@@ -1093,12 +1344,12 @@ function hyperliquidAccountStateFromParts({
     account_source: accountSource,
     network: network === "testnet" ? "testnet" : "mainnet",
     trading_enabled: status === "ready_to_trade",
-    equity_bucket: accountValue <= 0
+    equity_bucket: unifiedReadiness?.equityBucket ?? (accountValue <= 0
       ? "none"
       : accountValue < 5
         ? "low"
-        : "ready",
-    margin_utilization_bucket: hyperliquidMarginUtilizationBucket(state),
+        : "ready"),
+    margin_utilization_bucket: unifiedReadiness ? "unknown" : hyperliquidMarginUtilizationBucket(state),
     position_count: positionCount,
     position_total_count: positionTotalCount,
     positions_truncated: positionTotalCount > positionCount,

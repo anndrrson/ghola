@@ -232,7 +232,7 @@ is explicitly set. Managed allocations use worker-local testnet API wallets:
 Mainnet submit remains blocked unless `PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE` is
 explicitly `tiny_fill` or `full_ticket`. Public trading uses only `full_ticket`
 after its signed exact-plan, account, market, release, and global gates pass.
-`tiny_fill` remains an order-level marker for the bounded $10.50 proof; the
+`tiny_fill` remains an order-level marker for the bounded $11.00 proof; the
 worker itself must be in `full_ticket` mode.
 
 `POST /hyperliquid/verify` is the no-submit readiness path. It requires
@@ -245,7 +245,7 @@ explicit canary submit.
 
 The public funded proof requires an initially flat HYPE position, an approved
 trade-only API wallet, shared Postgres claims, and all exact guards. It opens
-exactly $10.50 with atomic venue-native TP/SL, proves isolated 1×, observes the
+exactly $11.00 with atomic venue-native TP/SL, proves isolated 1×, observes the
 exact position, closes that size reduce-only, terminally cancels both protection
 children, and replays both claims without another submit. It then independently
 re-queries every order, fill, account state, and open order, recording public

@@ -1,4 +1,7 @@
-import type { PrivateAccountLiveTradingStatus } from "./private-account-client";
+import type {
+  PrivateAccountLiveTradingStatus,
+  PrivateAccountTerminalAccessStatus,
+} from "./private-account-client";
 import {
   privateAccountByoPlanContainment,
   type PrivateAccountByoLiveOrderShape,
@@ -12,12 +15,18 @@ import {
   LIVE_TRADING_REQUIRED_CONSECUTIVE_PROOFS,
   LIVE_TRADING_ROLLING_24H_NOTIONAL_USD,
   isLiveTradingCapability,
+  type LiveTradingCapabilityId,
 } from "./live-trading-contract";
 
 export const TERMINAL_LIVE_STATUS_MAX_AGE_MS = 30_000;
 
 export type TerminalLiveStatusChronologyDecision =
   | { action: "accept"; status: PrivateAccountLiveTradingStatus; checkedAtMs: number }
+  | { action: "ignore"; status: null; checkedAtMs: number }
+  | { action: "block"; status: null; checkedAtMs: number };
+
+export type TerminalAccountAccessChronologyDecision =
+  | { action: "accept"; status: PrivateAccountTerminalAccessStatus; checkedAtMs: number }
   | { action: "ignore"; status: null; checkedAtMs: number }
   | { action: "block"; status: null; checkedAtMs: number };
 
@@ -39,6 +48,30 @@ export function terminalLiveStatusChronologyDecision(input: {
   }
   if (checkedAtMs === input.latestCheckedAtMs) {
     return input.current && liveAuthorizationFingerprint(input.current) === liveAuthorizationFingerprint(candidate)
+      ? { action: "ignore", status: null, checkedAtMs }
+      : { action: "block", status: null, checkedAtMs };
+  }
+  return { action: "accept", status: candidate, checkedAtMs };
+}
+
+export function terminalAccountAccessChronologyDecision(input: {
+  current: PrivateAccountTerminalAccessStatus | null;
+  latestCheckedAtMs: number;
+  candidate: unknown;
+  nowMs?: number;
+}): TerminalAccountAccessChronologyDecision {
+  const candidate = inspectTerminalAccountAccessStatus(input.candidate);
+  if (!candidate) return { action: "block", status: null, checkedAtMs: input.latestCheckedAtMs };
+  const checkedAtMs = Date.parse(candidate.checked_at);
+  const nowMs = input.nowMs ?? Date.now();
+  if (!Number.isFinite(nowMs) || checkedAtMs > nowMs + 30_000) {
+    return { action: "block", status: null, checkedAtMs: input.latestCheckedAtMs };
+  }
+  if (checkedAtMs < input.latestCheckedAtMs) {
+    return { action: "ignore", status: null, checkedAtMs: input.latestCheckedAtMs };
+  }
+  if (checkedAtMs === input.latestCheckedAtMs) {
+    return input.current && accountAccessFingerprint(input.current) === accountAccessFingerprint(candidate)
       ? { action: "ignore", status: null, checkedAtMs }
       : { action: "block", status: null, checkedAtMs };
   }
@@ -82,6 +115,51 @@ export function inspectTerminalLiveTradingStatus(value: unknown): PrivateAccount
   return value as PrivateAccountLiveTradingStatus;
 }
 
+export function inspectTerminalAccountAccessStatus(value: unknown): PrivateAccountTerminalAccessStatus | null {
+  const row = record(value);
+  const requirements = record(row?.account_requirements);
+  const configured = row?.configured_capabilities;
+  const required = row?.required_capabilities;
+  const authorized = row?.authorized_capabilities;
+  if (
+    !row
+    || row.version !== 1
+    || (row.status !== "green" && row.status !== "red")
+    || row.venue_id !== "hyperliquid"
+    || row.network !== "mainnet"
+    || typeof row.opening_orders_enabled !== "boolean"
+    || !["public", "account_canary", "blocked"].includes(String(row.access_mode))
+    || !["disabled", "canary", "public", "killed"].includes(String(row.launch_state))
+    || !validReleaseIdentity(row.release_identity)
+    || (row.live_worker_readiness !== null && !validLiveWorkerReadiness(row.live_worker_readiness))
+    || !validEffectiveCaps(row.effective_caps)
+    || !validCapabilityIdArray(configured)
+    || !validCapabilityIdArray(required)
+    || !validCapabilityIdArray(authorized)
+    || !requirements
+    || !booleanFields(requirements, ["account_ready", "vault_ready", "eligibility_ready", "entitlement_ready", "graduation_ready"])
+    || (row.graduation_completed_at !== null && !canonicalIso(row.graduation_completed_at))
+    || !safeStringArray(row.reason_codes)
+    || !safeText(row.access_commitment, 256)
+    || !canonicalIso(row.checked_at)
+  ) return null;
+  const configuredCapabilities = configured as string[];
+  const requiredCapabilities = required as string[];
+  const authorizedCapabilities = authorized as string[];
+  const allRequirementsReady = ["account_ready", "vault_ready", "eligibility_ready", "entitlement_ready", "graduation_ready"]
+    .every((field) => requirements[field] === true);
+  const coherentReady = row.status === "green" && row.opening_orders_enabled === true &&
+    (row.access_mode === "public" || row.access_mode === "account_canary") &&
+    ((row.access_mode === "public" && row.launch_state === "public") ||
+      (row.access_mode === "account_canary" && row.launch_state === "canary")) &&
+    record(row.release_identity)?.valid === true && record(row.live_worker_readiness)?.ready === true &&
+    allRequirementsReady && requiredCapabilities.length > 0 &&
+    requiredCapabilities.every((capability) => configuredCapabilities.includes(capability) && authorizedCapabilities.includes(capability));
+  const coherentBlocked = row.status === "red" && row.opening_orders_enabled === false &&
+    row.access_mode === "blocked" && authorizedCapabilities.length === 0;
+  return coherentReady || coherentBlocked ? value as PrivateAccountTerminalAccessStatus : null;
+}
+
 export function terminalByoVenueReady(
   status: PrivateAccountLiveTradingStatus | null,
   venue: "hyperliquid" | "phoenix" | "coinbase",
@@ -105,18 +183,44 @@ export function terminalByoVenueReady(
     inspected.byo_live_venues.some((item) => item.id === venue && item.status === "green");
 }
 
+export function terminalAccountCanaryVenueReady(
+  status: PrivateAccountTerminalAccessStatus | null,
+  venue: "hyperliquid" | "phoenix" | "coinbase",
+  receivedAt: number | null,
+  nowMs = Date.now(),
+): boolean {
+  const inspected = inspectTerminalAccountAccessStatus(status);
+  if (!inspected || venue !== "hyperliquid" || receivedAt == null || nowMs < receivedAt ||
+    nowMs - receivedAt > TERMINAL_LIVE_STATUS_MAX_AGE_MS) return false;
+  const checkedAt = Date.parse(inspected.checked_at);
+  return Number.isFinite(checkedAt) && checkedAt <= nowMs &&
+    nowMs - checkedAt <= TERMINAL_LIVE_STATUS_MAX_AGE_MS &&
+    inspected.status === "green" && inspected.opening_orders_enabled === true &&
+    inspected.access_mode === "account_canary" && inspected.launch_state === "canary" &&
+    inspected.release_identity.valid === true && inspected.live_worker_readiness?.ready === true;
+}
+
 export function terminalByoExecutionReadiness(
   status: PrivateAccountLiveTradingStatus | null,
   venue: "hyperliquid" | "phoenix" | "coinbase",
   receivedAt: number | null,
   order: PrivateAccountByoLiveOrderShape | null,
   nowMs = Date.now(),
+  accountAccess: PrivateAccountTerminalAccessStatus | null = null,
+  accountAccessReceivedAt: number | null = null,
 ): PrivateAccountByoPlanContainment {
-  if (!terminalByoVenueReady(status, venue, receivedAt, nowMs)) {
+  const publicReady = terminalByoVenueReady(status, venue, receivedAt, nowMs);
+  const accountCanaryReady = terminalAccountCanaryVenueReady(
+    accountAccess,
+    venue,
+    accountAccessReceivedAt,
+    nowMs,
+  );
+  if (!publicReady && !accountCanaryReady) {
     return {
       allowed: false,
       reason_code: "terminal_byo_live_gate_not_ready",
-      message: "The fresh global and venue live-trading gates must both be green.",
+      message: "A fresh public gate or owner-bound canary authorization is required.",
     };
   }
   if (!order || order.venue_id !== venue) {
@@ -132,8 +236,11 @@ export function terminalByoExecutionReadiness(
     order.order_type.toLowerCase() === "limit" && order.time_in_force.toLowerCase() === "ioc"
     ? "limit_order"
     : null;
-  const protectionConfigured = status?.hyperliquid_capabilities.some((item) => item.id === "stop_loss" && item.visible) === true &&
-    status.hyperliquid_capabilities.some((item) => item.id === "take_profit" && item.visible);
+  const protectionConfigured = accountCanaryReady
+    ? (["stop_loss", "take_profit"] as LiveTradingCapabilityId[])
+        .every((capability) => accountAccess?.configured_capabilities.includes(capability))
+    : status?.hyperliquid_capabilities.some((item) => item.id === "stop_loss" && item.visible) === true &&
+      status.hyperliquid_capabilities.some((item) => item.id === "take_profit" && item.visible);
   if (protectionConfigured && !order.protection_intent) {
     return {
       allowed: false,
@@ -141,13 +248,16 @@ export function terminalByoExecutionReadiness(
       message: "This release requires a bound venue-native stop and take-profit plan.",
     };
   }
-  const requiredCapabilities = capability
+  const requiredCapabilities: LiveTradingCapabilityId[] = capability
     ? order.protection_intent ? [capability, "stop_loss", "take_profit"] : [capability]
     : [];
-  if (!capability || !requiredCapabilities.every((required) => status?.hyperliquid_capabilities.some((item) =>
-    item.id === required && item.state === "live" && item.visible === true &&
-    item.consecutive_mainnet_proofs >= item.required_mainnet_proofs
-  ))) {
+  const capabilitiesReady = accountCanaryReady
+    ? requiredCapabilities.every((required) => accountAccess?.authorized_capabilities.includes(required) === true)
+    : requiredCapabilities.every((required) => status?.hyperliquid_capabilities.some((item) =>
+        item.id === required && item.state === "live" && item.visible === true &&
+        item.consecutive_mainnet_proofs >= item.required_mainnet_proofs
+      ));
+  if (!capability || !capabilitiesReady) {
     return {
       allowed: false,
       reason_code: "terminal_live_capability_not_proven",
@@ -175,6 +285,25 @@ function liveAuthorizationFingerprint(status: PrivateAccountLiveTradingStatus) {
     status.byo_live_venues
       .map((venue) => [venue.id, venue.status, venue.reason_codes.slice().sort()])
       .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+  ]);
+}
+
+function accountAccessFingerprint(status: PrivateAccountTerminalAccessStatus) {
+  return JSON.stringify([
+    status.status,
+    status.opening_orders_enabled,
+    status.access_mode,
+    status.launch_state,
+    status.release_identity,
+    status.live_worker_readiness,
+    status.effective_caps,
+    status.configured_capabilities.slice().sort(),
+    status.required_capabilities.slice().sort(),
+    status.authorized_capabilities.slice().sort(),
+    status.account_requirements,
+    status.graduation_completed_at,
+    status.reason_codes.slice().sort(),
+    status.access_commitment,
   ]);
 }
 
@@ -275,6 +404,12 @@ function validCapabilityStatus(value: unknown) {
     && row.required_mainnet_proofs === LIVE_TRADING_REQUIRED_CONSECUTIVE_PROOFS
     && (row.last_proven_at === null || canonicalIso(row.last_proven_at))
     && safeStringArray(row.reason_codes));
+}
+
+function validCapabilityIdArray(value: unknown) {
+  return Array.isArray(value) && value.length <= 32 &&
+    value.every((capability) => typeof capability === "string" && isLiveTradingCapability(capability)) &&
+    new Set(value).size === value.length;
 }
 
 function booleanFields(row: Record<string, unknown>, fields: readonly string[]) {

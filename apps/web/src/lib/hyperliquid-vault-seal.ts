@@ -6,6 +6,7 @@ import {
   type ConfidentialComputeProviderStatus,
   type PrivateAgentRuntimeStatus,
 } from "./private-agent-runtime";
+import { gholaCommitment } from "./private-account";
 
 export type HyperliquidNetwork = "mainnet" | "testnet";
 
@@ -23,15 +24,11 @@ export interface HyperliquidEncryptedExecutionVaultBundle {
   aad: string;
 }
 
-export interface HyperliquidCredentialImportResult {
-  draft: HyperliquidExecutionCredentialDraft;
-  fields: Array<"network" | "hyperliquid_account_address" | "api_wallet_private_key" | "agent_name">;
-}
-
 export interface BuildHyperliquidExecutionVaultBundleOptions {
   accountCommitment: string;
   ownerWalletAddress: string;
   credential: HyperliquidExecutionCredentialDraft;
+  agentWalletAddress?: string;
   signBytes: (bytes: Uint8Array) => Promise<Uint8Array>;
   runtimeStatus?: PrivateAgentRuntimeStatus;
   fetchRuntimeStatus?: () => Promise<PrivateAgentRuntimeStatus>;
@@ -46,15 +43,7 @@ export interface BuildHyperliquidExecutionVaultBundleResult {
 
 const ETH_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const PRIVATE_KEY_RE = /^0x[0-9a-fA-F]{64}$/;
-const ETH_ADDRESS_TOKEN_RE = /(?:^|[^0-9a-fA-F])(0x[0-9a-fA-F]{40})(?![0-9a-fA-F])/;
-const PRIVATE_KEY_TOKEN_RE = /(?:^|[^0-9a-fA-F])(0x[0-9a-fA-F]{64})(?![0-9a-fA-F])/;
 const AGENT_NAME_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
-const DEFAULT_HYPERLIQUID_DRAFT: HyperliquidExecutionCredentialDraft = {
-  network: "mainnet",
-  hyperliquid_account_address: "",
-  api_wallet_private_key: "",
-  agent_name: "",
-};
 
 export function validateHyperliquidExecutionCredentialDraft(
   draft: HyperliquidExecutionCredentialDraft,
@@ -74,76 +63,6 @@ export function validateHyperliquidExecutionCredentialDraft(
     errors.push("Agent name can use letters, numbers, dash, underscore, dot, or colon.");
   }
   return errors;
-}
-
-export function parseHyperliquidCredentialImport(
-  value: string,
-  current: HyperliquidExecutionCredentialDraft = DEFAULT_HYPERLIQUID_DRAFT,
-): HyperliquidCredentialImportResult {
-  const parsed = parseImportValue(value);
-  const fields: HyperliquidCredentialImportResult["fields"] = [];
-  const next: HyperliquidExecutionCredentialDraft = {
-    network: current.network,
-    hyperliquid_account_address: current.hyperliquid_account_address,
-    api_wallet_private_key: current.api_wallet_private_key,
-    agent_name: current.agent_name || "",
-  };
-  const network = normalizeNetwork(firstStringByKeys(parsed, [
-    "network",
-    "hyperliquid_network",
-    "hl_network",
-    "chain",
-  ]) || value);
-  if (network) {
-    next.network = network;
-    fields.push("network");
-  }
-  const account = firstStringByKeys(parsed, [
-    "hyperliquid_account_address",
-    "hyperliquid_account",
-    "account_address",
-    "accountAddress",
-    "user",
-    "user_address",
-    "userAddress",
-    "master",
-    "master_address",
-    "masterAddress",
-    "address",
-  ]) || value.match(ETH_ADDRESS_TOKEN_RE)?.[1] || "";
-  if (ETH_ADDRESS_RE.test(account.trim())) {
-    next.hyperliquid_account_address = account.trim().toLowerCase();
-    fields.push("hyperliquid_account_address");
-  }
-  const privateKey = firstStringByKeys(parsed, [
-    "api_wallet_private_key",
-    "apiWalletPrivateKey",
-    "agent_private_key",
-    "agentPrivateKey",
-    "private_key",
-    "privateKey",
-    "secret_key",
-    "secretKey",
-    "key",
-  ]) || value.match(PRIVATE_KEY_TOKEN_RE)?.[1] || "";
-  if (PRIVATE_KEY_RE.test(privateKey.trim())) {
-    next.api_wallet_private_key = privateKey.trim().toLowerCase();
-    fields.push("api_wallet_private_key");
-  }
-  const agentName = firstStringByKeys(parsed, [
-    "agent_name",
-    "agentName",
-    "name",
-    "label",
-  ]) || "";
-  if (agentName.trim() && AGENT_NAME_RE.test(agentName.trim())) {
-    next.agent_name = agentName.trim();
-    fields.push("agent_name");
-  }
-  return {
-    draft: next,
-    fields: Array.from(new Set(fields)),
-  };
 }
 
 export async function fetchPrivateAgentRuntimeStatus(): Promise<PrivateAgentRuntimeStatus> {
@@ -192,6 +111,12 @@ export async function buildHyperliquidExecutionVaultBundle(
     accountCommitment: options.accountCommitment,
     recipientId: recipient.recipient_id,
     network: normalizedNetwork,
+    ...(options.agentWalletAddress
+      ? {
+          venueAccountAddress: options.credential.hyperliquid_account_address,
+          agentWalletAddress: options.agentWalletAddress,
+        }
+      : {}),
   });
   const sealedPlaintext = {
     version: 1,
@@ -231,13 +156,90 @@ export function hyperliquidVaultAssociatedData(input: {
   accountCommitment: string;
   recipientId: string;
   network: HyperliquidNetwork;
+  venueAccountAddress?: string;
+  agentWalletAddress?: string;
 }) {
+  const identity = input.venueAccountAddress && input.agentWalletAddress
+    ? hyperliquidVaultIdentityCommitments({
+        venueAccountAddress: input.venueAccountAddress,
+        agentWalletAddress: input.agentWalletAddress,
+      })
+    : null;
   return [
-    "ghola/hyperliquid-execution-vault-v1",
+    identity
+      ? "ghola/hyperliquid-execution-vault-v2"
+      : "ghola/hyperliquid-execution-vault-v1",
     `account:${input.accountCommitment}`,
     `recipient:${input.recipientId}`,
     `network:${input.network}`,
+    ...(identity
+      ? [
+          `venue-account:${identity.venue_account_commitment}`,
+          `agent-wallet:${identity.agent_wallet_commitment}`,
+        ]
+      : []),
   ].join("|");
+}
+
+export function parseHyperliquidVaultAssociatedData(value: string): {
+  version: 1 | 2;
+  account_commitment: string;
+  recipient: string;
+  network: HyperliquidNetwork;
+  venue_account_commitment: string | null;
+  agent_wallet_commitment: string | null;
+} | null {
+  const [version, accountPart, recipientPart, networkPart, venueAccountPart, agentWalletPart, ...extra] = value.split("|");
+  const parsedVersion = version === "ghola/hyperliquid-execution-vault-v1"
+    ? 1
+    : version === "ghola/hyperliquid-execution-vault-v2"
+      ? 2
+      : null;
+  if (!parsedVersion || extra.length > 0) return null;
+  const account = accountPart?.startsWith("account:") ? accountPart.slice("account:".length) : "";
+  const recipient = recipientPart?.startsWith("recipient:") ? recipientPart.slice("recipient:".length) : "";
+  const network = networkPart?.startsWith("network:") ? networkPart.slice("network:".length) : "";
+  if (!account || !recipient || (network !== "mainnet" && network !== "testnet")) return null;
+  if (parsedVersion === 1) {
+    if (venueAccountPart !== undefined || agentWalletPart !== undefined) return null;
+    return {
+      version: 1,
+      account_commitment: account,
+      recipient,
+      network,
+      venue_account_commitment: null,
+      agent_wallet_commitment: null,
+    };
+  }
+  const venueAccount = venueAccountPart?.startsWith("venue-account:")
+    ? venueAccountPart.slice("venue-account:".length)
+    : "";
+  const agentWallet = agentWalletPart?.startsWith("agent-wallet:")
+    ? agentWalletPart.slice("agent-wallet:".length)
+    : "";
+  if (!/^hyperliquid_venue_account_[0-9a-f]{48}$/.test(venueAccount) ||
+      !/^hyperliquid_agent_wallet_[0-9a-f]{48}$/.test(agentWallet)) return null;
+  return {
+    version: 2,
+    account_commitment: account,
+    recipient,
+    network,
+    venue_account_commitment: venueAccount,
+    agent_wallet_commitment: agentWallet,
+  };
+}
+
+export function hyperliquidVaultIdentityCommitments(input: {
+  venueAccountAddress: string;
+  agentWalletAddress: string;
+}) {
+  const venueAccount = normalizedEvmAddress(input.venueAccountAddress);
+  const agentWallet = normalizedEvmAddress(input.agentWalletAddress);
+  if (venueAccount === agentWallet) throw new Error("Hyperliquid master and API wallet must differ.");
+  return {
+    venue_account_commitment: gholaCommitment("hyperliquid_venue_account", venueAccount),
+    agent_wallet_commitment: gholaCommitment("hyperliquid_agent_wallet", agentWallet),
+  };
 }
 
 function selectedReadyProvider(
@@ -261,58 +263,10 @@ function isPrivateAgentRuntimeStatus(value: unknown): value is PrivateAgentRunti
   );
 }
 
-function parseImportValue(value: string): unknown {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  if (trimmed.startsWith("{")) {
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      return null;
-    }
-  }
-  const record: Record<string, string> = {};
-  for (const line of trimmed.split(/\r?\n/)) {
-    const match = line.match(/^\s*([A-Za-z0-9_.-]+)\s*(?:=|:)\s*(.+?)\s*$/);
-    if (!match) continue;
-    record[match[1]] = match[2].replace(/^["']|["']$/g, "");
-  }
-  return Object.keys(record).length ? record : null;
-}
-
-function firstStringByKeys(value: unknown, keys: string[]): string | null {
-  const wanted = new Set(keys.map((key) => key.toLowerCase()));
-  const seen = new Set<unknown>();
-  function visit(node: unknown): string | null {
-    if (!node || typeof node !== "object" || seen.has(node)) return null;
-    seen.add(node);
-    if (Array.isArray(node)) {
-      for (const child of node) {
-        const found = visit(child);
-        if (found) return found;
-      }
-      return null;
-    }
-    for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
-      if (wanted.has(key.toLowerCase()) && typeof child === "string" && child.trim()) {
-        return child.trim();
-      }
-    }
-    for (const child of Object.values(node as Record<string, unknown>)) {
-      const found = visit(child);
-      if (found) return found;
-    }
-    return null;
-  }
-  return visit(value);
-}
-
-function normalizeNetwork(value: string): HyperliquidNetwork | null {
+function normalizedEvmAddress(value: string): string {
   const normalized = value.trim().toLowerCase();
-  if (!normalized) return null;
-  if (normalized.includes("testnet") || normalized.includes("test")) return "testnet";
-  if (normalized.includes("mainnet") || normalized.includes("main")) return "mainnet";
-  return null;
+  if (!ETH_ADDRESS_RE.test(normalized)) throw new Error("Hyperliquid wallet address is invalid.");
+  return normalized;
 }
 
 function solanaAddressToDid(address: string): string | null {

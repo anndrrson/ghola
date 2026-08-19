@@ -165,12 +165,29 @@ export interface AutopilotSession {
   execution_enabled: boolean;
   autonomous_live_submit_enabled: boolean;
   autonomous_execution_mode: "no_submit" | "live";
+  final_flat_evidence?: AutopilotFinalFlatEvidence | null;
   control_plane: "android" | "worker";
   visibility_summary: {
     main_wallet_prompts_per_trade: false;
     execution_boundary: "bounded_session_policy" | "bounded_delegated_worker_policy";
     user_can_kill_anytime: true;
   };
+}
+
+export interface AutopilotFinalFlatEvidence {
+  proof_kind: "hyperliquid_kill_and_flat_v1";
+  status: "reconciled";
+  final_flat_proven: true;
+  account_flat: true;
+  open_order_count: 0;
+  reduce_only_exit_proven: true;
+  cancellations_terminal: true;
+  cancellations: Record<string, unknown>[];
+  closes: Record<string, unknown>[];
+  evidence_commitment: string;
+  root_work_order_commitment: string;
+  reconciled_at: string;
+  completed_at: string;
 }
 
 export interface AutopilotRiskSummary {
@@ -199,7 +216,7 @@ export interface AutopilotCreateResult {
   events: AutopilotEvent[];
 }
 
-export type AutopilotControlAction = "pause" | "resume" | "kill";
+export type AutopilotControlAction = "pause" | "resume" | "kill" | "kill_and_flat";
 
 export type AutonomousAutopilotControlFailure =
   | { error: "autopilot_session_not_found" }
@@ -459,7 +476,7 @@ export async function listAutopilotSessionsForOwner(
 
 export async function controlAutopilotSessionFromBody(
   sessionId: string,
-  action: AutopilotControlAction,
+  action: Exclude<AutopilotControlAction, "kill_and_flat">,
   owner: AutopilotOwner,
   now: Date = new Date(),
 ): Promise<{ session: AutopilotSession; event: AutopilotEvent } | { error: "autopilot_session_not_found" }> {
@@ -516,7 +533,7 @@ export async function controlAutonomousAutopilotSessionFromBody(
       return { error: "autopilot_session_not_found" };
     }
     if (
-      action !== "kill"
+      action !== "kill" && action !== "kill_and_flat"
       && ["killed", "expired", "blocked", "risk_halted"].includes(local.status)
     ) {
       return {
@@ -529,6 +546,14 @@ export async function controlAutonomousAutopilotSessionFromBody(
 
     const workerSessionId = local.worker_autopilot_session_id;
     if (!workerSessionId) {
+      if (action === "kill_and_flat") {
+        return {
+          error: "autopilot_worker_control_unconfirmed",
+          action,
+          reason: "worker_session_required_for_final_flat_evidence",
+          retryable: true,
+        };
+      }
       return controlAutopilotSessionFromBody(sessionId, action, owner, now);
     }
 
@@ -1008,7 +1033,8 @@ async function controlWorkerAutopilotSession(
   }
   const cfg = autopilotWorkerConfig(env);
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
-  const workerPath = `/autopilot/sessions/${encodeURIComponent(workerSessionId)}/${action}`;
+  const workerAction = action === "kill_and_flat" ? "kill-and-flat" : action;
+  const workerPath = `/autopilot/sessions/${encodeURIComponent(workerSessionId)}/${workerAction}`;
   const authorization = workerAuthorizationHeader({
     env,
     fallbackToken: cfg.token,
@@ -1025,7 +1051,7 @@ async function controlWorkerAutopilotSession(
   const controller = new AbortController();
   const timeout = setTimeout(
     () => controller.abort(),
-    autopilotControlTimeoutMs(env),
+    action === "kill_and_flat" ? 120_000 : autopilotControlTimeoutMs(env),
   );
   const response = await fetchImpl(
     new URL(workerPath, cfg.url),
@@ -1087,6 +1113,15 @@ function workerControlAcknowledgmentError(
     return status === "killed" && session.execution_enabled === false
       ? null
       : "worker_kill_not_acknowledged";
+  }
+  if (action === "kill_and_flat") {
+    const evidence = finalFlatEvidenceValue(session.final_flat_evidence);
+    const eventData = record(event.data);
+    return status === "killed" && session.execution_enabled === false && evidence &&
+      eventData.final_flat_proven === true &&
+      stringValue(eventData.evidence_commitment) === evidence.evidence_commitment
+      ? null
+      : "worker_final_flat_not_acknowledged";
   }
   if (action === "pause") {
     return status === "paused" && session.execution_enabled === false
@@ -1162,6 +1197,7 @@ async function mergeWorkerSession(
       stringValue(workerSession.autonomous_execution_mode) === "live"
       ? "live"
       : "no_submit",
+    final_flat_evidence: finalFlatEvidenceValue(workerSession.final_flat_evidence) ?? local.final_flat_evidence ?? null,
     control_plane: "worker",
   };
   await persistSession(merged);
@@ -1798,6 +1834,7 @@ function sessionFromRecord(stored: PrivateAutopilotSessionRecordV1): AutopilotSe
       stringValue(raw.autonomous_execution_mode) === "live"
       ? "live"
       : "no_submit",
+    final_flat_evidence: finalFlatEvidenceValue(raw.final_flat_evidence),
     control_plane: stringValue(raw.control_plane) === "worker" ? "worker" : "android",
     visibility_summary: {
       main_wallet_prompts_per_trade: false,
@@ -1820,6 +1857,74 @@ function riskSummaryValue(value: unknown): AutopilotRiskSummary | null {
     unrealized_pnl_usd: numberValue(raw.unrealized_pnl_usd) ?? 0,
     estimated_total_pnl_usd: numberValue(raw.estimated_total_pnl_usd) ?? 0,
     checked_at: checkedAt,
+  };
+}
+
+function finalFlatEvidenceValue(value: unknown): AutopilotFinalFlatEvidence | null {
+  const raw = optionalRecord(value);
+  if (!raw) return null;
+  const cancellations = Array.isArray(raw.cancellations)
+    ? raw.cancellations.map(optionalRecord).filter(Boolean) as Record<string, unknown>[]
+    : [];
+  const closes = Array.isArray(raw.closes)
+    ? raw.closes.map(optionalRecord).filter(Boolean) as Record<string, unknown>[]
+    : [];
+  const evidenceCommitment = stringValue(raw.evidence_commitment) ?? "";
+  const rootCommitment = stringValue(raw.root_work_order_commitment) ?? "";
+  const reconciledAt = stringValue(raw.reconciled_at);
+  const completedAt = stringValue(raw.completed_at);
+  if (raw.proof_kind !== "hyperliquid_kill_and_flat_v1" || raw.status !== "reconciled" ||
+      raw.final_flat_proven !== true || raw.account_flat !== true || raw.open_order_count !== 0 ||
+      raw.reduce_only_exit_proven !== true || raw.cancellations_terminal !== true ||
+      !/^[A-Za-z0-9_:-]{16,160}$/u.test(evidenceCommitment || "") ||
+      !/^[A-Za-z0-9_:-]{16,160}$/u.test(rootCommitment || "") ||
+      !reconciledAt || !Number.isFinite(Date.parse(reconciledAt)) ||
+      !completedAt || !Number.isFinite(Date.parse(completedAt)) ||
+      !cancellations.every((item) => item.terminal_status === "canceled" &&
+        item.venue_readback_proven === true && Boolean(stringValue(item.venue_order_oid)) &&
+        Boolean(stringValue(item.work_order_commitment)) && item.replay_protected === true) ||
+      !closes.every((item) => item.terminal_status === "filled" && item.reduce_only === true &&
+        item.venue_readback_proven === true && Boolean(stringValue(item.venue_order_oid)) &&
+        Boolean(stringValue(item.work_order_commitment)) &&
+        item.replay_protected === true &&
+        /^[A-Za-z0-9_:-]{16,160}$/u.test(stringValue(item.fill_evidence_commitment) ?? "") &&
+        ["1", "2-4", "5+", "unknown"].includes(stringValue(item.fill_count_bucket) ?? ""))) {
+    return null;
+  }
+  const publicCancellations = cancellations.map((item) => ({
+    market: stringValue(item.market) ?? "",
+    work_order_commitment: stringValue(item.work_order_commitment) ?? "",
+    venue_order_oid: stringValue(item.venue_order_oid) ?? "",
+    terminal_status: "canceled",
+    venue_readback_proven: true,
+    replay_protected: true,
+  }));
+  const publicCloses = closes.map((item) => ({
+    market: stringValue(item.market) ?? "",
+    work_order_commitment: stringValue(item.work_order_commitment) ?? "",
+    venue_order_oid: stringValue(item.venue_order_oid) ?? "",
+    venue_order_cloid: stringValue(item.venue_order_cloid) ?? "",
+    terminal_status: "filled",
+    reduce_only: true,
+    fill_count_bucket: stringValue(item.fill_count_bucket) ?? "unknown",
+    fill_evidence_commitment: stringValue(item.fill_evidence_commitment) ?? "",
+    venue_readback_proven: true,
+    replay_protected: true,
+  }));
+  return {
+    proof_kind: "hyperliquid_kill_and_flat_v1",
+    status: "reconciled",
+    final_flat_proven: true,
+    account_flat: true,
+    open_order_count: 0,
+    reduce_only_exit_proven: true,
+    cancellations_terminal: true,
+    cancellations: publicCancellations,
+    closes: publicCloses,
+    evidence_commitment: evidenceCommitment,
+    root_work_order_commitment: rootCommitment,
+    reconciled_at: reconciledAt,
+    completed_at: completedAt,
   };
 }
 

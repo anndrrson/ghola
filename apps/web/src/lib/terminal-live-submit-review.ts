@@ -14,6 +14,12 @@ export interface TerminalLiveSubmitReviewSnapshot {
   baseSize: string;
   limitPrice: string;
   invalidationLevel: string;
+  venueProtection: null | {
+    mode: "venue_native_oco";
+    takeProfitLevel: string;
+    stopLossLevel: string;
+    maxSlippageBps: number;
+  };
   maxSlippageBps: number;
   executionReferencePrice: string;
   riskBudgetUsd: string;
@@ -59,6 +65,7 @@ export function captureTerminalLiveSubmitReview(
 ): TerminalLiveSubmitReviewSnapshot | null {
   const plan = binding.order_plan;
   const risk = plan.risk_envelope;
+  const protection = plan.protection_intent;
   const executionReferencePrice = plan.market_context.execution_reference_price;
   if (
     !risk
@@ -88,6 +95,15 @@ export function captureTerminalLiveSubmitReview(
     || !Number.isFinite(plan.max_slippage_bps)
     || !Number.isFinite(risk.fee_bps)
     || !Number.isFinite(risk.buffer_bps)
+    || (protection != null && (
+      protection.mode !== "venue_native_oco"
+      || !positiveDecimal(protection.take_profit_level)
+      || !positiveDecimal(protection.stop_level)
+      || protection.stop_level !== plan.stop_intent.stop_level
+      || !Number.isFinite(protection.max_slippage_bps)
+      || protection.max_slippage_bps < 1
+      || protection.max_slippage_bps > 100
+    ))
   ) return null;
 
   return {
@@ -103,6 +119,12 @@ export function captureTerminalLiveSubmitReview(
     baseSize: plan.base_size,
     limitPrice: plan.limit_price,
     invalidationLevel: plan.stop_intent.stop_level,
+    venueProtection: protection ? {
+      mode: protection.mode,
+      takeProfitLevel: protection.take_profit_level,
+      stopLossLevel: protection.stop_level,
+      maxSlippageBps: protection.max_slippage_bps,
+    } : null,
     maxSlippageBps: plan.max_slippage_bps,
     executionReferencePrice,
     riskBudgetUsd: risk.risk_budget_usd,

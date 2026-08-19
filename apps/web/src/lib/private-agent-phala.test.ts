@@ -9,6 +9,7 @@ import {
   phalaJitProvisioningConfigured,
   phalaJitProvisioningEnabled,
   phalaWakeOnUseEnabled,
+  privateAgentInvestorLiveReleaseConfigured,
   privateAgentRemoteExecutionDisabled,
   privateAgentSpendArmed,
   phalaWorkerImageConfiguredForRequestedMode,
@@ -25,6 +26,7 @@ const TEST_ENV_KEYS = [
   "GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN",
   "GHOLA_PRIVATE_AGENT_IMAGE_DIGEST",
   "GHOLA_PRIVATE_AGENT_JIT_PROVISIONING",
+  "GHOLA_PRIVATE_AGENT_PROVISIONING_MUTATIONS_ENABLED",
   "GHOLA_PRIVATE_AGENT_LEASE_STORE",
   "GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED",
   "GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN",
@@ -45,6 +47,7 @@ const TEST_ENV_KEYS = [
   "GHOLA_CONSUMER_SOLANA_USDC_MINT",
   "GHOLA_VERCEL_SPEND_WEBHOOK_SECRET",
   "GHOLA_HYPERLIQUID_LIVE_MODE",
+  "GHOLA_LIVE_TRADING_PUBLIC_ENABLED",
   "GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD",
   "GHOLA_HYPERLIQUID_LIVE_MAX_SLIPPAGE_BPS",
   "GHOLA_LIVE_TRADING_DAILY_CAP_USD",
@@ -68,6 +71,7 @@ const TEST_ENV_KEYS = [
   "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD",
   "PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED",
+  "PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED",
   "PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD",
@@ -84,8 +88,13 @@ const TEST_ENV_KEYS = [
   "PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON",
   "PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON",
   "VERCEL_ENV",
+  "VITEST",
   "NODE_ENV",
 ];
+
+const IMAGE_DIGEST_A = `sha256:${"a".repeat(64)}`;
+const IMAGE_DIGEST_B = `sha256:${"b".repeat(64)}`;
+const IMAGE_DIGEST_D = `sha256:${"d".repeat(64)}`;
 
 afterEach(() => {
   resetPrivateAgentRuntimeLeaseStoreForTests();
@@ -108,12 +117,16 @@ function setTestEnv(values: Record<string, string>): void {
 describe("private-agent Phala provisioning", () => {
   it("builds a no-plaintext worker compose with dstack quote binding", () => {
     const compose = buildPhalaWorkerCompose({
-      image: "ghcr.io/example/worker@sha256:abc",
-      imageDigest: "sha256:abc",
+      image: "ghcr.io/example/worker:release",
+      imageDigest: IMAGE_DIGEST_A,
     });
 
-    expect(compose).toContain("ghcr.io/example/worker@sha256:abc");
+    expect(compose).toContain(`ghcr.io/example/worker:release@${IMAGE_DIGEST_A}`);
     expect(compose).toContain("/var/run/dstack.sock:/var/run/dstack.sock");
+    expect(compose).toContain("private-agent-data:/data");
+    expect(compose).toContain("    read_only: true");
+    expect(compose).toContain("      - /tmp");
+    expect(compose).toContain("      - no-new-privileges:true");
     expect(compose).toContain('PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE: "true"');
     expect(compose).toContain('PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY: "true"');
     expect(compose).toContain(
@@ -126,7 +139,7 @@ describe("private-agent Phala provisioning", () => {
       'PRIVATE_AGENT_FUNDING_SIGNING_KEY: "${PRIVATE_AGENT_FUNDING_SIGNING_KEY:-}"',
     );
     expect(compose).toContain('PRIVATE_AGENT_STATE_STORE: "json"');
-    expect(compose).toContain('PRIVATE_AGENT_IMAGE_DIGEST: "sha256:abc"');
+    expect(compose).toContain(`PRIVATE_AGENT_IMAGE_DIGEST: "${IMAGE_DIGEST_A}"`);
     expect(compose).toContain(
       'PRIVATE_AGENT_STATE_POSTGRES_URL: "${PRIVATE_AGENT_STATE_POSTGRES_URL:-}"',
     );
@@ -183,8 +196,8 @@ describe("private-agent Phala provisioning", () => {
     });
 
     const compose = buildPhalaWorkerCompose({
-      image: "ghcr.io/example/worker@sha256:abc",
-      imageDigest: "sha256:abc",
+      image: "ghcr.io/example/worker:release",
+      imageDigest: IMAGE_DIGEST_A,
     });
 
     expect(compose).toContain('PRIVATE_AGENT_STATE_STORE: "postgres"');
@@ -197,13 +210,28 @@ describe("private-agent Phala provisioning", () => {
   it("pins a tag-only worker image to the configured digest", () => {
     const compose = buildPhalaWorkerCompose({
       image: "ghcr.io/example/worker:private-agent-worker-c8d4eca",
-      imageDigest: "sha256:def",
+      imageDigest: IMAGE_DIGEST_D,
     });
 
     expect(compose).toContain(
-      "image: ghcr.io/example/worker:private-agent-worker-c8d4eca@sha256:def",
+      `image: ghcr.io/example/worker:private-agent-worker-c8d4eca@${IMAGE_DIGEST_D}`,
     );
-    expect(compose).toContain('PHALA_CVM_IMAGE_DIGEST: "sha256:def"');
+    expect(compose).toContain(`PHALA_CVM_IMAGE_DIGEST: "${IMAGE_DIGEST_D}"`);
+  });
+
+  it("rejects pre-pinned images and non-canonical digests", () => {
+    expect(() => buildPhalaWorkerCompose({
+      image: `ghcr.io/example/worker:release@${IMAGE_DIGEST_A}`,
+      imageDigest: IMAGE_DIGEST_A,
+    })).toThrow("must be an unpinned image tag");
+    expect(() => buildPhalaWorkerCompose({
+      image: "ghcr.io/example/worker:release",
+      imageDigest: "sha256:abc",
+    })).toThrow("exact lowercase sha256:<64 hex>");
+    expect(() => buildPhalaWorkerCompose({
+      image: "ghcr.io/example/worker:release",
+      imageDigest: `sha256:${"A".repeat(64)}`,
+    })).toThrow("exact lowercase sha256:<64 hex>");
   });
 
   it("passes live tiny-fill controls into the worker compose", () => {
@@ -215,8 +243,8 @@ describe("private-agent Phala provisioning", () => {
     });
 
     const compose = buildPhalaWorkerCompose({
-      image: "ghcr.io/example/worker@sha256:def",
-      imageDigest: "sha256:def",
+      image: "ghcr.io/example/worker:release",
+      imageDigest: IMAGE_DIGEST_D,
     });
 
     expect(compose).toContain(
@@ -246,11 +274,11 @@ describe("private-agent Phala provisioning", () => {
 
     const compose = buildPhalaWorkerCompose({
       image: `ghcr.io/example/worker:${sha}`,
-      imageDigest: `sha256:${"b".repeat(64)}`,
+      imageDigest: IMAGE_DIGEST_B,
     });
 
     expect(compose).toContain(`PRIVATE_AGENT_BUILD_GIT_SHA: "${sha}"`);
-    expect(compose).toContain(`PRIVATE_AGENT_IMAGE_DIGEST: "sha256:${"b".repeat(64)}"`);
+    expect(compose).toContain(`PRIVATE_AGENT_IMAGE_DIGEST: "${IMAGE_DIGEST_B}"`);
     expect(compose).toContain('PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED: "true"');
     expect(compose).toContain('PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD: "100"');
     expect(compose).toContain('PRIVATE_AGENT_LIVE_DAILY_NOTIONAL_CAP_USD: "500"');
@@ -258,9 +286,37 @@ describe("private-agent Phala provisioning", () => {
     expect(compose).toContain('GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED: "true"');
   });
 
+  it("propagates and cleans up the exact Hyperliquid risk-reduction contract", () => {
+    setTestEnv({
+      GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES: "limit_order,cancel,reduce_only",
+      PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED: "true",
+    });
+
+    const compose = buildPhalaWorkerCompose({
+      image: "ghcr.io/example/worker:release",
+      imageDigest: IMAGE_DIGEST_A,
+    });
+
+    expect(compose).toContain('PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED: "true"');
+    expect(compose).toContain('PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES: "limit_order,cancel,reduce_only"');
+
+    setTestEnv({});
+    const resetCompose = buildPhalaWorkerCompose({
+      image: "ghcr.io/example/worker:release",
+      imageDigest: IMAGE_DIGEST_A,
+    });
+    expect(resetCompose).toContain('PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED: "false"');
+    expect(resetCompose).not.toContain('PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES: "limit_order,cancel,reduce_only"');
+  });
+
   it("refuses live JIT provisioning without an explicit fresh worker image", () => {
     setTestEnv({
+      NODE_ENV: "production",
+      VERCEL_ENV: "production",
+      VITEST: "false",
       GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
+      GHOLA_PRIVATE_AGENT_PROVISIONING_MUTATIONS_ENABLED: "true",
+      GHOLA_PRIVATE_AGENT_SPEND_ARMED: "true",
       GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "true",
       GHOLA_HYPERLIQUID_LIVE_MODE: "tiny_fill",
       PHALA_CLOUD_API_KEY: "phala-key",
@@ -271,6 +327,25 @@ describe("private-agent Phala provisioning", () => {
     expect(phalaJitProvisioningConfigIssue()).toContain(
       "GHOLA_PRIVATE_AGENT_WORKER_IMAGE",
     );
+  });
+
+  it("keeps release mutations default-off and independent from ordinary wake", () => {
+    setTestEnv({
+      NODE_ENV: "production",
+      VERCEL_ENV: "production",
+      VITEST: "false",
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
+      GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "true",
+      GHOLA_PRIVATE_AGENT_SPEND_ARMED: "true",
+      GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED: "true",
+      PHALA_CLOUD_API_KEY: "phala-key",
+    });
+
+    expect(phalaWakeOnUseEnabled()).toBe(true);
+    expect(phalaJitProvisioningEnabled()).toBe(false);
+
+    process.env.GHOLA_PRIVATE_AGENT_PROVISIONING_MUTATIONS_ENABLED = "true";
+    expect(phalaJitProvisioningEnabled()).toBe(true);
   });
 
   it("binds recipient evidence to recipient id and public key", () => {
@@ -305,6 +380,26 @@ describe("private-agent Phala provisioning", () => {
 
     process.env.GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN = "false";
     expect(phalaIdleShutdownEnabled()).toBe(false);
+  });
+
+  it.each([
+    ["PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", "full_ticket"],
+    ["GHOLA_HYPERLIQUID_LIVE_MODE", "tiny_fill"],
+    ["GHOLA_LIVE_TRADING_PUBLIC_ENABLED", "true"],
+  ])("disables idle stop for investor live config %s", async (key, value) => {
+    setTestEnv({
+      GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN: "true",
+      [key]: value,
+    });
+
+    expect(privateAgentInvestorLiveReleaseConfigured()).toBe(true);
+    expect(phalaIdleShutdownEnabled()).toBe(false);
+    await expect(stopIdlePhalaPrivateAgent()).resolves.toMatchObject({
+      attempted: false,
+      stopped: false,
+      status: "disabled",
+      reason: expect.stringContaining("investor live trading"),
+    });
   });
 
   it("does not auto-arm inside the test process even with production-shaped credentials", () => {

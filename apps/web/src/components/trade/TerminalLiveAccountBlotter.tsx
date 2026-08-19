@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useLayoutEffect, useMemo } from "react";
+import { memo, useLayoutEffect, useMemo, useState } from "react";
 import type { TerminalLiveAccountView } from "@/lib/terminal-live-account";
 import { terminalLiveAccountOrderEventKey } from "@/lib/terminal-live-account-events";
 import {
@@ -10,6 +10,11 @@ import {
 import { useTerminalLiveAccount } from "@/lib/use-terminal-live-account";
 import { TerminalLiveAccountTriage } from "@/components/trade/TerminalLiveAccountTriage";
 import { deriveTerminalLiveOrderReconciliation } from "@/lib/terminal-live-order-reconciliation";
+import {
+  HYPERLIQUID_CLOSE_CONFIRMATION,
+  closeHyperliquidPosition,
+} from "@/lib/private-account-client";
+import { authorizePrivateAccountWalletRequest } from "@/lib/private-account-wallet-step-up";
 
 export const TerminalLiveAccountPanel = memo(function TerminalLiveAccountPanel({
   authenticated,
@@ -70,7 +75,7 @@ export const TerminalLiveAccountBlotter = memo(function TerminalLiveAccountBlott
       <div className="flex items-start justify-between gap-3 px-4 py-3">
         <div>
           <h2 id="live-account-blotter-heading" className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#dce6f4]">Live account blotter</h2>
-          <p className="mt-0.5 text-[9px] text-[#66738c]">Hyperliquid · privacy-bucketed positions, orders, fills, lifecycle · read only</p>
+          <p className="mt-0.5 text-[9px] text-[#66738c]">Hyperliquid · privacy-bucketed positions, orders, fills, lifecycle</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {onRefresh ? <button type="button" onClick={onRefresh} disabled={view.status === "connecting"} aria-label="Refresh live account evidence" className="term-chip h-7 px-2 text-[8px] disabled:cursor-wait disabled:opacity-50">Refresh</button> : null}
@@ -132,6 +137,7 @@ export const TerminalLiveAccountBlotter = memo(function TerminalLiveAccountBlott
             }))}
             onInspectMarket={inspectMarket}
           />
+          <ClosePositionControls positions={view.positions.map((position) => position.market)} onRefresh={onRefresh} />
           <AccountTable
             label="Open orders"
             count={view.openOrdersTruncated ? `${view.openOrders.length}/${view.openOrderTotalCount}` : undefined}
@@ -168,12 +174,100 @@ export const TerminalLiveAccountBlotter = memo(function TerminalLiveAccountBlott
             onInspectMarket={inspectMarket}
             inspectColumn={1}
           />
-          <p className="border-t border-[#141d2e] px-4 py-2 text-[8px] leading-3 text-[#566278]">Values, leverage, margin use, and liquidation distance are bounded privacy buckets—not exact venue balances or prices. Market links only navigate; this surface cannot cancel, close, or submit.</p>
+          <p className="border-t border-[#141d2e] px-4 py-2 text-[8px] leading-3 text-[#566278]">Values, leverage, margin use, and liquidation distance are bounded privacy buckets—not exact venue balances or prices. Phantom may first request Solana sign-in (SIWS), then the close requires two scoped Solana message signatures and only submits reduce-only.</p>
         </>
       )}
     </section>
   );
 });
+
+type CloseEvidence = {
+  market_flat?: boolean;
+  final_flat_proven?: boolean;
+  evidence_commitment?: string;
+  closes?: Array<{ venue_order_oid?: string; terminal_status?: string; reduce_only?: boolean; venue_readback_proven?: boolean }>;
+};
+
+type CloseState =
+  | { status: "idle" }
+  | { status: "confirming"; market: "BTC" | "ETH" | "SOL" | "HYPE"; idempotencyKey: string }
+  | { status: "closing"; market: "BTC" | "ETH" | "SOL" | "HYPE" }
+  | { status: "complete"; market: string; evidence: CloseEvidence }
+  | { status: "error"; message: string };
+
+function ClosePositionControls({ positions, onRefresh }: { positions: string[]; onRefresh?: () => void }) {
+  const [state, setState] = useState<CloseState>({ status: "idle" });
+  const markets = [...new Set(positions.map(closeMarket).filter(Boolean))] as Array<"BTC" | "ETH" | "SOL" | "HYPE">;
+  if (!markets.length) return null;
+
+  async function closeConfirmed() {
+    if (state.status !== "confirming") return;
+    const requestBody = {
+      version: 1,
+      market: state.market,
+      idempotency_key: state.idempotencyKey,
+      confirmation: HYPERLIQUID_CLOSE_CONFIRMATION,
+    };
+    try {
+      setState({ status: "closing", market: state.market });
+      const path = "/v1/private-account/hyperliquid/positions/close";
+      const proofHeaders = await authorizePrivateAccountWalletRequest({ path, body: requestBody });
+      const evidence = await closeHyperliquidPosition({
+        market: state.market,
+        idempotencyKey: state.idempotencyKey,
+        proofHeaders,
+      }) as CloseEvidence;
+      const close = evidence.closes?.[0];
+      if (!evidence.market_flat || !evidence.final_flat_proven || !evidence.evidence_commitment ||
+          close?.terminal_status !== "filled" || close.reduce_only !== true || close.venue_readback_proven !== true) {
+        throw new Error("Venue did not return a reconciled reduce-only close receipt.");
+      }
+      setState({ status: "complete", market: state.market, evidence });
+      onRefresh?.();
+    } catch (error) {
+      setState({ status: "error", message: error instanceof Error ? error.message : "Position close failed." });
+    }
+  }
+
+  return (
+    <section className="border-t border-[#141d2e] px-4 py-2.5" aria-label="Reduce-only position controls">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[8px] font-semibold uppercase tracking-[0.12em] text-[#738099]">Position controls</span>
+        {markets.map((market) => (
+          <button key={market} type="button" disabled={state.status === "closing"}
+            onClick={() => setState({ status: "confirming", market, idempotencyKey: `close_${crypto.randomUUID()}` })}
+            className="term-chip h-7 px-2 text-[8px] text-rose-200 disabled:opacity-50">
+            Close {market} · RO
+          </button>
+        ))}
+      </div>
+      {state.status === "confirming" ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-rose-300/20 bg-rose-300/[0.04] px-2 py-2 text-[8px] text-rose-100" role="alert">
+          <span>If Solana sign-in is not current, Phantom may first request SIWS. It then requests a wallet-binding message and the exact reduce-only close request for the full {state.market} position within the release slippage cap.</span>
+          <button type="button" onClick={closeConfirmed} className="term-chip h-7 px-2 font-semibold text-rose-100">Sign + close</button>
+          <button type="button" onClick={() => setState({ status: "idle" })} className="term-chip h-7 px-2">Cancel</button>
+        </div>
+      ) : state.status === "closing" ? (
+        <p className="mt-2 text-[8px] text-amber-100" role="status">Closing {state.market} reduce-only; waiting for venue fill and flat-position readback…</p>
+      ) : state.status === "complete" ? (
+        <p className="mt-2 text-[8px] text-emerald-200" role="status">
+          {state.market} flat · reduce-only fill verified · venue order {shortEvidence(state.evidence.closes?.[0]?.venue_order_oid)} · evidence {shortEvidence(state.evidence.evidence_commitment)}
+        </p>
+      ) : state.status === "error" ? (
+        <p className="mt-2 text-[8px] text-rose-200" role="alert">{state.message}</p>
+      ) : null}
+    </section>
+  );
+}
+
+function closeMarket(value: string): "BTC" | "ETH" | "SOL" | "HYPE" | null {
+  const market = value.trim().toUpperCase().split("-")[0]?.split("/")[0] ?? "";
+  return market === "BTC" || market === "ETH" || market === "SOL" || market === "HYPE" ? market : null;
+}
+
+function shortEvidence(value: string | undefined) {
+  return value ? `${value.slice(0, 12)}…` : "verified";
+}
 
 function AccountTable({ label, headers, rows, empty, count, onInspectMarket, inspectColumn = 0 }: { label: string; headers: string[]; rows: Array<{ key: string; market: string; cells: string[] }>; empty: string; count?: string; onInspectMarket?: (market: string) => void; inspectColumn?: number }) {
   return (

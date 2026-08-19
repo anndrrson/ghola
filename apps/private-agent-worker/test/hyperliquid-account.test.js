@@ -20,7 +20,7 @@ test("reconciles Hyperliquid terminal IOC fills by cloid", async () => {
     const fetchImpl = async (_url, init) => {
       const body = JSON.parse(init.body);
       const value = body.type === "orderStatus"
-        ? { status: "order", order: { order: { coin: "SOL", oid: 77, cloid }, status: "filled", statusTimestamp: 1 } }
+        ? { status: "order", order: { order: { coin: "SOL", oid: 77, cloid, tif: "Ioc", origSz: "0.05", sz: "0", side: "B", limitPx: "200", reduceOnly: false }, status: "filled", statusTimestamp: 1 } }
         : [{ coin: "SOL", oid: 77, px: "200", sz: "0.05", side: "B", time: 1 }];
       return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
     };
@@ -28,6 +28,7 @@ test("reconciles Hyperliquid terminal IOC fills by cloid", async () => {
       credential: credential("testnet"),
       cloid,
       market: "SOL",
+      expectedOrder: { side: "buy", base_size: "0.05", limit_price: "200", reduce_only: false },
       fetchImpl,
     });
     assert.equal(result.terminal, true);
@@ -36,6 +37,21 @@ test("reconciles Hyperliquid terminal IOC fills by cloid", async () => {
     assert.equal(result.filled_base_size, "0.05");
     assert.equal(result.venue_order_reference, "oid:77");
     assert.equal(result.final_proof.final_fill_proven, true);
+    assert.equal(result.final_proof.venue_order_readback_proven, true);
+    assert.equal(result.final_proof.venue_order_oid, "77");
+    assert.equal(result.final_proof.venue_order_cloid, cloid);
+    assert.equal(result.final_proof.venue_order_original_size, "0.05");
+    assert.equal(result.final_proof.venue_order_remaining_size, "0");
+    assert.equal(result.final_proof.venue_order_filled_size, "0.05");
+    const mismatched = await reconcileHyperliquidExecution({
+      credential: credential("testnet"),
+      cloid,
+      market: "SOL",
+      expectedOrder: { side: "buy", base_size: "0.06", limit_price: "200", reduce_only: false },
+      fetchImpl,
+    });
+    assert.equal(mismatched.terminal, false);
+    assert.equal(mismatched.final_proof, null);
   } finally {
     restore(previous);
   }
@@ -49,7 +65,7 @@ test("treats venue-declared IOC rejection statuses as terminal no-fill outcomes"
     const fetchImpl = async (_url, init) => {
       const body = JSON.parse(init.body);
       const value = body.type === "orderStatus"
-        ? { status: "order", order: { order: { coin: "BTC", oid: 78, cloid }, status: "iocCancelRejected", statusTimestamp: 1 } }
+        ? { status: "order", order: { order: { coin: "BTC", oid: 78, cloid, tif: "Ioc", origSz: "0.001", sz: "0.001" }, status: "iocCancelRejected", statusTimestamp: 1 } }
         : [];
       return Response.json(value);
     };
@@ -63,6 +79,189 @@ test("treats venue-declared IOC rejection statuses as terminal no-fill outcomes"
     assert.equal(result.status, "rejected");
     assert.equal(result.final_proof.final_no_fill_proven, true);
     assert.equal(result.final_proof.terminal_status, "iocCancelRejected");
+    assert.equal(result.final_proof.venue_order_oid, "78");
+    assert.equal(result.final_proof.venue_order_cloid, cloid);
+    assert.equal(result.final_proof.venue_order_filled_size, "0");
+  } finally {
+    restore(previous);
+  }
+});
+
+test("does not mistake a partial IOC for no-fill when bounded fill history is empty", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    const cloid = `0x${"7".repeat(32)}`;
+    const fetchImpl = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      return Response.json(body.type === "orderStatus"
+        ? {
+            status: "order",
+            order: {
+              order: { coin: "HYPE", oid: 84, cloid, tif: "Ioc", origSz: "0.2", sz: "0.1" },
+              status: "iocCancelRejected",
+            },
+          }
+        : []);
+    };
+    const result = await reconcileHyperliquidExecution({
+      credential: credential("testnet"),
+      cloid,
+      market: "HYPE",
+      fetchImpl,
+    });
+    assert.equal(result.terminal, false);
+    assert.equal(result.status, "fill_readback_unconfirmed");
+    assert.equal(result.final_proof, null);
+  } finally {
+    restore(previous);
+  }
+});
+
+test("proves a partial IOC only when exact fills match the venue size delta", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    const cloid = `0x${"6".repeat(32)}`;
+    const fetchImpl = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      return Response.json(body.type === "orderStatus"
+        ? {
+            status: "order",
+            order: {
+              order: { coin: "HYPE", oid: 85, cloid, tif: "Ioc", origSz: "0.2", sz: "0.1" },
+              status: "iocCancelRejected",
+            },
+          }
+        : [{ coin: "HYPE", oid: 85, px: "42", sz: "0.1", side: "B", time: 1 }]);
+    };
+    const result = await reconcileHyperliquidExecution({
+      credential: credential("testnet"),
+      cloid,
+      market: "HYPE",
+      fetchImpl,
+    });
+    assert.equal(result.terminal, true);
+    assert.equal(result.status, "partially_filled");
+    assert.equal(result.filled_base_size, "0.1");
+    assert.equal(result.final_proof.final_fill_proven, true);
+    assert.equal(result.final_proof.final_no_fill_proven, false);
+    assert.equal(result.final_proof.venue_order_filled_size, "0.1");
+  } finally {
+    restore(previous);
+  }
+});
+
+test("keeps reconciliation unresolved when the exact fill readback is unavailable", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    const cloid = `0x${"f".repeat(32)}`;
+    const fetchImpl = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      if (body.type === "orderStatus") {
+        return Response.json({
+          status: "order",
+          order: { order: { coin: "HYPE", oid: 81, cloid, tif: "Ioc", origSz: "0.1", sz: "0.1" }, status: "iocCancelRejected" },
+        });
+      }
+      return new Response("unavailable", { status: 503 });
+    };
+    const result = await reconcileHyperliquidExecution({
+      credential: credential("testnet"),
+      cloid,
+      market: "HYPE",
+      fetchImpl,
+    });
+    assert.equal(result.terminal, false);
+    assert.equal(result.status, "fill_readback_unconfirmed");
+    assert.equal(result.final_proof, null);
+  } finally {
+    restore(previous);
+  }
+});
+
+test("keeps a filled order unresolved until at least one exact fill is readable", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    const cloid = `0x${"9".repeat(32)}`;
+    const fetchImpl = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      return Response.json(body.type === "orderStatus"
+        ? { status: "order", order: { order: { coin: "HYPE", oid: 82, cloid, tif: "Ioc", origSz: "0.1", sz: "0" }, status: "filled" } }
+        : []);
+    };
+    const result = await reconcileHyperliquidExecution({
+      credential: credential("testnet"),
+      cloid,
+      market: "HYPE",
+      fetchImpl,
+    });
+    assert.equal(result.terminal, false);
+    assert.equal(result.status, "fill_readback_unconfirmed");
+    assert.equal(result.final_proof, null);
+  } finally {
+    restore(previous);
+  }
+});
+
+test("rejects malformed or cross-market exact-oid fills as reconciliation evidence", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    const scenarios = [
+      { coin: "HYPE", oid: 83, px: "", sz: "0.1" },
+      { coin: "BTC", oid: 83, px: "42", sz: "0.1" },
+    ];
+    for (const fill of scenarios) {
+      const cloid = `0x${"8".repeat(32)}`;
+      const fetchImpl = async (_url, init) => {
+        const body = JSON.parse(init.body);
+        return Response.json(body.type === "orderStatus"
+          ? { status: "order", order: { order: { coin: "HYPE", oid: 83, cloid, tif: "Ioc", origSz: "0.1", sz: "0" }, status: "iocCancelRejected" } }
+          : [fill]);
+      };
+      const result = await reconcileHyperliquidExecution({
+        credential: credential("testnet"),
+        cloid,
+        market: "HYPE",
+        fetchImpl,
+      });
+      assert.equal(result.terminal, false);
+      assert.equal(result.status, "fill_readback_unconfirmed");
+      assert.equal(result.final_proof, null);
+    }
+  } finally {
+    restore(previous);
+  }
+});
+
+test("refuses terminal reconciliation proof when venue oid or cloid is not exact", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    const cloid = `0x${"d".repeat(32)}`;
+    const fetchImpl = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      return Response.json(body.type === "orderStatus"
+        ? {
+            status: "order",
+            order: {
+              order: { coin: "BTC", oid: 80, cloid: `0x${"e".repeat(32)}`, tif: "Ioc", origSz: "0.001", sz: "0" },
+              status: "filled",
+            },
+          }
+        : [{ coin: "BTC", oid: 80, px: "63000", sz: "0.001", side: "B", time: 1 }]);
+    };
+    const result = await reconcileHyperliquidExecution({
+      credential: credential("testnet"),
+      cloid,
+      market: "BTC",
+      fetchImpl,
+    });
+    assert.equal(result.terminal, false);
+    assert.equal(result.final_proof, null);
   } finally {
     restore(previous);
   }
@@ -80,7 +279,7 @@ test("reconciles both deterministic OCO children before resolving a protected fi
         return Response.json([{ coin: "BTC", oid: 79, px: "63000", sz: "0.001", side: "B", time: 1 }]);
       }
       if (body.oid === cloid) {
-        return Response.json({ status: "order", order: { order: { coin: "BTC", oid: 79, cloid }, status: "filled" } });
+        return Response.json({ status: "order", order: { order: { coin: "BTC", oid: 79, cloid, tif: "Ioc", origSz: "0.001", sz: "0" }, status: "filled" } });
       }
       if (body.oid === children.take_profit_cloid || body.oid === children.stop_loss_cloid) {
         return Response.json({
@@ -398,7 +597,9 @@ test("provider pong refreshes account stream liveness without fabricating state"
   }
   const fetchImpl = async (_url, init) => {
     const type = JSON.parse(init.body).type;
-    const value = type === "clearinghouseState"
+    const value = type === "userAbstraction"
+      ? "default"
+      : type === "clearinghouseState"
       ? { marginSummary: { accountValue: "100" }, assetPositions: [] }
       : [];
     return { ok: true, json: async () => value };
@@ -435,7 +636,9 @@ test("incremental order updates reconcile the streamed open-order set", async ()
   }
   const fetchImpl = async (_url, init) => {
     const type = JSON.parse(init.body).type;
-    const value = type === "clearinghouseState"
+    const value = type === "userAbstraction"
+      ? "default"
+      : type === "clearinghouseState"
       ? { marginSummary: { accountValue: "100" }, assetPositions: [] }
       : [];
     return { ok: true, json: async () => value };
@@ -485,13 +688,114 @@ test("account snapshots bind exact public venue and network identity", async () 
   }
 });
 
+test("unified account snapshots use exact spot collateral without leaking values", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    const requests = [];
+    const snapshot = await readHyperliquidAccountSnapshot({
+      credential: credential("testnet"),
+      accountSource: "sealed_byo",
+      fetchImpl: unifiedAccountFetch({ requests }),
+    });
+    assert.equal(snapshot.status, "ready_to_trade");
+    assert.equal(snapshot.trading_enabled, true);
+    assert.equal(snapshot.equity_bucket, "ready");
+    assert.equal(snapshot.margin_utilization_bucket, "unknown");
+    assert.equal(snapshot.position_count, 0);
+    assert.equal(snapshot.open_order_count, 0);
+    assert.deepEqual(new Set(requests), new Set([
+      "userAbstraction",
+      "clearinghouseState",
+      "openOrders",
+      "userFills",
+      "spotClearinghouseState",
+    ]));
+    const serialized = JSON.stringify(snapshot);
+    assert.equal(serialized.includes("21.75"), false);
+  } finally {
+    restore(previous);
+  }
+});
+
+test("unified account snapshots fail closed on unsupported modes and malformed spot state", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  try {
+    await assert.rejects(() => readHyperliquidAccountSnapshot({
+      credential: credential("testnet"),
+      fetchImpl: unifiedAccountFetch({ abstraction: "portfolioMargin" }),
+    }), /account abstraction mode is unsupported/);
+    await assert.rejects(() => readHyperliquidAccountSnapshot({
+      credential: credential("testnet"),
+      fetchImpl: unifiedAccountFetch({ total: "10", hold: "10.01" }),
+    }), /USDC hold is invalid/);
+  } finally {
+    restore(previous);
+  }
+});
+
+test("unified account streams update exact spot collateral and reject cross-user state", async () => {
+  const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+  const events = [];
+  const subscriptions = [];
+  let socket = null;
+  class FakeWebSocket {
+    constructor() { socket = this; queueMicrotask(() => this.onopen?.()); }
+    send(raw) {
+      const message = JSON.parse(raw);
+      if (message.method === "subscribe") subscriptions.push(message.subscription);
+    }
+    close() {}
+  }
+  let stop = () => {};
+  try {
+    stop = await createHyperliquidAccountStateStream({
+      credential: credential("testnet"),
+      fetchImpl: unifiedAccountFetch(),
+      webSocketCtor: FakeWebSocket,
+      onEvent: (event) => events.push(event),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(subscriptions.some((row) => row.type === "spotState"), true);
+    assert.equal(subscriptions.some((row) => row.type === "activeAssetData" && row.coin === "BTC"), true);
+    assert.equal(events.filter((event) => event.event === "account_state").at(-1)?.data?.status, "ready_to_trade");
+
+    const accountStateCount = events.filter((event) => event.event === "account_state").length;
+    socket.onmessage({ data: JSON.stringify({
+      channel: "spotState",
+      data: {
+        user: "0x0000000000000000000000000000000000000002",
+        spotState: { balances: [{ coin: "USDC", token: 0, total: "100", hold: "0" }] },
+      },
+    }) });
+    assert.equal(events.at(-1)?.event, "error");
+    assert.equal(events.filter((event) => event.event === "account_state").length, accountStateCount);
+
+    socket.onmessage({ data: JSON.stringify({
+      channel: "spotState",
+      data: {
+        user: credential("testnet").account_address,
+        spotState: { balances: [{ coin: "USDC", token: 0, total: "2", hold: "0" }] },
+      },
+    }) });
+    assert.equal(events.filter((event) => event.event === "account_state").at(-1)?.data?.status, "needs_funds");
+  } finally {
+    stop();
+    restore(previous);
+  }
+});
+
 test("account snapshots disclose bounded open-order truncation", async () => {
   const previous = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
   delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
   try {
     const fetchImpl = async (_url, init) => {
       const type = JSON.parse(init.body).type;
-      const value = type === "clearinghouseState"
+      const value = type === "userAbstraction"
+        ? "default"
+        : type === "clearinghouseState"
         ? { marginSummary: { accountValue: "100" }, assetPositions: [] }
         : type === "openOrders"
           ? Array.from({ length: 13 }, (_, index) => ({ oid: index, coin: "BTC", side: "B", sz: "1", limitPx: "100" }))
@@ -514,7 +818,9 @@ test("account snapshots retain the riskiest bounded positions without leaking om
   try {
     const fetchImpl = async (_url, init) => {
       const type = JSON.parse(init.body).type;
-      const value = type === "clearinghouseState"
+      const value = type === "userAbstraction"
+        ? "default"
+        : type === "clearinghouseState"
         ? {
             marginSummary: { accountValue: "100", totalMarginUsed: "10" },
             assetPositions: Array.from({ length: 13 }, (_, index) => ({ position: {
@@ -553,7 +859,9 @@ test("account snapshots expose only bounded position risk, never exact liquidati
   try {
     const fetchImpl = async (_url, init) => {
       const type = JSON.parse(init.body).type;
-      const value = type === "clearinghouseState"
+      const value = type === "userAbstraction"
+        ? "default"
+        : type === "clearinghouseState"
         ? {
             marginSummary: { accountValue: "100", totalMarginUsed: "10" },
             assetPositions: [{ position: {
@@ -657,6 +965,26 @@ function credential(network) {
     base_url: network === "testnet" ? "https://api.hyperliquid-testnet.xyz" : "https://api.hyperliquid.xyz",
     account_address: "0x0000000000000000000000000000000000000001",
     api_wallet_private_key: `0x${"1".repeat(64)}`,
+  };
+}
+
+function unifiedAccountFetch({
+  abstraction = "unifiedAccount",
+  total = "21.75",
+  hold = "0.0",
+  requests = [],
+} = {}) {
+  return async (_url, init) => {
+    const body = JSON.parse(init.body);
+    requests.push(body.type);
+    const value = body.type === "userAbstraction"
+      ? abstraction
+      : body.type === "clearinghouseState"
+        ? { marginSummary: { accountValue: "0", totalMarginUsed: "0" }, assetPositions: [] }
+        : body.type === "spotClearinghouseState"
+          ? { balances: [{ coin: "USDC", token: 0, total, hold }] }
+          : [];
+    return Response.json(value);
   };
 }
 

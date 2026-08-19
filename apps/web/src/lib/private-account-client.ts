@@ -10,12 +10,17 @@ import type {
 } from "./private-account";
 import type { PrivateAccountReadinessResponse } from "./private-account-readiness";
 import type { HyperliquidEncryptedExecutionVaultBundle } from "./hyperliquid-vault-seal";
+import type {
+  HyperliquidAgentAuthorizationRequest,
+  HyperliquidAgentRevocationRequest,
+} from "./hyperliquid-agent-wallet";
 import type { CoinbaseEncryptedExecutionVaultBundle, CoinbaseExecutionMode } from "./coinbase-vault-seal";
 import type { SolanaPerpsEncryptedExecutionVaultBundle } from "./solana-perps-vault-seal";
 import type { SolanaSwapEncryptedExecutionVaultBundle } from "./solana-swap-vault-seal";
 import type { TradeOrderPlan } from "./trade-order-plan";
 import type { MarketFundingRateFields } from "./market-funding-rate";
 import type {
+  LiveTradingCapabilityId,
   LiveTradingCapabilityStatus,
   LiveTradingCaps,
   LiveTradingLaunchState,
@@ -138,6 +143,33 @@ export interface PrivateAccountLiveTradingStatus {
   };
   reason_codes: string[];
   gate_commitment: string;
+  checked_at: string;
+}
+
+export interface PrivateAccountTerminalAccessStatus {
+  version: 1;
+  status: "green" | "red";
+  venue_id: "hyperliquid";
+  network: "mainnet";
+  opening_orders_enabled: boolean;
+  access_mode: "public" | "account_canary" | "blocked";
+  launch_state: LiveTradingLaunchState;
+  release_identity: LiveTradingReleaseIdentity;
+  live_worker_readiness: PrivateAccountLiveTradingStatus["live_worker_readiness"] | null;
+  effective_caps: LiveTradingCaps;
+  configured_capabilities: LiveTradingCapabilityId[];
+  required_capabilities: LiveTradingCapabilityId[];
+  authorized_capabilities: LiveTradingCapabilityId[];
+  account_requirements: {
+    account_ready: boolean;
+    vault_ready: boolean;
+    eligibility_ready: boolean;
+    entitlement_ready: boolean;
+    graduation_ready: boolean;
+  };
+  graduation_completed_at: string | null;
+  reason_codes: string[];
+  access_commitment: string;
   checked_at: string;
 }
 
@@ -314,12 +346,27 @@ export interface PrivateAutopilotSession {
   execution_enabled: boolean;
   autonomous_live_submit_enabled?: boolean;
   autonomous_execution_mode?: "no_submit" | "live";
+  final_flat_evidence?: HyperliquidFinalFlatEvidence | null;
   control_plane: "android" | "worker";
   visibility_summary: {
     main_wallet_prompts_per_trade: false;
     execution_boundary: "bounded_session_policy" | "bounded_delegated_worker_policy";
     user_can_kill_anytime: true;
   };
+}
+
+export interface HyperliquidFinalFlatEvidence {
+  proof_kind: "hyperliquid_kill_and_flat_v1";
+  status: "reconciled";
+  final_flat_proven: true;
+  account_flat: true;
+  open_order_count: 0;
+  cancellations: Array<Record<string, unknown>>;
+  closes: Array<Record<string, unknown>>;
+  evidence_commitment: string;
+  root_work_order_commitment: string;
+  reconciled_at: string;
+  completed_at: string;
 }
 
 export interface PrivateAutopilotEvent {
@@ -702,6 +749,16 @@ export async function controlPrivateAutopilotSession(
   ) as Promise<{ version: 1; session: PrivateAutopilotSession; event: PrivateAutopilotEvent }>;
 }
 
+export async function killAndFlatPrivateAutopilotSession(
+  autopilotSessionId: string,
+  options: { proofHeaders: Record<string, string> },
+): Promise<{ version: 1; session: PrivateAutopilotSession; event: PrivateAutopilotEvent }> {
+  return privateAccountFetch(
+    `/v1/private-account/autopilot/sessions/${encodeURIComponent(autopilotSessionId)}/kill-and-flat`,
+    { method: "POST", headers: options.proofHeaders, body: "{}" },
+  ) as Promise<{ version: 1; session: PrivateAutopilotSession; event: PrivateAutopilotEvent }>;
+}
+
 export async function getPrivateAutopilotReadiness(productId = "BTC-USD"): Promise<PrivateAutopilotReadiness> {
   const params = new URLSearchParams({ product_id: productId });
   return privateAccountFetch(`/v1/private-account/autopilot/readiness?${params.toString()}`, {
@@ -854,6 +911,15 @@ export async function getPrivateAccountLiveTradingStatus(): Promise<PrivateAccou
   });
 }
 
+export async function getPrivateAccountTerminalAccessStatus(
+  options: { signal?: AbortSignal } = {},
+): Promise<PrivateAccountTerminalAccessStatus> {
+  return privateAccountFetch("/v1/private-account/live-trading/terminal-access", {
+    method: "GET",
+    signal: options.signal,
+  });
+}
+
 export async function getPublicAgentStartupStatus(options: { signal?: AbortSignal } = {}): Promise<PublicAgentStartupStatus> {
   return privateAccountFetch("/v1/private-account/agent/startup", {
     method: "GET",
@@ -871,6 +937,34 @@ export async function wakePublicAgentWorker(): Promise<PublicAgentWakeResponse> 
 export async function getHyperliquidExecutionVaultStatus() {
   return privateAccountFetch("/v1/private-account/hyperliquid/vault", {
     method: "GET",
+  });
+}
+
+export async function preflightPhantomHyperliquidAccount(accountAddress: string) {
+  return privateAccountFetch("/v1/private-account/hyperliquid/agent-wallet", {
+    method: "PUT",
+    body: JSON.stringify({ account_address: accountAddress }),
+  });
+}
+
+export async function authorizePhantomHyperliquidAgent(input: HyperliquidAgentAuthorizationRequest) {
+  return privateAccountFetch("/v1/private-account/hyperliquid/agent-wallet", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function disablePhantomHyperliquidAgent(input: HyperliquidAgentRevocationRequest) {
+  return privateAccountFetch("/v1/private-account/hyperliquid/agent-wallet", {
+    method: "DELETE",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function removeRevokedLegacyHyperliquidAgentVault() {
+  return privateAccountFetch("/v1/private-account/hyperliquid/agent-wallet", {
+    method: "DELETE",
+    body: JSON.stringify({}),
   });
 }
 
@@ -1004,6 +1098,27 @@ export async function runHyperliquidMainnetRoundTrip(options: {
     method: "POST",
     headers: options.proofHeaders,
     body: JSON.stringify({ confirmation: HYPERLIQUID_MAINNET_PROOF_CONFIRMATION }),
+  });
+}
+
+export const HYPERLIQUID_CLOSE_CONFIRMATION =
+  "I_UNDERSTAND_THIS_CLOSES_A_REAL_POSITION_REDUCE_ONLY";
+
+export async function closeHyperliquidPosition(input: {
+  market: "BTC" | "ETH" | "SOL" | "HYPE";
+  idempotencyKey: string;
+  proofHeaders: Record<string, string>;
+}) {
+  const body = {
+    version: 1 as const,
+    market: input.market,
+    idempotency_key: input.idempotencyKey,
+    confirmation: HYPERLIQUID_CLOSE_CONFIRMATION,
+  };
+  return privateAccountFetch("/v1/private-account/hyperliquid/positions/close", {
+    method: "POST",
+    headers: input.proofHeaders,
+    body: JSON.stringify(body),
   });
 }
 
@@ -1686,9 +1801,9 @@ const LIVE_GUARDED_MUTATION_PATHS = [
   /^\/v1\/private-account\/actions\/execute$/,
   /^\/v1\/private-account\/autopilot\/sessions$/,
   /^\/v1\/private-account\/autopilot\/sessions\/[^/]+$/,
-  /^\/v1\/private-account\/autopilot\/sessions\/[^/]+\/(?:pause|resume|kill)$/,
+  /^\/v1\/private-account\/autopilot\/sessions\/[^/]+\/(?:pause|resume|kill|kill-and-flat)$/,
   /^\/v1\/private-account\/connectors\/(?:submit|verify-no-submit|reconcile)$/,
-  /^\/v1\/private-account\/hyperliquid\/(?:account-snapshot|mainnet-roundtrip|managed-allocation)$/,
+  /^\/v1\/private-account\/hyperliquid\/(?:account-snapshot|mainnet-roundtrip|managed-allocation|positions\/close)$/,
   /^\/v1\/private-account\/hyperliquid\/agent\/session$/,
   /^\/v1\/private-account\/hyperliquid\/vault$/,
   /^\/v1\/private-account\/omnibus\/(?:allocate|reconcile)$/,

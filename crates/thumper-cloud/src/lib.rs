@@ -8,11 +8,11 @@ pub mod routes;
 pub mod services;
 pub mod state;
 
-use axum::Json;
-use axum::Router;
 use axum::extract::State;
 use axum::http::HeaderValue;
 use axum::routing::{delete, get, patch, post};
+use axum::Json;
+use axum::Router;
 use serde_json::json;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -110,6 +110,11 @@ pub async fn run_cloud() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 
     // Marketplace: expire stale claims every 5 minutes
     tokio::spawn(routes::marketplace::claim_expiry_loop(state.db.clone()));
+    // Complimentary access expiration must pause outstanding compute without
+    // turning the billing status GET endpoint into a mutating poll route.
+    tokio::spawn(routes::billing::complimentary_access_expiry_loop(
+        state.db.clone(),
+    ));
     // Refresh compute provider cache every 30s
     {
         let state = state.clone();
@@ -285,6 +290,18 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/billing/private-agent/trading/cap",
             axum::routing::patch(routes::billing::update_private_agent_trading_cap),
+        )
+        .route(
+            "/api/billing/access-passes",
+            post(routes::billing::create_access_pass),
+        )
+        .route(
+            "/api/billing/access-passes/redeem",
+            post(routes::billing::redeem_access_pass),
+        )
+        .route(
+            "/api/billing/access-passes/revoke",
+            post(routes::billing::revoke_access_pass),
         )
         .route(
             "/api/billing/webhook",

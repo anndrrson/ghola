@@ -49,6 +49,7 @@ function SignInContent() {
     : "";
 
   const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+  const twitterEnabled = process.env.NEXT_PUBLIC_TWITTER_ENABLED === "true";
 
   const handleGoogleCredential = useCallback(
     async (credential: string) => {
@@ -158,20 +159,22 @@ function SignInContent() {
             Sign in to your private AI
           </p>
 
-          {((googleClientId && googleAvailable) || process.env.NEXT_PUBLIC_TWITTER_ENABLED) && (
+          {((googleClientId && googleAvailable) || twitterEnabled) && (
             <>
               {googleClientId && googleAvailable && (
                 <div id="google-signin-btn" className="flex justify-center" />
               )}
-              <a
-                href="/api/auth/twitter"
-                className="flex items-center justify-center gap-2 w-full mt-3 rounded-lg bg-[#0f1117] border border-[#1e2a3a] py-2.5 text-sm font-medium text-[#eef1f8] hover:bg-[#161822] transition-colors"
-              >
-                <svg viewBox="0 0 24 24" className="w-4 h-4 fill-current">
-                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-                </svg>
-                Continue with X
-              </a>
+              {twitterEnabled && (
+                <a
+                  href="/api/auth/twitter"
+                  className="flex items-center justify-center gap-2 w-full mt-3 rounded-lg bg-[#0f1117] border border-[#1e2a3a] py-2.5 text-sm font-medium text-[#eef1f8] hover:bg-[#161822] transition-colors"
+                >
+                  <svg viewBox="0 0 24 24" className="w-4 h-4 fill-current">
+                    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+                  </svg>
+                  Continue with X
+                </a>
+              )}
               <div className="relative my-5">
                 <div className="absolute inset-0 flex items-center">
                   <div className="w-full border-t border-[#1e2a3a]" />

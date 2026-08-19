@@ -20,6 +20,9 @@ const ENV_KEYS = [
   "GHOLA_LIVE_TRADING_DAILY_CAP_USD",
   "GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS",
   "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET",
+  "GHOLA_PRIVATE_ACCOUNT_STORE",
+  "GHOLA_PRIVATE_ACCOUNT_DATABASE_URL",
+  "GHOLA_PRIVATE_AGENT_PROVISIONING_MUTATIONS_ENABLED",
   "GHOLA_V6_HYPERLIQUID_PILOT_ENABLED",
   "GHOLA_HYPERLIQUID_LIVE_MODE",
   "PRIVATE_AGENT_VENUE_DRY_RUN",
@@ -39,9 +42,21 @@ const ENV_KEYS = [
   "GHOLA_PRIVATE_AGENT_WORKER_GIT_SHA",
   "GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST",
   "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
+  "NEXT_PUBLIC_GOOGLE_CLIENT_ID",
+  "GHOLA_PRIVATE_AGENT_WORKER_IMAGE",
   "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET",
   "GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64",
   "GHOLA_LIVE_TRADING_CONTROL_TOKEN",
+  "GHOLA_LIVE_TRADING_RESET_TOKEN",
+  "GHOLA_INVESTOR_CANARY_SECRET",
+  "GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN",
+  "PRIVATE_AGENT_EXECUTION_TOKEN",
+  "GHOLA_BAKED_WEB_GIT_SHA",
+  "VERCEL_GIT_COMMIT_SHA",
+  "PRIVATE_AGENT_IMAGE_DIGEST",
+  "PHALA_CVM_IMAGE_DIGEST",
+  "PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED",
+  "GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED",
 ] as const;
 
 describe("private account live trading launch gate", () => {
@@ -169,7 +184,7 @@ describe("private account live trading launch gate", () => {
         reconciled: true,
         final_flat: true,
         open_order_count: 0,
-        order_notional_usd: 10.5,
+        order_notional_usd: 11,
         web_git_sha: release.web_git_sha,
         worker_git_sha: release.worker_git_sha,
         worker_image_digest: release.worker_image_digest,
@@ -188,11 +203,17 @@ describe("private account live trading launch gate", () => {
 function enableExactEnvironment() {
   Object.assign(process.env, {
     GHOLA_LIVE_TRADING_PUBLIC_ENABLED: "true",
-    GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES: "limit_order",
+    GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES: "limit_order,cancel,reduce_only,stop_loss,take_profit",
     GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD: "100",
     GHOLA_LIVE_TRADING_DAILY_CAP_USD: "500",
     GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS: "100",
     GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET: "secure_private_account_request_proof_secret_value",
+    GHOLA_LIVE_TRADING_CONTROL_TOKEN: "K7vP3xN9mR2qW8tL5cD1hF6jB4zY0uSa",
+    GHOLA_LIVE_TRADING_RESET_TOKEN: "R4nW8qL2xC7mV1pK9tD5hF3jB6zY0uSa",
+    GHOLA_INVESTOR_CANARY_SECRET: "Q9mV4xR7kT2pN8cL5wD1hF6jB3zY0uSa",
+    GHOLA_PRIVATE_ACCOUNT_STORE: "postgres",
+    GHOLA_PRIVATE_ACCOUNT_DATABASE_URL: "postgres://configured.example/ghola",
+    GHOLA_PRIVATE_AGENT_PROVISIONING_MUTATIONS_ENABLED: "false",
     GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
     PRIVATE_AGENT_VENUE_DRY_RUN: "false",
     PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET: "true",
@@ -206,12 +227,22 @@ function enableExactEnvironment() {
     PRIVATE_AGENT_STATE_STORE: "postgres",
     PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE: "true",
     PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY: "true",
+    PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED: "true",
+    GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED: "true",
     PRIVATE_AGENT_GLOBAL_KILL_SWITCH: "false",
     GHOLA_WEB_GIT_SHA: SHA,
+    GHOLA_BAKED_WEB_GIT_SHA: SHA,
+    VERCEL_GIT_COMMIT_SHA: SHA,
     GHOLA_PRIVATE_AGENT_WORKER_GIT_SHA: SHA,
     GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST: DIGEST,
-    GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.ghola.test",
-    PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "worker-capability-secret-value-123456789",
+    PRIVATE_AGENT_IMAGE_DIGEST: DIGEST,
+    PHALA_CVM_IMAGE_DIGEST: DIGEST,
+    GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.ghola.xyz",
+    GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "B7zL4qN9wX2cV8mK5rT1yP6sD3fH0jUa",
+    PRIVATE_AGENT_EXECUTION_TOKEN: "B7zL4qN9wX2cV8mK5rT1yP6sD3fH0jUa",
+    NEXT_PUBLIC_GOOGLE_CLIENT_ID: "ghola-investor.apps.googleusercontent.com",
+    GHOLA_PRIVATE_AGENT_WORKER_IMAGE: `ghcr.io/anndrrson/ghola:private-agent-worker-${SHA}`,
+    PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "M8pR2vW7xZ4cN9kL5tQ1sD6fH3jY0uBa",
     GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64: Buffer.alloc(44, 7).toString("base64"),
   });
 }
@@ -227,23 +258,29 @@ async function primeLaunch(state: "canary" | "public" | "killed", proofCount: nu
     worker_git_sha: release.worker_git_sha,
     worker_image_digest: release.worker_image_digest,
     config_fingerprint: release.config_fingerprint,
-    public_capabilities: ["limit_order"],
+    public_capabilities: ["limit_order", "cancel", "reduce_only", "stop_loss", "take_profit"],
     caps: canonicalLiveTradingCaps(),
     evidence_commitment: "launch_evidence_commitment",
     updated_by: "test-operator",
     created_at: now,
     updated_at: now,
   });
-  for (let index = 0; index < proofCount; index += 1) await putEvidence("green", index);
+  for (const capability of ["limit_order", "cancel", "reduce_only", "stop_loss", "take_profit"] as const) {
+    for (let index = 0; index < proofCount; index += 1) await putEvidence("green", index, capability);
+  }
 }
 
-async function putEvidence(status: "green" | "red", offset: number) {
+async function putEvidence(
+  status: "green" | "red",
+  offset: number,
+  capability: "limit_order" | "cancel" | "reduce_only" | "stop_loss" | "take_profit" = "limit_order",
+) {
   const release = currentLiveTradingReleaseIdentity();
   const observed = new Date(Date.now() - 60_000 + offset * 1_000);
   await putLiveTradingCapabilityEvidence({
     version: 2,
-    evidence_id: `evidence_${status}_${offset}_${observed.getTime()}`,
-    capability: "limit_order",
+    evidence_id: `evidence_${capability}_${status}_${offset}_${observed.getTime()}`,
+    capability,
     venue_id: "hyperliquid",
     network: "mainnet",
     status,
@@ -251,7 +288,7 @@ async function putEvidence(status: "green" | "red", offset: number) {
     reconciled: status === "green",
     final_flat: status === "green",
     open_order_count: status === "green" ? 0 : -1,
-    order_notional_usd: 10.5,
+    order_notional_usd: 11,
     web_git_sha: release.web_git_sha as string,
     worker_git_sha: release.worker_git_sha as string,
     worker_image_digest: release.worker_image_digest as string,
@@ -288,7 +325,7 @@ function readyWorkerMock() {
         rolling_24h_notional_usd: 500,
         max_slippage_bps: 100,
       },
-      capabilities: ["limit_order", "cancel", "reduce_only"],
+      capabilities: ["limit_order", "cancel", "reduce_only", "stop_loss", "take_profit"],
     },
   }));
 }

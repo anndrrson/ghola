@@ -36,33 +36,48 @@ jobs:
       PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
       PHALA_CLOUD_API_PREFIX: ${{ vars.PHALA_CLOUD_API_PREFIX }}
       BASE_URL: ${{ vars.GHOLA_PRIVATE_AGENT_BASE_URL }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
       CVM_NAMES: ${{ inputs.cvm_names || 'ghola-private-agent-worker-d36f9cc,ghola-private-agent-worker-4cbdf74,ghola-private-agent-worker-77ce835,ghola-private-agent-worker-no-submit-f510d61,ghola-private-agent-worker' }}
       CVM_PREFIXES: ${{ inputs.cvm_prefixes || 'ghola-' }}
       DRY_RUN: ${{ inputs.dry_run || 'false' }}
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - uses: actions/setup-node@v6.4.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
 
-      - name: Stop known Ghola Phala CVMs
+      - name: Run guarded Ghola Phala spend check
         run: |
           set -euo pipefail
-          if [ -z "${PHALA_CLOUD_API_KEY}" ]; then
-            echo "## Phala spend brake skipped" >> "$GITHUB_STEP_SUMMARY"
-            echo "- PHALA_CLOUD_API_KEY is not configured." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
           if [ "${{ github.event_name }}" = "schedule" ] && [ "$DRY_RUN" != "true" ]; then
+            if [ "${#CRON_SECRET}" -lt 32 ]; then
+              echo "## Phala spend brake failed closed" >> "$GITHUB_STEP_SUMMARY"
+              echo "- Repository secret CRON_SECRET must contain at least 32 characters." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
             base="${BASE_URL:-https://ghola.xyz}"
             echo "Running idle-aware Phala stop through $base/api/private-agent/idle"
-            out=$(curl -fsS -m 75 "$base/api/private-agent/idle" -H "x-vercel-cron: 1")
+            out=$(curl -fsS -m 75 -X POST "$base/api/private-agent/idle" -H "authorization: Bearer ${CRON_SECRET}")
             echo "$out"
             OUT="$out" node <<'NODE'
           const { appendFileSync } = require("node:fs");
           const result = JSON.parse(process.env.OUT || "{}");
           const idle = result.idle || {};
+          const knownStatuses = new Set([
+            "disabled",
+            "lease_active",
+            "sessions_active",
+            "already_stopped",
+            "stopped",
+          ]);
+          const stoppedConsistent = idle.status === "stopped"
+            ? idle.attempted === true && idle.stopped === true
+            : idle.attempted === false && idle.stopped === false;
+          const valid = knownStatuses.has(idle.status) &&
+            typeof idle.attempted === "boolean" &&
+            typeof idle.stopped === "boolean" &&
+            stoppedConsistent;
           appendFileSync(
             process.env.GITHUB_STEP_SUMMARY,
             [
@@ -74,10 +89,24 @@ jobs:
               `- stopped: \`${Boolean(idle.stopped)}\``,
               idle.lease_expires_at ? `- lease_expires_at: \`${idle.lease_expires_at}\`` : "",
               idle.reason ? `- reason: \`${idle.reason}\`` : "",
+              `- response_valid: \`${valid}\``,
               "",
             ].filter(Boolean).join("\n"),
           );
+          if (!valid) {
+            throw new Error("Idle checks were unknown or inconsistent; scheduled stop failed closed.");
+          }
           NODE
+            exit 0
+          fi
+          if [ "$DRY_RUN" != "true" ]; then
+            echo "## Phala spend brake failed closed" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Manual direct CVM stops are disabled because this workflow cannot prove venue-wide flatness." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ -z "${PHALA_CLOUD_API_KEY}" ]; then
+            echo "## Phala spend brake skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "- PHALA_CLOUD_API_KEY is not configured." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           work="$RUNNER_TEMP/phala-spend-brake"
@@ -85,8 +114,7 @@ jobs:
           cd "$work"
           npm init -y >/dev/null
           npm install --no-audit --no-fund @phala/cloud >/dev/null
-          args=(--names "$CVM_NAMES" --prefixes "$CVM_PREFIXES")
-          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          args=(--names "$CVM_NAMES" --prefixes "$CVM_PREFIXES" --dry-run)
           out=$(PHALA_CLOUD_MODULE_DIR="$work" node "$GITHUB_WORKSPACE/scripts/stop-ghola-phala-cvms.mjs" "${args[@]}")
           echo "$out"
           OUT="$out" node <<'NODE'

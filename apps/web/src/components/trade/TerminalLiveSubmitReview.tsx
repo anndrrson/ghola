@@ -39,6 +39,16 @@ export function TerminalLiveSubmitReview({
         <ReviewValue label="Limit" value={`$${review.limitPrice}`} />
         <ReviewValue label="Executable reference" value={`$${review.executionReferencePrice}`} />
         <ReviewValue label="Plan invalidation" value={`$${review.invalidationLevel}`} />
+        {review.venueProtection ? (
+          <>
+            <ReviewValue label="Venue take-profit" value={`$${review.venueProtection.takeProfitLevel}`} />
+            <ReviewValue label="Venue stop-loss" value={`$${review.venueProtection.stopLossLevel}`} />
+            <ReviewValue label="Protection mode" value="Hyperliquid native TP/SL" />
+            <ReviewValue label="Protection slippage cap" value={`${review.venueProtection.maxSlippageBps} bp`} />
+          </>
+        ) : (
+          <ReviewValue label="Venue protection" value="Not attached" wide />
+        )}
         <ReviewValue label="Slippage cap" value={`${review.maxSlippageBps} bp`} />
         <ReviewValue label="Stop + slippage loss" value={`$${review.stopAndSlippageLossUsd}`} />
         <ReviewValue label="Route-cost loss" value={`$${review.roundTripCostLossUsd}`} />
@@ -66,7 +76,9 @@ export function TerminalLiveSubmitReview({
         <p className="mt-2 text-[9px] leading-4 text-[#8290a8]">Current displayed depth only; not authorization-bound. Fees, latency, queue priority, hidden liquidity, and fill guarantees are excluded.</p>
       </div>
       <p id="live-submit-review-warning" className="mt-3 text-[10px] leading-4 text-amber-100">
-        Submits one entry limit only. Plan invalidation is not a venue stop or bracket. The server rechecks the exact bound plan before dispatch.
+        {review.venueProtection
+          ? "Submits the bound entry plus venue-native take-profit and stop-loss protection at the displayed levels. The server rechecks the exact bound plan before dispatch."
+          : "Submits one entry limit without venue-native take-profit or stop-loss protection. Plan invalidation remains an agent-plan control. The server rechecks the exact bound plan before dispatch."}
       </p>
       {blocker ? <p role="alert" className="mt-2 text-[10px] leading-4 text-rose-200">{blocker}</p> : null}
       <div className="mt-3 grid grid-cols-2 gap-2">

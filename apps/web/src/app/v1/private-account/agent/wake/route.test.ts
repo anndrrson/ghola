@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createPublicAgentWakePost,
+  publicAgentWakeEntitlement,
   type PublicAgentWakeDependencies,
 } from "./route";
 
@@ -73,6 +74,7 @@ function wakeDependencies(
 ): PublicAgentWakeDependencies {
   return {
     authenticateImpl: vi.fn(async () => authenticatedOwner()),
+    entitlementImpl: vi.fn(async () => ({ ok: true as const })),
     quotaStoreReadyImpl: vi.fn(async () => true),
     consumeRateLimitImpl: vi.fn(async () => ({ ok: true, count: 1, retry_after_seconds: 60 })),
     spendPolicyImpl: vi.fn(() => ({
@@ -120,6 +122,7 @@ describe("public agent wake route", () => {
 
     expect(res.status).toBe(403);
     expect(deps.authenticateImpl).not.toHaveBeenCalled();
+    expect(deps.entitlementImpl).not.toHaveBeenCalled();
     expect(deps.getRuntimeStatusImpl).not.toHaveBeenCalled();
     expect(deps.markActivityImpl).not.toHaveBeenCalled();
     expect(deps.wakeImpl).not.toHaveBeenCalled();
@@ -147,6 +150,7 @@ describe("public agent wake route", () => {
     expect(crossSite.status).toBe(403);
     expect(simplePost.status).toBe(403);
     expect(deps.authenticateImpl).not.toHaveBeenCalled();
+    expect(deps.entitlementImpl).not.toHaveBeenCalled();
     expect(deps.getRuntimeStatusImpl).not.toHaveBeenCalled();
     expect(deps.wakeImpl).not.toHaveBeenCalled();
   });
@@ -164,9 +168,35 @@ describe("public agent wake route", () => {
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ version: 1, error: "private_account_auth_required" });
     expect(deps.quotaStoreReadyImpl).not.toHaveBeenCalled();
+    expect(deps.entitlementImpl).not.toHaveBeenCalled();
     expect(deps.consumeRateLimitImpl).not.toHaveBeenCalled();
     expect(deps.getRuntimeStatusImpl).not.toHaveBeenCalled();
     expect(deps.markActivityImpl).not.toHaveBeenCalled();
+    expect(deps.wakeImpl).not.toHaveBeenCalled();
+  });
+
+  it("requires an active private-agent entitlement before spend policy or quota access", async () => {
+    process.env.GHOLA_PUBLIC_AGENT_WAKE_ENABLED = "true";
+    const entitlementImpl = vi.fn(async () => ({
+      ok: false as const,
+      status: 402,
+      error: "private_agent_subscription_required",
+    }));
+    const deps = wakeDependencies({ entitlementImpl });
+
+    const res = await createPublicAgentWakePost(deps)(wakeRequest());
+    const body = await res.json();
+
+    expect(res.status).toBe(402);
+    expect(body).toMatchObject({
+      status: "blocked",
+      ready: false,
+      error: "private_agent_subscription_required",
+    });
+    expect(entitlementImpl).toHaveBeenCalledOnce();
+    expect(deps.spendPolicyImpl).not.toHaveBeenCalled();
+    expect(deps.quotaStoreReadyImpl).not.toHaveBeenCalled();
+    expect(deps.getRuntimeStatusImpl).not.toHaveBeenCalled();
     expect(deps.wakeImpl).not.toHaveBeenCalled();
   });
 
@@ -217,6 +247,28 @@ describe("public agent wake route", () => {
       leaseMs: 600_000,
     });
     expect(deps.wakeImpl).not.toHaveBeenCalled();
+  });
+
+  it("checks cookie-backed billing without exposing the session and accepts founder-tier access", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      tier: "starter",
+      access_source: "complimentary_pass",
+    }), { status: 200 }));
+
+    const result = await publicAgentWakeEntitlement(wakeRequest(), fetchImpl as typeof fetch);
+
+    expect(result).toEqual({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://thumper-cloud.onrender.com/api/billing/status",
+      expect.objectContaining({
+        method: "GET",
+        headers: {
+          authorization: "Bearer verified-session",
+          accept: "application/json",
+        },
+        cache: "no-store",
+      }),
+    );
   });
 });
 

@@ -74,6 +74,7 @@ function privateMutationPost(
       capability: order_plan.execution_policy.reduce_only ? "reduce_only" : "limit_order",
       account_commitment: tradeExecutionIdentityCommitments("web-user-1", order_plan.venue_id).upstreamAccountId,
       vault_commitment: "test-vault",
+      launch_revision: order_plan.execution_policy.reduce_only ? null : 1,
       reservation: null,
     }),
     liveDispatchImpl: async ({ idempotency_key, account_commitment, vault_commitment, plan_digest }) => {
@@ -444,6 +445,129 @@ describe("v1 execution proxy routing", () => {
     });
   });
 
+  it.each([
+    ["not_dispatched", "released", "not_dispatched"],
+    ["no_fill", "released", "dispatched"],
+    ["filled", "filled", "dispatched"],
+    ["submitted", null, "dispatched"],
+    [null, null, "dispatched"],
+  ] as const)("settles billing truthfully for %s disposition", async (disposition, expectedSettlement, publicDispatch) => {
+    process.env.GHOLA_ORDER_PLAN_BINDING_SECRET = "proxy-binding-test-secret";
+    const settle = vi.fn<NonNullable<V1ProxyDependencies["settleNotionalReservationImpl"]>>(async () => undefined);
+    const dispatch = vi.fn<NonNullable<V1ProxyDependencies["liveDispatchImpl"]>>(async () => Response.json(
+      { disposition },
+      {
+        status: disposition === "not_dispatched" ? 409 : 202,
+        headers: disposition ? { "x-ghola-live-trading-disposition": disposition } : undefined,
+      },
+    ));
+    const proxyPost = createV1ProxyHandler({
+      fetchImpl: brandPrivateAgentMockTransport(vi.fn<typeof fetch>()),
+      fetchSessionUserImpl: sessionLookup("web-user-1"),
+      byoExecutionGateImpl: (plan) => ({
+        allowed: true,
+        reason_codes: [],
+        venue: { id: plan.venue_id, label: plan.venue_id, submit_source: "user_scoped_credential", status: "green", reason_codes: [] },
+      }),
+      liveAuthorizationImpl: async ({ order_plan }) => ({
+        ok: true,
+        capability: "limit_order",
+        account_commitment: tradeExecutionIdentityCommitments("web-user-1", order_plan.venue_id).upstreamAccountId,
+        vault_commitment: "test-vault",
+        launch_revision: 1,
+        reservation: {
+          version: 2,
+          reservation_id: "reservation_dispatch_truth",
+          owner_commitment: "owner_dispatch_truth",
+          account_commitment: "account_dispatch_truth",
+          idempotency_key: "idempotency_dispatch_truth",
+          request_commitment: `sha256:${"7".repeat(64)}`,
+          notional_usd: 25,
+          status: "reserved",
+          created_at: "2026-08-19T12:00:00.000Z",
+          expires_at: "2026-08-19T12:05:00.000Z",
+          updated_at: "2026-08-19T12:00:00.000Z",
+        },
+      }),
+      settleNotionalReservationImpl: settle,
+      liveDispatchImpl: dispatch,
+    });
+    const plan = orderPlan();
+    const sessionToken = sessionJwt("web-user-1");
+    const response = await proxyPost(
+      request("https://ghola.test/v1/trading/app/execute", {
+        method: "POST",
+        headers: {
+          origin: "https://ghola.test",
+          "content-type": "application/json",
+          cookie: `ghola_exec_session=exec-session-token; ghola_thumper_session=${sessionToken}`,
+        },
+        body: JSON.stringify(executionBody(plan, orderPlanBinding(plan, "web-user-1"))),
+      }),
+      { params: Promise.resolve({ path: ["trading", "app", "execute"] }) },
+    );
+
+    expect(response.headers.get("x-ghola-execution-dispatch")).toBe(publicDispatch);
+    expect(response.headers.get("x-ghola-live-trading-disposition")).toBeNull();
+    if (expectedSettlement) {
+      expect(settle).toHaveBeenCalledWith({
+        reservation_id: "reservation_dispatch_truth",
+        status: expectedSettlement,
+      });
+    } else {
+      expect(settle).not.toHaveBeenCalled();
+    }
+  });
+
+  it("routes an existing durable plan to recovery before closed opening gates", async () => {
+    process.env.GHOLA_ORDER_PLAN_BINDING_SECRET = "proxy-binding-test-secret";
+    process.env.GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED = "true";
+    const authorization = vi.fn<NonNullable<V1ProxyDependencies["liveAuthorizationImpl"]>>();
+    const gate = vi.fn<NonNullable<V1ProxyDependencies["byoExecutionGateImpl"]>>(() => ({
+      allowed: false,
+      reason_codes: ["closed"],
+      venue: { id: "hyperliquid", label: "hyperliquid", submit_source: "user_scoped_credential", status: "red", reason_codes: ["closed"] },
+    }));
+    const dispatch = vi.fn<NonNullable<V1ProxyDependencies["liveDispatchImpl"]>>(async () => Response.json({
+      version: 1,
+      status: "pending",
+      planDigest: `sha256:${"a".repeat(64)}`,
+      workerWorkOrderCommitment: `live_trade_work_order_${"b".repeat(48)}`,
+      checkedAt: "2026-08-19T12:00:00.000Z",
+    }, { status: 202, headers: { "x-ghola-live-trading-disposition": "submitted" } }));
+    const proxyPost = createV1ProxyHandler({
+      fetchImpl: brandPrivateAgentMockTransport(vi.fn<typeof fetch>()),
+      fetchSessionUserImpl: sessionLookup("web-user-1"),
+      byoExecutionGateImpl: gate,
+      liveAuthorizationImpl: authorization,
+      getLiveRecoveryImpl: vi.fn(async ({ owner_commitment, plan_digest }) => ({
+        owner_commitment,
+        plan_digest,
+        account_commitment: "account_recovery_existing",
+        vault_commitment: "vault_recovery_existing",
+        reservation_id: "reservation_recovery_existing",
+      } as never)),
+      liveDispatchImpl: dispatch,
+    });
+    const order = orderPlan();
+    const binding = orderPlanBinding(order, "web-user-1");
+    const response = await proxyPost(request("https://ghola.test/v1/trading/app/execute", {
+      method: "POST",
+      headers: {
+        origin: "https://ghola.test",
+        "content-type": "application/json",
+        cookie: `ghola_exec_session=exec-session-token; ghola_thumper_session=${sessionJwt("web-user-1")}`,
+      },
+      body: JSON.stringify(executionBody(order, binding)),
+    }), { params: Promise.resolve({ path: ["trading", "app", "execute"] }) });
+
+    expect(response.status).toBe(202);
+    expect(response.headers.get("x-ghola-execution-dispatch")).toBe("dispatched");
+    expect(gate).not.toHaveBeenCalled();
+    expect(authorization).not.toHaveBeenCalled();
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
   it("fails closed when the server-issued app session is unavailable", async () => {
     process.env.GHOLA_ORDER_PLAN_BINDING_SECRET = "proxy-binding-test-secret";
     const fetchSpy = vi.fn<typeof fetch>();
@@ -617,6 +741,7 @@ describe("v1 execution proxy routing", () => {
       capability: "reduce_only",
       account_commitment: tradeExecutionIdentityCommitments("web-user-1", order_plan.venue_id).upstreamAccountId,
       vault_commitment: "test-vault",
+      launch_revision: null,
       reservation: null,
     }));
     const dispatchSpy = vi.fn<NonNullable<V1ProxyDependencies["liveDispatchImpl"]>>(async () =>

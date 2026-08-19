@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createPrivateKey, createPublicKey } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fchmodSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const DEFAULT_OUT = ".dev/phala-worker.env";
@@ -41,6 +41,7 @@ const WORKER_KEYS = [
   "PRIVATE_AGENT_AI_MODEL",
   "PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE",
+  "PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED",
   "PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES",
   "PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD",
@@ -122,6 +123,7 @@ const ALIASES = {
   PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD: ["GHOLA_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD"],
   PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD: ["GHOLA_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD"],
   PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS: ["GHOLA_HYPERLIQUID_LIVE_MAX_SLIPPAGE_BPS"],
+  PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES: ["GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES"],
   PRIVATE_AGENT_IMAGE_DIGEST: ["GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST", "PHALA_CVM_IMAGE_DIGEST"],
   PRIVATE_AGENT_BUILD_GIT_SHA: ["GHOLA_PRIVATE_AGENT_WORKER_GIT_SHA", "GHOLA_WEB_GIT_SHA", "VERCEL_GIT_COMMIT_SHA"],
   PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT: ["GHOLA_PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT"],
@@ -171,6 +173,7 @@ const DEFAULTS = {
   PRIVATE_AGENT_AI_MAX_DECISIONS_PER_HOUR: "12",
   PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET: "false",
   PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "disabled",
+  PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED: "false",
   PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES: "limit_order",
   PRIVATE_AGENT_HYPERLIQUID_MAINNET_PROOF_ENABLED: "false",
   PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD: "5",
@@ -237,14 +240,44 @@ if (mainnetLive) {
     ["PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE", "true"],
     ["PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY", "true"],
     ["PRIVATE_AGENT_GLOBAL_KILL_SWITCH", "false"],
-    ["PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES", "limit_order"],
+    ["PRIVATE_AGENT_HYPERLIQUID_RISK_REDUCTION_ENABLED", "true"],
+    ["GHOLA_LIVE_TRADING_POSITION_PROTECTION_ENABLED", "true"],
   ].filter(([key, value]) => out[key] !== value).map(([key]) => key);
-  if (exactLive.length) fail(`Invalid mainnet live worker env(s): ${exactLive.join(", ")}`);
-  if (!/^[a-f0-9]{7,64}$/i.test(out.PRIVATE_AGENT_BUILD_GIT_SHA || "")) {
-    fail("PRIVATE_AGENT_BUILD_GIT_SHA is required for mainnet live mode.");
+  const expectedCapabilities = ["limit_order", "cancel", "reduce_only", "stop_loss", "take_profit"];
+  const configuredCapabilities = String(out.PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (
+    configuredCapabilities.length !== expectedCapabilities.length ||
+    expectedCapabilities.some((capability) => !configuredCapabilities.includes(capability))
+  ) {
+    exactLive.push("PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES");
+  } else {
+    out.PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES = expectedCapabilities.join(",");
   }
-  if (!/^(?:sha256:)?[a-f0-9]{64}$/i.test(out.PRIVATE_AGENT_IMAGE_DIGEST || out.PHALA_CVM_IMAGE_DIGEST || "")) {
-    fail("PRIVATE_AGENT_IMAGE_DIGEST is required for mainnet live mode.");
+  if (exactLive.length) fail(`Invalid mainnet live worker env(s): ${exactLive.join(", ")}`);
+  if (!/^[a-f0-9]{40}$/.test(out.PRIVATE_AGENT_BUILD_GIT_SHA || "")) {
+    fail("PRIVATE_AGENT_BUILD_GIT_SHA must be the exact lowercase 40-character release SHA for mainnet live mode.");
+  }
+  const expectedImage = `ghcr.io/anndrrson/ghola:private-agent-worker-${out.PRIVATE_AGENT_BUILD_GIT_SHA}`;
+  if (out.GHOLA_PRIVATE_AGENT_WORKER_IMAGE !== expectedImage) {
+    fail(`GHOLA_PRIVATE_AGENT_WORKER_IMAGE must be the exact source-bound tag ${expectedImage}.`);
+  }
+  if (!/^sha256:[a-f0-9]{64}$/.test(out.PRIVATE_AGENT_IMAGE_DIGEST || "")) {
+    fail("PRIVATE_AGENT_IMAGE_DIGEST must be a canonical lowercase sha256 digest for mainnet live mode.");
+  }
+  const normalizedImageDigests = [
+    out.PRIVATE_AGENT_IMAGE_DIGEST,
+    out.PHALA_CVM_IMAGE_DIGEST,
+    out.GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST,
+  ].map((value) => String(value || ""));
+  if (normalizedImageDigests.some((value) => !/^sha256:[a-f0-9]{64}$/.test(value)) ||
+      new Set(normalizedImageDigests).size !== 1) {
+    fail("All worker image digest pins must be canonical lowercase sha256 values and literally identical for mainnet live mode.");
+  }
+  for (const key of ["PRIVATE_AGENT_EXECUTION_TOKEN", "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET"]) {
+    if (!strongSecret(out[key])) fail(`${key} must be a strong 32+ character secret for mainnet live mode.`);
   }
   const signerPins = String(out.GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64 || "")
     .split(",").map((value) => value.trim()).filter(Boolean);
@@ -268,7 +301,20 @@ if (missing.length) {
 }
 
 const outPath = resolve(process.cwd(), args.out || DEFAULT_OUT);
-writeFileSync(outPath, serializeEnv(out), { mode: 0o600 });
+let outFd;
+try {
+  outFd = openSync(
+    outPath,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
+    0o600,
+  );
+  fchmodSync(outFd, 0o600);
+  writeFileSync(outFd, serializeEnv(out));
+} catch (error) {
+  fail(`Could not securely write worker env: ${error instanceof Error ? error.message : "write failed"}`);
+} finally {
+  if (outFd !== undefined) closeSync(outFd);
+}
 console.log(JSON.stringify({
   output: outPath,
   wrote_secret_file: true,
@@ -299,6 +345,14 @@ function usage(error = "") {
     "The output contains secrets and must stay gitignored.",
   ].join("\n"));
   process.exit(error ? 1 : 0);
+}
+
+function strongSecret(value) {
+  const trimmed = String(value || "").trim();
+  const lowered = trimmed.toLowerCase();
+  return trimmed.length >= 32 && new Set(trimmed).size >= 8 &&
+    !["dev", "test", "default", "local", "changeme", "example", "placeholder", "secret"]
+      .some((item) => lowered === item || lowered.includes(item));
 }
 
 function readEnvFile(file) {

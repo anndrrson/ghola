@@ -13,6 +13,7 @@ import {
 import {
   MAINNET_PROOF_CONFIRMATION,
   hyperliquidMainnetRoundTripEnabled,
+  isHyperliquidMainnetProofWorkOrder,
   recoverHyperliquidMainnetCanary,
   runSealedHyperliquidMainnetRoundTrip,
   validateHyperliquidMainnetRoundTripRequest,
@@ -59,7 +60,7 @@ export function hardenedCanaryPolicyCommitment({ accountCommitment, vaultCommitm
     throw new Error("funded canary policy scope is invalid");
   }
   return `hyperliquid_mainnet_policy_${sha256(
-    `${accountCommitment}:${vaultCommitment}:10.5:100`,
+    `${accountCommitment}:${vaultCommitment}:11:100`,
   ).slice(0, 48)}`;
 }
 
@@ -113,13 +114,13 @@ export async function runHardenedMainnetCanary({ env = process.env } = {}) {
       aad,
     },
     market: "HYPE",
-    notional_usd: 10.5,
+    notional_usd: 11,
     slippage_bps: 100,
   };
   const errors = validateHyperliquidMainnetRoundTripRequest(body, recipient);
   if (errors.length) throw new Error(`hardened canary request is invalid: ${errors.join(", ")}`);
   const state = createPostgresWorkerState(config.databaseUrl, { driver: "pg" });
-  const proofWorkOrder = `hl_mainnet_investor_proof_${sha256(vaultCommitment).slice(0, 32)}`;
+  const proofWorkOrder = `hl_mainnet_investor_proof_v2_${sha256(vaultCommitment).slice(0, 32)}`;
   try {
     await recoverArmedMainnetCanary({ config, state });
     writeActiveCanary({
@@ -170,7 +171,7 @@ async function recoverArmedMainnetCanary({ config, state }) {
   if (manifest?.status !== "armed") return null;
   const accountCommitment = `sha256:${sha256(config.accountAddress)}`;
   if (manifest?.version !== 1 || manifest.account_commitment !== accountCommitment ||
-      !/^hl_mainnet_investor_proof_[0-9a-f]{32}$/u.test(String(manifest.proof_work_order_commitment || ""))) {
+      !isHyperliquidMainnetProofWorkOrder(manifest.proof_work_order_commitment)) {
     throw new Error("active mainnet canary recovery scope does not match");
   }
   const recovery = await recoverHyperliquidMainnetCanary({

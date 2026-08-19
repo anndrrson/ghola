@@ -8,6 +8,10 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import {
+  isTerminalHyperliquidOrderStatus,
+  normalizeHyperliquidOrderStatus,
+} from "../venues/hyperliquid-status.js";
 
 const STATE_VERSION = 1;
 const STATE_MUTATION_QUEUES = new Map();
@@ -936,9 +940,44 @@ export function createPostgresWorkerState(databaseUrl, { driver = "auto" } = {})
       return {
         status: rows[0].status,
         context: claim?.context || null,
+        no_broadcast_probe: claim?.no_broadcast_probe || null,
         attempt: decodeJson(rows[0].attempt_json),
         receipt: decodeJson(rows[0].receipt_json),
       };
+    },
+
+    async recordExecutionClaimNoBroadcastObservation(workOrderCommitment, observation) {
+      const sql = await ensureInitialized();
+      const cloid = String(observation?.cloid || "").toLowerCase();
+      const instructionExpiresAt = String(observation?.instruction_expires_at || "");
+      const observedAt = String(observation?.observed_at || "");
+      if (!/^0x[0-9a-f]{32}$/u.test(cloid) ||
+          !Number.isFinite(Date.parse(instructionExpiresAt)) ||
+          !Number.isFinite(Date.parse(observedAt))) return null;
+      const rows = await sql`
+        UPDATE worker_execution_claims
+        SET claim_json = jsonb_set(
+          claim_json,
+          '{no_broadcast_probe}',
+          jsonb_build_object(
+            'cloid', ${cloid},
+            'instruction_expires_at', ${instructionExpiresAt},
+            'first_observed_at', COALESCE(claim_json->'no_broadcast_probe'->>'first_observed_at', ${observedAt}),
+            'last_observed_at', ${observedAt},
+            'observation_count', COALESCE((claim_json->'no_broadcast_probe'->>'observation_count')::integer, 0) + 1
+          )
+        ), updated_at = NOW()
+        WHERE work_order_commitment = ${workOrderCommitment}
+          AND status IN (${"in_progress"}, ${"reconcile_required"})
+          AND (
+            claim_json->'no_broadcast_probe' IS NULL OR (
+              claim_json->'no_broadcast_probe'->>'cloid' = ${cloid} AND
+              claim_json->'no_broadcast_probe'->>'instruction_expires_at' = ${instructionExpiresAt}
+            )
+          )
+        RETURNING claim_json->'no_broadcast_probe' AS probe
+      `;
+      return decodeJson(rows[0]?.probe) || null;
     },
 
     async resolveExecutionClaim(workOrderCommitment, { attempt, receipt }) {
@@ -962,8 +1001,30 @@ export function createPostgresWorkerState(databaseUrl, { driver = "auto" } = {})
             receipt_json = ${jsonParam(receipt)}::jsonb,
             updated_at = NOW()
           WHERE work_order_commitment = ${workOrderCommitment}
-            AND status IN (${"in_progress"}, ${"reconcile_required"}, ${"completed"})
+            AND (
+              status IN (${"in_progress"}, ${"reconcile_required"}, ${"rejected"}) OR (
+                status = ${"completed"} AND NOT COALESCE((
+                  receipt_json #>> '{final_proof,final_venue_execution_proven}' = 'true' AND (
+                    receipt_json #>> '{final_proof,final_fill_proven}' = 'true' OR
+                    receipt_json #>> '{final_proof,final_no_fill_proven}' = 'true' OR
+                    receipt_json #>> '{final_proof,final_no_broadcast_proven}' = 'true'
+                  )
+                ), FALSE)
+              )
+            )
             AND claim_json -> 'context' ->> 'request_digest' = ${completionDigest}
+            AND NOT EXISTS (
+              SELECT 1
+              FROM worker_idempotency AS immutable
+              WHERE immutable.work_order_commitment = ${workOrderCommitment}
+                AND COALESCE((
+                  immutable.receipt_json #>> '{final_proof,final_venue_execution_proven}' = 'true' AND (
+                    immutable.receipt_json #>> '{final_proof,final_fill_proven}' = 'true' OR
+                    immutable.receipt_json #>> '{final_proof,final_no_fill_proven}' = 'true' OR
+                    immutable.receipt_json #>> '{final_proof,final_no_broadcast_proven}' = 'true'
+                  )
+                ), FALSE)
+            )
           RETURNING work_order_commitment
         ), attempt_write AS (
           INSERT INTO worker_execution_attempts (
@@ -999,15 +1060,22 @@ export function createPostgresWorkerState(databaseUrl, { driver = "auto" } = {})
       const completed = decodeJson(rows[0]?.receipt_json);
       if (completed) return completed;
       const existingRows = await sql`
-        SELECT receipt_json
-        FROM worker_idempotency
-        WHERE work_order_commitment = ${workOrderCommitment}
+        SELECT COALESCE(
+          (
+            SELECT receipt_json
+            FROM worker_idempotency
+            WHERE work_order_commitment = ${workOrderCommitment}
+          ),
+          (
+            SELECT receipt_json
+            FROM worker_execution_claims
+            WHERE work_order_commitment = ${workOrderCommitment}
+          )
+        ) AS receipt_json
       `;
       const existing = decodeJson(existingRows[0]?.receipt_json);
-      if (existing?.execution_request_digest === completionDigest &&
-        (existing?.final_proof?.final_fill_proven === true ||
-          existing?.final_proof?.final_no_broadcast_proven === true ||
-          existing?.final_proof?.final_no_fill_proven === true)) {
+      if (existing?.execution_request_digest?.toLowerCase() === completionDigest &&
+          hasTerminalExecutionProof(existing)) {
         return existing;
       }
       throw executionClaimConflict();
@@ -2694,9 +2762,40 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save, mutate 
       return {
         status: claim.status,
         context: claim.context || null,
+        no_broadcast_probe: claim.no_broadcast_probe || null,
         attempt: claim.attempt || null,
         receipt: claim.receipt || null,
       };
+    },
+
+    async recordExecutionClaimNoBroadcastObservation(workOrderCommitment, observation) {
+      return mutateState((state) => {
+        const claim = state.execution_claims[workOrderCommitment];
+        const cloid = String(observation?.cloid || "").toLowerCase();
+        const instructionExpiresAt = String(observation?.instruction_expires_at || "");
+        const observedAt = String(observation?.observed_at || "");
+        if (!claim || !["in_progress", "reconcile_required"].includes(claim.status) ||
+            !/^0x[0-9a-f]{32}$/u.test(cloid) ||
+            !Number.isFinite(Date.parse(instructionExpiresAt)) ||
+            !Number.isFinite(Date.parse(observedAt))) return null;
+        const existing = claim.no_broadcast_probe;
+        if (existing && (existing.cloid !== cloid || existing.instruction_expires_at !== instructionExpiresAt)) {
+          return null;
+        }
+        const probe = {
+          cloid,
+          instruction_expires_at: instructionExpiresAt,
+          first_observed_at: existing?.first_observed_at || observedAt,
+          last_observed_at: observedAt,
+          observation_count: Number(existing?.observation_count || 0) + 1,
+        };
+        state.execution_claims[workOrderCommitment] = {
+          ...claim,
+          no_broadcast_probe: probe,
+          updated_at: observedAt,
+        };
+        return probe;
+      });
     },
 
     async resolveExecutionClaim(workOrderCommitment, { attempt, receipt }) {
@@ -2706,13 +2805,14 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save, mutate 
         if (!completionDigest) throw executionClaimContextConflict();
         assertTerminalExecutionResolution(receipt);
         const cached = state.idempotency[workOrderCommitment]?.receipt;
-        if (cached?.execution_request_digest === completionDigest &&
-          (cached?.final_proof?.final_fill_proven === true ||
-            cached?.final_proof?.final_no_broadcast_proven === true ||
-            cached?.final_proof?.final_no_fill_proven === true)) {
-          return cached;
+        for (const immutable of [cached, claim?.receipt]) {
+          if (!hasTerminalExecutionProof(immutable)) continue;
+          if (immutable.execution_request_digest?.toLowerCase() !== completionDigest) {
+            throw executionClaimContextConflict();
+          }
+          return immutable;
         }
-        if (!claim || !["in_progress", "reconcile_required", "completed"].includes(claim.status)) {
+        if (!claim || !["in_progress", "reconcile_required", "rejected", "completed"].includes(claim.status)) {
           throw executionClaimConflict();
         }
         if (claim.context?.request_digest !== completionDigest) {
@@ -3066,9 +3166,25 @@ function serializeStateMutation(path, task) {
 function sanitizeExecutionClaimContext(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const context = {};
-  for (const key of ["venue_id", "platform_class", "execution_mode", "operation_class"]) {
-    if (typeof value[key] === "string" && value[key].length <= 128) context[key] = value[key];
+  for (const key of [
+    "venue_id",
+    "platform_class",
+    "execution_mode",
+    "operation_class",
+    "owner_commitment",
+    "account_commitment",
+    "vault_commitment",
+    "policy_commitment",
+    "order_policy_commitment",
+    "plan_digest",
+    "request_commitment",
+    "market",
+    "original_request_digest",
+    "sealed_request_digest",
+  ]) {
+    if (typeof value[key] === "string" && value[key].length <= 240) context[key] = value[key];
   }
+  if (value.reconciliation_binding_version === 1) context.reconciliation_binding_version = 1;
   if (validExecutionRequestDigest(value.request_digest)) {
     context.request_digest = value.request_digest.toLowerCase();
   }
@@ -3101,24 +3217,42 @@ function executionCompletionRequestDigest(attempt, receipt) {
 
 function assertTerminalExecutionResolution(receipt) {
   const proof = receipt?.final_proof;
+  const terminalStatus = String(proof?.terminal_status || "").trim();
+  const normalizedHyperliquidStatus = normalizeHyperliquidOrderStatus(terminalStatus);
   const filled = proof?.final_fill_proven === true;
+  const rawTerminalOutcomeCount = Number(proof?.final_fill_proven === true) +
+    Number(proof?.final_no_fill_proven === true) +
+    Number(proof?.final_no_broadcast_proven === true);
   const noBroadcast =
     proof?.final_no_broadcast_proven === true &&
     proof?.broadcast_performed === false &&
-    ["cancelled", "failed", "no_submit", "rejected"].includes(String(proof?.terminal_status || "").toLowerCase());
+    ["cancelled", "failed", "no_submit", "rejected"].includes(terminalStatus.toLowerCase());
+  const terminalNoFillStatus =
+    ["cancelled", "canceled", "expired", "failed", "rejected"].includes(terminalStatus.toLowerCase()) ||
+    (proof?.venue_id === "hyperliquid" && normalizedHyperliquidStatus !== "filled" &&
+      isTerminalHyperliquidOrderStatus(terminalStatus));
   const terminalNoFill =
     proof?.final_no_fill_proven === true &&
-    ["cancelled", "canceled", "expired", "failed", "rejected"].includes(String(proof?.terminal_status || "").toLowerCase());
+    terminalNoFillStatus;
+  const terminalOutcomeCount = Number(filled) + Number(noBroadcast) + Number(terminalNoFill);
   if (
     !receipt || typeof receipt !== "object" ||
     !proof || typeof proof !== "object" ||
     proof.final_venue_execution_proven !== true ||
-    (!filled && !noBroadcast && !terminalNoFill) ||
-    typeof proof.terminal_status !== "string" ||
-    !proof.terminal_status.trim()
+    rawTerminalOutcomeCount !== 1 || terminalOutcomeCount !== 1 ||
+    !terminalStatus
   ) {
     throw executionClaimConflict();
   }
+}
+
+function hasTerminalExecutionProof(receipt) {
+  const proof = receipt?.final_proof;
+  return proof?.final_venue_execution_proven === true && (
+    proof?.final_fill_proven === true ||
+    proof?.final_no_fill_proven === true ||
+    proof?.final_no_broadcast_proven === true
+  );
 }
 
 function sanitizeExecutionClaimFailure(value) {

@@ -49,7 +49,7 @@ export async function createFundedProofDossier({
       take_profit: { oid: report.take_profit_oid, cloid: report.take_profit_cloid },
       stop_loss: { oid: report.stop_loss_oid, cloid: report.stop_loss_cloid },
     },
-    expectedNotionalUsd: 10.5,
+    expectedNotionalUsd: 11,
     fetchImpl,
   });
   assertSameVenueEvidence(report.venue_evidence, freshEvidence);
@@ -73,7 +73,7 @@ export async function createFundedProofDossier({
     market: "HYPE",
     real_funds: true,
     execution_account_address: config.accountAddress,
-    notional_usd: 10.5,
+    notional_usd: 11,
     entry_order: freshEvidence.entry,
     exit_order: freshEvidence.exit,
     round_trip: {
@@ -137,7 +137,7 @@ export async function createFundedProofDossier({
 
 function assertHardenedReport(report) {
   if (report?.ok !== true || report?.status !== "filled" || report?.network !== "mainnet" ||
-      report?.market !== "HYPE" || report?.notional_usd !== 10.5 || report?.claim_store !== "postgres" ||
+      report?.market !== "HYPE" || report?.notional_usd !== 11 || report?.claim_store !== "postgres" ||
       report?.preflight_verified !== true || report?.api_wallet_authorization_verified !== true ||
       !/^0x[0-9a-f]{40}$/u.test(String(report?.api_wallet_address || "").toLowerCase()) ||
       report?.preflight_transaction_broadcast !== false || report?.independent_venue_evidence_proven !== true ||
@@ -145,6 +145,9 @@ function assertHardenedReport(report) {
       report?.final_proof?.exit_preflight_proven !== true ||
       report?.venue_position_protection_proven !== true ||
       report?.protection_cleanup_confirmed !== true || report?.protection_children_terminal !== true ||
+      report?.protection_children_no_fill_proven !== true ||
+      report?.final_proof?.protection_children_no_fill_proven !== true ||
+      !validProtectionProof(report) ||
       !/^\d+$/u.test(String(report?.take_profit_oid || "")) ||
       !/^\d+$/u.test(String(report?.stop_loss_oid || "")) ||
       !/^0x[0-9a-f]{32}$/u.test(String(report?.take_profit_cloid || "").toLowerCase()) ||
@@ -169,12 +172,39 @@ function assertSameVenueEvidence(first, second) {
   for (const phase of ["take_profit", "stop_loss"]) {
     const left = first?.protection?.[phase];
     const right = second?.protection?.[phase];
-    if (String(left?.oid) !== String(right?.oid) ||
-        String(left?.cloid).toLowerCase() !== String(right?.cloid).toLowerCase() ||
-        left?.order_status !== "canceled" || right?.order_status !== "canceled") {
+    if (canonicalJson(left) !== canonicalJson(right) || !validProtectionEvidenceLeg(right)) {
       throw new Error(`fresh Hyperliquid ${phase} protection evidence differs from the worker proof`);
     }
   }
+}
+
+function validProtectionProof(report) {
+  const acceptance = report?.protection_acceptance;
+  const cleanup = report?.protection_cleanup;
+  const venue = report?.venue_evidence?.protection;
+  return ["take_profit", "stop_loss"].every((kind) => {
+    const oid = String(report?.[`${kind}_oid`] || "");
+    const cloid = String(report?.[`${kind}_cloid`] || "").toLowerCase();
+    return /^\d+$/u.test(oid) && /^0x[0-9a-f]{32}$/u.test(cloid) &&
+      String(acceptance?.[kind]?.oid || "") === oid &&
+      String(acceptance?.[kind]?.cloid || "").toLowerCase() === cloid &&
+      acceptance?.[kind]?.venue_accepted === true &&
+      acceptance?.[kind]?.venue_order_readback_proven === true &&
+      String(cleanup?.[kind]?.oid || "") === oid &&
+      String(cleanup?.[kind]?.cloid || "").toLowerCase() === cloid &&
+      cleanup?.[kind]?.terminal_status === "canceled" &&
+      cleanup?.[kind]?.cancellation_readback_proven === true &&
+      cleanup?.[kind]?.final_cancellation_proven === true &&
+      validProtectionEvidenceLeg(venue?.[kind]);
+  });
+}
+
+function validProtectionEvidenceLeg(value) {
+  return value?.order_status === "canceled" &&
+    value?.venue_accepted === true && value?.venue_order_readback_proven === true &&
+    value?.final_cancellation_proven === true && value?.final_no_fill_proven === true &&
+    value?.fill_count === 0 && String(value?.filled_base_size) === "0" &&
+    value?.reduce_only === true && value?.trigger_order === true;
 }
 
 function git(args) {

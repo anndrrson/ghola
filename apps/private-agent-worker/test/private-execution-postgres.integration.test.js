@@ -132,6 +132,60 @@ describe("live Postgres execution claims", { skip: !databaseUrl }, () => {
     assert.deepEqual(replay.receipt, receipt);
   });
 
+  it("upgrades completed nonterminal evidence once and keeps the first terminal receipt immutable", async () => {
+    const workOrder = unique("terminal_cas");
+    const requestDigest = sha256(workOrder);
+    const context = {
+      venue_id: "hyperliquid",
+      platform_class: "hyperliquid_style_market",
+      execution_mode: "byo_api_key",
+      operation_class: "limit_order",
+      request_digest: requestDigest,
+    };
+    const initialState = createPostgresWorkerState(databaseUrl, { driver: "pg" });
+    const claim = await initialState.claimExecution(workOrder, context);
+    assert.equal(claim.status, "claimed");
+    const submitted = {
+      attempt: {
+        status: "submitted",
+        execution_request_digest: requestDigest,
+      },
+      receipt: {
+        status: "submitted",
+        execution_request_digest: requestDigest,
+        final_proof: {
+          final_venue_execution_proven: true,
+          final_fill_proven: false,
+          final_no_fill_proven: false,
+          final_no_broadcast_proven: false,
+        },
+      },
+    };
+    await initialState.recordExecutionClaimEvidence(workOrder, claim.claim_token, submitted);
+    assert.deepEqual(
+      await initialState.completeExecutionClaim(workOrder, claim.claim_token, submitted),
+      submitted.receipt,
+    );
+    await initialState.close();
+
+    const filled = terminalCompletion(requestDigest, "filled");
+    const noFill = terminalCompletion(requestDigest, "cancelled");
+    const first = createPostgresWorkerState(databaseUrl, { driver: "pg" });
+    const second = createPostgresWorkerState(databaseUrl, { driver: "pg" });
+    const [firstResult, secondResult] = await Promise.all([
+      first.resolveExecutionClaim(workOrder, filled),
+      second.resolveExecutionClaim(workOrder, noFill),
+    ]);
+    assert.deepEqual(firstResult, secondResult);
+    assert.ok([filled.receipt.status, noFill.receipt.status].includes(firstResult.status));
+
+    const losingCompletion = firstResult.status === filled.receipt.status ? noFill : filled;
+    assert.deepEqual(await first.resolveExecutionClaim(workOrder, losingCompletion), firstResult);
+    assert.deepEqual((await second.getIdempotency(workOrder)).receipt, firstResult);
+    assert.deepEqual((await second.getExecutionClaimEvidence(workOrder)).receipt, firstResult);
+    await Promise.all([first.close(), second.close()]);
+  });
+
   it("enforces first-use policy amounts as numbers", async () => {
     const state = createPostgresWorkerState(databaseUrl, { driver: "pg" });
     const key = unique("policy_amount");
@@ -151,4 +205,22 @@ function unique(label) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function terminalCompletion(requestDigest, status) {
+  const filled = status === "filled";
+  const proof = {
+    proof_kind: "hyperliquid_execution_proof_v1",
+    venue_id: "hyperliquid",
+    broadcast_performed: true,
+    final_venue_execution_proven: true,
+    final_fill_proven: filled,
+    final_no_fill_proven: !filled,
+    final_no_broadcast_proven: false,
+    terminal_status: status,
+  };
+  return {
+    attempt: { status, execution_request_digest: requestDigest, final_proof: proof },
+    receipt: { status, execution_request_digest: requestDigest, final_proof: proof },
+  };
 }

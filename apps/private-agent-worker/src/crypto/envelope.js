@@ -14,6 +14,11 @@ export const RECIPIENT_KIND = {
   ModelBridge: 0x02,
 };
 
+export const HYPERLIQUID_EXECUTION_VAULT_AAD_PREFIXES = Object.freeze([
+  "ghola/hyperliquid-execution-vault-v1|",
+  "ghola/hyperliquid-execution-vault-v2|",
+]);
+
 const EPHEM_PUB_LEN = 32;
 const NONCE_LEN = 12;
 const SIGNATURE_LEN = 64;
@@ -257,6 +262,14 @@ export async function openSealedBundle(bundle, recipient, opts = {}) {
     throw new EnvelopeError("sealed bundle associated data mismatch");
   }
   if (opts.aadPrefix && !aad.startsWith(opts.aadPrefix)) {
+    throw new EnvelopeError("sealed bundle associated data prefix mismatch");
+  }
+  if (opts.aadPrefixes && (
+    !Array.isArray(opts.aadPrefixes) ||
+    opts.aadPrefixes.length === 0 ||
+    !opts.aadPrefixes.every((prefix) => typeof prefix === "string" && prefix.length > 0) ||
+    !opts.aadPrefixes.some((prefix) => aad.startsWith(prefix))
+  )) {
     throw new EnvelopeError("sealed bundle associated data prefix mismatch");
   }
   let parsed;
