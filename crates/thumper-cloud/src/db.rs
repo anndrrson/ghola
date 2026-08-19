@@ -358,7 +358,8 @@ $$;
 -- Enterprise tier support
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
 ALTER TABLE users ADD CONSTRAINT users_tier_check
-    CHECK (tier IN ('free', 'pro', 'trial_pack', 'starter', 'private_agent', 'unlimited', 'enterprise'));
+    CHECK (tier IN ('free', 'pro', 'trial_pack', 'starter', 'private_agent', 'unlimited', 'enterprise'))
+    NOT VALID;
 
 CREATE TABLE IF NOT EXISTS complimentary_access_passes (
     code_hash TEXT PRIMARY KEY,
@@ -1050,3 +1051,105 @@ CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires
     ON refresh_tokens(expires_at);
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::run_migrations;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use std::str::FromStr;
+
+    /// Runs against a disposable database created beneath
+    /// `GHOLA_TEST_DATABASE_URL`; never point that variable at production.
+    #[tokio::test]
+    #[ignore = "requires local GHOLA_TEST_DATABASE_URL with CREATE DATABASE permission"]
+    async fn migrations_preserve_legacy_tiers_and_enforce_new_writes() {
+        let admin_url = std::env::var("GHOLA_TEST_DATABASE_URL")
+            .expect("GHOLA_TEST_DATABASE_URL must name a disposable local Postgres server");
+        assert!(
+            admin_url.starts_with("postgres://127.0.0.1:")
+                || admin_url.starts_with("postgres://localhost:")
+                || admin_url.starts_with("postgresql://127.0.0.1:")
+                || admin_url.starts_with("postgresql://localhost:"),
+            "DB integration test is restricted to localhost"
+        );
+
+        let admin_options = PgConnectOptions::from_str(&admin_url).unwrap();
+        let admin_pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(admin_options.clone())
+            .await
+            .unwrap();
+        let database_name = format!("ghola_tier_test_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(&format!("CREATE DATABASE \"{database_name}\""))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with(admin_options.database(&database_name))
+            .await
+            .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        // Reproduce the production shape: an out-of-domain row predates an
+        // unvalidated constraint, so it is grandfathered but new writes are checked.
+        sqlx::raw_sql(
+            r#"
+            ALTER TABLE users DROP CONSTRAINT users_tier_check;
+            INSERT INTO users (email, tier)
+                VALUES ('legacy-tier@ghola.test', 'legacy_grandfathered');
+            ALTER TABLE users ADD CONSTRAINT users_tier_check
+                CHECK (tier IN ('free', 'pro', 'private_agent', 'unlimited', 'enterprise'))
+                NOT VALID;
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        let legacy_tier: String =
+            sqlx::query_scalar("SELECT tier FROM users WHERE email = 'legacy-tier@ghola.test'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(legacy_tier, "legacy_grandfathered");
+
+        sqlx::query("INSERT INTO users (email, tier) VALUES ($1, $2)")
+            .bind("valid-tier@ghola.test")
+            .bind("starter")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let invalid_write = sqlx::query("INSERT INTO users (email, tier) VALUES ($1, $2)")
+            .bind("invalid-tier@ghola.test")
+            .bind("future_invalid")
+            .execute(&pool)
+            .await
+            .expect_err("new out-of-domain tiers must be rejected");
+        let invalid_code = invalid_write
+            .as_database_error()
+            .and_then(|error| error.code())
+            .map(|code| code.into_owned());
+        assert_eq!(invalid_code.as_deref(), Some("23514"));
+
+        let validated: bool = sqlx::query_scalar(
+            "SELECT convalidated FROM pg_constraint \
+             WHERE conrelid = 'users'::regclass AND conname = 'users_tier_check'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(!validated);
+
+        pool.close().await;
+        sqlx::query(&format!("DROP DATABASE \"{database_name}\" WITH (FORCE)"))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
+        admin_pool.close().await;
+    }
+}
