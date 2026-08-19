@@ -16,6 +16,7 @@ their own proof gates pass.
   queried worker evidence; rotating Ghola accounts, vaults, or API wallets does not create another subject.
 - Web SHA, worker SHA, worker image digest, config fingerprint, caps, and capabilities must match.
 - Durable launch states: `disabled`, `canary`, `public`, `killed`.
+- Live-release validation requires `GHOLA_PRIVATE_AGENT_PROVISIONING_MUTATIONS_ENABLED=false`.
 - Risk-reducing orders bypass launch, eligibility, billing, and opening caps after identity and vault checks.
 
 ## Required flow
@@ -54,11 +55,26 @@ curl -sS https://ghola.xyz/api/internal/live-trading/launch \
   -X POST \
   -H "Authorization: Bearer $GHOLA_LIVE_TRADING_CONTROL_TOKEN" \
   -H "Content-Type: application/json" \
-  --data '{"state":"killed","updated_by":"operator"}'
+  --data '{"state":"killed","updated_by":"operator","confirmation":"KILL HYPERLIQUID MAINNET LIVE TRADING"}'
 ```
 
-The durable kill closes exposure-creating authorization immediately. Keep the worker global kill
-switch and deployment rollback available as independent controls.
+The durable kill is absorbing: stale canary/public writes cannot reopen it. It commits before any
+worker readiness or network probe and closes exposure-creating authorization immediately. Keep the
+worker global kill switch and deployment rollback available as independent controls.
+
+Reset only after the incident is resolved. Read the killed control's exact `revision`, then use the
+separate, strong `GHOLA_LIVE_TRADING_RESET_TOKEN` (never the control token):
+
+```sh
+curl -sS https://ghola.xyz/api/internal/live-trading/launch \
+  -X POST \
+  -H "Authorization: Bearer $GHOLA_LIVE_TRADING_RESET_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{"state":"disabled","updated_by":"operator","expected_revision":42,"confirmation":"RESET KILLED LIVE TRADING TO DISABLED"}'
+```
+
+The reset fails unless state is still `killed` at exactly that revision. Canary/public activation
+must then use the ordinary control flow again.
 
 ## Proof standard
 

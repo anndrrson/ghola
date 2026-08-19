@@ -174,7 +174,7 @@ export const TerminalLiveAccountBlotter = memo(function TerminalLiveAccountBlott
             onInspectMarket={inspectMarket}
             inspectColumn={1}
           />
-          <p className="border-t border-[#141d2e] px-4 py-2 text-[8px] leading-3 text-[#566278]">Values, leverage, margin use, and liquidation distance are bounded privacy buckets—not exact venue balances or prices. Position close requires a fresh wallet signature and only submits reduce-only.</p>
+          <p className="border-t border-[#141d2e] px-4 py-2 text-[8px] leading-3 text-[#566278]">Values, leverage, margin use, and liquidation distance are bounded privacy buckets—not exact venue balances or prices. Phantom may first request Solana sign-in (SIWS), then the close requires two scoped Solana message signatures and only submits reduce-only.</p>
         </>
       )}
     </section>
@@ -243,7 +243,7 @@ function ClosePositionControls({ positions, onRefresh }: { positions: string[]; 
       </div>
       {state.status === "confirming" ? (
         <div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-rose-300/20 bg-rose-300/[0.04] px-2 py-2 text-[8px] text-rose-100" role="alert">
-          <span>This signs a real reduce-only market close for the full {state.market} position within the release slippage cap.</span>
+          <span>If Solana sign-in is not current, Phantom may first request SIWS. It then requests a wallet-binding message and the exact reduce-only close request for the full {state.market} position within the release slippage cap.</span>
           <button type="button" onClick={closeConfirmed} className="term-chip h-7 px-2 font-semibold text-rose-100">Sign + close</button>
           <button type="button" onClick={() => setState({ status: "idle" })} className="term-chip h-7 px-2">Cancel</button>
         </div>

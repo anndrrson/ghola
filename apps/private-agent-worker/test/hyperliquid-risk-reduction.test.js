@@ -1,5 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   closeSealedHyperliquidPosition,
   HYPERLIQUID_CLOSE_CONFIRMATION,
@@ -9,6 +12,8 @@ import {
   controlAutopilotSession,
   resetAutopilotExecutionControlsForTests,
 } from "../src/execution/autopilot.js";
+import { executeHyperliquidRiskReduction } from "../src/execution/private-execution.js";
+import { createWorkerState } from "../src/state/private-state.js";
 
 describe("Hyperliquid risk reduction", () => {
   it("resolves the exact venue position and submits only a reduce-only bounded IOC", async () => {
@@ -54,6 +59,74 @@ describe("Hyperliquid risk reduction", () => {
     assert.match(report.closes[0].fill_evidence_commitment, /^hl_fill_evidence_[0-9a-f]{64}$/u);
     assert.equal("fill_summary" in report.closes[0], false);
     assert.equal(JSON.stringify(report).includes("filled_base_size"), false);
+  });
+
+  it("persists safe investor/account/vault/policy/market bindings on reduce-only child claims", async () => {
+    const previousDryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "true";
+    const state = createWorkerState(mkdtempSync(join(tmpdir(), "ghola-risk-context.")));
+    const workOrder = "hl_close_context_close_hype_1";
+    try {
+      await executeHyperliquidRiskReduction({
+        body: {
+          version: 1,
+          execution_mode: "byo_api_key",
+          owner_commitment: "owner_risk_context",
+          account_commitment: "account_risk_context",
+          vault_commitment: "vault_risk_context",
+          policy_commitment: "policy_risk_context",
+          session_policy: {
+            execution_network: "testnet",
+            market_allowlist: ["HYPE"],
+            max_slippage_bps: 50,
+            policy_commitment: "policy_risk_context",
+          },
+          operation_class: "limit_order",
+          work_order_commitment: workOrder,
+        },
+        instruction: {
+          version: 1,
+          kind: "ghola_private_execution_instruction",
+          venue_id: "hyperliquid",
+          operation_class: "limit_order",
+          expires_at: new Date(Date.now() + 10_000).toISOString(),
+          order: {
+            market: "HYPE",
+            side: "sell",
+            base_size: "0.25",
+            size_mode: "base",
+            order_type: "market",
+            tif: "Ioc",
+            post_only: false,
+            reduce_only: true,
+            max_slippage_bps: "50",
+            live_order_mode: "tiny_fill",
+            margin_mode: "isolated",
+            leverage: 1,
+          },
+        },
+        recipient: {},
+        state,
+      });
+      const evidence = await state.getExecutionClaimEvidence(workOrder);
+      assert.deepEqual(evidence.context, {
+        venue_id: "hyperliquid",
+        platform_class: "hyperliquid_style_market",
+        execution_mode: "byo_api_key",
+        operation_class: "limit_order",
+        owner_commitment: "owner_risk_context",
+        account_commitment: "account_risk_context",
+        vault_commitment: "vault_risk_context",
+        policy_commitment: "policy_risk_context",
+        order_policy_commitment: "policy_risk_context",
+        market: "HYPE",
+        request_digest: evidence.context.request_digest,
+      });
+      assert.match(evidence.context.request_digest, /^[a-f0-9]{64}$/u);
+    } finally {
+      if (previousDryRun === undefined) delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+      else process.env.PRIVATE_AGENT_VENUE_DRY_RUN = previousDryRun;
+    }
   });
 
   it("cancels every observed order before reduce-only closes and proves final-flat", async () => {

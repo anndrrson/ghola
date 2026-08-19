@@ -8,7 +8,6 @@ import {
   unauthorized,
 } from "../../_lib";
 import { verifyConsumerStepUp } from "@/lib/consumer-step-up";
-import { hasPrivateAccountMobileProofHeaders } from "@/lib/private-account-mobile-proof";
 import { isTestnetVaultBundle } from "./vault-bundle";
 import { hyperliquidMainnetVaultAuthError } from "./vault-auth";
 
@@ -47,20 +46,20 @@ export async function DELETE(req: Request) {
   const owner = await privateAccountOwnerFromRequest(req);
   if (!owner) return unauthorized();
   const current = await hyperliquidVaultStatusForOwner(owner);
-  const replacingTestnetVault = current.hyperliquid_execution_vault?.network === "testnet";
-  if (!replacingTestnetVault && !verifiedEmail(owner.user.email_verified)) {
-    return json({ error: "verified_email_required" }, 403);
+  const vault = current.hyperliquid_execution_vault;
+  if (!vault || vault.status === "revoked") {
+    return json({ error: "hyperliquid_execution_vault_not_found" }, 404);
   }
-  if (!replacingTestnetVault) {
-    if (hasPrivateAccountMobileProofHeaders(req)) {
-      const guarded = await privateAccountLiveGuard(req, { allowMobileWalletProof: true });
-      if (!guarded.ok) return guarded.response;
-      if (guarded.request_proof_kind !== "mobile_wallet") {
-        return json({ error: "step_up_authentication_required" }, 403);
-      }
-    } else if (!await verifyConsumerStepUp(req)) {
-      return json({ error: "step_up_authentication_required" }, 403);
-    }
+  if (vault.network !== "testnet") {
+    const automated = vault.authorization_source === "phantom_approve_agent_v1";
+    return json({
+      error: automated
+        ? "hyperliquid_agent_revocation_signature_required"
+        : "legacy_hyperliquid_authority_requires_venue_revocation",
+      message: automated
+        ? "Disable this wallet with the signed Phantom key-replacement flow. Ghola did not remove venue authority."
+        : "Revoke the legacy API wallet in Hyperliquid before removing it from Ghola.",
+    }, 409);
   }
   const revoked = await revokeHyperliquidVaultForOwner(owner);
   if ("error" in revoked) return json({ error: revoked.error }, 404);

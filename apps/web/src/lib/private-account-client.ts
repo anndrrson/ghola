@@ -10,12 +10,17 @@ import type {
 } from "./private-account";
 import type { PrivateAccountReadinessResponse } from "./private-account-readiness";
 import type { HyperliquidEncryptedExecutionVaultBundle } from "./hyperliquid-vault-seal";
+import type {
+  HyperliquidAgentAuthorizationRequest,
+  HyperliquidAgentRevocationRequest,
+} from "./hyperliquid-agent-wallet";
 import type { CoinbaseEncryptedExecutionVaultBundle, CoinbaseExecutionMode } from "./coinbase-vault-seal";
 import type { SolanaPerpsEncryptedExecutionVaultBundle } from "./solana-perps-vault-seal";
 import type { SolanaSwapEncryptedExecutionVaultBundle } from "./solana-swap-vault-seal";
 import type { TradeOrderPlan } from "./trade-order-plan";
 import type { MarketFundingRateFields } from "./market-funding-rate";
 import type {
+  LiveTradingCapabilityId,
   LiveTradingCapabilityStatus,
   LiveTradingCaps,
   LiveTradingLaunchState,
@@ -138,6 +143,33 @@ export interface PrivateAccountLiveTradingStatus {
   };
   reason_codes: string[];
   gate_commitment: string;
+  checked_at: string;
+}
+
+export interface PrivateAccountTerminalAccessStatus {
+  version: 1;
+  status: "green" | "red";
+  venue_id: "hyperliquid";
+  network: "mainnet";
+  opening_orders_enabled: boolean;
+  access_mode: "public" | "account_canary" | "blocked";
+  launch_state: LiveTradingLaunchState;
+  release_identity: LiveTradingReleaseIdentity;
+  live_worker_readiness: PrivateAccountLiveTradingStatus["live_worker_readiness"] | null;
+  effective_caps: LiveTradingCaps;
+  configured_capabilities: LiveTradingCapabilityId[];
+  required_capabilities: LiveTradingCapabilityId[];
+  authorized_capabilities: LiveTradingCapabilityId[];
+  account_requirements: {
+    account_ready: boolean;
+    vault_ready: boolean;
+    eligibility_ready: boolean;
+    entitlement_ready: boolean;
+    graduation_ready: boolean;
+  };
+  graduation_completed_at: string | null;
+  reason_codes: string[];
+  access_commitment: string;
   checked_at: string;
 }
 
@@ -879,6 +911,15 @@ export async function getPrivateAccountLiveTradingStatus(): Promise<PrivateAccou
   });
 }
 
+export async function getPrivateAccountTerminalAccessStatus(
+  options: { signal?: AbortSignal } = {},
+): Promise<PrivateAccountTerminalAccessStatus> {
+  return privateAccountFetch("/v1/private-account/live-trading/terminal-access", {
+    method: "GET",
+    signal: options.signal,
+  });
+}
+
 export async function getPublicAgentStartupStatus(options: { signal?: AbortSignal } = {}): Promise<PublicAgentStartupStatus> {
   return privateAccountFetch("/v1/private-account/agent/startup", {
     method: "GET",
@@ -896,6 +937,34 @@ export async function wakePublicAgentWorker(): Promise<PublicAgentWakeResponse> 
 export async function getHyperliquidExecutionVaultStatus() {
   return privateAccountFetch("/v1/private-account/hyperliquid/vault", {
     method: "GET",
+  });
+}
+
+export async function preflightPhantomHyperliquidAccount(accountAddress: string) {
+  return privateAccountFetch("/v1/private-account/hyperliquid/agent-wallet", {
+    method: "PUT",
+    body: JSON.stringify({ account_address: accountAddress }),
+  });
+}
+
+export async function authorizePhantomHyperliquidAgent(input: HyperliquidAgentAuthorizationRequest) {
+  return privateAccountFetch("/v1/private-account/hyperliquid/agent-wallet", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function disablePhantomHyperliquidAgent(input: HyperliquidAgentRevocationRequest) {
+  return privateAccountFetch("/v1/private-account/hyperliquid/agent-wallet", {
+    method: "DELETE",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function removeRevokedLegacyHyperliquidAgentVault() {
+  return privateAccountFetch("/v1/private-account/hyperliquid/agent-wallet", {
+    method: "DELETE",
+    body: JSON.stringify({}),
   });
 }
 

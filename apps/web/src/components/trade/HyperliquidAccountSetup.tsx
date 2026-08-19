@@ -16,21 +16,32 @@ import {
   LIVE_TRADING_RISK_DISCLOSURE_VERSION,
   LIVE_TRADING_TERMS_VERSION,
 } from "@/lib/live-trading-contract";
-import { hasPrivateAgentEntitlement } from "@/lib/private-agent-runtime";
-import { getThumperBillingStatus } from "@/lib/thumper-api";
-import type { ThumperBillingStatusResponse } from "@/lib/thumper-types";
-import { useThumperAuth } from "@/lib/thumper-auth-context";
+import {
+  InvestorAccessGate,
+  type InvestorAccessControl,
+} from "./InvestorAccessGate";
+import { investorFacingErrorMessage } from "@/lib/investor-facing-error";
 
 type LiveAccess = {
   eligibility_ready?: boolean;
   vault_ready?: boolean;
+  graduation_ready?: boolean;
+  proof_completed_at?: string | null;
 };
 
 type WakeState = "idle" | "waking" | "warming" | "ready" | "error";
+const WORKER_WARM_POLL_MS = 5_000;
+const WORKER_WARM_MAX_POLLS = 18;
 
 export function HyperliquidAccountSetup() {
-  const auth = useThumperAuth();
-  const [billing, setBilling] = useState<ThumperBillingStatusResponse | null>(null);
+  return (
+    <InvestorAccessGate requireComplimentaryPass>
+      {(investorAccess) => <HyperliquidAccountSetupContent investorAccess={investorAccess} />}
+    </InvestorAccessGate>
+  );
+}
+
+function HyperliquidAccountSetupContent({ investorAccess }: { investorAccess: InvestorAccessControl }) {
   const [access, setAccess] = useState<LiveAccess | null>(null);
   const [startup, setStartup] = useState<PublicAgentStartupStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -41,100 +52,117 @@ export function HyperliquidAccountSetup() {
   const [network, setNetwork] = useState<"mainnet" | "testnet">("mainnet");
 
   const refresh = useCallback(async () => {
-    if (!auth.authenticated) return;
     setLoading(true);
     setLoadError(null);
     try {
-      const [nextBilling, nextAccess, nextStartup] = await Promise.all([
-        getThumperBillingStatus(),
+      const [nextAccess, nextStartup] = await Promise.all([
         getHyperliquidLiveAccess() as Promise<LiveAccess>,
         getPublicAgentStartupStatus(),
       ]);
-      setBilling(nextBilling);
       setAccess(nextAccess);
       setStartup(nextStartup);
-      if (nextStartup.runtime.ready) setWakeState("ready");
+      if (nextStartup.runtime.ready) {
+        setWakeState("ready");
+        setWakeMessage("Secure worker is ready.");
+      } else if (nextStartup.runtime.status === "blocked") {
+        setWakeState("error");
+        setWakeMessage(investorFacingErrorMessage(nextStartup.runtime.message, "Secure worker setup is blocked. Recheck access, then retry."));
+      }
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Setup status is unavailable.");
+      setLoadError(investorFacingErrorMessage(error, "Setup status is unavailable."));
     } finally {
       setLoading(false);
     }
-  }, [auth.authenticated]);
+  }, []);
 
   useEffect(() => {
-    if (!auth.loading && auth.authenticated) void refresh();
-  }, [auth.authenticated, auth.loading, refresh]);
+    void refresh();
+  }, [refresh]);
 
   useEffect(() => {
     if (wakeState !== "warming") return;
     let cancelled = false;
-    const timer = window.setInterval(() => {
-      void getPublicAgentStartupStatus().then((next) => {
-        if (cancelled) return;
-        setStartup(next);
-        if (next.runtime.ready) {
-          setWakeState("ready");
-          setWakeMessage("Secure worker is ready.");
-          setConnectionEpoch((value) => value + 1);
-          window.clearInterval(timer);
-        }
-      }).catch(() => undefined);
-    }, 5_000);
+    let timer: number | null = null;
+    let pollCount = 0;
+    const poll = () => {
+      timer = window.setTimeout(() => {
+        void getPublicAgentStartupStatus().then((next) => {
+          if (cancelled) return;
+          setStartup(next);
+          if (next.runtime.ready) {
+            setWakeState("ready");
+            setWakeMessage("Secure worker is ready.");
+            setConnectionEpoch((value) => value + 1);
+            return;
+          }
+          if (next.runtime.status === "blocked") {
+            setWakeState("error");
+            setWakeMessage(investorFacingErrorMessage(next.runtime.message, "Secure worker setup is blocked. Recheck access, then retry."));
+            return;
+          }
+          pollCount += 1;
+          if (pollCount >= WORKER_WARM_MAX_POLLS) {
+            setWakeState("error");
+            setWakeMessage("Secure worker did not become ready in time. Recheck access, then retry.");
+            return;
+          }
+          poll();
+        }).catch((error) => {
+          if (cancelled) return;
+          setWakeState("error");
+          setWakeMessage(investorFacingErrorMessage(error, "Secure worker status could not be checked. Retry when ready."));
+        });
+      }, WORKER_WARM_POLL_MS);
+    };
+    poll();
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer != null) window.clearTimeout(timer);
     };
   }, [wakeState]);
 
-  const entitled = hasPrivateAgentEntitlement(billing?.tier);
   const eligibilityReady = access?.eligibility_ready === true;
   const runtimeReady = startup?.runtime.ready === true || wakeState === "ready";
 
   async function wakeForSetup() {
-    if (!entitled || !eligibilityReady || wakeState === "waking") return;
+    if (!eligibilityReady || wakeState === "waking") return;
+    if (!await investorAccess.ensureReady()) return;
     setWakeState("waking");
     setWakeMessage("Starting attested setup compute. This can take about a minute.");
     try {
       const wake = await wakePublicAgentWorker();
       setWakeMessage(wake.message);
-      setWakeState(wake.ready ? "ready" : wake.status === "warming" ? "warming" : "error");
       const next = await getPublicAgentStartupStatus();
       setStartup(next);
       if (wake.ready || next.runtime.ready) {
         setWakeState("ready");
+        setWakeMessage("Secure worker is ready.");
         setConnectionEpoch((value) => value + 1);
+      } else if (wake.status === "blocked" || next.runtime.status === "blocked") {
+        setWakeState("error");
+        setWakeMessage(investorFacingErrorMessage(next.runtime.message || wake.message, "Secure worker setup is blocked. Recheck access, then retry."));
+      } else {
+        setWakeState("warming");
       }
     } catch (error) {
       setWakeState("error");
-      setWakeMessage(error instanceof Error ? error.message : "Secure worker start failed.");
+      setWakeMessage(investorFacingErrorMessage(error, "Secure worker start failed. Recheck access, then retry."));
     }
   }
 
-  if (auth.loading) return <SetupNotice message="Checking your account…" loading />;
-  if (!auth.authenticated) {
-    return (
-      <SetupNotice message="Sign in before connecting venue access.">
-        {/* A full navigation is required so /signin receives its scoped
-            Google OAuth COOP/COEP response headers. */}
-        <a href="/signin?redirect=%2Faccount%3Fflow%3Dtrade" className="trade-action inline-flex h-10 items-center justify-center rounded-md px-4 text-sm font-semibold">
-          Sign in
-        </a>
-      </SetupNotice>
-    );
+  if (loading && !access && !startup) {
+    return <SetupNotice message="Checking venue and worker readiness…" loading />;
   }
 
   return (
     <section id="hyperliquid-setup" className="scroll-mt-6 space-y-3">
-      <SetupStep number="1" title="Account access" complete={entitled}>
-        {loading && !billing ? (
-          <p className="flex items-center gap-2 text-xs text-[#8b95a8]"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Checking access…</p>
-        ) : entitled ? (
-          <p className="text-xs leading-5 text-emerald-200">Private-agent access is active{billing?.expires_at ? ` through ${new Date(billing.expires_at).toLocaleDateString()}` : ""}.</p>
-        ) : (
-          <p className="text-xs leading-5 text-amber-100">
-            Active private-agent access is required for setup compute. Review access in <Link href="/settings" className="underline underline-offset-2">Settings</Link>.
-          </p>
-        )}
+      <SetupStep number="1" title="Account access" complete>
+        <p className="text-xs leading-5 text-emerald-200">
+          Access was rechecked before setup
+          {investorAccess.readiness.expires_at
+            ? <> and expires <time dateTime={investorAccess.readiness.expires_at}>{new Date(investorAccess.readiness.expires_at).toLocaleString()}</time></>
+            : ""}.
+        </p>
       </SetupStep>
 
       <SetupStep number="2" title="Eligibility, terms, and risk" complete={eligibilityReady} id="eligibility-consent">
@@ -142,13 +170,11 @@ export function HyperliquidAccountSetup() {
           <p className="text-xs leading-5 text-emerald-200">
             Current acceptance recorded: terms {LIVE_TRADING_TERMS_VERSION} · risk {LIVE_TRADING_RISK_DISCLOSURE_VERSION}.
           </p>
-        ) : entitled ? (
+        ) : (
           <EligibilityConsent onAccepted={async () => {
             const next = await getHyperliquidLiveAccess() as LiveAccess;
             setAccess(next);
-          }} />
-        ) : (
-          <p className="text-xs text-[#69758a]">Activate account access before accepting live-trading eligibility.</p>
+          }} beforeSubmit={investorAccess.ensureReady} />
         )}
       </SetupStep>
 
@@ -165,7 +191,7 @@ export function HyperliquidAccountSetup() {
             <button
               type="button"
               onClick={() => void wakeForSetup()}
-              disabled={!entitled || wakeState === "waking" || wakeState === "warming"}
+              disabled={wakeState === "waking" || wakeState === "warming"}
               className="trade-action inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
             >
               {wakeState === "waking" || wakeState === "warming" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
@@ -178,12 +204,41 @@ export function HyperliquidAccountSetup() {
       <SetupStep number="4" title="Seal trade-only access" complete={access?.vault_ready === true}>
         {!eligibilityReady ? (
           <p className="text-xs text-[#69758a]">The credential form stays hidden until current eligibility and terms are accepted.</p>
-        ) : entitled ? (
+        ) : (
           <div key={connectionEpoch}>
-            <ConnectHyperliquidButton ready network={network} onNetworkChange={setNetwork} />
+            <ConnectHyperliquidButton
+              ready
+              network={network}
+              onNetworkChange={setNetwork}
+              beforeWalletAction={investorAccess.ensureReady}
+              onVaultStatusChange={refresh}
+            />
+          </div>
+        )}
+      </SetupStep>
+
+      <SetupStep number="5" title="Prove account and unlock terminal" complete={access?.graduation_ready === true}>
+        {access?.graduation_ready === true ? (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs leading-5 text-emerald-200">
+              This account passed the current-release mainnet proof
+              {access.proof_completed_at ? <> at <time dateTime={access.proof_completed_at}>{new Date(access.proof_completed_at).toLocaleString()}</time></> : ""}.
+            </p>
+            <Link href="/trade?flow=hyperliquid-live" className="trade-action inline-flex h-10 items-center rounded-md px-4 text-xs font-semibold">
+              Open live terminal
+            </Link>
+          </div>
+        ) : access?.vault_ready === true ? (
+          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+            <p className="text-xs leading-5 text-[#8b95a8]">
+              Run one protected real $11.00 HYPE round trip. It must fill, close reduce-only, clean its TP/SL orders, and finish flat before opening orders unlock.
+            </p>
+            <Link href="/trade/mainnet-e2e" className="trade-action inline-flex h-10 items-center justify-center rounded-md px-4 text-xs font-semibold">
+              Run $11 proof
+            </Link>
           </div>
         ) : (
-          <p className="text-xs text-[#69758a]">Active private-agent access is required to connect a new credential.</p>
+          <p className="text-xs text-[#69758a]">Seal a mainnet trade-only API wallet before running the proof.</p>
         )}
       </SetupStep>
 
@@ -201,7 +256,13 @@ export function HyperliquidAccountSetup() {
   );
 }
 
-function EligibilityConsent({ onAccepted }: { onAccepted: () => Promise<void> }) {
+function EligibilityConsent({
+  onAccepted,
+  beforeSubmit,
+}: {
+  onAccepted: () => Promise<void>;
+  beforeSubmit: () => Promise<boolean>;
+}) {
   const [eligible, setEligible] = useState(false);
   const [accepted, setAccepted] = useState(false);
   const [working, setWorking] = useState(false);
@@ -213,6 +274,7 @@ function EligibilityConsent({ onAccepted }: { onAccepted: () => Promise<void> })
     setWorking(true);
     setError(null);
     try {
+      if (!await beforeSubmit()) return;
       await verifyVenueEligibility({
         venue_id: "hyperliquid",
         credential_type: "self_attested_eligible_user",
@@ -223,7 +285,7 @@ function EligibilityConsent({ onAccepted }: { onAccepted: () => Promise<void> })
       });
       await onAccepted();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Eligibility acceptance failed.");
+      setError(investorFacingErrorMessage(cause, "Eligibility acceptance failed."));
     } finally {
       setWorking(false);
     }

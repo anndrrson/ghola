@@ -170,8 +170,13 @@ export interface ThumperTemplateResponse {
 export interface ThumperBillingStatusResponse {
   tier: "free" | "pro" | "trial_pack" | "starter" | "private_agent" | "unlimited" | "enterprise";
   access_source?: "free" | "stripe" | "complimentary_pass";
+  access_state?: "active" | "expired" | "revoked" | "none";
+  invite_state?: "active" | "expired" | "revoked" | "none";
+  active_pass_id?: string | null;
+  invite_expires_at?: string | null;
   stripe_customer_id: string | null;
   expires_at?: string | null;
+  last_access_expires_at?: string | null;
   portal_url?: string | null;
   limits: {
     calls_per_month: number;

@@ -3,15 +3,33 @@ import {
   hyperliquidMainnetProofUiEnabled,
   json,
   privateAccountLiveGuard,
+  privateAccountSessionTokenFromRequest,
   releasePrivateAccountLiveRevenueReservation,
   runHyperliquidMainnetProofForOwner,
 } from "../../_lib";
+import { paidLiveTradingEntitlement } from "@/lib/live-trading-opening-access.server";
+import { getLiveTradingLaunchControl } from "@/lib/live-trading-store";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   if (!hyperliquidMainnetProofUiEnabled()) {
     return json({ error: "hyperliquid_mainnet_roundtrip_unavailable" }, 404);
+  }
+  const launch = await getLiveTradingLaunchControl();
+  if (launch.state !== "canary" && launch.state !== "public") {
+    return json({ error: launch.state === "killed" ? "live_trading_killed" : "live_trading_not_in_canary" }, 409);
+  }
+  if (launch.state === "canary") {
+    const entitlement = await paidLiveTradingEntitlement(
+      privateAccountSessionTokenFromRequest(req) ?? "",
+      fetch,
+      process.env,
+      { requireComplimentaryPass: true },
+    );
+    if (!entitlement.ok) {
+      return json({ error: entitlement.error, reason_codes: entitlement.reason_codes }, entitlement.status);
+    }
   }
   const guarded = await privateAccountLiveGuard(req, { allowMobileWalletProof: true, requireRevenue: true });
   if (!guarded.ok) return guarded.response;
@@ -23,7 +41,10 @@ export async function POST(req: Request) {
     await releasePrivateAccountLiveRevenueReservation(guarded.revenue, "failed");
     return json({ error: "hyperliquid_mainnet_roundtrip_confirmation_required" }, 400);
   }
-  const result = await runHyperliquidMainnetProofForOwner(guarded.owner);
+  const result = await runHyperliquidMainnetProofForOwner(guarded.owner, {
+    state: launch.state,
+    revision: launch.revision,
+  });
   if ("error" in result) {
     await releasePrivateAccountLiveRevenueReservation(guarded.revenue, "failed");
     return json({ error: result.error }, result.status);

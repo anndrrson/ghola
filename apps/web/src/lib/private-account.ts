@@ -555,9 +555,28 @@ export interface GholaHyperliquidExecutionVault {
   encrypted_execution_vault: GholaEncryptedPrivateBundle;
   supported_operations: GholaHyperliquidOperationClass[];
   blocked_operations: GholaHyperliquidBlockedOperation[];
+  authorization?: GholaHyperliquidAgentAuthorization | null;
   status: "sealed" | "stale" | "revoked";
   created_at: string;
   updated_at: string;
+}
+
+export interface GholaHyperliquidAgentAuthorization {
+  version: 1;
+  source: "phantom_approve_agent_v1";
+  network: "mainnet";
+  agent_name: "ghola-mainnet";
+  venue_account_commitment: string;
+  agent_wallet_commitment: string;
+  valid_until: string;
+  approve_nonce: number;
+  verified_at: string;
+  worker_verification_commitment: string;
+  worker_verified_at: string;
+  worker_contract_version: number;
+  worker_git_sha: string;
+  worker_image_digest: string;
+  worker_config_fingerprint: string;
 }
 
 export interface GholaHyperliquidSessionPolicy {
@@ -1344,6 +1363,7 @@ export function createHyperliquidExecutionVault(input: {
     encapsulated_key?: string | null;
   };
   policy_seed?: unknown;
+  authorization?: GholaHyperliquidAgentAuthorization | null;
   now?: Date;
 }): { ok: true; vault: GholaHyperliquidExecutionVault } | { ok: false; error: "encrypted_bundle_invalid" | "forbidden_raw_hyperliquid_field" } {
   if (containsForbiddenPublicPrivateAccountField(input.encrypted_execution_vault)) {
@@ -1355,6 +1375,7 @@ export function createHyperliquidExecutionVault(input: {
   const policyCommitment = gholaCommitment("hyperliquid_execution_policy", {
     account_commitment: input.account_commitment,
     seed: input.policy_seed ?? "ghola-hyperliquid-private-execution-v1",
+    authorization: input.authorization ?? null,
   });
   const vaultSeed = {
     account_commitment: input.account_commitment,
@@ -1375,6 +1396,7 @@ export function createHyperliquidExecutionVault(input: {
       encrypted_execution_vault: encrypted.bundle,
       supported_operations: ["read", "limit_order", "cancel", "reconcile"],
       blocked_operations: ["withdraw", "vault_transfer", "leverage_escalation"],
+      authorization: input.authorization ?? null,
       status: "sealed",
       created_at: now.toISOString(),
       updated_at: now.toISOString(),

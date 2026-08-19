@@ -1,9 +1,9 @@
 "use client";
 
-import { memo, useEffect, useId, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
-import { thumperSignIn, thumperSignUp } from "@/lib/thumper-api";
+import { thumperGoogleSignIn, thumperSignIn, thumperSignUp } from "@/lib/thumper-api";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { GholaLogo } from "@/components/GholaLogo";
@@ -16,7 +16,25 @@ type AuthModalProps = {
   onClose: () => void;
   onModeChange: (mode: AuthMode) => void;
   redirectTo?: string | null;
+  verifiedEmailRequired?: boolean;
 };
+
+type GoogleIdentity = {
+  accounts: {
+    id: {
+      initialize: (config: {
+        client_id: string;
+        callback: (response: { credential: string }) => void;
+      }) => void;
+      renderButton: (
+        element: HTMLElement,
+        config: { theme?: string; size?: string; width?: number; text?: string; shape?: string },
+      ) => void;
+    };
+  };
+};
+
+const GOOGLE_IDENTITY_SCRIPT_ID = "ghola-google-identity";
 
 function passwordStrength(password: string) {
   if (password.length < 12) return { label: "Weak", score: 1, color: "bg-red-500" };
@@ -39,6 +57,7 @@ export const AuthModal = memo(function AuthModal({
   onClose,
   onModeChange,
   redirectTo = "/trade",
+  verifiedEmailRequired = false,
 }: AuthModalProps) {
   const router = useRouter();
   const { setAuth } = useThumperAuth();
@@ -57,8 +76,46 @@ export const AuthModal = memo(function AuthModal({
   const nameId = useId();
   const emailId = useId();
   const passwordId = useId();
+  const googleButtonRef = useRef<HTMLDivElement>(null);
+  const googleRenderedClientRef = useRef<string | null>(null);
+  const googleAuthInFlightRef = useRef(false);
   const isSignup = mode === "signup";
   const strength = passwordStrength(password);
+  const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+
+  const completeAuth = useCallback(async (res: Awaited<ReturnType<typeof thumperGoogleSignIn>>, fallbackEmail = "") => {
+    const user = {
+      id: res.user.id,
+      email: res.user.email,
+      name: res.user.name,
+    };
+    if (res.token) setAuth(res.token, user);
+    else setAuth(user);
+    if (!walletAddress) {
+      try {
+        await createWallet(res.user.email || fallbackEmail);
+      } catch {
+        // Wallet creation can be completed later from the account surface.
+      }
+    }
+    onClose();
+    if (redirectTo) router.push(redirectTo);
+  }, [createWallet, onClose, redirectTo, router, setAuth, walletAddress]);
+
+  const handleGoogleCredential = useCallback(async (credential: string) => {
+    if (googleAuthInFlightRef.current) return;
+    googleAuthInFlightRef.current = true;
+    setError("");
+    setLoading(true);
+    try {
+      await completeAuth(await thumperGoogleSignIn(credential));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Verified Google sign-in failed");
+    } finally {
+      googleAuthInFlightRef.current = false;
+      setLoading(false);
+    }
+  }, [completeAuth]);
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -125,6 +182,68 @@ export const AuthModal = memo(function AuthModal({
       if (returnFocus?.isConnected) queueMicrotask(() => returnFocus.focus());
     };
   }, [mounted]);
+
+  useEffect(() => {
+    if (!mounted || !open || !verifiedEmailRequired) {
+      googleRenderedClientRef.current = null;
+      return;
+    }
+    const button = googleButtonRef.current;
+    if (!button) return;
+    if (!googleClientId) {
+      setError("Verified Google sign-in is unavailable. Ask the invitation sender to restore it.");
+      return;
+    }
+
+    let active = true;
+    const render = () => {
+      if (!active || !googleButtonRef.current) return;
+      const google = (window as typeof window & { google?: GoogleIdentity }).google;
+      if (!google) {
+        setError("Verified Google sign-in could not load. Reload and try once more.");
+        return;
+      }
+      if (googleRenderedClientRef.current === googleClientId && googleButtonRef.current.childElementCount > 0) {
+        return;
+      }
+      googleButtonRef.current.replaceChildren();
+      google.accounts.id.initialize({
+        client_id: googleClientId,
+        callback: (response) => void handleGoogleCredential(response.credential),
+      });
+      google.accounts.id.renderButton(googleButtonRef.current, {
+        theme: "filled_black",
+        size: "large",
+        width: 336,
+        text: "continue_with",
+        shape: "rectangular",
+      });
+      googleRenderedClientRef.current = googleClientId;
+    };
+
+    const existing = document.getElementById(GOOGLE_IDENTITY_SCRIPT_ID) as HTMLScriptElement | null;
+    if ((window as typeof window & { google?: GoogleIdentity }).google) {
+      render();
+      return () => { active = false; };
+    }
+    const script = existing ?? document.createElement("script");
+    if (!existing) {
+      script.id = GOOGLE_IDENTITY_SCRIPT_ID;
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      document.head.appendChild(script);
+    }
+    script.addEventListener("load", render);
+    const onError = () => {
+      if (active) setError("Verified Google sign-in could not load. Reload and try once more.");
+    };
+    script.addEventListener("error", onError);
+    return () => {
+      active = false;
+      script.removeEventListener("load", render);
+      script.removeEventListener("error", onError);
+    };
+  }, [googleClientId, handleGoogleCredential, mounted, open, verifiedEmailRequired]);
 
   if (!mounted) return null;
 
@@ -197,15 +316,26 @@ export const AuthModal = memo(function AuthModal({
         </div>
 
         <h2 id={titleId} className="text-lg font-semibold text-[#eef1f8]">
-          {isSignup ? "Create your account" : "Welcome back"}
+          {verifiedEmailRequired ? "Verify the invited email" : isSignup ? "Create your account" : "Welcome back"}
         </h2>
         <p className="mt-1 text-sm text-[#8b95a8]">
-          {isSignup
+          {verifiedEmailRequired
+            ? "Continue with Google using the exact address that received this invitation."
+            : isSignup
             ? "Start a private AI session without leaving this page."
             : "Sign in and continue to your private AI."}
         </p>
 
-        <form onSubmit={submit} className="mt-6 space-y-4">
+        {verifiedEmailRequired ? (
+          <div className="mt-6 space-y-4">
+            <div ref={googleButtonRef} className="flex min-h-10 justify-center" data-testid="verified-google-signin" />
+            {error ? (
+              <div role="alert" aria-atomic="true" className="rounded-lg border border-red-500/20 bg-red-500/10 p-3">
+                <p className="text-sm text-red-400">{error}</p>
+              </div>
+            ) : null}
+          </div>
+        ) : <form onSubmit={submit} className="mt-6 space-y-4">
           {isSignup && (
             <div>
               <label htmlFor={nameId} className="mb-1.5 block text-sm text-[#8b95a8]">
@@ -288,9 +418,9 @@ export const AuthModal = memo(function AuthModal({
                 ? "Get started"
                 : "Sign in"}
           </button>
-        </form>
+        </form>}
 
-        <p className="mt-4 text-center text-sm text-[#8b95a8]">
+        {!verifiedEmailRequired ? <p className="mt-4 text-center text-sm text-[#8b95a8]">
           {isSignup ? "Already have an account?" : "Need an account?"}{" "}
           <button
             type="button"
@@ -299,7 +429,7 @@ export const AuthModal = memo(function AuthModal({
           >
             {isSignup ? "Sign in" : "Sign up"}
           </button>
-        </p>
+        </p> : null}
       </div>
     </div>
   );

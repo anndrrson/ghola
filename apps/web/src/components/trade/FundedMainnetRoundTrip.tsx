@@ -26,6 +26,10 @@ import {
   type SolanaProvider,
   type WalletConnectionStageCode,
 } from "@/lib/wallet-request-proof";
+import {
+  InvestorAccessGate,
+  type InvestorAccessControl,
+} from "./InvestorAccessGate";
 
 type FillSummary = {
   filled_base_size: string;
@@ -98,6 +102,14 @@ type State =
 const REQUEST_BODY = { confirmation: HYPERLIQUID_MAINNET_PROOF_CONFIRMATION };
 
 export function FundedMainnetRoundTrip() {
+  return (
+    <InvestorAccessGate requireComplimentaryPass>
+      {(access) => <FundedMainnetRoundTripContent access={access} />}
+    </InvestorAccessGate>
+  );
+}
+
+function FundedMainnetRoundTripContent({ access }: { access: InvestorAccessControl }) {
   const [state, setState] = useState<State>({ status: "idle" });
   const [eligibleNonUs, setEligibleNonUs] = useState(false);
   const actionInFlight = useRef(false);
@@ -107,6 +119,7 @@ export function FundedMainnetRoundTrip() {
     if (actionInFlight.current) return;
     actionInFlight.current = true;
     try {
+      if (!await access.ensureReady()) return;
       setState({ status: "wallet_connecting" });
       const wallet = await connectSolanaWallet({ deferPhantomSiws: true });
       const provider = requiredSolanaProvider();
@@ -126,8 +139,9 @@ export function FundedMainnetRoundTrip() {
   async function continuePhantomSiws() {
     if (state.status !== "siws_retry" || actionInFlight.current) return;
     actionInFlight.current = true;
-    setState({ status: "siws_authorizing" });
     try {
+      if (!await access.ensureReady()) return;
+      setState({ status: "siws_authorizing" });
       const wallet = await retryPhantomSiwsWalletConnection();
       const provider = requiredSolanaProvider();
       setState({ status: "wallet_ready", wallet, provider });
@@ -152,6 +166,7 @@ export function FundedMainnetRoundTrip() {
     actionInFlight.current = true;
     const prepared = state;
     try {
+      if (!await access.ensureReady()) return;
       setState({ status: "proof_signing" });
       const wallet = prepared.wallet;
       const provider = requirePreparedSolanaProvider(prepared.provider, wallet);
@@ -339,6 +354,12 @@ function Complete({ report }: { report: MainnetRoundTripReport }) {
       <p className="mt-4 break-all text-[10px] leading-5 text-[#8d9bb1]">Proof claim: {report.proof_work_order_commitment}</p>
       <p className="break-all text-[10px] leading-5 text-[#8d9bb1]">Entry claim: {report.entry_work_order_commitment}</p>
       <p className="break-all text-[10px] leading-5 text-[#8d9bb1]">Exit claim: {report.exit_work_order_commitment}</p>
+      <Link
+        href="/trade?flow=hyperliquid-live"
+        className="mt-4 inline-flex h-10 items-center justify-center rounded bg-emerald-300 px-4 text-sm font-semibold text-black hover:bg-emerald-200"
+      >
+        Open the live terminal
+      </Link>
     </div>
   );
 }

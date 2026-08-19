@@ -45,6 +45,12 @@ import {
   closeSealedHyperliquidPosition,
   validateHyperliquidCloseRequest,
 } from "./execution/hyperliquid-risk-reduction.js";
+import {
+  validateHyperliquidAgentLegacyRemovalRequest,
+  validateHyperliquidAgentWalletVerificationRequest,
+  verifyHyperliquidLegacyAgentRevoked,
+  verifyHyperliquidAgentWalletOnboarding,
+} from "./execution/hyperliquid-agent-wallet-verification.js";
 import { createConfiguredWorkerState } from "./state/private-state.js";
 import {
   attestFreshCredentialFunded,
@@ -109,6 +115,7 @@ const LIVE_TRADING_MAX_ORDER_NOTIONAL_USD = 100;
 const LIVE_TRADING_ROLLING_24H_NOTIONAL_USD = 500;
 const LIVE_TRADING_MAX_SLIPPAGE_BPS = 100;
 const LIVE_TRADING_SUPPORTED_CAPABILITIES = ["limit_order", "cancel", "reduce_only", "stop_loss", "take_profit"];
+const LIVE_TRADING_REQUIRED_CAPABILITIES = ["limit_order", "cancel", "reduce_only", "stop_loss", "take_profit"];
 const DSTACK_QUOTE_PATHS = [
   {
     socketPath: "/var/run/dstack.sock",
@@ -252,7 +259,10 @@ function gholaCommitment(prefix, value) {
   return `${prefix}_${sha256Hex(stableJson(value)).slice(0, 48)}`;
 }
 
-export function liveTradingReadinessContract(envInput = process.env) {
+export function liveTradingReadinessContract(envInput = process.env, bakedIdentityInput = readBakedBuildIdentity()) {
+  const configuredGitSha = normalizedGitSha(envInput.PRIVATE_AGENT_BUILD_GIT_SHA || envInput.VERCEL_GIT_COMMIT_SHA);
+  const bakedGitSha = normalizedGitSha(bakedIdentityInput?.git_sha);
+  const workerImageDigestPin = configuredImageDigestPin(envInput);
   const configuredCapabilities = String(
     envInput.PRIVATE_AGENT_LIVE_TRADING_CAPABILITIES ||
     envInput.GHOLA_LIVE_TRADING_PUBLIC_CAPABILITIES ||
@@ -299,11 +309,18 @@ export function liveTradingReadinessContract(envInput = process.env) {
   if (!String(envInput.PRIVATE_AGENT_STATE_POSTGRES_URL || "").trim()) reasonCodes.push("worker_state_postgres_url_missing");
   if (snapshot.require_dstack_quote !== "true") reasonCodes.push("worker_dstack_quote_not_required");
   if (snapshot.require_worker_capability !== "true") reasonCodes.push("worker_capability_auth_not_required");
+  if (!strongWorkerSecret(envInput.PRIVATE_AGENT_EXECUTION_TOKEN)) reasonCodes.push("worker_execution_token_weak");
+  if (!strongWorkerSecret(envInput.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET)) reasonCodes.push("worker_capability_secret_weak");
   if (envInput.PRIVATE_AGENT_GLOBAL_KILL_SWITCH === "true") reasonCodes.push("worker_global_kill_active");
-  if (!normalizedGitSha(envInput.PRIVATE_AGENT_BUILD_GIT_SHA || envInput.VERCEL_GIT_COMMIT_SHA)) reasonCodes.push("worker_release_identity_missing");
-  if (!normalizedImageDigest(envInput.PRIVATE_AGENT_IMAGE_DIGEST || envInput.PHALA_CVM_IMAGE_DIGEST)) reasonCodes.push("worker_image_digest_missing");
+  if (!configuredGitSha) reasonCodes.push("worker_release_identity_missing");
+  if (!bakedGitSha) reasonCodes.push("worker_baked_release_identity_missing");
+  else if (configuredGitSha && bakedGitSha !== configuredGitSha) reasonCodes.push("worker_baked_release_identity_mismatch");
+  if (!workerImageDigestPin.configured) reasonCodes.push("worker_image_digest_missing");
+  else if (!workerImageDigestPin.valid) reasonCodes.push("worker_image_digest_pin_mismatch");
   if (fundingSignerKeys.length === 0) reasonCodes.push("funding_worker_signer_pin_missing");
   else if (fundingSignerKeys.some((key) => !validBase64PublicKey(key))) reasonCodes.push("funding_worker_signer_pin_invalid");
+  if (snapshot.risk_reduction_enabled !== "true") reasonCodes.push("hyperliquid_risk_reduction_disabled");
+  if (snapshot.position_protection_enabled !== "true") reasonCodes.push("position_protection_disabled");
   const implementedCapabilities = [
     "limit_order",
     ...(snapshot.risk_reduction_enabled === "true"
@@ -319,12 +336,17 @@ export function liveTradingReadinessContract(envInput = process.env) {
   ) {
     reasonCodes.push("public_capability_not_implemented");
   }
+  if (
+    configuredCapabilities.length !== LIVE_TRADING_REQUIRED_CAPABILITIES.length ||
+    new Set(configuredCapabilities).size !== configuredCapabilities.length ||
+    LIVE_TRADING_REQUIRED_CAPABILITIES.some((capability) => !configuredCapabilities.includes(capability))
+  ) reasonCodes.push("required_live_capabilities_mismatch");
   return {
     ready: reasonCodes.length === 0,
     reason_codes: reasonCodes,
     contract_version: LIVE_TRADING_CONTRACT_VERSION,
-    worker_git_sha: normalizedGitSha(envInput.PRIVATE_AGENT_BUILD_GIT_SHA || envInput.VERCEL_GIT_COMMIT_SHA),
-    worker_image_digest: normalizedImageDigest(envInput.PRIVATE_AGENT_IMAGE_DIGEST || envInput.PHALA_CVM_IMAGE_DIGEST),
+    worker_git_sha: bakedGitSha,
+    worker_image_digest: workerImageDigestPin.valid ? workerImageDigestPin.digest : null,
     config_fingerprint: gholaCommitment("live_trading_config", snapshot),
     caps: {
       max_order_notional_usd: snapshot.max_order_notional_usd,
@@ -333,6 +355,15 @@ export function liveTradingReadinessContract(envInput = process.env) {
     },
     capabilities: configuredCapabilities.filter((capability) => LIVE_TRADING_SUPPORTED_CAPABILITIES.includes(capability)),
   };
+}
+
+function readBakedBuildIdentity() {
+  try {
+    const parsed = JSON.parse(readFileSync(new URL("../build-identity.json", import.meta.url), "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function validBase64PublicKey(value) {
@@ -347,12 +378,39 @@ function finiteNumberOrNull(value) {
 
 function normalizedGitSha(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  return /^[a-f0-9]{7,64}$/.test(normalized) ? normalized : null;
+  return /^[a-f0-9]{40}$/.test(normalized) ? normalized : null;
 }
 
 function normalizedImageDigest(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  return /^(?:sha256:)?[a-f0-9]{64}$/.test(normalized) ? normalized : null;
+  const normalized = String(value || "").trim();
+  return /^sha256:[a-f0-9]{64}$/.test(normalized) ? normalized : null;
+}
+
+function configuredImageDigestPin(envInput = process.env) {
+  const required = [
+    envInput.PRIVATE_AGENT_IMAGE_DIGEST,
+    envInput.PHALA_CVM_IMAGE_DIGEST,
+  ].map((value) => String(value || "").trim());
+  const configured = [
+    ...required,
+    envInput.GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST,
+    envInput.GHOLA_PRIVATE_AGENT_IMAGE_DIGEST,
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  const canonical = configured.map((value) => normalizedImageDigest(value));
+  const valid = required.every(Boolean) && canonical.every(Boolean) && new Set(configured).size === 1;
+  return {
+    configured: configured.length > 0,
+    valid,
+    digest: valid ? canonical[0] : null,
+  };
+}
+
+function strongWorkerSecret(value) {
+  const trimmed = String(value || "").trim();
+  const lowered = trimmed.toLowerCase();
+  return trimmed.length >= 32 && new Set(trimmed).size >= 8 &&
+    !["dev", "test", "default", "local", "changeme", "example", "placeholder", "secret"]
+      .some((item) => lowered === item || lowered.includes(item));
 }
 
 function postUnixJson({ socketPath, path, body }) {
@@ -469,6 +527,7 @@ async function attestationMetadata(recipient, fundingSignerPublicKeyB64 = "") {
 async function publicRecipient(recipient) {
   const fundingSigner = fundingSigningIdentity();
   const attestation = await attestationMetadata(recipient, fundingSigner.public_key_b64);
+  const workerImageDigestPin = configuredImageDigestPin();
   return {
     recipient_id: recipient.recipient_id,
     x25519_pub_hex: recipient.x25519_pub_hex,
@@ -476,7 +535,7 @@ async function publicRecipient(recipient) {
     tee_kind: env("PRIVATE_AGENT_TEE_KIND", "phala"),
     measurement_hex: attestation.measurement_hex,
     attestation_hash: attestation.attestation_hash,
-    image_digest: env("PHALA_CVM_IMAGE_DIGEST", env("PRIVATE_AGENT_IMAGE_DIGEST", null)),
+    image_digest: workerImageDigestPin.valid ? workerImageDigestPin.digest : null,
     report_data_hex: attestation.report_data_hex,
     quote_hash: attestation.quote_hash,
     attested_ready:
@@ -490,7 +549,8 @@ async function publicRecipient(recipient) {
 async function runtimeHealthEvidence(recipient, ready, observedAt = new Date()) {
   const fundingSigner = fundingSigningIdentity();
   const attestation = await attestationMetadata(recipient, fundingSigner.public_key_b64);
-  const imageDigest = env("PHALA_CVM_IMAGE_DIGEST", env("PRIVATE_AGENT_IMAGE_DIGEST", null));
+  const workerImageDigestPin = configuredImageDigestPin();
+  const imageDigest = workerImageDigestPin.valid ? workerImageDigestPin.digest : null;
   const provider = env("PRIVATE_AGENT_PROVIDER_ID", "phala");
   const teeKind = env("PRIVATE_AGENT_TEE_KIND", "phala");
   const attestedReady =
@@ -568,6 +628,7 @@ async function runtimeHealthEvidence(recipient, ready, observedAt = new Date()) 
 async function readiness(recipient) {
   const fundingSigner = fundingSigningIdentity();
   const attestation = await attestationMetadata(recipient, fundingSigner.public_key_b64);
+  const workerImageDigestPin = configuredImageDigestPin();
   const missing = [];
   if (!recipient?.recipient_id || !PUBLIC_KEY_HEX_RE.test(recipient.x25519_pub_hex || "")) {
     missing.push("recipient_key");
@@ -582,7 +643,8 @@ async function readiness(recipient) {
     (boolEnv("PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE") &&
       Boolean(attestation.attestation_hash));
   if (!attestedReady) missing.push("attestation");
-  if (!env("PHALA_CVM_IMAGE_DIGEST", env("PRIVATE_AGENT_IMAGE_DIGEST"))) missing.push("image_digest");
+  if (!workerImageDigestPin.configured) missing.push("image_digest");
+  else if (!workerImageDigestPin.valid) missing.push("worker_image_digest_pin_mismatch");
   const dstackQuoteReady =
     boolEnv("PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE") &&
     Boolean(attestation.attestation_hash);
@@ -2785,7 +2847,18 @@ export function createPrivateAgentWorkerServer(options = {}) {
         if (!hyperliquidMainnetRoundTripEnabled()) {
           return json(res, 503, { error: "hyperliquid_mainnet_roundtrip_disabled" });
         }
-        const errors = validateHyperliquidMainnetRoundTripRequest(authorized.body, recipient);
+        const workerRelease = liveTradingReadinessContract();
+        if (!workerRelease.ready) {
+          return json(res, 503, {
+            error: "live trading worker release is not ready",
+            reason_codes: workerRelease.reason_codes,
+          });
+        }
+        const errors = validateHyperliquidMainnetRoundTripRequest(
+          authorized.body,
+          recipient,
+          workerRelease,
+        );
         if (errors.length > 0) {
           return json(res, 400, {
             error: "invalid Hyperliquid mainnet round-trip request",
@@ -2834,6 +2907,44 @@ export function createPrivateAgentWorkerServer(options = {}) {
         });
         if (authorized.rejected) return;
         const { body } = authorized;
+        if (body.operation_class === "agent_wallet_onboarding_verify" ||
+            body.operation_class === "agent_wallet_legacy_revocation_verify") {
+          const legacyRemoval = body.operation_class === "agent_wallet_legacy_revocation_verify";
+          const validate = legacyRemoval
+            ? validateHyperliquidAgentLegacyRemovalRequest
+            : validateHyperliquidAgentWalletVerificationRequest;
+          const errors = validate(body, recipient);
+          if (errors.length > 0) {
+            const recipientMismatch = errors.includes("encrypted_execution_vault recipient mismatch");
+            return json(res, recipientMismatch ? 409 : 400, {
+              error: "invalid hyperliquid agent-wallet verification request",
+              error_code: recipientMismatch
+                ? "hyperliquid_agent_vault_recipient_mismatch"
+                : "hyperliquid_agent_vault_verification_invalid",
+              details: errors,
+            });
+          }
+          if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+            return json(res, 503, {
+              error: "attested sealed execution is unavailable",
+              error_code: "hyperliquid_agent_authorization_state_unknown",
+              missing: ready.missing,
+            });
+          }
+          const verification = legacyRemoval
+            ? await verifyHyperliquidLegacyAgentRevoked({ body, recipient })
+            : await verifyHyperliquidAgentWalletOnboarding({ body, recipient });
+          const release = liveTradingReadinessContract();
+          return json(res, 200, {
+            ...verification,
+            worker_release: {
+              contract_version: release.contract_version,
+              worker_git_sha: release.worker_git_sha,
+              worker_image_digest: release.worker_image_digest,
+              config_fingerprint: release.config_fingerprint,
+            },
+          });
+        }
         const errors = validateHyperliquidOrderRequest(body, recipient, { requirePlatformFeePolicy: false });
         if (errors.length > 0) {
           return json(res, 400, {

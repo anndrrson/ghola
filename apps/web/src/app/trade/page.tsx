@@ -85,10 +85,12 @@ import {
 } from "@/lib/ghola-market-chart";
 import {
   createPrivateAccountIntent,
+  getPrivateAccountTerminalAccessStatus,
   getPublicAgentStartupStatus,
   previewPrivateAccountAction,
   wakePublicAgentWorker,
   type PrivateAccountLiveTradingStatus,
+  type PrivateAccountTerminalAccessStatus,
   type PrivateAccountSafeInput,
   type PublicAgentStartupStatus,
   type PublicAgentStartupVenue,
@@ -134,6 +136,7 @@ import {
 } from "@/lib/terminal-certified-market-signals";
 import {
   TERMINAL_LIVE_STATUS_MAX_AGE_MS,
+  terminalAccountAccessChronologyDecision,
   terminalByoExecutionReadiness,
   terminalLiveStatusChronologyDecision,
 } from "@/lib/terminal-live-readiness";
@@ -159,16 +162,15 @@ import {
   type TerminalLiveExecutionReceipt as TerminalLiveExecutionReceiptRecord,
 } from "@/lib/terminal-live-execution-receipt";
 import {
+  discardTerminalLiveExecutionAfterAbsenceProof,
   discardTerminalLiveExecutionPendingEntry,
-  externallyReviewTerminalLiveExecutionJournalEntry,
   persistTerminalLiveExecutionJournalEntry,
   readTerminalLiveExecutionJournalStorage,
   serializeTerminalLiveExecutionJournal,
   terminalLiveExecutionJournalSafetyState,
   terminalLiveExecutionJournalSummary,
-  terminalLiveExecutionExternalReviewDecision,
-  terminalLiveExecutionReviewEvidenceCrossed,
   terminalLiveExecutionJournalEntryFromReceipt,
+  terminalLiveExecutionJournalEntryFromReconciliationReceipt,
   terminalLiveExecutionJournalStorageKey,
   terminalLiveExecutionLockStoragePrefix,
   terminalLiveExecutionScopedJournalView,
@@ -180,6 +182,10 @@ import {
   type TerminalLiveExecutionJournalEntry,
   type TerminalLiveExecutionJournalStorageStatus,
 } from "@/lib/terminal-live-execution-journal";
+import {
+  pollTerminalLiveReconciliation,
+  TERMINAL_LIVE_RECONCILIATION_POLL_MS,
+} from "@/lib/terminal-live-reconciliation.client";
 import {
   deriveTerminalLiveAccountRisk,
   terminalLiveAccountRiskDecisionEqual,
@@ -539,6 +545,9 @@ export default function TradePage() {
   const [liveStatus, setLiveStatus] = useState<PrivateAccountLiveTradingStatus | null>(null);
   const [liveStatusReceivedAt, setLiveStatusReceivedAt] = useState<number | null>(null);
   const [liveStatusSubject, setLiveStatusSubject] = useState<string | null>(null);
+  const [terminalAccess, setTerminalAccess] = useState<PrivateAccountTerminalAccessStatus | null>(null);
+  const [terminalAccessReceivedAt, setTerminalAccessReceivedAt] = useState<number | null>(null);
+  const [terminalAccessSubject, setTerminalAccessSubject] = useState<string | null>(null);
   const [workerReady, setWorkerReady] = useState(false);
   const [workerLabel, setWorkerLabel] = useState("checking");
   const [workerWakeState, setWorkerWakeState] = useState<WorkerWakeState>("idle");
@@ -561,6 +570,16 @@ export default function TradePage() {
   const scopedLiveStatusReceivedAt = terminalPolledValueForSubject(
     liveStatusReceivedAt,
     liveStatusSubject,
+    authenticatedSubject,
+  );
+  const scopedTerminalAccess = terminalPolledValueForSubject(
+    terminalAccess,
+    terminalAccessSubject,
+    authenticatedSubject,
+  );
+  const scopedTerminalAccessReceivedAt = terminalPolledValueForSubject(
+    terminalAccessReceivedAt,
+    terminalAccessSubject,
     authenticatedSubject,
   );
   const scopedAgentStartup = terminalPolledValueForSubject(
@@ -790,13 +809,8 @@ export default function TradePage() {
   }, [applyWorkspaceState, workspaceStorageConflict, workspaceStorageKey]);
   const handleLiveAccountRiskDecision = useCallback((next: TerminalLiveAccountRiskDecision) => {
     const current = liveAccountRiskDecisionRef.current;
-    const reviewEvidenceCrossed = next.accountStreamCurrent && terminalLiveExecutionReviewEvidenceCrossed(
-      liveExecutionJournalRef.current,
-      current?.accountStreamObservedAtMs ?? null,
-      next.accountStreamObservedAtMs,
-    );
     liveAccountRiskDecisionRef.current = next;
-    if (terminalLiveAccountRiskDecisionEqual(current, next) && !reviewEvidenceCrossed) return;
+    if (terminalLiveAccountRiskDecisionEqual(current, next)) return;
     liveExecutionEpochRef.current += 1;
     setLiveAccountRiskDecision(next);
   }, []);
@@ -877,6 +891,23 @@ export default function TradePage() {
         liveExecutionJournalRef.current = discarded.entries;
         setLiveExecutionJournal(discarded.entries);
       }
+    }
+    return discarded.ok;
+  }, [updateLiveExecutionJournalStorageStatus]);
+  const discardLiveExecutionAfterAbsenceProof = useCallback((proof: {
+    planDigest: string;
+    proofCommitment: string;
+    firstCheckedAt: string;
+    checkedAt: string;
+  }) => {
+    const subjectScope = liveExecutionJournalSubjectScopeRef.current;
+    if (!subjectScope) return false;
+    const discarded = discardTerminalLiveExecutionAfterAbsenceProof(window.localStorage, subjectScope, proof);
+    if (!discarded.ok) {
+      updateLiveExecutionJournalStorageStatus("blocked");
+    } else {
+      liveExecutionJournalRef.current = discarded.entries;
+      setLiveExecutionJournal(discarded.entries);
     }
     return discarded.ok;
   }, [updateLiveExecutionJournalStorageStatus]);
@@ -1466,6 +1497,9 @@ export default function TradePage() {
       setLiveStatus(null);
       setLiveStatusReceivedAt(null);
       setLiveStatusSubject(authenticatedSubject);
+      setTerminalAccess(null);
+      setTerminalAccessReceivedAt(null);
+      setTerminalAccessSubject(authenticatedSubject);
       setWorkerReady(false);
       setWorkerLabel("local off");
       setWorkerWakeState("idle");
@@ -1474,6 +1508,8 @@ export default function TradePage() {
     let statusRequestId = 0;
     let latestLiveCheckedAt = Number.NEGATIVE_INFINITY;
     let latestLiveStatus: PrivateAccountLiveTradingStatus | null = null;
+    let latestTerminalAccessCheckedAt = Number.NEGATIVE_INFINITY;
+    let latestTerminalAccess: PrivateAccountTerminalAccessStatus | null = null;
     async function refreshLiveStatus(signal: AbortSignal) {
       const res = await fetch("/v1/private-account/live-trading/status", { cache: "no-store", signal });
       if (!res.ok) return null;
@@ -1486,6 +1522,10 @@ export default function TradePage() {
         remote_execution_ready?: boolean;
         providers?: Array<{ id: string; evidence?: { cvm_status?: string } }>;
       };
+    }
+    async function refreshTerminalAccess(signal: AbortSignal) {
+      if (!authenticatedSubject) return null;
+      return getPrivateAccountTerminalAccessStatus({ signal }).catch(() => null);
     }
     function applyWorkerStatus(worker: Awaited<ReturnType<typeof refreshWorkerStatus>>) {
       if (!worker) return;
@@ -1513,15 +1553,30 @@ export default function TradePage() {
       setLiveStatusSubject(authenticatedSubject);
       return true;
     }
+    function applyTerminalAccess(status: unknown, requestId: number) {
+      if (requestId !== statusRequestId) return;
+      const decision = terminalAccountAccessChronologyDecision({
+        current: latestTerminalAccess,
+        latestCheckedAtMs: latestTerminalAccessCheckedAt,
+        candidate: status,
+      });
+      if (decision.action === "ignore") return;
+      latestTerminalAccessCheckedAt = decision.checkedAtMs;
+      latestTerminalAccess = decision.status;
+      setTerminalAccess(decision.status);
+      setTerminalAccessReceivedAt(decision.action === "accept" ? Date.now() : null);
+      setTerminalAccessSubject(authenticatedSubject);
+    }
     const poller = createTerminalSingleFlightPoller({
       intervalMs: TERMINAL_STATUS_POLL_INTERVAL_MS,
       timeoutMs: TERMINAL_STATUS_REQUEST_TIMEOUT_MS,
       async run(signal) {
         const requestId = ++statusRequestId;
         try {
-          const [live, worker] = await Promise.all([
+          const [live, worker, accountAccess] = await Promise.all([
             refreshLiveStatus(signal),
             refreshWorkerStatus(signal),
+            refreshTerminalAccess(signal),
           ]);
           if (signal.aborted || requestId !== statusRequestId) return;
           applyWorkerStatus(worker);
@@ -1534,11 +1589,20 @@ export default function TradePage() {
             setLiveStatusReceivedAt(null);
             setLiveStatusSubject(authenticatedSubject);
           }
+          if (accountAccess) applyTerminalAccess(accountAccess, requestId);
+          else {
+            setTerminalAccess(null);
+            setTerminalAccessReceivedAt(null);
+            setTerminalAccessSubject(authenticatedSubject);
+          }
         } catch {
           if (!signal.aborted && requestId === statusRequestId) {
             setLiveStatus(null);
             setLiveStatusReceivedAt(null);
             setLiveStatusSubject(authenticatedSubject);
+            setTerminalAccess(null);
+            setTerminalAccessReceivedAt(null);
+            setTerminalAccessSubject(authenticatedSubject);
             setWorkerLabel("unknown");
           }
         }
@@ -1566,6 +1630,21 @@ export default function TradePage() {
     return () => window.clearTimeout(timer);
   }, [liveStatusReceivedAt]);
 
+  useEffect(() => {
+    if (terminalAccessReceivedAt == null) return;
+    const remaining = TERMINAL_LIVE_STATUS_MAX_AGE_MS - (Date.now() - terminalAccessReceivedAt);
+    if (remaining <= 0) {
+      setTerminalAccess(null);
+      setTerminalAccessReceivedAt(null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setTerminalAccess(null);
+      setTerminalAccessReceivedAt(null);
+    }, remaining + 1);
+    return () => window.clearTimeout(timer);
+  }, [terminalAccessReceivedAt]);
+
   const refreshAgentStartup = useCallback(async () => {
     try {
       const startup = await getPublicAgentStartupStatus();
@@ -1585,6 +1664,9 @@ export default function TradePage() {
       setAgentWakeMessage("Secure worker starts are disabled on localhost and local previews.");
       return;
     }
+    setAgentWakeMessage((current) => current === "Secure worker starts are disabled on localhost and local previews."
+      ? null
+      : current);
     setAgentWakeState("waking");
     setAgentWakeMessage("Starting secure worker. This can take about a minute.");
     try {
@@ -1951,11 +2033,15 @@ export default function TradePage() {
     maxNotionalUsd: MAX_TRADE_NOTIONAL_USD,
     costEvidence: selectedRouteCostEvidence,
   }), [notional, riskBudgetUsd, selectedRouteCostEvidence, slippageBps, tradeRisk.maxLossUsd, tradeRisk.stopDistanceBps]);
-  const venueNativeProtectionConfigured = scopedLiveStatus?.hyperliquid_capabilities.some((capability) =>
-    capability.id === "stop_loss" && capability.visible
-  ) === true && scopedLiveStatus.hyperliquid_capabilities.some((capability) =>
-    capability.id === "take_profit" && capability.visible
-  );
+  const venueNativeProtectionConfigured = scopedTerminalAccess?.access_mode === "account_canary"
+    ? ["stop_loss", "take_profit"].every((capability) =>
+        scopedTerminalAccess.configured_capabilities.includes(capability as "stop_loss" | "take_profit")
+      )
+    : scopedLiveStatus?.hyperliquid_capabilities.some((capability) =>
+        capability.id === "stop_loss" && capability.visible
+      ) === true && scopedLiveStatus.hyperliquid_capabilities.some((capability) =>
+        capability.id === "take_profit" && capability.visible
+      );
   const rawTargetPrice = terminalRewardTargetPrice({
     side,
     entryPrice: entryLevel,
@@ -2049,15 +2135,72 @@ export default function TradePage() {
     scopedLiveExecutionJournal,
   ), [scopedLiveExecutionJournal, scopedLiveExecutionJournalStorageStatus]);
   const unresolvedLiveExecutionJournalEntry = liveExecutionJournalSummary.primaryUnresolved;
-  const externalReviewDecision = unresolvedLiveExecutionJournalEntry
-    ? terminalLiveExecutionExternalReviewDecision({
-        entry: unresolvedLiveExecutionJournalEntry,
-        selectedVenue: venue.id,
-        selectedNetwork: venue.id === "hyperliquid" ? hyperliquidNetwork : "mainnet",
-        accountStreamCurrent: effectiveLiveAccountRisk.accountStreamCurrent,
-        accountStreamObservedAtMs: effectiveLiveAccountRisk.accountStreamObservedAtMs,
-      })
-    : null;
+  const unresolvedLiveExecutionPlanDigest = unresolvedLiveExecutionJournalEntry?.planDigest ?? null;
+
+  useEffect(() => {
+    if (
+      !thumperAuth.authenticated ||
+      scopedLiveExecutionJournalStorageStatus !== "ready" ||
+      !unresolvedLiveExecutionPlanDigest
+    ) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      const result = await pollTerminalLiveReconciliation({
+        planDigest: unresolvedLiveExecutionPlanDigest,
+      });
+      if (stopped) return;
+      if (result.status === "not_dispatched") {
+        if (discardLiveExecutionAfterAbsenceProof({
+          planDigest: unresolvedLiveExecutionPlanDigest,
+          proofCommitment: result.proofCommitment,
+          firstCheckedAt: result.firstCheckedAt,
+          checkedAt: result.checkedAt,
+        })) {
+          liveExecutionEpochRef.current += 1;
+          previewRequestIdRef.current += 1;
+          setPreview({ status: "idle" });
+          setBoundPlanAuditSnapshot(null);
+          setLiveExecution({ status: "idle" });
+          setKeyboardMessage("The original request never reached durable dispatch. Server absence proof cleared the pre-dispatch lock; any retry remains plan-bound.");
+          return;
+        }
+        timer = setTimeout(() => { void poll(); }, 5_000);
+        return;
+      }
+      if (result.status === "terminal") {
+        const current = liveExecutionJournalRef.current;
+        const entry = current.find((item) => item.planDigest === unresolvedLiveExecutionPlanDigest);
+        const resolved = entry
+          ? terminalLiveExecutionJournalEntryFromReconciliationReceipt(result.receipt, entry)
+          : null;
+        if (resolved && recordLiveExecutionJournalEntry(resolved)) {
+          liveExecutionEpochRef.current += 1;
+          previewRequestIdRef.current += 1;
+          setPreview({ status: "idle" });
+          setBoundPlanAuditSnapshot(null);
+          setLiveExecution({ status: "idle" });
+          setKeyboardMessage(`Original work order ${result.receipt.status === "no_fill"
+            ? "closed with no fill"
+            : result.receipt.status === "not_dispatched"
+              ? "was durably rejected before venue submission"
+              : "reconciled with a terminal fill"}; live submit remains plan-bound.`);
+          return;
+        }
+        timer = setTimeout(() => { void poll(); }, 5_000);
+        return;
+      }
+      timer = setTimeout(
+        () => { void poll(); },
+        result.status === "pending" ? TERMINAL_LIVE_RECONCILIATION_POLL_MS : 5_000,
+      );
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [discardLiveExecutionAfterAbsenceProof, recordLiveExecutionJournalEntry, scopedLiveExecutionJournalStorageStatus, thumperAuth.authenticated, unresolvedLiveExecutionPlanDigest]);
 
   function recheckLiveAccountRisk() {
     const current = liveAccountRiskDecisionRef.current;
@@ -2317,6 +2460,9 @@ export default function TradePage() {
       venue.id,
       scopedLiveStatusReceivedAt,
       orderPlan,
+      Date.now(),
+      scopedTerminalAccess,
+      scopedTerminalAccessReceivedAt,
     );
     if (!exactReadiness.allowed) {
       setLiveExecution({ status: "error", message: exactReadiness.message });
@@ -2574,6 +2720,9 @@ export default function TradePage() {
     venue.id,
     scopedLiveStatusReceivedAt,
     orderPlan,
+    Date.now(),
+    scopedTerminalAccess,
+    scopedTerminalAccessReceivedAt,
   );
   const liveWorking = liveExecution.status === "working";
   const stopOnRiskSide = Boolean(
@@ -2860,14 +3009,25 @@ export default function TradePage() {
     && stopOnRiskSide
     && planMarketState.allowed
     && riskBudgetInterlock.allowed;
-  const limitIocCapabilityLive = scopedLiveStatus?.hyperliquid_capabilities.some((capability) =>
-    capability.id === "limit_order" && capability.state === "live" && capability.visible
-  ) === true;
-  const venueNativeProtectionLive = !venueNativeProtectionConfigured || ["stop_loss", "take_profit"].every((id) =>
-    scopedLiveStatus?.hyperliquid_capabilities.some((capability) =>
-      capability.id === id && capability.state === "live" && capability.visible &&
-      capability.consecutive_mainnet_proofs >= capability.required_mainnet_proofs
-    ) === true
+  const accountCanaryOpeningReady = scopedTerminalAccess?.status === "green" &&
+    scopedTerminalAccess.access_mode === "account_canary" &&
+    scopedTerminalAccess.opening_orders_enabled === true;
+  const limitIocCapabilityLive = accountCanaryOpeningReady
+    ? scopedTerminalAccess.authorized_capabilities.includes("limit_order")
+    : scopedLiveStatus?.hyperliquid_capabilities.some((capability) =>
+        capability.id === "limit_order" && capability.state === "live" && capability.visible
+      ) === true;
+  const venueNativeProtectionLive = !venueNativeProtectionConfigured || (
+    accountCanaryOpeningReady
+      ? ["stop_loss", "take_profit"].every((id) =>
+          scopedTerminalAccess.authorized_capabilities.includes(id as "stop_loss" | "take_profit")
+        )
+      : ["stop_loss", "take_profit"].every((id) =>
+          scopedLiveStatus?.hyperliquid_capabilities.some((capability) =>
+            capability.id === id && capability.state === "live" && capability.visible &&
+            capability.consecutive_mainnet_proofs >= capability.required_mainnet_proofs
+          ) === true
+        )
   );
   const limitIocLive = limitIocCapabilityLive && venueNativeProtectionLive;
   const agentLifecycleVisible = scopedLiveStatus?.hyperliquid_capabilities.some((capability) =>
@@ -3613,38 +3773,6 @@ export default function TradePage() {
     setKeyboardMessage("Refreshing the sealed Hyperliquid account stream and authoritative snapshot; execution binding cleared. No order submitted.");
   }, [thumperAuth.authenticated, venue.id]);
 
-  const handleExternalExecutionReview = useCallback((planDigest: string) => {
-    if (liveExecutionJournalStorageStatusRef.current !== "ready") {
-      setKeyboardMessage("Execution safety ledger is locked; stored history was preserved");
-      return;
-    }
-    const current = liveExecutionJournalRef.current;
-    const entry = current.find((item) => item.planDigest === planDigest);
-    if (!entry || (entry.status !== "unknown" && entry.status !== "submitted")) return;
-    const reviewDecision = terminalLiveExecutionExternalReviewDecision({
-      entry,
-      selectedVenue: venue.id,
-      selectedNetwork: venue.id === "hyperliquid" ? hyperliquidNetwork : "mainnet",
-      accountStreamCurrent: effectiveLiveAccountRisk.accountStreamCurrent,
-      accountStreamObservedAtMs: effectiveLiveAccountRisk.accountStreamObservedAtMs,
-    });
-    if (!reviewDecision.allowed) {
-      setKeyboardMessage(terminalLiveExecutionExternalReviewBlockerLabel(reviewDecision.blocker));
-      return;
-    }
-    const confirmed = window.confirm("Only continue after checking the venue account's open orders and fills. This records external review locally; it does not prove reconciliation or cancel an order. Unlock this entry?");
-    if (!confirmed) return;
-    const next = externallyReviewTerminalLiveExecutionJournalEntry(current, planDigest);
-    const reviewed = next.find((item) => item.planDigest === planDigest) ?? null;
-    if (next === current || !reviewed || !recordLiveExecutionJournalEntry(reviewed)) return;
-    liveExecutionEpochRef.current += 1;
-    previewRequestIdRef.current += 1;
-    setPreview({ status: "idle" });
-    setBoundPlanAuditSnapshot(null);
-    setLiveExecution({ status: "idle" });
-    setKeyboardMessage("External account review recorded · execution binding cleared · no reconciliation claimed");
-  }, [effectiveLiveAccountRisk.accountStreamCurrent, effectiveLiveAccountRisk.accountStreamObservedAtMs, hyperliquidNetwork, recordLiveExecutionJournalEntry, venue.id]);
-
   const handleReconnectMarket = useCallback(() => {
     if (previewInFlightRef.current || liveExecutionInFlightRef.current) {
       setKeyboardMessage("Market reconnect waits for the current preview or execution request to settle.");
@@ -3909,7 +4037,7 @@ export default function TradePage() {
       <TerminalHeader
         authenticated={thumperAuth.authenticated}
         alertSummary={alertSummary}
-        byoLiveEnabled={scopedLiveStatus?.byo_live_trading_enabled === true}
+        byoLiveEnabled={scopedLiveStatus?.byo_live_trading_enabled === true || accountCanaryOpeningReady}
         inert={mobileTicketOpen}
         keyboardMessage=""
         localPreview={localPreview}
@@ -4618,8 +4746,6 @@ export default function TradePage() {
               <TerminalLiveExecutionJournal
                 entries={scopedLiveExecutionJournal}
                 onFocusAccount={focusLiveAccount}
-                onReviewEntry={handleExternalExecutionReview}
-                reviewBlocker={externalReviewDecision?.allowed === false ? terminalLiveExecutionExternalReviewBlockerLabel(externalReviewDecision.blocker) : null}
                 storageStatus={scopedLiveExecutionJournalStorageStatus}
                 selectedVenue={venue.id}
                 selectedNetwork={venue.id === "hyperliquid" ? hyperliquidNetwork : "mainnet"}
@@ -5054,7 +5180,9 @@ export default function TradePage() {
                 Modeled loss assumes an exit at the invalidation within the slippage cap. Gaps, outages, and venue failures can produce a larger realized loss.
               </p>
               <p className="mt-1 text-[10px] leading-4 text-amber-200/75">
-                Strategy, trigger, and plan invalidation are agent-plan controls. One-shot live submit sends the entry limit only; it is not a bracket order.
+                {venueNativeProtectionConfigured
+                  ? "Live submit binds the entry limit and venue-native take-profit/stop-loss orders. Review all three levels before confirming."
+                  : "Strategy, trigger, and plan invalidation are agent-plan controls. Live submit sends the entry limit without venue-native protection."}
               </p>
             </div>
 
@@ -5162,10 +5290,27 @@ export default function TradePage() {
                     </p>
                   ) : null}
                   {liveExecution.status === "done" && (
-                    <p role="status" aria-live="polite" aria-atomic="true" className="flex items-center gap-1.5 font-mono text-xs text-emerald-200">
-                      <Check aria-hidden className="h-3.5 w-3.5" />
-                      Submission acknowledgement verified · {liveExecution.receipt.commitment.slice(0, 14)}…
-                    </p>
+                    <div role="status" aria-live="polite" aria-atomic="true" className="font-mono text-xs text-emerald-200">
+                      <p className="flex items-center gap-1.5">
+                        <Check aria-hidden className="h-3.5 w-3.5" />
+                        {liveExecution.receipt.status === "reconciled"
+                          ? `Venue fill verified · ${liveExecution.receipt.orderId}`
+                          : liveExecution.receipt.status === "no_fill"
+                            ? `IOC closed with no fill · safe to retry · ${liveExecution.receipt.orderId}`
+                            : liveExecution.receipt.status === "not_dispatched"
+                              ? "Worker proved the order was rejected before venue submission · safe to retry"
+                            : `Submission acknowledged; reconciliation pending · ${liveExecution.receipt.commitment.slice(0, 14)}…`}
+                      </p>
+                      {liveExecution.receipt.provenFill ? (
+                        <p className="mt-1 pl-5 text-[10px] text-emerald-100/75">
+                          Filled {liveExecution.receipt.provenFill.filledBaseSize} @ {liveExecution.receipt.provenFill.averageFillPrice}
+                          {` · fee $${liveExecution.receipt.provenFill.feeUsd} · `}
+                          {liveExecution.receipt.provenFill.protection.status === "proven"
+                            ? `TP/SL proven within ${liveExecution.receipt.provenFill.protection.maxSlippageBps} bp`
+                            : "venue-native protection not requested"}
+                        </p>
+                      ) : null}
+                    </div>
                   )}
                   {liveExecution.status === "unknown" && (
                     <p role="alert" aria-atomic="true" className="text-xs leading-5 text-rose-300">
@@ -6807,17 +6952,8 @@ function liveExecutionJournalBlockerLabel(
 ) {
   if (state === "loading") return "Restoring the local execution safety ledger before live submit.";
   if (state === "blocked") return "Live submit blocked: the local execution safety ledger is unavailable or invalid; stored history was preserved.";
-  if (state === "unresolved") return "Live submit blocked: a prior submission remains unacknowledged or unreconciled. Inspect the venue account before unlocking it.";
+  if (state === "unresolved") return "Live submit blocked: a prior submission remains unacknowledged or unreconciled. Automatic recovery is polling the original work order.";
   return "";
-}
-
-function terminalLiveExecutionExternalReviewBlockerLabel(
-  blocker: ReturnType<typeof terminalLiveExecutionExternalReviewDecision>["blocker"],
-) {
-  if (blocker === "account_context_mismatch") return "Select the unresolved order’s exact venue and network before reviewing it.";
-  if (blocker === "account_stream_not_current") return "Await a verified current Hyperliquid account stream before external review.";
-  if (blocker === "account_snapshot_predates_submit") return "Await a fresh Hyperliquid account snapshot observed after the submit attempt.";
-  return "External review remains unavailable.";
 }
 
 function marketFreshnessLimitMs(interval: ChartInterval) {

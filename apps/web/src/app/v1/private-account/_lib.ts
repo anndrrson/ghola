@@ -15,8 +15,10 @@ import {
 import { privateAgentTradingMeterEvent } from "@/lib/private-agent-trading-billing";
 import {
   LIVE_TRADING_ELIGIBILITY_CONFIRMATION,
+  LIVE_TRADING_CONTRACT_VERSION,
   LIVE_TRADING_EVIDENCE_MAX_AGE_MS,
   LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD,
+  LIVE_TRADING_REQUIRED_CAPABILITIES,
   LIVE_TRADING_RISK_DISCLOSURE_VERSION,
   LIVE_TRADING_TERMS_VERSION,
 } from "@/lib/live-trading-contract";
@@ -34,6 +36,7 @@ import { probeLiveTradingWorkerReadiness } from "@/lib/private-agent-worker-read
 import {
   mobileWalletCommitment,
 } from "@/lib/private-account-wallet-binding";
+
 import {
   consumeConsumerNonce,
   consumeConsumerRateLimit,
@@ -86,6 +89,7 @@ import {
   type GholaSealedRuntimeContext,
   type GholaHyperliquidSessionPolicy,
   type GholaHyperliquidManagedAllocation,
+  type GholaHyperliquidAgentAuthorization,
   type GholaOmnibusAllocation,
   type GholaVenueAccountMode,
   type GholaVenueExecutionMode,
@@ -352,6 +356,19 @@ import {
   privateAgentLiveTradeReservationSeconds,
 } from "@/lib/private-agent-pricing";
 import { enterpriseGateStatus } from "@/lib/enterprise-gate-status";
+import { parseHyperliquidVaultAssociatedData } from "@/lib/hyperliquid-vault-seal";
+import {
+  isCurrentHyperliquidVaultAuthorization,
+  isMainnetHyperliquidVaultAadForAccount,
+  isSealedHyperliquidVaultRecordForAccount,
+} from "@/lib/hyperliquid-vault-scope";
+
+function investorCanaryBillingHeader(): Record<string, string> {
+  const secret = process.env.GHOLA_INVESTOR_CANARY_SECRET?.trim();
+  return secret && secret.length >= 32
+    ? { "X-Ghola-Investor-Canary-Secret": secret }
+    : {};
+}
 
 export const PRIVATE_ACCOUNT_HEADERS = {
   "Cache-Control": "no-store, max-age=0",
@@ -1044,6 +1061,7 @@ async function verifyLiveRevenueGuard(
       Authorization: authorization,
       Accept: "application/json",
       "Content-Type": "application/json",
+      ...investorCanaryBillingHeader(),
     },
     body: JSON.stringify({
       session_id: sessionId,
@@ -1135,6 +1153,7 @@ export async function meterPrivateAccountTradingFills(input: {
       Authorization: input.authorization,
       Accept: "application/json",
       "Content-Type": "application/json",
+      ...investorCanaryBillingHeader(),
     },
     body: JSON.stringify(event),
     cache: "no-store",
@@ -2633,18 +2652,26 @@ export async function hyperliquidVaultStatusForOwner(owner: PrivateAccountReques
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
   ]);
   const allocationSource = allocation ? hyperliquidVenueAccessSourceForAllocation(allocation.allocation.execution_mode) : null;
+  const vaultReady = isSealedHyperliquidVaultRecordForAccount(
+    vault,
+    owner.owner_commitment,
+    account.account_commitment,
+  ) && isMainnetHyperliquidVaultAadForAccount(
+    vault.vault.encrypted_execution_vault.aad,
+    account.account_commitment,
+  ) && isCurrentHyperliquidVaultAuthorization(vault);
   return {
     version: 1,
     account_commitment: account.account_commitment,
     hyperliquid_execution_vault: vault ? publicHyperliquidVault(vault) : null,
     managed_allocation: allocation ? publicHyperliquidManagedAllocation(allocation) : null,
     execution_mode: allocation ? allocation.allocation.execution_mode : "byo_api_key" as const,
-    ready: vault?.status === "sealed" || allocation?.status === "allocated",
+    ready: vaultReady || allocation?.status === "allocated",
     venue_access: {
-      source: vault?.status === "sealed"
+      source: vaultReady
         ? "user_provided_credentials" as const
         : allocation?.status === "allocated" ? allocationSource : null,
-      status: vault?.status === "sealed" || allocation?.status === "allocated"
+      status: vaultReady || allocation?.status === "allocated"
         ? "venue_credentials_sealed" as const
         : "venue_access_required" as const,
       venue_gate: "venue_accepts_or_rejects_credentials" as const,
@@ -2680,6 +2707,7 @@ export function hyperliquidMainnetProofUiEnabled(
 
 export async function runHyperliquidMainnetProofForOwner(
   owner: PrivateAccountRequestOwner,
+  expectedLaunch: { state: "canary" | "public"; revision: number },
   transport: PrivateWorkerTransportOptions = {},
 ) {
   const env = transport.env ?? process.env;
@@ -2692,9 +2720,8 @@ export async function runHyperliquidMainnetProofForOwner(
     getLatestVenueEligibilityByAccount({ account_commitment: account.account_commitment, venue_id: "hyperliquid" }),
     getLiveTradingLaunchControl(),
   ]);
-  if (launch.state !== "canary" && launch.state !== "public") {
-    return { error: "live_trading_not_in_canary" as const, status: 409 };
-  }
+  const initialLaunchError = launchEpochError(launch, expectedLaunch);
+  if (initialLaunchError) return initialLaunchError;
   const release = currentLiveTradingReleaseIdentity(env);
   const publicCapabilities = configuredLiveTradingPublicCapabilities(env);
   const bindingFailures = liveTradingControlBindingFailures(
@@ -2706,11 +2733,17 @@ export async function runHyperliquidMainnetProofForOwner(
   if (!release.valid || bindingFailures.length) {
     return { error: "live_trading_release_binding_invalid" as const, status: 409 };
   }
+  const webGitSha = release.web_git_sha;
+  const workerGitSha = release.worker_git_sha;
+  const workerImageDigest = release.worker_image_digest;
+  if (!webGitSha || !workerGitSha || !workerImageDigest) {
+    return { error: "live_trading_release_binding_invalid" as const, status: 409 };
+  }
   const workerReadiness = await probeLiveTradingWorkerReadiness({
     env,
     fetchImpl: transport.fetchImpl,
     expectedRelease: release,
-    requiredCapabilities: ["limit_order"],
+    requiredCapabilities: publicCapabilities,
   });
   if (!workerReadiness.ready) {
     return { error: "live_trading_worker_not_ready" as const, status: 503 };
@@ -2723,12 +2756,23 @@ export async function runHyperliquidMainnetProofForOwner(
     credential.risk_disclosure_version === LIVE_TRADING_RISK_DISCLOSURE_VERSION && credential.accepted_at)) {
     return { error: "live_trading_eligibility_required" as const, status: 451 };
   }
-  if (!vault || vault.owner_commitment !== owner.owner_commitment || vault.status !== "sealed") {
+  if (!isSealedHyperliquidVaultRecordForAccount(
+    vault,
+    owner.owner_commitment,
+    account.account_commitment,
+  )) {
     return { error: "hyperliquid_execution_vault_not_ready" as const, status: 409 };
   }
-  const vaultNetwork = parseHyperliquidVaultAad(vault.vault.encrypted_execution_vault.aad)?.network;
-  if (vaultNetwork !== "mainnet") {
+  if (!isMainnetHyperliquidVaultAadForAccount(
+    vault.vault.encrypted_execution_vault.aad,
+    account.account_commitment,
+  )) {
     return { error: "hyperliquid_mainnet_vault_required" as const, status: 409 };
+  }
+  if ((launch.state === "canary" &&
+      vault.vault.authorization?.source !== "phantom_approve_agent_v1") ||
+      !isCurrentHyperliquidVaultAuthorization(vault, Date.now(), undefined, release)) {
+    return { error: "hyperliquid_agent_authorization_required" as const, status: 409 };
   }
   const cfg = hyperliquidWorkerConfig(env);
   if (!cfg.url) return { error: "private_worker_unavailable" as const, status: 503 };
@@ -2744,6 +2788,13 @@ export async function runHyperliquidMainnetProofForOwner(
     market: "HYPE",
     notional_usd: LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD,
     slippage_bps: 100,
+    release_binding: {
+      contract_version: LIVE_TRADING_CONTRACT_VERSION,
+      web_git_sha: webGitSha,
+      worker_git_sha: workerGitSha,
+      worker_image_digest: workerImageDigest,
+      config_fingerprint: release.config_fingerprint,
+    },
   };
   const authorization = workerAuthorizationHeader({
     fallbackToken: cfg.token,
@@ -2757,40 +2808,50 @@ export async function runHyperliquidMainnetProofForOwner(
       operation_class: "mainnet_roundtrip_proof",
     }),
   });
-  const response = await (transport.fetchImpl ?? fetch)(new URL(workerPath, cfg.url), {
-    method: "POST",
-    cache: "no-store",
-    headers: {
-      "content-type": "application/json",
-      "x-ghola-sealed-execution-required": "true",
-      ...(authorization ? { authorization } : {}),
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
-  }).catch(() => null);
+  const dispatched = await runAtExactHyperliquidProofLaunchEpoch(expectedLaunch, () =>
+    (transport.fetchImpl ?? fetch)(new URL(workerPath, cfg.url), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        ...(authorization ? { authorization } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
+    }).catch(() => null)
+  );
+  if (!dispatched.ok) return { error: dispatched.error, status: dispatched.status };
+  const response = dispatched.value;
   if (!response) return { error: "private_worker_unavailable" as const, status: 503 };
   const result = await response.json().catch(() => null);
   if (!response.ok) {
     const value = objectBody(result);
-    if (launch.state === "canary") {
-      await recordMainnetCapabilityEvidence({
-        release,
-        status: "red",
-        reason: safeHyperliquidMainnetProofError(stringValue(value.error)),
-      });
+    if (expectedLaunch.state === "canary") {
+      const recorded = await runAtExactHyperliquidProofLaunchEpoch(expectedLaunch, () =>
+        recordValidatedHyperliquidMainnetCapabilityEvidence({
+          release,
+          report: result,
+          reason: safeHyperliquidMainnetProofError(stringValue(value.error)),
+        })
+      );
+      if (!recorded.ok) return { error: recorded.error, status: recorded.status };
     }
     return {
       error: safeHyperliquidMainnetProofError(stringValue(value.error)),
       status: response.status,
     };
   }
-  if (!validHyperliquidMainnetProofReport(result)) {
-    if (launch.state === "canary") {
-      await recordMainnetCapabilityEvidence({
-        release,
-        status: "red",
-        reason: "hyperliquid_mainnet_roundtrip_invalid_proof",
-      });
+  if (!validHyperliquidMainnetProofReport(result, release)) {
+    if (expectedLaunch.state === "canary") {
+      const recorded = await runAtExactHyperliquidProofLaunchEpoch(expectedLaunch, () =>
+        recordValidatedHyperliquidMainnetCapabilityEvidence({
+          release,
+          report: result,
+          reason: "hyperliquid_mainnet_roundtrip_invalid_proof",
+        })
+      );
+      if (!recorded.ok) return { error: recorded.error, status: recorded.status };
     }
     return { error: "hyperliquid_mainnet_roundtrip_invalid_proof" as const, status: 502 };
   }
@@ -2805,66 +2866,119 @@ export async function runHyperliquidMainnetProofForOwner(
     entry_work_order_commitment: report.entry_work_order_commitment,
     exit_work_order_commitment: report.exit_work_order_commitment,
     venue_account_commitment: venueAccountCommitment,
+    web_git_sha: webGitSha,
+    worker_git_sha: workerGitSha,
+    worker_image_digest: workerImageDigest,
+    config_fingerprint: release.config_fingerprint,
     completed_at: completedAt,
   });
-  const graduation = await putLiveTradingAccountGraduation({
-    version: 2,
-    graduation_id: gholaCommitment("hyperliquid_account_graduation", {
+  const recordedEvidence = await runAtExactHyperliquidProofLaunchEpoch(expectedLaunch, () =>
+    recordValidatedHyperliquidMainnetCapabilityEvidence({
+      release,
+      report,
+      receiptCommitment: proofEvidenceCommitment,
+    })
+  );
+  if (!recordedEvidence.ok) return { error: recordedEvidence.error, status: recordedEvidence.status };
+  const evidenceStatus = recordedEvidence.value;
+  if (evidenceStatus !== "green") {
+    return { error: "hyperliquid_mainnet_roundtrip_invalid_proof" as const, status: 502 };
+  }
+  const recordedGraduation = await runAtExactHyperliquidProofLaunchEpoch(expectedLaunch, () =>
+    putLiveTradingAccountGraduation({
+      version: 3,
+      contract_version: LIVE_TRADING_CONTRACT_VERSION,
+      graduation_id: gholaCommitment("hyperliquid_account_graduation", {
+        owner_commitment: owner.owner_commitment,
+        account_commitment: account.account_commitment,
+        vault_commitment: vault.vault_commitment,
+        web_git_sha: webGitSha,
+        worker_git_sha: workerGitSha,
+        worker_image_digest: workerImageDigest,
+        config_fingerprint: release.config_fingerprint,
+      }),
       owner_commitment: owner.owner_commitment,
       account_commitment: account.account_commitment,
       vault_commitment: vault.vault_commitment,
-    }),
-    owner_commitment: owner.owner_commitment,
-    account_commitment: account.account_commitment,
-    vault_commitment: vault.vault_commitment,
-    proof_evidence_commitment: proofEvidenceCommitment,
-    proof_notional_usd: LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD,
-    status: "active",
-    completed_at: completedAt,
-    revoked_at: null,
-    created_at: completedAt,
-    updated_at: completedAt,
-  });
-  await recordMainnetCapabilityEvidence({
-    release,
-    status: "green",
-    completedAt,
-    receiptCommitment: proofEvidenceCommitment,
-    resultCommitment: gholaCommitment("hyperliquid_mainnet_roundtrip_result", report),
-    venueAccountCommitment,
-  });
+      web_git_sha: webGitSha,
+      worker_git_sha: workerGitSha,
+      worker_image_digest: workerImageDigest,
+      config_fingerprint: release.config_fingerprint,
+      proof_evidence_commitment: proofEvidenceCommitment,
+      proof_notional_usd: LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD,
+      status: "active",
+      completed_at: completedAt,
+      revoked_at: null,
+      created_at: completedAt,
+      updated_at: completedAt,
+    })
+  );
+  if (!recordedGraduation.ok) return { error: recordedGraduation.error, status: recordedGraduation.status };
+  const graduation = recordedGraduation.value;
   return { report: { ...report, account_graduated: true, graduation_id: graduation.graduation_id } };
 }
 
-async function recordMainnetCapabilityEvidence(input: {
+async function currentLaunchEpochError(expected: { state: "canary" | "public"; revision: number }) {
+  const current = await getLiveTradingLaunchControl().catch(() => null);
+  return current
+    ? launchEpochError(current, expected)
+    : { error: "live_trading_launch_state_unavailable" as const, status: 503 as const };
+}
+
+export async function runAtExactHyperliquidProofLaunchEpoch<T>(
+  expected: { state: "canary" | "public"; revision: number },
+  operation: () => Promise<T>,
+): Promise<
+  | { ok: true; value: T }
+  | { ok: false; error: "live_trading_killed" | "live_trading_launch_epoch_changed" | "live_trading_launch_state_unavailable"; status: 409 | 503 }
+> {
+  const error = await currentLaunchEpochError(expected);
+  if (error) return { ok: false, ...error };
+  return { ok: true, value: await operation() };
+}
+
+function launchEpochError(
+  current: { state: string; revision: number },
+  expected: { state: "canary" | "public"; revision: number },
+) {
+  if (current.state === "killed") return { error: "live_trading_killed" as const, status: 409 as const };
+  if (current.state !== expected.state || current.revision !== expected.revision) {
+    return { error: "live_trading_launch_epoch_changed" as const, status: 409 as const };
+  }
+  return null;
+}
+
+export async function recordValidatedHyperliquidMainnetCapabilityEvidence(input: {
   release: ReturnType<typeof currentLiveTradingReleaseIdentity>;
-  status: "green" | "red";
-  completedAt?: string;
+  report: unknown;
   receiptCommitment?: string;
-  resultCommitment?: string;
-  venueAccountCommitment?: string;
   reason?: string;
 }) {
   if (!input.release.valid || !input.release.web_git_sha || !input.release.worker_git_sha ||
-    !input.release.worker_image_digest) return;
-  const observedAt = input.completedAt && Number.isFinite(Date.parse(input.completedAt))
-    ? new Date(input.completedAt)
-    : new Date();
-  const advertised = configuredLiveTradingPublicCapabilities();
+    !input.release.worker_image_digest) return "red" as const;
+  const validated = validHyperliquidMainnetProofReport(input.report, input.release);
+  const report = validated ? input.report as Record<string, unknown> : null;
+  const receiptCommitment = stringValue(input.receiptCommitment);
+  const status = validated && receiptCommitment ? "green" as const : "red" as const;
+  const observedAt = status === "green" ? new Date(String(report?.completed_at)) : new Date();
+  const resultCommitment = status === "green"
+    ? gholaCommitment("hyperliquid_mainnet_roundtrip_result", report)
+    : null;
+  const venueAccountCommitment = status === "green"
+    ? hyperliquidVenueAccountCommitment(report as Record<string, unknown>)
+    : null;
   const webGitSha = input.release.web_git_sha;
   const workerGitSha = input.release.worker_git_sha;
   const workerImageDigest = input.release.worker_image_digest;
-  const provenCapabilities = (["limit_order", "cancel", "reduce_only"] as const)
-    .filter((capability) => capability === "limit_order" || advertised.includes(capability));
-  await Promise.all(provenCapabilities.map((capability) => {
+  await Promise.all(LIVE_TRADING_REQUIRED_CAPABILITIES.map((capability) => {
     const seed = {
       capability,
-      status: input.status,
+      status,
       observed_at: observedAt.toISOString(),
-      receipt_commitment: input.receiptCommitment ?? null,
-      result_commitment: input.resultCommitment ?? null,
-      venue_account_commitment: input.venueAccountCommitment ?? null,
-      proof_subject_commitment: input.venueAccountCommitment ?? null,
+      receipt_commitment: status === "green" ? receiptCommitment : null,
+      result_commitment: resultCommitment,
+      venue_account_commitment: venueAccountCommitment,
+      proof_subject_commitment: venueAccountCommitment,
       config_fingerprint: input.release.config_fingerprint,
     };
     return putLiveTradingCapabilityEvidence({
@@ -2873,26 +2987,27 @@ async function recordMainnetCapabilityEvidence(input: {
       capability,
       venue_id: "hyperliquid",
       network: "mainnet",
-      status: input.status,
-      broadcast_performed: input.status === "green",
-      reconciled: input.status === "green",
-      final_flat: input.status === "green",
-      open_order_count: input.status === "green" ? 0 : -1,
+      status,
+      broadcast_performed: status === "green",
+      reconciled: status === "green",
+      final_flat: status === "green",
+      open_order_count: status === "green" ? 0 : -1,
       order_notional_usd: LIVE_TRADING_FIRST_PROOF_NOTIONAL_USD,
       web_git_sha: webGitSha,
       worker_git_sha: workerGitSha,
       worker_image_digest: workerImageDigest,
       config_fingerprint: input.release.config_fingerprint,
-      receipt_commitment: input.receiptCommitment ?? null,
-      result_commitment: input.resultCommitment ?? null,
-      venue_account_commitment: input.venueAccountCommitment ?? null,
-      proof_subject_commitment: input.venueAccountCommitment ?? null,
+      receipt_commitment: status === "green" ? receiptCommitment : null,
+      result_commitment: resultCommitment,
+      venue_account_commitment: venueAccountCommitment,
+      proof_subject_commitment: venueAccountCommitment,
       reason: input.reason ?? null,
       observed_at: observedAt.toISOString(),
       expires_at: new Date(observedAt.getTime() + LIVE_TRADING_EVIDENCE_MAX_AGE_MS).toISOString(),
       created_at: new Date().toISOString(),
     });
   }));
+  return status;
 }
 
 function safeHyperliquidMainnetProofError(value: string) {
@@ -2906,7 +3021,10 @@ function safeHyperliquidMainnetProofError(value: string) {
   return allowed.has(value) ? value : "hyperliquid_mainnet_roundtrip_failed";
 }
 
-function validHyperliquidMainnetProofReport(value: unknown) {
+export function validHyperliquidMainnetProofReport(
+  value: unknown,
+  expectedRelease: ReturnType<typeof currentLiveTradingReleaseIdentity>,
+) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const report = value as Record<string, unknown>;
   return report.ok === true &&
@@ -2935,6 +3053,9 @@ function validHyperliquidMainnetProofReport(value: unknown) {
     /^0x[0-9a-f]{32}$/u.test(String(report.stop_loss_cloid || "").toLowerCase()) &&
     report.protection_cleanup_confirmed === true &&
     report.protection_children_terminal === true &&
+    report.protection_children_no_fill_proven === true &&
+    validHyperliquidProtectionProof(report) &&
+    validHyperliquidProofReleaseBinding(report.release_binding, expectedRelease) &&
     report.default_margin_mode === "isolated" &&
     report.default_leverage === 1 &&
     report.exit_status === "filled" &&
@@ -2954,7 +3075,58 @@ function validHyperliquidMainnetProofReport(value: unknown) {
     typeof report.entry_work_order_commitment === "string" &&
     typeof report.exit_work_order_commitment === "string" &&
     typeof report.completed_at === "string" &&
-    Number.isFinite(Date.parse(report.completed_at));
+    canonicalIsoDate(report.completed_at);
+}
+
+function validHyperliquidProofReleaseBinding(
+  value: unknown,
+  expected: ReturnType<typeof currentLiveTradingReleaseIdentity>,
+) {
+  const binding = objectBody(value);
+  return expected.valid &&
+    binding.contract_version === LIVE_TRADING_CONTRACT_VERSION &&
+    binding.web_git_sha === expected.web_git_sha &&
+    binding.worker_git_sha === expected.worker_git_sha &&
+    binding.worker_image_digest === expected.worker_image_digest &&
+    binding.config_fingerprint === expected.config_fingerprint;
+}
+
+function validHyperliquidProtectionProof(report: Record<string, unknown>) {
+  const acceptance = objectBody(report.protection_acceptance);
+  const cleanup = objectBody(report.protection_cleanup);
+  const venueEvidence = objectBody(report.venue_evidence);
+  const venueProtection = objectBody(venueEvidence.protection);
+  const finalProof = objectBody(report.final_proof);
+  if (finalProof.venue_position_protection_proven !== true ||
+      finalProof.protection_cleanup_proven !== true ||
+      finalProof.protection_children_terminal !== true ||
+      finalProof.protection_children_no_fill_proven !== true) return false;
+  const identities = new Set<string>();
+  for (const kind of ["take_profit", "stop_loss"] as const) {
+    const prefix = kind;
+    const expectedOid = String(report[`${prefix}_oid`] || "");
+    const expectedCloid = String(report[`${prefix}_cloid`] || "").toLowerCase();
+    const accepted = objectBody(acceptance[kind]);
+    const cancelled = objectBody(cleanup[kind]);
+    const independentlyRead = objectBody(venueProtection[kind]);
+    if (!/^\d+$/u.test(expectedOid) || !/^0x[0-9a-f]{32}$/u.test(expectedCloid) ||
+        String(accepted.oid || "") !== expectedOid ||
+        String(accepted.cloid || "").toLowerCase() !== expectedCloid ||
+        accepted.venue_accepted !== true || accepted.venue_order_readback_proven !== true ||
+        String(cancelled.oid || "") !== expectedOid ||
+        String(cancelled.cloid || "").toLowerCase() !== expectedCloid ||
+        cancelled.terminal_status !== "canceled" ||
+        cancelled.cancellation_readback_proven !== true ||
+        cancelled.final_cancellation_proven !== true ||
+        cancelled.action_expiry_proven !== true ||
+        (cancelled.broadcast_performed !== true && cancelled.already_terminal !== true) ||
+        !validHyperliquidProtectionEvidenceLeg(independentlyRead) ||
+        String(independentlyRead.oid || "") !== expectedOid ||
+        String(independentlyRead.cloid || "").toLowerCase() !== expectedCloid) return false;
+    identities.add(`oid:${expectedOid}`);
+    identities.add(`cloid:${expectedCloid}`);
+  }
+  return identities.size === 4;
 }
 
 function validHyperliquidVenueEvidence(value: unknown) {
@@ -2970,6 +3142,7 @@ function validHyperliquidVenueEvidence(value: unknown) {
     evidence.reduce_only_exit_proven === true &&
     evidence.position_protection_proven === true &&
     evidence.protection_children_terminal === true &&
+    evidence.protection_children_no_fill_proven === true &&
     validHyperliquidProtectionEvidenceLeg((evidence.protection as Record<string, unknown> | undefined)?.take_profit) &&
     validHyperliquidProtectionEvidenceLeg((evidence.protection as Record<string, unknown> | undefined)?.stop_loss) &&
     evidence.transaction_hashes_distinct === true &&
@@ -2992,9 +3165,20 @@ function validHyperliquidProtectionEvidenceLeg(value: unknown) {
   return /^\d+$/u.test(String(leg.oid || "")) &&
     /^0x[0-9a-f]{32}$/u.test(String(leg.cloid || "").toLowerCase()) &&
     leg.order_status === "canceled" &&
+    leg.venue_accepted === true &&
+    leg.venue_order_readback_proven === true &&
+    leg.final_cancellation_proven === true &&
+    leg.final_no_fill_proven === true &&
+    leg.fill_count === 0 &&
+    String(leg.filled_base_size) === "0" &&
     leg.side === "sell" &&
     leg.reduce_only === true &&
     leg.trigger_order === true;
+}
+
+function canonicalIsoDate(value: string) {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
 function validHyperliquidVenueEvidenceLeg(value: unknown, reduceOnly: boolean) {
@@ -3784,6 +3968,7 @@ export async function allocateHyperliquidNativeVaultFromBody(
 export async function sealHyperliquidVaultFromBody(
   body: unknown,
   owner: PrivateAccountRequestOwner,
+  options: { authorization?: GholaHyperliquidAgentAuthorization } = {},
 ) {
   const value = objectBody(body);
   const account = await createOrGetStoredPrivateAccount(owner);
@@ -3824,29 +4009,35 @@ export async function sealHyperliquidVaultFromBody(
       recipient,
       network: aadContext.network,
       policy_commitment_seed: "capped-hyperliquid-v1",
+      authorization: options.authorization ?? null,
     },
+    authorization: options.authorization ?? null,
   });
   if (!created.ok) return { error: created.error };
+  let activeVault = created.vault;
   if (previousVault?.status === "sealed" && previousVault.vault_commitment !== created.vault.vault_commitment) {
+    const revokedAt = new Date().toISOString();
     await putHyperliquidExecutionVault({
       ...previousVault,
       status: "revoked",
-      vault: { ...previousVault.vault, status: "revoked", updated_at: new Date().toISOString() },
-      updated_at: new Date().toISOString(),
+      vault: { ...previousVault.vault, status: "revoked", updated_at: revokedAt },
+      updated_at: revokedAt,
     });
+    const activatedAt = new Date(Math.max(Date.now(), Date.parse(revokedAt) + 1)).toISOString();
+    activeVault = { ...activeVault, updated_at: activatedAt };
   }
   const stored = await putHyperliquidExecutionVault({
     version: 1,
     owner_commitment: owner.owner_commitment,
     account_commitment: account.account_commitment,
-    vault_commitment: created.vault.vault_commitment,
-    encrypted_vault_commitment: created.vault.encrypted_vault_commitment,
-    recipient_commitment: created.vault.recipient_commitment,
-    policy_commitment: created.vault.policy_commitment,
-    status: created.vault.status,
-    vault: created.vault,
-    created_at: created.vault.created_at,
-    updated_at: created.vault.updated_at,
+    vault_commitment: activeVault.vault_commitment,
+    encrypted_vault_commitment: activeVault.encrypted_vault_commitment,
+    recipient_commitment: activeVault.recipient_commitment,
+    policy_commitment: activeVault.policy_commitment,
+    status: activeVault.status,
+    vault: activeVault,
+    created_at: activeVault.created_at,
+    updated_at: activeVault.updated_at,
   });
   return {
     version: 1,
@@ -3856,10 +4047,20 @@ export async function sealHyperliquidVaultFromBody(
   };
 }
 
-export async function revokeHyperliquidVaultForOwner(owner: PrivateAccountRequestOwner) {
+export async function revokeHyperliquidVaultForOwner(
+  owner: PrivateAccountRequestOwner,
+  options: { expectedVaultCommitment?: string } = {},
+) {
   const account = await createOrGetStoredPrivateAccount(owner);
   const vault = await getHyperliquidExecutionVaultByAccount(account.account_commitment);
-  if (!vault || vault.status === "revoked") return { error: "hyperliquid_execution_vault_not_found" as const };
+  if (!vault || vault.status === "revoked" ||
+      vault.owner_commitment !== owner.owner_commitment ||
+      vault.account_commitment !== account.account_commitment) {
+    return { error: "hyperliquid_execution_vault_not_found" as const };
+  }
+  if (options.expectedVaultCommitment && vault.vault_commitment !== options.expectedVaultCommitment) {
+    return { error: "hyperliquid_execution_vault_state_changed" as const };
+  }
   const now = new Date().toISOString();
   const stored = await putHyperliquidExecutionVault({
     ...vault,
@@ -4750,17 +4951,12 @@ function parseHyperliquidVaultAad(value: string): {
   recipient: string;
   network: "mainnet" | "testnet";
 } | null {
-  const [version, accountPart, recipientPart, networkPart] = value.split("|");
-  if (version !== "ghola/hyperliquid-execution-vault-v1") return null;
-  const account = accountPart?.startsWith("account:") ? accountPart.slice("account:".length) : "";
-  const recipient = recipientPart?.startsWith("recipient:") ? recipientPart.slice("recipient:".length) : "";
-  const network = networkPart?.startsWith("network:") ? networkPart.slice("network:".length) : "";
-  if (!account || !recipient || (network !== "mainnet" && network !== "testnet")) return null;
-  return {
-    account_commitment: account,
-    recipient,
-    network,
-  };
+  const parsed = parseHyperliquidVaultAssociatedData(value);
+  return parsed ? {
+    account_commitment: parsed.account_commitment,
+    recipient: parsed.recipient,
+    network: parsed.network,
+  } : null;
 }
 
 function parseVenueVaultAad(value: string): {
@@ -6993,6 +7189,9 @@ function publicHyperliquidVault(record: PrivateHyperliquidVaultRecordV1) {
     network: aadContext?.network ?? null,
     supported_operations: record.vault.supported_operations,
     blocked_operations: record.vault.blocked_operations,
+    authorization_source: record.vault.authorization?.source ?? "legacy_import",
+    venue_revoke_supported: record.vault.authorization?.source === "phantom_approve_agent_v1",
+    authorization_valid_until: record.vault.authorization?.valid_until ?? null,
     status: record.status,
     updated_at: record.updated_at,
   };
@@ -7431,6 +7630,12 @@ function hyperliquidSnapshotNextStep(status: string) {
 function hyperliquidWorkerConfig(
   env: Record<string, string | undefined> = process.env,
 ) {
+  if (env.GHOLA_LIVE_TRADING_PUBLIC_ENABLED === "true") {
+    return {
+      url: env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() || "",
+      token: env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() || "",
+    };
+  }
   return {
     url:
       env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL?.trim() ||

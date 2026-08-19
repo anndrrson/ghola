@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { openSealedBundle } from "../crypto/envelope.js";
+import {
+  HYPERLIQUID_EXECUTION_VAULT_AAD_PREFIXES,
+  openSealedBundle,
+} from "../crypto/envelope.js";
 import { executeHyperliquidRiskReduction } from "./private-execution.js";
 import {
   hyperliquidCredentialFromVault,
@@ -278,7 +281,7 @@ function cancelInstruction(order, workOrder) {
 async function credentialForBody({ body, recipient, state }) {
   if (body.execution_mode === "byo_api_key") {
     const opened = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+      aadPrefixes: HYPERLIQUID_EXECUTION_VAULT_AAD_PREFIXES,
       expectedKind: "ghola_hyperliquid_execution_vault",
     });
     return hyperliquidCredentialFromVault(opened.json);

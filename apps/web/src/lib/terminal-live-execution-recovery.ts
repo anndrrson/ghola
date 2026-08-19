@@ -1,7 +1,4 @@
-import {
-  terminalLiveExecutionExternalReviewDecision,
-  type TerminalLiveExecutionJournalEntry,
-} from "./terminal-live-execution-journal";
+import type { TerminalLiveExecutionJournalEntry } from "./terminal-live-execution-journal";
 
 export interface TerminalLiveExecutionRecoveryDossier {
   planDigest: string;
@@ -18,7 +15,6 @@ export interface TerminalLiveExecutionRecoveryDossier {
   accountContext: "verified" | "mismatch" | "external";
   accountStream: "current" | "waiting" | "external";
   postSubmitSnapshot: "verified" | "waiting" | "external";
-  reviewAllowed: boolean;
   copyText: string;
 }
 
@@ -30,7 +26,6 @@ export function deriveTerminalLiveExecutionRecoveryDossier(input: {
   accountStreamObservedAtMs: number | null;
 }): TerminalLiveExecutionRecoveryDossier {
   const { entry } = input;
-  const review = terminalLiveExecutionExternalReviewDecision(input);
   const hyperliquid = entry.venue === "hyperliquid";
   const contextMatches = input.selectedVenue === entry.venue
     && input.selectedNetwork === entry.network;
@@ -119,7 +114,6 @@ export function deriveTerminalLiveExecutionRecoveryDossier(input: {
     accountContext: contextMatches ? (hyperliquid ? "verified" : "external") : "mismatch",
     accountStream: contextMatches ? (hyperliquid ? (input.accountStreamCurrent ? "current" : "waiting") : "external") : "waiting",
     postSubmitSnapshot: contextMatches ? (hyperliquid ? (snapshotAfterSubmit ? "verified" : "waiting") : "external") : "waiting",
-    reviewAllowed: review.allowed,
     copyText: lines.join("\n"),
   };
 }

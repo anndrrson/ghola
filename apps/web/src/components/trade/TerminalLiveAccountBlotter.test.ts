@@ -113,7 +113,8 @@ describe("TerminalLiveAccountBlotter", () => {
     document.body.append(host);
     await act(async () => createRoot(host as HTMLDivElement).render(createElement(TerminalLiveAccountBlotter, { view: liveView() })));
     await act(async () => findButton(host as HTMLDivElement, "Close BTC · RO").click());
-    expect(host.textContent).toContain("real reduce-only market close");
+    expect(host.textContent).toContain("may first request SIWS");
+    expect(host.textContent).toContain("wallet-binding message and the exact reduce-only close request");
     await act(async () => findButton(host as HTMLDivElement, "Sign + close").click());
     expect(closeMocks.authorize).toHaveBeenCalledWith(expect.objectContaining({
       path: "/v1/private-account/hyperliquid/positions/close",

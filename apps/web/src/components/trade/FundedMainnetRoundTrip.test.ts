@@ -1,4 +1,4 @@
-import { act, createElement } from "react";
+import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +20,12 @@ const api = vi.hoisted(() => ({
   roundtrip: vi.fn(),
 }));
 
+const access = vi.hoisted(() => ({
+  ensureReady: vi.fn(),
+  billing: { tier: "starter" },
+  readiness: { ready: true },
+}));
+
 vi.mock("@/lib/wallet-request-proof", () => ({
   connectSolanaWallet: wallet.connect,
   privateAccountMobileProofHeaders: wallet.proofHeaders,
@@ -36,6 +42,9 @@ vi.mock("@/lib/private-account-client", () => ({
   getPrivateMobileWalletBindingChallenge: api.challenge,
   runHyperliquidMainnetRoundTrip: api.roundtrip,
   verifyVenueEligibility: api.eligibility,
+}));
+vi.mock("./InvestorAccessGate", () => ({
+  InvestorAccessGate: ({ children }: { children: (control: typeof access) => ReactNode }) => children(access),
 }));
 
 import { FundedMainnetRoundTrip } from "./FundedMainnetRoundTrip";
@@ -64,6 +73,7 @@ describe("FundedMainnetRoundTrip", () => {
     api.bind.mockResolvedValue({ ok: true });
     api.eligibility.mockResolvedValue({ ok: true });
     api.roundtrip.mockResolvedValue(completeReport());
+    access.ensureReady.mockResolvedValue(true);
   });
 
   afterEach(async () => {
@@ -89,6 +99,7 @@ describe("FundedMainnetRoundTrip", () => {
     await clickButton(container, "Authorize wallet only");
 
     expect(wallet.connect).toHaveBeenCalledWith({ deferPhantomSiws: true });
+    expect(access.ensureReady.mock.invocationCallOrder[0]).toBeLessThan(wallet.connect.mock.invocationCallOrder[0]);
     expect(wallet.retrySiws).not.toHaveBeenCalled();
     expect(serverCalls()).toBe(0);
     expect(container.querySelector("[data-wallet-stage='phantom_siws_retry_required']")).not.toBeNull();
@@ -110,12 +121,39 @@ describe("FundedMainnetRoundTrip", () => {
     expect(api.bind).toHaveBeenCalledOnce();
     expect(api.eligibility).toHaveBeenCalledOnce();
     expect(api.roundtrip).toHaveBeenCalledOnce();
+    expect(container.querySelector<HTMLAnchorElement>('a[href="/trade?flow=hyperliquid-live"]')?.textContent)
+      .toContain("Open the live terminal");
     expect(wallet.sign.mock.invocationCallOrder[1]).toBeLessThan(api.bind.mock.invocationCallOrder[0]);
     expect(wallet.requirePrepared).toHaveBeenLastCalledWith(PROVIDER, WALLET);
     const finalPinOrder = wallet.requirePrepared.mock.invocationCallOrder[
       wallet.requirePrepared.mock.invocationCallOrder.length - 1
     ];
     expect(finalPinOrder).toBeLessThan(api.roundtrip.mock.invocationCallOrder[0]);
+  });
+
+  it("rechecks access and performs no wallet or server work when it is no longer ready", async () => {
+    access.ensureReady.mockResolvedValue(false);
+    await mount(root);
+    await openConfirmation(container);
+    await clickButton(container, "Authorize wallet only");
+
+    expect(access.ensureReady).toHaveBeenCalledOnce();
+    expect(wallet.connect).not.toHaveBeenCalled();
+    expect(wallet.sign).not.toHaveBeenCalled();
+    expect(serverCalls()).toBe(0);
+  });
+
+  it("rechecks access before a fresh Phantom retry", async () => {
+    access.ensureReady.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    wallet.connect.mockRejectedValueOnce(stageError("phantom_siws_retry_required"));
+    await mount(root);
+    await openConfirmation(container);
+    await clickButton(container, "Authorize wallet only");
+    await clickButton(container, "Continue with Phantom");
+
+    expect(access.ensureReady).toHaveBeenCalledTimes(2);
+    expect(wallet.retrySiws).not.toHaveBeenCalled();
+    expect(serverCalls()).toBe(0);
   });
 
   it("makes no mutating server request when the second signature is rejected", async () => {

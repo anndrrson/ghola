@@ -6,6 +6,7 @@ import { AuthModal } from "./AuthModal";
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
   setAuth: vi.fn(),
+  googleSignIn: vi.fn(),
   authHook: vi.fn(() => ({ setAuth: vi.fn() })),
 }));
 
@@ -17,12 +18,22 @@ vi.mock("@/lib/thumper-auth-context", () => ({ useThumperAuth: () => {
 vi.mock("@/lib/turnkey-provider", () => ({
   useTurnkeyWallet: () => ({ createWallet: vi.fn(), walletAddress: "wallet-ready" }),
 }));
+vi.mock("@/lib/thumper-api", () => ({
+  thumperGoogleSignIn: mocks.googleSignIn,
+  thumperSignIn: vi.fn(),
+  thumperSignUp: vi.fn(),
+}));
 
 describe("AuthModal", () => {
   let container: HTMLDivElement;
   let root: Root;
 
   beforeEach(() => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = "google-client";
+    mocks.googleSignIn.mockResolvedValue({
+      token: "session-token",
+      user: { id: "investor", email: "investor@example.com", name: "Investor" },
+    });
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -38,6 +49,8 @@ describe("AuthModal", () => {
     container.remove();
     vi.clearAllMocks();
     vi.unstubAllGlobals();
+    delete process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+    delete (window as typeof window & { google?: unknown }).google;
   });
 
   it("opens as a named modal with associated fields and Escape handling", async () => {
@@ -78,7 +91,61 @@ describe("AuthModal", () => {
     expect(mocks.authHook).toHaveBeenCalledTimes(renders);
     expect(container.innerHTML).toBe("");
   });
+
+  it("requires verified Google identity for an investor invitation", async () => {
+    let credentialCallback: ((response: { credential: string }) => void) | null = null;
+    const renderButton = vi.fn((element: HTMLElement) => {
+      const button = document.createElement("button");
+      button.textContent = "Continue with Google";
+      element.appendChild(button);
+    });
+    (window as typeof window & { google?: GoogleIdentityMock }).google = {
+      accounts: { id: {
+        initialize: ({ callback }) => { credentialCallback = callback; },
+        renderButton,
+      } },
+    };
+    const onClose = vi.fn();
+    await act(async () => {
+      root.render(createElement(AuthModal, {
+        mode: "signup",
+        open: true,
+        onClose,
+        onModeChange: vi.fn(),
+        redirectTo: null,
+        verifiedEmailRequired: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Verify the invited email");
+    expect(container.querySelector('input[type="email"]')).toBeNull();
+    expect(renderButton).toHaveBeenCalledOnce();
+    await act(async () => {
+      if (!credentialCallback) throw new Error("Google credential callback missing");
+      credentialCallback({ credential: "verified-google-token" });
+      credentialCallback({ credential: "duplicate-google-token" });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.googleSignIn).toHaveBeenCalledOnce();
+    expect(mocks.googleSignIn).toHaveBeenCalledWith("verified-google-token");
+    expect(mocks.setAuth).toHaveBeenCalledWith("session-token", {
+      id: "investor",
+      email: "investor@example.com",
+      name: "Investor",
+    });
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
 });
+
+type GoogleIdentityMock = {
+  accounts: { id: {
+    initialize: (config: { callback: (response: { credential: string }) => void }) => void;
+    renderButton: (element: HTMLElement) => void;
+  } };
+};
 
 function requiredElement<T extends Element>(root: ParentNode, selector: string): T {
   const value = root.querySelector<T>(selector);

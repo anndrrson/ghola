@@ -53,7 +53,7 @@ describe("middleware security hardening", () => {
     expect(res.headers.get("Pragma")).toBe("no-cache");
   });
 
-  it("allows Google OAuth popups only on sign-in and sign-up pages", () => {
+  it("allows Google OAuth popups only on explicit auth and investor-account pages", () => {
     const requestFor = (pathname: string) =>
       ({
         headers: new Headers({ "user-agent": "Mozilla/5.0" }),
@@ -71,6 +71,12 @@ describe("middleware security hardening", () => {
     ).toBe("unsafe-none");
     expect(
       proxy(requestFor("/signup")).headers.get("Cross-Origin-Embedder-Policy"),
+    ).toBe("unsafe-none");
+    expect(
+      proxy(requestFor("/account")).headers.get("Cross-Origin-Opener-Policy"),
+    ).toBe("same-origin-allow-popups");
+    expect(
+      proxy(requestFor("/account")).headers.get("Cross-Origin-Embedder-Policy"),
     ).toBe("unsafe-none");
     expect(
       proxy(requestFor("/trade")).headers.get("Cross-Origin-Opener-Policy"),

@@ -6,14 +6,16 @@ import {
 } from "./terminal-live-execution-receipt";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
+const WORK_ORDER = `live_trade_work_order_${"b".repeat(48)}`;
 const NOW = Date.parse("2026-08-13T12:00:00.000Z");
 
 describe("terminal live execution receipt", () => {
-  it.each(["submitted", "reconciled"] as const)("accepts a strict %s acknowledgement", (status) => {
+  it.each(["submitted", "reconciled", "no_fill"] as const)("accepts a strict %s acknowledgement", (status) => {
     expect(inspectTerminalLiveExecutionReceipt({
       appLiveTradingExecutionRun: {
         status,
         gholaAppLiveTradingExecutionRunCommitment: "run_commitment_123",
+        workerWorkOrderCommitment: WORK_ORDER,
         liveTradingOrder: { orderId: "venue_order_456" },
       },
     }, DIGEST, NOW)).toEqual({
@@ -22,10 +24,64 @@ describe("terminal live execution receipt", () => {
         status,
         commitment: "run_commitment_123",
         orderId: "venue_order_456",
+        workOrderCommitment: WORK_ORDER,
         planDigest: DIGEST,
         receivedAt: "2026-08-13T12:00:00.000Z",
       },
     });
+  });
+
+  it("accepts an exact worker-proven pre-submit rejection without an order id", () => {
+    expect(inspectTerminalLiveExecutionReceipt({
+      appLiveTradingExecutionRun: {
+        status: "not_dispatched",
+        gholaAppLiveTradingExecutionRunCommitment: "run_commitment_no_broadcast",
+        workerWorkOrderCommitment: WORK_ORDER,
+        liveTradingOrder: null,
+      },
+    }, DIGEST, NOW)).toMatchObject({
+      ok: true,
+      receipt: { status: "not_dispatched", orderId: null, workOrderCommitment: WORK_ORDER },
+    });
+  });
+
+  it("accepts exact fill details only on a reconciled venue proof", () => {
+    const run = {
+      status: "reconciled",
+      gholaAppLiveTradingExecutionRunCommitment: "run_commitment_123",
+      workerWorkOrderCommitment: WORK_ORDER,
+      liveTradingOrder: {
+        orderId: "venue_order_456",
+        venueProvenFill: {
+          filledBaseSize: "0.00016",
+          averageFillPrice: "62500",
+          feeUsd: "0.005",
+          protection: {
+            status: "proven",
+            grouping: "normalTpsl",
+            triggerSource: "mark",
+            triggerOrderType: "bounded_limit",
+            maxSlippageBps: 50,
+          },
+        },
+      },
+    };
+    expect(inspectTerminalLiveExecutionReceipt({ appLiveTradingExecutionRun: run }, DIGEST, NOW))
+      .toMatchObject({
+        ok: true,
+        receipt: {
+          provenFill: {
+            filledBaseSize: "0.00016",
+            averageFillPrice: "62500",
+            feeUsd: "0.005",
+            protection: { status: "proven", maxSlippageBps: 50 },
+          },
+        },
+      });
+
+    expect(inspectTerminalLiveExecutionReceipt({
+      appLiveTradingExecutionRun: { ...run, status: "submitted" },
+    }, DIGEST, NOW)).toEqual({ ok: false, error: "execution_receipt_fill_proof_invalid" });
   });
 
   it.each([
@@ -34,7 +90,11 @@ describe("terminal live execution receipt", () => {
     [{ appLiveTradingExecutionRun: { status: "failed", gholaAppLiveTradingExecutionRunCommitment: "run_commitment_123" } }, "execution_receipt_status_unverified"],
     [{ appLiveTradingExecutionRun: { status: "submitted" } }, "execution_receipt_commitment_missing"],
     [{ appLiveTradingExecutionRun: { status: "submitted", gholaAppLiveTradingExecutionRunCommitment: "short" } }, "execution_receipt_commitment_missing"],
-    [{ appLiveTradingExecutionRun: { status: "submitted", gholaAppLiveTradingExecutionRunCommitment: "run_commitment_123", liveTradingOrder: { orderId: "bad id" } } }, "execution_receipt_order_invalid"],
+    [{ appLiveTradingExecutionRun: { status: "submitted", gholaAppLiveTradingExecutionRunCommitment: "run_commitment_123" } }, "execution_receipt_work_order_missing"],
+    [{ appLiveTradingExecutionRun: { status: "submitted", gholaAppLiveTradingExecutionRunCommitment: "run_commitment_123", workerWorkOrderCommitment: WORK_ORDER, liveTradingOrder: { orderId: "bad id" } } }, "execution_receipt_order_invalid"],
+    [{ appLiveTradingExecutionRun: { status: "reconciled", gholaAppLiveTradingExecutionRunCommitment: "run_commitment_123", workerWorkOrderCommitment: WORK_ORDER, liveTradingOrder: null } }, "execution_receipt_order_missing"],
+    [{ appLiveTradingExecutionRun: { status: "no_fill", gholaAppLiveTradingExecutionRunCommitment: "run_commitment_123", workerWorkOrderCommitment: WORK_ORDER, liveTradingOrder: null } }, "execution_receipt_order_missing"],
+    [{ appLiveTradingExecutionRun: { status: "not_dispatched", gholaAppLiveTradingExecutionRunCommitment: "run_commitment_123", workerWorkOrderCommitment: WORK_ORDER, liveTradingOrder: { orderId: "venue_order_456" } } }, "execution_receipt_order_invalid"],
   ])("fails closed for malformed success payloads", (payload, error) => {
     expect(inspectTerminalLiveExecutionReceipt(payload, DIGEST, NOW)).toEqual({ ok: false, error });
   });
@@ -75,7 +135,7 @@ describe("terminal live execution receipt", () => {
   });
 
   it("requires proxy-bound plan identity on successful responses", () => {
-    const body = { appLiveTradingExecutionRun: { status: "submitted", gholaAppLiveTradingExecutionRunCommitment: "run_commitment_123" } };
+    const body = { appLiveTradingExecutionRun: { status: "submitted", gholaAppLiveTradingExecutionRunCommitment: "run_commitment_123", workerWorkOrderCommitment: WORK_ORDER } };
     expect(inspectTerminalLiveExecutionResponse({ httpOk: true, body, expectedPlanDigest: DIGEST, responsePlanDigest: DIGEST, nowMs: NOW }).outcome).toBe("acknowledged");
     expect(inspectTerminalLiveExecutionResponse({ httpOk: true, body, expectedPlanDigest: DIGEST, responsePlanDigest: null, nowMs: NOW }))
       .toEqual({ outcome: "unknown", reason: "execution_response_plan_digest_mismatch" });

@@ -22,8 +22,15 @@ import {
   configuredHyperliquidAssetIndex,
 } from "@/lib/signed-execution-material";
 import { authorizeLiveTradingMutation } from "@/lib/live-trading-authorization.server";
-import { settleLiveTradingNotionalReservation } from "@/lib/live-trading-store";
-import { dispatchLiveTradingOrder } from "@/lib/live-trading-worker-dispatch.server";
+import {
+  getLiveTradingWorkOrderReconciliation,
+  settleLiveTradingNotionalReservation,
+} from "@/lib/live-trading-store";
+import {
+  dispatchLiveTradingOrder,
+  LIVE_TRADING_DISPATCH_DISPOSITION_HEADER,
+  type LiveTradingDispatchDisposition,
+} from "@/lib/live-trading-worker-dispatch.server";
 
 const THUMPER_API_BASE =
   process.env.NEXT_PUBLIC_THUMPER_API_URL ||
@@ -108,6 +115,7 @@ export type V1ProxyDependencies = {
   fetchSessionUserImpl: typeof fetchSessionUser;
   byoExecutionGateImpl?: typeof privateAccountByoExecutionGate;
   liveAuthorizationImpl?: typeof authorizeLiveTradingMutation;
+  getLiveRecoveryImpl?: typeof getLiveTradingWorkOrderReconciliation;
   settleNotionalReservationImpl?: typeof settleLiveTradingNotionalReservation;
   liveDispatchImpl?: typeof dispatchLiveTradingOrder;
 };
@@ -221,6 +229,27 @@ async function handle(req: NextRequest, pathParts: string[], dependencies: V1Pro
         { status: verification.status, headers: EXECUTION_NOT_DISPATCHED_HEADERS },
       );
     }
+    verifiedExecutionPlanDigest = verification.planDigest;
+    const existingRecovery = await (
+      dependencies.getLiveRecoveryImpl ?? getLiveTradingWorkOrderReconciliation
+    )({
+      owner_commitment: verification.ownerCommitment,
+      plan_digest: verification.planDigest,
+    }).catch(() => null);
+    if (existingRecovery) {
+      liveDispatchResponse = await (dependencies.liveDispatchImpl ?? dispatchLiveTradingOrder)({
+        owner_commitment: verification.ownerCommitment,
+        account_commitment: existingRecovery.account_commitment,
+        vault_commitment: existingRecovery.vault_commitment,
+        idempotency_key: verification.upstream.idempotencyKey,
+        plan_digest: verification.planDigest,
+        order_plan: verification.orderPlan,
+        reservation_id: existingRecovery.reservation_id,
+        expected_launch_revision: null,
+        fetchImpl: dependencies.fetchImpl,
+        env: process.env,
+      });
+    } else {
     const executionTransportAllowed = verification.orderPlan.execution_policy.reduce_only
       ? privateAgentEmergencyControlTransportAllowed("close", process.env, dependencies.fetchImpl)
       : privateAgentTransportAllowed("execute", process.env, dependencies.fetchImpl);
@@ -256,7 +285,6 @@ async function handle(req: NextRequest, pathParts: string[], dependencies: V1Pro
       );
     }
     liveReservationId = liveAuthorization.reservation?.reservation_id ?? null;
-    verifiedExecutionPlanDigest = verification.planDigest;
     liveDispatchResponse = await (dependencies.liveDispatchImpl ?? dispatchLiveTradingOrder)({
       owner_commitment: verification.ownerCommitment,
       account_commitment: liveAuthorization.account_commitment,
@@ -264,9 +292,12 @@ async function handle(req: NextRequest, pathParts: string[], dependencies: V1Pro
       idempotency_key: verification.upstream.idempotencyKey,
       plan_digest: verification.planDigest,
       order_plan: verification.orderPlan,
+      reservation_id: liveReservationId,
+      expected_launch_revision: liveAuthorization.launch_revision,
       fetchImpl: dependencies.fetchImpl,
       env: process.env,
     });
+    }
   } else {
     body = bodyAllowed ? await req.arrayBuffer() : undefined;
   }
@@ -289,10 +320,13 @@ async function handle(req: NextRequest, pathParts: string[], dependencies: V1Pro
     }
   }
 
-  if (liveReservationId && (upstream.ok || (upstream.status >= 400 && upstream.status < 500))) {
+  const liveDispatchDisposition = liveDispatchResponse
+    ? inspectLiveDispatchDisposition(upstream.headers.get(LIVE_TRADING_DISPATCH_DISPOSITION_HEADER))
+    : null;
+  if (liveReservationId && liveDispatchDisposition && liveDispatchDisposition !== "submitted") {
     await (dependencies.settleNotionalReservationImpl ?? settleLiveTradingNotionalReservation)({
       reservation_id: liveReservationId,
-      status: upstream.ok ? "filled" : "released",
+      status: liveDispatchDisposition === "filled" ? "filled" : "released",
     }).catch(() => undefined);
   }
 
@@ -303,12 +337,16 @@ async function handle(req: NextRequest, pathParts: string[], dependencies: V1Pro
     if (lower === "set-cookie") return;
     if (lower === EXECUTION_DISPATCH_HEADER.toLowerCase()) return;
     if (lower === EXECUTION_PLAN_DIGEST_HEADER.toLowerCase()) return;
+    if (lower === LIVE_TRADING_DISPATCH_DISPOSITION_HEADER) return;
     outHeaders.set(key, value);
   });
   outHeaders.set("Cache-Control", NO_STORE_HEADERS["Cache-Control"]);
   outHeaders.set("Pragma", NO_STORE_HEADERS.Pragma);
   if (isAppExecute) {
-    outHeaders.set(EXECUTION_DISPATCH_HEADER, "dispatched");
+    outHeaders.set(
+      EXECUTION_DISPATCH_HEADER,
+      liveDispatchDisposition === "not_dispatched" ? "not_dispatched" : "dispatched",
+    );
     if (verifiedExecutionPlanDigest) outHeaders.set(EXECUTION_PLAN_DIGEST_HEADER, verifiedExecutionPlanDigest);
   }
 
@@ -317,6 +355,12 @@ async function handle(req: NextRequest, pathParts: string[], dependencies: V1Pro
     statusText: upstream.statusText,
     headers: outHeaders,
   });
+}
+
+function inspectLiveDispatchDisposition(value: string | null): LiveTradingDispatchDisposition | null {
+  return value === "not_dispatched" || value === "submitted" || value === "filled" || value === "no_fill"
+    ? value
+    : null;
 }
 
 async function verifyTradingAppOrderPlan(

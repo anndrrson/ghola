@@ -44,9 +44,34 @@ describe("central live-trading authorization", () => {
       reservation: null,
     });
   });
+
+  it.each([
+    ["cross-account AAD", "account_other", "mainnet"],
+    ["testnet AAD", null, "testnet"],
+  ] as const)("fails a reduce-only exit closed for %s", async (_label, aadAccount, network) => {
+    const { accountCommitment } = await accountWithVault({ aadAccount, network });
+    const result = await authorizeLiveTradingMutation({
+      owner_commitment: OWNER,
+      web_session_token: "",
+      order_plan: plan(true),
+      idempotency_key: "reduce_only_scope_rejection_test",
+      plan_digest: `sha256:${"d".repeat(64)}`,
+      env: {},
+    });
+    expect(accountCommitment).not.toBe(aadAccount);
+    expect(result).toEqual({
+      ok: false,
+      error: "hyperliquid_mainnet_vault_required",
+      status: 409,
+      reason_codes: ["hyperliquid_mainnet_vault_required"],
+    });
+  });
 });
 
-async function accountWithVault() {
+async function accountWithVault(options: {
+  aadAccount?: string | null;
+  network?: "mainnet" | "testnet";
+} = {}) {
   const account = createPrivateExecutionAccount({
     sessionId: OWNER,
     turnkeyWalletId: "turnkey_reduce_only_test",
@@ -80,7 +105,7 @@ async function accountWithVault() {
     encrypted_execution_vault: {
       ciphertext: "sealed-reduce-only-vault",
       recipient,
-      aad: `ghola/hyperliquid-execution-vault-v1|account:${account.account_commitment}|recipient:${recipient}|network:mainnet`,
+      aad: `ghola/hyperliquid-execution-vault-v1|account:${options.aadAccount ?? account.account_commitment}|recipient:${recipient}|network:${options.network ?? "mainnet"}`,
     },
   });
   if (!created.ok) throw new Error(created.error);

@@ -37,12 +37,7 @@ const env = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.account.mockResolvedValue({ account_commitment: "account_commitment_risk_123" });
-  mocks.vault.mockResolvedValue({
-    owner_commitment: "owner_commitment_risk_123",
-    account_commitment: "account_commitment_risk_123",
-    vault_commitment: "vault_commitment_risk_123",
-    status: "sealed",
-  });
+  mocks.vault.mockResolvedValue(validRiskVault());
   mocks.release.mockReturnValue({
     contract_version: 2,
     web_git_sha: "a".repeat(40),
@@ -89,6 +84,43 @@ describe("risk-reduction authorization", () => {
     });
   });
 
+  it.each([
+    ["owner", { owner_commitment: "owner_commitment_other" }],
+    ["account", { account_commitment: "account_commitment_other" }],
+    ["sealed status", { status: "deleted" }],
+  ])("fails closed when the vault has the wrong %s binding", async (_label, overrides) => {
+    mocks.vault.mockResolvedValue({
+      ...validRiskVault(),
+      ...overrides,
+    });
+    await expect(authorize()).resolves.toMatchObject({
+      ok: false,
+      error: "sealed_hyperliquid_vault_required",
+      status: 409,
+    });
+    expect(mocks.worker).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "cross-account AAD",
+      "ghola/hyperliquid-execution-vault-v1|account:account_commitment_other|recipient:worker_recipient|network:mainnet",
+    ],
+    [
+      "testnet AAD",
+      "ghola/hyperliquid-execution-vault-v1|account:account_commitment_risk_123|recipient:worker_recipient|network:testnet",
+    ],
+  ])("fails closed for %s before probing the worker", async (_label, aad) => {
+    mocks.vault.mockResolvedValue(validRiskVault(aad));
+    await expect(authorize()).resolves.toEqual({
+      ok: false,
+      error: "hyperliquid_mainnet_vault_required",
+      status: 409,
+      reason_codes: ["hyperliquid_mainnet_vault_required"],
+    });
+    expect(mocks.worker).not.toHaveBeenCalled();
+  });
+
   it("fails closed on stale or unattested worker readiness", async () => {
     mocks.worker.mockResolvedValue({ ready: false, reason_codes: ["worker_attestation_stale"] });
     await expect(authorize()).resolves.toEqual({
@@ -112,6 +144,18 @@ describe("risk-reduction authorization", () => {
     });
   });
 });
+
+function validRiskVault(
+  aad = "ghola/hyperliquid-execution-vault-v1|account:account_commitment_risk_123|recipient:worker_recipient|network:mainnet",
+) {
+  return {
+    owner_commitment: "owner_commitment_risk_123",
+    account_commitment: "account_commitment_risk_123",
+    vault_commitment: "vault_commitment_risk_123",
+    status: "sealed",
+    vault: { encrypted_execution_vault: { aad } },
+  };
+}
 
 function authorize(customEnv = env) {
   return authorizeLiveTradingRiskReduction({

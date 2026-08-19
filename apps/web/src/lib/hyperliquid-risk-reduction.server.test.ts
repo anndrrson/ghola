@@ -43,20 +43,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.authorize.mockResolvedValue({ ok: true, account_commitment: "account_commitment_12345", vault_commitment: "vault_commitment_12345" });
   mocks.account.mockResolvedValue({ account_commitment: "account_commitment_12345" });
-  mocks.vault.mockResolvedValue({
-    owner_commitment: "owner_commitment_12345",
-    vault_commitment: "vault_commitment_12345",
-    policy_commitment: "policy_commitment_12345",
-    status: "sealed",
-    vault: {
-      encrypted_execution_vault: {
-        version: 1,
-        recipient: "worker_recipient",
-        aad: "ghola/hyperliquid-execution-vault-v1|account:account_commitment_12345|recipient:worker_recipient|network:mainnet",
-        ciphertext_b64: "sealed_ciphertext",
-      },
-    },
-  });
+  mocks.vault.mockResolvedValue(vaultRecord());
   mocks.transportAllowed.mockReturnValue(true);
   mocks.workerAuth.mockReturnValue("Bearer capability");
 });
@@ -103,7 +90,70 @@ describe("Hyperliquid risk-reduction web boundary", () => {
     });
     expect(result).toEqual({ ok: false, error: "hyperliquid_close_evidence_invalid", status: 502 });
   });
+
+  it.each([
+    [
+      "cross-account AAD",
+      "ghola/hyperliquid-execution-vault-v1|account:account_commitment_other|recipient:worker_recipient|network:mainnet",
+    ],
+    [
+      "testnet AAD",
+      "ghola/hyperliquid-execution-vault-v1|account:account_commitment_12345|recipient:worker_recipient|network:testnet",
+    ],
+  ])("rejects %s before calling the worker", async (_label, aad) => {
+    mocks.vault.mockResolvedValue(vaultRecord(aad));
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const result = await closeHyperliquidPositionForOwner({
+      owner_commitment: "owner_commitment_12345",
+      web_session_token: "session-token",
+      request,
+      env: {},
+      fetchImpl,
+    });
+    expect(result).toEqual({ ok: false, error: "hyperliquid_mainnet_vault_required", status: 409 });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(mocks.workerAuth).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["owner", { owner_commitment: "owner_commitment_other" }],
+    ["account", { account_commitment: "account_commitment_other" }],
+    ["sealed status", { status: "deleted" }],
+  ])("revalidates the vault %s binding before calling the worker", async (_label, overrides) => {
+    mocks.vault.mockResolvedValue({ ...vaultRecord(), ...overrides });
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const result = await closeHyperliquidPositionForOwner({
+      owner_commitment: "owner_commitment_12345",
+      web_session_token: "session-token",
+      request,
+      env: {},
+      fetchImpl,
+    });
+    expect(result).toEqual({ ok: false, error: "sealed_hyperliquid_vault_required", status: 409 });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(mocks.workerAuth).not.toHaveBeenCalled();
+  });
 });
+
+function vaultRecord(
+  aad = "ghola/hyperliquid-execution-vault-v1|account:account_commitment_12345|recipient:worker_recipient|network:mainnet",
+) {
+  return {
+    owner_commitment: "owner_commitment_12345",
+    account_commitment: "account_commitment_12345",
+    vault_commitment: "vault_commitment_12345",
+    policy_commitment: "policy_commitment_12345",
+    status: "sealed",
+    vault: {
+      encrypted_execution_vault: {
+        version: 1,
+        recipient: "worker_recipient",
+        aad,
+        ciphertext_b64: "sealed_ciphertext",
+      },
+    },
+  };
+}
 
 function validEvidence() {
   return {

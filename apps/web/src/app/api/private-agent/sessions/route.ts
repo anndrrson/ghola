@@ -48,6 +48,13 @@ const PRIVATE_AGENT_SESSION_RESERVATION_SECONDS = Number.parseInt(
   10,
 );
 
+function investorCanaryBillingHeader(): Record<string, string> {
+  const secret = process.env.GHOLA_INVESTOR_CANARY_SECRET?.trim();
+  return secret && secret.length >= 32
+    ? { "X-Ghola-Investor-Canary-Secret": secret }
+    : {};
+}
+
 function json(body: unknown, status: number) {
   return NextResponse.json(body, {
     status,
@@ -145,6 +152,7 @@ async function reservePrivateAgentCompute(input: {
         Authorization: input.bearer,
         Accept: "application/json",
         "Content-Type": "application/json",
+        ...investorCanaryBillingHeader(),
       },
       body: JSON.stringify({
         session_id: input.reservationId,

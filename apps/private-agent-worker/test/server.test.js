@@ -406,7 +406,8 @@ describe("private agent worker", () => {
     await close(server);
     process.env.PRIVATE_AGENT_ALLOW_UNATTESTED_DEV = "false";
     process.env.PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE = "true";
-    process.env.PHALA_CVM_IMAGE_DIGEST = "sha256:test";
+    process.env.PHALA_CVM_IMAGE_DIGEST = `sha256:${"b".repeat(64)}`;
+    process.env.PRIVATE_AGENT_IMAGE_DIGEST = process.env.PHALA_CVM_IMAGE_DIGEST;
     process.env.PRIVATE_AGENT_DSTACK_QUOTE_JSON = JSON.stringify({
       mr_aggregated: "measurement-test",
       quote: "quote-test",

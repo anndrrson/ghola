@@ -65,6 +65,121 @@ describe("emergency live-worker readiness", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("tolerates only the coherent killed-live pair while normal readiness stays closed", async () => {
+    gates.normal.mockReturnValue(true);
+    const fetchImpl = vi.fn(async () => workerResponse({
+      live_trading: {
+        ready: false,
+        reason_codes: ["worker_global_kill_active"],
+      },
+    })) as unknown as typeof fetch;
+
+    await expect(probeLiveTradingWorkerReadiness({
+      env,
+      fetchImpl,
+      expectedRelease: release,
+      requiredCapabilities: ["cancel", "reduce_only"],
+    })).resolves.toMatchObject({
+      ready: false,
+      reason_codes: ["worker_global_kill_active", "worker_live_contract_not_ready"],
+    });
+
+    await expect(probeEmergencyLiveTradingWorkerReadiness({
+      action: "kill_and_flat",
+      env,
+      fetchImpl,
+      expectedRelease: release,
+      requiredCapabilities: ["cancel", "reduce_only"],
+    })).resolves.toMatchObject({ ready: true, reason_codes: [] });
+  });
+
+  it("rejects kill reason strings unless the live sub-contract is actually killed", async () => {
+    const fetchImpl = vi.fn(async () => workerResponse({
+      live_trading: {
+        ready: true,
+        reason_codes: ["worker_global_kill_active", "worker_live_contract_not_ready"],
+      },
+    })) as unknown as typeof fetch;
+
+    await expect(probeEmergencyLiveTradingWorkerReadiness({
+      action: "close",
+      env,
+      fetchImpl,
+      expectedRelease: release,
+      requiredCapabilities: ["reduce_only"],
+    })).resolves.toMatchObject({
+      ready: false,
+      reason_codes: ["worker_global_kill_active", "worker_live_contract_not_ready"],
+    });
+  });
+
+  it("rejects every non-kill contract, release, cap, capability, or auth reason", async () => {
+    const fetchImpl = vi.fn(async () => workerResponse({
+      live_trading: {
+        ready: false,
+        reason_codes: ["worker_global_kill_active", "worker_capability_auth_not_required"],
+        worker_git_sha: "c".repeat(40),
+        worker_image_digest: `sha256:${"d".repeat(64)}`,
+        config_fingerprint: "live_trading_config_other",
+        capabilities: ["cancel"],
+        caps: {
+          max_order_notional_usd: 99,
+          rolling_24h_notional_usd: 499,
+          max_slippage_bps: 99,
+        },
+      },
+    })) as unknown as typeof fetch;
+
+    const result = await probeEmergencyLiveTradingWorkerReadiness({
+      action: "kill_and_flat",
+      env,
+      fetchImpl,
+      expectedRelease: release,
+      requiredCapabilities: ["cancel", "reduce_only"],
+    });
+    expect(result.ready).toBe(false);
+    expect(result.reason_codes).toEqual(expect.arrayContaining([
+      "worker_capability_auth_not_required",
+      "worker_git_sha_mismatch",
+      "worker_image_digest_mismatch",
+      "worker_config_fingerprint_mismatch",
+      "worker_max_order_cap_mismatch",
+      "worker_daily_cap_mismatch",
+      "worker_slippage_cap_mismatch",
+      "worker_capability_missing:reduce_only",
+    ]));
+  });
+
+  it("requires healthy general readiness even when the live contract is killed", async () => {
+    const fetchImpl = vi.fn(async () => workerResponse({
+      ready: false,
+      live_trading: {
+        ready: false,
+        reason_codes: ["worker_global_kill_active"],
+      },
+    }, 503)) as unknown as typeof fetch;
+
+    await expect(probeEmergencyLiveTradingWorkerReadiness({
+      action: "close",
+      env,
+      fetchImpl,
+      expectedRelease: release,
+      requiredCapabilities: ["reduce_only"],
+    })).resolves.toMatchObject({ ready: false, reason_codes: ["live_worker_not_ready"] });
+  });
+
+  it("requires configured worker authentication before probing an emergency exit", async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    await expect(probeEmergencyLiveTradingWorkerReadiness({
+      action: "close",
+      env: { GHOLA_PRIVATE_AGENT_EXECUTION_URL: env.GHOLA_PRIVATE_AGENT_EXECUTION_URL },
+      fetchImpl,
+      expectedRelease: release,
+      requiredCapabilities: ["reduce_only"],
+    })).resolves.toMatchObject({ ready: false, reason_codes: ["live_worker_not_configured"] });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("still fails closed on stale attestation or release mismatch", async () => {
     const staleFetch = vi.fn(async () => workerResponse({
       ready: false,
@@ -88,7 +203,7 @@ describe("emergency live-worker readiness", () => {
   });
 });
 
-function workerResponse(overrides: Record<string, unknown> = {}) {
+function workerResponse(overrides: Record<string, unknown> = {}, status = 200) {
   const liveOverride = overrides.live_trading && typeof overrides.live_trading === "object"
     ? overrides.live_trading as Record<string, unknown>
     : {};
@@ -107,5 +222,5 @@ function workerResponse(overrides: Record<string, unknown> = {}) {
       reason_codes: [],
       ...liveOverride,
     },
-  }), { status: 200, headers: { "content-type": "application/json" } });
+  }), { status, headers: { "content-type": "application/json" } });
 }

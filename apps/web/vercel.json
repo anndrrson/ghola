@@ -1,10 +1,4 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "installCommand": "npm install",
-  "crons": [
-    {
-      "path": "/api/private-agent/idle",
-      "schedule": "*/15 * * * *"
-    }
-  ]
+  "installCommand": "npm ci --ignore-scripts"
 }

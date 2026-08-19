@@ -27,8 +27,7 @@ describe("TerminalLiveExecutionJournal", () => {
 
   it("retains an explicit unknown outcome without implying a fill", () => {
     const onFocusAccount = vi.fn();
-    const onReviewEntry = vi.fn();
-    act(() => root.render(createElement(TerminalLiveExecutionJournal, { ...evidenceProps(), entries: [entry()], onFocusAccount, onReviewEntry })));
+    act(() => root.render(createElement(TerminalLiveExecutionJournal, { ...evidenceProps(), entries: [entry()], onFocusAccount })));
     expect(container.textContent).toContain("outcome unknown");
     expect(container.textContent).toContain("Do not resubmit");
     expect(container.textContent).toContain("0.1 base · GTC @ 100");
@@ -39,8 +38,8 @@ describe("TerminalLiveExecutionJournal", () => {
     const buttons = [...container.querySelectorAll("button")];
     act(() => buttons.find((button) => button.textContent === "Inspect account stream")!.click());
     expect(onFocusAccount).toHaveBeenCalledOnce();
-    act(() => buttons.find((button) => button.textContent?.startsWith("Review oldest lock"))!.click());
-    expect(onReviewEntry).toHaveBeenCalledWith(entry().planDigest);
+    expect(buttons.some((button) => /review|unlock/iu.test(button.textContent ?? ""))).toBe(false);
+    expect(container.textContent).toContain("Automatic recovery polls the original work order without rebroadcast");
   });
 
   it("keeps live submit visibly locked when persisted safety state is unavailable", () => {
@@ -49,18 +48,15 @@ describe("TerminalLiveExecutionJournal", () => {
     expect(container.textContent).toContain("Live submit remains locked");
   });
 
-  it("keeps external review disabled until exact account evidence is current", () => {
+  it("never offers a manual unlock even when account evidence is current", () => {
     act(() => root.render(createElement(TerminalLiveExecutionJournal, {
       ...evidenceProps(),
       entries: [entry()],
       onFocusAccount: vi.fn(),
-      onReviewEntry: vi.fn(),
-      reviewBlocker: "Await a fresh post-submit account snapshot.",
     })));
-    const review = [...container.querySelectorAll("button")].find((button) => button.textContent?.startsWith("Review oldest lock"));
-    expect(review?.disabled).toBe(true);
-    expect(review?.getAttribute("aria-describedby")).toBe("live-execution-review-blocker");
-    expect(container.textContent).toContain("Await a fresh post-submit account snapshot");
+    const labels = [...container.querySelectorAll("button")].map((button) => button.textContent ?? "");
+    expect(labels.some((label) => /review|unlock|clear/iu.test(label))).toBe(false);
+    expect(container.textContent).toContain("Only exact terminal venue evidence can clear this lock");
   });
 
   it("keeps an older unresolved lock prominent over a newer reconciled row", () => {
@@ -75,14 +71,41 @@ describe("TerminalLiveExecutionJournal", () => {
       recordedAt: "2026-08-13T12:00:01.000Z",
       reason: null,
     };
-    const onReviewEntry = vi.fn();
-    act(() => root.render(createElement(TerminalLiveExecutionJournal, { ...evidenceProps(), entries: [unknown, reconciled], onFocusAccount: vi.fn(), onReviewEntry })));
+    act(() => root.render(createElement(TerminalLiveExecutionJournal, { ...evidenceProps(), entries: [unknown, reconciled], onFocusAccount: vi.fn() })));
     expect(container.textContent).toContain("1 outcome unknown");
     expect(container.textContent).toContain("reconcile every lock");
     expect(container.querySelector("tbody tr")?.textContent).toContain("reconciled");
-    const review = [...container.querySelectorAll("button")].find((button) => button.textContent?.startsWith("Review oldest lock"));
-    act(() => review?.click());
-    expect(onReviewEntry).toHaveBeenCalledWith(unknown.planDigest);
+    expect([...container.querySelectorAll("button")].some((button) => /review|unlock/iu.test(button.textContent ?? ""))).toBe(false);
+  });
+
+  it("shows exact fill, fee, and protection only on a proven reconciled row", () => {
+    const reconciled: TerminalLiveExecutionJournalEntry = {
+      ...entry(),
+      outcome: "acknowledged",
+      status: "reconciled",
+      commitment: "run_commitment_123",
+      orderId: "venue_order_123",
+      reason: null,
+      provenFill: {
+        filledBaseSize: "0.0004",
+        averageFillPrice: "62500",
+        feeUsd: "0.005",
+        protection: {
+          status: "proven",
+          grouping: "normalTpsl",
+          triggerSource: "mark",
+          triggerOrderType: "bounded_limit",
+          maxSlippageBps: 50,
+        },
+      },
+    };
+    act(() => root.render(createElement(TerminalLiveExecutionJournal, {
+      ...evidenceProps(),
+      entries: [reconciled],
+      onFocusAccount: vi.fn(),
+    })));
+
+    expect(container.textContent).toContain("0.0004 base @ 62500 · fee $0.005 · TP/SL proven ≤50 bp");
   });
 
   it("renders and copies exact recovery evidence without claiming reconciliation", () => {
@@ -96,7 +119,7 @@ describe("TerminalLiveExecutionJournal", () => {
     expect(container.textContent).toContain("Recovery dossier");
     expect(container.textContent).toContain(entry().planDigest);
     expect(container.textContent).toContain("Do not resubmit");
-    expect(container.textContent).toContain("does not cancel or reconcile anything");
+    expect(container.textContent).toContain("Manual review cannot unlock or relabel this work order");
     const copy = [...container.querySelectorAll("button")].find((button) => button.textContent === "Copy dossier");
     act(() => copy?.click());
     expect(onCopyEvidence).toHaveBeenCalledWith("Recovery dossier", expect.stringContaining(`plan_digest=${entry().planDigest}`));

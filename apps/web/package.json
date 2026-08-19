@@ -9,6 +9,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
+    "test:investor:canary": "node --test scripts/investor-canary-acceptance.test.mjs scripts/investor-canary-docs.test.mjs scripts/investor-canary-live-verifier.test.mjs scripts/issue-investor-access-pass.test.mjs",
+    "issue:investor:pass": "node scripts/issue-investor-access-pass.mjs",
     "security:check": "npm test && npm run lint",
     "test:auth": "vitest run src/lib/thumper-api.test.ts src/app/api/auth/session/email/signin/route.test.ts src/app/api/auth/session/email/signup/route.test.ts",
     "smoke:auth": "node scripts/smoke-auth.mjs",
@@ -21,6 +23,8 @@
     "verify:prod:trading": "node scripts/verify-prod-trading.mjs",
     "verify:prod:hyperliquid": "node scripts/verify-prod-hyperliquid.mjs",
     "verify:prod:hyperliquid:live": "GHOLA_VERIFY_LIVE_SUBMIT=true node scripts/verify-prod-hyperliquid.mjs",
+    "verify:investor:canary": "node scripts/investor-canary-acceptance.mjs",
+    "verify:investor:canary:live": "node scripts/investor-canary-live-verifier.mjs",
     "certify:charts": "vitest run src/lib/hyperliquid-market-data.test.ts src/lib/hyperliquid-live-market.test.ts src/lib/market-component-clock.test.ts src/lib/terminal-certified-market-signals.test.ts src/lib/unified-live-market.test.ts src/lib/ghola-chart-engine.test.ts src/lib/ghola-market-chart.test.ts && node scripts/certify-hyperliquid-charts.mjs",
     "certify:terminal:local": "node scripts/certify-terminal-local.mjs",
     "certify:terminal:local:quick": "node scripts/certify-terminal-local.mjs --quick",
@@ -74,7 +78,8 @@
     "next": "^16.2.11",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "three": "^0.184.0"
+    "three": "^0.184.0",
+    "viem": "2.50.4"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",

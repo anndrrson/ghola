@@ -360,13 +360,53 @@ ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
 ALTER TABLE users ADD CONSTRAINT users_tier_check
     CHECK (tier IN ('free', 'pro', 'trial_pack', 'starter', 'private_agent', 'unlimited', 'enterprise'));
 
+CREATE TABLE IF NOT EXISTS complimentary_access_passes (
+    code_hash TEXT PRIMARY KEY,
+    pass_id UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+    email TEXT NOT NULL,
+    tier TEXT NOT NULL CHECK (tier IN ('starter', 'private_agent')),
+    issuance_key TEXT NOT NULL,
+    issuance_fingerprint TEXT NOT NULL,
+    code_encrypted BYTEA NOT NULL,
+    redeem_expires_at TIMESTAMPTZ NOT NULL,
+    grant_days INTEGER NOT NULL CHECK (grant_days BETWEEN 1 AND 90),
+    created_by UUID NOT NULL REFERENCES users(id),
+    redeemed_by UUID REFERENCES users(id),
+    redeemed_at TIMESTAMPTZ,
+    grant_expires_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK ((redeemed_by IS NULL AND redeemed_at IS NULL AND grant_expires_at IS NULL)
+        OR (redeemed_by IS NOT NULL AND redeemed_at IS NOT NULL AND grant_expires_at IS NOT NULL))
+);
+ALTER TABLE complimentary_access_passes
+    ADD COLUMN IF NOT EXISTS pass_id UUID NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE complimentary_access_passes
+    ADD COLUMN IF NOT EXISTS issuance_key TEXT;
+ALTER TABLE complimentary_access_passes
+    ADD COLUMN IF NOT EXISTS issuance_fingerprint TEXT;
+ALTER TABLE complimentary_access_passes
+    ADD COLUMN IF NOT EXISTS code_encrypted BYTEA;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_complimentary_access_passes_pass_id
+    ON complimentary_access_passes(pass_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_complimentary_access_passes_issuance
+    ON complimentary_access_passes(created_by, issuance_key)
+    WHERE issuance_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_complimentary_access_passes_active
+    ON complimentary_access_passes(redeemed_by, grant_expires_at)
+    WHERE redeemed_by IS NOT NULL AND revoked_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS private_agent_compute_reservations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    session_id TEXT NOT NULL UNIQUE,
+    session_id TEXT NOT NULL,
     seconds BIGINT NOT NULL CHECK (seconds > 0),
     reason TEXT NOT NULL DEFAULT 'private_agent_session'
         CHECK (reason IN ('private_agent_session', 'live_trade_submit')),
+    access_source TEXT NOT NULL DEFAULT 'stripe'
+        CHECK (access_source IN ('stripe', 'complimentary_pass')),
+    access_pass_id UUID REFERENCES complimentary_access_passes(pass_id),
+    access_expires_at TIMESTAMPTZ,
     status TEXT NOT NULL DEFAULT 'reserved'
         CHECK (status IN ('reserved', 'completed', 'paused', 'failed')),
     period_start DATE NOT NULL DEFAULT date_trunc('month', now())::date,
@@ -374,10 +414,38 @@ CREATE TABLE IF NOT EXISTS private_agent_compute_reservations (
     released_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE private_agent_compute_reservations
+    DROP CONSTRAINT IF EXISTS private_agent_compute_reservations_session_id_key;
+ALTER TABLE private_agent_compute_reservations
+    ADD COLUMN IF NOT EXISTS access_source TEXT NOT NULL DEFAULT 'stripe';
+ALTER TABLE private_agent_compute_reservations
+    ADD COLUMN IF NOT EXISTS access_pass_id UUID REFERENCES complimentary_access_passes(pass_id);
+ALTER TABLE private_agent_compute_reservations
+    ADD COLUMN IF NOT EXISTS access_expires_at TIMESTAMPTZ;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'private_agent_compute_reservations'::regclass
+          AND conname = 'private_agent_compute_reservations_access_source_check'
+    ) THEN
+        ALTER TABLE private_agent_compute_reservations
+            ADD CONSTRAINT private_agent_compute_reservations_access_source_check
+            CHECK (access_source IN ('stripe', 'complimentary_pass'));
+    END IF;
+END
+$$;
 CREATE INDEX IF NOT EXISTS idx_private_agent_compute_reservations_user_period
     ON private_agent_compute_reservations(user_id, period_start);
+CREATE INDEX IF NOT EXISTS idx_private_agent_compute_reservations_access
+    ON private_agent_compute_reservations(user_id, period_start, access_source);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_private_agent_compute_reservations_user_session
+    ON private_agent_compute_reservations(user_id, session_id);
 CREATE INDEX IF NOT EXISTS idx_private_agent_compute_reservations_status
     ON private_agent_compute_reservations(status, reason);
+CREATE INDEX IF NOT EXISTS idx_private_agent_compute_reservations_comp_active
+    ON private_agent_compute_reservations(access_expires_at)
+    WHERE access_source = 'complimentary_pass' AND status = 'reserved';
 
 CREATE TABLE IF NOT EXISTS private_agent_trading_usage_periods (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -406,12 +474,45 @@ CREATE TABLE IF NOT EXISTS private_agent_trading_usage_events (
     fill_count INTEGER NOT NULL CHECK (fill_count > 0),
     filled_notional_micro_usd BIGINT NOT NULL CHECK (filled_notional_micro_usd > 0),
     incremental_fee_micro_usd BIGINT NOT NULL CHECK (incremental_fee_micro_usd >= 0),
+    access_source TEXT NOT NULL DEFAULT 'stripe'
+        CHECK (access_source IN ('stripe', 'complimentary_pass')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, event_id),
     UNIQUE (user_id, connector_result_commitment)
 );
+ALTER TABLE private_agent_trading_usage_events
+    ADD COLUMN IF NOT EXISTS access_source TEXT NOT NULL DEFAULT 'stripe';
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'private_agent_trading_usage_events'::regclass
+          AND conname = 'private_agent_trading_usage_events_access_source_check'
+    ) THEN
+        ALTER TABLE private_agent_trading_usage_events
+            ADD CONSTRAINT private_agent_trading_usage_events_access_source_check
+            CHECK (access_source IN ('stripe', 'complimentary_pass'));
+    END IF;
+END
+$$;
 CREATE INDEX IF NOT EXISTS idx_private_agent_trading_usage_events_user_period
     ON private_agent_trading_usage_events(user_id, period_start, created_at DESC);
+
+-- Complimentary trading usage is deliberately isolated from paid billing
+-- periods so it can never create or inflate a Stripe invoice after access
+-- expires or the user later purchases a plan.
+CREATE TABLE IF NOT EXISTS complimentary_access_trading_usage_periods (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    period_start DATE NOT NULL,
+    tier TEXT NOT NULL CHECK (tier IN ('starter', 'private_agent')),
+    included_notional_micro_usd BIGINT NOT NULL
+        CHECK (included_notional_micro_usd >= 0),
+    filled_notional_micro_usd BIGINT NOT NULL DEFAULT 0
+        CHECK (filled_notional_micro_usd >= 0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, period_start)
+);
 CREATE TABLE IF NOT EXISTS private_agent_trading_invoice_outbox (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { OAUTH_POPUP_HEADERS, SECURITY_HEADERS } from "../../next.config";
+import { execSync } from "node:child_process";
+
+import {
+  BAKED_WEB_GIT_SHA,
+  OAUTH_POPUP_HEADERS,
+  SECURITY_HEADERS,
+} from "../../next.config";
 
 function headerMap(headers: Array<{ key: string; value: string }>) {
   const m = new Map<string, string>();
@@ -9,6 +15,12 @@ function headerMap(headers: Array<{ key: string; value: string }>) {
 }
 
 describe("security headers (next.config)", () => {
+  it("bakes the exact repository SHA into the web artifact identity", () => {
+    expect(BAKED_WEB_GIT_SHA).toBe(
+      execSync("git rev-parse HEAD", { encoding: "utf8" }).trim(),
+    );
+  });
+
   it("keeps non-CSP browser security headers in next.config.ts", () => {
     const m = headerMap(SECURITY_HEADERS);
 
@@ -38,7 +50,7 @@ describe("security headers (next.config)", () => {
     expect(m.has("content-security-policy-report-only")).toBe(false);
   });
 
-  it("disables embedder isolation only for Google OAuth entry pages", () => {
+  it("defines the narrow Google OAuth popup exception used by auth and investor account setup", () => {
     const site = headerMap(SECURITY_HEADERS);
     const oauth = headerMap(OAUTH_POPUP_HEADERS);
 

@@ -11,6 +11,9 @@ pub enum CloudError {
     #[error("unauthorized")]
     Unauthorized,
 
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+
     #[error("not found: {0}")]
     NotFound(String),
 
@@ -50,18 +53,28 @@ impl IntoResponse for CloudError {
                 (StatusCode::UNAUTHORIZED, public_msg)
             }
             CloudError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
+            CloudError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             CloudError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             CloudError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-            CloudError::RateLimit => (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded".to_string()),
+            CloudError::RateLimit => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate limit exceeded".to_string(),
+            ),
             CloudError::PaymentRequired(msg) => (StatusCode::PAYMENT_REQUIRED, msg.clone()),
             CloudError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
             CloudError::Database(e) => {
                 tracing::error!("database error: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                )
             }
             CloudError::Internal(msg) => {
                 tracing::error!("internal error: {msg}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                )
             }
         };
 

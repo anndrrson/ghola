@@ -1,8 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { canonicalLiveTradingCaps } from "./live-trading-contract";
-import { liveTradingControlBindingFailures } from "./live-trading-release.server";
+import {
+  currentLiveTradingReleaseIdentity,
+  liveTradingControlBindingFailures,
+} from "./live-trading-release.server";
 
 describe("live-trading launch binding", () => {
+  it("surfaces missing exact investor web dependencies in the release identity", () => {
+    const sha = "a".repeat(40);
+    const release = currentLiveTradingReleaseIdentity({
+      GHOLA_PRIVATE_AGENT_WORKER_URL: "https://fallback-worker.ghola.xyz",
+      PHALA_AGENT_ENDPOINT: "https://fallback-phala.ghola.xyz",
+      GHOLA_PRIVATE_AGENT_WORKER_GIT_SHA: sha,
+      GHOLA_PRIVATE_AGENT_WORKER_IMAGE: `ghcr.io/anndrrson/ghola:private-agent-worker-${sha}`,
+    });
+    expect(release.valid).toBe(false);
+    expect(release.reason_codes).toEqual(expect.arrayContaining([
+      "worker_execution_url_missing",
+      "google_client_id_missing",
+    ]));
+    expect(release.reason_codes).not.toContain("worker_image_tag_release_mismatch");
+  });
+
   it("accepts canonical caps after Postgres JSONB reorders their keys", () => {
     const caps = canonicalLiveTradingCaps();
     const release = {

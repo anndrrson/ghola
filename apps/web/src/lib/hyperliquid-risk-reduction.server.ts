@@ -5,6 +5,7 @@ import { autopilotWorkerConfig } from "./private-agent-worker-readiness";
 import { privateAgentEmergencyControlTransportAllowed } from "./private-agent-spend-policy";
 import { authorizeLiveTradingRiskReduction } from "./live-trading-authorization.server";
 import { canonicalLiveTradingCaps } from "./live-trading-contract";
+import { parseHyperliquidVaultAssociatedData } from "./hyperliquid-vault-seal";
 
 export const HYPERLIQUID_CLOSE_CONFIRMATION =
   "I_UNDERSTAND_THIS_CLOSES_A_REAL_POSITION_REDUCE_ONLY";
@@ -103,12 +104,21 @@ export async function closeHyperliquidPositionForOwner(input: {
     getPrivateAccountByOwner(input.owner_commitment),
     getHyperliquidExecutionVaultByAccount(authorization.account_commitment),
   ]);
-  if (!account || !vault || vault.owner_commitment !== input.owner_commitment || vault.status !== "sealed" ||
+  if (!account || account.account_commitment !== authorization.account_commitment || !vault ||
+      vault.owner_commitment !== input.owner_commitment ||
+      vault.account_commitment !== authorization.account_commitment || vault.status !== "sealed" ||
       vault.vault_commitment !== authorization.vault_commitment) {
     return { ok: false, error: "sealed_hyperliquid_vault_required", status: 409 };
   }
-  const network = hyperliquidVaultNetwork(vault.vault.encrypted_execution_vault.aad);
-  if (!network) return { ok: false, error: "hyperliquid_vault_network_invalid", status: 409 };
+  const vaultAad = vault.vault?.encrypted_execution_vault?.aad;
+  const vaultScope = typeof vaultAad === "string"
+    ? parseHyperliquidVaultAssociatedData(vaultAad)
+    : null;
+  if (vaultScope?.network !== "mainnet" ||
+      vaultScope.account_commitment !== authorization.account_commitment) {
+    return { ok: false, error: "hyperliquid_mainnet_vault_required", status: 409 };
+  }
+  const network = "mainnet" as const;
   const cfg = autopilotWorkerConfig(env);
   if (!cfg.url) return { ok: false, error: "private_worker_unavailable", status: 503 };
   const workerPath = "/hyperliquid/positions/close";
@@ -267,12 +277,6 @@ function normalizedPublicCancellation(
     venue_readback_proven: true,
     replay_protected: true,
   };
-}
-
-function hyperliquidVaultNetwork(aad: string): "mainnet" | "testnet" | null {
-  const part = aad.split("|").find((value) => value.startsWith("network:"));
-  const value = part?.slice("network:".length);
-  return value === "mainnet" || value === "testnet" ? value : null;
 }
 
 function validCommitment(value: unknown) {

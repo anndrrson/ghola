@@ -37,6 +37,11 @@ export interface LiveTradingWorkerReadiness {
   checked_at: string;
 }
 
+const EMERGENCY_KILLED_WORKER_REASONS = [
+  "worker_global_kill_active",
+  "worker_live_contract_not_ready",
+] as const;
+
 function allowUnattestedDevelopmentWorker(
   env: Record<string, string | undefined>,
 ): boolean {
@@ -113,21 +118,22 @@ export async function probeLiveTradingWorkerReadiness(input: {
     env,
     fetchImpl,
     transportAllowed: privateAgentTransportAllowed("discover", env, fetchImpl),
+    tolerateKilledWorker: false,
   });
 }
 
 /**
  * Emergency risk reduction may cross the worker transport while production
- * spend is disarmed or locked down. The response is still checked against the
- * same exact release, attestation readiness, caps, and capabilities as normal
- * live execution.
+ * spend is disarmed or locked down. A coherent global-kill state may make only
+ * the live sub-contract red; general readiness, exact release identity, caps,
+ * auth, and risk-reduction capabilities remain fail closed.
  */
 export async function probeEmergencyLiveTradingWorkerReadiness(input: {
   action: Extract<PrivateAgentEmergencyControlAction, "close" | "kill_and_flat">;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   expectedRelease: LiveTradingReleaseIdentity;
-  requiredCapabilities: LiveTradingCapabilityId[];
+  requiredCapabilities: Array<Extract<LiveTradingCapabilityId, "cancel" | "reduce_only">>;
 }): Promise<LiveTradingWorkerReadiness> {
   const env = input.env ?? process.env;
   const fetchImpl = input.fetchImpl ?? fetch;
@@ -136,6 +142,7 @@ export async function probeEmergencyLiveTradingWorkerReadiness(input: {
     env,
     fetchImpl,
     transportAllowed: privateAgentEmergencyControlTransportAllowed(input.action, env, fetchImpl),
+    tolerateKilledWorker: true,
   });
 }
 
@@ -145,6 +152,7 @@ async function probePinnedLiveTradingWorkerReadiness(input: {
   expectedRelease: LiveTradingReleaseIdentity;
   requiredCapabilities: LiveTradingCapabilityId[];
   transportAllowed: boolean;
+  tolerateKilledWorker: boolean;
 }): Promise<LiveTradingWorkerReadiness> {
   const { env, fetchImpl } = input;
   const config = autopilotWorkerConfig(env);
@@ -163,8 +171,9 @@ async function probePinnedLiveTradingWorkerReadiness(input: {
   const caps = asRecord(live.caps);
   const capabilities = stringArray(live.capabilities)
     .filter((value): value is LiveTradingCapabilityId => input.requiredCapabilities.includes(value as LiveTradingCapabilityId));
+  const liveReasonCodes = stringArray(live.reason_codes);
   const reasonCodes = stringArray(body.missing).map((reason) => `worker_missing:${reason}`);
-  reasonCodes.push(...stringArray(live.reason_codes));
+  reasonCodes.push(...liveReasonCodes);
   const contractVersion = finiteInteger(live.contract_version);
   const workerGitSha = safeString(live.worker_git_sha);
   const workerImageDigest = safeString(live.worker_image_digest);
@@ -181,7 +190,12 @@ async function probePinnedLiveTradingWorkerReadiness(input: {
   for (const capability of input.requiredCapabilities) {
     if (!stringArray(live.capabilities).includes(capability)) reasonCodes.push(`worker_capability_missing:${capability}`);
   }
-  const uniqueReasons = [...new Set(reasonCodes)];
+  const uniqueReasons = blockingLiveWorkerReasons(
+    reasonCodes,
+    input.tolerateKilledWorker &&
+      live.ready === false &&
+      liveReasonCodes.includes("worker_global_kill_active"),
+  );
   return {
     ready: uniqueReasons.length === 0,
     endpoint_configured: true,
@@ -193,6 +207,16 @@ async function probePinnedLiveTradingWorkerReadiness(input: {
     reason_codes: uniqueReasons,
     checked_at: checkedAt,
   };
+}
+
+function blockingLiveWorkerReasons(reasonCodes: string[], tolerateKilledWorker: boolean): string[] {
+  const uniqueReasons = [...new Set(reasonCodes)];
+  if (!tolerateKilledWorker ||
+      !EMERGENCY_KILLED_WORKER_REASONS.every((reason) => uniqueReasons.includes(reason))) {
+    return uniqueReasons;
+  }
+  return uniqueReasons.filter((reason) =>
+    !EMERGENCY_KILLED_WORKER_REASONS.includes(reason as typeof EMERGENCY_KILLED_WORKER_REASONS[number]));
 }
 
 export async function probeAutopilotWorkerReadiness(

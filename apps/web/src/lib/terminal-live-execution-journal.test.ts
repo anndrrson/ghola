@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { TerminalLiveExecutionReceipt } from "./terminal-live-execution-receipt";
 import {
   appendTerminalLiveExecutionJournal,
+  discardTerminalLiveExecutionAfterAbsenceProof,
   discardTerminalLiveExecutionPendingEntry,
-  externallyReviewTerminalLiveExecutionJournalEntry,
   parseTerminalLiveExecutionJournal,
   parseTerminalLiveExecutionLock,
   persistTerminalLiveExecutionJournalEntry,
@@ -13,10 +13,9 @@ import {
   terminalLiveExecutionJournalHasUnresolved,
   terminalLiveExecutionJournalSafetyState,
   terminalLiveExecutionJournalSummary,
-  terminalLiveExecutionExternalReviewDecision,
-  terminalLiveExecutionReviewEvidenceCrossed,
   terminalLiveExecutionLockStorageKey,
   terminalLiveExecutionJournalEntryFromReceipt,
+  terminalLiveExecutionJournalEntryFromReconciliationReceipt,
   terminalLiveExecutionJournalStorageKey,
   terminalLiveExecutionLegacyStorageRequiresReview,
   terminalLiveExecutionLockStoragePrefix,
@@ -80,6 +79,35 @@ describe("terminal live execution journal", () => {
     expect(entry).not.toHaveProperty("preview_commitment");
   });
 
+  it("records terminal IOC no-fill as resolved and safe to retry", () => {
+    const entry = terminalLiveExecutionJournalEntryFromReceipt(receipt("no_fill"), plan())!;
+    expect(entry).toMatchObject({ status: "no_fill", outcome: "acknowledged" });
+    expect(terminalLiveExecutionJournalHasUnresolved([entry])).toBe(false);
+    expect(terminalLiveExecutionJournalSafetyState("ready", [entry])).toBe("ready");
+    expect(terminalLiveExecutionJournalSummary("ready", [entry])).toMatchObject({
+      state: "reconciled",
+      unresolvedCount: 0,
+      latest: { status: "no_fill" },
+    });
+    expect(parseTerminalLiveExecutionJournal(serializeTerminalLiveExecutionJournal([entry])))
+      .toEqual([entry]);
+  });
+
+  it("persists only validated venue-proven fill details", () => {
+    const entry = terminalLiveExecutionJournalEntryFromReceipt({
+      ...receipt("reconciled"),
+      provenFill: {
+        filledBaseSize: "0.00016",
+        averageFillPrice: "62500",
+        feeUsd: "0.005",
+        protection: { status: "not_requested" },
+      },
+    }, plan())!;
+    expect(parseTerminalLiveExecutionJournal(serializeTerminalLiveExecutionJournal([entry])))
+      .toEqual([entry]);
+    expect(entry.provenFill).toMatchObject({ filledBaseSize: "0.00016", feeUsd: "0.005" });
+  });
+
   it("upgrades unknown to submitted to reconciled and never downgrades", () => {
     const unknown = terminalLiveExecutionUnknownJournalEntry({ planDigest: digest(0), plan: plan(), reason: "execution_transport_outcome_unknown", recordedAt: iso(0) })!;
     const submitted = terminalLiveExecutionJournalEntryFromReceipt(receipt("submitted"), plan())!;
@@ -107,18 +135,26 @@ describe("terminal live execution journal", () => {
     expect(journal[0].planDigest).toBe(digest(TERMINAL_LIVE_EXECUTION_JOURNAL_LIMIT + 2));
   });
 
-  it("strictly persists unresolved safety state and supports explicit external review", () => {
+  it("keeps legacy external-review rows locked until authoritative terminal evidence arrives", () => {
     const unknown = terminalLiveExecutionUnknownJournalEntry({ planDigest: digest(0), plan: plan(), reason: "execution_transport_outcome_unknown", recordedAt: iso(0) })!;
     const hydrated = parseTerminalLiveExecutionJournal(serializeTerminalLiveExecutionJournal([unknown]));
     expect(hydrated).toEqual([unknown]);
     expect(terminalLiveExecutionJournalHasUnresolved(hydrated!)).toBe(true);
-    const reviewed = externallyReviewTerminalLiveExecutionJournalEntry(hydrated!, digest(0), iso(3));
-    expect(reviewed[0]).toMatchObject({ outcome: "externally_reviewed", status: "externally_reviewed", reviewedAt: iso(3), reason: "external_account_review" });
-    expect(terminalLiveExecutionJournalHasUnresolved(reviewed)).toBe(false);
-    expect(terminalLiveExecutionJournalSafetyState("ready", reviewed)).toBe("ready");
+    const legacyReviewed: TerminalLiveExecutionJournalEntry = {
+      ...unknown,
+      outcome: "externally_reviewed",
+      status: "externally_reviewed",
+      reviewedAt: iso(3),
+      reason: "external_account_review",
+    };
+    expect(terminalLiveExecutionJournalHasUnresolved([legacyReviewed])).toBe(true);
+    expect(terminalLiveExecutionJournalSafetyState("ready", [legacyReviewed])).toBe("unresolved");
     expect(terminalLiveExecutionJournalSafetyState("ready", hydrated!)).toBe("unresolved");
     expect(terminalLiveExecutionJournalSafetyState("loading", [])).toBe("loading");
-    expect(parseTerminalLiveExecutionJournal(serializeTerminalLiveExecutionJournal(reviewed))).toEqual(reviewed);
+    expect(parseTerminalLiveExecutionJournal(serializeTerminalLiveExecutionJournal([legacyReviewed]))).toEqual([legacyReviewed]);
+    const terminal = terminalLiveExecutionJournalEntryFromReconciliationReceipt(receipt("reconciled"), legacyReviewed);
+    expect(terminal).toMatchObject({ outcome: "acknowledged", status: "reconciled", reason: null });
+    expect(terminalLiveExecutionJournalHasUnresolved([terminal!])).toBe(false);
   });
 
   it("preserves legacy evidence rows while rejecting malformed optional ticket fields", () => {
@@ -136,32 +172,15 @@ describe("terminal live execution journal", () => {
     expect(parseTerminalLiveExecutionJournal(JSON.stringify({ version: 1, entries: [{ ...current, allInLossUsd: "0.58" }] }))).toBeNull();
   });
 
-  it("requires a current post-submit Hyperliquid account snapshot before external review", () => {
-    const entry = terminalLiveExecutionUnknownJournalEntry({ planDigest: digest(0), plan: plan(), reason: "execution_transport_outcome_unknown", recordedAt: iso(2) })!;
-    const decide = (overrides: Partial<Parameters<typeof terminalLiveExecutionExternalReviewDecision>[0]> = {}) => terminalLiveExecutionExternalReviewDecision({
-      entry,
-      selectedVenue: "hyperliquid",
-      selectedNetwork: "mainnet",
-      accountStreamCurrent: true,
-      accountStreamObservedAtMs: Date.parse(iso(3)),
-      ...overrides,
+  it("accepts only terminal evidence bound to the exact plan and original work order", () => {
+    const submitted = terminalLiveExecutionJournalEntryFromReceipt(receipt("submitted"), plan())!;
+    expect(terminalLiveExecutionJournalEntryFromReconciliationReceipt(receipt("submitted"), submitted)).toBeNull();
+    expect(terminalLiveExecutionJournalEntryFromReconciliationReceipt({ ...receipt("reconciled"), planDigest: digest(1) }, submitted)).toBeNull();
+    expect(terminalLiveExecutionJournalEntryFromReconciliationReceipt({ ...receipt("reconciled"), workOrderCommitment: workOrder(1) }, submitted)).toBeNull();
+    expect(terminalLiveExecutionJournalEntryFromReconciliationReceipt(receipt("reconciled"), submitted)).toMatchObject({
+      status: "reconciled",
+      workOrderCommitment: workOrder(0),
     });
-    expect(decide()).toEqual({ allowed: true, blocker: null });
-    expect(decide({ selectedNetwork: "testnet" }).blocker).toBe("account_context_mismatch");
-    expect(decide({ accountStreamCurrent: false }).blocker).toBe("account_stream_not_current");
-    expect(decide({ accountStreamObservedAtMs: Date.parse(iso(1)) }).blocker).toBe("account_snapshot_predates_submit");
-    expect(decide({ accountStreamObservedAtMs: null }).blocker).toBe("account_snapshot_predates_submit");
-    expect(decide({ entry: { ...entry, venue: "coinbase" }, selectedVenue: "coinbase" })).toEqual({ allowed: true, blocker: null });
-    expect(decide({ entry: { ...entry, venue: "coinbase" }, selectedVenue: "hyperliquid" }).blocker).toBe("account_context_mismatch");
-    expect(decide({ entry: { ...entry, venue: "phoenix" }, selectedVenue: "phoenix", selectedNetwork: "testnet" }).blocker).toBe("account_context_mismatch");
-  });
-
-  it("signals only the first account-observation crossing of an unresolved Hyperliquid submit", () => {
-    const entry = terminalLiveExecutionUnknownJournalEntry({ planDigest: digest(0), plan: plan(), reason: "execution_transport_outcome_unknown", recordedAt: iso(2) })!;
-    expect(terminalLiveExecutionReviewEvidenceCrossed([entry], Date.parse(iso(1)), Date.parse(iso(2)))).toBe(true);
-    expect(terminalLiveExecutionReviewEvidenceCrossed([entry], Date.parse(iso(2)), Date.parse(iso(3)))).toBe(false);
-    expect(terminalLiveExecutionReviewEvidenceCrossed([{ ...entry, venue: "coinbase" }], null, Date.parse(iso(3)))).toBe(false);
-    expect(terminalLiveExecutionReviewEvidenceCrossed([{ ...entry, status: "externally_reviewed", outcome: "externally_reviewed" }], null, Date.parse(iso(3)))).toBe(false);
   });
 
   it("rejects malformed, duplicated, oversized, or contradictory persisted ledgers", () => {
@@ -182,8 +201,8 @@ describe("terminal live execution journal", () => {
     expect(parseTerminalLiveExecutionLock(key, serializeTerminalLiveExecutionLock(unknown), scope)).toEqual(unknown);
     expect(parseTerminalLiveExecutionLock(key, serializeTerminalLiveExecutionLock(unknown), otherScope)).toBeNull();
     expect(parseTerminalLiveExecutionLock(`${key}0`, serializeTerminalLiveExecutionLock(unknown), scope)).toBeNull();
-    const reviewed = externallyReviewTerminalLiveExecutionJournalEntry([unknown], unknown.planDigest, iso(3))[0];
-    expect(() => serializeTerminalLiveExecutionLock(reviewed)).toThrow();
+    const legacyReviewed: TerminalLiveExecutionJournalEntry = { ...unknown, outcome: "externally_reviewed", status: "externally_reviewed", reviewedAt: iso(3), reason: "external_account_review" };
+    expect(() => serializeTerminalLiveExecutionLock(legacyReviewed)).toThrow();
   });
 
   it("derives opaque deterministic subject-isolated storage keys", () => {
@@ -281,6 +300,26 @@ describe("terminal live execution journal", () => {
     expect(readTerminalLiveExecutionJournalStorage(storage, scope)).toEqual({ status: "ready", entries: [unknown] });
   });
 
+  it("clears only a current-protocol unknown after a delayed server absence proof", () => {
+    const scope = terminalLiveExecutionSubjectScope("user-a")!;
+    const unknown = terminalLiveExecutionUnknownJournalEntry({ planDigest: digest(0), plan: plan(), reason: "execution_transport_outcome_unknown", recordedAt: iso(0) })!;
+    const storage = memoryStorage(new Map([[terminalLiveExecutionJournalStorageKey(scope)!, serializeTerminalLiveExecutionJournal([])]]));
+    expect(persistTerminalLiveExecutionJournalEntry(storage, scope, unknown).ok).toBe(true);
+    const baseProof = {
+      planDigest: unknown.planDigest,
+      proofCommitment: `live_trade_absence_proof_${"a".repeat(48)}`,
+      firstCheckedAt: iso(0),
+    };
+    expect(discardTerminalLiveExecutionAfterAbsenceProof(storage, scope, { ...baseProof, checkedAt: new Date(Date.parse(iso(0)) + 29_999).toISOString() }).ok).toBe(false);
+    expect(readTerminalLiveExecutionJournalStorage(storage, scope)).toEqual({ status: "ready", entries: [unknown] });
+    expect(discardTerminalLiveExecutionAfterAbsenceProof(storage, scope, { ...baseProof, checkedAt: new Date(Date.parse(iso(0)) + 30_000).toISOString() })).toEqual({ ok: true, entries: [] });
+
+    const legacy = { ...unknown };
+    delete legacy.recoveryProtocol;
+    expect(persistTerminalLiveExecutionJournalEntry(storage, scope, legacy).ok).toBe(true);
+    expect(discardTerminalLiveExecutionAfterAbsenceProof(storage, scope, { ...baseProof, checkedAt: new Date(Date.parse(iso(0)) + 60_000).toISOString() }).ok).toBe(false);
+  });
+
   it("blocks when the exact subject journal is absent", () => {
     const scope = terminalLiveExecutionSubjectScope("user-a")!;
     expect(readTerminalLiveExecutionJournalStorage(memoryStorage(new Map()), scope)).toEqual({ status: "blocked", entries: [] });
@@ -297,11 +336,12 @@ describe("terminal live execution journal", () => {
   });
 });
 
-function receipt(status: "submitted" | "reconciled"): TerminalLiveExecutionReceipt {
-  return { status, commitment: "run_commitment_123", orderId: "venue_order_456", planDigest: digest(0), receivedAt: iso(status === "submitted" ? 1 : 2) };
+function receipt(status: "submitted" | "reconciled" | "no_fill"): TerminalLiveExecutionReceipt {
+  return { status, commitment: "run_commitment_123", orderId: "venue_order_456", workOrderCommitment: workOrder(0), planDigest: digest(0), receivedAt: iso(status === "submitted" ? 1 : 2) };
 }
 
 function digest(index: number) { return `sha256:${index.toString(16).padStart(64, "0")}`; }
+function workOrder(index: number) { return `live_trade_work_order_${index.toString(16).padStart(48, "0")}`; }
 function iso(index: number) { return new Date(Date.parse("2026-08-13T12:00:00.000Z") + index * 1_000).toISOString(); }
 
 function plan(overrides: Partial<TradeOrderPlan> = {}): TradeOrderPlan {

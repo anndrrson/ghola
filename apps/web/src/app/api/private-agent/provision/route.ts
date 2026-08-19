@@ -1,23 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   discoverPhalaPrivateAgentExecutionUrl,
+  phalaJitProvisioningEnabled,
   wakePhalaPrivateAgentForUse,
 } from "@/lib/private-agent-phala";
 import { privateAgentSpendPolicy } from "@/lib/private-agent-spend-policy";
+import { verifyInternalBearer } from "@/lib/internal-control-auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-function bearer(req: NextRequest): string | null {
-  const value = req.headers.get("authorization");
-  if (!value?.startsWith("Bearer ")) return null;
-  return value.slice("Bearer ".length).trim();
-}
-
 export async function POST(req: NextRequest) {
-  const token = process.env.GHOLA_PRIVATE_AGENT_PROVISION_TOKEN?.trim();
-  if (!token || bearer(req) !== token) {
+  if (!verifyInternalBearer(req, "GHOLA_PRIVATE_AGENT_PROVISION_TOKEN")) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
   const policy = privateAgentSpendPolicy("provision");
@@ -27,10 +22,17 @@ export async function POST(req: NextRequest) {
       { status: 503, headers: { "cache-control": "no-store" } },
     );
   }
+  if (!phalaJitProvisioningEnabled()) {
+    return NextResponse.json(
+      { error: "private_agent_provisioning_mutations_disabled" },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
+  }
 
   const provisioning = await wakePhalaPrivateAgentForUse({
     reason: "operator_provision",
     waitForReadyMs: 180_000,
+    allowReleaseMutation: true,
   });
   const executionUrl = await discoverPhalaPrivateAgentExecutionUrl();
 

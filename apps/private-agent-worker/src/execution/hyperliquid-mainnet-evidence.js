@@ -119,8 +119,12 @@ async function collectVenueEvidence({
     phase: "exit",
   });
   const protectionEvidence = protectionRef ? {
-    take_profit: validateVenueProtectionOrder(protectionStatuses[0], protectionRef.takeProfit, coin, "take-profit"),
-    stop_loss: validateVenueProtectionOrder(protectionStatuses[1], protectionRef.stopLoss, coin, "stop-loss"),
+    take_profit: validateVenueProtectionOrder(
+      protectionStatuses[0], protectionRef.takeProfit, coin, "take-profit", userFills,
+    ),
+    stop_loss: validateVenueProtectionOrder(
+      protectionStatuses[1], protectionRef.stopLoss, coin, "stop-loss", userFills,
+    ),
   } : null;
   if (entryFill.firstFillTimeMs > exitFill.firstFillTimeMs) {
     throw evidenceError("Hyperliquid exit predates entry");
@@ -154,6 +158,7 @@ async function collectVenueEvidence({
     reduce_only_exit_proven: true,
     position_protection_proven: protectionEvidence !== null,
     protection_children_terminal: protectionEvidence !== null,
+    protection_children_no_fill_proven: protectionEvidence !== null,
     ...(protectionEvidence ? { protection: protectionEvidence } : {}),
     transaction_hashes_distinct: true,
     flat_after_exit: true,
@@ -217,7 +222,7 @@ function validateProtectionReference(value) {
   return { takeProfit, stopLoss };
 }
 
-function validateVenueProtectionOrder(response, reference, coin, phase) {
+function validateVenueProtectionOrder(response, reference, coin, phase, userFills) {
   if (response?.status !== "order") throw evidenceError(`Hyperliquid ${phase} protection is unavailable`);
   const envelope = response?.order;
   const order = envelope?.order;
@@ -233,11 +238,23 @@ function validateVenueProtectionOrder(response, reference, coin, phase) {
       order.reduceOnly !== true || order.isTrigger !== true) {
     throw evidenceError(`Hyperliquid ${phase} protection controls mismatch`);
   }
+  const childFills = userFills.filter((fill) =>
+    String(fill?.oid ?? "") === reference.oid ||
+    String(fill?.cloid || "").toLowerCase() === reference.cloid);
+  if (childFills.length > 0) {
+    throw evidenceError(`Hyperliquid ${phase} protection has fill evidence`);
+  }
   return {
     oid: reference.oid,
     cloid: reference.cloid,
     order_status: "canceled",
     venue_order_status: venueStatus,
+    venue_accepted: true,
+    venue_order_readback_proven: true,
+    final_cancellation_proven: true,
+    final_no_fill_proven: true,
+    fill_count: 0,
+    filled_base_size: "0",
     side: "sell",
     reduce_only: true,
     trigger_order: true,

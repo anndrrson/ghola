@@ -45,7 +45,7 @@ function isNoIndexPath(pathname: string): boolean {
 }
 
 function isOAuthPopupPath(pathname: string): boolean {
-  return pathname === "/signin" || pathname === "/signup";
+  return pathname === "/signin" || pathname === "/signup" || pathname === "/account";
 }
 
 export function buildContentSecurityPolicy(isDev: boolean): string {
@@ -127,7 +127,8 @@ export function proxy(request: NextRequest) {
   // Google Identity Services returns the credential from its popup with
   // window.opener/postMessage. Full `same-origin` opener isolation severs
   // that relationship and leaves the popup stranded on /gsi/transform.
-  // Keep the exception limited to the two pages that initiate OAuth.
+  // Keep the exception limited to pages that initiate OAuth. `/account` owns
+  // the inline, email-bound investor invitation flow.
   if (isOAuthPopupPath(pathname)) {
     response.headers.set(
       "Cross-Origin-Opener-Policy",

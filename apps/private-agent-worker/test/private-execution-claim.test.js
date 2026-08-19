@@ -405,6 +405,129 @@ describe("durable private execution claims", () => {
     }
   });
 
+  it("atomically resolves native Hyperliquid terminal no-fill statuses", async () => {
+    for (const state of [
+      createWorkerState(tempDir()),
+      createSqliteWorkerState(join(tempDir(), "resolved-hyperliquid-no-fill.sqlite")),
+    ]) {
+      const context = claimContext("hyperliquid", "limit_order", "terminal Hyperliquid no fill");
+      const claimed = await state.claimExecution("resolved_hyperliquid_no_fill", context);
+      assert.equal(claimed.status, "claimed");
+      const proof = {
+        proof_kind: "hyperliquid_execution_proof_v1",
+        venue_id: "hyperliquid",
+        network: "mainnet",
+        broadcast_performed: true,
+        final_venue_execution_proven: true,
+        final_fill_proven: false,
+        final_no_fill_proven: true,
+        terminal_status: "iocCancelRejected",
+        venue_order_readback_proven: true,
+        venue_order_status: "iocCancelRejected",
+        venue_order_oid: "518475952920",
+        venue_order_cloid: `0x${"2".repeat(32)}`,
+      };
+      const completed = {
+        attempt: {
+          status: "rejected",
+          execution_request_digest: context.request_digest,
+          final_proof: proof,
+        },
+        receipt: {
+          status: "rejected",
+          execution_request_digest: context.request_digest,
+          final_proof: proof,
+        },
+      };
+      assert.deepEqual(
+        await state.resolveExecutionClaim("resolved_hyperliquid_no_fill", completed),
+        completed.receipt,
+      );
+      assert.deepEqual(
+        await state.resolveExecutionClaim("resolved_hyperliquid_no_fill", completed),
+        completed.receipt,
+      );
+    }
+  });
+
+  it("upgrades completed nonterminal evidence once and freezes the first terminal result", async () => {
+    for (const state of [
+      createWorkerState(tempDir()),
+      createSqliteWorkerState(join(tempDir(), "terminal-resolution-cas.sqlite")),
+    ]) {
+      const workOrder = "completed_nonterminal_resolution";
+      const context = claimContext("hyperliquid", "limit_order", "terminal resolution CAS");
+      const claim = await state.claimExecution(workOrder, context);
+      assert.equal(claim.status, "claimed");
+      const submitted = {
+        attempt: { status: "submitted", execution_request_digest: context.request_digest },
+        receipt: {
+          status: "submitted",
+          execution_request_digest: context.request_digest,
+          final_proof: {
+            final_venue_execution_proven: true,
+            final_fill_proven: false,
+            final_no_fill_proven: false,
+            final_no_broadcast_proven: false,
+          },
+        },
+      };
+      await state.recordExecutionClaimEvidence(workOrder, claim.claim_token, submitted);
+      assert.deepEqual(
+        await state.completeExecutionClaim(workOrder, claim.claim_token, submitted),
+        submitted.receipt,
+      );
+
+      const completion = (status) => {
+        const filled = status === "filled";
+        const proof = {
+          proof_kind: "hyperliquid_execution_proof_v1",
+          venue_id: "hyperliquid",
+          broadcast_performed: true,
+          final_venue_execution_proven: true,
+          final_fill_proven: filled,
+          final_no_fill_proven: !filled,
+          final_no_broadcast_proven: false,
+          terminal_status: status,
+        };
+        return {
+          attempt: { status, execution_request_digest: context.request_digest, final_proof: proof },
+          receipt: { status, execution_request_digest: context.request_digest, final_proof: proof },
+        };
+      };
+      const filled = completion("filled");
+      const noFill = completion("cancelled");
+      const [first, second] = await Promise.all([
+        state.resolveExecutionClaim(workOrder, filled),
+        state.resolveExecutionClaim(workOrder, noFill),
+      ]);
+      assert.deepEqual(first, second);
+      assert.deepEqual((await state.getIdempotency(workOrder)).receipt, first);
+      const loser = first.status === "filled" ? noFill : filled;
+      assert.deepEqual(await state.resolveExecutionClaim(workOrder, loser), first);
+    }
+  });
+
+  it("rejects contradictory terminal fill and no-fill proof", async () => {
+    const state = createWorkerState(tempDir());
+    const context = claimContext("hyperliquid", "limit_order", "contradictory terminal proof");
+    assert.equal((await state.claimExecution("contradictory_terminal_work_order", context)).status, "claimed");
+    const proof = {
+      proof_kind: "hyperliquid_execution_proof_v1",
+      venue_id: "hyperliquid",
+      broadcast_performed: true,
+      final_venue_execution_proven: true,
+      final_fill_proven: true,
+      final_no_fill_proven: true,
+      terminal_status: "filled",
+    };
+    await assert.rejects(state.resolveExecutionClaim("contradictory_terminal_work_order", {
+      attempt: { status: "filled", execution_request_digest: context.request_digest, final_proof: proof },
+      receipt: { status: "filled", execution_request_digest: context.request_digest, final_proof: proof },
+    }));
+    assert.equal((await state.getExecutionClaimEvidence("contradictory_terminal_work_order")).status, "in_progress");
+  });
+
   it("serializes JSON claims across adapters sharing a path", async () => {
     let document = {};
     const path = join(tempDir(), "shared-memory-state.json");
@@ -460,7 +583,12 @@ describe("durable private execution claims", () => {
       assert.notEqual(claimIndex, -1);
       const firstPolicyIndex = implementation.indexOf("enforceInstructionPolicy(");
       const lastPolicyIndex = implementation.lastIndexOf("enforceInstructionPolicy(");
-      assert.ok(firstPolicyIndex < claimIndex);
+      if (name === "executeHyperliquidOrder") {
+        assert.ok(claimIndex < firstPolicyIndex);
+        assert.ok(claimIndex < implementation.indexOf("openSealedBundle("));
+      } else {
+        assert.ok(firstPolicyIndex < claimIndex);
+      }
       assert.ok(claimIndex < lastPolicyIndex);
     }
     const coinbase = functionSource(source, "executeCoinbaseOrder");
