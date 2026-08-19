@@ -1,6 +1,6 @@
-FROM rust:slim-bookworm AS builder
+FROM rust:slim-bookworm@sha256:2775a09d208ff0d7c1f50490c45b62db929e87ba1dcbc3f2132ac71a704bcdd3 AS builder
 
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
@@ -13,10 +13,18 @@ COPY migrations/cloud/ migrations/cloud/
 
 RUN cargo build --release -p thumper-cloud
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+ARG THUMPER_BUILD_GIT_SHA
+RUN printf '%s' "${THUMPER_BUILD_GIT_SHA}" | grep -Eq '^[0-9a-f]{40}$' \
+    && printf '{"git_sha":"%s"}\n' "${THUMPER_BUILD_GIT_SHA}" > /app/build-identity.json
+
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
+ARG THUMPER_BUILD_GIT_SHA
+LABEL org.opencontainers.image.revision="${THUMPER_BUILD_GIT_SHA}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/thumper-cloud /usr/local/bin/thumper-cloud
+COPY --from=builder /app/build-identity.json /app/build-identity.json
 
 ENV THUMPER_CLOUD_BIND=0.0.0.0:10000
 

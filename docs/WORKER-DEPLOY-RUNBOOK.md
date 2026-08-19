@@ -30,6 +30,13 @@ github.com/anndrrson/ghola/.github/workflows/build-private-agent-worker-image.ym
 <full SHA> --format json` and require the SLSA v1 subject name, digest, source repository, workflow,
 and commit to equal the approved release.
 
+Build Thumper once from the same exact SHA with the protected `build-thumper-image.yml` workflow and
+the immutable tag `ghcr.io/anndrrson/ghola:thumper-cloud-<full SHA>`. It has the same single-attempt,
+tag-absence, pinned-action/base-image, baked-identity, provenance, SBOM, and GitHub-attestation gates.
+Verify its signed digest independently before updating Render. The live `thumper-cloud` service must
+remain image-backed with automatic deploys and Blueprint Auto Sync off; update it once to the verified
+`tag@sha256:digest`. Never switch it to a source build or ask Render to rebuild the repository.
+
 ## Worker contract
 
 Generate the env file with `scripts/build-phala-worker-env.mjs`. Live mode fails generation unless
@@ -176,8 +183,9 @@ Verify those controls read-only and record them in the protected operations evid
 test, typecheck, lint, production build, PostgreSQL integration test, and security gate passes on the clean
 commit, obtain explicit human approval for one release attempt.
 
-The single approved attempt is: build the worker image once; verify its signed SHA-to-digest provenance;
-deploy the exact-SHA Thumper migration/service once; set durable launch `disabled`; update the existing CVM
+The single approved attempt is: build the worker image once; build the Thumper image once; verify both
+signed SHA-to-digest provenance records; update the image-backed Thumper service once; set durable launch
+`disabled`; update the existing CVM
 once; validate its attestation and no-submit checks; build one non-aliased Vercel production candidate from
 the exact SHA; revoke any temporary deployment-protection bypass; then promote only that already-tested
 artifact and rebind `canary`. Stop and report the first failure. Never auto-retry a paid build, deploy, or

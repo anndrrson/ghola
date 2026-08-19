@@ -112,6 +112,7 @@ test("worker image workflow bakes and source-binds the exact commit SHA", () => 
   assert.match(workflow, /subject-digest: \$\{\{ steps\.build\.outputs\.digest \}\}/);
   assert.match(workflow, /push-to-registry: true/);
   assert.match(workflow, /environment: investor-worker-release/);
+  assert.match(workflow, /timeout-minutes: 60/);
   assert.match(workflow, /group: investor-worker-release-\$\{\{ github\.sha \}\}/);
   assert.match(workflow, /cancel-in-progress: false/);
   assert.match(workflow, /RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
@@ -125,6 +126,42 @@ test("worker image workflow bakes and source-binds the exact commit SHA", () => 
   assert.match(workflow, /uses: actions\/attest@[0-9a-f]{40}/);
   assert.match(dockerfile, /^FROM node:20-slim@sha256:[0-9a-f]{64}$/m);
   assert.doesNotMatch(dockerfile, /chown -R node:node \/data \/app/);
+});
+
+test("Thumper image workflow is immutable, source-bound, and single-attempt", () => {
+  const dockerfile = readFileSync(resolve("../../Dockerfile.thumper"), "utf8");
+  const workflow = readFileSync(resolve("../../.github/workflows/build-thumper-image.yml"), "utf8");
+  assert.match(dockerfile, /^FROM rust:slim-bookworm@sha256:[0-9a-f]{64} AS builder$/m);
+  assert.match(dockerfile, /^FROM debian:bookworm-slim@sha256:[0-9a-f]{64}$/m);
+  assert.match(dockerfile, /ARG THUMPER_BUILD_GIT_SHA/);
+  assert.match(dockerfile, /org\.opencontainers\.image\.revision="\$\{THUMPER_BUILD_GIT_SHA\}"/);
+  assert.match(dockerfile, /> \/app\/build-identity\.json/);
+  assert.match(workflow, /expected_image="ghcr\.io\/\$\{repository\}:thumper-cloud-\$\{actual\}"/);
+  assert.match(workflow, /THUMPER_BUILD_GIT_SHA=\$\{\{ steps\.source\.outputs\.git_sha \}\}/);
+  assert.match(workflow, /environment: investor-worker-release/);
+  assert.match(workflow, /timeout-minutes: 60/);
+  assert.match(workflow, /group: investor-thumper-release-\$\{\{ github\.sha \}\}/);
+  assert.match(workflow, /cancel-in-progress: false/);
+  assert.match(workflow, /paid Thumper builds are single-attempt/);
+  assert.match(workflow, /immutable image tag already exists/);
+  assert.match(workflow, /provenance: mode=max/);
+  assert.match(workflow, /sbom: true/);
+  assert.match(workflow, /uses: actions\/checkout@[0-9a-f]{40}/);
+  assert.match(workflow, /uses: docker\/setup-buildx-action@[0-9a-f]{40}/);
+  assert.match(workflow, /uses: docker\/login-action@[0-9a-f]{40}/);
+  assert.match(workflow, /uses: docker\/build-push-action@[0-9a-f]{40}/);
+  assert.match(workflow, /uses: actions\/attest@[0-9a-f]{40}/);
+  assert.match(workflow, /subject-digest: \$\{\{ steps\.build\.outputs\.digest \}\}/);
+  assert.match(workflow, /grep -q '\[\[:space:\]\[:cntrl:\]\]'/);
+  assert.match(workflow, /ref_to_build, checked-out HEAD, and attestation source SHA must match exactly/);
+
+  const exactTag = /^ghcr\.io\/anndrrson\/ghola:thumper-cloud-[0-9a-f]{40}$/u;
+  assert.equal(exactTag.test(`ghcr.io/anndrrson/ghola:thumper-cloud-${"a".repeat(40)}`), true);
+  assert.equal(exactTag.test(`ghcr.io/other/ghola:thumper-cloud-${"a".repeat(40)}`), false);
+  assert.equal(exactTag.test(`ghcr.io/anndrrson/ghola:thumper-cloud-${"A".repeat(40)}`), false);
+  assert.equal(exactTag.test(`ghcr.io/anndrrson/ghola:thumper-cloud-${"a".repeat(39)}`), false);
+  assert.equal(exactTag.test("ghcr.io/anndrrson/ghola:latest"), false);
+  assert.equal(exactTag.test(`ghcr.io/anndrrson/ghola:thumper-cloud-${"a".repeat(40)}\nevil`), false);
 });
 
 test("legacy private-stack workflow is a mutation-free tombstone", () => {
