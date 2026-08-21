@@ -104,7 +104,12 @@ def main():
                 fail("unsupported hyperliquid no-submit operation", "venue_rejected")
             order = instruction["order"]
             expires_after_ms = configure_action_expiry(exchange, instruction)
-            resolved = resolve_limit_order(info, order, execution_address)
+            resolved = resolve_limit_order(
+                info,
+                order,
+                execution_address,
+                require_funds=False,
+            )
             market_gate = verify_fresh_execution_book(info, order, resolved, execution_address)
             Cloid.from_str(cloid)
             protection_checked = False
@@ -231,9 +236,14 @@ def prepare_live_limit_order(info, exchange, order, execution_address):
     return resolved, execution_configuration, market_gate
 
 
-def resolve_limit_order(info, order, account_address):
+def resolve_limit_order(info, order, account_address, require_funds=True):
     if order.get("order_type") == "market":
-        return resolve_market_ioc_order(info, order, account_address)
+        return resolve_market_ioc_order(
+            info,
+            order,
+            account_address,
+            require_funds=require_funds,
+        )
 
     if order.get("live_order_mode") != "tiny_fill":
         try:
@@ -264,6 +274,7 @@ def resolve_limit_order(info, order, account_address):
             order.get("market"),
             order.get("side"),
             base,
+            require_funds=require_funds,
         )
         return {
             "base_size": decimal_text(base),
@@ -307,6 +318,7 @@ def resolve_limit_order(info, order, account_address):
         coin,
         order.get("side"),
         base_size,
+        require_funds=require_funds,
     )
     return {
         "base_size": decimal_text(base_size),
@@ -816,7 +828,7 @@ def hyperliquid_error_message(error):
     return f"hyperliquid request failed ({type(error).__name__}): {sanitized[:240]}"
 
 
-def resolve_market_ioc_order(info, order, account_address):
+def resolve_market_ioc_order(info, order, account_address, require_funds=True):
     coin = order.get("market")
     try:
         slippage_bps = Decimal(str(order.get("max_slippage_bps") or "50"))
@@ -861,6 +873,7 @@ def resolve_market_ioc_order(info, order, account_address):
         coin,
         order.get("side"),
         base_size,
+        require_funds=require_funds,
     )
     return {
         "base_size": decimal_text(base_size),
@@ -872,7 +885,15 @@ def resolve_market_ioc_order(info, order, account_address):
     }
 
 
-def check_account_value(info, account_address, quote_size, market, side, base_size):
+def check_account_value(
+    info,
+    account_address,
+    quote_size,
+    market,
+    side,
+    base_size,
+    require_funds=True,
+):
     try:
         abstraction = hyperliquid_account_abstraction(info, account_address)
         if abstraction in ("default", "disabled"):
@@ -890,7 +911,7 @@ def check_account_value(info, account_address, quote_size, market, side, base_si
             ctx.prec = exact_account_decimal_precision(quote_size, available)
             fee_buffer = max(Decimal("0.01"), quote_size * Decimal("0.001"))
             required = quote_size + fee_buffer
-        if available < required:
+        if require_funds and available < required:
             fail("hyperliquid account has insufficient available value", "venue_rejected")
         if abstraction == "unifiedAccount":
             verify_unified_active_asset_capacity(

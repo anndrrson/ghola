@@ -390,6 +390,41 @@ class FakePrecisionInfo:
     def user_state(self, _address):
         return {"marginSummary": {"accountValue": "1000"}, "withdrawable": "1000"}
 
+class FakeUnfundedPrecisionInfo(FakePrecisionInfo):
+    def user_state(self, _address):
+        return {"marginSummary": {"accountValue": "0"}, "withdrawable": "0"}
+
+unfunded_order = {
+    "market": "HYPE",
+    "side": "buy",
+    "order_type": "limit",
+    "live_order_mode": "full_ticket",
+    "base_size": "0.19",
+    "limit_price": "56.365",
+    "tif": "Ioc",
+}
+no_submit_unfunded = module.resolve_limit_order(
+    FakeUnfundedPrecisionInfo(),
+    unfunded_order,
+    "0x" + "a" * 40,
+    require_funds=False,
+)
+assert no_submit_unfunded["account_state_checked"] is True
+
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    try:
+        module.resolve_limit_order(
+            FakeUnfundedPrecisionInfo(),
+            unfunded_order,
+            "0x" + "a" * 40,
+        )
+    except SystemExit:
+        pass
+live_unfunded_failure = json.loads(output.getvalue())
+assert live_unfunded_failure["error_code"] == "venue_rejected"
+assert "insufficient available value" in live_unfunded_failure["error"]
+
 valid_order = module.resolve_limit_order(FakePrecisionInfo(), {
     "market": "HYPE",
     "side": "buy",
