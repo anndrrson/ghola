@@ -46,7 +46,7 @@ def main():
                 fail("unsupported hyperliquid no-submit operation", "venue_rejected")
             order = instruction["order"]
             info = Info(base_url, skip_ws=True)
-            resolved = resolve_limit_order(info, order, account_address)
+            resolved = resolve_limit_order(info, order, account_address, require_funds=False)
             Cloid.from_str(cloid)
             print(json.dumps({
                 "status": "verified_no_funds",
@@ -95,9 +95,9 @@ def main():
     fail("unsupported hyperliquid operation")
 
 
-def resolve_limit_order(info, order, account_address):
+def resolve_limit_order(info, order, account_address, require_funds=True):
     if order.get("order_type") == "market":
-        return resolve_market_ioc_order(info, order, account_address)
+        return resolve_market_ioc_order(info, order, account_address, require_funds=require_funds)
 
     if order.get("live_order_mode") != "tiny_fill":
         try:
@@ -114,7 +114,7 @@ def resolve_limit_order(info, order, account_address):
             fail("hyperliquid limit order size is below venue minimum", "venue_rejected")
         notional = base * price
         if notional > 0:
-            check_account_value(info, account_address, notional)
+            check_account_value(info, account_address, notional, require_funds=require_funds)
         return {
             "base_size": decimal_text(base),
             "limit_price": decimal_text(price),
@@ -138,7 +138,12 @@ def resolve_limit_order(info, order, account_address):
     if mid <= 0:
         fail("hyperliquid market data unavailable")
 
-    account_state_checked = check_account_value(info, account_address, quote_size)
+    account_state_checked = check_account_value(
+        info,
+        account_address,
+        quote_size,
+        require_funds=require_funds,
+    )
     slippage = slippage_bps / Decimal("10000")
     limit = mid * (Decimal("1") + slippage if order.get("side") == "buy" else Decimal("1") - slippage)
     if limit <= 0:
@@ -156,7 +161,7 @@ def resolve_limit_order(info, order, account_address):
     }
 
 
-def resolve_market_ioc_order(info, order, account_address):
+def resolve_market_ioc_order(info, order, account_address, require_funds=True):
     coin = order.get("market")
     try:
         slippage_bps = Decimal(str(order.get("max_slippage_bps") or "50"))
@@ -183,7 +188,12 @@ def resolve_market_ioc_order(info, order, account_address):
         fail("invalid hyperliquid market order size", "venue_rejected")
 
     notional = quote_size if quote_size > 0 else base_size * mid
-    account_state_checked = check_account_value(info, account_address, notional)
+    account_state_checked = check_account_value(
+        info,
+        account_address,
+        notional,
+        require_funds=require_funds,
+    )
     slippage = slippage_bps / Decimal("10000")
     limit = mid * (Decimal("1") + slippage if order.get("side") == "buy" else Decimal("1") - slippage)
     if limit <= 0:
@@ -201,7 +211,7 @@ def resolve_market_ioc_order(info, order, account_address):
     }
 
 
-def check_account_value(info, account_address, quote_size):
+def check_account_value(info, account_address, quote_size, require_funds=True):
     try:
         state = info.user_state(account_address)
         account_value = Decimal(str(
@@ -209,7 +219,7 @@ def check_account_value(info, account_address, quote_size):
             state.get("crossMarginSummary", {}).get("accountValue") or
             "0"
         ))
-        if account_value < quote_size:
+        if require_funds and account_value < quote_size:
             fail("hyperliquid account has insufficient available value", "venue_rejected")
         return True
     except SystemExit:
