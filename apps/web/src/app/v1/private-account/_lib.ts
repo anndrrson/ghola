@@ -116,6 +116,7 @@ import {
   workerAuthorizationHeader,
   workerCapabilityExpectedFromBody,
 } from "@/lib/private-agent-capability";
+import { resolveHyperliquidWorkerUrl } from "@/lib/private-account-worker-routing";
 import {
   getPooledWorkerReadiness,
   pooledWorkerVenueGateFromReadiness,
@@ -2588,7 +2589,7 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
     : 0;
   const pooledBalanceReady = allocationMode !== "ghola_pooled" ||
     balanceSnapshot.available_micro_usdc >= pooledBalanceRequiredMicroUsdc;
-  const workerConfigured = Boolean(hyperliquidWorkerConfig().url) || localHyperliquidPilotEnabled();
+  const workerConfigured = Boolean(hyperliquidWorkerConfig(runtime).url) || localHyperliquidPilotEnabled();
   const workerReady = Boolean(runtime?.selected_provider) || localHyperliquidPilotEnabled();
   const liveTinyFill =
     process.env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
@@ -2717,7 +2718,7 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
       next_step: "Start the private worker and run the no-submit connection check.",
     });
   }
-  const cfg = hyperliquidWorkerConfig();
+  const cfg = hyperliquidWorkerConfig(runtime);
   const workerReady = Boolean(runtime?.selected_provider);
   if (!cfg.url || !workerReady) {
     return localHyperliquidAccountSnapshot({
@@ -2846,7 +2847,7 @@ export async function hyperliquidAccountStreamForOwner(
     }));
   }
 
-  const cfg = hyperliquidWorkerConfig();
+  const cfg = hyperliquidWorkerConfig(runtime);
   const workerReady = Boolean(runtime?.selected_provider);
   if (!cfg.url || !workerReady) {
     return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
@@ -6568,7 +6569,8 @@ async function requestHyperliquidManagedAllocation(input: {
   if (localHyperliquidPilotEnabled()) {
     return { allocation: input.fallback };
   }
-  const cfg = hyperliquidWorkerConfig();
+  const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
+  const cfg = hyperliquidWorkerConfig(runtime);
   if (!cfg.url) return { error: "connector_endpoint_missing" };
   try {
     const workerPath = "/hyperliquid/managed/allocations";
@@ -6750,14 +6752,20 @@ function hyperliquidSnapshotNextStep(status: string) {
   return "Wait for the private worker to come back online.";
 }
 
-function hyperliquidWorkerConfig() {
+function hyperliquidWorkerConfig(
+  runtime: Awaited<ReturnType<typeof getPrivateAgentRuntimeStatus>> | null = null,
+) {
+  const selectedProviderExecutionUrl = runtime
+    ? selectedReadyPrivateAgentProvider(runtime)?.execution_url?.trim()
+    : "";
   return {
-    url:
-      process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL?.trim() ||
-      process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() ||
-      process.env.GHOLA_PRIVATE_AGENT_WORKER_URL?.trim() ||
-      process.env.PHALA_AGENT_ENDPOINT?.trim() ||
-      "",
+    url: resolveHyperliquidWorkerUrl({
+      selected_provider_execution_url: selectedProviderExecutionUrl,
+      connector_url: process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL,
+      execution_url: process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL,
+      worker_url: process.env.GHOLA_PRIVATE_AGENT_WORKER_URL,
+      phala_endpoint: process.env.PHALA_AGENT_ENDPOINT,
+    }),
     token:
       process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN?.trim() ||
       process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
