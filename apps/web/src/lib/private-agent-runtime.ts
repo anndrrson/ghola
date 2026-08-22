@@ -114,6 +114,22 @@ export function providerReadyForPrivateAgents(
   );
 }
 
+export function collectPrivateAgentRecipientIds(
+  providers: ConfidentialComputeProviderStatus[],
+  configuredRecipients: Array<string | null | undefined> = [],
+): Set<string> {
+  const recipients = new Set<string>();
+  for (const configured of configuredRecipients) {
+    if (configured?.trim()) recipients.add(configured.trim());
+  }
+  for (const provider of providers) {
+    if (providerReadyForPrivateAgents(provider) && provider.sealed_recipient?.recipient_id) {
+      recipients.add(provider.sealed_recipient.recipient_id);
+    }
+  }
+  return recipients;
+}
+
 export function chooseConfidentialComputeProvider(
   providers: ConfidentialComputeProviderStatus[],
   preferredProvider?: ConfidentialComputeProviderId | null,

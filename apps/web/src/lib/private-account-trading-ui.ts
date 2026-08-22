@@ -46,6 +46,10 @@ export function isHyperliquidAgentKeyConfirmed(input: {
   return Boolean(input.generatedAgentAddress?.trim() || input.confirmedImportedAgentKey);
 }
 
+export function shouldResetHyperliquidConnectionError(wasOpen: boolean, isOpen: boolean) {
+  return isOpen && !wasOpen;
+}
+
 export interface TradingNextAction {
   kind: TradingActionKind;
   label: string;

@@ -318,8 +318,8 @@ import {
 } from "@/lib/private-account-auction-onchain";
 import { getPrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime-server";
 import {
+  collectPrivateAgentRecipientIds,
   hasPrivateAgentEntitlement,
-  providerReadyForPrivateAgents,
 } from "@/lib/private-agent-runtime";
 import {
   phalaIdleLeaseMs,
@@ -4207,34 +4207,26 @@ function parseVenueVaultAad(value: string): {
 }
 
 async function currentPrivateAgentRecipientIds(): Promise<Set<string>> {
-  const recipients = new Set<string>();
+  const configuredRecipients: Array<string | null | undefined> = [];
   if (process.env.GHOLA_ENABLE_MOCK_ATTESTED_PROVIDER === "true") {
-    recipients.add(
+    configuredRecipients.push(
       process.env.GHOLA_PRIVATE_AGENT_ENCLAVE_KEY_ID?.trim() || "mock_attested:dev",
     );
   }
   if (process.env.GHOLA_PRIVATE_AGENT_ATTESTED_READY === "true") {
-    for (const value of [
+    configuredRecipients.push(
       process.env.GHOLA_PRIVATE_AGENT_RECIPIENT_ID,
       process.env.PRIVATE_AGENT_RECIPIENT_ID,
       process.env.PHALA_ENCLAVE_KEY_ID,
       process.env.GHOLA_PRIVATE_AGENT_ENCLAVE_KEY_ID,
-    ]) {
-      if (value?.trim()) recipients.add(value.trim());
-    }
+    );
   }
   if (process.env.GENSYN_CONFIDENTIAL_EXECUTION_READY === "true" && process.env.GENSYN_ENCLAVE_KEY_ID?.trim()) {
-    recipients.add(process.env.GENSYN_ENCLAVE_KEY_ID.trim());
+    configuredRecipients.push(process.env.GENSYN_ENCLAVE_KEY_ID);
   }
-  if (recipients.size > 0) return recipients;
 
   const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
-  for (const provider of runtime?.providers ?? []) {
-    if (providerReadyForPrivateAgents(provider) && provider.sealed_recipient?.recipient_id) {
-      recipients.add(provider.sealed_recipient.recipient_id);
-    }
-  }
-  return recipients;
+  return collectPrivateAgentRecipientIds(runtime?.providers ?? [], configuredRecipients);
 }
 
 export async function armHyperliquidAgentSessionFromBody(

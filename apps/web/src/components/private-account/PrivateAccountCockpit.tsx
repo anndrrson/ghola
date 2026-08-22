@@ -135,6 +135,7 @@ import {
   deriveVenueReadinessSteps,
   isHyperliquidAgentKeyConfirmed,
   requiresHyperliquidPoolTerms,
+  shouldResetHyperliquidConnectionError,
   shouldReconnectHyperliquidApiWallet,
   type TradingActionKind,
   type TradingNextAction,
@@ -5773,6 +5774,7 @@ function HyperliquidConnectModal({
   const [quickImport, setQuickImport] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const previousOpenRef = useRef(false);
 
   const clearCredentialDraft = useCallback(() => {
     setDraft({
@@ -5792,7 +5794,15 @@ function HyperliquidConnectModal({
       ...current,
       network: hyperliquidNetwork,
     }));
-    setError(null);
+  }, [open, hyperliquidNetwork]);
+
+  useEffect(() => {
+    if (shouldResetHyperliquidConnectionError(previousOpenRef.current, open)) setError(null);
+    previousOpenRef.current = open;
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         clearCredentialDraft();
@@ -5805,7 +5815,7 @@ function HyperliquidConnectModal({
       document.body.style.overflow = "";
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [clearCredentialDraft, open, onClose, hyperliquidNetwork]);
+  }, [clearCredentialDraft, open, onClose]);
 
   const finishTurnkeySetup = useCallback(() => {
     void getHyperliquidExecutionVaultStatus()

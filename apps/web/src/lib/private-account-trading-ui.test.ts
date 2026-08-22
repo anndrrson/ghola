@@ -17,6 +17,7 @@ import {
   isHyperliquidAgentKeyConfirmed,
   phoenixOrderbookClickSide,
   requiresHyperliquidPoolTerms,
+  shouldResetHyperliquidConnectionError,
   shouldReconnectHyperliquidApiWallet,
   type TradingUiStateInput,
 } from "./private-account-trading-ui";
@@ -69,6 +70,20 @@ describe("private account trading UI derivation", () => {
     );
     expect(cockpitSource.match(/if \(!agentKeyConfirmed\)/g)).toHaveLength(1);
     expect(cockpitSource).not.toContain("if (!confirmedAgentKey)");
+  });
+
+  it("keeps a Hyperliquid connection error visible until the dialog is reopened", () => {
+    expect(shouldResetHyperliquidConnectionError(false, true)).toBe(true);
+    expect(shouldResetHyperliquidConnectionError(true, true)).toBe(false);
+    expect(shouldResetHyperliquidConnectionError(true, false)).toBe(false);
+
+    const cockpitSource = readFileSync(
+      resolve(process.cwd(), "src/components/private-account/PrivateAccountCockpit.tsx"),
+      "utf8",
+    );
+    expect(cockpitSource).toContain(
+      "if (shouldResetHyperliquidConnectionError(previousOpenRef.current, open)) setError(null);",
+    );
   });
 
   it("opens wallet replacement only for exact Hyperliquid agent-binding failures", () => {

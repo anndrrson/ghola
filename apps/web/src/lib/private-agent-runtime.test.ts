@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildPrivateAgentRuntimeStatus,
   chooseConfidentialComputeProvider,
+  collectPrivateAgentRecipientIds,
   evaluatePrivateAgentAccess,
   hasPrivateAgentEntitlement,
   providerReadyForPrivateAgents,
@@ -56,6 +57,18 @@ describe("private agent runtime", () => {
     expect(
       chooseConfidentialComputeProvider([localOnly, readyPhala], "phala")?.id,
     ).toBe("phala");
+  });
+
+  it("accepts the current attested recipient alongside configured recipients", () => {
+    const recipients = collectPrivateAgentRecipientIds(
+      [localOnly, readyPhala],
+      ["phala:cvm:configured", "  phala:cvm:configured  "],
+    );
+
+    expect([...recipients]).toEqual([
+      "phala:cvm:configured",
+      "phala:cvm:test",
+    ]);
   });
 
   it("keeps remote execution fail-closed without a shielded rail", () => {
