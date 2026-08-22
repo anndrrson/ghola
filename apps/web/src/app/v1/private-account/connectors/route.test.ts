@@ -169,6 +169,7 @@ describe("private account connector gateway routes", () => {
 
   afterEach(async () => {
     await resetPrivateAccountStoreForTests();
+    vi.unstubAllEnvs();
     delete process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS;
     delete process.env.GHOLA_CONNECTOR_MODE;
@@ -194,6 +195,8 @@ describe("private account connector gateway routes", () => {
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_RATE_LIMIT_MAX;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_RATE_LIMIT_WINDOW_MS;
+    delete process.env.GHOLA_PRIVATE_AGENT_PROVIDER;
+    delete process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET;
   });
 
   it("guards mutating live routes with JSON, auth, proof, replay, and rate limits", async () => {
@@ -631,6 +634,8 @@ describe("private account connector gateway routes", () => {
 
     expect(verifyRes.status, JSON.stringify(verified)).toBe(200);
     expect(verified.verification.status).toBe("verified_no_funds");
+    expect(verified.connection_proof_persisted).toBe(false);
+    expect(verified.connection_proof_reason).toBe("local_test_proof_not_persisted");
     expect(verified.verification.checks.transaction_broadcast).toBe(false);
     expect(verified.verification.checks.order_request_built).toBe(true);
     expect(verified.verification.verification_commitment).toMatch(/^connector_no_submit_verification_/);
@@ -643,6 +648,109 @@ describe("private account connector gateway routes", () => {
     );
     expect(JSON.stringify(verified)).not.toContain("sealed-hyperliquid-vault");
     expect(JSON.stringify(verified)).not.toContain("sealed-hyperliquid-instruction");
+  });
+
+  it("persists Hyperliquid readiness only after every live proof check passes", async () => {
+    process.env.GHOLA_CONNECTOR_MODE = "http";
+    delete process.env.GHOLA_SHIELDED_POOL_MODE;
+    process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED = "true";
+    process.env.GHOLA_HYPERLIQUID_LIVE_MODE = "tiny_fill";
+    process.env.GHOLA_PRIVATE_AGENT_PROVIDER = "mock_attested";
+    process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL = "https://worker.ghola.test";
+    process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS = "ready";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "test-worker-capability-secret-32-bytes";
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === "https://api.hyperliquid.xyz/info") {
+        return new Response(JSON.stringify([{
+          address: TEST_HYPERLIQUID_AGENT,
+          name: "ghola-test",
+          validUntil: null,
+        }]), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url === "https://worker.ghola.test/hyperliquid/verify") {
+        return new Response(JSON.stringify({
+          status: "verified_no_funds",
+          verification_commitment: "connector_no_submit_verification_live_test",
+          result_commitment: "connector_no_submit_result_live_test",
+          provider_ref_commitment: "connector_no_submit_provider_live_test",
+          checks: {
+            sealed_vault_opened: true,
+            sealed_instruction_opened: true,
+            authority_derived: true,
+            policy_enforced: true,
+            live_gate_enforced: true,
+            api_wallet_loaded: true,
+            hyperliquid_api_reachable: true,
+            hyperliquid_sdk_ready: true,
+            account_read_checked: true,
+            order_request_built: true,
+            live_venue_checked: true,
+            transaction_broadcast: false,
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ error: "not_found" }), {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const statusRes = await getHyperliquidVault(get("/v1/private-account/hyperliquid/vault"));
+    const status = await statusRes.json();
+    const workOrderCommitment = "connector_work_order_hyperliquid_persist_test";
+    const sealRes = await sealHyperliquidVault(
+      post("/v1/private-account/hyperliquid/vault", {
+        encrypted_execution_vault: {
+          alg: "sealed-provider-v1",
+          ciphertext: "sealed-hyperliquid-vault-persist",
+          recipient: "mock_attested:dev",
+          aad: [
+            "ghola/hyperliquid-execution-vault-v1",
+            `account:${status.account_commitment}`,
+            "recipient:mock_attested:dev",
+            "network:mainnet",
+          ].join("|"),
+        },
+        credential_binding: await signHyperliquidApiWalletBinding({
+          privateKey: TEST_HYPERLIQUID_AGENT_KEY,
+          accountCommitment: status.account_commitment,
+          network: "mainnet",
+          ownerAddress: TEST_HYPERLIQUID_OWNER,
+        }),
+      }),
+    );
+    expect(sealRes.status).toBe(201);
+
+    const verifyRes = await verifyNoSubmitRoute(
+      post("/v1/private-account/connectors/verify-no-submit", {
+        platform_class: "hyperliquid_style_market",
+        work_order_commitment: workOrderCommitment,
+        encrypted_execution_instruction_bundle: {
+          alg: "sealed-provider-v1",
+          ciphertext: "sealed-hyperliquid-instruction-persist",
+          recipient: "mock_attested:dev",
+          aad: [
+            "ghola/private-execution-instruction-v1",
+            `work_order:${workOrderCommitment}`,
+            "venue:hyperliquid",
+            "recipient:mock_attested:dev",
+          ].join("|"),
+        },
+      }),
+    );
+    const verified = await verifyRes.json();
+    expect(verifyRes.status, JSON.stringify(verified)).toBe(200);
+    expect(verified.connection_proof_persisted, JSON.stringify(verified)).toBe(true);
+    expect(verified.connection_proof_reason).toBeNull();
+
+    const readyRes = await getHyperliquidVault(get("/v1/private-account/hyperliquid/vault"));
+    const ready = await readyRes.json();
+    expect(ready.ready).toBe(true);
+    expect(ready.connection_proof).toMatchObject({
+      status: "verified_no_funds",
+      verification_commitment: "connector_no_submit_verification_live_test",
+    });
   });
 
   it("verifies Coinbase readiness without submitting or exposing raw fields", async () => {

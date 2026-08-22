@@ -115,6 +115,7 @@ import type {
 } from "@/lib/coinbase-live-market";
 import {
   hyperliquidMarketFromTradeReturn,
+  hyperliquidNoSubmitProofReady,
   liveHyperliquidReferencePrice,
 } from "@/lib/hyperliquid-trade-return";
 import {
@@ -676,6 +677,7 @@ interface NoFundsVerificationState {
     hyperliquid_sdk_ready?: boolean;
     account_read_checked?: boolean;
     order_request_built?: boolean;
+    live_venue_checked?: boolean;
     jupiter_api_reachable?: boolean;
     jupiter_token_allowlist_passed?: boolean;
     jupiter_order_built?: boolean;
@@ -684,6 +686,12 @@ interface NoFundsVerificationState {
     coinbase_order_request_built?: boolean;
     transaction_broadcast?: boolean;
   };
+}
+
+interface HyperliquidNoSubmitResult {
+  verification: NoFundsVerificationState;
+  connection_proof_persisted?: boolean;
+  connection_proof_reason?: string | null;
 }
 
 interface LiveReadinessCertificate {
@@ -2372,12 +2380,16 @@ export function PrivateAccountCockpit({
         platform_class: "hyperliquid_style_market",
         work_order_commitment: workOrderCommitment,
         encrypted_execution_instruction_bundle: sealed.encrypted_execution_instruction_bundle,
-      });
-      const verification = result.verification as NoFundsVerificationState;
-      setHyperliquidVerification(verification);
-      if (verification.status !== "verified_no_funds") {
-        throw new Error(verification.reason || verification.status);
+      }) as HyperliquidNoSubmitResult;
+      const verification = result.verification;
+      const proofReady = hyperliquidNoSubmitProofReady(result);
+      if (!proofReady) {
+        const reason = result.connection_proof_reason || verification.reason ||
+          "hyperliquid_connection_proof_not_persisted";
+        setHyperliquidVerification({ ...verification, status: "failed", reason });
+        throw new Error(reason);
       }
+      setHyperliquidVerification(verification);
       setHyperliquidSetupNotice({
         tone: "good",
         title: "Ready to place trade",

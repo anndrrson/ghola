@@ -6160,15 +6160,24 @@ export async function connectorVerifyNoSubmitFromBody(
     site_origin: context.site_origin ?? null,
     env: connectorEnv,
   });
+  let connectionProofPersisted = false;
+  let connectionProofReason = platformClass === "hyperliquid_style_market"
+    ? "required_live_checks_incomplete"
+    : null;
   if (platformClass === "hyperliquid_style_market" &&
       verification.status === "verified_no_funds" &&
       verification.checks.sealed_vault_opened &&
+      verification.checks.sealed_instruction_opened &&
       verification.checks.authority_derived &&
+      verification.checks.policy_enforced &&
+      verification.checks.live_gate_enforced &&
       verification.checks.api_wallet_loaded &&
       verification.checks.hyperliquid_api_reachable &&
+      verification.checks.hyperliquid_sdk_ready &&
       verification.checks.account_read_checked &&
       verification.checks.order_request_built &&
       verification.checks.live_venue_checked === true &&
+      verification.checks.transaction_broadcast === false &&
       (executionMode !== "byo_api_key" || hyperliquidSignerBindingVerified) &&
       process.env.GHOLA_CONNECTOR_MODE !== "local_test" &&
       process.env.GHOLA_SHIELDED_POOL_MODE !== "local_test") {
@@ -6195,6 +6204,10 @@ export async function connectorVerifyNoSubmitFromBody(
           vault: { ...storedVault.vault, connection_proof: proof, updated_at: verifiedAt },
           updated_at: verifiedAt,
         });
+        connectionProofPersisted = true;
+        connectionProofReason = null;
+      } else {
+        connectionProofReason = "connection_record_missing";
       }
     } else {
       const storedAllocation = await getHyperliquidManagedAllocationByAccount(account.account_commitment);
@@ -6204,7 +6217,22 @@ export async function connectorVerifyNoSubmitFromBody(
           allocation: { ...storedAllocation.allocation, connection_proof: proof, updated_at: verifiedAt },
           updated_at: verifiedAt,
         });
+        connectionProofPersisted = true;
+        connectionProofReason = null;
+      } else {
+        connectionProofReason = "connection_record_missing";
       }
+    }
+  } else if (platformClass === "hyperliquid_style_market") {
+    if (verification.status !== "verified_no_funds") {
+      connectionProofReason = verification.reason || verification.status;
+    } else if (executionMode === "byo_api_key" && !hyperliquidSignerBindingVerified) {
+      connectionProofReason = "signer_binding_not_verified";
+    } else if (
+      process.env.GHOLA_CONNECTOR_MODE === "local_test" ||
+      process.env.GHOLA_SHIELDED_POOL_MODE === "local_test"
+    ) {
+      connectionProofReason = "local_test_proof_not_persisted";
     }
   }
   return {
@@ -6212,6 +6240,12 @@ export async function connectorVerifyNoSubmitFromBody(
     account_commitment: account.account_commitment,
     readiness: publicConnectorReadiness(readiness),
     verification,
+    ...(platformClass === "hyperliquid_style_market"
+      ? {
+          connection_proof_persisted: connectionProofPersisted,
+          connection_proof_reason: connectionProofReason,
+        }
+      : {}),
   };
 }
 

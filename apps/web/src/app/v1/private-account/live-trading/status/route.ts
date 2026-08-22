@@ -205,6 +205,7 @@ export async function liveTradingStatusResponse(input: {
     release_validation: {
       hyperliquid_proof_protocol: GHOLA_HYPERLIQUID_PROOF_PROTOCOL,
       exact_agent_binding_required: true,
+      durable_connection_proof_required: true,
       ambiguity_retry_forbidden: true,
       venue_order_status_reconciliation_required: true,
       reduce_only_close_required: true,

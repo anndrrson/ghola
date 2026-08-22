@@ -137,6 +137,15 @@ describe("private account live trading launch gate", () => {
       fresh_user_live_ready: false,
       launch_mode: "disabled",
       bounded_beta_enabled: false,
+      release_validation: {
+        hyperliquid_proof_protocol: "ghola-hyperliquid-proof-v2",
+        exact_agent_binding_required: true,
+        durable_connection_proof_required: true,
+        ambiguity_retry_forbidden: true,
+        venue_order_status_reconciliation_required: true,
+        reduce_only_close_required: true,
+        final_flat_zero_orders_required: true,
+      },
       byo_live_trading_enabled: false,
       pooled_live_trading_enabled: false,
       hyperliquid_byo: {

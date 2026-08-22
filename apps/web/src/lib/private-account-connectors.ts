@@ -2054,6 +2054,7 @@ function connectorEnvConfig(platformClass: GholaPlatformClass, env: Record<strin
 }
 
 function connectorMode(env: Record<string, string | undefined>): GholaConnectorMode {
+  if (env.GHOLA_CONNECTOR_MODE === "http") return "http";
   if (env.GHOLA_CONNECTOR_MODE === "local_test" || env.GHOLA_SHIELDED_POOL_MODE === "local_test") {
     return "local_test";
   }
