@@ -16,7 +16,6 @@ import {
   FileText,
   Zap,
   Search,
-  Tag,
   ExternalLink,
 } from "lucide-react";
 

@@ -24,11 +24,6 @@ const asks: PhoenixChartBookLevel[] = [
   { px: "150.2", sz: "3" },
   { px: "150.3", sz: "2" },
 ];
-const bids: PhoenixChartBookLevel[] = [
-  { px: "150.1", sz: "4" },
-  { px: "150.0", sz: "1" },
-];
-
 describe("Phoenix chart helpers", () => {
   it("pads the candle price range around the high/low", () => {
     const range = phoenixCandlePriceRange(candles);

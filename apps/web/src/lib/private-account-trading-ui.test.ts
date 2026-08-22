@@ -1,15 +1,21 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   validatePrivateExecutionOrderDraft,
   type PrivateExecutionOrderDraft,
 } from "./private-execution-instruction-seal";
 import {
   deriveLiveReadinessDisplay,
+  deriveAutopilotExecutionDisplay,
+  deriveHyperliquidVerificationAction,
+  deriveLiveTradingExecutionDisplay,
   deriveMarketFeedFreshness,
   deriveOrderTicketDisplayState,
   deriveTradingNextAction,
   deriveVenueReadinessSteps,
   phoenixOrderbookClickSide,
+  requiresHyperliquidPoolTerms,
   type TradingUiStateInput,
 } from "./private-account-trading-ui";
 
@@ -41,6 +47,73 @@ const validOrder: PrivateExecutionOrderDraft = {
 };
 
 describe("private account trading UI derivation", () => {
+  it("requires pooled-account terms only for the Ghola Hyperliquid pool", () => {
+    expect(requiresHyperliquidPoolTerms({
+      liveHyperliquidFlow: true,
+      executionMode: "ghola_pooled",
+    })).toBe(true);
+    expect(requiresHyperliquidPoolTerms({
+      liveHyperliquidFlow: true,
+      executionMode: "byo_api_key",
+    })).toBe(false);
+    expect(requiresHyperliquidPoolTerms({
+      liveHyperliquidFlow: true,
+      executionMode: "managed_testnet",
+    })).toBe(false);
+    expect(requiresHyperliquidPoolTerms({
+      liveHyperliquidFlow: false,
+      executionMode: "ghola_pooled",
+    })).toBe(false);
+  });
+
+  it("exposes owner authentication before the Hyperliquid no-submit check", () => {
+    const input = {
+      liveHyperliquidFlow: true,
+      connected: true,
+      armed: true,
+      turnkeyConfigured: true,
+      turnkeyLoading: false,
+      working: false,
+      verified: false,
+    };
+    expect(deriveHyperliquidVerificationAction({
+      ...input,
+      turnkeyAuthenticated: false,
+    })).toMatchObject({
+      kind: "authenticate_owner",
+      label: "Authenticate owner wallet",
+      disabled: false,
+    });
+    expect(deriveHyperliquidVerificationAction({
+      ...input,
+      turnkeyAuthenticated: true,
+    })).toMatchObject({
+      kind: "verify_connection",
+      label: "Check connection",
+    });
+    expect(deriveHyperliquidVerificationAction({
+      ...input,
+      ownerAuthRequired: false,
+      turnkeyConfigured: false,
+      turnkeyAuthenticated: false,
+    })).toMatchObject({
+      kind: "verify_connection",
+      label: "Check connection",
+    });
+
+    const cockpitSource = readFileSync(
+      resolve(process.cwd(), "src/components/private-account/PrivateAccountCockpit.tsx"),
+      "utf8",
+    );
+    expect(cockpitSource).toContain("!LEGACY_HYPERLIQUID_API_KEYS_ENABLED");
+    expect(cockpitSource).toContain("let sealingAddress = turnkeyWallet.walletAddress");
+    expect(cockpitSource).toContain("let signInstructionBytes = turnkeyWallet.signBytes");
+    expect(cockpitSource).toContain("setHyperliquidOwnerAuthConfirmed(true)");
+    expect(cockpitSource).toContain("ownerAuthRequired={!LEGACY_HYPERLIQUID_API_KEYS_ENABLED}");
+    expect(cockpitSource).toContain("onAuthenticateTurnkey={authenticateHyperliquidOwner}");
+    expect(cockpitSource).toContain("verificationAction.kind === \"authenticate_owner\"");
+  });
+
   it("uses clearer signed-out and venue-access calls to action", () => {
     expect(deriveTradingNextAction({ ...base, authenticated: false }).label).toBe("Sign in to trade");
     expect(deriveTradingNextAction(base).label).toBe("Connect Phoenix authority");
@@ -136,9 +209,43 @@ describe("private account trading UI derivation", () => {
       ...base,
       platformClass: "hyperliquid_style_market",
       liveHyperliquidFlow: true,
+      hyperliquid: { connected: true, armed: true, verified: false, ownerAuthConfigured: true, ownerAuthenticated: false },
+    })).toMatchObject({
+      kind: "authenticate_hyperliquid_owner",
+      label: "Authenticate owner wallet",
+    });
+    expect(deriveVenueReadinessSteps({
+      ...base,
+      platformClass: "hyperliquid_style_market",
+      liveHyperliquidFlow: true,
+      hyperliquid: { connected: true, armed: true, verified: false, ownerAuthConfigured: true, ownerAuthenticated: false },
+    }).find((step) => step.id === "privacy")).toMatchObject({
+      value: "Authenticate owner wallet",
+      status: "current",
+    });
+    expect(deriveTradingNextAction({
+      ...base,
+      platformClass: "hyperliquid_style_market",
+      liveHyperliquidFlow: true,
+      hyperliquid: {
+        connected: true,
+        armed: true,
+        verified: false,
+        ownerAuthRequired: false,
+        ownerAuthConfigured: false,
+        ownerAuthenticated: false,
+      },
+    })).toMatchObject({
+      kind: "verify_hyperliquid",
+      label: "Check connection",
+    });
+    expect(deriveTradingNextAction({
+      ...base,
+      platformClass: "hyperliquid_style_market",
+      liveHyperliquidFlow: true,
       hasPreview: true,
       canApprovePrivate: true,
-      hyperliquid: { connected: true, armed: true, verified: false, accountReady: true, accessLabel: "Ghola Vault Mode" },
+      hyperliquid: { connected: true, armed: true, verified: false, accountReady: true, ownerAuthenticated: true, accessLabel: "Ghola Vault Mode" },
     }).kind).toBe("verify_hyperliquid");
     expect(deriveTradingNextAction({
       ...base,
@@ -146,7 +253,7 @@ describe("private account trading UI derivation", () => {
       liveHyperliquidFlow: true,
       hasPreview: true,
       canApprovePrivate: true,
-      hyperliquid: { connected: true, armed: true, verified: false, accountReady: true, workerUnavailable: true, accessLabel: "Ghola Vault Mode" },
+      hyperliquid: { connected: true, armed: true, verified: false, accountReady: true, workerUnavailable: true, ownerAuthenticated: true, accessLabel: "Ghola Vault Mode" },
     }).description).toContain("Worker unavailable");
     expect(deriveTradingNextAction({
       ...base,
@@ -154,7 +261,7 @@ describe("private account trading UI derivation", () => {
       liveHyperliquidFlow: true,
       hasPreview: true,
       canApprovePrivate: true,
-      hyperliquid: { connected: true, armed: true, verified: false, accountReady: false, needsFunds: true, accessLabel: "Ghola Vault Mode" },
+      hyperliquid: { connected: true, armed: true, verified: false, accountReady: false, needsFunds: true, ownerAuthenticated: true, accessLabel: "Ghola Vault Mode" },
     }).description).toContain("Needs funds");
     expect(deriveTradingNextAction({
       ...base,
@@ -162,7 +269,7 @@ describe("private account trading UI derivation", () => {
       liveHyperliquidFlow: true,
       hasPreview: true,
       canApprovePrivate: true,
-      hyperliquid: { connected: true, armed: true, verified: true, accountReady: true, accessLabel: "Ghola Vault Mode" },
+      hyperliquid: { connected: true, armed: true, verified: true, accountReady: true, ownerAuthenticated: true, accessLabel: "Ghola Vault Mode" },
     }).kind).toBe("place_trade");
   });
 
@@ -287,7 +394,7 @@ describe("private account trading UI derivation", () => {
       liveSubmitEnabled: false,
     })).toMatchObject({
       status: "live_submit_locked",
-      nextActionLabel: "Live submit locked",
+      nextActionLabel: "Preview mode",
     });
     expect(deriveLiveReadinessDisplay({
       venue: "phoenix",
@@ -313,11 +420,78 @@ describe("private account trading UI derivation", () => {
     expect(steps.map((step) => [step.id, step.status])).toEqual([
       ["venue", "done"],
       ["access", "done"],
-      ["guardrails", "done"],
+      ["limits", "done"],
       ["privacy", "done"],
       ["submit", "current"],
     ]);
     expect(steps.find((step) => step.id === "privacy")?.value).toBe("Checked");
+  });
+
+  it("derives confident execution display without leaking internal flags", () => {
+    const display = deriveAutopilotExecutionDisplay({
+      product_id: "BTC-USD",
+      can_arm: true,
+      can_live_submit: false,
+      blockers: ["private_worker_not_configured", "tiny_live_order_gate_not_ready", "PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT=false"],
+      venue_readiness: [{
+        venue_id: "hyperliquid",
+        status: "blocked",
+        reason_codes: ["hyperliquid_tiny_fill_disabled"],
+      }],
+    });
+    expect(display).toMatchObject({
+      mode: "needs_setup",
+      label: "Needs setup",
+      can_trade: false,
+      next_action_label: "Finish setup",
+    });
+    const customerCopy = [display.label, display.detail, display.plain_reason].join(" ");
+    expect(customerCopy).not.toMatch(/tiny|gate|PRIVATE_AGENT|live_submit|dry_run|kill_switch/i);
+
+    const live = deriveAutopilotExecutionDisplay({
+      session: {
+        status: "running",
+        execution_enabled: true,
+        session_policy: {
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+          max_notional_bucket: "50",
+          max_daily_notional_bucket: "250",
+          max_slippage_bps: 50,
+        },
+      },
+    });
+    expect(live).toMatchObject({
+      mode: "live_capped",
+      label: "Live Capped",
+      can_trade: true,
+      limits: {
+        venues: ["Hyperliquid"],
+        markets: ["BTC"],
+        max_order_usd: "$50",
+        daily_cap_usd: "$250",
+        slippage_bps: 50,
+      },
+    });
+  });
+
+  it("derives live trading display from launch status", () => {
+    expect(deriveLiveTradingExecutionDisplay({
+      live_trading_enabled: true,
+      pooled_live_trading_enabled: true,
+      required_venues: [{ id: "hyperliquid", label: "Hyperliquid", status: "green", reason_codes: [] }],
+    })).toMatchObject({
+      mode: "live_capped",
+      label: "Live Capped available",
+      can_trade: true,
+      limits: { venues: ["Hyperliquid"] },
+    });
+    const blocked = deriveLiveTradingExecutionDisplay({
+      live_trading_enabled: false,
+      reason_codes: ["venue_dry_run_enabled", "hyperliquid:hyperliquid_live_mode_disabled"],
+    });
+    expect(blocked.mode).toBe("needs_setup");
+    expect([blocked.label, blocked.detail, blocked.plain_reason].join(" ")).not.toMatch(/dry_run|live_mode|hyperliquid:/i);
   });
 
   it("uses conventional Phoenix book click sides", () => {

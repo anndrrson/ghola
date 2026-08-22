@@ -1,0 +1,409 @@
+"use client";
+
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  type ReactNode,
+} from "react";
+import {
+  TurnkeyProvider,
+  useTurnkey,
+  type TurnkeyProviderConfig,
+  type Wallet,
+  type WalletAccount,
+} from "@turnkey/react-wallet-kit";
+import { createAccountWithAddress } from "@turnkey/viem";
+import { ExchangeClient, HttpTransport, InfoClient } from "@nktkas/hyperliquid";
+import {
+  buildTurnkeyHyperliquidPolicies,
+  ownerMandateMessage,
+} from "@ghola/perps-core";
+
+const PERPS_WALLET_NAME = "Ghola Perps";
+const OWNER_PATH = "m/44'/60'/0'/0/0";
+const AGENT_PATH = "m/44'/60'/0'/0/1";
+const TOMBSTONE_PATH = "m/44'/60'/0'/0/2";
+const SEALING_PATH = "m/44'/501'/0'/0'";
+
+const OWNER_ACCOUNT = {
+  curve: "CURVE_SECP256K1",
+  pathFormat: "PATH_FORMAT_BIP32",
+  path: OWNER_PATH,
+  addressFormat: "ADDRESS_FORMAT_ETHEREUM",
+} as const;
+const AGENT_ACCOUNT = { ...OWNER_ACCOUNT, path: AGENT_PATH } as const;
+const TOMBSTONE_ACCOUNT = { ...OWNER_ACCOUNT, path: TOMBSTONE_PATH } as const;
+const SEALING_ACCOUNT = {
+  curve: "CURVE_ED25519",
+  pathFormat: "PATH_FORMAT_BIP32",
+  path: SEALING_PATH,
+  addressFormat: "ADDRESS_FORMAT_SOLANA",
+} as const;
+
+export interface PerpsWalletPair {
+  organizationId: string;
+  walletId: string;
+  owner: WalletAccount;
+  agent: WalletAccount;
+  sealing: WalletAccount;
+  tombstone?: WalletAccount;
+}
+
+interface InstallDelegationResult {
+  delegatedUserId: string;
+  policyIds: string[];
+}
+
+interface PerpsTurnkeyContextValue {
+  configured: boolean;
+  authenticated: boolean;
+  loading: boolean;
+  organizationId: string | null;
+  login: () => Promise<void>;
+  logout: () => Promise<void>;
+  ensureWalletPair: (includeTombstone?: boolean) => Promise<PerpsWalletPair>;
+  installDelegation: (publicKey: string) => Promise<InstallDelegationResult>;
+  signOwnerMandate: (mandate: unknown) => Promise<`0x${string}`>;
+  signAgentBinding: (message: string) => Promise<`0x${string}`>;
+  signSealingBytes: (bytes: Uint8Array) => Promise<Uint8Array>;
+  configureHyperliquid: (input: {
+    network: "mainnet" | "testnet";
+    markets: string[];
+    leverage: number;
+    marginMode: "cross" | "isolated";
+    agentName: string;
+  }) => Promise<void>;
+  revokeHyperliquid: (input: {
+    network: "mainnet" | "testnet";
+    agentName: string;
+    delegatedUserId: string;
+  }) => Promise<void>;
+}
+
+const unavailable = async () => {
+  throw new Error("Turnkey Embedded Wallets is not configured for this environment.");
+};
+
+const PerpsTurnkeyContext = createContext<PerpsTurnkeyContextValue>({
+  configured: false,
+  authenticated: false,
+  loading: false,
+  organizationId: null,
+  login: unavailable,
+  logout: async () => {},
+  ensureWalletPair: unavailable,
+  installDelegation: unavailable,
+  signOwnerMandate: unavailable,
+  signAgentBinding: unavailable,
+  signSealingBytes: unavailable,
+  configureHyperliquid: unavailable,
+  revokeHyperliquid: unavailable,
+});
+
+const parentOrganizationId = process.env.NEXT_PUBLIC_TURNKEY_PERPS_ORGANIZATION_ID || "";
+const authProxyConfigId = process.env.NEXT_PUBLIC_TURNKEY_PERPS_AUTH_PROXY_CONFIG_ID || "";
+
+export function PerpsTurnkeyProvider({ children }: { children: ReactNode }) {
+  if (!parentOrganizationId || !authProxyConfigId) {
+    return <PerpsTurnkeyContext.Provider value={{ ...CONTEXT_DEFAULTS }}>{children}</PerpsTurnkeyContext.Provider>;
+  }
+  const customWallet = {
+    walletName: PERPS_WALLET_NAME,
+    walletAccounts: [OWNER_ACCOUNT, AGENT_ACCOUNT, SEALING_ACCOUNT],
+  };
+  const createSuborgParams = { customWallet };
+  const config: TurnkeyProviderConfig = {
+    organizationId: parentOrganizationId,
+    authProxyConfigId,
+    autoRefreshManagedState: true,
+    auth: {
+      autoRefreshSession: true,
+      createSuborgParams: {
+        emailOtpAuth: createSuborgParams,
+        passkeyAuth: createSuborgParams,
+        walletAuth: createSuborgParams,
+        oauth: createSuborgParams,
+      },
+    },
+    ui: {
+      darkMode: true,
+      preferLargeActionButtons: true,
+      borderRadius: 8,
+      authModal: {
+        methods: {
+          emailOtpAuthEnabled: true,
+          passkeyAuthEnabled: true,
+          walletAuthEnabled: true,
+        },
+        methodOrder: ["passkey", "email", "wallet"],
+      },
+    },
+  };
+  return (
+    <TurnkeyProvider config={config}>
+      <PerpsTurnkeySession>{children}</PerpsTurnkeySession>
+    </TurnkeyProvider>
+  );
+}
+
+const CONTEXT_DEFAULTS = {
+  configured: false,
+  authenticated: false,
+  loading: false,
+  organizationId: null,
+  login: unavailable,
+  logout: async () => {},
+  ensureWalletPair: unavailable,
+  installDelegation: unavailable,
+  signOwnerMandate: unavailable,
+  signAgentBinding: unavailable,
+  signSealingBytes: unavailable,
+  configureHyperliquid: unavailable,
+  revokeHyperliquid: unavailable,
+} satisfies PerpsTurnkeyContextValue;
+
+function PerpsTurnkeySession({ children }: { children: ReactNode }) {
+  const turnkey = useTurnkey();
+  const organizationId = turnkey.session?.organizationId || null;
+  const authenticated = turnkey.authState === "authenticated";
+  const loading = turnkey.clientState === "loading";
+
+  const login = useCallback(async () => {
+    await turnkey.handleLogin({ title: "Protect your Ghola perps wallets" });
+  }, [turnkey]);
+
+  const logout = useCallback(async () => {
+    await turnkey.logout();
+  }, [turnkey]);
+
+  const ensureWalletPair = useCallback(async (includeTombstone = false) => {
+    if (!organizationId || !turnkey.httpClient || !authenticated) {
+      throw new Error("Authenticate with Turnkey before creating the perps wallets.");
+    }
+    let wallets = await turnkey.refreshWallets({ organizationId });
+    let wallet = findPerpsWallet(wallets);
+    if (!wallet) {
+      const walletId = await turnkey.createWallet({
+        organizationId,
+        walletName: PERPS_WALLET_NAME,
+        accounts: [OWNER_ACCOUNT, AGENT_ACCOUNT, SEALING_ACCOUNT],
+      });
+      wallets = await turnkey.refreshWallets({ organizationId });
+      wallet = wallets.find((candidate) => candidate.walletId === walletId) || findPerpsWallet(wallets);
+    }
+    if (!wallet) throw new Error("Turnkey did not return the Ghola perps wallet.");
+    const required = includeTombstone
+      ? [OWNER_ACCOUNT, AGENT_ACCOUNT, SEALING_ACCOUNT, TOMBSTONE_ACCOUNT]
+      : [OWNER_ACCOUNT, AGENT_ACCOUNT, SEALING_ACCOUNT];
+    const missing = required.filter((params) => !wallet?.accounts.some((account) => account.path === params.path));
+    if (missing.length > 0) {
+      await turnkey.createWalletAccounts({
+        organizationId,
+        walletId: wallet.walletId,
+        accounts: missing,
+      });
+      wallets = await turnkey.refreshWallets({ organizationId });
+      wallet = wallets.find((candidate) => candidate.walletId === wallet?.walletId) || null;
+    }
+    if (!wallet) throw new Error("Turnkey perps wallet refresh failed.");
+    const owner = accountAt(wallet, OWNER_PATH);
+    const agent = accountAt(wallet, AGENT_PATH);
+    const sealing = accountAt(wallet, SEALING_PATH);
+    const tombstone = includeTombstone ? accountAt(wallet, TOMBSTONE_PATH) : undefined;
+    return { organizationId, walletId: wallet.walletId, owner, agent, sealing, tombstone };
+  }, [authenticated, organizationId, turnkey]);
+
+  const installDelegation = useCallback(async (publicKey: string) => {
+    const pair = await ensureWalletPair();
+    if (!/^(?:04[0-9a-f]{128}|0[23][0-9a-f]{64})$/i.test(publicKey)) {
+      throw new Error("The delegated worker public key is invalid.");
+    }
+    const delegatedUser = await turnkey.fetchOrCreateP256ApiKeyUser({
+      publicKey,
+      organizationId: pair.organizationId,
+      createParams: {
+        userName: "Ghola Perps Worker",
+        apiKeyName: "ghola-perps-worker",
+      },
+    });
+    const policies = buildTurnkeyHyperliquidPolicies({
+      delegated_user_id: delegatedUser.userId,
+      owner_address: pair.owner.address,
+      agent_address: pair.agent.address,
+    });
+    const installed = await turnkey.fetchOrCreatePolicies({
+      organizationId: pair.organizationId,
+      policies: policies.map((policy) => ({ ...policy })),
+    });
+    return {
+      delegatedUserId: delegatedUser.userId,
+      policyIds: installed.map((policy) => policy.policyId),
+    };
+  }, [ensureWalletPair, turnkey]);
+
+  const signOwnerMandate = useCallback(async (mandate: unknown) => {
+    const pair = await ensureWalletPair();
+    if (!turnkey.httpClient) throw new Error("Turnkey signing client is unavailable.");
+    const account = createAccountWithAddress({
+      client: turnkey.httpClient,
+      organizationId: pair.organizationId,
+      signWith: pair.owner.address,
+      ethereumAddress: pair.owner.address,
+    });
+    return account.signMessage({ message: ownerMandateMessage(mandate) });
+  }, [ensureWalletPair, turnkey.httpClient]);
+
+  const signAgentBinding = useCallback(async (message: string) => {
+    const pair = await ensureWalletPair();
+    if (!turnkey.httpClient) throw new Error("Turnkey signing client is unavailable.");
+    const account = createAccountWithAddress({
+      client: turnkey.httpClient,
+      organizationId: pair.organizationId,
+      signWith: pair.agent.address,
+      ethereumAddress: pair.agent.address,
+    });
+    return account.signMessage({ message });
+  }, [ensureWalletPair, turnkey.httpClient]);
+
+  const signSealingBytes = useCallback(async (bytes: Uint8Array) => {
+    const pair = await ensureWalletPair();
+    if (!turnkey.httpClient) throw new Error("Turnkey signing client is unavailable.");
+    const result = await turnkey.httpClient.signRawPayload({
+      organizationId: pair.organizationId,
+      signWith: pair.sealing.address,
+      payload: bytesToHex(bytes),
+      encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
+      hashFunction: "HASH_FUNCTION_NOT_APPLICABLE",
+    });
+    const signature = hexToBytes(`${result.r || ""}${result.s || ""}`);
+    if (signature.length !== 64) throw new Error("Turnkey returned an invalid sealing signature.");
+    return signature;
+  }, [ensureWalletPair, turnkey.httpClient]);
+
+  const configureHyperliquid = useCallback(async (input: {
+    network: "mainnet" | "testnet";
+    markets: string[];
+    leverage: number;
+    marginMode: "cross" | "isolated";
+    agentName: string;
+  }) => {
+    assertVenueMutationAllowed(input.network);
+    const pair = await ensureWalletPair();
+    const client = turnkey.httpClient;
+    if (!client) throw new Error("Turnkey signing client is unavailable.");
+    const { exchange, info } = ownerClients(client, pair, input.network);
+    const meta = await info.meta();
+    for (const market of input.markets) {
+      const asset = meta.universe.findIndex((item) => item.name === market);
+      if (asset < 0) throw new Error(`${market} is not available on Hyperliquid ${input.network}.`);
+      await exchange.updateLeverage({
+        asset,
+        isCross: input.marginMode === "cross",
+        leverage: input.leverage,
+      });
+    }
+    await exchange.approveAgent({
+      agentAddress: pair.agent.address as `0x${string}`,
+      agentName: input.agentName,
+    });
+  }, [ensureWalletPair, turnkey.httpClient]);
+
+  const revokeHyperliquid = useCallback(async (input: {
+    network: "mainnet" | "testnet";
+    agentName: string;
+    delegatedUserId: string;
+  }) => {
+    assertVenueMutationAllowed(input.network);
+    const pair = await ensureWalletPair(true);
+    if (!pair.tombstone || !turnkey.httpClient) throw new Error("Turnkey revocation account is unavailable.");
+    await turnkey.httpClient.deleteUsers({
+      organizationId: pair.organizationId,
+      userIds: [input.delegatedUserId],
+    });
+    const { exchange } = ownerClients(turnkey.httpClient, pair, input.network);
+    await exchange.approveAgent({
+      agentAddress: pair.tombstone.address as `0x${string}`,
+      agentName: input.agentName,
+    });
+  }, [ensureWalletPair, turnkey.httpClient]);
+
+  const value = useMemo<PerpsTurnkeyContextValue>(() => ({
+    configured: true,
+    authenticated,
+    loading,
+    organizationId,
+    login,
+    logout,
+    ensureWalletPair,
+    installDelegation,
+    signOwnerMandate,
+    signAgentBinding,
+    signSealingBytes,
+    configureHyperliquid,
+    revokeHyperliquid,
+  }), [
+    authenticated,
+    configureHyperliquid,
+    ensureWalletPair,
+    installDelegation,
+    loading,
+    login,
+    logout,
+    organizationId,
+    revokeHyperliquid,
+    signOwnerMandate,
+    signAgentBinding,
+    signSealingBytes,
+  ]);
+  return <PerpsTurnkeyContext.Provider value={value}>{children}</PerpsTurnkeyContext.Provider>;
+}
+
+export function usePerpsTurnkey() {
+  return useContext(PerpsTurnkeyContext);
+}
+
+function findPerpsWallet(wallets: Wallet[]) {
+  return wallets.find((wallet) => wallet.walletName === PERPS_WALLET_NAME) || null;
+}
+
+function accountAt(wallet: Wallet, path: string) {
+  const account = wallet.accounts.find((candidate) => candidate.path === path);
+  if (!account) throw new Error(`Turnkey wallet account ${path} is unavailable.`);
+  return account;
+}
+
+function ownerClients(
+  client: NonNullable<ReturnType<typeof useTurnkey>["httpClient"]>,
+  pair: PerpsWalletPair,
+  network: "mainnet" | "testnet",
+) {
+  if (!client) throw new Error("Turnkey signing client is unavailable.");
+  const wallet = createAccountWithAddress({
+    client,
+    organizationId: pair.organizationId,
+    signWith: pair.owner.address,
+    ethereumAddress: pair.owner.address,
+  });
+  const transport = new HttpTransport({ isTestnet: network === "testnet", timeout: 12_000 });
+  return {
+    exchange: new ExchangeClient({ transport, wallet }),
+    info: new InfoClient({ transport }),
+  };
+}
+
+function assertVenueMutationAllowed(network: "mainnet" | "testnet") {
+  if (network === "mainnet" && process.env.NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED !== "true") {
+    throw new Error("Mainnet perps setup is disabled. Use testnet.");
+  }
+}
+
+function bytesToHex(bytes: Uint8Array) {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function hexToBytes(value: string) {
+  if (!/^[0-9a-f]*$/i.test(value) || value.length % 2 !== 0) throw new Error("Invalid signature hex.");
+  return Uint8Array.from({ length: value.length / 2 }, (_, index) => Number.parseInt(value.slice(index * 2, index * 2 + 2), 16));
+}

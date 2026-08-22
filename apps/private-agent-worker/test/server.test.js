@@ -380,6 +380,18 @@ describe("private agent worker", () => {
     );
   });
 
+  it("publishes redacted proposal-model status with readiness", async () => {
+    process.env.PRIVATE_AGENT_AI_PROVIDER_KIND = "ollama";
+    process.env.PRIVATE_AGENT_AI_MODEL = "local-proposal-model";
+    process.env.PRIVATE_AGENT_AI_API_KEY = "must-not-leak";
+    const response = await fetch(`${baseUrl}/ready`);
+    const body = await response.json();
+    assert.equal(body.decision_provider.configured, true);
+    assert.equal(body.decision_provider.provider_kind, "ollama");
+    assert.equal(body.decision_provider.local, true);
+    assert.equal(JSON.stringify(body).includes("must-not-leak"), false);
+  });
+
   it("can require dstack quote evidence before accepting production sessions", async () => {
     await close(server);
     process.env.PRIVATE_AGENT_ALLOW_UNATTESTED_DEV = "false";
@@ -1242,10 +1254,66 @@ describe("private agent worker", () => {
 
     assert.equal(response.status, 200);
     const body = await response.json();
-    assert.equal(body.status, "reconciled");
+    assert.equal(body.status, "outcome_unknown");
     assert.equal(body.final_proof.broadcast_performed, false);
     assert.equal(body.final_proof.final_venue_execution_proven, false);
     assert.notEqual(body.status, "submitted");
+  });
+
+  it("persists an ambiguous Hyperliquid attempt before refusing any retry", async () => {
+    await close(server);
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    process.env.PRIVATE_AGENT_PYTHON = "/definitely-missing-ghola-python";
+    const state = createWorkerState(dir);
+    server = createPrivateAgentWorkerServer({ state });
+    baseUrl = await listen(server);
+    const vault = await encryptedHyperliquidVault(baseUrl);
+    const workOrderCommitment = "connector_work_order_hl_ambiguous_123";
+    const requestBody = {
+      version: 1,
+      work_order_commitment: workOrderCommitment,
+      vault_commitment: vault.vault_commitment,
+      policy_commitment: vault.policy_commitment,
+      operation_class: "limit_order",
+      encrypted_execution_vault: vault.encrypted_execution_vault,
+      encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+        venue_id: "hyperliquid",
+        work_order_commitment: workOrderCommitment,
+        operation_class: "limit_order",
+        order: {
+          market: "HYPE",
+          side: "buy",
+          quote_size: "11",
+          tif: "Ioc",
+          live_order_mode: "tiny_fill",
+        },
+      }),
+      session_policy: {
+        market_allowlist: ["HYPE"],
+        max_notional_bucket: "25",
+        max_order_count: 1,
+        kill_switch: false,
+      },
+    };
+    const submit = () => fetch(`${baseUrl}/hyperliquid/orders`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    const first = await submit();
+    assert.equal(first.status, 502);
+    const attempt = await state.getExecutionAttempt(workOrderCommitment);
+    assert.equal(attempt.status, "ambiguous");
+    assert.match(attempt.provider_ref_seed.cloid, /^0x[0-9a-f]{32}$/);
+
+    const second = await submit();
+    assert.equal(second.status, 409);
+    assert.match((await second.json()).error, /reconcile it instead of retrying/);
   });
 
   it("rejects plaintext strategy fields recursively", async () => {
@@ -1311,6 +1379,39 @@ describe("private agent worker", () => {
     assert.equal(body.provider, "phala");
     assert.equal(body.strategy_id, "strategy_123");
     assert.equal(body.sealed_execution_required, true);
+  });
+
+  it("rejects the unattested development override in production", async () => {
+    await close(server);
+    process.env.NODE_ENV = "production";
+    process.env.PRIVATE_AGENT_ALLOW_UNATTESTED_DEV = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    server = createPrivateAgentWorkerServer();
+    baseUrl = await listen(server);
+
+    const requestBody = await encryptedRequest(baseUrl);
+    const token = capabilityToken({
+      path: "/private-agent/sessions",
+      scope: "session:create",
+      body: requestBody,
+      expected: {
+        owner_commitment: requestBody.owner_commitment,
+        session_commitment: requestBody.session_commitment,
+      },
+    });
+    const response = await fetch(`${baseUrl}/private-agent/sessions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    assert.equal(response.status, 503);
+    const body = await response.json();
+    assert.equal(body.error, "attested sealed execution is unavailable");
   });
 
   it("arms Hyperliquid sessions with only encrypted vault material", async () => {

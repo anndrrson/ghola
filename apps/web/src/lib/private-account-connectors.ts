@@ -5,6 +5,8 @@ import {
   gholaCommitment,
   venueIdForPlatformClass,
   type GholaConnectorPreviewContext,
+  type GholaHyperliquidExecutionVault,
+  type GholaHyperliquidManagedAllocation,
   type GholaPlatformClass,
   type GholaPrivateAccountActionClass,
   type GholaPrivacyPreview,
@@ -24,12 +26,14 @@ import {
   workerAuthorizationHeader,
   workerCapabilityExpectedFromBody,
 } from "./private-agent-capability";
+import { isGholaHyperliquidProofProtocol } from "./hyperliquid-proof-protocol";
 
 export type GholaConnectorStatus = "ready" | "missing" | "stale" | "blocked";
 export type GholaConnectorMode = "http" | "local_test";
 export type GholaConnectorSubmitError =
   | "connector_not_ready"
   | "connector_submit_failed"
+  | "connector_submit_ambiguous"
   | "connector_submit_blocked"
   | "venue_access_required"
   | "needs_funds"
@@ -44,6 +48,8 @@ export type GholaLinkabilityDecision =
 
 export type GholaConnectorWorkOrderStatus =
   | "prepared"
+  | "submitting"
+  | "ambiguous"
   | "submitted"
   | "reconciled"
   | "failed"
@@ -171,7 +177,7 @@ export interface GholaConnectorResult {
   connector_result_commitment: string;
   work_order_commitment: string;
   platform_class: GholaPlatformClass;
-  status: "submitted" | "reconciled" | "failed" | "cancelled" | "blocked";
+  status: "submitted" | "reconciled" | "ambiguous" | "failed" | "cancelled" | "blocked";
   provider_ref_commitment: string | null;
   result_commitment: string;
   final_proof: GholaConnectorFinalProof | null;
@@ -203,6 +209,8 @@ export interface GholaConnectorFinalProof {
   broadcast_performed: boolean;
   final_venue_execution_proven: boolean;
   final_fill_proven: boolean;
+  cumulative_filled_micro_usdc?: number;
+  filled_base_size?: string | null;
   signature_commitment?: string | null;
   request_commitment?: string | null;
   checked_at: string;
@@ -233,6 +241,7 @@ export interface GholaConnectorNoFundsVerification {
     hyperliquid_sdk_ready: boolean;
     account_read_checked: boolean;
     order_request_built: boolean;
+    live_venue_checked?: boolean;
     jupiter_api_reachable?: boolean;
     jupiter_token_allowlist_passed?: boolean;
     jupiter_order_built?: boolean;
@@ -442,7 +451,7 @@ export async function connectorReadiness(input: {
 
   const cfg = connectorEnvConfig(input.manifest.platform_class, env);
   if (!cfg.url) reasonCodes.push("connector_endpoint_missing");
-  if (!cfg.token) reasonCodes.push("connector_token_missing");
+  if (!cfg.auth_configured) reasonCodes.push("connector_token_missing");
   if (!cfg.readiness) reasonCodes.push("connector_readiness_missing");
   if (cfg.readiness === "stale") reasonCodes.push("connector_readiness_stale");
   if (cfg.readiness === "blocked") reasonCodes.push("connector_readiness_blocked");
@@ -451,7 +460,7 @@ export async function connectorReadiness(input: {
     ? "blocked"
     : cfg.readiness === "stale"
       ? "stale"
-      : cfg.url && cfg.token && cfg.readiness === "ready" && input.manifest.allow_live_submit
+      : cfg.url && cfg.auth_configured && cfg.readiness === "ready" && input.manifest.allow_live_submit
         ? "ready"
         : "missing";
   return readiness({
@@ -762,6 +771,18 @@ export async function submitConnectorWorkOrder(input: {
     });
     const body = asRecord(await res.json().catch(() => null));
     if (!res.ok || body.ok === false) {
+      console.warn("[private-account] connector submit rejected", {
+        platform_class: input.manifest.platform_class,
+        status: res.status,
+        error_code: stringValue(body.error_code) || stringValue(body.code) || null,
+        error: stringValue(body.error) || null,
+        details: Array.isArray(body.details)
+          ? body.details.filter((detail): detail is string => typeof detail === "string").slice(0, 8)
+          : [],
+      });
+      if (res.status === 408 || res.status === 425 || res.status === 429 || res.status >= 500) {
+        return { ok: false, error: "connector_submit_ambiguous" };
+      }
       return { ok: false, error: connectorSubmitError(body, res.status) };
     }
     return {
@@ -779,7 +800,7 @@ export async function submitConnectorWorkOrder(input: {
       }),
     };
   } catch {
-    return { ok: false, error: "connector_submit_failed" };
+    return { ok: false, error: "connector_submit_ambiguous" };
   }
 }
 
@@ -908,6 +929,8 @@ export async function reconcileConnectorResult(input: {
   work_order: GholaConnectorWorkOrder;
   manifest: GholaConnectorManifest;
   existing_result?: GholaConnectorResult | null;
+  hyperliquid_execution_vault?: GholaHyperliquidExecutionVault | null;
+  hyperliquid_managed_allocation?: GholaHyperliquidManagedAllocation | null;
   now?: Date;
   env?: Record<string, string | undefined>;
 }): Promise<GholaConnectorResult> {
@@ -940,6 +963,23 @@ export async function reconcileConnectorResult(input: {
       version: 1,
       work_order_commitment: input.work_order.work_order_commitment,
       provider_ref_commitment: input.existing_result?.provider_ref_commitment ?? null,
+      ...(input.manifest.platform_class === "hyperliquid_style_market" && input.hyperliquid_execution_vault
+        ? {
+            execution_mode: "byo_api_key",
+            vault_commitment: input.hyperliquid_execution_vault.vault_commitment,
+            encrypted_vault_commitment: input.hyperliquid_execution_vault.encrypted_vault_commitment,
+            policy_commitment: input.hyperliquid_execution_vault.policy_commitment,
+            encrypted_execution_vault: input.hyperliquid_execution_vault.encrypted_execution_vault,
+          }
+        : {}),
+      ...(input.manifest.platform_class === "hyperliquid_style_market" && input.hyperliquid_managed_allocation
+        ? {
+            execution_mode: input.hyperliquid_managed_allocation.execution_mode,
+            managed_allocation_commitment: input.hyperliquid_managed_allocation.allocation_commitment,
+            allocation_commitment: input.hyperliquid_managed_allocation.allocation_commitment,
+            policy_commitment: input.hyperliquid_managed_allocation.policy_commitment,
+          }
+        : {}),
     };
     const authorization = workerAuthorizationHeader({
       env: input.env ?? process.env,
@@ -965,15 +1005,26 @@ export async function reconcileConnectorResult(input: {
       body: JSON.stringify(payload),
     });
     const body = asRecord(await res.json().catch(() => null));
+    const finalProof = connectorFinalProof(body.final_proof);
+    const hyperliquidProtocolValid = input.manifest.platform_class !== "hyperliquid_style_market" ||
+      (
+        isGholaHyperliquidProofProtocol(body.execution_protocol) &&
+        finalProof?.proof_kind === "hyperliquid_order_status_reconciliation_v1"
+      );
+    const outcomeUnknown = !hyperliquidProtocolValid ||
+      body.status === "outcome_unknown" ||
+      finalProof?.status === "outcome_unknown";
     return connectorResult({
       work_order: input.work_order,
       manifest: input.manifest,
-      status: res.ok && body.status !== "failed" ? "reconciled" : "failed",
+      status: res.ok && outcomeUnknown
+        ? "ambiguous"
+        : res.ok && body.status !== "failed" ? "reconciled" : "failed",
       provider_ref_seed: stringValue(body.provider_ref_commitment) ||
         input.existing_result?.provider_ref_commitment ||
         input.work_order.work_order_commitment,
-      final_proof: connectorFinalProof(body.final_proof),
-      reason: res.ok ? null : "connector_reconcile_failed",
+      final_proof: finalProof,
+      reason: res.ok ? (outcomeUnknown ? "connector_submit_ambiguous" : null) : "connector_reconcile_failed",
       now,
     });
   } catch {
@@ -1253,6 +1304,7 @@ function connectorAccessContext(
 function connectorSubmitError(body: Record<string, unknown>, status: number): GholaConnectorSubmitError {
   const code = stringValue(body.error_code) || stringValue(body.code) || stringValue(body.error);
   const text = `${code} ${stringValue(body.error)}`;
+  if (code === "connector_submit_ambiguous") return "connector_submit_ambiguous";
   if (code === "needs_funds" || /needs funds|insufficient|not enough|balance/i.test(text)) {
     return "needs_funds";
   }
@@ -1868,6 +1920,7 @@ function defaultNoFundsChecks(ok: boolean): GholaConnectorNoFundsVerification["c
     hyperliquid_sdk_ready: ok,
     account_read_checked: ok,
     order_request_built: ok,
+    live_venue_checked: false,
     jupiter_api_reachable: ok,
     jupiter_token_allowlist_passed: ok,
     jupiter_order_built: ok,
@@ -1894,6 +1947,7 @@ function noFundsChecks(value: unknown): GholaConnectorNoFundsVerification["check
     hyperliquid_sdk_ready: body.hyperliquid_sdk_ready === true,
     account_read_checked: body.account_read_checked === true,
     order_request_built: body.order_request_built === true || body.order_packet_built === true,
+    live_venue_checked: body.live_venue_checked === true,
     jupiter_api_reachable: body.jupiter_api_reachable === true,
     jupiter_token_allowlist_passed: body.jupiter_token_allowlist_passed === true,
     jupiter_order_built: body.jupiter_order_built === true,
@@ -1988,9 +2042,13 @@ function connectorEnvConfig(platformClass: GholaPlatformClass, env: Record<strin
         env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
         ""
       : "");
+  const capabilitySecret = env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET?.trim() ||
+    env.GHOLA_WORKER_CAPABILITY_SECRET?.trim() ||
+    "";
   return {
     url: env[`${prefix}_URL`]?.trim() || "",
     token,
+    auth_configured: Boolean(token || capabilitySecret),
     readiness: env[`${prefix}_READINESS`]?.trim() || "",
   };
 }
@@ -2031,6 +2089,8 @@ function connectorFinalProof(value: unknown): GholaConnectorFinalProof | null {
     broadcast_performed: body.broadcast_performed === true,
     final_venue_execution_proven: body.final_venue_execution_proven === true,
     final_fill_proven: body.final_fill_proven === true,
+    cumulative_filled_micro_usdc: Math.max(0, Math.floor(numberValue(body.cumulative_filled_micro_usdc))),
+    filled_base_size: stringValue(body.filled_base_size) || null,
     signature_commitment: stringValue(body.signature_commitment) || null,
     request_commitment: stringValue(body.request_commitment) || null,
     checked_at: checkedAt,
@@ -2049,4 +2109,9 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string {
   return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function numberValue(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }

@@ -167,7 +167,7 @@ describe("ohttp", () => {
       const plaintext = new Uint8Array(plaintextLen);
       globalThis.crypto.getRandomValues(plaintext);
 
-      const { capsule, context: _ctx } = await encapsulateRequest(cfg, plaintext);
+      const { capsule } = await encapsulateRequest(cfg, plaintext);
       expect(capsule[0]).toBe(cfg.keyId);
 
       // Server-side decap with hpke-js

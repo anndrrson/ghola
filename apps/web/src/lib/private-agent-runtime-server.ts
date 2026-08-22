@@ -10,6 +10,7 @@ import {
 } from "@/lib/private-balance";
 import {
   discoverPhalaPrivateAgentProvider,
+  expectedRecipientReportDataHex,
   privateAgentRemoteExecutionDisabled,
   phalaJitProvisioningConfigIssue,
   phalaJitProvisioningConfigured,
@@ -35,6 +36,47 @@ interface AttestedProvider {
   expires_at_unix?: number | null;
 }
 
+interface PhalaWorkerHealth {
+  status?: string;
+  ok?: boolean;
+  ready?: boolean;
+  attested?: boolean;
+  attested_ready?: boolean;
+  sealed_execution_required?: boolean;
+  plaintext_rejected?: boolean;
+  provider?: string;
+  tee_kind?: string;
+  checked_at?: string;
+  observed_at?: string;
+  runtime_attestation_commitment?: string | null;
+  runtime_measurement_commitment?: string | null;
+  runtime_policy_commitment?: string | null;
+  image_digest?: string | null;
+  report_data_hex?: string | null;
+  attestation_hash?: string | null;
+  quote_hash?: string | null;
+  missing?: unknown[];
+}
+
+interface PhalaWorkerRecipient {
+  recipient_id?: string;
+  x25519_pub_hex?: string;
+  funding_signer_public_key_b64?: string | null;
+  tee_kind?: string | null;
+  measurement_hex?: string | null;
+  image_digest?: string | null;
+  report_data_hex?: string | null;
+  attestation_hash?: string | null;
+  quote_hash?: string | null;
+  attested_ready?: boolean;
+  expires_at_unix?: number | null;
+}
+
+const ATTESTATION_STATUS_MAX_AGE_MS = 5 * 60_000;
+const ATTESTATION_STATUS_FETCH_TIMEOUT_MS = 12_000;
+const WORKER_EVIDENCE_FETCH_TIMEOUT_MS = 18_000;
+const X25519_PUBLIC_KEY_RE = /^[0-9a-f]{64}$/i;
+
 function thumperBase(): string {
   return (
     process.env.NEXT_PUBLIC_THUMPER_API_URL ||
@@ -56,6 +98,10 @@ function envSet(...keys: string[]): boolean {
     const value = process.env[key];
     return typeof value === "string" && value.trim().length > 0;
   });
+}
+
+function envTrue(key: string): boolean {
+  return process.env[key]?.trim() === "true";
 }
 
 function preferredProvider(): ConfidentialComputeProviderId | null {
@@ -87,6 +133,241 @@ async function fetchJson<T>(url: URL, timeoutMs = 4000): Promise<T | null> {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function normalizedHttpsUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:") return null;
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+}
+
+export function phalaProviderFromAttestationStatus(input: {
+  status: PrivateAgentRuntimeStatus;
+  executionUrl: string;
+  recipientId: string;
+  recipientX25519: string;
+  measurementHex: string;
+  nowMs?: number;
+}): ConfidentialComputeProviderStatus | null {
+  const checkedAtMs = Date.parse(input.status.checked_at);
+  if (
+    !Number.isFinite(checkedAtMs) ||
+    Math.abs((input.nowMs ?? Date.now()) - checkedAtMs) > ATTESTATION_STATUS_MAX_AGE_MS
+  ) {
+    return null;
+  }
+  if (input.status.selected_provider !== "phala") return null;
+  const provider = input.status.providers.find((candidate) => candidate.id === "phala");
+  const recipient = provider?.sealed_recipient;
+  const evidence = provider?.evidence;
+  const expectedExecutionUrl = normalizedHttpsUrl(input.executionUrl);
+  const verifiedExecutionUrl = normalizedHttpsUrl(provider?.execution_url);
+  if (
+    !provider ||
+    !recipient ||
+    !expectedExecutionUrl ||
+    verifiedExecutionUrl !== expectedExecutionUrl ||
+    recipient.recipient_id !== input.recipientId ||
+    recipient.x25519_pub_hex.toLowerCase() !== input.recipientX25519.toLowerCase() ||
+    recipient.measurement_hex?.toLowerCase() !== input.measurementHex.toLowerCase() ||
+    !recipient.attestation_hash ||
+    provider.configured !== true ||
+    provider.available !== true ||
+    provider.attested !== true ||
+    provider.supports_sealed_secrets !== true ||
+    provider.supports_background_agents !== true ||
+    provider.supports_trading_execution !== true ||
+    evidence?.report_data_bound !== true ||
+    evidence?.funding_signer_bound !== true ||
+    evidence?.phala_attestation_present !== true
+  ) {
+    return null;
+  }
+  return provider;
+}
+
+export function phalaProviderFromWorkerEvidence(input: {
+  executionUrl: string;
+  health: PhalaWorkerHealth;
+  recipient: PhalaWorkerRecipient;
+  fundingSignerPins: string[];
+  imageDigestPin: string;
+  nowMs?: number;
+}): ConfidentialComputeProviderStatus | null {
+  const executionUrl = normalizedHttpsUrl(input.executionUrl);
+  const checkedAtMs = Date.parse(input.health.checked_at || input.health.observed_at || "");
+  const recipientId = input.recipient.recipient_id?.trim() || "";
+  const recipientX25519 = input.recipient.x25519_pub_hex?.trim() || "";
+  const fundingSigner = input.recipient.funding_signer_public_key_b64?.trim() || "";
+  const fundingSignerPins = new Set(input.fundingSignerPins.map((pin) => pin.trim()).filter(Boolean));
+  const imageDigestPin = input.imageDigestPin.trim().toLowerCase();
+  const recipientImageDigest = (
+    input.recipient.image_digest || input.recipient.measurement_hex || ""
+  ).trim().toLowerCase();
+  const expectedReportData = recipientId && recipientX25519 && fundingSigner
+    ? expectedRecipientReportDataHex({
+        recipientId,
+        x25519PubHex: recipientX25519,
+        fundingSignerPublicKeyB64: fundingSigner,
+      }).toLowerCase()
+    : "";
+  const recipientReportData = input.recipient.report_data_hex?.trim().toLowerCase() || "";
+  const healthReportData = input.health.report_data_hex?.trim().toLowerCase() || "";
+  const recipientAttestation = input.recipient.attestation_hash?.trim().toLowerCase() || "";
+  const healthAttestation = input.health.attestation_hash?.trim().toLowerCase() || "";
+  const recipientQuote = input.recipient.quote_hash?.trim().toLowerCase() || "";
+  const healthQuote = input.health.quote_hash?.trim().toLowerCase() || "";
+  const expiresAtMs = typeof input.recipient.expires_at_unix === "number"
+    ? input.recipient.expires_at_unix * 1_000
+    : null;
+
+  if (
+    !executionUrl ||
+    !Number.isFinite(checkedAtMs) ||
+    Math.abs((input.nowMs ?? Date.now()) - checkedAtMs) > ATTESTATION_STATUS_MAX_AGE_MS ||
+    input.health.status !== "green" ||
+    input.health.ok !== true ||
+    input.health.ready !== true ||
+    input.health.attested !== true ||
+    input.health.attested_ready !== true ||
+    input.health.sealed_execution_required !== true ||
+    input.health.plaintext_rejected !== true ||
+    input.health.provider !== "phala" ||
+    input.health.tee_kind !== "phala" ||
+    !input.health.runtime_attestation_commitment ||
+    !input.health.runtime_measurement_commitment ||
+    !input.health.runtime_policy_commitment ||
+    (Array.isArray(input.health.missing) && input.health.missing.length > 0) ||
+    input.recipient.attested_ready !== true ||
+    input.recipient.tee_kind !== "phala" ||
+    !recipientId ||
+    !X25519_PUBLIC_KEY_RE.test(recipientX25519) ||
+    !fundingSigner ||
+    !fundingSignerPins.has(fundingSigner) ||
+    !imageDigestPin ||
+    recipientImageDigest !== imageDigestPin ||
+    input.health.image_digest?.trim().toLowerCase() !== imageDigestPin ||
+    !expectedReportData ||
+    recipientReportData !== expectedReportData ||
+    healthReportData !== expectedReportData ||
+    !recipientAttestation ||
+    recipientAttestation !== healthAttestation ||
+    !recipientQuote ||
+    recipientQuote !== healthQuote ||
+    (expiresAtMs !== null && expiresAtMs <= (input.nowMs ?? Date.now()))
+  ) {
+    return null;
+  }
+
+  return {
+    id: "phala",
+    label: "Phala TEE",
+    configured: true,
+    available: true,
+    attested: true,
+    supports_sealed_secrets: true,
+    supports_background_agents: true,
+    supports_trading_execution: true,
+    execution_url: executionUrl,
+    reason: null,
+    sealed_recipient: {
+      recipient_id: recipientId,
+      x25519_pub_hex: recipientX25519,
+      tee_kind: "phala",
+      measurement_hex: recipientImageDigest,
+      attestation_hash: input.recipient.attestation_hash?.trim() || null,
+      expires_at_unix: input.recipient.expires_at_unix ?? null,
+    },
+    evidence: {
+      tee_kind: "phala",
+      execution_url_configured: true,
+      image_digest_configured: true,
+      recipient_configured: true,
+      report_data_bound: true,
+      funding_signer_bound: true,
+      phala_attestation_present: true,
+      direct_worker_evidence: true,
+    },
+  };
+}
+
+async function directWorkerPhalaProvider(): Promise<ConfidentialComputeProviderStatus | null> {
+  const executionUrl = normalizedHttpsUrl(
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() ||
+    process.env.PHALA_AGENT_ENDPOINT?.trim(),
+  );
+  const fundingSignerPins = (
+    process.env.GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64 || ""
+  ).split(",").map((pin) => pin.trim()).filter(Boolean);
+  const imageDigestPin = (
+    process.env.GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST ||
+    process.env.GHOLA_PRIVATE_AGENT_IMAGE_DIGEST ||
+    process.env.PHALA_CVM_IMAGE_DIGEST ||
+    ""
+  ).trim();
+  if (!executionUrl || fundingSignerPins.length === 0 || !imageDigestPin) return null;
+
+  // The worker obtains fresh Dstack evidence for each response. Fetch these
+  // sequentially to avoid contending on the guest attestation socket.
+  const recipient = await fetchJson<PhalaWorkerRecipient>(
+    new URL("/.well-known/private-agent-recipient", executionUrl),
+    WORKER_EVIDENCE_FETCH_TIMEOUT_MS,
+  );
+  if (!recipient) return null;
+  const health = await fetchJson<PhalaWorkerHealth>(
+    new URL("/health", executionUrl),
+    WORKER_EVIDENCE_FETCH_TIMEOUT_MS,
+  );
+  if (!health) return null;
+  return phalaProviderFromWorkerEvidence({
+    executionUrl,
+    health,
+    recipient,
+    fundingSignerPins,
+    imageDigestPin,
+  });
+}
+
+async function mirroredPhalaProvider(): Promise<ConfidentialComputeProviderStatus | null> {
+  const statusUrl = normalizedHttpsUrl(
+    process.env.GHOLA_PRIVATE_AGENT_ATTESTATION_STATUS_URL?.trim(),
+  );
+  const executionUrl =
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() ||
+    process.env.PHALA_AGENT_ENDPOINT?.trim() ||
+    "";
+  const recipientId =
+    process.env.PHALA_ENCLAVE_KEY_ID?.trim() ||
+    process.env.GHOLA_PRIVATE_AGENT_ENCLAVE_KEY_ID?.trim() ||
+    "";
+  const recipientX25519 =
+    process.env.PHALA_ENCLAVE_X25519_PUB_HEX?.trim() ||
+    process.env.GHOLA_PRIVATE_AGENT_ENCLAVE_X25519_PUB_HEX?.trim() ||
+    "";
+  const measurementHex =
+    process.env.PHALA_CVM_MEASUREMENT_HEX?.trim() ||
+    process.env.GHOLA_PRIVATE_AGENT_MEASUREMENT_HEX?.trim() ||
+    "";
+  if (!statusUrl || !executionUrl || !recipientId || !recipientX25519 || !measurementHex) {
+    return null;
+  }
+  const status = await fetchJson<PrivateAgentRuntimeStatus>(
+    new URL(statusUrl),
+    ATTESTATION_STATUS_FETCH_TIMEOUT_MS,
+  );
+  if (!status) return null;
+  return phalaProviderFromAttestationStatus({
+    status,
+    executionUrl,
+    recipientId,
+    recipientX25519,
+    measurementHex,
+  });
 }
 
 function localProvider(): ConfidentialComputeProviderStatus {
@@ -171,6 +452,10 @@ function isAttestedProvider(value: unknown): value is AttestedProvider {
 async function phalaProvider(): Promise<ConfidentialComputeProviderStatus> {
   const discovered = await discoverPhalaPrivateAgentProvider().catch(() => null);
   if (discovered) return discovered;
+  const directWorker = await directWorkerPhalaProvider().catch(() => null);
+  if (directWorker) return directWorker;
+  const mirrored = await mirroredPhalaProvider().catch(() => null);
+  if (mirrored) return mirrored;
   if (phalaJitProvisioningEnabled()) {
     const configIssue = phalaJitProvisioningConfigIssue();
     const configured = phalaJitProvisioningConfigured();
@@ -333,6 +618,8 @@ function gensynProvider(): ConfidentialComputeProviderStatus {
 
 function mockAttestedProvider(): ConfidentialComputeProviderStatus | null {
   if (process.env.GHOLA_ENABLE_MOCK_ATTESTED_PROVIDER !== "true") return null;
+  const recipientId = process.env.GHOLA_PRIVATE_AGENT_ENCLAVE_KEY_ID?.trim() || "mock_attested:dev";
+  const recipientX25519 = process.env.GHOLA_PRIVATE_AGENT_ENCLAVE_X25519_PUB_HEX?.trim() || "11".repeat(32);
   return {
     id: "mock_attested",
     label: "Mock attested provider",
@@ -344,8 +631,8 @@ function mockAttestedProvider(): ConfidentialComputeProviderStatus | null {
     supports_trading_execution: true,
     reason: null,
     sealed_recipient: {
-      recipient_id: "mock_attested:dev",
-      x25519_pub_hex: "11".repeat(32),
+      recipient_id: recipientId,
+      x25519_pub_hex: recipientX25519,
       tee_kind: "none",
       measurement_hex: "00".repeat(32),
       attestation_hash: "mock",
@@ -355,7 +642,9 @@ function mockAttestedProvider(): ConfidentialComputeProviderStatus | null {
 }
 
 export async function getPrivateAgentRuntimeStatus(): Promise<PrivateAgentRuntimeStatus> {
-  if (privateAgentRemoteExecutionDisabled()) {
+  const boundedBetaEnabled = envTrue("GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED");
+  const operatorSpendLock = privateAgentRemoteExecutionDisabled();
+  if (operatorSpendLock) {
     const status = buildPrivateAgentRuntimeStatus({
       providers: [
         localProvider(),
@@ -377,6 +666,8 @@ export async function getPrivateAgentRuntimeStatus(): Promise<PrivateAgentRuntim
       ],
       preferredProvider: preferredProvider(),
       shieldedRailReady: true,
+      boundedBetaEnabled,
+      operatorSpendLock,
     });
     return {
       ...status,
@@ -407,5 +698,7 @@ export async function getPrivateAgentRuntimeStatus(): Promise<PrivateAgentRuntim
     providers,
     preferredProvider: preferredProvider(),
     shieldedRailReady: summarizePrivateBalance(paymentHealth).privateSpendReady,
+    boundedBetaEnabled,
+    operatorSpendLock,
   });
 }

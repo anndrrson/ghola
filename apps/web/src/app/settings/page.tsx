@@ -30,9 +30,19 @@ import type {
   ThumperTelegramStatus,
 } from "@/lib/thumper-types";
 import type { PrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime";
+import { probeGholaHome, type GholaHomeStatus } from "@/lib/local-inference";
 import { GholaLogo } from "@/components/GholaLogo";
 
 type Tab = "profile" | "privacy" | "model" | "usage" | "accounts" | "telegram" | "plan";
+
+type TradingModelStatus = {
+  worker_configured: boolean;
+  reachable: boolean;
+  configured: boolean;
+  provider_kind: string | null;
+  model_id: string | null;
+  local: boolean;
+};
 
 export default function SettingsPage() {
   const { authenticated, loading, user, logout } = useThumperAuth();
@@ -236,7 +246,7 @@ function PrivacySecurityTab() {
       status: "Private preferred",
       desc: "Private actions use the private rail when available; public settlement requires an explicit choice.",
       href: "/private-balance",
-      cta: "Manage balance",
+      cta: "Manage funding",
     },
     {
       icon: Link2,
@@ -310,6 +320,8 @@ function ModelTab() {
   const [baseUrl, setBaseUrl] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [localStatus, setLocalStatus] = useState<GholaHomeStatus | null>(null);
+  const [tradingModelStatus, setTradingModelStatus] = useState<TradingModelStatus | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -323,6 +335,38 @@ function ModelTab() {
         setBaseUrl(cfg.base_url || "");
       })
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void probeGholaHome().then((status) => {
+      if (active) setLocalStatus(status);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void fetch("/api/private-agent/model-status", { cache: "no-store" })
+      .then((response) => response.json() as Promise<TradingModelStatus>)
+      .then((status) => {
+        if (active) setTradingModelStatus(status);
+      })
+      .catch(() => {
+        if (active) setTradingModelStatus({
+          worker_configured: true,
+          reachable: false,
+          configured: false,
+          provider_kind: null,
+          model_id: null,
+          local: false,
+        });
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const selectedProvider = providers.find((p) => p.id === provider);
@@ -420,15 +464,43 @@ function ModelTab() {
       </button>
 
       {showAdvanced && (
-        <div>
-          <label className="block text-sm text-[#8b95a8] mb-1.5">Base URL (optional)</label>
-          <input
-            type="url"
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://api.openai.com/v1"
-            className="w-full rounded-lg border border-[#1e2a3a] bg-[#161822] px-3 py-2.5 text-sm text-[#eef1f8] placeholder-[#4a5568] outline-none focus:border-[#3da8ff] transition-colors"
-          />
+        <div className="space-y-3">
+          <div>
+            <label className="block text-sm text-[#8b95a8] mb-1.5">Base URL (optional)</label>
+            <input
+              type="url"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="https://api.openai.com/v1"
+              className="w-full rounded-lg border border-[#1e2a3a] bg-[#161822] px-3 py-2.5 text-sm text-[#eef1f8] placeholder-[#4a5568] outline-none focus:border-[#3da8ff] transition-colors"
+            />
+          </div>
+          <div className="rounded-lg border border-[#1e2a3a] bg-[#161822] p-3 text-xs text-[#8b95a8]">
+            <div className="flex items-center justify-between gap-3">
+              <span>Trading model role</span>
+              <span className="text-[#a8d8ff]">Proposal only</span>
+            </div>
+            <p className="mt-1 text-[#4a5568]">
+              Deterministic code owns venue, size, leverage, routing, risk veto, and Turnkey signing.
+            </p>
+            <div className="mt-2 flex items-center justify-between gap-3 border-t border-[#1e2a3a] pt-2">
+              <span>Worker model</span>
+              <span className={tradingModelStatus?.configured ? "text-[#63d6a7]" : "text-[#e6b45c]"}>
+                {tradingModelLabel(tradingModelStatus)}
+              </span>
+            </div>
+          </div>
+          <div className="rounded-lg border border-[#1e2a3a] bg-[#161822] p-3 text-xs text-[#8b95a8]">
+            <div className="flex items-center justify-between gap-3">
+              <span>Local Ghola Home</span>
+              <span className={localStatus?.available && localStatus.paired ? "text-[#63d6a7]" : "text-[#e6b45c]"}>
+                {localStatus?.available && localStatus.paired ? "Connected" : "Not connected"}
+              </span>
+            </div>
+            <p className="mt-1 text-[#4a5568]">
+              Localhost models require Ghola Home plus a locally run worker; cloud workers cannot reach your localhost. Remote model endpoints must use an approved HTTPS origin.
+            </p>
+          </div>
         </div>
       )}
 
@@ -448,6 +520,15 @@ function ModelTab() {
       </button>
     </div>
   );
+}
+
+function tradingModelLabel(status: TradingModelStatus | null) {
+  if (!status) return "Checking…";
+  if (status.configured) {
+    return `${status.local ? "Local" : status.provider_kind || "Hosted"} · ${status.model_id || "Configured"}`;
+  }
+  if (!status.worker_configured) return "Worker not linked";
+  return status.reachable ? "Needs configuration" : "Worker offline";
 }
 
 function UsageTab() {

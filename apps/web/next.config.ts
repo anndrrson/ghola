@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { withWorkflow } from "workflow/next";
 import { CROSS_ORIGIN_ISOLATION_HEADERS } from "./src/lib/csp-config";
 
 // Defense-in-depth response headers. Applied to every route except the
@@ -45,6 +46,8 @@ export const INTENT_SECURITY_HEADERS = SECURITY_HEADERS.map((header) =>
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  turbopack: { root: "../.." },
+  transpilePackages: ["@ghola/perps-core"],
   poweredByHeader: false,
   // Deterministic build id. Without this Next.js generates a random
   // 20-char id per build, which leaks into manifest paths and
@@ -75,6 +78,15 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
+        source: "/.well-known/apple-app-site-association",
+        headers: [
+          {
+            key: "Content-Type",
+            value: "application/json",
+          },
+        ],
+      },
+      {
         source: "/intent",
         headers: INTENT_SECURITY_HEADERS,
       },
@@ -88,4 +100,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withWorkflow(nextConfig);

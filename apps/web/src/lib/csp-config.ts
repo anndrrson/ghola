@@ -39,6 +39,14 @@ export const CONNECT_SRC_HOSTS: readonly string[] = [
   // account/order submission still goes through Ghola's sealed connector.
   "wss://api.hyperliquid.xyz",
   "wss://api.hyperliquid-testnet.xyz",
+  // Public Phoenix market data stream. This is market-only data;
+  // live order submission still goes through Ghola's sealed worker path.
+  "https://perp-api.phoenix.trade",
+  "wss://perp-api.phoenix.trade",
+  // Public Backpack market data stream. This is market-only data;
+  // account/order submission still goes through Ghola's sealed worker path.
+  "https://api.backpack.exchange",
+  "wss://ws.backpack.exchange",
   // Public Coinbase Advanced market data stream. This is market-only data;
   // account/order submission still goes through Ghola's sealed connector.
   "wss://advanced-trade-ws.coinbase.com",

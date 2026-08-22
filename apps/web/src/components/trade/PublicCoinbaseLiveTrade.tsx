@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Activity,
@@ -30,7 +30,8 @@ import {
   type GholaChartMode,
 } from "@/lib/ghola-market-chart";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
-import { useTurnkeyWallet } from "@/lib/turnkey-provider";
+import { usePerpsTurnkey } from "@/lib/perps-turnkey-provider";
+import { TurnkeyPerpsManager } from "@/components/trade/TurnkeyPerpsManager";
 import { GholaMarketChart } from "@/components/private-account/GholaMarketChart";
 import {
   formatAssetQuantity,
@@ -55,7 +56,12 @@ import {
   type PrivateAccountSafeInput,
 } from "@/lib/private-account-client";
 import { useMarketData } from "@/lib/market-data-store";
-import { hyperliquidPerpsReadiness, spotVenueReadiness } from "@/lib/trade-readiness";
+import {
+  hyperliquidCredentialsSealed,
+  hyperliquidPerpsReadiness,
+  mergeHyperliquidAccountSnapshot,
+  spotVenueReadiness,
+} from "@/lib/trade-readiness";
 
 type LiveStep = "idle" | "prepared" | "submitted";
 
@@ -802,7 +808,7 @@ function AlternateProductWorkspace({
   hyperliquidMaxSlippageBps: number;
 }) {
   const workspaceParams = useSearchParams();
-  const turnkeyWallet = useTurnkeyWallet();
+  const perpsTurnkey = usePerpsTurnkey();
   // This value must be identical during SSR and the browser's first render.
   // Browser preferences are reconciled in an effect after hydration.
   const requestedPerpMarket = workspaceParams.get("product") === "perps"
@@ -846,6 +852,8 @@ function AlternateProductWorkspace({
   const marketLabel = product === "perps" ? `${baseSymbol}-PERP` : product === "swap" ? "SOL / USDC" : referenceProduct;
   const nativeProtection = selectedVenue?.protective_orders === "native";
   const setupHref = `/account?flow=private-mode&setup=${encodeURIComponent(venue)}&return_to=${encodeURIComponent(`/trade?product=${product}&venue=${venue}&market=${marketLabel}`)}`;
+  const legacyHyperliquidApiKeysEnabled =
+    process.env.NEXT_PUBLIC_GHOLA_LEGACY_HYPERLIQUID_API_KEYS === "true";
   const useHyperliquidMarket = active && product === "perps" && venue === "hyperliquid";
   const hyperliquidRecord = useMarketData({
     venue: "hyperliquid",
@@ -992,7 +1000,7 @@ function AlternateProductWorkspace({
       coin: perpMarket,
       onState(snapshot) {
         if (!cancelled) {
-          setHyperliquidAccount(snapshot);
+          setHyperliquidAccount((current) => mergeHyperliquidAccountSnapshot(current, snapshot));
           setAccountState("ready");
         }
       },
@@ -1013,10 +1021,10 @@ function AlternateProductWorkspace({
     void fetch("/v1/private-account/hyperliquid/vault", { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) throw new Error("connection status unavailable");
-        return response.json() as Promise<{ ready?: boolean }>;
+        return response.json() as Promise<{ credentials_sealed?: boolean }>;
       })
       .then((status) => {
-        if (!cancelled) setHyperliquidConnectionReady(status.ready === true);
+        if (!cancelled) setHyperliquidConnectionReady(hyperliquidCredentialsSealed(status));
       })
       .catch(() => {
         if (!cancelled) setHyperliquidConnectionReady(false);
@@ -1057,6 +1065,20 @@ function AlternateProductWorkspace({
     params.set("market", marketLabel.replace(" / ", "-"));
     replaceTradeUrlAfterPaint(`/trade?${params.toString()}`);
   }
+
+  const handlePerpsManagerReady = useCallback((configured: {
+    leverage: number;
+    marginMode: "cross" | "isolated";
+    maxSlippageBps: number;
+  }) => {
+    setLeverage(String(configured.leverage));
+    setMarginMode(configured.marginMode);
+    setMaxSlippageBps(String(configured.maxSlippageBps));
+    void fetch("/v1/private-account/hyperliquid/status", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((status) => setHyperliquidConnectionReady(hyperliquidCredentialsSealed(status)))
+      .catch(() => setHyperliquidConnectionReady(false));
+  }, []);
 
   async function reviewPerpOrder() {
     setPerpError(null);
@@ -1135,17 +1157,18 @@ function AlternateProductWorkspace({
       setPerpError("The live review expired. Review the order again for a fresh price and account check.");
       return;
     }
-    if (!turnkeyWallet.walletAddress) {
-      setPerpError("Unlock your Ghola wallet to approve this private order.");
+    if (!perpsTurnkey.configured || !perpsTurnkey.authenticated) {
+      setPerpError("Authenticate with the Turnkey owner wallet before approving this order.");
       return;
     }
     setPerpWorking("submit");
     try {
+      const pair = await perpsTurnkey.ensureWalletPair();
       const sealed = await buildPrivateExecutionInstructionBundle({
-        ownerWalletAddress: turnkeyWallet.walletAddress,
+        ownerWalletAddress: pair.sealing.address,
         previewCommitment: perpReview.previewCommitment,
         order: perpOrder,
-        signBytes: turnkeyWallet.signBytes,
+        signBytes: perpsTurnkey.signSealingBytes,
         ttlMs: 60_000,
       });
       const approval = await approvePrivateAccountAction({
@@ -1478,7 +1501,7 @@ function AlternateProductWorkspace({
             if (event.currentTarget === event.target) setSetupOpen(false);
           }}
         >
-          <aside role="dialog" aria-modal="true" aria-label="Venue setup" className="h-full w-full max-w-md border-l border-[#29313c] bg-[#0b0e13] p-6 shadow-2xl">
+          <aside role="dialog" aria-modal="true" aria-label="Venue setup" className="h-full w-full max-w-md overflow-y-auto border-l border-[#29313c] bg-[#0b0e13] p-6 shadow-2xl">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#3da8ff]">Secure connection</p>
@@ -1498,21 +1521,41 @@ function AlternateProductWorkspace({
               </div>
               <p className="mt-4 text-sm leading-6 text-[#9da8b8]">
                 {product === "perps"
-                  ? "Use a dedicated Hyperliquid API wallet. Ghola encrypts it in your browser, checks the connection without placing an order, and only then marks the account connected."
+                  ? legacyHyperliquidApiKeysEnabled
+                    ? "Use a dedicated trade-only API wallet. Your owner wallet keeps funding, withdrawal, and revocation authority."
+                    : "Your owner wallet keeps funding and revocation authority. A separate Turnkey agent wallet receives bounded signing access."
                   : selectedVenue?.unavailable_reason ?? "This venue is ready for capped execution."}
               </p>
             </div>
-            <Link
-              href={setupHref}
-              className="mt-5 inline-flex h-12 w-full items-center justify-center rounded-md bg-[#3da8ff] text-sm font-bold text-[#03101d] hover:bg-[#67baff]"
-            >
-              {product === "perps" ? "Connect Hyperliquid" : "Continue secure setup"}
-            </Link>
-            <p className="mt-3 text-xs leading-5 text-[#697486]">
-              {product === "perps"
-                ? "You’ll need your Hyperliquid account address and a dedicated API wallet key—not your main wallet seed."
-                : "Setup opens in a secure account flow."}
-            </p>
+            {product === "perps" ? (
+              legacyHyperliquidApiKeysEnabled ? (
+                <div className="mt-5 space-y-3">
+                  <p className="text-xs leading-5 text-[#9da8b8]">
+                    Ghola seals the scoped API wallet to the private worker. The browser never sends your owner key.
+                  </p>
+                  <Link
+                    href={setupHref}
+                    className="inline-flex h-12 w-full items-center justify-center rounded-md bg-[#3da8ff] text-sm font-bold text-[#03101d] hover:bg-[#67baff]"
+                  >
+                    Connect scoped API wallet
+                  </Link>
+                </div>
+              ) : (
+                <TurnkeyPerpsManager
+                  network={hyperliquidNetwork}
+                  market={perpMarket}
+                  referencePrice={displayedMid}
+                  onReady={handlePerpsManagerReady}
+                />
+              )
+            ) : (
+              <Link
+                href={setupHref}
+                className="mt-5 inline-flex h-12 w-full items-center justify-center rounded-md bg-[#3da8ff] text-sm font-bold text-[#03101d] hover:bg-[#67baff]"
+              >
+                Continue secure setup
+              </Link>
+            )}
           </aside>
         </div>
       )}
@@ -1716,6 +1759,7 @@ function validatePerpTicket(
   const slippage = Number(order.max_slippage_bps);
   if (Number.isFinite(notional) && notional < 10) errors.unshift("Hyperliquid orders must be at least $10.");
   if (Number.isFinite(notional) && notional > 1_000) errors.unshift("Orders are capped at $1,000 during the bounded mainnet launch.");
+  if (!order.reduce_only && !order.protective_orders?.stop_loss?.trim()) errors.unshift("A stop-loss is required by the signed agent mandate.");
   if (maxLeverage != null && Number(order.leverage) > maxLeverage) errors.unshift(`This market supports at most ${maxLeverage}× leverage.`);
   if (Number.isFinite(slippage) && slippage > maxSlippagePolicyBps) {
     errors.unshift(`Max slippage is capped at ${maxSlippagePolicyBps} bps for this environment.`);

@@ -96,6 +96,49 @@ describe("private account anonymity engine", () => {
     expect(preview.degraded_reasons).toContain("direct_public_fallback cannot satisfy Private Mode");
   });
 
+  it("does not apply private-rail linkability blocking to an explicitly accepted direct venue route", () => {
+    const action = createPrivateAccountAction({ action_class: "trade_on_platform" });
+
+    const preview = previewPrivateAccountAction({
+      action,
+      platform_class: "hyperliquid_style_market",
+      requested_rail: "direct_public_fallback",
+      anonymity_set: {
+        effective: 1,
+        amount_bucketed: false,
+        timing_window_met: false,
+        uniqueness_score_bps: 10_000,
+      },
+      linkability_simulation: {
+        ...linkabilitySimulation(),
+        decision: "blocked",
+        reason_codes: ["blocked_account_reuse"],
+      },
+      rotation: {
+        ...platformRotation(),
+        reuse_count: 7,
+        status: "rotate_required",
+        reason_codes: ["platform_funding_account_reuse"],
+      },
+      connector_context: {
+        ...connectorContext(),
+        linkability_decision: "blocked",
+        venue_access_source: "user_provided_credentials",
+        venue_gate: "venue_accepts_or_rejects_credentials",
+        venue_visibility: "execution_account_and_order_activity",
+        privacy_claim: "venue_visible_order_degraded",
+        reason_codes: ["repeated_venue", "same_amount_bucket"],
+      },
+    });
+
+    expect(preview.claim_status).toBe("degraded_user_accepted_required");
+    expect(preview.blocked_reasons).not.toContain("adversarial linkability simulator blocked execution");
+    expect(preview.blocked_reasons).not.toContain("blocked_account_reuse");
+    expect(preview.blocked_reasons).not.toContain("cross-platform linkability score blocks execution");
+    expect(preview.wait_reasons).not.toContain("platform funding account rotation is required");
+    expect(preview.degraded_reasons).toContain("direct_public_fallback cannot satisfy Private Mode");
+  });
+
   it("marks venue-visible markets as degraded even when source wallet is hidden", () => {
     const action = createPrivateAccountAction({ action_class: "trade_on_platform" });
 

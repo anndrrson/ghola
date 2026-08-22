@@ -45,6 +45,7 @@ export class PrivateExecutionError extends Error {
 }
 
 const AUTOPILOT_INTERNAL_INSTRUCTION = Symbol("ghola.autopilot.internal_instruction");
+const HYPERLIQUID_PROOF_PROTOCOL = "ghola-hyperliquid-proof-v2";
 
 export function commitment(prefix, value) {
   return `${prefix}_${sha256Hex(canonicalJson(value)).slice(0, 48)}`;
@@ -253,6 +254,13 @@ export async function storeCoinbaseSession({ body, recipient, state, provider })
 export async function executeHyperliquidOrder({ body, recipient, state }) {
   const cached = await state.getIdempotency(body.work_order_commitment);
   if (cached?.receipt) return cached.receipt;
+  const priorAttempt = await state.getExecutionAttempt(body.work_order_commitment);
+  if (["pending", "ambiguous", "submitted", "filled", "cancelled", "reconciled"].includes(priorAttempt?.status)) {
+    throw new PrivateExecutionError(
+      "hyperliquid work order already has a durable submission attempt; reconcile it instead of retrying",
+      409,
+    );
+  }
   const executionMode = hyperliquidExecutionMode(body);
   let credential;
   let allocation = null;
@@ -283,19 +291,48 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
       : undefined,
     policy_commitment: body.policy_commitment,
   });
-  const instruction = await resolvePrivateCancelTarget(await instructionForBody({
+  const instruction = await resolvePrivateOrderTarget(await instructionForBody({
     body,
     recipient,
     venue_id: "hyperliquid",
     session,
-  }), { state, venue_id: "hyperliquid" });
-  await enforceInstructionPolicy({ body, instruction, session, state });
-  const cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
-  const adapterResult = await submitHyperliquidExecution({
-    credential,
+  }), { state, venue_id: "hyperliquid", body });
+  await enforceInstructionPolicy({
+    body,
     instruction,
-    cloid,
+    session,
+    state,
+    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
   });
+  const cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
+  const pendingAttempt = {
+    venue_id: "hyperliquid",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: executionMode,
+    provider_ref_seed: { venue: "hyperliquid", cloid, pending: true },
+    result_seed: { kind: "hyperliquid_submission_pending" },
+    fills: [],
+    final_proof: null,
+    status: "pending",
+    created_at: new Date().toISOString(),
+  };
+  await state.putExecutionAttempt(body.work_order_commitment, pendingAttempt);
+  let adapterResult;
+  try {
+    adapterResult = await submitHyperliquidExecution({
+      credential,
+      instruction,
+      cloid,
+    });
+  } catch (error) {
+    await state.putExecutionAttempt(body.work_order_commitment, {
+      ...pendingAttempt,
+      result_seed: { kind: "hyperliquid_submission_ambiguous" },
+      status: "ambiguous",
+      updated_at: new Date().toISOString(),
+    });
+    throw error;
+  }
   await state.putExecutionAttempt(body.work_order_commitment, {
     venue_id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
@@ -307,7 +344,9 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     status: adapterResult.status,
     created_at: new Date().toISOString(),
   });
-  const receipt = executionReceipt({
+  const receipt = {
+    execution_protocol: HYPERLIQUID_PROOF_PROTOCOL,
+    ...executionReceipt({
     venue_id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
     execution_mode: executionMode,
@@ -333,7 +372,8 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
           ? "no_ghola_public_settlement"
           : "private_funding_evidence_required",
     },
-  });
+    }),
+  };
   return state.putIdempotency(body.work_order_commitment, receipt);
 }
 
@@ -345,6 +385,65 @@ export async function readHyperliquidSnapshot({ body, recipient, state }) {
       ? "ghola_pooled"
       : executionMode === "managed_testnet" ? "ghola_managed" : "sealed_byo",
   });
+}
+
+export async function reconcileHyperliquidOrder({ body, recipient, state }) {
+  const { executionMode, credential } = await hyperliquidCredentialForBody({ body, recipient, state });
+  const targetWorkOrderCommitment = body.work_order_commitment;
+  const attempted = await state.getExecutionAttempt(targetWorkOrderCommitment);
+  const targetCloid = await state.deriveHyperliquidCloid(targetWorkOrderCommitment);
+  const instruction = normalizeInstruction({
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: "hyperliquid",
+    operation_class: "reconcile",
+    reconcile: {
+      target_work_order_commitment: targetWorkOrderCommitment,
+      target_client_order_id: targetCloid,
+      target_order_id: attempted?.provider_ref_seed?.order_id || attempted?.provider_ref_seed?.oid || null,
+    },
+  }, { venue_id: "hyperliquid", operation_class: "reconcile" });
+  const adapterResult = await submitHyperliquidExecution({
+    credential,
+    instruction,
+    cloid: targetCloid,
+  });
+  await state.putExecutionAttempt(targetWorkOrderCommitment, {
+    venue_id: "hyperliquid",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: executionMode,
+    provider_ref_seed: adapterResult.provider_ref_seed,
+    result_seed: adapterResult.result_seed,
+    fills: adapterResult.fills,
+    final_proof: adapterResult.final_proof || null,
+    status: adapterResult.status,
+    created_at: attempted?.created_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+  return {
+    execution_protocol: HYPERLIQUID_PROOF_PROTOCOL,
+    ...executionReceipt({
+    venue_id: "hyperliquid",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: executionMode,
+    instruction,
+    body: { ...body, operation_class: "reconcile" },
+    status: adapterResult.status,
+    provider_ref_seed: adapterResult.provider_ref_seed,
+    result_seed: adapterResult.result_seed,
+    fills: adapterResult.fills,
+    final_proof: adapterResult.final_proof,
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      hyperliquid_sees: "account_and_targeted_order_status_query",
+      venue_access_source: hyperliquidVenueAccessSource(executionMode),
+      ghola_access_role: "private_execution_reconciler",
+      venue_gate: "venue_order_status_is_source_of_truth",
+      public_chain_sees: "no_transaction_sent",
+    },
+    }),
+  };
 }
 
 export async function streamHyperliquidAccountState({ body, recipient, state, onEvent }) {
@@ -456,13 +555,19 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
     policy_commitment: body.policy_commitment || undefined,
     allocation_commitment: body.omnibus_allocation?.allocation_commitment || body.allocation_commitment || undefined,
   });
-  const instruction = await resolvePrivateCancelTarget(await instructionForBody({
+  const instruction = await resolvePrivateOrderTarget(await instructionForBody({
     body,
     recipient,
     venue_id: "coinbase_advanced",
     session,
-  }), { state, venue_id: "coinbase_advanced" });
-  await enforceInstructionPolicy({ body, instruction, session, state });
+  }), { state, venue_id: "coinbase_advanced", body });
+  await enforceInstructionPolicy({
+    body,
+    instruction,
+    session,
+    state,
+    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
+  });
 
   let credential;
   if (body.execution_mode === "partner_omnibus") {
@@ -574,13 +679,19 @@ export async function executeSolanaPerpsOrder({ body, recipient, state }) {
     allocation_commitment: body.allocation_commitment || undefined,
     policy_commitment: body.policy_commitment || undefined,
   });
-  const instruction = await resolvePrivateCancelTarget(await instructionForBody({
+  const instruction = await resolvePrivateOrderTarget(await instructionForBody({
     body,
     recipient,
     venue_id: venueId,
     session,
-  }), { state, venue_id: venueId });
-  await enforceInstructionPolicy({ body, instruction, session, state });
+  }), { state, venue_id: venueId, body });
+  await enforceInstructionPolicy({
+    body,
+    instruction,
+    session,
+    state,
+    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
+  });
   const clientOrderId = await state.deriveClientOrderId(venueId, body.work_order_commitment);
   const adapterResult = await submitSolanaPerpsExecution({
     credential,
@@ -654,7 +765,13 @@ export async function executeJupiterSwapOrder({ body, recipient, state }) {
     venue_id: "jupiter",
     session,
   });
-  await enforceInstructionPolicy({ body, instruction, session, state });
+  await enforceInstructionPolicy({
+    body,
+    instruction,
+    session,
+    state,
+    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
+  });
   const clientOrderId = await state.deriveClientOrderId("jupiter", body.work_order_commitment);
   const adapterResult = await submitJupiterSwapExecution({
     credential,
@@ -856,13 +973,20 @@ export async function verifySolanaPerpsOrderNoSubmit({ body, recipient, state })
     allocation_commitment: body.allocation_commitment || undefined,
     policy_commitment: body.policy_commitment || undefined,
   });
-  const instruction = await resolvePrivateCancelTarget(await instructionForBody({
+  const instruction = await resolvePrivateOrderTarget(await instructionForBody({
     body,
     recipient,
     venue_id: venueId,
     session,
-  }), { state, venue_id: venueId });
-  await enforceInstructionPolicy({ body, instruction, session, state: null });
+  }), { state, venue_id: venueId, body });
+  await enforceInstructionPolicy({
+    body,
+    instruction,
+    session,
+    state,
+    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
+    account_usage: false,
+  });
   const clientOrderId = await state.deriveClientOrderId(venueId, body.work_order_commitment);
   const adapterResult = await verifySolanaPerpsNoSubmit({
     credential,
@@ -914,13 +1038,20 @@ export async function verifyCoinbaseOrderNoSubmit({ body, recipient, state }) {
     policy_commitment: body.policy_commitment || undefined,
     allocation_commitment: body.omnibus_allocation?.allocation_commitment || body.allocation_commitment || undefined,
   });
-  const instruction = await resolvePrivateCancelTarget(await instructionForBody({
+  const instruction = await resolvePrivateOrderTarget(await instructionForBody({
     body,
     recipient,
     venue_id: "coinbase_advanced",
     session,
-  }), { state, venue_id: "coinbase_advanced" });
-  await enforceInstructionPolicy({ body, instruction, session, state: null });
+  }), { state, venue_id: "coinbase_advanced", body });
+  await enforceInstructionPolicy({
+    body,
+    instruction,
+    session,
+    state,
+    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
+    account_usage: false,
+  });
 
   let credential;
   if (body.execution_mode === "partner_omnibus") {
@@ -1000,7 +1131,14 @@ export async function verifyJupiterSwapNoSubmit({ body, recipient, state }) {
     venue_id: "jupiter",
     session,
   });
-  await enforceInstructionPolicy({ body, instruction, session, state: null });
+  await enforceInstructionPolicy({
+    body,
+    instruction,
+    session,
+    state,
+    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
+    account_usage: false,
+  });
   const clientOrderId = await state.deriveClientOrderId("jupiter", body.work_order_commitment);
   const adapterResult = await verifyJupiterSwapNoSubmitAdapter({
     credential,
@@ -1077,13 +1215,20 @@ export async function verifyHyperliquidOrderNoSubmit({ body, recipient, state })
       : undefined,
     policy_commitment: body.policy_commitment,
   });
-  const instruction = await resolvePrivateCancelTarget(await instructionForBody({
+  const instruction = await resolvePrivateOrderTarget(await instructionForBody({
     body,
     recipient,
     venue_id: "hyperliquid",
     session,
-  }), { state, venue_id: "hyperliquid" });
-  await enforceInstructionPolicy({ body, instruction, session, state: null });
+  }), { state, venue_id: "hyperliquid", body });
+  await enforceInstructionPolicy({
+    body,
+    instruction,
+    session,
+    state,
+    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
+    account_usage: false,
+  });
   const cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
   const adapterResult = await verifyHyperliquidNoSubmit({
     credential,
@@ -1094,6 +1239,7 @@ export async function verifyHyperliquidOrderNoSubmit({ body, recipient, state })
   const providerRefCommitment = commitment("hyperliquid_provider_ref", adapterResult.provider_ref_seed);
   return {
     version: 1,
+    execution_protocol: HYPERLIQUID_PROOF_PROTOCOL,
     platform_class: "hyperliquid_style_market",
     execution_mode: executionMode,
     status: "verified_no_funds",
@@ -1217,15 +1363,33 @@ async function instructionForBody({ body, recipient, venue_id, session }) {
   throw new PrivateExecutionError("encrypted execution instruction is required");
 }
 
-async function resolvePrivateCancelTarget(instruction, { state, venue_id }) {
-  const target = instruction?.cancel?.target_work_order_commitment;
-  if (instruction?.operation_class !== "cancel" || !target) return instruction;
-  if (!(await state.getIdempotency(target))?.receipt) {
-    throw new PrivateExecutionError("cancel target work order is unknown");
+async function resolvePrivateOrderTarget(instruction, { state, venue_id, body }) {
+  const target = instruction?.operation_class === "cancel"
+    ? instruction.cancel?.target_work_order_commitment
+    : instruction?.operation_class === "reconcile"
+      ? instruction.reconcile?.target_work_order_commitment
+      : null;
+  if (!target) return instruction;
+  const cached = (await state.getIdempotency(target))?.receipt;
+  if (!cached && !await durableRecoveryTargetAllowed({ state, body, target, venueId: venue_id })) {
+    throw new PrivateExecutionError(instruction.operation_class === "cancel"
+      ? "cancel target work order is unknown"
+      : "reconcile target work order is unknown");
   }
   const clientOrderId = venue_id === "hyperliquid"
     ? await state.deriveHyperliquidCloid(target)
     : await state.deriveClientOrderId("ghola", target);
+  if (instruction.operation_class === "reconcile") {
+    const attempt = await state.getExecutionAttempt(target);
+    return {
+      ...instruction,
+      reconcile: {
+        ...instruction.reconcile,
+        target_client_order_id: clientOrderId,
+        target_order_id: attempt?.provider_ref_seed?.order_id || attempt?.provider_ref_seed?.oid || null,
+      },
+    };
+  }
   return {
     ...instruction,
     cancel: {
@@ -1233,6 +1397,19 @@ async function resolvePrivateCancelTarget(instruction, { state, venue_id }) {
       client_order_id: clientOrderId,
     },
   };
+}
+
+async function durableRecoveryTargetAllowed({ state, body, target, venueId }) {
+  if (!body?.[AUTOPILOT_INTERNAL_INSTRUCTION] || !body.recovery_saga_id || !body.autopilot_session_id) return false;
+  const saga = await state.getMultiLegSaga?.(body.recovery_saga_id);
+  if (
+    !saga ||
+    saga.execution_context?.autopilot_session_id !== body.autopilot_session_id ||
+    saga.execution_context?.policy_commitment !== body.policy_commitment
+  ) return false;
+  const contextLeg = saga.execution_context.legs.find((leg) => leg.work_order_commitment === target);
+  const sagaLeg = contextLeg && saga.legs.find((leg) => leg.leg_id === contextLeg.leg_id);
+  return sagaLeg?.venue_id === venueId;
 }
 
 function hyperliquidExecutionMode(body) {

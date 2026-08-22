@@ -102,7 +102,7 @@ describe("ghola market chart model", () => {
     });
     expect(overlays[0].priceEnd).toBeCloseTo(100.5);
     expect(overlays.find((overlay) => overlay.id === "agent-entry")?.label).toBe("Entry");
-    expect(overlays.find((overlay) => overlay.id === "agent-guard")?.label).toBe("Slippage cap 50 bps");
+    expect(overlays.find((overlay) => overlay.id === "agent-guard")?.label).toBe("Max slippage · 50 bps");
     expect(overlays.find((overlay) => overlay.label === "Scout target")).toBeUndefined();
     expect(overlays.find((overlay) => overlay.label === "Venue sees")).toBeUndefined();
     expect(overlays.find((overlay) => overlay.id === "receipt")?.kind).toBe("receipt");

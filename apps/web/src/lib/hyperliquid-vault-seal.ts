@@ -1,4 +1,5 @@
 import bs58 from "bs58";
+import { normalizePerpsMandate } from "@ghola/perps-core";
 import { didKeyFromVerifying, RecipientKind, seal } from "./envelope";
 import {
   chooseConfidentialComputeProvider,
@@ -42,6 +43,28 @@ export interface BuildHyperliquidExecutionVaultBundleResult {
   encrypted_execution_vault: HyperliquidEncryptedExecutionVaultBundle;
   recipient: ConfidentialComputeProviderStatus["sealed_recipient"];
   associated_data: string;
+}
+
+export interface TurnkeyHyperliquidExecutionCredential {
+  signing_mode: "turnkey_delegated";
+  turnkey_organization_id: string;
+  turnkey_agent_key_ref: string;
+  owner_wallet_address: string;
+  agent_wallet_address: string;
+  hyperliquid_account_address: string;
+  owner_mandate_signature: `0x${string}`;
+  perps_mandate: unknown;
+  agent_name: string;
+}
+
+export interface BuildTurnkeyHyperliquidExecutionVaultBundleOptions {
+  accountCommitment: string;
+  sealingWalletAddress: string;
+  credential: TurnkeyHyperliquidExecutionCredential;
+  signBytes: (bytes: Uint8Array) => Promise<Uint8Array>;
+  runtimeStatus?: PrivateAgentRuntimeStatus;
+  fetchRuntimeStatus?: () => Promise<PrivateAgentRuntimeStatus>;
+  now?: Date;
 }
 
 const ETH_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -212,6 +235,87 @@ export async function buildHyperliquidExecutionVaultBundle(
     kind: RecipientKind.ModelBridge,
     associatedData: new TextEncoder().encode(associatedData),
     plaintext: new TextEncoder().encode(JSON.stringify(sealedPlaintext)),
+    signBody: options.signBytes,
+  });
+
+  return {
+    recipient,
+    associated_data: associatedData,
+    encrypted_execution_vault: {
+      alg: "sealed-provider-v1",
+      ciphertext: bytesToBase64(sealedBytes),
+      recipient: recipient.recipient_id,
+      aad: associatedData,
+    },
+  };
+}
+
+export async function buildTurnkeyHyperliquidExecutionVaultBundle(
+  options: BuildTurnkeyHyperliquidExecutionVaultBundleOptions,
+): Promise<BuildHyperliquidExecutionVaultBundleResult> {
+  if (!options.accountCommitment.trim()) throw new Error("Private account commitment is unavailable.");
+  const credential = options.credential;
+  const mandate = normalizePerpsMandate(credential.perps_mandate);
+  const owner = credential.owner_wallet_address.trim().toLowerCase();
+  const agent = credential.agent_wallet_address.trim().toLowerCase();
+  const execution = credential.hyperliquid_account_address.trim().toLowerCase();
+  if (!ETH_ADDRESS_RE.test(owner) || !ETH_ADDRESS_RE.test(agent) || !ETH_ADDRESS_RE.test(execution)) {
+    throw new Error("Turnkey owner, agent, and execution addresses are required.");
+  }
+  if (
+    mandate.owner_address !== owner ||
+    mandate.agent_address !== agent ||
+    mandate.execution_address !== execution
+  ) {
+    throw new Error("Turnkey wallet addresses do not match the signed mandate.");
+  }
+  if (!/^0x[0-9a-fA-F]{130}$/.test(credential.owner_mandate_signature)) {
+    throw new Error("Owner mandate signature is invalid.");
+  }
+  if (!credential.turnkey_organization_id.trim() || !credential.turnkey_agent_key_ref.trim()) {
+    throw new Error("Turnkey organization and delegated key reference are required.");
+  }
+  if (!AGENT_NAME_RE.test(credential.agent_name.trim())) {
+    throw new Error("Agent name is invalid.");
+  }
+
+  const runtime = options.runtimeStatus ??
+    await (options.fetchRuntimeStatus ?? fetchPrivateAgentRuntimeStatus)();
+  const provider = selectedReadyProvider(runtime);
+  const recipient = provider?.sealed_recipient;
+  if (!recipient) throw new Error("Attested private-agent recipient is unavailable.");
+  const recipientX25519 = hexToBytes(recipient.x25519_pub_hex);
+  if (recipientX25519.length !== 32) throw new Error("Attested private-agent recipient key is invalid.");
+  const ownerDid = solanaAddressToDid(options.sealingWalletAddress);
+  if (!ownerDid) throw new Error("Turnkey sealing identity is unavailable.");
+  const associatedData = hyperliquidVaultAssociatedData({
+    accountCommitment: options.accountCommitment,
+    recipientId: recipient.recipient_id,
+    network: mandate.network,
+  });
+  const sealedBytes = await seal({
+    senderDid: ownerDid,
+    recipientId: recipient.recipient_id,
+    recipientX25519,
+    kind: RecipientKind.ModelBridge,
+    associatedData: new TextEncoder().encode(associatedData),
+    plaintext: new TextEncoder().encode(JSON.stringify({
+      version: 1,
+      kind: "ghola_hyperliquid_execution_vault",
+      signing_mode: "turnkey_delegated",
+      network: mandate.network,
+      turnkey_organization_id: credential.turnkey_organization_id.trim(),
+      turnkey_agent_key_ref: credential.turnkey_agent_key_ref.trim(),
+      owner_wallet_address: owner,
+      agent_wallet_address: agent,
+      hyperliquid_account_address: execution,
+      owner_mandate_signature: credential.owner_mandate_signature,
+      perps_mandate: mandate,
+      agent_name: credential.agent_name.trim(),
+      allowed_operations: ["read", "limit_order", "cancel", "reconcile"],
+      blocked_operations: ["withdraw", "transfer", "approve_agent", "configure_leverage"],
+      created_at: (options.now ?? new Date()).toISOString(),
+    })),
     signBody: options.signBytes,
   });
 

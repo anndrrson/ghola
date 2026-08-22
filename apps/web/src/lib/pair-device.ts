@@ -28,18 +28,16 @@
  * and `crates/said-envelope/src/lib.rs` for the wire format.
  */
 
-import { ed25519, x25519 } from "@noble/curves/ed25519";
+import { x25519 } from "@noble/curves/ed25519";
 
 import {
   RecipientKind,
-  didKeyFromVerifying,
   open as openEnvelope,
   seal as sealEnvelope,
   type SealOptions,
 } from "./envelope";
 import {
   SessionVault,
-  VaultRecipientKind,
   type VaultRecipientKindByte,
 } from "./session-vault";
 
@@ -329,7 +327,3 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     );
   });
 }
-
-// `_unused` so eslint doesn't flag the imports purely for type usage.
-type _unused = typeof ed25519 | VaultRecipientKindByte;
-void VaultRecipientKind; // referenced for re-export discoverability

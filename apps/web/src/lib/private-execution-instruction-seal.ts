@@ -33,6 +33,12 @@ export interface PrivateExecutionOrderDraft {
   size_mode?: "base" | "quote";
   post_only?: boolean;
   reduce_only?: boolean;
+  leverage?: number;
+  margin_mode?: "cross" | "isolated";
+  protective_orders?: {
+    stop_loss?: string;
+    take_profit?: string;
+  };
   tif?: "Gtc" | "Ioc" | "Alo" | "gtc" | "ioc" | "fok";
   input_mint?: string;
   output_mint?: string;
@@ -176,6 +182,9 @@ export function validatePrivateExecutionOrderDraft(draft: PrivateExecutionOrderD
   }
   errors.push(...validatePrivateExecutionAgentMandate(draft));
   if (draft.venue_id === "jupiter") {
+    if (draft.protective_orders?.stop_loss?.trim() || draft.protective_orders?.take_profit?.trim()) {
+      errors.push("Protective orders are not available for swaps.");
+    }
     if (draft.operation_class !== "swap") errors.push("Jupiter only supports private swap instructions.");
     if (!SOLANA_ADDRESS_RE.test(draft.input_mint?.trim() || "")) errors.push("Select a valid input mint.");
     if (!SOLANA_ADDRESS_RE.test(draft.output_mint?.trim() || "")) errors.push("Select a valid output mint.");
@@ -202,6 +211,23 @@ export function validatePrivateExecutionOrderDraft(draft: PrivateExecutionOrderD
   }
   if (draft.side !== "buy" && draft.side !== "sell") {
     errors.push("Select buy or sell.");
+  }
+  const stopLoss = draft.protective_orders?.stop_loss?.trim() || "";
+  const takeProfit = draft.protective_orders?.take_profit?.trim() || "";
+  if (stopLoss && (!DECIMAL_RE.test(stopLoss) || Number(stopLoss) <= 0)) {
+    errors.push("Enter a stop-loss price greater than 0.");
+  }
+  if (takeProfit && (!DECIMAL_RE.test(takeProfit) || Number(takeProfit) <= 0)) {
+    errors.push("Enter a take-profit price greater than 0.");
+  }
+  if (draft.leverage !== undefined && (!Number.isInteger(draft.leverage) || draft.leverage < 1 || draft.leverage > 100)) {
+    errors.push("Select a valid whole-number leverage.");
+  }
+  if (draft.margin_mode && draft.margin_mode !== "cross" && draft.margin_mode !== "isolated") {
+    errors.push("Select cross or isolated margin.");
+  }
+  if (draft.reduce_only && (stopLoss || takeProfit)) {
+    errors.push("Reduce-only orders cannot attach a new TP/SL bracket.");
   }
   const tinyFill =
     (draft.venue_id === "hyperliquid" || draft.venue_id === "phoenix") &&
@@ -414,6 +440,21 @@ export async function buildPrivateExecutionInstructionBundle(
               tif: options.order.tif || (options.order.venue_id === "coinbase_advanced" ? "gtc" : "Gtc"),
               post_only: options.order.post_only === true,
               reduce_only: options.order.reduce_only === true,
+              leverage: options.order.leverage ?? 1,
+              margin_mode: options.order.margin_mode || "cross",
+              ...(options.order.protective_orders?.stop_loss?.trim() ||
+              options.order.protective_orders?.take_profit?.trim()
+                ? {
+                    protective_orders: {
+                      ...(options.order.protective_orders.stop_loss?.trim()
+                        ? { stop_loss: options.order.protective_orders.stop_loss.trim() }
+                        : {}),
+                      ...(options.order.protective_orders.take_profit?.trim()
+                        ? { take_profit: options.order.protective_orders.take_profit.trim() }
+                        : {}),
+                    },
+                  }
+                : {}),
               ...(options.order.max_slippage_bps?.trim() ? { max_slippage_bps: options.order.max_slippage_bps.trim() } : {}),
             }),
       };

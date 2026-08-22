@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 
 const DAYS = [
   { key: "mon", label: "Monday" },
@@ -18,7 +18,7 @@ interface HoursEditorProps {
 }
 
 export function HoursEditor({ value, onChange }: HoursEditorProps) {
-  const hours = value ?? {};
+  const hours = useMemo(() => value ?? {}, [value]);
 
   const getOpen = useCallback(
     (day: string) => {

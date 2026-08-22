@@ -1,7 +1,9 @@
 import {
+  COINBASE_PRODUCT_IDS,
   getCoinbaseMarketSnapshot,
   normalizeCoinbaseMarketInput,
   type CoinbaseBookLevel,
+  type CoinbaseBaseCurrency,
   type CoinbaseCandle,
   type CoinbaseCandleInterval,
   type CoinbaseMarketSnapshot,
@@ -12,8 +14,15 @@ import {
   type PhoenixBookLevel,
   type PhoenixCandle,
   type PhoenixCandleInterval,
-  type PhoenixMarketSnapshot,
 } from "./phoenix-market-data";
+import {
+  getHyperliquidMarketSnapshot,
+  type HyperliquidMarketSnapshot,
+} from "./hyperliquid-market-data";
+import {
+  getBackpackMarketSnapshot,
+  type BackpackMarketSnapshot,
+} from "./backpack-market-data";
 
 export type MobileMarketProductId = CoinbaseProductId;
 export type MobileMarketInterval = CoinbaseCandleInterval;
@@ -36,6 +45,7 @@ export interface MobileMarketBookLevel {
 export interface MobileMarketPrimary {
   platform: "coinbase";
   source: string | null;
+  source_timestamp: number | null;
   stale: boolean;
   price: string | null;
   mid: string | null;
@@ -87,10 +97,22 @@ export interface MobileMarketSolanaDex {
   jupiter: MobileMarketJupiter | null;
 }
 
+export interface MobileMarketVenueQuote {
+  venue_id: "coinbase" | "phoenix" | "jupiter" | "hyperliquid" | "backpack";
+  label: string;
+  market_type: "spot" | "perp" | "route";
+  stale: boolean;
+  price: string | null;
+  best_bid: string | null;
+  best_ask: string | null;
+  spread_bps: number | null;
+  funding_rate: string | null;
+}
+
 export interface MobileMarketSnapshot {
   version: 1;
   product_id: MobileMarketProductId;
-  base_currency: "BTC" | "ETH" | "SOL";
+  base_currency: CoinbaseBaseCurrency;
   quote_currency: "USD";
   interval: MobileMarketInterval;
   fetched_at: string;
@@ -98,6 +120,7 @@ export interface MobileMarketSnapshot {
   warnings: string[];
   primary: MobileMarketPrimary;
   solana_dex: MobileMarketSolanaDex | null;
+  venues: MobileMarketVenueQuote[];
 }
 
 export interface MobileMarketSnapshotInput {
@@ -107,6 +130,8 @@ export interface MobileMarketSnapshotInput {
   fetchImpl?: typeof fetch;
   getCoinbaseSnapshot?: typeof getCoinbaseMarketSnapshot;
   getPhoenixSnapshot?: typeof getPhoenixMarketSnapshot;
+  getHyperliquidSnapshot?: typeof getHyperliquidMarketSnapshot;
+  getBackpackSnapshot?: typeof getBackpackMarketSnapshot;
 }
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -114,6 +139,11 @@ const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const DEFAULT_JUPITER_QUOTE_URL = "https://lite-api.jup.ag/swap/v1/quote";
 const JUPITER_SOL_AMOUNT_LAMPORTS = "1000000000";
 const JUPITER_SLIPPAGE_BPS = 50;
+// Every product admitted to the mobile spot catalog is also verified against
+// Hyperliquid's public perpetual universe. Keeping this derived from the
+// Coinbase allowlist prevents Android from advertising a venue/product pair
+// that the aggregate snapshot route can never return.
+const HYPERLIQUID_MOBILE_PRODUCTS = new Set<MobileMarketProductId>(COINBASE_PRODUCT_IDS);
 
 export function normalizeMobileMarketInput(input: MobileMarketSnapshotInput): {
   productId: MobileMarketProductId;
@@ -137,18 +167,44 @@ export async function getMobileMarketSnapshot(input: MobileMarketSnapshotInput =
     fetchImpl: input.fetchImpl,
   });
   if (coinbase.stale) warnings.push("coinbase_stale");
+  const venues: MobileMarketVenueQuote[] = [coinbaseVenue(coinbase)];
+
+  if (HYPERLIQUID_MOBILE_PRODUCTS.has(normalized.productId)) {
+    const hyperliquidResult = await Promise.resolve(
+      (input.getHyperliquidSnapshot ?? getHyperliquidMarketSnapshot)({
+        network: "mainnet",
+        coin: coinbase.base_currency_id,
+        interval: normalized.interval,
+        now,
+        fetchImpl: input.fetchImpl,
+      }),
+    ).catch(() => null);
+    if (hyperliquidResult) venues.push(hyperliquidVenue(hyperliquidResult));
+    if (!hyperliquidResult || hyperliquidResult.stale) warnings.push("hyperliquid_limited");
+  }
 
   let solanaDex: MobileMarketSolanaDex | null = null;
   if (normalized.productId === "SOL-USD") {
-    const [phoenixResult, jupiterResult] = await Promise.allSettled([
+    const [phoenixResult, jupiterResult, backpackResult] = await Promise.allSettled([
       fetchPhoenixForMobile(normalized.interval, now, input.getPhoenixSnapshot ?? getPhoenixMarketSnapshot),
       fetchJupiterRouteQuote(now, input.fetchImpl ?? fetch),
+      (input.getBackpackSnapshot ?? getBackpackMarketSnapshot)({
+        symbol: "SOL_USDC_PERP",
+        interval: normalized.interval,
+        now,
+        fetchImpl: input.fetchImpl,
+      }),
     ]);
     const phoenix = phoenixResult.status === "fulfilled" ? phoenixResult.value : null;
     const jupiter = jupiterResult.status === "fulfilled" ? jupiterResult.value : null;
+    const backpack = backpackResult.status === "fulfilled" ? backpackResult.value : null;
     if (!phoenix || phoenix.stale) warnings.push("phoenix_limited");
     if (!jupiter || jupiter.stale) warnings.push("jupiter_limited");
+    if (!backpack || backpack.stale) warnings.push("backpack_limited");
     solanaDex = { symbol: "SOL", phoenix, jupiter };
+    if (phoenix) venues.push(phoenixVenue(phoenix));
+    if (jupiter) venues.push(jupiterVenue(jupiter));
+    if (backpack) venues.push(backpackVenue(backpack));
   }
 
   return {
@@ -162,6 +218,47 @@ export async function getMobileMarketSnapshot(input: MobileMarketSnapshotInput =
     warnings,
     primary: coinbaseToMobilePrimary(coinbase),
     solana_dex: solanaDex,
+    venues,
+  };
+}
+
+function coinbaseVenue(snapshot: CoinbaseMarketSnapshot): MobileMarketVenueQuote {
+  return {
+    venue_id: "coinbase", label: "Coinbase", market_type: "spot", stale: snapshot.stale,
+    price: snapshot.price, best_bid: snapshot.best_bid, best_ask: snapshot.best_ask,
+    spread_bps: snapshot.spread_bps, funding_rate: null,
+  };
+}
+
+function hyperliquidVenue(snapshot: HyperliquidMarketSnapshot): MobileMarketVenueQuote {
+  return {
+    venue_id: "hyperliquid", label: "Hyperliquid", market_type: "perp", stale: snapshot.stale,
+    price: snapshot.mark_price ?? snapshot.mid, best_bid: snapshot.best_bid, best_ask: snapshot.best_ask,
+    spread_bps: snapshot.spread_bps, funding_rate: snapshot.funding_rate,
+  };
+}
+
+function phoenixVenue(snapshot: MobileMarketPhoenix): MobileMarketVenueQuote {
+  return {
+    venue_id: "phoenix", label: "Phoenix", market_type: "perp", stale: snapshot.stale,
+    price: snapshot.mark_price ?? snapshot.mid, best_bid: snapshot.best_bid, best_ask: snapshot.best_ask,
+    spread_bps: snapshot.spread_bps, funding_rate: snapshot.funding_rate,
+  };
+}
+
+function jupiterVenue(snapshot: MobileMarketJupiter): MobileMarketVenueQuote {
+  return {
+    venue_id: "jupiter", label: "Jupiter", market_type: "route", stale: snapshot.stale,
+    price: snapshot.price, best_bid: null, best_ask: null, spread_bps: null, funding_rate: null,
+  };
+}
+
+function backpackVenue(snapshot: BackpackMarketSnapshot): MobileMarketVenueQuote {
+  return {
+    venue_id: "backpack", label: "Backpack", market_type: "perp", stale: snapshot.stale,
+    price: snapshot.mark_price ?? snapshot.last_price ?? snapshot.mid,
+    best_bid: snapshot.best_bid, best_ask: snapshot.best_ask,
+    spread_bps: snapshot.spread_bps, funding_rate: snapshot.funding_rate,
   };
 }
 
@@ -239,6 +336,7 @@ function coinbaseToMobilePrimary(snapshot: CoinbaseMarketSnapshot): MobileMarket
   return {
     platform: "coinbase",
     source: snapshot.source,
+    source_timestamp: snapshot.source_timestamp,
     stale: snapshot.stale,
     price: snapshot.price,
     mid: snapshot.mid,

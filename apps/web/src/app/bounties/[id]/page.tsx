@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
   getMarketplaceTask,
@@ -52,7 +52,6 @@ const statusColors: Record<string, string> = {
 
 export default function BountyDetailPage() {
   const params = useParams();
-  const router = useRouter();
   const id = params.id as string;
   const { authenticated, user } = useThumperAuth();
 

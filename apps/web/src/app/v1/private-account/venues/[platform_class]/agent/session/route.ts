@@ -12,7 +12,10 @@ function platformClass(params: unknown): GholaPlatformClass | null {
     params && typeof params === "object" && "platform_class" in params
       ? (params as { platform_class?: unknown }).platform_class
       : null;
-  return value === "hyperliquid_style_market" || value === "coinbase_style_provider"
+  return value === "hyperliquid_style_market" ||
+    value === "coinbase_style_provider" ||
+    value === "solana_perps_market" ||
+    value === "solana_swap_aggregator"
     ? value
     : null;
 }

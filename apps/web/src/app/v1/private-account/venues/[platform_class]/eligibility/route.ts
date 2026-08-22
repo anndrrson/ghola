@@ -29,5 +29,7 @@ export async function POST(
   if (!venueId) return json({ error: "venue_not_supported" }, 404);
   const guarded = await privateAccountLiveGuard(req);
   if (!guarded.ok) return guarded.response;
-  return json(await verifyVenueEligibilityFromBody(guarded.body, guarded.owner, venueId), 201);
+  const verified = await verifyVenueEligibilityFromBody(guarded.body, guarded.owner, venueId, req);
+  if ("error" in verified) return json({ error: verified.error }, 400);
+  return json(verified, 201);
 }

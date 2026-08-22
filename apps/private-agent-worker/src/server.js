@@ -3,6 +3,7 @@ import { createServer, request as httpRequest } from "node:http";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertRecipientSecretMatches } from "./crypto/envelope.js";
+import { createKrakenV2Service } from "./kraken-v2/service.js";
 import {
   capabilityRequired,
   verifyWorkerCapability,
@@ -17,20 +18,26 @@ import {
   runAutopilotTick,
   startAutopilotDueLoop,
   startAutopilotLoop,
+  updateAutopilotAccounting,
 } from "./execution/autopilot.js";
 import { revenueEvidenceStatement } from "./execution/revenue-evidence.js";
+import { publicDecisionProviderStatus } from "./execution/decision-provider.js";
+import { startMultiLegRecoveryLoop } from "./execution/multi-leg-orchestrator.js";
 import {
   createHyperliquidManagedAllocation,
+  executeAutopilotOrder,
   executeCoinbaseOrder,
   executeHyperliquidOrder,
   executeJupiterSwapOrder,
   executeSolanaPerpsOrder,
   readHyperliquidSnapshot,
+  reconcileHyperliquidOrder,
   reconcileStoredExecution,
   streamHyperliquidAccountState,
   storeCoinbaseSession,
   storeHyperliquidSession,
   storePrivateAgentSession,
+  verifyAutopilotOrder,
   verifyCoinbaseOrderNoSubmit,
   verifyVenueCredential,
   verifyHyperliquidOrderNoSubmit,
@@ -149,6 +156,11 @@ function envFrom(sourceEnv, name, fallback = "") {
 }
 
 function boolEnv(name) {
+  // Development bypasses must never become a production control plane. Treat
+  // the override as false even when an operator accidentally sets it there.
+  if (name === "PRIVATE_AGENT_ALLOW_UNATTESTED_DEV" && process.env.NODE_ENV === "production") {
+    return false;
+  }
   return env(name).toLowerCase() === "true";
 }
 
@@ -1499,7 +1511,8 @@ function validateHyperliquidReconcileRequest(body, recipient) {
   if (body.encrypted_execution_vault && (body.managed_allocation_commitment || body.allocation_commitment)) {
     errors.push("encrypted_execution_vault and managed_allocation_commitment cannot both be set");
   }
-  if ("encrypted_execution_vault" in body) {
+  if (executionMode === "byo_api_key") {
+    if (!isNonEmptyString(body.vault_commitment)) errors.push("vault_commitment is required");
     errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
   }
   if ((executionMode === "managed_testnet" || executionMode === "ghola_pooled") &&
@@ -2068,6 +2081,25 @@ function validateAutopilotSessionRequest(body, recipient) {
   return errors;
 }
 
+function validateAutopilotAccountingRequest(body, sessionId) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) errors.push("request must not contain plaintext secret fields");
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.operation_class !== "portfolio_reconcile") errors.push("operation_class must be portfolio_reconcile");
+  if (body.autopilot_session_id !== sessionId) errors.push("autopilot_session_id must match the path");
+  if (!Array.isArray(body.expected_snapshots) || body.expected_snapshots.length === 0) {
+    errors.push("expected_snapshots must be a non-empty array");
+  }
+  if (!Array.isArray(body.observed_snapshots) || body.observed_snapshots.length === 0) {
+    errors.push("observed_snapshots must be a non-empty array");
+  }
+  if (body.expected_snapshots?.length > 16 || body.observed_snapshots?.length > 16) {
+    errors.push("accounting snapshots exceed the venue limit");
+  }
+  return errors;
+}
+
 function validateAutopilotRunDueRequest(body) {
   const errors = [];
   if (!isObject(body)) return ["request body must be an object"];
@@ -2158,9 +2190,27 @@ function triVenueSessionBody(body, strategy = "arb", hyperliquidAllocation = nul
 export function createPrivateAgentWorkerServer(options = {}) {
   const recipient = options.recipient || loadRecipient();
   const state = options.state || createConfiguredWorkerState(dataDir());
+  const krakenV2 = options.krakenV2Service || createKrakenV2Service({
+    env: process.env,
+    state: options.krakenV2State,
+    recipient,
+    adapterFactory: options.krakenV2AdapterFactory,
+    receiptSigner: options.krakenV2ReceiptSigner,
+  });
   const dueLoop = options.startAutopilotDueLoop === false
     ? null
     : startAutopilotDueLoop({ state, recipient });
+  const multiLegRecoveryLoop = options.startMultiLegRecoveryLoop === false
+    ? null
+    : startMultiLegRecoveryLoop({
+        state,
+        recipient,
+        executeOrder: executeAutopilotOrder,
+        verifyOrder: verifyAutopilotOrder,
+      });
+  const krakenHeartbeat = options.startKrakenV2Heartbeat === false
+    ? null
+    : krakenV2.startHeartbeat?.(60_000);
 
   const server = createServer(async (req, res) => {
     try {
@@ -2175,6 +2225,8 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return json(res, ready.ready ? 200 : 503, {
           ready: ready.ready,
           missing: ready.missing,
+          execution_protocols: ["ghola-hyperliquid-proof-v2"],
+          decision_provider: publicDecisionProviderStatus(),
         });
       }
 
@@ -2183,6 +2235,47 @@ export function createPrivateAgentWorkerServer(options = {}) {
         url.pathname === "/.well-known/private-agent-recipient"
       ) {
         return json(res, 200, await publicRecipient(recipient));
+      }
+
+      if (req.method === "POST" && url.pathname.startsWith("/v2/kraken/")) {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const routes = {
+          "/v2/kraken/connections": ["kraken:connection", (body) => krakenV2.link(body)],
+          "/v2/kraken/mandates": ["kraken:mandate", (body) => krakenV2.authorizeMandate(body)],
+          "/v2/kraken/allocation-intents": [
+            "kraken:intent",
+            (body) => krakenV2.acceptIntent(body, { execute: body.execute !== false }),
+          ],
+          "/v2/kraken/rebalance": [
+            "kraken:execute",
+            (body) => krakenV2.rebalance(
+              body.connection_id,
+              body.trigger || "manual",
+              body,
+            ),
+          ],
+          "/v2/kraken/control": ["kraken:control", (body) => krakenV2.control(body)],
+          "/v2/kraken/status": [
+            "kraken:read",
+            (body) => krakenV2.status(body.connection_id, body),
+          ],
+        };
+        const route = routes[url.pathname];
+        if (!route) return json(res, 404, { error: "not found" });
+        const [scope, handler] = route;
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope,
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "kraken",
+            operation_class: scope,
+          }),
+        });
+        if (authorized.rejected) return;
+        return json(res, 200, await handler(authorized.body));
       }
 
       if (req.method === "POST" && url.pathname === "/venues/pools/readiness") {
@@ -2312,6 +2405,39 @@ export function createPrivateAgentWorkerServer(options = {}) {
           session,
           events: await state.listAutopilotEvents(session.autopilot_session_id),
         });
+      }
+
+      const accountingMatch = url.pathname.match(/^\/autopilot\/sessions\/([^/]+)\/accounting$/);
+      if (req.method === "POST" && accountingMatch) {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const sessionId = decodeURIComponent(accountingMatch[1]);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "reconcile:read",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            autopilot_session_id: sessionId,
+            operation_class: "portfolio_reconcile",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateAutopilotAccountingRequest(body, sessionId);
+        if (errors.length > 0) {
+          return json(res, 400, { error: "invalid autopilot accounting request", details: errors });
+        }
+        const result = await updateAutopilotAccounting({
+          sessionId,
+          state,
+          expected_snapshots: body.expected_snapshots,
+          observed_snapshots: body.observed_snapshots,
+        });
+        if (!result.ok && result.error === "autopilot_session_not_found") {
+          return json(res, 404, { error: result.error });
+        }
+        return json(res, result.ok ? 200 : 400, result);
       }
 
       if (req.method === "POST" && url.pathname === "/autopilot/run-due") {
@@ -2961,16 +3087,15 @@ export function createPrivateAgentWorkerServer(options = {}) {
             error_code: hyperliquidValidationErrorCode(errors),
           });
         }
-        return json(res, 200, await reconcileStoredExecution({
+        return json(res, 200, await reconcileHyperliquidOrder({
           body: {
             ...body,
             vault_commitment: body.vault_commitment || "vault_commitment_redacted",
             policy_commitment: body.policy_commitment || "policy_commitment_redacted",
             operation_class: "reconcile",
           },
+          recipient,
           state,
-          venue_id: "hyperliquid",
-          platform_class: "hyperliquid_style_market",
         }));
       }
 
@@ -3429,6 +3554,8 @@ export function createPrivateAgentWorkerServer(options = {}) {
   });
   server.on("close", () => {
     dueLoop?.stop?.();
+    multiLegRecoveryLoop?.stop?.();
+    krakenHeartbeat?.stop?.();
   });
   return server;
 }

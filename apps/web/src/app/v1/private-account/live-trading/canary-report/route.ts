@@ -47,6 +47,12 @@ export async function POST(req: Request) {
       max_slippage_bps: report.max_slippage_bps,
       receipt_commitment: report.receipt_commitment,
       result_commitment: report.result_commitment,
+      entry_receipt_commitment: report.entry_receipt_commitment,
+      close_receipt_commitment: report.close_receipt_commitment,
+      final_venue_execution_proven: report.final_venue_execution_proven,
+      final_fill_proven: report.final_fill_proven,
+      position_count: report.position_count,
+      open_order_count: report.open_order_count,
       evidence_commitment: report.evidence_commitment,
       observed_at: report.observed_at,
       expires_at: report.expires_at,
@@ -115,8 +121,22 @@ function parseCanaryReport(body: Record<string, unknown>):
   const expiresAt = new Date(observedAt.getTime() + ttlMs);
   const receiptCommitment = nullableStringField(body.receipt_commitment);
   const resultCommitment = nullableStringField(body.result_commitment);
+  const entryReceiptCommitment = nullableStringField(body.entry_receipt_commitment);
+  const closeReceiptCommitment = nullableStringField(body.close_receipt_commitment);
+  const finalVenueExecutionProven = body.final_venue_execution_proven === true;
+  const finalFillProven = body.final_fill_proven === true;
+  const positionCount = integerField(body.position_count);
+  const openOrderCount = integerField(body.open_order_count);
   if (status === "green" && !receiptCommitment) reasonCodes.push("receipt_commitment_required");
   if (status === "green" && !resultCommitment) reasonCodes.push("result_commitment_required");
+  if (!capitalFree && status === "green") {
+    if (!entryReceiptCommitment) reasonCodes.push("entry_receipt_commitment_required");
+    if (!closeReceiptCommitment) reasonCodes.push("close_receipt_commitment_required");
+    if (!finalVenueExecutionProven) reasonCodes.push("final_venue_execution_proof_required");
+    if (!finalFillProven) reasonCodes.push("final_fill_proof_required");
+    if (positionCount !== 0) reasonCodes.push("flat_position_required");
+    if (openOrderCount !== 0) reasonCodes.push("zero_open_orders_required");
+  }
 
   if (reasonCodes.length > 0 || !isVenueId(venueId) || (status !== "green" && status !== "red") || !isReconcileStatus(reconcileStatus)) {
     return { ok: false, reasonCodes };
@@ -139,6 +159,12 @@ function parseCanaryReport(body: Record<string, unknown>):
     max_slippage_bps: maxSlippageBps,
     receipt_commitment: receiptCommitment,
     result_commitment: resultCommitment,
+    entry_receipt_commitment: entryReceiptCommitment,
+    close_receipt_commitment: closeReceiptCommitment,
+    final_venue_execution_proven: finalVenueExecutionProven,
+    final_fill_proven: finalFillProven,
+    position_count: positionCount,
+    open_order_count: openOrderCount,
     reason: nullableStringField(body.reason),
     observed_at: observedAt.toISOString(),
     expires_at: expiresAt.toISOString(),
@@ -168,6 +194,12 @@ function parseCanaryReport(body: Record<string, unknown>):
       max_slippage_bps: maxSlippageBps,
       receipt_commitment: receiptCommitment,
       result_commitment: resultCommitment,
+      entry_receipt_commitment: entryReceiptCommitment,
+      close_receipt_commitment: closeReceiptCommitment,
+      final_venue_execution_proven: finalVenueExecutionProven,
+      final_fill_proven: finalFillProven,
+      position_count: positionCount,
+      open_order_count: openOrderCount,
       evidence_commitment: evidenceCommitment,
       reason: nullableStringField(body.reason),
       observed_at: observedAt.toISOString(),
@@ -212,6 +244,11 @@ function numberField(value: unknown): number {
   if (typeof value === "number") return value;
   if (typeof value === "string" && value.trim()) return Number(value);
   return Number.NaN;
+}
+
+function integerField(value: unknown): number {
+  const parsed = numberField(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : -1;
 }
 
 function dateField(value: unknown): Date | null {

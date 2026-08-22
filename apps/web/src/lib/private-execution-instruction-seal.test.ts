@@ -19,6 +19,8 @@ function runtimeWithRecipient(recipientId: string, recipientPub: Uint8Array): Pr
     checked_at: new Date("2026-05-28T00:00:00Z").toISOString(),
     sealed_execution_required: true,
     entitlement_required: "paid_private_agent_plan",
+    bounded_beta_enabled: true,
+    operator_spend_lock: false,
     preferred_provider: "phala",
     selected_provider: "phala",
     remote_execution_ready: true,
@@ -56,6 +58,8 @@ describe("private execution instruction sealing", () => {
       checked_at: new Date("2026-05-28T00:00:00Z").toISOString(),
       sealed_execution_required: true,
       entitlement_required: "paid_private_agent_plan",
+      bounded_beta_enabled: true,
+      operator_spend_lock: false,
       preferred_provider: "phala",
       selected_provider: "phala",
       remote_execution_ready: true,
@@ -129,6 +133,8 @@ describe("private execution instruction sealing", () => {
       checked_at: new Date("2026-05-28T00:00:00Z").toISOString(),
       sealed_execution_required: true,
       entitlement_required: "paid_private_agent_plan",
+      bounded_beta_enabled: true,
+      operator_spend_lock: false,
       preferred_provider: "phala",
       selected_provider: "phala",
       remote_execution_ready: true,
@@ -189,6 +195,66 @@ describe("private execution instruction sealing", () => {
     });
   });
 
+  it("seals a full Hyperliquid bracket with leverage and isolated margin", async () => {
+    const recipientSecret = x25519.utils.randomPrivateKey();
+    const recipientPub = x25519.getPublicKey(recipientSecret);
+    const senderSecret = ed25519.utils.randomPrivateKey();
+    const ownerWalletAddress = bs58.encode(ed25519.getPublicKey(senderSecret));
+    const built = await buildPrivateExecutionInstructionBundle({
+      ownerWalletAddress,
+      previewCommitment: "preview_full_ticket",
+      runtimeStatus: runtimeWithRecipient("phala:cvm:full-ticket", recipientPub),
+      signBytes: async (bytes) => ed25519.sign(bytes, senderSecret),
+      order: {
+        venue_id: "hyperliquid",
+        operation_class: "limit_order",
+        market: "SOL",
+        side: "buy",
+        base_size: "",
+        quote_size: "25",
+        size_mode: "quote",
+        limit_price: "150",
+        order_type: "limit",
+        tif: "Gtc",
+        leverage: 5,
+        margin_mode: "isolated",
+        protective_orders: { stop_loss: "145", take_profit: "165" },
+      },
+    });
+    const opened = await open(base64ToBytes(built.encrypted_execution_instruction_bundle.ciphertext), recipientSecret);
+    const plaintext = JSON.parse(new TextDecoder().decode(opened.plaintext));
+    expect(plaintext.order).toMatchObject({
+      market: "SOL",
+      quote_size: "25",
+      leverage: 5,
+      margin_mode: "isolated",
+      protective_orders: { stop_loss: "145", take_profit: "165" },
+    });
+    expect(JSON.stringify(built.encrypted_execution_instruction_bundle)).not.toContain("165");
+  });
+
+  it("rejects invalid leverage and reduce-only brackets before sealing", () => {
+    const base = {
+      venue_id: "hyperliquid" as const,
+      operation_class: "limit_order" as const,
+      market: "BTC",
+      side: "sell" as const,
+      base_size: "",
+      quote_size: "25",
+      size_mode: "quote" as const,
+      limit_price: "70000",
+      order_type: "limit" as const,
+      tif: "Gtc" as const,
+    };
+    expect(validatePrivateExecutionOrderDraft({ ...base, leverage: 0 })).toContain("Select a valid whole-number leverage.");
+    expect(validatePrivateExecutionOrderDraft({
+      ...base,
+      leverage: 2,
+      reduce_only: true,
+      protective_orders: { stop_loss: "71000" },
+    })).toContain("Reduce-only orders cannot attach a new TP/SL bracket.");
+  });
+
   it("seals Phoenix tiny-fill tickets with a price limit", async () => {
     const recipientSecret = x25519.utils.randomPrivateKey();
     const recipientPub = x25519.getPublicKey(recipientSecret);
@@ -201,6 +267,8 @@ describe("private execution instruction sealing", () => {
       checked_at: new Date("2026-05-28T00:00:00Z").toISOString(),
       sealed_execution_required: true,
       entitlement_required: "paid_private_agent_plan",
+      bounded_beta_enabled: true,
+      operator_spend_lock: false,
       preferred_provider: "phala",
       selected_provider: "phala",
       remote_execution_ready: true,
@@ -244,7 +312,7 @@ describe("private execution instruction sealing", () => {
     });
 
     expect(built.encrypted_execution_instruction_bundle.aad).toContain("venue:phoenix");
-    expect(JSON.stringify(built.encrypted_execution_instruction_bundle)).not.toContain("250");
+    expect(JSON.stringify(built.encrypted_execution_instruction_bundle)).not.toContain("limit_price");
 
     const opened = await open(
       base64ToBytes(built.encrypted_execution_instruction_bundle.ciphertext),

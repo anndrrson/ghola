@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { thumperSignIn, thumperSignUp } from "@/lib/thumper-api";
@@ -117,7 +118,7 @@ export function AuthModal({
     }
   }
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-[80] flex items-center justify-center px-4 py-6">
       <button
         aria-label="Close auth dialog"
@@ -262,6 +263,7 @@ export function AuthModal({
           </button>
         </p>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

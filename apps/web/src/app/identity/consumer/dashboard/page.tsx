@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useAuth } from "@/lib/auth-context";
 import { getConsumerProfile } from "@/lib/api";
 import type { PublicProfile } from "@/lib/types";
 import {
@@ -15,7 +14,6 @@ import {
 } from "lucide-react";
 
 export default function ConsumerDashboardPage() {
-  const { user } = useAuth();
   const [profile, setProfile] = useState<PublicProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);

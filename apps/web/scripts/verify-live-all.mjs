@@ -28,13 +28,13 @@ const VENUES = [
   {
     id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
-    page: "/app/account?flow=hyperliquid-live",
+    page: "/account?flow=hyperliquid-live",
     market: "/v1/private-account/hyperliquid/market-snapshot?coin=BTC&interval=1m",
   },
   {
     id: "phoenix",
     platform_class: "solana_perps_market",
-    page: "/app/account?flow=phoenix-live",
+    page: "/account?flow=phoenix-live",
     market: "/v1/private-account/phoenix/market-snapshot?market=SOL&interval=1m",
   },
   {
@@ -46,14 +46,14 @@ const VENUES = [
   {
     id: "coinbase",
     platform_class: "coinbase_style_provider",
-    page: "/app/account?flow=coinbase",
+    page: "/account?flow=coinbase",
     market: "/v1/private-account/coinbase/market-snapshot?product_id=BTC-USD&interval=1m",
   },
 ];
 
 try {
   await checkHead("landing", "/");
-  await checkHead("trade_terminal", "/app/account?flow=trade");
+  await checkHead("trade_terminal", "/account?flow=trade");
   const liveTradingGate = await safeGetJson("/v1/private-account/live-trading/status");
   report.live_trading_gate = summarizeLiveTradingGate(liveTradingGate);
   record(
@@ -61,17 +61,160 @@ try {
     liveTradingGate.ok && (!requirePublicLive || liveTradingGate.body?.live_trading_enabled === true),
     report.live_trading_gate,
   );
+  const proofProtocolReady = liveTradingGate.body?.release_validation?.hyperliquid_proof_protocol ===
+    "ghola-hyperliquid-proof-v2" &&
+    liveTradingGate.body?.release_validation?.exact_agent_binding_required === true &&
+    liveTradingGate.body?.release_validation?.ambiguity_retry_forbidden === true &&
+    liveTradingGate.body?.release_validation?.venue_order_status_reconciliation_required === true &&
+    liveTradingGate.body?.release_validation?.reduce_only_close_required === true &&
+    liveTradingGate.body?.release_validation?.final_flat_zero_orders_required === true;
+  record("hyperliquid_proof_protocol", proofProtocolReady, liveTradingGate.body?.release_validation || null);
+  if (!proofProtocolReady) {
+    throw new Error("Release validation requires the Hyperliquid proof-v2 safety contract.");
+  }
+  const privateAccountPersistence = liveTradingGate.body?.private_account_persistence || null;
+  const privateAccountPersistenceReady = liveTradingGate.ok &&
+    privateAccountPersistence?.status === "green" &&
+    privateAccountPersistence?.ready === true &&
+    ["postgres", "blob"].includes(privateAccountPersistence?.store);
+  record("private_account_persistence_ready", privateAccountPersistenceReady, {
+    status: privateAccountPersistence?.status || null,
+    ready: privateAccountPersistence?.ready ?? null,
+    store: privateAccountPersistence?.store || null,
+    reason_codes: privateAccountPersistence?.reason_codes || [],
+  });
+  if (!privateAccountPersistenceReady) {
+    throw new Error("Release validation requires persistent private-account storage; memory storage is forbidden.");
+  }
+  const hyperliquidByoReasonCodes = liveTradingGate.body?.hyperliquid_byo?.reason_codes;
+  const hyperliquidPooledReasonCodes = liveTradingGate.body?.hyperliquid_pooled?.reason_codes;
+  const hyperliquidMainnetWorkerEnabled = liveTradingGate.ok &&
+    liveTradingGate.body?.hyperliquid_network === "mainnet" &&
+    Array.isArray(hyperliquidByoReasonCodes) &&
+    Array.isArray(hyperliquidPooledReasonCodes) &&
+    !hyperliquidByoReasonCodes.includes("hyperliquid_mainnet_worker_disabled") &&
+    !hyperliquidPooledReasonCodes.includes("hyperliquid_mainnet_worker_disabled");
+  record("hyperliquid_mainnet_worker_enabled", hyperliquidMainnetWorkerEnabled, {
+    hyperliquid_network: liveTradingGate.body?.hyperliquid_network || null,
+    byo_reason_codes: Array.isArray(hyperliquidByoReasonCodes) ? hyperliquidByoReasonCodes : null,
+    pooled_reason_codes: Array.isArray(hyperliquidPooledReasonCodes) ? hyperliquidPooledReasonCodes : null,
+  });
+  if (!hyperliquidMainnetWorkerEnabled) {
+    throw new Error("Release validation requires PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true on Vercel.");
+  }
+  const hyperliquidClientConnectionMode = liveTradingGate.body?.hyperliquid_byo?.connection_mode || null;
+  const hyperliquidClientConnectionReady = liveTradingGate.ok &&
+    liveTradingGate.body?.hyperliquid_byo?.client_connection_ready === true &&
+    ["verified_scoped_api_wallet", "turnkey_delegated"].includes(hyperliquidClientConnectionMode);
+  record("hyperliquid_client_connection_enabled", hyperliquidClientConnectionReady, {
+    connection_mode: hyperliquidClientConnectionMode,
+    client_connection_ready: liveTradingGate.body?.hyperliquid_byo?.client_connection_ready ?? null,
+  });
+  if (!hyperliquidClientConnectionReady) {
+    throw new Error("Release validation requires a verified owner-to-agent Hyperliquid connection mode.");
+  }
+  const hyperliquidMarketAllowlist = liveTradingGate.body?.hyperliquid_byo?.market_allowlist;
+  const hyperliquidHypeProofReady = Array.isArray(hyperliquidMarketAllowlist) &&
+    hyperliquidMarketAllowlist.includes("HYPE");
+  record("hyperliquid_hype_policy_enabled", hyperliquidHypeProofReady, {
+    market_allowlist: Array.isArray(hyperliquidMarketAllowlist) ? hyperliquidMarketAllowlist : null,
+  });
+  if (!hyperliquidHypeProofReady) {
+    throw new Error("Release validation requires HYPE in the Hyperliquid BYO market allowlist.");
+  }
+  const privateAccountLaunch = await safeGetJson("/v1/private-account/launch/status");
+  const launchChecks = Array.isArray(privateAccountLaunch.body?.checks)
+    ? privateAccountLaunch.body.checks
+    : [];
+  const requiredHyperliquidConnectorChecks = [
+    "hyperliquid_connector_url_configured",
+    "hyperliquid_connector_token_configured",
+    "hyperliquid_connector_ready",
+  ];
+  const hyperliquidConnectorFailures = launchChecks.filter(
+    (check) => requiredHyperliquidConnectorChecks.includes(check?.check) && check?.status !== "ready",
+  );
+  const hyperliquidConnectorReady = privateAccountLaunch.ok &&
+    requiredHyperliquidConnectorChecks.every((checkName) =>
+      launchChecks.some((check) => check?.check === checkName && check?.status === "ready")
+    );
+  record("hyperliquid_connector_ready", hyperliquidConnectorReady, {
+    failed_checks: hyperliquidConnectorFailures.map((check) => ({
+      check: check.check,
+      reason: check.reason || null,
+    })),
+  });
+  if (!hyperliquidConnectorReady) {
+    throw new Error("Release validation requires a configured, ready Hyperliquid connector and execution token.");
+  }
+  const privateAgentRuntime = await safeGetJson("/api/private-agent/status");
+  const selectedPrivateAgentProviderId = privateAgentRuntime.body?.selected_provider || null;
+  const selectedPrivateAgentProvider = Array.isArray(privateAgentRuntime.body?.providers)
+    ? privateAgentRuntime.body.providers.find((provider) => provider?.id === selectedPrivateAgentProviderId) || null
+    : null;
+  const privateAgentSealedExecutionReady = privateAgentRuntime.ok &&
+    Boolean(selectedPrivateAgentProviderId) &&
+    selectedPrivateAgentProvider?.configured === true &&
+    selectedPrivateAgentProvider?.available === true &&
+    selectedPrivateAgentProvider?.attested === true &&
+    selectedPrivateAgentProvider?.supports_sealed_secrets === true &&
+    selectedPrivateAgentProvider?.supports_trading_execution === true &&
+    Boolean(selectedPrivateAgentProvider?.sealed_recipient?.recipient_id) &&
+    Boolean(selectedPrivateAgentProvider?.sealed_recipient?.x25519_pub_hex);
+  record("private_agent_sealed_execution_ready", privateAgentSealedExecutionReady, {
+    selected_provider: selectedPrivateAgentProviderId,
+    configured: selectedPrivateAgentProvider?.configured ?? null,
+    available: selectedPrivateAgentProvider?.available ?? null,
+    attested: selectedPrivateAgentProvider?.attested ?? null,
+    supports_sealed_secrets: selectedPrivateAgentProvider?.supports_sealed_secrets ?? null,
+    supports_trading_execution: selectedPrivateAgentProvider?.supports_trading_execution ?? null,
+    sealed_recipient_present: Boolean(
+      selectedPrivateAgentProvider?.sealed_recipient?.recipient_id &&
+      selectedPrivateAgentProvider?.sealed_recipient?.x25519_pub_hex
+    ),
+    blocking_reasons: privateAgentRuntime.body?.blocking_reasons || [],
+  });
+  if (!privateAgentSealedExecutionReady) {
+    throw new Error("Release validation requires an attested private-agent provider with a sealed execution recipient.");
+  }
   record(
     "pooled_worker_readiness",
     liveTradingGate.ok &&
       (
         liveTradingGate.body?.pooled_live_trading_enabled !== true ||
-        liveTradingGate.body?.pooled_worker_readiness?.ready === true
+        liveTradingGate.body?.pooled_worker_readiness?.ready === true ||
+        (Array.isArray(liveTradingGate.body?.pooled_live_venues) && liveTradingGate.body.pooled_live_venues.length > 0)
       ),
-    liveTradingGate.body?.pooled_worker_readiness || { status: "not_reported" },
+    {
+      ...(liveTradingGate.body?.pooled_worker_readiness || { status: "not_reported" }),
+      pooled_live_venues: liveTradingGate.body?.pooled_live_venues || [],
+    },
   );
+  const hyperliquidRequiredVenue = Array.isArray(liveTradingGate.body?.required_venues)
+    ? liveTradingGate.body.required_venues.find((venue) => venue.id === "hyperliquid")
+    : null;
+  const hyperliquidCanary = hyperliquidRequiredVenue?.canary_report || null;
+  const hyperliquidRoundTripCanaryReady = hyperliquidRequiredVenue?.canary_status === "green" &&
+    Boolean(hyperliquidCanary?.entry_receipt_commitment) &&
+    Boolean(hyperliquidCanary?.close_receipt_commitment) &&
+    hyperliquidCanary?.final_venue_execution_proven === true &&
+    hyperliquidCanary?.final_fill_proven === true &&
+    hyperliquidCanary?.position_count === 0 &&
+    hyperliquidCanary?.open_order_count === 0;
+  record("hyperliquid_round_trip_flat_canary", hyperliquidRoundTripCanaryReady, {
+    canary_status: hyperliquidRequiredVenue?.canary_status || null,
+    entry_receipt_present: Boolean(hyperliquidCanary?.entry_receipt_commitment),
+    close_receipt_present: Boolean(hyperliquidCanary?.close_receipt_commitment),
+    final_venue_execution_proven: hyperliquidCanary?.final_venue_execution_proven === true,
+    final_fill_proven: hyperliquidCanary?.final_fill_proven === true,
+    position_count: hyperliquidCanary?.position_count ?? null,
+    open_order_count: hyperliquidCanary?.open_order_count ?? null,
+  });
   if (requirePublicLive && liveTradingGate.body?.live_trading_enabled !== true) {
     throw new Error("Public live trading gate is not green.");
+  }
+  if (requirePublicLive && !hyperliquidRoundTripCanaryReady) {
+    throw new Error("Public live release requires an entry + reduce-only close canary ending flat with zero open orders.");
   }
 
   for (const venue of VENUES) {
@@ -250,11 +393,15 @@ function summarizeLiveTradingGate(result) {
   if (!result.ok) return { status: result.status, error: result.body?.error || null };
   return {
     status: result.status,
+    hyperliquid_network: result.body?.hyperliquid_network || null,
     live_trading_enabled: result.body?.live_trading_enabled === true,
     live_submit_mode: result.body?.live_submit_mode || null,
     byo_live_trading_enabled: result.body?.byo_live_trading_enabled === true,
     pooled_live_trading_enabled: result.body?.pooled_live_trading_enabled === true,
     pooled_worker_readiness: result.body?.pooled_worker_readiness || null,
+    hyperliquid_byo: result.body?.hyperliquid_byo || null,
+    hyperliquid_pooled: result.body?.hyperliquid_pooled || null,
+    private_account_persistence: result.body?.private_account_persistence || null,
     public_live_copy_allowed: result.body?.public_live_copy_allowed === true,
     default_access_mode: result.body?.default_access_mode || null,
     byo_live_venues: Array.isArray(result.body?.byo_live_venues)
@@ -275,6 +422,12 @@ function summarizeLiveTradingGate(result) {
             observed_at: venue.canary_report.observed_at || null,
             expires_at: venue.canary_report.expires_at || null,
             evidence_commitment: venue.canary_report.evidence_commitment || null,
+            entry_receipt_commitment: venue.canary_report.entry_receipt_commitment || null,
+            close_receipt_commitment: venue.canary_report.close_receipt_commitment || null,
+            final_venue_execution_proven: venue.canary_report.final_venue_execution_proven === true,
+            final_fill_proven: venue.canary_report.final_fill_proven === true,
+            position_count: venue.canary_report.position_count ?? null,
+            open_order_count: venue.canary_report.open_order_count ?? null,
           } : null,
           reason_codes: venue.reason_codes || [],
         }))

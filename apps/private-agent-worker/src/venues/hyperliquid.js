@@ -3,6 +3,11 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  submitTurnkeyHyperliquidExecution,
+  turnkeyHyperliquidCredentialFromVault,
+  verifyTurnkeyHyperliquidNoSubmit,
+} from "./hyperliquid-turnkey.js";
 
 const MAINNET_API_URL = "https://api.hyperliquid.xyz";
 const TESTNET_API_URL = "https://api.hyperliquid-testnet.xyz";
@@ -27,6 +32,9 @@ export function hyperliquidCredentialFromVault(vault) {
   }
   if (vault.kind !== "ghola_hyperliquid_execution_vault") {
     throw new HyperliquidExecutionError("hyperliquid execution vault kind is invalid", 400, "venue_access_required");
+  }
+  if (vault.signing_mode === "turnkey_delegated") {
+    return turnkeyHyperliquidCredentialFromVault(vault);
   }
   if (!vault.hyperliquid_account_address || !vault.api_wallet_private_key) {
     throw new HyperliquidExecutionError("hyperliquid execution credentials are missing", 400, "venue_access_required");
@@ -124,8 +132,37 @@ export async function submitHyperliquidExecution({
   instruction,
   cloid,
   runner = defaultRunner,
+  turnkeySubmitter = submitTurnkeyHyperliquidExecution,
+  fetchImpl = fetch,
 }) {
   assertHyperliquidPilotNetwork(credential, instruction);
+  if (instruction.operation_class === "reconcile") {
+    return reconcileHyperliquidExecution({ credential, instruction, fetchImpl });
+  }
+  if (credential?.signing_mode === "turnkey_delegated") {
+    const result = await turnkeySubmitter({ credential, instruction, cloid });
+    const finalProof = hyperliquidFinalProof({ instruction, result });
+    return {
+      status: result.status || (instruction.operation_class === "cancel" ? "cancelled" : "submitted"),
+      provider_ref_seed: {
+        venue: "hyperliquid",
+        signing_mode: "turnkey_delegated",
+        cloid,
+        oid: result.oid || null,
+        fills_count: Array.isArray(result.fills) ? result.fills.length : 0,
+        bracket_count: Number.isInteger(result.bracket_count) ? result.bracket_count : 0,
+      },
+      result_seed: {
+        kind: "hyperliquid_turnkey_result",
+        status: result.status || "submitted",
+        market: instruction.order?.market || instruction.cancel?.market || null,
+        protection_status: Number(result.bracket_count || 0) > 0 ? "submitted_with_entry" : "not_requested",
+        risk_decision: result.risk_decision || null,
+      },
+      fills: Array.isArray(result.fills) ? result.fills.slice(0, 25) : [],
+      final_proof: finalProof,
+    };
+  }
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
     return {
       status: instruction.operation_class === "cancel" ? "cancelled" : "submitted",
@@ -139,6 +176,7 @@ export async function submitHyperliquidExecution({
     cloid,
     timeout_ms: Number.parseInt(process.env.PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS || "12000", 10),
   });
+  const finalProof = hyperliquidFinalProof({ instruction, result });
   return {
     status: result.status || (instruction.operation_class === "cancel" ? "cancelled" : "submitted"),
     provider_ref_seed: {
@@ -146,13 +184,176 @@ export async function submitHyperliquidExecution({
       cloid,
       oid: result.oid || null,
       fills_count: Array.isArray(result.fills) ? result.fills.length : 0,
+      bracket_count: Number.isInteger(result.bracket_count) ? result.bracket_count : 0,
     },
     result_seed: {
       kind: "hyperliquid_result",
       status: result.status || "submitted",
       market: instruction.order?.market || instruction.cancel?.market || null,
+      protection_status: Number(result.bracket_count || 0) > 0 ? "submitted_with_entry" : "not_requested",
     },
     fills: Array.isArray(result.fills) ? result.fills.slice(0, 25) : [],
+    final_proof: finalProof,
+  };
+}
+
+async function reconcileHyperliquidExecution({ credential, instruction, fetchImpl }) {
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
+    return {
+      status: "outcome_unknown",
+      provider_ref_seed: { venue: "hyperliquid", dry_run: true, targeted: true },
+      result_seed: { kind: "hyperliquid_targeted_reconcile", fills_count: 0 },
+      fills: [],
+      final_proof: {
+        version: 1,
+        proof_kind: "hyperliquid_order_status_reconciliation_v1",
+        status: "outcome_unknown",
+        venue_id: "hyperliquid",
+        broadcast_performed: false,
+        final_venue_execution_proven: false,
+        final_fill_proven: false,
+        cumulative_filled_micro_usdc: 0,
+        filled_base_size: null,
+        checked_at: new Date().toISOString(),
+      },
+    };
+  }
+  const targetCloid = String(instruction.reconcile?.target_client_order_id || "").toLowerCase();
+  const targetOid = String(instruction.reconcile?.target_order_id || "");
+  if (!targetCloid && !targetOid) {
+    throw new HyperliquidExecutionError("hyperliquid targeted reconcile requires an order target", 400);
+  }
+  const orderStatusResponse = await fetchImpl(`${credential.base_url || MAINNET_API_URL}/info`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      type: "orderStatus",
+      user: credential.account_address,
+      oid: targetCloid || Number(targetOid),
+    }),
+  });
+  if (!orderStatusResponse.ok) {
+    throw new HyperliquidExecutionError("hyperliquid targeted reconcile failed", 502);
+  }
+  const orderStatusBody = await orderStatusResponse.json();
+  if (orderStatusBody?.status !== "order") {
+    return {
+      status: "outcome_unknown",
+      provider_ref_seed: { venue: "hyperliquid", targeted: true, cloid: targetCloid || null },
+      result_seed: { kind: "hyperliquid_order_status_reconcile", status: "unknownOid" },
+      fills: [],
+      final_proof: {
+        version: 1,
+        proof_kind: "hyperliquid_order_status_reconciliation_v1",
+        status: "outcome_unknown",
+        venue_id: "hyperliquid",
+        broadcast_performed: false,
+        final_venue_execution_proven: false,
+        final_fill_proven: false,
+        cumulative_filled_micro_usdc: 0,
+        filled_base_size: null,
+        checked_at: new Date().toISOString(),
+      },
+    };
+  }
+  const venueOrder = orderStatusBody.order?.order || {};
+  const venueOrderStatus = String(orderStatusBody.order?.status || "unknown");
+  const venueOid = String(venueOrder.oid || targetOid || "");
+  let rows = [];
+  try {
+    const fillsResponse = await fetchImpl(`${credential.base_url || MAINNET_API_URL}/info`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "userFillsByTime",
+        user: credential.account_address,
+        startTime: Date.now() - 8 * 24 * 60 * 60_000,
+        aggregateByTime: true,
+      }),
+    });
+    if (fillsResponse.ok) {
+      const fillsBody = await fillsResponse.json();
+      rows = Array.isArray(fillsBody) ? fillsBody : [];
+    }
+  } catch {
+    rows = [];
+  }
+  const matched = rows.filter((fill) => {
+    const cloidMatches = targetCloid && String(fill?.cloid || fill?.cloidHex || "").toLowerCase() === targetCloid;
+    const oidMatches = venueOid && String(fill?.oid || fill?.orderId || "") === venueOid;
+    return cloidMatches || oidMatches;
+  });
+  const fills = matched.slice(0, 25).map((fill) => ({
+    coin: fill?.coin || null,
+    px: fill?.px || null,
+    sz: fill?.sz || null,
+    fee: fill?.fee || null,
+    time: fill?.time || null,
+  }));
+  const filledBase = fills.reduce((sum, fill) => sum + positiveDecimal(fill.sz), 0);
+  const filledNotional = fills.reduce((sum, fill) => sum + positiveDecimal(fill.sz) * positiveDecimal(fill.px), 0);
+  const finalFillProven = venueOrderStatus === "filled" && filledBase > 0;
+  return {
+    status: "reconciled",
+    provider_ref_seed: {
+      venue: "hyperliquid",
+      targeted: true,
+      cloid: targetCloid || null,
+      oid: venueOid || null,
+      order_status: venueOrderStatus,
+      fills_count: fills.length,
+    },
+    result_seed: {
+      kind: "hyperliquid_order_status_reconcile",
+      order_status: venueOrderStatus,
+      fills_count: fills.length,
+    },
+    fills,
+    final_proof: {
+      version: 1,
+      proof_kind: "hyperliquid_order_status_reconciliation_v1",
+      status: finalFillProven ? "filled" : venueOrderStatus,
+      venue_id: "hyperliquid",
+      broadcast_performed: true,
+      final_venue_execution_proven: true,
+      final_fill_proven: finalFillProven,
+      cumulative_filled_micro_usdc: Math.max(0, Math.round(filledNotional * 1_000_000)),
+      filled_base_size: filledBase > 0 ? trimDecimal(filledBase) : null,
+      checked_at: new Date().toISOString(),
+    },
+  };
+}
+
+function hyperliquidFinalProof({ instruction, result }) {
+  const fills = Array.isArray(result?.fills) ? result.fills : [];
+  let filledBase = 0;
+  let filledNotional = 0;
+  for (const fill of fills) {
+    const size = positiveDecimal(fill?.sz ?? fill?.size ?? fill?.totalSz);
+    const price = positiveDecimal(fill?.px ?? fill?.price ?? fill?.avgPx);
+    if (!size || !price) continue;
+    filledBase += size;
+    filledNotional += size * price;
+  }
+  const requestedBase = positiveDecimal(instruction.order?.base_size);
+  const requestedQuote = positiveDecimal(instruction.order?.quote_size);
+  const minimumFillRatio = boundedRatio(process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_FILL_RATIO, 0.999);
+  const fullByBase = requestedBase > 0 && filledBase >= requestedBase * minimumFillRatio;
+  const fullByQuote = requestedQuote > 0 && filledNotional >= requestedQuote * minimumFillRatio;
+  const cancelled = instruction.operation_class === "cancel" && result?.status === "cancelled";
+  const fullFill = result?.status === "filled" && (requestedBase > 0 ? fullByBase : fullByQuote);
+  const terminalIoc = result?.status === "filled" && String(instruction.order?.tif || "").toLowerCase() === "ioc";
+  return {
+    version: 1,
+    proof_kind: "hyperliquid_immediate_order_state_v1",
+    status: fullFill ? "filled" : cancelled ? "cancelled" : filledBase > 0 ? "partially_filled" : "outcome_unknown",
+    venue_id: "hyperliquid",
+    broadcast_performed: true,
+    final_venue_execution_proven: fullFill || cancelled || terminalIoc,
+    final_fill_proven: fullFill,
+    cumulative_filled_micro_usdc: Math.max(0, Math.round(filledNotional * 1_000_000)),
+    filled_base_size: filledBase > 0 ? trimDecimal(filledBase) : null,
+    checked_at: new Date().toISOString(),
   };
 }
 
@@ -162,8 +363,18 @@ export async function verifyHyperliquidNoSubmit({
   cloid,
   executionMode = "byo_api_key",
   runner = defaultRunner,
+  turnkeyVerifier = verifyTurnkeyHyperliquidNoSubmit,
 }) {
   assertHyperliquidPilotNetwork(credential, instruction);
+  if (credential?.signing_mode === "turnkey_delegated") {
+    const runnerResult = await turnkeyVerifier({ credential, instruction, cloid });
+    return hyperliquidNoSubmitResult({
+      instruction,
+      cloid,
+      executionMode,
+      runnerResult,
+    });
+  }
   if (
     process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" ||
     process.env.PRIVATE_AGENT_HYPERLIQUID_NO_SUBMIT_LOCAL_CHECKS === "true"
@@ -178,6 +389,7 @@ export async function verifyHyperliquidNoSubmit({
         market_data_checked: true,
         account_state_checked: true,
         order_request_checked: true,
+        live_venue_checked: false,
       },
     });
   }
@@ -192,7 +404,7 @@ export async function verifyHyperliquidNoSubmit({
     instruction,
     cloid,
     executionMode,
-    runnerResult,
+    runnerResult: { ...runnerResult, live_venue_checked: true },
   });
 }
 
@@ -220,11 +432,19 @@ export async function readHyperliquidAccountSnapshot({
       next_step: "Preview trade",
     };
   }
-  const [state, openOrders, userFills] = await Promise.all([
+  const [state, spotState, abstraction, openOrders, userFills] = await Promise.all([
     postHyperliquidInfo(fetchImpl, credential.base_url, {
       type: "clearinghouseState",
       user: credential.account_address,
     }),
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "spotClearinghouseState",
+      user: credential.account_address,
+    }),
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "userAbstraction",
+      user: credential.account_address,
+    }).catch(() => null),
     postHyperliquidInfo(fetchImpl, credential.base_url, {
       type: "openOrders",
       user: credential.account_address,
@@ -237,6 +457,8 @@ export async function readHyperliquidAccountSnapshot({
   ]);
   return hyperliquidAccountStateFromParts({
     state,
+    spotState,
+    abstraction,
     openOrders,
     userFills,
     accountSource,
@@ -291,16 +513,26 @@ export async function createHyperliquidAccountStateStream({
   let heartbeatTimer = null;
   let reconnectAttempts = 0;
   let currentState = null;
+  let currentSpotState = null;
+  let currentAbstraction = null;
   let currentOpenOrders = [];
   let currentFills = [];
 
   async function backfill(status = "backfilling") {
     onEvent({ event: "stream_status", data: accountStreamStatus(status) });
-    const [state, openOrders, userFills] = await Promise.all([
+    const [state, spotState, abstraction, openOrders, userFills] = await Promise.all([
       postHyperliquidInfo(fetchImpl, credential.base_url, {
         type: "clearinghouseState",
         user: credential.account_address,
       }),
+      postHyperliquidInfo(fetchImpl, credential.base_url, {
+        type: "spotClearinghouseState",
+        user: credential.account_address,
+      }),
+      postHyperliquidInfo(fetchImpl, credential.base_url, {
+        type: "userAbstraction",
+        user: credential.account_address,
+      }).catch(() => null),
       postHyperliquidInfo(fetchImpl, credential.base_url, {
         type: "openOrders",
         user: credential.account_address,
@@ -312,6 +544,8 @@ export async function createHyperliquidAccountStateStream({
       }).catch(() => []),
     ]);
     currentState = state;
+    currentSpotState = spotState;
+    currentAbstraction = abstraction;
     currentOpenOrders = Array.isArray(openOrders) ? openOrders : [];
     currentFills = Array.isArray(userFills) ? userFills : [];
     emitAccountState("backfilling");
@@ -322,6 +556,8 @@ export async function createHyperliquidAccountStateStream({
       event: "account_state",
       data: hyperliquidAccountStateFromParts({
         state: currentState,
+        spotState: currentSpotState,
+        abstraction: currentAbstraction,
         openOrders: currentOpenOrders,
         userFills: currentFills,
         accountSource,
@@ -447,22 +683,30 @@ export async function createHyperliquidAccountStateStream({
 
 function hyperliquidAccountStateFromParts({
   state,
+  spotState,
+  abstraction,
   openOrders,
   userFills,
   accountSource,
   streamStatus = "snapshot",
 }) {
-  const accountValue = decimalNumber(
+  const perpAccountValue = decimalNumber(
     state?.marginSummary?.accountValue ??
       state?.crossMarginSummary?.accountValue ??
       "0",
   );
+  const unifiedUsdc = abstraction === "unifiedAccount"
+    ? availableSpotUsdc(spotState)
+    : 0;
+  const accountValue = Math.max(perpAccountValue, unifiedUsdc);
   const positions = sanitizePositions(state?.assetPositions);
   const sanitizedOpenOrders = sanitizeOpenOrders(openOrders);
   const recentFills = sanitizeFills(userFills);
   const positionCount = positions.length;
   const openOrderCount = sanitizedOpenOrders.length;
-  const status = accountValue >= 5 ? "ready_to_trade" : "needs_funds";
+  // Match the ticket and venue launch minimum. Previously a $5 account could
+  // appear ready even though every supported order would be rejected.
+  const status = accountValue >= 10 ? "ready_to_trade" : "needs_funds";
   return {
     version: 1,
     status,
@@ -470,7 +714,7 @@ function hyperliquidAccountStateFromParts({
     trading_enabled: status === "ready_to_trade",
     equity_bucket: accountValue <= 0
       ? "none"
-      : accountValue < 5
+      : accountValue < 10
         ? "low"
         : "ready",
     position_count: positionCount,
@@ -486,6 +730,13 @@ function hyperliquidAccountStateFromParts({
       ? "Preview trade"
       : "Add collateral on Hyperliquid, then check again.",
   };
+}
+
+function availableSpotUsdc(spotState) {
+  const balance = Array.isArray(spotState?.balances)
+    ? spotState.balances.find((item) => item?.coin === "USDC")
+    : null;
+  return Math.max(0, decimalNumber(balance?.total) - decimalNumber(balance?.hold));
 }
 
 function sanitizePositions(assetPositions) {
@@ -651,6 +902,7 @@ function hyperliquidNoSubmitResult({ instruction, cloid, executionMode, runnerRe
     account_read_checked: runnerResult.account_state_checked === true,
     order_packet_built: runnerResult.order_request_checked === true,
     order_request_built: runnerResult.order_request_checked === true,
+    live_venue_checked: runnerResult.live_venue_checked === true,
     transaction_broadcast: false,
   };
   return {
@@ -710,6 +962,20 @@ async function postHyperliquidInfo(fetchImpl, baseUrl, body) {
 function decimalNumber(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function positiveDecimal(value) {
+  const parsed = Number.parseFloat(String(value ?? ""));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function boundedRatio(value, fallback) {
+  const parsed = Number.parseFloat(String(value ?? ""));
+  return Number.isFinite(parsed) && parsed >= 0.9 && parsed <= 1 ? parsed : fallback;
+}
+
+function trimDecimal(value) {
+  return Number(value).toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function decimalBucket(value) {

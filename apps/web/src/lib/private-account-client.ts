@@ -1,6 +1,7 @@
 import type {
   GholaClaimStatus,
   GholaAuctionOrderSide,
+  GholaFundingAmountBucket,
   GholaPlatformClass,
   GholaPrivateAccountActionClass,
   GholaRailKind,
@@ -9,10 +10,13 @@ import type {
   GholaVenueId,
 } from "./private-account";
 import type { PrivateAccountReadinessResponse } from "./private-account-readiness";
+import type { CustomerExecutionDisplay } from "./private-account-trading-ui";
 import type { HyperliquidEncryptedExecutionVaultBundle } from "./hyperliquid-vault-seal";
+import type { HyperliquidApiWalletBindingProof } from "./hyperliquid-agent-binding";
 import type { CoinbaseEncryptedExecutionVaultBundle, CoinbaseExecutionMode } from "./coinbase-vault-seal";
 import type { SolanaPerpsEncryptedExecutionVaultBundle } from "./solana-perps-vault-seal";
 import type { SolanaSwapEncryptedExecutionVaultBundle } from "./solana-swap-vault-seal";
+import { defaultHyperliquidMarketAllowlist } from "./private-account-hyperliquid-policy";
 
 export type PrivateAccountProductBucket =
   | "stablecoin"
@@ -27,7 +31,7 @@ export interface PrivateAccountSafeInput {
   action_class: GholaPrivateAccountActionClass;
   platform_class: GholaPlatformClass;
   product_bucket: PrivateAccountProductBucket;
-  amount_bucket: "5" | "10" | "25" | "50" | "100";
+  amount_bucket: GholaFundingAmountBucket;
   urgency: "maximum_privacy" | "next_batch" | "fast_degraded";
   destination_class:
     | "ghola_user"
@@ -39,7 +43,7 @@ export interface PrivateAccountSafeInput {
   solver_count_bucket: "1" | "2-4" | "5+";
 }
 
-export type PrivateAutopilotVenueId = "jupiter" | "phoenix" | "hyperliquid" | "coinbase_advanced";
+export type PrivateAutopilotVenueId = "jupiter" | "phoenix" | "backpack" | "hyperliquid" | "coinbase_advanced";
 export type PrivateAutopilotStatus =
   | "armed"
   | "watching"
@@ -59,6 +63,8 @@ export type PrivateAutopilotEventType =
   | "session_state"
   | "venue_readiness"
   | "proposal"
+  | "executor_created"
+  | "tick_snapshot"
   | "execution"
   | "live_order_submitted"
   | "position_update"
@@ -71,14 +77,46 @@ export interface PrivateAccountLiveTradingStatus {
   version: 1;
   status: "green" | "red";
   live_trading_enabled: boolean;
-  live_submit_mode: "disabled" | "byo_mainnet" | "pooled_and_byo";
+  live_submit_mode: "disabled" | "byo_mainnet" | "byo_testnet" | "pooled_account" | "pooled_and_byo";
+  fresh_user_live_ready?: boolean;
+  launch_mode?: "disabled" | "hyperliquid_byo" | "hyperliquid_pooled" | "hyperliquid_byo_and_pooled";
+  bounded_beta_enabled?: boolean;
   byo_live_trading_enabled: boolean;
   pooled_live_trading_enabled: boolean;
+  hyperliquid_byo?: {
+    status: "green" | "red";
+    reason_codes: string[];
+    canary_status: "green" | "missing" | "red" | "stale";
+    canary_reason_codes?: string[];
+  };
+  hyperliquid_pooled?: {
+    status: "green" | "red";
+    reason_codes: string[];
+    canary_status: "green" | "missing" | "red" | "stale";
+    canary_reason_codes?: string[];
+    worker_readiness?: {
+      status: "ready" | "blocked" | "unavailable";
+      ready: boolean;
+      endpoint_configured: boolean;
+      reason_codes: string[];
+      venue_status?: "ready" | "blocked" | "unavailable";
+      venue_ready?: boolean;
+      venue_reason_codes?: string[];
+      checked_at: string;
+    };
+    ghola_balance_required?: {
+      required: boolean;
+      per_user?: boolean;
+      funding_status_path?: string;
+      funding_intent_path?: string;
+      import_credit_path?: string;
+    };
+  };
   public_live_copy_allowed: boolean;
   public_market_data_enabled: boolean;
   default_access_mode: "ghola_auto_access";
   required_venues: Array<{
-    id: "hyperliquid" | "phoenix" | "jupiter" | "coinbase";
+    id: "hyperliquid" | "phoenix" | "backpack" | "jupiter" | "coinbase";
     label: string;
     submit_source?: "ghola_pooled_account";
     status: "green" | "red";
@@ -88,7 +126,7 @@ export interface PrivateAccountLiveTradingStatus {
     reason_codes: string[];
   }>;
   byo_live_venues: Array<{
-    id: "hyperliquid" | "phoenix" | "jupiter" | "coinbase";
+    id: "hyperliquid" | "phoenix" | "backpack" | "jupiter" | "coinbase";
     label: string;
     submit_source: "user_scoped_credential";
     status: "green" | "red";
@@ -97,17 +135,28 @@ export interface PrivateAccountLiveTradingStatus {
   pooled_reason_codes: string[];
   reason_codes: string[];
   gate_commitment: string;
+  execution_display?: CustomerExecutionDisplay;
   checked_at: string;
 }
 
+export type PrivateAutopilotStrategyId =
+  | "bounded_intent_executor_v1"
+  | "momentum_micro_trader"
+  | "hedged_spread_arbitrage_v1"
+  | "tri_venue_market_maker_v1";
+export type PrivateCanonicalAutopilotStrategyId = Exclude<PrivateAutopilotStrategyId, "momentum_micro_trader">;
+
 export interface PrivateAutopilotSessionPolicy {
+  strategy_id?: PrivateAutopilotStrategyId;
   decision_model: "rules_plus_ai_score" | "ai_direct_order_v1";
+  decision_contract?: "deterministic_proposal_v1" | "structured_proposal_v2";
+  model_role?: "score_only" | "proposal_only";
   ai_direct_enabled: boolean;
   venue_allowlist: PrivateAutopilotVenueId[];
   market_allowlist: string[];
-  max_notional_bucket: "5" | "10" | "25" | "50" | "100";
+  max_notional_bucket: GholaFundingAmountBucket;
   max_position_notional_bucket: "50" | "100" | "250" | "500";
-  max_daily_notional_bucket: "25" | "50" | "100" | "250";
+  max_daily_notional_bucket: "25" | "50" | "100" | "250" | "500" | "1000" | "2500" | "5000";
   max_order_count: number;
   ttl_ms: number;
   max_slippage_bps: number;
@@ -130,16 +179,26 @@ export interface PrivateAutopilotSessionPolicy {
 export interface PrivateAutopilotSession {
   version: 2;
   autopilot_session_id: string;
+  agent_controller_id?: string | null;
   worker_autopilot_session_id: string | null;
   worker_session_commitment: string | null;
   owner_commitment: string;
   status: PrivateAutopilotStatus;
   strategy: {
     version: 1;
-    strategy_id: "momentum_micro_trader";
+    strategy_id: PrivateCanonicalAutopilotStrategyId;
     decision_model: "rules_plus_ai_score" | "ai_direct_order_v1";
-    executable_order_source: "deterministic_guarded_strategy" | "ai_structured_decision_validated_by_policy";
+    executable_order_source:
+      | "deterministic_guarded_strategy"
+      | "deterministic_bounded_intent_executor"
+      | "ai_structured_decision_validated_by_policy"
+      | "deterministic_cost_router_after_typed_model_proposal"
+      | "deterministic_guarded_arb_planner"
+      | "deterministic_guarded_market_maker";
     ai_can_execute_directly: boolean;
+    decision_contract?: "deterministic_proposal_v1" | "structured_proposal_v2";
+    model_role?: "score_only" | "proposal_only";
+    deterministic_router?: boolean;
   };
   session_policy: PrivateAutopilotSessionPolicy;
   venue_access: Record<PrivateAutopilotVenueId, {
@@ -179,6 +238,16 @@ export interface PrivateAutopilotCreateResponse {
   events: PrivateAutopilotEvent[];
 }
 
+export interface PrivateAutopilotReplayResponse {
+  version: 1;
+  session: PrivateAutopilotSession;
+  metrics: Record<string, unknown>;
+  executors: Record<string, unknown>[];
+  tick_snapshots: Record<string, unknown>[];
+  positions: Record<string, unknown>[];
+  events: PrivateAutopilotEvent[];
+}
+
 export interface PrivateAutopilotListResponse {
   version: 1;
   autopilot_sessions: PrivateAutopilotSession[];
@@ -193,6 +262,7 @@ export interface PrivateAutopilotReadiness {
   seeker_required: boolean;
   target_live_mode: "tiny_live_orders";
   blockers: string[];
+  execution_display?: CustomerExecutionDisplay;
   venue_readiness: Array<{
     venue_id: PrivateAutopilotVenueId;
     status: "ready" | "needs_funds" | "blocked";
@@ -205,7 +275,7 @@ export interface HyperliquidMarketSnapshot {
   version: 1;
   platform: "hyperliquid";
   network: "mainnet" | "testnet";
-  coin: "BTC" | "ETH" | "SOL" | "HYPE";
+  coin: string;
   interval: "1m" | "5m" | "15m" | "1h";
   fetched_at: string;
   source_timestamp: number | null;
@@ -295,7 +365,7 @@ export type HyperliquidAccountStreamStatus =
 
 export async function getHyperliquidMarketSnapshot(input: {
   network?: "mainnet" | "testnet";
-  coin?: "BTC" | "ETH" | "SOL" | "HYPE";
+  coin?: string;
   interval?: "1m" | "5m" | "15m" | "1h";
 } = {}): Promise<HyperliquidMarketSnapshot> {
   const params = new URLSearchParams();
@@ -316,7 +386,7 @@ export async function getHyperliquidAccountSnapshot(): Promise<HyperliquidAccoun
 }
 
 export function openHyperliquidAccountStream(input: {
-  coin?: "BTC" | "ETH" | "SOL" | "HYPE";
+  coin?: string;
   onState: (snapshot: HyperliquidAccountSnapshot) => void;
   onStatus?: (status: HyperliquidAccountStreamStatus) => void;
   onEvent?: (event: unknown) => void;
@@ -409,6 +479,14 @@ export async function getPrivateAutopilotSession(
   return privateAccountFetch(`/v1/private-account/autopilot/sessions/${encodeURIComponent(autopilotSessionId)}`, {
     method: "GET",
   }) as Promise<{ version: 1; session: PrivateAutopilotSession }>;
+}
+
+export async function getPrivateAutopilotReplay(
+  autopilotSessionId: string,
+): Promise<PrivateAutopilotReplayResponse> {
+  return privateAccountFetch(`/v1/private-account/autopilot/sessions/${encodeURIComponent(autopilotSessionId)}/replay`, {
+    method: "GET",
+  }) as Promise<PrivateAutopilotReplayResponse>;
 }
 
 export async function controlPrivateAutopilotSession(
@@ -602,7 +680,7 @@ export async function allocateHyperliquidManagedTestnet(input: {
     body: JSON.stringify({
       execution_mode: input.execution_mode || "managed_testnet",
       network: input.network || (input.execution_mode === "ghola_pooled" ? "mainnet" : "testnet"),
-      market_allowlist: input.market_allowlist || ["BTC", "ETH", "SOL"],
+      market_allowlist: input.market_allowlist || defaultHyperliquidMarketAllowlist(),
       max_notional_bucket: input.max_notional_bucket || "25",
       max_order_count: input.max_order_count ?? 10,
       kill_switch: input.kill_switch === true,
@@ -613,11 +691,13 @@ export async function allocateHyperliquidManagedTestnet(input: {
 
 export async function sealHyperliquidExecutionVault(input: {
   encrypted_execution_vault: HyperliquidEncryptedExecutionVaultBundle;
+  credential_binding?: HyperliquidApiWalletBindingProof;
 }) {
   return privateAccountFetch("/v1/private-account/hyperliquid/vault", {
     method: "POST",
     body: JSON.stringify({
       encrypted_execution_vault: input.encrypted_execution_vault,
+      credential_binding: input.credential_binding,
     }),
   });
 }
@@ -633,7 +713,7 @@ export async function armHyperliquidExecutionAgent(input: {
     method: "POST",
     body: JSON.stringify({
       execution_mode: input.execution_mode,
-      market_allowlist: input.market_allowlist || ["BTC", "ETH", "SOL"],
+      market_allowlist: input.market_allowlist || defaultHyperliquidMarketAllowlist(),
       max_notional_bucket: input.max_notional_bucket || "25",
       max_order_count: input.max_order_count ?? 10,
       kill_switch: input.kill_switch === true,
@@ -674,11 +754,23 @@ export async function getVenueEligibilityStatus(input: {
 export async function verifyVenueEligibility(input: {
   venue_id: GholaVenueId;
   credential_type?: "self_attested_eligible_user" | "partner_verified_eligible_user";
+  launch_scope?: "hyperliquid_pooled_non_us_beta";
+  accepted_terms?: boolean;
+  accepted_risk?: boolean;
+  jurisdiction_assertion?: "non_us" | "us" | "unknown";
+  country_code?: string;
+  region_code?: string;
 }) {
   return privateAccountFetch(`/v1/private-account/venues/${input.venue_id}/eligibility`, {
     method: "POST",
     body: JSON.stringify({
       credential_type: input.credential_type || "self_attested_eligible_user",
+      ...(input.launch_scope ? { launch_scope: input.launch_scope } : {}),
+      ...(input.accepted_terms !== undefined ? { accepted_terms: input.accepted_terms } : {}),
+      ...(input.accepted_risk !== undefined ? { accepted_risk: input.accepted_risk } : {}),
+      ...(input.jurisdiction_assertion ? { jurisdiction_assertion: input.jurisdiction_assertion } : {}),
+      ...(input.country_code ? { country_code: input.country_code } : {}),
+      ...(input.region_code ? { region_code: input.region_code } : {}),
     }),
   });
 }
@@ -876,6 +968,7 @@ export async function verifyPrivateAccountConnectorNoSubmit(input: {
 
 export async function reconcilePrivateAccountConnector(input: {
   work_order_commitment?: string;
+  preview_commitment?: string;
   connector_result_commitment?: string;
 }) {
   return privateAccountFetch("/v1/private-account/connectors/reconcile", {

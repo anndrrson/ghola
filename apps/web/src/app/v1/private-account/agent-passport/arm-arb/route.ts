@@ -62,9 +62,9 @@ export async function POST(req: Request) {
 function guardedArbPolicy(body: Record<string, unknown>, readiness: Awaited<ReturnType<typeof agentPassportReadinessForOwner>>) {
   const ready = new Set(readiness.ready_venues);
   const venues = [
-    ...(ready.has("coinbase_advanced") ? ["coinbase_advanced"] : []),
-    ...(ready.has("jupiter") ? ["jupiter"] : []),
+    ...(ready.has("phoenix") ? ["phoenix"] : []),
     "hyperliquid",
+    ...(ready.has("backpack") ? ["backpack"] : []),
   ];
   return {
     strategy_id: "hedged_spread_arbitrage_v1",
@@ -78,10 +78,15 @@ function guardedArbPolicy(body: Record<string, unknown>, readiness: Awaited<Retu
     ttl_ms: integer(body.ttl_ms, 5 * 60_000, 4 * 60 * 60_000, 60 * 60_000),
     max_slippage_bps: integer(body.max_slippage_bps, 1, 100, 25),
     cooldown_ms: integer(body.cooldown_ms, 60_000, 30 * 60_000, 60_000),
-    data_max_age_ms: integer(body.data_max_age_ms, 5_000, 5 * 60_000, 15_000),
+    data_max_age_ms: integer(
+      body.data_max_age_ms,
+      1_000,
+      5 * 60_000,
+      envInteger("PRIVATE_AGENT_ARB_MAX_MARKET_DATA_SKEW_MS", 2_000),
+    ),
     min_net_edge_bps: integer(body.min_net_edge_bps, 1, 5_000, envInteger("PRIVATE_AGENT_ARB_MIN_NET_EDGE_BPS", 25)),
     max_execution_skew_ms: integer(body.max_execution_skew_ms, 50, 60_000, envInteger("PRIVATE_AGENT_ARB_MAX_EXECUTION_SKEW_MS", 2_000)),
-    allowed_order_types: ["spot_market_order", "swap", "limit_order", "cancel"],
+    allowed_order_types: ["perp_limit_order", "limit_order", "cancel"],
     kill_switch: body.kill_switch === true,
     reduce_only_on_reconcile_failure: true,
   };

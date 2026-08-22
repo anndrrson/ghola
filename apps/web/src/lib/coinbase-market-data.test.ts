@@ -4,6 +4,9 @@ import {
   normalizeCoinbaseCandles,
   normalizeCoinbaseMarketInput,
   resetCoinbaseMarketSnapshotCacheForTests,
+  selectCoinbaseDisplayPrice,
+  spreadBps,
+  validatedBookMid,
 } from "./coinbase-market-data";
 
 describe("Coinbase market data", () => {
@@ -18,7 +21,7 @@ describe("Coinbase market data", () => {
       interval: "1m",
     });
     expect(normalizeCoinbaseMarketInput({ productId: "DOGE-USD", interval: "2m" })).toEqual({
-      productId: "BTC-USD",
+      productId: "DOGE-USD",
       interval: "5m",
     });
   });
@@ -30,6 +33,17 @@ describe("Coinbase market data", () => {
     ]);
     expect(candles.map((candle) => candle.t)).toEqual([1780106100000, 1780106400000]);
     expect(candles[0]).toMatchObject({ o: "99", c: "100", v: "2" });
+  });
+
+  it("calculates exchange midpoints without floating-point artifacts", () => {
+    expect(validatedBookMid("72.89", "72.90")).toBe("72.895");
+    expect(validatedBookMid("68100", "68101")).toBe("68100.5");
+    expect(validatedBookMid("102", "100")).toBeNull();
+  });
+
+  it("rejects crossed books instead of presenting a fabricated zero spread", () => {
+    expect(spreadBps("73.08", "73.09")).toBe(1.37);
+    expect(spreadBps("73.10", "73.09")).toBeNull();
   });
 
   it("builds a public spot snapshot without account data", async () => {
@@ -107,7 +121,105 @@ describe("Coinbase market data", () => {
     expect(JSON.stringify(snapshot)).not.toContain("api_key");
     expect(JSON.stringify(snapshot)).not.toContain("wallet_address");
   });
+
+  it("preserves source age when every refresh dependency fails", async () => {
+    const firstAt = new Date("2026-05-30T02:07:01.000Z");
+    const initial = await getCoinbaseMarketSnapshot({
+      productId: "SOL-USD",
+      interval: "5m",
+      now: firstAt,
+      fetchImpl: successfulMarketFetch as never,
+    });
+    const failedAt = new Date("2026-05-30T02:07:06.000Z");
+    const failed = await getCoinbaseMarketSnapshot({
+      productId: "SOL-USD",
+      interval: "5m",
+      now: failedAt,
+      fetchImpl: vi.fn(async () => { throw new Error("network down"); }) as never,
+      cacheMode: "refresh",
+    });
+
+    expect(failed.stale).toBe(true);
+    expect(failed.fetched_at).toBe(initial.fetched_at);
+    expect(failed.request_completed_at).toBe(failedAt.toISOString());
+    expect(failed.last_error_at).toBe(failedAt.toISOString());
+    expect(failed.book_mid).toBe(initial.book_mid);
+  });
+
+  it("serves an expired trustworthy snapshot immediately while one refresh runs", async () => {
+    const firstAt = new Date("2026-05-30T02:07:01.000Z");
+    const initial = await getCoinbaseMarketSnapshot({
+      productId: "BTC-USD",
+      interval: "1m",
+      now: firstAt,
+      fetchImpl: successfulMarketFetch as never,
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const slowFetch = vi.fn(async (url: string) => {
+      await gate;
+      return successfulMarketFetch(url);
+    });
+    const staleAt = new Date(firstAt.getTime() + 5_000);
+    const first = await getCoinbaseMarketSnapshot({ productId: "BTC-USD", interval: "1m", now: staleAt, fetchImpl: slowFetch as never });
+    const second = await getCoinbaseMarketSnapshot({ productId: "BTC-USD", interval: "1m", now: staleAt, fetchImpl: slowFetch as never });
+
+    expect(first).toMatchObject({ mid: initial.mid, stale: true });
+    expect(second).toMatchObject({ mid: initial.mid, stale: true });
+    expect(slowFetch).toHaveBeenCalledTimes(4);
+    release();
+    await getCoinbaseMarketSnapshot({ productId: "BTC-USD", interval: "1m", now: staleAt, fetchImpl: slowFetch as never, cacheMode: "refresh" });
+  });
+
+  it("selects a fresh book midpoint before last trade and reports delayed fallback", () => {
+    const now = Date.parse("2026-05-30T02:07:10.000Z");
+    const snapshot = {
+      ...emptySnapshotForSelection(now),
+      book_mid: "101",
+      mid: "101",
+      book_updated_at: now - 1_000,
+      last_trade_price: "100.5",
+      price: "100.5",
+      last_trade_updated_at: now - 2_000,
+    };
+    expect(selectCoinbaseDisplayPrice(snapshot, now)).toMatchObject({ value: "101", kind: "book_mid", stale: false });
+    expect(selectCoinbaseDisplayPrice({ ...snapshot, book_updated_at: now - 11_000 }, now)).toMatchObject({
+      value: "100.5",
+      kind: "last_trade",
+      stale: false,
+    });
+    expect(selectCoinbaseDisplayPrice({ ...snapshot, book_updated_at: now - 11_000, last_trade_updated_at: now - 16_000 }, now)).toMatchObject({
+      value: "100.5",
+      kind: "last_trade",
+      stale: true,
+    });
+  });
 });
+
+async function successfulMarketFetch(url: string) {
+  if (url.includes("/product_book")) return json({ pricebook: { time: "2026-05-30T02:07:01.000Z", bids: [{ price: "100", size: "1" }], asks: [{ price: "102", size: "1" }] } });
+  if (url.includes("/candles")) return json({ candles: [{ start: "1780106400", low: "99", high: "103", open: "100", close: "101", volume: "1" }] });
+  if (url.includes("/ticker")) return json({ trades: [{ trade_id: "1", product_id: "SOL-USD", price: "100.5", size: "1", time: "2026-05-30T02:07:01.000Z", side: "BUY" }] });
+  return json({ product_id: "SOL-USD", price: "100.5", quote_increment: "0.01" });
+}
+
+function emptySnapshotForSelection(now: number) {
+  return {
+    version: 1 as const,
+    platform: "coinbase" as const,
+    product_id: "BTC-USD" as const,
+    base_currency_id: "BTC" as const,
+    quote_currency_id: "USD" as const,
+    interval: "5m" as const,
+    fetched_at: new Date(now).toISOString(), request_completed_at: new Date(now).toISOString(),
+    source: "http" as const, source_timestamp: now, stale: false, last_error_at: null,
+    last_trade_price: null, book_mid: null, last_trade_updated_at: null, book_updated_at: null,
+    candle_updated_at: null, last_heartbeat_at: null, price: null, mid: null, best_bid: null, best_ask: null,
+    spread_bps: null, price_percentage_change_24h: null, volume_24h: null, approximate_quote_24h_volume: null,
+    base_increment: null, quote_increment: null, quote_min_size: null, trading_disabled: false, product_type: null,
+    candles: [], bids: [], asks: [], recent_trades: [],
+  };
+}
 
 function json(body: unknown) {
   return new Response(JSON.stringify(body), {

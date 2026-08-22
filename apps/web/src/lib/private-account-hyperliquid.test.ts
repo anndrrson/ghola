@@ -110,6 +110,20 @@ describe("Hyperliquid private execution layer", () => {
     });
   });
 
+  it("allows the HYPE proof market in the default Hyperliquid policy", () => {
+    const policy = createHyperliquidSessionPolicy({ now: NOW });
+
+    expect(policy.market_allowlist).toContain("HYPE");
+    expect(validateHyperliquidPolicyExecution({
+      policy,
+      operation: "limit_order",
+      market: "HYPE",
+      notional_bucket: "10",
+      order_count: 0,
+      now: NOW,
+    })).toEqual({ ok: true });
+  });
+
   it("blocks Hyperliquid readiness unless pilot, vault, funding, and connector gates are green", async () => {
     const blockedManifest = getConnectorManifest("hyperliquid_style_market", NOW);
     const blocked = await connectorReadiness({
@@ -172,7 +186,7 @@ describe("Hyperliquid private execution layer", () => {
       GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
       GHOLA_HYPERLIQUID_LIVE_MODE: "tiny_fill",
       GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL: "https://worker.ghola.test",
-      GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN: "worker-token-test",
+      PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "worker-capability-secret-test",
       GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS: "ready",
     };
     const manifest = getConnectorManifest("hyperliquid_style_market", NOW);
@@ -188,6 +202,7 @@ describe("Hyperliquid private execution layer", () => {
     });
 
     expect(readiness.status).toBe("ready");
+    expect(readiness.reason_codes).not.toContain("connector_token_missing");
     expect(manifest.supported_rails).toContain("direct_public_fallback");
     expect(readiness.reason_codes).not.toContain("shielded_funding_evidence_required");
     expect(readiness.reason_codes).not.toContain("sealed_runtime_unhealthy");
@@ -207,7 +222,9 @@ describe("Hyperliquid private execution layer", () => {
       GHOLA_PRIVATE_RUNTIME_URL: "https://runtime.ghola.test",
       GHOLA_PRIVATE_RUNTIME_MEASUREMENT: "measurement-test",
     };
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    const fetchMock = vi.fn<
+      (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+    >(async () =>
       Response.json({
         ok: true,
         provider_ref_commitment: "hyperliquid_provider_ref_test",
@@ -336,7 +353,9 @@ describe("Hyperliquid private execution layer", () => {
       GHOLA_PRIVATE_RUNTIME_URL: "https://runtime.ghola.test",
       GHOLA_PRIVATE_RUNTIME_MEASUREMENT: "measurement-test",
     };
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    const fetchMock = vi.fn<
+      (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+    >(async () =>
       Response.json({
         ok: true,
         provider_ref_commitment: "hyperliquid_provider_ref_managed",

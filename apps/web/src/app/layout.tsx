@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Funnel_Display } from "next/font/google";
 import "./globals.css";
+import "@turnkey/react-wallet-kit/styles.css";
 import { AuthProvider } from "@/lib/auth-context";
 import { ThumperAuthProvider } from "@/lib/thumper-auth-context";
 import { AppWalletProvider } from "@/lib/wallet-provider";
 import { LayoutShell } from "@/components/LayoutShell";
 import { ServiceWorker } from "@/components/ServiceWorker";
+import { PerpsTurnkeyProvider } from "@/lib/perps-turnkey-provider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -92,7 +94,9 @@ export default function RootLayout({
         <AuthProvider>
           <ThumperAuthProvider>
             <AppWalletProvider>
-              <LayoutShell>{children}</LayoutShell>
+              <PerpsTurnkeyProvider>
+                <LayoutShell>{children}</LayoutShell>
+              </PerpsTurnkeyProvider>
             </AppWalletProvider>
           </ThumperAuthProvider>
         </AuthProvider>

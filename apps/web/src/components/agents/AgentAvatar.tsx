@@ -41,8 +41,8 @@ export function AgentAvatar({
   if (avatarUrl) {
     // Plain <img> instead of next/image: avatar URLs come from arbitrary user input
     // and adding every host to next.config.ts remotePatterns isn't practical.
-    // eslint-disable-next-line @next/next/no-img-element
     return (
+      // eslint-disable-next-line @next/next/no-img-element
       <img
         src={avatarUrl}
         alt={displayName}

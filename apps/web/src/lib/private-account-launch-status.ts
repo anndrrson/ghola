@@ -51,7 +51,9 @@ export async function privateAccountLaunchStatus(
   const connectorToken =
     trimmed(env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN) ||
     trimmed(env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN) ||
-    trimmed(env.PRIVATE_AGENT_EXECUTION_TOKEN);
+    trimmed(env.PRIVATE_AGENT_EXECUTION_TOKEN) ||
+    trimmed(env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET) ||
+    trimmed(env.GHOLA_WORKER_CAPABILITY_SECRET);
   const checks: GholaLaunchCheck[] = [
     check(
       "auth_api_configured",

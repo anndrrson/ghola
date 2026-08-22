@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Privacy Policy — Ghola",
@@ -6,7 +7,7 @@ export const metadata: Metadata = {
     "How Ghola collects, uses, stores, and protects information across the Ghola web application, mobile app, and APIs.",
 };
 
-const EFFECTIVE_DATE = "April 29, 2026";
+const EFFECTIVE_DATE = "August 6, 2026";
 
 export default function PrivacyPolicyPage() {
   return (
@@ -54,9 +55,9 @@ export default function PrivacyPolicyPage() {
             2.2 Wallet and on-chain data
           </h3>
           <p>
-            Ghola integrates with Solana wallets, including the Solana Seeker
-            Seed Vault and Mobile Wallet Adapter. We collect your public wallet
-            address and on-chain transaction signatures. We do not collect or
+            Ghola integrates with Solana wallets through Mobile Wallet Adapter.
+            We collect your public wallet address and on-chain transaction
+            signatures. We do not collect or
             store your private keys, seed phrase, or recovery material — those
             remain on your device.
           </p>
@@ -119,11 +120,12 @@ export default function PrivacyPolicyPage() {
             2.7 Payment information
           </h3>
           <p>
-            Subscription payments are processed by Stripe. We do not store your
-            full card number. We retain the last four digits, card brand,
-            customer ID, and subscription status returned by Stripe. USDC
-            settlement transactions occur on the Solana blockchain and are
-            publicly visible by their nature.
+            Depending on where you install Ghola, subscription payments are
+            processed by Google Play or Stripe. We do not store your full card
+            number. We retain the minimum customer, purchase-token, and
+            subscription-status metadata needed to verify access and reconcile
+            billing. USDC settlement transactions occur on the Solana
+            blockchain and are publicly visible by their nature.
           </p>
         </Section>
 
@@ -200,10 +202,16 @@ export default function PrivacyPolicyPage() {
 
         <Section title="5. Data retention">
           <p>
-            We retain account data for as long as your account is active. You
-            may delete your account at any time from the in-app settings; when
-            you do so we delete or anonymise associated personal data within 30
-            days, except where retention is required for legal, accounting, or
+            We retain account data for as long as your account is active. In
+            the Android app, open Account, expand Advanced account details, and
+            choose Delete Ghola account to revoke access immediately. If you
+            cannot access the app, use our dedicated {" "}
+            <Link href="/account/delete" className="underline">
+              account-deletion page
+            </Link>{" "}
+            to submit a verified request. We delete or anonymise associated
+            personal data within 30 days after verification, except where
+            retention is required for legal, accounting, security, or
             fraud-prevention purposes.
           </p>
           <p>

@@ -7,10 +7,13 @@ const eslintConfig = defineConfig([
   ...nextTs,
   globalIgnores([
     ".next/**",
+    ".workflow-data/**",
+    ".workflow-vitest/**",
     "out/**",
     "build/**",
     "next-env.d.ts",
     "node_modules/**",
+    "src/app/.well-known/workflow/**",
   ]),
   {
     rules: {

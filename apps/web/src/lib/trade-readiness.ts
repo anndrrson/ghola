@@ -12,6 +12,22 @@ export type SpotReadinessStatus = {
   no_key_blocking_reason_codes?: string[];
 };
 
+export function hyperliquidCredentialsSealed(status: {
+  credentials_sealed?: boolean;
+} | null): boolean {
+  return status?.credentials_sealed === true;
+}
+
+export function mergeHyperliquidAccountSnapshot(
+  current: HyperliquidAccountSnapshot | null,
+  incoming: HyperliquidAccountSnapshot,
+): HyperliquidAccountSnapshot {
+  if (current?.status === "needs_funds" && incoming.status === "private_mode_waiting") {
+    return current;
+  }
+  return incoming;
+}
+
 export function spotVenueReadiness(venue: "coinbase" | "phoenix", status: SpotReadinessStatus | null): TradeReadiness {
   if (!status) return { label: "checking", ready: false, detail: "Checking secure venue availability." };
   const ready = venue === "coinbase" ? status.coinbase_public_live_ready : status.phoenix_public_live_ready;

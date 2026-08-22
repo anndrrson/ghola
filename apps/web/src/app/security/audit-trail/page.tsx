@@ -42,7 +42,6 @@ const GITHUB_REPO = "https://github.com/anndrrson/ghola";
 
 export default function AuditTrailPage() {
   const [manifest, setManifest] = useState<ManifestSnapshot | null>(null);
-  const [cspHashCount, setCspHashCount] = useState<number | null>(null);
 
   useEffect(() => {
     void fetch("/.well-known/sri-manifest.json", { cache: "no-store" })
@@ -57,13 +56,6 @@ export default function AuditTrailPage() {
         });
       })
       .catch(() => setManifest({ manifest_sha256: null, generated_at: null, git_commit: null, file_count: null }));
-
-    void fetch("/.well-known/csp-inline-hashes.json", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((b) => {
-        if (b && Array.isArray(b.hashes)) setCspHashCount(b.hashes.length);
-      })
-      .catch(() => {});
   }, []);
 
   return (
@@ -123,16 +115,12 @@ export default function AuditTrailPage() {
 
           <ArtifactRow
             icon={<FileCheck2 className="h-4 w-4" />}
-            label="Inline-script CSP allowlist"
-            value={
-              cspHashCount === null
-                ? "loading…"
-                : `${cspHashCount} pinned sha256 hashes`
-            }
-            evidence="Every inline <script> block Next.js emits is hashed at build time and listed in the CSP script-src directive. 'unsafe-inline' is removed; only pinned hashes execute."
-            verifyCommand={`curl -s https://ghola.xyz/.well-known/csp-inline-hashes.json | jq '.hashes | length'\n\n# Verify CSP header enforcing:\ncurl -sI https://ghola.xyz/ | grep -i 'content-security-policy:'`}
-            externalHref="https://ghola.xyz/.well-known/csp-inline-hashes.json"
-            externalLabel="csp-inline-hashes.json"
+            label="Bootstrap CSP"
+            value="compact CSP that permits Next bootstrap scripts"
+            evidence="The proxy emits a compact Content-Security-Policy. Statically prerendered Next pages require an allowed inline bootstrap path; the public site render canary verifies the page actually hydrates instead of shipping a blank shell."
+            verifyCommand={`curl -sI https://ghola.xyz/ | grep -i 'content-security-policy:'\n\n# Verify the production script policy can run Next's bootstrap scripts:\ncurl -sI https://ghola.xyz/ | tr -d '\\r' | grep -i '^content-security-policy:' | grep -E \"'unsafe-inline'|'nonce-|'sha256-\"\n\n# Browser-level proof, catches 200 OK blank-shell failures:\ncd apps/web && node scripts/smoke-site-load.mjs`}
+            externalHref="https://ghola.xyz/"
+            externalLabel="headers"
           />
 
           <ArtifactRow
@@ -179,7 +167,7 @@ export default function AuditTrailPage() {
             icon={<FileCheck2 className="h-4 w-4" />}
             label="Response headers (defense in depth)"
             value="HSTS · CSP enforcing · XFO DENY · COOP/COEP · CORP same-origin"
-            evidence="Verified by the security-headers.test.ts vitest regression on every CI run. apps/web/next.config.ts is the source of truth."
+            evidence="Verified by the security-headers.test.ts and proxy.test.ts vitest regressions on every CI run. apps/web/src/proxy.ts owns CSP; next.config.ts owns non-CSP defense-in-depth headers."
             verifyCommand={`curl -sI https://ghola.xyz/ | grep -iE 'strict-transport|x-frame|content-security|content-type-options|referrer|permissions-policy|cross-origin'`}
             externalHref="https://github.com/anndrrson/ghola/blob/main/apps/web/src/lib/security-headers.test.ts"
             externalLabel="headers test"

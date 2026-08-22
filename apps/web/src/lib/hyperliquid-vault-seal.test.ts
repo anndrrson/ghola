@@ -4,6 +4,7 @@ import { ed25519, x25519 } from "@noble/curves/ed25519";
 import { localEd25519Signer, open } from "./envelope";
 import {
   buildHyperliquidExecutionVaultBundle,
+  buildTurnkeyHyperliquidExecutionVaultBundle,
   hyperliquidVaultAssociatedData,
   parseHyperliquidCredentialImport,
   validateHyperliquidExecutionCredentialDraft,
@@ -24,6 +25,102 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 describe("Hyperliquid vault sealing", () => {
+  it("seals only Turnkey references and a signed mandate for delegated execution", async () => {
+    const userSecret = ed25519.utils.randomPrivateKey();
+    const sealingWalletAddress = bs58.encode(ed25519.getPublicKey(userSecret));
+    const recipientSecret = x25519.utils.randomPrivateKey();
+    const recipientPub = x25519.getPublicKey(recipientSecret);
+    const now = Date.now();
+    const owner = "0x1111111111111111111111111111111111111111";
+    const agent = "0x2222222222222222222222222222222222222222";
+    const runtimeStatus: PrivateAgentRuntimeStatus = {
+      version: 1,
+      checked_at: new Date(now).toISOString(),
+      sealed_execution_required: true,
+      entitlement_required: "paid_private_agent_plan",
+      bounded_beta_enabled: true,
+      operator_spend_lock: false,
+      preferred_provider: "phala",
+      selected_provider: "phala",
+      remote_execution_ready: true,
+      shielded_rail_ready: true,
+      providers: [{
+        id: "phala",
+        label: "Local worker",
+        configured: true,
+        available: true,
+        attested: true,
+        supports_sealed_secrets: true,
+        supports_background_agents: true,
+        supports_trading_execution: true,
+        reason: null,
+        sealed_recipient: {
+          recipient_id: "local:test",
+          x25519_pub_hex: bytesToHex(recipientPub),
+          tee_kind: "phala",
+          measurement_hex: "00".repeat(32),
+        },
+      }],
+      blocking_reasons: [],
+      disclosure: "test",
+    };
+    const built = await buildTurnkeyHyperliquidExecutionVaultBundle({
+      accountCommitment: "private_account_commitment_test",
+      sealingWalletAddress,
+      signBytes: localEd25519Signer(userSecret),
+      runtimeStatus,
+      now: new Date(now),
+      credential: {
+        signing_mode: "turnkey_delegated",
+        turnkey_organization_id: "org-test",
+        turnkey_agent_key_ref: "worker-test",
+        owner_wallet_address: owner,
+        agent_wallet_address: agent,
+        hyperliquid_account_address: owner,
+        owner_mandate_signature: `0x${"ab".repeat(65)}`,
+        agent_name: "ghola-perps",
+        perps_mandate: {
+          version: 1,
+          mandate_id: "mandate:test:turnkey",
+          network: "testnet",
+          owner_address: owner,
+          agent_address: agent,
+          execution_address: owner,
+          allowed_markets: ["BTC", "ETH", "SOL"],
+          margin_mode: "isolated",
+          configured_leverage: 2,
+          max_leverage: 2,
+          max_order_notional_micro_usdc: 25_000_000,
+          max_gross_exposure_micro_usdc: 50_000_000,
+          max_daily_notional_micro_usdc: 100_000_000,
+          daily_loss_limit_micro_usdc: 10_000_000,
+          max_drawdown_micro_usdc: 15_000_000,
+          max_drawdown_bps: 1_500,
+          max_slippage_bps: 50,
+          stop_loss_bps: 500,
+          max_open_orders: 4,
+          max_orders_per_day: 20,
+          data_max_age_ms: 30_000,
+          expires_at_ms: now + 86_400_000,
+          kill_switch: false,
+          jurisdiction: {
+            eligible: true,
+            accepted_risk: true,
+            attested_at_ms: now,
+            terms_version: "test-2026-08",
+          },
+        },
+      },
+    });
+    const opened = await open(base64ToBytes(built.encrypted_execution_vault.ciphertext), recipientSecret);
+    const plaintext = JSON.parse(new TextDecoder().decode(opened.plaintext)) as Record<string, unknown>;
+    expect(plaintext.signing_mode).toBe("turnkey_delegated");
+    expect(plaintext.owner_wallet_address).toBe(owner);
+    expect(plaintext.agent_wallet_address).toBe(agent);
+    expect(JSON.stringify(plaintext)).not.toContain("private_key");
+    expect(JSON.stringify(plaintext)).not.toContain("seed");
+  });
+
   it("seals raw execution credentials to the attested TEE recipient only", async () => {
     const userSecret = ed25519.utils.randomPrivateKey();
     const walletAddress = bs58.encode(ed25519.getPublicKey(userSecret));
@@ -36,6 +133,8 @@ describe("Hyperliquid vault sealing", () => {
       checked_at: "2026-05-27T12:00:00.000Z",
       sealed_execution_required: true,
       entitlement_required: "paid_private_agent_plan",
+      bounded_beta_enabled: true,
+      operator_spend_lock: false,
       preferred_provider: "phala",
       selected_provider: "phala",
       remote_execution_ready: true,

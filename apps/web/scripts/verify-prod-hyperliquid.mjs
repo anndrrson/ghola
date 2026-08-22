@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ed25519 } from "@noble/curves/ed25519";
+import { privateKeyToAccount } from "viem/accounts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../../..");
@@ -20,12 +21,13 @@ const network = env("GHOLA_VERIFY_HYPERLIQUID_NETWORK", "mainnet") === "testnet"
 const accountAddress = env("GHOLA_VERIFY_HYPERLIQUID_ACCOUNT_ADDRESS");
 const apiWalletPrivateKey = env("GHOLA_VERIFY_HYPERLIQUID_API_WALLET_PRIVATE_KEY");
 const market = env("GHOLA_VERIFY_HYPERLIQUID_MARKET", "BTC").toUpperCase();
-const quoteSize = env("GHOLA_VERIFY_HYPERLIQUID_QUOTE_SIZE", "5");
+const quoteSize = env("GHOLA_VERIFY_HYPERLIQUID_QUOTE_SIZE", "11");
 const maxSlippageBps = env("GHOLA_VERIFY_HYPERLIQUID_MAX_SLIPPAGE_BPS", "50");
 const allowMissingCredentials = boolEnv("GHOLA_VERIFY_ALLOW_MISSING_HYPERLIQUID_CREDENTIALS");
 const storeVaultConfirm = env("GHOLA_VERIFY_STORE_HYPERLIQUID_VAULT_CONFIRM");
 const liveSubmit = boolEnv("GHOLA_VERIFY_LIVE_SUBMIT");
 const liveSubmitConfirm = env("GHOLA_VERIFY_LIVE_SUBMIT_CONFIRM");
+const internalToken = env("GHOLA_VERIFY_INTERNAL_TOKEN");
 const reportPath = resolve(REPO_ROOT, env("GHOLA_VERIFY_REPORT_PATH", ".dev/ghola-prod-hyperliquid-verify.json"));
 
 const cookies = new Map();
@@ -123,8 +125,25 @@ try {
       `network:${network}`,
     ].join("|"));
 
+    const apiWallet = privateKeyToAccount(apiWalletPrivateKey.toLowerCase());
+    const credentialBinding = {
+      version: 1,
+      network,
+      owner_address: accountAddress.toLowerCase(),
+      agent_address: apiWallet.address.toLowerCase(),
+      signature: await apiWallet.signMessage({
+        message: hyperliquidAgentBindingMessage({
+          accountCommitment,
+          network,
+          ownerAddress: accountAddress,
+          agentAddress: apiWallet.address,
+        }),
+      }),
+    };
+
     const sealed = await postJson("/v1/private-account/hyperliquid/vault", {
       encrypted_execution_vault: encryptedVault,
+      credential_binding: credentialBinding,
     });
     record("sealed_hyperliquid_vault_stored", sealed.ready === true, {
       vault_commitment: short(sealed.hyperliquid_execution_vault?.vault_commitment),
@@ -160,7 +179,7 @@ try {
         throw new Error(`Live submit requires ready_to_trade; account snapshot returned ${snapshot.status}.`);
       }
       report.live_execution = await runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBps });
-      report.status = "live_submitted";
+      report.status = "live_round_trip_flat";
     } else {
       report.status = "verified_no_submit";
     }
@@ -183,7 +202,7 @@ try {
   }
   if (
     report.status !== "verified_no_submit" &&
-    report.status !== "live_submitted" &&
+    report.status !== "live_round_trip_flat" &&
     report.status !== "routes_ready_credentials_required"
   ) {
     process.exit(1);
@@ -253,6 +272,83 @@ async function runNoSubmitVerification({ recipient, market, quoteSize, maxSlippa
 }
 
 async function runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBps }) {
+  const entry = await runLiveOrder({
+    recipient,
+    market,
+    quoteSize,
+    maxSlippageBps,
+    side: "buy",
+    reduceOnly: false,
+  });
+  const entryProof = entry.execution.connector_result?.final_proof || {};
+  const filledBaseSize = stringValue(entryProof.filled_base_size);
+  if (
+    entryProof.final_venue_execution_proven !== true ||
+    entryProof.final_fill_proven !== true ||
+    !Number.isFinite(Number(filledBaseSize)) ||
+    Number(filledBaseSize) <= 0
+  ) {
+    throw new Error("Live entry did not return a proven exact fill; close was not attempted.");
+  }
+  const close = await runLiveOrder({
+    recipient,
+    market,
+    quoteSize,
+    maxSlippageBps,
+    side: "sell",
+    reduceOnly: true,
+    baseSize: filledBaseSize,
+  });
+  const closeProof = close.execution.connector_result?.final_proof || {};
+  if (closeProof.final_venue_execution_proven !== true || closeProof.final_fill_proven !== true) {
+    throw new Error("Reduce-only close did not return final venue fill proof.");
+  }
+  const finalSnapshot = await postJson("/v1/private-account/hyperliquid/account-snapshot", {});
+  const flat = finalSnapshot.position_count === 0 && finalSnapshot.open_order_count === 0;
+  record("live_hyperliquid_flat_zero_orders", flat, {
+    position_count: finalSnapshot.position_count,
+    open_order_count: finalSnapshot.open_order_count,
+  });
+  assertSafeArtifact("live_hyperliquid_final_snapshot", finalSnapshot);
+  if (!flat) throw new Error("Live proof ended with a position or open order; manual intervention is required.");
+  if (!internalToken) throw new Error("GHOLA_VERIFY_INTERNAL_TOKEN is required to record a live release canary.");
+  const canary = await postJson("/v1/private-account/live-trading/canary-report", {
+    venue_id: "hyperliquid",
+    network: "mainnet",
+    status: "green",
+    live_mode: "full_ticket",
+    canary_kind: "full_ticket_broadcast",
+    broadcast_performed: true,
+    reconcile_status: "reconciled",
+    order_notional_usd: Number(quoteSize),
+    max_order_notional_usd: Number(env("GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD", "1000")),
+    daily_cap_usd: Number(env("GHOLA_LIVE_TRADING_DAILY_CAP_USD", "5000")),
+    max_slippage_bps: Number(maxSlippageBps),
+    receipt_commitment: close.receipt.receipt_commitment || null,
+    result_commitment: close.execution.connector_result?.result_commitment || null,
+    entry_receipt_commitment: entry.receipt.receipt_commitment || null,
+    close_receipt_commitment: close.receipt.receipt_commitment || null,
+    final_venue_execution_proven: true,
+    final_fill_proven: true,
+    position_count: finalSnapshot.position_count,
+    open_order_count: finalSnapshot.open_order_count,
+    observed_at: new Date().toISOString(),
+  }, { internalToken });
+  record("live_hyperliquid_canary_recorded", canary.accepted === true, {
+    report_id: canary.report?.report_id || null,
+    evidence_commitment: canary.report?.evidence_commitment || null,
+  });
+  return sanitizePublicArtifact({
+    entry: liveOrderSummary(entry),
+    close: liveOrderSummary(close),
+    final_venue_execution_proven: true,
+    final_fill_proven: true,
+    position_count: finalSnapshot.position_count,
+    open_order_count: finalSnapshot.open_order_count,
+  });
+}
+
+async function runLiveOrder({ recipient, market, quoteSize, maxSlippageBps, side, reduceOnly, baseSize }) {
   const safeInput = {
     action_class: "trade_on_platform",
     platform_class: "hyperliquid_style_market",
@@ -298,10 +394,17 @@ async function runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBp
     expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
     order: {
       market,
-      side: "buy",
-      quote_size: quoteSize,
+      side,
+      ...(reduceOnly ? {
+        base_size: baseSize,
+        order_type: "market",
+        size_mode: "base",
+        reduce_only: true,
+      } : {
+        quote_size: quoteSize,
+        live_order_mode: "tiny_fill",
+      }),
       max_slippage_bps: maxSlippageBps,
-      live_order_mode: "tiny_fill",
       tif: "Ioc",
     },
   }, [
@@ -328,7 +431,7 @@ async function runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBp
     encrypted_execution_instruction_bundle: encryptedInstruction,
   });
   const receipt = execution.receipt || {};
-  record("live_hyperliquid_submit", execution.ok === true && Boolean(receipt.connector_result_commitment), {
+  record(reduceOnly ? "live_hyperliquid_reduce_only_close" : "live_hyperliquid_entry", execution.ok === true && Boolean(receipt.connector_result_commitment), {
     execution_commitment: execution.execution_commitment || null,
     receipt_commitment: receipt.receipt_commitment || null,
     connector_result_commitment: receipt.connector_result_commitment || null,
@@ -337,16 +440,21 @@ async function runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBp
   });
   assertSafeArtifact("live_hyperliquid_execution", execution);
 
-  return sanitizePublicArtifact({
-    intent_id: intent.intent_id,
-    preview_commitment: preview.preview_commitment,
-    approval_commitment: approval.approval_commitment,
-    execution_commitment: execution.execution_commitment || null,
-    receipt_commitment: receipt.receipt_commitment || null,
-    connector_result_commitment: receipt.connector_result_commitment || null,
-    work_order_commitment: receipt.work_order_commitment || null,
-    claim_status: receipt.claim_status || null,
-  });
+  return { intent, preview, approval, execution, receipt };
+}
+
+function liveOrderSummary(value) {
+  return {
+    intent_id: value.intent.intent_id,
+    preview_commitment: value.preview.preview_commitment,
+    approval_commitment: value.approval.approval_commitment,
+    execution_commitment: value.execution.execution_commitment || null,
+    receipt_commitment: value.receipt.receipt_commitment || null,
+    connector_result_commitment: value.receipt.connector_result_commitment || null,
+    work_order_commitment: value.receipt.work_order_commitment || null,
+    claim_status: value.receipt.claim_status || null,
+    final_proof: value.execution.connector_result?.final_proof || null,
+  };
 }
 
 async function checkHead(name, path) {
@@ -364,6 +472,7 @@ async function postJson(path, body, options = {}) {
     headers: {
       "content-type": "application/json",
       ...(options.sameOrigin ? { origin: baseUrl } : {}),
+      ...(options.internalToken ? { "x-ghola-internal-token": options.internalToken } : {}),
     },
     body: JSON.stringify(body),
   });
@@ -457,11 +566,23 @@ async function sealBundle(recipient, plaintext, aad) {
 }
 
 function selectedRecipient(runtime) {
-  const selected = runtime.providers?.find((provider) => provider.id === runtime.selected_provider) ||
-    runtime.providers?.find((provider) => provider.id === "phala");
+  if (runtime.selected_provider !== "phala") {
+    throw new Error("release validation requires Phala to be the selected private-agent provider");
+  }
+  const selected = runtime.providers?.find((provider) => provider.id === "phala");
+  if (
+    selected?.configured !== true ||
+    selected?.available !== true ||
+    selected?.attested !== true ||
+    selected?.supports_sealed_secrets !== true ||
+    selected?.supports_background_agents !== true ||
+    selected?.supports_trading_execution !== true
+  ) {
+    throw new Error("release validation requires an attested, trade-ready Phala provider");
+  }
   const recipient = selected?.sealed_recipient;
   if (!recipient?.recipient_id || !recipient?.x25519_pub_hex) {
-    throw new Error("production private-agent recipient is unavailable");
+    throw new Error("release validation requires an attested Phala recipient");
   }
   return recipient;
 }
@@ -498,6 +619,17 @@ function validateHyperliquidCredentialInputs(input) {
   if (!Number.isInteger(slippage) || slippage < 1 || slippage > 100) {
     throw new Error("GHOLA_VERIFY_HYPERLIQUID_MAX_SLIPPAGE_BPS must be an integer from 1 to 100.");
   }
+}
+
+function hyperliquidAgentBindingMessage(input) {
+  return [
+    "Ghola Hyperliquid API wallet binding",
+    "Version: 1",
+    `Private account: ${String(input.accountCommitment).trim()}`,
+    `Network: ${input.network}`,
+    `Owner: ${String(input.ownerAddress).trim().toLowerCase()}`,
+    `Agent: ${String(input.agentAddress).trim().toLowerCase()}`,
+  ].join("\n");
 }
 
 const FORBIDDEN_PUBLIC_FIELDS = [

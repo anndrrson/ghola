@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
  * Content-Security-Policy violation report sink.
  *
  * Browsers POST here whenever a script, style, or fetch violates the
- * CSP we declared in next.config.ts. The `report-uri` directive in
+ * CSP emitted by src/proxy.ts. The `report-uri` directive in
  * the CSP header points at this endpoint.
  *
  * What we DO with reports:
@@ -90,7 +90,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // Got something but couldn't parse it as either shape. Log the
     // raw bytes truncated so an operator can still investigate.
     const raw = JSON.stringify(parsed).slice(0, 1000);
-    // eslint-disable-next-line no-console
     console.warn(
       "[csp-violation] unrecognized-shape",
       JSON.stringify({ ip, ua: ua.slice(0, 200), origin, raw }),
@@ -99,7 +98,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   for (const r of reports) {
-    // eslint-disable-next-line no-console
     console.warn(
       "[csp-violation]",
       JSON.stringify({

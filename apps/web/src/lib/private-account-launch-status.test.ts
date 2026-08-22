@@ -7,6 +7,8 @@ const READY_RUNTIME: PrivateAgentRuntimeStatus = {
   checked_at: "2026-05-28T00:00:00.000Z",
   sealed_execution_required: true,
   entitlement_required: "paid_private_agent_plan",
+  bounded_beta_enabled: true,
+  operator_spend_lock: false,
   preferred_provider: "phala",
   selected_provider: "phala",
   remote_execution_ready: true,
@@ -42,7 +44,7 @@ describe("private account launch status", () => {
       NEXT_PUBLIC_THUMPER_API_URL: "https://thumper.test",
       GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
       GHOLA_HYPERLIQUID_LIVE_MODE: "tiny_fill",
-      GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN: "token",
+      PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "capability-secret",
     }, READY_RUNTIME);
 
     expect(status.ready_to_accept_users).toBe(true);

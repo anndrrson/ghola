@@ -1,23 +1,34 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { POST as postArbCanaryReport } from "@/app/v1/private-account/agent-passport/arb-canary-report/route";
 import { POST as armArbRoute } from "@/app/v1/private-account/agent-passport/arm-arb/route";
-import { privateAccountOwnerFromRequest } from "@/app/v1/private-account/_lib";
+import {
+  privateAccountOwnerFromRequest,
+  type PrivateAccountRequestOwner,
+} from "@/app/v1/private-account/_lib";
 import {
   agentPassportReadinessForOwner,
   linkAgentPlatformFromBody,
 } from "./private-agent-passport";
 import { resetPrivateAccountStoreForTests } from "./private-account-store";
 
-const owner = { owner_commitment: "owner_passport_test" };
+const owner: PrivateAccountRequestOwner = {
+  owner_commitment: "owner_passport_test",
+  user: {
+    id: "owner_passport_test",
+    email: "owner_passport_test@example.com",
+  },
+};
 
 describe("agent passport venue linking", () => {
   afterEach(async () => {
     await resetPrivateAccountStoreForTests();
     delete process.env.PRIVATE_AGENT_ARB_LIVE_SUBMIT;
+    delete process.env.PRIVATE_AGENT_TRI_VENUE_ARB_LIVE_SUBMIT;
     delete process.env.PRIVATE_AGENT_ARB_MAX_LEG_NOTIONAL_USD;
     delete process.env.PRIVATE_AGENT_ARB_DAILY_NOTIONAL_CAP_USD;
     delete process.env.PRIVATE_AGENT_ARB_MIN_NET_EDGE_BPS;
     delete process.env.PRIVATE_AGENT_ARB_MAX_EXECUTION_SKEW_MS;
+    delete process.env.PRIVATE_AGENT_ARB_MAX_MARKET_DATA_SKEW_MS;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE;
     delete process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL;
@@ -55,7 +66,7 @@ describe("agent passport venue linking", () => {
     expect(blocked).toEqual({ error: "withdraw_permission_blocked" });
   });
 
-  it("requires Hyperliquid plus a spot or swap venue for guarded arbitrage readiness", async () => {
+  it("requires Hyperliquid, Phoenix, and Backpack for guarded SOL arbitrage readiness", async () => {
     await linkAgentPlatformFromBody({
       venue_id: "hyperliquid",
       permission_attestation: { scopes: ["read", "trade"] },
@@ -63,24 +74,29 @@ describe("agent passport venue linking", () => {
     }, owner);
     let readiness = await agentPassportReadinessForOwner(owner);
     expect(readiness.can_arm).toBe(false);
-    expect(readiness.blockers).toContain("second_spot_or_swap_venue_required");
+    expect(readiness.blockers).toEqual(expect.arrayContaining(["phoenix_required", "backpack_required"]));
 
     await linkAgentPlatformFromBody({
-      venue_id: "jupiter",
-      execution_mode: "user_stealth",
+      venue_id: "phoenix",
       permission_attestation: { scopes: ["read", "trade"] },
-      encrypted_execution_vault: sealedVault("jupiter"),
+      encrypted_execution_vault: sealedVault("phoenix"),
+    }, owner);
+    await linkAgentPlatformFromBody({
+      venue_id: "backpack",
+      permission_attestation: { scopes: ["read", "trade"] },
+      encrypted_execution_vault: sealedVault("backpack"),
     }, owner);
     process.env.PRIVATE_AGENT_ARB_LIVE_SUBMIT = "true";
     process.env.PRIVATE_AGENT_ARB_MAX_LEG_NOTIONAL_USD = "25";
     process.env.PRIVATE_AGENT_ARB_DAILY_NOTIONAL_CAP_USD = "100";
     process.env.PRIVATE_AGENT_ARB_MIN_NET_EDGE_BPS = "25";
     process.env.PRIVATE_AGENT_ARB_MAX_EXECUTION_SKEW_MS = "2000";
+    process.env.PRIVATE_AGENT_ARB_MAX_MARKET_DATA_SKEW_MS = "2000";
 
     readiness = await agentPassportReadinessForOwner(owner);
     expect(readiness.can_arm).toBe(true);
     expect(readiness.can_live_submit).toBe(true);
-    expect(readiness.ready_venues).toEqual(expect.arrayContaining(["hyperliquid", "jupiter"]));
+    expect(readiness.ready_venues).toEqual(expect.arrayContaining(["hyperliquid", "phoenix", "backpack"]));
   });
 
   it("rejects arm-arb until Agent Passport has a hedged venue pair", async () => {
@@ -133,6 +149,8 @@ describe("agent passport venue linking", () => {
     expect(readiness.can_arm).toBe(false);
     expect(readiness.arb_canary_required).toBe(false);
     expect(readiness.arb_canary_status).toBe("green");
+    expect(readiness.arb_canary_report).not.toBeNull();
+    if (!readiness.arb_canary_report) throw new Error("expected arb canary report");
     expect(readiness.arb_canary_report.worker_url).toBe("https://worker.example");
     expect(readiness.blockers).toContain("hyperliquid_required");
     expect(readiness.blockers).not.toContain("agent_arb_canary_missing");
@@ -169,13 +187,19 @@ describe("agent passport venue linking", () => {
       permission_attestation: { scopes: ["read", "trade"] },
       encrypted_execution_vault: sealedVault("hyperliquid"),
     }, routeOwner);
-    const linkedCoinbase = await linkAgentPlatformFromBody({
-      venue_id: "coinbase_advanced",
+    const linkedPhoenix = await linkAgentPlatformFromBody({
+      venue_id: "phoenix",
       permission_attestation: { scopes: ["read", "trade"] },
-      encrypted_execution_vault: sealedVault("coinbase"),
+      encrypted_execution_vault: sealedVault("phoenix"),
+    }, routeOwner);
+    const linkedBackpack = await linkAgentPlatformFromBody({
+      venue_id: "backpack",
+      permission_attestation: { scopes: ["read", "trade"] },
+      encrypted_execution_vault: sealedVault("backpack"),
     }, routeOwner);
     expect("error" in linkedHyperliquid).toBe(false);
-    expect("error" in linkedCoinbase).toBe(false);
+    expect("error" in linkedPhoenix).toBe(false);
+    expect("error" in linkedBackpack).toBe(false);
 
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "token";
@@ -213,6 +237,7 @@ describe("agent passport venue linking", () => {
     process.env.PRIVATE_AGENT_ARB_DAILY_NOTIONAL_CAP_USD = "25";
     process.env.PRIVATE_AGENT_ARB_MIN_NET_EDGE_BPS = "25";
     process.env.PRIVATE_AGENT_ARB_MAX_EXECUTION_SKEW_MS = "2000";
+    process.env.PRIVATE_AGENT_ARB_MAX_MARKET_DATA_SKEW_MS = "2000";
 
     const routeOwner = await privateAccountOwnerFromRequest(authedPost("/v1/private-account/agent-passport/arm-arb", {}));
     expect(routeOwner).not.toBeNull();
@@ -222,13 +247,19 @@ describe("agent passport venue linking", () => {
       permission_attestation: { scopes: ["read", "trade"] },
       encrypted_execution_vault: sealedVault("hyperliquid"),
     }, routeOwner);
-    const linkedCoinbase = await linkAgentPlatformFromBody({
-      venue_id: "coinbase_advanced",
+    const linkedPhoenix = await linkAgentPlatformFromBody({
+      venue_id: "phoenix",
       permission_attestation: { scopes: ["read", "trade"] },
-      encrypted_execution_vault: sealedVault("coinbase"),
+      encrypted_execution_vault: sealedVault("phoenix"),
+    }, routeOwner);
+    const linkedBackpack = await linkAgentPlatformFromBody({
+      venue_id: "backpack",
+      permission_attestation: { scopes: ["read", "trade"] },
+      encrypted_execution_vault: sealedVault("backpack"),
     }, routeOwner);
     expect("error" in linkedHyperliquid).toBe(false);
-    expect("error" in linkedCoinbase).toBe(false);
+    expect("error" in linkedPhoenix).toBe(false);
+    expect("error" in linkedBackpack).toBe(false);
 
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "token";
@@ -252,7 +283,7 @@ describe("agent passport venue linking", () => {
             },
             session_policy: {
               strategy_id: "hedged_spread_arbitrage_v1",
-              venue_allowlist: ["coinbase_advanced", "hyperliquid"],
+              venue_allowlist: ["phoenix", "hyperliquid", "backpack"],
               market_allowlist: ["SOL-USD"],
               max_notional_bucket: "5",
               max_daily_notional_bucket: "25",
@@ -260,21 +291,22 @@ describe("agent passport venue linking", () => {
               ttl_ms: 60 * 60_000,
               max_slippage_bps: 25,
               cooldown_ms: 60_000,
-              data_max_age_ms: 15_000,
+              data_max_age_ms: 2_000,
               min_net_edge_bps: 25,
               max_execution_skew_ms: 2000,
               kill_switch: false,
               policy_commitment: "worker_arb_policy",
             },
             venue_access: {
-              coinbase_advanced: { status: "ready", execution_mode: "byo_api_key", reason: "agent_passport_ready" },
+              phoenix: { status: "ready", execution_mode: "byo_api_key", reason: "agent_passport_ready" },
               hyperliquid: { status: "ready", execution_mode: "byo_api_key", reason: "agent_passport_ready" },
+              backpack: { status: "ready", execution_mode: "byo_api_key", reason: "agent_passport_ready" },
             },
             order_count: 0,
             daily_notional_used_bucket: "0",
             updated_at: "2026-06-03T12:00:00.000Z",
             expires_at: "2026-06-03T13:00:00.000Z",
-            next_step: "Autonomous worker is running.",
+            next_step: "Bounded intent executor is running.",
             execution_enabled: true,
           },
           events: [],

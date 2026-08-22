@@ -1,51 +1,15 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import {
   connectSrcDirective,
   CROSS_ORIGIN_ISOLATION_HEADERS,
 } from "./lib/csp-config";
 
-// Next.js 16's Proxy (formerly middleware) always runs on the Node.js
-// runtime, so `node:fs` is available here and no `runtime` segment
-// config is needed (one is in fact disallowed). Reading the build-time
-// inline-script hash allowlist off disk lets the Proxy CSP match the
-// hash-based, `'unsafe-inline'`-free policy that `next.config.ts`
-// emits — otherwise the Proxy would silently reintroduce
-// `'unsafe-inline'` into `script-src` and defeat the build-time
-// hardening.
-
-const INLINE_HASHES_PATH = join(
-  process.cwd(),
-  "public",
-  ".well-known",
-  "csp-inline-hashes.json",
-);
-
-// Load the sha256 inline-script allowlist written by
-// `scripts/build-inline-csp.mjs` after `next build`. Returns null when
-// the file is absent (dev / pre-build) or malformed, in which case the
-// production CSP falls back to a policy without `'unsafe-inline'` and
-// without hashes (strictest available; first-party inline scripts must
-// be hashed via the build step to load).
-function loadInlineScriptHashes(): string[] | null {
-  try {
-    const raw = readFileSync(INLINE_HASHES_PATH, "utf8");
-    const parsed = JSON.parse(raw) as { hashes?: unknown };
-    if (
-      parsed &&
-      Array.isArray(parsed.hashes) &&
-      parsed.hashes.length > 0 &&
-      parsed.hashes.every((h) => typeof h === "string")
-    ) {
-      return parsed.hashes as string[];
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
+// Next consumes `x-nonce` from the request headers and applies it to
+// framework-managed scripts. Keeping CSP here avoids the previous
+// production issue where next.config.ts emitted a very large per-build
+// inline hash allowlist that could exceed Node/Undici header limits.
 
 // AI training crawlers and bulk scrapers that should not index the site.
 // Legitimate agent access should go through the Ghola MCP/API channels.
@@ -89,48 +53,56 @@ function isNoIndexPath(pathname: string): boolean {
   return NO_INDEX_PATHS.some((p) => pathname.startsWith(p));
 }
 
-export function buildContentSecurityPolicy(
-  isDev: boolean,
-  inlineHashes?: string[] | null,
-): string {
-  // In production we MUST NOT emit `'unsafe-inline'` for scripts — that
-  // would defeat the hash-based CSP that `next.config.ts` builds from
-  // `public/.well-known/csp-inline-hashes.json`. Instead we splice the
-  // same per-build sha256 hashes into `script-src`. In development the
-  // Next dev server injects unhashable inline + eval'd scripts (HMR,
-  // React refresh), so `'unsafe-inline' 'unsafe-eval'` are required.
-  const hashSources =
-    !isDev && inlineHashes && inlineHashes.length > 0
-      ? " " + inlineHashes.map((h) => `'${h}'`).join(" ")
-      : "";
+export function buildContentSecurityPolicy(isDev: boolean): string {
+  // Next's statically prerendered app pages include inline bootstrap
+  // scripts. Vercel can serve those pages from the prerender cache before
+  // a per-request nonce reaches the rendered HTML, so production must allow
+  // inline bootstrap scripts until these pages are made fully dynamic or the
+  // build emits a stable hash allowlist.
   const scriptSrc = isDev
     ? "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' 'unsafe-eval' https://accounts.google.com https://apis.google.com"
-    : `script-src 'self' 'wasm-unsafe-eval'${hashSources} https://accounts.google.com https://apis.google.com`;
-  return (
-    [
-      "default-src 'self'",
-      scriptSrc,
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob: https:",
-      "font-src 'self' data:",
-      "media-src 'self' blob:",
-      "manifest-src 'self'",
-      "worker-src 'self' blob:",
-      // API + auth + identity backends. Pinned host list is shared with
-      // next.config.ts via src/lib/csp-config.ts so the runtime Proxy and
-      // the static headers() config emit the IDENTICAL connect-src — no
-      // more wide-open `connect-src 'self' https: wss:` on some routes and
-      // a tight allowlist on others. No wildcards (see csp-config.ts).
-      connectSrcDirective(),
-      "frame-src https://accounts.google.com",
-      "frame-ancestors 'none'",
-      "object-src 'none'",
-      "base-uri 'self'",
-      "form-action 'self'",
-      "upgrade-insecure-requests",
-      "block-all-mixed-content",
-    ].join("; ") + ";"
-  );
+    : "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://accounts.google.com https://apis.google.com";
+  const directives = [
+    "default-src 'self'",
+    scriptSrc,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self' data:",
+    "media-src 'self' blob:",
+    "manifest-src 'self'",
+    "worker-src 'self' blob:",
+    // API + auth + identity backends. Pinned host list is shared with
+    // next.config.ts via src/lib/csp-config.ts so the runtime Proxy and
+    // the static headers() config emit the IDENTICAL connect-src — no
+    // more wide-open `connect-src 'self' https: wss:` on some routes and
+    // a tight allowlist on others. No wildcards (see csp-config.ts).
+    connectSrcDirective(),
+    "frame-src https://accounts.google.com",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ];
+
+  if (!isDev) {
+    directives.push("upgrade-insecure-requests", "block-all-mixed-content");
+  }
+
+  return directives.join("; ") + ";";
+}
+
+export function buildApiContentSecurityPolicy(): string {
+  return [
+    "default-src 'none'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+  ].join("; ") + ";";
+}
+
+function cspNonce(): string {
+  return randomBytes(16).toString("base64");
 }
 
 export function applySecurityHeaders(
@@ -139,13 +111,17 @@ export function applySecurityHeaders(
     isDev: boolean;
     isHttps: boolean;
     allowMicrophone?: boolean;
-    inlineHashes?: string[] | null;
+    nonce?: string | null;
+    api?: boolean;
   },
 ): void {
   headers.set(
     "Content-Security-Policy",
-    buildContentSecurityPolicy(opts.isDev, opts.inlineHashes),
+    opts.api
+      ? buildApiContentSecurityPolicy()
+      : buildContentSecurityPolicy(opts.isDev),
   );
+  if (opts.nonce && !opts.api) headers.set("x-nonce", opts.nonce);
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("X-Frame-Options", "DENY");
   headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -175,9 +151,11 @@ export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const isDev = process.env.NODE_ENV !== "production";
   const isHttps = request.nextUrl.protocol === "https:";
-  // Hash allowlist is only meaningful for the enforcing (production)
-  // policy; in dev we use 'unsafe-inline' and skip the disk read.
-  const inlineHashes = isDev ? null : loadInlineScriptHashes();
+  const isApiPath =
+    pathname.startsWith("/api/") ||
+    pathname.startsWith("/v1/") ||
+    pathname.startsWith("/.well-known/");
+  const nonce = !isDev && !isApiPath ? cspNonce() : null;
 
   // Block known AI/scraper bots with a redirect to the API docs
   if (isBlockedBot(ua)) {
@@ -195,16 +173,29 @@ export function proxy(request: NextRequest) {
         },
       }
     );
-    applySecurityHeaders(blockedResponse.headers, { isDev, isHttps, inlineHashes });
+    applySecurityHeaders(blockedResponse.headers, { isDev, isHttps, api: true });
     return blockedResponse;
   }
 
-  const response = NextResponse.next();
+  const requestHeaders = new Headers(request.headers);
+  if (nonce) {
+    requestHeaders.set("x-nonce", nonce);
+    requestHeaders.set(
+      "Content-Security-Policy",
+      buildContentSecurityPolicy(isDev),
+    );
+  }
+  const response = NextResponse.next({
+    request: {
+      headers: requestHeaders,
+    },
+  });
   applySecurityHeaders(response.headers, {
     isDev,
     isHttps,
     allowMicrophone: pathname === "/intent",
-    inlineHashes,
+    nonce,
+    api: isApiPath,
   });
 
   // Sensitive pages: noindex + nofollow
@@ -213,12 +204,14 @@ export function proxy(request: NextRequest) {
   }
 
   // API routes: always noindex, expose Ghola provenance hint
-  if (pathname.startsWith("/api/")) {
+  if (isApiPath) {
     response.headers.set("X-Robots-Tag", "noindex, nofollow");
-    response.headers.set(
-      "X-Ghola-Api-Docs",
-      "https://ghola.xyz/docs/api"
-    );
+    if (pathname.startsWith("/api/") || pathname.startsWith("/v1/")) {
+      response.headers.set(
+        "X-Ghola-Api-Docs",
+        "https://ghola.xyz/docs/api"
+      );
+    }
     // API responses can carry credentials and private payloads.
     response.headers.set("Cache-Control", "no-store, max-age=0");
     response.headers.set("Pragma", "no-cache");
@@ -240,7 +233,8 @@ export const config = {
      * - _next/static (static files)
      * - _next/image (image optimization)
      * - favicon.ico (browser favicon)
+     * - Workflow's authenticated internal queue handlers
      */
-    "/((?!_next/static|_next/image|favicon\\.ico).*)",
+    "/((?!_next/static|_next/image|favicon\\.ico|\\.well-known/workflow/).*)",
   ],
 };

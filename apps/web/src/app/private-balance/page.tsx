@@ -26,14 +26,14 @@ const principles = [
 export default function PrivateBalancePage() {
   return (
     <RequireThumperAuth
-      title="Sign in to view Balance"
-      detail="Your private balance loads after account sign-in."
+      title="Sign in to view Funding"
+      detail="Your private funding vault loads after account sign-in."
     >
       <main className="min-h-screen bg-[#08090d] pt-16 text-[#eef1f8]">
       <section className="border-b border-[#151b26] px-5 py-16 sm:px-8 sm:py-24 lg:px-10">
         <div className="mx-auto max-w-6xl">
           <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-[#6f7d9a]">
-            Private Balance
+            Private Funding
           </p>
           <div className="mt-5 grid gap-8 lg:grid-cols-[0.9fr_1.1fr] lg:items-end">
             <div>
@@ -41,7 +41,7 @@ export default function PrivateBalancePage() {
                 Privacy with no setup ritual.
               </h1>
               <p className="mt-6 max-w-2xl text-base leading-7 text-[#aab5c8] sm:text-lg">
-                Private Balance turns shielded settlement into one switch.
+                Private funding turns shielded settlement into one switch.
                 Ghola avoids Aleo-only concentration risk by keeping the rail
                 interface open for multiple fail-closed shielded networks.
               </p>

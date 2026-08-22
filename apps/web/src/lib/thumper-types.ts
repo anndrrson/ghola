@@ -182,12 +182,15 @@ export interface ThumperBillingStatusResponse {
     included_seconds: number;
     reserved_seconds: number;
     used_seconds: number;
+    active_reserved_seconds?: number;
+    billable_used_seconds?: number;
     remaining_seconds: number;
     active_agent_limit: number;
     active_agent_count: number;
     period_start: string;
     period_end: string;
     metering_unit: "agent_second";
+    metering_mode?: "hybrid_allowance_v1";
   };
 }
 

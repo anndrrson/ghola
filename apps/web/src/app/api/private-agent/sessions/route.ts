@@ -13,7 +13,7 @@ import {
 import { getPrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime-server";
 import {
   ensurePhalaPrivateAgentProvisioned,
-  markPhalaPrivateAgentActivity,
+  markPhalaPrivateAgentActivityWithShutdown,
   phalaWorkerExecutionToken,
   privateAgentRemoteExecutionDisabled,
   wakePhalaPrivateAgentForUse,
@@ -41,7 +41,7 @@ interface BillingStatus {
 }
 
 const PRIVATE_AGENT_SESSION_RESERVATION_SECONDS = Number.parseInt(
-  process.env.GHOLA_PRIVATE_AGENT_SESSION_RESERVATION_SECONDS || "3600",
+  process.env.GHOLA_PRIVATE_AGENT_SESSION_RESERVATION_SECONDS || "300",
   10,
 );
 
@@ -137,6 +137,7 @@ async function reservePrivateAgentCompute(input: {
       body: JSON.stringify({
         session_id: input.reservationId,
         seconds: input.seconds,
+        metering_mode: "sparse_metered_v1",
       }),
       cache: "no-store",
     },
@@ -157,6 +158,7 @@ async function releasePrivateAgentCompute(input: {
   bearer: string;
   reservationId: string;
   status: "failed" | "paused" | "completed";
+  secondsUsed?: number;
 }) {
   await fetchWithTimeout(
     `${THUMPER_API_BASE}/api/billing/private-agent/compute/release`,
@@ -170,6 +172,7 @@ async function releasePrivateAgentCompute(input: {
       body: JSON.stringify({
         session_id: input.reservationId,
         status: input.status,
+        ...(Number.isFinite(input.secondsUsed) ? { seconds_used: Math.max(0, Math.floor(input.secondsUsed!)) } : {}),
       }),
       cache: "no-store",
     },
@@ -252,13 +255,23 @@ export async function POST(req: NextRequest) {
       runtime = await getPrivateAgentRuntimeStatus();
     }
   } else if (runtime.selected_provider === "phala") {
-    await markPhalaPrivateAgentActivity({
-      reason: "private_agent_session_request",
-      leaseMs: Math.max(
-        PRIVATE_AGENT_SESSION_RESERVATION_SECONDS * 1000 + 10 * 60_000,
-        30 * 60_000,
-      ),
-    });
+    try {
+      await markPhalaPrivateAgentActivityWithShutdown({
+        reason: "private_agent_session_request",
+        leaseMs: Math.max(
+          PRIVATE_AGENT_SESSION_RESERVATION_SECONDS * 1000 + 10 * 60_000,
+          30 * 60_000,
+        ),
+      });
+    } catch {
+      return json(
+        {
+          error: "sealed private-agent execution is unavailable",
+          blocking_reasons: ["idle_shutdown_safety_unavailable"],
+        },
+        503,
+      );
+    }
   }
   if (!runtime.remote_execution_ready || !runtime.selected_provider) {
     return json(
@@ -365,6 +378,7 @@ export async function POST(req: NextRequest) {
       bearer: billing.bearer,
       reservationId,
       status: "failed",
+      secondsUsed: 0,
     });
     return json({ error: "private-agent execution provider unavailable" }, 503);
   }
@@ -374,6 +388,7 @@ export async function POST(req: NextRequest) {
       bearer: billing.bearer,
       reservationId,
       status: "failed",
+      secondsUsed: 0,
     });
     return json(
       {
@@ -385,12 +400,16 @@ export async function POST(req: NextRequest) {
   }
 
   if (runtime.selected_provider === "phala") {
-    await markPhalaPrivateAgentActivity({
+    await markPhalaPrivateAgentActivityWithShutdown({
       reason: "private_agent_session_accepted",
       leaseMs: Math.max(
         PRIVATE_AGENT_SESSION_RESERVATION_SECONDS * 1000 + 10 * 60_000,
         30 * 60_000,
       ),
+    }).catch(() => {
+      // The pre-use timer remains as a safety net. Do not discard a worker's
+      // successful response merely because this lease extension could not be
+      // scheduled.
     });
   }
 

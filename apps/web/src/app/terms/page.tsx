@@ -6,7 +6,7 @@ export const metadata: Metadata = {
     "The terms governing your use of the Ghola web application, mobile application, and APIs.",
 };
 
-const EFFECTIVE_DATE = "April 29, 2026";
+const EFFECTIVE_DATE = "July 29, 2026";
 
 export default function TermsPage() {
   return (
@@ -67,6 +67,14 @@ export default function TermsPage() {
             marketplace, a compute marketplace, and a merchant registry.
           </p>
           <p>
+            The Seeker application also provides market data, configurable
+            trading limits, no-submit review proofs, and—only for eligible
+            users who explicitly connect and fund a supported venue—bounded
+            order execution. Ghola is not a broker, exchange, custodian, or
+            investment adviser. Market data may be delayed or supplied by a
+            venue different from the selected execution venue.
+          </p>
+          <p>
             You acknowledge that AI outputs may be inaccurate, incomplete, or
             inappropriate, and that you should review outputs before relying
             on them. You are responsible for the tasks you assign to your
@@ -76,8 +84,8 @@ export default function TermsPage() {
 
         <Section title="5. Wallets and on-chain transactions">
           <p>
-            The Services interact with self-custodial wallets, including the
-            Solana Seeker Seed Vault. You retain sole control of your private
+            The Services interact with self-custodial Solana wallets through
+            Mobile Wallet Adapter. You retain sole control of your private
             keys and recovery material. You are solely responsible for
             safeguarding them. We cannot recover lost keys or reverse on-chain
             transactions.
@@ -88,6 +96,14 @@ export default function TermsPage() {
             risks associated with the use of cryptocurrencies, including
             volatility, regulatory uncertainty, smart-contract risk, and total
             loss.
+          </p>
+          <p>
+            Trading features are not financial, investment, tax, or legal
+            advice and do not promise profit or protection from loss. You are
+            responsible for confirming that each connected venue and
+            transaction is lawful and available in your jurisdiction, for
+            reviewing the limits you set, and for monitoring or stopping an
+            active agent.
           </p>
         </Section>
 

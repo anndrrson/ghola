@@ -1,5 +1,5 @@
 export type HyperliquidNetwork = "mainnet" | "testnet";
-export type HyperliquidMarketCoin = "BTC" | "ETH" | "SOL" | "HYPE";
+export type HyperliquidMarketCoin = string;
 export type HyperliquidCandleInterval = "1m" | "5m" | "15m" | "1h";
 
 export interface HyperliquidCandle {
@@ -60,6 +60,13 @@ export interface HyperliquidMarketSnapshotInput {
   interval?: string | null;
   now?: Date;
   fetchImpl?: typeof fetch;
+  cacheMode?: "swr" | "refresh";
+}
+
+export interface HyperliquidMarketUniverseItem {
+  coin: string;
+  max_leverage: number | null;
+  size_decimals: number | null;
 }
 
 const API_URLS: Record<HyperliquidNetwork, string> = {
@@ -67,7 +74,7 @@ const API_URLS: Record<HyperliquidNetwork, string> = {
   testnet: "https://api.hyperliquid-testnet.xyz",
 };
 
-const MARKET_ALLOWLIST = new Set<HyperliquidMarketCoin>(["BTC", "ETH", "SOL", "HYPE"]);
+const MARKET_NAME_RE = /^[A-Za-z0-9_:@.-]{1,48}$/;
 const INTERVAL_ALLOWLIST = new Set<HyperliquidCandleInterval>(["1m", "5m", "15m", "1h"]);
 const INTERVAL_MS: Record<HyperliquidCandleInterval, number> = {
   "1m": 60_000,
@@ -79,6 +86,7 @@ const CANDLE_WINDOW = 240;
 const BOOK_LEVEL_WINDOW = 20;
 const RECENT_TRADE_WINDOW = 20;
 const MARKET_CACHE_TTL_MS = 4_000;
+const MARKET_MAX_STALE_MS = 5 * 60_000;
 
 type CacheRecord = {
   fetchedAtMs: number;
@@ -87,6 +95,7 @@ type CacheRecord = {
 
 const snapshotCache = new Map<string, CacheRecord>();
 const inflight = new Map<string, Promise<HyperliquidMarketSnapshot>>();
+const universeCache = new Map<HyperliquidNetwork, { fetchedAtMs: number; markets: HyperliquidMarketUniverseItem[] }>();
 
 export function normalizeHyperliquidMarketInput(
   input: HyperliquidMarketSnapshotInput,
@@ -96,17 +105,49 @@ export function normalizeHyperliquidMarketInput(
   interval: HyperliquidCandleInterval;
 } {
   const network = input.network === "testnet" ? "testnet" : "mainnet";
-  const coin = String(input.coin || "BTC").trim().toUpperCase();
+  const requestedCoin = String(input.coin || "BTC").trim();
+  const coin = MARKET_NAME_RE.test(requestedCoin) ? requestedCoin : "BTC";
   const interval = String(input.interval || "5m").trim();
   return {
     network,
-    coin: MARKET_ALLOWLIST.has(coin as HyperliquidMarketCoin)
-      ? coin as HyperliquidMarketCoin
-      : "BTC",
+    coin,
     interval: INTERVAL_ALLOWLIST.has(interval as HyperliquidCandleInterval)
       ? interval as HyperliquidCandleInterval
       : "5m",
   };
+}
+
+export async function getHyperliquidMarketUniverse(input: {
+  network?: string | null;
+  now?: Date;
+  fetchImpl?: typeof fetch;
+} = {}): Promise<HyperliquidMarketUniverseItem[]> {
+  const network: HyperliquidNetwork = input.network === "testnet" ? "testnet" : "mainnet";
+  const nowMs = (input.now ?? new Date()).getTime();
+  const cached = universeCache.get(network);
+  if (cached && nowMs - cached.fetchedAtMs < 60_000) {
+    return cached.markets;
+  }
+  const raw = await postInfo(input.fetchImpl ?? fetch, API_URLS[network], { type: "meta" });
+  const universe = raw && typeof raw === "object"
+    ? (raw as Record<string, unknown>).universe
+    : null;
+  const markets = Array.isArray(universe)
+    ? universe.flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const row = item as Record<string, unknown>;
+        const coin = typeof row.name === "string" ? row.name.trim() : "";
+        if (!MARKET_NAME_RE.test(coin) || row.isDelisted === true) return [];
+        return [{
+          coin,
+          max_leverage: finiteNumber(row.maxLeverage),
+          size_decimals: finiteNumber(row.szDecimals),
+        }];
+      })
+    : [];
+  if (markets.length === 0) throw new Error("hyperliquid_market_universe_empty");
+  universeCache.set(network, { fetchedAtMs: nowMs, markets });
+  return markets;
 }
 
 export async function getHyperliquidMarketSnapshot(
@@ -121,29 +162,60 @@ export async function getHyperliquidMarketSnapshot(
     return cached.snapshot;
   }
   const active = inflight.get(key);
+  if (cached && input.cacheMode !== "refresh" && nowMs - cached.fetchedAtMs <= MARKET_MAX_STALE_MS) {
+    if (!active) {
+      void refreshHyperliquidSnapshot({
+        ...normalized,
+        now,
+        fetchImpl: input.fetchImpl ?? fetch,
+        previous: cached.snapshot,
+        key,
+        cacheTimestamp: nowMs,
+      });
+    }
+    return { ...cached.snapshot, stale: true };
+  }
   if (active) return active;
 
-  const promise = fetchFreshHyperliquidMarketSnapshot({
+  return refreshHyperliquidSnapshot({
     ...normalized,
     now,
     fetchImpl: input.fetchImpl ?? fetch,
     previous: cached?.snapshot ?? null,
-  }).then((snapshot) => {
-    snapshotCache.set(key, {
-      fetchedAtMs: nowMs,
+    key,
+    cacheTimestamp: nowMs,
+  });
+}
+
+function refreshHyperliquidSnapshot(input: {
+  network: HyperliquidNetwork;
+  coin: HyperliquidMarketCoin;
+  interval: HyperliquidCandleInterval;
+  now: Date;
+  fetchImpl: typeof fetch;
+  previous: HyperliquidMarketSnapshot | null;
+  key: string;
+  cacheTimestamp: number;
+}) {
+  const active = inflight.get(input.key);
+  if (active) return active;
+  const promise = fetchFreshHyperliquidMarketSnapshot(input).then((snapshot) => {
+    snapshotCache.set(input.key, {
+      fetchedAtMs: input.cacheTimestamp,
       snapshot,
     });
     return snapshot;
   }).finally(() => {
-    inflight.delete(key);
+    inflight.delete(input.key);
   });
-  inflight.set(key, promise);
+  inflight.set(input.key, promise);
   return promise;
 }
 
 export function resetHyperliquidMarketSnapshotCacheForTests() {
   snapshotCache.clear();
   inflight.clear();
+  universeCache.clear();
 }
 
 async function fetchFreshHyperliquidMarketSnapshot(input: {
@@ -212,6 +284,11 @@ async function postInfo(fetchImpl: typeof fetch, baseUrl: string, body: Record<s
   });
   if (!res.ok) throw new Error(`hyperliquid_info_${res.status}`);
   return res.json();
+}
+
+function finiteNumber(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function buildSnapshot(input: {
