@@ -14,6 +14,7 @@ import {
   deriveOrderTicketDisplayState,
   deriveTradingNextAction,
   deriveVenueReadinessSteps,
+  isHyperliquidAgentKeyConfirmed,
   phoenixOrderbookClickSide,
   requiresHyperliquidPoolTerms,
   shouldReconnectHyperliquidApiWallet,
@@ -48,6 +49,28 @@ const validOrder: PrivateExecutionOrderDraft = {
 };
 
 describe("private account trading UI derivation", () => {
+  it("accepts locally generated Hyperliquid agent keys without the import-only checkbox", () => {
+    expect(isHyperliquidAgentKeyConfirmed({
+      generatedAgentAddress: "0xabc",
+      confirmedImportedAgentKey: false,
+    })).toBe(true);
+    expect(isHyperliquidAgentKeyConfirmed({
+      generatedAgentAddress: "",
+      confirmedImportedAgentKey: true,
+    })).toBe(true);
+    expect(isHyperliquidAgentKeyConfirmed({
+      generatedAgentAddress: "",
+      confirmedImportedAgentKey: false,
+    })).toBe(false);
+
+    const cockpitSource = readFileSync(
+      resolve(process.cwd(), "src/components/private-account/PrivateAccountCockpit.tsx"),
+      "utf8",
+    );
+    expect(cockpitSource.match(/if \(!agentKeyConfirmed\)/g)).toHaveLength(1);
+    expect(cockpitSource).not.toContain("if (!confirmedAgentKey)");
+  });
+
   it("opens wallet replacement only for exact Hyperliquid agent-binding failures", () => {
     expect(shouldReconnectHyperliquidApiWallet(new Error("hyperliquid_agent_binding_required"))).toBe(true);
     expect(shouldReconnectHyperliquidApiWallet("hyperliquid_agent_not_authorized")).toBe(true);

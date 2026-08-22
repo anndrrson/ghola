@@ -39,6 +39,13 @@ export function shouldReconnectHyperliquidApiWallet(error: unknown) {
   return code === "hyperliquid_agent_binding_required" || code === "hyperliquid_agent_not_authorized";
 }
 
+export function isHyperliquidAgentKeyConfirmed(input: {
+  generatedAgentAddress?: string | null;
+  confirmedImportedAgentKey: boolean;
+}) {
+  return Boolean(input.generatedAgentAddress?.trim() || input.confirmedImportedAgentKey);
+}
+
 export interface TradingNextAction {
   kind: TradingActionKind;
   label: string;

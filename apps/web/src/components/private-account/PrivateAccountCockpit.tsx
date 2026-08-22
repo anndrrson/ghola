@@ -133,6 +133,7 @@ import {
   deriveHyperliquidVerificationAction,
   deriveTradingNextAction,
   deriveVenueReadinessSteps,
+  isHyperliquidAgentKeyConfirmed,
   requiresHyperliquidPoolTerms,
   shouldReconnectHyperliquidApiWallet,
   type TradingActionKind,
@@ -5853,10 +5854,14 @@ function HyperliquidConnectModal({
   const validationErrors = validateHyperliquidExecutionCredentialDraft(draft);
   const hasAccount = Boolean(draft.hyperliquid_account_address.trim());
   const hasKey = Boolean(draft.api_wallet_private_key.trim());
+  const agentKeyConfirmed = isHyperliquidAgentKeyConfirmed({
+    generatedAgentAddress,
+    confirmedImportedAgentKey: confirmedAgentKey,
+  });
   const canSubmit = Boolean(
     accountCommitment &&
       walletAddress &&
-      (generatedAgentAddress || confirmedAgentKey) &&
+      agentKeyConfirmed &&
       validationErrors.length === 0 &&
       !submitting,
   );
@@ -5868,7 +5873,7 @@ function HyperliquidConnectModal({
         ? "Enter account address"
         : !hasKey
           ? "Enter API wallet key"
-        : !generatedAgentAddress && !confirmedAgentKey
+        : !agentKeyConfirmed
           ? "Confirm key type"
             : validationErrors.length > 0
               ? "Check connection details"
@@ -5929,7 +5934,7 @@ function HyperliquidConnectModal({
       setError("Private account wallet is unavailable.");
       return;
     }
-    if (!confirmedAgentKey) {
+    if (!agentKeyConfirmed) {
       setError("Confirm the imported key is a Hyperliquid API wallet key.");
       return;
     }
