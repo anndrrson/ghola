@@ -48,12 +48,18 @@ export async function privateAccountLaunchStatus(
     explicitConnectorReadiness === "ready" ||
     (!explicitConnectorReadiness && currentRuntime.remote_execution_ready && Boolean(runtimeExecutionUrl));
   const runtimeUrl = trimmed(env.GHOLA_PRIVATE_RUNTIME_URL) || runtimeExecutionUrl;
+  const primaryCapabilitySecret = trimmed(env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET);
+  const legacyCapabilitySecret = trimmed(env.GHOLA_WORKER_CAPABILITY_SECRET);
+  const capabilitySecretAliasesCoherent =
+    !primaryCapabilitySecret ||
+    !legacyCapabilitySecret ||
+    primaryCapabilitySecret === legacyCapabilitySecret;
   const connectorToken =
     trimmed(env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN) ||
     trimmed(env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN) ||
     trimmed(env.PRIVATE_AGENT_EXECUTION_TOKEN) ||
-    trimmed(env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET) ||
-    trimmed(env.GHOLA_WORKER_CAPABILITY_SECRET);
+    primaryCapabilitySecret ||
+    legacyCapabilitySecret;
   const checks: GholaLaunchCheck[] = [
     check(
       "auth_api_configured",
@@ -84,6 +90,11 @@ export async function privateAccountLaunchStatus(
       "hyperliquid_connector_token_configured",
       Boolean(connectorToken),
       "hyperliquid_connector_token_missing",
+    ),
+    blockingCheck(
+      "worker_capability_secret_aliases_coherent",
+      capabilitySecretAliasesCoherent,
+      "worker_capability_secret_alias_mismatch",
     ),
     check(
       "hyperliquid_connector_ready",
@@ -122,6 +133,14 @@ function check(checkName: string, ready: boolean, reason: string): GholaLaunchCh
   return {
     check: checkName,
     status: ready ? "ready" : "missing",
+    reason: ready ? null : reason,
+  };
+}
+
+function blockingCheck(checkName: string, ready: boolean, reason: string): GholaLaunchCheck {
+  return {
+    check: checkName,
+    status: ready ? "ready" : "blocked",
     reason: ready ? null : reason,
   };
 }

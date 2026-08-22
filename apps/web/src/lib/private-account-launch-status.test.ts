@@ -71,4 +71,23 @@ describe("private account launch status", () => {
     ]));
     expect(JSON.stringify(status)).not.toContain("super-secret-token-value");
   });
+
+  it("blocks release when worker capability secret aliases disagree", async () => {
+    const status = await privateAccountLaunchStatus({
+      NEXT_PUBLIC_THUMPER_API_URL: "https://thumper.test",
+      GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
+      GHOLA_HYPERLIQUID_LIVE_MODE: "tiny_fill",
+      PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "current-secret",
+      GHOLA_WORKER_CAPABILITY_SECRET: "stale-secret",
+    }, READY_RUNTIME);
+
+    expect(status.ready_to_accept_users).toBe(false);
+    expect(status.checks).toContainEqual({
+      check: "worker_capability_secret_aliases_coherent",
+      status: "blocked",
+      reason: "worker_capability_secret_alias_mismatch",
+    });
+    expect(JSON.stringify(status)).not.toContain("current-secret");
+    expect(JSON.stringify(status)).not.toContain("stale-secret");
+  });
 });

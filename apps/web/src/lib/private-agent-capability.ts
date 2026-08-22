@@ -81,9 +81,12 @@ export function workerCapabilityExpectedFromBody(
 }
 
 function workerCapabilitySecret(env: Record<string, string | undefined>): string {
-  return env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET?.trim() ||
-    env.GHOLA_WORKER_CAPABILITY_SECRET?.trim() ||
-    "";
+  const primary = env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET?.trim() ?? "";
+  const legacy = env.GHOLA_WORKER_CAPABILITY_SECRET?.trim() ?? "";
+  if (primary && legacy && primary !== legacy) {
+    throw new Error("worker_capability_secret_alias_mismatch");
+  }
+  return primary || legacy;
 }
 
 function bodyHash(body: unknown): string {
