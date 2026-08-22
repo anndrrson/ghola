@@ -1,0 +1,29 @@
+name: Vercel Web Deployment Gate
+
+on:
+  status:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-web-deployment:
+    name: Require a built Vercel web artifact
+    if: >-
+      github.event.context == 'Vercel – web' &&
+      github.event.state != 'pending'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Reject skipped, ignored, canceled, or incomplete web deployments
+        env:
+          VERCEL_STATUS_CONTEXT: ${{ github.event.context }}
+          VERCEL_STATUS_STATE: ${{ github.event.state }}
+          VERCEL_STATUS_DESCRIPTION: ${{ github.event.description }}
+          VERCEL_STATUS_TARGET_URL: ${{ github.event.target_url }}
+          VERCEL_STATUS_SHA: ${{ github.event.sha }}
+        run: node apps/web/scripts/verify-vercel-web-status.mjs

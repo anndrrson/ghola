@@ -43,6 +43,8 @@ jobs:
       # `npm install --frozen-lockfile` (not a valid npm flag) never gave.
       - run: npm ci
       - run: npm test
+      - name: Release gate tests
+        run: npm run test:release-gates
       - name: Block dangerous HTML sinks
         run: ../../scripts/security/check-dangerous-html.sh
       # The build IS the reproducibility check: passing GIT_COMMIT pins
