@@ -3,6 +3,7 @@ import type { HyperliquidAccountSnapshot } from "@/lib/private-account-client";
 import {
   hyperliquidCredentialsSealed,
   hyperliquidPerpsReadiness,
+  hyperliquidSubmissionSignerMode,
   mergeHyperliquidAccountSnapshot,
   spotVenueReadiness,
 } from "@/lib/trade-readiness";
@@ -27,6 +28,24 @@ describe("trade readiness", () => {
     expect(hyperliquidCredentialsSealed({ credentials_sealed: false })).toBe(false);
     expect(hyperliquidCredentialsSealed({})).toBe(false);
     expect(hyperliquidCredentialsSealed(null)).toBe(false);
+  });
+
+  it("uses the private-account signer for the enabled API-wallet flow", () => {
+    expect(hyperliquidSubmissionSignerMode({
+      legacyApiKeysEnabled: true,
+      privateAccountWalletReady: true,
+      perpsTurnkeyConfigured: false,
+      perpsTurnkeyAuthenticated: false,
+    })).toBe("private_account_wallet");
+  });
+
+  it("requires authenticated perps Turnkey outside the API-wallet flow", () => {
+    expect(hyperliquidSubmissionSignerMode({
+      legacyApiKeysEnabled: false,
+      privateAccountWalletReady: true,
+      perpsTurnkeyConfigured: true,
+      perpsTurnkeyAuthenticated: false,
+    })).toBeNull();
   });
 
   it("preserves a confirmed collateral blocker over a temporary verification stream state", () => {

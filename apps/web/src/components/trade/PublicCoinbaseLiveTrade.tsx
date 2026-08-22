@@ -31,6 +31,7 @@ import {
 } from "@/lib/ghola-market-chart";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { usePerpsTurnkey } from "@/lib/perps-turnkey-provider";
+import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { TurnkeyPerpsManager } from "@/components/trade/TurnkeyPerpsManager";
 import { GholaMarketChart } from "@/components/private-account/GholaMarketChart";
 import {
@@ -59,6 +60,7 @@ import { useMarketData } from "@/lib/market-data-store";
 import {
   hyperliquidCredentialsSealed,
   hyperliquidPerpsReadiness,
+  hyperliquidSubmissionSignerMode,
   mergeHyperliquidAccountSnapshot,
   spotVenueReadiness,
 } from "@/lib/trade-readiness";
@@ -809,6 +811,7 @@ function AlternateProductWorkspace({
 }) {
   const workspaceParams = useSearchParams();
   const perpsTurnkey = usePerpsTurnkey();
+  const privateAccountWallet = useTurnkeyWallet();
   // This value must be identical during SSR and the browser's first render.
   // Browser preferences are reconciled in an effect after hydration.
   const requestedPerpMarket = workspaceParams.get("product") === "perps"
@@ -1157,18 +1160,35 @@ function AlternateProductWorkspace({
       setPerpError("The live review expired. Review the order again for a fresh price and account check.");
       return;
     }
-    if (!perpsTurnkey.configured || !perpsTurnkey.authenticated) {
-      setPerpError("Authenticate with the Turnkey owner wallet before approving this order.");
+    const signerMode = hyperliquidSubmissionSignerMode({
+      legacyApiKeysEnabled: legacyHyperliquidApiKeysEnabled,
+      privateAccountWalletReady: Boolean(privateAccountWallet.walletAddress),
+      perpsTurnkeyConfigured: perpsTurnkey.configured,
+      perpsTurnkeyAuthenticated: perpsTurnkey.authenticated,
+    });
+    if (!signerMode) {
+      setPerpError(legacyHyperliquidApiKeysEnabled
+        ? "The private account wallet is unavailable. Sign in again before approving this order."
+        : "Authenticate with the Turnkey owner wallet before approving this order.");
       return;
     }
     setPerpWorking("submit");
     try {
-      const pair = await perpsTurnkey.ensureWalletPair();
+      let ownerWalletAddress: string;
+      let signInstructionBytes: (bytes: Uint8Array) => Promise<Uint8Array>;
+      if (signerMode === "private_account_wallet") {
+        ownerWalletAddress = privateAccountWallet.walletAddress!;
+        signInstructionBytes = privateAccountWallet.signBytes;
+      } else {
+        const pair = await perpsTurnkey.ensureWalletPair();
+        ownerWalletAddress = pair.sealing.address;
+        signInstructionBytes = perpsTurnkey.signSealingBytes;
+      }
       const sealed = await buildPrivateExecutionInstructionBundle({
-        ownerWalletAddress: pair.sealing.address,
+        ownerWalletAddress,
         previewCommitment: perpReview.previewCommitment,
         order: perpOrder,
-        signBytes: perpsTurnkey.signSealingBytes,
+        signBytes: signInstructionBytes,
         ttlMs: 60_000,
       });
       const approval = await approvePrivateAccountAction({

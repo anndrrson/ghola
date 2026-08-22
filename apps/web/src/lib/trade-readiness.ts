@@ -18,6 +18,20 @@ export function hyperliquidCredentialsSealed(status: {
   return status?.credentials_sealed === true;
 }
 
+export function hyperliquidSubmissionSignerMode(input: {
+  legacyApiKeysEnabled: boolean;
+  privateAccountWalletReady: boolean;
+  perpsTurnkeyConfigured: boolean;
+  perpsTurnkeyAuthenticated: boolean;
+}): "private_account_wallet" | "perps_turnkey" | null {
+  if (input.legacyApiKeysEnabled) {
+    return input.privateAccountWalletReady ? "private_account_wallet" : null;
+  }
+  return input.perpsTurnkeyConfigured && input.perpsTurnkeyAuthenticated
+    ? "perps_turnkey"
+    : null;
+}
+
 export function mergeHyperliquidAccountSnapshot(
   current: HyperliquidAccountSnapshot | null,
   incoming: HyperliquidAccountSnapshot,
