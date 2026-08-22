@@ -28,6 +28,7 @@ function emptyState() {
     autopilot_opportunities: {},
     executor_records: {},
     tick_snapshots: {},
+    multi_leg_sagas: {},
     revenue_evidence: [],
     hyperliquid_managed_allocations: {},
     omnibus: {},
@@ -76,6 +77,7 @@ export function createWorkerState(dir) {
       autopilot_opportunities: loaded.autopilot_opportunities || {},
       executor_records: loaded.executor_records || {},
       tick_snapshots: loaded.tick_snapshots || {},
+      multi_leg_sagas: loaded.multi_leg_sagas || {},
       revenue_evidence: Array.isArray(loaded.revenue_evidence) ? loaded.revenue_evidence : [],
       hyperliquid_managed_allocations: loaded.hyperliquid_managed_allocations || {},
       omnibus: loaded.omnibus || {},
@@ -400,6 +402,21 @@ export function createPostgresWorkerState(databaseUrl) {
         await sql`
           CREATE INDEX IF NOT EXISTS idx_worker_tick_snapshots_controller
           ON worker_tick_snapshots (agent_controller_id, created_at DESC)
+        `;
+        await sql`
+          CREATE TABLE IF NOT EXISTS worker_multi_leg_sagas (
+            saga_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            terminal BOOLEAN NOT NULL DEFAULT FALSE,
+            last_event_sequence INTEGER NOT NULL,
+            saga_json JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `;
+        await sql`
+          CREATE INDEX IF NOT EXISTS idx_worker_multi_leg_sagas_active
+          ON worker_multi_leg_sagas (terminal, updated_at DESC)
         `;
         await sql`
           CREATE TABLE IF NOT EXISTS worker_revenue_events (
@@ -931,6 +948,78 @@ export function createPostgresWorkerState(databaseUrl) {
         LIMIT 100
       `;
       return rows.map((row) => decodeJson(row.tick_json)).filter(Boolean).reverse();
+    },
+
+    async putMultiLegSaga(saga, input = {}) {
+      const sql = await ensureInitialized();
+      const next = { ...saga, updated_at_ms: Number(saga.updated_at_ms || Date.now()) };
+      const expectedSequence = input.expected_sequence;
+      let rows;
+      if (expectedSequence === null) {
+        rows = await sql`
+          INSERT INTO worker_multi_leg_sagas (
+            saga_id, status, terminal, last_event_sequence, saga_json, created_at, updated_at
+          )
+          VALUES (
+            ${next.saga_id}, ${next.status}, ${next.terminal === true},
+            ${next.last_event_sequence}, ${jsonParam(next)}::jsonb,
+            ${new Date(next.created_at_ms).toISOString()}, NOW()
+          )
+          ON CONFLICT (saga_id) DO NOTHING
+          RETURNING saga_json
+        `;
+      } else if (Number.isInteger(expectedSequence) && expectedSequence >= 0) {
+        rows = await sql`
+          UPDATE worker_multi_leg_sagas
+          SET
+            status = ${next.status},
+            terminal = ${next.terminal === true},
+            last_event_sequence = ${next.last_event_sequence},
+            saga_json = ${jsonParam(next)}::jsonb,
+            updated_at = NOW()
+          WHERE saga_id = ${next.saga_id}
+            AND last_event_sequence = ${expectedSequence}
+          RETURNING saga_json
+        `;
+      } else {
+        return { ok: false, error: "saga_expected_sequence_required" };
+      }
+      if (rows[0]) return { ok: true, saga: decodeJson(rows[0].saga_json) };
+      return {
+        ok: false,
+        error: "saga_version_conflict",
+        saga: await this.getMultiLegSaga(next.saga_id),
+      };
+    },
+
+    async getMultiLegSaga(sagaId) {
+      const sql = await ensureInitialized();
+      const rows = await sql`
+        SELECT saga_json
+        FROM worker_multi_leg_sagas
+        WHERE saga_id = ${sagaId}
+      `;
+      return decodeJson(rows[0]?.saga_json) || null;
+    },
+
+    async listMultiLegSagas(input = {}) {
+      const sql = await ensureInitialized();
+      const limit = Math.max(1, Math.min(positiveInt(input.limit, 200), 1_000));
+      const rows = input.active_only === true
+        ? await sql`
+          SELECT saga_json
+          FROM worker_multi_leg_sagas
+          WHERE terminal = FALSE
+          ORDER BY updated_at ASC
+          LIMIT ${limit}
+        `
+        : await sql`
+          SELECT saga_json
+          FROM worker_multi_leg_sagas
+          ORDER BY updated_at DESC
+          LIMIT ${limit}
+        `;
+      return rows.map((row) => decodeJson(row.saga_json)).filter(Boolean);
     },
 
     async appendRevenueEvidence(event) {
@@ -1921,6 +2010,34 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
       return ((await loadState()).tick_snapshots[sessionId] || []).slice(-100);
     },
 
+    async putMultiLegSaga(saga, input = {}) {
+      const state = await loadState();
+      const existing = state.multi_leg_sagas[saga.saga_id] || null;
+      const expectedSequence = input.expected_sequence;
+      if (expectedSequence === null ? existing !== null : !Number.isInteger(expectedSequence)) {
+        return { ok: false, error: existing ? "saga_version_conflict" : "saga_expected_sequence_required", saga: existing };
+      }
+      if (Number.isInteger(expectedSequence) && (!existing || existing.last_event_sequence !== expectedSequence)) {
+        return { ok: false, error: "saga_version_conflict", saga: existing };
+      }
+      const next = { ...saga, updated_at_ms: Number(saga.updated_at_ms || Date.now()) };
+      state.multi_leg_sagas[saga.saga_id] = next;
+      await save(state);
+      return { ok: true, saga: next };
+    },
+
+    async getMultiLegSaga(sagaId) {
+      return (await loadState()).multi_leg_sagas[sagaId] || null;
+    },
+
+    async listMultiLegSagas(input = {}) {
+      const limit = Math.max(1, Math.min(positiveInt(input.limit, 200), 1_000));
+      return Object.values((await loadState()).multi_leg_sagas)
+        .filter((saga) => input.active_only !== true || saga.terminal !== true)
+        .sort((left, right) => Number(left.updated_at_ms || 0) - Number(right.updated_at_ms || 0))
+        .slice(0, limit);
+    },
+
     async appendRevenueEvidence(event) {
       const state = await loadState();
       const existing = Array.isArray(state.revenue_evidence) ? state.revenue_evidence : [];
@@ -2119,6 +2236,7 @@ function normalizeState(value) {
     autopilot_opportunities: loaded.autopilot_opportunities || {},
     executor_records: loaded.executor_records || {},
     tick_snapshots: loaded.tick_snapshots || {},
+    multi_leg_sagas: loaded.multi_leg_sagas || {},
     revenue_evidence: Array.isArray(loaded.revenue_evidence) ? loaded.revenue_evidence : [],
     hyperliquid_managed_allocations: loaded.hyperliquid_managed_allocations || {},
     omnibus: loaded.omnibus || {},

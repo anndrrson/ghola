@@ -28,6 +28,28 @@ describe("full-ticket execution policy", () => {
     );
   });
 
+  it("allows one $11 HYPE order inside a $25 session cap", async () => {
+    const instruction = hyperliquidFullTicketOrder({
+      market: "HYPE",
+      quote_size: "11",
+      max_slippage_bps: "50",
+    });
+    await enforceInstructionPolicy({
+      body: {
+        policy_commitment: "policy_hype_proof",
+        session_policy: {
+          policy_commitment: "policy_hype_proof",
+          market_allowlist: ["BTC", "ETH", "SOL", "HYPE"],
+          max_notional_bucket: "25",
+          max_order_count: 10,
+        },
+      },
+      instruction,
+      session: null,
+      state: null,
+    });
+  });
+
   it("blocks Hyperliquid full-ticket orders over the slippage cap", async () => {
     const instruction = hyperliquidFullTicketOrder({ quote_size: "10", max_slippage_bps: "101" });
     await assert.rejects(
@@ -46,6 +68,126 @@ describe("full-ticket execution policy", () => {
     await assert.rejects(
       () => enforceInstructionPolicy({ body: { policy_commitment: "policy_test" }, instruction, session: null, state }),
       /daily notional cap/,
+    );
+  });
+
+  it("normalizes leverage, margin mode, and native protection", () => {
+    const instruction = hyperliquidFullTicketOrder({
+      leverage: 7,
+      margin_mode: "isolated",
+      protective_orders: { stop_loss: "65000", take_profit: "72000" },
+    });
+    assert.equal(instruction.order.leverage, 7);
+    assert.equal(instruction.order.margin_mode, "isolated");
+    assert.deepEqual(instruction.order.protective_orders, { stop_loss: "65000", take_profit: "72000" });
+  });
+
+  it("rejects reduce-only orders that attach new protection", () => {
+    assert.throws(
+      () => hyperliquidFullTicketOrder({ reduce_only: true, protective_orders: { stop_loss: "65000" } }),
+      /reduce-only orders cannot attach protective orders/,
+    );
+  });
+
+  it("allows a risk-reducing exit even when entry notional limits are exhausted", async () => {
+    const instruction = hyperliquidFullTicketOrder({
+      quote_size: "100000",
+      reduce_only: true,
+      max_slippage_bps: "50",
+    });
+    const state = {
+      async incrementPolicyAmount() {
+        return { ok: false };
+      },
+    };
+    await enforceInstructionPolicy({
+      body: { policy_commitment: "policy_test" },
+      instruction,
+      session: null,
+      state,
+    });
+  });
+
+  it("keeps cancel and reduce-only recovery open after a session kill", async () => {
+    const reduceOnly = hyperliquidFullTicketOrder({ reduce_only: true });
+    await enforceInstructionPolicy({
+      body: { session_policy: { kill_switch: true } },
+      instruction: reduceOnly,
+      session: null,
+      state: null,
+    });
+    const cancel = normalizeInstruction({
+      version: 1,
+      kind: "ghola_private_execution_instruction",
+      venue_id: "hyperliquid",
+      operation_class: "cancel",
+      cancel: {
+        market: "BTC",
+        target_work_order_commitment: "work_order_recovery_0001",
+      },
+    }, { venue_id: "hyperliquid", operation_class: "cancel" });
+    await enforceInstructionPolicy({
+      body: { session_policy: { kill_switch: true } },
+      instruction: cancel,
+      session: null,
+      state: null,
+    });
+  });
+
+  it("still blocks risk increases after a session kill", async () => {
+    await assert.rejects(
+      () => enforceInstructionPolicy({
+        body: { session_policy: { kill_switch: true } },
+        instruction: hyperliquidFullTicketOrder(),
+        session: null,
+        state: null,
+      }),
+      /kill switch/,
+    );
+  });
+
+  it("still enforces slippage bounds on reduce-only exits", async () => {
+    const instruction = hyperliquidFullTicketOrder({
+      reduce_only: true,
+      max_slippage_bps: "101",
+    });
+    await assert.rejects(
+      () => enforceInstructionPolicy({ body: { policy_commitment: "policy_test" }, instruction, session: null, state: null }),
+      /slippage/,
+    );
+  });
+
+  it("rejects untrusted Coinbase logical reduce-only flags", async () => {
+    await assert.rejects(
+      () => enforceInstructionPolicy({
+        body: coinbaseRecoveryBody(),
+        instruction: coinbaseReduceOnlyOrder(),
+        session: null,
+        state: coinbaseRecoveryState(),
+      }),
+      /restricted to the protected recovery worker/,
+    );
+  });
+
+  it("permits only state-bound Coinbase position reduction", async () => {
+    await enforceInstructionPolicy({
+      body: coinbaseRecoveryBody(),
+      instruction: coinbaseReduceOnlyOrder(),
+      session: null,
+      state: coinbaseRecoveryState(),
+      trusted_internal: true,
+      account_usage: false,
+    });
+    await assert.rejects(
+      () => enforceInstructionPolicy({
+        body: coinbaseRecoveryBody(),
+        instruction: coinbaseReduceOnlyOrder({ side: "buy" }),
+        session: null,
+        state: coinbaseRecoveryState(),
+        trusted_internal: true,
+        account_usage: false,
+      }),
+      /does not reduce a recorded position/,
     );
   });
 
@@ -172,6 +314,53 @@ function policyState() {
     },
     async incrementPolicyCount() {
       return { ok: true };
+    },
+  };
+}
+
+function coinbaseReduceOnlyOrder(overrides = {}) {
+  return normalizeInstruction({
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: "coinbase_advanced",
+    operation_class: "spot_market_order",
+    order: {
+      market: "SOL-USD",
+      side: "sell",
+      base_size: "0.25",
+      limit_price: "101",
+      order_type: "market",
+      size_mode: "base",
+      reduce_only: true,
+      ...overrides,
+    },
+  }, { venue_id: "coinbase_advanced", operation_class: "spot_market_order" });
+}
+
+function coinbaseRecoveryBody() {
+  return {
+    autopilot_session_id: "autopilot_recovery_test",
+    policy_commitment: "policy_recovery_test",
+    session_policy: {
+      policy_commitment: "policy_recovery_test",
+      market_allowlist: ["SOL-USD"],
+      max_notional_bucket: "10",
+    },
+  };
+}
+
+function coinbaseRecoveryState() {
+  return {
+    async getAutopilotSession() {
+      return { session_policy: { policy_commitment: "policy_recovery_test" } };
+    },
+    async listAutopilotPositions() {
+      return [{
+        venue_id: "coinbase_advanced",
+        market: "SOL-USD",
+        signed_notional_micro_usdc: 25_000_000,
+        signed_base_size: 0.25,
+      }];
     },
   };
 }

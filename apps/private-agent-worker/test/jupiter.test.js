@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  jupiterCredentialFromVault,
   jupiterPlatformFeeAccountReadiness,
   submitJupiterSwapExecution,
   verifyJupiterSwapNoSubmit,
@@ -28,6 +29,43 @@ describe("jupiter live adapter policy", () => {
 
   afterEach(() => {
     process.env = { ...OLD_ENV };
+  });
+
+  it("accepts a Turnkey-delegated Jupiter authority without exportable key material", async () => {
+    process.env.PRIVATE_AGENT_JUPITER_NO_SUBMIT_LOCAL_CHECKS = "true";
+    const credential = jupiterCredentialFromVault({
+      kind: "ghola_solana_swap_execution_vault",
+      signing_mode: "turnkey_delegated",
+      authority: PHANTOM_OWNER,
+      turnkey_organization_id: "org-user-001",
+      turnkey_agent_key_ref: "worker-agent-001",
+      owner_mandate_commitment: "mandate:jupiter:001",
+      turnkey_policy_commitment: "policy:jupiter:001",
+    });
+    assert.equal(credential.signing_mode, "turnkey_delegated");
+    assert.equal(credential.keypair, null);
+    assert.equal(credential.authority, PHANTOM_OWNER);
+
+    const verified = await verifyJupiterSwapNoSubmit({
+      credential,
+      clientOrderId: "jupiter_turnkey_no_submit",
+      instruction: {
+        version: 1,
+        venue_id: "jupiter",
+        operation_class: "swap",
+        order: {
+          input_mint: SOL_MINT,
+          output_mint: USDC_MINT,
+          amount: "1000000",
+          quote_size: "25",
+          max_slippage_bps: "50",
+          routing_mode: "meta_aggregator",
+        },
+      },
+    });
+    assert.equal(verified.checks.turnkey_delegated_signer_configured, true);
+    assert.equal(verified.checks.exportable_private_key_required, false);
+    assert.equal(verified.checks.transaction_broadcast, false);
   });
 
   it("blocks swaps above the live notional cap before building a transaction", async () => {

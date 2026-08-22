@@ -106,6 +106,75 @@ describe("coinbase live adapter", () => {
     assert.equal(JSON.stringify(result).includes("api_private_key"), false);
   });
 
+  it("passes native attached stop-loss and take-profit prices to Coinbase", async () => {
+    const oldDryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    const oldLiveMode = process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+    const oldProducts = process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS;
+    const oldCap = process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD;
+    delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = "full";
+    process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS = "SOL-USD";
+    process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD = "25";
+    let submittedBody = null;
+    try {
+      const result = await submitCoinbaseExecution({
+        credential: testCredential(),
+        clientOrderId: "coinbase_protected_order",
+        fetchImpl: async (url, init) => {
+          if (String(url).endsWith("/key_permissions")) {
+            return new Response(JSON.stringify({ can_view: true, can_trade: true, can_transfer: false }), { status: 200 });
+          }
+          if (init.method === "GET") {
+            return new Response(JSON.stringify({
+              order: {
+                order_id: "protected_order",
+                product_id: "SOL-USD",
+                status: "FILLED",
+                completion_percentage: "100",
+                filled_size: "0.25",
+                average_filled_price: "100",
+                total_fees: "0.01",
+              },
+            }), { status: 200 });
+          }
+          submittedBody = JSON.parse(init.body);
+          return new Response(JSON.stringify({ success: true, order_id: "protected_order" }), { status: 200 });
+        },
+        instruction: {
+          operation_class: "spot_market_order",
+          order: {
+            market: "SOL-USD",
+            side: "buy",
+            quote_size: "25",
+            protective_orders: {
+              stop_loss: "70",
+              take_profit: "80",
+            },
+          },
+        },
+      });
+      assert.deepEqual(submittedBody.attached_order_configuration, {
+        trigger_bracket_gtc: {
+          limit_price: "80",
+          stop_trigger_price: "70",
+        },
+      });
+      assert.equal(result.status, "filled");
+      assert.equal(result.final_proof.final_fill_proven, true);
+      assert.equal(result.final_proof.cumulative_filled_micro_usdc, 25_000_000);
+      assert.equal(result.final_proof.filled_base_size, "0.25");
+    } finally {
+      if (oldDryRun === undefined) delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+      else process.env.PRIVATE_AGENT_VENUE_DRY_RUN = oldDryRun;
+      if (oldLiveMode === undefined) delete process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+      else process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = oldLiveMode;
+      if (oldProducts === undefined) delete process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS;
+      else process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS = oldProducts;
+      if (oldCap === undefined) delete process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD;
+      else process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD = oldCap;
+    }
+  });
+
   it("blocks products outside the Coinbase live allowlist before key preflight", async () => {
     const oldDryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
     const oldLiveMode = process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;

@@ -18,6 +18,17 @@ function resetEnv() {
   process.env = { ...OLD_ENV };
 }
 
+async function weakMarketFetch() {
+  return new Response(JSON.stringify({
+    price: "100",
+    price_percentage_change_24h: "0.01",
+    pricebook: {
+      best_bid: "99.99",
+      best_ask: "100.01",
+    },
+  }), { status: 200 });
+}
+
 describe("autonomous autopilot engine", () => {
   let dir;
 
@@ -542,7 +553,7 @@ describe("autonomous autopilot engine", () => {
     assert.equal((await state.listExecutorRecords(session.autopilot_session_id)).length, 1);
   });
 
-  it("lets AI-direct mode originate a bounded dry-run order after deterministic validation", async () => {
+  it("routes a typed AI proposal into a bounded dry-run order after deterministic validation", async () => {
     process.env.PRIVATE_AGENT_AI_DIRECT_ENABLED = "true";
     process.env.PRIVATE_AGENT_AI_DIRECT_MODE = "mock";
     process.env.PRIVATE_AGENT_AI_MAX_DECISIONS_PER_HOUR = "12";
@@ -573,7 +584,9 @@ describe("autonomous autopilot engine", () => {
       now,
     });
 
-    assert.equal(session.strategy.ai_can_execute_directly, true);
+    assert.equal(session.strategy.ai_can_execute_directly, false);
+    assert.equal(session.strategy.model_role, "proposal_only");
+    assert.equal(session.strategy.deterministic_router, true);
     assert.equal(session.strategy.strategy_id, "bounded_intent_executor_v1");
     assert.equal(session.session_policy.strategy_id, "bounded_intent_executor_v1");
     assert.equal(session.session_policy.ai_direct_enabled, true);
@@ -587,7 +600,9 @@ describe("autonomous autopilot engine", () => {
     });
 
     assert.equal(tick.ok, true);
-    assert.equal(tick.proposal.decision_source, "ai_direct_order_v1");
+    assert.equal(tick.proposal.decision_source, "ai_structured_proposal_v2");
+    assert.equal(tick.proposal.routing.selected_venue_id, "jupiter");
+    assert.ok(tick.proposal.routing.expected_net_benefit_bps > 0);
     assert.match(tick.proposal.decision_id, /^aidec_/);
     assert.equal(tick.proposal.venue_id, "jupiter");
     assert.equal(tick.proposal.operation_class, "swap");
@@ -620,6 +635,104 @@ describe("autonomous autopilot engine", () => {
       "venue_reconcile",
       "tick_snapshot",
     ]);
+  });
+
+  it("skips AI-direct decisions when the market is not actionable", async () => {
+    process.env.PRIVATE_AGENT_AI_DIRECT_ENABLED = "true";
+    process.env.PRIVATE_AGENT_AUTOPILOT_SIGNAL_MODE = "live";
+    const state = createWorkerState(dir);
+    const recipient = { recipient_id: "did:key:test-autopilot-worker" };
+    const now = new Date(Date.now() + 60_000);
+    const session = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_autopilot_ai_sparse",
+        session_policy: {
+          decision_model: "ai_direct_order_v1",
+          ai_direct_enabled: true,
+          venue_allowlist: ["jupiter"],
+          market_allowlist: ["SOL-USD"],
+          max_notional_bucket: "50",
+          max_daily_notional_bucket: "250",
+          max_order_count: 10,
+          ttl_ms: 2 * 60 * 60_000,
+          max_slippage_bps: 50,
+          min_signal_bps: 25,
+        },
+      },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+
+    const tick = await runAutopilotTick({
+      sessionId: session.autopilot_session_id,
+      state,
+      recipient,
+      now: new Date(now.getTime() + 60_000),
+      env: process.env,
+      fetchImpl: weakMarketFetch,
+    });
+
+    assert.equal(tick.ok, false);
+    assert.equal(tick.error, "signal_too_weak");
+    assert.equal((await state.listAutopilotDecisions(session.autopilot_session_id)).length, 0);
+    const updated = await state.getAutopilotSession(session.autopilot_session_id);
+    assert.equal(updated.non_actionable_tick_count, 1);
+  });
+
+  it("auto-pauses after repeated non-actionable ticks", async () => {
+    process.env.PRIVATE_AGENT_AUTOPILOT_SIGNAL_MODE = "live";
+    process.env.PRIVATE_AGENT_AUTOPILOT_AUTO_PAUSE_NOOP_TICKS = "2";
+    const state = createWorkerState(dir);
+    const recipient = { recipient_id: "did:key:test-autopilot-worker" };
+    const now = new Date(Date.now() + 60_000);
+    const session = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_autopilot_auto_pause",
+        session_policy: {
+          ai_direct_enabled: false,
+          venue_allowlist: ["jupiter"],
+          market_allowlist: ["SOL-USD"],
+          max_notional_bucket: "50",
+          max_daily_notional_bucket: "250",
+          max_order_count: 10,
+          ttl_ms: 2 * 60 * 60_000,
+          max_slippage_bps: 50,
+          min_signal_bps: 25,
+        },
+      },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+
+    const first = await runAutopilotTick({
+      sessionId: session.autopilot_session_id,
+      state,
+      recipient,
+      now: new Date(now.getTime() + 60_000),
+      env: process.env,
+      fetchImpl: weakMarketFetch,
+    });
+    const second = await runAutopilotTick({
+      sessionId: session.autopilot_session_id,
+      state,
+      recipient,
+      now: new Date(now.getTime() + 120_000),
+      env: process.env,
+      fetchImpl: weakMarketFetch,
+    });
+
+    assert.equal(first.error, "signal_too_weak");
+    assert.equal(second.error, "signal_too_weak");
+    const updated = await state.getAutopilotSession(session.autopilot_session_id);
+    assert.equal(updated.status, "paused");
+    assert.equal(updated.execution_enabled, false);
+    assert.equal(updated.non_actionable_tick_count, 2);
   });
 
   it("simulates a no-submit private liquidity quote pair with replay records", async () => {

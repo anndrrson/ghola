@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   isArbitrageSession,
+  isCarrySession,
   runGuardedArbitrageTick,
 } from "./arbitrage.js";
 import { decideAiDirectOrder, publicDecisionRecord } from "./ai-direct-order.js";
+import { routeModelProposal } from "./autopilot-router.js";
 import { executeAutopilotOrder, verifyAutopilotOrder } from "./private-execution.js";
 import { jupiterPlatformFeeQuote } from "../venues/jupiter.js";
 import {
@@ -13,11 +15,16 @@ import {
   tickSnapshot,
 } from "./replay.js";
 import { revenueEvidenceEvent } from "./revenue-evidence.js";
+import {
+  evaluateAutopilotPortfolioProposal,
+  portfolioMandateForSession,
+  reconcileSessionPortfolio,
+} from "./portfolio-risk.js";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
-const SUPPORTED_VENUES = new Set(["jupiter", "phoenix", "backpack", "hyperliquid", "coinbase_advanced"]);
+const SUPPORTED_VENUES = new Set(["jupiter", "phoenix", "backpack", "hyperliquid", "drift", "coinbase_advanced"]);
 const SUPPORTED_MARKETS = new Set(["SOL-USD", "BTC-USD", "ETH-USD", "SOL/USDC", "SOL", "BTC", "ETH", "HYPE"]);
 const BOUNDED_INTENT_STRATEGY = "bounded_intent_executor_v1";
 const DEFAULT_VENUES = ["jupiter", "phoenix", "hyperliquid", "coinbase_advanced"];
@@ -28,9 +35,13 @@ export async function createAutopilotSession({ body, recipient, state, provider,
   const policy = normalizeAutopilotPolicy(body?.session_policy || body || {}, now);
   const venueAccess = normalizeVenueAccess(body?.venue_access || body?.venue_vaults || {}, policy);
   const readyVenues = policy.venue_allowlist.filter((venue) => venueAccess[venue]?.status === "ready");
+  const activationReady = policy.execution_network !== "mainnet" || (
+    Boolean(policy.mainnet_activation_id) && Boolean(policy.owner_authorization_commitment)
+  );
   const status = policy.kill_switch
     ? "killed"
-    : readyVenues.length > 0 ? "running" : "pending_funding";
+    : !activationReady ? "pending_activation"
+      : readyVenues.length > 0 ? "running" : "pending_funding";
   const id = `autopilot_${digest({
     owner_commitment: stringValue(body?.owner_commitment) || "owner_redacted",
     policy,
@@ -51,6 +62,9 @@ export async function createAutopilotSession({ body, recipient, state, provider,
     status,
     strategy: strategyForPolicy(policy),
     session_policy: policy,
+    portfolio_mandate: null,
+    portfolio_accounting: null,
+    billing_metering: normalizeBillingMetering(body?.billing_metering),
     venue_access: venueAccess,
     order_count: 0,
     tick_count: 0,
@@ -63,6 +77,8 @@ export async function createAutopilotSession({ body, recipient, state, provider,
     expires_at: policy.expires_at,
     next_step: status === "running"
       ? "Bounded intent executor is running. Trades require fresh market data, policy caps, and submit-time guardrails."
+      : status === "pending_activation"
+        ? "Owner authorization and explicit mainnet activation are required."
       : status === "pending_funding"
         ? "Fund an isolated venue vault or connect a trade-only venue vault before live execution."
         : "Kill switch is active.",
@@ -74,6 +90,12 @@ export async function createAutopilotSession({ body, recipient, state, provider,
       user_can_kill_anytime: true,
     },
   };
+  session.portfolio_mandate = portfolioMandateForSession({
+    session_id: id,
+    owner_commitment: session.owner_commitment,
+    policy,
+    now,
+  });
   await state.putAutopilotSession(session);
   await appendEvent(state, session, "session_created", "Autonomous trading session created.", {
     strategy: session.strategy,
@@ -97,6 +119,8 @@ export async function createAutopilotSession({ body, recipient, state, provider,
     max_order_count: policy.max_order_count,
     cooldown_ms: policy.cooldown_ms,
     data_max_age_ms: policy.data_max_age_ms,
+    execution_network: policy.execution_network,
+    portfolio_mandate_id: session.portfolio_mandate.mandate_id,
   }, now);
   if (status === "pending_funding") {
     await appendEvent(state, session, "funding_required", "Isolated venue funding is required before autonomous live trading.", {
@@ -152,17 +176,32 @@ export async function controlAutopilotSession({ sessionId, action, state, recipi
       stopAutopilotLoop(sessionId);
     } else {
       const ready = readyVenues(refreshed);
-      refreshed.status = ready.length ? "running" : "pending_funding";
-      refreshed.execution_enabled = ready.length > 0;
-      refreshed.next_step = ready.length
-        ? "Bounded intent executor is running."
-        : "Fund an isolated venue vault before live execution.";
-      if (recipient && ready.length) startAutopilotLoop({ sessionId, state, recipient });
+      const activationReady = refreshed.session_policy.execution_network !== "mainnet" || (
+        Boolean(refreshed.session_policy.mainnet_activation_id) &&
+        Boolean(refreshed.session_policy.owner_authorization_commitment)
+      );
+      refreshed.status = !activationReady ? "pending_activation" : ready.length ? "running" : "pending_funding";
+      refreshed.execution_enabled = activationReady && ready.length > 0;
+      refreshed.next_step = !activationReady
+        ? "Owner authorization and explicit mainnet activation are required."
+        : ready.length
+          ? "Bounded intent executor is running."
+          : "Fund an isolated venue vault before live execution.";
+      if (recipient && activationReady && ready.length) startAutopilotLoop({ sessionId, state, recipient });
     }
   }
   refreshed.updated_at = now.toISOString();
   await state.putAutopilotSession(refreshed);
   const event = await appendEvent(state, refreshed, "session_state", `Autopilot ${action}.`, { action }, now);
+  if (action === "pause" || action === "kill") {
+    await meterAutopilotCompute({
+      session: refreshed,
+      status: action === "kill" ? "completed" : "paused",
+      now,
+      env: process.env,
+      fetchImpl: fetch,
+    }).catch(() => null);
+  }
   return { session: publicSession(refreshed), event };
 }
 
@@ -196,6 +235,49 @@ export async function listAutopilotReplay({ sessionId, state, now = new Date() }
     positions: positions.map(publicPosition),
     now,
   });
+}
+
+export async function updateAutopilotAccounting({
+  sessionId,
+  state,
+  expected_snapshots,
+  observed_snapshots,
+  now = new Date(),
+}) {
+  const session = await state.getAutopilotSession(sessionId);
+  if (!session) return { ok: false, error: "autopilot_session_not_found" };
+  try {
+    const portfolioAccounting = reconcileSessionPortfolio({
+      session,
+      expected_snapshots,
+      observed_snapshots,
+      now,
+    });
+    const next = {
+      ...session,
+      portfolio_accounting: portfolioAccounting,
+      updated_at: now.toISOString(),
+    };
+    if (portfolioAccounting.status !== "reconciled" && next.status === "running") {
+      next.status = "paused";
+      next.execution_enabled = false;
+      next.next_step = "Portfolio reconciliation is required; only cancel and reduce-only recovery remain permitted.";
+    }
+    await state.putAutopilotSession(next);
+    await appendEvent(state, next, "portfolio_reconciliation", portfolioAccounting.status === "reconciled"
+      ? "Portfolio accounting reconciled across configured venues."
+      : "Portfolio accounting mismatch froze risk increases.", {
+        status: portfolioAccounting.status,
+        stale_venues: portfolioAccounting.aggregate.stale_venues,
+        mismatches: portfolioAccounting.reconciliation.mismatches,
+      }, now);
+    return { ok: true, session: publicSession(next), portfolio_accounting: portfolioAccounting };
+  } catch (error) {
+    return {
+      ok: false,
+      error: typeof error?.code === "string" ? error.code : "portfolio_accounting_invalid",
+    };
+  }
 }
 
 export function startAutopilotLoop({ sessionId, state, recipient }) {
@@ -382,7 +464,36 @@ async function runAutopilotTickUnlocked({
     });
     return { ok: false, error: "autopilot_not_running" };
   }
-  if (session.last_execution_at) {
+  const metered = await meterAutopilotCompute({
+    session,
+    status: "active",
+    now,
+    env,
+    fetchImpl,
+  });
+  if (!metered.ok) {
+    session.status = "paused";
+    session.execution_enabled = false;
+    session.next_step = "Autopilot paused because private-agent compute allowance is unavailable.";
+    session.updated_at = now.toISOString();
+    await state.putAutopilotSession(session);
+    await appendEvent(state, session, "guardrail", "Compute metering rejected this agent tick.", {
+      error: metered.error,
+    }, now);
+    await putTick(state, session, {
+      tick_id: tickId,
+      status: "rejected",
+      risk_result: { ok: false, reason: metered.error || "compute_metering_rejected" },
+      now,
+    });
+    return { ok: false, error: metered.error || "compute_metering_rejected" };
+  }
+  const carryExitDue = isCarrySession(session) && (await state.listAutopilotPositions(sessionId)).some((position) =>
+    position.strategy_id === "delta_neutral_carry_v1" &&
+    Math.abs(Number(position.signed_notional_micro_usdc || 0)) > 0 &&
+    (!Number.isFinite(Date.parse(position.exit_due_at || "")) || Date.parse(position.exit_due_at) <= now.getTime())
+  );
+  if (session.last_execution_at && !carryExitDue) {
     const elapsed = now.getTime() - new Date(session.last_execution_at).getTime();
     if (elapsed < session.session_policy.cooldown_ms) {
       session.last_tick_at = now.toISOString();
@@ -453,8 +564,25 @@ async function runAutopilotTickUnlocked({
 
   let proposal;
   if (session.session_policy.ai_direct_enabled) {
+    const actionability = buildMomentumProposal(session, market, { env, now });
+    if (!actionability.ok) {
+      return recordNonActionableTick({
+        state,
+        session,
+        tickId,
+        market,
+        positions,
+        reason: actionability.error,
+        message: actionability.message,
+        data: actionability.data,
+        now,
+        env,
+      });
+    }
+    session.non_actionable_tick_count = 0;
+    await state.putAutopilotSession(session);
     if (!aiDirectRuntimeEnabled(env)) {
-      await appendEvent(state, session, "risk_reject", "AI-direct execution is disabled in worker configuration.", {
+      await appendEvent(state, session, "risk_reject", "Model proposals are disabled in worker configuration.", {
         required_env: "PRIVATE_AGENT_AI_DIRECT_ENABLED=true",
       }, now);
       await putTick(state, session, {
@@ -492,10 +620,10 @@ async function runAutopilotTickUnlocked({
     });
     await state.appendAutopilotDecision(sessionId, decision.record);
     await appendEvent(state, session, "ai_decision", decision.ok
-      ? "AI direct order decision accepted by schema and confidence checks."
-      : "AI direct order decision rejected before policy execution.", publicDecisionRecord(decision.record), now);
+      ? "Typed model proposal accepted by schema and confidence checks."
+      : "Typed model proposal rejected before deterministic routing.", publicDecisionRecord(decision.record), now);
     if (!decision.ok) {
-      await appendEvent(state, session, "risk_reject", "AI direct order was rejected before execution.", {
+      await appendEvent(state, session, "risk_reject", "Model proposal was rejected before deterministic routing.", {
         error: decision.error,
         decision_id: decision.record.decision_id,
       }, now);
@@ -510,7 +638,12 @@ async function runAutopilotTickUnlocked({
       });
       return { ok: false, error: decision.error };
     }
-    const built = buildAiDirectProposal(session, market, decision.decision, { env, now, positions });
+    const built = buildAiDirectProposal(session, market, decision.decision, {
+      env,
+      now,
+      positions,
+      signalBps: Math.abs(Number(actionability.signal_bps || 0)),
+    });
     if (!built.ok) {
       await appendEvent(state, session, "risk_reject", built.message, {
         ...built.data,
@@ -528,8 +661,8 @@ async function runAutopilotTickUnlocked({
       return { ok: false, error: built.error };
     }
     proposal = { ...built, decision_id: decision.record.decision_id };
-    await appendEvent(state, session, "proposal", "AI direct order decision validated into a bounded proposal.", publicProposal(proposal), now);
-    await appendEvent(state, session, "ai_score", "AI direct decision met the session confidence threshold.", {
+    await appendEvent(state, session, "proposal", "Typed model output was routed into a bounded deterministic proposal.", publicProposal(proposal), now);
+    await appendEvent(state, session, "ai_score", "Model proposal met the session confidence threshold.", {
       score_bps: decision.decision.confidence_bps,
       threshold_bps: session.session_policy.ai_min_confidence_bps,
       model: decision.record.model_id,
@@ -538,17 +671,21 @@ async function runAutopilotTickUnlocked({
   } else {
     proposal = buildMomentumProposal(session, market, { env, now });
     if (!proposal.ok) {
-      await appendEvent(state, session, "guardrail", proposal.message, proposal.data, now);
-      await putTick(state, session, {
-        tick_id: tickId,
-        status: "rejected",
+      return recordNonActionableTick({
+        state,
+        session,
+        tickId,
         market,
         positions,
-        risk_result: { ok: false, reason: proposal.error },
+        reason: proposal.error,
+        message: proposal.message,
+        data: proposal.data,
         now,
+        env,
       });
-      return { ok: false, error: proposal.error };
     }
+    session.non_actionable_tick_count = 0;
+    await state.putAutopilotSession(session);
     await appendEvent(state, session, "proposal", "Bounded intent executor proposed a capped order.", publicProposal(proposal), now);
 
     const score = scoreProposal(proposal, { env });
@@ -573,6 +710,37 @@ async function runAutopilotTickUnlocked({
       });
       return { ok: false, error: "ai_score_below_threshold" };
     }
+  }
+  const recentDecisions = state.listAutopilotDecisions
+    ? (await state.listAutopilotDecisions(sessionId)).filter((decision) => {
+        const createdAt = Date.parse(String(decision.created_at || ""));
+        return Number.isFinite(createdAt) && createdAt >= now.getTime() - 60 * 60_000;
+      }).length
+    : 0;
+  const portfolioRisk = evaluateAutopilotPortfolioProposal({
+    session,
+    positions,
+    proposal,
+    market,
+    model_decisions_last_hour: recentDecisions,
+    now,
+    env,
+  });
+  if (!portfolioRisk.allowed) {
+    await appendEvent(state, session, "risk_reject", "Portfolio-wide mandate rejected the proposed order.", {
+      reasons: portfolioRisk.reasons,
+      action_class: portfolioRisk.action_class,
+    }, now);
+    await putTick(state, session, {
+      tick_id: tickId,
+      status: "rejected",
+      market,
+      positions,
+      proposal,
+      risk_result: portfolioRisk,
+      now,
+    });
+    return { ok: false, error: portfolioRisk.reasons[0] || "portfolio_risk_rejected" };
   }
   if (env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT !== "true" && env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
     await appendEvent(state, session, "guardrail", "Live submit gate is disabled.", {
@@ -768,11 +936,27 @@ async function runAutopilotTickUnlocked({
     revenue_evidence_event_id: revenueEvidence?.revenue_event_id || null,
     revenue_evidence_hash: revenueEvidence?.event_hash || null,
   }, now);
+  const priorPosition = positions.find((position) =>
+    position.venue_id === proposal.venue_id && normalizeMarket(position.market) === normalizeMarket(proposal.market)
+  );
+  const priorSignedMicro = Number.isSafeInteger(priorPosition?.signed_notional_micro_usdc)
+    ? priorPosition.signed_notional_micro_usdc
+    : Math.round(Number(priorPosition?.estimated_exposure_notional_usd || 0) * 1_000_000) *
+      (priorPosition?.side === "sell" ? -1 : 1);
+  const signedNotionalMicro = priorSignedMicro + Math.round(proposal.notional_usd * 1_000_000) *
+    (proposal.side === "sell" ? -1 : 1);
   const position = await state.putAutopilotPosition(sessionId, {
     venue_id: proposal.venue_id,
+    asset: baseMarket(proposal.market),
     market: proposal.market,
-    side: proposal.side,
-    estimated_exposure_notional_usd: proposal.notional_usd,
+    product_type: proposal.product_type || (proposal.venue_id === "hyperliquid" || proposal.venue_id === "drift" ? "perp" : "spot"),
+    side: signedNotionalMicro < 0 ? "sell" : "buy",
+    signed_notional_micro_usdc: signedNotionalMicro,
+    estimated_exposure_notional_usd: Math.abs(signedNotionalMicro) / 1_000_000,
+    leverage_x100: proposal.product_type === "perp" ? session.portfolio_mandate.configured_leverage_x100 : 100,
+    liquidation_distance_bps: proposal.product_type === "perp"
+      ? Number(market.projected_liquidation_distance_bps || 100_000)
+      : 100_000,
     last_order_notional_usd: proposal.notional_usd,
     last_work_order_commitment: workOrderCommitment,
     source: "autopilot_execution_receipt",
@@ -806,7 +990,7 @@ async function runAutopilotTickUnlocked({
     market,
     positions: [position],
     proposal,
-    risk_result: { ok: true, reason: "policy_passed" },
+    risk_result: portfolioRisk,
     executor_ids: [submittedExecutor.executor_id],
     receipt_commitments: [receipt.result_commitment, receipt.final_proof].filter(Boolean),
     now,
@@ -1065,6 +1249,72 @@ function leaseActive(session, now) {
   return Number.isFinite(until) && until > now.getTime();
 }
 
+function normalizeBillingMetering(value) {
+  const raw = value && typeof value === "object" ? value : null;
+  if (!raw) return null;
+  const reservationId = stringValue(raw.reservation_id);
+  const reservedSeconds = Number(raw.reserved_seconds);
+  const leaseStartedAt = stringValue(raw.lease_started_at);
+  const leaseExpiresAt = stringValue(raw.lease_expires_at);
+  if (!reservationId || !Number.isFinite(reservedSeconds) || reservedSeconds < 60 || !leaseStartedAt || !leaseExpiresAt) {
+    return null;
+  }
+  return {
+    version: 1,
+    reservation_id: reservationId,
+    metering_mode: "sparse_metered_v1",
+    reserved_seconds: Math.floor(reservedSeconds),
+    lease_started_at: leaseStartedAt,
+    lease_expires_at: leaseExpiresAt,
+  };
+}
+
+async function meterAutopilotCompute({
+  session,
+  status = "active",
+  now = new Date(),
+  env = process.env,
+  fetchImpl = fetch,
+}) {
+  const billing = normalizeBillingMetering(session?.billing_metering);
+  if (!billing) return { ok: true, skipped: "billing_metering_not_configured" };
+  const token = env.GHOLA_PRIVATE_AGENT_METER_TOKEN || env.PRIVATE_AGENT_METER_TOKEN;
+  const base = env.GHOLA_CLOUD_API_BASE || env.THUMPER_API_BASE || env.NEXT_PUBLIC_THUMPER_API_URL;
+  if (!token || !base) return { ok: true, skipped: "meter_endpoint_not_configured" };
+  const startedAt = new Date(billing.lease_started_at).getTime();
+  const secondsUsed = Number.isFinite(startedAt)
+    ? Math.max(0, Math.ceil((now.getTime() - startedAt) / 1000))
+    : 0;
+  const bucket = status === "active" ? Math.floor(secondsUsed / 60) : secondsUsed;
+  const idempotencyKey = `meter_${digest({
+    reservation: billing.reservation_id,
+    worker_session: session.autopilot_session_id,
+    status,
+    bucket,
+  }).slice(0, 32)}`;
+  const response = await fetchImpl(new URL("/api/billing/private-agent/compute/meter", base), {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+      "x-ghola-private-agent-meter-token": token,
+    },
+    body: JSON.stringify({
+      session_id: billing.reservation_id,
+      worker_session_id: session.autopilot_session_id,
+      idempotency_key: idempotencyKey,
+      seconds_used: secondsUsed,
+      status,
+      lease_seconds: billing.reserved_seconds,
+    }),
+  }).catch((error) => ({ ok: false, status: 0, error }));
+  if (!response || !response.ok) {
+    return { ok: false, error: response?.status ? `compute_meter_${response.status}` : "compute_meter_unavailable" };
+  }
+  return { ok: true };
+}
+
 function normalizeAutopilotPolicy(raw, now) {
   const venues = unique(array(raw.venue_allowlist)
     .map((venue) => stringValue(venue).toLowerCase())
@@ -1072,15 +1322,27 @@ function normalizeAutopilotPolicy(raw, now) {
   const markets = unique(array(raw.market_allowlist)
     .map(normalizeMarket)
     .filter((market) => SUPPORTED_MARKETS.has(market)));
-  const ttlMs = clampInt(raw.ttl_ms, 5 * 60_000, 4 * 60 * 60_000, 2 * 60 * 60_000);
   const strategyId = normalizeStrategyId(raw.strategy_id);
-  const aiDirectEnabled = strategyId !== "hedged_spread_arbitrage_v1" &&
+  const carryStrategy = strategyId === "delta_neutral_carry_v1";
+  const ttlMs = clampInt(
+    raw.ttl_ms,
+    5 * 60_000,
+    carryStrategy ? 8 * 24 * 60 * 60_000 : 4 * 60 * 60_000,
+    carryStrategy ? 26 * 60 * 60_000 : 2 * 60 * 60_000,
+  );
+  const aiDirectEnabled = strategyId !== "delta_neutral_carry_v1" &&
+    strategyId !== "hedged_spread_arbitrage_v1" &&
     strategyId !== "tri_venue_market_maker_v1" &&
     (raw.ai_direct_enabled === true || stringValue(raw.decision_model) === "ai_direct_order_v1");
+  const agentMandate = normalizeSessionMandate(raw.agent_mandate);
+  const executionNetwork = normalizeExecutionNetwork(raw.execution_network || raw.network);
+  const configuredLeverageX100 = clampInt(raw.configured_leverage_x100, 100, 500, 100);
   const policy = {
     version: 2,
     strategy_id: strategyId,
     decision_model: aiDirectEnabled ? "ai_direct_order_v1" : "rules_plus_ai_score",
+    decision_contract: aiDirectEnabled ? "structured_proposal_v2" : "deterministic_proposal_v1",
+    model_role: aiDirectEnabled ? "proposal_only" : "score_only",
     ai_direct_enabled: aiDirectEnabled,
     venue_allowlist: venues.length ? venues : DEFAULT_VENUES,
     market_allowlist: markets.length ? markets : DEFAULT_MARKETS,
@@ -1098,11 +1360,30 @@ function normalizeAutopilotPolicy(raw, now) {
     ai_min_confidence_bps: clampInt(raw.ai_min_confidence_bps ?? raw.min_ai_score_bps, 5_000, 9_900, 6_500),
     min_signal_bps: clampInt(raw.min_signal_bps, 5, 2_000, 25),
     max_spread_bps: clampInt(raw.max_spread_bps, 1, 1_000, 150),
+    execution_network: executionNetwork,
+    configured_leverage_x100: configuredLeverageX100,
+    max_leverage_x100: Math.max(configuredLeverageX100, clampInt(raw.max_leverage_x100, 100, 500, configuredLeverageX100)),
+    min_liquidation_distance_bps: clampInt(raw.min_liquidation_distance_bps, 500, 10_000, 2_500),
+    max_asset_concentration_bps: clampInt(raw.max_asset_concentration_bps, 1_000, 10_000, 10_000),
+    daily_loss_limit_bucket: bucket(raw.daily_loss_limit_bucket, ["5", "10", "25", "50", "100"], "50"),
+    max_drawdown_bucket: bucket(raw.max_drawdown_bucket, ["5", "10", "25", "50", "100", "250"], "100"),
+    max_drawdown_bps: clampInt(raw.max_drawdown_bps, 100, 5_000, 1_500),
+    max_funding_bps_8h: clampInt(raw.max_funding_bps_8h, 0, 1_000, 100),
+    max_basis_bps: clampInt(raw.max_basis_bps, 0, 5_000, 500),
+    max_fee_bps: clampInt(raw.max_fee_bps, 0, 1_000, 100),
+    max_gas_micro_usdc: clampInt(raw.max_gas_micro_usdc, 0, 100_000_000, 1_000_000),
+    max_open_orders: clampInt(raw.max_open_orders, 0, 100, 10),
+    max_model_decisions_per_hour: clampInt(raw.max_model_decisions_per_hour, 0, 1_000, 20),
+    max_model_cost_micro_usdc_per_day: clampInt(raw.max_model_cost_micro_usdc_per_day, 0, 100_000_000, 5_000_000),
+    reduce_only: raw.reduce_only === true,
+    mainnet_activation_id: boundedIdentifier(raw.mainnet_activation_id),
+    owner_authorization_commitment: boundedIdentifier(raw.owner_authorization_commitment),
     allowed_order_types: ["swap", "spot_market_order", "spot_limit_order", "perp_limit_order", "limit_order", "cancel"],
     kill_switch: raw.kill_switch === true,
     reduce_only_on_reconcile_failure: raw.reduce_only_on_reconcile_failure !== false,
     locale_hint: localeHint(raw.locale_hint),
     timezone: stringValue(raw.timezone) || null,
+    ...(agentMandate ? { agent_mandate: agentMandate } : {}),
     expires_at: new Date(now.getTime() + ttlMs).toISOString(),
   };
   return {
@@ -1111,14 +1392,53 @@ function normalizeAutopilotPolicy(raw, now) {
   };
 }
 
+// The user-authored trade plan ("mandate") attached to a session. Side, when
+// set to buy/sell, is enforced deterministically on every proposal; the rest
+// steers the model proposal via prompt context. Absent means model-selected direction.
+function normalizeSessionMandate(value) {
+  if (!value || typeof value !== "object") return null;
+  const side = stringValue(value.side).toLowerCase();
+  const mandate = {
+    version: 1,
+    side: side === "buy" || side === "sell" ? side : "auto",
+    strategy_profile: stringValue(value.strategy_profile) || "momentum_continuation",
+    entry_trigger: stringValue(value.entry_trigger) || "preview_now",
+    exit_rule: stringValue(value.exit_rule) || "manual_approval",
+    time_horizon: stringValue(value.time_horizon) || "scalp",
+  };
+  const note = stringValue(value.strategy_note);
+  if (note) mandate.strategy_note = note.slice(0, 240);
+  return mandate;
+}
+
+// The binding direction from the mandate, or null when the user left it on
+// "auto" (or no mandate at all) and the agent is free to choose.
+function mandateSide(session) {
+  const side = session?.session_policy?.agent_mandate?.side;
+  return side === "buy" || side === "sell" ? side : null;
+}
+
 function strategyForPolicy(policy) {
+  if (policy.strategy_id === "delta_neutral_carry_v1") {
+    return {
+      version: 1,
+      strategy_id: "delta_neutral_carry_v1",
+      decision_model: "rules_plus_ai_score",
+      model_role: "proposal_only",
+      executable_order_source: "deterministic_funding_carry_planner",
+      ai_can_execute_directly: false,
+      deterministic_router: true,
+      protected_multi_leg: true,
+    };
+  }
   if (policy.strategy_id === "hedged_spread_arbitrage_v1") {
     return {
       version: 1,
       strategy_id: "hedged_spread_arbitrage_v1",
       decision_model: "rules_plus_ai_score",
       executable_order_source: "deterministic_guarded_arb_planner",
-      ai_can_execute_directly: true,
+      ai_can_execute_directly: false,
+      deterministic_router: true,
     };
   }
   if (policy.strategy_id === "tri_venue_market_maker_v1") {
@@ -1127,7 +1447,8 @@ function strategyForPolicy(policy) {
       strategy_id: "tri_venue_market_maker_v1",
       decision_model: "rules_plus_ai_score",
       executable_order_source: "deterministic_guarded_market_maker",
-      ai_can_execute_directly: true,
+      ai_can_execute_directly: false,
+      deterministic_router: true,
     };
   }
   if (policy.ai_direct_enabled) {
@@ -1135,8 +1456,11 @@ function strategyForPolicy(policy) {
       version: 1,
       strategy_id: BOUNDED_INTENT_STRATEGY,
       decision_model: "ai_direct_order_v1",
-      executable_order_source: "ai_structured_decision_validated_by_policy",
-      ai_can_execute_directly: true,
+      decision_contract: "structured_proposal_v2",
+      model_role: "proposal_only",
+      executable_order_source: "deterministic_cost_router_after_typed_model_proposal",
+      ai_can_execute_directly: false,
+      deterministic_router: true,
     };
   }
   return {
@@ -1150,7 +1474,11 @@ function strategyForPolicy(policy) {
 
 function normalizeStrategyId(value) {
   const raw = stringValue(value);
-  if (raw === "hedged_spread_arbitrage_v1" || raw === "tri_venue_market_maker_v1") return raw;
+  if (
+    raw === "delta_neutral_carry_v1" ||
+    raw === "hedged_spread_arbitrage_v1" ||
+    raw === "tri_venue_market_maker_v1"
+  ) return raw;
   return BOUNDED_INTENT_STRATEGY;
 }
 
@@ -1161,10 +1489,11 @@ function normalizeVenueAccess(raw, policy) {
   for (const venue of policy.venue_allowlist) {
     const value = raw?.[venue] || raw?.[venue.replace("_advanced", "")] || null;
     if (value && typeof value === "object") {
+      const requestedStatus = value.status === "ready" || value.encrypted_execution_vault || value.execution_mode === "ghola_pooled"
+        ? "ready"
+        : value.status || "needs_funds";
       out[venue] = {
-        status: value.status === "ready" || value.encrypted_execution_vault || value.execution_mode === "ghola_pooled"
-          ? "ready"
-          : value.status || "needs_funds",
+        status: venue === "drift" ? "quarantined" : requestedStatus,
         execution_mode: value.execution_mode || defaultExecutionMode(venue),
         vault_commitment: value.vault_commitment || null,
         encrypted_vault_commitment: value.encrypted_vault_commitment || null,
@@ -1172,17 +1501,50 @@ function normalizeVenueAccess(raw, policy) {
         allocation_commitment: value.allocation_commitment || value.managed_allocation_commitment || null,
         managed_allocation_commitment: value.managed_allocation_commitment || null,
         omnibus_allocation: value.omnibus_allocation || null,
-        reason: value.reason || null,
+        adapter_id: stringValue(value.adapter_id).slice(0, 80) || null,
+        custody_type: stringValue(value.custody_type).slice(0, 80) || null,
+        readiness_checked_at_ms: Number.isSafeInteger(value.readiness_checked_at_ms) ? value.readiness_checked_at_ms : null,
+        latency_ms: Number.isInteger(value.latency_ms) && value.latency_ms >= 0 ? value.latency_ms : null,
+        capabilities: normalizeCapabilityEvidence(value.capabilities),
+        no_submit_proof: normalizeNoSubmitProof(value.no_submit_proof),
+        reason: venue === "drift" ? "drift_runtime_quarantined" : value.reason || null,
       };
     } else {
       out[venue] = {
-        status: dryRunReady ? "ready" : "needs_funds",
+        status: venue === "drift" ? "quarantined" : dryRunReady ? "ready" : "needs_funds",
         execution_mode: dryRunReady ? defaultExecutionMode(venue) : null,
-        reason: dryRunReady ? "dry_run_ready" : "isolated_vault_required",
+        reason: venue === "drift"
+          ? "drift_runtime_quarantined"
+          : dryRunReady ? "dry_run_ready" : "isolated_vault_required",
       };
     }
   }
   return out;
+}
+
+function normalizeCapabilityEvidence(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key, item]) => /^[a-z0-9_]{2,60}$/.test(key) && typeof item === "boolean")
+      .slice(0, 32),
+  );
+}
+
+function normalizeNoSubmitProof(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return {
+    status: value.status === "verified_no_funds" ? value.status : "unverified",
+    transaction_broadcast: value.transaction_broadcast === false
+      ? false
+      : value.transaction_broadcast === true ? true : null,
+    turnkey_policy_checked: value.turnkey_policy_checked === true,
+    account_state_checked: value.account_state_checked === true,
+    order_request_checked: value.order_request_checked === true,
+    dependency_audit: value.dependency_audit === "pass" ? "pass" : "fail",
+    verified_at_ms: Number.isSafeInteger(value.verified_at_ms) ? value.verified_at_ms : null,
+    capabilities: normalizeCapabilityEvidence(value.capabilities),
+  };
 }
 
 function buildMomentumProposal(session, market, { env, now }) {
@@ -1202,82 +1564,114 @@ function buildMomentumProposal(session, market, { env, now }) {
       data: { change_bps: changeBps, threshold_bps: session.session_policy.min_signal_bps },
     };
   }
-  const venue = selectVenue(session, market);
-  if (!venue) {
-    return {
-      ok: false,
-      error: "venue_not_ready",
-      message: "No venue is funded and ready for this market.",
-      data: { venues: session.venue_access },
-    };
-  }
-  const side = changeBps >= 0 ? "buy" : "sell";
+  // A buy/sell mandate is binding; otherwise follow the momentum signal.
+  const side = mandateSide(session) ?? (changeBps >= 0 ? "buy" : "sell");
   const price = Number(market.price || market.mid || 0);
   if (!Number.isFinite(price) || price <= 0) {
     return { ok: false, error: "price_unavailable", message: "Price is unavailable; no trade attempted.", data: market };
   }
-  const notional = Math.min(
-    bucketToUsd(session.session_policy.max_notional_bucket),
-    remainingDailyNotional(session),
-  );
-  if (notional <= 0) {
+  const routed = routeModelProposal({
+    session,
+    market,
+    decision: {
+      version: 2,
+      action: "trade",
+      objective: "best_execution",
+      market: market.product_id,
+      side,
+      confidence_bps: 10_000,
+    },
+    signal_bps: Math.abs(changeBps),
+    env,
+    now,
+  });
+  if (!routed.ok) {
     return {
       ok: false,
-      error: "daily_cap_exhausted",
-      message: "Daily notional cap is exhausted; no trade attempted.",
-      data: { max_daily_notional_bucket: session.session_policy.max_daily_notional_bucket },
+      error: routed.error,
+      message: routed.message,
+      data: { routing: routed.routing || null },
     };
   }
+  const venue = routed.venue_id;
+  const notional = routed.notional_usd;
   const instruction = instructionForVenue({ venue, market, side, price, notional, policy: session.session_policy, env, now });
+  instruction.operation_class = routed.operation_class;
   return {
     ok: true,
     proposal_commitment: `autopilot_proposal_${digest({ session: session.autopilot_session_id, venue, market, side, notional, now: now.toISOString() })}`,
     venue_id: venue,
-    operation_class: instruction.operation_class,
+    operation_class: routed.operation_class,
     market: market.product_id,
+    objective: "best_execution",
+    product_type: routed.product_type,
     side,
     notional_usd: notional,
     signal_bps: changeBps,
+    routing: routeSummary(routed.routing),
     instruction,
   };
 }
 
-function buildAiDirectProposal(session, market, decision, { env = process.env, now, positions = [] }) {
+async function recordNonActionableTick({
+  state,
+  session,
+  tickId,
+  market,
+  positions,
+  reason,
+  message,
+  data,
+  now,
+  env,
+}) {
+  const nextCount = Number(session.non_actionable_tick_count || 0) + 1;
+  const maxNoopTicks = integerEnvFrom(env, "PRIVATE_AGENT_AUTOPILOT_AUTO_PAUSE_NOOP_TICKS", 10);
+  const hasOpenPosition = positions.some((position) => Number(position?.notional_usd || position?.notional || 0) > 0);
+  session.non_actionable_tick_count = nextCount;
+  if (!hasOpenPosition && maxNoopTicks > 0 && nextCount >= maxNoopTicks) {
+    session.status = "paused";
+    session.execution_enabled = false;
+    session.next_step = "Autopilot auto-paused after repeated non-actionable market ticks.";
+    await meterAutopilotCompute({ session, status: "paused", now, env }).catch(() => null);
+  }
+  session.last_tick_at = now.toISOString();
+  session.updated_at = now.toISOString();
+  await state.putAutopilotSession(session);
+  await appendEvent(state, session, "guardrail", message, {
+    ...data,
+    non_actionable_tick_count: nextCount,
+    auto_paused: session.status === "paused",
+  }, now);
+  await putTick(state, session, {
+    tick_id: tickId,
+    status: "rejected",
+    market,
+    positions,
+    risk_result: { ok: false, reason },
+    now,
+  });
+  return { ok: false, error: reason };
+}
+
+function buildAiDirectProposal(session, market, decision, {
+  env = process.env,
+  now,
+  positions = [],
+  signalBps = 0,
+}) {
   if (decision.action !== "trade") {
     return {
       ok: false,
       error: `ai_decision_${decision.action}`,
-      message: "AI direct decision did not request a trade.",
+      message: "Model proposal did not request a trade.",
       data: { action: decision.action, reason_codes: decision.reason_codes },
     };
   }
-  const venue = stringValue(decision.venue_id).toLowerCase();
-  if (!readyVenues(session).includes(venue)) {
-    return {
-      ok: false,
-      error: "venue_not_ready",
-      message: "AI selected a venue that is not ready.",
-      data: { venue_id: venue },
-    };
-  }
-  const operationClass = stringValue(decision.operation_class);
-  if (!operationAllowedForVenue(venue, operationClass)) {
-    return {
-      ok: false,
-      error: "ai_operation_not_allowed",
-      message: "AI selected an operation that is not allowed for the venue.",
-      data: { venue_id: venue, operation_class: operationClass },
-    };
-  }
-  if (!session.session_policy.allowed_order_types.includes(operationClass)) {
-    return {
-      ok: false,
-      error: "ai_operation_outside_policy",
-      message: "AI selected an operation outside the session policy.",
-      data: { operation_class: operationClass },
-    };
-  }
-  const side = decision.side === "buy" || decision.side === "sell" ? decision.side : null;
+  // A buy/sell mandate overrides the model's chosen direction; on "auto" the
+  // model's proposal stands. Venue, operation, size, and price are never model-owned.
+  const aiSide = decision.side === "buy" || decision.side === "sell" ? decision.side : null;
+  const side = mandateSide(session) ?? aiSide;
   if (!side) {
     return {
       ok: false,
@@ -1296,38 +1690,48 @@ function buildAiDirectProposal(session, market, decision, { env = process.env, n
       data: { market: decisionMarket, market_allowlist: allowedMarkets },
     };
   }
-  if (venue === "jupiter" && decisionMarket !== "SOL-USD" && decisionMarket !== "SOL/USDC") {
+  const routed = routeModelProposal({
+    session,
+    market,
+    decision: { ...decision, side, market: decisionMarket },
+    signal_bps: signalBps,
+    env,
+    now,
+  });
+  if (!routed.ok) {
     return {
       ok: false,
-      error: "ai_jupiter_market_unsupported",
-      message: "Jupiter autonomous swaps are limited to SOL markets in this release.",
-      data: { market: decisionMarket },
+      error: routed.error,
+      message: routed.message,
+      data: { routing: routed.routing || null },
     };
   }
-  const price = Number(decision.limit_price || market.price || market.mid || 0);
-  if (!Number.isFinite(price) || price <= 0) {
+  const venue = routed.venue_id;
+  const operationClass = routed.operation_class;
+  if (!operationAllowedForVenue(venue, operationClass)) {
     return {
       ok: false,
-      error: "price_unavailable",
-      message: "AI trade decision could not be priced.",
-      data: { market: decisionMarket },
+      error: "router_operation_not_allowed",
+      message: "The deterministic router produced an unsupported venue operation.",
+      data: { venue_id: venue, operation_class: operationClass },
     };
   }
-  const notional = Number(decision.quote_size_usd);
-  if (!Number.isFinite(notional) || notional <= 0) {
+  if (!session.session_policy.allowed_order_types.includes(operationClass)) {
     return {
       ok: false,
-      error: "ai_trade_quote_size_required",
-      message: "AI trade decision did not include a positive quote size.",
-      data: {},
+      error: "router_operation_outside_policy",
+      message: "The deterministic route is outside the signed order-type policy.",
+      data: { operation_class: operationClass },
     };
   }
+  const price = routed.reference_price;
+  const notional = routed.notional_usd;
   const maxOrderNotional = bucketToUsd(session.session_policy.max_notional_bucket);
   if (maxOrderNotional > 0 && notional > maxOrderNotional) {
     return {
       ok: false,
-      error: "ai_notional_exceeds_order_cap",
-      message: "AI trade decision exceeded the per-order notional cap.",
+      error: "router_notional_exceeds_order_cap",
+      message: "The deterministic route exceeded the per-order notional cap.",
       data: { quote_size_usd: notional, max_notional_bucket: session.session_policy.max_notional_bucket },
     };
   }
@@ -1342,14 +1746,12 @@ function buildAiDirectProposal(session, market, decision, { env = process.env, n
   const maxPositionNotional = bucketToUsd(session.session_policy.max_position_notional_bucket);
   if (maxPositionNotional > 0) {
     const currentExposure = positionExposureFor(positions, venue, decisionMarket);
-    const nextExposure = side === "sell"
-      ? Math.max(0, currentExposure - notional)
-      : currentExposure + notional;
+    const nextExposure = currentExposure + notional;
     if (nextExposure > maxPositionNotional) {
       return {
         ok: false,
-        error: "ai_position_cap_exceeded",
-        message: "AI trade decision exceeded the position notional cap.",
+        error: "router_position_cap_exceeded",
+        message: "The deterministic route exceeded the position notional cap.",
         data: {
           quote_size_usd: notional,
           current_exposure_notional_usd: currentExposure,
@@ -1358,21 +1760,6 @@ function buildAiDirectProposal(session, market, decision, { env = process.env, n
       };
     }
   }
-  if (
-    Number.isInteger(decision.max_slippage_bps) &&
-    decision.max_slippage_bps > session.session_policy.max_slippage_bps
-  ) {
-    return {
-      ok: false,
-      error: "ai_slippage_exceeds_policy",
-      message: "AI trade decision exceeded the session slippage policy.",
-      data: {
-        max_slippage_bps: decision.max_slippage_bps,
-        policy_max_slippage_bps: session.session_policy.max_slippage_bps,
-      },
-    };
-  }
-
   const productId = decisionMarket === "SOL/USDC" ? "SOL-USD" : decisionMarket;
   const proposalMarket = { ...market, product_id: productId, price, mid: price };
   const instruction = instructionForVenue({
@@ -1386,31 +1773,6 @@ function buildAiDirectProposal(session, market, decision, { env = process.env, n
     now,
   });
   instruction.operation_class = operationClass;
-  if (instruction.order) {
-    if (Number.isInteger(decision.max_slippage_bps)) {
-      instruction.order.max_slippage_bps = String(decision.max_slippage_bps);
-    }
-    if (operationClass === "spot_limit_order") {
-      if (!decision.limit_price) {
-        return {
-          ok: false,
-          error: "ai_limit_price_required",
-          message: "AI spot limit order requires a limit price.",
-          data: { venue_id: venue, operation_class: operationClass },
-        };
-      }
-      instruction.order.order_type = "limit";
-      instruction.order.limit_price = trim(decision.limit_price);
-      instruction.order.tif = timeInForceForVenue(decision.time_in_force, venue);
-    } else if (operationClass === "spot_market_order") {
-      instruction.order.order_type = "market";
-      instruction.order.tif = timeInForceForVenue(decision.time_in_force, venue);
-      delete instruction.order.limit_price;
-    } else if ((operationClass === "limit_order" || operationClass === "perp_limit_order") && decision.limit_price) {
-      instruction.order.limit_price = trim(decision.limit_price);
-      instruction.order.tif = timeInForceForVenue(decision.time_in_force, venue);
-    }
-  }
   return {
     ok: true,
     proposal_commitment: `autopilot_proposal_${digest({
@@ -1418,18 +1780,42 @@ function buildAiDirectProposal(session, market, decision, { env = process.env, n
       decision,
       venue,
       market: productId,
+      route_cost_bps: routed.routing.selected.costs.total_bps,
       now: now.toISOString(),
     })}`,
     decision_id: decision.decision_id || null,
-    decision_source: "ai_direct_order_v1",
+    decision_source: "ai_structured_proposal_v2",
+    objective: decision.objective,
     venue_id: venue,
     operation_class: operationClass,
     market: productId,
+    product_type: routed.product_type,
     side,
     notional_usd: notional,
-    signal_bps: 0,
+    signal_bps: signalBps,
     confidence_bps: decision.confidence_bps,
+    routing: routeSummary(routed.routing),
     instruction,
+  };
+}
+
+function routeSummary(routing) {
+  return {
+    version: 1,
+    selected_venue_id: routing.selected.venue_id,
+    modeled_cost_bps: routing.selected.costs.total_bps,
+    expected_gross_benefit_bps: routing.selected.expected_gross_benefit_bps,
+    expected_net_benefit_bps: routing.selected.expected_net_benefit_bps,
+    selected_costs: routing.selected.costs,
+    selected_quote: {
+      gas_micro_usdc: routing.selected.quote.gas_micro_usdc,
+    },
+    candidates: routing.candidates.map((candidate) => ({
+      venue_id: candidate.venue_id,
+      status: candidate.status,
+      reasons: candidate.reasons,
+      modeled_cost_bps: candidate.costs?.total_bps ?? null,
+    })),
   };
 }
 
@@ -1579,7 +1965,7 @@ function aiDirectRuntimeEnabled(env) {
 }
 
 async function reserveAiDecisionBudget({ state, session, env, now }) {
-  const max = Number.parseInt(String(env.PRIVATE_AGENT_AI_MAX_DECISIONS_PER_HOUR ?? "12"), 10);
+  const max = Number.parseInt(String(env.PRIVATE_AGENT_AI_MAX_DECISIONS_PER_HOUR ?? "4"), 10);
   if (!Number.isInteger(max) || max <= 0) return { ok: true, max: 0 };
   const hour = now.toISOString().slice(0, 13);
   const result = await state.incrementPolicyCount(
@@ -1760,6 +2146,11 @@ function primaryProduct(session) {
 
 function publicSession(session) {
   const out = JSON.parse(JSON.stringify(session));
+  for (const access of Object.values(out.venue_access || {})) {
+    if (!access || typeof access !== "object") continue;
+    delete access.encrypted_execution_vault;
+    delete access.omnibus_allocation;
+  }
   if (out.pending_execution) {
     out.pending_execution = publicPendingExecution(out.pending_execution);
   }
@@ -1872,9 +2263,23 @@ function jupiterPlatformFeeRequested(env = process.env) {
 function publicPosition(position) {
   return {
     venue_id: position.venue_id || null,
+    asset: position.asset || baseMarket(position.market),
     market: position.market || null,
+    product_type: position.product_type || null,
     side: position.side || null,
     estimated_exposure_notional_bucket: String(position.estimated_exposure_notional_usd ?? position.notional_usd ?? "0"),
+    signed_exposure_notional_bucket: String(
+      Number(position.signed_notional_micro_usdc || 0) / 1_000_000,
+    ),
+    signed_base_size: Number.isFinite(Number(position.signed_base_size))
+      ? String(position.signed_base_size)
+      : null,
+    strategy_id: position.strategy_id || null,
+    protected_pair_id: position.protected_pair_id || null,
+    exit_due_at: position.exit_due_at || null,
+    liquidation_distance_bps: Number.isInteger(position.liquidation_distance_bps)
+      ? position.liquidation_distance_bps
+      : null,
     last_order_notional_bucket: String(position.last_order_notional_usd ?? "0"),
     last_work_order_commitment: position.last_work_order_commitment || null,
     source: position.source || "native_autopilot_state",
@@ -1903,9 +2308,8 @@ function venueMarketSymbol(venue, productId) {
 }
 
 function defaultExecutionMode(venue) {
-  if (venue === "coinbase_advanced") return "partner_omnibus";
-  if (venue === "hyperliquid") return "ghola_pooled";
-  return "ghola_pooled";
+  if (venue === "jupiter") return "user_stealth";
+  return "byo_api_key";
 }
 
 function remainingDailyNotional(session) {
@@ -1927,6 +2331,16 @@ function localeHint(value) {
   if (raw === "zh" || raw === "zh-cn" || raw === "zh_hans") return "zh-CN";
   if (raw === "id" || raw === "in" || raw === "id-id") return "id";
   return "en";
+}
+
+function normalizeExecutionNetwork(value) {
+  const network = stringValue(value).toLowerCase();
+  return network === "mainnet" || network === "testnet" ? network : "paper";
+}
+
+function boundedIdentifier(value) {
+  const normalized = stringValue(value);
+  return /^[A-Za-z0-9:_-]{8,160}$/.test(normalized) ? normalized : null;
 }
 
 function spreadBps(body, price) {

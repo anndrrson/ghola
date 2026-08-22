@@ -10,6 +10,11 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
+import {
+  normalizeTurnkeySolanaSigningConfig,
+  resolveTurnkeySolanaAgentApiKey,
+  signTurnkeySolanaTransaction,
+} from "./turnkey-solana.js";
 
 const DEFAULT_JUPITER_SWAP_BASE_URL = "https://api.jup.ag/swap/v2";
 const DEFAULT_JUPITER_TX_BASE_URL = "https://api.jup.ag/tx/v1";
@@ -38,13 +43,25 @@ export function jupiterCredentialFromVault(vault) {
   if (vault.kind !== "ghola_solana_swap_execution_vault") {
     throw new JupiterSwapExecutionError("jupiter execution vault kind is invalid", 400, "venue_access_required");
   }
-  const keypair = keypairFromSecret(
-    vault.wallet_private_key ||
-      vault.authority_private_key ||
-      vault.secret_key ||
-      vault.private_key,
-  );
-  const authority = keypair.publicKey.toBase58();
+  let keypair = null;
+  let turnkeySigning = null;
+  let authority;
+  if (vault.signing_mode === "turnkey_delegated") {
+    try {
+      turnkeySigning = normalizeTurnkeySolanaSigningConfig(vault);
+      authority = turnkeySigning.authority;
+    } catch {
+      throw new JupiterSwapExecutionError("jupiter Turnkey signing configuration is invalid", 400, "venue_access_required");
+    }
+  } else {
+    keypair = keypairFromSecret(
+      vault.wallet_private_key ||
+        vault.authority_private_key ||
+        vault.secret_key ||
+        vault.private_key,
+    );
+    authority = keypair.publicKey.toBase58();
+  }
   if (vault.authority && String(vault.authority) !== authority) {
     throw new JupiterSwapExecutionError("jupiter vault authority mismatch", 400, "venue_access_required");
   }
@@ -53,6 +70,8 @@ export function jupiterCredentialFromVault(vault) {
     network: "mainnet",
     authority,
     keypair,
+    signing_mode: turnkeySigning ? "turnkey_delegated" : "sealed_keypair",
+    turnkey_signing: turnkeySigning,
     swapBaseUrl: stringValue(vault.swap_api_url) ||
       stringValue(vault.api_url) ||
       process.env.PRIVATE_AGENT_JUPITER_SWAP_API_URL ||
@@ -206,7 +225,16 @@ export async function verifyJupiterSwapNoSubmit({
       transactionBuilt: true,
       apiReachable: true,
       platformFee,
+      turnkeySigning: credential.signing_mode === "turnkey_delegated",
     });
+  }
+
+  if (credential.signing_mode === "turnkey_delegated") {
+    try {
+      resolveTurnkeySolanaAgentApiKey(credential.turnkey_signing);
+    } catch {
+      throw new JupiterSwapExecutionError("jupiter Turnkey delegated signer is unavailable", 503, "venue_access_required");
+    }
   }
 
   assertJupiterLiveEnabled(instruction);
@@ -223,6 +251,7 @@ export async function verifyJupiterSwapNoSubmit({
       apiReachable: true,
       requestId: built.requestId || null,
       platformFee,
+      turnkeySigning: credential.signing_mode === "turnkey_delegated",
     });
   } catch (error) {
     throw safeJupiterError(error);
@@ -238,6 +267,7 @@ function jupiterNoSubmitResult({
   apiReachable,
   requestId = null,
   platformFee = null,
+  turnkeySigning = false,
 }) {
   return {
     status: "verified_no_funds",
@@ -279,6 +309,8 @@ function jupiterNoSubmitResult({
       jupiter_token_allowlist_passed: true,
       jupiter_order_built: orderBuilt,
       jupiter_transaction_built: transactionBuilt,
+      turnkey_delegated_signer_configured: turnkeySigning,
+      exportable_private_key_required: !turnkeySigning,
       transaction_broadcast: false,
     },
     final_proof: jupiterFinalProof({
@@ -297,7 +329,7 @@ async function executeMetaAggregatorSwap({ credential, instruction, fetchImpl })
   if (!order.transaction || !order.requestId) {
     throw new JupiterSwapExecutionError("jupiter order did not include a signable transaction", 502);
   }
-  const signedTransaction = signBase64Transaction(order.transaction, credential.keypair);
+  const signedTransaction = await signBase64Transaction(order.transaction, credential);
   const result = await fetchJson(fetchImpl, `${credential.swapBaseUrl}/execute`, {
     method: "POST",
     headers: jupiterHeaders({ json: true }),
@@ -325,8 +357,9 @@ async function executeRouterSwap({ credential, instruction, fetchImpl }) {
     fetchImpl,
     feeAccountPrepared: true,
   });
-  const transaction = buildRouterTransaction(built, credential.keypair);
-  const signedTransaction = Buffer.from(transaction.serialize()).toString("base64");
+  const transaction = buildRouterTransaction(built, new PublicKey(credential.authority));
+  const signed = await signJupiterTransaction(transaction, credential);
+  const signedTransaction = Buffer.from(signed.serialize()).toString("base64");
   const result = await fetchJson(fetchImpl, `${credential.txBaseUrl}/submit`, {
     method: "POST",
     headers: jupiterHeaders({ json: true }),
@@ -585,7 +618,7 @@ export async function jupiterPlatformFeeAccountReadiness({
         };
       }
     }
-    const payer = payerCredential?.keypair?.publicKey;
+    const payer = payerCredential?.keypair?.publicKey || publicKeyOrNull(payerCredential?.authority);
     if (!payer) {
       return {
         ...base,
@@ -851,13 +884,13 @@ function associatedTokenAddress({ owner, mint, tokenProgramId = SPL_TOKEN_PROGRA
   )[0];
 }
 
-function signBase64Transaction(transaction, keypair) {
+async function signBase64Transaction(transaction, credential) {
   const parsed = VersionedTransaction.deserialize(Buffer.from(transaction, "base64"));
-  parsed.sign([keypair]);
-  return Buffer.from(parsed.serialize()).toString("base64");
+  const signed = await signJupiterTransaction(parsed, credential);
+  return Buffer.from(signed.serialize()).toString("base64");
 }
 
-function buildRouterTransaction(build, keypair) {
+function buildRouterTransaction(build, payerPublicKey) {
   const instructions = [
     ...(build.computeBudgetInstructions || []),
     ...(build.setupInstructions || []),
@@ -876,13 +909,30 @@ function buildRouterTransaction(build, keypair) {
   const lookupTables = Object.entries(build.addressesByLookupTableAddress || {})
     .map(([key, addresses]) => lookupTableAccount(key, addresses));
   const message = new TransactionMessage({
-    payerKey: keypair.publicKey,
+    payerKey: payerPublicKey,
     recentBlockhash,
     instructions,
   }).compileToV0Message(lookupTables);
-  const transaction = new VersionedTransaction(message);
-  transaction.sign([keypair]);
-  return transaction;
+  return new VersionedTransaction(message);
+}
+
+async function signJupiterTransaction(transaction, credential) {
+  if (credential?.keypair) {
+    transaction.sign([credential.keypair]);
+    return transaction;
+  }
+  if (credential?.signing_mode === "turnkey_delegated" && credential.turnkey_signing) {
+    return signTurnkeySolanaTransaction({ transaction, config: credential.turnkey_signing });
+  }
+  throw new JupiterSwapExecutionError("jupiter signing authority is unavailable", 503, "venue_access_required");
+}
+
+function publicKeyOrNull(value) {
+  try {
+    return value ? new PublicKey(String(value)) : null;
+  } catch {
+    return null;
+  }
 }
 
 function jupiterInstruction(instruction) {
