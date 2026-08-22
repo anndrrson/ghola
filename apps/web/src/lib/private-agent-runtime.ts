@@ -130,6 +130,17 @@ export function collectPrivateAgentRecipientIds(
   return recipients;
 }
 
+export function selectedReadyPrivateAgentProvider(
+  runtime: PrivateAgentRuntimeStatus,
+): ConfidentialComputeProviderStatus | null {
+  const selected = runtime.selected_provider
+    ? runtime.providers.find((provider) =>
+        provider.id === runtime.selected_provider && providerReadyForPrivateAgents(provider)
+      ) ?? null
+    : null;
+  return selected ?? chooseConfidentialComputeProvider(runtime.providers, runtime.preferred_provider);
+}
+
 export function chooseConfidentialComputeProvider(
   providers: ConfidentialComputeProviderStatus[],
   preferredProvider?: ConfidentialComputeProviderId | null,

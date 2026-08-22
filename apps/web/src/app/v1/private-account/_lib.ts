@@ -320,6 +320,7 @@ import { getPrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime-server
 import {
   collectPrivateAgentRecipientIds,
   hasPrivateAgentEntitlement,
+  selectedReadyPrivateAgentProvider,
 } from "@/lib/private-agent-runtime";
 import {
   phalaIdleLeaseMs,
@@ -9032,28 +9033,28 @@ async function connectorRuntimeEnv(
   ) return env;
 
   const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
-  if (!runtime?.remote_execution_ready || !runtime.selected_provider) return env;
-  const provider = runtime.providers.find((item) => item.id === runtime.selected_provider);
+  if (!runtime) return env;
+  const provider = selectedReadyPrivateAgentProvider(runtime);
   const executionUrl = provider?.execution_url?.trim();
   if (!executionUrl) return env;
 
   if (platformClass === "hyperliquid_style_market") {
-    env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL ||= executionUrl;
+    env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL = executionUrl;
     env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS ||= "ready";
   }
   if (platformClass === "solana_perps_market") {
-    env.GHOLA_CONNECTOR_SOLANA_PERPS_MARKET_URL ||= executionUrl;
+    env.GHOLA_CONNECTOR_SOLANA_PERPS_MARKET_URL = executionUrl;
     env.GHOLA_CONNECTOR_SOLANA_PERPS_MARKET_READINESS ||= "ready";
   }
   if (platformClass === "solana_swap_aggregator") {
-    env.GHOLA_CONNECTOR_SOLANA_SWAP_AGGREGATOR_URL ||= executionUrl;
+    env.GHOLA_CONNECTOR_SOLANA_SWAP_AGGREGATOR_URL = executionUrl;
     env.GHOLA_CONNECTOR_SOLANA_SWAP_AGGREGATOR_READINESS ||= "ready";
   }
   if (platformClass === "coinbase_style_provider") {
-    env.GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_URL ||= executionUrl;
+    env.GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_URL = executionUrl;
     env.GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_READINESS ||= "ready";
   }
-  env.GHOLA_PRIVATE_RUNTIME_URL ||= executionUrl;
+  env.GHOLA_PRIVATE_RUNTIME_URL = executionUrl;
 
   const measurement =
     provider?.sealed_recipient?.measurement_hex?.trim() ||

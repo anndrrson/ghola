@@ -6,6 +6,7 @@ import {
   evaluatePrivateAgentAccess,
   hasPrivateAgentEntitlement,
   providerReadyForPrivateAgents,
+  selectedReadyPrivateAgentProvider,
   type ConfidentialComputeProviderStatus,
 } from "./private-agent-runtime";
 
@@ -81,6 +82,7 @@ describe("private agent runtime", () => {
 
     expect(runtime.remote_execution_ready).toBe(false);
     expect(runtime.blocking_reasons).toContain("no_ready_shielded_settlement_rail");
+    expect(selectedReadyPrivateAgentProvider(runtime)?.id).toBe("phala");
   });
 
   it("blocks free users even when the runtime is ready", () => {
