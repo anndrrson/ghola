@@ -92,7 +92,8 @@ describe("phalaProviderFromWorkerEvidence", () => {
   const fundingSigner = "pinned-worker-signer";
   const imageDigest = `sha256:${"33".repeat(32)}`;
   const reportData = "0xddeec5dd13435c621080c1ed6f0c339e64e9e557bdf1fe16aa8caa2ec10580cb";
-  const attestationHash = "attestation-hash";
+  const attestationHash = "recipient-attestation-hash";
+  const healthAttestationHash = "health-attestation-hash";
   const health = {
     status: "green",
     ok: true,
@@ -109,8 +110,8 @@ describe("phalaProviderFromWorkerEvidence", () => {
     runtime_policy_commitment: "runtime-policy",
     image_digest: imageDigest,
     report_data_hex: reportData,
-    attestation_hash: attestationHash,
-    quote_hash: attestationHash,
+    attestation_hash: healthAttestationHash,
+    quote_hash: healthAttestationHash,
     missing: [],
   };
   const recipient = {
@@ -126,7 +127,7 @@ describe("phalaProviderFromWorkerEvidence", () => {
     expires_at_unix: null,
   };
 
-  it("accepts fresh worker evidence only when signer, image, report data, and quote are pinned", () => {
+  it("accepts independently refreshed recipient and health attestations", () => {
     expect(phalaProviderFromWorkerEvidence({
       executionUrl,
       health,
@@ -161,6 +162,14 @@ describe("phalaProviderFromWorkerEvidence", () => {
       executionUrl,
       health,
       recipient: { ...recipient, report_data_hex: "0xdeadbeef" },
+      fundingSignerPins: [fundingSigner],
+      imageDigestPin: imageDigest,
+      nowMs: Date.parse(checkedAt),
+    })).toBeNull();
+    expect(phalaProviderFromWorkerEvidence({
+      executionUrl,
+      health: { ...health, quote_hash: "different-health-quote" },
+      recipient,
       fundingSignerPins: [fundingSigner],
       imageDigestPin: imageDigest,
       nowMs: Date.parse(checkedAt),

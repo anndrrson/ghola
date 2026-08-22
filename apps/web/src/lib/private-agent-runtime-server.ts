@@ -256,9 +256,11 @@ export function phalaProviderFromWorkerEvidence(input: {
     recipientReportData !== expectedReportData ||
     healthReportData !== expectedReportData ||
     !recipientAttestation ||
-    recipientAttestation !== healthAttestation ||
+    !healthAttestation ||
     !recipientQuote ||
-    recipientQuote !== healthQuote ||
+    !healthQuote ||
+    recipientAttestation !== recipientQuote ||
+    healthAttestation !== healthQuote ||
     (expiresAtMs !== null && expiresAtMs <= (input.nowMs ?? Date.now()))
   ) {
     return null;
