@@ -34,6 +34,11 @@ export type TradingActionTone = "primary" | "success" | "warn" | "danger" | "neu
 export type TradingStatusTone = "good" | "warn" | "bad" | "neutral";
 export type CustomerExecutionMode = "needs_setup" | "preview" | "live_capped" | "waiting" | "paused" | "stopped";
 
+export function shouldReconnectHyperliquidApiWallet(error: unknown) {
+  const code = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return code === "hyperliquid_agent_binding_required" || code === "hyperliquid_agent_not_authorized";
+}
+
 export interface TradingNextAction {
   kind: TradingActionKind;
   label: string;

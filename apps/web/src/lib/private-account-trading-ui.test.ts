@@ -16,6 +16,7 @@ import {
   deriveVenueReadinessSteps,
   phoenixOrderbookClickSide,
   requiresHyperliquidPoolTerms,
+  shouldReconnectHyperliquidApiWallet,
   type TradingUiStateInput,
 } from "./private-account-trading-ui";
 
@@ -47,6 +48,19 @@ const validOrder: PrivateExecutionOrderDraft = {
 };
 
 describe("private account trading UI derivation", () => {
+  it("opens wallet replacement only for exact Hyperliquid agent-binding failures", () => {
+    expect(shouldReconnectHyperliquidApiWallet(new Error("hyperliquid_agent_binding_required"))).toBe(true);
+    expect(shouldReconnectHyperliquidApiWallet("hyperliquid_agent_not_authorized")).toBe(true);
+    expect(shouldReconnectHyperliquidApiWallet(new Error("hyperliquid_binding_check_unavailable"))).toBe(false);
+    expect(shouldReconnectHyperliquidApiWallet(new Error("connector_submit_ambiguous"))).toBe(false);
+
+    const cockpitSource = readFileSync(
+      resolve(process.cwd(), "src/components/private-account/PrivateAccountCockpit.tsx"),
+      "utf8",
+    );
+    expect(cockpitSource.match(/if \(reconnectRequired\) setHyperliquidConnectOpen\(true\);/g)).toHaveLength(2);
+  });
+
   it("requires pooled-account terms only for the Ghola Hyperliquid pool", () => {
     expect(requiresHyperliquidPoolTerms({
       liveHyperliquidFlow: true,

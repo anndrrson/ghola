@@ -134,6 +134,7 @@ import {
   deriveTradingNextAction,
   deriveVenueReadinessSteps,
   requiresHyperliquidPoolTerms,
+  shouldReconnectHyperliquidApiWallet,
   type TradingActionKind,
   type TradingNextAction,
   type VenueReadinessStep,
@@ -1812,6 +1813,7 @@ export function PrivateAccountCockpit({
         detail: liveHyperliquidFlow ? "Next step: check the connection." : "Next step: preview the trade.",
       });
     } catch (err) {
+      const reconnectRequired = shouldReconnectHyperliquidApiWallet(err);
       const message = friendlyPrivateAccountError(err, "Could not arm Hyperliquid.");
       setError(message);
       setHyperliquidSetupNotice({
@@ -1819,6 +1821,7 @@ export function PrivateAccountCockpit({
         title: "Could not enable Hyperliquid",
         detail: message,
       });
+      if (reconnectRequired) setHyperliquidConnectOpen(true);
     } finally {
       setWorking(false);
     }
@@ -2383,6 +2386,7 @@ export function PrivateAccountCockpit({
       }
       void refreshHyperliquidAccountSnapshot();
     } catch (err) {
+      const reconnectRequired = shouldReconnectHyperliquidApiWallet(err);
       const message = friendlyPrivateAccountError(err, "Could not verify Hyperliquid connection.");
       if (message.toLowerCase().includes("authenticate with turnkey")) {
         setHyperliquidOwnerAuthConfirmed(false);
@@ -2393,6 +2397,7 @@ export function PrivateAccountCockpit({
         title: "Hyperliquid check failed",
         detail: message,
       });
+      if (reconnectRequired) setHyperliquidConnectOpen(true);
     } finally {
       setWorking(false);
     }
