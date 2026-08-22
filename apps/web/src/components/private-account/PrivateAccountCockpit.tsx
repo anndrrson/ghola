@@ -114,6 +114,10 @@ import type {
   CoinbaseLiveMarketStatus,
 } from "@/lib/coinbase-live-market";
 import {
+  hyperliquidMarketFromTradeReturn,
+  liveHyperliquidReferencePrice,
+} from "@/lib/hyperliquid-trade-return";
+import {
   type CoinbaseCandleInterval,
   type CoinbaseMarketSnapshot,
   type CoinbaseProductId,
@@ -833,6 +837,7 @@ export function PrivateAccountCockpit({
   hyperliquidNetwork: "mainnet" | "testnet";
 }) {
   const startsHyperliquid = initialFlow === "hyperliquid-live" || initialFlow === "trade" || initialSetupVenue === "hyperliquid";
+  const initialHyperliquidMarketCoin = hyperliquidMarketFromTradeReturn(initialReturnTo) ?? "BTC";
   const startsPhoenix = initialFlow === "phoenix-live";
   const startsJupiter = initialFlow === "jupiter-live";
   const startsCoinbase = initialFlow === "coinbase";
@@ -853,7 +858,7 @@ export function PrivateAccountCockpit({
   const [liveJupiterFlow, setLiveJupiterFlow] = useState(startsJupiter);
   const [input, setInput] = useState<PrivateAccountSafeInput>(
     startsHyperliquid
-      ? DEFAULT_HYPERLIQUID_LIVE_INPUT
+      ? { ...DEFAULT_HYPERLIQUID_LIVE_INPUT, asset_bucket: hyperliquidAssetBucket(initialHyperliquidMarketCoin) }
       : startsCoinbase
         ? DEFAULT_COINBASE_INPUT
       : startsJupiter
@@ -864,7 +869,7 @@ export function PrivateAccountCockpit({
   );
   const [orderDraft, setOrderDraft] = useState<PrivateExecutionOrderDraft>(
     startsHyperliquid
-      ? DEFAULT_HYPERLIQUID_LIVE_ORDER
+      ? { ...DEFAULT_HYPERLIQUID_LIVE_ORDER, market: initialHyperliquidMarketCoin }
       : startsCoinbase
         ? DEFAULT_COINBASE_ORDER
       : startsJupiter
@@ -938,6 +943,7 @@ export function PrivateAccountCockpit({
   const hyperliquidMarket = hyperliquidMarketRecord.snapshot?.platform === "hyperliquid"
     ? hyperliquidMarketRecord.snapshot
     : startsHyperliquid ? initialHyperliquidMarket : null;
+  const hyperliquidReferencePrice = liveHyperliquidReferencePrice(hyperliquidMarket);
   const hyperliquidMarketStatus = hyperliquidMarketRecord.status as HyperliquidLiveMarketStatus;
   const coinbaseMarket = coinbaseMarketRecord.snapshot?.platform === "coinbase" ? coinbaseMarketRecord.snapshot : null;
   const coinbaseMarketStatus = coinbaseMarketRecord.status as CoinbaseLiveMarketStatus;
@@ -1276,7 +1282,8 @@ export function PrivateAccountCockpit({
       initialSetupVenue !== "hyperliquid" ||
       !auth.authenticated ||
       !hyperliquidVault?.account_commitment ||
-      !turnkeyWallet.walletAddress
+      !turnkeyWallet.walletAddress ||
+      hyperliquidReferencePrice === null
     ) return;
     initialSetupHandled.current = true;
     setLiveHyperliquidFlow(true);
@@ -1292,6 +1299,7 @@ export function PrivateAccountCockpit({
     auth.authenticated,
     hyperliquidVault,
     hyperliquidVault?.account_commitment,
+    hyperliquidReferencePrice,
     initialSetupVenue,
     turnkeyWallet.walletAddress,
   ]);
@@ -2319,14 +2327,8 @@ export function PrivateAccountCockpit({
       ) {
         throw new Error("hyperliquid_execution_vault_not_ready");
       }
-      const reference = Number(
-        hyperliquidMarket?.mark_price ||
-        hyperliquidMarket?.mid ||
-        initialHyperliquidMarket?.mark_price ||
-        initialHyperliquidMarket?.mid ||
-        "",
-      );
-      if (!Number.isFinite(reference) || reference <= 0) {
+      const reference = liveHyperliquidReferencePrice(hyperliquidMarket || initialHyperliquidMarket);
+      if (reference === null) {
         throw new Error("A live Hyperliquid reference price is required for the no-submit risk check.");
       }
       if (!LEGACY_HYPERLIQUID_API_KEYS_ENABLED) {
