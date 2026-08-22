@@ -115,6 +115,7 @@ import type {
 } from "@/lib/coinbase-live-market";
 import {
   hyperliquidMarketFromTradeReturn,
+  hyperliquidNoSubmitProofOrder,
   hyperliquidNoSubmitProofReady,
   liveHyperliquidReferencePrice,
 } from "@/lib/hyperliquid-trade-return";
@@ -2350,22 +2351,13 @@ export function PrivateAccountCockpit({
         marginMode = mandate.margin_mode;
       }
       if (!sealingAddress) throw new Error("Turnkey wallet identity is unavailable.");
-      const normalizedOrder = normalizeOrderForPlatform({
-        venue_id: "hyperliquid",
-        operation_class: "limit_order",
+      const normalizedOrder = normalizeOrderForPlatform(hyperliquidNoSubmitProofOrder({
         market: orderDraft.venue_id === "hyperliquid" ? orderDraft.market : "BTC",
-        side: "buy",
-        base_size: "",
-        limit_price: reference.toFixed(6),
-        quote_size: "5",
-        max_slippage_bps: maxSlippageBps,
-        order_type: "limit",
-        size_mode: "quote",
-        tif: "Gtc",
+        referencePrice: reference,
+        maxSlippageBps,
         leverage,
-        margin_mode: marginMode,
-        protective_orders: { stop_loss: (reference * 0.96).toFixed(6) },
-      }, "hyperliquid_style_market");
+        marginMode,
+      }), "hyperliquid_style_market");
       const validationErrors = validatePrivateExecutionOrderDraft(normalizedOrder);
       if (validationErrors.length > 0) throw new Error(validationErrors[0]);
       const workOrderCommitment = `connector_work_order_hyperliquid_verify_${safeRandomId()}`;

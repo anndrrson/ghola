@@ -1,4 +1,32 @@
+import type { PrivateExecutionOrderDraft } from "./private-execution-instruction-seal";
+
 export type GholaHyperliquidMarket = "BTC" | "ETH" | "SOL" | "HYPE";
+
+export function hyperliquidNoSubmitProofOrder(input: {
+  market: string;
+  referencePrice: number;
+  maxSlippageBps: string;
+  leverage: number;
+  marginMode: "cross" | "isolated";
+}): PrivateExecutionOrderDraft {
+  return {
+    venue_id: "hyperliquid",
+    operation_class: "limit_order",
+    market: input.market.toUpperCase().split("-")[0] || "BTC",
+    side: "buy",
+    base_size: "",
+    limit_price: input.referencePrice.toFixed(6),
+    quote_size: "5",
+    max_slippage_bps: input.maxSlippageBps,
+    live_order_mode: "tiny_fill",
+    order_type: "limit",
+    size_mode: "quote",
+    tif: "Ioc",
+    leverage: input.leverage,
+    margin_mode: input.marginMode,
+    protective_orders: { stop_loss: (input.referencePrice * 0.96).toFixed(6) },
+  };
+}
 
 export function hyperliquidMarketFromTradeReturn(
   returnTo: string | null | undefined,

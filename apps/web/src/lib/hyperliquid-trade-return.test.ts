@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   hyperliquidMarketFromTradeReturn,
+  hyperliquidNoSubmitProofOrder,
   hyperliquidNoSubmitProofReady,
   liveHyperliquidReferencePrice,
 } from "./hyperliquid-trade-return";
@@ -22,6 +23,25 @@ describe("hyperliquid setup return target", () => {
     expect(liveHyperliquidReferencePrice({ mid: "79.10" })).toBe(79.1);
     expect(liveHyperliquidReferencePrice({ mark_price: "0" })).toBeNull();
     expect(liveHyperliquidReferencePrice(null)).toBeNull();
+  });
+
+  it("builds the connection proof with the worker's tiny-fill IOC contract", () => {
+    expect(hyperliquidNoSubmitProofOrder({
+      market: "HYPE-PERP",
+      referencePrice: 79.25,
+      maxSlippageBps: "50",
+      leverage: 1,
+      marginMode: "cross",
+    })).toMatchObject({
+      venue_id: "hyperliquid",
+      operation_class: "limit_order",
+      market: "HYPE",
+      quote_size: "5",
+      live_order_mode: "tiny_fill",
+      order_type: "limit",
+      size_mode: "quote",
+      tif: "Ioc",
+    });
   });
 
   it("does not accept a verified status unless the live proof was persisted", () => {

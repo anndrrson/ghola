@@ -15,7 +15,10 @@ import { publicLivePhoenixNoKeyConfig } from "../../public-live/phoenix/_lib";
 import { publicLiveCoinbaseConfig } from "../../public-live/coinbase/_lib";
 import { resolveGholaProductEnvironment } from "@/lib/product-environment";
 import { defaultHyperliquidMarketAllowlist } from "@/lib/private-account-hyperliquid-policy";
-import { GHOLA_HYPERLIQUID_PROOF_PROTOCOL } from "@/lib/hyperliquid-proof-protocol";
+import {
+  GHOLA_HYPERLIQUID_NO_SUBMIT_ORDER_CONTRACT,
+  GHOLA_HYPERLIQUID_PROOF_PROTOCOL,
+} from "@/lib/hyperliquid-proof-protocol";
 
 export const dynamic = "force-dynamic";
 
@@ -204,6 +207,7 @@ export async function liveTradingStatusResponse(input: {
     version: 1,
     release_validation: {
       hyperliquid_proof_protocol: GHOLA_HYPERLIQUID_PROOF_PROTOCOL,
+      no_submit_order_contract: GHOLA_HYPERLIQUID_NO_SUBMIT_ORDER_CONTRACT,
       exact_agent_binding_required: true,
       durable_connection_proof_required: true,
       ambiguity_retry_forbidden: true,

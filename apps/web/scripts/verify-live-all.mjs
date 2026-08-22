@@ -63,6 +63,7 @@ try {
   );
   const proofProtocolReady = liveTradingGate.body?.release_validation?.hyperliquid_proof_protocol ===
     "ghola-hyperliquid-proof-v2" &&
+    liveTradingGate.body?.release_validation?.no_submit_order_contract === "tiny_fill_ioc_v1" &&
     liveTradingGate.body?.release_validation?.exact_agent_binding_required === true &&
     liveTradingGate.body?.release_validation?.durable_connection_proof_required === true &&
     liveTradingGate.body?.release_validation?.ambiguity_retry_forbidden === true &&
