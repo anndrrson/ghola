@@ -71,6 +71,20 @@ export default function SupportPage() {
           </p>
         </Section>
 
+        <Section title="Trading Incidents">
+          <p>
+            If a live order is ambiguous, protection is missing, or the app and
+            venue disagree about positions or open orders, stop placing new
+            orders and check the venue directly. Use a reduce-only venue exit
+            if needed, then email <SupportEmail label="privacy@ghola.xyz" />.
+          </p>
+          <p>
+            Include the approximate time, market, public client-order ID, and
+            Ghola reference ID. Never send an API-wallet secret, private key,
+            seed phrase, recovery material, or one-time code.
+          </p>
+        </Section>
+
         <Section title="Native Messaging Abuse Reports">
           <p>
             Ghola-native messages are encrypted end to end by default. Ghola

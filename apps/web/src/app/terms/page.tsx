@@ -6,7 +6,7 @@ export const metadata: Metadata = {
     "The terms governing your use of the Ghola web application, mobile application, and APIs.",
 };
 
-const EFFECTIVE_DATE = "July 29, 2026";
+const EFFECTIVE_DATE = "August 23, 2026";
 
 export default function TermsPage() {
   return (
@@ -104,6 +104,22 @@ export default function TermsPage() {
             transaction is lawful and available in your jurisdiction, for
             reviewing the limits you set, and for monitoring or stopping an
             active agent.
+          </p>
+          <p>
+            Mainnet trading is an experimental public beta for eligible adults
+            only. Orders can fill immediately, protection can fail or trigger,
+            software and venue outages can delay reconciliation, and leveraged
+            positions can lose all posted collateral. Ghola&apos;s caps, stop
+            controls, reduce-only exits, and kill switch reduce operational
+            risk but do not guarantee execution, price, profit, or prevention
+            of loss.
+          </p>
+          <p>
+            Ghola accepts only scoped trading credentials for supported venue
+            integrations. Do not provide withdrawal or transfer authority. You
+            may revoke a connected API wallet through the venue at any time,
+            and you remain responsible for independently checking positions
+            and open orders at the venue.
           </p>
         </Section>
 

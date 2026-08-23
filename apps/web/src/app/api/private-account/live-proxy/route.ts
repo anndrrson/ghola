@@ -6,6 +6,7 @@ import {
   rejectForbiddenFields,
   unauthorized,
 } from "@/app/v1/private-account/_lib";
+import { emitOperationalAlert } from "@/lib/operations-alert";
 
 export const dynamic = "force-dynamic";
 
@@ -53,10 +54,12 @@ export async function POST(req: Request) {
     return json({ error: "private_account_request_proof_unconfigured" }, 503);
   }
 
-  console.info("[private-account-live-proxy] started", {
+  console.info(JSON.stringify({
+    level: "info",
+    message: "private_account_live_proxy_started",
     correlation_id: correlationId,
-    path: target.pathname,
-  });
+    route: target.pathname,
+  }));
   try {
     const response = await fetch(new URL(`${target.pathname}${target.search}`, req.url), {
       method: "POST",
@@ -73,12 +76,14 @@ export async function POST(req: Request) {
     });
     const text = await response.text();
     const durationMs = Date.now() - startedAt;
-    console.info("[private-account-live-proxy] completed", {
+    console.info(JSON.stringify({
+      level: "info",
+      message: "private_account_live_proxy_completed",
       correlation_id: correlationId,
-      path: target.pathname,
+      route: target.pathname,
       status: response.status,
       duration_ms: durationMs,
-    });
+    }));
     const headers = new Headers({
       "cache-control": "no-store, max-age=0",
       "content-type": response.headers.get("content-type") || "application/json",
@@ -93,11 +98,20 @@ export async function POST(req: Request) {
     const durationMs = Date.now() - startedAt;
     const ambiguous = target.pathname === "/v1/private-account/actions/execute" ||
       target.pathname === "/v1/private-account/connectors/submit";
-    console.error("[private-account-live-proxy] failed", {
+    console.error(JSON.stringify({
+      level: "error",
+      message: "private_account_live_proxy_failed",
       correlation_id: correlationId,
-      path: target.pathname,
+      route: target.pathname,
       duration_ms: durationMs,
       error_name: error instanceof Error ? error.name : "unknown",
+    }));
+    await emitOperationalAlert({
+      code: ambiguous ? "connector_submit_ambiguous" : "private_account_live_proxy_unavailable",
+      route: target.pathname,
+      severity: "critical",
+      correlation_id: correlationId,
+      duration_ms: durationMs,
     });
     return new Response(JSON.stringify({
       error: ambiguous ? "connector_submit_ambiguous" : "private_account_live_proxy_unavailable",

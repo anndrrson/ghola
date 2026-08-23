@@ -147,6 +147,19 @@ try {
   const launchChecks = Array.isArray(privateAccountLaunch.body?.checks)
     ? privateAccountLaunch.body.checks
     : [];
+  const launchBlockingChecks = launchChecks
+    .filter((check) => check?.status !== "ready")
+    .map((check) => ({ check: check.check, status: check.status, reason: check.reason || null }));
+  const publicBetaLaunchReady = privateAccountLaunch.ok &&
+    privateAccountLaunch.body?.ready_to_accept_users === true &&
+    launchBlockingChecks.length === 0;
+  record("public_beta_launch_gate", !requirePublicLive || publicBetaLaunchReady, {
+    ready_to_accept_users: privateAccountLaunch.body?.ready_to_accept_users === true,
+    blocking_checks: launchBlockingChecks,
+  });
+  if (requirePublicLive && !publicBetaLaunchReady) {
+    throw new Error("Public live release requires every launch/status safety and operations check to be ready.");
+  }
   const requiredHyperliquidConnectorChecks = [
     "hyperliquid_connector_url_configured",
     "hyperliquid_connector_token_configured",

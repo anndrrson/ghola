@@ -2213,6 +2213,28 @@ export function createPrivateAgentWorkerServer(options = {}) {
     : krakenV2.startHeartbeat?.(60_000);
 
   const server = createServer(async (req, res) => {
+    const requestStartedAt = Date.now();
+    const requestId = /^[a-zA-Z0-9._:-]{8,96}$/.test(String(req.headers["x-ghola-correlation-id"] || ""))
+      ? String(req.headers["x-ghola-correlation-id"])
+      : `worker-${randomUUID()}`;
+    let requestPath = "/invalid";
+    try {
+      requestPath = new URL(req.url || "/", "http://localhost").pathname;
+    } catch {
+      // Keep request logging fail-safe; the route handler returns the client error below.
+    }
+    res.setHeader("x-ghola-request-id", requestId);
+    res.once("finish", () => {
+      console.log(JSON.stringify({
+        level: res.statusCode >= 500 ? "error" : res.statusCode >= 400 ? "warning" : "info",
+        message: "private_agent_worker_request_completed",
+        request_id: requestId,
+        method: req.method || "UNKNOWN",
+        route: requestPath,
+        status: res.statusCode,
+        duration_ms: Date.now() - requestStartedAt,
+      }));
+    });
     try {
       const url = new URL(req.url || "/", "http://localhost");
       const ready = await readiness(recipient);
@@ -3546,6 +3568,16 @@ export function createPrivateAgentWorkerServer(options = {}) {
 
       return json(res, 404, { error: "not found" });
     } catch (error) {
+      console.error(JSON.stringify({
+        level: "error",
+        message: "private_agent_worker_request_failed",
+        request_id: requestId,
+        method: req.method || "UNKNOWN",
+        route: requestPath,
+        error_name: error instanceof Error ? error.name : "unknown",
+        error_code: error?.code || error?.error_code || null,
+        duration_ms: Date.now() - requestStartedAt,
+      }));
       return json(res, error.status || 500, {
         error: error.message || "internal error",
         error_code: error.code || error.error_code || undefined,
@@ -3563,6 +3595,10 @@ export function createPrivateAgentWorkerServer(options = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number.parseInt(env("PORT", "8787"), 10);
   createPrivateAgentWorkerServer().listen(port, () => {
-    console.log(`ghola-private-agent-worker listening on :${port}`);
+    console.log(JSON.stringify({
+      level: "info",
+      message: "private_agent_worker_listening",
+      port,
+    }));
   });
 }

@@ -105,8 +105,10 @@ export function getMarketDataRecord(key: MarketDataKey) {
   return ensureEntry(key).record;
 }
 
+const selectMarketDataRecord = (record: MarketDataRecord) => record;
+
 export function useMarketData(key: MarketDataKey, enabled = true): MarketDataRecord {
-  return useMarketDataSelector(key, (record) => record, enabled);
+  return useMarketDataSelector(key, selectMarketDataRecord, enabled);
 }
 
 export function useMarketDataSelector<T>(
@@ -120,31 +122,27 @@ export function useMarketDataSelector<T>(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const stableKey = useMemo(() => key, [id]);
   useEffect(() => enabled ? acquireMarketData(stableKey) : undefined, [enabled, stableKey]);
-  const selectorRef = useRef(selector);
-  const equalityRef = useRef(isEqual);
   const selectedRef = useRef<T | undefined>(undefined);
   const initializedRef = useRef(false);
-  selectorRef.current = selector;
-  equalityRef.current = isEqual;
   const getSnapshot = useCallback(() => {
-    const selected = selectorRef.current(getMarketDataRecord(stableKey));
-    if (initializedRef.current && equalityRef.current(selectedRef.current as T, selected)) {
+    const selected = selector(getMarketDataRecord(stableKey));
+    if (initializedRef.current && isEqual(selectedRef.current as T, selected)) {
       return selectedRef.current as T;
     }
     initializedRef.current = true;
     selectedRef.current = selected;
     return selected;
-  }, [stableKey]);
+  }, [isEqual, selector, stableKey]);
   const subscribe = useCallback((listener: Listener) => {
     if (!enabled) return () => {};
     let previous = getSnapshot();
     return subscribeMarketData(stableKey, () => {
       const next = getSnapshot();
-      if (equalityRef.current(previous, next)) return;
+      if (isEqual(previous, next)) return;
       previous = next;
       listener();
     });
-  }, [enabled, getSnapshot, stableKey]);
+  }, [enabled, getSnapshot, isEqual, stableKey]);
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 

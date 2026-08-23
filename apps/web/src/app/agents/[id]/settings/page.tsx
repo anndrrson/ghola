@@ -21,7 +21,7 @@ export default function AgentSettingsPage() {
   const [archiving, setArchiving] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (!params.id) return;
@@ -36,6 +36,12 @@ export default function AgentSettingsPage() {
       .finally(() => setLoading(false));
   }, [params.id]);
 
+  useEffect(() => {
+    if (!saved) return;
+    const timeout = window.setTimeout(() => setSaved(false), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [saved]);
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     if (!params.id) return;
@@ -48,7 +54,7 @@ export default function AgentSettingsPage() {
         avatar_url: avatarUrl || undefined,
         status,
       });
-      setSavedAt(Date.now());
+      setSaved(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to save");
     } finally {
@@ -163,7 +169,7 @@ export default function AgentSettingsPage() {
             )}
             Save changes
           </button>
-          {savedAt && Date.now() - savedAt < 3000 && (
+          {saved && (
             <span className="text-sm text-green-400">Saved</span>
           )}
         </div>

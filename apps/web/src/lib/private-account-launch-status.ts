@@ -24,8 +24,20 @@ export interface GholaPrivateAccountLaunchStatus {
 }
 
 const REQUIRED_LIVE_ENV = [
+  "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED=true",
+  "GHOLA_LIVE_TRADING_PUBLIC_ENABLED=true",
   "GHOLA_V6_HYPERLIQUID_PILOT_ENABLED=true",
   "GHOLA_HYPERLIQUID_LIVE_MODE=tiny_fill",
+  "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE=enforce",
+  "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET=<32+ character production secret>",
+  "GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD<=50",
+  "GHOLA_LIVE_TRADING_DAILY_CAP_USD<=250",
+  "GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS<=100",
+  "PRIVATE_AGENT_GLOBAL_KILL_SWITCH=false (explicitly configured)",
+  "GHOLA_PUBLIC_BETA_MONITORING_ENABLED=true",
+  "GHOLA_OPERATIONS_ALERT_WEBHOOK=<secret URL>, SENTRY_DSN=<secret>, or GHOLA_LOG_DRAIN_CONFIGURED=true",
+  "GHOLA_PUBLIC_BETA_ROLLBACK_READY=true",
+  "GHOLA_PUBLIC_BETA_RUNBOOK_VERSION=2026-08-23",
   "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN=<worker-token>",
   "attested provider publishes execution_url and sealed recipient evidence, or GHOLA_PRIVATE_RUNTIME_URL / GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL are set manually",
 ] as const;
@@ -60,6 +72,13 @@ export async function privateAccountLaunchStatus(
     trimmed(env.PRIVATE_AGENT_EXECUTION_TOKEN) ||
     primaryCapabilitySecret ||
     legacyCapabilitySecret;
+  const killSwitch = trimmed(env.PRIVATE_AGENT_GLOBAL_KILL_SWITCH).toLowerCase();
+  const alertingConfigured = Boolean(
+    trimmed(env.GHOLA_OPERATIONS_ALERT_WEBHOOK) ||
+    trimmed(env.SENTRY_DSN) ||
+    trimmed(env.NEXT_PUBLIC_SENTRY_DSN) ||
+    env.GHOLA_LOG_DRAIN_CONFIGURED === "true"
+  );
   const checks: GholaLaunchCheck[] = [
     check(
       "auth_api_configured",
@@ -71,6 +90,16 @@ export async function privateAccountLaunchStatus(
       status: "ready",
       reason: null,
     },
+    check(
+      "bounded_public_beta_enabled",
+      env.GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED === "true",
+      "bounded_public_beta_disabled",
+    ),
+    check(
+      "public_live_trading_enabled",
+      env.GHOLA_LIVE_TRADING_PUBLIC_ENABLED === "true",
+      "public_live_trading_disabled",
+    ),
     check(
       "hyperliquid_pilot_enabled",
       env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED === "true",
@@ -95,6 +124,61 @@ export async function privateAccountLaunchStatus(
       "worker_capability_secret_aliases_coherent",
       capabilitySecretAliasesCoherent,
       "worker_capability_secret_alias_mismatch",
+    ),
+    blockingCheck(
+      "request_proof_enforced",
+      trimmed(env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE).toLowerCase() === "enforce",
+      "request_proof_not_enforced",
+    ),
+    blockingCheck(
+      "request_proof_secret_configured",
+      validProductionSecret(env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET),
+      "request_proof_secret_missing_or_weak",
+    ),
+    blockingCheck(
+      "public_beta_order_cap",
+      capAtMost(env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD, 50),
+      "public_beta_order_cap_missing_or_above_50",
+    ),
+    blockingCheck(
+      "public_beta_daily_cap",
+      capAtMost(env.GHOLA_LIVE_TRADING_DAILY_CAP_USD, 250),
+      "public_beta_daily_cap_missing_or_above_250",
+    ),
+    blockingCheck(
+      "public_beta_slippage_cap",
+      capAtMost(env.GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS, 100),
+      "public_beta_slippage_cap_missing_or_above_100",
+    ),
+    blockingCheck(
+      "global_kill_switch_configured",
+      killSwitch === "true" || killSwitch === "false",
+      "global_kill_switch_unconfigured",
+    ),
+    blockingCheck(
+      "global_kill_switch_inactive",
+      killSwitch === "false",
+      killSwitch === "true" ? "global_kill_switch_active" : "global_kill_switch_unconfigured",
+    ),
+    blockingCheck(
+      "production_monitoring_enabled",
+      env.GHOLA_PUBLIC_BETA_MONITORING_ENABLED === "true",
+      "production_monitoring_disabled",
+    ),
+    blockingCheck(
+      "actionable_alerting_configured",
+      alertingConfigured,
+      "actionable_alerting_unconfigured",
+    ),
+    blockingCheck(
+      "rollback_ready",
+      env.GHOLA_PUBLIC_BETA_ROLLBACK_READY === "true",
+      "rollback_not_acknowledged",
+    ),
+    blockingCheck(
+      "public_beta_runbook_acknowledged",
+      env.GHOLA_PUBLIC_BETA_RUNBOOK_VERSION === "2026-08-23",
+      "public_beta_runbook_not_acknowledged",
     ),
     check(
       "hyperliquid_connector_ready",
@@ -147,4 +231,18 @@ function blockingCheck(checkName: string, ready: boolean, reason: string): Ghola
 
 function trimmed(value: string | undefined): string {
   return value?.trim() ?? "";
+}
+
+function capAtMost(value: string | undefined, max: number): boolean {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= max;
+}
+
+function validProductionSecret(value: string | undefined): boolean {
+  const secret = trimmed(value);
+  const lowered = secret.toLowerCase();
+  return secret.length >= 32 &&
+    !["dev", "test", "default", "local", "changeme", "example", "placeholder"].some((item) =>
+      lowered === item || lowered.includes(item)
+    );
 }

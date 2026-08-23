@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "kind": "ghola_hyperliquid_mainnet_round_trip_release_proof",
+  "network": "mainnet",
+  "market": "HYPE",
+  "owner": "0xa0582521E11eFFDF12fF00B50087802C3346E7Ef",
+  "candidate": {
+    "web_commit_sha": "45410f02",
+    "preview_url": "https://web-git-codex-private-agent-worker-n-c18d85-anndrrsons-projects.vercel.app"
+  },
+  "request": {
+    "side": "buy",
+    "quote_notional_usd": 11,
+    "max_slippage_bps": 50,
+    "stop_loss_usd": 76,
+    "ambiguity_retry_performed": false
+  },
+  "entry": {
+    "direction": "Open Long",
+    "fill_price_usd": 77.734,
+    "filled_base_size": 0.14,
+    "filled_notional_usd": 10.88276,
+    "reduce_only": false,
+    "venue_order_id": 523759911598,
+    "client_order_id": "0x183e9fdec60d963ccb83e32f9699dfe9",
+    "filled_at": "2026-08-23T05:05:11.967Z"
+  },
+  "protection": {
+    "order_type": "Stop Market",
+    "trigger_price_usd": 76,
+    "base_size": 0.14,
+    "reduce_only": true,
+    "venue_order_id": 523759911599,
+    "client_order_id": "0xc238afc3171f682e11c3e8f8f4f477fd",
+    "opened_at": "2026-08-23T05:05:11.967Z",
+    "terminal_status": "reduceOnlyCanceled",
+    "terminal_at": "2026-08-23T05:05:58.953Z"
+  },
+  "close": {
+    "direction": "Close Long",
+    "fill_price_usd": 77.632,
+    "filled_base_size": 0.14,
+    "reduce_only": true,
+    "venue_order_id": 523760490657,
+    "client_order_id": "0x63fc2e0c5b4cc52c7c1e58b2d2392f45",
+    "filled_at": "2026-08-23T05:05:58.953Z"
+  },
+  "final_venue_state": {
+    "checked_at": "2026-08-23T05:24:10.000Z",
+    "nonzero_positions": 0,
+    "open_orders": 0
+  },
+  "evidence_sources": [
+    "Hyperliquid info:userFills",
+    "Hyperliquid info:historicalOrders",
+    "Hyperliquid info:clearinghouseState",
+    "Hyperliquid info:frontendOpenOrders",
+    "Ghola in-browser reconciliation proof"
+  ],
+  "evidence_commitment": "hlproof_1e814ab09a2e82ffe46427a9a9e0496c35cbb0dc5da5def422da360a93d69b98"
+}

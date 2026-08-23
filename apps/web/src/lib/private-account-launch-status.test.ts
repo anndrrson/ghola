@@ -38,14 +38,28 @@ const READY_RUNTIME: PrivateAgentRuntimeStatus = {
   disclosure: "test",
 };
 
+const READY_ENV = {
+  NEXT_PUBLIC_THUMPER_API_URL: "https://thumper.test",
+  GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED: "true",
+  GHOLA_LIVE_TRADING_PUBLIC_ENABLED: "true",
+  GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
+  GHOLA_HYPERLIQUID_LIVE_MODE: "tiny_fill",
+  GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE: "enforce",
+  GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET: "secure-production-request-proof-secret-2026",
+  GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD: "50",
+  GHOLA_LIVE_TRADING_DAILY_CAP_USD: "250",
+  GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS: "100",
+  PRIVATE_AGENT_GLOBAL_KILL_SWITCH: "false",
+  GHOLA_PUBLIC_BETA_MONITORING_ENABLED: "true",
+  GHOLA_LOG_DRAIN_CONFIGURED: "true",
+  GHOLA_PUBLIC_BETA_ROLLBACK_READY: "true",
+  GHOLA_PUBLIC_BETA_RUNBOOK_VERSION: "2026-08-23",
+  PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "capability-secret",
+} as const;
+
 describe("private account launch status", () => {
   it("reports the live Hyperliquid path ready only when deployment and runtime gates pass", async () => {
-    const status = await privateAccountLaunchStatus({
-      NEXT_PUBLIC_THUMPER_API_URL: "https://thumper.test",
-      GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
-      GHOLA_HYPERLIQUID_LIVE_MODE: "tiny_fill",
-      PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "capability-secret",
-    }, READY_RUNTIME);
+    const status = await privateAccountLaunchStatus(READY_ENV, READY_RUNTIME);
 
     expect(status.ready_to_accept_users).toBe(true);
     expect(status.checks.every((check) => check.status === "ready")).toBe(true);
@@ -74,9 +88,7 @@ describe("private account launch status", () => {
 
   it("blocks release when worker capability secret aliases disagree", async () => {
     const status = await privateAccountLaunchStatus({
-      NEXT_PUBLIC_THUMPER_API_URL: "https://thumper.test",
-      GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
-      GHOLA_HYPERLIQUID_LIVE_MODE: "tiny_fill",
+      ...READY_ENV,
       PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "current-secret",
       GHOLA_WORKER_CAPABILITY_SECRET: "stale-secret",
     }, READY_RUNTIME);
@@ -89,5 +101,23 @@ describe("private account launch status", () => {
     });
     expect(JSON.stringify(status)).not.toContain("current-secret");
     expect(JSON.stringify(status)).not.toContain("stale-secret");
+  });
+
+  it("blocks public launch when safety operations are implicit or unmonitored", async () => {
+    const status = await privateAccountLaunchStatus({
+      ...READY_ENV,
+      PRIVATE_AGENT_GLOBAL_KILL_SWITCH: undefined,
+      GHOLA_PUBLIC_BETA_MONITORING_ENABLED: undefined,
+      GHOLA_LOG_DRAIN_CONFIGURED: undefined,
+      GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD: "1000",
+    }, READY_RUNTIME);
+
+    expect(status.ready_to_accept_users).toBe(false);
+    expect(status.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ check: "global_kill_switch_configured", status: "blocked" }),
+      expect.objectContaining({ check: "production_monitoring_enabled", status: "blocked" }),
+      expect.objectContaining({ check: "actionable_alerting_configured", status: "blocked" }),
+      expect.objectContaining({ check: "public_beta_order_cap", status: "blocked" }),
+    ]));
   });
 });

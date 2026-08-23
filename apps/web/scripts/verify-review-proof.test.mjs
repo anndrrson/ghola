@@ -96,7 +96,8 @@ async function withReviewerServer(options, assertion) {
       return;
     }
     if (request.method === "POST" && request.url === "/v1/private-account/demo/run") {
-      for await (const _ of request) {
+      for await (const chunk of request) {
+        void chunk;
         // Drain the request before responding so the child process can reuse the connection.
       }
       json(response, 200, fixtureRun(baseUrl));
