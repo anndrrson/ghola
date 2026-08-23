@@ -62,6 +62,7 @@ export function spotVenueReadiness(venue: "coinbase" | "phoenix", status: SpotRe
 }
 
 export function hyperliquidPerpsReadiness(input: {
+  authenticationLoading?: boolean;
   authenticated: boolean;
   network: "mainnet" | "testnet";
   credentialsReady: boolean | null;
@@ -70,6 +71,7 @@ export function hyperliquidPerpsReadiness(input: {
   marketCatalogState: "loading" | "ready" | "unavailable";
   selectedMarketAvailable: boolean;
 }): TradeReadiness {
+  if (input.authenticationLoading) return { label: "checking", ready: false, detail: "Checking the signed-in Ghola session." };
   if (!input.authenticated) return { label: "disconnected", ready: false, detail: "Sign in before connecting a Hyperliquid trading account." };
   if (input.accountState === "unavailable" || input.marketCatalogState === "unavailable") return { label: "worker unavailable", ready: false, detail: `The Hyperliquid ${input.network} worker is unavailable.` };
   if (input.credentialsReady === null) return { label: "checking", ready: false, detail: "Checking the sealed Hyperliquid connection." };

@@ -773,6 +773,7 @@ export function PublicCoinbaseLiveTrade({
         chartMode={chartMode}
         onChartModeChange={setChartMode}
         referenceProduct={product}
+        authenticationLoading={auth.loading}
         authenticated={auth.authenticated}
         hyperliquidNetwork={hyperliquidNetwork}
         productEnvironment={productEnvironment}
@@ -834,6 +835,7 @@ function AlternateProductWorkspace({
   chartMode,
   onChartModeChange,
   referenceProduct,
+  authenticationLoading,
   authenticated,
   hyperliquidNetwork,
   productEnvironment,
@@ -849,6 +851,7 @@ function AlternateProductWorkspace({
   chartMode: GholaChartMode;
   onChartModeChange: (value: GholaChartMode) => void;
   referenceProduct: CoinbaseProductId;
+  authenticationLoading: boolean;
   authenticated: boolean;
   hyperliquidNetwork: "mainnet" | "testnet";
   productEnvironment: "production" | "testnet";
@@ -948,6 +951,7 @@ function AlternateProductWorkspace({
   const displayedMarketStatus = useHyperliquidMarket ? hyperliquidStatus : referenceRecord.status;
   const selectedMarketCapability = perpMarkets.find((item) => item.coin === perpMarket);
   const hyperliquidReadiness = useMemo(() => hyperliquidPerpsReadiness({
+    authenticationLoading,
     authenticated,
     network: hyperliquidNetwork,
     credentialsReady: hyperliquidConnectionChecked ? hyperliquidConnectionReady : null,
@@ -955,7 +959,7 @@ function AlternateProductWorkspace({
     account: hyperliquidAccount,
     marketCatalogState: perpMarketCatalogState,
     selectedMarketAvailable: Boolean(selectedMarketCapability),
-  }), [accountState, authenticated, hyperliquidAccount, hyperliquidConnectionChecked, hyperliquidConnectionReady, hyperliquidNetwork, perpMarketCatalogState, selectedMarketCapability]);
+  }), [accountState, authenticated, authenticationLoading, hyperliquidAccount, hyperliquidConnectionChecked, hyperliquidConnectionReady, hyperliquidNetwork, perpMarketCatalogState, selectedMarketCapability]);
   const maxLeverage = hyperliquidMarket?.max_leverage ?? selectedMarketCapability?.max_leverage ?? null;
   const manualPerpOrder = useMemo<PrivateExecutionOrderDraft>(() => ({
     venue_id: "hyperliquid",
@@ -1604,6 +1608,7 @@ function AlternateProductWorkspace({
               </div>
               <AccountActivityPanel
                 tab={activityTab}
+                authenticationLoading={authenticationLoading}
                 authenticated={authenticated}
                 state={accountState}
                 snapshot={hyperliquidAccount}
@@ -1792,7 +1797,7 @@ function AlternateProductWorkspace({
 
               <button
                 type="button"
-                disabled={perpWorking !== null || perpAttempt?.status === "ambiguous" || perpAttempt?.status === "awaiting_reconciliation" || (perpAttempt?.status === "reconciled" && !perpAttempt.order.reduce_only)}
+                disabled={authenticationLoading || perpWorking !== null || perpAttempt?.status === "ambiguous" || perpAttempt?.status === "awaiting_reconciliation" || (perpAttempt?.status === "reconciled" && !perpAttempt.order.reduce_only)}
                 onClick={() => { if (product === "perps" && hyperliquidConnectionReady) void reviewPerpOrder(); else setSetupOpen(true); }}
                 className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md bg-[#3da8ff] text-sm font-bold text-[#03101d] transition hover:bg-[#67baff] disabled:cursor-wait disabled:opacity-70"
               >
@@ -1802,7 +1807,7 @@ function AlternateProductWorkspace({
                     : perpWorking === "reconcile" ? "Reconciling exact order…"
                     : perpWorking === "verify" ? "Verifying flat and clear…"
                     : "Review order"
-                  : authenticated && product === "perps" ? `Connect Hyperliquid ${hyperliquidNetwork}` : authenticated ? `Set up ${selectedVenue?.label}` : "Sign in to continue"}
+                  : authenticationLoading ? "Checking sign-in…" : authenticated && product === "perps" ? `Connect Hyperliquid ${hyperliquidNetwork}` : authenticated ? `Set up ${selectedVenue?.label}` : "Sign in to continue"}
               </button>
               {perpAttempt?.status === "ambiguous" && (
                 <button
@@ -2216,6 +2221,7 @@ function SpreadMetric({
 
 function AccountActivityPanel({
   tab,
+  authenticationLoading,
   authenticated,
   state,
   snapshot,
@@ -2223,6 +2229,7 @@ function AccountActivityPanel({
   supported,
 }: {
   tab: "positions" | "orders" | "activity";
+  authenticationLoading: boolean;
   authenticated: boolean;
   state: "loading" | "ready" | "unavailable";
   snapshot: HyperliquidAccountSnapshot | null;
@@ -2231,6 +2238,9 @@ function AccountActivityPanel({
 }) {
   if (!supported) {
     return <ActivityNotice>No live venue session · activity will appear here after setup.</ActivityNotice>;
+  }
+  if (authenticationLoading) {
+    return <ActivityNotice>Checking the signed-in Ghola session…</ActivityNotice>;
   }
   if (!authenticated) {
     return <ActivityNotice>Sign in to load private positions, working orders, and fills.</ActivityNotice>;
