@@ -911,6 +911,15 @@ export async function verifyConnectorNoSubmit(input: {
     });
     const body = asRecord(await res.json().catch(() => null));
     if (!res.ok || body.status !== "verified_no_funds") {
+      console.warn("[private-account] connector no-submit rejected", {
+        platform_class: input.platform_class,
+        status: res.status,
+        error_code: stringValue(body.error_code) || stringValue(body.code) || null,
+        error: stringValue(body.error) || null,
+        details: Array.isArray(body.details)
+          ? body.details.filter((detail): detail is string => typeof detail === "string").slice(0, 8)
+          : [],
+      });
       return failedNoFundsVerification(base, noFundsReason(body, res.status), "failed", input.site_origin);
     }
     return verifiedNoFundsVerification(base, {
@@ -920,7 +929,12 @@ export async function verifyConnectorNoSubmit(input: {
       checks: noFundsChecks(body.checks),
       site_origin: input.site_origin,
     });
-  } catch {
+  } catch (error) {
+    console.warn("[private-account] connector no-submit unavailable", {
+      platform_class: input.platform_class,
+      error_name: error instanceof Error ? error.name : "unknown",
+      error_message: error instanceof Error ? error.message : "unknown",
+    });
     return failedNoFundsVerification(base, "worker_unavailable", "worker_unavailable", input.site_origin);
   }
 }

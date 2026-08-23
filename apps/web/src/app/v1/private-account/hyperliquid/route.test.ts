@@ -154,6 +154,10 @@ describe("Hyperliquid private-account routes", () => {
     delete process.env.GHOLA_HYPERLIQUID_LIVE_MODE;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET;
+    delete process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL;
+    delete process.env.GHOLA_PRIVATE_AGENT_PROVIDER;
+    delete process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET;
+    delete process.env.GHOLA_CONNECTOR_MODE;
     vi.restoreAllMocks();
     await resetPrivateAccountStoreForTests();
   });
@@ -342,6 +346,65 @@ describe("Hyperliquid private-account routes", () => {
     expect(armed.session_policy.policy_commitment).toMatch(/^hyperliquid_session_policy_/);
     expect(armed.session_policy.strategy_commitment).toMatch(/^hyperliquid_strategy_/);
     expect(JSON.stringify(armed)).not.toContain("sealed-ciphertext-only");
+  });
+
+  it("arms the capped Hyperliquid session on the selected private worker", async () => {
+    const preflight = await (await vaultStatus(
+      request("/v1/private-account/hyperliquid/vault"),
+    )).json();
+    await sealVault(
+      request("/v1/private-account/hyperliquid/vault", {
+        encrypted_execution_vault: {
+          alg: "sealed-provider-v1",
+          ciphertext: "sealed-ciphertext-only",
+          recipient: "mock_attested:dev",
+          aad: vaultAad(preflight.account_commitment),
+        },
+        credential_binding: await credentialBinding(preflight.account_commitment),
+      }),
+    );
+    process.env.GHOLA_CONNECTOR_MODE = "http";
+    process.env.GHOLA_PRIVATE_AGENT_PROVIDER = "mock_attested";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "test-worker-capability-secret";
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = new URL(typeof input === "string"
+        ? input
+        : input instanceof URL ? input.href : input.url);
+      if (url.hostname === "worker.example" && url.pathname === "/hyperliquid/sessions") {
+        expect(init?.method).toBe("POST");
+        expect(new Headers(init?.headers).get("authorization")).toMatch(/^Bearer ghcap_v1\./);
+        const body = JSON.parse(String(init?.body));
+        expect(body).toMatchObject({
+          version: 1,
+          account_commitment: preflight.account_commitment,
+          execution_mode: "byo_api_key",
+        });
+        expect(body.encrypted_execution_vault.ciphertext).toBe("sealed-ciphertext-only");
+        return Response.json({
+          status: "armed",
+          hyperliquid_session_commitment: "hyperliquid_session_worker_proof",
+        }, { status: 201 });
+      }
+      return Response.json([{
+        address: TEST_HYPERLIQUID_AGENT,
+        name: "ghola-test",
+        validUntil: null,
+      }]);
+    });
+
+    const armRes = await armAgent(
+      request("/v1/private-account/hyperliquid/agent/session", {
+        market_allowlist: ["HYPE"],
+        max_notional_bucket: "25",
+        max_order_count: 3,
+      }),
+    );
+    const armed = await armRes.json();
+
+    expect(armRes.status).toBe(201);
+    expect(armed.status).toBe("armed");
+    expect(armed.agent_session_commitment).toBe("hyperliquid_session_worker_proof");
   });
 
   it("allocates a managed Hyperliquid testnet account and reports simple gates", async () => {

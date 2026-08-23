@@ -1298,7 +1298,7 @@ export function PrivateAccountCockpit({
     setLiveHyperliquidFlow(true);
     if (hyperliquidVault.hyperliquid_execution_vault?.status === "sealed") {
       verifyHyperliquidAfterConnect.current = true;
-      void verifyHyperliquidNoSubmit(hyperliquidVault);
+      void armAndVerifyHyperliquid(hyperliquidVault);
       return;
     }
     setHyperliquidConnectOpen(true);
@@ -1831,6 +1831,7 @@ export function PrivateAccountCockpit({
         title: liveHyperliquidFlow ? "Hyperliquid enabled" : "Hyperliquid ready",
         detail: liveHyperliquidFlow ? "Next step: check the connection." : "Next step: preview the trade.",
       });
+      return true;
     } catch (err) {
       const reconnectRequired = shouldReconnectHyperliquidApiWallet(err);
       const message = friendlyPrivateAccountError(err, "Could not arm Hyperliquid.");
@@ -1841,9 +1842,16 @@ export function PrivateAccountCockpit({
         detail: message,
       });
       if (reconnectRequired) setHyperliquidConnectOpen(true);
+      return false;
     } finally {
       setWorking(false);
     }
+  }
+
+  async function armAndVerifyHyperliquid(vaultOverride?: HyperliquidVaultState) {
+    const armed = await armHyperliquidAgent(false);
+    if (!armed) return;
+    await verifyHyperliquidNoSubmit(vaultOverride);
   }
 
   async function allocateHyperliquidManaged() {
@@ -3246,7 +3254,7 @@ export function PrivateAccountCockpit({
           if (iosReturnTo) {
             window.location.assign(iosReturnTo);
           } else {
-            window.setTimeout(() => void verifyHyperliquidNoSubmit(sealed), 0);
+            window.setTimeout(() => void armAndVerifyHyperliquid(sealed), 0);
           }
         }}
       />
@@ -3271,7 +3279,7 @@ export function PrivateAccountCockpit({
             {error && hyperliquidVault && (
               <button
                 type="button"
-                onClick={() => void verifyHyperliquidNoSubmit(hyperliquidVault)}
+                onClick={() => void armAndVerifyHyperliquid(hyperliquidVault)}
                 className="mt-6 h-11 w-full rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb]"
               >
                 Retry verification
@@ -9545,6 +9553,9 @@ function friendlyPrivateAccountError(err: unknown, fallback: string) {
   }
   if (message === "connector_not_ready") {
     return "This connector is not ready yet.";
+  }
+  if (message === "worker_session_rejected") {
+    return "The private worker rejected the capped trading session. No order was sent.";
   }
   if (message === "invalid_authority_or_access") {
     return "The venue could not use that trading authority or API wallet. Check the credential and venue access.";

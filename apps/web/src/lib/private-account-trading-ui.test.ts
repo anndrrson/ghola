@@ -164,6 +164,10 @@ describe("private account trading UI derivation", () => {
     expect(cockpitSource).toContain("ownerAuthRequired={!LEGACY_HYPERLIQUID_API_KEYS_ENABLED}");
     expect(cockpitSource).toContain("onAuthenticateTurnkey={authenticateHyperliquidOwner}");
     expect(cockpitSource).toContain("verificationAction.kind === \"authenticate_owner\"");
+    expect(cockpitSource).toContain("async function armAndVerifyHyperliquid");
+    expect(cockpitSource).toContain("const armed = await armHyperliquidAgent(false)");
+    expect(cockpitSource).toContain("if (!armed) return");
+    expect(cockpitSource).toContain("await verifyHyperliquidNoSubmit(vaultOverride)");
   });
 
   it("uses clearer signed-out and venue-access calls to action", () => {

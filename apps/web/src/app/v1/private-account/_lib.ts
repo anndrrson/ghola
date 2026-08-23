@@ -4278,6 +4278,17 @@ export async function armHyperliquidAgentSessionFromBody(
       : null,
     policy_commitment: policy.policy_commitment,
   });
+  const workerSession = await requestHyperliquidAgentSession({
+    account_commitment: account.account_commitment,
+    execution_mode: executionMode,
+    vault: executionMode === "byo_api_key" ? vault : null,
+    allocation: executionMode === "managed_testnet" || executionMode === "ghola_pooled"
+      ? allocation
+      : null,
+    policy,
+    fallback_session_commitment: sessionCommitment,
+  });
+  if ("error" in workerSession) return workerSession;
   return {
     version: 1,
     status: policy.kill_switch ? "stopped" as const : "armed" as const,
@@ -4287,7 +4298,7 @@ export async function armHyperliquidAgentSessionFromBody(
     allocation_commitment: executionMode === "managed_testnet" || executionMode === "ghola_pooled"
       ? allocation?.allocation_commitment
       : null,
-    agent_session_commitment: sessionCommitment,
+    agent_session_commitment: workerSession.session_commitment,
     session_policy: publicHyperliquidSessionPolicy(policy),
   };
 }
@@ -6564,6 +6575,84 @@ function publicHyperliquidSessionPolicy(policy: GholaHyperliquidSessionPolicy) {
   };
 }
 
+async function requestHyperliquidAgentSession(input: {
+  account_commitment: string;
+  execution_mode: "byo_api_key" | "managed_testnet" | "ghola_pooled";
+  vault: PrivateHyperliquidVaultRecordV1 | null;
+  allocation: PrivateHyperliquidManagedAllocationRecordV1 | null;
+  policy: GholaHyperliquidSessionPolicy;
+  fallback_session_commitment: string;
+}): Promise<
+  | { session_commitment: string }
+  | { error: "connector_endpoint_missing" | "worker_unavailable" | "worker_session_rejected" }
+> {
+  if (localHyperliquidPilotEnabled()) {
+    return { session_commitment: input.fallback_session_commitment };
+  }
+  const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
+  const cfg = hyperliquidWorkerConfig(runtime);
+  if (!cfg.url) return { error: "connector_endpoint_missing" };
+  const workerPath = "/hyperliquid/sessions";
+  const payload = {
+    version: 1,
+    account_commitment: input.account_commitment,
+    execution_mode: input.execution_mode,
+    policy_commitment: input.policy.policy_commitment,
+    session_policy: publicHyperliquidSessionPolicy(input.policy),
+    ...(input.execution_mode === "byo_api_key" && input.vault
+      ? {
+          vault_commitment: input.vault.vault_commitment,
+          encrypted_execution_vault: input.vault.vault.encrypted_execution_vault,
+        }
+      : input.allocation
+        ? {
+            managed_allocation_commitment: input.allocation.allocation_commitment,
+            allocation_commitment: input.allocation.allocation_commitment,
+          }
+        : {}),
+  };
+  try {
+    const authorization = workerAuthorizationHeader({
+      fallbackToken: cfg.token,
+      method: "POST",
+      path: workerPath,
+      scope: "session:create",
+      body: payload,
+      expected: workerCapabilityExpectedFromBody(payload, {
+        venue_id: "hyperliquid",
+        platform_class: "hyperliquid_style_market",
+      }),
+    });
+    const res = await fetch(new URL(workerPath, cfg.url), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        ...(authorization ? { authorization } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+    const responseBody = objectBody(await res.json().catch(() => null));
+    const sessionCommitment = stringValue(responseBody.hyperliquid_session_commitment);
+    if (!res.ok || responseBody.status !== "armed" || !sessionCommitment) {
+      console.warn("[private-account] Hyperliquid worker session rejected", {
+        status: res.status,
+        error_code: stringValue(responseBody.error_code) || null,
+        error: stringValue(responseBody.error) || null,
+      });
+      return { error: res.status >= 500 ? "worker_unavailable" : "worker_session_rejected" };
+    }
+    return { session_commitment: sessionCommitment };
+  } catch (error) {
+    console.warn("[private-account] Hyperliquid worker session unavailable", {
+      error_name: error instanceof Error ? error.name : "unknown",
+      error_message: error instanceof Error ? error.message : "unknown",
+    });
+    return { error: "worker_unavailable" };
+  }
+}
+
 async function requestHyperliquidManagedAllocation(input: {
   account_commitment: string;
   policy: GholaHyperliquidSessionPolicy;
@@ -7027,6 +7116,7 @@ function hyperliquidStreamCoin(value: unknown) {
 }
 
 function localHyperliquidPilotEnabled() {
+  if (process.env.GHOLA_CONNECTOR_MODE === "http") return false;
   return process.env.NODE_ENV === "test" || process.env.GHOLA_CONNECTOR_MODE === "local_test";
 }
 
