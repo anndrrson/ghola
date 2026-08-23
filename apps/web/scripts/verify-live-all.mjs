@@ -71,6 +71,7 @@ try {
     liveTradingGate.body?.release_validation?.post_submit_reconciliation_required === true &&
     liveTradingGate.body?.release_validation?.correlated_execution_diagnostics_required === true &&
     liveTradingGate.body?.release_validation?.public_trade_ambiguity_recovery_required === true &&
+    liveTradingGate.body?.release_validation?.public_trade_tiny_fill_submit_required === true &&
     liveTradingGate.body?.release_validation?.reduce_only_close_required === true &&
     liveTradingGate.body?.release_validation?.exact_fill_reduce_only_close_required === true &&
     liveTradingGate.body?.release_validation?.final_flat_zero_orders_required === true &&

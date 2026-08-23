@@ -411,9 +411,11 @@ async function runLiveOrder({ recipient, market, quoteSize, maxSlippageBps, side
       side,
       ...(reduceOnly ? {
         base_size: baseSize,
+        quote_size: quoteSize,
         order_type: "market",
         size_mode: "base",
         reduce_only: true,
+        live_order_mode: "tiny_fill",
       } : {
         quote_size: quoteSize,
         live_order_mode: "tiny_fill",

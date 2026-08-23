@@ -950,20 +950,21 @@ function AlternateProductWorkspace({
     side,
     base_size: "",
     quote_size: amount,
-    limit_price: orderType === "limit" ? limitPrice : "",
-    order_type: orderType,
+    limit_price: "",
+    order_type: "market",
     size_mode: "quote",
-    tif: orderType === "market" ? "Ioc" : timeInForce,
+    live_order_mode: "tiny_fill",
+    tif: "Ioc",
     max_slippage_bps: maxSlippageBps,
     reduce_only: reduceOnly,
-    post_only: orderType === "limit" && timeInForce === "Alo",
+    post_only: false,
     leverage: Number(leverage),
     margin_mode: marginMode,
     protective_orders: reduceOnly ? undefined : {
       ...(stopLoss.trim() ? { stop_loss: stopLoss.trim() } : {}),
       ...(takeProfit.trim() ? { take_profit: takeProfit.trim() } : {}),
     },
-  }), [amount, leverage, limitPrice, marginMode, maxSlippageBps, orderType, perpMarket, reduceOnly, side, stopLoss, takeProfit, timeInForce]);
+  }), [amount, leverage, marginMode, maxSlippageBps, perpMarket, reduceOnly, side, stopLoss, takeProfit]);
   const perpOrder = preparedPerpClose?.order ?? manualPerpOrder;
   const perpNotional = useMemo(() => orderNotional(perpOrder, displayedMid), [displayedMid, perpOrder]);
   const perpOrderErrors = useMemo(
@@ -1579,11 +1580,11 @@ function AlternateProductWorkspace({
                         key={type}
                         type="button"
                         aria-pressed={orderType === type}
-                        disabled={Boolean(preparedPerpClose)}
+                        disabled={Boolean(preparedPerpClose) || type === "limit"}
                         onClick={() => setOrderType(type)}
                         className={orderType === type
                           ? "h-10 rounded-md border border-[#3da8ff]/45 bg-[#3da8ff]/12 text-sm font-semibold capitalize text-[#a9d8ff]"
-                          : "h-10 rounded-md border border-[#252d37] bg-[#090b0e] text-sm capitalize text-[#778295]"}
+                          : "h-10 rounded-md border border-[#252d37] bg-[#090b0e] text-sm capitalize text-[#778295] disabled:cursor-not-allowed disabled:opacity-40"}
                       >
                         {type}
                       </button>

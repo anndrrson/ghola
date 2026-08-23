@@ -419,7 +419,8 @@ export async function buildPrivateExecutionInstructionBundle(
         side: options.order.side,
         ...(options.order.live_order_mode === "tiny_fill"
           ? {
-              quote_size: options.order.quote_size?.trim(),
+              ...(options.order.base_size.trim() ? { base_size: options.order.base_size.trim() } : {}),
+              ...(options.order.quote_size?.trim() ? { quote_size: options.order.quote_size.trim() } : {}),
               ...(options.order.venue_id === "hyperliquid"
                 ? { max_slippage_bps: options.order.max_slippage_bps?.trim() || "50" }
                 : {}),
@@ -428,6 +429,28 @@ export async function buildPrivateExecutionInstructionBundle(
                 : {}),
               live_order_mode: "tiny_fill" as const,
               tif: "Ioc",
+              ...(options.order.venue_id === "hyperliquid"
+                ? {
+                    reduce_only: options.order.reduce_only === true,
+                    leverage: options.order.leverage ?? 1,
+                    margin_mode: options.order.margin_mode || "cross",
+                    ...(options.order.reduce_only !== true && (
+                      options.order.protective_orders?.stop_loss?.trim() ||
+                      options.order.protective_orders?.take_profit?.trim()
+                    )
+                      ? {
+                          protective_orders: {
+                            ...(options.order.protective_orders.stop_loss?.trim()
+                              ? { stop_loss: options.order.protective_orders.stop_loss.trim() }
+                              : {}),
+                            ...(options.order.protective_orders.take_profit?.trim()
+                              ? { take_profit: options.order.protective_orders.take_profit.trim() }
+                              : {}),
+                          },
+                        }
+                      : {}),
+                  }
+                : {}),
             }
           : {
               order_type: options.order.order_type || "limit",

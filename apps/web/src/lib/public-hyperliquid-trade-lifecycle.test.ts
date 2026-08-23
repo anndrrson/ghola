@@ -13,6 +13,10 @@ const verifierSource = readFileSync(
 
 describe("public Hyperliquid lifecycle integration", () => {
   it("removes the submit control before execution and reconciles every acknowledgement", () => {
+    const orderContract = componentSource.slice(
+      componentSource.indexOf("const manualPerpOrder"),
+      componentSource.indexOf("const perpOrder"),
+    );
     const removeReview = componentSource.indexOf("setPerpReview(null);", componentSource.indexOf("async function submitPerpOrder"));
     const execute = componentSource.indexOf("await executePrivateAccountAction", removeReview);
     const reconcile = componentSource.indexOf("await reconcilePerpOrder(reviewed.previewCommitment, reviewed.order);", execute);
@@ -22,6 +26,10 @@ describe("public Hyperliquid lifecycle integration", () => {
     expect(reconcile).toBeGreaterThan(execute);
     expect(componentSource).toContain("This exact order remains locked");
     expect(componentSource).toContain("Check this exact order on Hyperliquid");
+    expect(orderContract).toContain('order_type: "market"');
+    expect(orderContract).toContain('live_order_mode: "tiny_fill"');
+    expect(orderContract).toContain('tif: "Ioc"');
+    expect(orderContract).not.toContain("tif: orderType");
   });
 
   it("prepares closes only from exact reconciled fill proof", () => {
@@ -35,6 +43,8 @@ describe("public Hyperliquid lifecycle integration", () => {
     expect(verifierSource).toContain('postJson("/v1/private-account/connectors/reconcile"');
     expect(verifierSource).toContain("the verifier will not resubmit it");
     expect(verifierSource).toContain('protective_orders: { stop_loss: stopLoss }');
+    expect(verifierSource).toContain('live_order_mode: "tiny_fill"');
+    expect(verifierSource).toContain("quote_size: quoteSize");
     expect(verifierSource).toContain("GHOLA_VERIFY_HYPERLIQUID_STOP_LOSS must be a positive price");
     expect(verifierSource.match(/postJson\("\/v1\/private-account\/actions\/execute"/g)).toHaveLength(1);
   });

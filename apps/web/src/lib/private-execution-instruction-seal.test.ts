@@ -174,6 +174,9 @@ describe("private execution instruction sealing", () => {
         max_slippage_bps: "50",
         live_order_mode: "tiny_fill",
         tif: "Ioc",
+        leverage: 2,
+        margin_mode: "cross",
+        protective_orders: { stop_loss: "77.35" },
       },
       now: new Date("2026-05-28T00:00:00Z"),
     });
@@ -192,6 +195,58 @@ describe("private execution instruction sealing", () => {
       max_slippage_bps: "50",
       live_order_mode: "tiny_fill",
       tif: "Ioc",
+      reduce_only: false,
+      leverage: 2,
+      margin_mode: "cross",
+      protective_orders: { stop_loss: "77.35" },
+    });
+  });
+
+  it("seals an exact-base Hyperliquid tiny-fill reduce-only close", async () => {
+    const recipientSecret = x25519.utils.randomPrivateKey();
+    const recipientPub = x25519.getPublicKey(recipientSecret);
+    const senderSecret = ed25519.utils.randomPrivateKey();
+    const ownerWalletAddress = bs58.encode(ed25519.getPublicKey(senderSecret));
+    const built = await buildPrivateExecutionInstructionBundle({
+      ownerWalletAddress,
+      previewCommitment: "preview_commitment_hyperliquid_close",
+      runtimeStatus: runtimeWithRecipient("phala:cvm:hyperliquid-live", recipientPub),
+      signBytes: async (bytes) => ed25519.sign(bytes, senderSecret),
+      order: {
+        venue_id: "hyperliquid",
+        operation_class: "limit_order",
+        market: "HYPE",
+        side: "sell",
+        base_size: "0.137844",
+        quote_size: "11",
+        limit_price: "",
+        order_type: "market",
+        size_mode: "base",
+        max_slippage_bps: "50",
+        live_order_mode: "tiny_fill",
+        tif: "Ioc",
+        reduce_only: true,
+        leverage: 1,
+        margin_mode: "cross",
+      },
+    });
+
+    const opened = await open(
+      base64ToBytes(built.encrypted_execution_instruction_bundle.ciphertext),
+      recipientSecret,
+    );
+    const plaintext = JSON.parse(new TextDecoder().decode(opened.plaintext));
+    expect(plaintext.order).toEqual({
+      market: "HYPE",
+      side: "sell",
+      base_size: "0.137844",
+      quote_size: "11",
+      max_slippage_bps: "50",
+      live_order_mode: "tiny_fill",
+      tif: "Ioc",
+      reduce_only: true,
+      leverage: 1,
+      margin_mode: "cross",
     });
   });
 

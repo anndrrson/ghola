@@ -144,10 +144,14 @@ export function buildHyperliquidReduceOnlyClose(
     operation_class: "limit_order",
     side: entry.side === "buy" ? "sell" : "buy",
     base_size: fill.baseSize,
-    quote_size: "",
+    // The mainnet tiny-fill gate requires quote sizing even for reduce-only
+    // orders. The exact reconciled base size remains authoritative for the
+    // close; the original quote size only satisfies the bounded live gate.
+    quote_size: entry.quote_size?.trim() || "",
     limit_price: "",
     order_type: "market",
     size_mode: "base",
+    live_order_mode: "tiny_fill",
     tif: "Ioc",
     reduce_only: true,
     post_only: false,
