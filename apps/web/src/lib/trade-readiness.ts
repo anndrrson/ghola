@@ -42,6 +42,15 @@ export function mergeHyperliquidAccountSnapshot(
   return incoming;
 }
 
+export function hyperliquidAccountTopologyChanged(
+  current: HyperliquidAccountSnapshot | null,
+  incoming: HyperliquidAccountSnapshot,
+): boolean {
+  if (!current) return false;
+  return current.position_count !== incoming.position_count ||
+    current.open_order_count !== incoming.open_order_count;
+}
+
 export function spotVenueReadiness(venue: "coinbase" | "phoenix", status: SpotReadinessStatus | null): TradeReadiness {
   if (!status) return { label: "checking", ready: false, detail: "Checking secure venue availability." };
   const ready = venue === "coinbase" ? status.coinbase_public_live_ready : status.phoenix_public_live_ready;

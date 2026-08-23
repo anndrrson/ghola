@@ -60,6 +60,7 @@ import {
 } from "@/lib/private-account-client";
 import { useMarketData } from "@/lib/market-data-store";
 import {
+  hyperliquidAccountTopologyChanged,
   hyperliquidCredentialsSealed,
   hyperliquidPerpsReadiness,
   hyperliquidSubmissionSignerMode,
@@ -894,6 +895,8 @@ function AlternateProductWorkspace({
   ]);
   const [perpMarketCatalogState, setPerpMarketCatalogState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [hyperliquidAccount, setHyperliquidAccount] = useState<HyperliquidAccountSnapshot | null>(null);
+  const hyperliquidAccountRef = useRef<HyperliquidAccountSnapshot | null>(null);
+  const hyperliquidTopologyReconciliationRef = useRef(false);
   const [hyperliquidConnectionReady, setHyperliquidConnectionReady] = useState(false);
   const [accountState, setAccountState] = useState<"loading" | "ready" | "unavailable">("loading");
   const venues = capabilitiesForProduct(product);
@@ -922,6 +925,11 @@ function AlternateProductWorkspace({
   const referenceMarketProduct = PRODUCTS.includes(requestedReferenceProduct as CoinbaseProductId)
     ? requestedReferenceProduct as CoinbaseProductId
     : null;
+
+  const commitHyperliquidAccount = useCallback((snapshot: HyperliquidAccountSnapshot | null) => {
+    hyperliquidAccountRef.current = snapshot;
+    setHyperliquidAccount(snapshot);
+  }, []);
   const useCoinbaseReference = active && !useHyperliquidMarket && referenceMarketProduct != null;
   const referenceRecord = useMarketData({
     venue: "coinbase",
@@ -1019,7 +1027,7 @@ function AlternateProductWorkspace({
 
   useEffect(() => {
     if (!authenticated) {
-      setHyperliquidAccount(null);
+      commitHyperliquidAccount(null);
       setAccountState("loading");
       return;
     }
@@ -1039,12 +1047,12 @@ function AlternateProductWorkspace({
         if (!response.ok) throw new Error("account unavailable");
         const snapshot = await response.json() as HyperliquidAccountSnapshot;
         if (!cancelled) {
-          setHyperliquidAccount(snapshot);
+          commitHyperliquidAccount(snapshot);
           setAccountState("ready");
         }
       } catch {
         if (!cancelled) {
-          setHyperliquidAccount(null);
+          commitHyperliquidAccount(null);
           setAccountState("unavailable");
         }
       }
@@ -1053,10 +1061,28 @@ function AlternateProductWorkspace({
     const stream = openHyperliquidAccountStream({
       coin: perpMarket,
       onState(snapshot) {
-        if (!cancelled) {
-          setHyperliquidAccount((current) => mergeHyperliquidAccountSnapshot(current, snapshot));
-          setAccountState("ready");
+        if (cancelled) return;
+        const current = hyperliquidAccountRef.current;
+        if (hyperliquidAccountTopologyChanged(current, snapshot)) {
+          if (hyperliquidTopologyReconciliationRef.current) return;
+          hyperliquidTopologyReconciliationRef.current = true;
+          void getHyperliquidAccountSnapshot()
+            .then((authoritative) => {
+              if (!cancelled) {
+                commitHyperliquidAccount(authoritative);
+                setAccountState("ready");
+              }
+            })
+            .catch(() => {
+              if (!cancelled) setAccountState("unavailable");
+            })
+            .finally(() => {
+              hyperliquidTopologyReconciliationRef.current = false;
+            });
+          return;
         }
+        commitHyperliquidAccount(mergeHyperliquidAccountSnapshot(current, snapshot));
+        setAccountState("ready");
       },
       onError() {
         // Preserve the last coherent snapshot while the stream reconnects.
@@ -1067,7 +1093,7 @@ function AlternateProductWorkspace({
       cancelSchedule();
       stream.close();
     };
-  }, [authenticated, perpMarket, useHyperliquidMarket]);
+  }, [authenticated, commitHyperliquidAccount, perpMarket, useHyperliquidMarket]);
 
   useEffect(() => {
     if (!authenticated || !useHyperliquidMarket) return;
@@ -1169,7 +1195,7 @@ function AlternateProductWorkspace({
         kill_switch: false,
       });
       const freshAccount = await getHyperliquidAccountSnapshot();
-      setHyperliquidAccount(freshAccount);
+      commitHyperliquidAccount(freshAccount);
       setAccountState("ready");
       if (freshAccount.status !== "ready_to_trade" || freshAccount.trading_enabled !== true) {
         throw new Error(freshAccount.next_step || "Hyperliquid is not ready for a live order.");
@@ -1358,7 +1384,7 @@ function AlternateProductWorkspace({
         let protection: HyperliquidProtectionProof;
         try {
           const protectedSnapshot = await getHyperliquidAccountSnapshot();
-          setHyperliquidAccount(protectedSnapshot);
+          commitHyperliquidAccount(protectedSnapshot);
           setAccountState("ready");
           protection = proveHyperliquidEntryProtection({
             network: hyperliquidNetwork,
@@ -1390,7 +1416,7 @@ function AlternateProductWorkspace({
 
       setPerpWorking("verify");
       const finalSnapshot = await getHyperliquidAccountSnapshot();
-      setHyperliquidAccount(finalSnapshot);
+      commitHyperliquidAccount(finalSnapshot);
       setAccountState("ready");
       if (hyperliquidAccountIsFlatAndClear(finalSnapshot)) {
         setPreparedPerpClose(null);

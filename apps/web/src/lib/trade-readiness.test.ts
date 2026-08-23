@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { HyperliquidAccountSnapshot } from "@/lib/private-account-client";
 import {
   hyperliquidCredentialsSealed,
+  hyperliquidAccountTopologyChanged,
   hyperliquidPerpsReadiness,
   hyperliquidSubmissionSignerMode,
   mergeHyperliquidAccountSnapshot,
@@ -53,5 +54,26 @@ describe("trade readiness", () => {
     const incoming = { status: "private_mode_waiting", next_step: "Run the no-submit connection check." } as HyperliquidAccountSnapshot;
     expect(mergeHyperliquidAccountSnapshot(current, incoming)).toBe(current);
     expect(mergeHyperliquidAccountSnapshot(null, incoming)).toBe(incoming);
+  });
+
+  it("requires authoritative reconciliation before accepting stream topology changes", () => {
+    const flat = {
+      status: "ready_to_trade",
+      position_count: 0,
+      open_order_count: 0,
+    } as HyperliquidAccountSnapshot;
+    expect(hyperliquidAccountTopologyChanged(flat, {
+      ...flat,
+      open_order_count: 1,
+    })).toBe(true);
+    expect(hyperliquidAccountTopologyChanged(flat, {
+      ...flat,
+      position_count: 1,
+    })).toBe(true);
+    expect(hyperliquidAccountTopologyChanged(flat, {
+      ...flat,
+      last_event_at: "later",
+    })).toBe(false);
+    expect(hyperliquidAccountTopologyChanged(null, flat)).toBe(false);
   });
 });
