@@ -51,6 +51,9 @@ export async function POST(req: Request) {
       close_receipt_commitment: report.close_receipt_commitment,
       final_venue_execution_proven: report.final_venue_execution_proven,
       final_fill_proven: report.final_fill_proven,
+      entry_protection_proven: report.entry_protection_proven ?? false,
+      entry_protection_order_count: report.entry_protection_order_count ?? -1,
+      entry_protection_evidence_commitment: report.entry_protection_evidence_commitment ?? null,
       position_count: report.position_count,
       open_order_count: report.open_order_count,
       evidence_commitment: report.evidence_commitment,
@@ -125,6 +128,9 @@ function parseCanaryReport(body: Record<string, unknown>):
   const closeReceiptCommitment = nullableStringField(body.close_receipt_commitment);
   const finalVenueExecutionProven = body.final_venue_execution_proven === true;
   const finalFillProven = body.final_fill_proven === true;
+  const entryProtectionProven = body.entry_protection_proven === true;
+  const entryProtectionOrderCount = integerField(body.entry_protection_order_count);
+  const entryProtectionEvidenceCommitment = nullableStringField(body.entry_protection_evidence_commitment);
   const positionCount = integerField(body.position_count);
   const openOrderCount = integerField(body.open_order_count);
   if (status === "green" && !receiptCommitment) reasonCodes.push("receipt_commitment_required");
@@ -134,6 +140,11 @@ function parseCanaryReport(body: Record<string, unknown>):
     if (!closeReceiptCommitment) reasonCodes.push("close_receipt_commitment_required");
     if (!finalVenueExecutionProven) reasonCodes.push("final_venue_execution_proof_required");
     if (!finalFillProven) reasonCodes.push("final_fill_proof_required");
+    if (venueId === "hyperliquid") {
+      if (!entryProtectionProven) reasonCodes.push("entry_protection_proof_required");
+      if (entryProtectionOrderCount < 1) reasonCodes.push("entry_protection_order_required");
+      if (!entryProtectionEvidenceCommitment) reasonCodes.push("entry_protection_commitment_required");
+    }
     if (positionCount !== 0) reasonCodes.push("flat_position_required");
     if (openOrderCount !== 0) reasonCodes.push("zero_open_orders_required");
   }
@@ -163,6 +174,9 @@ function parseCanaryReport(body: Record<string, unknown>):
     close_receipt_commitment: closeReceiptCommitment,
     final_venue_execution_proven: finalVenueExecutionProven,
     final_fill_proven: finalFillProven,
+    entry_protection_proven: entryProtectionProven,
+    entry_protection_order_count: entryProtectionOrderCount,
+    entry_protection_evidence_commitment: entryProtectionEvidenceCommitment,
     position_count: positionCount,
     open_order_count: openOrderCount,
     reason: nullableStringField(body.reason),
@@ -198,6 +212,9 @@ function parseCanaryReport(body: Record<string, unknown>):
       close_receipt_commitment: closeReceiptCommitment,
       final_venue_execution_proven: finalVenueExecutionProven,
       final_fill_proven: finalFillProven,
+      entry_protection_proven: entryProtectionProven,
+      entry_protection_order_count: entryProtectionOrderCount,
+      entry_protection_evidence_commitment: entryProtectionEvidenceCommitment,
       position_count: positionCount,
       open_order_count: openOrderCount,
       evidence_commitment: evidenceCommitment,

@@ -76,6 +76,7 @@ try {
     liveTradingGate.body?.release_validation?.reconciliation_failure_order_lock_required === true &&
     liveTradingGate.body?.release_validation?.reduce_only_close_required === true &&
     liveTradingGate.body?.release_validation?.exact_fill_reduce_only_close_required === true &&
+    liveTradingGate.body?.release_validation?.entry_protection_proof_required === true &&
     liveTradingGate.body?.release_validation?.final_flat_zero_orders_required === true &&
     liveTradingGate.body?.release_validation?.release_identity_required === true;
   record("hyperliquid_proof_protocol", proofProtocolReady, liveTradingGate.body?.release_validation || null);
@@ -219,6 +220,9 @@ try {
     Boolean(hyperliquidCanary?.close_receipt_commitment) &&
     hyperliquidCanary?.final_venue_execution_proven === true &&
     hyperliquidCanary?.final_fill_proven === true &&
+    hyperliquidCanary?.entry_protection_proven === true &&
+    hyperliquidCanary?.entry_protection_order_count >= 1 &&
+    Boolean(hyperliquidCanary?.entry_protection_evidence_commitment) &&
     hyperliquidCanary?.position_count === 0 &&
     hyperliquidCanary?.open_order_count === 0;
   record("hyperliquid_round_trip_flat_canary", hyperliquidRoundTripCanaryReady, {
@@ -227,6 +231,9 @@ try {
     close_receipt_present: Boolean(hyperliquidCanary?.close_receipt_commitment),
     final_venue_execution_proven: hyperliquidCanary?.final_venue_execution_proven === true,
     final_fill_proven: hyperliquidCanary?.final_fill_proven === true,
+    entry_protection_proven: hyperliquidCanary?.entry_protection_proven === true,
+    entry_protection_order_count: hyperliquidCanary?.entry_protection_order_count ?? null,
+    entry_protection_commitment_present: Boolean(hyperliquidCanary?.entry_protection_evidence_commitment),
     position_count: hyperliquidCanary?.position_count ?? null,
     open_order_count: hyperliquidCanary?.open_order_count ?? null,
   });
@@ -446,6 +453,9 @@ function summarizeLiveTradingGate(result) {
             close_receipt_commitment: venue.canary_report.close_receipt_commitment || null,
             final_venue_execution_proven: venue.canary_report.final_venue_execution_proven === true,
             final_fill_proven: venue.canary_report.final_fill_proven === true,
+            entry_protection_proven: venue.canary_report.entry_protection_proven === true,
+            entry_protection_order_count: venue.canary_report.entry_protection_order_count ?? null,
+            entry_protection_evidence_commitment: venue.canary_report.entry_protection_evidence_commitment || null,
             position_count: venue.canary_report.position_count ?? null,
             open_order_count: venue.canary_report.open_order_count ?? null,
           } : null,

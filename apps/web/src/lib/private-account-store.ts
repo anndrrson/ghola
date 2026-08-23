@@ -199,6 +199,9 @@ export interface PrivateLiveTradingCanaryReportRecordV1 {
   close_receipt_commitment: string | null;
   final_venue_execution_proven: boolean;
   final_fill_proven: boolean;
+  entry_protection_proven?: boolean;
+  entry_protection_order_count?: number;
+  entry_protection_evidence_commitment?: string | null;
   position_count: number;
   open_order_count: number;
   evidence_commitment: string;
@@ -4090,6 +4093,9 @@ export async function putLiveTradingCanaryReport(
       close_receipt_commitment,
       final_venue_execution_proven,
       final_fill_proven,
+      entry_protection_proven,
+      entry_protection_order_count,
+      entry_protection_evidence_commitment,
       position_count,
       open_order_count,
       evidence_commitment,
@@ -4116,6 +4122,9 @@ export async function putLiveTradingCanaryReport(
       ${record.close_receipt_commitment},
       ${record.final_venue_execution_proven},
       ${record.final_fill_proven},
+      ${record.entry_protection_proven ?? false},
+      ${record.entry_protection_order_count ?? -1},
+      ${record.entry_protection_evidence_commitment ?? null},
       ${record.position_count},
       ${record.open_order_count},
       ${record.evidence_commitment},
@@ -4141,6 +4150,9 @@ export async function putLiveTradingCanaryReport(
       close_receipt_commitment = EXCLUDED.close_receipt_commitment,
       final_venue_execution_proven = EXCLUDED.final_venue_execution_proven,
       final_fill_proven = EXCLUDED.final_fill_proven,
+      entry_protection_proven = EXCLUDED.entry_protection_proven,
+      entry_protection_order_count = EXCLUDED.entry_protection_order_count,
+      entry_protection_evidence_commitment = EXCLUDED.entry_protection_evidence_commitment,
       position_count = EXCLUDED.position_count,
       open_order_count = EXCLUDED.open_order_count,
       evidence_commitment = EXCLUDED.evidence_commitment,
@@ -5807,6 +5819,9 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
       close_receipt_commitment TEXT,
       final_venue_execution_proven BOOLEAN NOT NULL DEFAULT FALSE,
       final_fill_proven BOOLEAN NOT NULL DEFAULT FALSE,
+      entry_protection_proven BOOLEAN NOT NULL DEFAULT FALSE,
+      entry_protection_order_count INTEGER NOT NULL DEFAULT -1,
+      entry_protection_evidence_commitment TEXT,
       position_count INTEGER NOT NULL DEFAULT -1,
       open_order_count INTEGER NOT NULL DEFAULT -1,
       evidence_commitment TEXT NOT NULL,
@@ -5820,6 +5835,9 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
   await sql`ALTER TABLE private_account_live_trading_canary_reports ADD COLUMN IF NOT EXISTS close_receipt_commitment TEXT`;
   await sql`ALTER TABLE private_account_live_trading_canary_reports ADD COLUMN IF NOT EXISTS final_venue_execution_proven BOOLEAN NOT NULL DEFAULT FALSE`;
   await sql`ALTER TABLE private_account_live_trading_canary_reports ADD COLUMN IF NOT EXISTS final_fill_proven BOOLEAN NOT NULL DEFAULT FALSE`;
+  await sql`ALTER TABLE private_account_live_trading_canary_reports ADD COLUMN IF NOT EXISTS entry_protection_proven BOOLEAN NOT NULL DEFAULT FALSE`;
+  await sql`ALTER TABLE private_account_live_trading_canary_reports ADD COLUMN IF NOT EXISTS entry_protection_order_count INTEGER NOT NULL DEFAULT -1`;
+  await sql`ALTER TABLE private_account_live_trading_canary_reports ADD COLUMN IF NOT EXISTS entry_protection_evidence_commitment TEXT`;
   await sql`ALTER TABLE private_account_live_trading_canary_reports ADD COLUMN IF NOT EXISTS position_count INTEGER NOT NULL DEFAULT -1`;
   await sql`ALTER TABLE private_account_live_trading_canary_reports ADD COLUMN IF NOT EXISTS open_order_count INTEGER NOT NULL DEFAULT -1`;
   await sql`
@@ -6686,6 +6704,9 @@ function liveTradingCanaryReportRow(row: LiveTradingCanaryReportRow): PrivateLiv
     close_receipt_commitment: row.close_receipt_commitment ?? null,
     final_venue_execution_proven: Boolean(row.final_venue_execution_proven),
     final_fill_proven: Boolean(row.final_fill_proven),
+    entry_protection_proven: Boolean(row.entry_protection_proven),
+    entry_protection_order_count: Number(row.entry_protection_order_count ?? -1),
+    entry_protection_evidence_commitment: row.entry_protection_evidence_commitment ?? null,
     position_count: Number(row.position_count),
     open_order_count: Number(row.open_order_count),
     evidence_commitment: row.evidence_commitment,

@@ -339,6 +339,10 @@ export interface HyperliquidAccountSnapshot {
     price_bucket: string;
     status: string;
     reduce_only: boolean;
+    is_trigger?: boolean;
+    trigger_kind?: "sl" | "tp" | null;
+    trigger_price_bucket?: string;
+    trigger_price_commitment?: string | null;
   }>;
   recent_fills?: Array<{
     fill_commitment: string;

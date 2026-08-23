@@ -73,6 +73,10 @@ import {
   provenHyperliquidFill,
   type HyperliquidConnectorResult,
 } from "@/lib/hyperliquid-trade-lifecycle";
+import {
+  proveHyperliquidEntryProtection,
+  type HyperliquidProtectionProof,
+} from "@/lib/hyperliquid-protection-proof";
 
 type LiveStep = "idle" | "prepared" | "submitted";
 
@@ -153,6 +157,7 @@ type PerpAttemptState = {
   order: PrivateExecutionOrderDraft;
   status: "awaiting_reconciliation" | "ambiguous" | "reconciled" | "failed";
   result: HyperliquidConnectorResult | null;
+  protection: HyperliquidProtectionProof | null;
 };
 
 type PreparedPerpClose = {
@@ -1163,6 +1168,19 @@ function AlternateProductWorkspace({
         max_order_count: 100,
         kill_switch: false,
       });
+      const freshAccount = await getHyperliquidAccountSnapshot();
+      setHyperliquidAccount(freshAccount);
+      setAccountState("ready");
+      if (freshAccount.status !== "ready_to_trade" || freshAccount.trading_enabled !== true) {
+        throw new Error(freshAccount.next_step || "Hyperliquid is not ready for a live order.");
+      }
+      if (perpOrder.reduce_only) {
+        if (freshAccount.position_count === 0) {
+          throw new Error("Hyperliquid reports no open position to reduce.");
+        }
+      } else if (!hyperliquidAccountIsFlatAndClear(freshAccount)) {
+        throw new Error(`A new entry requires a flat account with zero working orders. Hyperliquid reports ${freshAccount.position_count} position(s) and ${freshAccount.open_order_count} order(s).`);
+      }
       const reviewedNotional = String(perpNotional || Number(amount));
       const safeInput = perpSafeInput(perpMarket, reviewedNotional);
       const intent = await createPrivateAccountIntent(safeInput) as { intent_id?: string };
@@ -1271,6 +1289,7 @@ function AlternateProductWorkspace({
         order: reviewed.order,
         status: "awaiting_reconciliation",
         result: null,
+        protection: null,
       });
       setPerpNotice("Hyperliquid acknowledged the request. Checking the exact client-order ID before any next action.");
       await reconcilePerpOrder(reviewed.previewCommitment, reviewed.order);
@@ -1282,6 +1301,7 @@ function AlternateProductWorkspace({
           order: reviewed.order,
           status: "ambiguous",
           result: null,
+          protection: null,
         });
         setPerpError(failure.message);
         await reconcilePerpOrder(reviewed.previewCommitment, reviewed.order);
@@ -1291,6 +1311,7 @@ function AlternateProductWorkspace({
           order: reviewed.order,
           status: "failed",
           result: null,
+          protection: null,
         });
         setPerpError(failure.message);
       }
@@ -1311,7 +1332,7 @@ function AlternateProductWorkspace({
       const result = reconciled.connector_result ?? null;
       if (!result) throw new Error("connector_reconcile_failed");
       if (result.status === "ambiguous") {
-        setPerpAttempt({ previewCommitment, order, status: "ambiguous", result });
+        setPerpAttempt({ previewCommitment, order, status: "ambiguous", result, protection: null });
         setPerpError(classifyHyperliquidTradeFailure(new Error("connector_submit_ambiguous")).message);
         setPerpNotice(null);
         return;
@@ -1321,24 +1342,51 @@ function AlternateProductWorkspace({
         // A reconciliation transport failure must never reopen the order
         // ticket: keep the exact CLOID locked and allow only another status
         // check or a risk-reducing action.
-        setPerpAttempt({ previewCommitment, order, status: "ambiguous", result });
+        setPerpAttempt({ previewCommitment, order, status: "ambiguous", result, protection: null });
         setPerpError(`${classifyHyperliquidTradeFailure(new Error(result.reason || "connector_reconcile_failed")).message} This exact order remains locked.`);
         setPerpNotice(null);
         return;
       }
       const fill = provenHyperliquidFill(result);
       if (!fill) {
-        setPerpAttempt({ previewCommitment, order, status: "ambiguous", result });
+        setPerpAttempt({ previewCommitment, order, status: "ambiguous", result, protection: null });
         setPerpError("Hyperliquid has not returned exact final fill proof. This order remains locked and will not be retried.");
         setPerpNotice(null);
         return;
       }
-      setPerpAttempt({ previewCommitment, order, status: "reconciled", result });
       if (!order.reduce_only) {
-        setPerpNotice(`Entry fill proven for ${fill.baseSize} ${order.market}. Prepare the exact reduce-only close next.`);
-        setPerpError(null);
+        let protection: HyperliquidProtectionProof;
+        try {
+          const protectedSnapshot = await getHyperliquidAccountSnapshot();
+          setHyperliquidAccount(protectedSnapshot);
+          setAccountState("ready");
+          protection = proveHyperliquidEntryProtection({
+            network: hyperliquidNetwork,
+            order,
+            snapshot: protectedSnapshot,
+          });
+        } catch {
+          protection = proveHyperliquidEntryProtection({
+            network: hyperliquidNetwork,
+            order,
+            snapshot: null,
+          });
+        }
+        setPerpAttempt({ previewCommitment, order, status: "reconciled", result, protection });
+        if (protection.status === "proven") {
+          setPerpNotice(`Entry fill and ${protection.matched_order_count} exact reduce-only protection order(s) proven for ${fill.baseSize} ${order.market}.`);
+          setPerpError(null);
+        } else if (protection.status === "not_requested") {
+          setPerpNotice(`Entry fill proven for ${fill.baseSize} ${order.market}. Prepare the exact reduce-only close next.`);
+          setPerpError(null);
+        } else {
+          setPerpNotice(null);
+          setPerpError(`Entry fill is proven, but the exact reduce-only protection is not. No retry will occur; prepare the exact reduce-only close now.`);
+        }
         return;
       }
+
+      setPerpAttempt({ previewCommitment, order, status: "reconciled", result, protection: null });
 
       setPerpWorking("verify");
       const finalSnapshot = await getHyperliquidAccountSnapshot();
@@ -1359,6 +1407,7 @@ function AlternateProductWorkspace({
         order,
         status: "ambiguous",
         result: current?.result ?? null,
+        protection: current?.protection ?? null,
       }));
       setPerpError(`${failure.message} This exact order remains locked.`);
       setPerpNotice(null);
@@ -1729,7 +1778,9 @@ function AlternateProductWorkspace({
                   onClick={preparePerpReduceOnlyClose}
                   className="mt-2 inline-flex h-11 w-full items-center justify-center rounded-md border border-amber-300/40 bg-amber-300/10 px-4 text-sm font-semibold text-amber-100 hover:bg-amber-300/15 disabled:opacity-50"
                 >
-                  Prepare exact reduce-only close
+                  {perpAttempt.protection?.status === "unproven"
+                    ? "Prepare reduce-only close now"
+                    : "Prepare exact reduce-only close"}
                 </button>
               )}
               {product === "perps" && (

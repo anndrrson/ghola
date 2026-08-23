@@ -117,6 +117,7 @@ import {
   workerCapabilityExpectedFromBody,
 } from "@/lib/private-agent-capability";
 import { resolveHyperliquidWorkerUrl } from "@/lib/private-account-worker-routing";
+import { hyperliquidTriggerPriceCommitment } from "@/lib/hyperliquid-protection-proof";
 import {
   getPooledWorkerReadiness,
   pooledWorkerVenueGateFromReadiness,
@@ -2783,7 +2784,10 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
         next_step: "Worker returned unsafe account data.",
       });
     }
-    const snapshot = normalizeHyperliquidAccountSnapshot(raw, accountSource);
+    const frontendOpenOrders = hasVault && vault?.vault.signer_binding
+      ? await hyperliquidFrontendOpenOrdersForBinding(vault.vault.signer_binding)
+      : null;
+    const snapshot = normalizeHyperliquidAccountSnapshot(raw, accountSource, frontendOpenOrders);
     return {
       ...snapshot,
       trading_enabled: snapshot.trading_enabled && Boolean(connectionProof),
@@ -6671,6 +6675,7 @@ function normalizeHyperliquidManagedAllocation(
 function normalizeHyperliquidAccountSnapshot(
   value: Record<string, unknown>,
   fallbackSource: "sealed_byo" | "ghola_managed" | "ghola_pooled" | "none",
+  verifiedFrontendOpenOrders: { network: "mainnet" | "testnet"; orders: unknown[] } | null = null,
 ) {
   const status = stringValue(value.status);
   const normalizedStatus = isHyperliquidAccountSnapshotStatus(status)
@@ -6678,6 +6683,15 @@ function normalizeHyperliquidAccountSnapshot(
     : "worker_unavailable";
   const source = stringValue(value.account_source);
   const equityBucket = stringValue(value.equity_bucket);
+  const positions = normalizeHyperliquidSnapshotPositions(value.positions);
+  const openOrders = verifiedFrontendOpenOrders === null
+    ? normalizeHyperliquidSnapshotOpenOrders(value.open_orders)
+    : normalizeHyperliquidFrontendOpenOrders(
+        verifiedFrontendOpenOrders.orders,
+        verifiedFrontendOpenOrders.network,
+      );
+  const recentFills = normalizeHyperliquidSnapshotFills(value.recent_fills);
+  const visibility = objectBody(value.visibility_summary);
   return {
     version: 1,
     platform_class: "hyperliquid_style_market" as const,
@@ -6690,11 +6704,202 @@ function normalizeHyperliquidAccountSnapshot(
     equity_bucket: equityBucket === "none" || equityBucket === "low" || equityBucket === "ready"
       ? equityBucket
       : "unknown",
-    position_count: Math.max(0, Math.min(100, Math.floor(numberValue(value.position_count) || 0))),
-    open_order_count: Math.max(0, Math.min(100, Math.floor(numberValue(value.open_order_count) || 0))),
+    position_count: positions.length,
+    open_order_count: openOrders.length,
+    stream_status: normalizeHyperliquidStreamStatus(value.stream_status),
+    positions,
+    open_orders: openOrders,
+    recent_fills: recentFills,
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: stringValue(visibility.ghola_operator_sees) || "commitment_and_ciphertext_only",
+      hyperliquid_sees: stringValue(visibility.hyperliquid_sees) || "execution_account_and_order_activity",
+      public_chain_sees: stringValue(visibility.public_chain_sees) || "no_direct_main_wallet_trade_settlement",
+    },
     last_checked_at: stringValue(value.last_checked_at) || new Date().toISOString(),
+    last_event_at: stringValue(value.last_event_at) || undefined,
     next_step: stringValue(value.next_step) || hyperliquidSnapshotNextStep(normalizedStatus),
   };
+}
+
+async function hyperliquidFrontendOpenOrdersForBinding(
+  binding: VerifiedHyperliquidSignerBinding,
+): Promise<{ network: "mainnet" | "testnet"; orders: unknown[] } | null> {
+  const baseUrl = binding.network === "testnet"
+    ? "https://api.hyperliquid-testnet.xyz"
+    : "https://api.hyperliquid.xyz";
+  try {
+    const response = await fetchWithTimeout(`${baseUrl}/info`, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "frontendOpenOrders", user: binding.owner_address }),
+    });
+    if (!response.ok) return null;
+    const body = await response.json().catch(() => null);
+    return Array.isArray(body) ? { network: binding.network, orders: body } : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeHyperliquidSnapshotPositions(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 24).flatMap((candidate) => {
+    const row = objectBody(candidate);
+    const side = stringValue(row.side);
+    const market = stringValue(row.market).toUpperCase();
+    const positionCommitment = stringValue(row.position_commitment);
+    if (!market || !positionCommitment || (side !== "long" && side !== "short")) return [];
+    return [{
+      position_commitment: positionCommitment,
+      market,
+      side,
+      size_bucket: stringValue(row.size_bucket) || "unknown",
+      entry_price_bucket: stringValue(row.entry_price_bucket) || "unknown",
+      unrealized_pnl_bucket: stringValue(row.unrealized_pnl_bucket) || "none",
+    }];
+  });
+}
+
+function normalizeHyperliquidSnapshotOpenOrders(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 50).flatMap((candidate) => {
+    const row = objectBody(candidate);
+    const market = stringValue(row.market).toUpperCase();
+    const orderHandleCommitment = stringValue(row.order_handle_commitment);
+    const side = normalizeHyperliquidOrderSide(row.side);
+    if (!market || !orderHandleCommitment) return [];
+    return [{
+      order_handle_commitment: orderHandleCommitment,
+      market,
+      side,
+      size_bucket: stringValue(row.size_bucket) || "unknown",
+      price_bucket: stringValue(row.price_bucket) || "unknown",
+      status: stringValue(row.status) || "open",
+      reduce_only: row.reduce_only === true,
+      is_trigger: row.is_trigger === true,
+      trigger_kind: normalizeHyperliquidTriggerKind(row.trigger_kind),
+      trigger_price_bucket: stringValue(row.trigger_price_bucket) || undefined,
+      trigger_price_commitment: stringValue(row.trigger_price_commitment) || null,
+    }];
+  });
+}
+
+function normalizeHyperliquidFrontendOpenOrders(
+  value: unknown[],
+  network: "mainnet" | "testnet",
+) {
+  const flattened: Record<string, unknown>[] = [];
+  const visit = (candidate: unknown) => {
+    const row = objectBody(candidate);
+    if (Object.keys(row).length === 0) return;
+    flattened.push(row);
+    if (Array.isArray(row.children)) row.children.forEach(visit);
+  };
+  value.forEach(visit);
+
+  const seen = new Set<string>();
+  return flattened.slice(0, 100).flatMap((row) => {
+    const market = stringValue(row.coin).toUpperCase();
+    const oid = numberValue(row.oid);
+    const cloid = stringValue(row.cloid);
+    const identity = oid > 0 ? `oid:${oid}` : cloid ? `cloid:${cloid.toLowerCase()}` : "";
+    if (!market || !identity || seen.has(identity)) return [];
+    seen.add(identity);
+    const triggerPrice = stringValue(row.triggerPx);
+    const orderType = stringValue(row.orderType).toLowerCase();
+    const triggerKind = orderType.startsWith("stop")
+      ? "sl" as const
+      : orderType.startsWith("take profit")
+        ? "tp" as const
+        : null;
+    const isTrigger = row.isTrigger === true;
+    return [{
+      order_handle_commitment: gholaCommitment("hyperliquid_open_order", {
+        oid,
+        cloid: cloid || null,
+        coin: market,
+        side: stringValue(row.side),
+        timestamp: numberValue(row.timestamp),
+      }),
+      market,
+      side: normalizeHyperliquidOrderSide(row.side),
+      size_bucket: hyperliquidDecimalBucket(row.sz ?? row.origSz),
+      price_bucket: hyperliquidDecimalBucket(row.limitPx),
+      status: "open",
+      reduce_only: row.reduceOnly === true,
+      is_trigger: isTrigger,
+      trigger_kind: isTrigger ? triggerKind : null,
+      trigger_price_bucket: isTrigger ? hyperliquidDecimalBucket(triggerPrice) : undefined,
+      trigger_price_commitment: isTrigger && triggerPrice
+        ? hyperliquidTriggerPriceCommitment({
+            network,
+            market,
+            triggerPrice,
+          })
+        : null,
+    }];
+  });
+}
+
+function normalizeHyperliquidSnapshotFills(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 24).flatMap((candidate) => {
+    const row = objectBody(candidate);
+    const market = stringValue(row.market).toUpperCase();
+    const fillCommitment = stringValue(row.fill_commitment);
+    if (!market || !fillCommitment) return [];
+    return [{
+      fill_commitment: fillCommitment,
+      market,
+      side: normalizeHyperliquidOrderSide(row.side),
+      size_bucket: stringValue(row.size_bucket) || "unknown",
+      price_bucket: stringValue(row.price_bucket) || "unknown",
+      fee_bucket: stringValue(row.fee_bucket) || "none",
+      time_bucket: stringValue(row.time_bucket) || "unknown",
+    }];
+  });
+}
+
+function normalizeHyperliquidOrderSide(value: unknown): "buy" | "sell" | "unknown" {
+  const side = stringValue(value).toLowerCase();
+  if (side === "b" || side === "buy") return "buy";
+  if (side === "a" || side === "sell") return "sell";
+  return "unknown";
+}
+
+function normalizeHyperliquidTriggerKind(value: unknown): "sl" | "tp" | null {
+  const kind = stringValue(value).toLowerCase();
+  return kind === "sl" || kind === "tp" ? kind : null;
+}
+
+function normalizeHyperliquidStreamStatus(value: unknown) {
+  const status = stringValue(value);
+  return [
+    "connecting",
+    "live",
+    "reconnecting",
+    "backfilling",
+    "snapshot",
+    "worker_unavailable",
+    "venue_access_required",
+    "needs_funds",
+  ].includes(status) ? status : "snapshot";
+}
+
+function hyperliquidDecimalBucket(value: unknown): string {
+  const decimal = Number(value);
+  if (!Number.isFinite(decimal) || decimal === 0) return "none";
+  const absolute = Math.abs(decimal);
+  if (absolute < 0.001) return "<0.001";
+  if (absolute < 0.01) return "0.001-0.01";
+  if (absolute < 0.1) return "0.01-0.1";
+  if (absolute < 1) return "0.1-1";
+  if (absolute < 10) return "1-10";
+  if (absolute < 100) return "10-100";
+  if (absolute < 1_000) return "100-1000";
+  return ">=1000";
 }
 
 function localHyperliquidAccountSnapshot(input: {

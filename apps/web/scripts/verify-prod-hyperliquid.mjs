@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ed25519 } from "@noble/curves/ed25519";
@@ -304,6 +305,16 @@ async function runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBp
   ) {
     throw new Error("Live entry did not return a proven exact fill; close was not attempted.");
   }
+  const protectionSnapshot = await postJson("/v1/private-account/hyperliquid/account-snapshot", {});
+  const entryProtection = proveHyperliquidEntryProtection({
+    network,
+    market,
+    side: "buy",
+    stopLoss,
+    snapshot: protectionSnapshot,
+  });
+  record("live_hyperliquid_entry_protection", entryProtection.proven, entryProtection);
+  assertSafeArtifact("live_hyperliquid_protection_snapshot", protectionSnapshot);
   const close = await runLiveOrder({
     recipient,
     market,
@@ -325,6 +336,9 @@ async function runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBp
   });
   assertSafeArtifact("live_hyperliquid_final_snapshot", finalSnapshot);
   if (!flat) throw new Error("Live proof ended with a position or open order; manual intervention is required.");
+  if (!entryProtection.proven) {
+    throw new Error("The entry was closed safely, but its exact reduce-only stop was not proven. A green canary was not recorded.");
+  }
   if (!internalToken) throw new Error("GHOLA_VERIFY_INTERNAL_TOKEN is required to record a live release canary.");
   const canary = await postJson("/v1/private-account/live-trading/canary-report", {
     venue_id: "hyperliquid",
@@ -344,6 +358,9 @@ async function runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBp
     close_receipt_commitment: close.receipt.receipt_commitment || null,
     final_venue_execution_proven: true,
     final_fill_proven: true,
+    entry_protection_proven: true,
+    entry_protection_order_count: entryProtection.matched_order_count,
+    entry_protection_evidence_commitment: entryProtection.evidence_commitment,
     position_count: finalSnapshot.position_count,
     open_order_count: finalSnapshot.open_order_count,
     observed_at: new Date().toISOString(),
@@ -357,6 +374,9 @@ async function runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBp
     close: liveOrderSummary(close),
     final_venue_execution_proven: true,
     final_fill_proven: true,
+    entry_protection_proven: true,
+    entry_protection_order_count: entryProtection.matched_order_count,
+    entry_protection_evidence_commitment: entryProtection.evidence_commitment,
     position_count: finalSnapshot.position_count,
     open_order_count: finalSnapshot.open_order_count,
   });
@@ -501,6 +521,80 @@ function liveOrderSummary(value) {
     claim_status: value.receipt.claim_status || null,
     final_proof: value.execution.connector_result?.final_proof || null,
   };
+}
+
+function proveHyperliquidEntryProtection({ network, market, side, stopLoss, snapshot }) {
+  const normalizedMarket = String(market || "").trim().toUpperCase();
+  const expectedTriggerCommitment = hyperliquidTriggerPriceCommitment({
+    network,
+    market: normalizedMarket,
+    triggerPrice: stopLoss,
+  });
+  const protectiveSide = side === "buy" ? "sell" : "buy";
+  const positionSide = side === "buy" ? "long" : "short";
+  const openOrders = Array.isArray(snapshot?.open_orders) ? snapshot.open_orders : [];
+  const matchingOrders = openOrders.filter((order) =>
+    String(order?.market || "").trim().toUpperCase() === normalizedMarket &&
+    order?.side === protectiveSide &&
+    order?.reduce_only === true &&
+    order?.is_trigger === true &&
+    order?.trigger_kind === "sl" &&
+    Boolean(expectedTriggerCommitment) &&
+    order?.trigger_price_commitment === expectedTriggerCommitment
+  );
+  const positionMatches = snapshot?.position_count === 1 &&
+    Array.isArray(snapshot?.positions) &&
+    snapshot.positions.some((position) =>
+      String(position?.market || "").trim().toUpperCase() === normalizedMarket &&
+      position?.side === positionSide
+    );
+  const matchedCommitments = Array.from(new Set(
+    matchingOrders.map((order) => String(order?.order_handle_commitment || "")).filter(Boolean),
+  ));
+  const proven = positionMatches &&
+    snapshot?.open_order_count === 1 &&
+    openOrders.length === 1 &&
+    matchedCommitments.length === 1;
+  return {
+    proven,
+    matched_order_count: matchedCommitments.length,
+    evidence_commitment: gholaCommitment("hyperliquid_entry_protection", {
+      network,
+      market: normalizedMarket,
+      expected_trigger_commitment: expectedTriggerCommitment,
+      matching_order_commitments: matchedCommitments,
+      position_count: snapshot?.position_count ?? null,
+      open_order_count: snapshot?.open_order_count ?? null,
+      checked_at: snapshot?.last_checked_at ?? null,
+    }),
+    checked_at: snapshot?.last_checked_at ?? null,
+  };
+}
+
+function hyperliquidTriggerPriceCommitment({ network, market, triggerPrice }) {
+  const parsed = Number(triggerPrice);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  const canonicalPrice = parsed.toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
+  return gholaCommitment("hyperliquid_trigger_price", {
+    network,
+    market: String(market || "").trim().toUpperCase(),
+    trigger_price: canonicalPrice,
+  });
+}
+
+function gholaCommitment(prefix, value) {
+  return `${prefix}_${createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 48)}`;
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function delay(ms) {

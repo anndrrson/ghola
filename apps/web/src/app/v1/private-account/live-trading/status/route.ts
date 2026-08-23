@@ -222,6 +222,7 @@ export async function liveTradingStatusResponse(input: {
       reconciliation_failure_order_lock_required: true,
       reduce_only_close_required: true,
       exact_fill_reduce_only_close_required: true,
+      entry_protection_proof_required: true,
       final_flat_zero_orders_required: true,
       release_identity_required: true,
     },
@@ -757,6 +758,15 @@ function evaluateCanary(
   }
   if (!report.final_venue_execution_proven) reasonCodes.push("canary_final_execution_unproven");
   if (!report.final_fill_proven) reasonCodes.push("canary_final_fill_unproven");
+  if (venueId === "hyperliquid") {
+    if (!report.entry_protection_proven) reasonCodes.push("canary_entry_protection_unproven");
+    if ((report.entry_protection_order_count ?? -1) < 1) {
+      reasonCodes.push("canary_entry_protection_order_missing");
+    }
+    if (!report.entry_protection_evidence_commitment) {
+      reasonCodes.push("canary_entry_protection_commitment_missing");
+    }
+  }
   if (report.position_count !== 0) reasonCodes.push("canary_position_not_flat");
   if (report.open_order_count !== 0) reasonCodes.push("canary_open_orders_remaining");
   if (

@@ -35,6 +35,9 @@ function greenBody() {
     close_receipt_commitment: "receipt_close_test",
     final_venue_execution_proven: true,
     final_fill_proven: true,
+    entry_protection_proven: true,
+    entry_protection_order_count: 1,
+    entry_protection_evidence_commitment: "entry_protection_test",
     position_count: 0,
     open_order_count: 0,
     observed_at: new Date().toISOString(),
@@ -79,6 +82,24 @@ describe("live-trading canary report", () => {
     expect(body.report.position_count).toBe(0);
     expect(body.report.open_order_count).toBe(0);
     expect(body.report.final_venue_execution_proven).toBe(true);
+    expect(body.report.entry_protection_proven).toBe(true);
     expect(body.report.close_receipt_commitment).toBe("receipt_close_test");
+  });
+
+  it("rejects a green Hyperliquid canary without exact entry protection", async () => {
+    const response = await POST(request({
+      ...greenBody(),
+      entry_protection_proven: false,
+      entry_protection_order_count: 0,
+      entry_protection_evidence_commitment: null,
+    }));
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.reason_codes).toEqual(expect.arrayContaining([
+      "entry_protection_proof_required",
+      "entry_protection_order_required",
+      "entry_protection_commitment_required",
+    ]));
   });
 });
