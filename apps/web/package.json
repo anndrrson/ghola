@@ -11,7 +11,7 @@
     "test": "vitest run",
     "test:workflow": "vitest run --config vitest.workflow.config.ts",
     "security:check": "npm test && npm run lint",
-    "test:auth": "vitest run src/lib/thumper-api.test.ts src/app/api/auth/session/email/signin/route.test.ts src/app/api/auth/session/email/signup/route.test.ts",
+    "test:auth": "vitest run src/lib/thumper-api.test.ts src/lib/google-auth.test.ts src/app/api/auth/session/email/signin/route.test.ts src/app/api/auth/session/email/signup/route.test.ts src/app/api/auth/session/google/callback/route.test.ts",
     "smoke:auth": "node scripts/smoke-auth.mjs",
     "smoke:auction-local": "node scripts/ghola-auction-local-e2e.mjs",
     "smoke:auction-devnet": "GHOLA_AUCTION_SMOKE_CLUSTER=devnet node scripts/ghola-auction-local-e2e.mjs",

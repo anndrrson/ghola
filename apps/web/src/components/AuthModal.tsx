@@ -1,13 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
-import { thumperGoogleSignIn, thumperSignIn, thumperSignUp } from "@/lib/thumper-api";
+import { thumperSignIn, thumperSignUp } from "@/lib/thumper-api";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { GholaLogo } from "@/components/GholaLogo";
+import {
+  googleIdentityApi,
+  initializeGoogleRedirect,
+} from "@/lib/google-auth-client";
 
 export type AuthMode = "signin" | "signup";
 
@@ -19,29 +23,6 @@ type AuthModalProps = {
   redirectTo?: string | null;
   reason?: "chat-private" | "hyperliquid-setup";
 };
-
-type GoogleIdentityApi = {
-  initialize: (config: {
-    client_id: string;
-    callback: (response: { credential: string }) => void;
-  }) => void;
-  renderButton: (
-    element: HTMLElement,
-    config: {
-      theme?: string;
-      size?: string;
-      width?: number;
-      text?: string;
-      shape?: string;
-    },
-  ) => void;
-};
-
-function googleIdentityApi() {
-  return (window as typeof window & {
-    google?: { accounts?: { id?: GoogleIdentityApi } };
-  }).google?.accounts?.id;
-}
 
 function passwordStrength(password: string) {
   if (password.length < 12) return { label: "Weak", score: 1, color: "bg-red-500" };
@@ -114,32 +95,6 @@ export function AuthModal({
     };
   }, [mounted, onClose]);
 
-  const handleGoogleCredential = useCallback(async (credential: string) => {
-    setError("");
-    setLoading(true);
-    try {
-      const res = await thumperGoogleSignIn(credential);
-      setAuth({
-        id: res.user.id,
-        email: res.user.email,
-        name: res.user.name,
-      });
-      if (!walletAddress && res.user.email) {
-        try {
-          await createWallet(res.user.email);
-        } catch {
-          // Wallet creation can be completed later from the account surface.
-        }
-      }
-      onClose();
-      if (redirectTo) router.push(redirectTo);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Google sign-in failed");
-    } finally {
-      setLoading(false);
-    }
-  }, [createWallet, onClose, redirectTo, router, setAuth, walletAddress]);
-
   useEffect(() => {
     if (!mounted || !googleClientId || !googleAvailable) return;
 
@@ -148,10 +103,7 @@ export function AuthModal({
       if (cancelled || !googleButtonRef.current) return;
       const google = googleIdentityApi();
       if (!google) return;
-      google.initialize({
-        client_id: googleClientId,
-        callback: (response) => void handleGoogleCredential(response.credential),
-      });
+      initializeGoogleRedirect(google, googleClientId, redirectTo || "/trade");
       google.renderButton(googleButtonRef.current, {
         theme: "filled_black",
         size: "large",
@@ -182,7 +134,7 @@ export function AuthModal({
       cancelled = true;
       script.removeEventListener("load", renderGoogleButton);
     };
-  }, [googleAvailable, googleClientId, handleGoogleCredential, mounted]);
+  }, [googleAvailable, googleClientId, mounted, redirectTo]);
 
   if (!mounted) return null;
 

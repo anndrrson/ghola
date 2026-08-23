@@ -1,37 +1,16 @@
 "use client";
 
-import { useState, useEffect, useCallback, Suspense } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
-import { thumperSignUp, thumperGoogleSignIn } from "@/lib/thumper-api";
+import { thumperSignUp } from "@/lib/thumper-api";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { GholaLogo } from "@/components/GholaLogo";
-
-declare global {
-  interface Window {
-    google?: {
-      accounts: {
-        id: {
-          initialize: (config: {
-            client_id: string;
-            callback: (response: { credential: string }) => void;
-          }) => void;
-          renderButton: (
-            element: HTMLElement,
-            config: {
-              theme?: string;
-              size?: string;
-              width?: number;
-              text?: string;
-              shape?: string;
-            }
-          ) => void;
-        };
-      };
-    };
-  }
-}
+import {
+  googleIdentityApi,
+  initializeGoogleRedirect,
+} from "@/lib/google-auth-client";
 
 function getPasswordStrength(password: string): {
   level: "weak" | "fair" | "good" | "strong";
@@ -111,48 +90,21 @@ function SignUpContent() {
   const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
   const twitterEnabled = process.env.NEXT_PUBLIC_TWITTER_ENABLED === "true";
 
-  const handleGoogleCredential = useCallback(
-    async (credential: string) => {
-      setError("");
-      setLoading(true);
-      try {
-        const res = await thumperGoogleSignIn(credential);
-        setAuth({
-          id: res.user.id,
-          email: res.user.email,
-          name: res.user.name,
-        });
-        // Create Turnkey wallet if not already present
-        if (!walletAddress && res.user.email) {
-          try {
-            await createWallet(res.user.email);
-          } catch {
-            // Non-fatal — wallet can be created later
-          }
-        }
-        router.push(redirectTo + extraParams);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Google sign-in failed");
-      } finally {
-        setLoading(false);
-      }
-    },
-    [setAuth, createWallet, walletAddress, router, redirectTo, extraParams]
-  );
-
   useEffect(() => {
     if (!googleClientId) return;
     const script = document.createElement("script");
     script.src = "https://accounts.google.com/gsi/client";
     script.async = true;
     script.onload = () => {
-      window.google?.accounts.id.initialize({
-        client_id: googleClientId,
-        callback: (response) => handleGoogleCredential(response.credential),
-      });
+      const google = googleIdentityApi();
+      if (!google) {
+        setGoogleAvailable(false);
+        return;
+      }
+      initializeGoogleRedirect(google, googleClientId, redirectTo + extraParams);
       const btn = document.getElementById("google-signin-btn");
       if (btn) {
-        window.google?.accounts.id.renderButton(btn, {
+        google.renderButton(btn, {
           theme: "filled_black",
           size: "large",
           width: 350,
@@ -168,7 +120,13 @@ function SignUpContent() {
     return () => {
       document.body.removeChild(script);
     };
-  }, [googleClientId, handleGoogleCredential]);
+  }, [extraParams, googleClientId, redirectTo]);
+
+  useEffect(() => {
+    if (searchParams.get("google_error")) {
+      setError("Google sign-in failed. Please try again or use email.");
+    }
+  }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

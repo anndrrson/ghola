@@ -1,14 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   applyNoStore,
-  fetchSessionUser,
-  fetchWithTimeout,
-  invalidSessionStatus,
   NO_STORE_HEADERS,
   sameOrigin,
-  THUMPER_API_BASE,
   withSessionCookie,
 } from "../_lib";
+import { exchangeGoogleCredential } from "./_exchange";
 
 export async function POST(req: NextRequest) {
   if (!sameOrigin(req)) {
@@ -18,9 +15,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let body: string;
+  let idToken: string;
   try {
-    body = await req.text();
+    const body = (await req.json()) as { id_token?: unknown };
+    if (typeof body.id_token !== "string") throw new Error("missing credential");
+    idToken = body.id_token;
   } catch {
     return NextResponse.json(
       { error: "Invalid request" },
@@ -28,54 +27,15 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  try {
-    const upstream = await fetchWithTimeout(
-      `${THUMPER_API_BASE}/api/auth/google`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-      },
-    );
-    const raw = await upstream.text();
-    if (!upstream.ok) {
-      return NextResponse.json(
-        { error: safeError(raw, upstream.status) },
-        { status: upstream.status, headers: NO_STORE_HEADERS },
-      );
-    }
-
-    const parsed = JSON.parse(raw) as { token?: string };
-    const token = parsed.token;
-    if (!token) {
-      return NextResponse.json(
-        { error: "Missing token from auth provider" },
-        { status: 502, headers: NO_STORE_HEADERS },
-      );
-    }
-    const session = await fetchSessionUser(token);
-    if (!session.ok) {
-      return NextResponse.json(
-        { error: "Invalid session from auth provider" },
-        { status: invalidSessionStatus(session.status), headers: NO_STORE_HEADERS },
-      );
-    }
-
-    const res = NextResponse.json({ user: session.user });
-    applyNoStore(withSessionCookie(res, token));
-    return res;
-  } catch {
+  const exchange = await exchangeGoogleCredential(idToken);
+  if (!exchange.ok) {
     return NextResponse.json(
-      { error: "Auth provider unavailable" },
-      { status: 503, headers: NO_STORE_HEADERS },
+      { error: exchange.error },
+      { status: exchange.status, headers: NO_STORE_HEADERS },
     );
   }
-}
 
-function safeError(raw: string, status: number): string {
-  try {
-    const parsed = JSON.parse(raw) as { error?: string };
-    if (parsed.error) return parsed.error;
-  } catch {}
-  return `Auth request failed (${status})`;
+  const res = NextResponse.json({ user: exchange.user });
+  applyNoStore(withSessionCookie(res, exchange.token));
+  return res;
 }

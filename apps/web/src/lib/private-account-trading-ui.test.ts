@@ -130,7 +130,7 @@ describe("private account trading UI derivation", () => {
     expect(authModalSource).toContain('reason?: "chat-private" | "hyperliquid-setup";');
     expect(authModalSource).toContain("Continue directly to one trade-only Hyperliquid authorization.");
     expect(authModalSource).toContain("isSignup && !isHyperliquidSetup");
-    expect(authModalSource).toContain("thumperGoogleSignIn(credential)");
+    expect(authModalSource).toContain("initializeGoogleRedirect");
     expect(authModalSource).toContain('z-[110]');
   });
 

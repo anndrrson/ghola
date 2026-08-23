@@ -7,6 +7,24 @@ import process from "node:process";
 const root = process.cwd();
 const chunkDir = path.join(root, ".next", "static", "chunks");
 
+const requiredGoogleRedirectSources = [
+  {
+    file: "src/lib/google-auth-client.ts",
+    patterns: [
+      { label: "redirect UX mode", pattern: /ux_mode:\s*["']redirect["']/ },
+      { label: "fixed same-origin callback", pattern: /GOOGLE_AUTH_CALLBACK_PATH/ },
+    ],
+  },
+  {
+    file: "src/app/api/auth/session/google/callback/route.ts",
+    patterns: [
+      { label: "Google double-submit CSRF check", pattern: /g_csrf_token/ },
+      { label: "server session cookie", pattern: /withSessionCookie/ },
+      { label: "internal-only return path", pattern: /safeInternalRedirect/ },
+    ],
+  },
+];
+
 const forbidden = [
   {
     label: "absolute upstream session auth URL",
@@ -37,6 +55,18 @@ async function walk(dir) {
 }
 
 async function main() {
+  for (const requirement of requiredGoogleRedirectSources) {
+    const source = await readFile(path.join(root, requirement.file), "utf8");
+    for (const rule of requirement.patterns) {
+      if (!rule.pattern.test(source)) {
+        console.error(
+          `[auth-bundle-guard] ${requirement.file} is missing ${rule.label}`,
+        );
+        process.exit(1);
+      }
+    }
+  }
+
   try {
     const info = await stat(chunkDir);
     if (!info.isDirectory()) throw new Error(`${chunkDir} is not a directory`);
@@ -69,7 +99,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`[auth-bundle-guard] scanned ${files.length} client chunk(s); session auth is same-origin safe`);
+  console.log(`[auth-bundle-guard] scanned ${files.length} client chunk(s); session auth is same-origin safe and Google uses the verified redirect callback`);
 }
 
 await main();
