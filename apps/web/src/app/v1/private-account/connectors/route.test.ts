@@ -26,7 +26,10 @@ import { POST as armVenueAgent } from "../venues/[platform_class]/agent/session/
 import { POST as verifyVenueEligibility } from "../venues/[platform_class]/eligibility/route";
 import { POST as allocatePooledVenue } from "../venues/[platform_class]/pool/allocate/route";
 import { POST as allocateOmnibus } from "../omnibus/allocate/route";
-import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
+import {
+  getLatestLiveTradingCanaryReport,
+  resetPrivateAccountStoreForTests,
+} from "@/lib/private-account-store";
 import { gholaCommitment } from "@/lib/private-account";
 import { signHyperliquidApiWalletBinding } from "@/lib/hyperliquid-api-wallet";
 
@@ -659,9 +662,16 @@ describe("private account connector gateway routes", () => {
     process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL = "https://worker.ghola.test";
     process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS = "ready";
     process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "test-worker-capability-secret-32-bytes";
-    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
       const url = String(input);
       if (url === "https://api.hyperliquid.xyz/info") {
+        const body = JSON.parse(String(init?.body || "{}")) as { type?: string };
+        if (body.type === "frontendOpenOrders") {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
         return new Response(JSON.stringify([{
           address: TEST_HYPERLIQUID_AGENT,
           name: "ghola-test",
@@ -688,6 +698,20 @@ describe("private account connector gateway routes", () => {
             live_venue_checked: true,
             transaction_broadcast: false,
           },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url === "https://worker.ghola.test/hyperliquid/account-snapshot") {
+        return new Response(JSON.stringify({
+          status: "ready_to_trade",
+          account_source: "sealed_byo",
+          trading_enabled: true,
+          equity_bucket: "ready",
+          positions: [],
+          open_orders: [],
+          recent_fills: [],
+          stream_status: "snapshot",
+          last_checked_at: new Date().toISOString(),
+          next_step: "Preview trade",
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
       return new Response(JSON.stringify({ error: "not_found" }), {
@@ -743,6 +767,23 @@ describe("private account connector gateway routes", () => {
     expect(verifyRes.status, JSON.stringify(verified)).toBe(200);
     expect(verified.connection_proof_persisted, JSON.stringify(verified)).toBe(true);
     expect(verified.connection_proof_reason).toBeNull();
+    expect(verified.release_canary_persisted, JSON.stringify(verified)).toBe(true);
+    expect(verified.release_canary_reason).toBeNull();
+
+    const releaseCanary = await getLatestLiveTradingCanaryReport(
+      "hyperliquid",
+      "capital_free_no_submit",
+    );
+    expect(releaseCanary).toMatchObject({
+      status: "green",
+      live_mode: "no_submit",
+      broadcast_performed: false,
+      reconcile_status: "reconciled",
+      position_count: 0,
+      open_order_count: 0,
+      receipt_commitment: "connector_no_submit_verification_live_test",
+      result_commitment: "connector_no_submit_result_live_test",
+    });
 
     const readyRes = await getHyperliquidVault(get("/v1/private-account/hyperliquid/vault"));
     const ready = await readyRes.json();

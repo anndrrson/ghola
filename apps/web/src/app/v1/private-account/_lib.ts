@@ -118,6 +118,7 @@ import {
 } from "@/lib/private-agent-capability";
 import { resolveHyperliquidWorkerUrl } from "@/lib/private-account-worker-routing";
 import { hyperliquidTriggerPriceCommitment } from "@/lib/hyperliquid-protection-proof";
+import { buildHyperliquidCapitalFreeCanary } from "@/lib/hyperliquid-release-canary";
 import {
   getPooledWorkerReadiness,
   pooledWorkerVenueGateFromReadiness,
@@ -222,6 +223,7 @@ import {
   putConnectorWorkOrder,
   putLinkabilityScore,
   putLinkabilitySimulation,
+  putLiveTradingCanaryReport,
   putPlatformRotation,
   putPrivateReceiptExport,
   putPrivateReceiptExportRevocation,
@@ -6188,6 +6190,10 @@ export async function connectorVerifyNoSubmitFromBody(
   let connectionProofReason = platformClass === "hyperliquid_style_market"
     ? "required_live_checks_incomplete"
     : null;
+  let releaseCanaryPersisted = false;
+  let releaseCanaryReason = platformClass === "hyperliquid_style_market"
+    ? "hyperliquid_no_submit_proof_incomplete"
+    : null;
   if (platformClass === "hyperliquid_style_market" &&
       verification.status === "verified_no_funds" &&
       verification.checks.sealed_vault_opened &&
@@ -6247,6 +6253,26 @@ export async function connectorVerifyNoSubmitFromBody(
         connectionProofReason = "connection_record_missing";
       }
     }
+    if (connectionProofPersisted && proof.network === "mainnet") {
+      try {
+        const accountState = await hyperliquidAccountSnapshotForOwner(owner);
+        const canary = buildHyperliquidCapitalFreeCanary({
+          verification,
+          connection_proof_persisted: true,
+          network: proof.network,
+          account_state: accountState,
+        });
+        if (canary.ok) {
+          await putLiveTradingCanaryReport(canary.report);
+          releaseCanaryPersisted = true;
+          releaseCanaryReason = null;
+        } else {
+          releaseCanaryReason = canary.reason;
+        }
+      } catch {
+        releaseCanaryReason = "hyperliquid_no_submit_canary_store_unavailable";
+      }
+    }
   } else if (platformClass === "hyperliquid_style_market") {
     if (verification.status !== "verified_no_funds") {
       connectionProofReason = verification.reason || verification.status;
@@ -6268,6 +6294,8 @@ export async function connectorVerifyNoSubmitFromBody(
       ? {
           connection_proof_persisted: connectionProofPersisted,
           connection_proof_reason: connectionProofReason,
+          release_canary_persisted: releaseCanaryPersisted,
+          release_canary_reason: releaseCanaryReason,
         }
       : {}),
   };

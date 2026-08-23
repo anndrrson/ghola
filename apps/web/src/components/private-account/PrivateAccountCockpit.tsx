@@ -1199,16 +1199,21 @@ export function PrivateAccountCockpit({
       onState: setHyperliquidAccount,
       onStatus: setHyperliquidAccountStreamStatus,
       onError: () => {
-        setHyperliquidAccountStreamStatus("worker_unavailable");
-        setHyperliquidAccount((current) => current
-          ? { ...current, stream_status: "worker_unavailable" }
-          : null);
+        setHyperliquidAccountStreamStatus("reconnecting");
+        void refreshHyperliquidAccountSnapshot();
       },
     });
     return () => {
       stream.close();
     };
-  }, [auth.authenticated, hyperliquidAgent?.status, hyperliquidMarketCoin, hyperliquidVault?.ready, input.platform_class]);
+  }, [
+    auth.authenticated,
+    hyperliquidAgent?.status,
+    hyperliquidMarketCoin,
+    hyperliquidVault?.ready,
+    input.platform_class,
+    refreshHyperliquidAccountSnapshot,
+  ]);
 
   useEffect(() => {
     if (!auth.authenticated || !activeAutopilotSession?.autopilot_session_id) return;
