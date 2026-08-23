@@ -191,11 +191,6 @@ export async function privateAccountLaunchStatus(
       Boolean(runtimeUrl),
       "sealed_runtime_url_missing",
     ),
-    check(
-      "attested_private_agent_ready",
-      currentRuntime.remote_execution_ready,
-      currentRuntime.blocking_reasons[0] ?? "private_agent_runtime_not_ready",
-    ),
   ];
 
   return {

@@ -81,9 +81,28 @@ describe("private account launch status", () => {
       "auth_api_missing",
       "hyperliquid_pilot_disabled",
       "hyperliquid_connector_url_missing",
-      "no_attested_confidential_compute_provider",
     ]));
     expect(JSON.stringify(status)).not.toContain("super-secret-token-value");
+  });
+
+  it("does not couple Hyperliquid launch to an unrelated shielded settlement rail", async () => {
+    const status = await privateAccountLaunchStatus({
+      ...READY_ENV,
+      GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL: "https://worker.test",
+      GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS: "ready",
+      GHOLA_PRIVATE_RUNTIME_URL: "https://worker.test",
+    }, {
+      ...READY_RUNTIME,
+      selected_provider: null,
+      remote_execution_ready: false,
+      shielded_rail_ready: false,
+      providers: [],
+      blocking_reasons: ["no_ready_shielded_settlement_rail"],
+    });
+
+    expect(status.ready_to_accept_users).toBe(true);
+    expect(status.runtime.remote_execution_ready).toBe(false);
+    expect(status.checks.some((check) => check.check === "attested_private_agent_ready")).toBe(false);
   });
 
   it("blocks release when worker capability secret aliases disagree", async () => {
