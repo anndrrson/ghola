@@ -1797,7 +1797,7 @@ function AlternateProductWorkspace({
 
               <button
                 type="button"
-                disabled={authenticationLoading || perpWorking !== null || perpAttempt?.status === "ambiguous" || perpAttempt?.status === "awaiting_reconciliation" || (perpAttempt?.status === "reconciled" && !perpAttempt.order.reduce_only)}
+                disabled={authenticationLoading || (product === "perps" && !hyperliquidConnectionChecked) || perpWorking !== null || perpAttempt?.status === "ambiguous" || perpAttempt?.status === "awaiting_reconciliation" || (perpAttempt?.status === "reconciled" && !perpAttempt.order.reduce_only)}
                 onClick={() => { if (product === "perps" && hyperliquidConnectionReady) void reviewPerpOrder(); else setSetupOpen(true); }}
                 className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md bg-[#3da8ff] text-sm font-bold text-[#03101d] transition hover:bg-[#67baff] disabled:cursor-wait disabled:opacity-70"
               >
@@ -1807,7 +1807,7 @@ function AlternateProductWorkspace({
                     : perpWorking === "reconcile" ? "Reconciling exact order…"
                     : perpWorking === "verify" ? "Verifying flat and clear…"
                     : "Review order"
-                  : authenticationLoading ? "Checking sign-in…" : authenticated && product === "perps" ? `Connect Hyperliquid ${hyperliquidNetwork}` : authenticated ? `Set up ${selectedVenue?.label}` : "Sign in to continue"}
+                  : authenticationLoading ? "Checking sign-in…" : product === "perps" && !hyperliquidConnectionChecked ? "Checking connection…" : authenticated && product === "perps" ? `Connect Hyperliquid ${hyperliquidNetwork}` : authenticated ? `Set up ${selectedVenue?.label}` : "Sign in to continue"}
               </button>
               {perpAttempt?.status === "ambiguous" && (
                 <button
