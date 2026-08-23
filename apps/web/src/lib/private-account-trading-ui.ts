@@ -62,6 +62,14 @@ export function shouldShowHyperliquidSetupProgress(input: {
   );
 }
 
+export function hyperliquidAccountAddressDraftValue(value: string) {
+  const trimmed = value.trim();
+  if (trimmed === "") return "";
+  if (trimmed === "0") return "0";
+  if (!/^0x[0-9a-fA-F]{0,40}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
 export interface TradingNextAction {
   kind: TradingActionKind;
   label: string;

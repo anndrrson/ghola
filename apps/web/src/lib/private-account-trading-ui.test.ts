@@ -14,6 +14,7 @@ import {
   deriveOrderTicketDisplayState,
   deriveTradingNextAction,
   deriveVenueReadinessSteps,
+  hyperliquidAccountAddressDraftValue,
   isHyperliquidAgentKeyConfirmed,
   phoenixOrderbookClickSide,
   requiresHyperliquidPoolTerms,
@@ -51,6 +52,14 @@ const validOrder: PrivateExecutionOrderDraft = {
 };
 
 describe("private account trading UI derivation", () => {
+  it("rejects browser autofill values from the Hyperliquid owner-address draft", () => {
+    expect(hyperliquidAccountAddressDraftValue("anndrrson@proton.me")).toBeNull();
+    expect(hyperliquidAccountAddressDraftValue("0")).toBe("0");
+    expect(hyperliquidAccountAddressDraftValue("0xa058")).toBe("0xa058");
+    expect(hyperliquidAccountAddressDraftValue(`0x${"a".repeat(40)}`)).toHaveLength(42);
+    expect(hyperliquidAccountAddressDraftValue(`0x${"a".repeat(41)}`)).toBeNull();
+  });
+
   it("does not block fresh Hyperliquid users with a verification overlay before setup starts", () => {
     expect(shouldShowHyperliquidSetupProgress({
       initialSetup: true,

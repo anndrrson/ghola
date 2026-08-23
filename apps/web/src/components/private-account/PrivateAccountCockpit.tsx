@@ -139,6 +139,7 @@ import {
   deriveHyperliquidVerificationAction,
   deriveTradingNextAction,
   deriveVenueReadinessSteps,
+  hyperliquidAccountAddressDraftValue,
   isHyperliquidAgentKeyConfirmed,
   requiresHyperliquidPoolTerms,
   shouldResetHyperliquidConnectionError,
@@ -5938,6 +5939,12 @@ function HyperliquidConnectModal({
     }
   }
 
+  function updateHyperliquidAccountAddress(value: string) {
+    const next = hyperliquidAccountAddressDraftValue(value);
+    if (next === null) return;
+    setDraft((current) => ({ ...current, hyperliquid_account_address: next }));
+  }
+
   function generateDedicatedWallet() {
     try {
       const generated = generateHyperliquidApiWallet();
@@ -6064,8 +6071,12 @@ function HyperliquidConnectModal({
               <span className="text-xs font-medium text-[#96a2b7]">Hyperliquid account</span>
               <input
                 value={draft.hyperliquid_account_address}
-                onChange={(event) => setDraft({ ...draft, hyperliquid_account_address: event.target.value })}
+                onChange={(event) => updateHyperliquidAccountAddress(event.target.value)}
                 placeholder="0x account address"
+                name="hyperliquid-owner-address"
+                autoComplete="off"
+                data-1p-ignore="true"
+                data-lpignore="true"
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
@@ -6074,11 +6085,15 @@ function HyperliquidConnectModal({
             </label>
             <label className="grid gap-2">
               <span className="text-xs font-medium text-[#96a2b7]">API wallet key</span>
-              <input
-                type="password"
-                value={draft.api_wallet_private_key}
-                onChange={(event) => setDraft({ ...draft, api_wallet_private_key: event.target.value })}
-                placeholder="0x private key"
+                <input
+                  type="password"
+                  value={draft.api_wallet_private_key}
+                  onChange={(event) => setDraft({ ...draft, api_wallet_private_key: event.target.value })}
+                  placeholder="0x private key"
+                  name="hyperliquid-api-wallet-private-key"
+                  autoComplete="new-password"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
@@ -6106,8 +6121,12 @@ function HyperliquidConnectModal({
                 <span className="text-xs font-medium text-[#96a2b7]">Hyperliquid account address</span>
                 <input
                   value={draft.hyperliquid_account_address}
-                  onChange={(event) => setDraft({ ...draft, hyperliquid_account_address: event.target.value })}
+                  onChange={(event) => updateHyperliquidAccountAddress(event.target.value)}
                   placeholder="0x…"
+                  name="hyperliquid-owner-address"
+                  autoComplete="off"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck={false}
@@ -6192,7 +6211,10 @@ function HyperliquidConnectModal({
                         setConfirmedAgentKey(false);
                       }}
                       placeholder="0x + 64 hexadecimal characters"
-                      autoComplete="off"
+                      name="hyperliquid-api-wallet-private-key"
+                      autoComplete="new-password"
+                      data-1p-ignore="true"
+                      data-lpignore="true"
                       autoCapitalize="none"
                       autoCorrect="off"
                       spellCheck={false}
