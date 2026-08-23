@@ -43,6 +43,7 @@ const READY_ENV = {
   GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED: "true",
   GHOLA_LIVE_TRADING_PUBLIC_ENABLED: "true",
   GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
+  NEXT_PUBLIC_GHOLA_LEGACY_HYPERLIQUID_API_KEYS: "true",
   GHOLA_HYPERLIQUID_LIVE_MODE: "tiny_fill",
   GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE: "enforce",
   GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET: "secure-production-request-proof-secret-2026",
@@ -120,6 +121,20 @@ describe("private account launch status", () => {
     });
     expect(JSON.stringify(status)).not.toContain("current-secret");
     expect(JSON.stringify(status)).not.toContain("stale-secret");
+  });
+
+  it("blocks launch when the browser would fall through to unverified Turnkey onboarding", async () => {
+    const status = await privateAccountLaunchStatus({
+      ...READY_ENV,
+      NEXT_PUBLIC_GHOLA_LEGACY_HYPERLIQUID_API_KEYS: undefined,
+    }, READY_RUNTIME);
+
+    expect(status.ready_to_accept_users).toBe(false);
+    expect(status.checks).toContainEqual({
+      check: "scoped_api_wallet_onboarding_enabled",
+      status: "blocked",
+      reason: "scoped_api_wallet_onboarding_disabled",
+    });
   });
 
   it("blocks public launch when safety operations are implicit or unmonitored", async () => {

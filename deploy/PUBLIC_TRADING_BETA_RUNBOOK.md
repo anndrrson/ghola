@@ -19,6 +19,7 @@ Scope: a capped, non-custodial Hyperliquid mainnet beta using user-owned, trade-
 The `/v1/private-account/launch/status` response must report every check as `ready`, including:
 
 - public beta and public-live flags;
+- `NEXT_PUBLIC_GHOLA_LEGACY_HYPERLIQUID_API_KEYS=true` so the browser uses the verified trade-only scoped-wallet path instead of an unverified Turnkey fallback;
 - strong request-proof secret in enforced mode;
 - explicit inactive global kill switch;
 - $50/$250/100-bps caps;
@@ -34,6 +35,7 @@ GHOLA_PUBLIC_BETA_MONITORING_ENABLED=true
 GHOLA_VERCEL_ALERTS_CONFIGURED=true
 GHOLA_PUBLIC_BETA_ROLLBACK_READY=true
 GHOLA_PUBLIC_BETA_RUNBOOK_VERSION=2026-08-23
+NEXT_PUBLIC_GHOLA_LEGACY_HYPERLIQUID_API_KEYS=true
 ```
 
 ## Pre-promotion gate
@@ -53,7 +55,7 @@ Also require:
 
 1. Candidate deployment is `READY` and bound to the intended commit.
 2. Runtime logs show no unexplained 5xx, timeouts, or ambiguous-submit spikes.
-3. Signed-out and signed-in nonfinancial browser flows pass twice without refreshing.
+3. Signed-out and signed-in nonfinancial browser flows pass twice without refreshing; opening Connect Hyperliquid must show the dedicated trade-only API-wallet flow, never local configuration or a mainnet-disabled fallback.
 4. The committed proof at `deploy/evidence/hyperliquid-mainnet-proof-2026-08-23.json` verifies.
 5. The current production deployment URL is recorded as the rollback target.
 
@@ -61,11 +63,13 @@ Do not perform another live financial proof without fresh explicit authorization
 
 ## Promotion
 
-Promote the exact verified artifact; do not rebuild it:
+Prefer promoting the exact verified artifact without rebuilding:
 
 ```bash
 vercel promote <verified-candidate-url>
 ```
+
+If the Vercel dashboard explicitly says it will create a new Production build, first audit every Production variable against `/v1/private-account/launch/status`. Treat the result as a distinct artifact and run the complete Production smoke immediately.
 
 Immediately run signed-out and signed-in no-submit smoke checks. Confirm the public domain, support, terms, trade page, launch status, authentication, scoped-wallet setup, market data, and no-submit verification.
 

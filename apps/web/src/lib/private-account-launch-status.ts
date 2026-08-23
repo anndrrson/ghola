@@ -27,6 +27,7 @@ const REQUIRED_LIVE_ENV = [
   "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED=true",
   "GHOLA_LIVE_TRADING_PUBLIC_ENABLED=true",
   "GHOLA_V6_HYPERLIQUID_PILOT_ENABLED=true",
+  "NEXT_PUBLIC_GHOLA_LEGACY_HYPERLIQUID_API_KEYS=true (verified trade-only scoped-wallet onboarding)",
   "GHOLA_HYPERLIQUID_LIVE_MODE=tiny_fill",
   "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE=enforce",
   "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET=<32+ character production secret>",
@@ -91,6 +92,11 @@ export async function privateAccountLaunchStatus(
       status: "ready",
       reason: null,
     },
+    blockingCheck(
+      "scoped_api_wallet_onboarding_enabled",
+      env.NEXT_PUBLIC_GHOLA_LEGACY_HYPERLIQUID_API_KEYS === "true",
+      "scoped_api_wallet_onboarding_disabled",
+    ),
     check(
       "bounded_public_beta_enabled",
       env.GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED === "true",
