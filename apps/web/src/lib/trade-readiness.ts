@@ -64,7 +64,7 @@ export function spotVenueReadiness(venue: "coinbase" | "phoenix", status: SpotRe
 export function hyperliquidPerpsReadiness(input: {
   authenticated: boolean;
   network: "mainnet" | "testnet";
-  credentialsReady: boolean;
+  credentialsReady: boolean | null;
   accountState: "loading" | "ready" | "unavailable";
   account: HyperliquidAccountSnapshot | null;
   marketCatalogState: "loading" | "ready" | "unavailable";
@@ -72,6 +72,7 @@ export function hyperliquidPerpsReadiness(input: {
 }): TradeReadiness {
   if (!input.authenticated) return { label: "disconnected", ready: false, detail: "Sign in before connecting a Hyperliquid trading account." };
   if (input.accountState === "unavailable" || input.marketCatalogState === "unavailable") return { label: "worker unavailable", ready: false, detail: `The Hyperliquid ${input.network} worker is unavailable.` };
+  if (input.credentialsReady === null) return { label: "checking", ready: false, detail: "Checking the sealed Hyperliquid connection." };
   if (!input.credentialsReady || input.account?.status === "venue_access_required") return { label: "credentials required", ready: false, detail: "Connect a scoped Hyperliquid API wallet with trading-only permissions." };
   if (input.account?.status === "needs_funds") return { label: "collateral required", ready: false, detail: "Add collateral to the connected Hyperliquid account." };
   if (input.account?.status === "worker_unavailable" || input.account?.stream_status === "worker_unavailable") return { label: "worker unavailable", ready: false, detail: `The Hyperliquid ${input.network} worker is unavailable.` };

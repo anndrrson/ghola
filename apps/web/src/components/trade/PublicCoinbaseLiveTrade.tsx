@@ -898,6 +898,7 @@ function AlternateProductWorkspace({
   const hyperliquidAccountRef = useRef<HyperliquidAccountSnapshot | null>(null);
   const hyperliquidTopologyReconciliationRef = useRef(false);
   const [hyperliquidConnectionReady, setHyperliquidConnectionReady] = useState(false);
+  const [hyperliquidConnectionChecked, setHyperliquidConnectionChecked] = useState(false);
   const [accountState, setAccountState] = useState<"loading" | "ready" | "unavailable">("loading");
   const venues = capabilitiesForProduct(product);
   const selectedVenue = venues.find((item) => item.id === venue) ?? venues[0];
@@ -949,12 +950,12 @@ function AlternateProductWorkspace({
   const hyperliquidReadiness = useMemo(() => hyperliquidPerpsReadiness({
     authenticated,
     network: hyperliquidNetwork,
-    credentialsReady: hyperliquidConnectionReady,
+    credentialsReady: hyperliquidConnectionChecked ? hyperliquidConnectionReady : null,
     accountState,
     account: hyperliquidAccount,
     marketCatalogState: perpMarketCatalogState,
     selectedMarketAvailable: Boolean(selectedMarketCapability),
-  }), [accountState, authenticated, hyperliquidAccount, hyperliquidConnectionReady, hyperliquidNetwork, perpMarketCatalogState, selectedMarketCapability]);
+  }), [accountState, authenticated, hyperliquidAccount, hyperliquidConnectionChecked, hyperliquidConnectionReady, hyperliquidNetwork, perpMarketCatalogState, selectedMarketCapability]);
   const maxLeverage = hyperliquidMarket?.max_leverage ?? selectedMarketCapability?.max_leverage ?? null;
   const manualPerpOrder = useMemo<PrivateExecutionOrderDraft>(() => ({
     venue_id: "hyperliquid",
@@ -1096,18 +1097,28 @@ function AlternateProductWorkspace({
   }, [authenticated, commitHyperliquidAccount, perpMarket, useHyperliquidMarket]);
 
   useEffect(() => {
-    if (!authenticated || !useHyperliquidMarket) return;
+    if (!authenticated || !useHyperliquidMarket) {
+      setHyperliquidConnectionChecked(false);
+      return;
+    }
     let cancelled = false;
+    setHyperliquidConnectionChecked(false);
     void fetch("/v1/private-account/hyperliquid/vault", { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) throw new Error("connection status unavailable");
         return response.json() as Promise<{ credentials_sealed?: boolean }>;
       })
       .then((status) => {
-        if (!cancelled) setHyperliquidConnectionReady(hyperliquidCredentialsSealed(status));
+        if (!cancelled) {
+          setHyperliquidConnectionReady(hyperliquidCredentialsSealed(status));
+          setHyperliquidConnectionChecked(true);
+        }
       })
       .catch(() => {
-        if (!cancelled) setHyperliquidConnectionReady(false);
+        if (!cancelled) {
+          setHyperliquidConnectionReady(false);
+          setHyperliquidConnectionChecked(true);
+        }
       });
     return () => { cancelled = true; };
   }, [authenticated, useHyperliquidMarket]);
@@ -1156,8 +1167,14 @@ function AlternateProductWorkspace({
     setMaxSlippageBps(String(configured.maxSlippageBps));
     void fetch("/v1/private-account/hyperliquid/status", { cache: "no-store" })
       .then((response) => response.json())
-      .then((status) => setHyperliquidConnectionReady(hyperliquidCredentialsSealed(status)))
-      .catch(() => setHyperliquidConnectionReady(false));
+      .then((status) => {
+        setHyperliquidConnectionReady(hyperliquidCredentialsSealed(status));
+        setHyperliquidConnectionChecked(true);
+      })
+      .catch(() => {
+        setHyperliquidConnectionReady(false);
+        setHyperliquidConnectionChecked(true);
+      });
   }, []);
 
   async function reviewPerpOrder() {

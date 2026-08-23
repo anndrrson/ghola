@@ -18,6 +18,7 @@ describe("trade readiness", () => {
   it("reports the first actionable Hyperliquid perp prerequisite", () => {
     const account = { status: "ready_to_trade", trading_enabled: true, stream_status: "live", next_step: "", version: 1, platform_class: "hyperliquid_style_market", venue_id: "hyperliquid", account_source: "sealed_byo", equity_bucket: "ready", position_count: 0, open_order_count: 0, last_checked_at: "now" } as const;
     const base = { authenticated: true, network: "testnet" as const, credentialsReady: true, accountState: "ready" as const, account, marketCatalogState: "ready" as const, selectedMarketAvailable: true };
+    expect(hyperliquidPerpsReadiness({ ...base, credentialsReady: null }).label).toBe("checking");
     expect(hyperliquidPerpsReadiness({ ...base, credentialsReady: false }).label).toBe("credentials required");
     expect(hyperliquidPerpsReadiness({ ...base, account: { ...account, status: "needs_funds" } }).label).toBe("collateral required");
     expect(hyperliquidPerpsReadiness({ ...base, selectedMarketAvailable: false }).label).toBe("selected market unavailable");
