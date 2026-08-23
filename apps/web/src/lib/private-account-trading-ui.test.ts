@@ -60,14 +60,14 @@ describe("private account trading UI derivation", () => {
     expect(hyperliquidAccountAddressDraftValue(`0x${"a".repeat(41)}`)).toBeNull();
   });
 
-  it("does not block fresh Hyperliquid users with a verification overlay before setup starts", () => {
+  it("keeps focused Hyperliquid setup inside one guided surface", () => {
     expect(shouldShowHyperliquidSetupProgress({
       initialSetup: true,
       connectOpen: false,
       working: false,
       error: null,
       notice: null,
-    })).toBe(false);
+    })).toBe(true);
     expect(shouldShowHyperliquidSetupProgress({
       initialSetup: true,
       connectOpen: false,
@@ -79,6 +79,11 @@ describe("private account trading UI derivation", () => {
       working: false,
       error: "Connection needs attention",
     })).toBe(true);
+    expect(shouldShowHyperliquidSetupProgress({
+      initialSetup: true,
+      connectOpen: true,
+      working: false,
+    })).toBe(false);
   });
 
   it("accepts locally generated Hyperliquid agent keys without the import-only checkbox", () => {
@@ -99,8 +104,34 @@ describe("private account trading UI derivation", () => {
       resolve(process.cwd(), "src/components/private-account/PrivateAccountCockpit.tsx"),
       "utf8",
     );
-    expect(cockpitSource.match(/if \(!agentKeyConfirmed\)/g)).toHaveLength(1);
+    expect(cockpitSource).toContain("const authorizationReady = generatedAgentAddress ? authorizationOpened : agentKeyConfirmed;");
+    expect(cockpitSource).toContain("if (!authorizationReady)");
     expect(cockpitSource).not.toContain("if (!confirmedAgentKey)");
+  });
+
+  it("keeps focused onboarding to sign-in plus two visible Hyperliquid steps", () => {
+    const cockpitSource = readFileSync(
+      resolve(process.cwd(), "src/components/private-account/PrivateAccountCockpit.tsx"),
+      "utf8",
+    );
+    const authModalSource = readFileSync(
+      resolve(process.cwd(), "src/components/AuthModal.tsx"),
+      "utf8",
+    );
+    expect(cockpitSource).toContain("Start trading on Hyperliquid");
+    expect(cockpitSource).toContain('reason="hyperliquid-setup"');
+    expect(cockpitSource).toContain("focusedHyperliquidAuthPrompted.current = true;");
+    expect(cockpitSource).toContain("setAuthOpen(true);");
+    expect(cockpitSource).toContain("Step 1 of 2 · Enter the Hyperliquid account");
+    expect(cockpitSource).toContain("Step 2 of 2 · Authorize the trade-only wallet");
+    expect(cockpitSource).toContain("I’ve authorized it — verify");
+    expect(cockpitSource).toContain("hyperliquidSetupAuthRedirect(initialReturnTo)");
+    expect(cockpitSource).not.toContain("Return here, confirm authorization, then secure and verify.");
+    expect(authModalSource).toContain('reason?: "chat-private" | "hyperliquid-setup";');
+    expect(authModalSource).toContain("Continue directly to one trade-only Hyperliquid authorization.");
+    expect(authModalSource).toContain("isSignup && !isHyperliquidSetup");
+    expect(authModalSource).toContain("thumperGoogleSignIn(credential)");
+    expect(authModalSource).toContain('z-[110]');
   });
 
   it("keeps a Hyperliquid connection error visible until the dialog is reopened", () => {

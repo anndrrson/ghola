@@ -57,9 +57,7 @@ export function shouldShowHyperliquidSetupProgress(input: {
   error?: string | null;
   notice?: unknown;
 }) {
-  return input.initialSetup && !input.connectOpen && Boolean(
-    input.working || input.error || input.notice,
-  );
+  return input.initialSetup && !input.connectOpen;
 }
 
 export function hyperliquidAccountAddressDraftValue(value: string) {

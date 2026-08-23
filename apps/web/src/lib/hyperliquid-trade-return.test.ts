@@ -3,6 +3,7 @@ import {
   hyperliquidMarketFromTradeReturn,
   hyperliquidNoSubmitProofOrder,
   hyperliquidNoSubmitProofReady,
+  hyperliquidSetupAuthRedirect,
   liveHyperliquidReferencePrice,
 } from "./hyperliquid-trade-return";
 
@@ -16,6 +17,16 @@ describe("hyperliquid setup return target", () => {
   it("rejects external and non-Hyperliquid targets", () => {
     expect(hyperliquidMarketFromTradeReturn("https://example.com/trade?venue=hyperliquid&market=HYPE-PERP")).toBeNull();
     expect(hyperliquidMarketFromTradeReturn("/trade?venue=backpack&market=HYPE-PERP")).toBeNull();
+  });
+
+  it("preserves the focused setup and safe trade return through sign-in", () => {
+    expect(hyperliquidSetupAuthRedirect(
+      "/trade?product=perps&venue=hyperliquid&market=HYPE-PERP",
+    )).toBe(
+      "/account?flow=private-mode&setup=hyperliquid&return_to=%2Ftrade%3Fproduct%3Dperps%26venue%3Dhyperliquid%26market%3DHYPE-PERP",
+    );
+    expect(hyperliquidSetupAuthRedirect("https://example.com/trade?venue=hyperliquid&market=HYPE-PERP"))
+      .toBe("/account?flow=private-mode&setup=hyperliquid");
   });
 
   it("requires a positive live reference price", () => {

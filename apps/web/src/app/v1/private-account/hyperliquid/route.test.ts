@@ -6,6 +6,7 @@ import {
 import { POST as armAgent } from "./agent/session/route";
 import { POST as accountSnapshot } from "./account-snapshot/route";
 import { GET as accountStream } from "./account-stream/route";
+import { GET as agentAuthorization } from "./agent-authorization/route";
 import { POST as allocateManaged } from "./managed-allocation/route";
 import { GET as hyperliquidRoot } from "./route";
 import { GET as hyperliquidStatus } from "./status/route";
@@ -160,6 +161,44 @@ describe("Hyperliquid private-account routes", () => {
     delete process.env.GHOLA_CONNECTOR_MODE;
     vi.restoreAllMocks();
     await resetPrivateAccountStoreForTests();
+  });
+
+  it("reports the exact owner-to-agent authorization without submitting an order", async () => {
+    const res = await agentAuthorization(request(
+      `/v1/private-account/hyperliquid/agent-authorization?network=mainnet&owner=${TEST_HYPERLIQUID_OWNER}&agent=${TEST_HYPERLIQUID_AGENT}`,
+    ));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({
+      network: "mainnet",
+      owner_address: TEST_HYPERLIQUID_OWNER,
+      agent_address: TEST_HYPERLIQUID_AGENT,
+      status: "authorized",
+      authorized: true,
+    });
+  });
+
+  it("reports an unapproved agent so only that pending wallet may be replaced", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation(async () => Response.json([]));
+    const res = await agentAuthorization(request(
+      `/v1/private-account/hyperliquid/agent-authorization?network=mainnet&owner=${TEST_HYPERLIQUID_OWNER}&agent=${TEST_HYPERLIQUID_AGENT}`,
+    ));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.status).toBe("not_authorized");
+    expect(body.authorized).toBe(false);
+  });
+
+  it("fails closed when Hyperliquid authorization cannot be checked", async () => {
+    vi.mocked(globalThis.fetch).mockRejectedValue(new Error("network unavailable"));
+    const res = await agentAuthorization(request(
+      `/v1/private-account/hyperliquid/agent-authorization?network=mainnet&owner=${TEST_HYPERLIQUID_OWNER}&agent=${TEST_HYPERLIQUID_AGENT}`,
+    ));
+
+    expect(res.status).toBe(503);
+    expect((await res.json()).error).toBe("hyperliquid_binding_check_unavailable");
   });
 
   it("requires a client-sealed encrypted execution vault bundle", async () => {

@@ -678,6 +678,28 @@ export async function getHyperliquidPilotStatus() {
   });
 }
 
+export async function getHyperliquidApiWalletAuthorization(input: {
+  network: "mainnet" | "testnet";
+  ownerAddress: string;
+  agentAddress: string;
+}): Promise<{
+  version: 1;
+  network: "mainnet" | "testnet";
+  owner_address: string;
+  agent_address: string;
+  status: "authorized" | "not_authorized";
+  authorized: boolean;
+}> {
+  const params = new URLSearchParams({
+    network: input.network,
+    owner: input.ownerAddress,
+    agent: input.agentAddress,
+  });
+  return privateAccountFetch(`/v1/private-account/hyperliquid/agent-authorization?${params}`, {
+    method: "GET",
+  });
+}
+
 export async function allocateHyperliquidManagedTestnet(input: {
   execution_mode?: "managed_testnet" | "ghola_pooled";
   network?: "testnet" | "mainnet";

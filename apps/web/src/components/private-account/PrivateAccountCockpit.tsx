@@ -25,6 +25,7 @@ import {
   createPrivateAccountRuntimeEnvelope,
   executePrivateAccountAction,
   exportPrivateAccountPrivateReceipt,
+  getHyperliquidApiWalletAuthorization,
   getPrivateAutopilotReadiness,
   getPrivateAutopilotReplay,
   getPrivateAccountOmnibusStatus,
@@ -70,9 +71,14 @@ import {
   type HyperliquidExecutionCredentialDraft,
 } from "@/lib/hyperliquid-vault-seal";
 import {
-  generateHyperliquidApiWallet,
   signHyperliquidApiWalletBinding,
 } from "@/lib/hyperliquid-api-wallet";
+import {
+  clearPendingHyperliquidApiWallet,
+  resumeOrCreatePendingHyperliquidApiWallet,
+  resumePendingHyperliquidApiWallet,
+  type PendingHyperliquidApiWallet,
+} from "@/lib/hyperliquid-pending-api-wallet";
 import { defaultHyperliquidMarketAllowlist } from "@/lib/private-account-hyperliquid-policy";
 import {
   buildCoinbaseExecutionVaultBundle,
@@ -117,6 +123,7 @@ import {
   hyperliquidMarketFromTradeReturn,
   hyperliquidNoSubmitProofOrder,
   hyperliquidNoSubmitProofReady,
+  hyperliquidSetupAuthRedirect,
   liveHyperliquidReferencePrice,
 } from "@/lib/hyperliquid-trade-return";
 import {
@@ -857,6 +864,7 @@ export function PrivateAccountCockpit({
   const perpsTurnkey = usePerpsTurnkey();
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
+  const focusedHyperliquidAuthPrompted = useRef(false);
   const [hyperliquidConnectOpen, setHyperliquidConnectOpen] = useState(false);
   const initialSetupHandled = useRef(false);
   const verifyHyperliquidAfterConnect = useRef(false);
@@ -2688,8 +2696,10 @@ export function PrivateAccountCockpit({
       tone: coinbaseVerified ? "good" : "warn",
     },
   ];
-  const authRedirectBase = liveHyperliquidFlow
-    ? "/account?flow=hyperliquid-live"
+  const authRedirectBase = initialSetupVenue === "hyperliquid"
+    ? hyperliquidSetupAuthRedirect(initialReturnTo)
+    : liveHyperliquidFlow
+      ? "/account?flow=hyperliquid-live"
     : livePhoenixFlow
       ? "/account?flow=phoenix-live"
       : liveJupiterFlow
@@ -2702,6 +2712,19 @@ export function PrivateAccountCockpit({
   const authRedirect = iosReturnTo
     ? `${authRedirectBase}&source=ios&return_to=${encodeURIComponent(iosReturnTo)}`
     : authRedirectBase;
+
+  useEffect(() => {
+    if (
+      initialSetupVenue !== "hyperliquid" ||
+      auth.loading ||
+      auth.authenticated ||
+      focusedHyperliquidAuthPrompted.current
+    ) return;
+    focusedHyperliquidAuthPrompted.current = true;
+    setAuthMode("signup");
+    setAuthOpen(true);
+  }, [auth.authenticated, auth.loading, initialSetupVenue]);
+
   const applyQuickAction = (preset: (typeof QUICK_ACTIONS)[number]) => {
     setPreview(null);
     setExecution(null);
@@ -3009,6 +3032,42 @@ export function PrivateAccountCockpit({
   }
 
   if (!auth.authenticated) {
+    if (initialSetupVenue === "hyperliquid" && !iosReturnTo) {
+      return (
+        <div className="fixed inset-0 z-[90] grid place-items-center overflow-y-auto bg-[#080b10] px-4 py-8">
+          <AuthModal
+            mode={authMode}
+            open={authOpen}
+            onClose={() => setAuthOpen(false)}
+            onModeChange={setAuthMode}
+            redirectTo={authRedirect}
+            reason="hyperliquid-setup"
+          />
+          <section className="w-full max-w-md rounded-2xl border border-[#253044] bg-[#0d1119] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#62b7ff]">Ghola setup</p>
+            <div className="mt-5 flex h-11 w-11 items-center justify-center rounded-xl bg-[#62b7ff]/10 text-[#8fcaff]">
+              <KeyRound className="h-5 w-5" />
+            </div>
+            <h1 className="mt-5 text-2xl font-semibold text-[#f6f8ff]">Start trading on Hyperliquid</h1>
+            <p className="mt-2 text-sm leading-6 text-[#96a2b7]">
+              Sign in, authorize one trade-only wallet, and return ready to trade. Withdrawals stay disabled.
+            </p>
+            <button
+              type="button"
+              disabled={auth.loading}
+              onClick={() => {
+                setAuthMode("signup");
+                setAuthOpen(true);
+              }}
+              className="mt-7 h-12 w-full rounded-xl bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] disabled:cursor-wait disabled:opacity-60"
+            >
+              {auth.loading ? "Checking sign-in…" : "Start trading"}
+            </button>
+            <p className="mt-4 text-center text-xs text-[#67758a]">One secure authorization · no deposit or trade during setup</p>
+          </section>
+        </div>
+      );
+    }
     if (iosReturnTo) {
       return (
         <div className="fixed inset-0 z-[90] grid place-items-center overflow-y-auto bg-[#080b10] px-4 py-8">
@@ -3309,6 +3368,15 @@ export function PrivateAccountCockpit({
                 Retry verification
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => window.location.assign(
+                initialReturnTo || `/trade?product=perps&venue=hyperliquid&market=${hyperliquidMarketCoin}-PERP`,
+              )}
+              className="mt-3 h-10 w-full rounded-lg text-sm font-medium text-[#8f9bb0] hover:bg-white/5 hover:text-white"
+            >
+              Back to trading
+            </button>
             <p className="mt-5 text-xs leading-5 text-[#67758a]">No order is sent during this check.</p>
           </section>
         </div>
@@ -5809,10 +5877,27 @@ function HyperliquidConnectModal({
   });
   const [confirmedAgentKey, setConfirmedAgentKey] = useState(false);
   const [generatedAgentAddress, setGeneratedAgentAddress] = useState("");
+  const [authorizationOpened, setAuthorizationOpened] = useState(false);
   const [quickImport, setQuickImport] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [pendingWalletAction, setPendingWalletAction] = useState<"resume" | "generate" | "replace" | null>(null);
+  const [pendingNotice, setPendingNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const previousOpenRef = useRef(false);
+
+  const applyPendingWallet = useCallback((pending: PendingHyperliquidApiWallet) => {
+    setDraft({
+      network: pending.network,
+      hyperliquid_account_address: pending.ownerAddress,
+      api_wallet_private_key: pending.privateKey,
+      agent_name: "ghola",
+    });
+    setGeneratedAgentAddress(pending.agentAddress);
+    setAuthorizationOpened(false);
+    setQuickImport("");
+    setConfirmedAgentKey(false);
+    setError(null);
+  }, []);
 
   const clearCredentialDraft = useCallback(() => {
     setDraft({
@@ -5822,8 +5907,11 @@ function HyperliquidConnectModal({
       agent_name: "",
     });
     setGeneratedAgentAddress("");
+    setAuthorizationOpened(false);
     setQuickImport("");
     setConfirmedAgentKey(false);
+    setPendingWalletAction(null);
+    setPendingNotice(null);
   }, [hyperliquidNetwork]);
 
   useEffect(() => {
@@ -5838,6 +5926,34 @@ function HyperliquidConnectModal({
     if (shouldResetHyperliquidConnectionError(previousOpenRef.current, open)) setError(null);
     previousOpenRef.current = open;
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !LEGACY_HYPERLIQUID_API_KEYS_ENABLED || iosReturnTo || !walletAddress) return;
+    let cancelled = false;
+    setPendingWalletAction("resume");
+    void resumePendingHyperliquidApiWallet({
+      userDid: walletAddress,
+      network: hyperliquidNetwork,
+      signBytes,
+    })
+      .then((pending) => {
+        if (cancelled || !pending) return;
+        applyPendingWallet(pending);
+        setPendingNotice("Resumed your unfinished trade-only wallet setup.");
+      })
+      .catch((caught) => {
+        if (cancelled) return;
+        setError(caught instanceof Error
+          ? `Could not resume the saved wallet: ${caught.message}`
+          : "Could not resume the saved trade-only wallet.");
+      })
+      .finally(() => {
+        if (!cancelled) setPendingWalletAction(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyPendingWallet, hyperliquidNetwork, iosReturnTo, open, signBytes, walletAddress]);
 
   useEffect(() => {
     if (!open) return;
@@ -5906,22 +6022,27 @@ function HyperliquidConnectModal({
     generatedAgentAddress,
     confirmedImportedAgentKey: confirmedAgentKey,
   });
+  const authorizationReady = generatedAgentAddress ? authorizationOpened : agentKeyConfirmed;
+  const ownerAddressReady = /^0x[0-9a-fA-F]{40}$/.test(draft.hyperliquid_account_address.trim());
   const canSubmit = Boolean(
     accountCommitment &&
       walletAddress &&
-      agentKeyConfirmed &&
+      authorizationReady &&
       validationErrors.length === 0 &&
-      !submitting,
+      !submitting &&
+      !pendingWalletAction,
   );
   const connectLabel = submitting
     ? "Verifying…"
+    : generatedAgentAddress
+      ? authorizationOpened ? "I’ve authorized it — verify" : "Authorize on Hyperliquid first"
     : !accountCommitment || !walletAddress
       ? "Preparing secure wallet…"
       : !hasAccount
         ? "Enter account address"
         : !hasKey
           ? "Enter API wallet key"
-        : !agentKeyConfirmed
+        : !authorizationReady
           ? "Confirm key type"
             : validationErrors.length > 0
               ? "Check connection details"
@@ -5934,6 +6055,7 @@ function HyperliquidConnectModal({
     if (imported.fields.length > 0) {
       setDraft(imported.draft);
       setGeneratedAgentAddress("");
+      setAuthorizationOpened(false);
       setConfirmedAgentKey(false);
       setError(null);
     }
@@ -5945,31 +6067,61 @@ function HyperliquidConnectModal({
     setDraft((current) => ({ ...current, hyperliquid_account_address: next }));
   }
 
-  function generateDedicatedWallet() {
+  async function generateDedicatedWallet() {
+    if (!walletAddress) {
+      setError("Private account wallet is unavailable.");
+      return;
+    }
+    setPendingWalletAction("generate");
     try {
-      const generated = generateHyperliquidApiWallet();
-      setDraft((current) => ({
-        ...current,
-        api_wallet_private_key: generated.privateKey,
-        agent_name: current.agent_name?.trim() || "ghola",
-      }));
-      setGeneratedAgentAddress(generated.address);
-      setConfirmedAgentKey(false);
-      setQuickImport("");
-      setError(null);
+      const pending = await resumeOrCreatePendingHyperliquidApiWallet({
+        userDid: walletAddress,
+        network: hyperliquidNetwork,
+        ownerAddress: draft.hyperliquid_account_address,
+        signBytes,
+      });
+      applyPendingWallet(pending);
+      setPendingNotice(pending.ownerConflict
+        ? `A pending wallet already exists for ${pending.ownerAddress}. It was resumed instead of creating another.`
+        : pending.resumed
+          ? "Resumed your unfinished trade-only wallet setup."
+          : "Trade-only wallet created and saved securely in this browser.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not generate a dedicated API wallet.");
+    } finally {
+      setPendingWalletAction(null);
     }
   }
 
-  function clearGeneratedWallet() {
-    setDraft((current) => ({
-      ...current,
-      api_wallet_private_key: "",
-    }));
-    setGeneratedAgentAddress("");
-    setConfirmedAgentKey(false);
+  async function replaceGeneratedWallet() {
+    if (!walletAddress || !generatedAgentAddress || !ownerAddressReady) return;
+    setPendingWalletAction("replace");
     setError(null);
+    try {
+      const status = await getHyperliquidApiWalletAuthorization({
+        network: draft.network,
+        ownerAddress: draft.hyperliquid_account_address,
+        agentAddress: generatedAgentAddress,
+      });
+      if (status.authorized) {
+        setError("Revoke this exact trade-only wallet on Hyperliquid before replacement. Ghola will not create another while it remains authorized.");
+        return;
+      }
+      await clearPendingHyperliquidApiWallet({
+        userDid: walletAddress,
+        network: draft.network,
+        ownerAddress: draft.hyperliquid_account_address,
+      });
+      setDraft((current) => ({ ...current, api_wallet_private_key: "" }));
+      setGeneratedAgentAddress("");
+      setAuthorizationOpened(false);
+      setConfirmedAgentKey(false);
+      setPendingNotice("The unapproved pending wallet was removed. You can create one replacement.");
+    } catch {
+      setError("Ghola could not confirm this wallet is unapproved, so replacement is blocked for safety.");
+    } finally {
+      setPendingWalletAction(null);
+    }
   }
 
   async function copyGeneratedAddress() {
@@ -5988,8 +6140,10 @@ function HyperliquidConnectModal({
       setError("Private account wallet is unavailable.");
       return;
     }
-    if (!agentKeyConfirmed) {
-      setError("Confirm the imported key is a Hyperliquid API wallet key.");
+    if (!authorizationReady) {
+      setError(generatedAgentAddress
+        ? "Authorize the generated trade-only wallet on Hyperliquid first."
+        : "Confirm the imported key is a Hyperliquid API wallet key.");
       return;
     }
     if (validationErrors.length > 0) {
@@ -6014,6 +6168,13 @@ function HyperliquidConnectModal({
         encrypted_execution_vault: sealed.encrypted_execution_vault,
         credential_binding: credentialBinding,
       });
+      if (generatedAgentAddress) {
+        await clearPendingHyperliquidApiWallet({
+          userDid: walletAddress,
+          network: draft.network,
+          ownerAddress: draft.hyperliquid_account_address,
+        }).catch(() => {});
+      }
       clearCredentialDraft();
       onConnected(stored);
       onClose();
@@ -6062,6 +6223,13 @@ function HyperliquidConnectModal({
         {iosHandoff && (
           <p className="mt-2 pr-6 text-sm leading-5 text-[#8f9bb0]">
             One-time secure setup. You’ll return to the Ghola app when the connection is ready.
+          </p>
+        )}
+        {!iosHandoff && (
+          <p className="mt-2 pr-6 text-sm leading-5 text-[#8f9bb0]">
+            {generatedAgentAddress
+              ? "Step 2 of 2 · Authorize the trade-only wallet, then Ghola verifies it."
+              : "Step 1 of 2 · Enter the Hyperliquid account that holds your collateral."}
           </p>
         )}
 
@@ -6116,161 +6284,142 @@ function HyperliquidConnectModal({
           </div>
         ) : (
           <>
-            <div className="mt-5 grid gap-4">
-              <label className="grid gap-1.5">
-                <span className="text-xs font-medium text-[#96a2b7]">Hyperliquid account address</span>
-                <input
-                  value={draft.hyperliquid_account_address}
-                  onChange={(event) => updateHyperliquidAccountAddress(event.target.value)}
-                  placeholder="0x…"
-                  name="hyperliquid-owner-address"
-                  autoComplete="off"
-                  data-1p-ignore="true"
-                  data-lpignore="true"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  className="h-12 rounded-lg border border-[#253044] bg-[#080b10] px-4 font-mono text-sm text-[#eef1f8] outline-none placeholder:text-[#536076] focus:border-[#62b7ff]"
-                />
-              </label>
-              <div className="grid gap-3 rounded-lg border border-[#29405b] bg-[#0a1420] p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-[#dcecff]">Dedicated API wallet</p>
-                    <p className="mt-1 text-[11px] leading-4 text-[#8197b2]">
-                      Generated locally. The private key stays in memory and is encrypted before upload.
-                    </p>
-                  </div>
-                  {!generatedAgentAddress && (
-                    <button
-                      type="button"
-                      onClick={generateDedicatedWallet}
-                      className="shrink-0 border border-[#4778a6] bg-[#10243a] px-3 py-2 text-xs font-semibold text-[#bfe0ff] hover:bg-[#16304d]"
-                    >
-                      Generate in Ghola
-                    </button>
-                  )}
-                </div>
-                {generatedAgentAddress && (
-                  <div className="grid gap-3">
-                    <div className="rounded-md border border-[#315374] bg-[#070d14] p-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-[#6f8ba7]">
-                          Public authorization address
-                        </span>
-                        <button
-                          type="button"
-                          onClick={copyGeneratedAddress}
-                          className="inline-flex items-center gap-1 text-xs text-[#9bcfff] hover:text-white"
-                        >
-                          <Copy className="h-3.5 w-3.5" />
-                          Copy
-                        </button>
+            {!generatedAgentAddress ? (
+              <div className="mt-5 grid gap-4">
+                <label className="grid gap-1.5">
+                  <span className="text-xs font-medium text-[#96a2b7]">Your Hyperliquid account</span>
+                  <input
+                    value={draft.hyperliquid_account_address}
+                    onChange={(event) => updateHyperliquidAccountAddress(event.target.value)}
+                    placeholder="0x account address"
+                    name="hyperliquid-owner-address"
+                    autoComplete="off"
+                    data-1p-ignore="true"
+                    data-lpignore="true"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    className="h-12 rounded-lg border border-[#253044] bg-[#080b10] px-4 font-mono text-sm text-[#eef1f8] outline-none placeholder:text-[#536076] focus:border-[#62b7ff]"
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={!ownerAddressReady || Boolean(pendingWalletAction)}
+                  onClick={generateDedicatedWallet}
+                  className="h-12 rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {pendingWalletAction === "resume"
+                    ? "Checking saved setup…"
+                    : pendingWalletAction === "generate"
+                      ? "Creating…"
+                      : "Create trade-only wallet"}
+                </button>
+                <p className="text-center text-xs leading-5 text-[#718096]">Encrypted in this browser and resumed after interruptions. It cannot withdraw funds.</p>
+
+                <details className="rounded-lg border border-[#253044] bg-[#080b10] p-3">
+                  <summary className="cursor-pointer text-xs font-medium text-[#8290a5]">Use an existing API wallet</summary>
+                  <div className="mt-4 grid gap-3">
+                    <label className="grid gap-1.5">
+                      <span className="text-xs font-medium text-[#96a2b7]">API wallet private key</span>
+                      <input
+                        type="password"
+                        value={draft.api_wallet_private_key}
+                        onChange={(event) => {
+                          setDraft({ ...draft, api_wallet_private_key: event.target.value });
+                          setConfirmedAgentKey(false);
+                        }}
+                        placeholder="0x + 64 hexadecimal characters"
+                        name="hyperliquid-api-wallet-private-key"
+                        autoComplete="new-password"
+                        data-1p-ignore="true"
+                        data-lpignore="true"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        className="h-12 rounded-lg border border-[#253044] bg-[#07090c] px-4 font-mono text-sm text-[#eef1f8] outline-none placeholder:text-[#536076] focus:border-[#62b7ff]"
+                      />
+                    </label>
+                    <label className="flex items-start gap-3 text-xs leading-5 text-[#aab5c8]">
+                      <input
+                        type="checkbox"
+                        checked={confirmedAgentKey}
+                        onChange={(event) => setConfirmedAgentKey(event.target.checked)}
+                        className="mt-1 h-4 w-4 accent-[#a8d8ff]"
+                      />
+                      <span>This is a dedicated API wallet key—not my main wallet key.</span>
+                    </label>
+                    <details className="border-t border-[#253044] pt-3">
+                      <summary className="cursor-pointer text-xs text-[#718096]">Advanced import</summary>
+                      <div className="mt-3 grid gap-3">
+                        <textarea
+                          value={quickImport}
+                          onChange={(event) => updateQuickImport(event.target.value)}
+                          placeholder="Paste JSON or KEY=VALUE lines"
+                          autoComplete="off"
+                          spellCheck={false}
+                          className="min-h-20 resize-none rounded-md border border-[#253044] bg-[#07090c] px-3 py-3 font-mono text-xs text-[#eef1f8] outline-none"
+                        />
+                        <TextInput
+                          label="Agent name"
+                          value={draft.agent_name || ""}
+                          placeholder="optional"
+                          onChange={(value) => setDraft({ ...draft, agent_name: value })}
+                        />
                       </div>
-                      <p className="mt-2 break-all font-mono text-xs text-[#dcecff]">
-                        {generatedAgentAddress}
-                      </p>
-                    </div>
-                    <ol className="grid gap-1.5 pl-4 text-xs leading-5 text-[#94a8bf]">
-                      <li className="list-decimal">Open Hyperliquid API wallets for the {draft.network} account.</li>
-                      <li className="list-decimal">Paste this public address and authorize it with your account wallet.</li>
-                      <li className="list-decimal">Return here, confirm authorization, then secure and verify.</li>
-                    </ol>
-                    <div className="flex flex-wrap gap-2">
-                      <a
-                        href={draft.network === "testnet"
-                          ? "https://app.hyperliquid-testnet.xyz/API"
-                          : "https://app.hyperliquid.xyz/API"}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex h-9 items-center border border-[#4778a6] px-3 text-xs font-semibold text-[#bfe0ff] hover:bg-[#10243a]"
-                      >
-                        Open Hyperliquid API wallets
-                      </a>
-                      <button
-                        type="button"
-                        onClick={clearGeneratedWallet}
-                        className="h-9 px-2 text-xs text-[#718399] hover:text-[#dcecff]"
-                      >
-                        Use a different wallet
+                    </details>
+                  </div>
+                </details>
+              </div>
+            ) : (
+              <div className="mt-5 grid gap-4">
+                <div className="rounded-lg border border-[#29405b] bg-[#0a1420] p-4">
+                  <p className="text-sm font-semibold text-[#dcecff]">Authorize this address on Hyperliquid</p>
+                  <p className="mt-1 text-xs leading-5 text-[#8197b2]">Copy it into Hyperliquid’s API-wallet form and approve with your owner account.</p>
+                  <div className="mt-3 rounded-md border border-[#315374] bg-[#070d14] p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-[#6f8ba7]">Trade-only address</span>
+                      <button type="button" onClick={copyGeneratedAddress} className="inline-flex items-center gap-1 text-xs text-[#9bcfff] hover:text-white">
+                        <Copy className="h-3.5 w-3.5" /> Copy
                       </button>
                     </div>
+                    <p className="mt-2 break-all font-mono text-xs text-[#dcecff]">{generatedAgentAddress}</p>
                   </div>
-                )}
-              </div>
-              {!generatedAgentAddress && (
-                <details className="rounded-lg border border-[#253044] bg-[#080b10] p-3">
-                  <summary className="cursor-pointer text-xs font-medium text-[#8290a5]">Bring an existing API wallet instead</summary>
-                  <label className="mt-4 grid gap-1.5">
-                    <span className="text-xs font-medium text-[#96a2b7]">Dedicated API wallet private key</span>
-                    <input
-                      type="password"
-                      value={draft.api_wallet_private_key}
-                      onChange={(event) => {
-                        setDraft({ ...draft, api_wallet_private_key: event.target.value });
-                        setConfirmedAgentKey(false);
-                      }}
-                      placeholder="0x + 64 hexadecimal characters"
-                      name="hyperliquid-api-wallet-private-key"
-                      autoComplete="new-password"
-                      data-1p-ignore="true"
-                      data-lpignore="true"
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      className="h-12 rounded-lg border border-[#253044] bg-[#07090c] px-4 font-mono text-sm text-[#eef1f8] outline-none placeholder:text-[#536076] focus:border-[#62b7ff]"
-                    />
-                  </label>
-                </details>
-              )}
-              <div className="flex items-center justify-between rounded-lg border border-[#253044] bg-[#080b10] px-3 py-2.5 text-xs">
-                <span className="text-[#778398]">Network</span>
-                <span className="font-medium capitalize text-[#8fe0bd]">{draft.network}</span>
-              </div>
-              <details className="rounded-lg border border-[#253044] bg-[#080b10] p-3">
-                <summary className="cursor-pointer text-xs font-medium text-[#8290a5]">Import JSON or add an agent name</summary>
-                <div className="mt-4 grid gap-4">
-                  <label className="grid gap-1.5">
-                    <span className="text-xs text-[#8b95a8]">Credential import</span>
-                    <textarea
-                      value={quickImport}
-                      onChange={(event) => updateQuickImport(event.target.value)}
-                      placeholder="Paste JSON or KEY=VALUE lines"
-                      autoComplete="off"
-                      spellCheck={false}
-                      className="min-h-24 resize-none rounded-md border border-[#253044] bg-[#07090c] px-3 py-3 font-mono text-xs text-[#eef1f8] outline-none placeholder:text-[#59657a] focus:border-[#62b7ff]"
-                    />
-                  </label>
-                  <TextInput
-                    label="Agent name"
-                    value={draft.agent_name || ""}
-                    placeholder="optional"
-                    onChange={(value) => setDraft({ ...draft, agent_name: value })}
-                  />
                 </div>
-              </details>
-              {generatedAgentAddress ? (
-                <div className="rounded-lg border border-[#285c49] bg-[#0d251c] p-3 text-sm leading-5 text-[#92e1bd]">
-                  Ghola will verify the exact owner-to-agent authorization with Hyperliquid. This cannot pass from a checkbox.
-                </div>
-              ) : (
-                <label className="flex items-start gap-3 rounded-lg border border-[#253044] bg-[#080b10] p-3 text-sm text-[#aab5c8]">
-                  <input
-                    type="checkbox"
-                    checked={confirmedAgentKey}
-                    onChange={(event) => setConfirmedAgentKey(event.target.checked)}
-                    className="mt-1 h-4 w-4 accent-[#a8d8ff]"
-                  />
-                  <span>I’m using a dedicated Hyperliquid API wallet key—not my main wallet seed.</span>
-                </label>
-              )}
-            </div>
-            <div className="mt-5 rounded-lg border border-[#203349] bg-[#0a1420] px-3 py-2.5 text-xs leading-5 text-[#8ea7c3]">
-              Your key is encrypted in this browser. Ghola verifies the connection without placing an order.
-            </div>
+                <a
+                  href={draft.network === "testnet"
+                    ? "https://app.hyperliquid-testnet.xyz/API"
+                    : "https://app.hyperliquid.xyz/API"}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={() => {
+                    setAuthorizationOpened(true);
+                    void copyGeneratedAddress();
+                  }}
+                  className="inline-flex h-12 items-center justify-center rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb]"
+                >
+                  Open Hyperliquid to authorize
+                </a>
+                <p className="text-center text-xs leading-5 text-[#718096]">
+                  {authorizationOpened ? "After approval, return here and verify below." : "The address will be copied when Hyperliquid opens."}
+                </p>
+                <button
+                  type="button"
+                  disabled={Boolean(pendingWalletAction)}
+                  onClick={replaceGeneratedWallet}
+                  className="h-9 text-xs text-[#718399] hover:text-[#dcecff] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {pendingWalletAction === "replace" ? "Checking authorization…" : "Replace unapproved wallet"}
+                </button>
+              </div>
+            )}
+            <details className="mt-5 rounded-lg border border-[#203349] bg-[#0a1420] p-3 text-xs leading-5 text-[#8ea7c3]">
+              <summary className="cursor-pointer font-medium text-[#9bcfff]">How this stays safe</summary>
+              <p className="mt-2">Ghola encrypts the API key, verifies the exact owner-to-wallet authorization without placing an order, and never receives withdrawal access.</p>
+            </details>
           </>
         )}
 
+        {pendingNotice && <p role="status" className="mt-4 text-sm text-emerald-200">{pendingNotice}</p>}
         {error && <p className="mt-4 text-sm text-red-200">{error}</p>}
 
         <div className="mt-5 grid gap-2 sm:grid-cols-2">

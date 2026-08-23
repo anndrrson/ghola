@@ -222,7 +222,7 @@ async function thumperFetch<T>(
 // Auth
 
 export async function thumperSignUp(data: {
-  name: string;
+  name?: string;
   email: string;
   password: string;
 }): Promise<ThumperAuthResponse> {
@@ -233,7 +233,7 @@ export async function thumperSignUp(data: {
       body: JSON.stringify({
         email: data.email,
         password: data.password,
-        display_name: data.name,
+        display_name: data.name?.trim() || "Ghola user",
       }),
     },
   );

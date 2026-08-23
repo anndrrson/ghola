@@ -45,6 +45,19 @@ export function hyperliquidMarketFromTradeReturn(
   }
 }
 
+export function hyperliquidSetupAuthRedirect(
+  returnTo: string | null | undefined,
+): string {
+  const params = new URLSearchParams({
+    flow: "private-mode",
+    setup: "hyperliquid",
+  });
+  if (returnTo && hyperliquidMarketFromTradeReturn(returnTo)) {
+    params.set("return_to", returnTo);
+  }
+  return `/account?${params.toString()}`;
+}
+
 export function liveHyperliquidReferencePrice(snapshot: {
   mark_price?: string | null;
   mid?: string | null;

@@ -3,6 +3,9 @@
 !apps
 !apps/web
 !apps/web/**
+!packages
+!packages/perps-core
+!packages/perps-core/**
 
 # Vercel's linked project root is apps/web. When the CLI applies this
 # ignore file relative to that root, the repo-root exceptions above do
@@ -23,13 +26,25 @@
 !scripts
 !scripts/**
 
+# Local environment files must never enter a Vercel source bundle. Keep the
+# checked-in template available in either repo-root or apps/web-root uploads.
+.env
+.env.*
+!.env.example
+apps/web/.env
+apps/web/.env.*
+!apps/web/.env.example
+
 apps/web/.next
+apps/web/.next/**
 apps/web/node_modules
+apps/web/node_modules/**
 apps/web/coverage
 apps/web/.turbo
 apps/web/out
 apps/web/dist
 apps/web/build
+apps/web/tsconfig.tsbuildinfo
 .next
 node_modules
 coverage

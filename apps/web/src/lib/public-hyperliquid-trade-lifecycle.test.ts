@@ -55,6 +55,14 @@ describe("public Hyperliquid lifecycle integration", () => {
     expect(componentSource).toContain("Hyperliquid reports zero positions and zero open orders");
   });
 
+  it("uses one focused onboarding action before exposing the order ticket", () => {
+    expect(componentSource).toContain("Start trading in minutes");
+    expect(componentSource).toContain('router.push(product === "perps" && venue === "hyperliquid" ? setupHref : signinHref);');
+    expect(componentSource).toContain('? "Start trading"');
+    expect(componentSource).toContain('hyperliquidAction.action !== "review"');
+    expect(componentSource).toContain("Withdrawals remain disabled · no trade during setup");
+  });
+
   it("makes the release verifier reconcile without resubmitting", () => {
     expect(verifierSource).toContain('postJson("/v1/private-account/connectors/reconcile"');
     expect(verifierSource).toContain("the verifier will not resubmit it");

@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
-import { thumperSignIn, thumperSignUp } from "@/lib/thumper-api";
+import { thumperGoogleSignIn, thumperSignIn, thumperSignUp } from "@/lib/thumper-api";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { GholaLogo } from "@/components/GholaLogo";
@@ -17,8 +17,31 @@ type AuthModalProps = {
   onClose: () => void;
   onModeChange: (mode: AuthMode) => void;
   redirectTo?: string | null;
-  reason?: "chat-private";
+  reason?: "chat-private" | "hyperliquid-setup";
 };
+
+type GoogleIdentityApi = {
+  initialize: (config: {
+    client_id: string;
+    callback: (response: { credential: string }) => void;
+  }) => void;
+  renderButton: (
+    element: HTMLElement,
+    config: {
+      theme?: string;
+      size?: string;
+      width?: number;
+      text?: string;
+      shape?: string;
+    },
+  ) => void;
+};
+
+function googleIdentityApi() {
+  return (window as typeof window & {
+    google?: { accounts?: { id?: GoogleIdentityApi } };
+  }).google?.accounts?.id;
+}
 
 function passwordStrength(password: string) {
   if (password.length < 12) return { label: "Weak", score: 1, color: "bg-red-500" };
@@ -51,11 +74,15 @@ export function AuthModal({
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [googleAvailable, setGoogleAvailable] = useState(true);
   const [mounted, setMounted] = useState(open);
   const [visible, setVisible] = useState(false);
+  const googleButtonRef = useRef<HTMLDivElement>(null);
   const fieldId = useId();
   const isSignup = mode === "signup";
   const isPrivateChat = reason === "chat-private";
+  const isHyperliquidSetup = reason === "hyperliquid-setup";
+  const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
   const strength = passwordStrength(password);
   const nameId = `${fieldId}-name`;
   const emailId = `${fieldId}-email`;
@@ -87,6 +114,76 @@ export function AuthModal({
     };
   }, [mounted, onClose]);
 
+  const handleGoogleCredential = useCallback(async (credential: string) => {
+    setError("");
+    setLoading(true);
+    try {
+      const res = await thumperGoogleSignIn(credential);
+      setAuth({
+        id: res.user.id,
+        email: res.user.email,
+        name: res.user.name,
+      });
+      if (!walletAddress && res.user.email) {
+        try {
+          await createWallet(res.user.email);
+        } catch {
+          // Wallet creation can be completed later from the account surface.
+        }
+      }
+      onClose();
+      if (redirectTo) router.push(redirectTo);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Google sign-in failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [createWallet, onClose, redirectTo, router, setAuth, walletAddress]);
+
+  useEffect(() => {
+    if (!mounted || !googleClientId || !googleAvailable) return;
+
+    let cancelled = false;
+    const renderGoogleButton = () => {
+      if (cancelled || !googleButtonRef.current) return;
+      const google = googleIdentityApi();
+      if (!google) return;
+      google.initialize({
+        client_id: googleClientId,
+        callback: (response) => void handleGoogleCredential(response.credential),
+      });
+      google.renderButton(googleButtonRef.current, {
+        theme: "filled_black",
+        size: "large",
+        width: 336,
+        text: "continue_with",
+        shape: "rectangular",
+      });
+    };
+
+    const source = "https://accounts.google.com/gsi/client";
+    const existing = document.querySelector<HTMLScriptElement>(`script[src="${source}"]`);
+    if (existing) {
+      if (googleIdentityApi()) renderGoogleButton();
+      else existing.addEventListener("load", renderGoogleButton, { once: true });
+      return () => {
+        cancelled = true;
+        existing.removeEventListener("load", renderGoogleButton);
+      };
+    }
+
+    const script = document.createElement("script");
+    script.src = source;
+    script.async = true;
+    script.addEventListener("load", renderGoogleButton, { once: true });
+    script.addEventListener("error", () => setGoogleAvailable(false), { once: true });
+    document.head.appendChild(script);
+    return () => {
+      cancelled = true;
+      script.removeEventListener("load", renderGoogleButton);
+    };
+  }, [googleAvailable, googleClientId, handleGoogleCredential, mounted]);
+
   if (!mounted) return null;
 
   async function submit(event: React.FormEvent) {
@@ -95,7 +192,7 @@ export function AuthModal({
     setLoading(true);
     try {
       const res = isSignup
-        ? await thumperSignUp({ name, email, password })
+        ? await thumperSignUp({ name: isHyperliquidSetup ? undefined : name, email, password })
         : await thumperSignIn({ email, password });
       setAuth({
         id: res.user.id,
@@ -119,7 +216,7 @@ export function AuthModal({
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-[80] flex items-center justify-center px-4 py-6">
+    <div className="fixed inset-0 z-[110] flex items-center justify-center px-4 py-6">
       <button
         aria-label="Close auth dialog"
         className={`absolute inset-0 bg-black/72 backdrop-blur-sm transition-opacity duration-200 ease-out ${
@@ -155,6 +252,10 @@ export function AuthModal({
             ? isSignup
               ? "Create an account to get your private answer"
               : "Sign in to get your private answer"
+            : isHyperliquidSetup
+              ? isSignup
+                ? "Start trading"
+                : "Welcome back"
             : isSignup
               ? "Create your account"
               : "Welcome back"}
@@ -162,13 +263,29 @@ export function AuthModal({
         <p className="mt-1 text-sm text-[#8b95a8]">
           {isPrivateChat
             ? "Your question is saved and will send after private setup finishes."
+            : isHyperliquidSetup
+              ? "Continue directly to one trade-only Hyperliquid authorization."
             : isSignup
               ? "Start using Ghola without leaving this page."
               : "Sign in to continue to Ghola."}
         </p>
 
-        <form onSubmit={submit} className="mt-6 space-y-4">
-          {isSignup && (
+        {googleClientId && googleAvailable && (
+          <>
+            <div ref={googleButtonRef} className="mt-6 flex min-h-10 justify-center" />
+            <div className="relative my-5">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-[#1e2a3a]" />
+              </div>
+              <div className="relative flex justify-center text-xs">
+                <span className="bg-[#0b0d13] px-3 text-[#4a5568]">or use email</span>
+              </div>
+            </div>
+          </>
+        )}
+
+        <form onSubmit={submit} className={`${googleClientId && googleAvailable ? "" : "mt-6"} space-y-4`}>
+          {isSignup && !isHyperliquidSetup && (
             <div>
               <label htmlFor={nameId} className="mb-1.5 block text-sm text-[#8b95a8]">
                 Name
@@ -247,7 +364,7 @@ export function AuthModal({
                 ? "Creating account..."
                 : "Signing in..."
               : isSignup
-                ? "Get started"
+                ? isHyperliquidSetup ? "Continue" : "Get started"
                 : "Sign in"}
           </button>
         </form>

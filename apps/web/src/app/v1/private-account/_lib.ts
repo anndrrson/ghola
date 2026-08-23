@@ -4138,6 +4138,28 @@ async function verifyHyperliquidAgentAtVenue(input: {
   }
 }
 
+export async function hyperliquidAgentAuthorizationStatus(input: {
+  network: "mainnet" | "testnet";
+  owner_address: string;
+  agent_address: string;
+}) {
+  const ownerAddress = input.owner_address.trim().toLowerCase();
+  const agentAddress = input.agent_address.trim().toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(ownerAddress) || !/^0x[0-9a-f]{40}$/.test(agentAddress)) {
+    return { status: "invalid" as const, authorized: false };
+  }
+  const checked = await verifyHyperliquidAgentAtVenue({
+    network: input.network,
+    owner_address: ownerAddress,
+    agent_address: agentAddress,
+  });
+  if (checked.ok) return { status: "authorized" as const, authorized: true };
+  if (checked.error === "hyperliquid_agent_not_authorized") {
+    return { status: "not_authorized" as const, authorized: false };
+  }
+  return { status: "unavailable" as const, authorized: false };
+}
+
 async function reverifyStoredHyperliquidSignerBinding(
   vault: PrivateHyperliquidVaultRecordV1,
 ): Promise<

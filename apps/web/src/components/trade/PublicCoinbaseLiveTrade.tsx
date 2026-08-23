@@ -1535,15 +1535,15 @@ function AlternateProductWorkspace({
                 {hyperliquidReadiness.label}
               </span>
             )}
-            <button
-              type="button"
-              onClick={() => setSetupOpen(true)}
-              className="h-9 rounded-md border border-[#315478] bg-[#102033] px-3 text-xs font-semibold text-[#8fcbff] hover:border-[#3da8ff]"
-            >
-              {product === "perps" && !hyperliquidConnectionReady
-                ? `Connect Hyperliquid ${hyperliquidNetwork}`
-                : product === "perps" ? "Connected" : "Venue setup"}
-            </button>
+            {(product !== "perps" || hyperliquidConnectionReady) && (
+              <button
+                type="button"
+                onClick={() => setSetupOpen(true)}
+                className="h-9 rounded-md border border-[#315478] bg-[#102033] px-3 text-xs font-semibold text-[#8fcbff] hover:border-[#3da8ff]"
+              >
+                {product === "perps" ? "Manage connection" : "Venue setup"}
+              </button>
+            )}
           </div>
         </header>
 
@@ -1649,7 +1649,24 @@ function AlternateProductWorkspace({
                 </select>
               </div>
 
-              {product === "automate" ? (
+              {product === "perps" && hyperliquidAction.action !== "review" ? (
+                <div className="grid min-h-[270px] place-content-center gap-4 rounded-lg border border-[#263448] bg-[#0b1320] p-6 text-center">
+                  <span className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-[#3da8ff]/12 text-[#75c2ff]">
+                    {authenticated ? <ShieldCheck className="h-5 w-5" /> : <LogIn className="h-5 w-5" />}
+                  </span>
+                  <div>
+                    <h2 className="text-lg font-semibold text-white">
+                      {authenticated ? "Connect Hyperliquid" : "Start trading in minutes"}
+                    </h2>
+                    <p className="mx-auto mt-2 max-w-[270px] text-sm leading-6 text-[#8f9cad]">
+                      {authenticated
+                        ? "Authorize one trade-only wallet. Ghola verifies it and brings you straight back here."
+                        : "Sign in once, authorize trade-only access, then place and manage orders here."}
+                    </p>
+                  </div>
+                  <p className="text-xs text-[#64748b]">Withdrawals remain disabled · no trade during setup</p>
+                </div>
+              ) : product === "automate" ? (
                 <div className="grid gap-3">
                   <TicketField label="Strategy" value="Momentum with risk cap" readOnly />
                   <TicketInput label="Max order" prefix="$" value={amount} onChange={setAmount} />
@@ -1810,9 +1827,11 @@ function AlternateProductWorkspace({
                 disabled={authenticationLoading || (product === "perps" && hyperliquidAction.disabled) || perpWorking !== null || perpAttempt?.status === "ambiguous" || perpAttempt?.status === "awaiting_reconciliation" || (perpAttempt?.status === "reconciled" && !perpAttempt.order.reduce_only)}
                 onClick={() => {
                   if (!authenticated) {
-                    router.push(signinHref);
+                    router.push(product === "perps" && venue === "hyperliquid" ? setupHref : signinHref);
                   } else if (product === "perps" && hyperliquidAction.action === "review") {
                     void reviewPerpOrder();
+                  } else if (product === "perps" && legacyHyperliquidApiKeysEnabled) {
+                    router.push(setupHref);
                   } else {
                     setSetupOpen(true);
                   }
@@ -1825,7 +1844,10 @@ function AlternateProductWorkspace({
                     : perpWorking === "reconcile" ? "Reconciling exact order…"
                     : perpWorking === "verify" ? "Verifying flat and clear…"
                     : "Review order"
-                  : product === "perps" ? hyperliquidAction.label : authenticationLoading ? "Checking sign-in…" : authenticated ? `Set up ${selectedVenue?.label}` : "Sign in to continue"}
+                  : !authenticated && product === "perps" && venue === "hyperliquid" ? "Start trading"
+                    : product === "perps" ? hyperliquidAction.label
+                      : authenticationLoading ? "Checking sign-in…"
+                        : authenticated ? `Set up ${selectedVenue?.label}` : "Sign in to continue"}
               </button>
               {perpAttempt?.status === "ambiguous" && (
                 <button

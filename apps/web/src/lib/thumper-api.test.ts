@@ -54,6 +54,35 @@ describe("thumper auth helpers", () => {
     expect(localStorage.getItem("thumper_token")).toBeNull();
   });
 
+  it("does not require a display-name field during focused trading signup", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        user: {
+          id: "user_trading_signup",
+          email: "trader@example.test",
+          name: "Ghola user",
+        },
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await thumperSignUp({
+      email: "trader@example.test",
+      password: "correct horse battery staple",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/auth/session/email/signup", expect.objectContaining({
+      body: JSON.stringify({
+        email: "trader@example.test",
+        password: "correct horse battery staple",
+        display_name: "Ghola user",
+      }),
+    }));
+  });
+
   it("uses the cookie-backed email signin session route even when an upstream public API URL is configured", async () => {
     vi.stubEnv("NEXT_PUBLIC_THUMPER_API_URL", "https://thumper-cloud.onrender.com");
     const fetchMock = vi.fn().mockResolvedValue(
