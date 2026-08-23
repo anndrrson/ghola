@@ -19,6 +19,7 @@ import {
   GHOLA_HYPERLIQUID_NO_SUBMIT_ORDER_CONTRACT,
   GHOLA_HYPERLIQUID_PROOF_PROTOCOL,
 } from "@/lib/hyperliquid-proof-protocol";
+import { hyperliquidReleaseIdentity } from "@/lib/hyperliquid-release-identity";
 
 export const dynamic = "force-dynamic";
 
@@ -52,6 +53,7 @@ export async function liveTradingStatusResponse(input: {
   host?: string | null;
 } = {}) {
   const env = input.env ?? process.env;
+  const releaseIdentity = hyperliquidReleaseIdentity(env);
   const productEnvironment = resolveGholaProductEnvironment({
     host: input.host,
     configuredEnvironment: env.GHOLA_PRODUCT_ENVIRONMENT,
@@ -212,9 +214,15 @@ export async function liveTradingStatusResponse(input: {
       durable_connection_proof_required: true,
       ambiguity_retry_forbidden: true,
       venue_order_status_reconciliation_required: true,
+      post_submit_reconciliation_required: true,
+      correlated_execution_diagnostics_required: true,
+      public_trade_ambiguity_recovery_required: true,
       reduce_only_close_required: true,
+      exact_fill_reduce_only_close_required: true,
       final_flat_zero_orders_required: true,
+      release_identity_required: true,
     },
+    release_identity: releaseIdentity,
     product_environment: productEnvironment.environment,
     hyperliquid_network: productEnvironment.hyperliquidNetwork,
     testnet_funds_have_no_value: productEnvironment.environment === "testnet",

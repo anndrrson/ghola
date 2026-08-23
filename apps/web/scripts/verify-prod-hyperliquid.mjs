@@ -23,6 +23,7 @@ const apiWalletPrivateKey = env("GHOLA_VERIFY_HYPERLIQUID_API_WALLET_PRIVATE_KEY
 const market = env("GHOLA_VERIFY_HYPERLIQUID_MARKET", "BTC").toUpperCase();
 const quoteSize = env("GHOLA_VERIFY_HYPERLIQUID_QUOTE_SIZE", "11");
 const maxSlippageBps = env("GHOLA_VERIFY_HYPERLIQUID_MAX_SLIPPAGE_BPS", "50");
+const stopLoss = env("GHOLA_VERIFY_HYPERLIQUID_STOP_LOSS");
 const allowMissingCredentials = boolEnv("GHOLA_VERIFY_ALLOW_MISSING_HYPERLIQUID_CREDENTIALS");
 const storeVaultConfirm = env("GHOLA_VERIFY_STORE_HYPERLIQUID_VAULT_CONFIRM");
 const liveSubmit = boolEnv("GHOLA_VERIFY_LIVE_SUBMIT");
@@ -103,7 +104,13 @@ try {
     if (storeVaultConfirm !== "I_UNDERSTAND_THIS_STORES_A_SEALED_VAULT") {
       throw new Error("Set GHOLA_VERIFY_STORE_HYPERLIQUID_VAULT_CONFIRM=I_UNDERSTAND_THIS_STORES_A_SEALED_VAULT before sealing production credentials.");
     }
-    validateHyperliquidCredentialInputs({ accountAddress, apiWalletPrivateKey, quoteSize, maxSlippageBps });
+    validateHyperliquidCredentialInputs({
+      accountAddress,
+      apiWalletPrivateKey,
+      quoteSize,
+      maxSlippageBps,
+      ...(liveSubmit ? { stopLoss } : {}),
+    });
     const vaultStatus = await getJson("/v1/private-account/hyperliquid/vault");
     const accountCommitment = stringValue(vaultStatus.account_commitment);
     record("private_account_loaded", Boolean(accountCommitment), {
@@ -178,7 +185,13 @@ try {
       if (snapshot.status !== "ready_to_trade") {
         throw new Error(`Live submit requires ready_to_trade; account snapshot returned ${snapshot.status}.`);
       }
-      report.live_execution = await runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBps });
+      report.live_execution = await runLiveSubmitCanary({
+        recipient,
+        market,
+        quoteSize,
+        maxSlippageBps,
+        stopLoss,
+      });
       report.status = "live_round_trip_flat";
     } else {
       report.status = "verified_no_submit";
@@ -271,7 +284,7 @@ async function runNoSubmitVerification({ recipient, market, quoteSize, maxSlippa
   });
 }
 
-async function runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBps }) {
+async function runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBps, stopLoss }) {
   const entry = await runLiveOrder({
     recipient,
     market,
@@ -279,6 +292,7 @@ async function runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBp
     maxSlippageBps,
     side: "buy",
     reduceOnly: false,
+    stopLoss,
   });
   const entryProof = entry.execution.connector_result?.final_proof || {};
   const filledBaseSize = stringValue(entryProof.filled_base_size);
@@ -348,7 +362,7 @@ async function runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBp
   });
 }
 
-async function runLiveOrder({ recipient, market, quoteSize, maxSlippageBps, side, reduceOnly, baseSize }) {
+async function runLiveOrder({ recipient, market, quoteSize, maxSlippageBps, side, reduceOnly, baseSize, stopLoss }) {
   const safeInput = {
     action_class: "trade_on_platform",
     platform_class: "hyperliquid_style_market",
@@ -403,6 +417,7 @@ async function runLiveOrder({ recipient, market, quoteSize, maxSlippageBps, side
       } : {
         quote_size: quoteSize,
         live_order_mode: "tiny_fill",
+        protective_orders: { stop_loss: stopLoss },
       }),
       max_slippage_bps: maxSlippageBps,
       tif: "Ioc",
@@ -440,7 +455,36 @@ async function runLiveOrder({ recipient, market, quoteSize, maxSlippageBps, side
   });
   assertSafeArtifact("live_hyperliquid_execution", execution);
 
-  return { intent, preview, approval, execution, receipt };
+  // A submit acknowledgement is not final proof. Resolve the deterministic
+  // client-order ID exactly once; never submit the same approval again.
+  await delay(750);
+  const reconciliation = await postJson("/v1/private-account/connectors/reconcile", {
+    preview_commitment: preview.preview_commitment,
+  });
+  const connectorResult = reconciliation.connector_result || {};
+  const reconciliationFinal = connectorResult.status === "reconciled" &&
+    connectorResult.final_proof?.proof_kind === "hyperliquid_order_status_reconciliation_v1" &&
+    connectorResult.final_proof?.final_venue_execution_proven === true;
+  record(reduceOnly ? "live_hyperliquid_close_reconciled" : "live_hyperliquid_entry_reconciled", reconciliationFinal, {
+    status: connectorResult.status || null,
+    reason: connectorResult.reason || null,
+    proof_kind: connectorResult.final_proof?.proof_kind || null,
+    final_venue_execution_proven: connectorResult.final_proof?.final_venue_execution_proven ?? null,
+    final_fill_proven: connectorResult.final_proof?.final_fill_proven ?? null,
+  });
+  assertSafeArtifact("live_hyperliquid_reconciliation", reconciliation);
+  if (!reconciliationFinal) {
+    throw new Error("Hyperliquid order acknowledgement did not reconcile to a final proof; the verifier will not resubmit it.");
+  }
+
+  return {
+    intent,
+    preview,
+    approval,
+    execution: { ...execution, connector_result: connectorResult },
+    receipt,
+    reconciliation,
+  };
 }
 
 function liveOrderSummary(value) {
@@ -455,6 +499,10 @@ function liveOrderSummary(value) {
     claim_status: value.receipt.claim_status || null,
     final_proof: value.execution.connector_result?.final_proof || null,
   };
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function checkHead(name, path) {
@@ -618,6 +666,12 @@ function validateHyperliquidCredentialInputs(input) {
   const slippage = Number(input.maxSlippageBps);
   if (!Number.isInteger(slippage) || slippage < 1 || slippage > 100) {
     throw new Error("GHOLA_VERIFY_HYPERLIQUID_MAX_SLIPPAGE_BPS must be an integer from 1 to 100.");
+  }
+  if (Object.hasOwn(input, "stopLoss")) {
+    const stop = Number(input.stopLoss);
+    if (!Number.isFinite(stop) || stop <= 0) {
+      throw new Error("GHOLA_VERIFY_HYPERLIQUID_STOP_LOSS must be a positive price for live submit.");
+    }
   }
 }
 

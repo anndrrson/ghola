@@ -29,6 +29,8 @@ const LIVE_MUTATION_PATHS = [
 ];
 
 export async function POST(req: Request) {
+  const startedAt = Date.now();
+  const correlationId = liveCorrelationId(req.headers.get("x-ghola-correlation-id"));
   const owner = await privateAccountOwnerFromRequest(req);
   if (!owner) return unauthorized();
 
@@ -51,27 +53,73 @@ export async function POST(req: Request) {
     return json({ error: "private_account_request_proof_unconfigured" }, 503);
   }
 
-  const response = await fetch(new URL(`${target.pathname}${target.search}`, req.url), {
-    method: "POST",
-    cache: "no-store",
-    headers: {
-      "content-type": "application/json",
-      authorization: req.headers.get("authorization") ?? "",
-      cookie: req.headers.get("cookie") ?? "",
-      origin: new URL(req.url).origin,
-      ...(proofHeaders ?? {}),
-    },
-    body: JSON.stringify(proxyBody.body ?? {}),
+  console.info("[private-account-live-proxy] started", {
+    correlation_id: correlationId,
+    path: target.pathname,
   });
-  const text = await response.text();
-  const headers = new Headers({
-    "cache-control": "no-store, max-age=0",
-    "content-type": response.headers.get("content-type") || "application/json",
-  });
-  return new Response(text, {
-    status: response.status,
-    headers,
-  });
+  try {
+    const response = await fetch(new URL(`${target.pathname}${target.search}`, req.url), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+        authorization: req.headers.get("authorization") ?? "",
+        cookie: req.headers.get("cookie") ?? "",
+        origin: new URL(req.url).origin,
+        "x-ghola-correlation-id": correlationId,
+        ...(proofHeaders ?? {}),
+      },
+      body: JSON.stringify(proxyBody.body ?? {}),
+    });
+    const text = await response.text();
+    const durationMs = Date.now() - startedAt;
+    console.info("[private-account-live-proxy] completed", {
+      correlation_id: correlationId,
+      path: target.pathname,
+      status: response.status,
+      duration_ms: durationMs,
+    });
+    const headers = new Headers({
+      "cache-control": "no-store, max-age=0",
+      "content-type": response.headers.get("content-type") || "application/json",
+      "server-timing": `ghola-live-proxy;dur=${durationMs}`,
+      "x-ghola-correlation-id": correlationId,
+    });
+    return new Response(text, {
+      status: response.status,
+      headers,
+    });
+  } catch (error) {
+    const durationMs = Date.now() - startedAt;
+    const ambiguous = target.pathname === "/v1/private-account/actions/execute" ||
+      target.pathname === "/v1/private-account/connectors/submit";
+    console.error("[private-account-live-proxy] failed", {
+      correlation_id: correlationId,
+      path: target.pathname,
+      duration_ms: durationMs,
+      error_name: error instanceof Error ? error.name : "unknown",
+    });
+    return new Response(JSON.stringify({
+      error: ambiguous ? "connector_submit_ambiguous" : "private_account_live_proxy_unavailable",
+      correlation_id: correlationId,
+      retry_forbidden: ambiguous,
+    }), {
+      status: 502,
+      headers: {
+        "cache-control": "no-store, max-age=0",
+        "content-type": "application/json",
+        "server-timing": `ghola-live-proxy;dur=${durationMs}`,
+        "x-ghola-correlation-id": correlationId,
+      },
+    });
+  }
+}
+
+function liveCorrelationId(value: string | null): string {
+  const normalized = value?.trim() ?? "";
+  return /^[a-zA-Z0-9._:-]{12,96}$/.test(normalized)
+    ? normalized
+    : `ghola-${randomUUID()}`;
 }
 
 function readProxyBody(value: unknown): ProxyBody | null {

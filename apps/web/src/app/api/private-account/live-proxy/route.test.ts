@@ -10,6 +10,8 @@ const ENV_KEYS = [
 describe("private account live proxy", () => {
   beforeEach(() => {
     clearEnv();
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
     process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
     process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET = "secure_private_account_request_proof_secret_32bytes";
   });
@@ -42,7 +44,28 @@ describe("private account live proxy", () => {
     expect(headers["x-ghola-request-timestamp"]).toBeTruthy();
     expect(headers["x-ghola-request-nonce"]).toMatch(/^web-/);
     expect(headers["x-ghola-request-proof"]).toMatch(/^[0-9a-f]{64}$/);
+    expect(headers["x-ghola-correlation-id"]).toBe("ghola-correlation-test-123");
     expect(headers.authorization).toBe("Bearer local-live-user");
+    expect(res.headers.get("x-ghola-correlation-id")).toBe("ghola-correlation-test-123");
+    expect(res.headers.get("server-timing")).toMatch(/^ghola-live-proxy;dur=/);
+  });
+
+  it("fails an uncertain execution closed with a retry-forbidden correlation record", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("connection reset"));
+
+    const res = await POST(proxyRequest({
+      path: "/v1/private-account/actions/execute",
+      body: { version: 1 },
+    }));
+    const body = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(body).toMatchObject({
+      error: "connector_submit_ambiguous",
+      correlation_id: "ghola-correlation-test-123",
+      retry_forbidden: true,
+    });
+    expect(res.headers.get("x-ghola-correlation-id")).toBe("ghola-correlation-test-123");
   });
 
   it("rejects paths outside the live mutation allowlist", async () => {
@@ -99,6 +122,7 @@ function proxyRequest(payload: { path: string; body: Record<string, unknown> }) 
     headers: {
       "content-type": "application/json",
       authorization: "Bearer local-live-user",
+      "x-ghola-correlation-id": "ghola-correlation-test-123",
     },
     body: JSON.stringify({
       path: payload.path,

@@ -51,8 +51,10 @@ import {
   createPrivateAccountIntent,
   createPrivateAccountRuntimeEnvelope,
   executePrivateAccountAction,
+  getHyperliquidAccountSnapshot,
   openHyperliquidAccountStream,
   previewPrivateAccountAction,
+  reconcilePrivateAccountConnector,
   type HyperliquidAccountSnapshot,
   type PrivateAccountSafeInput,
 } from "@/lib/private-account-client";
@@ -64,6 +66,13 @@ import {
   mergeHyperliquidAccountSnapshot,
   spotVenueReadiness,
 } from "@/lib/trade-readiness";
+import {
+  buildHyperliquidReduceOnlyClose,
+  classifyHyperliquidTradeFailure,
+  hyperliquidAccountIsFlatAndClear,
+  provenHyperliquidFill,
+  type HyperliquidConnectorResult,
+} from "@/lib/hyperliquid-trade-lifecycle";
 
 type LiveStep = "idle" | "prepared" | "submitted";
 
@@ -119,6 +128,36 @@ type LiveTradingStatus = {
   coinbase_public_live_ready?: boolean;
   phoenix_public_live_ready?: boolean;
   no_key_blocking_reason_codes?: string[];
+};
+
+type PerpExecutionResponse = {
+  ok?: boolean;
+  status?: string;
+  receipt?: {
+    receipt_commitment?: string | null;
+    work_order_commitment?: string | null;
+    connector_result_commitment?: string | null;
+  };
+};
+
+type PerpReconciliationResponse = {
+  connector_result?: HyperliquidConnectorResult | null;
+  work_order?: {
+    work_order_commitment?: string | null;
+    status?: string | null;
+  } | null;
+};
+
+type PerpAttemptState = {
+  previewCommitment: string;
+  order: PrivateExecutionOrderDraft;
+  status: "awaiting_reconciliation" | "ambiguous" | "reconciled" | "failed";
+  result: HyperliquidConnectorResult | null;
+};
+
+type PreparedPerpClose = {
+  order: PrivateExecutionOrderDraft;
+  entryResultCommitment: string | null;
 };
 
 const DEFAULT_PRODUCT: CoinbaseProductId = "SOL-USD";
@@ -830,13 +869,17 @@ function AlternateProductWorkspace({
   const [leverage, setLeverage] = useState("1");
   const [marginMode, setMarginMode] = useState<"cross" | "isolated">("cross");
   const [maxSlippageBps, setMaxSlippageBps] = useState(String(hyperliquidMaxSlippageBps));
-  const [perpWorking, setPerpWorking] = useState<"preview" | "submit" | null>(null);
+  const [perpWorking, setPerpWorking] = useState<"preview" | "submit" | "reconcile" | "verify" | null>(null);
   const [perpError, setPerpError] = useState<string | null>(null);
   const [perpNotice, setPerpNotice] = useState<string | null>(null);
+  const [perpAttempt, setPerpAttempt] = useState<PerpAttemptState | null>(null);
+  const [preparedPerpClose, setPreparedPerpClose] = useState<PreparedPerpClose | null>(null);
   const [perpReview, setPerpReview] = useState<{
     intentId: string;
     previewCommitment: string;
     createdAt: number;
+    order: PrivateExecutionOrderDraft;
+    notional: string;
   } | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
   const [activityTab, setActivityTab] = useState<"positions" | "orders" | "activity">("positions");
@@ -900,7 +943,7 @@ function AlternateProductWorkspace({
     selectedMarketAvailable: Boolean(selectedMarketCapability),
   }), [accountState, authenticated, hyperliquidAccount, hyperliquidConnectionReady, hyperliquidNetwork, perpMarketCatalogState, selectedMarketCapability]);
   const maxLeverage = hyperliquidMarket?.max_leverage ?? selectedMarketCapability?.max_leverage ?? null;
-  const perpOrder = useMemo<PrivateExecutionOrderDraft>(() => ({
+  const manualPerpOrder = useMemo<PrivateExecutionOrderDraft>(() => ({
     venue_id: "hyperliquid",
     operation_class: "limit_order",
     market: perpMarket,
@@ -921,6 +964,8 @@ function AlternateProductWorkspace({
       ...(takeProfit.trim() ? { take_profit: takeProfit.trim() } : {}),
     },
   }), [amount, leverage, limitPrice, marginMode, maxSlippageBps, orderType, perpMarket, reduceOnly, side, stopLoss, takeProfit, timeInForce]);
+  const perpOrder = preparedPerpClose?.order ?? manualPerpOrder;
+  const perpNotional = useMemo(() => orderNotional(perpOrder, displayedMid), [displayedMid, perpOrder]);
   const perpOrderErrors = useMemo(
     () => validatePerpTicket(perpOrder, displayedMid, maxLeverage, hyperliquidMaxSlippageBps),
     [displayedMid, hyperliquidMaxSlippageBps, maxLeverage, perpOrder],
@@ -1086,6 +1131,10 @@ function AlternateProductWorkspace({
   async function reviewPerpOrder() {
     setPerpError(null);
     setPerpNotice(null);
+    if (perpAttempt?.status === "awaiting_reconciliation" || perpAttempt?.status === "ambiguous") {
+      setPerpError("The prior order is locked. Reconcile its exact client-order ID before reviewing another order.");
+      return;
+    }
     if (!authenticated) {
       setSetupOpen(true);
       return;
@@ -1113,7 +1162,8 @@ function AlternateProductWorkspace({
         max_order_count: 100,
         kill_switch: false,
       });
-      const safeInput = perpSafeInput(perpMarket, amount);
+      const reviewedNotional = String(perpNotional || Number(amount));
+      const safeInput = perpSafeInput(perpMarket, reviewedNotional);
       const intent = await createPrivateAccountIntent(safeInput) as { intent_id?: string };
       if (!intent.intent_id) throw new Error("Ghola could not create the private order intent.");
       const runtime = await createPrivateAccountRuntimeEnvelope({
@@ -1144,9 +1194,15 @@ function AlternateProductWorkspace({
       }
       const previewCommitment = preview.preview?.preview_commitment;
       if (!previewCommitment) throw new Error("Ghola did not return a review commitment.");
-      setPerpReview({ intentId: intent.intent_id, previewCommitment, createdAt: Date.now() });
+      setPerpReview({
+        intentId: intent.intent_id,
+        previewCommitment,
+        createdAt: Date.now(),
+        order: perpOrder,
+        notional: reviewedNotional,
+      });
     } catch (error) {
-      setPerpError(friendlyPerpError(error));
+      setPerpError(classifyHyperliquidTradeFailure(error).message);
     } finally {
       setPerpWorking(null);
     }
@@ -1154,8 +1210,9 @@ function AlternateProductWorkspace({
 
   async function submitPerpOrder() {
     if (!perpReview || perpWorking) return;
+    const reviewed = perpReview;
     setPerpError(null);
-    if (Date.now() - perpReview.createdAt > 15_000) {
+    if (Date.now() - reviewed.createdAt > 15_000) {
       setPerpReview(null);
       setPerpError("The live review expired. Review the order again for a fresh price and account check.");
       return;
@@ -1172,6 +1229,10 @@ function AlternateProductWorkspace({
         : "Authenticate with the Turnkey owner wallet before approving this order.");
       return;
     }
+    // The approval is single-use. Remove the submit control before any network
+    // call so an uncertain response can never be clicked or retried again.
+    setPerpReview(null);
+    if (reviewed.order.reduce_only) setPreparedPerpClose(null);
     setPerpWorking("submit");
     try {
       let ownerWalletAddress: string;
@@ -1186,32 +1247,149 @@ function AlternateProductWorkspace({
       }
       const sealed = await buildPrivateExecutionInstructionBundle({
         ownerWalletAddress,
-        previewCommitment: perpReview.previewCommitment,
-        order: perpOrder,
+        previewCommitment: reviewed.previewCommitment,
+        order: reviewed.order,
         signBytes: signInstructionBytes,
         ttlMs: 60_000,
       });
       const approval = await approvePrivateAccountAction({
-        intent_id: perpReview.intentId,
-        preview_commitment: perpReview.previewCommitment,
+        intent_id: reviewed.intentId,
+        preview_commitment: reviewed.previewCommitment,
         degraded_accepted: true,
       }) as { approval?: { approval_commitment?: string } };
       const approvalCommitment = approval.approval?.approval_commitment;
       if (!approvalCommitment) throw new Error("Order approval was not recorded.");
-      const execution = await executePrivateAccountAction({
-        intent_id: perpReview.intentId,
-        preview_commitment: perpReview.previewCommitment,
+      await executePrivateAccountAction({
+        intent_id: reviewed.intentId,
+        preview_commitment: reviewed.previewCommitment,
         approval_commitment: approvalCommitment,
         encrypted_execution_instruction_bundle: sealed.encrypted_execution_instruction_bundle,
-      }) as { execution?: { status?: string }; status?: string };
-      const status = execution.execution?.status || execution.status || "submitted";
-      setPerpNotice(`Hyperliquid order ${status.replaceAll("_", " ")}. Reconciliation is active.`);
-      setPerpReview(null);
+      }) as PerpExecutionResponse;
+      setPerpAttempt({
+        previewCommitment: reviewed.previewCommitment,
+        order: reviewed.order,
+        status: "awaiting_reconciliation",
+        result: null,
+      });
+      setPerpNotice("Hyperliquid acknowledged the request. Checking the exact client-order ID before any next action.");
+      await reconcilePerpOrder(reviewed.previewCommitment, reviewed.order);
     } catch (error) {
-      setPerpError(friendlyPerpError(error));
+      const failure = classifyHyperliquidTradeFailure(error);
+      if (failure.reconciliationRequired) {
+        setPerpAttempt({
+          previewCommitment: reviewed.previewCommitment,
+          order: reviewed.order,
+          status: "ambiguous",
+          result: null,
+        });
+        setPerpError(failure.message);
+        await reconcilePerpOrder(reviewed.previewCommitment, reviewed.order);
+      } else {
+        setPerpAttempt({
+          previewCommitment: reviewed.previewCommitment,
+          order: reviewed.order,
+          status: "failed",
+          result: null,
+        });
+        setPerpError(failure.message);
+      }
     } finally {
       setPerpWorking(null);
     }
+  }
+
+  async function reconcilePerpOrder(
+    previewCommitment: string,
+    order: PrivateExecutionOrderDraft,
+  ) {
+    setPerpWorking("reconcile");
+    try {
+      const reconciled = await reconcilePrivateAccountConnector({
+        preview_commitment: previewCommitment,
+      }) as PerpReconciliationResponse;
+      const result = reconciled.connector_result ?? null;
+      if (!result) throw new Error("connector_reconcile_failed");
+      if (result.status === "ambiguous") {
+        setPerpAttempt({ previewCommitment, order, status: "ambiguous", result });
+        setPerpError(classifyHyperliquidTradeFailure(new Error("connector_submit_ambiguous")).message);
+        setPerpNotice(null);
+        return;
+      }
+      if (result.status === "failed") {
+        setPerpAttempt({ previewCommitment, order, status: "failed", result });
+        setPerpError(classifyHyperliquidTradeFailure(new Error(result.reason || "connector_submit_failed")).message);
+        setPerpNotice(null);
+        return;
+      }
+      const fill = provenHyperliquidFill(result);
+      if (!fill) {
+        setPerpAttempt({ previewCommitment, order, status: "ambiguous", result });
+        setPerpError("Hyperliquid has not returned exact final fill proof. This order remains locked and will not be retried.");
+        setPerpNotice(null);
+        return;
+      }
+      setPerpAttempt({ previewCommitment, order, status: "reconciled", result });
+      if (!order.reduce_only) {
+        setPerpNotice(`Entry fill proven for ${fill.baseSize} ${order.market}. Prepare the exact reduce-only close next.`);
+        setPerpError(null);
+        return;
+      }
+
+      setPerpWorking("verify");
+      const finalSnapshot = await getHyperliquidAccountSnapshot();
+      setHyperliquidAccount(finalSnapshot);
+      setAccountState("ready");
+      if (hyperliquidAccountIsFlatAndClear(finalSnapshot)) {
+        setPreparedPerpClose(null);
+        setPerpNotice("Reduce-only close proven. Hyperliquid reports zero positions and zero open orders.");
+        setPerpError(null);
+      } else {
+        setPerpError(`Close fill is proven, but Hyperliquid still reports ${finalSnapshot.position_count} position(s) and ${finalSnapshot.open_order_count} open order(s). No further order will be sent automatically.`);
+        setPerpNotice(null);
+      }
+    } catch (error) {
+      const failure = classifyHyperliquidTradeFailure(error);
+      setPerpAttempt((current) => ({
+        previewCommitment,
+        order,
+        status: "ambiguous",
+        result: current?.result ?? null,
+      }));
+      setPerpError(`${failure.message} This exact order remains locked.`);
+      setPerpNotice(null);
+    } finally {
+      setPerpWorking(null);
+    }
+  }
+
+  function preparePerpReduceOnlyClose() {
+    if (!perpAttempt || perpAttempt.order.reduce_only) return;
+    const fill = provenHyperliquidFill(perpAttempt.result);
+    if (!fill) {
+      setPerpError("An exact reconciled entry fill is required before preparing a close.");
+      return;
+    }
+    const closeOrder = buildHyperliquidReduceOnlyClose(perpAttempt.order, fill);
+    setPreparedPerpClose({
+      order: closeOrder,
+      entryResultCommitment: perpAttempt.result?.result_commitment ?? null,
+    });
+    setSide(closeOrder.side);
+    setOrderType("market");
+    setReduceOnly(true);
+    setStopLoss("");
+    setTakeProfit("");
+    setAdvanced(true);
+    setPerpAttempt(null);
+    setPerpError(null);
+    setPerpNotice(`Exact ${fill.baseSize} ${closeOrder.market} reduce-only close prepared. Review and confirm it separately.`);
+  }
+
+  function returnToManualPerpTicket() {
+    setPreparedPerpClose(null);
+    setReduceOnly(false);
+    setPerpNotice(null);
+    setPerpError(null);
   }
 
   return (
@@ -1383,12 +1561,13 @@ function AlternateProductWorkspace({
                       <button
                         key={direction}
                         type="button"
+                        disabled={Boolean(preparedPerpClose)}
                         onClick={() => setSide(direction)}
                         className={side === direction
                           ? direction === "buy"
-                            ? "h-11 rounded-md border border-[#62d6a5]/40 bg-[#62d6a5]/12 text-sm font-semibold text-[#a8efd1]"
-                            : "h-11 rounded-md border border-[#ef8f97]/40 bg-[#ef8f97]/12 text-sm font-semibold text-[#ffc2c7]"
-                          : "h-11 rounded-md border border-[#252d37] bg-[#090b0e] text-sm text-[#778295]"}
+                            ? "h-11 rounded-md border border-[#62d6a5]/40 bg-[#62d6a5]/12 text-sm font-semibold text-[#a8efd1] disabled:opacity-70"
+                            : "h-11 rounded-md border border-[#ef8f97]/40 bg-[#ef8f97]/12 text-sm font-semibold text-[#ffc2c7] disabled:opacity-70"
+                          : "h-11 rounded-md border border-[#252d37] bg-[#090b0e] text-sm text-[#778295] disabled:opacity-50"}
                       >
                         {direction === "buy" ? "Long" : "Short"}
                       </button>
@@ -1400,6 +1579,7 @@ function AlternateProductWorkspace({
                         key={type}
                         type="button"
                         aria-pressed={orderType === type}
+                        disabled={Boolean(preparedPerpClose)}
                         onClick={() => setOrderType(type)}
                         className={orderType === type
                           ? "h-10 rounded-md border border-[#3da8ff]/45 bg-[#3da8ff]/12 text-sm font-semibold capitalize text-[#a9d8ff]"
@@ -1409,7 +1589,11 @@ function AlternateProductWorkspace({
                       </button>
                     ))}
                   </div>
-                  <TicketInput label="Size" prefix="$" value={amount} onChange={setAmount} />
+                  {preparedPerpClose ? (
+                    <TicketField label="Exact close size" value={`${preparedPerpClose.order.base_size} ${preparedPerpClose.order.market}`} readOnly />
+                  ) : (
+                    <TicketInput label="Size" prefix="$" value={amount} onChange={setAmount} />
+                  )}
                   {orderType === "limit" && (
                     <TicketInput label="Limit price" prefix="$" value={limitPrice} onChange={setLimitPrice} placeholder="Required" />
                   )}
@@ -1417,6 +1601,7 @@ function AlternateProductWorkspace({
                     <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-[#778295]">Leverage</span>
                     <select
                       value={leverage}
+                      disabled={Boolean(preparedPerpClose)}
                       onChange={(event) => setLeverage(event.target.value)}
                       className="mt-1 h-11 w-full rounded-md border border-[#2b3441] bg-[#07090c] px-3 font-mono text-sm text-white outline-none focus:border-[#3da8ff]"
                     >
@@ -1431,6 +1616,7 @@ function AlternateProductWorkspace({
                         key={mode}
                         type="button"
                         aria-pressed={marginMode === mode}
+                        disabled={Boolean(preparedPerpClose)}
                         onClick={() => setMarginMode(mode)}
                         className={marginMode === mode
                           ? "h-10 rounded-md border border-[#3da8ff]/45 bg-[#3da8ff]/10 text-sm font-semibold capitalize text-[#a9d8ff]"
@@ -1455,6 +1641,7 @@ function AlternateProductWorkspace({
                         <input
                           type="checkbox"
                           checked={reduceOnly}
+                          disabled={Boolean(preparedPerpClose)}
                           onChange={(event) => setReduceOnly(event.target.checked)}
                           className="h-4 w-4 accent-[#3da8ff]"
                         />
@@ -1473,7 +1660,9 @@ function AlternateProductWorkspace({
                           </select>
                         </label>
                       )}
-                      {orderType === "market" && (
+                      {orderType === "market" && preparedPerpClose ? (
+                        <TicketField label="Max slippage" value={`${preparedPerpClose.order.max_slippage_bps} bps`} readOnly />
+                      ) : orderType === "market" && (
                         <TicketInput label="Max slippage" suffix="bps" value={maxSlippageBps} onChange={setMaxSlippageBps} />
                       )}
                       {nativeProtection && !reduceOnly ? (
@@ -1489,20 +1678,55 @@ function AlternateProductWorkspace({
                       )}
                     </div>
                   )}
+                  {preparedPerpClose && (
+                    <div className="grid gap-2 rounded-md border border-amber-300/35 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">
+                      <p>This close uses the exact reconciled entry fill, is reduce-only, and cannot attach a new bracket.</p>
+                      <button
+                        type="button"
+                        onClick={returnToManualPerpTicket}
+                        className="h-9 rounded-md border border-amber-200/35 px-3 font-semibold hover:bg-amber-200/10"
+                      >
+                        Return to manual ticket
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
               <button
                 type="button"
-                disabled={perpWorking !== null}
+                disabled={perpWorking !== null || perpAttempt?.status === "ambiguous" || perpAttempt?.status === "awaiting_reconciliation" || (perpAttempt?.status === "reconciled" && !perpAttempt.order.reduce_only)}
                 onClick={() => { if (product === "perps" && hyperliquidConnectionReady) void reviewPerpOrder(); else setSetupOpen(true); }}
                 className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md bg-[#3da8ff] text-sm font-bold text-[#03101d] transition hover:bg-[#67baff] disabled:cursor-wait disabled:opacity-70"
               >
                 {product === "perps" && hyperliquidConnectionReady ? <Send className="h-4 w-4" /> : <KeyRound className="h-4 w-4" />}
                 {product === "perps" && hyperliquidConnectionReady
-                  ? perpWorking === "preview" ? "Checking live order…" : "Review order"
+                  ? perpWorking === "preview" ? "Checking live order…"
+                    : perpWorking === "reconcile" ? "Reconciling exact order…"
+                    : perpWorking === "verify" ? "Verifying flat and clear…"
+                    : "Review order"
                   : authenticated && product === "perps" ? `Connect Hyperliquid ${hyperliquidNetwork}` : authenticated ? `Set up ${selectedVenue?.label}` : "Sign in to continue"}
               </button>
+              {perpAttempt?.status === "ambiguous" && (
+                <button
+                  type="button"
+                  disabled={perpWorking !== null}
+                  onClick={() => void reconcilePerpOrder(perpAttempt.previewCommitment, perpAttempt.order)}
+                  className="mt-2 inline-flex h-11 w-full items-center justify-center rounded-md border border-amber-300/40 bg-amber-300/10 px-4 text-sm font-semibold text-amber-100 hover:bg-amber-300/15 disabled:opacity-50"
+                >
+                  Check this exact order on Hyperliquid
+                </button>
+              )}
+              {perpAttempt?.status === "reconciled" && !perpAttempt.order.reduce_only && provenHyperliquidFill(perpAttempt.result) && (
+                <button
+                  type="button"
+                  disabled={perpWorking !== null}
+                  onClick={preparePerpReduceOnlyClose}
+                  className="mt-2 inline-flex h-11 w-full items-center justify-center rounded-md border border-amber-300/40 bg-amber-300/10 px-4 text-sm font-semibold text-amber-100 hover:bg-amber-300/15 disabled:opacity-50"
+                >
+                  Prepare exact reduce-only close
+                </button>
+              )}
               {product === "perps" && (
                 <p className={hyperliquidReadiness.ready ? "mt-3 text-center text-[11px] leading-4 text-[#68be98]" : "mt-3 text-center text-[11px] leading-4 text-[#aab4c2]"}>{hyperliquidReadiness.detail}</p>
               )}
@@ -1585,23 +1809,23 @@ function AlternateProductWorkspace({
             <div className="flex items-start justify-between gap-4 border-b border-[#232b35] pb-5">
               <div>
                 <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#3da8ff]">Final review</p>
-                <h2 className="mt-2 text-2xl font-semibold text-white">{side === "buy" ? "Long" : "Short"} {perpMarket}-PERP</h2>
-                <p className="mt-1 text-sm text-[#7f8998]">Hyperliquid · {marginMode} · {leverage}×</p>
+                <h2 className="mt-2 text-2xl font-semibold text-white">{perpReview.order.side === "buy" ? "Long" : "Short"} {perpReview.order.market}-PERP</h2>
+                <p className="mt-1 text-sm text-[#7f8998]">Hyperliquid · {perpReview.order.margin_mode} · {perpReview.order.leverage}×</p>
               </div>
               <button type="button" disabled={perpWorking !== null} onClick={() => setPerpReview(null)} className="rounded-md p-2 text-[#7f8998] hover:bg-white/5 hover:text-white disabled:opacity-40">Close</button>
             </div>
             <div className="mt-5 grid grid-cols-2 gap-2">
-              <ReviewDatum label="Order" value={orderType === "market" ? `Market · ${maxSlippageBps} bps max` : `Limit · ${timeInForce}`} />
-              <ReviewDatum label="Notional" value={`$${amount}`} />
+              <ReviewDatum label="Order" value={perpReview.order.order_type === "market" ? `Market · ${perpReview.order.max_slippage_bps} bps max` : `Limit · ${perpReview.order.tif}`} />
+              <ReviewDatum label="Notional" value={formatCompactUsd(Number(perpReview.notional))} />
               <ReviewDatum label="Reference" value={formatUsdPrice(displayedMid)} />
-              <ReviewDatum label="Estimated size" value={estimatedPerpSize(amount, displayedMid, perpMarket)} />
-              <ReviewDatum label="Initial margin" value={estimatedMargin(amount, leverage)} />
-              <ReviewDatum label="Mode" value={`${reduceOnly ? "reduce-only · " : ""}${marginMode} · ${leverage}×`} />
+              <ReviewDatum label={perpReview.order.reduce_only ? "Exact size" : "Estimated size"} value={perpReview.order.size_mode === "base" ? `${perpReview.order.base_size} ${perpReview.order.market}` : estimatedPerpSize(perpReview.notional, displayedMid, perpReview.order.market)} />
+              <ReviewDatum label="Initial margin" value={estimatedMargin(perpReview.notional, String(perpReview.order.leverage))} />
+              <ReviewDatum label="Mode" value={`${perpReview.order.reduce_only ? "reduce-only · " : ""}${perpReview.order.margin_mode} · ${perpReview.order.leverage}×`} />
             </div>
-            {(stopLoss || takeProfit) && !reduceOnly && (
+            {(perpReview.order.protective_orders?.stop_loss || perpReview.order.protective_orders?.take_profit) && !perpReview.order.reduce_only && (
               <div className="mt-4 rounded-lg border border-[#294437] bg-[#0b1913] p-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#76d3a7]">Native protection</p>
-                <p className="mt-2 text-sm text-[#b8c8bf]">{stopLoss ? `Stop $${stopLoss}` : "No stop"} · {takeProfit ? `Take profit $${takeProfit}` : "No take profit"}</p>
+                <p className="mt-2 text-sm text-[#b8c8bf]">{perpReview.order.protective_orders?.stop_loss ? `Stop $${perpReview.order.protective_orders.stop_loss}` : "No stop"} · {perpReview.order.protective_orders?.take_profit ? `Take profit $${perpReview.order.protective_orders.take_profit}` : "No take profit"}</p>
                 <p className="mt-2 text-xs leading-5 text-[#748b7f]">The bracket is submitted as reduce-only venue triggers with the entry.</p>
               </div>
             )}
@@ -1611,7 +1835,7 @@ function AlternateProductWorkspace({
             <div className="mt-auto grid gap-2 pt-6">
               <button type="button" disabled={perpWorking !== null} onClick={() => void submitPerpOrder()} className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-[#3da8ff] text-sm font-bold text-[#03101d] hover:bg-[#67baff] disabled:cursor-wait disabled:opacity-65">
                 <ShieldCheck className="h-4 w-4" />
-                {perpWorking === "submit" ? "Submitting securely…" : `Submit ${side === "buy" ? "long" : "short"}`}
+                {perpWorking === "submit" ? "Submitting securely…" : `Submit ${perpReview.order.side === "buy" ? "long" : "short"}`}
               </button>
               <button type="button" disabled={perpWorking !== null} onClick={() => setPerpReview(null)} className="h-11 rounded-md border border-[#2b3441] text-sm text-[#aab4c2] hover:border-[#465367] hover:text-white disabled:opacity-40">Back to ticket</button>
             </div>
@@ -1772,13 +1996,13 @@ function validatePerpTicket(
   maxSlippagePolicyBps: number,
 ): string[] {
   const errors = validatePrivateExecutionOrderDraft(order);
-  const notional = Number(order.quote_size);
+  const notional = orderNotional(order, referencePrice);
   const reference = Number(referencePrice);
   const stop = Number(order.protective_orders?.stop_loss);
   const takeProfit = Number(order.protective_orders?.take_profit);
   const slippage = Number(order.max_slippage_bps);
-  if (Number.isFinite(notional) && notional < 10) errors.unshift("Hyperliquid orders must be at least $10.");
-  if (Number.isFinite(notional) && notional > 1_000) errors.unshift("Orders are capped at $1,000 during the bounded mainnet launch.");
+  if (!order.reduce_only && Number.isFinite(notional) && notional < 10) errors.unshift("Hyperliquid orders must be at least $10.");
+  if (!order.reduce_only && Number.isFinite(notional) && notional > 1_000) errors.unshift("Orders are capped at $1,000 during the bounded mainnet launch.");
   if (!order.reduce_only && !order.protective_orders?.stop_loss?.trim()) errors.unshift("A stop-loss is required by the signed agent mandate.");
   if (maxLeverage != null && Number(order.leverage) > maxLeverage) errors.unshift(`This market supports at most ${maxLeverage}× leverage.`);
   if (Number.isFinite(slippage) && slippage > maxSlippagePolicyBps) {
@@ -1793,6 +2017,19 @@ function validatePerpTicket(
     if (order.side === "sell" && takeProfit >= reference) errors.unshift("A short take-profit must be below the current mark price.");
   }
   return [...new Set(errors)];
+}
+
+function orderNotional(
+  order: PrivateExecutionOrderDraft,
+  referencePrice: string | null | undefined,
+): number {
+  const quote = Number(order.quote_size);
+  if (Number.isFinite(quote) && quote > 0) return quote;
+  const base = Number(order.base_size);
+  const reference = Number(referencePrice);
+  return Number.isFinite(base) && base > 0 && Number.isFinite(reference) && reference > 0
+    ? base * reference
+    : Number.NaN;
 }
 
 function perpSafeInput(market: string, amount: string): PrivateAccountSafeInput {
@@ -1827,14 +2064,7 @@ function estimatedMargin(amount: string, leverage: string): string {
 }
 
 function friendlyPerpError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error || "Hyperliquid order failed.");
-  const normalized = raw.toLowerCase();
-  if (normalized.includes("insufficient") || normalized.includes("needs_funds")) return "This Hyperliquid account needs enough perp collateral for the order and fees.";
-  if (normalized.includes("preview_expired") || normalized.includes("intent_expired")) return "The live review expired. Review the order again.";
-  if (normalized.includes("max notional") || normalized.includes("notional cap")) return "This order exceeds the account’s configured trading limit.";
-  if (normalized.includes("worker") || normalized.includes("connector")) return "The private execution worker is reconnecting. Your order was not blindly resubmitted.";
-  if (normalized.includes("venue_rejected")) return "Hyperliquid rejected the order. Recheck collateral, price, size, and leverage.";
-  return raw.replaceAll("_", " ");
+  return classifyHyperliquidTradeFailure(error).message;
 }
 
 function PerpDatum({ label, value }: { label: string; value: string }) {

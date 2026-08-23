@@ -68,11 +68,26 @@ try {
     liveTradingGate.body?.release_validation?.durable_connection_proof_required === true &&
     liveTradingGate.body?.release_validation?.ambiguity_retry_forbidden === true &&
     liveTradingGate.body?.release_validation?.venue_order_status_reconciliation_required === true &&
+    liveTradingGate.body?.release_validation?.post_submit_reconciliation_required === true &&
+    liveTradingGate.body?.release_validation?.correlated_execution_diagnostics_required === true &&
+    liveTradingGate.body?.release_validation?.public_trade_ambiguity_recovery_required === true &&
     liveTradingGate.body?.release_validation?.reduce_only_close_required === true &&
-    liveTradingGate.body?.release_validation?.final_flat_zero_orders_required === true;
+    liveTradingGate.body?.release_validation?.exact_fill_reduce_only_close_required === true &&
+    liveTradingGate.body?.release_validation?.final_flat_zero_orders_required === true &&
+    liveTradingGate.body?.release_validation?.release_identity_required === true;
   record("hyperliquid_proof_protocol", proofProtocolReady, liveTradingGate.body?.release_validation || null);
   if (!proofProtocolReady) {
     throw new Error("Release validation requires the Hyperliquid proof-v2 safety contract.");
+  }
+  const releaseIdentity = liveTradingGate.body?.release_identity || null;
+  const releaseIdentityReady = releaseIdentity?.ready === true &&
+    Boolean(releaseIdentity?.web_commit_sha) &&
+    Boolean(releaseIdentity?.web_deployment_url) &&
+    Boolean(releaseIdentity?.worker_image_digest || releaseIdentity?.worker_expected_measurement) &&
+    Boolean(releaseIdentity?.release_identity_commitment);
+  record("hyperliquid_release_identity", releaseIdentityReady, releaseIdentity);
+  if (!releaseIdentityReady) {
+    throw new Error("Release validation requires one reproducible web-and-worker artifact identity.");
   }
   const privateAccountPersistence = liveTradingGate.body?.private_account_persistence || null;
   const privateAccountPersistenceReady = liveTradingGate.ok &&

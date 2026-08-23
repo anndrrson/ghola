@@ -1281,6 +1281,9 @@ function delay(ms: number) {
 }
 
 async function privateAccountFetch(path: string, options: RequestInit) {
+  const correlationId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? `ghola-${crypto.randomUUID()}`
+    : `ghola-${Date.now().toString(36)}`;
   const requestBody = requestBodyObject(options.body);
   const proxied = liveGuardedMutation(path, options.method)
     ? {
@@ -1298,6 +1301,7 @@ async function privateAccountFetch(path: string, options: RequestInit) {
     : { path, options };
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    "x-ghola-correlation-id": correlationId,
     ...((proxied.options.headers as Record<string, string>) || {}),
   };
   const token = thumperToken();
@@ -1313,9 +1317,11 @@ async function privateAccountFetch(path: string, options: RequestInit) {
     const err = new Error(body.error || `API error ${res.status}`) as Error & {
       status?: number;
       body?: unknown;
+      correlationId?: string;
     };
     err.status = res.status;
     err.body = body;
+    err.correlationId = res.headers.get("x-ghola-correlation-id") || body.correlation_id || correlationId;
     throw err;
   }
   return body;
