@@ -1,6 +1,9 @@
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { submitHyperliquidExecution } from "../src/venues/hyperliquid.js";
+import {
+  reconcileHyperliquidOpenOrders,
+  submitHyperliquidExecution,
+} from "../src/venues/hyperliquid.js";
 
 const OLD_ENV = { ...process.env };
 
@@ -71,5 +74,67 @@ describe("Hyperliquid targeted reconciliation", () => {
     assert.equal(result.final_proof.final_fill_proven, true);
     assert.equal(result.final_proof.cumulative_filled_micro_usdc, 11_000_000);
     assert.equal(result.final_proof.filled_base_size, "0.25");
+  });
+});
+
+describe("Hyperliquid open-order stream reconciliation", () => {
+  const stop = {
+    oid: 101,
+    cloid: `0x${"ab".repeat(16)}`,
+    coin: "HYPE",
+    side: "A",
+    sz: "0.13",
+    limitPx: "77.35",
+    reduceOnly: true,
+  };
+
+  it("removes a terminal stop update from the open-order snapshot", () => {
+    const result = reconcileHyperliquidOpenOrders([stop], [{
+      order: { ...stop },
+      status: "reduceOnlyCanceled",
+      statusTimestamp: 1,
+    }]);
+
+    assert.deepEqual(result, []);
+  });
+
+  it("does not remove another open order when a close fills", () => {
+    const result = reconcileHyperliquidOpenOrders([stop], [{
+      order: {
+        oid: 202,
+        cloid: `0x${"cd".repeat(16)}`,
+        coin: "HYPE",
+        side: "A",
+        sz: "0.13",
+        limitPx: "84",
+        reduceOnly: true,
+      },
+      status: "filled",
+      statusTimestamp: 2,
+    }]);
+
+    assert.deepEqual(result, [stop]);
+  });
+
+  it("upserts an open update and preserves snapshot-only fields", () => {
+    const result = reconcileHyperliquidOpenOrders([{
+      ...stop,
+      triggerPx: "77.35",
+      isTrigger: true,
+    }], {
+      orderUpdates: [{
+        order: { ...stop, sz: "0.10" },
+        status: "open",
+        statusTimestamp: 3,
+      }],
+    });
+
+    assert.deepEqual(result, [{
+      ...stop,
+      sz: "0.10",
+      triggerPx: "77.35",
+      isTrigger: true,
+      status: "open",
+    }]);
   });
 });

@@ -17,6 +17,62 @@ const RECENT_FILL_WINDOW = 12;
 const OPEN_ORDER_WINDOW = 12;
 const POSITION_WINDOW = 12;
 
+export function reconcileHyperliquidOpenOrders(openOrders, data) {
+  const updates = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.orderUpdates)
+      ? data.orderUpdates
+      : [data];
+  let next = Array.isArray(openOrders) ? [...openOrders] : [];
+
+  for (const update of updates.filter(Boolean)) {
+    const order = update?.order || update;
+    const status = String(update?.status || order?.status || "").trim().toLowerCase();
+    const matchingIndex = next.findIndex((candidate) => sameHyperliquidOrder(candidate, order));
+
+    if (status === "open") {
+      if (!hasHyperliquidOrderIdentity(order)) continue;
+      const openOrder = matchingIndex >= 0
+        ? { ...next[matchingIndex], ...order, status: "open" }
+        : { ...order, status: "open" };
+      if (matchingIndex >= 0) next[matchingIndex] = openOrder;
+      else next.push(openOrder);
+      continue;
+    }
+
+    if (matchingIndex >= 0 && isTerminalHyperliquidOrderStatus(status)) {
+      next.splice(matchingIndex, 1);
+    }
+  }
+
+  return next;
+}
+
+function sameHyperliquidOrder(left, right) {
+  if (left?.oid !== undefined && left?.oid !== null && right?.oid !== undefined && right?.oid !== null) {
+    if (String(left.oid) === String(right.oid)) return true;
+  }
+  const leftCloid = typeof left?.cloid === "string" ? left.cloid.toLowerCase() : "";
+  const rightCloid = typeof right?.cloid === "string" ? right.cloid.toLowerCase() : "";
+  return Boolean(leftCloid && rightCloid && leftCloid === rightCloid);
+}
+
+function hasHyperliquidOrderIdentity(order) {
+  return order?.oid !== undefined && order?.oid !== null ||
+    typeof order?.cloid === "string" && order.cloid.length > 0;
+}
+
+function isTerminalHyperliquidOrderStatus(status) {
+  return status === "filled" ||
+    status === "triggered" ||
+    status === "rejected" ||
+    status === "expired" ||
+    status.endsWith("cancel") ||
+    status.endsWith("canceled") ||
+    status.endsWith("cancelled") ||
+    status.endsWith("rejected");
+}
+
 export class HyperliquidExecutionError extends Error {
   constructor(message, status = 502, code = "connector_submit_failed") {
     super(message);
@@ -653,6 +709,7 @@ export async function createHyperliquidAccountStateStream({
       return fills.length > 0;
     }
     if (channel === "orderUpdates") {
+      currentOpenOrders = reconcileHyperliquidOpenOrders(currentOpenOrders, data);
       onEvent({ event: "account_event", data: sanitizeOrderUpdate(data) });
       return true;
     }
