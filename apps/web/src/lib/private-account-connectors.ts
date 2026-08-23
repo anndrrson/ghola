@@ -1325,10 +1325,14 @@ function connectorSubmitError(body: Record<string, unknown>, status: number): Gh
   if (code === "venue_access_required" || code === "hyperliquid_execution_vault_not_ready") {
     return "venue_access_required";
   }
+  if (status === 401 || status === 403) return "venue_access_required";
   if (code === "venue_rejected" || code.includes("venue rejected") || code.includes("hyperliquid request failed")) {
     return "venue_rejected";
   }
-  if (status === 409 || status === 422) return "venue_rejected";
+  // A completed 4xx response proves the worker rejected the request before a
+  // successful acknowledgement. Only transport failures, timeouts, and 5xx
+  // responses above are ambiguous and require client-order reconciliation.
+  if (status >= 400 && status < 500) return "venue_rejected";
   return "connector_submit_failed";
 }
 

@@ -455,7 +455,7 @@ describe("Hyperliquid private execution layer", () => {
     expect(body.encrypted_execution_vault).toBeUndefined();
   });
 
-  it("maps Hyperliquid venue rejection separately from connector failure", async () => {
+  it("maps a deterministic Hyperliquid worker policy rejection separately from an ambiguous submit", async () => {
     process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED = "true";
     const env = {
       NODE_ENV: "production",
@@ -469,9 +469,8 @@ describe("Hyperliquid private execution layer", () => {
     };
     vi.stubGlobal("fetch", vi.fn(async () =>
       Response.json({
-        error: "hyperliquid request failed",
-        error_code: "venue_rejected",
-      }, { status: 422 }),
+        error: "hyperliquid live order must use tiny_fill mode",
+      }, { status: 400 }),
     ));
 
     const account = createPrivateExecutionAccount({ vaultReady: true });

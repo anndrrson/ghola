@@ -289,17 +289,15 @@ function composeScalar(compose: string, name: string): string | null {
 }
 
 export function phalaWorkerRuntimeConfigDrift(info: unknown): string[] {
+  const reasons: string[] = [];
   const expectedComposeHash = env("GHOLA_PHALA_PRIVATE_AGENT_COMPOSE_HASH")?.toLowerCase();
-  if (expectedComposeHash) {
-    return phalaComposeHash(info) === expectedComposeHash
-      ? []
-      : ["phala_worker_compose_hash_mismatch"];
+  if (expectedComposeHash && phalaComposeHash(info) !== expectedComposeHash) {
+    reasons.push("phala_worker_compose_hash_mismatch");
   }
 
   const compose = phalaComposeText(info);
-  if (!compose) return ["phala_worker_compose_unavailable"];
+  if (!compose) return [...reasons, "phala_worker_compose_unavailable"];
 
-  const reasons: string[] = [];
   const expectedImage = phalaWorkerImageReference(phalaWorkerImage(), phalaWorkerImageDigest());
   if (composeScalar(compose, "image") !== expectedImage) {
     reasons.push("phala_worker_image_mismatch");

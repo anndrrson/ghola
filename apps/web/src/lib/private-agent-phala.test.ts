@@ -190,11 +190,27 @@ describe("private-agent Phala provisioning", () => {
   it("pins sealed Phala runtime configuration by compose commitment", () => {
     const expected = "12".repeat(32);
     setTestEnv({ GHOLA_PHALA_PRIVATE_AGENT_COMPOSE_HASH: expected });
+    const compose = buildPhalaWorkerCompose();
 
-    expect(phalaWorkerRuntimeConfigDrift({ compose_hash: expected })).toEqual([]);
-    expect(phalaWorkerRuntimeConfigDrift({ compose_hash: "34".repeat(32) })).toEqual([
+    expect(phalaWorkerRuntimeConfigDrift({
+      compose_hash: expected,
+      compose_file: { docker_compose_file: compose },
+    })).toEqual([]);
+    expect(phalaWorkerRuntimeConfigDrift({
+      compose_hash: "34".repeat(32),
+      compose_file: { docker_compose_file: compose },
+    })).toEqual([
       "phala_worker_compose_hash_mismatch",
     ]);
+    expect(phalaWorkerRuntimeConfigDrift({
+      compose_hash: expected,
+      compose_file: {
+        docker_compose_file: compose.replace(
+          'PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "disabled"',
+          'PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "tiny_fill"',
+        ),
+      },
+    })).toContain("private_agent_hyperliquid_live_mode_mismatch");
   });
 
   it("refuses live JIT provisioning without an explicit fresh worker image", () => {
