@@ -9108,7 +9108,11 @@ async function connectorForExecution(input: {
       env: connectorEnv,
     });
     if (!submitted.ok) {
-      const ambiguous = submitted.error === "connector_submit_ambiguous";
+      // Once the worker accepted the execution request, a generic submit
+      // failure is not proof that no venue broadcast occurred. Preserve the
+      // durable lock and force targeted reconciliation before any new order.
+      const ambiguous = submitted.error === "connector_submit_ambiguous" ||
+        submitted.error === "connector_submit_failed";
       const failedAt = new Date().toISOString();
       await putConnectorWorkOrder({
         ...workOrderRecord,

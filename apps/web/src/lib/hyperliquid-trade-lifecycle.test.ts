@@ -45,6 +45,17 @@ describe("Hyperliquid trade lifecycle", () => {
     expect(failure.message).toContain("will never resubmit");
   });
 
+  it("treats a generic worker submit failure as ambiguous after execution starts", () => {
+    const failure = classifyHyperliquidTradeFailure(new Error("connector_submit_failed"));
+
+    expect(failure).toMatchObject({
+      code: "connector_submit_failed",
+      retryForbidden: true,
+      reconciliationRequired: true,
+    });
+    expect(failure.message).toContain("must reconcile its client-order ID");
+  });
+
   it("does not mislabel a venue rejection as a worker reconnect", () => {
     expect(classifyHyperliquidTradeFailure(new Error("venue_rejected"))).toMatchObject({
       code: "venue_rejected",
@@ -94,11 +105,11 @@ describe("Hyperliquid trade lifecycle", () => {
       quote_size: "11",
       order_type: "market",
       size_mode: "base",
-      live_order_mode: "tiny_fill",
       tif: "Ioc",
       reduce_only: true,
       post_only: false,
     });
+    expect(close.live_order_mode).toBeUndefined();
     expect(close.protective_orders).toBeUndefined();
   });
 

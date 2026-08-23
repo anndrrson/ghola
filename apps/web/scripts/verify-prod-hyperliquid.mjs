@@ -238,8 +238,9 @@ async function runNoSubmitVerification({ recipient, market, quoteSize, maxSlippa
       market,
       side: "buy",
       quote_size: quoteSize,
+      order_type: "market",
+      size_mode: "quote",
       max_slippage_bps: maxSlippageBps,
-      live_order_mode: "tiny_fill",
       tif: "Ioc",
     },
   }, [
@@ -435,10 +436,10 @@ async function runLiveOrder({ recipient, market, quoteSize, maxSlippageBps, side
         order_type: "market",
         size_mode: "base",
         reduce_only: true,
-        live_order_mode: "tiny_fill",
       } : {
         quote_size: quoteSize,
-        live_order_mode: "tiny_fill",
+        order_type: "market",
+        size_mode: "quote",
         protective_orders: { stop_loss: stopLoss },
       }),
       max_slippage_bps: maxSlippageBps,

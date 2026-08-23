@@ -32,8 +32,11 @@ describe("public Hyperliquid lifecycle integration", () => {
     expect(componentSource).toContain("Check this exact order on Hyperliquid");
     expect(componentSource).toContain('status: "ambiguous", result');
     expect(componentSource).not.toContain('setPerpAttempt({ previewCommitment, order, status: "failed", result });');
+    expect(privateAccountServerSource).toContain(
+      'submitted.error === "connector_submit_failed"',
+    );
     expect(orderContract).toContain('order_type: "market"');
-    expect(orderContract).toContain('live_order_mode: "tiny_fill"');
+    expect(orderContract).not.toContain('live_order_mode: "tiny_fill"');
     expect(orderContract).toContain('tif: "Ioc"');
     expect(orderContract).not.toContain("tif: orderType");
   });
@@ -67,7 +70,8 @@ describe("public Hyperliquid lifecycle integration", () => {
     expect(verifierSource).toContain('postJson("/v1/private-account/connectors/reconcile"');
     expect(verifierSource).toContain("the verifier will not resubmit it");
     expect(verifierSource).toContain('protective_orders: { stop_loss: stopLoss }');
-    expect(verifierSource).toContain('live_order_mode: "tiny_fill"');
+    expect(verifierSource).not.toContain('live_order_mode: "tiny_fill"');
+    expect(verifierSource).toContain('order_type: "market"');
     expect(verifierSource).toContain("quote_size: quoteSize");
     expect(verifierSource).toContain("GHOLA_VERIFY_HYPERLIQUID_STOP_LOSS must be a positive price");
     expect(verifierSource.match(/postJson\("\/v1\/private-account\/actions\/execute"/g)).toHaveLength(1);

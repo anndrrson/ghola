@@ -981,7 +981,6 @@ function AlternateProductWorkspace({
     limit_price: "",
     order_type: "market",
     size_mode: "quote",
-    live_order_mode: "tiny_fill",
     tif: "Ioc",
     max_slippage_bps: maxSlippageBps,
     reduce_only: reduceOnly,
