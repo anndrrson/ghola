@@ -170,6 +170,20 @@ describe("private account trading UI derivation", () => {
     expect(cockpitSource).toContain("await verifyHyperliquidNoSubmit(vaultOverride)");
   });
 
+  it("wakes and renews the private worker for every Hyperliquid user-action path", () => {
+    const serverSource = readFileSync(
+      resolve(process.cwd(), "src/app/v1/private-account/_lib.ts"),
+      "utf8",
+    );
+
+    expect(serverSource).toContain('await wakePrivateWorkerForUse("hyperliquid_session_create")');
+    expect(serverSource).toContain('await wakePrivateWorkerForUse("hyperliquid_account_snapshot")');
+    expect(serverSource).toContain('await wakePrivateWorkerForUse("hyperliquid_account_stream")');
+    expect(serverSource).toContain("hyperliquid_${executionMode}_no_submit_check");
+    expect(serverSource).toContain("hyperliquid_${venueExecutionMode ?? \"unknown\"}_submit");
+    expect(serverSource).toContain('process.env.GHOLA_PRIVATE_WORKER_WAKE_ON_USE === "false"');
+  });
+
   it("uses clearer signed-out and venue-access calls to action", () => {
     expect(deriveTradingNextAction({ ...base, authenticated: false }).label).toBe("Sign in to trade");
     expect(deriveTradingNextAction(base).label).toBe("Connect Phoenix authority");

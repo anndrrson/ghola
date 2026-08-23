@@ -2692,13 +2692,16 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
 
 export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRequestOwner) {
   const account = await createOrGetStoredPrivateAccount(owner);
-  const [vault, allocation, runtime] = await Promise.all([
+  const [vault, allocation] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
-    getPrivateAgentRuntimeStatus().catch(() => null),
   ]);
   const hasVault = vault?.status === "sealed";
   const hasManaged = allocation?.status === "allocated";
+  if (hasVault || hasManaged) {
+    await wakePrivateWorkerForUse("hyperliquid_account_snapshot");
+  }
+  const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
   const connectionProof = currentHyperliquidConnectionProof(vault, allocation);
   const accountSource = hasManaged
     ? allocation.allocation.execution_mode === "ghola_pooled" ? "ghola_pooled" as const : "ghola_managed" as const
@@ -2810,13 +2813,16 @@ export async function hyperliquidAccountStreamForOwner(
   req: Request,
 ) {
   const account = await createOrGetStoredPrivateAccount(owner);
-  const [vault, allocation, runtime] = await Promise.all([
+  const [vault, allocation] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
-    getPrivateAgentRuntimeStatus().catch(() => null),
   ]);
   const hasVault = vault?.status === "sealed";
   const hasManaged = allocation?.status === "allocated";
+  if (hasVault || hasManaged) {
+    await wakePrivateWorkerForUse("hyperliquid_account_stream");
+  }
+  const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
   const accountSource = hasManaged
     ? allocation.allocation.execution_mode === "ghola_pooled" ? "ghola_pooled" as const : "ghola_managed" as const
     : hasVault ? "sealed_byo" as const : "none" as const;
@@ -6137,8 +6143,10 @@ export async function connectorVerifyNoSubmitFromBody(
       connectorVault = vault.vault;
     }
   }
-  if (executionMode === "ghola_pooled") {
-    await wakePooledWorkerForUse(`pooled_${pooledWorkerVenueId(venueId) ?? venueId}_no_submit_check`);
+  if (platformClass === "hyperliquid_style_market") {
+    await wakePrivateWorkerForUse(`hyperliquid_${executionMode}_no_submit_check`);
+  } else if (executionMode === "ghola_pooled") {
+    await wakePrivateWorkerForUse(`pooled_${pooledWorkerVenueId(venueId) ?? venueId}_no_submit_check`);
   }
 
   const readiness = await connectorReadiness({
@@ -6589,6 +6597,7 @@ async function requestHyperliquidAgentSession(input: {
   if (localHyperliquidPilotEnabled()) {
     return { session_commitment: input.fallback_session_commitment };
   }
+  await wakePrivateWorkerForUse("hyperliquid_session_create");
   const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
   const cfg = hyperliquidWorkerConfig(runtime);
   if (!cfg.url) return { error: "connector_endpoint_missing" };
@@ -6668,6 +6677,7 @@ async function requestHyperliquidManagedAllocation(input: {
   if (localHyperliquidPilotEnabled()) {
     return { allocation: input.fallback };
   }
+  await wakePrivateWorkerForUse("hyperliquid_managed_allocation");
   const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
   const cfg = hyperliquidWorkerConfig(runtime);
   if (!cfg.url) return { error: "connector_endpoint_missing" };
@@ -7074,8 +7084,9 @@ function hyperliquidWorkerConfig(
   };
 }
 
-async function wakePooledWorkerForUse(reason: string) {
+async function wakePrivateWorkerForUse(reason: string) {
   if (
+    process.env.GHOLA_PRIVATE_WORKER_WAKE_ON_USE === "false" ||
     process.env.GHOLA_POOLED_WORKER_WAKE_ON_USE === "false" ||
     process.env.NODE_ENV === "test" ||
     process.env.GHOLA_CONNECTOR_MODE === "local_test"
@@ -7084,8 +7095,14 @@ async function wakePooledWorkerForUse(reason: string) {
   }
   return wakePhalaPrivateAgentForUse({
     reason,
-    waitForReadyMs: positiveIntegerEnv("GHOLA_POOLED_WORKER_WAKE_WAIT_MS", 45_000),
-    leaseMs: positiveIntegerEnv("GHOLA_POOLED_WORKER_LEASE_MS", phalaIdleLeaseMs()),
+    waitForReadyMs: positiveIntegerEnv(
+      "GHOLA_PRIVATE_WORKER_WAKE_WAIT_MS",
+      positiveIntegerEnv("GHOLA_POOLED_WORKER_WAKE_WAIT_MS", 45_000),
+    ),
+    leaseMs: positiveIntegerEnv(
+      "GHOLA_PRIVATE_WORKER_LEASE_MS",
+      positiveIntegerEnv("GHOLA_POOLED_WORKER_LEASE_MS", phalaIdleLeaseMs()),
+    ),
   }).catch(() => null);
 }
 
@@ -7097,7 +7114,7 @@ async function pooledWorkerVenueGate(venueId: GholaVenueId) {
   if (!workerVenueId) {
     return { ok: false as const, error: "pooled_mode_not_supported" as const, reason_codes: ["pooled_mode_not_supported"] };
   }
-  await wakePooledWorkerForUse(`pooled_${workerVenueId}_access_request`);
+  await wakePrivateWorkerForUse(`pooled_${workerVenueId}_access_request`);
   const readiness = await getPooledWorkerReadiness(process.env);
   const gate = pooledWorkerVenueGateFromReadiness(venueId, readiness);
   if (!gate.ok) {
@@ -8895,8 +8912,10 @@ async function connectorForExecution(input: {
     const signerBinding = await reverifyStoredHyperliquidSignerBinding(hyperliquidVault);
     if (!signerBinding.ok) return { error: signerBinding.error };
   }
-  if (usesPooledExecution) {
-    await wakePooledWorkerForUse(`pooled_${pooledWorkerVenueId(venueId ?? "hyperliquid") ?? venueId ?? "hyperliquid"}_submit`);
+  if (manifestRecord.platform_class === "hyperliquid_style_market") {
+    await wakePrivateWorkerForUse(`hyperliquid_${venueExecutionMode ?? "unknown"}_submit`);
+  } else if (usesPooledExecution) {
+    await wakePrivateWorkerForUse(`pooled_${pooledWorkerVenueId(venueId ?? "hyperliquid") ?? venueId ?? "hyperliquid"}_submit`);
   }
 
   const connectorEnv = await connectorRuntimeEnv(manifestRecord.platform_class);

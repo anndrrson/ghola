@@ -178,7 +178,7 @@ export async function freshSealedRuntimeHealth(
 
   try {
     const controller = new AbortController();
-    const timeoutMs = positiveIntegerEnv(env, "GHOLA_PRIVATE_RUNTIME_HEALTH_TIMEOUT_MS", 2_500);
+    const timeoutMs = positiveIntegerEnv(env, "GHOLA_PRIVATE_RUNTIME_HEALTH_TIMEOUT_MS", 10_000);
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let response: Response;
     try {
