@@ -143,6 +143,7 @@ import {
   requiresHyperliquidPoolTerms,
   shouldResetHyperliquidConnectionError,
   shouldReconnectHyperliquidApiWallet,
+  shouldShowHyperliquidSetupProgress,
   type TradingActionKind,
   type TradingNextAction,
   type VenueReadinessStep,
@@ -3274,7 +3275,13 @@ export function PrivateAccountCockpit({
           }
         }}
       />
-      {initialSetupVenue === "hyperliquid" && !hyperliquidConnectOpen && (
+      {shouldShowHyperliquidSetupProgress({
+        initialSetup: initialSetupVenue === "hyperliquid",
+        connectOpen: hyperliquidConnectOpen,
+        working,
+        error,
+        notice: hyperliquidSetupNotice,
+      }) && (
         <div className="fixed inset-0 z-[80] grid place-items-center bg-[#08090d] px-4">
           <section className="w-full max-w-md rounded-2xl border border-[#253044] bg-[#0d1119] p-6 shadow-[0_28px_90px_rgba(0,0,0,0.6)]">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#16283b] text-[#8fcaff]">

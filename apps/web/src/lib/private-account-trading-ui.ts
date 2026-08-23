@@ -50,6 +50,18 @@ export function shouldResetHyperliquidConnectionError(wasOpen: boolean, isOpen: 
   return isOpen && !wasOpen;
 }
 
+export function shouldShowHyperliquidSetupProgress(input: {
+  initialSetup: boolean;
+  connectOpen: boolean;
+  working: boolean;
+  error?: string | null;
+  notice?: unknown;
+}) {
+  return input.initialSetup && !input.connectOpen && Boolean(
+    input.working || input.error || input.notice,
+  );
+}
+
 export interface TradingNextAction {
   kind: TradingActionKind;
   label: string;

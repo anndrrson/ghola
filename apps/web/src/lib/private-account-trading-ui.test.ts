@@ -19,6 +19,7 @@ import {
   requiresHyperliquidPoolTerms,
   shouldResetHyperliquidConnectionError,
   shouldReconnectHyperliquidApiWallet,
+  shouldShowHyperliquidSetupProgress,
   type TradingUiStateInput,
 } from "./private-account-trading-ui";
 
@@ -50,6 +51,27 @@ const validOrder: PrivateExecutionOrderDraft = {
 };
 
 describe("private account trading UI derivation", () => {
+  it("does not block fresh Hyperliquid users with a verification overlay before setup starts", () => {
+    expect(shouldShowHyperliquidSetupProgress({
+      initialSetup: true,
+      connectOpen: false,
+      working: false,
+      error: null,
+      notice: null,
+    })).toBe(false);
+    expect(shouldShowHyperliquidSetupProgress({
+      initialSetup: true,
+      connectOpen: false,
+      working: true,
+    })).toBe(true);
+    expect(shouldShowHyperliquidSetupProgress({
+      initialSetup: true,
+      connectOpen: false,
+      working: false,
+      error: "Connection needs attention",
+    })).toBe(true);
+  });
+
   it("accepts locally generated Hyperliquid agent keys without the import-only checkbox", () => {
     expect(isHyperliquidAgentKeyConfirmed({
       generatedAgentAddress: "0xabc",
