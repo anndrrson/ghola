@@ -11,6 +11,7 @@ import {
   googleIdentityApi,
   initializeGoogleRedirect,
 } from "@/lib/google-auth-client";
+import { resolveAuthRedirect } from "@/lib/google-auth";
 
 function SignInContent() {
   const [email, setEmail] = useState("");
@@ -22,7 +23,7 @@ function SignInContent() {
   const { createWallet, walletAddress } = useTurnkeyWallet();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const redirectTo = searchParams.get("redirect") || "/chat";
+  const redirectTo = resolveAuthRedirect(searchParams);
   const extraParams = searchParams.get("callback_port")
     ? `?callback_port=${searchParams.get("callback_port")}`
     : "";
