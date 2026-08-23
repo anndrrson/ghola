@@ -35,7 +35,7 @@ const REQUIRED_LIVE_ENV = [
   "GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS<=100",
   "PRIVATE_AGENT_GLOBAL_KILL_SWITCH=false (explicitly configured)",
   "GHOLA_PUBLIC_BETA_MONITORING_ENABLED=true",
-  "GHOLA_OPERATIONS_ALERT_WEBHOOK=<secret URL>, SENTRY_DSN=<secret>, or GHOLA_LOG_DRAIN_CONFIGURED=true",
+  "GHOLA_OPERATIONS_ALERT_WEBHOOK=<secret URL>, SENTRY_DSN=<secret>, GHOLA_LOG_DRAIN_CONFIGURED=true, or GHOLA_VERCEL_ALERTS_CONFIGURED=true",
   "GHOLA_PUBLIC_BETA_ROLLBACK_READY=true",
   "GHOLA_PUBLIC_BETA_RUNBOOK_VERSION=2026-08-23",
   "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN=<worker-token>",
@@ -77,7 +77,8 @@ export async function privateAccountLaunchStatus(
     trimmed(env.GHOLA_OPERATIONS_ALERT_WEBHOOK) ||
     trimmed(env.SENTRY_DSN) ||
     trimmed(env.NEXT_PUBLIC_SENTRY_DSN) ||
-    env.GHOLA_LOG_DRAIN_CONFIGURED === "true"
+    env.GHOLA_LOG_DRAIN_CONFIGURED === "true" ||
+    env.GHOLA_VERCEL_ALERTS_CONFIGURED === "true"
   );
   const checks: GholaLaunchCheck[] = [
     check(

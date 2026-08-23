@@ -24,13 +24,14 @@ The `/v1/private-account/launch/status` response must report every check as `rea
 - $50/$250/100-bps caps;
 - persistent private-account storage;
 - attested worker, sealed recipient, connector URL, and token;
-- production monitoring plus an alert webhook, Sentry, or a configured Vercel log drain;
+- production monitoring plus an alert webhook, Sentry, a configured Vercel log drain, or verified Vercel Web/Email/Push alerts;
 - rollback and this runbook acknowledged in environment configuration.
 
 The environment acknowledgment values are:
 
 ```text
 GHOLA_PUBLIC_BETA_MONITORING_ENABLED=true
+GHOLA_VERCEL_ALERTS_CONFIGURED=true
 GHOLA_PUBLIC_BETA_ROLLBACK_READY=true
 GHOLA_PUBLIC_BETA_RUNBOOK_VERSION=2026-08-23
 ```
