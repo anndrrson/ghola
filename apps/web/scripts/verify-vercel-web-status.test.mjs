@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_EVIDENCE_PATH } from "./verify-hyperliquid-release-evidence.mjs";
 import { verifyVercelWebStatus, VERCEL_WEB_CONTEXT } from "./verify-vercel-web-status.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -83,6 +84,28 @@ test("Vercel uploads every local package required by the web app", () => {
       ignoreRules.has(`!${packagePath}`) && ignoreRules.has(`!${packagePath}/**`),
       `${packagePath} must be included in .vercelignore`,
     );
+  }
+});
+
+test("Vercel uploads every file required by post-build release validation", () => {
+  const ignoreRules = new Set(
+    readFileSync(resolve(repoRoot, ".vercelignore"), "utf8")
+      .split(/\r?\n/)
+      .map((line) => line.trim()),
+  );
+  const evidencePath = relative(repoRoot, DEFAULT_EVIDENCE_PATH).replaceAll("\\", "/");
+  const requiredRules = [
+    "!deploy",
+    "!deploy/evidence",
+    `!${evidencePath}`,
+    "!crates",
+    "!crates/said-shielded-pool-circuits",
+    "!crates/said-shielded-pool-circuits/artifacts",
+    "!crates/said-shielded-pool-circuits/artifacts/**",
+  ];
+
+  for (const rule of requiredRules) {
+    assert.ok(ignoreRules.has(rule), `${rule} must be included in .vercelignore`);
   }
 });
 
