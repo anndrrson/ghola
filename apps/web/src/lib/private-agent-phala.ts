@@ -176,14 +176,18 @@ function phalaWorkerImageDigest(): string {
 function liveHyperliquidEnabled(): boolean {
   return (
     env("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE") === "tiny_fill" ||
-    env("GHOLA_HYPERLIQUID_LIVE_MODE") === "tiny_fill"
+    env("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE") === "full_ticket" ||
+    env("GHOLA_HYPERLIQUID_LIVE_MODE") === "tiny_fill" ||
+    env("GHOLA_HYPERLIQUID_LIVE_MODE") === "full_ticket"
   );
 }
 
 function liveSolanaPerpsEnabled(): boolean {
   return (
     env("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE") === "sdk_runner" ||
-    env("GHOLA_SOLANA_PERPS_LIVE_MODE") === "sdk_runner"
+    env("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE") === "full_ticket" ||
+    env("GHOLA_SOLANA_PERPS_LIVE_MODE") === "sdk_runner" ||
+    env("GHOLA_SOLANA_PERPS_LIVE_MODE") === "full_ticket"
   );
 }
 
@@ -216,6 +220,96 @@ function workerLiveEnv(name: string, fallback: string, aliases: string[] = []): 
 
 function composeEnvLine(name: string, value: string): string {
   return `      ${name}: ${JSON.stringify(value)}`;
+}
+
+function phalaWorkerImageReference(image: string, imageDigest: string): string {
+  return /@sha256:[0-9a-f]+$/i.test(image) ? image : `${image}@${imageDigest}`;
+}
+
+function expectedHyperliquidWorkerConfig(): Record<string, string> {
+  return {
+    PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET: workerEnv(
+      "PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET",
+      "false",
+      ["GHOLA_HYPERLIQUID_ALLOW_MAINNET"],
+    ),
+    PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: workerLiveEnv(
+      "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE",
+      "disabled",
+    ),
+    PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD: workerLiveEnv(
+      "PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD",
+      "5",
+    ),
+    PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD: workerEnv(
+      "PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD",
+      "25",
+      ["GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD"],
+    ),
+    PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD: workerEnv(
+      "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD",
+      "",
+    ),
+    PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD: workerEnv(
+      "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD",
+      "",
+    ),
+    PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS: workerEnv(
+      "PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS",
+      "50",
+      ["GHOLA_HYPERLIQUID_LIVE_MAX_SLIPPAGE_BPS"],
+    ),
+  };
+}
+
+function phalaComposeText(info: unknown): string | null {
+  if (!info || typeof info !== "object") return null;
+  const composeFile = (info as Record<string, unknown>).compose_file;
+  if (!composeFile || typeof composeFile !== "object") return null;
+  const compose = (composeFile as Record<string, unknown>).docker_compose_file;
+  return typeof compose === "string" && compose.trim() ? compose : null;
+}
+
+function phalaComposeHash(info: unknown): string | null {
+  if (!info || typeof info !== "object") return null;
+  const record = info as Record<string, unknown>;
+  const value = record.compose_hash ?? record.composeHash;
+  return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value.trim())
+    ? value.trim().toLowerCase()
+    : null;
+}
+
+function composeScalar(compose: string, name: string): string | null {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = compose.match(
+    new RegExp(`^\\s*${escaped}:\\s*(?:"([^"]*)"|'([^']*)'|([^\\s#]+))\\s*$`, "m"),
+  );
+  if (!match) return null;
+  return match[1] ?? match[2] ?? match[3] ?? "";
+}
+
+export function phalaWorkerRuntimeConfigDrift(info: unknown): string[] {
+  const expectedComposeHash = env("GHOLA_PHALA_PRIVATE_AGENT_COMPOSE_HASH")?.toLowerCase();
+  if (expectedComposeHash) {
+    return phalaComposeHash(info) === expectedComposeHash
+      ? []
+      : ["phala_worker_compose_hash_mismatch"];
+  }
+
+  const compose = phalaComposeText(info);
+  if (!compose) return ["phala_worker_compose_unavailable"];
+
+  const reasons: string[] = [];
+  const expectedImage = phalaWorkerImageReference(phalaWorkerImage(), phalaWorkerImageDigest());
+  if (composeScalar(compose, "image") !== expectedImage) {
+    reasons.push("phala_worker_image_mismatch");
+  }
+  for (const [name, expected] of Object.entries(expectedHyperliquidWorkerConfig())) {
+    if (composeScalar(compose, name) !== expected) {
+      reasons.push(`${name.toLowerCase()}_mismatch`);
+    }
+  }
+  return reasons;
 }
 
 export function phalaJitProvisioningEnabled(): boolean {
@@ -330,10 +424,12 @@ export function buildPhalaWorkerCompose(input: {
 } = {}): string {
   const image = input.image ?? phalaWorkerImage();
   const imageDigest = input.imageDigest ?? phalaWorkerImageDigest();
+  const imageReference = phalaWorkerImageReference(image, imageDigest);
+  const hyperliquid = expectedHyperliquidWorkerConfig();
   return [
     "services:",
     "  private-agent-worker:",
-    `    image: ${image}`,
+    `    image: ${imageReference}`,
     "    restart: unless-stopped",
     "    ports:",
     '      - "8787:8787"',
@@ -353,13 +449,7 @@ export function buildPhalaWorkerCompose(input: {
     composeEnvLine("PRIVATE_AGENT_GLOBAL_KILL_SWITCH", workerEnv("PRIVATE_AGENT_GLOBAL_KILL_SWITCH", "false")),
     composeEnvLine("PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE", workerEnv("PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE", "60")),
     composeEnvLine("PRIVATE_AGENT_MIN_ORDER_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_MIN_ORDER_NOTIONAL_USD", "0")),
-    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", workerEnv("PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", "false", ["GHOLA_HYPERLIQUID_ALLOW_MAINNET"])),
-    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", "disabled")),
-    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", "5")),
-    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", "25", ["GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD"])),
-    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD", "")),
-    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD", "")),
-    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS", workerEnv("PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS", "50", ["GHOLA_HYPERLIQUID_LIVE_MAX_SLIPPAGE_BPS"])),
+    ...Object.entries(hyperliquid).map(([name, value]) => composeEnvLine(name, value)),
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE", "disabled", ["GHOLA_SOLANA_PERPS_LIVE_MODE"])),
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET", "false", ["GHOLA_SOLANA_PERPS_ALLOW_MAINNET"])),
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD", "5", ["GHOLA_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD"])),
@@ -489,6 +579,7 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
   }
 
   const status = cvmStatus(info);
+  const runtimeConfigDrift = phalaWorkerRuntimeConfigDrift(info);
   if (status !== "running") {
     // Starting/stopped CVMs cannot pass the recipient or attestation checks.
     // Return after the inexpensive state lookup so native wake polling does
@@ -514,6 +605,8 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
         report_data_bound: false,
         funding_signer_bound: false,
         phala_attestation_present: false,
+        runtime_config_matches_requested_mode: runtimeConfigDrift.length === 0,
+        runtime_config_drift_reasons: runtimeConfigDrift,
       },
     };
   }
@@ -559,7 +652,13 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
     fundingSignerBound &&
     reportDataBound;
   const attested = attestationPresent(attestation);
-  const ready = status === "running" && Boolean(executionUrl) && recipientReady && attested;
+  const runtimeConfigMatchesRequestedMode = runtimeConfigDrift.length === 0;
+  const ready =
+    status === "running" &&
+    Boolean(executionUrl) &&
+    recipientReady &&
+    attested &&
+    runtimeConfigMatchesRequestedMode;
 
   return {
     id: "phala",
@@ -573,7 +672,9 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
     execution_url: executionUrl,
     reason: ready
       ? null
-      : "Phala worker exists but is not yet running with verified attestation-bound recipient evidence.",
+      : !runtimeConfigMatchesRequestedMode
+        ? "Phala worker runtime configuration does not match the requested live-trading policy."
+        : "Phala worker exists but is not yet running with verified attestation-bound recipient evidence.",
     ...(recipientReady && recipient?.recipient_id && recipient?.x25519_pub_hex
       ? {
           sealed_recipient: {
@@ -597,6 +698,8 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
       report_data_bound: reportDataBound,
       funding_signer_bound: fundingSignerBound,
       phala_attestation_present: attested,
+      runtime_config_matches_requested_mode: runtimeConfigMatchesRequestedMode,
+      runtime_config_drift_reasons: runtimeConfigDrift,
     },
   };
 }

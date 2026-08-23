@@ -44,6 +44,8 @@ export interface ConfidentialComputeProviderStatus {
     report_data_bound?: boolean;
     funding_signer_bound?: boolean;
     phala_attestation_present?: boolean;
+    runtime_config_matches_requested_mode?: boolean;
+    runtime_config_drift_reasons?: string[];
     direct_worker_evidence?: boolean;
   };
 }

@@ -13,6 +13,7 @@ import {
   phalaJitProvisioningConfigured,
   phalaRecipientFetchTimeoutMs,
   phalaWorkerImageConfiguredForRequestedMode,
+  phalaWorkerRuntimeConfigDrift,
   phalaWorkerReadyPollMs,
   resetPhalaWakeStateForTests,
   stopIdlePhalaPrivateAgent,
@@ -53,7 +54,9 @@ const TEST_ENV_KEYS = [
   "GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST",
   "GHOLA_PHALA_WORKER_READY_POLL_MS",
   "GHOLA_PHALA_RECIPIENT_FETCH_TIMEOUT_MS",
+  "GHOLA_PHALA_PRIVATE_AGENT_COMPOSE_HASH",
   "GHOLA_HYPERLIQUID_LIVE_MODE",
+  "GHOLA_HYPERLIQUID_ALLOW_MAINNET",
   "GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD",
   "GHOLA_HYPERLIQUID_LIVE_MAX_SLIPPAGE_BPS",
   "PHALA_API_KEY",
@@ -61,6 +64,9 @@ const TEST_ENV_KEYS = [
   "PRIVATE_AGENT_EXECUTION_TOKEN",
   "PRIVATE_AGENT_FUNDING_SIGNING_KEY",
   "PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD",
+  "PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET",
+  "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD",
+  "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS",
@@ -150,11 +156,52 @@ describe("private-agent Phala provisioning", () => {
     );
   });
 
+  it("pins the image and rejects stale Hyperliquid runtime configuration", () => {
+    setTestEnv({
+      GHOLA_PRIVATE_AGENT_WORKER_IMAGE: "ghcr.io/example/worker:full-ticket",
+      GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST: `sha256:${"ab".repeat(32)}`,
+      PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET: "true",
+      PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD: "5000",
+      PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD: "1000",
+      PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "full_ticket",
+      PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS: "100",
+    });
+    const compose = buildPhalaWorkerCompose();
+    const info = { compose_file: { docker_compose_file: compose } };
+
+    expect(compose).toContain(
+      `image: ghcr.io/example/worker:full-ticket@sha256:${"ab".repeat(32)}`,
+    );
+    expect(phalaWorkerRuntimeConfigDrift(info)).toEqual([]);
+
+    const stale = {
+      compose_file: {
+        docker_compose_file: compose.replace(
+          'PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "full_ticket"',
+          'PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "tiny_fill"',
+        ),
+      },
+    };
+    expect(phalaWorkerRuntimeConfigDrift(stale)).toContain(
+      "private_agent_hyperliquid_live_mode_mismatch",
+    );
+  });
+
+  it("pins sealed Phala runtime configuration by compose commitment", () => {
+    const expected = "12".repeat(32);
+    setTestEnv({ GHOLA_PHALA_PRIVATE_AGENT_COMPOSE_HASH: expected });
+
+    expect(phalaWorkerRuntimeConfigDrift({ compose_hash: expected })).toEqual([]);
+    expect(phalaWorkerRuntimeConfigDrift({ compose_hash: "34".repeat(32) })).toEqual([
+      "phala_worker_compose_hash_mismatch",
+    ]);
+  });
+
   it("refuses live JIT provisioning without an explicit fresh worker image", () => {
     setTestEnv({
       GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
       GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "true",
-      GHOLA_HYPERLIQUID_LIVE_MODE: "tiny_fill",
+      GHOLA_HYPERLIQUID_LIVE_MODE: "full_ticket",
       PHALA_CLOUD_API_KEY: "phala-key",
     });
 
