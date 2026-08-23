@@ -6288,12 +6288,18 @@ export async function connectorReconcileFromBody(
       return { error: "hyperliquid_execution_vault_not_ready" as const };
     }
   }
+  // Submission resolves the currently selected attested worker through
+  // connectorRuntimeEnv. Reconciliation must use that same routing policy;
+  // falling back to the static connector URL can target a stale Phala
+  // instance and falsely report a filled order as unreconciled.
+  const connectorEnv = await connectorRuntimeEnv(workOrderRecord.platform_class);
   const reconciled = await reconcileConnectorResult({
     work_order: workOrderRecord.work_order,
     manifest: manifestRecord.manifest,
     existing_result: existingResult?.result ?? null,
     hyperliquid_execution_vault: hyperliquidExecutionVault,
     hyperliquid_managed_allocation: hyperliquidManagedAllocation,
+    env: connectorEnv,
   });
   const now = new Date().toISOString();
   await putConnectorWorkOrder({

@@ -10,6 +10,10 @@ const verifierSource = readFileSync(
   resolve(process.cwd(), "scripts/verify-prod-hyperliquid.mjs"),
   "utf8",
 );
+const privateAccountServerSource = readFileSync(
+  resolve(process.cwd(), "src/app/v1/private-account/_lib.ts"),
+  "utf8",
+);
 
 describe("public Hyperliquid lifecycle integration", () => {
   it("removes the submit control before execution and reconciles every acknowledgement", () => {
@@ -26,10 +30,22 @@ describe("public Hyperliquid lifecycle integration", () => {
     expect(reconcile).toBeGreaterThan(execute);
     expect(componentSource).toContain("This exact order remains locked");
     expect(componentSource).toContain("Check this exact order on Hyperliquid");
+    expect(componentSource).toContain('status: "ambiguous", result');
+    expect(componentSource).not.toContain('setPerpAttempt({ previewCommitment, order, status: "failed", result });');
     expect(orderContract).toContain('order_type: "market"');
     expect(orderContract).toContain('live_order_mode: "tiny_fill"');
     expect(orderContract).toContain('tif: "Ioc"');
     expect(orderContract).not.toContain("tif: orderType");
+  });
+
+  it("reconciles through the selected attested worker instead of a stale static endpoint", () => {
+    const reconcileRoute = privateAccountServerSource.slice(
+      privateAccountServerSource.indexOf("export async function connectorReconcileFromBody"),
+      privateAccountServerSource.indexOf("export async function connectorOperationsForOwner"),
+    );
+
+    expect(reconcileRoute).toContain("await connectorRuntimeEnv(workOrderRecord.platform_class)");
+    expect(reconcileRoute).toContain("env: connectorEnv");
   });
 
   it("prepares closes only from exact reconciled fill proof", () => {

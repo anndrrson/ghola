@@ -1317,8 +1317,12 @@ function AlternateProductWorkspace({
         return;
       }
       if (result.status === "failed") {
-        setPerpAttempt({ previewCommitment, order, status: "failed", result });
-        setPerpError(classifyHyperliquidTradeFailure(new Error(result.reason || "connector_submit_failed")).message);
+        // Execution was already acknowledged before this read-only check.
+        // A reconciliation transport failure must never reopen the order
+        // ticket: keep the exact CLOID locked and allow only another status
+        // check or a risk-reducing action.
+        setPerpAttempt({ previewCommitment, order, status: "ambiguous", result });
+        setPerpError(`${classifyHyperliquidTradeFailure(new Error(result.reason || "connector_reconcile_failed")).message} This exact order remains locked.`);
         setPerpNotice(null);
         return;
       }

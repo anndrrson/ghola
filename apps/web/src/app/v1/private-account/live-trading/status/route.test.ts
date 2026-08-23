@@ -148,6 +148,8 @@ describe("private account live trading launch gate", () => {
         correlated_execution_diagnostics_required: true,
         public_trade_ambiguity_recovery_required: true,
         public_trade_tiny_fill_submit_required: true,
+        selected_worker_reconciliation_required: true,
+        reconciliation_failure_order_lock_required: true,
         reduce_only_close_required: true,
         exact_fill_reduce_only_close_required: true,
         final_flat_zero_orders_required: true,
