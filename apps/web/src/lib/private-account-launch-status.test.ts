@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { privateAccountLaunchStatus } from "./private-account-launch-status";
 import type { PrivateAgentRuntimeStatus } from "./private-agent-runtime";
+import type { GholaRuntimeHealth } from "./private-account-runtime";
+import type { PrivateLiveTradingCanaryReportRecordV1 } from "./private-account-store";
 
 const READY_RUNTIME: PrivateAgentRuntimeStatus = {
   version: 1,
@@ -58,9 +60,58 @@ const READY_ENV = {
   PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "capability-secret",
 } as const;
 
+const READY_RUNTIME_HEALTH: GholaRuntimeHealth = {
+  version: 1,
+  status: "green",
+  mode: "http",
+  runtime_health_commitment: "runtime-health-test",
+  runtime_attestation_commitment: "runtime-attestation-test",
+  runtime_measurement_commitment: "runtime-measurement-test",
+  runtime_policy_commitment: "runtime-policy-test",
+  observed_at: new Date().toISOString(),
+  reason: null,
+};
+
+function readyNoSubmitCanary(): PrivateLiveTradingCanaryReportRecordV1 {
+  const observedAt = new Date();
+  return {
+    version: 1,
+    report_id: "capital_free_canary_hyperliquid_test",
+    venue_id: "hyperliquid",
+    network: "mainnet",
+    status: "green",
+    live_mode: "no_submit",
+    canary_kind: "capital_free_no_submit",
+    broadcast_performed: false,
+    reconcile_status: "reconciled",
+    order_notional_usd: 11,
+    max_order_notional_usd: 50,
+    daily_cap_usd: 250,
+    max_slippage_bps: 100,
+    receipt_commitment: "receipt_test",
+    result_commitment: "result_test",
+    entry_receipt_commitment: null,
+    close_receipt_commitment: null,
+    final_venue_execution_proven: false,
+    final_fill_proven: false,
+    position_count: 0,
+    open_order_count: 0,
+    evidence_commitment: "evidence_test",
+    reason: null,
+    observed_at: observedAt.toISOString(),
+    expires_at: new Date(observedAt.getTime() + 60 * 60 * 1_000).toISOString(),
+    created_at: observedAt.toISOString(),
+  };
+}
+
 describe("private account launch status", () => {
   it("reports the live Hyperliquid path ready only when deployment and runtime gates pass", async () => {
-    const status = await privateAccountLaunchStatus(READY_ENV, READY_RUNTIME);
+    const status = await privateAccountLaunchStatus(
+      READY_ENV,
+      READY_RUNTIME,
+      READY_RUNTIME_HEALTH,
+      readyNoSubmitCanary(),
+    );
 
     expect(status.ready_to_accept_users).toBe(true);
     expect(status.checks.every((check) => check.status === "ready")).toBe(true);
@@ -75,7 +126,7 @@ describe("private account launch status", () => {
       selected_provider: null,
       remote_execution_ready: false,
       blocking_reasons: ["no_attested_confidential_compute_provider"],
-    });
+    }, READY_RUNTIME_HEALTH, readyNoSubmitCanary());
 
     expect(status.ready_to_accept_users).toBe(false);
     expect(status.checks.map((check) => check.reason)).toEqual(expect.arrayContaining([
@@ -99,7 +150,7 @@ describe("private account launch status", () => {
       shielded_rail_ready: false,
       providers: [],
       blocking_reasons: ["no_ready_shielded_settlement_rail"],
-    });
+    }, READY_RUNTIME_HEALTH, readyNoSubmitCanary());
 
     expect(status.ready_to_accept_users).toBe(true);
     expect(status.runtime.remote_execution_ready).toBe(false);
@@ -111,7 +162,7 @@ describe("private account launch status", () => {
       ...READY_ENV,
       PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "current-secret",
       GHOLA_WORKER_CAPABILITY_SECRET: "stale-secret",
-    }, READY_RUNTIME);
+    }, READY_RUNTIME, READY_RUNTIME_HEALTH, readyNoSubmitCanary());
 
     expect(status.ready_to_accept_users).toBe(false);
     expect(status.checks).toContainEqual({
@@ -127,7 +178,7 @@ describe("private account launch status", () => {
     const status = await privateAccountLaunchStatus({
       ...READY_ENV,
       NEXT_PUBLIC_GHOLA_LEGACY_HYPERLIQUID_API_KEYS: undefined,
-    }, READY_RUNTIME);
+    }, READY_RUNTIME, READY_RUNTIME_HEALTH, readyNoSubmitCanary());
 
     expect(status.ready_to_accept_users).toBe(false);
     expect(status.checks).toContainEqual({
@@ -144,7 +195,7 @@ describe("private account launch status", () => {
       GHOLA_PUBLIC_BETA_MONITORING_ENABLED: undefined,
       GHOLA_VERCEL_ALERTS_CONFIGURED: undefined,
       GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD: "1000",
-    }, READY_RUNTIME);
+    }, READY_RUNTIME, READY_RUNTIME_HEALTH, readyNoSubmitCanary());
 
     expect(status.ready_to_accept_users).toBe(false);
     expect(status.checks).toEqual(expect.arrayContaining([
@@ -152,6 +203,26 @@ describe("private account launch status", () => {
       expect.objectContaining({ check: "production_monitoring_enabled", status: "blocked" }),
       expect.objectContaining({ check: "actionable_alerting_configured", status: "blocked" }),
       expect.objectContaining({ check: "public_beta_order_cap", status: "blocked" }),
+    ]));
+  });
+
+  it("blocks launch when runtime health or the no-submit canary is unavailable", async () => {
+    const unhealthyRuntime: GholaRuntimeHealth = {
+      ...READY_RUNTIME_HEALTH,
+      status: "red",
+      reason: "sealed runtime health endpoint is unreachable",
+    };
+    const status = await privateAccountLaunchStatus(
+      READY_ENV,
+      READY_RUNTIME,
+      unhealthyRuntime,
+      null,
+    );
+
+    expect(status.ready_to_accept_users).toBe(false);
+    expect(status.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ check: "sealed_runtime_health_fresh", status: "blocked" }),
+      expect.objectContaining({ check: "hyperliquid_no_submit_canary_fresh", status: "blocked" }),
     ]));
   });
 });

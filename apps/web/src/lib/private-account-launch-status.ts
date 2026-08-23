@@ -1,6 +1,11 @@
 import { getPrivateAgentRuntimeStatus } from "./private-agent-runtime-server";
 import type { PrivateAgentRuntimeStatus } from "./private-agent-runtime";
 import { enterpriseGateStatus, type GholaEnterpriseGateStatus } from "./enterprise-gate-status";
+import { freshSealedRuntimeHealth, type GholaRuntimeHealth } from "./private-account-runtime";
+import {
+  getLatestLiveTradingCanaryReport,
+  type PrivateLiveTradingCanaryReportRecordV1,
+} from "./private-account-store";
 
 export interface GholaLaunchCheck {
   check: string;
@@ -41,11 +46,14 @@ const REQUIRED_LIVE_ENV = [
   "GHOLA_PUBLIC_BETA_RUNBOOK_VERSION=2026-08-23",
   "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN=<worker-token>",
   "attested provider publishes execution_url and sealed recipient evidence, or GHOLA_PRIVATE_RUNTIME_URL / GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL are set manually",
+  "fresh Hyperliquid capital-free no-submit canary is green and matches public beta caps",
 ] as const;
 
 export async function privateAccountLaunchStatus(
   env: Record<string, string | undefined> = process.env,
   runtime?: PrivateAgentRuntimeStatus,
+  runtimeHealth?: GholaRuntimeHealth,
+  noSubmitCanary?: PrivateLiveTradingCanaryReportRecordV1 | null,
 ): Promise<GholaPrivateAccountLaunchStatus> {
   const currentRuntime = runtime ?? await getPrivateAgentRuntimeStatus();
   const enterpriseGate = enterpriseGateStatus(env);
@@ -61,6 +69,14 @@ export async function privateAccountLaunchStatus(
     explicitConnectorReadiness === "ready" ||
     (!explicitConnectorReadiness && currentRuntime.remote_execution_ready && Boolean(runtimeExecutionUrl));
   const runtimeUrl = trimmed(env.GHOLA_PRIVATE_RUNTIME_URL) || runtimeExecutionUrl;
+  const currentRuntimeHealth = runtimeHealth ?? await freshSealedRuntimeHealth(undefined, {
+    ...env,
+    GHOLA_PRIVATE_RUNTIME_URL: runtimeUrl,
+  });
+  const currentNoSubmitCanary = noSubmitCanary === undefined
+    ? await getLatestLiveTradingCanaryReport("hyperliquid", "capital_free_no_submit")
+    : noSubmitCanary;
+  const noSubmitCanaryReady = freshHyperliquidNoSubmitCanary(currentNoSubmitCanary, env);
   const primaryCapabilitySecret = trimmed(env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET);
   const legacyCapabilitySecret = trimmed(env.GHOLA_WORKER_CAPABILITY_SECRET);
   const capabilitySecretAliasesCoherent =
@@ -197,6 +213,16 @@ export async function privateAccountLaunchStatus(
       Boolean(runtimeUrl),
       "sealed_runtime_url_missing",
     ),
+    blockingCheck(
+      "sealed_runtime_health_fresh",
+      currentRuntimeHealth.status === "green",
+      currentRuntimeHealth.reason || "sealed_runtime_unhealthy",
+    ),
+    blockingCheck(
+      "hyperliquid_no_submit_canary_fresh",
+      noSubmitCanaryReady,
+      currentNoSubmitCanary ? "hyperliquid_no_submit_canary_failed_or_stale" : "hyperliquid_no_submit_canary_missing",
+    ),
   ];
 
   return {
@@ -247,4 +273,41 @@ function validProductionSecret(value: string | undefined): boolean {
     !["dev", "test", "default", "local", "changeme", "example", "placeholder"].some((item) =>
       lowered === item || lowered.includes(item)
     );
+}
+
+function freshHyperliquidNoSubmitCanary(
+  report: PrivateLiveTradingCanaryReportRecordV1 | null,
+  env: Record<string, string | undefined>,
+): boolean {
+  if (!report) return false;
+  const observedAt = Date.parse(report.observed_at);
+  const expiresAt = Date.parse(report.expires_at);
+  const maxStaleMs = positiveInteger(env.GHOLA_LIVE_TRADING_CANARY_MAX_STALE_MS, 24 * 60 * 60 * 1_000);
+  return report.venue_id === "hyperliquid" &&
+    report.network === "mainnet" &&
+    report.status === "green" &&
+    report.live_mode === "no_submit" &&
+    report.canary_kind === "capital_free_no_submit" &&
+    report.broadcast_performed === false &&
+    report.reconcile_status === "reconciled" &&
+    Boolean(report.receipt_commitment) &&
+    Boolean(report.result_commitment) &&
+    report.order_notional_usd > 0 &&
+    report.order_notional_usd <= Number(env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD) &&
+    sameNumber(report.max_order_notional_usd, Number(env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD)) &&
+    sameNumber(report.daily_cap_usd, Number(env.GHOLA_LIVE_TRADING_DAILY_CAP_USD)) &&
+    report.max_slippage_bps <= Number(env.GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS) &&
+    Number.isFinite(observedAt) &&
+    Number.isFinite(expiresAt) &&
+    expiresAt > Date.now() &&
+    Date.now() - observedAt <= maxStaleMs;
+}
+
+function positiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function sameNumber(left: number, right: number): boolean {
+  return Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) < 0.000001;
 }
