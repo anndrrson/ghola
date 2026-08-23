@@ -3,6 +3,7 @@ import type { HyperliquidAccountSnapshot } from "@/lib/private-account-client";
 import {
   hyperliquidCredentialsSealed,
   hyperliquidAccountTopologyChanged,
+  hyperliquidPrimaryAction,
   hyperliquidPerpsReadiness,
   hyperliquidSubmissionSignerMode,
   mergeHyperliquidAccountSnapshot,
@@ -10,6 +11,20 @@ import {
 } from "@/lib/trade-readiness";
 
 describe("trade readiness", () => {
+  it("keeps the signed-out CTA actionable without waiting for a private connection check", () => {
+    expect(hyperliquidPrimaryAction({
+      authenticationLoading: false,
+      authenticated: false,
+      connectionChecked: false,
+      connectionReady: false,
+      network: "mainnet",
+    })).toEqual({
+      action: "sign_in",
+      disabled: false,
+      label: "Sign in to continue",
+    });
+  });
+
   it("keeps Coinbase spot independent from Phoenix readiness", () => {
     expect(spotVenueReadiness("coinbase", { coinbase_public_live_ready: false, phoenix_public_live_ready: true }).label).toBe("worker unavailable");
     expect(spotVenueReadiness("phoenix", { coinbase_public_live_ready: false, phoenix_public_live_ready: true }).label).toBe("ready");

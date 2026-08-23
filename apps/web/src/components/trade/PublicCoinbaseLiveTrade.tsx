@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Activity,
   ChevronDown,
@@ -62,6 +62,7 @@ import { useMarketData } from "@/lib/market-data-store";
 import {
   hyperliquidAccountTopologyChanged,
   hyperliquidCredentialsSealed,
+  hyperliquidPrimaryAction,
   hyperliquidPerpsReadiness,
   hyperliquidSubmissionSignerMode,
   mergeHyperliquidAccountSnapshot,
@@ -857,6 +858,7 @@ function AlternateProductWorkspace({
   productEnvironment: "production" | "testnet";
   hyperliquidMaxSlippageBps: number;
 }) {
+  const router = useRouter();
   const workspaceParams = useSearchParams();
   const perpsTurnkey = usePerpsTurnkey();
   const privateAccountWallet = useTurnkeyWallet();
@@ -910,6 +912,7 @@ function AlternateProductWorkspace({
   const marketLabel = product === "perps" ? `${baseSymbol}-PERP` : product === "swap" ? "SOL / USDC" : referenceProduct;
   const nativeProtection = selectedVenue?.protective_orders === "native";
   const setupHref = `/account?flow=private-mode&setup=${encodeURIComponent(venue)}&return_to=${encodeURIComponent(`/trade?product=${product}&venue=${venue}&market=${marketLabel}`)}`;
+  const signinHref = `/signin?redirect=${encodeURIComponent(`/trade?product=${product}&venue=${venue}&market=${marketLabel}`)}`;
   const legacyHyperliquidApiKeysEnabled =
     process.env.NEXT_PUBLIC_GHOLA_LEGACY_HYPERLIQUID_API_KEYS === "true";
   const useHyperliquidMarket = active && product === "perps" && venue === "hyperliquid";
@@ -960,6 +963,13 @@ function AlternateProductWorkspace({
     marketCatalogState: perpMarketCatalogState,
     selectedMarketAvailable: Boolean(selectedMarketCapability),
   }), [accountState, authenticated, authenticationLoading, hyperliquidAccount, hyperliquidConnectionChecked, hyperliquidConnectionReady, hyperliquidNetwork, perpMarketCatalogState, selectedMarketCapability]);
+  const hyperliquidAction = hyperliquidPrimaryAction({
+    authenticationLoading,
+    authenticated,
+    connectionChecked: hyperliquidConnectionChecked,
+    connectionReady: hyperliquidConnectionReady,
+    network: hyperliquidNetwork,
+  });
   const maxLeverage = hyperliquidMarket?.max_leverage ?? selectedMarketCapability?.max_leverage ?? null;
   const manualPerpOrder = useMemo<PrivateExecutionOrderDraft>(() => ({
     venue_id: "hyperliquid",
@@ -1797,17 +1807,25 @@ function AlternateProductWorkspace({
 
               <button
                 type="button"
-                disabled={authenticationLoading || (product === "perps" && !hyperliquidConnectionChecked) || perpWorking !== null || perpAttempt?.status === "ambiguous" || perpAttempt?.status === "awaiting_reconciliation" || (perpAttempt?.status === "reconciled" && !perpAttempt.order.reduce_only)}
-                onClick={() => { if (product === "perps" && hyperliquidConnectionReady) void reviewPerpOrder(); else setSetupOpen(true); }}
+                disabled={authenticationLoading || (product === "perps" && hyperliquidAction.disabled) || perpWorking !== null || perpAttempt?.status === "ambiguous" || perpAttempt?.status === "awaiting_reconciliation" || (perpAttempt?.status === "reconciled" && !perpAttempt.order.reduce_only)}
+                onClick={() => {
+                  if (!authenticated) {
+                    router.push(signinHref);
+                  } else if (product === "perps" && hyperliquidAction.action === "review") {
+                    void reviewPerpOrder();
+                  } else {
+                    setSetupOpen(true);
+                  }
+                }}
                 className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md bg-[#3da8ff] text-sm font-bold text-[#03101d] transition hover:bg-[#67baff] disabled:cursor-wait disabled:opacity-70"
               >
-                {product === "perps" && hyperliquidConnectionReady ? <Send className="h-4 w-4" /> : <KeyRound className="h-4 w-4" />}
-                {product === "perps" && hyperliquidConnectionReady
+                {!authenticated ? <LogIn className="h-4 w-4" /> : product === "perps" && hyperliquidAction.action === "review" ? <Send className="h-4 w-4" /> : <KeyRound className="h-4 w-4" />}
+                {product === "perps" && hyperliquidAction.action === "review"
                   ? perpWorking === "preview" ? "Checking live order…"
                     : perpWorking === "reconcile" ? "Reconciling exact order…"
                     : perpWorking === "verify" ? "Verifying flat and clear…"
                     : "Review order"
-                  : authenticationLoading ? "Checking sign-in…" : product === "perps" && !hyperliquidConnectionChecked ? "Checking connection…" : authenticated && product === "perps" ? `Connect Hyperliquid ${hyperliquidNetwork}` : authenticated ? `Set up ${selectedVenue?.label}` : "Sign in to continue"}
+                  : product === "perps" ? hyperliquidAction.label : authenticationLoading ? "Checking sign-in…" : authenticated ? `Set up ${selectedVenue?.label}` : "Sign in to continue"}
               </button>
               {perpAttempt?.status === "ambiguous" && (
                 <button

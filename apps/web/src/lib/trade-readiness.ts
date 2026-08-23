@@ -12,6 +12,34 @@ export type SpotReadinessStatus = {
   no_key_blocking_reason_codes?: string[];
 };
 
+export type HyperliquidPrimaryAction = {
+  action: "wait" | "sign_in" | "connect" | "review";
+  disabled: boolean;
+  label: string;
+};
+
+export function hyperliquidPrimaryAction(input: {
+  authenticationLoading: boolean;
+  authenticated: boolean;
+  connectionChecked: boolean;
+  connectionReady: boolean;
+  network: "mainnet" | "testnet";
+}): HyperliquidPrimaryAction {
+  if (input.authenticationLoading) {
+    return { action: "wait", disabled: true, label: "Checking sign-in…" };
+  }
+  if (!input.authenticated) {
+    return { action: "sign_in", disabled: false, label: "Sign in to continue" };
+  }
+  if (!input.connectionChecked) {
+    return { action: "wait", disabled: true, label: "Checking connection…" };
+  }
+  if (!input.connectionReady) {
+    return { action: "connect", disabled: false, label: `Connect Hyperliquid ${input.network}` };
+  }
+  return { action: "review", disabled: false, label: "Review order" };
+}
+
 export function hyperliquidCredentialsSealed(status: {
   credentials_sealed?: boolean;
 } | null): boolean {
