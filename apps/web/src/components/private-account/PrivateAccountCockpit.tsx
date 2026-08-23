@@ -858,6 +858,7 @@ export function PrivateAccountCockpit({
   const [hyperliquidConnectOpen, setHyperliquidConnectOpen] = useState(false);
   const initialSetupHandled = useRef(false);
   const verifyHyperliquidAfterConnect = useRef(false);
+  const hyperliquidAccountRefresh = useRef<Promise<void> | null>(null);
   const [coinbaseConnectOpen, setCoinbaseConnectOpen] = useState(false);
   const [phoenixConnectOpen, setPhoenixConnectOpen] = useState(false);
   const [jupiterConnectOpen, setJupiterConnectOpen] = useState(false);
@@ -1083,12 +1084,22 @@ export function PrivateAccountCockpit({
     }
   }, []);
 
-  const refreshHyperliquidAccountSnapshot = useCallback(async () => {
-    try {
-      setHyperliquidAccount(await getHyperliquidAccountSnapshot());
-    } catch {
-      setHyperliquidAccount(null);
-    }
+  const refreshHyperliquidAccountSnapshot = useCallback(() => {
+    if (hyperliquidAccountRefresh.current) return hyperliquidAccountRefresh.current;
+    const request = getHyperliquidAccountSnapshot()
+      .then((snapshot) => {
+        setHyperliquidAccount(snapshot);
+      })
+      .catch(() => {
+        // Keep the last trusted snapshot while the live stream reconnects.
+      })
+      .finally(() => {
+        if (hyperliquidAccountRefresh.current === request) {
+          hyperliquidAccountRefresh.current = null;
+        }
+      });
+    hyperliquidAccountRefresh.current = request;
+    return request;
   }, []);
 
   const refreshCoinbaseState = useCallback(async () => {

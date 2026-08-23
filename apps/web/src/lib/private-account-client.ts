@@ -404,6 +404,7 @@ export function openHyperliquidAccountStream(input: {
     while (!closed) {
       activeController = new AbortController();
       input.onStatus?.(retryCount > 0 ? "reconnecting" : "connecting");
+      let receivedHealthyState = false;
       try {
         const params = new URLSearchParams();
         if (input.coin) params.set("coin", input.coin);
@@ -418,18 +419,25 @@ export function openHyperliquidAccountStream(input: {
           signal: activeController.signal,
         });
         if (!res.ok || !res.body) throw new Error(`Account stream error ${res.status}`);
-        retryCount = 0;
         await readPrivateAccountSse(res.body, {
           onMessage: (event, data) => {
             if (event === "account_state") {
               const snapshot = data as HyperliquidAccountSnapshot;
+              receivedHealthyState = true;
+              retryCount = 0;
               input.onState(snapshot);
               if (snapshot.stream_status) input.onStatus?.(snapshot.stream_status);
               return;
             }
             if (event === "stream_status") {
               const status = (data as { stream_status?: HyperliquidAccountStreamStatus }).stream_status;
-              if (status) input.onStatus?.(status);
+              if (status) {
+                if (status === "live" || status === "backfilling") {
+                  receivedHealthyState = true;
+                  retryCount = 0;
+                }
+                input.onStatus?.(status);
+              }
               return;
             }
             if (event === "account_event") {
@@ -447,7 +455,7 @@ export function openHyperliquidAccountStream(input: {
       if (!closed) {
         retryCount += 1;
         input.onStatus?.("reconnecting");
-        await delay(Math.min(8_000, 500 * 2 ** retryCount));
+        await delay(Math.min(8_000, 500 * 2 ** (receivedHealthyState ? 1 : retryCount)));
       }
     }
   }
