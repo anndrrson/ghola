@@ -10,8 +10,14 @@ import {
   useContext,
   useRef,
 } from "react";
-import { TurnkeyWalletProvider, useTurnkeyWallet } from "./turnkey-provider";
+import {
+  normalizeTurnkeyAuthEmail,
+  opaqueTurnkeyWalletScope,
+  TurnkeyWalletProvider,
+  useTurnkeyWallet,
+} from "./turnkey-provider";
 import { orniGetNonce, orniVerifySignature, clearOrniToken } from "./api";
+import { useThumperAuth } from "./thumper-auth-context";
 
 interface WalletAuthState {
   authenticated: boolean;
@@ -101,6 +107,9 @@ function TurnkeySIWSHandler({
 export const AppWalletProvider: FC<{ children: ReactNode }> = ({
   children,
 }) => {
+  const thumperAuth = useThumperAuth();
+  const authScope = opaqueTurnkeyWalletScope(thumperAuth.user?.id || "");
+  const authEmail = normalizeTurnkeyAuthEmail(thumperAuth.user?.email || "");
   const [authState, setAuthState] = useState<WalletAuthState>({
     authenticated: false,
     isCreator: false,
@@ -116,7 +125,12 @@ export const AppWalletProvider: FC<{ children: ReactNode }> = ({
   }, []);
 
   return (
-    <TurnkeyWalletProvider>
+    <TurnkeyWalletProvider
+      key={authScope || "signed-out"}
+      authEmail={authEmail}
+      authResolved={!thumperAuth.loading}
+      authScope={authScope}
+    >
       <TurnkeySIWSHandler onAuthChange={handleAuthChange} />
       <WalletAuthContext.Provider value={authState}>
         {children}

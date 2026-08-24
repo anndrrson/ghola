@@ -4,12 +4,16 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
+  useRef,
+  useState,
   type ReactNode,
 } from "react";
 import {
   TurnkeyProvider,
   useTurnkey,
+  type TurnkeyCallbacks,
   type TurnkeyProviderConfig,
   type Wallet,
   type WalletAccount,
@@ -20,12 +24,20 @@ import {
   buildTurnkeyHyperliquidPolicies,
   ownerMandateMessage,
 } from "@ghola/perps-core";
+import { useThumperAuth } from "./thumper-auth-context";
+import { opaqueTurnkeyWalletScope } from "./turnkey-provider";
+import {
+  decidePerpsTurnkeyBoundary,
+  parsePerpsTurnkeyBindings,
+  type PerpsTurnkeyBindings,
+} from "./perps-turnkey-session-boundary";
 
 const PERPS_WALLET_NAME = "Ghola Perps";
 const OWNER_PATH = "m/44'/60'/0'/0/0";
 const AGENT_PATH = "m/44'/60'/0'/0/1";
 const TOMBSTONE_PATH = "m/44'/60'/0'/0/2";
 const SEALING_PATH = "m/44'/501'/0'/0'";
+const TURNKEY_BINDINGS_STORAGE_KEY = "ghola_perps_turnkey_bindings_v1";
 
 const OWNER_ACCOUNT = {
   curve: "CURVE_SECP256K1",
@@ -142,8 +154,40 @@ export function PerpsTurnkeyProvider({ children }: { children: ReactNode }) {
     },
   };
   return (
-    <TurnkeyProvider config={config}>
-      <PerpsTurnkeySession>{children}</PerpsTurnkeySession>
+    <ConfiguredPerpsTurnkeyProvider config={config}>
+      {children}
+    </ConfiguredPerpsTurnkeyProvider>
+  );
+}
+
+function ConfiguredPerpsTurnkeyProvider({
+  children,
+  config,
+}: {
+  children: ReactNode;
+  config: TurnkeyProviderConfig;
+}) {
+  const [freshAuthenticationOrganizationId, setFreshAuthenticationOrganizationId] =
+    useState<string | null>(null);
+  const callbacks = useMemo<TurnkeyCallbacks>(() => ({
+    onAuthenticationSuccess: ({ session }) => {
+      setFreshAuthenticationOrganizationId(session?.organizationId || null);
+    },
+    onSessionExpired: () => {
+      setFreshAuthenticationOrganizationId(null);
+    },
+  }), []);
+  const clearFreshAuthentication = useCallback(() => {
+    setFreshAuthenticationOrganizationId(null);
+  }, []);
+  return (
+    <TurnkeyProvider config={config} callbacks={callbacks}>
+      <PerpsTurnkeySession
+        freshAuthenticationOrganizationId={freshAuthenticationOrganizationId}
+        clearFreshAuthentication={clearFreshAuthentication}
+      >
+        {children}
+      </PerpsTurnkeySession>
     </TurnkeyProvider>
   );
 }
@@ -164,19 +208,170 @@ const CONTEXT_DEFAULTS = {
   revokeHyperliquid: unavailable,
 } satisfies PerpsTurnkeyContextValue;
 
-function PerpsTurnkeySession({ children }: { children: ReactNode }) {
+function PerpsTurnkeySession({
+  children,
+  freshAuthenticationOrganizationId,
+  clearFreshAuthentication,
+}: {
+  children: ReactNode;
+  freshAuthenticationOrganizationId: string | null;
+  clearFreshAuthentication: () => void;
+}) {
   const turnkey = useTurnkey();
-  const organizationId = turnkey.session?.organizationId || null;
-  const authenticated = turnkey.authState === "authenticated";
-  const loading = turnkey.clientState === "loading";
+  const thumper = useThumperAuth();
+  const thumperUserScope = opaqueTurnkeyWalletScope(thumper.user?.id || "");
+  const turnkeyOrganizationId = turnkey.session?.organizationId || null;
+  const turnkeyAuthenticated = turnkey.authState === "authenticated";
+  const [bindings, setBindings] = useState<PerpsTurnkeyBindings>({});
+  const [bindingsLoaded, setBindingsLoaded] = useState(false);
+  const [pendingBindingUserId, setPendingBindingUserId] = useState<string | null>(null);
+  const [requireFreshAuthentication, setRequireFreshAuthentication] = useState(false);
+  const forcedLogoutKey = useRef<string | null>(null);
+
+  useEffect(() => {
+    let stored: string | null = null;
+    try {
+      stored = localStorage.getItem(`${TURNKEY_BINDINGS_STORAGE_KEY}:${parentOrganizationId}`);
+    } catch {
+      // A blocked storage boundary must never restore an unverified session.
+    }
+    setBindings(parsePerpsTurnkeyBindings(stored));
+    setBindingsLoaded(true);
+  }, []);
+
+  const boundary = useMemo(() => decidePerpsTurnkeyBoundary({
+    thumperLoading: thumper.loading || !bindingsLoaded,
+    thumperUserId: thumperUserScope,
+    turnkeyAuthenticated,
+    turnkeyOrganizationId,
+    bindings,
+    pendingBindingUserId,
+    freshAuthenticationOrganizationId,
+    requireFreshAuthentication,
+  }), [
+    bindings,
+    bindingsLoaded,
+    freshAuthenticationOrganizationId,
+    pendingBindingUserId,
+    requireFreshAuthentication,
+    thumper.loading,
+    thumperUserScope,
+    turnkeyAuthenticated,
+    turnkeyOrganizationId,
+  ]);
+
+  useEffect(() => {
+    if (boundary.kind !== "bind") return;
+    const next = {
+      ...bindings,
+      [boundary.binding.userId]: boundary.binding.organizationId,
+    };
+    try {
+      localStorage.setItem(
+        `${TURNKEY_BINDINGS_STORAGE_KEY}:${parentOrganizationId}`,
+        JSON.stringify(next),
+      );
+    } catch {
+      setPendingBindingUserId(null);
+      setRequireFreshAuthentication(true);
+      clearFreshAuthentication();
+      void turnkey.logout().catch(() => {});
+      return;
+    }
+    setBindings(next);
+    setPendingBindingUserId(null);
+    setRequireFreshAuthentication(false);
+    clearFreshAuthentication();
+  }, [bindings, boundary, clearFreshAuthentication, turnkey]);
+
+  useEffect(() => {
+    if (!boundary.clearPending || boundary.kind === "bind") return;
+    setPendingBindingUserId(null);
+  }, [boundary.clearPending, boundary.kind]);
+
+  const logoutBoundaryKey = boundary.kind === "logout"
+    ? `${boundary.reason}:${thumperUserScope || "signed-out"}:${turnkeyOrganizationId || "no-org"}`
+    : null;
+  useEffect(() => {
+    if (!logoutBoundaryKey) {
+      forcedLogoutKey.current = null;
+      return;
+    }
+    if (forcedLogoutKey.current === logoutBoundaryKey) return;
+    forcedLogoutKey.current = logoutBoundaryKey;
+    setPendingBindingUserId(null);
+    setRequireFreshAuthentication(true);
+    clearFreshAuthentication();
+    void turnkey.logout().catch(() => {});
+  }, [clearFreshAuthentication, logoutBoundaryKey, turnkey]);
+
+  useEffect(() => {
+    if (boundary.kind !== "await_fresh_turnkey_auth") return;
+    const timeout = window.setTimeout(() => {
+      setPendingBindingUserId(null);
+      setRequireFreshAuthentication(true);
+      clearFreshAuthentication();
+      void turnkey.logout().catch(() => {});
+    }, 10_000);
+    return () => window.clearTimeout(timeout);
+  }, [boundary.kind, clearFreshAuthentication, turnkey]);
+
+  useEffect(() => {
+    if (!boundary.ready || !requireFreshAuthentication) return;
+    setPendingBindingUserId(null);
+    setRequireFreshAuthentication(false);
+    clearFreshAuthentication();
+  }, [boundary.ready, clearFreshAuthentication, requireFreshAuthentication]);
+
+  const organizationId = boundary.ready ? turnkeyOrganizationId : null;
+  const authenticated = boundary.ready;
+  const loading =
+    turnkey.clientState === "loading" ||
+    thumper.loading ||
+    !bindingsLoaded ||
+    boundary.kind === "bind" ||
+    boundary.kind === "await_fresh_turnkey_auth" ||
+    boundary.kind === "logout";
 
   const login = useCallback(async () => {
-    await turnkey.handleLogin({ title: "Protect your Ghola perps wallets" });
-  }, [turnkey]);
+    const userId = thumperUserScope;
+    if (!userId || thumper.loading) {
+      throw new Error("Sign in to Ghola before authenticating the perps wallet.");
+    }
+    if (!bindingsLoaded) {
+      throw new Error("The perps identity boundary is still loading.");
+    }
+    if (boundary.ready) return;
+    setRequireFreshAuthentication(true);
+    clearFreshAuthentication();
+    setPendingBindingUserId(null);
+    if (turnkeyAuthenticated || turnkeyOrganizationId) {
+      await turnkey.logout();
+    }
+    setPendingBindingUserId(userId);
+    try {
+      await turnkey.handleLogin({ title: "Protect your Ghola perps wallets" });
+    } catch (error) {
+      setPendingBindingUserId((current) => (current === userId ? null : current));
+      throw error;
+    }
+  }, [
+    bindingsLoaded,
+    boundary.ready,
+    clearFreshAuthentication,
+    thumper.loading,
+    thumperUserScope,
+    turnkey,
+    turnkeyAuthenticated,
+    turnkeyOrganizationId,
+  ]);
 
   const logout = useCallback(async () => {
+    setPendingBindingUserId(null);
+    setRequireFreshAuthentication(true);
+    clearFreshAuthentication();
     await turnkey.logout();
-  }, [turnkey]);
+  }, [clearFreshAuthentication, turnkey]);
 
   const ensureWalletPair = useCallback(async (includeTombstone = false) => {
     if (!organizationId || !turnkey.httpClient || !authenticated) {

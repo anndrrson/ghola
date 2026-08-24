@@ -121,7 +121,7 @@ test("Vercel auth validation scans source when the Next adapter owns emitted chu
   assert.match(authGuard, /Vercel adapter owns emitted chunks/);
 });
 
-test("release keeps Hyperliquid onboarding on one resumable pending wallet", () => {
+test("release keeps Hyperliquid onboarding on one resumable wallet per authenticated owner lane", () => {
   const cockpit = readFileSync(
     resolve(webRoot, "src/components/private-account/PrivateAccountCockpit.tsx"),
     "utf8",
@@ -140,6 +140,8 @@ test("release keeps Hyperliquid onboarding on one resumable pending wallet", () 
   );
 
   assert.match(cockpit, /resumePendingHyperliquidApiWallet/);
+  assert.match(cockpit, /authScope: accountCommitment/);
+  assert.match(cockpit, /const ownerAddress = await connectInjectedHyperliquidOwner\(provider\)/);
   assert.match(cockpit, /focusedHyperliquidWalletProvisioning\.current = true/);
   assert.match(cockpit, /void ensureHyperliquidSigningWallet\(\)\.finally/);
   assert.match(cockpit, /resumeOrCreatePendingHyperliquidApiWallet/);
@@ -152,11 +154,49 @@ test("release keeps Hyperliquid onboarding on one resumable pending wallet", () 
   assert.match(cockpit, /await clearPendingHyperliquidApiWallet/);
   assert.doesNotMatch(cockpit, /generateHyperliquidApiWallet\(\)/);
   assert.match(pendingStore, /"AES-GCM"/);
-  assert.match(pendingStore, /pendingSlotId\(userDid, input\.network\)/);
+  assert.match(pendingStore, /const DB_VERSION = 2/);
+  assert.match(pendingStore, /authScope: string/);
+  assert.match(pendingStore, /ownerAddress: string/);
+  assert.match(pendingStore, /pendingSlotId\(lane\.authScope, lane\.userDid, lane\.network, lane\.ownerAddress\)/);
+  assert.match(pendingStore, /`\$\{input\.authScope\}\\0\$\{input\.userDid\}\\0\$\{input\.network\}\\0\$\{input\.ownerAddress\}\\0`/);
+  assert.match(pendingStore, /STORE_QUARANTINED/);
   assert.match(pendingStore, /objectStore\(STORE_PENDING\)\.add\(row\)/);
   assert.match(ownerAuthorization, /exchange\.approveAgent/);
   assert.match(ownerAuthorization, /eth_requestAccounts/);
   assert.match(agentPolicy, /GHOLA_HYPERLIQUID_AGENT_NAME = "ghola"/);
   assert.match(agentPolicy, /HYPERLIQUID_NAMED_AGENT_LIMIT = 3/);
   assert.doesNotMatch(cockpit, /generatedAgentAddress \? authorizationOpened : agentKeyConfirmed/);
+});
+
+test("release isolates local and Turnkey signing sessions by the authenticated user", () => {
+  const localWalletProvider = readFileSync(
+    resolve(webRoot, "src/lib/turnkey-provider.tsx"),
+    "utf8",
+  );
+  const walletProvider = readFileSync(
+    resolve(webRoot, "src/lib/wallet-provider.tsx"),
+    "utf8",
+  );
+  const perpsProvider = readFileSync(
+    resolve(webRoot, "src/lib/perps-turnkey-provider.tsx"),
+    "utf8",
+  );
+  const perpsBoundary = readFileSync(
+    resolve(webRoot, "src/lib/perps-turnkey-session-boundary.ts"),
+    "utf8",
+  );
+
+  assert.match(localWalletProvider, /SCOPED_WALLET_STORAGE_PREFIX/);
+  assert.match(localWalletProvider, /opaqueTurnkeyWalletScope/);
+  assert.match(localWalletProvider, /migrateOrQuarantineLegacyWallet/);
+  assert.match(localWalletProvider, /migrated_matching_browser_identity/);
+  assert.doesNotMatch(localWalletProvider, /JSON\.stringify\(\{ version: 1, legacy \}\)/);
+  assert.match(walletProvider, /key=\{authScope \|\| "signed-out"\}/);
+  assert.match(walletProvider, /authResolved=\{!thumperAuth\.loading\}/);
+  assert.match(perpsProvider, /opaqueTurnkeyWalletScope\(thumper\.user\?\.id \|\| ""\)/);
+  assert.match(perpsProvider, /onAuthenticationSuccess/);
+  assert.match(perpsProvider, /void turnkey\.logout\(\)/);
+  assert.match(perpsBoundary, /thumper_identity_mismatch/);
+  assert.match(perpsBoundary, /turnkey_organization_mismatch/);
+  assert.match(perpsBoundary, /unbound_turnkey_session/);
 });

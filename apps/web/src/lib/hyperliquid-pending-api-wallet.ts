@@ -7,19 +7,22 @@ import {
 import type { SignBytes } from "./session-vault";
 
 const DB_NAME = "ghola-hyperliquid-pending-wallets";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_PENDING = "pending_wallets";
-const INDEX_USER_NETWORK = "by_user_network";
-const RECORD_VERSION = 1;
+const STORE_QUARANTINED = "quarantined_wallets";
+const LEGACY_INDEX_USER_NETWORK = "by_user_network";
+const INDEX_EXACT_LANE = "by_auth_scope_user_network_owner";
+const RECORD_VERSION = 2;
 const NONCE_LENGTH = 12;
 const KEY_LENGTH = 32;
-const WRAP_CONTEXT = new TextEncoder().encode("ghola-hyperliquid-pending-wallet-wrap-v1");
+const WRAP_CONTEXT = new TextEncoder().encode("ghola-hyperliquid-pending-wallet-wrap-v2");
 
 type Network = "mainnet" | "testnet";
 
 type PendingWalletRow = {
-  version: 1;
+  version: 2;
   id: string;
+  authScope: string;
   userDid: string;
   network: Network;
   ownerAddress: string;
@@ -29,6 +32,13 @@ type PendingWalletRow = {
   createdAt: number;
 };
 
+type PendingWalletLane = {
+  authScope: string;
+  userDid: string;
+  network: Network;
+  ownerAddress: string;
+};
+
 export type PendingHyperliquidApiWallet = {
   network: Network;
   ownerAddress: string;
@@ -36,89 +46,109 @@ export type PendingHyperliquidApiWallet = {
   privateKey: `0x${string}`;
   createdAt: number;
   resumed: boolean;
-  ownerConflict: boolean;
 };
 
 export async function resumePendingHyperliquidApiWallet(input: {
+  authScope: string;
   userDid: string;
   network: Network;
+  ownerAddress: string;
   signBytes: SignBytes;
 }): Promise<PendingHyperliquidApiWallet | null> {
-  const rows = await pendingRows(input.userDid, input.network);
-  if (rows.length === 0) return null;
-  if (rows.length > 1) throw new Error("multiple_pending_hyperliquid_wallets");
-  return openPendingRow(rows[0], input.signBytes, true, false);
+  const lane = normalizeLane(input);
+  const userDid = lane.userDid;
+  const db = await openDb();
+  await quarantineLegacyPendingRow(db, pendingSlotId(userDid, input.network));
+  const row = await getPendingRow(db, pendingSlotId(
+    lane.authScope,
+    lane.userDid,
+    lane.network,
+    lane.ownerAddress,
+  ));
+  if (!row) return null;
+  if (!isPendingWalletRow(row)) {
+    await quarantinePendingRow(db, row, "malformed_v2_row");
+    return null;
+  }
+  assertExactLane(row, lane);
+  return openPendingRow(row, input.signBytes, true);
 }
 
 export async function resumeOrCreatePendingHyperliquidApiWallet(input: {
+  authScope: string;
   userDid: string;
   network: Network;
   ownerAddress: string;
   signBytes: SignBytes;
 }): Promise<PendingHyperliquidApiWallet> {
-  const userDid = input.userDid.trim();
-  const ownerAddress = normalizeOwnerAddress(input.ownerAddress);
-  if (!userDid) throw new Error("pending_wallet_identity_required");
-
-  const existing = await pendingRows(userDid, input.network);
-  if (existing.length > 1) throw new Error("multiple_pending_hyperliquid_wallets");
-  if (existing.length === 1) {
-    return openPendingRow(
-      existing[0],
-      input.signBytes,
-      true,
-      existing[0].ownerAddress !== ownerAddress,
-    );
+  const lane = normalizeLane(input);
+  const id = pendingSlotId(lane.authScope, lane.userDid, lane.network, lane.ownerAddress);
+  const db = await openDb();
+  await quarantineLegacyPendingRow(db, pendingSlotId(lane.userDid, input.network));
+  const existing = await getPendingRow(db, id);
+  if (existing) {
+    if (!isPendingWalletRow(existing)) {
+      await quarantinePendingRow(db, existing, "malformed_v2_row");
+    } else {
+      assertExactLane(existing, lane);
+      return openPendingRow(existing, input.signBytes, true);
+    }
   }
 
   const generated = generateHyperliquidApiWallet();
   const privateKey = hexToBytes(generated.privateKey);
   const salt = randomBytes(KEY_LENGTH);
-  const wrappingKey = await deriveWrappingKey({
-    userDid,
-    network: input.network,
-    ownerAddress,
-    salt,
-    signBytes: input.signBytes,
-  });
+  let wrappingKey: Uint8Array | null = null;
+  let wrappedPrivateKey: Uint8Array;
+  try {
+    wrappingKey = await deriveWrappingKey({
+      ...lane,
+      salt,
+      signBytes: input.signBytes,
+    });
+    wrappedPrivateKey = await aesGcmWrap(wrappingKey, privateKey);
+  } finally {
+    privateKey.fill(0);
+    wrappingKey?.fill(0);
+  }
   const row: PendingWalletRow = {
     version: RECORD_VERSION,
-    id: pendingSlotId(userDid, input.network),
-    userDid,
-    network: input.network,
-    ownerAddress,
+    id,
+    ...lane,
     agentAddress: generated.address.toLowerCase(),
     salt,
-    wrappedPrivateKey: await aesGcmWrap(wrappingKey, privateKey),
+    wrappedPrivateKey,
     createdAt: Date.now(),
   };
   try {
     await addPendingRow(row);
   } catch (error) {
-    if (!(error instanceof DOMException) || error.name !== "ConstraintError") throw error;
-    const raced = await pendingRows(userDid, input.network);
-    if (raced.length !== 1) throw new Error("pending_wallet_race_unresolved");
-    privateKey.fill(0);
-    wrappingKey.fill(0);
-    return openPendingRow(raced[0], input.signBytes, true, raced[0].ownerAddress !== ownerAddress);
+    if (!isConstraintError(error)) throw error;
+    const raced = await getPendingRow(db, id);
+    if (!raced || !isPendingWalletRow(raced)) throw new Error("pending_wallet_race_unresolved");
+    assertExactLane(raced, lane);
+    return openPendingRow(raced, input.signBytes, true);
   }
-  privateKey.fill(0);
-  wrappingKey.fill(0);
-  return openPendingRow(row, input.signBytes, false, false);
+  return openPendingRow(row, input.signBytes, false);
 }
 
 export async function clearPendingHyperliquidApiWallet(input: {
+  authScope: string;
   userDid: string;
   network: Network;
   ownerAddress: string;
 }): Promise<void> {
-  const userDid = input.userDid.trim();
-  const ownerAddress = normalizeOwnerAddress(input.ownerAddress);
+  const lane = normalizeLane(input);
   const db = await openDb();
-  const id = pendingSlotId(userDid, input.network);
+  await quarantineLegacyPendingRow(db, pendingSlotId(lane.userDid, input.network));
+  const id = pendingSlotId(lane.authScope, lane.userDid, lane.network, lane.ownerAddress);
   const row = await getPendingRow(db, id);
   if (!row) return;
-  if (row.ownerAddress !== ownerAddress) throw new Error("pending_wallet_owner_mismatch");
+  if (!isPendingWalletRow(row)) {
+    await quarantinePendingRow(db, row, "malformed_v2_row");
+    return;
+  }
+  assertExactLane(row, lane);
   await deleteRow(db, id);
 }
 
@@ -126,10 +156,9 @@ async function openPendingRow(
   row: PendingWalletRow,
   signBytes: SignBytes,
   resumed: boolean,
-  ownerConflict: boolean,
 ): Promise<PendingHyperliquidApiWallet> {
-  if (row.version !== RECORD_VERSION) throw new Error("pending_wallet_version_unsupported");
   const wrappingKey = await deriveWrappingKey({
+    authScope: row.authScope,
     userDid: row.userDid,
     network: row.network,
     ownerAddress: row.ownerAddress,
@@ -159,11 +188,11 @@ async function openPendingRow(
     privateKey: `0x${privateKeyHex}`,
     createdAt: row.createdAt,
     resumed,
-    ownerConflict,
   };
 }
 
 async function deriveWrappingKey(input: {
+  authScope: string;
   userDid: string;
   network: Network;
   ownerAddress: string;
@@ -171,7 +200,7 @@ async function deriveWrappingKey(input: {
   signBytes: SignBytes;
 }) {
   const identity = new TextEncoder().encode(
-    `${input.userDid}\0${input.network}\0${input.ownerAddress}\0`,
+    `${input.authScope}\0${input.userDid}\0${input.network}\0${input.ownerAddress}\0`,
   );
   const challenge = new Uint8Array(WRAP_CONTEXT.length + identity.length + input.salt.length);
   challenge.set(WRAP_CONTEXT, 0);
@@ -182,6 +211,26 @@ async function deriveWrappingKey(input: {
   return hkdf(sha256, signature, input.salt, WRAP_CONTEXT, KEY_LENGTH);
 }
 
+function normalizeLane(input: {
+  authScope: string;
+  userDid: string;
+  network: Network;
+  ownerAddress: string;
+}): PendingWalletLane {
+  return {
+    authScope: normalizeIdentity(input.authScope, "pending_wallet_auth_scope_required"),
+    userDid: normalizeIdentity(input.userDid, "pending_wallet_identity_required"),
+    network: input.network,
+    ownerAddress: normalizeOwnerAddress(input.ownerAddress),
+  };
+}
+
+function normalizeIdentity(value: string, errorCode: string) {
+  const normalized = value.trim();
+  if (!normalized || normalized.includes("\0")) throw new Error(errorCode);
+  return normalized;
+}
+
 function normalizeOwnerAddress(value: string) {
   const normalized = value.trim().toLowerCase();
   if (!/^0x[0-9a-f]{40}$/.test(normalized)) {
@@ -190,22 +239,61 @@ function normalizeOwnerAddress(value: string) {
   return normalized;
 }
 
-function pendingSlotId(userDid: string, network: Network) {
-  return `${userDid}\0${network}`;
+function pendingSlotId(userDid: string, network: Network): string;
+function pendingSlotId(authScope: string, userDid: string, network: Network, ownerAddress: string): string;
+function pendingSlotId(
+  authScopeOrUserDid: string,
+  userDidOrNetwork: string,
+  network?: Network,
+  ownerAddress?: string,
+) {
+  if (!network || !ownerAddress) return `${authScopeOrUserDid}\0${userDidOrNetwork}`;
+  return `${authScopeOrUserDid}\0${userDidOrNetwork}\0${network}\0${ownerAddress}`;
 }
 
-async function pendingRows(userDid: string, network: Network): Promise<PendingWalletRow[]> {
-  const normalizedDid = userDid.trim();
-  if (!normalizedDid) throw new Error("pending_wallet_identity_required");
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_PENDING, "readonly");
-    const request = tx.objectStore(STORE_PENDING)
-      .index(INDEX_USER_NETWORK)
-      .getAll(IDBKeyRange.only([normalizedDid, network]));
-    request.onsuccess = () => resolve((request.result || []) as PendingWalletRow[]);
-    request.onerror = () => reject(request.error);
-  });
+function assertExactLane(row: PendingWalletRow, lane: PendingWalletLane) {
+  if (
+    row.id !== pendingSlotId(lane.authScope, lane.userDid, lane.network, lane.ownerAddress) ||
+    row.authScope !== lane.authScope ||
+    row.userDid !== lane.userDid ||
+    row.network !== lane.network ||
+    row.ownerAddress !== lane.ownerAddress
+  ) {
+    throw new Error("pending_wallet_lane_mismatch");
+  }
+}
+
+function isPendingWalletRow(value: unknown): value is PendingWalletRow {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Partial<PendingWalletRow>;
+  if (
+    row.version !== RECORD_VERSION ||
+    typeof row.id !== "string" ||
+    typeof row.authScope !== "string" ||
+    !row.authScope.trim() ||
+    row.authScope.includes("\0") ||
+    typeof row.userDid !== "string" ||
+    !row.userDid.trim() ||
+    row.userDid.includes("\0") ||
+    (row.network !== "mainnet" && row.network !== "testnet") ||
+    typeof row.ownerAddress !== "string" ||
+    !/^0x[0-9a-f]{40}$/.test(row.ownerAddress) ||
+    typeof row.agentAddress !== "string" ||
+    !/^0x[0-9a-f]{40}$/.test(row.agentAddress) ||
+    !isUint8Array(row.salt) ||
+    !isUint8Array(row.wrappedPrivateKey) ||
+    typeof row.createdAt !== "number" ||
+    !Number.isFinite(row.createdAt)
+  ) return false;
+  return row.id === pendingSlotId(row.authScope, row.userDid, row.network, row.ownerAddress);
+}
+
+function isUint8Array(value: unknown): value is Uint8Array {
+  return ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === "[object Uint8Array]";
+}
+
+function isConstraintError(error: unknown) {
+  return Boolean(error && typeof error === "object" && "name" in error && error.name === "ConstraintError");
 }
 
 async function addPendingRow(row: PendingWalletRow) {
@@ -219,10 +307,10 @@ async function addPendingRow(row: PendingWalletRow) {
 }
 
 function getPendingRow(db: IDBDatabase, id: string) {
-  return new Promise<PendingWalletRow | null>((resolve, reject) => {
+  return new Promise<unknown | null>((resolve, reject) => {
     const tx = db.transaction(STORE_PENDING, "readonly");
     const request = tx.objectStore(STORE_PENDING).get(id);
-    request.onsuccess = () => resolve((request.result as PendingWalletRow | undefined) || null);
+    request.onsuccess = () => resolve(request.result ?? null);
     request.onerror = () => reject(request.error);
   });
 }
@@ -236,6 +324,34 @@ function deleteRow(db: IDBDatabase, id: string) {
   });
 }
 
+async function quarantineLegacyPendingRow(db: IDBDatabase, legacyId: string) {
+  const row = await getPendingRow(db, legacyId);
+  if (!row) return;
+  await quarantinePendingRow(db, row, "legacy_or_ownerless_row");
+}
+
+function quarantinePendingRow(db: IDBDatabase, row: unknown, reason: string) {
+  const sourceId = row && typeof row === "object" && "id" in row
+    ? String(row.id)
+    : "unknown";
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction([STORE_PENDING, STORE_QUARANTINED], "readwrite");
+    const pending = tx.objectStore(STORE_PENDING);
+    const quarantined = tx.objectStore(STORE_QUARANTINED);
+    quarantined.put({
+      id: `quarantine:${sourceId}`,
+      sourceId,
+      reason,
+      quarantinedAt: Date.now(),
+      record: row,
+    });
+    pending.delete(sourceId);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -243,10 +359,44 @@ function openDb(): Promise<IDBDatabase> {
     request.onsuccess = () => resolve(request.result);
     request.onupgradeneeded = () => {
       const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_PENDING)) {
-        const store = db.createObjectStore(STORE_PENDING, { keyPath: "id" });
-        store.createIndex(INDEX_USER_NETWORK, ["userDid", "network"], { unique: false });
+      const tx = request.transaction;
+      if (!tx) return;
+
+      const quarantine = db.objectStoreNames.contains(STORE_QUARANTINED)
+        ? tx.objectStore(STORE_QUARANTINED)
+        : db.createObjectStore(STORE_QUARANTINED, { keyPath: "id" });
+      const pending = db.objectStoreNames.contains(STORE_PENDING)
+        ? tx.objectStore(STORE_PENDING)
+        : db.createObjectStore(STORE_PENDING, { keyPath: "id" });
+
+      if (pending.indexNames.contains(LEGACY_INDEX_USER_NETWORK)) {
+        pending.deleteIndex(LEGACY_INDEX_USER_NETWORK);
       }
+      if (!pending.indexNames.contains(INDEX_EXACT_LANE)) {
+        pending.createIndex(
+          INDEX_EXACT_LANE,
+          ["authScope", "userDid", "network", "ownerAddress"],
+          { unique: true },
+        );
+      }
+
+      const cursorRequest = pending.openCursor();
+      cursorRequest.onsuccess = () => {
+        const cursor = cursorRequest.result;
+        if (!cursor) return;
+        if (!isPendingWalletRow(cursor.value)) {
+          const sourceId = String(cursor.primaryKey);
+          quarantine.put({
+            id: `quarantine:${sourceId}`,
+            sourceId,
+            reason: "legacy_or_ownerless_row",
+            quarantinedAt: Date.now(),
+            record: cursor.value,
+          });
+          cursor.delete();
+        }
+        cursor.continue();
+      };
     };
   });
 }

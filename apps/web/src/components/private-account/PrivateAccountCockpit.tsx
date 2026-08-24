@@ -5925,7 +5925,7 @@ function HyperliquidConnectModal({
   const [injectedWalletAvailable, setInjectedWalletAvailable] = useState(false);
   const [quickImport, setQuickImport] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [pendingWalletAction, setPendingWalletAction] = useState<"resume" | "generate" | "replace" | null>(null);
+  const [pendingWalletAction, setPendingWalletAction] = useState<"generate" | "replace" | null>(null);
   const [pendingNotice, setPendingNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const previousOpenRef = useRef(false);
@@ -5976,34 +5976,6 @@ function HyperliquidConnectModal({
     if (shouldResetHyperliquidConnectionError(previousOpenRef.current, open)) setError(null);
     previousOpenRef.current = open;
   }, [open]);
-
-  useEffect(() => {
-    if (!open || !LEGACY_HYPERLIQUID_API_KEYS_ENABLED || iosReturnTo || !walletAddress) return;
-    let cancelled = false;
-    setPendingWalletAction("resume");
-    void resumePendingHyperliquidApiWallet({
-      userDid: walletAddress,
-      network: hyperliquidNetwork,
-      signBytes,
-    })
-      .then((pending) => {
-        if (cancelled || !pending) return;
-        applyPendingWallet(pending);
-        setPendingNotice("Resumed your unfinished trade-only wallet setup.");
-      })
-      .catch((caught) => {
-        if (cancelled) return;
-        setError(caught instanceof Error
-          ? `Could not resume the saved wallet: ${caught.message}`
-          : "Could not resume the saved trade-only wallet.");
-      })
-      .finally(() => {
-        if (!cancelled) setPendingWalletAction(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [applyPendingWallet, hyperliquidNetwork, iosReturnTo, open, signBytes, walletAddress]);
 
   useEffect(() => {
     if (!open) return;
@@ -6184,24 +6156,23 @@ function HyperliquidConnectModal({
   }
 
   async function generateDedicatedWallet() {
-    if (!walletAddress) {
+    if (!walletAddress || !accountCommitment) {
       setError("Private account wallet is unavailable.");
       return;
     }
     setPendingWalletAction("generate");
     try {
       const pending = await resumeOrCreatePendingHyperliquidApiWallet({
+        authScope: accountCommitment,
         userDid: walletAddress,
         network: hyperliquidNetwork,
         ownerAddress: draft.hyperliquid_account_address,
         signBytes,
       });
       applyPendingWallet(pending);
-      setPendingNotice(pending.ownerConflict
-        ? `A pending wallet already exists for ${pending.ownerAddress}. It was resumed instead of creating another.`
-        : pending.resumed
-          ? "Resumed your unfinished trade-only wallet setup."
-          : "Trade-only wallet created and saved securely in this browser.");
+      setPendingNotice(pending.resumed
+        ? "Resumed your unfinished trade-only wallet setup."
+        : "Trade-only wallet created and saved securely in this browser.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not generate a dedicated API wallet.");
     } finally {
@@ -6225,16 +6196,16 @@ function HyperliquidConnectModal({
     setAuthorizationCheckError(null);
     try {
       const ownerAddress = await connectInjectedHyperliquidOwner(provider);
-      const pending = await resumeOrCreatePendingHyperliquidApiWallet({
+      const pendingInput = {
+        authScope: accountCommitment,
         userDid: walletAddress,
         network: hyperliquidNetwork,
         ownerAddress,
         signBytes,
-      });
+      };
+      const pending = await resumePendingHyperliquidApiWallet(pendingInput) ??
+        await resumeOrCreatePendingHyperliquidApiWallet(pendingInput);
       applyPendingWallet(pending);
-      if (pending.ownerConflict) {
-        throw new Error(`The saved setup belongs to ${pending.ownerAddress}. Connect that wallet or replace the unapproved setup.`);
-      }
       const credential: HyperliquidExecutionCredentialDraft = {
         network: pending.network,
         hyperliquid_account_address: pending.ownerAddress,
@@ -6315,6 +6286,7 @@ function HyperliquidConnectModal({
     });
     if (pendingAgentAddress) {
       await clearPendingHyperliquidApiWallet({
+        authScope: accountCommitment,
         userDid: walletAddress,
         network: credential.network,
         ownerAddress: credential.hyperliquid_account_address,
@@ -6326,7 +6298,7 @@ function HyperliquidConnectModal({
   }
 
   async function replaceGeneratedWallet() {
-    if (!walletAddress || !generatedAgentAddress || !ownerAddressReady) return;
+    if (!accountCommitment || !walletAddress || !generatedAgentAddress || !ownerAddressReady) return;
     setPendingWalletAction("replace");
     setError(null);
     try {
@@ -6340,6 +6312,7 @@ function HyperliquidConnectModal({
         return;
       }
       await clearPendingHyperliquidApiWallet({
+        authScope: accountCommitment,
         userDid: walletAddress,
         network: draft.network,
         ownerAddress: draft.hyperliquid_account_address,
@@ -6544,11 +6517,9 @@ function HyperliquidConnectModal({
                   onClick={generateDedicatedWallet}
                   className="h-12 rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {pendingWalletAction === "resume"
-                    ? "Checking saved setup…"
-                    : pendingWalletAction === "generate"
-                      ? "Creating…"
-                      : "Create trade-only wallet"}
+                  {pendingWalletAction === "generate"
+                    ? "Creating…"
+                    : "Create trade-only wallet"}
                 </button>
                 <p className="text-center text-xs leading-5 text-[#718096]">Encrypted in this browser and resumed after interruptions. It cannot withdraw funds.</p>
 

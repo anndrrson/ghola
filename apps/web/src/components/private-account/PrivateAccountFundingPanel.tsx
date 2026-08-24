@@ -481,8 +481,7 @@ async function resolveFundingSourceAddress(
 ) {
   if (kind === "embedded") {
     if (options.turnkeyWallet.walletAddress) return options.turnkeyWallet.walletAddress;
-    await options.turnkeyWallet.createWallet(options.email || "ghola-user");
-    return storedEmbeddedWalletAddress() || "embedded_wallet_created";
+    return options.turnkeyWallet.createWallet(options.email || "ghola-user");
   }
 
   const walletWindow = window as FundingBrowserWindow;
@@ -581,15 +580,6 @@ function fundingSourceRailLabel(kind: FundingSourceKind) {
   if (kind === "embedded") return "account signer";
   if (kind === "exchange") return "onchain receipt";
   return "onchain wallet";
-}
-
-function storedEmbeddedWalletAddress() {
-  try {
-    return window.localStorage.getItem("turnkey_wallet_address") ||
-      window.localStorage.getItem("ghola_browser_wallet_address");
-  } catch {
-    return null;
-  }
 }
 
 function Select({ label, value, options, onChange }: {
