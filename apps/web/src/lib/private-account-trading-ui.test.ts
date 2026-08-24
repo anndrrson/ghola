@@ -251,7 +251,7 @@ describe("private account trading UI derivation", () => {
     expect(cockpitSource).toContain("onAuthenticateTurnkey={authenticateHyperliquidOwner}");
     expect(cockpitSource).toContain("verificationAction.kind === \"authenticate_owner\"");
     expect(cockpitSource).toContain("async function armAndVerifyHyperliquid");
-    expect(cockpitSource).toContain("const armed = await armHyperliquidAgent(false)");
+    expect(cockpitSource).toContain("const armed = await armHyperliquidAgent(false, { refreshAccount: false })");
     expect(cockpitSource).toContain("if (!armed) return");
     expect(cockpitSource).toContain("await verifyHyperliquidNoSubmit(vaultOverride)");
   });
@@ -268,6 +268,14 @@ describe("private account trading UI derivation", () => {
     expect(serverSource).toContain("hyperliquid_${executionMode}_no_submit_check");
     expect(serverSource).toContain("hyperliquid_${venueExecutionMode ?? \"unknown\"}_submit");
     expect(serverSource).toContain('process.env.GHOLA_PRIVATE_WORKER_WAKE_ON_USE === "false"');
+    expect(serverSource).toContain("skip_worker_wake: true");
+
+    const noSubmitRouteSource = readFileSync(
+      resolve(process.cwd(), "src/app/v1/private-account/connectors/verify-no-submit/route.ts"),
+      "utf8",
+    );
+    expect(noSubmitRouteSource).toContain('import { after } from "next/server"');
+    expect(noSubmitRouteSource).toContain("after(task)");
   });
 
   it("uses clearer signed-out and venue-access calls to action", () => {

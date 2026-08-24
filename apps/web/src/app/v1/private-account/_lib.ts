@@ -2697,7 +2697,10 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
   };
 }
 
-export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRequestOwner) {
+export async function hyperliquidAccountSnapshotForOwner(
+  owner: PrivateAccountRequestOwner,
+  options: { skip_worker_wake?: boolean } = {},
+) {
   const account = await createOrGetStoredPrivateAccount(owner);
   const [vault, allocation] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
@@ -2705,7 +2708,7 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
   ]);
   const hasVault = vault?.status === "sealed";
   const hasManaged = allocation?.status === "allocated";
-  if (hasVault || hasManaged) {
+  if ((hasVault || hasManaged) && options.skip_worker_wake !== true) {
     await wakePrivateWorkerForUse("hyperliquid_account_snapshot");
   }
   const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
@@ -6077,7 +6080,10 @@ export async function connectorSubmitFromBody(
 export async function connectorVerifyNoSubmitFromBody(
   body: unknown,
   owner: PrivateAccountRequestOwner,
-  context: { site_origin?: string | null } = {},
+  context: {
+    site_origin?: string | null;
+    defer?: (task: () => Promise<void>) => void;
+  } = {},
 ) {
   const value = objectBody(body);
   const platformClass = stringValue(value.platform_class) || "solana_perps_market";
@@ -6316,23 +6322,46 @@ export async function connectorVerifyNoSubmitFromBody(
       }
     }
     if (connectionProofPersisted && proof.network === "mainnet") {
-      try {
-        const accountState = await hyperliquidAccountSnapshotForOwner(owner);
-        const canary = buildHyperliquidCapitalFreeCanary({
-          verification,
-          connection_proof_persisted: true,
-          network: proof.network,
-          account_state: accountState,
-        });
-        if (canary.ok) {
-          await putLiveTradingCanaryReport(canary.report);
-          releaseCanaryPersisted = true;
-          releaseCanaryReason = null;
-        } else {
-          releaseCanaryReason = canary.reason;
+      const persistReleaseCanary = async () => {
+        try {
+          // Verification has already woken and authenticated the worker. A
+          // second control-plane wake adds latency without strengthening the
+          // flat/zero account proof.
+          const accountState = await hyperliquidAccountSnapshotForOwner(owner, {
+            skip_worker_wake: true,
+          });
+          const canary = buildHyperliquidCapitalFreeCanary({
+            verification,
+            connection_proof_persisted: true,
+            network: proof.network,
+            account_state: accountState,
+          });
+          if (canary.ok) {
+            await putLiveTradingCanaryReport(canary.report);
+            return { persisted: true as const, reason: null };
+          } else {
+            return { persisted: false as const, reason: canary.reason };
+          }
+        } catch {
+          return {
+            persisted: false as const,
+            reason: "hyperliquid_no_submit_canary_store_unavailable",
+          };
         }
-      } catch {
-        releaseCanaryReason = "hyperliquid_no_submit_canary_store_unavailable";
+      };
+      if (context.defer) {
+        context.defer(async () => {
+          const deferred = await persistReleaseCanary();
+          console.info("[private-account] deferred Hyperliquid release canary completed", {
+            persisted: deferred.persisted,
+            reason: deferred.reason,
+          });
+        });
+        releaseCanaryReason = "hyperliquid_no_submit_canary_scheduled";
+      } else {
+        const persisted = await persistReleaseCanary();
+        releaseCanaryPersisted = persisted.persisted;
+        releaseCanaryReason = persisted.reason;
       }
     }
   } else if (platformClass === "hyperliquid_style_market") {

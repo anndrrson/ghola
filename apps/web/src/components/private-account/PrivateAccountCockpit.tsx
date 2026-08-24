@@ -1863,7 +1863,10 @@ export function PrivateAccountCockpit({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth.authenticated, iosReturnTo]);
 
-  async function armHyperliquidAgent(killSwitch = false) {
+  async function armHyperliquidAgent(
+    killSwitch = false,
+    options: { refreshAccount?: boolean } = {},
+  ) {
     setWorking(true);
     setError(null);
     setHyperliquidVerification(null);
@@ -1883,7 +1886,9 @@ export function PrivateAccountCockpit({
         kill_switch: killSwitch,
       });
       setHyperliquidAgent(armed);
-      await refreshHyperliquidAccountSnapshot();
+      if (options.refreshAccount !== false) {
+        await refreshHyperliquidAccountSnapshot();
+      }
       setHyperliquidSetupNotice({
         tone: "good",
         title: liveHyperliquidFlow ? "Hyperliquid enabled" : "Hyperliquid ready",
@@ -1907,7 +1912,10 @@ export function PrivateAccountCockpit({
   }
 
   async function armAndVerifyHyperliquid(vaultOverride?: HyperliquidVaultState) {
-    const armed = await armHyperliquidAgent(false);
+    // The no-submit proof reads the account authoritatively. Avoid a separate
+    // account refresh between arming and verification; it wakes and reads the
+    // same sealed worker twice while adding no proof strength.
+    const armed = await armHyperliquidAgent(false, { refreshAccount: false });
     if (!armed) return;
     await verifyHyperliquidNoSubmit(vaultOverride);
   }
