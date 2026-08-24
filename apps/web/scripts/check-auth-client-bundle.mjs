@@ -5,7 +5,22 @@ import path from "node:path";
 import process from "node:process";
 
 const root = process.cwd();
-const chunkDir = path.join(root, ".next", "static", "chunks");
+
+function vercelOutputRoots() {
+  return Array.from(new Set([
+    process.env.VERCEL_OUTPUT_DIR,
+    path.join(root, ".vercel", "output"),
+    path.resolve(root, "../..", ".vercel", "output"),
+    process.env.VERCEL ? "/vercel/output" : null,
+  ].filter(Boolean)));
+}
+
+const chunkDirCandidates = [
+  path.join(root, ".next", "static", "chunks"),
+  ...vercelOutputRoots().map((outputRoot) =>
+    path.join(outputRoot, "static", "_next", "static", "chunks")
+  ),
+];
 
 const requiredGoogleRedirectSources = [
   {
@@ -67,11 +82,16 @@ async function main() {
     }
   }
 
-  try {
-    const info = await stat(chunkDir);
-    if (!info.isDirectory()) throw new Error(`${chunkDir} is not a directory`);
-  } catch {
-    console.error("[auth-bundle-guard] missing .next/static/chunks; run next build first");
+  let chunkDir = null;
+  for (const candidate of chunkDirCandidates) {
+    const found = await stat(candidate).then((info) => info.isDirectory(), () => false);
+    if (found) {
+      chunkDir = candidate;
+      break;
+    }
+  }
+  if (!chunkDir) {
+    console.error(`[auth-bundle-guard] missing built client chunks; checked ${chunkDirCandidates.join(", ")}`);
     process.exit(1);
   }
 

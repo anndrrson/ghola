@@ -36,13 +36,36 @@
  */
 import { createHash } from "crypto";
 import { readdir, readFile, writeFile, mkdir, stat } from "fs/promises";
-import { join, relative } from "path";
+import { dirname, join, relative } from "path";
 import { execSync } from "child_process";
 
 const ROOT = process.cwd();
-const STATIC_DIR = join(ROOT, ".next", "static");
 const PUBLIC_DIR = join(ROOT, "public");
 const MANIFEST_PATH = join(PUBLIC_DIR, ".well-known", "sri-manifest.json");
+
+function vercelOutputRoots() {
+  return Array.from(new Set([
+    process.env.VERCEL_OUTPUT_DIR,
+    join(ROOT, ".vercel", "output"),
+    join(ROOT, "../..", ".vercel", "output"),
+    process.env.VERCEL ? "/vercel/output" : null,
+  ].filter(Boolean)));
+}
+
+async function builtStaticOutput() {
+  const candidates = [
+    { dir: join(ROOT, ".next", "static"), outputRoot: null },
+    ...vercelOutputRoots().map((outputRoot) => ({
+      dir: join(outputRoot, "static", "_next", "static"),
+      outputRoot,
+    })),
+  ];
+  for (const candidate of candidates) {
+    const exists = await stat(candidate.dir).then((info) => info.isDirectory(), () => false);
+    if (exists) return { ...candidate, checked: candidates.map((item) => item.dir) };
+  }
+  return { dir: null, outputRoot: null, checked: candidates.map((item) => item.dir) };
+}
 
 async function walk(dir) {
   let entries;
@@ -73,17 +96,14 @@ function gitCommit() {
 }
 
 async function main() {
-  const exists = await stat(STATIC_DIR).then(
-    () => true,
-    () => false,
-  );
-  if (!exists) {
+  const staticOutput = await builtStaticOutput();
+  if (!staticOutput.dir) {
     console.warn(
-      `[sri-manifest] ${STATIC_DIR} not found — skipping. Run \`npm run build\` first.`,
+      `[sri-manifest] built static output not found (${staticOutput.checked.join(", ")}) — skipping. Run \`npm run build\` first.`,
     );
     return;
   }
-  const files = await walk(STATIC_DIR);
+  const files = await walk(staticOutput.dir);
   files.sort();
 
   const entries = await Promise.all(
@@ -91,10 +111,8 @@ async function main() {
       const body = await readFile(path);
       const sha256 = createHash("sha256").update(body).digest("hex");
       const sha384b64 = createHash("sha384").update(body).digest("base64");
-      const rel = "/" + relative(join(ROOT, ".next"), path).replace(/\\/g, "/");
-      // The /_next/static prefix matches the public URL prefix Next
-      // serves from. The runtime path drops the leading `.next`.
-      const publicPath = rel.replace(/^\/static/, "/_next/static");
+      const rel = relative(staticOutput.dir, path).replace(/\\/g, "/");
+      const publicPath = `/_next/static/${rel}`;
       return {
         path: publicPath,
         sha256,
@@ -119,6 +137,16 @@ async function main() {
 
   await mkdir(join(PUBLIC_DIR, ".well-known"), { recursive: true });
   await writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
+  if (staticOutput.outputRoot) {
+    const deployedManifestPath = join(
+      staticOutput.outputRoot,
+      "static",
+      ".well-known",
+      "sri-manifest.json",
+    );
+    await mkdir(dirname(deployedManifestPath), { recursive: true });
+    await writeFile(deployedManifestPath, JSON.stringify(manifest, null, 2));
+  }
   console.log(
     `[sri-manifest] wrote ${entries.length} entries (${(manifest.total_bytes / 1024).toFixed(1)} KB) → ${relative(ROOT, MANIFEST_PATH)}`,
   );
