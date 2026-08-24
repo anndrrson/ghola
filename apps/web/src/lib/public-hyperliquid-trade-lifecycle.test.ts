@@ -66,6 +66,29 @@ describe("public Hyperliquid lifecycle integration", () => {
     expect(componentSource).toContain("Withdrawals remain disabled · no trade during setup");
   });
 
+  it("serializes initial worker access and bounds every pre-trade worker request", () => {
+    const accountSnapshotRoute = privateAccountServerSource.slice(
+      privateAccountServerSource.indexOf("export async function hyperliquidAccountSnapshotForOwner"),
+      privateAccountServerSource.indexOf("export async function hyperliquidAccountStreamForOwner"),
+    );
+    const sessionRoute = privateAccountServerSource.slice(
+      privateAccountServerSource.indexOf("async function requestHyperliquidAgentSession"),
+      privateAccountServerSource.indexOf("async function requestHyperliquidManagedAllocation"),
+    );
+    const accountMount = componentSource.slice(
+      componentSource.indexOf("let stream: ReturnType<typeof openHyperliquidAccountStream>"),
+      componentSource.indexOf("function changePerpMarket"),
+    );
+
+    expect(accountSnapshotRoute).toContain("fetchWithTimeout");
+    expect(sessionRoute).toContain("fetchWithTimeout");
+    expect(privateAccountServerSource).toContain('positiveIntegerEnv("GHOLA_POOLED_WORKER_WAKE_WAIT_MS", 12_000)');
+    expect(privateAccountServerSource).toContain("15_000");
+    expect(accountMount.indexOf("const response = await fetch")).toBeLessThan(accountMount.indexOf("connectStream();"));
+    expect(accountMount).not.toContain("void armHyperliquidExecutionAgent");
+    expect(componentSource).toContain("tradingReady: hyperliquidReadiness.ready");
+  });
+
   it("makes the release verifier reconcile without resubmitting", () => {
     expect(verifierSource).toContain('postJson("/v1/private-account/connectors/reconcile"');
     expect(verifierSource).toContain("the verifier will not resubmit it");

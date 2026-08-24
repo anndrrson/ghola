@@ -17,12 +17,36 @@ describe("trade readiness", () => {
       authenticated: false,
       connectionChecked: false,
       connectionReady: false,
+      tradingReady: false,
       network: "mainnet",
     })).toEqual({
       action: "sign_in",
       disabled: false,
       label: "Sign in to continue",
     });
+  });
+
+  it("never exposes Review order before authoritative trading readiness", () => {
+    expect(hyperliquidPrimaryAction({
+      authenticationLoading: false,
+      authenticated: true,
+      connectionChecked: true,
+      connectionReady: true,
+      tradingReady: false,
+      network: "mainnet",
+    })).toEqual({
+      action: "connect",
+      disabled: false,
+      label: "Check connection",
+    });
+    expect(hyperliquidPrimaryAction({
+      authenticationLoading: false,
+      authenticated: true,
+      connectionChecked: true,
+      connectionReady: true,
+      tradingReady: true,
+      network: "mainnet",
+    }).action).toBe("review");
   });
 
   it("keeps Coinbase spot independent from Phoenix readiness", () => {

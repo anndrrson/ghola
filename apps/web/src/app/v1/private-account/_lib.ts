@@ -2767,7 +2767,7 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
         platform_class: "hyperliquid_style_market",
       }),
     });
-    const res = await fetch(new URL(workerPath, cfg.url), {
+    const res = await fetchWithTimeout(new URL(workerPath, cfg.url), {
       method: "POST",
       cache: "no-store",
       headers: {
@@ -2906,16 +2906,24 @@ export async function hyperliquidAccountStreamForOwner(
         platform_class: "hyperliquid_style_market",
       }),
     });
-    const res = await fetch(new URL(workerPath, cfg.url), {
-      method: "POST",
-      cache: "no-store",
-      headers: {
-        "content-type": "application/json",
-        "x-ghola-sealed-execution-required": "true",
-        ...(authorization ? { authorization } : {}),
-      },
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    let res: Response;
+    try {
+      res = await fetch(new URL(workerPath, cfg.url), {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "content-type": "application/json",
+          "x-ghola-sealed-execution-required": "true",
+          ...(authorization ? { authorization } : {}),
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!res.ok || !res.body) {
       return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
         status: "worker_unavailable",
@@ -6714,7 +6722,7 @@ async function requestHyperliquidAgentSession(input: {
         platform_class: "hyperliquid_style_market",
       }),
     });
-    const res = await fetch(new URL(workerPath, cfg.url), {
+    const res = await fetchWithTimeout(new URL(workerPath, cfg.url), {
       method: "POST",
       cache: "no-store",
       headers: {
@@ -7177,9 +7185,12 @@ async function wakePrivateWorkerForUse(reason: string) {
   }
   return wakePhalaPrivateAgentForUse({
     reason,
-    waitForReadyMs: positiveIntegerEnv(
-      "GHOLA_PRIVATE_WORKER_WAKE_WAIT_MS",
-      positiveIntegerEnv("GHOLA_POOLED_WORKER_WAKE_WAIT_MS", 45_000),
+    waitForReadyMs: Math.min(
+      positiveIntegerEnv(
+        "GHOLA_PRIVATE_WORKER_WAKE_WAIT_MS",
+        positiveIntegerEnv("GHOLA_POOLED_WORKER_WAKE_WAIT_MS", 12_000),
+      ),
+      15_000,
     ),
     leaseMs: positiveIntegerEnv(
       "GHOLA_PRIVATE_WORKER_LEASE_MS",

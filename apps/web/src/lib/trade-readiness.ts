@@ -23,6 +23,7 @@ export function hyperliquidPrimaryAction(input: {
   authenticated: boolean;
   connectionChecked: boolean;
   connectionReady: boolean;
+  tradingReady: boolean;
   network: "mainnet" | "testnet";
 }): HyperliquidPrimaryAction {
   if (input.authenticationLoading) {
@@ -36,6 +37,9 @@ export function hyperliquidPrimaryAction(input: {
   }
   if (!input.connectionReady) {
     return { action: "connect", disabled: false, label: `Connect Hyperliquid ${input.network}` };
+  }
+  if (!input.tradingReady) {
+    return { action: "connect", disabled: false, label: "Check connection" };
   }
   return { action: "review", disabled: false, label: "Review order" };
 }

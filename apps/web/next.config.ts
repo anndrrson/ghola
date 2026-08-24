@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import path from "node:path";
 import { withWorkflow } from "workflow/next";
 import { CROSS_ORIGIN_ISOLATION_HEADERS } from "./src/lib/csp-config";
 
@@ -46,7 +47,7 @@ export const INTENT_SECURITY_HEADERS = SECURITY_HEADERS.map((header) =>
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  turbopack: { root: "../.." },
+  turbopack: { root: path.resolve(process.cwd(), "../..") },
   transpilePackages: ["@ghola/perps-core"],
   poweredByHeader: false,
   // Deterministic build id. Without this Next.js generates a random

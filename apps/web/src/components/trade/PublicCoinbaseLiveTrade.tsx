@@ -968,6 +968,7 @@ function AlternateProductWorkspace({
     authenticated,
     connectionChecked: hyperliquidConnectionChecked,
     connectionReady: hyperliquidConnectionReady,
+    tradingReady: hyperliquidReadiness.ready,
     network: hyperliquidNetwork,
   });
   const maxLeverage = hyperliquidMarket?.max_leverage ?? selectedMarketCapability?.max_leverage ?? null;
@@ -1051,6 +1052,40 @@ function AlternateProductWorkspace({
       return;
     }
     let cancelled = false;
+    let stream: ReturnType<typeof openHyperliquidAccountStream> | null = null;
+    const connectStream = () => {
+      if (cancelled || stream) return;
+      stream = openHyperliquidAccountStream({
+        coin: perpMarket,
+        onState(snapshot) {
+          if (cancelled) return;
+          const current = hyperliquidAccountRef.current;
+          if (hyperliquidAccountTopologyChanged(current, snapshot)) {
+            if (hyperliquidTopologyReconciliationRef.current) return;
+            hyperliquidTopologyReconciliationRef.current = true;
+            void getHyperliquidAccountSnapshot()
+              .then((authoritative) => {
+                if (!cancelled) {
+                  commitHyperliquidAccount(authoritative);
+                  setAccountState("ready");
+                }
+              })
+              .catch(() => {
+                if (!cancelled) setAccountState("unavailable");
+              })
+              .finally(() => {
+                hyperliquidTopologyReconciliationRef.current = false;
+              });
+            return;
+          }
+          commitHyperliquidAccount(mergeHyperliquidAccountSnapshot(current, snapshot));
+          setAccountState("ready");
+        },
+        onError() {
+          // Preserve the last coherent snapshot while the stream reconnects.
+        },
+      });
+    };
     const load = async () => {
       try {
         const response = await fetch("/v1/private-account/hyperliquid/account-snapshot", {
@@ -1063,6 +1098,9 @@ function AlternateProductWorkspace({
         if (!cancelled) {
           commitHyperliquidAccount(snapshot);
           setAccountState("ready");
+          if (snapshot.status === "ready_to_trade" && snapshot.trading_enabled === true) {
+            connectStream();
+          }
         }
       } catch {
         if (!cancelled) {
@@ -1072,40 +1110,10 @@ function AlternateProductWorkspace({
       }
     };
     const cancelSchedule = scheduleAfterPaint(() => void load());
-    const stream = openHyperliquidAccountStream({
-      coin: perpMarket,
-      onState(snapshot) {
-        if (cancelled) return;
-        const current = hyperliquidAccountRef.current;
-        if (hyperliquidAccountTopologyChanged(current, snapshot)) {
-          if (hyperliquidTopologyReconciliationRef.current) return;
-          hyperliquidTopologyReconciliationRef.current = true;
-          void getHyperliquidAccountSnapshot()
-            .then((authoritative) => {
-              if (!cancelled) {
-                commitHyperliquidAccount(authoritative);
-                setAccountState("ready");
-              }
-            })
-            .catch(() => {
-              if (!cancelled) setAccountState("unavailable");
-            })
-            .finally(() => {
-              hyperliquidTopologyReconciliationRef.current = false;
-            });
-          return;
-        }
-        commitHyperliquidAccount(mergeHyperliquidAccountSnapshot(current, snapshot));
-        setAccountState("ready");
-      },
-      onError() {
-        // Preserve the last coherent snapshot while the stream reconnects.
-      },
-    });
     return () => {
       cancelled = true;
       cancelSchedule();
-      stream.close();
+      stream?.close();
     };
   }, [authenticated, commitHyperliquidAccount, perpMarket, useHyperliquidMarket]);
 
@@ -1135,21 +1143,6 @@ function AlternateProductWorkspace({
       });
     return () => { cancelled = true; };
   }, [authenticated, useHyperliquidMarket]);
-
-  useEffect(() => {
-    if (!authenticated || !useHyperliquidMarket || !hyperliquidConnectionReady || perpMarkets.length === 0) return;
-    let cancelled = false;
-    void armHyperliquidExecutionAgent({
-      execution_mode: "byo_api_key",
-      market_allowlist: perpMarkets.map((item) => item.coin),
-      max_notional_bucket: "1000",
-      max_order_count: 100,
-      kill_switch: false,
-    }).catch((error) => {
-      if (!cancelled) setPerpError(friendlyPerpError(error));
-    });
-    return () => { cancelled = true; };
-  }, [authenticated, hyperliquidConnectionReady, perpMarkets, useHyperliquidMarket]);
 
   function changePerpMarket(next: string) {
     setPerpMarket(next);
@@ -2204,10 +2197,6 @@ function estimatedMargin(amount: string, leverage: string): string {
   const multiple = Number(leverage);
   if (!Number.isFinite(notional) || !Number.isFinite(multiple) || multiple <= 0) return "Unavailable";
   return formatCompactUsd(notional / multiple);
-}
-
-function friendlyPerpError(error: unknown): string {
-  return classifyHyperliquidTradeFailure(error).message;
 }
 
 function PerpDatum({ label, value }: { label: string; value: string }) {

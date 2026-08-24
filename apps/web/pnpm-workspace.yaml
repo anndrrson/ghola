@@ -1,11 +1,21 @@
 allowBuilds:
-  '@swc/core': set this to true or false
-  bufferutil: set this to true or false
-  cbor-extract: set this to true or false
-  core-js: set this to true or false
-  esbuild: set this to true or false
-  onnxruntime-node: set this to true or false
-  protobufjs: set this to true or false
-  sharp: set this to true or false
-  unrs-resolver: set this to true or false
-  utf-8-validate: set this to true or false
+  '@swc/core': true
+  bufferutil: true
+  cbor-extract: true
+  core-js: true
+  esbuild: true
+  onnxruntime-node: true
+  protobufjs: true
+  sharp: true
+  unrs-resolver: true
+  utf-8-validate: true
+overrides:
+  '@huggingface/transformers>sharp': 0.35.3
+  '@vercel/blob>undici': 6.28.0
+  '@workflow/core>nanoid': 5.1.16
+  '@workflow/world-local>undici': 7.29.0
+  '@workflow/world-vercel>undici': 7.29.0
+  'nanoid@<4': 3.3.18
+  'onnxruntime-node>adm-zip': 0.6.0
+  postcss: 8.5.26
+  ws: 8.21.2

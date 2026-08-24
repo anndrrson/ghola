@@ -257,7 +257,9 @@ function trimmed(value: string | undefined): string {
 function resolveConfiguredPath(value: string | undefined, fallback: string): string {
   const configured = trimmed(value);
   if (!configured) return fallback;
-  return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
+  return path.isAbsolute(configured)
+    ? configured
+    : path.resolve(/* turbopackIgnore: true */ process.cwd(), configured);
 }
 
 function defaultAuctionArtifactsDir(): string {
