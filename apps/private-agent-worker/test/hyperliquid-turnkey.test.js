@@ -216,6 +216,87 @@ test("existing no-submit adapter maps delegated verification and never broadcast
   assert.equal(result.provider_ref_seed.no_submit, true);
 });
 
+test("BYO no-submit uses the in-process SDK and never starts a signing runner", async () => {
+  const calls = [];
+  const result = await verifyHyperliquidNoSubmit({
+    credential: {
+      network: "testnet",
+      base_url: "https://api.hyperliquid-testnet.xyz",
+      account_address: OWNER,
+      api_wallet_private_key: `0x${"11".repeat(32)}`,
+    },
+    instruction: instruction({
+      market: "BTC",
+      order_type: "market",
+      quote_size: "11",
+      limit_price: undefined,
+      protective_orders: {},
+    }),
+    cloid: "0x11111111111111111111111111111111",
+    infoClient: {
+      async meta() {
+        calls.push("meta");
+        return { universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 50 }] };
+      },
+      async allMids() {
+        calls.push("allMids");
+        return { BTC: "100000" };
+      },
+      async clearinghouseState({ user }) {
+        calls.push(`account:${user}`);
+        return { marginSummary: { accountValue: "100" } };
+      },
+      async userRole({ user }) {
+        calls.push(`role:${user}`);
+        return { role: "agent", data: { user: OWNER } };
+      },
+    },
+  });
+
+  assert.equal(result.status, "verified_no_funds");
+  assert.equal(result.checks.order_request_built, true);
+  assert.equal(result.checks.transaction_broadcast, false);
+  assert.equal(calls.length, 4);
+  assert.ok(calls.includes("allMids"));
+  assert.ok(calls.includes(`account:${OWNER}`));
+  assert.ok(calls.includes("meta"));
+  assert.ok(calls.some((call) => call.startsWith("role:0x")));
+});
+
+test("BYO no-submit rejects an API wallet authorized for a different owner", async () => {
+  await assert.rejects(
+    verifyHyperliquidNoSubmit({
+      credential: {
+        network: "testnet",
+        account_address: OWNER,
+        api_wallet_private_key: `0x${"11".repeat(32)}`,
+      },
+      instruction: instruction({
+        market: "BTC",
+        order_type: "market",
+        quote_size: "11",
+        protective_orders: {},
+      }),
+      cloid: "0x11111111111111111111111111111111",
+      infoClient: {
+        async meta() {
+          return { universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 50 }] };
+        },
+        async allMids() {
+          return { BTC: "100000" };
+        },
+        async clearinghouseState() {
+          return { marginSummary: { accountValue: "100" } };
+        },
+        async userRole() {
+          return { role: "agent", data: { user: AGENT } };
+        },
+      },
+    }),
+    (error) => error?.code === "venue_access_required",
+  );
+});
+
 test("prepares a bracket only after deterministic risk approval", async () => {
   const credential = turnkeyHyperliquidCredentialFromVault(vault());
   const prepared = await prepareTurnkeyHyperliquidExecution({

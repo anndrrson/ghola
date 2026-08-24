@@ -3,6 +3,9 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HttpTransport, InfoClient } from "@nktkas/hyperliquid";
+import { formatPrice, formatSize } from "@nktkas/hyperliquid/utils";
+import { privateKeyToAccount } from "viem/accounts";
 import {
   submitTurnkeyHyperliquidExecution,
   turnkeyHyperliquidCredentialFromVault,
@@ -418,7 +421,8 @@ export async function verifyHyperliquidNoSubmit({
   instruction,
   cloid,
   executionMode = "byo_api_key",
-  runner = defaultRunner,
+  runner,
+  infoClient,
   turnkeyVerifier = verifyTurnkeyHyperliquidNoSubmit,
 }) {
   assertHyperliquidPilotNetwork(credential, instruction);
@@ -449,19 +453,170 @@ export async function verifyHyperliquidNoSubmit({
       },
     });
   }
-  const runnerResult = await runner({
-    credential,
-    instruction,
-    cloid,
-    verify_no_submit: true,
-    timeout_ms: Number.parseInt(process.env.PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS || "12000", 10),
-  });
+  const timeoutMs = Number.parseInt(process.env.PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS || "12000", 10);
+  const runnerResult = runner
+    ? await runner({
+        credential,
+        instruction,
+        cloid,
+        verify_no_submit: true,
+        timeout_ms: timeoutMs,
+      })
+    : await verifyHyperliquidNoSubmitWithSdk({
+        credential,
+        instruction,
+        cloid,
+        timeoutMs,
+        infoClient,
+      });
   return hyperliquidNoSubmitResult({
     instruction,
     cloid,
     executionMode,
     runnerResult: { ...runnerResult, live_venue_checked: true },
   });
+}
+
+async function verifyHyperliquidNoSubmitWithSdk({
+  credential,
+  instruction,
+  cloid,
+  timeoutMs,
+  infoClient,
+}) {
+  if (instruction.operation_class !== "limit_order") {
+    throw new HyperliquidExecutionError(
+      "unsupported hyperliquid no-submit operation",
+      422,
+      "venue_rejected",
+    );
+  }
+  if (!/^0x[0-9a-f]{32}$/i.test(String(cloid || ""))) {
+    throw new HyperliquidExecutionError("invalid hyperliquid client order id", 422, "venue_rejected");
+  }
+  if (!/^0x[0-9a-f]{40}$/i.test(String(credential?.account_address || ""))) {
+    throw new HyperliquidExecutionError("hyperliquid account address is invalid", 400, "venue_access_required");
+  }
+  if (!/^0x[0-9a-f]{64}$/i.test(String(credential?.api_wallet_private_key || ""))) {
+    throw new HyperliquidExecutionError("hyperliquid API wallet key is invalid", 400, "venue_access_required");
+  }
+  let apiWalletAddress;
+  try {
+    apiWalletAddress = privateKeyToAccount(credential.api_wallet_private_key).address.toLowerCase();
+  } catch {
+    throw new HyperliquidExecutionError("hyperliquid API wallet key is invalid", 400, "venue_access_required");
+  }
+  const info = infoClient || new InfoClient({
+    transport: new HttpTransport({
+      isTestnet: credential.network === "testnet",
+      timeout: timeoutMs,
+    }),
+  });
+  let meta;
+  let mids;
+  let account;
+  let walletRole;
+  try {
+    [meta, mids, account, walletRole] = await Promise.all([
+      info.meta(),
+      info.allMids(),
+      info.clearinghouseState({ user: credential.account_address }),
+      info.userRole({ user: apiWalletAddress }),
+    ]);
+  } catch {
+    throw new HyperliquidExecutionError(
+      "hyperliquid no-submit venue check failed",
+      502,
+      "connector_submit_failed",
+    );
+  }
+  if (
+    walletRole?.role !== "agent" ||
+    String(walletRole?.data?.user || "").toLowerCase() !== credential.account_address.toLowerCase()
+  ) {
+    throw new HyperliquidExecutionError(
+      "hyperliquid API wallet is not authorized for this account",
+      400,
+      "venue_access_required",
+    );
+  }
+  const order = instruction.order || {};
+  const market = String(order.market || "").toUpperCase();
+  if (order.side !== "buy" && order.side !== "sell") {
+    throw new HyperliquidExecutionError("invalid hyperliquid order side", 422, "venue_rejected");
+  }
+  const universe = Array.isArray(meta?.universe) ? meta.universe : [];
+  const asset = universe.find((candidate) => candidate?.name === market);
+  if (!asset) {
+    throw new HyperliquidExecutionError("hyperliquid market is unavailable", 422, "venue_rejected");
+  }
+  const mark = Number(mids?.[market]);
+  const leverage = Number(order.leverage || 1);
+  const maximumLeverage = Number(asset.maxLeverage || 1);
+  const slippageBps = Number(order.max_slippage_bps || 50);
+  if (!(mark > 0) || !(leverage > 0) || !(slippageBps > 0)) {
+    throw new HyperliquidExecutionError("invalid hyperliquid no-submit order", 422, "venue_rejected");
+  }
+  if (leverage > maximumLeverage) {
+    throw new HyperliquidExecutionError(
+      "requested leverage exceeds the market maximum",
+      422,
+      "venue_rejected",
+    );
+  }
+  const explicitLimit = Number(order.limit_price || 0);
+  const rawLimit = order.order_type === "limit" && explicitLimit > 0
+    ? explicitLimit
+    : mark * (order.side === "buy" ? 1 + slippageBps / 10_000 : 1 - slippageBps / 10_000);
+  const sizeDecimals = Number.isInteger(Number(asset.szDecimals)) ? Number(asset.szDecimals) : 6;
+  const quoteSize = Number(order.quote_size || 0);
+  const requestedBase = Number(order.base_size || 0);
+  let limitPrice;
+  let baseSize;
+  try {
+    limitPrice = Number(formatPrice(rawLimit, sizeDecimals));
+    baseSize = requestedBase > 0
+      ? formatSize(requestedBase, sizeDecimals)
+      : formatSize(quoteSize / limitPrice, sizeDecimals);
+  } catch {
+    throw new HyperliquidExecutionError(
+      "hyperliquid no-submit order could not be formatted",
+      422,
+      "venue_rejected",
+    );
+  }
+  if (!(limitPrice > 0) || !(Number(baseSize) > 0)) {
+    throw new HyperliquidExecutionError(
+      "hyperliquid no-submit order size is below venue minimum",
+      422,
+      "venue_rejected",
+    );
+  }
+  const stop = Number(order.protective_orders?.stop_loss || 0);
+  const take = Number(order.protective_orders?.take_profit || 0);
+  const buying = order.side === "buy";
+  if (stop > 0 && ((buying && stop >= mark) || (!buying && stop <= mark))) {
+    throw new HyperliquidExecutionError("invalid stop-loss price for current mark", 422, "venue_rejected");
+  }
+  if (take > 0 && ((buying && take <= mark) || (!buying && take >= mark))) {
+    throw new HyperliquidExecutionError("invalid take-profit price for current mark", 422, "venue_rejected");
+  }
+  if (!account || typeof account !== "object") {
+    throw new HyperliquidExecutionError(
+      "hyperliquid account state unavailable",
+      502,
+      "connector_submit_failed",
+    );
+  }
+  return {
+    status: "verified_no_funds",
+    sdk_checked: true,
+    api_wallet_loaded: true,
+    market_data_checked: true,
+    account_state_checked: true,
+    order_request_checked: true,
+    transaction_broadcast: false,
+  };
 }
 
 export async function readHyperliquidAccountSnapshot({
