@@ -3,9 +3,13 @@
 !apps
 !apps/web
 !apps/web/**
+!apps/private-agent-worker
+!apps/private-agent-worker/**
 !packages
 !packages/perps-core
 !packages/perps-core/**
+!packages/execution-core
+!packages/execution-core/**
 !crates
 !crates/said-shielded-pool-circuits
 !crates/said-shielded-pool-circuits/artifacts

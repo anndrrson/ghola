@@ -16,6 +16,9 @@ import type { HyperliquidApiWalletBindingProof } from "./hyperliquid-agent-bindi
 import type { CoinbaseEncryptedExecutionVaultBundle, CoinbaseExecutionMode } from "./coinbase-vault-seal";
 import type { SolanaPerpsEncryptedExecutionVaultBundle } from "./solana-perps-vault-seal";
 import type { SolanaSwapEncryptedExecutionVaultBundle } from "./solana-swap-vault-seal";
+import type { CarryExecutionVenue } from "./carry-venues";
+import type { AsterEncryptedExecutionVaultBundle } from "./aster-vault-seal";
+import type { LighterEncryptedExecutionVaultBundle } from "./lighter-vault-seal";
 import { defaultHyperliquidMarketAllowlist } from "./private-account-hyperliquid-policy";
 
 export type PrivateAccountProductBucket =
@@ -669,6 +672,132 @@ export async function getPrivateAccountLiveTradingStatus(): Promise<PrivateAccou
 export async function getHyperliquidExecutionVaultStatus() {
   return privateAccountFetch("/v1/private-account/hyperliquid/vault", {
     method: "GET",
+  });
+}
+
+export async function getPrivateAgentPassport() {
+  return privateAccountFetch("/v1/private-account/agent-passport", { method: "GET" });
+}
+
+export async function linkPrivateAgentPlatform(input: {
+  venue_id: "hyperliquid" | "lighter" | "aster";
+  encrypted_execution_vault: AsterEncryptedExecutionVaultBundle | LighterEncryptedExecutionVaultBundle;
+}) {
+  return privateAccountFetch("/v1/private-account/platforms/link", {
+    method: "POST",
+    body: JSON.stringify({
+      venue_id: input.venue_id,
+      execution_mode: "byo_api_key",
+      encrypted_execution_vault: input.encrypted_execution_vault,
+      permission_attestation: {
+        can_read: true,
+        can_trade: true,
+        can_withdraw: false,
+        can_transfer: false,
+      },
+    }),
+  });
+}
+
+export async function preflightAsterCarry(input: {
+  market: string;
+  side: "buy" | "sell";
+  base_size: string;
+  limit_price: string;
+  max_notional_bucket?: PrivateAccountSafeInput["amount_bucket"];
+}) {
+  return privateAccountFetch("/v1/private-account/carry", {
+    method: "POST",
+    body: JSON.stringify({ action: "preflight_aster", ...input }),
+  });
+}
+
+export async function preflightHyperliquidCarry(input: {
+  market: string;
+  side: "buy" | "sell";
+  quote_size: string;
+  max_slippage_bps?: string;
+  max_notional_bucket?: PrivateAccountSafeInput["amount_bucket"];
+}) {
+  return privateAccountFetch("/v1/private-account/carry", {
+    method: "POST",
+    body: JSON.stringify({ action: "preflight_hyperliquid", ...input }),
+  });
+}
+
+export async function preflightCarryPair(input: {
+  asset: string;
+  long_venue_id: CarryExecutionVenue;
+  short_venue_id: CarryExecutionVenue;
+  notional_usd: string;
+  horizon_days: string;
+}) {
+  return privateAccountFetch("/v1/private-account/carry", {
+    method: "POST",
+    body: JSON.stringify({ action: "preflight_pair", ...input }),
+  });
+}
+
+export async function createCarryPosition(input: {
+  position_input: Record<string, unknown>;
+  opportunity: Record<string, unknown>;
+  qualification_pilot?: { enabled: true; candidate_venue_id: CarryExecutionVenue };
+}) {
+  return privateAccountFetch("/v1/private-account/carry", {
+    method: "POST",
+    body: JSON.stringify({ action: "create", ...input }),
+  });
+}
+
+export async function listCarryPositions() {
+  return privateAccountFetch("/v1/private-account/carry", {
+    method: "POST",
+    body: JSON.stringify({ action: "read", limit: 100 }),
+  });
+}
+
+export async function getCarryReleaseEvidenceMaterial(position_id: string) {
+  return privateAccountFetch("/v1/private-account/carry", {
+    method: "POST",
+    body: JSON.stringify({ action: "release_evidence", position_id }),
+  });
+}
+
+export async function requestCarryPositionExit(input: {
+  position_id: string;
+  sequence: number;
+  event_id: string;
+}) {
+  return privateAccountFetch("/v1/private-account/carry", {
+    method: "POST",
+    body: JSON.stringify({
+      action: "event",
+      position_id: input.position_id,
+      event: {
+        version: 1,
+        event_id: input.event_id,
+        sequence: input.sequence,
+        type: "manual_exit_requested",
+      },
+    }),
+  });
+}
+
+export async function observeCarryPosition(input: {
+  position_id: string;
+  long_venue_id: CarryExecutionVenue;
+  short_venue_id: CarryExecutionVenue;
+}) {
+  return privateAccountFetch("/v1/private-account/carry", {
+    method: "POST",
+    body: JSON.stringify({ action: "observe", ...input }),
+  });
+}
+
+export async function executeCarryPositionEntry(position_id: string, qualification_pilot_confirmed = false) {
+  return privateAccountFetch("/v1/private-account/carry", {
+    method: "POST",
+    body: JSON.stringify({ action: "execute_entry", position_id, qualification_pilot_confirmed }),
   });
 }
 

@@ -8,7 +8,7 @@ import {
 } from "./private-agent-runtime";
 import { fetchPrivateAgentRuntimeStatus } from "./hyperliquid-vault-seal";
 
-export type PrivateExecutionVenueId = "hyperliquid" | "coinbase_advanced" | "phoenix" | "jupiter";
+export type PrivateExecutionVenueId = "hyperliquid" | "lighter" | "aster" | "coinbase_advanced" | "phoenix" | "jupiter";
 export type PrivateExecutionOperationClass =
   | "limit_order"
   | "perp_limit_order"

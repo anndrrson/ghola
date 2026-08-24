@@ -1,0 +1,475 @@
+import {
+  calculateMarginRunway,
+  evaluateCarryOpportunity,
+  exactQuantityRecoveryAdapter,
+  executionVenueSpec,
+  isCarryExecutionVenue,
+} from "@ghola/execution-core";
+import { fetchPerpShadowVenue } from "./perp-shadow-adapters.js";
+import { readCarryVenueQualification } from "./carry-qualification.js";
+
+const HOUR_MS = 3_600_000;
+const DAY_MS = 86_400_000;
+
+export async function preflightCarryPair({
+  body,
+  recipient,
+  state,
+  verifyOrder,
+  readHyperliquidSnapshot,
+  readHyperliquidCarryMetrics,
+  fetchVenue = fetchPerpShadowVenue,
+  now = () => Date.now(),
+  env = process.env,
+}) {
+  const asset = String(body.asset).toUpperCase();
+  const longVenue = String(body.long_venue_id);
+  const shortVenue = String(body.short_venue_id);
+  const notionalUsd = Number(body.notional_usd);
+  const horizonDays = Number(body.horizon_days);
+  if (longVenue === shortVenue || !isCarryExecutionVenue(longVenue) || !isCarryExecutionVenue(shortVenue)) {
+    throw carryError("carry_pair_not_execution_qualified", 422);
+  }
+
+  const observedAt = now();
+  const [longSnapshots, shortSnapshots] = await Promise.all([
+    fetchVenue({ venue_id: longVenue, assets: [asset], now_ms: observedAt, max_age_ms: 60_000 }),
+    fetchVenue({ venue_id: shortVenue, assets: [asset], now_ms: observedAt, max_age_ms: 60_000 }),
+  ]);
+  const longSnapshot = selectSnapshot(longSnapshots, asset, longVenue);
+  const shortSnapshot = selectSnapshot(shortSnapshots, asset, shortVenue);
+  const legs = [
+    { venue_id: longVenue, side: "buy", snapshot: longSnapshot },
+    { venue_id: shortVenue, side: "sell", snapshot: shortSnapshot },
+  ];
+
+  const evidence = await Promise.all(legs.map(async (leg) => {
+    const access = venueAccess(body, leg.venue_id);
+    const instruction = orderInstruction(leg, notionalUsd);
+    const workOrderCommitment = `${body.work_order_commitment}_${leg.venue_id}`;
+    const execution = executionFromAccess(access);
+    const receipt = await verifyOrder({
+      venue_id: leg.venue_id,
+      operation_class: "limit_order",
+      work_order_commitment: workOrderCommitment,
+      policy_commitment: access.policy_commitment,
+      session_policy: {
+        market_allowlist: [instruction.order.market],
+        max_notional_bucket: notionalBucket(notionalUsd),
+        max_order_count: 1,
+        kill_switch: false,
+      },
+      instruction,
+      execution,
+      recipient,
+      state,
+    });
+    let account = receipt.account || null;
+    let accountSnapshot = null;
+    if (leg.venue_id === "hyperliquid") {
+      [accountSnapshot, account] = await Promise.all([
+        readHyperliquidSnapshot({ body: execution, recipient, state }),
+        readHyperliquidCarryMetrics({ body: execution, recipient, state }),
+      ]);
+    }
+    return { ...leg, receipt, account, account_snapshot: accountSnapshot };
+  }));
+
+  const phase = body.phase === "monitoring" ? "monitoring" : "opening";
+  const modeled = modelCarryPairPreflight({
+    evidence,
+    notional_usd: notionalUsd,
+    horizon_days: horizonDays,
+    now_ms: now(),
+    phase,
+  });
+  const qualifications = await Promise.all(evidence.map((leg) => readCarryVenueQualification({
+    state,
+    venue_id: leg.venue_id,
+    now_ms: observedAt,
+    env,
+  })));
+  const qualificationByVenue = new Map(qualifications.map((item) => [item.venue_id, item]));
+  const qualificationReasons = evidence.flatMap((leg) => {
+    const spec = executionVenueSpec(leg.venue_id);
+    const qualification = qualificationByVenue.get(leg.venue_id);
+    return [
+      ...(qualification?.proven === true ? [] : [`venue_not_proven:${leg.venue_id}`]),
+      ...(qualification?.proven === true
+        ? []
+        : [exactQuantityRecoveryAdapter(leg.venue_id)
+          ? `exact_quantity_recovery_unproven:${leg.venue_id}`
+          : `exact_quantity_recovery_unavailable:${leg.venue_id}`]),
+      ...(!acceptableAuthorityBoundary(leg.receipt?.authority_boundary)
+        ? [`credential_authority_boundary_unacceptable:${leg.venue_id}`]
+        : []),
+      ...(leg.account?.fees_exact_for_account === false && leg.account?.fees_conservative_upper_bound !== true
+        ? [`account_fee_tier_unverified:${leg.venue_id}`]
+        : []),
+    ];
+  });
+  if (modeled.collateral_basis.supported !== true) {
+    qualificationReasons.push("cross_collateral_basis_risk_unmodeled");
+  }
+  const unproven = qualifications.filter((item) => item.proven !== true);
+  const pilotCandidate = unproven.length === 1
+    && executionVenueSpec(unproven[0].venue_id)?.qualification_status === "integration"
+    && exactQuantityRecoveryAdapter(unproven[0].venue_id)
+    ? unproven[0].venue_id
+    : null;
+  const pilotAllowedReasons = new Set(pilotCandidate ? [
+    `venue_not_proven:${pilotCandidate}`,
+    `exact_quantity_recovery_unproven:${pilotCandidate}`,
+  ] : []);
+  const qualificationPilotReady = Boolean(pilotCandidate)
+    && modeled.no_submit_ready
+    && modeled.opportunity.eligible
+    && qualificationReasons.every((reason) => pilotAllowedReasons.has(reason));
+  const liveCreationReady = modeled.no_submit_ready && modeled.opportunity.eligible && qualificationReasons.length === 0;
+  const creationOpportunity = {
+    ...modeled.opportunity,
+    all_venues_ready: modeled.no_submit_ready,
+    live_creation_ready: liveCreationReady,
+    qualification_pilot_ready: qualificationPilotReady,
+    qualification_pilot_candidate_venue_id: pilotCandidate,
+    long_margin_runway_ms: modeled.margin_runways[0]?.runway_ms ?? 0,
+    short_margin_runway_ms: modeled.margin_runways[1]?.runway_ms ?? 0,
+  };
+  return {
+    version: 1,
+    mode: phase === "monitoring" ? "paired_monitoring_no_submit" : "paired_no_submit",
+    asset,
+    transaction_broadcast: false,
+    no_submit_ready: modeled.no_submit_ready,
+    economic_opportunity: modeled.opportunity,
+    creation_opportunity: creationOpportunity,
+    collateral_basis: modeled.collateral_basis,
+    margin_runways: modeled.margin_runways,
+    account_readiness: modeled.account_readiness,
+    evidence: evidence.map((leg) => publicEvidence(leg, qualificationByVenue.get(leg.venue_id))),
+    live_creation_ready: liveCreationReady,
+    qualification_pilot_ready: qualificationPilotReady,
+    qualification_pilot_candidate_venue_id: pilotCandidate,
+    qualification_reasons: [...new Set(qualificationReasons)],
+    checked_at: new Date(modeled.checked_at_ms).toISOString(),
+  };
+}
+
+function acceptableAuthorityBoundary(boundary) {
+  if (!boundary || typeof boundary !== "object") return true;
+  if (boundary.venue_native_trade_only === true) return true;
+  return boundary.venue_native_trade_only === false &&
+    boundary.withdrawal_request_permitted === false &&
+    boundary.secure_withdrawal_destination === "owner_l1_only" &&
+    boundary.owner_wallet_key_present === false &&
+    boundary.non_owner_fund_movement_possible === false;
+}
+
+export function modelCarryPairPreflight({ evidence, notional_usd: notionalUsd, horizon_days: horizonDays, now_ms: nowMs, phase = "opening" }) {
+  const notionalMicro = usdMicro(notionalUsd);
+  const monitoring = phase === "monitoring";
+  const accounts = evidence.map((leg) => accountReadiness(leg, notionalMicro));
+  const marginRunways = evidence.map((leg, index) => projectedMarginRunway(leg, accounts[index], notionalMicro, nowMs));
+  const contracts = evidence.map((leg) => contractSpec(leg, notionalMicro));
+  const costs = evidence.map((leg) => legCosts(leg));
+  const collateralBasis = collateralBasisModel(contracts[0].collateral_asset, contracts[1].collateral_asset);
+  const noSubmitReady = evidence.every((leg, index) =>
+    leg.receipt?.checks?.transaction_broadcast === false &&
+    (leg.receipt?.checks?.order_request_built === true || leg.receipt?.checks?.order_request_checked === true) &&
+    accounts[index].authorized &&
+    (monitoring ? accounts[index].monitoring_ready : accounts[index].capital_ready)
+  );
+  const opportunity = evaluateCarryOpportunity({
+    version: 1,
+    long_contract: contracts[0],
+    short_contract: contracts[1],
+    notional_micro_usdc: notionalMicro,
+    capital_committed_micro_usdc: notionalMicro * 2,
+    horizon_ms: Math.round(horizonDays * DAY_MS),
+    long_costs: costs[0],
+    short_costs: costs[1],
+    capital_cost_bps_per_day: 1,
+    risk_buffer_bps: 10,
+    collateral_basis_risk_bps: collateralBasis.risk_bps,
+    min_expected_net_benefit_bps: 5,
+    min_margin_runway_ms: 6 * HOUR_MS,
+    margin_runways: marginRunways.map((runway, index) => ({
+      venue_id: runway.venue_id,
+      status: (monitoring ? accounts[index].monitoring_ready : accounts[index].capital_ready) ? runway.status : "breached",
+      runway_ms: runway.runway_ms,
+    })),
+    now_ms: nowMs,
+    max_data_age_ms: 60_000,
+  });
+  return {
+    checked_at_ms: nowMs,
+    no_submit_ready: noSubmitReady,
+    opportunity: Object.freeze({
+      ...opportunity,
+      collateral_basis_mode: collateralBasis.mode,
+      long_collateral_asset: contracts[0].collateral_asset,
+      short_collateral_asset: contracts[1].collateral_asset,
+    }),
+    collateral_basis: collateralBasis,
+    margin_runways: marginRunways,
+    account_readiness: accounts,
+  };
+}
+
+function collateralBasisModel(longAsset, shortAsset) {
+  if (longAsset === shortAsset) {
+    return Object.freeze({ supported: true, mode: "same_collateral", risk_bps: 0 });
+  }
+  const stablecoins = new Set(["USDC", "USDT"]);
+  if (stablecoins.has(longAsset) && stablecoins.has(shortAsset)) {
+    return Object.freeze({ supported: true, mode: "usdc_usdt_stress_buffer", risk_bps: 50 });
+  }
+  return Object.freeze({ supported: false, mode: "unsupported_cross_collateral", risk_bps: 10_000 });
+}
+
+function contractSpec(leg, notionalMicro) {
+  const snapshot = leg.snapshot;
+  const shape = leg.receipt?.order_shape || {};
+  const account = leg.account || {};
+  const makerE6 = signedFeeE6Bps(account.maker_fee_bps);
+  const takerE6 = feeE6Bps(account.taker_fee_bps);
+  return {
+    version: 1,
+    venue_id: leg.venue_id,
+    contract_id: snapshot.contract_id,
+    economic_equivalence_id: snapshot.economic_equivalence_id,
+    asset: snapshot.asset,
+    market: snapshot.market,
+    quote_asset: snapshot.quote_asset,
+    collateral_asset: snapshot.collateral_asset,
+    contract_type: snapshot.contract_type,
+    mark_price_e8: snapshot.mark_price_e8,
+    index_price_e8: snapshot.index_price_e8,
+    funding_rate_bps_per_interval: Math.trunc(snapshot.funding_rate_e12_per_interval / 100_000_000),
+    funding_rate_e12_per_interval: snapshot.funding_rate_e12_per_interval,
+    funding_interval_ms: snapshot.funding_interval_ms,
+    maker_fee_bps: Math.ceil(account.maker_fee_bps),
+    taker_fee_bps: Math.ceil(account.taker_fee_bps),
+    maker_fee_e6_bps: makerE6,
+    taker_fee_e6_bps: takerE6,
+    minimum_notional_micro_usdc: Math.min(notionalMicro, positiveInteger(shape.notional_micro_usdc, "carry_order_shape_notional")),
+    quantity_step_e8: positiveInteger(shape.quantity_step_e8 ?? snapshot.quantity_step_e8, "carry_quantity_step_unavailable"),
+    price_tick_e8: positiveInteger(shape.price_tick_e8 ?? snapshot.price_tick_e8, "carry_price_tick_unavailable"),
+    as_of_ms: snapshot.as_of_ms,
+  };
+}
+
+function legCosts(leg) {
+  const fee = feeE6Bps(leg.account?.taker_fee_bps);
+  const snapshot = leg.snapshot;
+  const executionPrice = leg.side === "buy" ? snapshot.best_ask_e8 : snapshot.best_bid_e8;
+  const slippage = executionPrice && snapshot.mark_price_e8
+    ? Math.max(0, Math.ceil(Math.abs(executionPrice - snapshot.mark_price_e8) * 10_000 / snapshot.mark_price_e8))
+    : 5;
+  return {
+    entry_fee_e6_bps: fee,
+    exit_fee_e6_bps: fee,
+    entry_slippage_bps: slippage,
+    exit_slippage_bps: slippage,
+    latency_penalty_bps: 1,
+    gas_micro_usdc: 0,
+  };
+}
+
+function accountReadiness(leg, notionalMicro) {
+  const account = leg.account || {};
+  const available = usdMicro(account.available_balance);
+  const balance = usdMicro(account.margin_balance);
+  const accountSnapshotReady = leg.venue_id !== "hyperliquid" || (
+    leg.account_snapshot?.status === "ready_to_trade" && leg.account_snapshot?.trading_enabled === true
+  );
+  const positionCount = leg.venue_id === "hyperliquid"
+    ? Number(leg.account_snapshot?.position_count || 0)
+    : Number(account.position_count || 0);
+  const openOrderCount = leg.venue_id === "hyperliquid"
+    ? Number(leg.account_snapshot?.open_order_count || 0)
+    : Number(account.open_order_count || 0);
+  const flat = positionCount === 0 && openOrderCount === 0;
+  const authorized = leg.receipt?.checks?.transaction_broadcast === false && account.can_trade === true && accountSnapshotReady;
+  return {
+    venue_id: leg.venue_id,
+    authorized,
+    flat_zero_orders: flat,
+    capital_ready: authorized && flat && available >= notionalMicro,
+    monitoring_ready: authorized && balance > 0,
+    available_balance_micro_usdc: available,
+    margin_balance_micro_usdc: balance,
+    required_opening_collateral_micro_usdc: notionalMicro,
+    owner_only_funding: true,
+  };
+}
+
+function projectedMarginRunway(leg, readiness, notionalMicro, nowMs) {
+  const account = leg.account || {};
+  const maintenance = usdMicro(account.maintenance_margin) + microFromBps(notionalMicro, leg.snapshot.maintenance_margin_bps || 500);
+  const safetyBuffer = Math.max(10_000_000, microFromBps(notionalMicro, 1_000));
+  const projectedHeadroom = Math.max(0, readiness.margin_balance_micro_usdc - maintenance - safetyBuffer);
+  const fundingDebit = leg.side === "buy"
+    ? Math.max(0, Math.ceil(leg.snapshot.funding_rate_e12_per_interval / 100_000_000))
+    : Math.max(0, Math.ceil(-leg.snapshot.funding_rate_e12_per_interval / 100_000_000));
+  return calculateMarginRunway({
+    version: 1,
+    venue_id: leg.venue_id,
+    equity_micro_usdc: readiness.margin_balance_micro_usdc,
+    maintenance_margin_micro_usdc: maintenance,
+    safety_buffer_micro_usdc: safetyBuffer,
+    position_notional_micro_usdc: notionalMicro,
+    stress_loss_bps_per_hour: 100,
+    funding_debit_bps_per_interval: fundingDebit,
+    funding_interval_ms: leg.snapshot.funding_interval_ms,
+    owner_transfer_latency_ms: 2 * HOUR_MS,
+    owner_response_buffer_ms: HOUR_MS,
+    liquidation_distance_bps: Math.min(100_000, Math.floor(projectedHeadroom * 10_000 / notionalMicro)),
+    minimum_liquidation_distance_bps: 1_000,
+    as_of_ms: nowMs,
+  });
+}
+
+function orderInstruction(leg, notionalUsd) {
+  const snapshot = leg.snapshot;
+  if (leg.venue_id === "hyperliquid") {
+    return {
+      version: 1,
+      kind: "ghola_private_execution_instruction",
+      venue_id: "hyperliquid",
+      operation_class: "limit_order",
+      order: {
+        market: snapshot.asset,
+        side: leg.side,
+        quote_size: String(notionalUsd),
+        size_mode: "quote",
+        order_type: "limit",
+        live_order_mode: "tiny_fill",
+        max_slippage_bps: "50",
+        tif: "Ioc",
+        reduce_only: false,
+        leverage: 1,
+        margin_mode: "cross",
+      },
+    };
+  }
+  const priceE8 = leg.side === "buy" ? snapshot.best_ask_e8 : snapshot.best_bid_e8;
+  if (!(priceE8 > 0) || !(snapshot.quantity_step_e8 > 0) || !(snapshot.price_tick_e8 > 0)) {
+    throw carryError(`carry_${leg.venue_id}_order_shape_unavailable`, 422);
+  }
+  const price = priceE8 / 100_000_000;
+  const step = snapshot.quantity_step_e8 / 100_000_000;
+  const base = Math.floor((notionalUsd / price) / step) * step;
+  if (!(price > 0) || !(step > 0) || !(base > 0)) throw carryError(`carry_${leg.venue_id}_order_shape_unavailable`, 422);
+  return {
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: leg.venue_id,
+    operation_class: "limit_order",
+    order: {
+      market: snapshot.asset,
+      side: leg.side,
+      base_size: decimalString(base, step),
+      quote_size: String(base * price),
+      limit_price: decimalString(price, snapshot.price_tick_e8 / 100_000_000),
+      order_type: "limit",
+      size_mode: "base",
+      tif: "Ioc",
+      reduce_only: false,
+      leverage: 1,
+      margin_mode: "cross",
+    },
+  };
+}
+
+function selectSnapshot(snapshots, asset, venueId) {
+  const snapshot = snapshots.find((item) => item.asset === asset);
+  const essential = ["mark_price_e8", "index_price_e8", "funding_rate_e12_per_interval", "funding_interval_ms"];
+  if (!snapshot || snapshot.stale || essential.some((field) => snapshot[field] === null)) {
+    throw carryError(`carry_shadow_unavailable:${venueId}`, 409);
+  }
+  return snapshot;
+}
+
+function venueAccess(body, venueId) {
+  const access = body.venue_access?.[venueId];
+  if (!access || access.status !== "ready") throw carryError(`carry_account_not_ready:${venueId}`, 409);
+  return access;
+}
+
+function executionFromAccess(access) {
+  return {
+    execution_mode: "byo_api_key",
+    vault_commitment: access.vault_commitment,
+    encrypted_vault_commitment: access.encrypted_vault_commitment,
+    encrypted_execution_vault: access.encrypted_execution_vault,
+    account_commitment: access.account_commitment,
+    owner_commitment: access.owner_commitment,
+  };
+}
+
+function publicEvidence(leg, qualification) {
+  return {
+    venue_id: leg.venue_id,
+    side: leg.side,
+    status: leg.receipt.status,
+    work_order_commitment: leg.receipt.work_order_commitment,
+    verification_commitment: leg.receipt.verification_commitment,
+    order_shape: leg.receipt.order_shape,
+    reference_mark_price_e8: leg.snapshot.mark_price_e8,
+    reference_price_source: "verified_pre_submit_mark",
+    checks: leg.receipt.checks,
+    authority_boundary: leg.receipt.authority_boundary || null,
+    qualification: qualification ? {
+      proven: qualification.proven === true,
+      source: qualification.source || null,
+      reasons: [...(qualification.reasons || [])],
+      adapter_id: qualification.adapter_id || null,
+      image_digest: qualification.image_digest || null,
+      verified_at_ms: qualification.verified_at_ms || null,
+      evidence_commitment: qualification.evidence_commitment || null,
+    } : null,
+    transaction_broadcast: false,
+  };
+}
+
+function notionalBucket(value) {
+  for (const bucket of [5, 10, 25, 50, 100, 250, 500, 1_000]) if (value <= bucket) return String(bucket);
+  throw carryError("carry_notional_above_pilot_limit", 422);
+}
+
+function decimalString(value, step) {
+  const decimals = Math.max(0, Math.min(8, Math.ceil(-Math.log10(step))));
+  return value.toFixed(decimals).replace(/\.?0+$/, "");
+}
+
+function feeE6Bps(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) throw carryError("carry_account_fee_unavailable", 409);
+  return Math.round(number * 1_000_000);
+}
+
+function signedFeeE6Bps(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw carryError("carry_account_fee_unavailable", 409);
+  return Math.round(number * 1_000_000);
+}
+
+function usdMicro(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return 0;
+  return Math.round(number * 1_000_000);
+}
+
+function positiveInteger(value, code) {
+  if (!Number.isSafeInteger(value) || value <= 0) throw carryError(code, 409);
+  return value;
+}
+
+function microFromBps(amount, bps) {
+  return Math.ceil(amount * bps / 10_000);
+}
+
+function carryError(code, status) {
+  return Object.assign(new Error(code), { code, status });
+}

@@ -4,6 +4,7 @@ import { Activity, LockKeyhole, ShieldCheck, type LucideIcon } from "lucide-reac
 import { PrivateAccountCockpit, type PrivateAccountInitialFlow } from "@/components/private-account/PrivateAccountCockpit";
 import { headers } from "next/headers";
 import { resolveGholaProductEnvironment } from "@/lib/product-environment";
+import { CarryAccountSetup } from "@/components/carry/CarryAccountSetup";
 
 export default async function GholaAccountPage({
   searchParams,
@@ -31,10 +32,11 @@ export default async function GholaAccountPage({
       ? returnTo
       : null;
   const focusedSetup = setup === "hyperliquid";
+  const focusedCarrySetup = setup === "carry";
   const initialFlow: PrivateAccountInitialFlow =
     flow === "hyperliquid-live" || flow === "phoenix-live" || flow === "jupiter-live" || flow === "coinbase" || flow === "trade"
       ? flow
-      : flow === "private-mode"
+      : flow === "private-mode" || focusedCarrySetup
         ? null
         : "trade";
   const terminalFlow =
@@ -57,7 +59,7 @@ export default async function GholaAccountPage({
   }
   return (
     <main className="min-h-screen bg-[#08090d] pt-16 text-[#eef1f8]">
-      {!terminalFlow && !focusedSetup && (
+      {!terminalFlow && !focusedSetup && !focusedCarrySetup && (
         <section className="border-b border-[#151b26] px-4 py-4 sm:px-6 lg:px-8">
           <div className="mx-auto max-w-7xl">
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
@@ -104,15 +106,17 @@ export default async function GholaAccountPage({
         </section>
       )}
 
-      <section className={terminalFlow || focusedSetup ? "px-0 py-0" : "px-4 py-5 sm:px-6 lg:px-8"}>
-        <PrivateAccountCockpit
-          initialFlow={initialFlow}
-          initialSetupVenue={setup === "hyperliquid" ? "hyperliquid" : null}
-          initialReturnTo={returnTo?.startsWith("/trade?") ? returnTo : null}
-          initialHyperliquidMarket={null}
-          initialIosReturnTo={initialIosReturnTo}
-          hyperliquidNetwork={hyperliquidNetwork}
-        />
+      <section className={terminalFlow || focusedSetup || focusedCarrySetup ? "px-0 py-0" : "px-4 py-5 sm:px-6 lg:px-8"}>
+        {focusedCarrySetup ? <CarryAccountSetup /> : (
+          <PrivateAccountCockpit
+            initialFlow={initialFlow}
+            initialSetupVenue={setup === "hyperliquid" ? "hyperliquid" : null}
+            initialReturnTo={returnTo === "/carry" || returnTo?.startsWith("/trade?") ? returnTo : null}
+            initialHyperliquidMarket={null}
+            initialIosReturnTo={initialIosReturnTo}
+            hyperliquidNetwork={hyperliquidNetwork}
+          />
+        )}
       </section>
     </main>
   );

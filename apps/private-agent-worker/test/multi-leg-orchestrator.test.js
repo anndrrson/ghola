@@ -282,3 +282,274 @@ test("cancels, reconciles, and exactly unwinds a one-leg fill", async (t) => {
   assert.equal(positions[0].signed_base_size, 0);
   assert.equal((await state.getAutopilotSession(context.autopilot_session_id)).status, "paused");
 });
+
+for (const [filledVenue, hedgeVenue] of [["aster", "lighter"], ["lighter", "aster"]]) {
+  test(`exactly recovers a filled ${filledVenue} leg against an unfilled ${hedgeVenue} leg`, async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), `ghola-${filledVenue}-recovery-`));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const state = createWorkerState(dir);
+    const suffix = `${filledVenue}:${hedgeVenue}`;
+    const sagaId = `saga:perp:${suffix}`;
+    const sessionId = `autopilot:perp:${suffix}`;
+    const filledLegId = `leg:${filledVenue}:filled`;
+    const hedgeLegId = `leg:${hedgeVenue}:hedge`;
+    const filledWork = `work:${filledVenue}:filled`;
+    const hedgeWork = `work:${hedgeVenue}:hedge`;
+    const marketFor = (venue) => venue === "lighter" ? "BTC" : "BTC-PERP";
+    const order = (venue, side) => ({
+      version: 1,
+      kind: "ghola_private_execution_instruction",
+      venue_id: venue,
+      operation_class: "limit_order",
+      order: {
+        market: marketFor(venue),
+        side,
+        base_size: "0.001",
+        limit_price: "10000",
+        reduce_only: false,
+        tif: "Ioc",
+      },
+    });
+    const definition = {
+      version: 1,
+      saga_id: sagaId,
+      idempotency_key: `idem:perp:${suffix}`,
+      plan_commitment: `plan:perp:${suffix}`,
+      strategy_id: "delta_neutral_carry",
+      max_unhedged_ms: 1_000,
+      max_hedge_error_micro_usdc: 100_000,
+      now_ms: NOW,
+      legs: [
+        { leg_id: filledLegId, venue_id: filledVenue, asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "buy", notional_micro_usdc: 10_000_000 },
+        { leg_id: hedgeLegId, venue_id: hedgeVenue, asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "sell", notional_micro_usdc: 10_000_000 },
+      ],
+    };
+    const context = {
+      version: 1,
+      autopilot_session_id: sessionId,
+      policy_commitment: `policy:perp:${suffix}`,
+      legs: [
+        { leg_id: filledLegId, work_order_commitment: filledWork, instruction: order(filledVenue, "buy") },
+        { leg_id: hedgeLegId, work_order_commitment: hedgeWork, instruction: order(hedgeVenue, "sell") },
+      ],
+    };
+    await state.putAutopilotSession({
+      autopilot_session_id: sessionId,
+      status: "running",
+      execution_enabled: true,
+      session_policy: {
+        policy_commitment: context.policy_commitment,
+        market_allowlist: ["BTC", "BTC-PERP"],
+        max_notional_bucket: "25",
+        max_daily_notional_bucket: "100",
+        max_order_count: 4,
+        max_slippage_bps: 10,
+      },
+      venue_access: {
+        aster: { status: "ready", execution_mode: "byo_api_key" },
+        lighter: { status: "ready", execution_mode: "byo_api_key" },
+      },
+      updated_at: new Date(NOW).toISOString(),
+    });
+    const created = await createDurableMultiLegSaga({ state, definition, execution_context: context });
+    await apply(state, sagaId, 1, "preflight_passed", { leg_id: filledLegId });
+    await apply(state, sagaId, 2, "preflight_passed", { leg_id: hedgeLegId });
+    await apply(state, sagaId, 3, "submission_started");
+    await apply(state, sagaId, 4, "leg_fill", { leg_id: filledLegId, cumulative_filled_micro_usdc: 10_000_000 });
+    await state.putIdempotency(filledWork, {
+      status: "filled",
+      final_proof: {
+        final_venue_execution_proven: true,
+        final_fill_proven: true,
+        cumulative_filled_micro_usdc: 10_000_000,
+        filled_base_size: "0.001",
+      },
+    });
+    await state.putIdempotency(hedgeWork, { status: "submitted" });
+
+    const calls = [];
+    const executeOrder = async (args) => {
+      calls.push(args);
+      if (args.operation_class === "cancel") return { status: "cancelled" };
+      if (args.operation_class === "reconcile") return { status: "reconciled", fills: [] };
+      return {
+        status: "filled",
+        final_proof: {
+          final_venue_execution_proven: true,
+          final_fill_proven: true,
+          filled_base_size: "0.001",
+        },
+      };
+    };
+    const active = await state.getMultiLegSaga(created.saga.saga_id);
+    const recovered = await recoverDueMultiLegSagas({
+      state,
+      now_ms: active.unhedged_deadline_ms,
+      recipient: { recipient_id: "did:key:perp-recovery-test" },
+      executeOrder,
+      verifyOrder: async () => ({ status: "verified_no_funds" }),
+      env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
+    });
+    assert.equal(recovered.ok, true);
+    assert.equal(recovered.recovered[0].saga.status, "unwound");
+    const unwind = calls.find((call) => call.instruction?.order?.reduce_only === true);
+    assert.equal(unwind.venue_id, filledVenue);
+    assert.equal(unwind.instruction.order.side, "sell");
+    assert.equal(unwind.instruction.order.base_size, "0.001");
+    assert.equal(calls.some((call) => call.venue_id === hedgeVenue && call.operation_class === "cancel"), true);
+    assert.equal(calls.some((call) => call.venue_id === hedgeVenue && call.operation_class === "reconcile"), true);
+  });
+}
+
+test("recovers a Carry Position saga directly from its sealed venue context", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-direct-recovery-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const sagaId = "saga:carry:direct:0001";
+  const longLeg = `${sagaId}:long`;
+  const shortLeg = `${sagaId}:short`;
+  const definition = {
+    version: 1,
+    saga_id: sagaId,
+    idempotency_key: "idem:carry:direct:0001",
+    plan_commitment: "plan:carry:direct:0001",
+    strategy_id: "delta_neutral_carry",
+    max_unhedged_ms: 1_000,
+    max_hedge_error_micro_usdc: 0,
+    now_ms: NOW,
+    legs: [
+      { leg_id: longLeg, venue_id: "aster", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "buy", notional_micro_usdc: 10_000_000 },
+      { leg_id: shortLeg, venue_id: "lighter", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "sell", notional_micro_usdc: 10_000_000 },
+    ],
+  };
+  const instruction = (venue, side) => ({
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: venue,
+    operation_class: "limit_order",
+    order: { market: venue === "lighter" ? "BTC" : "BTC-PERP", side, base_size: "0.001", limit_price: "10000", reduce_only: false, tif: "Ioc" },
+  });
+  const context = {
+    version: 1,
+    carry_position_id: "carry:position:direct:0001",
+    owner_commitment: "owner:carry:direct:0001",
+    policy_commitment: "policy:carry:direct:0001",
+    session_policy: {
+      policy_commitment: "policy:carry:direct:0001",
+      market_allowlist: ["BTC", "BTC-PERP"],
+      max_notional_bucket: "25",
+      max_order_count: 4,
+      max_slippage_bps: 10,
+    },
+    venue_access: {
+      aster: { status: "ready", execution_mode: "byo_api_key", encrypted_execution_vault: { ciphertext: "aster-sealed" } },
+      lighter: { status: "ready", execution_mode: "byo_api_key", encrypted_execution_vault: { ciphertext: "lighter-sealed" } },
+    },
+    legs: [
+      { leg_id: longLeg, work_order_commitment: "work:carry:direct:long", instruction: instruction("aster", "buy") },
+      { leg_id: shortLeg, work_order_commitment: "work:carry:direct:short", instruction: instruction("lighter", "sell") },
+    ],
+  };
+  const created = await createDurableMultiLegSaga({ state, definition, execution_context: context });
+  assert.equal(created.ok, true);
+  await apply(state, sagaId, 1, "preflight_passed", { leg_id: longLeg });
+  await apply(state, sagaId, 2, "preflight_passed", { leg_id: shortLeg });
+  await apply(state, sagaId, 3, "submission_started");
+  await apply(state, sagaId, 4, "leg_fill", { leg_id: longLeg, cumulative_filled_micro_usdc: 10_000_000 });
+  await state.putIdempotency("work:carry:direct:long", {
+    status: "filled",
+    final_proof: { final_venue_execution_proven: true, final_fill_proven: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: "0.001" },
+  });
+  await state.putIdempotency("work:carry:direct:short", { status: "submitted" });
+  const calls = [];
+  const active = await state.getMultiLegSaga(sagaId);
+  const recovered = await recoverDueMultiLegSagas({
+    state,
+    now_ms: active.unhedged_deadline_ms,
+    recipient: { recipient_id: "did:key:carry-direct" },
+    executeOrder: async (args) => {
+      calls.push(args);
+      if (args.operation_class === "cancel") return { status: "cancelled" };
+      if (args.operation_class === "reconcile") return { status: "reconciled", fills: [] };
+      return { status: "filled", final_proof: { final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.001" } };
+    },
+    verifyOrder: async () => ({ status: "verified_no_funds" }),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
+  });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.recovered[0].saga.status, "unwound");
+  const unwind = calls.find((call) => call.instruction?.order?.reduce_only === true);
+  assert.equal(unwind.execution.carry_position_id, "carry:position:direct:0001");
+  assert.equal(unwind.execution.encrypted_execution_vault.ciphertext, "aster-sealed");
+});
+
+test("completes a missing reduce-only exit leg without reopening the filled leg", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-exit-completion-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const sagaId = "saga:carry:exit:0001";
+  const asterLeg = `${sagaId}:aster`;
+  const lighterLeg = `${sagaId}:lighter`;
+  const instruction = (venue, side) => ({
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: venue,
+    operation_class: "limit_order",
+    order: { market: venue === "lighter" ? "BTC" : "BTC-PERP", side, base_size: "0.001", limit_price: "10000", reduce_only: true, tif: "Ioc" },
+  });
+  const created = await createDurableMultiLegSaga({
+    state,
+    definition: {
+      version: 1,
+      saga_id: sagaId,
+      idempotency_key: "idem:carry:exit:0001",
+      plan_commitment: "plan:carry:exit:0001",
+      strategy_id: "exposure_rebalance",
+      recovery_mode: "complete_reduce_only",
+      max_unhedged_ms: 1_000,
+      max_hedge_error_micro_usdc: 0,
+      now_ms: NOW,
+      legs: [
+        { leg_id: asterLeg, venue_id: "aster", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "sell", notional_micro_usdc: 10_000_000 },
+        { leg_id: lighterLeg, venue_id: "lighter", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "buy", notional_micro_usdc: 10_000_000 },
+      ],
+    },
+    execution_context: {
+      version: 1,
+      carry_position_id: "carry:position:exit:0001",
+      owner_commitment: "owner:carry:exit:0001",
+      policy_commitment: "policy:carry:exit:0001",
+      session_policy: { policy_commitment: "policy:carry:exit:0001", market_allowlist: ["BTC", "BTC-PERP"], max_notional_bucket: "25", max_order_count: 4, max_slippage_bps: 10 },
+      venue_access: { aster: { status: "ready" }, lighter: { status: "ready" } },
+      legs: [
+        { leg_id: asterLeg, work_order_commitment: "work:carry:exit:aster", instruction: instruction("aster", "sell") },
+        { leg_id: lighterLeg, work_order_commitment: "work:carry:exit:lighter", instruction: instruction("lighter", "buy") },
+      ],
+    },
+  });
+  assert.equal(created.ok, true);
+  await apply(state, sagaId, 1, "preflight_passed", { leg_id: asterLeg });
+  await apply(state, sagaId, 2, "preflight_passed", { leg_id: lighterLeg });
+  await apply(state, sagaId, 3, "submission_started");
+  await apply(state, sagaId, 4, "leg_fill", { leg_id: asterLeg, cumulative_filled_micro_usdc: 10_000_000 });
+  await apply(state, sagaId, 5, "leg_failed", { leg_id: lighterLeg, failure_code: "venue_rejected" });
+  const active = await state.getMultiLegSaga(sagaId);
+  const calls = [];
+  const recovered = await recoverDueMultiLegSagas({
+    state,
+    now_ms: active.unhedged_deadline_ms - 1,
+    recipient: { recipient_id: "did:key:carry-exit" },
+    executeOrder: async (args) => {
+      calls.push(args);
+      return { status: "filled", final_proof: { final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.001" } };
+    },
+    verifyOrder: async () => ({ status: "verified_no_funds" }),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
+  });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.recovered[0].saga.status, "reconciled");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].venue_id, "lighter");
+  assert.equal(calls[0].instruction.order.side, "buy");
+  assert.equal(calls[0].instruction.order.reduce_only, true);
+});

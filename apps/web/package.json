@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build && node scripts/check-review-proof-routes.mjs && node scripts/check-auth-client-bundle.mjs && node scripts/check-hyperliquid-execution-contract.mjs && node scripts/verify-hyperliquid-release-evidence.mjs && node scripts/build-sri-manifest.mjs",
+    "build": "next build && node scripts/check-review-proof-routes.mjs && node scripts/check-auth-client-bundle.mjs && node scripts/check-hyperliquid-execution-contract.mjs && node scripts/check-carry-execution-contract.mjs && node scripts/verify-hyperliquid-release-evidence.mjs && node scripts/build-sri-manifest.mjs",
     "build:no-sri": "next build && node scripts/check-review-proof-routes.mjs && node scripts/check-auth-client-bundle.mjs",
     "start": "next start",
     "lint": "eslint",
@@ -20,12 +20,14 @@
     "verify:prod:coinbase-public": "node scripts/verify-prod-coinbase-public-live.mjs",
     "verify:review-proof": "node scripts/verify-review-proof.mjs",
     "verify:release-evidence": "node scripts/verify-hyperliquid-release-evidence.mjs",
+    "verify:carry-release-evidence": "node scripts/verify-carry-release-evidence.mjs",
     "test:review-proof-preflight": "node --test scripts/verify-review-proof.test.mjs scripts/check-review-proof-routes.test.mjs",
-    "test:release-gates": "node --test scripts/verify-vercel-web-status.test.mjs scripts/check-hyperliquid-execution-contract.test.mjs scripts/verify-hyperliquid-release-evidence.test.mjs",
+    "test:release-gates": "node --test scripts/verify-vercel-web-status.test.mjs scripts/check-hyperliquid-execution-contract.test.mjs scripts/check-carry-execution-contract.test.mjs scripts/verify-hyperliquid-release-evidence.test.mjs scripts/verify-carry-release-evidence.test.mjs",
     "verify:prod:trading": "node scripts/verify-prod-trading.mjs",
     "verify:prod:hyperliquid": "node scripts/verify-prod-hyperliquid.mjs",
     "verify:prod:hyperliquid:live": "GHOLA_VERIFY_LIVE_SUBMIT=true node scripts/verify-prod-hyperliquid.mjs",
-    "guard:auth-bundle": "node scripts/check-auth-client-bundle.mjs"
+    "guard:auth-bundle": "node scripts/check-auth-client-bundle.mjs",
+    "guard:carry-release": "node scripts/check-carry-execution-contract.mjs"
   },
   "overrides": {
     "@huggingface/transformers": {
@@ -51,6 +53,7 @@
     "ws": "8.21.2"
   },
   "dependencies": {
+    "@ghola/execution-core": "file:../../packages/execution-core",
     "@ghola/perps-core": "file:../../packages/perps-core",
     "@ellipsis-labs/rise": "^0.4.19",
     "@huggingface/transformers": "^4.2.0",

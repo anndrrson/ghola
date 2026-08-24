@@ -6,6 +6,8 @@ const DEFAULT_TTL_SECONDS = 300;
 export type WorkerCapabilityScope =
   | "autopilot:control"
   | "autopilot:read"
+  | "carry:read"
+  | "carry:write"
   | "credential:verify"
   | "session:create"
   | "order:submit"

@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { advanceMultiLegSaga, createMultiLegSaga } from "@ghola/execution-core";
+import {
+  advanceMultiLegSaga,
+  createMultiLegSaga,
+  exactQuantityRecoveryAdapter,
+} from "@ghola/execution-core";
 
 export async function createDurableMultiLegSaga({ state, definition, execution_context = null }) {
   assertState(state);
@@ -43,12 +47,29 @@ function normalizeExecutionContext(value, saga) {
       leg_id: expected.leg_id,
       work_order_commitment: leg.work_order_commitment.trim(),
       instruction: structuredClone(leg.instruction),
+      accounting_reference_mark_price_e8: Number.isSafeInteger(leg.accounting_reference_mark_price_e8) && leg.accounting_reference_mark_price_e8 > 0
+        ? leg.accounting_reference_mark_price_e8
+        : null,
     });
   });
+  const autopilotSessionId = optionalText(value.autopilot_session_id);
+  const carryPositionId = optionalText(value.carry_position_id);
+  if (Boolean(autopilotSessionId) === Boolean(carryPositionId)) {
+    throw new Error("saga_execution_parent_invalid");
+  }
+  const directCarry = carryPositionId
+    ? {
+        carry_position_id: carryPositionId,
+        owner_commitment: requiredText(value.owner_commitment, "saga_owner_commitment_required"),
+        session_policy: cloneObject(value.session_policy, "saga_session_policy_required"),
+        venue_access: cloneObject(value.venue_access, "saga_venue_access_required"),
+      }
+    : {};
   return Object.freeze({
     version: 1,
-    autopilot_session_id: requiredText(value.autopilot_session_id, "saga_autopilot_session_required"),
+    autopilot_session_id: autopilotSessionId,
     policy_commitment: requiredText(value.policy_commitment, "saga_policy_commitment_required"),
+    ...directCarry,
     legs: Object.freeze(normalized),
   });
 }
@@ -191,10 +212,10 @@ async function executeCompensatingRecovery({
   env,
   nowMs,
 }) {
-  if (saga.legs.some((leg) => leg.venue_id !== "coinbase_advanced" && leg.venue_id !== "hyperliquid")) {
+  if (saga.legs.some((leg) => !exactQuantityRecoveryAdapter(leg.venue_id))) {
     return { ok: false, error: "exact_quantity_recovery_unavailable", saga };
   }
-  const session = await state.getAutopilotSession?.(saga.execution_context?.autopilot_session_id);
+  const session = await recoverySessionForSaga(state, saga);
   if (!session || !saga.execution_context) {
     return { ok: false, error: "saga_recovery_context_unavailable", saga };
   }
@@ -258,6 +279,19 @@ async function executeCompensatingRecovery({
   }
 
   current = await state.getMultiLegSaga(saga.saga_id) || current;
+  if (current.recovery_mode === "complete_reduce_only") {
+    return executeRiskReducingCompletion({
+      state,
+      saga: current,
+      session,
+      recipient,
+      executeOrder,
+      verifyOrder,
+      fetchImpl,
+      env,
+      nowMs,
+    });
+  }
   for (const action of current.next_actions.filter((item) => item.type === "submit_unwind")) {
     const leg = current.legs.find((item) => item.leg_id === action.leg_id);
     const context = executionLegContext(current, leg.leg_id);
@@ -363,6 +397,118 @@ async function executeCompensatingRecovery({
   return current.terminal && current.status === "unwound"
     ? { ok: true, saga: current }
     : { ok: false, error: "saga_recovery_incomplete", saga: current };
+}
+
+async function executeRiskReducingCompletion({
+  state,
+  saga,
+  session,
+  recipient,
+  executeOrder,
+  verifyOrder,
+  fetchImpl,
+  env,
+  nowMs,
+}) {
+  let current = saga;
+  for (const action of current.next_actions.filter((item) => item.type === "submit_completion")) {
+    const leg = current.legs.find((item) => item.leg_id === action.leg_id);
+    const context = executionLegContext(current, leg.leg_id);
+    const remainingMicro = leg.notional_micro_usdc - leg.filled_micro_usdc;
+    const requestedBase = positiveNumber(context.instruction?.order?.base_size);
+    const remainingBase = requestedBase * (remainingMicro / leg.notional_micro_usdc);
+    if (!(remainingBase > 0)) {
+      current = await recoveryEvent({
+        state,
+        saga: current,
+        type: "completion_failed",
+        values: { leg_id: leg.leg_id, failure_code: "exact_base_quantity_unavailable" },
+        nowMs,
+      });
+      return { ok: false, error: "exact_base_quantity_unavailable", saga: current };
+    }
+    const workOrderCommitment = recoveryWorkOrder(current, leg, "completion", remainingMicro);
+    const prior = await state.getIdempotency?.(workOrderCommitment);
+    const attempt = await state.getExecutionAttempt?.(workOrderCommitment);
+    if (attempt && !prior?.receipt) {
+      return { ok: false, error: "completion_outcome_requires_reconciliation", saga: current };
+    }
+    let price;
+    try {
+      price = await recoveryMark({ leg, context, fetchImpl, env });
+    } catch (error) {
+      return { ok: false, error: errorCode(error), saga: current };
+    }
+    const instruction = recoveryCompletionInstruction({
+      leg,
+      context,
+      session,
+      remainingMicro,
+      remainingBase,
+      price,
+      nowMs,
+    });
+    try {
+      if (typeof verifyOrder === "function" && !prior?.receipt) {
+        await verifyOrder(recoveryOrderArgs({
+          state,
+          session,
+          saga: current,
+          leg,
+          context,
+          recipient,
+          operationClass: instruction.operation_class,
+          workOrderCommitment: `${workOrderCommitment}:preflight`,
+          instruction,
+        }));
+      }
+      const receipt = prior?.receipt || await executeOrder(recoveryOrderArgs({
+        state,
+        session,
+        saga: current,
+        leg,
+        context,
+        recipient,
+        operationClass: instruction.operation_class,
+        workOrderCommitment,
+        instruction,
+      }));
+      const progress = unwindProgress({ receipt, requestedBase: remainingBase, remainingMicro, env });
+      if (progress.filledMicro > 0) {
+        current = await recoveryEvent({
+          state,
+          saga: current,
+          type: "completion_fill",
+          values: {
+            leg_id: leg.leg_id,
+            cumulative_filled_micro_usdc: Math.min(leg.notional_micro_usdc, leg.filled_micro_usdc + progress.filledMicro),
+          },
+          nowMs,
+        });
+      }
+      if (progress.terminal && progress.filledMicro === 0) {
+        current = await recoveryEvent({
+          state,
+          saga: current,
+          type: "completion_failed",
+          values: { leg_id: leg.leg_id, failure_code: "terminal_completion_without_fill" },
+          nowMs,
+        });
+        return { ok: false, error: "terminal_completion_without_fill", saga: current };
+      }
+    } catch (error) {
+      return { ok: false, error: errorCode(error), saga: await state.getMultiLegSaga(saga.saga_id) || current };
+    }
+    current = await state.getMultiLegSaga(saga.saga_id) || current;
+  }
+  if (current.status === "reconciling") {
+    for (const leg of current.legs.filter((item) => !item.reconciled)) {
+      current = await recoveryEvent({ state, saga: current, type: "leg_reconciled", values: { leg_id: leg.leg_id }, nowMs });
+    }
+  }
+  return current.terminal && current.status === "reconciled"
+    ? { ok: true, saga: current }
+    : { ok: false, error: "risk_reducing_completion_incomplete", saga: current };
 }
 
 async function applyRecoveryFillIfNew({ state, saga, leg, evidence, nowMs }) {
@@ -482,6 +628,8 @@ function reconcileInstruction({ leg, context, nowMs }) {
 }
 
 function recoveryUnwindInstruction({ leg, context, session, remainingMicro, remainingBase, price, nowMs }) {
+  const recoveryAdapter = exactQuantityRecoveryAdapter(leg.venue_id);
+  if (!recoveryAdapter) throw new Error("exact_quantity_recovery_unavailable");
   const side = leg.side === "buy" ? "sell" : "buy";
   const slippageBps = Math.max(1, Number(session.session_policy?.max_slippage_bps || 50));
   const limit = side === "buy"
@@ -491,7 +639,7 @@ function recoveryUnwindInstruction({ leg, context, session, remainingMicro, rema
     version: 1,
     kind: "ghola_private_execution_instruction",
     venue_id: leg.venue_id,
-    operation_class: leg.venue_id === "coinbase_advanced" ? "spot_market_order" : "limit_order",
+    operation_class: recoveryAdapter === "coinbase_advanced_v1" ? "spot_market_order" : "limit_order",
     expires_at: new Date(nowMs + 5 * 60_000).toISOString(),
     order: {
       market: originalVenueMarket(leg, context),
@@ -504,7 +652,37 @@ function recoveryUnwindInstruction({ leg, context, session, remainingMicro, rema
       live_order_mode: "tiny_fill",
       max_slippage_bps: String(slippageBps),
       reduce_only: true,
-      tif: leg.venue_id === "coinbase_advanced" ? "ioc" : "Ioc",
+      tif: recoveryAdapter === "coinbase_advanced_v1" ? "ioc" : "Ioc",
+    },
+  };
+}
+
+function recoveryCompletionInstruction({ leg, context, session, remainingMicro, remainingBase, price, nowMs }) {
+  const recoveryAdapter = exactQuantityRecoveryAdapter(leg.venue_id);
+  if (!recoveryAdapter) throw new Error("exact_quantity_recovery_unavailable");
+  const side = leg.side;
+  const slippageBps = Math.max(1, Number(session.session_policy?.max_slippage_bps || 50));
+  const limit = side === "buy"
+    ? price * (1 + slippageBps / 10_000)
+    : price * (1 - slippageBps / 10_000);
+  return {
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: leg.venue_id,
+    operation_class: recoveryAdapter === "coinbase_advanced_v1" ? "spot_market_order" : "limit_order",
+    expires_at: new Date(nowMs + 5 * 60_000).toISOString(),
+    order: {
+      market: originalVenueMarket(leg, context),
+      side,
+      base_size: trim(remainingBase),
+      quote_size: trim(remainingMicro / 1_000_000),
+      limit_price: trim(limit),
+      order_type: "market",
+      size_mode: "base",
+      live_order_mode: "tiny_fill",
+      max_slippage_bps: String(slippageBps),
+      reduce_only: true,
+      tif: recoveryAdapter === "coinbase_advanced_v1" ? "ioc" : "Ioc",
     },
   };
 }
@@ -532,7 +710,9 @@ function recoveryOrderArgs({
     instruction,
     execution: {
       ...executionForRecovery(session, leg.venue_id),
-      autopilot_session_id: saga.execution_context.autopilot_session_id,
+      autopilot_session_id: saga.execution_context.autopilot_session_id || undefined,
+      carry_position_id: saga.execution_context.carry_position_id || undefined,
+      owner_commitment: saga.execution_context.owner_commitment || undefined,
       recovery_saga_id: saga.saga_id,
       target_work_order_commitment: context.work_order_commitment,
     },
@@ -560,7 +740,8 @@ async function recoveryMark({ leg, context, fetchImpl, env }) {
     if (price > 0) return price;
     throw new Error("saga_recovery_mark_unavailable");
   }
-  if (leg.venue_id === "coinbase_advanced") {
+  const recoveryAdapter = exactQuantityRecoveryAdapter(leg.venue_id);
+  if (recoveryAdapter === "coinbase_advanced_v1") {
     const response = await fetchImpl(`https://api.coinbase.com/api/v3/brokerage/market/products/${encodeURIComponent(leg.market)}`, {
       cache: "no-store",
       headers: { "cache-control": "no-cache" },
@@ -569,7 +750,7 @@ async function recoveryMark({ leg, context, fetchImpl, env }) {
     const body = await response.json();
     const price = positiveNumber(body?.price || body?.mid_market_price || body?.pricebook?.best_bid);
     if (price > 0) return price;
-  } else {
+  } else if (recoveryAdapter === "hyperliquid_v1") {
     const response = await fetchImpl("https://api.hyperliquid.xyz/info", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -579,12 +760,34 @@ async function recoveryMark({ leg, context, fetchImpl, env }) {
     const mids = await response.json();
     const price = positiveNumber(mids?.[leg.asset]);
     if (price > 0) return price;
-  }
+  } else if (recoveryAdapter === "aster_v1") {
+    const market = originalVenueMarket(leg, context).toUpperCase().replace(/[-_/]/g, "").replace(/PERP$/, "");
+    const symbol = /USDT$/.test(market) ? market : `${market}USDT`;
+    const response = await fetchImpl(`https://fapi.asterdex.com/fapi/v3/premiumIndex?symbol=${encodeURIComponent(symbol)}`, {
+      cache: "no-store",
+      headers: { "cache-control": "no-cache" },
+    });
+    if (!response.ok) throw new Error("saga_recovery_mark_unavailable");
+    const body = await response.json();
+    const price = positiveNumber(body?.markPrice || body?.indexPrice);
+    if (price > 0) return price;
+  } else if (recoveryAdapter === "lighter_v1") {
+    const response = await fetchImpl("https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails", {
+      cache: "no-store",
+      headers: { "cache-control": "no-cache" },
+    });
+    if (!response.ok) throw new Error("saga_recovery_mark_unavailable");
+    const body = await response.json();
+    const rows = body?.order_book_details || body?.order_books || body?.markets || [];
+    const row = rows.find((item) => String(item?.symbol || item?.market_symbol || "").toUpperCase() === leg.asset);
+    const price = positiveNumber(row?.mark_price || row?.index_price || row?.last_trade_price);
+    if (price > 0) return price;
+  } else throw new Error("exact_quantity_recovery_unavailable");
   throw new Error("saga_recovery_mark_unavailable");
 }
 
 async function putRecoveryPosition({ state, session, saga, leg, filledBase, nowMs }) {
-  if (typeof state.putAutopilotPosition !== "function" || typeof state.listAutopilotPositions !== "function") return;
+  if (!session.autopilot_session_id || typeof state.putAutopilotPosition !== "function" || typeof state.listAutopilotPositions !== "function") return;
   const remainingMicro = leg.filled_micro_usdc - leg.unwind_filled_micro_usdc;
   const remainingBase = leg.filled_micro_usdc > 0 ? filledBase * (remainingMicro / leg.filled_micro_usdc) : 0;
   const positions = await state.listAutopilotPositions(session.autopilot_session_id);
@@ -628,7 +831,7 @@ function executionLegContext(saga, legId) {
 
 function originalVenueMarket(leg, context) {
   return context.instruction?.order?.market || context.instruction?.cancel?.market ||
-    (leg.venue_id === "hyperliquid" ? leg.asset : leg.market);
+    (exactQuantityRecoveryAdapter(leg.venue_id) === "hyperliquid_v1" ? leg.asset : leg.market);
 }
 
 function recoveryWorkOrder(saga, leg, action, amount) {
@@ -662,6 +865,20 @@ async function pauseParentSession(state, saga, nowMs) {
       : "Protected multi-leg cancellation, reconciliation, and unwind are required; risk increases remain paused.",
     updated_at: new Date(nowMs).toISOString(),
   });
+}
+
+async function recoverySessionForSaga(state, saga) {
+  const context = saga.execution_context;
+  if (!context) return null;
+  if (context.autopilot_session_id) return state.getAutopilotSession?.(context.autopilot_session_id);
+  if (!context.carry_position_id || !context.session_policy || !context.venue_access) return null;
+  return {
+    autopilot_session_id: null,
+    status: "paused",
+    execution_enabled: false,
+    session_policy: context.session_policy,
+    venue_access: context.venue_access,
+  };
 }
 
 function deadlineDue(saga, nowMs) {
@@ -701,6 +918,15 @@ function errorCode(error) {
 function requiredText(value, error) {
   if (typeof value !== "string" || value.trim().length < 8 || value.trim().length > 180) throw new Error(error);
   return value.trim();
+}
+
+function optionalText(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function cloneObject(value, error) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
+  return structuredClone(value);
 }
 
 function boundedMs(value, min, max, fallback) {

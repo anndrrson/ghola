@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ed25519 } from "@noble/curves/ed25519";
 import { Keypair } from "@solana/web3.js";
+import { privateKeyToAccount } from "viem/accounts";
 import {
   createPrivateAgentWorkerServer,
   loadRecipient,
@@ -149,6 +150,26 @@ async function encryptedHyperliquidExecutionVaultForNetwork(baseUrl, network) {
     "account:acct_commitment_123",
     `recipient:${target.recipient_id}`,
     `network:${network}`,
+  ].join("|"));
+}
+
+async function encryptedAsterVault(baseUrl) {
+  const target = await recipient(baseUrl);
+  const apiWalletPrivateKey = `0x${"31".repeat(32)}`;
+  return sealedBundle(baseUrl, {
+    version: 1,
+    kind: "ghola_aster_execution_vault",
+    network: "mainnet",
+    user_address: "0x2222222222222222222222222222222222222222",
+    signer_address: privateKeyToAccount(apiWalletPrivateKey).address,
+    api_wallet_private_key: apiWalletPrivateKey,
+    allowed_operations: ["read", "limit_order", "cancel", "reconcile"],
+    blocked_operations: ["withdraw", "vault_transfer", "leverage_escalation"],
+  }, [
+    "ghola/aster-execution-vault-v1",
+    "account:acct_commitment_aster_123",
+    `recipient:${target.recipient_id}`,
+    "network:mainnet",
   ].join("|"));
 }
 
@@ -496,6 +517,154 @@ describe("private agent worker", () => {
     assert.equal(replayed.status, 403);
     const replayBody = await replayed.json();
     assert.equal(replayBody.error_code, "worker_capability_replayed");
+  });
+
+  it("stores Carry Positions only with owner-scoped capability and ready venue accounts", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    const ownerCommitment = "owner:carry:server:0001";
+    const checkedAt = Date.now();
+    const longVault = await encryptedHyperliquidVault(baseUrl);
+    const shortVault = await encryptedHyperliquidVault(baseUrl);
+    const monitoringAccess = (venueId, vault) => ({
+      status: "ready",
+      owner_commitment: ownerCommitment,
+      account_commitment: `${venueId}_account_commitment_123`,
+      vault_commitment: `${venueId}_vault_commitment_123`,
+      encrypted_vault_commitment: `${venueId}_encrypted_vault_commitment_123`,
+      policy_commitment: `${venueId}_policy_commitment_123`,
+      encrypted_execution_vault: vault.encrypted_execution_vault,
+    });
+    const body = {
+      owner_commitment: ownerCommitment,
+      monitoring_context: {
+        version: 1,
+        venue_access: {
+          hyperliquid: monitoringAccess("hyperliquid", longVault),
+          lighter: monitoringAccess("lighter", shortVault),
+        },
+      },
+      position_input: {
+        version: 1,
+        position_id: "carry:position:server:0001",
+        mandate_id: "carry:mandate:server:0001",
+        asset: "BTC",
+        long_venue_id: "hyperliquid",
+        short_venue_id: "lighter",
+        target_notional_micro_usdc: 10_000_000,
+        risk_mandate: {
+          min_expected_net_benefit_bps: 1,
+          exit_net_value_bps: 0,
+          exit_after_consecutive_observations: 2,
+          min_margin_runway_ms: 3_600_000,
+          max_hedge_error_micro_usdc: 0,
+          max_data_age_ms: 30_000,
+          allow_migration: false,
+        },
+      },
+      opportunity: {
+        version: 1,
+        eligible: true,
+        reasons: [],
+        all_venues_ready: false,
+        live_creation_ready: true,
+        asset: "BTC",
+        long_venue_id: "hyperliquid",
+        short_venue_id: "lighter",
+        notional_micro_usdc: 10_000_000,
+        capital_committed_micro_usdc: 4_000_000,
+        horizon_ms: 86_400_000,
+        projected_gross_funding_micro_usdc: 25_000,
+        projected_trading_cost_micro_usdc: 3_000,
+        projected_capital_cost_micro_usdc: 1_000,
+        risk_buffer_micro_usdc: 1_000,
+        projected_net_value_micro_usdc: 20_000,
+        projected_net_value_bps: 20,
+        break_even_ms: 3_600_000,
+        checked_at_ms: checkedAt,
+        long_margin_runway_ms: 7_200_000,
+        short_margin_runway_ms: 7_200_000,
+      },
+    };
+    const notReadyToken = capabilityToken({
+      path: "/carry/positions",
+      scope: "carry:write",
+      body,
+      expected: { owner_commitment: ownerCommitment, operation_class: "create" },
+    });
+    const notReady = await fetch(`${baseUrl}/carry/positions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${notReadyToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+    assert.equal(notReady.status, 400);
+    assert.equal((await notReady.json()).error, "carry_venue_accounts_not_ready");
+
+    const readyBody = { ...body, opportunity: { ...body.opportunity, all_venues_ready: true } };
+    const readyToken = capabilityToken({
+      path: "/carry/positions",
+      scope: "carry:write",
+      body: readyBody,
+      expected: { owner_commitment: ownerCommitment, operation_class: "create" },
+    });
+    const created = await fetch(`${baseUrl}/carry/positions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${readyToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(readyBody),
+    });
+    assert.equal(created.status, 200);
+    const createdBody = await created.json();
+    assert.equal(createdBody.record.owner_commitment, ownerCommitment);
+    assert.equal(createdBody.record.opportunity.all_venues_ready, true);
+    assert.equal("monitoring_context" in createdBody.record, false);
+
+    const readBody = { owner_commitment: ownerCommitment, position_id: "carry:position:server:0001" };
+    const readToken = capabilityToken({
+      path: "/carry/positions/read",
+      scope: "carry:read",
+      body: readBody,
+      expected: { owner_commitment: ownerCommitment, operation_class: "/read" },
+    });
+    const read = await fetch(`${baseUrl}/carry/positions/read`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${readToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(readBody),
+    });
+    assert.equal(read.status, 200);
+    assert.equal((await read.json()).record.position.status, "draft");
+
+    const releaseToken = capabilityToken({
+      path: "/carry/positions/release-evidence",
+      scope: "carry:read",
+      body: readBody,
+      expected: { owner_commitment: ownerCommitment, operation_class: "/release-evidence" },
+    });
+    const release = await fetch(`${baseUrl}/carry/positions/release-evidence`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${releaseToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(readBody),
+    });
+    assert.equal(release.status, 400);
+    assert.deepEqual(await release.json(), {
+      ok: false,
+      error: "carry_release_position_not_reconciled",
+    });
   });
 
   it("requires scoped worker capabilities for pooled readiness probes", async () => {
@@ -1841,6 +2010,108 @@ describe("private agent worker", () => {
     assert.equal(body.visibility_summary.venue_access_source, "ghola_pooled_venue_account");
     assert.equal(body.checks.transaction_broadcast, false);
     assert.equal(JSON.stringify(body).includes("api_wallet_private_key"), false);
+  });
+
+  it("routes sealed Aster orders and requires an explicit no-submit verification header", async () => {
+    process.env.PRIVATE_AGENT_ASTER_ALLOW_MAINNET = "true";
+    process.env.PRIVATE_AGENT_ASTER_LIVE_MODE = "full_ticket";
+    const workOrderCommitment = "connector_work_order_aster_dry_run_123";
+    const requestBody = {
+      version: 1,
+      venue_id: "aster",
+      platform_class: "hyperliquid_style_market",
+      execution_mode: "byo_api_key",
+      work_order_commitment: workOrderCommitment,
+      vault_commitment: "aster_vault_commitment_123",
+      policy_commitment: "aster_policy_commitment_123",
+      operation_class: "limit_order",
+      encrypted_execution_vault: await encryptedAsterVault(baseUrl),
+      encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+        venue_id: "aster",
+        work_order_commitment: workOrderCommitment,
+        operation_class: "limit_order",
+        order: {
+          market: "BTC",
+          side: "buy",
+          base_size: "0.001",
+          quote_size: "5",
+          limit_price: "50000",
+          reduce_only: false,
+          tif: "Ioc",
+        },
+      }),
+      session_policy: {
+        market_allowlist: ["BTC"],
+        max_notional_bucket: "25",
+        max_order_count: 5,
+        kill_switch: false,
+      },
+    };
+    const submitted = await fetch(`${baseUrl}/venues/aster/orders`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(requestBody),
+    });
+    assert.equal(submitted.status, 202);
+    const receipt = await submitted.json();
+    assert.equal(receipt.venue_id, "aster");
+    assert.equal(receipt.platform_class, "hyperliquid_style_market");
+    assert.equal(JSON.stringify(receipt).includes("api_wallet_private_key"), false);
+
+    const missingHeader = await fetch(`${baseUrl}/venues/aster/verify`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(requestBody),
+    });
+    assert.equal(missingHeader.status, 400);
+    assert.equal((await missingHeader.json()).error, "no-submit verification header is required");
+
+    const invalidPreflight = await fetch(`${baseUrl}/venues/aster/preflight`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify({ version: 1 }),
+    });
+    assert.equal(invalidPreflight.status, 400);
+    assert.equal((await invalidPreflight.json()).error, "invalid aster preflight request");
+
+    const invalidLighterPreflight = await fetch(`${baseUrl}/venues/lighter/preflight`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify({ version: 1 }),
+    });
+    assert.equal(invalidLighterPreflight.status, 400);
+    assert.equal((await invalidLighterPreflight.json()).error, "invalid lighter preflight request");
+
+    const invalidPair = await fetch(`${baseUrl}/carry/preflight`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify({ version: 1 }),
+    });
+    assert.equal(invalidPair.status, 400);
+    assert.equal((await invalidPair.json()).error, "invalid carry preflight request");
   });
 
   it("rejects Hyperliquid mainnet credentials during the testnet pilot", async () => {

@@ -1,0 +1,239 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { executionVenueSpec } from "@ghola/execution-core";
+import { preflightCarryPair } from "../src/execution/carry-preflight.js";
+import { storeCarryVenueQualification } from "../src/execution/carry-qualification.js";
+
+const NOW = 1_800_000_000_000;
+
+function snapshot(venueId) {
+  return {
+    version: 1,
+    venue_id: venueId,
+    contract_id: `${venueId}:BTC`,
+    economic_equivalence_id: "carry:BTC-usd-linear",
+    asset: "BTC",
+    market: "BTC-USD",
+    quote_asset: venueId === "aster" ? "USDT" : "USD",
+    collateral_asset: venueId === "aster" ? "USDT" : "USDC",
+    contract_type: "linear_perp",
+    mark_price_e8: 10_000_000_000_000,
+    index_price_e8: 10_000_000_000_000,
+    best_bid_e8: 9_999_000_000_000,
+    best_ask_e8: 10_001_000_000_000,
+    funding_rate_e12_per_interval: venueId === "aster" ? 400_000_000 : 100_000_000,
+    funding_interval_ms: venueId === "aster" ? 28_800_000 : 3_600_000,
+    quantity_step_e8: 1_000,
+    price_tick_e8: 1_000_000,
+    maintenance_margin_bps: 500,
+    as_of_ms: NOW,
+    stale: false,
+  };
+}
+
+function access() {
+  return {
+    status: "ready",
+    owner_commitment: "owner_commitment_0001",
+    account_commitment: "account_commitment_0001",
+    vault_commitment: "vault_commitment_0001",
+    policy_commitment: "policy_commitment_0001",
+    encrypted_execution_vault: { ciphertext: "sealed" },
+  };
+}
+
+test("pairs authenticated no-submit evidence but blocks live creation until Aster recovery is proven", async () => {
+  const verified = [];
+  const account = {
+    can_trade: true,
+    available_balance: 500,
+    margin_balance: 500,
+    initial_margin: 0,
+    maintenance_margin: 0,
+    maker_fee_bps: 1.05,
+    taker_fee_bps: 3.15,
+  };
+  const result = await preflightCarryPair({
+    body: {
+      version: 1,
+      owner_commitment: "owner_commitment_0001",
+      work_order_commitment: "carry_pair_preflight_0001",
+      asset: "BTC",
+      long_venue_id: "hyperliquid",
+      short_venue_id: "aster",
+      notional_usd: 100,
+      horizon_days: 30,
+      venue_access: { hyperliquid: access(), aster: access() },
+    },
+    recipient: {},
+    state: {},
+    now: () => NOW,
+    fetchVenue: async ({ venue_id }) => [snapshot(venue_id)],
+    verifyOrder: async ({ venue_id, instruction, work_order_commitment }) => {
+      verified.push({ venue_id, instruction });
+      return {
+        status: "verified_ready",
+        work_order_commitment,
+        verification_commitment: `verification_${venue_id}`,
+        checks: { order_request_built: true, transaction_broadcast: false },
+        order_shape: venue_id === "hyperliquid"
+          ? { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 100_000_000 }
+          : { notional_micro_usdc: 99_900_000 },
+        ...(venue_id === "aster" ? { account } : {}),
+      };
+    },
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true }),
+    readHyperliquidCarryMetrics: async () => account,
+  });
+
+  assert.equal(verified.length, 2);
+  assert.equal(result.transaction_broadcast, false);
+  assert.equal(result.no_submit_ready, true);
+  assert.equal(result.live_creation_ready, false);
+  assert.equal(result.creation_opportunity.live_creation_ready, false);
+  assert.equal(result.creation_opportunity.all_venues_ready, true);
+  assert.equal(typeof result.creation_opportunity.long_margin_runway_ms, "number");
+  assert.ok(result.qualification_reasons.includes("venue_not_proven:aster"));
+  assert.ok(result.qualification_reasons.includes("exact_quantity_recovery_unproven:aster"));
+  assert.equal(result.account_readiness.every((item) => item.capital_ready), true);
+  assert.equal(result.economic_opportunity.projected_trading_cost_micro_usdc > 0, true);
+});
+
+test("accepts Lighter's owner-destination custody boundary and conservative fee ceiling", async () => {
+  const account = {
+    can_trade: true,
+    available_balance: 500,
+    margin_balance: 500,
+    initial_margin: 0,
+    maintenance_margin: 0,
+    maker_fee_bps: 0,
+    taker_fee_bps: 0,
+    position_count: 0,
+    open_order_count: 0,
+  };
+  const result = await preflightCarryPair({
+    body: {
+      version: 1,
+      owner_commitment: "owner_commitment_0002",
+      work_order_commitment: "carry_pair_preflight_0002",
+      asset: "BTC",
+      long_venue_id: "hyperliquid",
+      short_venue_id: "lighter",
+      notional_usd: 100,
+      horizon_days: 30,
+      venue_access: { hyperliquid: access(), lighter: access() },
+    },
+    recipient: {},
+    state: {},
+    now: () => NOW,
+    fetchVenue: async ({ venue_id }) => [snapshot(venue_id)],
+    verifyOrder: async ({ venue_id, instruction, work_order_commitment }) => ({
+      status: "verified_ready",
+      work_order_commitment,
+      verification_commitment: `verification_${venue_id}`,
+      checks: { order_request_checked: true, transaction_broadcast: false },
+      order_shape: { notional_micro_usdc: 99_900_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
+      ...(venue_id === "lighter" ? {
+        account: { ...account, fees_exact_for_account: false, fees_conservative_upper_bound: true },
+        authority_boundary: {
+          venue_native_trade_only: false,
+          withdrawal_request_permitted: false,
+          secure_withdrawal_destination: "owner_l1_only",
+          owner_wallet_key_present: false,
+          non_owner_fund_movement_possible: false,
+        },
+      } : {}),
+      instruction_venue: instruction.venue_id,
+    }),
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
+    readHyperliquidCarryMetrics: async () => account,
+  });
+
+  assert.equal(result.no_submit_ready, true);
+  assert.equal(result.live_creation_ready, false);
+  assert.equal(result.qualification_reasons.includes("credential_authority_boundary_unacceptable:lighter"), false);
+  assert.equal(result.qualification_reasons.includes("account_fee_tier_unverified:lighter"), false);
+  assert.ok(result.qualification_reasons.includes("venue_not_proven:lighter"));
+  assert.ok(result.qualification_reasons.includes("exact_quantity_recovery_unproven:lighter"));
+  assert.equal(result.evidence.find((item) => item.venue_id === "lighter").authority_boundary.venue_native_trade_only, false);
+});
+
+test("enables an economically eligible Aster pair only after deployment-bound qualification", async () => {
+  const image = "sha256:abcdef123456";
+  const rows = new Map();
+  const state = {
+    getIdempotency: async (key) => rows.get(key) || null,
+    putIdempotency: async (key, receipt) => { rows.set(key, { receipt }); return receipt; },
+  };
+  await storeCarryVenueQualification({
+    state,
+    now_ms: NOW,
+    env: { PRIVATE_AGENT_IMAGE_DIGEST: image },
+    evidence: {
+      version: 1,
+      venue_id: "aster",
+      adapter_id: executionVenueSpec("aster").exact_quantity_recovery_adapter,
+      image_digest: image,
+      network: "mainnet",
+      verified_at_ms: NOW,
+      no_submit: { transaction_broadcast: false, account_state_checked: true, order_request_checked: true, evidence_commitment: "no_submit_aster_0001" },
+      entry_reconciliation: { live_order_broadcast: true, target_client_order_matched: true, final_venue_execution_proven: true, filled_base_size: "0.001", evidence_commitment: "entry_aster_0001" },
+      exit_recovery: { live_order_broadcast: true, reduce_only: true, exact_base_quantity: true, final_venue_execution_proven: true, account_state_checked: true, gross_exposure_micro_usdc: 0, open_order_count: 0, evidence_commitment: "exit_aster_0001" },
+      ambiguous_submission_retry_count: 0,
+      authority_boundary_acceptable: true,
+      authority_evidence_commitment: "authority_aster_0001",
+    },
+  });
+  const account = {
+    can_trade: true,
+    available_balance: 500,
+    margin_balance: 500,
+    initial_margin: 0,
+    maintenance_margin: 0,
+    maker_fee_bps: 0,
+    taker_fee_bps: 0,
+  };
+  const preflightInput = {
+    body: {
+      version: 1,
+      owner_commitment: "owner_commitment_0003",
+      work_order_commitment: "carry_pair_preflight_0003",
+      asset: "BTC",
+      long_venue_id: "hyperliquid",
+      short_venue_id: "aster",
+      notional_usd: 100,
+      horizon_days: 30,
+      venue_access: { hyperliquid: access(), aster: access() },
+    },
+    recipient: {},
+    env: { PRIVATE_AGENT_IMAGE_DIGEST: image },
+    now: () => NOW,
+    fetchVenue: async ({ venue_id }) => [{
+      ...snapshot(venue_id),
+      funding_rate_e12_per_interval: venue_id === "aster" ? 2_000_000_000 : 0,
+    }],
+    verifyOrder: async ({ venue_id, work_order_commitment }) => ({
+      status: "verified_ready",
+      work_order_commitment,
+      verification_commitment: `verification_${venue_id}`,
+      checks: { order_request_checked: true, transaction_broadcast: false, account_state_checked: true },
+      order_shape: { market: "BTC-USD", base_size: "0.001", limit_price: "100000", notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
+      account,
+      ...(venue_id === "aster" ? { authority_boundary: { venue_native_trade_only: true } } : {}),
+    }),
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true }),
+    readHyperliquidCarryMetrics: async () => account,
+  };
+  const result = await preflightCarryPair({ ...preflightInput, state });
+
+  assert.equal(result.collateral_basis.supported, true);
+  assert.equal(result.economic_opportunity.collateral_basis_mode, "usdc_usdt_stress_buffer");
+  assert.equal(result.economic_opportunity.collateral_basis_risk_bps, 50);
+  assert.equal(result.qualification_reasons.length, 0);
+  assert.equal(result.live_creation_ready, true);
+  rows.clear();
+  const pilot = await preflightCarryPair({ ...preflightInput, state });
+  assert.equal(pilot.live_creation_ready, false);
+  assert.equal(pilot.qualification_pilot_ready, true);
+  assert.equal(pilot.qualification_pilot_candidate_venue_id, "aster");
+});

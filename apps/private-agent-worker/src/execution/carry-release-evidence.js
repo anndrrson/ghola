@@ -1,0 +1,239 @@
+import { createHash } from "node:crypto";
+import { readCarryVenueQualification } from "./carry-qualification.js";
+
+export async function buildCompletedCarryReleaseMaterial({
+  state,
+  owner_commitment: ownerCommitment,
+  position_id: positionId,
+  env = process.env,
+  now_ms: nowMs = Date.now(),
+}) {
+  const record = await state?.getCarryPositionRecord?.(String(positionId || ""));
+  if (!record) return denied("carry_position_not_found");
+  if (record.owner_commitment !== ownerCommitment) return denied("carry_position_owner_mismatch");
+  if (record.position?.status !== "reconciled") return denied("carry_release_position_not_reconciled");
+  if (record.value_ledger?.status !== "finalized" || record.value_evidence?.costs_complete !== true) {
+    return denied("carry_release_value_ledger_incomplete");
+  }
+  const finalState = record.final_reconciliation_evidence;
+  if (finalState?.account_state_checked !== true || finalState.gross_exposure_micro_usdc !== 0 || finalState.open_order_count !== 0) {
+    return denied("carry_release_final_state_unproven");
+  }
+  const [entrySaga, exitSaga] = await Promise.all([
+    state.getMultiLegSaga?.(record.entry_saga_id),
+    state.getMultiLegSaga?.(record.exit_saga_id),
+  ]);
+  if (entrySaga?.status !== "reconciled" || exitSaga?.status !== "reconciled") {
+    return denied("carry_release_sagas_not_reconciled");
+  }
+  const events = Array.isArray(record.lifecycle_events) ? record.lifecycle_events : [];
+  if (events.some((event) => ["submission_ambiguous", "recovery_failed"].includes(event?.type))) {
+    return denied("carry_release_ambiguous_or_recovered_lifecycle");
+  }
+  const observations = events.filter((event) => event?.type === "observation" && positiveInteger(event.recorded_at_ms));
+  if (observations.length === 0) return denied("carry_release_monitoring_evidence_missing");
+  const latestObservation = observations.at(-1);
+  const pair = [record.position.long_venue_id, record.position.short_venue_id];
+  const qualifications = await Promise.all(pair.map((venueId) => readCarryVenueQualification({
+    state,
+    venue_id: venueId,
+    now_ms: nowMs,
+    env,
+  })));
+  if (!qualifications.every((qualification) => qualification.proven === true)) {
+    return denied("carry_release_qualification_unproven");
+  }
+  const [entryLegs, exitLegs] = await Promise.all([
+    materialLegs({ state, saga: entrySaga, record, phase: "entry" }),
+    materialLegs({ state, saga: exitSaga, record, phase: "exit" }),
+  ]);
+  if (!entryLegs.ok) return entryLegs;
+  if (!exitLegs.ok) return exitLegs;
+  const exitRequest = [...events].reverse().find((event) => event?.type === "manual_exit_requested");
+  const entryReconciledAt = entrySaga.updated_at_ms;
+  const monitoringEndedAt = latestObservation.recorded_at_ms;
+  if (monitoringEndedAt <= entryReconciledAt) return denied("carry_release_monitoring_period_missing");
+  const exitRequestedAt = exitRequest?.recorded_at_ms || exitSaga.created_at_ms;
+  if (!positiveInteger(exitRequestedAt) || exitRequestedAt < monitoringEndedAt) {
+    return denied("carry_release_exit_timestamp_invalid");
+  }
+
+  const material = {
+    version: 1,
+    kind: "ghola_cross_venue_carry_mainnet_lifecycle_proof",
+    network: "mainnet",
+    request: { ambiguity_retry_performed: false },
+    position: {
+      position_id: record.position.position_id,
+      asset: record.position.asset,
+      target_notional_micro_usdc: record.position.target_notional_micro_usdc,
+      long_venue_id: record.position.long_venue_id,
+      short_venue_id: record.position.short_venue_id,
+      created_at: iso(record.position.created_at_ms),
+    },
+    mandate: {
+      policy_commitment: record.position.mandate_id,
+      ai_execution_authority: false,
+      funding_owner_only: true,
+      transfers_owner_only: true,
+      withdrawals_owner_only: true,
+    },
+    qualification: {
+      venues: qualifications.map((qualification) => ({
+        venue_id: qualification.venue_id,
+        proven: true,
+        adapter_id: qualification.adapter_id,
+        image_digest: qualification.image_digest,
+        source: qualification.source,
+        no_submit_ready: true,
+        transaction_broadcast: false,
+        evidence_commitment: qualification.evidence_commitment || `qualification:${qualification.venue_id}:registry`,
+      })),
+    },
+    entry: {
+      started_at: iso(entrySaga.created_at_ms),
+      reconciled_at: iso(entrySaga.updated_at_ms),
+      legs: entryLegs.legs,
+    },
+    monitoring: {
+      started_at: iso(entryReconciledAt),
+      ended_at: iso(monitoringEndedAt),
+      observation_count: observations.length,
+      funding_flip_checks: observations.length,
+      margin_runways: pair.map((venueId) => ({
+        venue_id: venueId,
+        runway_ms: latestObservation.margin_runway_ms_by_venue?.[venueId],
+        stale: false,
+      })),
+    },
+    exit: {
+      reason: exitRequest ? "manual" : "risk_mandate",
+      requested_at: iso(exitRequestedAt),
+      reconciled_at: iso(exitSaga.updated_at_ms),
+      legs: exitLegs.legs,
+    },
+    final_state: {
+      checked_at: iso(finalState.checked_at_ms),
+      gross_exposure_micro_usdc: 0,
+      open_order_count: 0,
+      venues: pair.map((venueId) => ({
+        venue_id: venueId,
+        nonzero_position_count: 0,
+        open_order_count: 0,
+        account_state_checked: true,
+      })),
+    },
+    value_ledger: releaseValueLedger(record),
+  };
+  material.worker_material_commitment = workerMaterialCommitment(material);
+  return { ok: true, material };
+}
+
+async function materialLegs({ state, saga, record, phase }) {
+  const legs = [];
+  for (const sagaLeg of saga.legs || []) {
+    const context = saga.execution_context?.legs?.find((item) => item.leg_id === sagaLeg.leg_id);
+    if (!context) return denied(`carry_release_${phase}_context_missing:${sagaLeg.venue_id}`);
+    const [cached, attempt] = await Promise.all([
+      state.getIdempotency?.(context.work_order_commitment),
+      state.getExecutionAttempt?.(context.work_order_commitment),
+    ]);
+    const receipt = cached?.receipt || attempt || null;
+    const proof = receipt?.final_proof || attempt?.final_proof || null;
+    if (attempt?.submit_count !== 1 || attempt?.ambiguity_retry_count !== 0) {
+      return denied(`carry_release_${phase}_submission_count_unproven:${sagaLeg.venue_id}`);
+    }
+    if (proof?.target_client_order_matched !== true || proof?.final_venue_execution_proven !== true || !positiveDecimal(proof?.filled_base_size)) {
+      return denied(`carry_release_${phase}_terminal_proof_missing:${sagaLeg.venue_id}`);
+    }
+    const ledgerEntries = (record.value_ledger.entries || []).filter((entry) => entry.leg_id === sagaLeg.leg_id);
+    legs.push({
+      venue_id: sagaLeg.venue_id,
+      side: context.instruction?.order?.side,
+      reduce_only: context.instruction?.order?.reduce_only === true,
+      client_order_commitment: receipt?.provider_ref_commitment || providerCommitment(attempt?.provider_ref_seed),
+      submit_count: attempt.submit_count,
+      ambiguity_retry_count: attempt.ambiguity_retry_count,
+      target_client_order_matched: true,
+      final_venue_execution_proven: true,
+      filled_base_size: String(proof.filled_base_size),
+      fee_micro_usdc: sumEntries(ledgerEntries, "trading_fee"),
+      slippage_micro_usdc: sumEntries(ledgerEntries, "slippage"),
+      receipt_commitment: receipt?.result_commitment || `receipt:${digest(JSON.stringify(proof))}`,
+    });
+  }
+  return legs.length === 2 ? { ok: true, legs } : denied(`carry_release_${phase}_legs_missing`);
+}
+
+function releaseValueLedger(record) {
+  const ledger = record.value_ledger;
+  const modeled = ledger.modeled;
+  const realized = ledger.realized;
+  const contractPnl = Number(record.value_evidence?.realized_economics?.contract_pnl_micro_usdc || 0);
+  return {
+    finalized: ledger.status === "finalized",
+    complete_costs: record.value_evidence?.costs_complete === true,
+    modeled: {
+      gross_funding_micro_usdc: modeled.gross_funding_micro_usdc,
+      total_cost_micro_usdc: modeled.trading_cost_micro_usdc + modeled.capital_cost_micro_usdc + modeled.risk_buffer_micro_usdc,
+      expected_net_micro_usdc: modeled.net_value_micro_usdc,
+    },
+    realized: {
+      contract_pnl_micro_usdc: contractPnl,
+      funding_micro_usdc: realized.funding_credit_micro_usdc - realized.funding_debit_micro_usdc,
+      fees_micro_usdc: realized.trading_fee_micro_usdc,
+      slippage_micro_usdc: realized.slippage_micro_usdc,
+      gas_micro_usdc: realized.gas_micro_usdc,
+      capital_cost_micro_usdc: realized.capital_cost_micro_usdc,
+      transfer_fees_micro_usdc: realized.transfer_fee_micro_usdc,
+      rebates_micro_usdc: realized.rebate_micro_usdc,
+      net_value_micro_usdc: realized.net_value_micro_usdc,
+    },
+    evidence_commitment: record.final_reconciliation_evidence.reconciliation_commitment,
+  };
+}
+
+function workerMaterialCommitment(material) {
+  const payload = { ...material };
+  delete payload.worker_material_commitment;
+  return `carry:release:material:${digest(stableJson(payload))}`;
+}
+
+function providerCommitment(value) {
+  return `provider:${digest(JSON.stringify(value || null))}`;
+}
+
+function sumEntries(entries, type) {
+  return entries.filter((entry) => entry.entry_type === type && entry.direction === "debit")
+    .reduce((sum, entry) => sum + Number(entry.amount_micro_usdc || 0), 0);
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, child]) => child !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+    .join(",")}}`;
+}
+
+function iso(value) {
+  return new Date(value).toISOString();
+}
+
+function positiveInteger(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function positiveDecimal(value) {
+  return /^\d+(?:\.\d+)?$/.test(String(value || "")) && Number(value) > 0;
+}
+
+function digest(value) {
+  return createHash("sha256").update(String(value)).digest("hex");
+}
+
+function denied(error) {
+  return { ok: false, error };
+}

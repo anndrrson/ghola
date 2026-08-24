@@ -1,0 +1,1231 @@
+import { createHash } from "node:crypto";
+import { exactQuantityRecoveryAdapter } from "@ghola/execution-core";
+import {
+  advanceStoredCarryPosition,
+  appendStoredCarryValueEntry,
+  collectStoredCarryFundingEvidence,
+  finalizeStoredCarryValueLedger,
+} from "./carry-positions.js";
+import { preflightCarryPair } from "./carry-preflight.js";
+import {
+  readCarryVenueQualification,
+  recordCompletedCarryVenueQualifications,
+  runtimeCarryQualificationImageDigest,
+} from "./carry-qualification.js";
+import {
+  applyDurableMultiLegEvent,
+  createDurableMultiLegSaga,
+} from "./multi-leg-orchestrator.js";
+
+export async function executeStoredCarryEntry({
+  state,
+  owner_commitment: ownerCommitment,
+  position_id: positionId,
+  recipient,
+  verifyOrder,
+  executeOrder,
+  qualification_confirmed: qualificationConfirmed = false,
+  preflight = preflightCarryPair,
+  env = process.env,
+  now = () => Date.now(),
+}) {
+  let record = await state.getCarryPositionRecord(String(positionId || ""));
+  if (!record) return denied("carry_position_not_found");
+  if (record.owner_commitment !== ownerCommitment) return denied("carry_position_owner_mismatch");
+  if (record.position.status !== "draft") return denied("carry_entry_already_started");
+  if (record.entry_saga_id) return denied("carry_entry_already_started");
+  if (!record.monitoring_context?.venue_access) return denied("carry_monitor_context_missing");
+  const live = env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true";
+  const pilotRecord = record.qualification_pilot?.status === "pending";
+  if (live && env.PRIVATE_AGENT_CARRY_POSITION_LIVE_SUBMIT !== "true") return denied("carry_position_live_submit_disabled");
+  if (live && pilotRecord && qualificationConfirmed !== true) return denied("carry_qualification_pilot_confirmation_required");
+  let pilotBootstrap = false;
+  if (live) {
+    const qualifications = await Promise.all([record.position.long_venue_id, record.position.short_venue_id].map((venueId) =>
+      readCarryVenueQualification({ state, venue_id: venueId, now_ms: now(), env })
+    ));
+    pilotBootstrap = qualificationPilotBootstrapAllowed({ record, qualifications, env });
+    if (!qualifications.every((item) => item.proven) && !pilotBootstrap) return denied("exact_quantity_recovery_unproven");
+  }
+
+  const startedAt = now();
+  let proof;
+  try {
+    proof = await preflight({
+      body: preflightBody(record, startedAt),
+      recipient,
+      state,
+      verifyOrder,
+      env,
+      now: () => startedAt,
+    });
+  } catch (error) {
+    return denied(errorCode(error, "carry_entry_preflight_failed"));
+  }
+  const qualifiedProof = pilotBootstrap
+    ? proof?.qualification_pilot_ready === true
+      && proof?.qualification_pilot_candidate_venue_id === record.qualification_pilot.candidate_venue_id
+    : proof?.live_creation_ready === true;
+  if (!qualifiedProof || proof?.no_submit_ready !== true || proof?.transaction_broadcast !== false) {
+    return denied("carry_entry_preflight_not_qualified");
+  }
+  const legs = buildLegs(record, proof, startedAt);
+  if (!legs.ok) return legs;
+  const sagaId = `saga:carry:${digest(`${positionId}:${startedAt}`).slice(0, 40)}`;
+  const policy = carrySessionPolicy(record, legs.legs, startedAt);
+  const created = await createDurableMultiLegSaga({
+    state,
+    definition: {
+      version: 1,
+      saga_id: sagaId,
+      idempotency_key: `idem:carry:${digest(`${positionId}:entry`).slice(0, 40)}`,
+      plan_commitment: `plan:carry:${digest(JSON.stringify(legs.legs)).slice(0, 40)}`,
+      strategy_id: "delta_neutral_carry",
+      max_unhedged_ms: boundedMs(env.PRIVATE_AGENT_CARRY_MAX_UNHEDGED_MS, 250, 60_000, 2_000),
+      max_hedge_error_micro_usdc: record.position.risk_mandate.max_hedge_error_micro_usdc,
+      now_ms: startedAt,
+      legs: legs.legs.map((leg) => ({
+        leg_id: leg.leg_id,
+        venue_id: leg.venue_id,
+        asset: record.position.asset,
+        market: leg.market,
+        product_type: "perp",
+        operation_class: "limit_order",
+        side: leg.side,
+        notional_micro_usdc: record.position.target_notional_micro_usdc,
+      })),
+    },
+    execution_context: {
+      version: 1,
+      carry_position_id: positionId,
+      owner_commitment: ownerCommitment,
+      policy_commitment: policy.policy_commitment,
+      session_policy: policy,
+      venue_access: record.monitoring_context.venue_access,
+      legs: legs.legs.map((leg) => ({
+        leg_id: leg.leg_id,
+        work_order_commitment: leg.work_order_commitment,
+        instruction: leg.instruction,
+        accounting_reference_mark_price_e8: leg.reference_mark_price_e8,
+      })),
+    },
+  });
+  if (!created.ok) return denied(created.error || "carry_entry_saga_create_failed");
+  if (created.duplicate) return denied("carry_entry_already_started");
+  const linked = await state.putCarryPositionRecord({
+    ...record,
+    entry_saga_id: sagaId,
+    qualification_context: qualificationContext(proof, startedAt),
+    ...(pilotRecord ? { qualification_pilot: { ...record.qualification_pilot, status: "entry_started" } } : {}),
+  }, { expected_version: record.record_version });
+  if (!linked.ok) return denied(linked.error || "carry_record_version_conflict");
+  record = linked.record;
+
+  for (const leg of legs.legs) await sagaEvent(state, sagaId, "preflight_passed", { leg_id: leg.leg_id }, now());
+  const opened = await advanceStoredCarryPosition({
+    state,
+    owner_commitment: ownerCommitment,
+    position_id: positionId,
+    event: carryEvent(record.position, "preflight_passed", {
+      opportunity_eligible: true,
+      all_venues_ready: true,
+    }),
+    now_ms: now(),
+  });
+  if (!opened.ok) return denied(opened.error || "carry_entry_lifecycle_failed");
+  await sagaEvent(state, sagaId, "submission_started", {}, now());
+
+  let outcomes;
+  try {
+    outcomes = await withTimeout(Promise.allSettled(legs.legs.map((leg) => executeOrder(orderArgs({
+      state,
+      record,
+      policy,
+      leg,
+      recipient,
+    })))), boundedMs(env.PRIVATE_AGENT_CARRY_MAX_UNHEDGED_MS, 250, 60_000, 2_000));
+  } catch {
+    return freezeAmbiguous({ state, record, positionId, ownerCommitment, sagaId, nowMs: now() });
+  }
+
+  let ambiguous = false;
+  const receiptByLeg = {};
+  for (let index = 0; index < legs.legs.length; index += 1) {
+    const leg = legs.legs[index];
+    const outcome = outcomes[index];
+    if (outcome.status === "rejected") {
+      if (isAmbiguous(outcome.reason)) {
+        ambiguous = true;
+      } else {
+        await sagaEvent(state, sagaId, "leg_failed", { leg_id: leg.leg_id, failure_code: "venue_submit_failed" }, now());
+      }
+      continue;
+    }
+    const receipt = outcome.value;
+    receiptByLeg[leg.leg_id] = receipt;
+    await sagaEvent(state, sagaId, "leg_acknowledged", {
+      leg_id: leg.leg_id,
+      provider_ref_commitment: receipt?.provider_ref_commitment || null,
+    }, now());
+    const progress = fillProgress(receipt, leg, record.position.target_notional_micro_usdc, env);
+    if (progress.filled_micro_usdc > 0) {
+      await sagaEvent(state, sagaId, "leg_fill", {
+        leg_id: leg.leg_id,
+        cumulative_filled_micro_usdc: progress.filled_micro_usdc,
+      }, now());
+    }
+    if (progress.terminal && progress.filled_micro_usdc < record.position.target_notional_micro_usdc) {
+      await sagaEvent(state, sagaId, "cancel_confirmed", {
+        leg_id: leg.leg_id,
+        cumulative_filled_micro_usdc: progress.filled_micro_usdc,
+      }, now());
+    } else if (!progress.terminal) {
+      ambiguous = true;
+    }
+  }
+  if (ambiguous) return freezeAmbiguous({ state, record, positionId, ownerCommitment, sagaId, nowMs: now() });
+
+  let saga = await state.getMultiLegSaga(sagaId);
+  if (saga.status === "reconciling") {
+    for (const leg of saga.legs) await sagaEvent(state, sagaId, "leg_reconciled", { leg_id: leg.leg_id }, now());
+    saga = await state.getMultiLegSaga(sagaId);
+  }
+  if (saga.legs.every((leg) => leg.filled_micro_usdc === 0)) {
+    const result = await advanceStoredCarryPosition({
+      state,
+      owner_commitment: ownerCommitment,
+      position_id: positionId,
+      event: carryEvent(opened.record.position, "entry_failed_no_fill"),
+      now_ms: now(),
+    });
+    return { ok: false, error: "carry_entry_failed_no_fill", saga, record: result.record };
+  }
+  const longLeg = saga.legs.find((leg) => leg.side === "buy");
+  const shortLeg = saga.legs.find((leg) => leg.side === "sell");
+  const advanced = await advanceStoredCarryPosition({
+    state,
+    owner_commitment: ownerCommitment,
+    position_id: positionId,
+    event: carryEvent(opened.record.position, "entry_reconciled", {
+      long_filled_micro_usdc: longLeg?.filled_micro_usdc || 0,
+      short_filled_micro_usdc: shortLeg?.filled_micro_usdc || 0,
+      hedge_error_micro_usdc: saga.hedge_error_micro_usdc || 0,
+    }),
+    now_ms: now(),
+  });
+  const accounting = await recordExecutionValueEvidence({
+    state,
+    ownerCommitment,
+    positionId,
+    phase: "entry",
+    legs: legs.legs,
+    receiptByLeg,
+    nowMs: now(),
+  });
+  const resultRecord = accounting.record || advanced.record;
+  return saga.status === "reconciled" && resultRecord?.position?.status === "active"
+    ? { ok: true, saga, record: resultRecord, accounting: accounting.summary }
+    : { ok: false, error: "carry_entry_requires_recovery", saga, record: resultRecord, accounting: accounting.summary };
+}
+
+export async function executeStoredCarryExit({
+  state,
+  owner_commitment: ownerCommitment,
+  position_id: positionId,
+  recipient,
+  verifyOrder,
+  executeOrder,
+  readFundingSettlements,
+  preflight = preflightCarryPair,
+  env = process.env,
+  now = () => Date.now(),
+}) {
+  let record = await state.getCarryPositionRecord(String(positionId || ""));
+  if (!record) return denied("carry_position_not_found");
+  if (record.owner_commitment !== ownerCommitment) return denied("carry_position_owner_mismatch");
+  if (record.position.status !== "exiting") return denied("carry_position_not_exiting");
+  if (record.exit_saga_id) return denied("carry_exit_already_started");
+  if (![record.position.long_venue_id, record.position.short_venue_id].every((venueId) => exactQuantityRecoveryAdapter(venueId) !== null)) {
+    return denied("exact_quantity_recovery_unavailable");
+  }
+  const entrySaga = record.entry_saga_id ? await state.getMultiLegSaga(record.entry_saga_id) : null;
+  if (!entrySaga || entrySaga.status !== "reconciled") return denied("carry_entry_reconciliation_missing");
+  const exactBases = await exactEntryBases(state, entrySaga);
+  if (!exactBases.ok) return exactBases;
+
+  const startedAt = now();
+  let proof;
+  try {
+    proof = await preflight({
+      body: { ...preflightBody(record, startedAt), phase: "monitoring" },
+      recipient,
+      state,
+      verifyOrder,
+      env,
+      now: () => startedAt,
+    });
+  } catch (error) {
+    return denied(errorCode(error, "carry_exit_preflight_failed"));
+  }
+  if (proof?.no_submit_ready !== true || proof?.transaction_broadcast !== false) return denied("carry_exit_preflight_not_ready");
+  const legs = buildExitLegs(record, proof, entrySaga, exactBases.byVenue, startedAt);
+  if (!legs.ok) return legs;
+  const sagaId = `saga:carry:exit:${digest(`${positionId}:${startedAt}`).slice(0, 36)}`;
+  const policy = carrySessionPolicy(record, legs.legs, startedAt);
+  const created = await createDurableMultiLegSaga({
+    state,
+    definition: {
+      version: 1,
+      saga_id: sagaId,
+      idempotency_key: `idem:carry:exit:${digest(positionId).slice(0, 36)}`,
+      plan_commitment: `plan:carry:exit:${digest(JSON.stringify(legs.legs)).slice(0, 36)}`,
+      strategy_id: "exposure_rebalance",
+      recovery_mode: "complete_reduce_only",
+      max_unhedged_ms: boundedMs(env.PRIVATE_AGENT_CARRY_MAX_UNHEDGED_MS, 250, 60_000, 2_000),
+      max_hedge_error_micro_usdc: record.position.risk_mandate.max_hedge_error_micro_usdc,
+      now_ms: startedAt,
+      legs: legs.legs.map((leg) => ({
+        leg_id: leg.leg_id,
+        venue_id: leg.venue_id,
+        asset: record.position.asset,
+        market: leg.market,
+        product_type: "perp",
+        operation_class: "limit_order",
+        side: leg.side,
+        notional_micro_usdc: record.position.target_notional_micro_usdc,
+      })),
+    },
+    execution_context: {
+      version: 1,
+      carry_position_id: positionId,
+      owner_commitment: ownerCommitment,
+      policy_commitment: policy.policy_commitment,
+      session_policy: policy,
+      venue_access: record.monitoring_context.venue_access,
+      legs: legs.legs.map((leg) => ({
+        leg_id: leg.leg_id,
+        work_order_commitment: leg.work_order_commitment,
+        instruction: leg.instruction,
+        accounting_reference_mark_price_e8: leg.reference_mark_price_e8,
+      })),
+    },
+  });
+  if (!created.ok) return denied(created.error || "carry_exit_saga_create_failed");
+  if (created.duplicate) return denied("carry_exit_already_started");
+  const linked = await state.putCarryPositionRecord({ ...record, exit_saga_id: sagaId }, { expected_version: record.record_version });
+  if (!linked.ok) return denied(linked.error || "carry_record_version_conflict");
+  record = linked.record;
+  for (const leg of legs.legs) await sagaEvent(state, sagaId, "preflight_passed", { leg_id: leg.leg_id }, now());
+  await sagaEvent(state, sagaId, "submission_started", {}, now());
+
+  let outcomes;
+  try {
+    outcomes = await withTimeout(Promise.allSettled(legs.legs.map((leg) => executeOrder(orderArgs({ state, record, policy, leg, recipient })))), boundedMs(env.PRIVATE_AGENT_CARRY_MAX_UNHEDGED_MS, 250, 60_000, 2_000));
+  } catch {
+    return freezeAmbiguous({ state, record, positionId, ownerCommitment, sagaId, nowMs: now() });
+  }
+  let ambiguous = false;
+  const receipts = [];
+  const receiptByLeg = {};
+  for (let index = 0; index < legs.legs.length; index += 1) {
+    const leg = legs.legs[index];
+    const outcome = outcomes[index];
+    if (outcome.status === "rejected") {
+      if (isAmbiguous(outcome.reason)) ambiguous = true;
+      else await sagaEvent(state, sagaId, "leg_failed", { leg_id: leg.leg_id, failure_code: "venue_submit_failed" }, now());
+      continue;
+    }
+    const receipt = outcome.value;
+    receipts.push(receipt);
+    receiptByLeg[leg.leg_id] = receipt;
+    await sagaEvent(state, sagaId, "leg_acknowledged", { leg_id: leg.leg_id, provider_ref_commitment: receipt?.provider_ref_commitment || null }, now());
+    const progress = fillProgress(receipt, leg, record.position.target_notional_micro_usdc, env);
+    if (progress.filled_micro_usdc > 0) await sagaEvent(state, sagaId, "leg_fill", { leg_id: leg.leg_id, cumulative_filled_micro_usdc: progress.filled_micro_usdc }, now());
+    if (progress.terminal && progress.filled_micro_usdc < record.position.target_notional_micro_usdc) {
+      await sagaEvent(state, sagaId, "cancel_confirmed", { leg_id: leg.leg_id, cumulative_filled_micro_usdc: progress.filled_micro_usdc }, now());
+    } else if (!progress.terminal) ambiguous = true;
+  }
+  if (ambiguous) return freezeAmbiguous({ state, record, positionId, ownerCommitment, sagaId, nowMs: now() });
+  let saga = await state.getMultiLegSaga(sagaId);
+  if (saga.status === "reconciling") {
+    for (const leg of saga.legs) await sagaEvent(state, sagaId, "leg_reconciled", { leg_id: leg.leg_id }, now());
+    saga = await state.getMultiLegSaga(sagaId);
+  }
+  if (saga.status !== "reconciled") return { ok: false, error: "carry_exit_requires_recovery", saga, record: publicCarryRecord(record) };
+  const openOrders = receipts.reduce((sum, receipt) => sum + Math.max(0, Number(receipt?.final_proof?.open_order_count || 0)), 0);
+  if (openOrders !== 0) return { ok: false, error: "carry_exit_open_orders_nonzero", saga, record: publicCarryRecord(record) };
+  const current = await state.getCarryPositionRecord(positionId);
+  const flatProof = await verifyFlatExitProof({
+    state,
+    record: current,
+    saga,
+    recipient,
+    verifyOrder,
+    preflight,
+    env,
+    nowMs: now(),
+  });
+  if (!flatProof.ok) {
+    const pending = await storeExitVerificationPending({ state, record: current, error: flatProof.error, env, nowMs: now() });
+    return { ok: false, error: flatProof.error, saga, record: publicCarryRecord(pending || current) };
+  }
+  const advanced = await advanceStoredCarryPosition({
+    state,
+    owner_commitment: ownerCommitment,
+    position_id: positionId,
+    event: carryEvent(current.position, "exit_reconciled", flatProof.evidence),
+    now_ms: now(),
+  });
+  if (!advanced.ok) return { ok: false, error: advanced.error, saga, record: advanced.record };
+  const accounting = await recordExecutionValueEvidence({
+    state,
+    ownerCommitment,
+    positionId,
+    phase: "exit",
+    legs: legs.legs,
+    receiptByLeg,
+    nowMs: now(),
+  });
+  const finalized = await finalizeCarryValueEvidenceIfComplete({
+    state,
+    ownerCommitment,
+    positionId,
+    venueAccess: current.monitoring_context.venue_access,
+    recipient,
+    readFundingSettlements,
+    nowMs: now(),
+  });
+  const qualification = await recordCompletedCarryVenueQualifications({ state, position_id: positionId, now_ms: now(), env });
+  return { ok: true, saga, record: finalized.record || accounting.record || advanced.record, accounting: accounting.summary, value_finalized: finalized.finalized, qualification };
+}
+
+export async function runCarryExecutionTick({
+  state,
+  recipient,
+  verifyOrder,
+  executeOrder,
+  readFundingSettlements,
+  preflight = preflightCarryPair,
+  env = process.env,
+  now = () => Date.now(),
+}) {
+  const records = await state.listCarryPositionRecords({ status: "exiting", limit: 500 });
+  const results = [];
+  for (const record of records) {
+    if (!record.exit_saga_id) {
+      results.push(await executeStoredCarryExit({
+        state,
+        owner_commitment: record.owner_commitment,
+        position_id: record.position.position_id,
+        recipient,
+        verifyOrder,
+        executeOrder,
+        readFundingSettlements,
+        preflight,
+        env,
+        now,
+      }));
+      continue;
+    }
+    const saga = await state.getMultiLegSaga(record.exit_saga_id);
+    if (saga?.status === "reconciled") {
+      const current = await state.getCarryPositionRecord(record.position.position_id);
+      if (Number(current.exit_verification?.next_check_at_ms || 0) > now()) {
+        results.push({ ok: true, pending: true, error: current.exit_verification?.error || "carry_exit_final_account_proof_pending" });
+        continue;
+      }
+      const flatProof = await verifyFlatExitProof({
+        state,
+        record: current,
+        saga,
+        recipient,
+        verifyOrder,
+        preflight,
+        env,
+        nowMs: now(),
+      });
+      if (!flatProof.ok) {
+        const pending = await storeExitVerificationPending({ state, record: current, error: flatProof.error, env, nowMs: now() });
+        results.push({ ok: false, error: flatProof.error, record: publicCarryRecord(pending || current) });
+        continue;
+      }
+      const advanced = await advanceStoredCarryPosition({
+        state,
+        owner_commitment: record.owner_commitment,
+        position_id: record.position.position_id,
+        event: carryEvent(current.position, "exit_reconciled", flatProof.evidence),
+        now_ms: now(),
+      });
+      if (!advanced.ok) {
+        results.push(advanced);
+        continue;
+      }
+      const accounting = await recordRecoveredExitValueEvidence({
+        state,
+        ownerCommitment: record.owner_commitment,
+        positionId: record.position.position_id,
+        saga,
+        env,
+        nowMs: now(),
+      });
+      const finalized = await finalizeCarryValueEvidenceIfComplete({
+        state,
+        ownerCommitment: record.owner_commitment,
+        positionId: record.position.position_id,
+        venueAccess: current.monitoring_context.venue_access,
+        recipient,
+        readFundingSettlements,
+        nowMs: now(),
+      });
+      const qualification = await recordCompletedCarryVenueQualifications({
+        state,
+        position_id: record.position.position_id,
+        now_ms: now(),
+        env,
+      });
+      results.push({ ...advanced, record: finalized.record || accounting.record || advanced.record, accounting: accounting.summary, value_finalized: finalized.finalized, qualification });
+    } else if (saga?.status === "manual_intervention") {
+      const current = await state.getCarryPositionRecord(record.position.position_id);
+      results.push(await advanceStoredCarryPosition({
+        state,
+        owner_commitment: record.owner_commitment,
+        position_id: record.position.position_id,
+        event: carryEvent(current.position, "recovery_failed"),
+        now_ms: now(),
+      }));
+    }
+  }
+  return { ok: results.every((result) => result.ok), checked: records.length, results };
+}
+
+async function verifyFlatExitProof({ state, record, saga, recipient, verifyOrder, preflight, env, nowMs }) {
+  let proof;
+  try {
+    proof = await preflight({
+      body: { ...preflightBody(record, nowMs), phase: "monitoring" },
+      recipient,
+      state,
+      verifyOrder,
+      env,
+      now: () => nowMs,
+    });
+  } catch (error) {
+    return denied(errorCode(error, "carry_exit_final_account_proof_unavailable"));
+  }
+  if (proof?.transaction_broadcast !== false || proof?.no_submit_ready !== true) {
+    return denied("carry_exit_final_account_proof_unavailable");
+  }
+  const readiness = Array.isArray(proof.account_readiness) ? proof.account_readiness : [];
+  const venues = [record.position.long_venue_id, record.position.short_venue_id];
+  const venueProof = venues.map((venueId) => readiness.find((item) => item?.venue_id === venueId));
+  if (venueProof.some((item) => item?.flat_zero_orders !== true || item?.authorized !== true)) {
+    return denied("carry_exit_not_flat_or_open_orders_nonzero");
+  }
+  return {
+    ok: true,
+    evidence: {
+      gross_exposure_micro_usdc: 0,
+      open_order_count: 0,
+      account_state_checked: true,
+      transaction_broadcast: false,
+      checked_at_ms: nowMs,
+      reconciliation_commitment: `carry:reconciliation:${digest(JSON.stringify({
+        position_id: record.position.position_id,
+        saga_id: saga.saga_id,
+        checked_at_ms: nowMs,
+        venue_readiness: venueProof.map((item) => ({
+          venue_id: item.venue_id,
+          authorized: true,
+          flat_zero_orders: true,
+        })),
+      })).slice(0, 40)}`,
+    },
+  };
+}
+
+async function storeExitVerificationPending({ state, record, error, env, nowMs }) {
+  const retryMs = boundedMs(env.PRIVATE_AGENT_CARRY_EXIT_VERIFY_RETRY_MS, 5_000, 300_000, 30_000);
+  const stored = await state.putCarryPositionRecord({
+    ...record,
+    exit_verification: {
+      status: "pending",
+      error: String(error || "carry_exit_final_account_proof_unavailable").slice(0, 120),
+      checked_at_ms: nowMs,
+      next_check_at_ms: nowMs + retryMs,
+      transaction_broadcast: false,
+    },
+  }, { expected_version: record.record_version });
+  return stored.ok ? stored.record : null;
+}
+
+async function recordExecutionValueEvidence({ state, ownerCommitment, positionId, phase, legs, receiptByLeg, nowMs }) {
+  const venues = {};
+  let entriesPersisted = true;
+  for (const leg of legs) {
+    const receipt = receiptByLeg[leg.leg_id];
+    const evidence = executionValueEvidence({ leg, receipt });
+    venues[leg.venue_id] = {
+      fee_exact: evidence.fee.complete,
+      slippage_exact: evidence.slippage.complete,
+      fill_exact: evidence.fill.complete,
+      filled_base_e8: evidence.fill.baseE8,
+      average_fill_price_e8: evidence.fill.averagePriceE8,
+      reference_mark_price_e8: Number.isSafeInteger(leg.reference_mark_price_e8) ? leg.reference_mark_price_e8 : null,
+      side: leg.side,
+      evidence_commitment: evidence.evidenceCommitment,
+    };
+    const entries = [];
+    if (evidence.fee.complete) {
+      entries.push({
+        entry_type: evidence.fee.amountMicro < 0 ? "rebate" : "trading_fee",
+        direction: evidence.fee.amountMicro < 0 ? "credit" : "debit",
+        amount_micro_usdc: Math.abs(evidence.fee.amountMicro),
+        suffix: "fee",
+      });
+    }
+    if (evidence.slippage.complete) {
+      entries.push({
+        entry_type: "slippage",
+        direction: "debit",
+        amount_micro_usdc: evidence.slippage.amountMicro,
+        suffix: "slippage",
+      });
+    }
+    for (const entry of entries) {
+      const persisted = await appendValueEntryWithRetry({
+        state,
+        ownerCommitment,
+        positionId,
+        entry: {
+          version: 1,
+          entry_id: `carry:value:${phase}:${leg.venue_id}:${entry.suffix}`,
+          entry_type: entry.entry_type,
+          direction: entry.direction,
+          amount_micro_usdc: entry.amount_micro_usdc,
+          venue_id: leg.venue_id,
+          leg_id: leg.leg_id,
+          occurred_at_ms: nowMs,
+          evidence_commitment: evidence.evidenceCommitment,
+        },
+        nowMs,
+      });
+      entriesPersisted &&= persisted;
+    }
+  }
+  const complete = entriesPersisted && legs.length === 2 && legs.every((leg) => venues[leg.venue_id]?.fee_exact && venues[leg.venue_id]?.slippage_exact && venues[leg.venue_id]?.fill_exact);
+  let storedRecord = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = await state.getCarryPositionRecord(positionId);
+    if (!current) break;
+    const nextEvidence = {
+      ...(current.value_evidence || {}),
+      [phase]: { status: complete ? "complete" : "pending_exact_receipts", checked_at_ms: nowMs, venues },
+      funding: current.value_evidence?.funding || { status: "pending_authoritative_settlement_history" },
+      costs_complete: false,
+    };
+    const stored = await state.putCarryPositionRecord({ ...current, value_evidence: nextEvidence }, { expected_version: current.record_version });
+    if (stored.ok) { storedRecord = stored.record; break; }
+  }
+  return { record: storedRecord ? publicCarryRecord(storedRecord) : null, summary: { phase, complete, venues } };
+}
+
+async function recordRecoveredExitValueEvidence({ state, ownerCommitment, positionId, saga, env, nowMs }) {
+  const legs = [];
+  const receiptByLeg = {};
+  for (const sagaLeg of saga.legs) {
+    const context = saga.execution_context?.legs?.find((item) => item.leg_id === sagaLeg.leg_id);
+    if (!context) continue;
+    const cached = await state.getIdempotency?.(context.work_order_commitment);
+    const attempt = await state.getExecutionAttempt?.(context.work_order_commitment);
+    const initialReceipt = cached?.receipt || attempt || null;
+    const initialProgress = fillProgress(initialReceipt, { instruction: context.instruction }, sagaLeg.notional_micro_usdc, env);
+    const remainingMicro = Math.max(0, sagaLeg.notional_micro_usdc - initialProgress.filled_micro_usdc);
+    let completionReceipt = null;
+    if (remainingMicro > 0) {
+      const completionWork = `work:recovery:${digest(`${saga.saga_id}:${sagaLeg.leg_id}:completion:${remainingMicro}`).slice(0, 40)}`;
+      const completion = await state.getIdempotency?.(completionWork);
+      const completionAttempt = await state.getExecutionAttempt?.(completionWork);
+      completionReceipt = completion?.receipt || completionAttempt || null;
+    }
+    const receipts = [initialReceipt, completionReceipt].filter(Boolean);
+    receiptByLeg[sagaLeg.leg_id] = {
+      provider_ref_commitment: receipts.map((item) => item.provider_ref_commitment).filter(Boolean).join(":") || null,
+      result_commitment: `carry:recovered-exit:${digest(JSON.stringify(receipts.map((item) => ({
+        result_commitment: item.result_commitment || null,
+        final_proof: item.final_proof || null,
+      })))).slice(0, 40)}`,
+      fills: receipts.flatMap(normalizedReceiptFills),
+    };
+    legs.push({
+      leg_id: sagaLeg.leg_id,
+      venue_id: sagaLeg.venue_id,
+      side: sagaLeg.side,
+      work_order_commitment: context.work_order_commitment,
+      instruction: context.instruction,
+      reference_mark_price_e8: completionReceipt ? null : context.accounting_reference_mark_price_e8,
+    });
+  }
+  return recordExecutionValueEvidence({
+    state,
+    ownerCommitment,
+    positionId,
+    phase: "exit",
+    legs,
+    receiptByLeg,
+    nowMs,
+  });
+}
+
+async function finalizeCarryValueEvidenceIfComplete({ state, ownerCommitment, positionId, venueAccess, recipient, readFundingSettlements, nowMs }) {
+  if (typeof readFundingSettlements !== "function") return { finalized: false, record: null };
+  await collectStoredCarryFundingEvidence({
+    state,
+    ownerCommitment,
+    positionId,
+    venueAccess,
+    recipient,
+    readFundingSettlements,
+    nowMs,
+    final: true,
+  });
+  let current = await state.getCarryPositionRecord(positionId);
+  const evidence = current?.value_evidence;
+  if (!current || evidence?.entry?.status !== "complete" || evidence?.exit?.status !== "complete" || evidence?.funding?.status !== "complete_through_exit") {
+    return { finalized: false, record: current ? publicCarryRecord(current) : null };
+  }
+  const economics = realizedCarryEconomics(current);
+  if (!economics.ok) return { finalized: false, record: publicCarryRecord(current) };
+  const economicCommitment = `carry:value:economics:${digest(JSON.stringify(economics.evidence)).slice(0, 40)}`;
+  const pnlStored = await appendValueEntryWithRetry({
+    state,
+    ownerCommitment,
+    positionId,
+    entry: {
+      version: 1,
+      entry_id: "carry:value:realized:contract-pnl",
+      entry_type: "settlement_adjustment",
+      direction: economics.settlementAdjustmentMicro < 0 ? "debit" : "credit",
+      amount_micro_usdc: Math.abs(economics.settlementAdjustmentMicro),
+      venue_id: null,
+      leg_id: null,
+      occurred_at_ms: nowMs,
+      evidence_commitment: economicCommitment,
+    },
+    nowMs,
+  });
+  const capitalStored = await appendValueEntryWithRetry({
+    state,
+    ownerCommitment,
+    positionId,
+    entry: {
+      version: 1,
+      entry_id: "carry:value:realized:capital-cost",
+      entry_type: "capital_cost",
+      direction: "debit",
+      amount_micro_usdc: economics.capitalCostMicro,
+      venue_id: null,
+      leg_id: null,
+      occurred_at_ms: nowMs,
+      evidence_commitment: economicCommitment,
+    },
+    nowMs,
+  });
+  if (!pnlStored || !capitalStored) return { finalized: false, record: publicCarryRecord(await state.getCarryPositionRecord(positionId) || current) };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    current = await state.getCarryPositionRecord(positionId);
+    const stored = await state.putCarryPositionRecord({
+      ...current,
+      value_evidence: {
+        ...current.value_evidence,
+        realized_economics: {
+          status: "complete",
+          contract_pnl_micro_usdc: economics.contractPnlMicro,
+          capital_cost_micro_usdc: economics.capitalCostMicro,
+          evidence_commitment: economicCommitment,
+          checked_at_ms: nowMs,
+        },
+        costs_complete: true,
+      },
+    }, { expected_version: current.record_version });
+    if (stored.ok) { current = stored.record; break; }
+  }
+  if (current.value_evidence?.costs_complete !== true) return { finalized: false, record: publicCarryRecord(current) };
+  const reconciliation = current.final_reconciliation_evidence;
+  if (reconciliation?.account_state_checked !== true || reconciliation?.gross_exposure_micro_usdc !== 0 || reconciliation?.open_order_count !== 0) {
+    return { finalized: false, record: publicCarryRecord(current) };
+  }
+  const finalized = await finalizeStoredCarryValueLedger({
+    state,
+    position_id: positionId,
+    owner_commitment: ownerCommitment,
+    evidence: {
+      gross_exposure_micro_usdc: 0,
+      open_order_count: 0,
+      costs_complete: true,
+      reconciliation_commitment: reconciliation.reconciliation_commitment,
+    },
+    now_ms: nowMs,
+  });
+  return { finalized: finalized.ok, record: finalized.record || publicCarryRecord(current) };
+}
+
+function realizedCarryEconomics(record) {
+  try {
+    const venues = [record.position.long_venue_id, record.position.short_venue_id];
+    let pnlE16 = 0n;
+    const pairs = [];
+    for (const venueId of venues) {
+      const entry = record.value_evidence.entry.venues[venueId];
+      const exit = record.value_evidence.exit.venues[venueId];
+      const entryBase = BigInt(entry.filled_base_e8);
+      const exitBase = BigInt(exit.filled_base_e8);
+      const entryPrice = BigInt(entry.average_fill_price_e8);
+      const exitPrice = BigInt(exit.average_fill_price_e8);
+      if (entryBase <= 0n || entryBase !== exitBase || entryPrice <= 0n || exitPrice <= 0n) return { ok: false };
+      const venuePnl = entry.side === "buy"
+        ? (exitPrice - entryPrice) * entryBase
+        : (entryPrice - exitPrice) * entryBase;
+      pnlE16 += venuePnl;
+      pairs.push({ venue_id: venueId, side: entry.side, base_e8: entry.filled_base_e8, entry_price_e8: entry.average_fill_price_e8, exit_price_e8: exit.average_fill_price_e8 });
+    }
+    const contractPnl = signedRoundedDiv(pnlE16, 10_000_000_000n);
+    if (contractPnl > BigInt(Number.MAX_SAFE_INTEGER) || contractPnl < BigInt(Number.MIN_SAFE_INTEGER)) return { ok: false };
+    const elapsedMs = Math.max(0, Number(record.final_reconciliation_evidence.checked_at_ms) - Number(record.position.created_at_ms));
+    const modeledCapital = BigInt(record.opportunity.projected_capital_cost_micro_usdc);
+    const horizon = BigInt(record.opportunity.horizon_ms);
+    const capitalCost = horizon > 0n ? roundedDiv(modeledCapital * BigInt(elapsedMs), horizon) : 0n;
+    if (capitalCost > BigInt(Number.MAX_SAFE_INTEGER)) return { ok: false };
+    const contractPnlMicro = Number(contractPnl);
+    const slippageMicro = Number(record.value_ledger.realized.slippage_micro_usdc || 0);
+    return {
+      ok: true,
+      contractPnlMicro,
+      settlementAdjustmentMicro: contractPnlMicro + slippageMicro,
+      capitalCostMicro: Number(capitalCost),
+      evidence: { position_id: record.position.position_id, pairs, contract_pnl_micro_usdc: contractPnlMicro, attributed_slippage_micro_usdc: slippageMicro, capital_cost_micro_usdc: Number(capitalCost), elapsed_ms: elapsedMs },
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function appendValueEntryWithRetry({ state, ownerCommitment, positionId, entry, nowMs }) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = await state.getCarryPositionRecord(positionId);
+    if (!current) return false;
+    const result = await appendStoredCarryValueEntry({
+      state,
+      owner_commitment: ownerCommitment,
+      position_id: positionId,
+      entry: { ...entry, sequence: current.value_ledger.last_sequence + 1 },
+      now_ms: nowMs,
+    });
+    if (result.ok) return true;
+    if (result.error !== "carry_record_version_conflict") return false;
+  }
+  return false;
+}
+
+function executionValueEvidence({ leg, receipt }) {
+  const fills = normalizedReceiptFills(receipt);
+  const fill = exactFillSummary(fills);
+  const evidenceCommitment = `carry:value:evidence:${digest(JSON.stringify({
+    leg_id: leg.leg_id,
+    work_order_commitment: leg.work_order_commitment,
+    provider_ref_commitment: receipt?.provider_ref_commitment || null,
+    result_commitment: receipt?.result_commitment || null,
+    final_proof: receipt?.final_proof || null,
+    fills,
+  })).slice(0, 40)}`;
+  const fee = exactQuoteFee(leg.venue_id, fills);
+  const reference = Number.isSafeInteger(leg.reference_mark_price_e8) && leg.reference_mark_price_e8 > 0
+    ? BigInt(leg.reference_mark_price_e8)
+    : null;
+  let slippageMicro = 0n;
+  let slippageComplete = reference !== null && fills.length > 0;
+  for (const fill of reference === null ? [] : fills) {
+    const sizeE8 = decimalToScaled(fill.size, 8);
+    const priceE8 = decimalToScaled(fill.price, 8);
+    if (sizeE8 === null || priceE8 === null || sizeE8 <= 0n || priceE8 <= 0n) {
+      slippageComplete = false;
+      break;
+    }
+    const difference = leg.side === "buy" ? priceE8 - reference : reference - priceE8;
+    if (difference > 0n) slippageMicro += roundedDiv(difference * sizeE8, 10_000_000_000n);
+  }
+  return {
+    evidenceCommitment,
+    fill,
+    fee,
+    slippage: {
+      complete: slippageComplete && slippageMicro <= BigInt(Number.MAX_SAFE_INTEGER),
+      amountMicro: slippageMicro <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(slippageMicro) : 0,
+    },
+  };
+}
+
+function exactFillSummary(fills) {
+  if (fills.length === 0) return { complete: false, baseE8: null, averagePriceE8: null };
+  let baseE8 = 0n;
+  let notionalE16 = 0n;
+  for (const fill of fills) {
+    const size = decimalToScaled(fill.size, 8);
+    const price = decimalToScaled(fill.price, 8);
+    if (size === null || price === null || size <= 0n || price <= 0n) return { complete: false, baseE8: null, averagePriceE8: null };
+    baseE8 += size;
+    notionalE16 += size * price;
+  }
+  const averagePriceE8 = roundedDiv(notionalE16, baseE8);
+  return {
+    complete: baseE8 > 0n,
+    baseE8: baseE8.toString(),
+    averagePriceE8: averagePriceE8.toString(),
+  };
+}
+
+function normalizedReceiptFills(receipt) {
+  const raw = Array.isArray(receipt?.fills) ? receipt.fills : [];
+  const normalized = raw.map((fill) => ({
+    size: fill?.size ?? fill?.sz ?? fill?.totalSz ?? null,
+    price: fill?.price ?? fill?.px ?? fill?.avgPx ?? null,
+    fee: fill?.fee ?? fill?.commission ?? null,
+    fee_asset: fill?.fee_asset ?? fill?.feeAsset ?? fill?.feeToken ?? fill?.commissionAsset ?? null,
+  })).filter((fill) => fill.size != null && fill.price != null);
+  if (normalized.length > 0) return normalized;
+  const proof = receipt?.final_proof;
+  if (proof?.filled_base_size && proof?.average_fill_price) {
+    return [{
+      size: proof.filled_base_size,
+      price: proof.average_fill_price,
+      fee: proof.fee_quote_amount ?? null,
+      fee_asset: proof.fee_asset ?? null,
+    }];
+  }
+  return [];
+}
+
+function exactQuoteFee(venueId, fills) {
+  if (fills.length === 0) return { complete: false, amountMicro: 0 };
+  let total = 0n;
+  for (const fill of fills) {
+    const fee = decimalToScaled(fill.fee, 6, true);
+    const asset = String(fill.fee_asset || (venueId === "hyperliquid" ? "USDC" : "")).toUpperCase();
+    if (fee === null || !new Set(["USD", "USDC", "USDT"]).has(asset)) return { complete: false, amountMicro: 0 };
+    total += fee;
+  }
+  if (total > BigInt(Number.MAX_SAFE_INTEGER) || total < BigInt(Number.MIN_SAFE_INTEGER)) return { complete: false, amountMicro: 0 };
+  return { complete: true, amountMicro: Number(total) };
+}
+
+function decimalToScaled(value, scale, signed = false) {
+  const text = String(value ?? "").trim();
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(text);
+  if (!match || (!signed && match[1] === "-")) return null;
+  const fraction = String(match[3] || "").padEnd(scale, "0");
+  const rounded = fraction.slice(0, scale);
+  const discarded = fraction.slice(scale);
+  let result = BigInt(match[2]) * (10n ** BigInt(scale)) + BigInt(rounded || "0");
+  if (discarded[0] >= "5") result += 1n;
+  return match[1] === "-" ? -result : result;
+}
+
+function roundedDiv(numerator, denominator) {
+  return (numerator + denominator / 2n) / denominator;
+}
+
+function signedRoundedDiv(numerator, denominator) {
+  return numerator < 0n
+    ? -roundedDiv(-numerator, denominator)
+    : roundedDiv(numerator, denominator);
+}
+
+export function startCarryExecutionLoop({ state, recipient, verifyOrder, executeOrder, readFundingSettlements, preflight = preflightCarryPair, env = process.env, now = () => Date.now() } = {}) {
+  if (String(env.PRIVATE_AGENT_CARRY_AUTO_EXIT_ENABLED ?? "true").toLowerCase() === "false") return { stop() {} };
+  const intervalMs = boundedMs(env.PRIVATE_AGENT_CARRY_EXECUTION_SWEEP_MS, 1_000, 60_000, 2_000);
+  let timer = null;
+  let stopped = false;
+  const schedule = (delay) => {
+    if (stopped) return;
+    timer = setTimeout(async () => {
+      await runCarryExecutionTick({ state, recipient, verifyOrder, executeOrder, readFundingSettlements, preflight, env, now }).catch(() => null);
+      schedule(intervalMs);
+    }, delay);
+    timer.unref?.();
+  };
+  schedule(intervalMs);
+  return { stop() { stopped = true; if (timer) clearTimeout(timer); timer = null; } };
+}
+
+async function exactEntryBases(state, saga) {
+  const byVenue = {};
+  for (const leg of saga.legs) {
+    const context = saga.execution_context?.legs?.find((item) => item.leg_id === leg.leg_id);
+    const cached = context ? await state.getIdempotency?.(context.work_order_commitment) : null;
+    const attempt = context ? await state.getExecutionAttempt?.(context.work_order_commitment) : null;
+    const proof = cached?.receipt?.final_proof || attempt?.final_proof;
+    const base = Number(proof?.filled_base_size);
+    if (!(base > 0) || proof?.final_venue_execution_proven !== true) return denied(`carry_exact_entry_quantity_missing:${leg.venue_id}`);
+    byVenue[leg.venue_id] = base;
+  }
+  return { ok: true, byVenue };
+}
+
+function buildExitLegs(record, proof, entrySaga, bases, nowMs) {
+  const evidence = Array.isArray(proof.evidence) ? proof.evidence : [];
+  const legs = [];
+  for (const entryLeg of entrySaga.legs) {
+    const side = entryLeg.side === "buy" ? "sell" : "buy";
+    const verified = evidence.find((item) => item.venue_id === entryLeg.venue_id);
+    const shape = verified?.order_shape;
+    if (!shape?.market || !shape?.limit_price || verified.transaction_broadcast !== false || !(bases[entryLeg.venue_id] > 0)) {
+      return denied(`carry_exit_order_shape_missing:${entryLeg.venue_id}`);
+    }
+    const legId = `leg:carry:exit:${digest(`${record.position.position_id}:${entryLeg.venue_id}`).slice(0, 28)}`;
+    legs.push({
+      leg_id: legId,
+      venue_id: entryLeg.venue_id,
+      side,
+      market: String(shape.market),
+      reference_mark_price_e8: verified.reference_mark_price_e8,
+      work_order_commitment: `work:carry:exit:${digest(`${record.position.position_id}:${entryLeg.venue_id}`).slice(0, 32)}`,
+      instruction: {
+        version: 1,
+        kind: "ghola_private_execution_instruction",
+        venue_id: entryLeg.venue_id,
+        operation_class: "limit_order",
+        expires_at: new Date(nowMs + 5 * 60_000).toISOString(),
+        order: {
+          market: String(shape.market), side, base_size: String(bases[entryLeg.venue_id]),
+          quote_size: String(record.position.target_notional_micro_usdc / 1_000_000), limit_price: String(shape.limit_price),
+          order_type: "limit", size_mode: "base", live_order_mode: "full_ticket", reduce_only: true,
+          tif: "Ioc", leverage: 1, margin_mode: "cross",
+        },
+      },
+    });
+  }
+  return { ok: true, legs };
+}
+
+function publicCarryRecord(record) {
+  const { monitoring_context: _context, ...safe } = record;
+  return structuredClone(safe);
+}
+
+function preflightBody(record, nowMs) {
+  return {
+    version: 1,
+    phase: "opening",
+    owner_commitment: record.owner_commitment,
+    work_order_commitment: `carry_entry_preflight_${digest(`${record.position.position_id}:${nowMs}`).slice(0, 32)}`,
+    asset: record.position.asset,
+    long_venue_id: record.position.long_venue_id,
+    short_venue_id: record.position.short_venue_id,
+    notional_usd: String(record.position.target_notional_micro_usdc / 1_000_000),
+    horizon_days: String(Math.max(1, Math.ceil(record.opportunity.horizon_ms / 86_400_000))),
+    venue_access: record.monitoring_context.venue_access,
+  };
+}
+
+function qualificationContext(proof, checkedAtMs) {
+  const venues = {};
+  for (const item of Array.isArray(proof?.evidence) ? proof.evidence : []) {
+    const checks = item?.checks || {};
+    venues[item.venue_id] = {
+      transaction_broadcast: item.transaction_broadcast === false ? false : null,
+      account_state_checked: checks.account_state_checked === true,
+      order_request_checked: checks.order_request_checked === true || checks.order_request_built === true,
+      evidence_commitment: String(item.verification_commitment || ""),
+      authority_boundary: item.authority_boundary ? structuredClone(item.authority_boundary) : null,
+    };
+  }
+  return { version: 1, checked_at_ms: checkedAtMs, venues };
+}
+
+function qualificationPilotBootstrapAllowed({ record, qualifications, env }) {
+  const pilot = record.qualification_pilot;
+  if (pilot?.status !== "pending" || env.PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED !== "true") return false;
+  if (!runtimeCarryQualificationImageDigest(env)) return false;
+  if (record.position.target_notional_micro_usdc > pilot.max_notional_micro_usdc) return false;
+  const candidate = qualifications.find((item) => item.venue_id === pilot.candidate_venue_id);
+  const peers = qualifications.filter((item) => item.venue_id !== pilot.candidate_venue_id);
+  return candidate?.proven !== true && peers.length === 1 && peers.every((item) => item.proven === true);
+}
+
+function buildLegs(record, proof, nowMs) {
+  const evidence = Array.isArray(proof.evidence) ? proof.evidence : [];
+  const specs = [
+    { id: "long", venue_id: record.position.long_venue_id, side: "buy" },
+    { id: "short", venue_id: record.position.short_venue_id, side: "sell" },
+  ];
+  const legs = [];
+  for (const spec of specs) {
+    const verified = evidence.find((item) => item.venue_id === spec.venue_id && item.side === spec.side);
+    const shape = verified?.order_shape;
+    if (!shape?.market || !shape?.base_size || !shape?.limit_price || verified.transaction_broadcast !== false) {
+      return denied(`carry_entry_order_shape_missing:${spec.venue_id}`);
+    }
+    const legId = `leg:carry:${digest(`${record.position.position_id}:${spec.id}`).slice(0, 32)}`;
+    const workOrder = `work:carry:${digest(`${record.position.position_id}:${spec.id}:entry`).slice(0, 40)}`;
+    legs.push({
+      leg_id: legId,
+      venue_id: spec.venue_id,
+      side: spec.side,
+      market: String(shape.market),
+      reference_mark_price_e8: verified.reference_mark_price_e8,
+      work_order_commitment: workOrder,
+      instruction: {
+        version: 1,
+        kind: "ghola_private_execution_instruction",
+        venue_id: spec.venue_id,
+        operation_class: "limit_order",
+        expires_at: new Date(nowMs + 5 * 60_000).toISOString(),
+        order: {
+          market: String(shape.market),
+          side: spec.side,
+          base_size: String(shape.base_size),
+          quote_size: String(record.position.target_notional_micro_usdc / 1_000_000),
+          limit_price: String(shape.limit_price),
+          order_type: "limit",
+          size_mode: "base",
+          live_order_mode: "full_ticket",
+          reduce_only: false,
+          tif: "Ioc",
+          leverage: 1,
+          margin_mode: "cross",
+        },
+      },
+    });
+  }
+  return { ok: true, legs };
+}
+
+function carrySessionPolicy(record, legs, nowMs) {
+  const notionalUsd = record.position.target_notional_micro_usdc / 1_000_000;
+  return {
+    version: 2,
+    strategy_id: "delta_neutral_carry_v1",
+    policy_commitment: record.position.mandate_id,
+    market_allowlist: [...new Set(legs.map((leg) => leg.market))],
+    max_notional_bucket: notionalBucket(notionalUsd),
+    max_daily_notional_bucket: notionalBucket(notionalUsd * 2),
+    max_order_count: 2,
+    max_slippage_bps: 50,
+    kill_switch: false,
+    expires_at: new Date(nowMs + 10 * 60_000).toISOString(),
+  };
+}
+
+function orderArgs({ state, record, policy, leg, recipient }) {
+  const access = record.monitoring_context.venue_access[leg.venue_id];
+  return {
+    venue_id: leg.venue_id,
+    operation_class: "limit_order",
+    work_order_commitment: leg.work_order_commitment,
+    policy_commitment: policy.policy_commitment,
+    session_policy: policy,
+    instruction: leg.instruction,
+    execution: {
+      execution_mode: "byo_api_key",
+      vault_commitment: access.vault_commitment,
+      encrypted_vault_commitment: access.encrypted_vault_commitment,
+      encrypted_execution_vault: access.encrypted_execution_vault,
+      account_commitment: access.account_commitment,
+      owner_commitment: record.owner_commitment,
+      carry_position_id: record.position.position_id,
+    },
+    recipient,
+    state,
+  };
+}
+
+async function sagaEvent(state, sagaId, type, values, nowMs) {
+  const saga = await state.getMultiLegSaga(sagaId);
+  const result = await applyDurableMultiLegEvent({
+    state,
+    saga_id: sagaId,
+    now_ms: Math.max(nowMs, saga.updated_at_ms),
+    event: {
+      version: 1,
+      event_id: `event:carry:${digest(`${sagaId}:${saga.last_event_sequence + 1}:${type}:${values.leg_id || "pair"}`).slice(0, 40)}`,
+      sequence: saga.last_event_sequence + 1,
+      type,
+      ...values,
+    },
+  });
+  if (!result.ok) throw new Error(result.error || "carry_saga_event_failed");
+  return result.saga;
+}
+
+async function freezeAmbiguous({ state, record, positionId, ownerCommitment, sagaId, nowMs }) {
+  const current = await state.getCarryPositionRecord(positionId);
+  const result = await advanceStoredCarryPosition({
+    state,
+    owner_commitment: ownerCommitment,
+    position_id: positionId,
+    event: carryEvent(current.position, "submission_ambiguous"),
+    now_ms: nowMs,
+  });
+  return { ok: false, error: "carry_entry_outcome_ambiguous", saga: await state.getMultiLegSaga(sagaId), record: result.record };
+}
+
+function carryEvent(position, type, values = {}) {
+  const sequence = position.last_event_sequence + 1;
+  return {
+    version: 1,
+    event_id: `carry:entry:${digest(`${position.position_id}:${sequence}:${type}`).slice(0, 40)}`,
+    sequence,
+    type,
+    ...values,
+  };
+}
+
+function fillProgress(receipt, leg, expectedMicro, env) {
+  if (env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !receipt?.final_proof) return { terminal: true, filled_micro_usdc: expectedMicro };
+  const proof = receipt?.final_proof;
+  const reported = Number(proof?.cumulative_filled_micro_usdc);
+  const targetBase = Number(leg.instruction?.order?.base_size);
+  const filledBase = Number(proof?.filled_base_size);
+  const proportional = Number.isFinite(targetBase) && targetBase > 0 && Number.isFinite(filledBase) && filledBase >= 0
+    ? Math.round(expectedMicro * Math.max(0, Math.min(1, filledBase / targetBase)))
+    : 0;
+  return {
+    terminal: proof?.final_venue_execution_proven === true,
+    filled_micro_usdc: Number.isSafeInteger(reported) && reported >= 0
+      ? Math.min(expectedMicro, reported)
+      : proof?.final_fill_proven === true ? proportional : 0,
+  };
+}
+
+function isAmbiguous(error) {
+  return /ambiguous|outcome_unknown|timeout/i.test(String(error?.code || error?.message || ""));
+}
+
+function withTimeout(promise, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("carry_entry_timeout")), timeoutMs);
+    timer.unref?.();
+    promise.then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
+  });
+}
+
+function notionalBucket(value) {
+  for (const bucket of [5, 10, 25, 50, 100, 250, 500, 1_000]) if (value <= bucket) return String(bucket);
+  return "1000";
+}
+
+function boundedMs(value, minimum, maximum, fallback) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
+}
+
+function digest(value) {
+  return createHash("sha256").update(String(value)).digest("hex");
+}
+
+function errorCode(error, fallback) {
+  return String(error?.code || error?.message || fallback).slice(0, 120);
+}
+
+function denied(error) {
+  return { ok: false, error };
+}

@@ -1,12 +1,15 @@
 const ID = /^[A-Za-z0-9:_-]{8,180}$/;
 const ASSET = /^[A-Z0-9][A-Z0-9._-]{0,31}$/;
-const VENUES = new Set(["hyperliquid", "drift", "coinbase_advanced", "jupiter", "phoenix", "backpack"]);
+import { SUPPORTED_EXECUTION_VENUES } from "./venues.js";
+
+const VENUES = new Set(SUPPORTED_EXECUTION_VENUES);
 const STRATEGIES = new Set(["spot_perp_hedge", "delta_neutral_carry", "exposure_rebalance", "hedged_spread_arbitrage"]);
 const EVENT_TYPES = new Set([
   "preflight_passed", "preflight_failed", "submission_started", "leg_acknowledged",
   "leg_fill", "leg_failed", "leg_reconciled", "reconciliation_failed",
-  "cancel_confirmed", "unwind_fill", "unwind_failed", "timeout",
+  "cancel_confirmed", "unwind_fill", "unwind_failed", "completion_fill", "completion_failed", "timeout",
 ]);
+const RECOVERY_MODES = new Set(["unwind", "complete_reduce_only"]);
 
 export function createMultiLegSaga(value) {
   const raw = object(value, "saga_required");
@@ -20,6 +23,7 @@ export function createMultiLegSaga(value) {
     idempotency_key: identifier(raw.idempotency_key, "idempotency_key"),
     plan_commitment: identifier(raw.plan_commitment, "plan_commitment"),
     strategy_id: enumValue(raw.strategy_id, STRATEGIES, "strategy_id"),
+    recovery_mode: enumValue(raw.recovery_mode || "unwind", RECOVERY_MODES, "recovery_mode"),
     status: "preflighting",
     terminal: false,
     max_unhedged_ms: boundedInteger(raw.max_unhedged_ms, 50, 300_000, "max_unhedged_ms"),
@@ -151,9 +155,20 @@ function applyEvent(saga, event, nowMs) {
     terminal(saga, "manual_intervention", "deterministic_unwind_failed");
     return;
   }
+  if (event.type === "completion_fill") {
+    const leg = sagaLeg(saga, event.leg_id);
+    applyFill(leg, event.cumulative_filled_micro_usdc, "filled_micro_usdc");
+    settleCompensation(saga);
+    return;
+  }
+  if (event.type === "completion_failed") {
+    sagaLeg(saga, event.leg_id).failure_code = failureCode(event.failure_code);
+    terminal(saga, "manual_intervention", "risk_reducing_completion_failed");
+    return;
+  }
   if (event.type === "timeout") {
     if (saga.unhedged_deadline_ms !== null && nowMs < saga.unhedged_deadline_ms) fail("timeout_not_due");
-    if (saga.status === "compensating") terminal(saga, "manual_intervention", "unwind_timeout");
+    if (saga.status === "compensating") terminal(saga, "manual_intervention", saga.recovery_mode === "complete_reduce_only" ? "completion_timeout" : "unwind_timeout");
     else enterCompensating(saga, nowMs);
   }
 }
@@ -199,6 +214,13 @@ function hasUncertainPeer(saga, failedLegId) {
 }
 
 function settleCompensation(saga) {
+  if (saga.recovery_mode === "complete_reduce_only") {
+    if (saga.legs.every((leg) => leg.filled_micro_usdc === leg.notional_micro_usdc)) {
+      saga.status = "reconciling";
+      saga.unhedged_deadline_ms = null;
+    }
+    return;
+  }
   const allSubmissionsFinal = submissionsFinal(saga);
   const exposureClosed = saga.legs.every((leg) => leg.unwind_filled_micro_usdc === leg.filled_micro_usdc);
   if (allSubmissionsFinal && exposureClosed) {
@@ -221,7 +243,7 @@ function submissionsFinal(saga) {
 function refreshDerived(saga) {
   refreshExposure(saga);
   const previous = JSON.stringify(saga.compensation.map((item) => [item.leg_id, item.target_unwind_micro_usdc]));
-  saga.compensation = saga.legs
+  saga.compensation = saga.recovery_mode === "complete_reduce_only" ? [] : saga.legs
     .filter((leg) => leg.filled_micro_usdc > leg.unwind_filled_micro_usdc)
     .map((leg) => ({
       version: 1,
@@ -274,6 +296,21 @@ function nextActions(saga) {
     return saga.legs.filter((leg) => !leg.reconciled).map((leg) => ({ type: "reconcile_leg", leg_id: leg.leg_id }));
   }
   if (saga.status === "compensating") {
+    if (saga.recovery_mode === "complete_reduce_only") {
+      return [
+        ...saga.legs.filter((leg) =>
+          leg.filled_micro_usdc < leg.notional_micro_usdc &&
+          leg.submission_status !== "failed" &&
+          !leg.cancel_confirmed
+        ).map((leg) => ({ type: "cancel_leg", leg_id: leg.leg_id })),
+        ...saga.legs.filter((leg) => leg.filled_micro_usdc < leg.notional_micro_usdc).map((leg) => ({
+          type: "submit_completion",
+          leg_id: leg.leg_id,
+          remaining_completion_micro_usdc: leg.notional_micro_usdc - leg.filled_micro_usdc,
+          reduce_only: true,
+        })),
+      ];
+    }
     return [
       ...saga.legs.filter((leg) =>
         leg.filled_micro_usdc < leg.notional_micro_usdc &&
@@ -336,7 +373,7 @@ function allowedEvents(status) {
     return new Set(["leg_acknowledged", "leg_fill", "leg_failed", "cancel_confirmed", "timeout"]);
   }
   if (status === "reconciling") return new Set(["leg_reconciled", "reconciliation_failed"]);
-  if (status === "compensating") return new Set(["leg_fill", "leg_failed", "cancel_confirmed", "unwind_fill", "unwind_failed", "timeout"]);
+  if (status === "compensating") return new Set(["leg_fill", "leg_failed", "cancel_confirmed", "unwind_fill", "unwind_failed", "completion_fill", "completion_failed", "timeout"]);
   return new Set();
 }
 

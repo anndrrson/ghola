@@ -87,3 +87,24 @@ test("router cannot select the quarantined Drift placeholder", () => {
   assert.equal(result.ok, false);
   assert.equal(result.error, "no_routable_venue");
 });
+
+test("new perp venues remain fail-closed until implementation and live qualification both pass", () => {
+  for (const venueId of ["lighter", "aster", "edgex", "dydx"]) {
+    const state = venueStateForRouting({
+      venue_id: venueId,
+      access: {
+        status: "ready",
+        execution_mode: "user_stealth",
+        capabilities: DRIFT_CAPABILITIES,
+      },
+      market_observed_at_ms: NOW,
+      now_ms: NOW,
+      env: {},
+    });
+    assert.equal(state.status, "quarantined");
+    const expectedStatus = venueId === "lighter" || venueId === "aster"
+      ? "implemented_unproven"
+      : "unimplemented";
+    assert.ok(state.quarantine_reasons.includes(`worker_route_${expectedStatus}`));
+  }
+});

@@ -300,6 +300,8 @@ export interface GholaEncryptedPrivateBundle {
 
 export type GholaVenueId =
   | "hyperliquid"
+  | "lighter"
+  | "aster"
   | "phoenix"
   | "drift"
   | "jupiter"
@@ -2418,7 +2420,7 @@ export function createOmnibusAllocation(input: {
 }
 
 export function venuePlatformClass(venueId: GholaVenueId): GholaPlatformClass {
-  if (venueId === "hyperliquid") return "hyperliquid_style_market";
+  if (venueId === "hyperliquid" || venueId === "lighter" || venueId === "aster") return "hyperliquid_style_market";
   if (venueId === "phoenix" || venueId === "drift" || venueId === "backpack") return "solana_perps_market";
   if (venueId === "jupiter") return "solana_swap_aggregator";
   if (venueId === "rfq_network") return "rfq_solver_network";
@@ -2435,7 +2437,7 @@ export function venueIdForPlatformClass(platformClass: GholaPlatformClass): Ghol
 }
 
 export function supportedVenueOperations(venueId: GholaVenueId): GholaVenueOperationClass[] {
-  if (venueId === "hyperliquid") return ["read", "limit_order", "cancel", "reconcile"];
+  if (venueId === "hyperliquid" || venueId === "lighter" || venueId === "aster") return ["read", "limit_order", "cancel", "reconcile"];
   if (venueId === "phoenix" || venueId === "drift" || venueId === "backpack") {
     return ["read", "perp_limit_order", "cancel", "fills", "reconcile"];
   }
@@ -2453,7 +2455,7 @@ export function blockedVenueOperations(
     "vault_transfer",
     "leverage_escalation",
   ];
-  if (venueId === "hyperliquid") return common;
+  if (venueId === "hyperliquid" || venueId === "lighter" || venueId === "aster") return common;
   if (venueId === "phoenix" || venueId === "drift" || venueId === "backpack") {
     return Array.from(new Set([
       ...common,
@@ -2497,6 +2499,8 @@ export function executionModeForAccountMode(accountMode: GholaVenueAccountMode):
 export function listVenueManifests(now: Date = new Date()): GholaVenueManifest[] {
   return ([
     "hyperliquid",
+    "lighter",
+    "aster",
     "phoenix",
     "drift",
     "jupiter",
@@ -2754,6 +2758,8 @@ function supportedVenueAccountModes(venueId: GholaVenueId): GholaVenueAccountMod
 
 function venueLabel(venueId: GholaVenueId): string {
   if (venueId === "hyperliquid") return "Hyperliquid";
+  if (venueId === "lighter") return "Lighter";
+  if (venueId === "aster") return "Aster";
   if (venueId === "phoenix") return "Phoenix";
   if (venueId === "drift") return "Drift";
   if (venueId === "jupiter") return "Jupiter";

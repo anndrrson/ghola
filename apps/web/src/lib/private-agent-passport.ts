@@ -13,6 +13,7 @@ import {
 import {
   getPrivateAgentPassportByAccount,
   getLatestAgentArbCanaryReport,
+  getHyperliquidExecutionVaultByAccount,
   getVenueExecutionVaultByAccount,
   listPrivateVenueCapabilities,
   putPrivateAgentPassport,
@@ -28,7 +29,7 @@ import {
 } from "@/app/v1/private-account/_lib";
 import { workerAuthorizationHeader } from "./private-agent-capability";
 
-const AGENT_VENUES: PrivateAgentVenueId[] = ["hyperliquid", "phoenix", "backpack", "coinbase_advanced", "jupiter"];
+const AGENT_VENUES: PrivateAgentVenueId[] = ["hyperliquid", "lighter", "aster", "phoenix", "backpack", "coinbase_advanced", "jupiter"];
 const ARB_MARKETS = ["SOL-USD"];
 
 export interface AgentPassportCapability {
@@ -81,6 +82,7 @@ export async function linkAgentPlatformFromBody(
   const encryptedVault = recordOrNull(value.encrypted_execution_vault ?? value.encrypted_vault);
   let vaultCommitment: string | null = stringValue(value.vault_commitment);
   let encryptedVaultCommitment: string | null = stringValue(value.encrypted_vault_commitment);
+  let vaultToStore: Parameters<typeof putVenueExecutionVault>[0] | null = null;
 
   if (encryptedVault) {
     const createdVault = createVenueExecutionVault({
@@ -102,7 +104,7 @@ export async function linkAgentPlatformFromBody(
     });
     if (!createdVault.ok) return { error: createdVault.error };
     const vault = createdVault.vault;
-    await putVenueExecutionVault({
+    vaultToStore = {
       version: 1,
       owner_commitment: owner.owner_commitment,
       account_commitment: account.account_commitment,
@@ -118,7 +120,7 @@ export async function linkAgentPlatformFromBody(
       vault,
       created_at: vault.created_at,
       updated_at: vault.updated_at,
-    });
+    };
     vaultCommitment = vault.vault_commitment;
     encryptedVaultCommitment = vault.encrypted_vault_commitment;
   }
@@ -135,6 +137,7 @@ export async function linkAgentPlatformFromBody(
     encrypted_execution_vault: encryptedVault,
   });
   if (!serverVerification.ok) return { error: serverVerification.error };
+  if (vaultToStore) await putVenueExecutionVault(vaultToStore);
 
   const capability = buildCapability({
     owner_commitment: owner.owner_commitment,
@@ -224,11 +227,28 @@ export async function agentPassportVenueAccessForWorker(
     out[capability.venue_id] = {
       status: "ready",
       execution_mode: capability.execution_mode,
+      account_commitment: account.account_commitment,
       vault_commitment: vault.vault_commitment,
       encrypted_vault_commitment: vault.encrypted_vault_commitment,
+      policy_commitment: vault.vault.policy_commitment,
       encrypted_execution_vault: vault.vault.encrypted_execution_vault,
       reason: "agent_passport_ready",
     };
+  }
+  if (!out.hyperliquid) {
+    const hyperliquid = await getHyperliquidExecutionVaultByAccount(account.account_commitment);
+    if (hyperliquid?.owner_commitment === owner.owner_commitment && hyperliquid.status === "sealed") {
+      out.hyperliquid = {
+        status: "ready",
+        execution_mode: "byo_api_key",
+        account_commitment: account.account_commitment,
+        vault_commitment: hyperliquid.vault_commitment,
+        encrypted_vault_commitment: hyperliquid.encrypted_vault_commitment,
+        policy_commitment: hyperliquid.policy_commitment,
+        encrypted_execution_vault: hyperliquid.vault.encrypted_execution_vault,
+        reason: "hyperliquid_vault_ready",
+      };
+    }
   }
   return out;
 }
@@ -458,6 +478,7 @@ function permissionAttestation(value: unknown):
   const canRead = raw.can_read === true || raw.view === true || scopes.some((scope) => ["read", "view"].includes(scope));
   const canTrade = raw.can_trade === true || raw.trade === true || scopes.some((scope) => ["trade", "order", "orders"].includes(scope));
   const canWithdraw = raw.can_withdraw === true ||
+    raw.can_transfer === true ||
     raw.transfer === true ||
     scopes.some((scope) => ["withdraw", "transfer", "wallet:transfer"].includes(scope));
   if (canWithdraw) return { ok: false, error: "withdraw_permission_blocked" };
@@ -560,6 +581,8 @@ function agentVenueForPlatform(value: unknown): PrivateAgentVenueId | null {
 
 function agentVenueId(value: unknown): PrivateAgentVenueId | null {
   return value === "hyperliquid" ||
+    value === "lighter" ||
+    value === "aster" ||
     value === "phoenix" ||
     value === "backpack" ||
     value === "coinbase_advanced" ||

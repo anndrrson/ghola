@@ -2,6 +2,11 @@ const ID = /^[A-Za-z0-9:_-]{8,160}$/;
 const ASSET = /^[A-Z0-9][A-Z0-9._-]{0,31}$/;
 const MARKET = /^[A-Z0-9][A-Z0-9._/-]{0,63}$/;
 
+import {
+  SUPPORTED_EXECUTION_VENUES,
+  requiredVenueCapabilities,
+} from "./venues.js";
+
 export { advanceMultiLegSaga, createMultiLegSaga } from "./multi-leg.js";
 export {
   aggregateExecutionQuality,
@@ -10,14 +15,32 @@ export {
   normalizeVenueAccountingSnapshot,
   reconcilePortfolioAccounting,
 } from "./accounting.js";
+export {
+  CarryModelError,
+  appendCarryValueLedgerEntry,
+  advanceCarryPosition,
+  calculateMarginRunway,
+  createCarryPosition,
+  createCarryValueLedger,
+  evaluateCarryOpportunity,
+  finalizeCarryValueLedger,
+  normalizePerpContractSpec,
+} from "./carry.js";
+export {
+  CARRY_EXECUTION_VENUES,
+  CORE_PERP_VENUES,
+  EXECUTION_VENUE_SPECS,
+  SUPPORTED_EXECUTION_VENUES,
+  exactQuantityRecoveryAdapter,
+  executionVenueSpec,
+  isCarryExecutionVenue,
+  isExecutionVenue,
+  requiredVenueCapabilities,
+  supportsExactQuantityRecovery,
+  venueSupportsProduct,
+} from "./venues.js";
 
 export const EXECUTION_CORE_VERSION = 1;
-export const SUPPORTED_EXECUTION_VENUES = Object.freeze([
-  "hyperliquid",
-  "drift",
-  "coinbase_advanced",
-  "jupiter",
-]);
 export const SUPPORTED_STRATEGIES = Object.freeze([
   "best_execution",
   "spot_perp_hedge",
@@ -35,25 +58,6 @@ export const PORTFOLIO_SIGNING_BOUNDARY = Object.freeze({
     "configure_leverage",
     "activate_mainnet",
     "revoke_agent",
-  ]),
-});
-
-const VENUE_CAPABILITIES = Object.freeze({
-  hyperliquid: Object.freeze([
-    "market_data", "funding", "fees", "orders", "positions", "collateral",
-    "reconciliation", "delegated_signing", "cancel", "reduce_only",
-  ]),
-  drift: Object.freeze([
-    "market_data", "funding", "fees", "orders", "positions", "collateral",
-    "reconciliation", "delegated_signing", "cancel", "reduce_only",
-  ]),
-  coinbase_advanced: Object.freeze([
-    "market_data", "fees", "orders", "balances", "reconciliation",
-    "trade_only_credentials", "cancel",
-  ]),
-  jupiter: Object.freeze([
-    "market_data", "fees", "quotes", "swap", "balances", "reconciliation",
-    "delegated_signing",
   ]),
 });
 
@@ -75,7 +79,7 @@ export function normalizePortfolioMandate(value) {
   if (raw.custody_model !== "self_custodial_turnkey") {
     fail("custody_model", "Only self-custodial Turnkey wallets are supported.");
   }
-  const allowedVenues = normalizedSet(raw.allowed_venues, SUPPORTED_EXECUTION_VENUES, "allowed_venues", 4);
+  const allowedVenues = normalizedSet(raw.allowed_venues, SUPPORTED_EXECUTION_VENUES, "allowed_venues", 16);
   const allowedAssets = uniqueArray(raw.allowed_assets, "allowed_assets", 50).map((item) => asset(item, "allowed_asset"));
   if (allowedAssets.length === 0) fail("allowed_assets", "At least one asset is required.");
   const allowedStrategies = normalizedSet(raw.allowed_strategies, SUPPORTED_STRATEGIES, "allowed_strategies", 4);
@@ -162,7 +166,7 @@ export function normalizePortfolioState(value) {
 export function assessVenueReadiness({ venue_state, required_capabilities, now_ms = Date.now(), max_age_ms }) {
   const venue = normalizeVenueState(venue_state);
   const required = required_capabilities === undefined
-    ? VENUE_CAPABILITIES[venue.venue_id]
+    ? requiredVenueCapabilities({ venue_id: venue.venue_id })
     : uniqueArray(required_capabilities, "required_capabilities", 32).map((item) => text(item, "required_capability"));
   const reasons = [];
   if (venue.status === "quarantined") reasons.push("venue_quarantined");
@@ -459,7 +463,7 @@ function normalizeRouteIntent(value) {
     product_type: enumValue(raw.product_type, ["spot", "perp"], "route_product_type"),
     notional_micro_usdc: positiveInteger(raw.notional_micro_usdc, "route_notional"),
     reference_price_e8: positiveInteger(raw.reference_price_e8, "route_reference_price"),
-    allowed_venues: normalizedSet(raw.allowed_venues, SUPPORTED_EXECUTION_VENUES, "route_allowed_venues", 4),
+    allowed_venues: normalizedSet(raw.allowed_venues, SUPPORTED_EXECUTION_VENUES, "route_allowed_venues", 16),
     data_max_age_ms: boundedInteger(raw.data_max_age_ms, 250, 300_000, "route_data_max_age"),
     max_fee_bps: boundedInteger(raw.max_fee_bps ?? 10_000, 0, 10_000, "route_max_fee_bps"),
     max_slippage_bps: boundedInteger(raw.max_slippage_bps ?? 10_000, 0, 10_000, "route_max_slippage_bps"),
@@ -547,14 +551,11 @@ function normalizePlanLeg(value) {
 }
 
 function routeCapabilities(quote) {
-  if (quote.venue_id === "jupiter") return ["market_data", "fees", "quotes", "swap", "balances", "reconciliation", "delegated_signing"];
-  if (quote.product_type === "perp") return ["market_data", "funding", "fees", "orders", "positions", "collateral", "reconciliation", "delegated_signing"];
-  return ["market_data", "fees", "orders", "balances", "reconciliation", "trade_only_credentials"];
+  return requiredVenueCapabilities(quote);
 }
 
 function planCapabilities(leg) {
-  const base = routeCapabilities(leg);
-  return leg.reduce_only ? [...new Set([...base, "reduce_only"])] : base;
+  return requiredVenueCapabilities(leg);
 }
 
 function legCostBps(leg) {

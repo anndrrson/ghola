@@ -2,6 +2,7 @@ import { createHash, generateKeyPairSync, randomUUID, timingSafeEqual } from "no
 import { createServer, request as httpRequest } from "node:http";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { CARRY_EXECUTION_VENUES } from "@ghola/execution-core";
 import { assertRecipientSecretMatches } from "./crypto/envelope.js";
 import { createKrakenV2Service } from "./kraken-v2/service.js";
 import {
@@ -23,13 +24,31 @@ import {
 import { revenueEvidenceStatement } from "./execution/revenue-evidence.js";
 import { publicDecisionProviderStatus } from "./execution/decision-provider.js";
 import { startMultiLegRecoveryLoop } from "./execution/multi-leg-orchestrator.js";
+import { fetchCorePerpShadowSet } from "./execution/perp-shadow-adapters.js";
+import { preflightCarryPair } from "./execution/carry-preflight.js";
+import { executeStoredCarryEntry, startCarryExecutionLoop } from "./execution/carry-executor.js";
+import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-evidence.js";
+import {
+  advanceStoredCarryPosition,
+  appendStoredCarryValueEntry,
+  createStoredCarryPosition,
+  finalizeStoredCarryValueLedger,
+  getStoredCarryPosition,
+  listStoredCarryPositions,
+  observeStoredCarryPosition,
+  startCarryMonitoringLoop,
+} from "./execution/carry-positions.js";
 import {
   createHyperliquidManagedAllocation,
+  executeAsterOrder,
   executeAutopilotOrder,
   executeCoinbaseOrder,
   executeHyperliquidOrder,
   executeJupiterSwapOrder,
+  executeLighterOrder,
   executeSolanaPerpsOrder,
+  readCarryFundingSettlements,
+  readHyperliquidCarryMetrics,
   readHyperliquidSnapshot,
   reconcileHyperliquidOrder,
   reconcileStoredExecution,
@@ -38,10 +57,12 @@ import {
   storeHyperliquidSession,
   storePrivateAgentSession,
   verifyAutopilotOrder,
+  verifyAsterOrderNoSubmit,
   verifyCoinbaseOrderNoSubmit,
   verifyVenueCredential,
   verifyHyperliquidOrderNoSubmit,
   verifyJupiterSwapNoSubmit,
+  verifyLighterOrderNoSubmit,
   verifySolanaPerpsOrderNoSubmit,
 } from "./execution/private-execution.js";
 import { createConfiguredWorkerState } from "./state/private-state.js";
@@ -63,12 +84,14 @@ import {
 import { loadPartnerCoinbaseCredential } from "./venues/coinbase.js";
 
 const MAX_BODY_BYTES = 256 * 1024;
+const CARRY_EXECUTION_VENUE_SET = new Set(CARRY_EXECUTION_VENUES);
 const PUBLIC_KEY_HEX_RE = /^[0-9a-f]{64}$/i;
 const PLAINTEXT_LEAK_KEYS = new Set([
   "account_id",
   "api_key",
   "api_key_id",
   "api_key_name",
+  "api_private_key",
   "api_secret",
   "api_wallet",
   "api_wallet_private_key",
@@ -80,6 +103,7 @@ const PLAINTEXT_LEAK_KEYS = new Set([
   "coinbase_signing_key",
   "hyperliquid_account_id",
   "key_secret",
+  "lighter_api_private_key",
   "leverage",
   "leverage_update",
   "messages",
@@ -1475,6 +1499,155 @@ function validateHyperliquidOrderRequest(body, recipient) {
   return errors;
 }
 
+function validateAsterOrderRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext Aster credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
+  if (!isNonEmptyString(body.policy_commitment)) errors.push("policy_commitment is required");
+  if (body.execution_mode !== "byo_api_key") errors.push("execution_mode must be byo_api_key");
+  if (!isNonEmptyString(body.vault_commitment)) errors.push("vault_commitment is required");
+  if (!["read", "limit_order", "cancel", "reconcile"].includes(body.operation_class)) {
+    errors.push("operation_class is unsupported");
+  }
+  errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  if ("encrypted_execution_instruction_bundle" in body) {
+    errors.push(...validateEncryptedBundle(
+      body.encrypted_execution_instruction_bundle,
+      recipient,
+      "encrypted_execution_instruction_bundle",
+    ));
+  }
+  return errors;
+}
+
+function validateAsterPreflightRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) errors.push("request must not contain plaintext credentials");
+  if (body.version !== 1) errors.push("version must be 1");
+  for (const field of ["owner_commitment", "account_commitment", "work_order_commitment", "vault_commitment", "policy_commitment"]) {
+    if (!isNonEmptyString(body[field])) errors.push(`${field} is required`);
+  }
+  if (!isNonEmptyString(body.market)) errors.push("market is required");
+  if (body.side !== "buy" && body.side !== "sell") errors.push("side must be buy or sell");
+  if (!(Number(body.base_size) > 0)) errors.push("base_size must be positive");
+  if (!(Number(body.limit_price) > 0)) errors.push("limit_price must be positive");
+  errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  return errors;
+}
+
+function validateLighterOrderRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext Lighter credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
+  if (!isNonEmptyString(body.policy_commitment)) errors.push("policy_commitment is required");
+  if (body.execution_mode !== "byo_api_key") errors.push("execution_mode must be byo_api_key");
+  if (!isNonEmptyString(body.vault_commitment)) errors.push("vault_commitment is required");
+  if (!["read", "limit_order", "cancel", "reconcile"].includes(body.operation_class)) {
+    errors.push("operation_class is unsupported");
+  }
+  errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  if ("encrypted_execution_instruction_bundle" in body) {
+    errors.push(...validateEncryptedBundle(
+      body.encrypted_execution_instruction_bundle,
+      recipient,
+      "encrypted_execution_instruction_bundle",
+    ));
+  }
+  return errors;
+}
+
+function validateLighterPreflightRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) errors.push("request must not contain plaintext credentials");
+  if (body.version !== 1) errors.push("version must be 1");
+  for (const field of ["owner_commitment", "account_commitment", "work_order_commitment", "vault_commitment", "policy_commitment"]) {
+    if (!isNonEmptyString(body[field])) errors.push(`${field} is required`);
+  }
+  if (!isNonEmptyString(body.market)) errors.push("market is required");
+  if (body.side !== "buy" && body.side !== "sell") errors.push("side must be buy or sell");
+  if (!(Number(body.base_size) > 0)) errors.push("base_size must be positive");
+  if (!(Number(body.limit_price) > 0)) errors.push("limit_price must be positive");
+  errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  return errors;
+}
+
+function validateHyperliquidPreflightRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) errors.push("request must not contain plaintext credentials");
+  if (body.version !== 1) errors.push("version must be 1");
+  for (const field of ["owner_commitment", "account_commitment", "work_order_commitment", "vault_commitment", "policy_commitment"]) {
+    if (!isNonEmptyString(body[field])) errors.push(`${field} is required`);
+  }
+  if (!isNonEmptyString(body.market)) errors.push("market is required");
+  if (body.side !== "buy" && body.side !== "sell") errors.push("side must be buy or sell");
+  if (!(Number(body.quote_size) > 0)) errors.push("quote_size must be positive");
+  if (!(Number(body.max_slippage_bps) > 0)) errors.push("max_slippage_bps must be positive");
+  errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  return errors;
+}
+
+function validateCarryPairPreflightRequest(body, recipient) {
+  const errors = [];
+  const supported = CARRY_EXECUTION_VENUE_SET;
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) errors.push("request must not contain plaintext credentials or order payloads");
+  if (body.version !== 1) errors.push("version must be 1");
+  if (!isNonEmptyString(body.owner_commitment)) errors.push("owner_commitment is required");
+  if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
+  if (!/^[A-Z0-9._-]{1,16}$/.test(String(body.asset || ""))) errors.push("asset is invalid");
+  if (!supported.has(body.long_venue_id)) errors.push("long_venue_id is unsupported");
+  if (!supported.has(body.short_venue_id)) errors.push("short_venue_id is unsupported");
+  if (body.long_venue_id === body.short_venue_id) errors.push("venues must be distinct");
+  if (!(Number(body.notional_usd) > 0) || Number(body.notional_usd) > 1_000) errors.push("notional_usd is outside the pilot limit");
+  if (!(Number(body.horizon_days) >= 1) || Number(body.horizon_days) > 365) errors.push("horizon_days is invalid");
+  for (const venueId of [...new Set([body.long_venue_id, body.short_venue_id])].filter((venueId) => supported.has(venueId))) {
+    const access = body.venue_access?.[venueId];
+    if (!isObject(access) || access.status !== "ready") {
+      errors.push(`${venueId} venue access is required`);
+      continue;
+    }
+    for (const field of ["account_commitment", "vault_commitment", "policy_commitment"]) {
+      if (!isNonEmptyString(access[field])) errors.push(`${venueId} ${field} is required`);
+    }
+    errors.push(...validateEncryptedBundle(access.encrypted_execution_vault, recipient, `${venueId} encrypted_execution_vault`));
+  }
+  return errors;
+}
+
+function validateCarryMonitoringAccess(body, recipient, mode) {
+  const errors = [];
+  const supported = CARRY_EXECUTION_VENUE_SET;
+  const accessByVenue = mode === "create" ? body.monitoring_context?.venue_access : body.venue_access;
+  if (!isObject(accessByVenue)) return ["carry monitoring venue_access is required"];
+  if (containsPlaintextLeakKey(accessByVenue)) errors.push("carry monitoring access must not contain plaintext credentials");
+  const entries = Object.entries(accessByVenue);
+  if (entries.length !== 2) errors.push("carry monitoring requires exactly two venues");
+  for (const [venueId, access] of entries) {
+    if (!supported.has(venueId)) errors.push(`${venueId} is unsupported for carry monitoring`);
+    if (!isObject(access) || access.status !== "ready") {
+      errors.push(`${venueId} monitoring access must be ready`);
+      continue;
+    }
+    if (access.owner_commitment !== body.owner_commitment) errors.push(`${venueId} monitoring owner mismatch`);
+    for (const field of ["account_commitment", "vault_commitment", "policy_commitment"]) {
+      if (!isNonEmptyString(access[field])) errors.push(`${venueId} ${field} is required`);
+    }
+    errors.push(...validateEncryptedBundle(access.encrypted_execution_vault, recipient, `${venueId} encrypted_execution_vault`));
+  }
+  return errors;
+}
+
 function validateHyperliquidAccountSnapshotRequest(body, recipient) {
   const errors = [];
   if (!isObject(body)) return ["request body must be an object"];
@@ -2208,6 +2381,25 @@ export function createPrivateAgentWorkerServer(options = {}) {
         executeOrder: executeAutopilotOrder,
         verifyOrder: verifyAutopilotOrder,
       });
+  const carryMonitoringLoop = options.startCarryMonitoringLoop === false
+    ? null
+    : startCarryMonitoringLoop({
+        state,
+        recipient,
+        verifyOrder: verifyAutopilotOrder,
+        readHyperliquidSnapshot,
+        readHyperliquidCarryMetrics,
+        readFundingSettlements: readCarryFundingSettlements,
+      });
+  const carryExecutionLoop = options.startCarryExecutionLoop === false
+    ? null
+    : startCarryExecutionLoop({
+        state,
+        recipient,
+        verifyOrder: verifyAutopilotOrder,
+        executeOrder: executeAutopilotOrder,
+        readFundingSettlements: readCarryFundingSettlements,
+      });
   const krakenHeartbeat = options.startKrakenV2Heartbeat === false
     ? null
     : krakenV2.startHeartbeat?.(60_000);
@@ -2257,6 +2449,158 @@ export function createPrivateAgentWorkerServer(options = {}) {
         url.pathname === "/.well-known/private-agent-recipient"
       ) {
         return json(res, 200, await publicRecipient(recipient));
+      }
+
+      if (req.method === "GET" && url.pathname === "/carry/shadow") {
+        const assets = String(url.searchParams.get("assets") || "BTC,ETH,SOL")
+          .split(",")
+          .map((asset) => asset.trim().toUpperCase())
+          .filter((asset) => /^[A-Z0-9._-]{1,16}$/.test(asset))
+          .slice(0, 10);
+        const venues = await fetchCorePerpShadowSet({ assets, timeout_ms: 8_000, max_age_ms: 60_000 });
+        return json(res, 200, {
+          version: 1,
+          mode: "shadow_read_only",
+          executable: false,
+          observed_at: new Date().toISOString(),
+          venues,
+        });
+      }
+
+      if (req.method === "POST" && url.pathname === "/carry/preflight") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        if (req.headers["x-ghola-no-submit-verify"] !== "true") {
+          return json(res, 400, { error: "no-submit verification header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "carry:read",
+          state,
+          expected: (body) => ({
+            owner_commitment: body.owner_commitment,
+            work_order_commitment: body.work_order_commitment,
+            operation_class: "paired_no_submit",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateCarryPairPreflightRequest(body, recipient);
+        if (errors.length > 0) return json(res, 400, { error: "invalid carry preflight request", details: errors });
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
+        }
+        return json(res, 200, await preflightCarryPair({
+          body,
+          recipient,
+          state,
+          verifyOrder: verifyAutopilotOrder,
+          readHyperliquidSnapshot,
+          readHyperliquidCarryMetrics,
+        }));
+      }
+
+      if (req.method === "POST" && url.pathname.startsWith("/carry/positions")) {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        if (url.pathname === "/carry/positions/observe" && req.headers["x-ghola-no-submit-verify"] !== "true") {
+          return json(res, 400, { error: "no-submit verification header is required" });
+        }
+        if (url.pathname === "/carry/positions/execute-entry" && req.headers["x-ghola-live-order-confirmed"] !== "true") {
+          return json(res, 400, { error: "live order confirmation header is required" });
+        }
+        const carryRoutes = {
+          "/carry/positions": ["carry:write", (body) => createStoredCarryPosition({
+            state,
+            owner_commitment: body.owner_commitment,
+            position_input: body.position_input,
+            opportunity: body.opportunity,
+            monitoring_context: body.monitoring_context,
+            qualification_pilot: body.qualification_pilot,
+          })],
+          "/carry/positions/read": ["carry:read", (body) => body.position_id
+            ? getStoredCarryPosition({ state, position_id: body.position_id, owner_commitment: body.owner_commitment })
+            : listStoredCarryPositions({ state, owner_commitment: body.owner_commitment, status: body.status, limit: body.limit })],
+          "/carry/positions/release-evidence": ["carry:read", (body) => buildCompletedCarryReleaseMaterial({
+            state,
+            position_id: body.position_id,
+            owner_commitment: body.owner_commitment,
+          })],
+          "/carry/positions/events": ["carry:write", (body) => advanceStoredCarryPosition({
+            state,
+            position_id: body.position_id,
+            owner_commitment: body.owner_commitment,
+            event: body.event,
+          })],
+          "/carry/positions/observe": ["carry:write", (body) => observeStoredCarryPosition({
+            state,
+            position_id: body.position_id,
+            owner_commitment: body.owner_commitment,
+            venue_access: body.venue_access,
+            recipient,
+            verifyOrder: verifyAutopilotOrder,
+            readHyperliquidSnapshot,
+            readHyperliquidCarryMetrics,
+            readFundingSettlements: readCarryFundingSettlements,
+          })],
+          "/carry/positions/execute-entry": ["order:submit", (body) => executeStoredCarryEntry({
+            state,
+            position_id: body.position_id,
+            owner_commitment: body.owner_commitment,
+            recipient,
+            verifyOrder: verifyAutopilotOrder,
+            executeOrder: executeAutopilotOrder,
+            qualification_confirmed: req.headers["x-ghola-carry-qualification-confirmed"] === "true",
+          })],
+          "/carry/positions/value-entries": ["carry:write", (body) => appendStoredCarryValueEntry({
+            state,
+            position_id: body.position_id,
+            owner_commitment: body.owner_commitment,
+            entry: body.entry,
+          })],
+          "/carry/positions/finalize": ["carry:write", (body) => finalizeStoredCarryValueLedger({
+            state,
+            position_id: body.position_id,
+            owner_commitment: body.owner_commitment,
+            evidence: body.evidence,
+          })],
+        };
+        const route = carryRoutes[url.pathname];
+        if (!route) return json(res, 404, { error: "not found" });
+        const [scope, handler] = route;
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope,
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            operation_class: url.pathname.slice("/carry/positions".length) || "create",
+          }),
+        });
+        if (authorized.rejected) return;
+        if (url.pathname === "/carry/positions"
+          && authorized.body.qualification_pilot?.enabled === true
+          && req.headers["x-ghola-carry-qualification-planned"] !== "true") {
+          return json(res, 400, { error: "carry qualification pilot planning confirmation is required" });
+        }
+        if (url.pathname === "/carry/positions" || url.pathname === "/carry/positions/observe") {
+          const monitoringErrors = validateCarryMonitoringAccess(
+            authorized.body,
+            recipient,
+            url.pathname === "/carry/positions" ? "create" : "observe",
+          );
+          if (monitoringErrors.length > 0) return json(res, 400, { error: "invalid carry monitoring access", details: monitoringErrors });
+        }
+        if (url.pathname === "/carry/positions/execute-entry" && !ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
+        }
+        const result = await handler(authorized.body);
+        const status = result.ok ? 200
+          : result.error === "carry_position_not_found" ? 404
+            : result.error === "carry_record_version_conflict" ? 409
+              : 400;
+        return json(res, status, result);
       }
 
       if (req.method === "POST" && url.pathname.startsWith("/v2/kraken/")) {
@@ -3016,6 +3360,81 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return;
       }
 
+      if (req.method === "POST" && url.pathname === "/hyperliquid/preflight") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        if (req.headers["x-ghola-no-submit-verify"] !== "true") {
+          return json(res, 400, { error: "no-submit verification header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "hyperliquid",
+            platform_class: "hyperliquid_style_market",
+            operation_class: "limit_order",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateHyperliquidPreflightRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, { error: "invalid hyperliquid preflight request", details: errors });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
+        }
+        const execution = {
+          execution_mode: "byo_api_key",
+          vault_commitment: body.vault_commitment,
+          encrypted_vault_commitment: body.encrypted_vault_commitment,
+          encrypted_execution_vault: body.encrypted_execution_vault,
+          account_commitment: body.account_commitment,
+          owner_commitment: body.owner_commitment,
+        };
+        const verification = await verifyAutopilotOrder({
+          venue_id: "hyperliquid",
+          operation_class: "limit_order",
+          work_order_commitment: body.work_order_commitment,
+          policy_commitment: body.policy_commitment,
+          session_policy: {
+            market_allowlist: [String(body.market).toUpperCase()],
+            max_notional_bucket: String(body.max_notional_bucket || "25"),
+            max_order_count: 1,
+            kill_switch: false,
+          },
+          instruction: {
+            version: 1,
+            kind: "ghola_private_execution_instruction",
+            venue_id: "hyperliquid",
+            operation_class: "limit_order",
+            order: {
+              market: body.market,
+              side: body.side,
+              quote_size: String(body.quote_size),
+              size_mode: "quote",
+              order_type: "limit",
+              live_order_mode: "tiny_fill",
+              max_slippage_bps: String(body.max_slippage_bps),
+              tif: "Ioc",
+              reduce_only: false,
+              leverage: 1,
+              margin_mode: "cross",
+            },
+          },
+          execution,
+          recipient,
+          state,
+        });
+        const [account, carryAccount] = await Promise.all([
+          readHyperliquidSnapshot({ body: execution, recipient, state }),
+          readHyperliquidCarryMetrics({ body: execution, recipient, state }),
+        ]);
+        return json(res, 200, { ...verification, account, carry_account: carryAccount });
+      }
+
       if (req.method === "POST" && url.pathname === "/hyperliquid/orders") {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
@@ -3119,6 +3538,306 @@ export function createPrivateAgentWorkerServer(options = {}) {
           recipient,
           state,
         }));
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/aster/preflight") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        if (req.headers["x-ghola-no-submit-verify"] !== "true") {
+          return json(res, 400, { error: "no-submit verification header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "aster",
+            platform_class: "hyperliquid_style_market",
+            operation_class: "limit_order",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateAsterPreflightRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, { error: "invalid aster preflight request", details: errors });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
+        }
+        const receipt = await verifyAutopilotOrder({
+          venue_id: "aster",
+          operation_class: "limit_order",
+          work_order_commitment: body.work_order_commitment,
+          policy_commitment: body.policy_commitment,
+          session_policy: {
+            market_allowlist: [String(body.market).toUpperCase()],
+            max_notional_bucket: String(body.max_notional_bucket || "25"),
+            max_order_count: 1,
+            kill_switch: false,
+          },
+          instruction: {
+            version: 1,
+            kind: "ghola_private_execution_instruction",
+            venue_id: "aster",
+            operation_class: "limit_order",
+            order: {
+              market: body.market,
+              side: body.side,
+              base_size: String(body.base_size),
+              quote_size: String(Number(body.base_size) * Number(body.limit_price)),
+              limit_price: String(body.limit_price),
+              order_type: "limit",
+              size_mode: "base",
+              tif: "Ioc",
+              reduce_only: false,
+              leverage: 1,
+              margin_mode: "cross",
+            },
+          },
+          execution: {
+            execution_mode: "byo_api_key",
+            vault_commitment: body.vault_commitment,
+            encrypted_vault_commitment: body.encrypted_vault_commitment,
+            encrypted_execution_vault: body.encrypted_execution_vault,
+            account_commitment: body.account_commitment,
+            owner_commitment: body.owner_commitment,
+          },
+          recipient,
+          state,
+        });
+        return json(res, 200, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/aster/orders") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:submit",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "aster",
+            platform_class: "hyperliquid_style_market",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateAsterOrderRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, { error: "invalid aster private order request", details: errors });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
+        }
+        return json(res, 202, await executeAsterOrder({ body, recipient, state }));
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/aster/verify") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        if (req.headers["x-ghola-no-submit-verify"] !== "true") {
+          return json(res, 400, { error: "no-submit verification header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "aster",
+            platform_class: "hyperliquid_style_market",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateAsterOrderRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, { error: "invalid aster private verification request", details: errors });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
+        }
+        return json(res, 200, await verifyAsterOrderNoSubmit({ body, recipient, state }));
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/aster/reconcile") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "reconcile:read",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "aster",
+            platform_class: "hyperliquid_style_market",
+            operation_class: "reconcile",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const requestBody = { ...body, operation_class: "reconcile" };
+        const errors = validateAsterOrderRequest(requestBody, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, { error: "invalid aster reconcile request", details: errors });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
+        }
+        return json(res, 200, await executeAsterOrder({ body: requestBody, recipient, state }));
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/lighter/preflight") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        if (req.headers["x-ghola-no-submit-verify"] !== "true") {
+          return json(res, 400, { error: "no-submit verification header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "lighter",
+            platform_class: "hyperliquid_style_market",
+            operation_class: "limit_order",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateLighterPreflightRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, { error: "invalid lighter preflight request", details: errors });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
+        }
+        const receipt = await verifyAutopilotOrder({
+          venue_id: "lighter",
+          operation_class: "limit_order",
+          work_order_commitment: body.work_order_commitment,
+          policy_commitment: body.policy_commitment,
+          session_policy: {
+            market_allowlist: [String(body.market).toUpperCase()],
+            max_notional_bucket: String(body.max_notional_bucket || "25"),
+            max_order_count: 1,
+            kill_switch: false,
+          },
+          instruction: {
+            version: 1,
+            kind: "ghola_private_execution_instruction",
+            venue_id: "lighter",
+            operation_class: "limit_order",
+            order: {
+              market: body.market,
+              side: body.side,
+              base_size: String(body.base_size),
+              quote_size: String(Number(body.base_size) * Number(body.limit_price)),
+              limit_price: String(body.limit_price),
+              order_type: "limit",
+              size_mode: "base",
+              tif: "Ioc",
+              reduce_only: false,
+              leverage: 1,
+              margin_mode: "cross",
+            },
+          },
+          execution: {
+            execution_mode: "byo_api_key",
+            vault_commitment: body.vault_commitment,
+            encrypted_vault_commitment: body.encrypted_vault_commitment,
+            encrypted_execution_vault: body.encrypted_execution_vault,
+            account_commitment: body.account_commitment,
+            owner_commitment: body.owner_commitment,
+          },
+          recipient,
+          state,
+        });
+        return json(res, 200, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/lighter/orders") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:submit",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "lighter",
+            platform_class: "hyperliquid_style_market",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateLighterOrderRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, { error: "invalid lighter private order request", details: errors });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
+        }
+        return json(res, 202, await executeLighterOrder({ body, recipient, state }));
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/lighter/verify") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        if (req.headers["x-ghola-no-submit-verify"] !== "true") {
+          return json(res, 400, { error: "no-submit verification header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "lighter",
+            platform_class: "hyperliquid_style_market",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateLighterOrderRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, { error: "invalid lighter private verification request", details: errors });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
+        }
+        return json(res, 200, await verifyLighterOrderNoSubmit({ body, recipient, state }));
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/lighter/reconcile") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "reconcile:read",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "lighter",
+            platform_class: "hyperliquid_style_market",
+            operation_class: "reconcile",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const requestBody = { ...body, operation_class: "reconcile" };
+        const errors = validateLighterOrderRequest(requestBody, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, { error: "invalid lighter reconcile request", details: errors });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
+        }
+        return json(res, 200, await executeLighterOrder({ body: requestBody, recipient, state }));
       }
 
       if (req.method === "POST" && url.pathname === "/venues/coinbase/sessions") {
@@ -3587,6 +4306,8 @@ export function createPrivateAgentWorkerServer(options = {}) {
   server.on("close", () => {
     dueLoop?.stop?.();
     multiLegRecoveryLoop?.stop?.();
+    carryMonitoringLoop?.stop?.();
+    carryExecutionLoop?.stop?.();
     krakenHeartbeat?.stop?.();
   });
   return server;

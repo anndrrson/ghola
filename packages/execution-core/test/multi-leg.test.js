@@ -160,6 +160,36 @@ test("partial fill plus peer failure creates deterministic inverse compensation"
   assert.equal(saga.hedge_error_micro_usdc, 0);
 });
 
+test("risk-reducing exits complete the missing close instead of reopening exposure", () => {
+  let saga = create({ recovery_mode: "complete_reduce_only" });
+  saga = advance(saga, 1, "preflight_passed", { leg_id: "leg:spot:0001" });
+  saga = advance(saga, 2, "preflight_passed", { leg_id: "leg:perp:0001" });
+  saga = advance(saga, 3, "submission_started");
+  saga = advance(saga, 4, "leg_fill", {
+    leg_id: "leg:spot:0001",
+    cumulative_filled_micro_usdc: 10_000_000,
+  });
+  saga = advance(saga, 5, "leg_failed", {
+    leg_id: "leg:perp:0001",
+    failure_code: "venue_rejected",
+  });
+  assert.equal(saga.status, "compensating");
+  assert.equal(saga.compensation.length, 0);
+  assert.equal(saga.next_actions.some((action) => action.type === "submit_unwind"), false);
+  const completion = saga.next_actions.find((action) => action.type === "submit_completion");
+  assert.equal(completion.leg_id, "leg:perp:0001");
+  assert.equal(completion.reduce_only, true);
+  saga = advance(saga, 6, "completion_fill", {
+    leg_id: "leg:perp:0001",
+    cumulative_filled_micro_usdc: 10_000_000,
+  });
+  assert.equal(saga.status, "reconciling");
+  saga = advance(saga, 7, "leg_reconciled", { leg_id: "leg:spot:0001" });
+  saga = advance(saga, 8, "leg_reconciled", { leg_id: "leg:perp:0001" });
+  assert.equal(saga.status, "reconciled");
+  assert.equal(saga.terminal, true);
+});
+
 test("late fills during compensation revise, rather than bypass, unwind targets", () => {
   let saga = readySaga();
   saga = advance(saga, 3, "submission_started");

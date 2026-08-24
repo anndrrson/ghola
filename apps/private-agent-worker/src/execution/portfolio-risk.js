@@ -1,14 +1,15 @@
 import {
+  SUPPORTED_EXECUTION_VENUES,
   aggregatePortfolioAccounting,
   evaluatePortfolioPlan,
   normalizePortfolioMandate,
   reconcilePortfolioAccounting,
+  venueSupportsProduct,
 } from "@ghola/execution-core";
 import { createHash } from "node:crypto";
 import { venueStateForRouting } from "./venue-readiness.js";
 
-const CORE_VENUES = new Set(["hyperliquid", "drift", "coinbase_advanced", "jupiter"]);
-const PERP_VENUES = new Set(["hyperliquid", "drift"]);
+const CORE_VENUES = new Set(SUPPORTED_EXECUTION_VENUES);
 
 export function portfolioMandateForSession({ session_id, owner_commitment, policy, now = new Date() }) {
   const allowedVenues = policy.venue_allowlist.filter((venue) => CORE_VENUES.has(venue));
@@ -285,7 +286,7 @@ function portfolioStateFromSession({ session, positions, model_decisions_last_ho
         position.signed_notional_micro_usdc,
         usdToMicro(Number(position.estimated_exposure_notional_usd ?? position.notional_usd ?? 0)) * (position.side === "sell" ? -1 : 1),
       );
-      const productType = position.product_type || (PERP_VENUES.has(position.venue_id) ? "perp" : "spot");
+      const productType = position.product_type || (venueSupportsProduct(position.venue_id, "perp") ? "perp" : "spot");
       return {
         venue_id: position.venue_id,
         asset: position.asset || assetForMarket(position.market),
@@ -318,7 +319,7 @@ function portfolioStateFromSession({ session, positions, model_decisions_last_ho
 
 function proposalProductType(proposal) {
   if (proposal.product_type === "spot" || proposal.product_type === "perp") return proposal.product_type;
-  return PERP_VENUES.has(proposal.venue_id) ? "perp" : "spot";
+  return venueSupportsProduct(proposal.venue_id, "perp") ? "perp" : "spot";
 }
 
 function strategiesForPolicy(policy) {

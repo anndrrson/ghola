@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
 import {
+  SUPPORTED_EXECUTION_VENUES,
+  executionVenueSpec,
+  supportsExactQuantityRecovery,
+  venueSupportsProduct,
+} from "@ghola/execution-core";
+import {
   applyDurableMultiLegEvent,
   createDurableMultiLegSaga,
 } from "./multi-leg-orchestrator.js";
@@ -7,9 +13,7 @@ import { evaluateAutopilotMultiLegPlan } from "./portfolio-risk.js";
 
 const SUPPORTED_MARKETS = new Set(["BTC-USD", "ETH-USD", "SOL-USD"]);
 const CARRY_STRATEGY = "delta_neutral_carry_v1";
-const SPOT_VENUES = new Set(["coinbase_advanced", "jupiter"]);
-const PERP_VENUES = new Set(["hyperliquid", "phoenix", "backpack"]);
-const PORTFOLIO_CONTRACT_VENUES = new Set(["hyperliquid", "drift", "coinbase_advanced", "jupiter"]);
+const PORTFOLIO_CONTRACT_VENUES = new Set(SUPPORTED_EXECUTION_VENUES);
 const DEFAULT_FEE_BPS = {
   coinbase_advanced: 60,
   hyperliquid: 5,
@@ -98,7 +102,7 @@ export async function runGuardedArbitrageTick({
 
   const pairVenues = [opportunity.buy_venue, opportunity.sell_venue];
   const portfolioContractPair = pairVenues.every((venue) => PORTFOLIO_CONTRACT_VENUES.has(venue));
-  const liveRecoveryPair = pairVenues.every((venue) => venue === "coinbase_advanced" || venue === "hyperliquid");
+  const liveRecoveryPair = pairVenues.every(supportsExactQuantityRecovery);
   if ((!portfolioContractPair || !liveRecoveryPair) && env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
     const reason = !portfolioContractPair
       ? "portfolio_venue_contract_unavailable"
@@ -463,7 +467,7 @@ function sagaLeg({ sagaId, id, venue, market, side, notional }) {
     venue_id: venue,
     asset: baseMarket(market),
     market,
-    product_type: SPOT_VENUES.has(venue) ? "spot" : "perp",
+    product_type: executionVenueSpec(venue)?.primary_product || "perp",
     operation_class: operationForVenue(venue),
     side,
     notional_micro_usdc: Math.round(notional * 1_000_000),
@@ -471,7 +475,7 @@ function sagaLeg({ sagaId, id, venue, market, side, notional }) {
 }
 
 function riskLeg({ venue, market, side, notionalUsd, basisBps, reduceOnly = false, session, env }) {
-  const productType = SPOT_VENUES.has(venue) ? "spot" : "perp";
+  const productType = executionVenueSpec(venue)?.primary_product || "perp";
   return {
     venue_id: venue,
     asset: baseMarket(market),
@@ -795,7 +799,7 @@ export async function bestCarryExitOpportunity({
     return carryExitFailure("carry_position_pair_mismatch", "Carry legs do not share one reconciled market and protected-pair identity.", {});
   }
   const dryRun = env.PRIVATE_AGENT_VENUE_DRY_RUN === "true";
-  if (!dryRun && (spotPosition.venue_id !== "coinbase_advanced" || perpPosition.venue_id !== "hyperliquid")) {
+  if (!dryRun && ![spotPosition.venue_id, perpPosition.venue_id].every(supportsExactQuantityRecovery)) {
     return carryExitFailure("exact_quantity_recovery_unavailable", "Live carry exit is limited to venues with proven exact-quantity recovery.", {
       venues: [spotPosition.venue_id, perpPosition.venue_id],
     });
@@ -1064,7 +1068,7 @@ async function marketSnapshots({ session, env, fetchImpl, now }) {
     const base = capUsd(env.PRIVATE_AGENT_ARB_FORCE_BUY_PRICE || env.PRIVATE_AGENT_AUTOPILOT_FORCE_PRICE, 100);
     const sell = capUsd(env.PRIVATE_AGENT_ARB_FORCE_SELL_PRICE, base * 1.03);
     const ready = readyVenues(session);
-    const hedgeVenue = ready.includes("hyperliquid") ? "hyperliquid" : ready.find((venue) => PERP_VENUES.has(venue)) || "hyperliquid";
+    const hedgeVenue = ready.includes("hyperliquid") ? "hyperliquid" : ready.find((venue) => venueSupportsProduct(venue, "perp")) || "hyperliquid";
     const buyVenue = ready.find((venue) => venue !== hedgeVenue) ||
       (session.session_policy.venue_allowlist.includes("coinbase_advanced") ? "coinbase_advanced" : "jupiter");
     return [
@@ -1243,7 +1247,7 @@ function instructionForLeg({ venue, market, side, price, notional, baseSize, red
       size_mode: "base",
       live_order_mode: "tiny_fill",
       max_slippage_bps: String(policy.max_slippage_bps),
-      reduce_only: reduceOnly && PERP_VENUES.has(venue),
+      reduce_only: reduceOnly && venueSupportsProduct(venue, "perp"),
       tif: "Ioc",
     },
   };
@@ -1283,9 +1287,9 @@ function workerSessionPolicy(session) {
 }
 
 function validPair(left, right) {
-  return (SPOT_VENUES.has(left) && PERP_VENUES.has(right)) ||
-    (SPOT_VENUES.has(right) && PERP_VENUES.has(left)) ||
-    (PERP_VENUES.has(left) && PERP_VENUES.has(right));
+  return (venueSupportsProduct(left, "spot") && venueSupportsProduct(right, "perp")) ||
+    (venueSupportsProduct(right, "spot") && venueSupportsProduct(left, "perp")) ||
+    (venueSupportsProduct(left, "perp") && venueSupportsProduct(right, "perp"));
 }
 
 function operationForVenue(venue) {

@@ -1,15 +1,22 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { NextRequest } from "next/server";
 import { POST as postArbCanaryReport } from "@/app/v1/private-account/agent-passport/arb-canary-report/route";
 import { POST as armArbRoute } from "@/app/v1/private-account/agent-passport/arm-arb/route";
+import { POST as linkPlatformRoute } from "@/app/v1/private-account/platforms/link/route";
+import { POST as carryRoute } from "@/app/v1/private-account/carry/route";
 import {
   privateAccountOwnerFromRequest,
+  createOrGetStoredPrivateAccount,
   type PrivateAccountRequestOwner,
 } from "@/app/v1/private-account/_lib";
 import {
   agentPassportReadinessForOwner,
   linkAgentPlatformFromBody,
 } from "./private-agent-passport";
-import { resetPrivateAccountStoreForTests } from "./private-account-store";
+import {
+  getVenueExecutionVaultByAccount,
+  resetPrivateAccountStoreForTests,
+} from "./private-account-store";
 
 const owner: PrivateAccountRequestOwner = {
   owner_commitment: "owner_passport_test",
@@ -64,6 +71,129 @@ describe("agent passport venue linking", () => {
     }, owner);
 
     expect(blocked).toEqual({ error: "withdraw_permission_blocked" });
+
+    const lighter = await linkAgentPlatformFromBody({
+      venue_id: "lighter",
+      permission_attestation: {
+        can_read: true,
+        can_trade: true,
+        can_withdraw: false,
+        can_transfer: false,
+      },
+      encrypted_execution_vault: sealedVault("lighter"),
+    }, owner);
+    expect("error" in lighter).toBe(false);
+    if (!("error" in lighter)) {
+      expect(lighter.capability.venue_id).toBe("lighter");
+      expect(lighter.capability.can_withdraw).toBe(false);
+    }
+
+    const transferBlocked = await linkAgentPlatformFromBody({
+      venue_id: "lighter",
+      permission_attestation: { can_read: true, can_trade: true, can_transfer: true },
+      encrypted_execution_vault: sealedVault("lighter"),
+    }, owner);
+    expect(transferBlocked).toEqual({ error: "withdraw_permission_blocked" });
+  });
+
+  it("does not persist an encrypted venue vault before worker verification succeeds", async () => {
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
+    const oldFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ status: "rejected" }), { status: 400 })) as typeof fetch;
+
+    try {
+      const linked = await linkAgentPlatformFromBody({
+        venue_id: "aster",
+        permission_attestation: { can_read: true, can_trade: true },
+        encrypted_execution_vault: sealedVault("aster"),
+      }, owner);
+      expect(linked).toEqual({ error: "credential_verification_failed" });
+
+      const account = await createOrGetStoredPrivateAccount(owner);
+      expect(await getVenueExecutionVaultByAccount({
+        account_commitment: account.account_commitment,
+        venue_id: "aster",
+        execution_mode: "byo_api_key",
+      })).toBeNull();
+    } finally {
+      globalThis.fetch = oldFetch;
+    }
+  });
+
+  it("links two Carry venues through authenticated routes and forwards only sealed access to no-submit", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
+    process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "report_only";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
+    const workerBodies: Record<string, unknown>[] = [];
+    const oldFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+      workerBodies.push(body);
+      if (url === "https://worker.example/venues/credentials/verify") {
+        return new Response(JSON.stringify({
+          status: "verified",
+          can_read: true,
+          can_trade: true,
+          can_withdraw: false,
+        }), { status: 200 });
+      }
+      if (url === "https://worker.example/carry/preflight") {
+        return new Response(JSON.stringify({
+          no_submit_ready: true,
+          transaction_broadcast: false,
+          live_creation_ready: true,
+        }), { status: 200 });
+      }
+      return oldFetch(input, init);
+    }) as typeof fetch;
+
+    try {
+      for (const venue of ["aster", "lighter"] as const) {
+        const response = await linkPlatformRoute(authedPost("/v1/private-account/platforms/link", {
+          venue_id: venue,
+          execution_mode: "byo_api_key",
+          permission_attestation: { can_read: true, can_trade: true, can_withdraw: false, can_transfer: false },
+          encrypted_execution_vault: sealedVault(venue),
+        }));
+        const body = await response.json();
+        expect(response.status, JSON.stringify(body)).toBe(201);
+        expect(body.capability.venue_id).toBe(venue);
+        expect(JSON.stringify(body)).not.toContain(`sealed-${venue}-vault`);
+        expect(JSON.stringify(body)).not.toContain("encrypted_execution_vault");
+      }
+
+      const response = await carryRoute(new NextRequest("https://ghola.test/v1/private-account/carry", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer investor-test-token",
+          "content-type": "application/json",
+          origin: "https://ghola.test",
+        },
+        body: JSON.stringify({
+          action: "preflight_pair",
+          asset: "BTC",
+          long_venue_id: "aster",
+          short_venue_id: "lighter",
+          notional_usd: "11",
+          horizon_days: "1",
+        }),
+      }));
+      const result = await response.json();
+      expect(response.status, JSON.stringify(result)).toBe(200);
+      expect(result.no_submit_ready).toBe(true);
+
+      const preflight = workerBodies.find((body) => body.operation_class === "paired_no_submit");
+      const access = preflight?.venue_access as Record<string, Record<string, unknown>>;
+      expect(access.aster.encrypted_execution_vault).toMatchObject({ ciphertext: "sealed-aster-vault" });
+      expect(access.lighter.encrypted_execution_vault).toMatchObject({ ciphertext: "sealed-lighter-vault" });
+      expect(preflight).not.toHaveProperty("api_private_key");
+      expect(preflight).not.toHaveProperty("api_wallet_private_key");
+    } finally {
+      globalThis.fetch = oldFetch;
+    }
   });
 
   it("requires Hyperliquid, Phoenix, and Backpack for guarded SOL arbitrage readiness", async () => {

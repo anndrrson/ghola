@@ -339,6 +339,8 @@ export async function enforceInstructionPolicy({
       await enforceGlobalSessionDailyNotional({ body, instruction, state, policy, notional });
       await enforceHyperliquidTinyFillPolicy({ body, instruction, state, notional });
       await enforceHyperliquidFullTicketPolicy({ body, instruction, state, notional });
+      await enforceAsterFullTicketPolicy({ body, instruction, state, notional });
+      await enforceLighterFullTicketPolicy({ body, instruction, state, notional });
     }
   }
   const rateLimit = Number.parseInt(process.env.PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE || "0", 10);
@@ -642,6 +644,44 @@ async function enforceHyperliquidTinyFillPolicy({ body, instruction, state, noti
       dailyCap,
     );
     if (!amount.ok) throw new ExecutionPolicyError("hyperliquid tiny fill daily notional cap exceeded");
+  }
+}
+
+async function enforceAsterFullTicketPolicy({ body, instruction, state, notional }) {
+  if (instruction.venue_id !== "aster" || instruction.operation_class !== "limit_order" || instruction.order?.reduce_only === true) return;
+  if (process.env.PRIVATE_AGENT_ASTER_ALLOW_MAINNET !== "true" || process.env.PRIVATE_AGENT_ASTER_LIVE_MODE !== "full_ticket") {
+    throw new ExecutionPolicyError("aster live execution is disabled");
+  }
+  if (instruction.order.tif !== "Ioc") {
+    throw new ExecutionPolicyError("aster paired entry must use IOC");
+  }
+  const perOrderCap = Math.min(capUsd(process.env.PRIVATE_AGENT_ASTER_FULL_TICKET_MAX_NOTIONAL_USD, 25), 1_000);
+  if (notional > perOrderCap) throw new ExecutionPolicyError("aster order exceeds the live notional cap");
+  const dailyCap = Math.min(capUsd(process.env.PRIVATE_AGENT_ASTER_DAILY_NOTIONAL_CAP_USD, 100), 10_000);
+  if (state && dailyCap > 0) {
+    const day = new Date().toISOString().slice(0, 10);
+    const subject = body.vault_commitment || body.policy_commitment || "unknown";
+    const amount = await state.incrementPolicyAmount(`aster_full_ticket_notional:${subject}:${day}`, notional, dailyCap);
+    if (!amount.ok) throw new ExecutionPolicyError("aster daily notional cap exceeded");
+  }
+}
+
+async function enforceLighterFullTicketPolicy({ body, instruction, state, notional }) {
+  if (instruction.venue_id !== "lighter" || instruction.operation_class !== "limit_order" || instruction.order?.reduce_only === true) return;
+  if (process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET !== "true" || process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE !== "full_ticket") {
+    throw new ExecutionPolicyError("lighter live execution is disabled");
+  }
+  if (instruction.order.tif !== "Ioc") {
+    throw new ExecutionPolicyError("lighter paired entry must use IOC");
+  }
+  const perOrderCap = Math.min(capUsd(process.env.PRIVATE_AGENT_LIGHTER_FULL_TICKET_MAX_NOTIONAL_USD, 25), 1_000);
+  if (notional > perOrderCap) throw new ExecutionPolicyError("lighter order exceeds the live notional cap");
+  const dailyCap = Math.min(capUsd(process.env.PRIVATE_AGENT_LIGHTER_DAILY_NOTIONAL_CAP_USD, 100), 10_000);
+  if (state && dailyCap > 0) {
+    const day = new Date().toISOString().slice(0, 10);
+    const subject = body.vault_commitment || body.policy_commitment || "unknown";
+    const amount = await state.incrementPolicyAmount(`lighter_full_ticket_notional:${subject}:${day}`, notional, dailyCap);
+    if (!amount.ok) throw new ExecutionPolicyError("lighter daily notional cap exceeded");
   }
 }
 

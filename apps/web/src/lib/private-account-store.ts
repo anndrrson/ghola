@@ -426,7 +426,7 @@ export interface PrivateMobileWalletBindingRecordV1 {
   updated_at: string;
 }
 
-export type PrivateAgentVenueId = "hyperliquid" | "phoenix" | "backpack" | "coinbase_advanced" | "jupiter";
+export type PrivateAgentVenueId = "hyperliquid" | "lighter" | "aster" | "phoenix" | "backpack" | "coinbase_advanced" | "jupiter";
 
 export interface PrivateAgentPassportRecordV1 {
   version: 1;
@@ -7014,8 +7014,8 @@ function agentPassportRow(row: AgentPassportRow): PrivateAgentPassportRecordV1 {
 
 function venueCapabilityRow(row: VenueCapabilityRow): PrivateVenueCapabilityRecordV1 {
   const status = row.status === "revoked" ? "revoked" : row.status === "blocked" ? "blocked" : "ready";
-  const venueId = row.venue_id === "coinbase_advanced" || row.venue_id === "jupiter"
-    ? row.venue_id
+  const venueId: PrivateAgentVenueId = ["hyperliquid", "lighter", "aster", "phoenix", "backpack", "coinbase_advanced", "jupiter"].includes(row.venue_id)
+    ? row.venue_id as PrivateAgentVenueId
     : "hyperliquid";
   return {
     version: 1,

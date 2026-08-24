@@ -186,6 +186,7 @@ test("targeted reconciliation filters fills to the original client order", async
     assert.equal(result.status, "reconciled");
     assert.equal(result.fills.length, 1);
     assert.equal(result.final_proof.final_venue_execution_proven, true);
+    assert.equal(result.final_proof.target_client_order_matched, true);
     assert.equal(result.final_proof.final_fill_proven, true);
     assert.equal(result.final_proof.cumulative_filled_micro_usdc, 25_000_000);
     assert.equal(result.final_proof.filled_base_size, "0.00025");

@@ -1,0 +1,399 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import {
+  advanceStoredCarryPosition,
+  appendStoredCarryValueEntry,
+  createStoredCarryPosition,
+  finalizeStoredCarryValueLedger,
+  observeStoredCarryPosition,
+  runCarryMonitoringTick,
+} from "../src/execution/carry-positions.js";
+import { createWorkerState } from "../src/state/private-state.js";
+
+const NOW = 1_800_000_000_000;
+const OWNER = "owner:commitment:0001";
+
+test("persists a Carry Position, lifecycle, and final value proof across state reload", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  let state = createWorkerState(dir);
+  const created = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: positionInput(),
+    opportunity: opportunity(),
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  assert.equal(created.ok, true);
+  assert.equal(created.record.record_version, 1);
+
+  let record = created.record;
+  for (const event of lifecycle()) {
+    const advanced = await advanceStoredCarryPosition({
+      state,
+      position_id: record.position.position_id,
+      owner_commitment: OWNER,
+      event,
+      now_ms: NOW + event.sequence,
+    });
+    assert.equal(advanced.ok, true);
+    record = advanced.record;
+  }
+  assert.equal(record.position.status, "reconciled");
+  assert.deepEqual(
+    record.lifecycle_events.map((event) => event.recorded_at_ms),
+    lifecycle().map((event) => NOW + event.sequence),
+  );
+
+  const valued = await appendStoredCarryValueEntry({
+    state,
+    position_id: record.position.position_id,
+    owner_commitment: OWNER,
+    entry: {
+      version: 1,
+      entry_id: "carry:value:entry:0001",
+      sequence: 1,
+      entry_type: "funding",
+      direction: "credit",
+      amount_micro_usdc: 21_000,
+      venue_id: "lighter",
+      leg_id: "carry:leg:short",
+      occurred_at_ms: NOW + 10,
+      evidence_commitment: "carry:value:evidence:0001",
+    },
+    now_ms: NOW + 10,
+  });
+  assert.equal(valued.ok, true);
+  const finalized = await finalizeStoredCarryValueLedger({
+    state,
+    position_id: record.position.position_id,
+    owner_commitment: OWNER,
+    evidence: {
+      gross_exposure_micro_usdc: 0,
+      open_order_count: 0,
+      costs_complete: true,
+      reconciliation_commitment: "carry:reconciliation:0001",
+    },
+    now_ms: NOW + 11,
+  });
+  assert.equal(finalized.ok, true);
+  assert.equal(finalized.record.value_ledger.status, "finalized");
+
+  state = createWorkerState(dir);
+  const reloaded = await state.getCarryPositionRecord(record.position.position_id);
+  assert.equal(reloaded.position.status, "reconciled");
+  assert.equal(reloaded.value_ledger.realized.net_value_micro_usdc, 21_000);
+  assert.equal(reloaded.value_ledger.finalization_evidence.open_order_count, 0);
+});
+
+test("rejects stale concurrent Carry Position writers", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-cas-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const created = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: positionInput(),
+    opportunity: opportunity(),
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  const first = await state.putCarryPositionRecord(created.record, { expected_version: 1 });
+  assert.equal(first.ok, true);
+  const stale = await state.putCarryPositionRecord(created.record, { expected_version: 1 });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.error, "carry_record_version_conflict");
+});
+
+test("refuses storage until both venue accounts and margin runways pass", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-readiness-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const notReady = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: positionInput(),
+    opportunity: { ...opportunity(), all_venues_ready: false },
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  assert.deepEqual(notReady, { ok: false, error: "carry_venue_accounts_not_ready" });
+  const lowRunway = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: positionInput(),
+    opportunity: { ...opportunity(), long_margin_runway_ms: 1 },
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  assert.deepEqual(lowRunway, { ok: false, error: "carry_margin_runway_insufficient" });
+});
+
+test("creates only a capped, explicitly enabled qualification pilot", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-qualification-pilot-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const pilotOpportunity = {
+    ...opportunity(),
+    live_creation_ready: false,
+    qualification_pilot_ready: true,
+    qualification_pilot_candidate_venue_id: "lighter",
+  };
+  const pilot = { enabled: true, candidate_venue_id: "lighter" };
+  const disabled = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: positionInput(),
+    opportunity: pilotOpportunity,
+    monitoring_context: monitoringContext(),
+    qualification_pilot: pilot,
+    env: {},
+    now_ms: NOW,
+  });
+  assert.equal(disabled.error, "carry_qualification_pilot_disabled");
+  const created = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: positionInput(),
+    opportunity: pilotOpportunity,
+    monitoring_context: monitoringContext(),
+    qualification_pilot: pilot,
+    env: {
+      PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED: "true",
+      PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_MAX_NOTIONAL_MICRO_USDC: "11000000",
+    },
+    now_ms: NOW,
+  });
+  assert.equal(created.ok, true);
+  assert.equal(created.record.qualification_pilot.candidate_venue_id, "lighter");
+  assert.equal(created.record.qualification_pilot.max_notional_micro_usdc, 11_000_000);
+  assert.equal(created.record.qualification_pilot.requires_separate_live_confirmation, true);
+});
+
+test("monitoring records funding flips and deterministically requests exit", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const preflight = async ({ body }) => ({
+    version: 1,
+    mode: "paired_monitoring_no_submit",
+    no_submit_ready: true,
+    transaction_broadcast: false,
+    economic_opportunity: {
+      checked_at_ms: NOW + body.work_order_commitment.length,
+      projected_net_value_bps: -1,
+    },
+    margin_runways: [
+      { venue_id: "hyperliquid", runway_ms: 7_200_000 },
+      { venue_id: "lighter", runway_ms: 7_200_000 },
+    ],
+    qualification_reasons: [],
+  });
+  const dependencies = {
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: { hyperliquid: { status: "ready" }, lighter: { status: "ready" } },
+    preflight,
+  };
+  const first = await observeStoredCarryPosition({ ...dependencies, now_ms: NOW + 100 });
+  assert.equal(first.ok, true);
+  assert.equal(first.observation_ok, true);
+  assert.equal(first.record.position.status, "active");
+  assert.equal(first.record.position.consecutive_exit_observations, 1);
+  assert.equal(first.record.latest_observation.expected_net_value_bps, -1);
+  assert.equal(first.record.latest_observation.margin_runway_ms_by_venue.hyperliquid, 7_200_000);
+  const second = await observeStoredCarryPosition({ ...dependencies, now_ms: NOW + 200 });
+  assert.equal(second.ok, true);
+  assert.equal(second.record.position.status, "exiting");
+  assert.deepEqual(second.record.position.next_actions, ["reduce_only_close_both_legs"]);
+});
+
+test("monitor failure freezes an active position without retry", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-failure-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const result = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: { hyperliquid: { status: "ready" }, lighter: { status: "ready" } },
+    preflight: async () => { throw new Error("venue_read_unavailable"); },
+    now_ms: NOW + 100,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.observation_ok, false);
+  assert.equal(result.record.position.status, "frozen");
+  assert.equal(result.record.position.retry_permitted, false);
+});
+
+test("worker monitoring survives without an open browser", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-background-monitor-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const tick = await runCarryMonitoringTick({
+    state,
+    preflight: async () => ({
+      economic_opportunity: { checked_at_ms: NOW + 100, projected_net_value_bps: 9 },
+      margin_runways: [
+        { venue_id: "hyperliquid", runway_ms: 7_200_000 },
+        { venue_id: "lighter", runway_ms: 7_200_000 },
+      ],
+      qualification_reasons: [],
+    }),
+    now_ms: NOW + 100,
+  });
+  assert.equal(tick.ok, true);
+  assert.equal(tick.checked, 1);
+  assert.equal(tick.results[0].position_id, active.position.position_id);
+  const stored = await state.getCarryPositionRecord(active.position.position_id);
+  assert.equal(stored.position.last_event_sequence, 3);
+  assert.equal(stored.position.status, "active");
+});
+
+test("monitoring appends only authoritative venue funding settlements", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-funding-ledger-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const result = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => ({
+      economic_opportunity: { checked_at_ms: NOW + 100, projected_net_value_bps: 9 },
+      margin_runways: [
+        { venue_id: "hyperliquid", runway_ms: 7_200_000 },
+        { venue_id: "lighter", runway_ms: 7_200_000 },
+      ],
+      qualification_reasons: [],
+    }),
+    readFundingSettlements: async ({ body }) => [{
+      settlement_id: `${body.venue_id}:settlement:1`,
+      occurred_at_ms: NOW + 50,
+      amount_quote: body.venue_id === "hyperliquid" ? "0.020" : "-0.005",
+      quote_asset: "USDC",
+    }],
+    now_ms: NOW + 100,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.funding.status, "current");
+  assert.equal(result.record.value_ledger.entries.length, 2);
+  assert.equal(result.record.value_ledger.realized.funding_credit_micro_usdc, 20_000);
+  assert.equal(result.record.value_ledger.realized.funding_debit_micro_usdc, 5_000);
+  assert.equal(result.record.value_evidence.funding.status, "current");
+});
+
+async function activePosition(state) {
+  const created = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: positionInput(),
+    opportunity: opportunity(),
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  let record = created.record;
+  for (const item of lifecycle().slice(0, 2)) {
+    const advanced = await advanceStoredCarryPosition({
+      state,
+      position_id: record.position.position_id,
+      owner_commitment: OWNER,
+      event: item,
+      now_ms: NOW + item.sequence,
+    });
+    record = advanced.record;
+  }
+  return record;
+}
+
+function positionInput() {
+  return {
+    version: 1,
+    position_id: "carry:position:stored:0001",
+    mandate_id: "carry:mandate:stored:0001",
+    asset: "BTC",
+    long_venue_id: "hyperliquid",
+    short_venue_id: "lighter",
+    target_notional_micro_usdc: 10_000_000,
+    risk_mandate: {
+      min_expected_net_benefit_bps: 1,
+      exit_net_value_bps: 0,
+      exit_after_consecutive_observations: 2,
+      min_margin_runway_ms: 3_600_000,
+      max_hedge_error_micro_usdc: 0,
+      max_data_age_ms: 30_000,
+      allow_migration: false,
+    },
+  };
+}
+
+function opportunity() {
+  return {
+    version: 1,
+    eligible: true,
+    reasons: [],
+    asset: "BTC",
+    long_venue_id: "hyperliquid",
+    short_venue_id: "lighter",
+    notional_micro_usdc: 10_000_000,
+    capital_committed_micro_usdc: 4_000_000,
+    horizon_ms: 86_400_000,
+    projected_gross_funding_micro_usdc: 25_000,
+    projected_trading_cost_micro_usdc: 3_000,
+    projected_capital_cost_micro_usdc: 1_000,
+    risk_buffer_micro_usdc: 1_000,
+    projected_net_value_micro_usdc: 20_000,
+    projected_net_value_bps: 20,
+    break_even_ms: 3_600_000,
+    checked_at_ms: NOW,
+    all_venues_ready: true,
+    live_creation_ready: true,
+    long_margin_runway_ms: 7_200_000,
+    short_margin_runway_ms: 7_200_000,
+  };
+}
+
+function monitoringContext() {
+  const access = (venueId) => ({
+    status: "ready",
+    owner_commitment: OWNER,
+    account_commitment: `account:${venueId}:0001`,
+    vault_commitment: `vault:${venueId}:0001`,
+    encrypted_vault_commitment: `encrypted:${venueId}:0001`,
+    policy_commitment: `policy:${venueId}:0001`,
+    encrypted_execution_vault: { version: 1, ciphertext: `sealed:${venueId}` },
+  });
+  return {
+    version: 1,
+    venue_access: {
+      hyperliquid: access("hyperliquid"),
+      lighter: access("lighter"),
+    },
+  };
+}
+
+function lifecycle() {
+  return [
+    event(1, "preflight_passed", { opportunity_eligible: true, all_venues_ready: true }),
+    event(2, "entry_reconciled", {
+      long_filled_micro_usdc: 10_000_000,
+      short_filled_micro_usdc: 10_000_000,
+      hedge_error_micro_usdc: 0,
+    }),
+    event(3, "manual_exit_requested"),
+    event(4, "exit_reconciled", { gross_exposure_micro_usdc: 0, open_order_count: 0 }),
+  ];
+}
+
+function event(sequence, type, overrides = {}) {
+  return { version: 1, event_id: `carry:event:stored:${sequence}`, sequence, type, ...overrides };
+}

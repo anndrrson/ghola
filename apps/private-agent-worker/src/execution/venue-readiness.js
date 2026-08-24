@@ -1,26 +1,22 @@
-const TARGET_VENUES = new Set(["hyperliquid", "drift", "coinbase_advanced", "jupiter"]);
+import {
+  SUPPORTED_EXECUTION_VENUES,
+  executionVenueSpec,
+  requiredVenueCapabilities,
+} from "@ghola/execution-core";
+
+const TARGET_VENUES = new Set(SUPPORTED_EXECUTION_VENUES);
 const DRIFT_RUNTIME_AVAILABLE = false;
 
-const CAPABILITIES = Object.freeze({
-  hyperliquid: Object.freeze({
-    market_data: true, funding: true, fees: true, orders: true, positions: true,
-    collateral: true, reconciliation: true, delegated_signing: true, cancel: true,
-    reduce_only: true,
+const CAPABILITIES = Object.freeze(Object.fromEntries(
+  SUPPORTED_EXECUTION_VENUES.map((venueId) => {
+    const spec = executionVenueSpec(venueId);
+    const route = requiredVenueCapabilities({ venue_id: venueId, product_type: spec.primary_product });
+    const capabilities = [...route];
+    if (spec.primary_product === "perp") capabilities.push("cancel", "reduce_only");
+    if (venueId === "coinbase_advanced") capabilities.push("cancel");
+    return [venueId, Object.freeze(Object.fromEntries([...new Set(capabilities)].map((item) => [item, true])))];
   }),
-  drift: Object.freeze({
-    market_data: true, funding: true, fees: true, orders: true, positions: true,
-    collateral: true, reconciliation: true, delegated_signing: true, cancel: true,
-    reduce_only: true,
-  }),
-  coinbase_advanced: Object.freeze({
-    market_data: true, fees: true, orders: true, balances: true,
-    reconciliation: true, trade_only_credentials: true, cancel: true,
-  }),
-  jupiter: Object.freeze({
-    market_data: true, fees: true, quotes: true, swap: true, balances: true,
-    reconciliation: true, delegated_signing: true,
-  }),
-});
+));
 
 export function venueStateForRouting({
   venue_id,
@@ -31,6 +27,7 @@ export function venueStateForRouting({
   env = process.env,
 }) {
   if (!TARGET_VENUES.has(venue_id)) throw new Error("unsupported_execution_venue");
+  const venueSpec = executionVenueSpec(venue_id);
   const reasons = [];
   const simulatedNoCustody = env.PRIVATE_AGENT_VENUE_DRY_RUN === "true";
   if (!simulatedNoCustody && (access.execution_mode === "ghola_pooled" || access.custody_type === "pooled_platform_account")) {
@@ -39,9 +36,19 @@ export function venueStateForRouting({
   const forced = envList(env.PRIVATE_AGENT_QUARANTINED_VENUES);
   if (forced.includes(venue_id)) reasons.push("operator_quarantine");
   if (access.status !== "ready") reasons.push(`access_${safeStatus(access.status)}`);
+  const routableWorkerStatus = venueSpec.worker_routing_status === "enabled"
+    || venueSpec.worker_routing_status === "isolated";
+  if (!routableWorkerStatus && venue_id !== "drift") {
+    reasons.push(`worker_route_${venueSpec.worker_routing_status}`);
+  }
   if (venue_id === "drift") reasons.push(...driftReadinessReasons({ access, now_ms, env }));
 
-  const capabilities = { ...CAPABILITIES[venue_id] };
+  const capabilities = Object.fromEntries(
+    Object.keys(CAPABILITIES[venue_id]).map((capability) => [
+      capability,
+      routableWorkerStatus ? true : access.capabilities?.[capability] === true,
+    ]),
+  );
   if (access.capabilities && typeof access.capabilities === "object") {
     for (const capability of Object.keys(capabilities)) {
       if (access.capabilities[capability] === false) capabilities[capability] = false;

@@ -1,0 +1,756 @@
+import { isExecutionVenue, venueSupportsProduct } from "./venues.js";
+
+const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
+const ID = /^[A-Za-z0-9:_-]{8,180}$/;
+const ASSET = /^[A-Z0-9][A-Z0-9._-]{0,31}$/;
+const MARKET = /^[A-Z0-9][A-Z0-9._/-]{0,63}$/;
+const POSITION_STATUSES = new Set([
+  "draft", "opening", "active", "rebalancing", "exiting", "reconciled", "frozen", "manual_intervention",
+]);
+const EVENT_TYPES = new Set([
+  "preflight_passed", "entry_reconciled", "entry_failed_no_fill", "observation", "manual_exit_requested",
+  "observation_unavailable", "submission_ambiguous", "restart_detected", "recovery_failed", "reconciliation_complete", "exit_reconciled",
+]);
+const VALUE_ENTRY_TYPES = new Set([
+  "funding", "trading_fee", "slippage", "gas", "capital_cost", "transfer_fee", "rebate", "settlement_adjustment",
+]);
+const DEBIT_ONLY_VALUE_ENTRY_TYPES = new Set([
+  "trading_fee", "slippage", "gas", "capital_cost", "transfer_fee",
+]);
+
+export class CarryModelError extends Error {
+  constructor(code) {
+    super(code);
+    this.name = "CarryModelError";
+    this.code = code;
+  }
+}
+
+export function normalizePerpContractSpec(value) {
+  const raw = object(value, "contract_required");
+  exactVersion(raw.version, "contract_version");
+  const venueId = venue(raw.venue_id, "contract_venue");
+  if (!venueSupportsProduct(venueId, "perp")) fail("contract_venue_not_perp");
+  return deepFreeze({
+    version: 1,
+    venue_id: venueId,
+    contract_id: identifier(raw.contract_id, "contract_id"),
+    economic_equivalence_id: identifier(raw.economic_equivalence_id, "economic_equivalence_id"),
+    asset: normalized(raw.asset, ASSET, "contract_asset"),
+    market: normalized(raw.market, MARKET, "contract_market"),
+    quote_asset: normalized(raw.quote_asset, ASSET, "contract_quote_asset"),
+    collateral_asset: normalized(raw.collateral_asset, ASSET, "contract_collateral_asset"),
+    contract_type: enumValue(raw.contract_type, new Set(["linear_perp", "inverse_perp"]), "contract_type"),
+    mark_price_e8: positiveInteger(raw.mark_price_e8, "contract_mark_price"),
+    index_price_e8: positiveInteger(raw.index_price_e8, "contract_index_price"),
+    funding_rate_bps_per_interval: boundedInteger(raw.funding_rate_bps_per_interval, -10_000, 10_000, "contract_funding_rate"),
+    funding_rate_e12_per_interval: raw.funding_rate_e12_per_interval === undefined
+      ? raw.funding_rate_bps_per_interval * 100_000_000
+      : boundedInteger(raw.funding_rate_e12_per_interval, -1_000_000_000_000, 1_000_000_000_000, "contract_funding_rate_e12"),
+    funding_interval_ms: boundedInteger(raw.funding_interval_ms, 60_000, DAY_MS, "contract_funding_interval"),
+    maker_fee_bps: boundedInteger(raw.maker_fee_bps, -1_000, 10_000, "contract_maker_fee"),
+    taker_fee_bps: boundedInteger(raw.taker_fee_bps, 0, 10_000, "contract_taker_fee"),
+    maker_fee_e6_bps: raw.maker_fee_e6_bps === undefined
+      ? raw.maker_fee_bps * 1_000_000
+      : boundedInteger(raw.maker_fee_e6_bps, -1_000_000_000, 10_000_000_000, "contract_maker_fee_e6"),
+    taker_fee_e6_bps: raw.taker_fee_e6_bps === undefined
+      ? raw.taker_fee_bps * 1_000_000
+      : boundedInteger(raw.taker_fee_e6_bps, 0, 10_000_000_000, "contract_taker_fee_e6"),
+    minimum_notional_micro_usdc: positiveInteger(raw.minimum_notional_micro_usdc, "contract_minimum_notional"),
+    quantity_step_e8: positiveInteger(raw.quantity_step_e8, "contract_quantity_step"),
+    price_tick_e8: positiveInteger(raw.price_tick_e8, "contract_price_tick"),
+    as_of_ms: positiveInteger(raw.as_of_ms, "contract_as_of"),
+  });
+}
+
+export function calculateMarginRunway(value) {
+  const raw = object(value, "margin_runway_required");
+  exactVersion(raw.version, "margin_runway_version");
+  const venueId = venue(raw.venue_id, "margin_runway_venue");
+  if (!venueSupportsProduct(venueId, "perp")) fail("margin_runway_venue_not_perp");
+  const equity = nonNegativeInteger(raw.equity_micro_usdc, "margin_equity");
+  const maintenance = nonNegativeInteger(raw.maintenance_margin_micro_usdc, "maintenance_margin");
+  const safetyBuffer = nonNegativeInteger(raw.safety_buffer_micro_usdc, "margin_safety_buffer");
+  const notional = positiveInteger(raw.position_notional_micro_usdc, "margin_position_notional");
+  const stressBpsPerHour = boundedInteger(raw.stress_loss_bps_per_hour, 0, 10_000, "stress_loss_bps_per_hour");
+  const fundingDebitBps = boundedInteger(raw.funding_debit_bps_per_interval, 0, 10_000, "funding_debit_bps_per_interval");
+  const fundingInterval = boundedInteger(raw.funding_interval_ms, 60_000, DAY_MS, "margin_funding_interval");
+  const transferLatency = nonNegativeInteger(raw.owner_transfer_latency_ms, "owner_transfer_latency");
+  const responseBuffer = nonNegativeInteger(raw.owner_response_buffer_ms, "owner_response_buffer");
+  const liquidationDistance = boundedInteger(raw.liquidation_distance_bps, 0, 100_000, "liquidation_distance");
+  const minimumLiquidationDistance = boundedInteger(raw.minimum_liquidation_distance_bps, 0, 100_000, "minimum_liquidation_distance");
+  const headroom = Math.max(0, equity - maintenance - safetyBuffer);
+  const stressLossPerHour = microFromBpsCeil(notional, stressBpsPerHour);
+  const fundingDebitPerHour = safeNumber(ceilDiv(
+    BigInt(microFromBpsCeil(notional, fundingDebitBps)) * BigInt(HOUR_MS),
+    BigInt(fundingInterval),
+  ));
+  const burnPerHour = safeAdd(stressLossPerHour, fundingDebitPerHour, "margin_burn_overflow");
+  const runwayMs = burnPerHour === 0
+    ? null
+    : safeNumber((BigInt(headroom) * BigInt(HOUR_MS)) / BigInt(burnPerHour));
+  const requiredResponseMs = safeAdd(transferLatency, responseBuffer, "margin_response_overflow");
+  let status = "healthy";
+  if (headroom === 0 || liquidationDistance < minimumLiquidationDistance) status = "breached";
+  else if (runwayMs !== null && runwayMs <= requiredResponseMs) status = "critical";
+  else if (runwayMs !== null && runwayMs <= requiredResponseMs * 2) status = "warning";
+  return deepFreeze({
+    version: 1,
+    venue_id: venueId,
+    as_of_ms: positiveInteger(raw.as_of_ms, "margin_as_of"),
+    status,
+    equity_micro_usdc: equity,
+    maintenance_margin_micro_usdc: maintenance,
+    safety_buffer_micro_usdc: safetyBuffer,
+    margin_headroom_micro_usdc: headroom,
+    stress_burn_micro_usdc_per_hour: burnPerHour,
+    runway_ms: runwayMs,
+    required_owner_response_ms: requiredResponseMs,
+    owner_action_required: status === "critical" || status === "breached",
+    automatic_transfer_permitted: false,
+  });
+}
+
+export function evaluateCarryOpportunity(value) {
+  const raw = object(value, "carry_opportunity_required");
+  exactVersion(raw.version, "carry_opportunity_version");
+  const longContract = normalizePerpContractSpec(raw.long_contract);
+  const shortContract = normalizePerpContractSpec(raw.short_contract);
+  const nowMs = positiveInteger(raw.now_ms, "carry_now");
+  const maxAgeMs = boundedInteger(raw.max_data_age_ms, 250, 300_000, "carry_max_data_age");
+  const notional = positiveInteger(raw.notional_micro_usdc, "carry_notional");
+  const capitalCommitted = positiveInteger(raw.capital_committed_micro_usdc, "carry_capital_committed");
+  const horizonMs = boundedInteger(raw.horizon_ms, 60_000, 366 * DAY_MS, "carry_horizon");
+  const longCosts = normalizeLegCosts(raw.long_costs, longContract.taker_fee_e6_bps);
+  const shortCosts = normalizeLegCosts(raw.short_costs, shortContract.taker_fee_e6_bps);
+  const capitalCostBpsPerDay = boundedInteger(raw.capital_cost_bps_per_day, 0, 10_000, "carry_capital_cost");
+  const riskBufferBps = boundedInteger(raw.risk_buffer_bps, 0, 10_000, "carry_risk_buffer");
+  const collateralBasisRiskBps = boundedInteger(raw.collateral_basis_risk_bps ?? 0, 0, 10_000, "carry_collateral_basis_risk");
+  const minimumNetBenefitBps = boundedInteger(raw.min_expected_net_benefit_bps, 0, 10_000, "carry_minimum_net_benefit");
+  const minimumRunwayMs = boundedInteger(raw.min_margin_runway_ms, 0, 366 * DAY_MS, "carry_minimum_runway");
+  const marginRunways = array(raw.margin_runways, "carry_margin_runways", 2, 2).map(normalizeMarginRunwayResult);
+  const reasons = [];
+  if (longContract.venue_id === shortContract.venue_id) reasons.push("distinct_venues_required");
+  if (longContract.economic_equivalence_id !== shortContract.economic_equivalence_id) reasons.push("contracts_not_economically_equivalent");
+  if (longContract.asset !== shortContract.asset) reasons.push("asset_mismatch");
+  if (longContract.contract_type !== shortContract.contract_type) reasons.push("contract_type_mismatch");
+  if (notional < longContract.minimum_notional_micro_usdc || notional < shortContract.minimum_notional_micro_usdc) {
+    reasons.push("notional_below_venue_minimum");
+  }
+  for (const contract of [longContract, shortContract]) {
+    if (contract.as_of_ms > nowMs || nowMs - contract.as_of_ms > maxAgeMs) reasons.push(`contract_stale:${contract.venue_id}`);
+  }
+  const marginByVenue = new Map(marginRunways.map((runway) => [runway.venue_id, runway]));
+  for (const venueId of [longContract.venue_id, shortContract.venue_id]) {
+    const runway = marginByVenue.get(venueId);
+    if (!runway) reasons.push(`margin_runway_missing:${venueId}`);
+    else if (runway.status === "critical" || runway.status === "breached" || (runway.runway_ms !== null && runway.runway_ms < minimumRunwayMs)) {
+      reasons.push(`margin_runway_insufficient:${venueId}`);
+    }
+  }
+
+  const longFunding = fundingCashMicro("long", notional, longContract, horizonMs);
+  const shortFunding = fundingCashMicro("short", notional, shortContract, horizonMs);
+  const grossFunding = safeAdd(longFunding, shortFunding, "carry_funding_overflow");
+  const legCostE6Bps = safeAdd(costE6Bps(longCosts), costE6Bps(shortCosts), "carry_cost_bps_overflow");
+  const fixedTradingCost = safeAdd(
+    microFromE6BpsCeil(notional, legCostE6Bps),
+    safeAdd(longCosts.gas_micro_usdc, shortCosts.gas_micro_usdc, "carry_gas_overflow"),
+    "carry_fixed_cost_overflow",
+  );
+  const baseRiskBuffer = microFromBpsCeil(notional, riskBufferBps);
+  const collateralBasisRisk = microFromBpsCeil(notional, collateralBasisRiskBps);
+  const riskBuffer = safeAdd(baseRiskBuffer, collateralBasisRisk, "carry_risk_buffer_overflow");
+  const capitalCost = safeNumber(ceilDiv(
+    BigInt(capitalCommitted) * BigInt(capitalCostBpsPerDay) * BigInt(horizonMs),
+    10_000n * BigInt(DAY_MS),
+  ));
+  const totalModeledCost = safeAdd(safeAdd(fixedTradingCost, riskBuffer, "carry_cost_overflow"), capitalCost, "carry_cost_overflow");
+  const expectedNet = safeAdd(grossFunding, -totalModeledCost, "carry_net_overflow");
+  const expectedNetBps = ratioBpsFloor(expectedNet, notional);
+  const dailyFunding = safeAdd(
+    fundingCashMicro("long", notional, longContract, DAY_MS),
+    fundingCashMicro("short", notional, shortContract, DAY_MS),
+    "carry_daily_funding_overflow",
+  );
+  const dailyCapitalCost = microFromBpsCeil(capitalCommitted, capitalCostBpsPerDay);
+  const netRecurringPerDay = safeAdd(dailyFunding, -dailyCapitalCost, "carry_daily_net_overflow");
+  const oneTimeCost = safeAdd(fixedTradingCost, riskBuffer, "carry_one_time_cost_overflow");
+  const breakEvenMs = netRecurringPerDay > 0
+    ? safeNumber(ceilDiv(BigInt(oneTimeCost) * BigInt(DAY_MS), BigInt(netRecurringPerDay)))
+    : null;
+  if (netRecurringPerDay <= 0) reasons.push("recurring_carry_not_positive");
+  if (breakEvenMs === null || breakEvenMs > horizonMs) reasons.push("break_even_outside_horizon");
+  if (expectedNetBps < minimumNetBenefitBps) reasons.push("expected_net_benefit_below_floor");
+
+  return deepFreeze({
+    version: 1,
+    eligible: [...new Set(reasons)].length === 0,
+    reasons: [...new Set(reasons)],
+    asset: longContract.asset,
+    long_venue_id: longContract.venue_id,
+    short_venue_id: shortContract.venue_id,
+    notional_micro_usdc: notional,
+    capital_committed_micro_usdc: capitalCommitted,
+    horizon_ms: horizonMs,
+    projected_long_funding_micro_usdc: longFunding,
+    projected_short_funding_micro_usdc: shortFunding,
+    projected_gross_funding_micro_usdc: grossFunding,
+    projected_trading_cost_micro_usdc: fixedTradingCost,
+    projected_capital_cost_micro_usdc: capitalCost,
+    base_risk_buffer_micro_usdc: baseRiskBuffer,
+    collateral_basis_risk_bps: collateralBasisRiskBps,
+    collateral_basis_risk_micro_usdc: collateralBasisRisk,
+    risk_buffer_micro_usdc: riskBuffer,
+    projected_total_cost_micro_usdc: totalModeledCost,
+    projected_net_value_micro_usdc: expectedNet,
+    projected_net_value_bps: expectedNetBps,
+    recurring_net_value_micro_usdc_per_day: netRecurringPerDay,
+    break_even_ms: breakEvenMs,
+    margin_runways: marginRunways,
+    checked_at_ms: nowMs,
+  });
+}
+
+export function createCarryPosition(value) {
+  const raw = object(value, "carry_position_required");
+  exactVersion(raw.version, "carry_position_version");
+  const longVenue = venue(raw.long_venue_id, "carry_long_venue");
+  const shortVenue = venue(raw.short_venue_id, "carry_short_venue");
+  if (longVenue === shortVenue) fail("carry_distinct_venues_required");
+  if (!venueSupportsProduct(longVenue, "perp") || !venueSupportsProduct(shortVenue, "perp")) fail("carry_perp_venues_required");
+  const mandate = normalizeRiskMandate(raw.risk_mandate);
+  const nowMs = positiveInteger(raw.now_ms, "carry_position_now");
+  return deepFreeze({
+    version: 1,
+    position_id: identifier(raw.position_id, "carry_position_id"),
+    mandate_id: identifier(raw.mandate_id, "carry_mandate_id"),
+    asset: normalized(raw.asset, ASSET, "carry_position_asset"),
+    long_venue_id: longVenue,
+    short_venue_id: shortVenue,
+    target_notional_micro_usdc: positiveInteger(raw.target_notional_micro_usdc, "carry_target_notional"),
+    long_filled_micro_usdc: 0,
+    short_filled_micro_usdc: 0,
+    hedge_error_micro_usdc: 0,
+    status: "draft",
+    risk_mandate: mandate,
+    consecutive_exit_observations: 0,
+    last_event_sequence: 0,
+    processed_event_ids: [],
+    next_actions: ["run_preflight"],
+    retry_permitted: false,
+    created_at_ms: nowMs,
+    updated_at_ms: nowMs,
+    terminal_reason: null,
+  });
+}
+
+export function advanceCarryPosition({ position: positionInput, event: eventInput, now_ms = Date.now() }) {
+  let position;
+  try {
+    position = mutablePosition(positionInput);
+    const event = normalizeEvent(eventInput);
+    const nowMs = positiveInteger(now_ms, "carry_event_now");
+    if (position.processed_event_ids.includes(event.event_id)) {
+      return deepFreeze({ ok: true, duplicate: true, position: deepFreeze(positionInput) });
+    }
+    if (event.sequence !== position.last_event_sequence + 1) fail("carry_event_sequence_invalid");
+    if (position.status === "reconciled" || position.status === "manual_intervention") fail("carry_position_terminal");
+    applyEvent(position, event, nowMs);
+    position.last_event_sequence = event.sequence;
+    position.processed_event_ids.push(event.event_id);
+    if (position.processed_event_ids.length > 256) position.processed_event_ids.shift();
+    position.updated_at_ms = nowMs;
+    return deepFreeze({ ok: true, duplicate: false, position: deepFreeze(position) });
+  } catch (error) {
+    return deepFreeze({ ok: false, error: error instanceof CarryModelError ? error.code : "carry_event_invalid", position: positionInput });
+  }
+}
+
+export function createCarryValueLedger(value) {
+  const raw = object(value, "carry_value_ledger_required");
+  exactVersion(raw.version, "carry_value_ledger_version");
+  const modeled = object(raw.modeled, "carry_value_modeled_required");
+  const grossFunding = signedInteger(modeled.gross_funding_micro_usdc, "carry_value_modeled_funding");
+  const tradingCost = nonNegativeInteger(modeled.trading_cost_micro_usdc, "carry_value_modeled_trading_cost");
+  const capitalCost = nonNegativeInteger(modeled.capital_cost_micro_usdc, "carry_value_modeled_capital_cost");
+  const riskBuffer = nonNegativeInteger(modeled.risk_buffer_micro_usdc, "carry_value_modeled_risk_buffer");
+  const modeledNet = safeAdd(
+    grossFunding,
+    -safeAdd(safeAdd(tradingCost, capitalCost, "carry_value_modeled_cost_overflow"), riskBuffer, "carry_value_modeled_cost_overflow"),
+    "carry_value_modeled_net_overflow",
+  );
+  return deepFreeze({
+    version: 1,
+    position_id: identifier(raw.position_id, "carry_value_position_id"),
+    currency: "USDC",
+    status: "open",
+    modeled: {
+      gross_funding_micro_usdc: grossFunding,
+      trading_cost_micro_usdc: tradingCost,
+      capital_cost_micro_usdc: capitalCost,
+      risk_buffer_micro_usdc: riskBuffer,
+      net_value_micro_usdc: modeledNet,
+    },
+    realized: emptyRealizedValue(modeledNet),
+    entries: [],
+    processed_entry_ids: [],
+    last_sequence: 0,
+    created_at_ms: positiveInteger(raw.now_ms, "carry_value_created_at"),
+    updated_at_ms: positiveInteger(raw.now_ms, "carry_value_updated_at"),
+    finalized_at_ms: null,
+    finalization_evidence: null,
+  });
+}
+
+export function appendCarryValueLedgerEntry({ ledger: ledgerInput, entry: entryInput, now_ms = Date.now() }) {
+  try {
+    const ledger = mutableValueLedger(ledgerInput);
+    if (ledger.status !== "open") fail("carry_value_ledger_finalized");
+    const entry = normalizeValueEntry(entryInput);
+    const nowMs = positiveInteger(now_ms, "carry_value_entry_now");
+    if (ledger.processed_entry_ids.includes(entry.entry_id)) {
+      return deepFreeze({ ok: true, duplicate: true, ledger: deepFreeze(ledgerInput) });
+    }
+    if (entry.sequence !== ledger.last_sequence + 1) fail("carry_value_entry_sequence_invalid");
+    if (entry.occurred_at_ms > nowMs) fail("carry_value_entry_from_future");
+    ledger.entries.push(entry);
+    ledger.processed_entry_ids.push(entry.entry_id);
+    ledger.last_sequence = entry.sequence;
+    ledger.realized = summarizeRealizedValue(ledger.entries, ledger.modeled.net_value_micro_usdc);
+    ledger.updated_at_ms = nowMs;
+    return deepFreeze({ ok: true, duplicate: false, ledger: deepFreeze(ledger) });
+  } catch (error) {
+    return deepFreeze({ ok: false, error: error instanceof CarryModelError ? error.code : "carry_value_entry_invalid", ledger: ledgerInput });
+  }
+}
+
+export function finalizeCarryValueLedger({ ledger: ledgerInput, evidence: evidenceInput, now_ms = Date.now() }) {
+  try {
+    const ledger = mutableValueLedger(ledgerInput);
+    if (ledger.status !== "open") fail("carry_value_ledger_finalized");
+    const evidence = object(evidenceInput, "carry_value_finalization_evidence_required");
+    const grossExposure = nonNegativeInteger(evidence.gross_exposure_micro_usdc, "carry_value_final_exposure");
+    const openOrderCount = nonNegativeInteger(evidence.open_order_count, "carry_value_final_open_orders");
+    if (grossExposure !== 0) fail("carry_value_final_exposure_not_flat");
+    if (openOrderCount !== 0) fail("carry_value_final_open_orders_nonzero");
+    if (evidence.costs_complete !== true) fail("carry_value_final_costs_incomplete");
+    const nowMs = positiveInteger(now_ms, "carry_value_finalized_at");
+    ledger.status = "finalized";
+    ledger.updated_at_ms = nowMs;
+    ledger.finalized_at_ms = nowMs;
+    ledger.finalization_evidence = {
+      gross_exposure_micro_usdc: 0,
+      open_order_count: 0,
+      costs_complete: true,
+      reconciliation_commitment: identifier(evidence.reconciliation_commitment, "carry_value_reconciliation_commitment"),
+    };
+    return deepFreeze({ ok: true, ledger: deepFreeze(ledger) });
+  } catch (error) {
+    return deepFreeze({ ok: false, error: error instanceof CarryModelError ? error.code : "carry_value_finalization_invalid", ledger: ledgerInput });
+  }
+}
+
+function applyEvent(position, event, nowMs) {
+  if (event.type === "observation_unavailable") {
+    requireStatus(position, new Set(["active", "rebalancing"]));
+    position.status = "frozen";
+    position.next_actions = ["reconcile_only"];
+    position.retry_permitted = false;
+    position.terminal_reason = "observation_unavailable";
+    return;
+  }
+  if (event.type === "submission_ambiguous" || event.type === "restart_detected" || event.type === "recovery_failed") {
+    position.status = "frozen";
+    position.next_actions = ["reconcile_only"];
+    position.retry_permitted = false;
+    position.terminal_reason = event.type;
+    return;
+  }
+  if (event.type === "preflight_passed") {
+    requireStatus(position, new Set(["draft"]));
+    if (event.opportunity_eligible !== true || event.all_venues_ready !== true) fail("carry_preflight_evidence_missing");
+    position.status = "opening";
+    position.next_actions = ["submit_protected_multi_leg_entry"];
+    return;
+  }
+  if (event.type === "entry_reconciled") {
+    requireStatus(position, new Set(["opening"]));
+    const longFilled = nonNegativeInteger(event.long_filled_micro_usdc, "carry_long_filled");
+    const shortFilled = nonNegativeInteger(event.short_filled_micro_usdc, "carry_short_filled");
+    const hedgeError = nonNegativeInteger(event.hedge_error_micro_usdc, "carry_hedge_error");
+    position.long_filled_micro_usdc = longFilled;
+    position.short_filled_micro_usdc = shortFilled;
+    position.hedge_error_micro_usdc = hedgeError;
+    if (longFilled === position.target_notional_micro_usdc && shortFilled === position.target_notional_micro_usdc && hedgeError <= position.risk_mandate.max_hedge_error_micro_usdc) {
+      position.status = "active";
+      position.next_actions = ["monitor_carry_and_margin"];
+    } else {
+      position.status = "exiting";
+      position.next_actions = ["cancel_open_orders", "reduce_only_close_filled_exposure"];
+      position.terminal_reason = "entry_hedge_mismatch";
+    }
+    return;
+  }
+  if (event.type === "entry_failed_no_fill") {
+    requireStatus(position, new Set(["opening"]));
+    position.status = "reconciled";
+    position.next_actions = [];
+    position.terminal_reason = "entry_failed_no_fill";
+    return;
+  }
+  if (event.type === "observation") {
+    requireStatus(position, new Set(["active", "rebalancing"]));
+    const asOf = positiveInteger(event.as_of_ms, "carry_observation_as_of");
+    if (asOf > nowMs || nowMs - asOf > position.risk_mandate.max_data_age_ms) {
+      position.status = "frozen";
+      position.next_actions = ["reconcile_only"];
+      position.retry_permitted = false;
+      position.terminal_reason = "observation_stale";
+      return;
+    }
+    const runways = object(event.margin_runway_ms_by_venue, "carry_observation_runways");
+    const unsafeMargin = [position.long_venue_id, position.short_venue_id].some((venueId) => {
+      const runway = runways[venueId];
+      return runway !== null && nonNegativeInteger(runway, "carry_observation_runway") < position.risk_mandate.min_margin_runway_ms;
+    });
+    if (unsafeMargin) {
+      position.status = "exiting";
+      position.next_actions = ["reduce_only_close_both_legs"];
+      position.terminal_reason = "margin_runway_below_mandate";
+      return;
+    }
+    const netCarryBps = boundedInteger(event.expected_net_value_bps, -100_000, 100_000, "carry_observation_net_value");
+    position.consecutive_exit_observations = netCarryBps <= position.risk_mandate.exit_net_value_bps
+      ? position.consecutive_exit_observations + 1
+      : 0;
+    if (position.consecutive_exit_observations >= position.risk_mandate.exit_after_consecutive_observations) {
+      position.status = "exiting";
+      position.next_actions = migrationActions(position, event);
+      position.terminal_reason = "carry_below_exit_threshold";
+    } else {
+      position.status = "active";
+      position.next_actions = ["monitor_carry_and_margin"];
+    }
+    return;
+  }
+  if (event.type === "manual_exit_requested") {
+    requireStatus(position, new Set(["active", "rebalancing", "frozen"]));
+    position.status = "exiting";
+    position.next_actions = ["reduce_only_close_both_legs"];
+    position.terminal_reason = "owner_exit_requested";
+    return;
+  }
+  if (event.type === "reconciliation_complete") {
+    requireStatus(position, new Set(["frozen"]));
+    if (event.known_flat === true && nonNegativeInteger(event.open_order_count, "carry_reconcile_open_orders") === 0) {
+      position.long_filled_micro_usdc = 0;
+      position.short_filled_micro_usdc = 0;
+      position.hedge_error_micro_usdc = 0;
+      position.status = "reconciled";
+      position.next_actions = [];
+      position.terminal_reason = "reconciled_flat";
+    } else {
+      position.status = "exiting";
+      position.next_actions = ["cancel_open_orders", "reduce_only_close_observed_exposure"];
+    }
+    return;
+  }
+  if (event.type === "exit_reconciled") {
+    requireStatus(position, new Set(["exiting"]));
+    const grossExposure = nonNegativeInteger(event.gross_exposure_micro_usdc, "carry_exit_gross_exposure");
+    const openOrders = nonNegativeInteger(event.open_order_count, "carry_exit_open_orders");
+    if (grossExposure <= position.risk_mandate.max_hedge_error_micro_usdc && openOrders === 0) {
+      position.long_filled_micro_usdc = 0;
+      position.short_filled_micro_usdc = 0;
+      position.hedge_error_micro_usdc = 0;
+      position.status = "reconciled";
+      position.next_actions = [];
+      position.terminal_reason = "reconciled_flat";
+    } else {
+      position.next_actions = ["cancel_open_orders", "reduce_only_close_observed_exposure"];
+    }
+  }
+}
+
+function migrationActions(position, event) {
+  const candidateBenefit = Number(event.migration_expected_net_value_bps);
+  if (
+    position.risk_mandate.allow_migration &&
+    typeof event.migration_candidate_id === "string" && ID.test(event.migration_candidate_id) &&
+    Number.isInteger(candidateBenefit) &&
+    candidateBenefit >= position.risk_mandate.min_expected_net_benefit_bps
+  ) return ["preflight_protected_migration"];
+  return ["reduce_only_close_both_legs"];
+}
+
+function normalizeRiskMandate(value) {
+  const raw = object(value, "carry_risk_mandate_required");
+  return deepFreeze({
+    min_expected_net_benefit_bps: boundedInteger(raw.min_expected_net_benefit_bps, 0, 10_000, "carry_mandate_minimum_net"),
+    exit_net_value_bps: boundedInteger(raw.exit_net_value_bps, -10_000, 10_000, "carry_mandate_exit_net"),
+    exit_after_consecutive_observations: boundedInteger(raw.exit_after_consecutive_observations, 1, 100, "carry_mandate_exit_observations"),
+    min_margin_runway_ms: boundedInteger(raw.min_margin_runway_ms, 0, 366 * DAY_MS, "carry_mandate_margin_runway"),
+    max_hedge_error_micro_usdc: nonNegativeInteger(raw.max_hedge_error_micro_usdc, "carry_mandate_hedge_error"),
+    max_data_age_ms: boundedInteger(raw.max_data_age_ms, 250, 300_000, "carry_mandate_data_age"),
+    allow_migration: raw.allow_migration === true,
+    owner_only_operations: Object.freeze(["fund", "withdraw", "transfer"]),
+  });
+}
+
+function normalizeLegCosts(value, defaultFeeE6Bps) {
+  const raw = object(value, "carry_leg_costs_required");
+  const entryFeeE6Bps = raw.entry_fee_e6_bps === undefined
+    ? (raw.entry_fee_bps === undefined ? defaultFeeE6Bps : boundedInteger(raw.entry_fee_bps, 0, 10_000, "carry_entry_fee") * 1_000_000)
+    : boundedInteger(raw.entry_fee_e6_bps, 0, 10_000_000_000, "carry_entry_fee_e6");
+  const exitFeeE6Bps = raw.exit_fee_e6_bps === undefined
+    ? (raw.exit_fee_bps === undefined ? defaultFeeE6Bps : boundedInteger(raw.exit_fee_bps, 0, 10_000, "carry_exit_fee") * 1_000_000)
+    : boundedInteger(raw.exit_fee_e6_bps, 0, 10_000_000_000, "carry_exit_fee_e6");
+  return {
+    entry_fee_e6_bps: entryFeeE6Bps,
+    exit_fee_e6_bps: exitFeeE6Bps,
+    entry_slippage_bps: boundedInteger(raw.entry_slippage_bps, 0, 10_000, "carry_entry_slippage"),
+    exit_slippage_bps: boundedInteger(raw.exit_slippage_bps, 0, 10_000, "carry_exit_slippage"),
+    latency_penalty_bps: boundedInteger(raw.latency_penalty_bps ?? 0, 0, 10_000, "carry_latency_penalty"),
+    gas_micro_usdc: nonNegativeInteger(raw.gas_micro_usdc ?? 0, "carry_gas"),
+  };
+}
+
+function normalizeMarginRunwayResult(value) {
+  const raw = object(value, "carry_margin_runway_invalid");
+  return deepFreeze({
+    venue_id: venue(raw.venue_id, "carry_margin_runway_venue"),
+    status: enumValue(raw.status, new Set(["healthy", "warning", "critical", "breached"]), "carry_margin_runway_status"),
+    runway_ms: raw.runway_ms === null ? null : nonNegativeInteger(raw.runway_ms, "carry_margin_runway_ms"),
+  });
+}
+
+function mutablePosition(value) {
+  const raw = object(value, "existing_carry_position_required");
+  exactVersion(raw.version, "existing_carry_position_version");
+  enumValue(raw.status, POSITION_STATUSES, "existing_carry_position_status");
+  array(raw.processed_event_ids, "existing_carry_event_ids", 0, 256);
+  return JSON.parse(JSON.stringify(raw));
+}
+
+function normalizeEvent(value) {
+  const raw = object(value, "carry_event_required");
+  exactVersion(raw.version, "carry_event_version");
+  return {
+    ...raw,
+    event_id: identifier(raw.event_id, "carry_event_id"),
+    sequence: positiveInteger(raw.sequence, "carry_event_sequence"),
+    type: enumValue(raw.type, EVENT_TYPES, "carry_event_type"),
+  };
+}
+
+function mutableValueLedger(value) {
+  const raw = object(value, "existing_carry_value_ledger_required");
+  exactVersion(raw.version, "existing_carry_value_ledger_version");
+  enumValue(raw.status, new Set(["open", "finalized"]), "existing_carry_value_ledger_status");
+  array(raw.entries, "existing_carry_value_entries", 0, 4_096);
+  array(raw.processed_entry_ids, "existing_carry_value_entry_ids", 0, 4_096);
+  return JSON.parse(JSON.stringify(raw));
+}
+
+function normalizeValueEntry(value) {
+  const raw = object(value, "carry_value_entry_required");
+  const entryType = enumValue(raw.entry_type, VALUE_ENTRY_TYPES, "carry_value_entry_type");
+  const direction = enumValue(raw.direction, new Set(["credit", "debit"]), "carry_value_entry_direction");
+  if (DEBIT_ONLY_VALUE_ENTRY_TYPES.has(entryType) && direction !== "debit") {
+    fail("carry_value_cost_must_be_debit");
+  }
+  return {
+    version: 1,
+    entry_id: identifier(raw.entry_id, "carry_value_entry_id"),
+    sequence: positiveInteger(raw.sequence, "carry_value_entry_sequence"),
+    entry_type: entryType,
+    direction,
+    amount_micro_usdc: nonNegativeInteger(raw.amount_micro_usdc, "carry_value_entry_amount"),
+    venue_id: raw.venue_id == null ? null : venue(raw.venue_id, "carry_value_entry_venue"),
+    leg_id: raw.leg_id == null ? null : identifier(raw.leg_id, "carry_value_entry_leg_id"),
+    occurred_at_ms: positiveInteger(raw.occurred_at_ms, "carry_value_entry_occurred_at"),
+    evidence_commitment: identifier(raw.evidence_commitment, "carry_value_entry_evidence"),
+  };
+}
+
+function emptyRealizedValue(modeledNet) {
+  return {
+    funding_credit_micro_usdc: 0,
+    funding_debit_micro_usdc: 0,
+    trading_fee_micro_usdc: 0,
+    slippage_micro_usdc: 0,
+    gas_micro_usdc: 0,
+    capital_cost_micro_usdc: 0,
+    transfer_fee_micro_usdc: 0,
+    rebate_micro_usdc: 0,
+    settlement_adjustment_micro_usdc: 0,
+    net_value_micro_usdc: 0,
+    variance_from_modeled_micro_usdc: -modeledNet,
+  };
+}
+
+function summarizeRealizedValue(entries, modeledNet) {
+  const value = emptyRealizedValue(modeledNet);
+  for (const entry of entries) {
+    const amount = entry.amount_micro_usdc;
+    if (entry.entry_type === "funding") {
+      value[entry.direction === "credit" ? "funding_credit_micro_usdc" : "funding_debit_micro_usdc"] = safeAdd(
+        value[entry.direction === "credit" ? "funding_credit_micro_usdc" : "funding_debit_micro_usdc"],
+        amount,
+        "carry_value_realized_overflow",
+      );
+    } else if (entry.entry_type === "settlement_adjustment") {
+      value.settlement_adjustment_micro_usdc = safeAdd(
+        value.settlement_adjustment_micro_usdc,
+        entry.direction === "credit" ? amount : -amount,
+        "carry_value_realized_overflow",
+      );
+    } else {
+      const field = `${entry.entry_type}_micro_usdc`;
+      value[field] = safeAdd(value[field], amount, "carry_value_realized_overflow");
+    }
+  }
+  const credits = safeAdd(
+    safeAdd(value.funding_credit_micro_usdc, value.rebate_micro_usdc, "carry_value_realized_overflow"),
+    Math.max(0, value.settlement_adjustment_micro_usdc),
+    "carry_value_realized_overflow",
+  );
+  const debits = [
+    value.funding_debit_micro_usdc,
+    value.trading_fee_micro_usdc,
+    value.slippage_micro_usdc,
+    value.gas_micro_usdc,
+    value.capital_cost_micro_usdc,
+    value.transfer_fee_micro_usdc,
+    Math.max(0, -value.settlement_adjustment_micro_usdc),
+  ].reduce((sum, amount) => safeAdd(sum, amount, "carry_value_realized_overflow"), 0);
+  value.net_value_micro_usdc = safeAdd(credits, -debits, "carry_value_realized_overflow");
+  value.variance_from_modeled_micro_usdc = safeAdd(value.net_value_micro_usdc, -modeledNet, "carry_value_realized_overflow");
+  return value;
+}
+
+function fundingCashMicro(side, notional, contract, horizonMs) {
+  const direction = side === "short" ? 1n : -1n;
+  const numerator = direction * BigInt(notional) * BigInt(contract.funding_rate_e12_per_interval) * BigInt(horizonMs);
+  return safeNumber(floorDiv(numerator, 1_000_000_000_000n * BigInt(contract.funding_interval_ms)));
+}
+
+function costE6Bps(costs) {
+  return [
+    costs.entry_fee_e6_bps,
+    costs.exit_fee_e6_bps,
+    costs.entry_slippage_bps * 1_000_000,
+    costs.exit_slippage_bps * 1_000_000,
+    costs.latency_penalty_bps * 1_000_000,
+  ]
+    .reduce((sum, value) => safeAdd(sum, value, "carry_cost_bps_overflow"), 0);
+}
+
+function microFromBpsCeil(amount, bps) {
+  return safeNumber(ceilDiv(BigInt(amount) * BigInt(bps), 10_000n));
+}
+
+function microFromE6BpsCeil(amount, e6Bps) {
+  return safeNumber(ceilDiv(BigInt(amount) * BigInt(e6Bps), 10_000_000_000n));
+}
+
+function ratioBpsFloor(amount, denominator) {
+  return safeNumber(floorDiv(BigInt(amount) * 10_000n, BigInt(denominator)));
+}
+
+function requireStatus(position, allowed) {
+  if (!allowed.has(position.status)) fail("carry_event_not_allowed_in_state");
+}
+
+function venue(value, code) {
+  if (typeof value !== "string" || !isExecutionVenue(value)) fail(code);
+  return value;
+}
+
+function object(value, code) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail(code);
+  return value;
+}
+
+function array(value, code, min, max) {
+  if (!Array.isArray(value) || value.length < min || value.length > max) fail(code);
+  return value;
+}
+
+function identifier(value, code) {
+  if (typeof value !== "string" || !ID.test(value)) fail(code);
+  return value;
+}
+
+function normalized(value, pattern, code) {
+  if (typeof value !== "string") fail(code);
+  const result = value.trim().toUpperCase();
+  if (!pattern.test(result)) fail(code);
+  return result;
+}
+
+function enumValue(value, allowed, code) {
+  if (!allowed.has(value)) fail(code);
+  return value;
+}
+
+function exactVersion(value, code) {
+  if (value !== 1) fail(code);
+}
+
+function positiveInteger(value, code) {
+  if (!Number.isSafeInteger(value) || value <= 0) fail(code);
+  return value;
+}
+
+function nonNegativeInteger(value, code) {
+  if (!Number.isSafeInteger(value) || value < 0) fail(code);
+  return value;
+}
+
+function signedInteger(value, code) {
+  if (!Number.isSafeInteger(value)) fail(code);
+  return value;
+}
+
+function boundedInteger(value, min, max, code) {
+  if (!Number.isSafeInteger(value) || value < min || value > max) fail(code);
+  return value;
+}
+
+function safeAdd(left, right, code) {
+  const result = left + right;
+  if (!Number.isSafeInteger(result)) fail(code);
+  return result;
+}
+
+function safeNumber(value) {
+  const result = Number(value);
+  if (!Number.isSafeInteger(result)) fail("carry_integer_overflow");
+  return result;
+}
+
+function ceilDiv(numerator, denominator) {
+  if (numerator < 0n || denominator <= 0n) fail("carry_division_invalid");
+  return (numerator + denominator - 1n) / denominator;
+}
+
+function floorDiv(numerator, denominator) {
+  if (denominator <= 0n) fail("carry_division_invalid");
+  let quotient = numerator / denominator;
+  if (numerator < 0n && numerator % denominator !== 0n) quotient -= 1n;
+  return quotient;
+}
+
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  Object.freeze(value);
+  for (const nested of Object.values(value)) deepFreeze(nested);
+  return value;
+}
+
+function fail(code) {
+  throw new CarryModelError(code);
+}

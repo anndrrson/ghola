@@ -1,10 +1,23 @@
-export type VenueId = "hyperliquid" | "drift" | "coinbase_advanced" | "jupiter";
+export type VenueId = "hyperliquid" | "lighter" | "aster" | "edgex" | "dydx" | "variational_omni" | "drift" | "phoenix" | "backpack" | "coinbase_advanced" | "jupiter";
+export type CorePerpVenueId = "hyperliquid" | "lighter" | "aster" | "edgex" | "dydx";
+export type CarryExecutionVenueId = "hyperliquid" | "lighter" | "aster";
 export type StrategyId = "best_execution" | "spot_perp_hedge" | "delta_neutral_carry" | "exposure_rebalance";
 export declare const EXECUTION_CORE_VERSION: 1;
 export declare const SUPPORTED_EXECUTION_VENUES: readonly VenueId[];
+export declare const CORE_PERP_VENUES: readonly CorePerpVenueId[];
+export declare const CARRY_EXECUTION_VENUES: readonly CarryExecutionVenueId[];
+export declare const EXECUTION_VENUE_SPECS: Readonly<Record<VenueId, Readonly<Record<string, unknown>>>>;
 export declare const SUPPORTED_STRATEGIES: readonly StrategyId[];
 export declare const PORTFOLIO_SIGNING_BOUNDARY: Readonly<Record<string, readonly string[]>>;
 export declare class ExecutionCoreError extends Error { code: string; }
+export declare class CarryModelError extends Error { code: string; }
+export declare function executionVenueSpec(venueId: string): Readonly<Record<string, unknown>> | null;
+export declare function exactQuantityRecoveryAdapter(venueId: string): string | null;
+export declare function isExecutionVenue(venueId: string): boolean;
+export declare function isCarryExecutionVenue(venueId: string): boolean;
+export declare function supportsExactQuantityRecovery(venueId: string): boolean;
+export declare function venueSupportsProduct(venueId: string, productType: string): boolean;
+export declare function requiredVenueCapabilities(input: Record<string, unknown>): readonly string[];
 export declare function normalizePortfolioMandate(value: unknown): Readonly<Record<string, unknown>>;
 export declare function normalizePortfolioState(value: unknown): Readonly<Record<string, unknown>>;
 export declare function assessVenueReadiness(input: Record<string, unknown>): Readonly<Record<string, unknown>>;
@@ -17,3 +30,11 @@ export declare function aggregatePortfolioAccounting(input: Record<string, unkno
 export declare function reconcilePortfolioAccounting(input: Record<string, unknown>): Readonly<Record<string, unknown>>;
 export declare function buildExecutionQualityReceipt(input: unknown): Readonly<Record<string, unknown>>;
 export declare function aggregateExecutionQuality(input: unknown[]): Readonly<Record<string, unknown>>;
+export declare function normalizePerpContractSpec(input: unknown): Readonly<Record<string, unknown>>;
+export declare function calculateMarginRunway(input: unknown): Readonly<Record<string, unknown>>;
+export declare function evaluateCarryOpportunity(input: unknown): Readonly<Record<string, unknown>>;
+export declare function createCarryPosition(input: unknown): Readonly<Record<string, unknown>>;
+export declare function advanceCarryPosition(input: Record<string, unknown>): Readonly<Record<string, unknown>>;
+export declare function createCarryValueLedger(input: unknown): Readonly<Record<string, unknown>>;
+export declare function appendCarryValueLedgerEntry(input: Record<string, unknown>): Readonly<Record<string, unknown>>;
+export declare function finalizeCarryValueLedger(input: Record<string, unknown>): Readonly<Record<string, unknown>>;

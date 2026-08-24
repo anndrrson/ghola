@@ -1,8 +1,11 @@
-import { rankExecutionRoutes } from "@ghola/execution-core";
+import {
+  SUPPORTED_EXECUTION_VENUES,
+  rankExecutionRoutes,
+  venueSupportsProduct,
+} from "@ghola/execution-core";
 import { venueStateForRouting } from "./venue-readiness.js";
 
-const SPOT_VENUES = new Set(["jupiter", "coinbase_advanced"]);
-const PERP_VENUES = new Set(["hyperliquid", "drift"]);
+const EXECUTION_VENUES = new Set(SUPPORTED_EXECUTION_VENUES);
 const DEFAULT_FEE_BPS = Object.freeze({
   jupiter: 10,
   coinbase_advanced: 60,
@@ -42,7 +45,7 @@ export function routeModelProposal({ session, market, decision, signal_bps, env 
   const liquidityUsd = positiveNumber(market.available_liquidity_usd || market.liquidity_usd) || notionalUsd;
   const latencyMs = nonNegativeInteger(market.latency_ms, 0);
   const allVenueStates = session.session_policy.venue_allowlist
-    .filter((venue) => SPOT_VENUES.has(venue) || PERP_VENUES.has(venue))
+    .filter((venue) => EXECUTION_VENUES.has(venue))
     .map((venue) => venueStateForRouting({
       venue_id: venue,
       access: session.venue_access?.[venue] || {},
@@ -52,8 +55,8 @@ export function routeModelProposal({ session, market, decision, signal_bps, env 
       env,
     }));
   const ready = allVenueStates.filter((state) => state.status === "ready").map((state) => state.venue_id);
-  const productType = ready.some((venue) => SPOT_VENUES.has(venue)) ? "spot" : "perp";
-  const eligible = ready.filter((venue) => productType === "spot" ? SPOT_VENUES.has(venue) : PERP_VENUES.has(venue));
+  const productType = ready.some((venue) => venueSupportsProduct(venue, "spot")) ? "spot" : "perp";
+  const eligible = ready.filter((venue) => venueSupportsProduct(venue, productType));
   if (eligible.length === 0) return { ok: false, error: "no_routable_venue", message: "No ready venue supports this product." };
   const quotes = eligible
     .filter((venue) => supportsMarket(venue, marketId))

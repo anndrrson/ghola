@@ -95,6 +95,10 @@ test("Vercel uploads every file required by post-build release validation", () =
   );
   const evidencePath = relative(repoRoot, DEFAULT_EVIDENCE_PATH).replaceAll("\\", "/");
   const requiredRules = [
+    "!apps/private-agent-worker",
+    "!apps/private-agent-worker/**",
+    "!packages/execution-core",
+    "!packages/execution-core/**",
     "!deploy",
     "!deploy/evidence",
     `!${evidencePath}`,

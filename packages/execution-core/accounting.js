@@ -1,7 +1,9 @@
 const ID = /^[A-Za-z0-9:_-]{8,180}$/;
 const ASSET = /^[A-Z0-9][A-Z0-9._-]{0,31}$/;
 const MARKET = /^[A-Z0-9][A-Z0-9._/-]{0,63}$/;
-const VENUES = new Set(["hyperliquid", "drift", "coinbase_advanced", "jupiter"]);
+import { SUPPORTED_EXECUTION_VENUES } from "./venues.js";
+
+const VENUES = new Set(SUPPORTED_EXECUTION_VENUES);
 
 export function normalizeVenueAccountingSnapshot(value) {
   const raw = object(value, "accounting_snapshot_required");

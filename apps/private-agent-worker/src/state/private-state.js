@@ -29,6 +29,7 @@ function emptyState() {
     executor_records: {},
     tick_snapshots: {},
     multi_leg_sagas: {},
+    carry_positions: {},
     revenue_evidence: [],
     hyperliquid_managed_allocations: {},
     omnibus: {},
@@ -78,6 +79,7 @@ export function createWorkerState(dir) {
       executor_records: loaded.executor_records || {},
       tick_snapshots: loaded.tick_snapshots || {},
       multi_leg_sagas: loaded.multi_leg_sagas || {},
+      carry_positions: loaded.carry_positions || {},
       revenue_evidence: Array.isArray(loaded.revenue_evidence) ? loaded.revenue_evidence : [],
       hyperliquid_managed_allocations: loaded.hyperliquid_managed_allocations || {},
       omnibus: loaded.omnibus || {},
@@ -417,6 +419,25 @@ export function createPostgresWorkerState(databaseUrl) {
         await sql`
           CREATE INDEX IF NOT EXISTS idx_worker_multi_leg_sagas_active
           ON worker_multi_leg_sagas (terminal, updated_at DESC)
+        `;
+        await sql`
+          CREATE TABLE IF NOT EXISTS worker_carry_positions (
+            position_id TEXT PRIMARY KEY,
+            owner_commitment TEXT NOT NULL,
+            status TEXT NOT NULL,
+            record_version BIGINT NOT NULL,
+            record_json JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `;
+        await sql`
+          CREATE INDEX IF NOT EXISTS idx_worker_carry_positions_owner
+          ON worker_carry_positions (owner_commitment, updated_at DESC)
+        `;
+        await sql`
+          CREATE INDEX IF NOT EXISTS idx_worker_carry_positions_status
+          ON worker_carry_positions (status, updated_at DESC)
         `;
         await sql`
           CREATE TABLE IF NOT EXISTS worker_revenue_events (
@@ -1020,6 +1041,85 @@ export function createPostgresWorkerState(databaseUrl) {
           LIMIT ${limit}
         `;
       return rows.map((row) => decodeJson(row.saga_json)).filter(Boolean);
+    },
+
+    async putCarryPositionRecord(record, input = {}) {
+      const positionId = record?.position?.position_id;
+      const expectedVersion = input.expected_version;
+      let rows;
+      if (expectedVersion === null) {
+        const next = { ...record, record_version: 1, updated_at: new Date().toISOString() };
+        rows = await sql`
+          INSERT INTO worker_carry_positions (
+            position_id, owner_commitment, status, record_version, record_json, created_at, updated_at
+          )
+          VALUES (
+            ${positionId}, ${next.owner_commitment}, ${next.position.status}, 1,
+            ${jsonParam(next)}::jsonb, ${next.created_at || new Date().toISOString()}, NOW()
+          )
+          ON CONFLICT (position_id) DO NOTHING
+          RETURNING record_json
+        `;
+      } else if (Number.isInteger(expectedVersion) && expectedVersion > 0) {
+        const next = { ...record, record_version: expectedVersion + 1, updated_at: new Date().toISOString() };
+        rows = await sql`
+          UPDATE worker_carry_positions
+          SET owner_commitment = ${next.owner_commitment},
+              status = ${next.position.status},
+              record_version = ${next.record_version},
+              record_json = ${jsonParam(next)}::jsonb,
+              updated_at = NOW()
+          WHERE position_id = ${positionId}
+            AND record_version = ${expectedVersion}
+          RETURNING record_json
+        `;
+      } else {
+        return { ok: false, error: "carry_record_expected_version_required" };
+      }
+      if (rows[0]) return { ok: true, record: decodeJson(rows[0].record_json) };
+      return {
+        ok: false,
+        error: "carry_record_version_conflict",
+        record: await this.getCarryPositionRecord(positionId),
+      };
+    },
+
+    async getCarryPositionRecord(positionId) {
+      const rows = await sql`
+        SELECT record_json
+        FROM worker_carry_positions
+        WHERE position_id = ${positionId}
+      `;
+      return decodeJson(rows[0]?.record_json) || null;
+    },
+
+    async listCarryPositionRecords(input = {}) {
+      const limit = Math.max(1, Math.min(positiveInt(input.limit, 100), 500));
+      const owner = stringValue(input.owner_commitment);
+      const status = stringValue(input.status);
+      const rows = owner && status
+        ? await sql`
+          SELECT record_json FROM worker_carry_positions
+          WHERE owner_commitment = ${owner} AND status = ${status}
+          ORDER BY updated_at DESC LIMIT ${limit}
+        `
+        : owner
+          ? await sql`
+            SELECT record_json FROM worker_carry_positions
+            WHERE owner_commitment = ${owner}
+            ORDER BY updated_at DESC LIMIT ${limit}
+          `
+          : status
+            ? await sql`
+              SELECT record_json FROM worker_carry_positions
+              WHERE status = ${status}
+              ORDER BY updated_at DESC LIMIT ${limit}
+            `
+            : await sql`
+              SELECT record_json FROM worker_carry_positions
+              ORDER BY updated_at DESC LIMIT ${limit}
+            `;
+      return rows.map((row) => decodeJson(row.record_json)).filter(Boolean);
     },
 
     async appendRevenueEvidence(event) {
@@ -1748,6 +1848,7 @@ async function migrateLegacyPostgresDocument(sql) {
 }
 
 export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
+  let mutationQueue = Promise.resolve();
   async function hmacHex(parts) {
     const secret = typeof hmacSecret === "function" ? await hmacSecret() : hmacSecret;
     return createHmac("sha256", Buffer.from(secret, "hex"))
@@ -1757,6 +1858,17 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
 
   async function loadState() {
     return normalizeState(await load());
+  }
+
+  function updateState(mutator) {
+    const run = mutationQueue.then(async () => {
+      const state = await loadState();
+      const result = await mutator(state);
+      await save(state);
+      return result;
+    });
+    mutationQueue = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   return {
@@ -1775,24 +1887,24 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
     },
 
     async putIdempotency(workOrderCommitment, receipt) {
-      const state = await loadState();
-      state.idempotency[workOrderCommitment] = {
-        receipt,
-        updated_at: new Date().toISOString(),
-      };
-      await save(state);
-      return receipt;
+      return updateState((state) => {
+        state.idempotency[workOrderCommitment] = {
+          receipt,
+          updated_at: new Date().toISOString(),
+        };
+        return receipt;
+      });
     },
 
     async putExecutionAttempt(workOrderCommitment, attempt) {
-      const state = await loadState();
-      state.execution_attempts[workOrderCommitment] = {
-        ...attempt,
-        work_order_commitment: workOrderCommitment,
-        updated_at: new Date().toISOString(),
-      };
-      await save(state);
-      return state.execution_attempts[workOrderCommitment];
+      return updateState((state) => {
+        state.execution_attempts[workOrderCommitment] = {
+          ...attempt,
+          work_order_commitment: workOrderCommitment,
+          updated_at: new Date().toISOString(),
+        };
+        return state.execution_attempts[workOrderCommitment];
+      });
     },
 
     async getExecutionAttempt(workOrderCommitment) {
@@ -2038,6 +2150,43 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
         .slice(0, limit);
     },
 
+    async putCarryPositionRecord(record, input = {}) {
+      const state = await loadState();
+      const positionId = record?.position?.position_id;
+      const existing = state.carry_positions[positionId] || null;
+      const expectedVersion = input.expected_version;
+      if (expectedVersion === null) {
+        if (existing) return { ok: false, error: "carry_record_version_conflict", record: existing };
+      } else if (!Number.isInteger(expectedVersion) || expectedVersion <= 0) {
+        return { ok: false, error: "carry_record_expected_version_required", record: existing };
+      } else if (!existing || existing.record_version !== expectedVersion) {
+        return { ok: false, error: "carry_record_version_conflict", record: existing };
+      }
+      const next = {
+        ...record,
+        record_version: expectedVersion === null ? 1 : expectedVersion + 1,
+        updated_at: new Date().toISOString(),
+      };
+      state.carry_positions[positionId] = next;
+      await save(state);
+      return { ok: true, record: next };
+    },
+
+    async getCarryPositionRecord(positionId) {
+      return (await loadState()).carry_positions[positionId] || null;
+    },
+
+    async listCarryPositionRecords(input = {}) {
+      const limit = Math.max(1, Math.min(positiveInt(input.limit, 100), 500));
+      const owner = stringValue(input.owner_commitment);
+      const status = stringValue(input.status);
+      return Object.values((await loadState()).carry_positions)
+        .filter((record) => !owner || record.owner_commitment === owner)
+        .filter((record) => !status || record.position?.status === status)
+        .sort((left, right) => String(right.updated_at || "").localeCompare(String(left.updated_at || "")))
+        .slice(0, limit);
+    },
+
     async appendRevenueEvidence(event) {
       const state = await loadState();
       const existing = Array.isArray(state.revenue_evidence) ? state.revenue_evidence : [];
@@ -2104,39 +2253,27 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
     },
 
     async incrementPolicyCount(key, maxCount) {
-      const state = await loadState();
-      const current = state.policy_counts[key] || { count: 0, updated_at: null };
-      if (Number.isInteger(maxCount) && current.count >= maxCount) {
-        return { ok: false, count: current.count };
-      }
-      const next = {
-        count: current.count + 1,
-        updated_at: new Date().toISOString(),
-      };
-      state.policy_counts[key] = next;
-      await save(state);
-      return { ok: true, count: next.count };
+      return updateState((state) => {
+        const current = state.policy_counts[key] || { count: 0, updated_at: null };
+        if (Number.isInteger(maxCount) && current.count >= maxCount) return { ok: false, count: current.count };
+        const next = { count: current.count + 1, updated_at: new Date().toISOString() };
+        state.policy_counts[key] = next;
+        return { ok: true, count: next.count };
+      });
     },
 
     async incrementPolicyAmount(key, amount, maxAmount) {
-      const state = await loadState();
       const parsedAmount = Number.parseFloat(String(amount || "0"));
       const parsedMax = Number.parseFloat(String(maxAmount || "0"));
-      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
-        return { ok: false, amount: 0 };
-      }
-      const current = state.policy_amounts[key] || { amount: 0, updated_at: null };
-      const nextAmount = Number(current.amount || 0) + parsedAmount;
-      if (Number.isFinite(parsedMax) && parsedMax > 0 && nextAmount > parsedMax) {
-        return { ok: false, amount: Number(current.amount || 0) };
-      }
-      const next = {
-        amount: nextAmount,
-        updated_at: new Date().toISOString(),
-      };
-      state.policy_amounts[key] = next;
-      await save(state);
-      return { ok: true, amount: next.amount };
+      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) return { ok: false, amount: 0 };
+      return updateState((state) => {
+        const current = state.policy_amounts[key] || { amount: 0, updated_at: null };
+        const nextAmount = Number(current.amount || 0) + parsedAmount;
+        if (Number.isFinite(parsedMax) && parsedMax > 0 && nextAmount > parsedMax) return { ok: false, amount: Number(current.amount || 0) };
+        const next = { amount: nextAmount, updated_at: new Date().toISOString() };
+        state.policy_amounts[key] = next;
+        return { ok: true, amount: next.amount };
+      });
     },
 
     async putOmnibusAllocation(allocation) {
@@ -2237,6 +2374,7 @@ function normalizeState(value) {
     executor_records: loaded.executor_records || {},
     tick_snapshots: loaded.tick_snapshots || {},
     multi_leg_sagas: loaded.multi_leg_sagas || {},
+    carry_positions: loaded.carry_positions || {},
     revenue_evidence: Array.isArray(loaded.revenue_evidence) ? loaded.revenue_evidence : [],
     hyperliquid_managed_allocations: loaded.hyperliquid_managed_allocations || {},
     omnibus: loaded.omnibus || {},

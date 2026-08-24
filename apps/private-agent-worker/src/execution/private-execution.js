@@ -19,6 +19,8 @@ import {
   hyperliquidCredentialFromVault,
   loadManagedHyperliquidCredential,
   readHyperliquidAccountSnapshot,
+  readHyperliquidCarryAccountMetrics,
+  readHyperliquidFundingSettlements,
   submitHyperliquidExecution,
   verifyHyperliquidNoSubmit,
 } from "../venues/hyperliquid.js";
@@ -35,6 +37,22 @@ import {
   submitJupiterSwapExecution,
   verifyJupiterSwapNoSubmit as verifyJupiterSwapNoSubmitAdapter,
 } from "../venues/jupiter.js";
+import {
+  asterCredentialFromVault,
+  dryRunAsterCredential,
+  readAsterAccountState,
+  readAsterFundingSettlements,
+  submitAndReconcileAsterExecution,
+  verifyAsterNoSubmit,
+} from "../venues/aster.js";
+import {
+  lighterClientOrderIndex,
+  lighterCredentialFromVault,
+  readLighterFundingSettlements,
+  submitAndReconcileLighterExecution,
+  verifyLighterCredential,
+  verifyLighterNoSubmit,
+} from "../venues/lighter.js";
 
 export class PrivateExecutionError extends Error {
   constructor(message, status = 400) {
@@ -309,6 +327,8 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     venue_id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
     execution_mode: executionMode,
+    submit_count: 1,
+    ambiguity_retry_count: 0,
     provider_ref_seed: { venue: "hyperliquid", cloid, pending: true },
     result_seed: { kind: "hyperliquid_submission_pending" },
     fills: [],
@@ -337,6 +357,8 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     venue_id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
     execution_mode: executionMode,
+    submit_count: pendingAttempt.submit_count,
+    ambiguity_retry_count: pendingAttempt.ambiguity_retry_count,
     provider_ref_seed: adapterResult.provider_ref_seed,
     result_seed: adapterResult.result_seed,
     fills: adapterResult.fills,
@@ -387,6 +409,33 @@ export async function readHyperliquidSnapshot({ body, recipient, state }) {
   });
 }
 
+export async function readHyperliquidCarryMetrics({ body, recipient, state }) {
+  const { credential } = await hyperliquidCredentialForBody({ body, recipient, state });
+  return readHyperliquidCarryAccountMetrics({ credential });
+}
+
+export async function readCarryFundingSettlements({ body, recipient, state }) {
+  const venueId = String(body.venue_id || "");
+  const common = {
+    asset: String(body.asset || "").toUpperCase(),
+    start_time_ms: Number(body.start_time_ms),
+    end_time_ms: Number(body.end_time_ms),
+  };
+  if (venueId === "hyperliquid") {
+    const { credential } = await hyperliquidCredentialForBody({ body, recipient, state });
+    return readHyperliquidFundingSettlements({ credential, ...common });
+  }
+  if (venueId === "aster") {
+    const credential = await asterCredentialForBody({ body, recipient });
+    return readAsterFundingSettlements({ credential, symbol: common.asset, ...common });
+  }
+  if (venueId === "lighter") {
+    const credential = await lighterCredentialForBody({ body, recipient });
+    return readLighterFundingSettlements({ credential, market: common.asset, ...common });
+  }
+  throw new PrivateExecutionError(`authoritative funding settlement history is unavailable for ${venueId}`, 409);
+}
+
 export async function reconcileHyperliquidOrder({ body, recipient, state }) {
   const { executionMode, credential } = await hyperliquidCredentialForBody({ body, recipient, state });
   const targetWorkOrderCommitment = body.work_order_commitment;
@@ -409,6 +458,7 @@ export async function reconcileHyperliquidOrder({ body, recipient, state }) {
     cloid: targetCloid,
   });
   await state.putExecutionAttempt(targetWorkOrderCommitment, {
+    ...attempted,
     venue_id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
     execution_mode: executionMode,
@@ -499,6 +549,48 @@ export async function verifyVenueCredential({ body, recipient }) {
       evidence_seed: {
         account_source: snapshot.account_source,
         status: snapshot.status,
+      },
+    });
+  }
+  if (venueId === "aster") {
+    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+      aadPrefix: "ghola/aster-execution-vault-v1",
+      expectedKind: "ghola_aster_execution_vault",
+    });
+    const credential = asterCredentialFromVault(openedVault.json);
+    const snapshot = await readAsterAccountState({ credential, symbol: "BTCUSDT" });
+    return credentialVerificationResult({
+      venue_id: "aster",
+      source: "aster_v3_account_readiness",
+      can_read: true,
+      can_trade: snapshot.can_trade,
+      can_withdraw: false,
+      evidence_seed: {
+        account_ready: snapshot.can_trade,
+        fee_schedule_loaded: snapshot.maker_fee_bps !== null && snapshot.taker_fee_bps !== null,
+      },
+    });
+  }
+  if (venueId === "lighter") {
+    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+      aadPrefix: "ghola/lighter-execution-vault-v1",
+      expectedKind: "ghola_lighter_execution_vault",
+    });
+    const credential = lighterCredentialFromVault(openedVault.json);
+    const verification = await verifyLighterCredential({ credential });
+    return credentialVerificationResult({
+      venue_id: "lighter",
+      source: "lighter_sdk_account_readiness_with_attested_owner_only_policy",
+      can_read: verification.can_read,
+      can_trade: verification.can_trade,
+      can_withdraw: verification.can_withdraw,
+      authority_boundary: {
+        venue_native_trade_only: false,
+        enforced_by: "attested_worker_policy",
+      },
+      evidence_seed: {
+        account_status: verification.account.account_status,
+        venue_native_trade_only: false,
       },
     });
   }
@@ -872,6 +964,30 @@ export async function executeAutopilotOrder({
       state,
     });
   }
+  if (venue_id === "aster") {
+    return executeAsterOrder({
+      body: {
+        ...body,
+        venue_id: "aster",
+        platform_class: "hyperliquid_style_market",
+        execution_mode: execution.execution_mode || "byo_api_key",
+      },
+      recipient,
+      state,
+    });
+  }
+  if (venue_id === "lighter") {
+    return executeLighterOrder({
+      body: {
+        ...body,
+        venue_id: "lighter",
+        platform_class: "hyperliquid_style_market",
+        execution_mode: execution.execution_mode || "byo_api_key",
+      },
+      recipient,
+      state,
+    });
+  }
   if (venue_id === "coinbase_advanced") {
     return executeCoinbaseOrder({
       body: {
@@ -931,6 +1047,30 @@ export async function verifyAutopilotOrder({
       state,
     });
   }
+  if (venue_id === "aster") {
+    return verifyAsterOrderNoSubmit({
+      body: {
+        ...body,
+        venue_id: "aster",
+        platform_class: "hyperliquid_style_market",
+        execution_mode: execution.execution_mode || "byo_api_key",
+      },
+      recipient,
+      state,
+    });
+  }
+  if (venue_id === "lighter") {
+    return verifyLighterOrderNoSubmit({
+      body: {
+        ...body,
+        venue_id: "lighter",
+        platform_class: "hyperliquid_style_market",
+        execution_mode: execution.execution_mode || "byo_api_key",
+      },
+      recipient,
+      state,
+    });
+  }
   if (venue_id === "phoenix" || venue_id === "backpack") {
     return verifySolanaPerpsOrderNoSubmit({
       body: {
@@ -956,6 +1096,307 @@ export async function verifyAutopilotOrder({
     });
   }
   throw new PrivateExecutionError("autopilot venue is unsupported", 400);
+}
+
+export async function executeAsterOrder({ body, recipient, state }) {
+  const cached = await state.getIdempotency(body.work_order_commitment);
+  if (cached?.receipt) return cached.receipt;
+  const priorAttempt = await state.getExecutionAttempt(body.work_order_commitment);
+  if (["pending", "ambiguous", "open", "filled", "cancelled", "rejected"].includes(priorAttempt?.status)) {
+    throw new PrivateExecutionError("aster work order already has an attempt; reconcile it instead of retrying", 409);
+  }
+  const credential = await asterCredentialForBody({ body, recipient });
+  const session = await state.findSession({
+    venue_id: "aster",
+    vault_commitment: body.vault_commitment || undefined,
+    policy_commitment: body.policy_commitment || undefined,
+  });
+  const instruction = await resolvePrivateOrderTarget(await instructionForBody({
+    body,
+    recipient,
+    venue_id: "aster",
+    session,
+  }), { state, venue_id: "aster", body });
+  await enforceInstructionPolicy({
+    body,
+    instruction,
+    session,
+    state,
+    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
+  });
+  const clientOrderId = await state.deriveClientOrderId("gh", body.work_order_commitment);
+  const pending = {
+    venue_id: "aster",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: "byo_api_key",
+    submit_count: 1,
+    ambiguity_retry_count: 0,
+    provider_ref_seed: { venue: "aster", client_order_id: clientOrderId, pending: true },
+    result_seed: { kind: "aster_submission_pending" },
+    fills: [],
+    final_proof: null,
+    status: "pending",
+    created_at: new Date().toISOString(),
+  };
+  await state.putExecutionAttempt(body.work_order_commitment, pending);
+  let result;
+  try {
+    result = await submitAndReconcileAsterExecution({ credential, instruction, clientOrderId });
+  } catch (error) {
+    const ambiguous = error?.code === "submission_outcome_ambiguous";
+    await state.putExecutionAttempt(body.work_order_commitment, {
+      ...pending,
+      result_seed: { kind: ambiguous ? "aster_submission_ambiguous" : "aster_submission_rejected" },
+      status: ambiguous ? "ambiguous" : "rejected",
+      updated_at: new Date().toISOString(),
+    });
+    throw error;
+  }
+  await state.putExecutionAttempt(body.work_order_commitment, {
+    ...pending,
+    provider_ref_seed: result.provider_ref_seed,
+    result_seed: result.result_seed,
+    fills: result.fills,
+    final_proof: result.final_proof,
+    status: result.status,
+    updated_at: new Date().toISOString(),
+  });
+  const receipt = executionReceipt({
+    venue_id: "aster",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: "byo_api_key",
+    instruction,
+    body,
+    status: result.status,
+    provider_ref_seed: result.provider_ref_seed,
+    result_seed: result.result_seed,
+    fills: result.fills,
+    final_proof: result.final_proof,
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      aster_sees: "account_and_order_activity",
+      venue_access_source: "sealed_api_wallet",
+      ghola_access_role: "private_execution_router",
+      venue_gate: "venue_accepts_or_rejects_credentials",
+      public_chain_sees: "no_ghola_settlement_transaction",
+    },
+  });
+  return state.putIdempotency(body.work_order_commitment, receipt);
+}
+
+export async function verifyAsterOrderNoSubmit({ body, recipient, state }) {
+  const credential = await asterCredentialForBody({ body, recipient });
+  const session = await state.findSession({
+    venue_id: "aster",
+    vault_commitment: body.vault_commitment || undefined,
+    policy_commitment: body.policy_commitment || undefined,
+  });
+  const instruction = await resolvePrivateOrderTarget(await instructionForBody({
+    body,
+    recipient,
+    venue_id: "aster",
+    session,
+  }), { state, venue_id: "aster", body });
+  await enforceInstructionPolicy({
+    body,
+    instruction,
+    session,
+    state,
+    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
+    account_usage: false,
+  });
+  const clientOrderId = await state.deriveClientOrderId("ghola", body.work_order_commitment);
+  const result = await verifyAsterNoSubmit({ credential, instruction, clientOrderId });
+  const providerSeed = { venue: "aster", client_order_id: clientOrderId, checks: result.checks };
+  const providerRefCommitment = commitment("aster_provider_ref", providerSeed);
+  return {
+    version: 1,
+    venue_id: "aster",
+    execution_protocol: "ghola-aster-v3-proof-v1",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: "byo_api_key",
+    status: result.status,
+    work_order_commitment: body.work_order_commitment,
+    vault_commitment: body.vault_commitment || null,
+    provider_ref_commitment: providerRefCommitment,
+    result_commitment: commitment("aster_no_submit_result", { providerRefCommitment, status: result.status }),
+    verification_commitment: commitment("aster_no_submit_verification", { providerSeed, account: result.account }),
+    checks: result.checks,
+    account: result.account,
+    authority_boundary: result.authority_boundary,
+    order_shape: {
+      market: result.order.symbol,
+      side: result.order.side.toLowerCase(),
+      base_size: result.order.quantity,
+      limit_price: result.order.price,
+      notional_micro_usdc: Math.round(Number(result.order.quantity) * Number(result.order.price) * 1_000_000),
+    },
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      aster_sees: "authenticated_account_reads_only",
+      transaction_broadcast: false,
+    },
+    updated_at: new Date().toISOString(),
+  };
+}
+
+async function asterCredentialForBody({ body, recipient }) {
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) return dryRunAsterCredential();
+  const opened = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+    aadPrefix: "ghola/aster-execution-vault-v1",
+    expectedKind: "ghola_aster_execution_vault",
+  });
+  return asterCredentialFromVault(opened.json);
+}
+
+export async function executeLighterOrder({ body, recipient, state }) {
+  const cached = await state.getIdempotency(body.work_order_commitment);
+  if (cached?.receipt) return cached.receipt;
+  const priorAttempt = await state.getExecutionAttempt(body.work_order_commitment);
+  if (["pending", "ambiguous", "open", "filled", "cancelled", "rejected"].includes(priorAttempt?.status)) {
+    throw new PrivateExecutionError("lighter work order already has an attempt; reconcile it instead of retrying", 409);
+  }
+  const credential = await lighterCredentialForBody({ body, recipient });
+  const session = await state.findSession({
+    venue_id: "lighter",
+    vault_commitment: body.vault_commitment || undefined,
+    policy_commitment: body.policy_commitment || undefined,
+  });
+  const instruction = await resolvePrivateOrderTarget(await instructionForBody({
+    body,
+    recipient,
+    venue_id: "lighter",
+    session,
+  }), { state, venue_id: "lighter", body });
+  await enforceInstructionPolicy({
+    body,
+    instruction,
+    session,
+    state,
+    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
+  });
+  const clientOrderIndex = lighterClientOrderIndex(body.work_order_commitment);
+  const pending = {
+    venue_id: "lighter",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: "byo_api_key",
+    submit_count: 1,
+    ambiguity_retry_count: 0,
+    provider_ref_seed: { venue: "lighter", client_order_index: clientOrderIndex, pending: true },
+    result_seed: { kind: "lighter_submission_pending" },
+    fills: [],
+    final_proof: null,
+    status: "pending",
+    created_at: new Date().toISOString(),
+  };
+  await state.putExecutionAttempt(body.work_order_commitment, pending);
+  let result;
+  try {
+    result = await submitAndReconcileLighterExecution({ credential, instruction, clientOrderIndex });
+  } catch (error) {
+    const ambiguous = error?.code === "submission_ambiguous";
+    await state.putExecutionAttempt(body.work_order_commitment, {
+      ...pending,
+      result_seed: { kind: ambiguous ? "lighter_submission_ambiguous" : "lighter_submission_rejected" },
+      status: ambiguous ? "ambiguous" : "rejected",
+      updated_at: new Date().toISOString(),
+    });
+    throw error;
+  }
+  await state.putExecutionAttempt(body.work_order_commitment, {
+    ...pending,
+    provider_ref_seed: result.provider_ref_seed,
+    result_seed: result.result_seed,
+    fills: result.fills,
+    final_proof: result.final_proof,
+    status: result.status,
+    updated_at: new Date().toISOString(),
+  });
+  const receipt = executionReceipt({
+    venue_id: "lighter",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: "byo_api_key",
+    instruction,
+    body,
+    status: result.status,
+    provider_ref_seed: result.provider_ref_seed,
+    result_seed: result.result_seed,
+    fills: result.fills,
+    final_proof: result.final_proof,
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      lighter_sees: "account_and_order_activity",
+      venue_access_source: "sealed_api_key",
+      ghola_access_role: "attested_policy_limited_execution_router",
+      venue_native_trade_only: false,
+      owner_only_operations: ["withdraw", "transfer", "leverage", "margin", "account_config", "api_key_rotation"],
+      public_chain_sees: "lighter_account_activity",
+    },
+  });
+  return state.putIdempotency(body.work_order_commitment, receipt);
+}
+
+export async function verifyLighterOrderNoSubmit({ body, recipient, state }) {
+  const credential = await lighterCredentialForBody({ body, recipient });
+  const session = await state.findSession({
+    venue_id: "lighter",
+    vault_commitment: body.vault_commitment || undefined,
+    policy_commitment: body.policy_commitment || undefined,
+  });
+  const instruction = await resolvePrivateOrderTarget(await instructionForBody({
+    body,
+    recipient,
+    venue_id: "lighter",
+    session,
+  }), { state, venue_id: "lighter", body });
+  await enforceInstructionPolicy({
+    body,
+    instruction,
+    session,
+    state,
+    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
+    account_usage: false,
+  });
+  const clientOrderIndex = lighterClientOrderIndex(body.work_order_commitment);
+  const result = await verifyLighterNoSubmit({ credential, instruction, clientOrderIndex });
+  const providerSeed = { venue: "lighter", client_order_index: clientOrderIndex, checks: result.checks };
+  const providerRefCommitment = commitment("lighter_provider_ref", providerSeed);
+  return {
+    version: 1,
+    venue_id: "lighter",
+    execution_protocol: "ghola-lighter-sdk-proof-v1",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: "byo_api_key",
+    status: result.status,
+    work_order_commitment: body.work_order_commitment,
+    vault_commitment: body.vault_commitment || null,
+    provider_ref_commitment: providerRefCommitment,
+    result_commitment: commitment("lighter_no_submit_result", { providerRefCommitment, status: result.status }),
+    verification_commitment: commitment("lighter_no_submit_verification", { providerSeed, account: result.account }),
+    checks: result.checks,
+    account: result.account,
+    order_shape: result.order_shape,
+    authority_boundary: result.authority_boundary,
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      lighter_sees: "authenticated_account_reads_and_local_signature_only",
+      transaction_broadcast: false,
+      venue_native_trade_only: false,
+    },
+    updated_at: new Date().toISOString(),
+  };
+}
+
+async function lighterCredentialForBody({ body, recipient }) {
+  const opened = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+    aadPrefix: "ghola/lighter-execution-vault-v1",
+    expectedKind: "ghola_lighter_execution_vault",
+  });
+  return lighterCredentialFromVault(opened.json);
 }
 
 export async function verifySolanaPerpsOrderNoSubmit({ body, recipient, state }) {
@@ -1260,6 +1701,7 @@ export async function verifyHyperliquidOrderNoSubmit({ body, recipient, state })
       checks: adapterResult.checks,
     }),
     checks: adapterResult.checks,
+    order_shape: adapterResult.order_shape,
     visibility_summary: {
       main_wallet_exposed: false,
       ghola_operator_sees: "commitment_and_ciphertext_only",
@@ -1378,7 +1820,9 @@ async function resolvePrivateOrderTarget(instruction, { state, venue_id, body })
   }
   const clientOrderId = venue_id === "hyperliquid"
     ? await state.deriveHyperliquidCloid(target)
-    : await state.deriveClientOrderId("ghola", target);
+    : venue_id === "lighter"
+      ? lighterClientOrderIndex(target)
+      : await state.deriveClientOrderId("ghola", target);
   if (instruction.operation_class === "reconcile") {
     const attempt = await state.getExecutionAttempt(target);
     return {
@@ -1386,6 +1830,7 @@ async function resolvePrivateOrderTarget(instruction, { state, venue_id, body })
       reconcile: {
         ...instruction.reconcile,
         target_client_order_id: clientOrderId,
+        ...(venue_id === "lighter" ? { target_client_order_index: clientOrderId } : {}),
         target_order_id: attempt?.provider_ref_seed?.order_id || attempt?.provider_ref_seed?.oid || null,
       },
     };
@@ -1395,6 +1840,7 @@ async function resolvePrivateOrderTarget(instruction, { state, venue_id, body })
     cancel: {
       ...instruction.cancel,
       client_order_id: clientOrderId,
+      ...(venue_id === "lighter" ? { client_order_index: clientOrderId } : {}),
     },
   };
 }
@@ -1502,6 +1948,7 @@ function credentialVerificationResult(input) {
     verification_commitment: verificationCommitment,
     evidence_commitment: commitment("venue_credential_verification_evidence", input.evidence_seed || {}),
     source: input.source,
+    authority_boundary: input.authority_boundary || undefined,
     checked_at: new Date().toISOString(),
   };
 }

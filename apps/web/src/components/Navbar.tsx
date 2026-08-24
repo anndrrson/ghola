@@ -19,6 +19,7 @@ const AuthModal = dynamic(
 
 const NAV_ITEMS: ReadonlyArray<{ href: string; label: string; match: string }> = [
   { href: "/trade", label: "Live trading", match: "/trade" },
+  { href: "/carry", label: "Carry", match: "/carry" },
   { href: "/trade?product=automate", label: "Automate", match: "/never-active" },
 ];
 
