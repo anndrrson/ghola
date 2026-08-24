@@ -6107,12 +6107,14 @@ export async function connectorVerifyNoSubmitFromBody(
     return { error: "encrypted_execution_instruction_required" as const };
   }
 
-  const account = await createOrGetStoredPrivateAccount(owner);
   const venueId = venueIdForPlatformClass(platformClass);
   if (!venueId) return { error: "venue_not_supported" as const };
 
   const manifest = getConnectorManifest(platformClass);
-  const connectorEnv = await connectorRuntimeEnv(platformClass);
+  const [account, connectorEnv] = await Promise.all([
+    createOrGetStoredPrivateAccount(owner),
+    connectorRuntimeEnv(platformClass),
+  ]);
   let executionMode: GholaVenueExecutionMode;
   let hyperliquidNetwork: "mainnet" | "testnet" | null = null;
   let hyperliquidSignerBindingVerified = false;
@@ -6218,8 +6220,19 @@ export async function connectorVerifyNoSubmitFromBody(
       connectorVault = vault.vault;
     }
   }
+  let runtimeHealth: GholaRuntimeHealth | null = null;
   if (platformClass === "hyperliquid_style_market") {
-    await wakePrivateWorkerForUse(`hyperliquid_${executionMode}_no_submit_check`);
+    runtimeHealth = await freshSealedRuntimeHealth(
+      undefined,
+      fastRuntimeHealthEnv(connectorEnv),
+    );
+    await wakePrivateWorkerForUse(
+      `hyperliquid_${executionMode}_no_submit_check`,
+      { verified_runtime_ready: runtimeHealth.status === "green" },
+    );
+    if (runtimeHealth.status !== "green") {
+      runtimeHealth = await freshSealedRuntimeHealth(undefined, connectorEnv);
+    }
     const requestedSession = objectBody(value.hyperliquid_session);
     if (Object.keys(requestedSession).length > 0) {
       const armed = await armHyperliquidAgentSessionFromBody(requestedSession, owner, {
@@ -6245,7 +6258,7 @@ export async function connectorVerifyNoSubmitFromBody(
     omnibus_allocation_ready: platformClass === "coinbase_style_provider" && executionMode === "partner_omnibus",
     pooled_allocation_ready: executionMode === "ghola_pooled",
     shielded_funding_ready: false,
-    runtime_health: await freshSealedRuntimeHealth(undefined, connectorEnv),
+    runtime_health: runtimeHealth ?? await freshSealedRuntimeHealth(undefined, connectorEnv),
     env: connectorEnv,
   });
   const verification = await verifyConnectorNoSubmit({
@@ -7232,7 +7245,10 @@ function hyperliquidWorkerConfig(
   };
 }
 
-async function wakePrivateWorkerForUse(reason: string) {
+async function wakePrivateWorkerForUse(
+  reason: string,
+  options: { verified_runtime_ready?: boolean } = {},
+) {
   if (
     process.env.GHOLA_PRIVATE_WORKER_WAKE_ON_USE === "false" ||
     process.env.GHOLA_POOLED_WORKER_WAKE_ON_USE === "false" ||
@@ -7243,6 +7259,7 @@ async function wakePrivateWorkerForUse(reason: string) {
   }
   return wakePhalaPrivateAgentForUse({
     reason,
+    verifiedRuntimeReady: options.verified_runtime_ready === true,
     waitForReadyMs: Math.min(
       positiveIntegerEnv(
         "GHOLA_PRIVATE_WORKER_WAKE_WAIT_MS",
@@ -9549,6 +9566,20 @@ async function connectorRuntimeEnv(
     platformClass !== "coinbase_style_provider"
   ) return env;
 
+  const configuredUrl = configuredConnectorUrl(platformClass, env);
+  const runtimeUrl = env.GHOLA_PRIVATE_RUNTIME_URL?.trim();
+  const configuredMeasurement = env.GHOLA_PRIVATE_RUNTIME_MEASUREMENT?.trim();
+  const expectedMeasurement = env.GHOLA_PRIVATE_RUNTIME_EXPECTED_MEASUREMENT?.trim();
+  if (
+    configuredUrl &&
+    runtimeUrl &&
+    configuredMeasurement &&
+    expectedMeasurement &&
+    configuredMeasurement === expectedMeasurement
+  ) {
+    return env;
+  }
+
   const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
   if (!runtime) return env;
   const provider = selectedReadyPrivateAgentProvider(runtime);
@@ -9581,6 +9612,35 @@ async function connectorRuntimeEnv(
   env.GHOLA_PRIVATE_RUNTIME_EXPECTED_MEASUREMENT ||=
     env.GHOLA_PRIVATE_RUNTIME_MEASUREMENT;
   return env;
+}
+
+function configuredConnectorUrl(
+  platformClass: GholaPlatformClass,
+  env: Record<string, string | undefined>,
+): string {
+  const name = platformClass === "hyperliquid_style_market"
+    ? "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL"
+    : platformClass === "solana_perps_market"
+      ? "GHOLA_CONNECTOR_SOLANA_PERPS_MARKET_URL"
+      : platformClass === "solana_swap_aggregator"
+        ? "GHOLA_CONNECTOR_SOLANA_SWAP_AGGREGATOR_URL"
+        : platformClass === "coinbase_style_provider"
+          ? "GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_URL"
+          : "";
+  return name ? env[name]?.trim() || "" : "";
+}
+
+function fastRuntimeHealthEnv(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const configured = Number.parseInt(env.GHOLA_PRIVATE_RUNTIME_HEALTH_TIMEOUT_MS || "", 10);
+  const timeoutMs = Number.isInteger(configured) && configured > 0
+    ? Math.min(configured, 1_500)
+    : 1_500;
+  return {
+    ...env,
+    GHOLA_PRIVATE_RUNTIME_HEALTH_TIMEOUT_MS: String(timeoutMs),
+  };
 }
 
 async function connectorReadinessForManifest(

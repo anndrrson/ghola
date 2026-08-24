@@ -942,6 +942,7 @@ export async function wakePhalaPrivateAgentForUse(input: {
   reason: string;
   waitForReadyMs?: number;
   leaseMs?: number;
+  verifiedRuntimeReady?: boolean;
 }): Promise<PhalaProvisionResult> {
   if (privateAgentRemoteExecutionDisabled()) {
     return ensurePhalaPrivateAgentProvisioned({
@@ -962,6 +963,15 @@ export async function wakePhalaPrivateAgentForUse(input: {
       status: "failed",
       reason:
         "Private compute stayed off because its durable idle shutdown could not be armed.",
+      cvm_name: phalaCvmName(),
+    };
+  }
+  if (input.verifiedRuntimeReady) {
+    return {
+      attempted: false,
+      ready: true,
+      status: "already_ready",
+      reason: "Fresh sealed-runtime health evidence verified before lease renewal.",
       cvm_name: phalaCvmName(),
     };
   }

@@ -17,6 +17,7 @@ import {
   phalaWorkerReadyPollMs,
   resetPhalaWakeStateForTests,
   stopIdlePhalaPrivateAgent,
+  wakePhalaPrivateAgentForUse,
 } from "./private-agent-phala";
 import { resetPrivateAgentRuntimeLeaseStoreForTests } from "./private-agent-runtime-lease";
 
@@ -334,6 +335,27 @@ describe("private-agent Phala provisioning", () => {
     expect(cloudClient.startCvm).toHaveBeenCalledTimes(1);
     expect(cloudClient.getCvmNetwork).not.toHaveBeenCalled();
     expect(cloudClient.getCvmAttestation).not.toHaveBeenCalled();
+  });
+
+  it("renews the safety lease without a cloud lookup after fresh runtime health is verified", async () => {
+    setTestEnv({
+      GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN: "false",
+      GHOLA_PRIVATE_AGENT_LEASE_STORE: "memory",
+    });
+
+    const result = await wakePhalaPrivateAgentForUse({
+      reason: "verified_runtime_fast_path",
+      verifiedRuntimeReady: true,
+    });
+
+    expect(result).toMatchObject({
+      attempted: false,
+      ready: true,
+      status: "already_ready",
+    });
+    expect(cloudClient.getCvmInfo).not.toHaveBeenCalled();
+    expect(cloudClient.getCvmState).not.toHaveBeenCalled();
+    expect(cloudClient.startCvm).not.toHaveBeenCalled();
   });
 
   it("refuses to provision duplicate paid capacity after a transient lookup failure", async () => {
