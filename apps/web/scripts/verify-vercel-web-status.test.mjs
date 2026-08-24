@@ -109,6 +109,18 @@ test("Vercel uploads every file required by post-build release validation", () =
   }
 });
 
+test("Vercel auth validation scans source when the Next adapter owns emitted chunks", () => {
+  const authGuard = readFileSync(
+    resolve(webRoot, "scripts/check-auth-client-bundle.mjs"),
+    "utf8",
+  );
+
+  assert.match(authGuard, /walkSource\(path\.join\(root, "src"\)\)/);
+  assert.match(authGuard, /failForbidden\(await findForbidden\(sourceFiles\), "source"\)/);
+  assert.match(authGuard, /if \(process\.env\.VERCEL\)/);
+  assert.match(authGuard, /Vercel adapter owns emitted chunks/);
+});
+
 test("release keeps Hyperliquid onboarding on one resumable pending wallet", () => {
   const cockpit = readFileSync(
     resolve(webRoot, "src/components/private-account/PrivateAccountCockpit.tsx"),
