@@ -176,6 +176,11 @@ describe("Hyperliquid private-account routes", () => {
       agent_address: TEST_HYPERLIQUID_AGENT,
       status: "authorized",
       authorized: true,
+      active_named_agent_count: 1,
+      named_agent_limit: 3,
+      preferred_agent_name: "ghola",
+      preferred_name_in_use: false,
+      named_slot_available: true,
     });
   });
 
@@ -189,6 +194,64 @@ describe("Hyperliquid private-account routes", () => {
     expect(res.status).toBe(200);
     expect(body.status).toBe("not_authorized");
     expect(body.authorized).toBe(false);
+  });
+
+  it("reports a full named-agent account before the user opens a wallet prompt", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation(async () => Response.json([
+      { name: "alpha", address: `0x${"aa".repeat(20)}`, validUntil: null },
+      { name: "beta", address: `0x${"bb".repeat(20)}`, validUntil: null },
+      { name: "gamma", address: `0x${"cc".repeat(20)}`, validUntil: null },
+    ]));
+    const res = await agentAuthorization(request(
+      `/v1/private-account/hyperliquid/agent-authorization?network=mainnet&owner=${TEST_HYPERLIQUID_OWNER}&agent=${TEST_HYPERLIQUID_AGENT}`,
+    ));
+    const body = await res.json();
+
+    expect(body).toMatchObject({
+      authorized: false,
+      active_named_agent_count: 3,
+      named_agent_limit: 3,
+      preferred_name_in_use: false,
+      named_slot_available: false,
+    });
+  });
+
+  it("allows deterministic replacement of an existing Ghola named slot", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation(async () => Response.json([
+      { name: "ghola", address: `0x${"aa".repeat(20)}`, validUntil: null },
+      { name: "beta", address: `0x${"bb".repeat(20)}`, validUntil: null },
+      { name: "gamma", address: `0x${"cc".repeat(20)}`, validUntil: null },
+    ]));
+    const res = await agentAuthorization(request(
+      `/v1/private-account/hyperliquid/agent-authorization?network=mainnet&owner=${TEST_HYPERLIQUID_OWNER}&agent=${TEST_HYPERLIQUID_AGENT}`,
+    ));
+    const body = await res.json();
+
+    expect(body).toMatchObject({
+      authorized: false,
+      active_named_agent_count: 3,
+      preferred_name_in_use: true,
+      named_slot_available: true,
+    });
+  });
+
+  it("does not count Hyperliquid's separate unnamed API wallet as a named slot", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation(async () => Response.json([
+      { name: "", address: `0x${"dd".repeat(20)}`, validUntil: null },
+      { name: "alpha", address: `0x${"aa".repeat(20)}`, validUntil: null },
+      { name: "beta", address: `0x${"bb".repeat(20)}`, validUntil: null },
+    ]));
+    const res = await agentAuthorization(request(
+      `/v1/private-account/hyperliquid/agent-authorization?network=mainnet&owner=${TEST_HYPERLIQUID_OWNER}&agent=${TEST_HYPERLIQUID_AGENT}`,
+    ));
+    const body = await res.json();
+
+    expect(body).toMatchObject({
+      authorized: false,
+      active_named_agent_count: 2,
+      named_agent_limit: 3,
+      named_slot_available: true,
+    });
   });
 
   it("fails closed when Hyperliquid authorization cannot be checked", async () => {

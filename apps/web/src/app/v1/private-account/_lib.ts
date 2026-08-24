@@ -3,6 +3,11 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto
 import { recoverMessageAddress } from "viem";
 import { hyperliquidApiWalletBindingMessage } from "@/lib/hyperliquid-agent-binding";
 import {
+  GHOLA_HYPERLIQUID_AGENT_NAME,
+  HYPERLIQUID_NAMED_AGENT_LIMIT,
+  hyperliquidNamedAgentCapacity,
+} from "@/lib/hyperliquid-agent-policy";
+import {
   fetchWithTimeout,
   fetchSessionUser,
   SESSION_COOKIE_NAME,
@@ -4110,6 +4115,23 @@ async function verifyHyperliquidAgentAtVenue(input: {
   | { ok: true }
   | { ok: false; error: "hyperliquid_agent_not_authorized" | "hyperliquid_binding_check_unavailable" }
 > {
+  const extraAgents = await readHyperliquidExtraAgents(input);
+  if (!extraAgents.ok) return extraAgents;
+  const authorized = extraAgents.agents.some((candidate) =>
+    candidate.address === input.agent_address.trim().toLowerCase(),
+  );
+  return authorized
+    ? { ok: true }
+    : { ok: false, error: "hyperliquid_agent_not_authorized" };
+}
+
+async function readHyperliquidExtraAgents(input: {
+  network: "mainnet" | "testnet";
+  owner_address: string;
+}): Promise<
+  | { ok: true; agents: { address: string; name: string; validUntil: number | null }[] }
+  | { ok: false; error: "hyperliquid_binding_check_unavailable" }
+> {
   const baseUrl = input.network === "testnet"
     ? "https://api.hyperliquid-testnet.xyz"
     : "https://api.hyperliquid.xyz";
@@ -4124,15 +4146,15 @@ async function verifyHyperliquidAgentAtVenue(input: {
     const body = await response.json().catch(() => null);
     if (!Array.isArray(body)) return { ok: false, error: "hyperliquid_binding_check_unavailable" };
     const now = Date.now();
-    const authorized = body.some((candidate) => {
+    const agents = body.flatMap((candidate) => {
       const row = objectBody(candidate);
+      const address = stringValue(row.address).toLowerCase();
+      const name = stringValue(row.name).trim();
       const validUntil = row.validUntil === null ? null : numberValue(row.validUntil);
-      return stringValue(row.address).toLowerCase() === input.agent_address &&
-        (validUntil === null || validUntil > now);
+      if (!/^0x[0-9a-f]{40}$/.test(address) || (validUntil !== null && validUntil <= now)) return [];
+      return [{ address, name, validUntil }];
     });
-    return authorized
-      ? { ok: true }
-      : { ok: false, error: "hyperliquid_agent_not_authorized" };
+    return { ok: true, agents };
   } catch {
     return { ok: false, error: "hyperliquid_binding_check_unavailable" };
   }
@@ -4148,16 +4170,26 @@ export async function hyperliquidAgentAuthorizationStatus(input: {
   if (!/^0x[0-9a-f]{40}$/.test(ownerAddress) || !/^0x[0-9a-f]{40}$/.test(agentAddress)) {
     return { status: "invalid" as const, authorized: false };
   }
-  const checked = await verifyHyperliquidAgentAtVenue({
+  const checked = await readHyperliquidExtraAgents({
     network: input.network,
     owner_address: ownerAddress,
-    agent_address: agentAddress,
   });
-  if (checked.ok) return { status: "authorized" as const, authorized: true };
-  if (checked.error === "hyperliquid_agent_not_authorized") {
-    return { status: "not_authorized" as const, authorized: false };
-  }
-  return { status: "unavailable" as const, authorized: false };
+  if (!checked.ok) return { status: "unavailable" as const, authorized: false };
+  const authorized = checked.agents.some((candidate) => candidate.address === agentAddress);
+  const activeNamedAgentCount = checked.agents.filter((candidate) => candidate.name.length > 0).length;
+  const preferredNameInUse = checked.agents.some((candidate) =>
+    candidate.name.toLowerCase() === GHOLA_HYPERLIQUID_AGENT_NAME,
+  );
+  const capacity = hyperliquidNamedAgentCapacity({ activeNamedAgentCount, preferredNameInUse });
+  return {
+    status: authorized ? "authorized" as const : "not_authorized" as const,
+    authorized,
+    active_named_agent_count: capacity.activeNamedAgentCount,
+    named_agent_limit: HYPERLIQUID_NAMED_AGENT_LIMIT,
+    preferred_agent_name: GHOLA_HYPERLIQUID_AGENT_NAME,
+    preferred_name_in_use: capacity.preferredNameInUse,
+    named_slot_available: authorized || capacity.namedSlotAvailable,
+  };
 }
 
 async function reverifyStoredHyperliquidSignerBinding(

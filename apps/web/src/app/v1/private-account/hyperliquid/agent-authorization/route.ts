@@ -33,7 +33,6 @@ export async function GET(req: Request) {
     network,
     owner_address: ownerAddress.toLowerCase(),
     agent_address: agentAddress.toLowerCase(),
-    status: result.status,
-    authorized: result.authorized,
+    ...result,
   });
 }

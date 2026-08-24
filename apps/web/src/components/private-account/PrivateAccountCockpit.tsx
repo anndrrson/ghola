@@ -73,6 +73,13 @@ import {
 import {
   signHyperliquidApiWalletBinding,
 } from "@/lib/hyperliquid-api-wallet";
+import { GHOLA_HYPERLIQUID_AGENT_NAME } from "@/lib/hyperliquid-agent-policy";
+import {
+  authorizeHyperliquidAgentWithInjectedOwner,
+  connectInjectedHyperliquidOwner,
+  injectedWalletErrorMessage,
+  resolveInjectedEvmProvider,
+} from "@/lib/hyperliquid-owner-authorization";
 import {
   clearPendingHyperliquidApiWallet,
   resumeOrCreatePendingHyperliquidApiWallet,
@@ -5878,6 +5885,10 @@ function HyperliquidConnectModal({
   const [confirmedAgentKey, setConfirmedAgentKey] = useState(false);
   const [generatedAgentAddress, setGeneratedAgentAddress] = useState("");
   const [authorizationOpened, setAuthorizationOpened] = useState(false);
+  const [authorizationStatus, setAuthorizationStatus] = useState<Awaited<ReturnType<typeof getHyperliquidApiWalletAuthorization>> | null>(null);
+  const [authorizationChecking, setAuthorizationChecking] = useState(false);
+  const [authorizationCheckError, setAuthorizationCheckError] = useState<string | null>(null);
+  const [injectedWalletAvailable, setInjectedWalletAvailable] = useState(false);
   const [quickImport, setQuickImport] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [pendingWalletAction, setPendingWalletAction] = useState<"resume" | "generate" | "replace" | null>(null);
@@ -5890,10 +5901,12 @@ function HyperliquidConnectModal({
       network: pending.network,
       hyperliquid_account_address: pending.ownerAddress,
       api_wallet_private_key: pending.privateKey,
-      agent_name: "ghola",
+      agent_name: GHOLA_HYPERLIQUID_AGENT_NAME,
     });
     setGeneratedAgentAddress(pending.agentAddress);
     setAuthorizationOpened(false);
+    setAuthorizationStatus(null);
+    setAuthorizationCheckError(null);
     setQuickImport("");
     setConfirmedAgentKey(false);
     setError(null);
@@ -5908,6 +5921,9 @@ function HyperliquidConnectModal({
     });
     setGeneratedAgentAddress("");
     setAuthorizationOpened(false);
+    setAuthorizationStatus(null);
+    setAuthorizationChecking(false);
+    setAuthorizationCheckError(null);
     setQuickImport("");
     setConfirmedAgentKey(false);
     setPendingWalletAction(null);
@@ -5971,6 +5987,58 @@ function HyperliquidConnectModal({
     };
   }, [clearCredentialDraft, open, onClose]);
 
+  useEffect(() => {
+    if (!open || !LEGACY_HYPERLIQUID_API_KEYS_ENABLED) return;
+    setInjectedWalletAvailable(Boolean(resolveInjectedEvmProvider()));
+  }, [open]);
+
+  useEffect(() => {
+    const ownerAddress = draft.hyperliquid_account_address.trim();
+    if (
+      !open ||
+      !generatedAgentAddress ||
+      !/^0x[0-9a-fA-F]{40}$/.test(ownerAddress)
+    ) return;
+    let cancelled = false;
+    let intervalId: number | null = null;
+
+    const check = async () => {
+      if (cancelled) return;
+      setAuthorizationChecking(true);
+      try {
+        const status = await getHyperliquidApiWalletAuthorization({
+          network: draft.network,
+          ownerAddress,
+          agentAddress: generatedAgentAddress,
+        });
+        if (cancelled) return;
+        setAuthorizationStatus(status);
+        setAuthorizationCheckError(null);
+        if (status.authorized) {
+          setPendingNotice("Hyperliquid authorization detected. Finish the secure connection below.");
+          if (intervalId !== null) window.clearInterval(intervalId);
+        }
+      } catch {
+        if (!cancelled) setAuthorizationCheckError("Ghola could not check Hyperliquid yet. Return here or retry once.");
+      } finally {
+        if (!cancelled) setAuthorizationChecking(false);
+      }
+    };
+    const checkWhenVisible = () => {
+      if (document.visibilityState === "visible") void check();
+    };
+    void check();
+    if (authorizationOpened) intervalId = window.setInterval(checkWhenVisible, 8_000);
+    window.addEventListener("focus", checkWhenVisible);
+    document.addEventListener("visibilitychange", checkWhenVisible);
+    return () => {
+      cancelled = true;
+      if (intervalId !== null) window.clearInterval(intervalId);
+      window.removeEventListener("focus", checkWhenVisible);
+      document.removeEventListener("visibilitychange", checkWhenVisible);
+    };
+  }, [authorizationOpened, draft.hyperliquid_account_address, draft.network, generatedAgentAddress, open]);
+
   const finishTurnkeySetup = useCallback(() => {
     void getHyperliquidExecutionVaultStatus()
       .then((sealed) => {
@@ -6022,7 +6090,15 @@ function HyperliquidConnectModal({
     generatedAgentAddress,
     confirmedImportedAgentKey: confirmedAgentKey,
   });
-  const authorizationReady = generatedAgentAddress ? authorizationOpened : agentKeyConfirmed;
+  const authorizationReady = generatedAgentAddress
+    ? authorizationStatus?.authorized === true
+    : agentKeyConfirmed;
+  const namedAgentSlotsFull = Boolean(
+    generatedAgentAddress &&
+      authorizationStatus &&
+      !authorizationStatus.authorized &&
+      !authorizationStatus.named_slot_available,
+  );
   const ownerAddressReady = /^0x[0-9a-fA-F]{40}$/.test(draft.hyperliquid_account_address.trim());
   const canSubmit = Boolean(
     accountCommitment &&
@@ -6035,7 +6111,13 @@ function HyperliquidConnectModal({
   const connectLabel = submitting
     ? "Verifying…"
     : generatedAgentAddress
-      ? authorizationOpened ? "I’ve authorized it — verify" : "Authorize on Hyperliquid first"
+      ? authorizationReady
+        ? "Finish secure connection"
+        : authorizationChecking
+          ? "Checking Hyperliquid…"
+          : namedAgentSlotsFull
+            ? "Free one API-wallet slot"
+            : "Authorize with wallet or Hyperliquid"
     : !accountCommitment || !walletAddress
       ? "Preparing secure wallet…"
       : !hasAccount
@@ -6093,6 +6175,122 @@ function HyperliquidConnectModal({
     }
   }
 
+  async function connectAndAuthorizeInjectedWallet() {
+    if (!walletAddress || !accountCommitment) {
+      setError("Sign in before connecting your Hyperliquid wallet.");
+      return;
+    }
+    const provider = resolveInjectedEvmProvider();
+    if (!provider) {
+      setInjectedWalletAvailable(false);
+      setError("Open Ghola in Chrome with Phantom, or in Phantom’s mobile browser. No QR scan is required.");
+      return;
+    }
+    setPendingWalletAction("generate");
+    setError(null);
+    setAuthorizationCheckError(null);
+    try {
+      const ownerAddress = await connectInjectedHyperliquidOwner(provider);
+      const pending = await resumeOrCreatePendingHyperliquidApiWallet({
+        userDid: walletAddress,
+        network: hyperliquidNetwork,
+        ownerAddress,
+        signBytes,
+      });
+      applyPendingWallet(pending);
+      if (pending.ownerConflict) {
+        throw new Error(`The saved setup belongs to ${pending.ownerAddress}. Connect that wallet or replace the unapproved setup.`);
+      }
+      const credential: HyperliquidExecutionCredentialDraft = {
+        network: pending.network,
+        hyperliquid_account_address: pending.ownerAddress,
+        api_wallet_private_key: pending.privateKey,
+        agent_name: GHOLA_HYPERLIQUID_AGENT_NAME,
+      };
+      let status = await getHyperliquidApiWalletAuthorization({
+        network: pending.network,
+        ownerAddress: pending.ownerAddress,
+        agentAddress: pending.agentAddress,
+      });
+      setAuthorizationStatus(status);
+      if (!status.authorized) {
+        if (!status.named_slot_available) {
+          throw new Error(
+            `Hyperliquid’s ${status.named_agent_limit} named API-wallet slots are full. Remove one on Hyperliquid, then return—Ghola will resume this exact wallet.`,
+          );
+        }
+        await authorizeHyperliquidAgentWithInjectedOwner({
+          provider,
+          ownerAddress: pending.ownerAddress as `0x${string}`,
+          agentAddress: pending.agentAddress as `0x${string}`,
+          network: pending.network,
+        });
+        status = await waitForHyperliquidAuthorization({
+          network: pending.network,
+          ownerAddress: pending.ownerAddress,
+          agentAddress: pending.agentAddress,
+        });
+        setAuthorizationStatus(status);
+      }
+      if (!status.authorized) throw new Error("Hyperliquid did not confirm the wallet authorization. Nothing was retried.");
+      setSubmitting(true);
+      await persistHyperliquidCredential(credential, pending.agentAddress);
+    } catch (caught) {
+      setError(injectedWalletErrorMessage(caught));
+    } finally {
+      setPendingWalletAction(null);
+      setSubmitting(false);
+    }
+  }
+
+  async function waitForHyperliquidAuthorization(input: {
+    network: "mainnet" | "testnet";
+    ownerAddress: string;
+    agentAddress: string;
+  }) {
+    let status = await getHyperliquidApiWalletAuthorization(input);
+    for (let attempt = 0; attempt < 5 && !status.authorized; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 700 + attempt * 300));
+      status = await getHyperliquidApiWalletAuthorization(input);
+    }
+    return status;
+  }
+
+  async function persistHyperliquidCredential(
+    credential: HyperliquidExecutionCredentialDraft,
+    pendingAgentAddress: string,
+  ) {
+    if (!accountCommitment || !walletAddress) throw new Error("Private account wallet is unavailable.");
+    const credentialErrors = validateHyperliquidExecutionCredentialDraft(credential);
+    if (credentialErrors.length > 0) throw new Error(credentialErrors[0]);
+    const sealed = await buildHyperliquidExecutionVaultBundle({
+      accountCommitment,
+      ownerWalletAddress: walletAddress,
+      credential,
+      signBytes,
+    });
+    const credentialBinding = await signHyperliquidApiWalletBinding({
+      privateKey: credential.api_wallet_private_key,
+      accountCommitment,
+      network: credential.network,
+      ownerAddress: credential.hyperliquid_account_address,
+    });
+    const stored = await sealHyperliquidExecutionVault({
+      encrypted_execution_vault: sealed.encrypted_execution_vault,
+      credential_binding: credentialBinding,
+    });
+    if (pendingAgentAddress) {
+      await clearPendingHyperliquidApiWallet({
+        userDid: walletAddress,
+        network: credential.network,
+        ownerAddress: credential.hyperliquid_account_address,
+      }).catch(() => {});
+    }
+    clearCredentialDraft();
+    onConnected(stored);
+    onClose();
+  }
+
   async function replaceGeneratedWallet() {
     if (!walletAddress || !generatedAgentAddress || !ownerAddressReady) return;
     setPendingWalletAction("replace");
@@ -6115,6 +6313,8 @@ function HyperliquidConnectModal({
       setDraft((current) => ({ ...current, api_wallet_private_key: "" }));
       setGeneratedAgentAddress("");
       setAuthorizationOpened(false);
+      setAuthorizationStatus(null);
+      setAuthorizationCheckError(null);
       setConfirmedAgentKey(false);
       setPendingNotice("The unapproved pending wallet was removed. You can create one replacement.");
     } catch {
@@ -6130,6 +6330,14 @@ function HyperliquidConnectModal({
       await navigator.clipboard.writeText(generatedAgentAddress);
     } catch {
       setError("Could not copy the public API wallet address. Select and copy it manually.");
+    }
+  }
+
+  async function copyAgentName() {
+    try {
+      await navigator.clipboard.writeText(GHOLA_HYPERLIQUID_AGENT_NAME);
+    } catch {
+      setError(`Use ${GHOLA_HYPERLIQUID_AGENT_NAME} as the API-wallet name.`);
     }
   }
 
@@ -6152,32 +6360,7 @@ function HyperliquidConnectModal({
     }
     setSubmitting(true);
     try {
-      const sealed = await buildHyperliquidExecutionVaultBundle({
-        accountCommitment,
-        ownerWalletAddress: walletAddress,
-        credential: draft,
-        signBytes,
-      });
-      const credentialBinding = await signHyperliquidApiWalletBinding({
-        privateKey: draft.api_wallet_private_key,
-        accountCommitment,
-        network: draft.network,
-        ownerAddress: draft.hyperliquid_account_address,
-      });
-      const stored = await sealHyperliquidExecutionVault({
-        encrypted_execution_vault: sealed.encrypted_execution_vault,
-        credential_binding: credentialBinding,
-      });
-      if (generatedAgentAddress) {
-        await clearPendingHyperliquidApiWallet({
-          userDid: walletAddress,
-          network: draft.network,
-          ownerAddress: draft.hyperliquid_account_address,
-        }).catch(() => {});
-      }
-      clearCredentialDraft();
-      onConnected(stored);
-      onClose();
+      await persistHyperliquidCredential(draft, generatedAgentAddress);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not connect Hyperliquid.");
     } finally {
@@ -6228,8 +6411,8 @@ function HyperliquidConnectModal({
         {!iosHandoff && (
           <p className="mt-2 pr-6 text-sm leading-5 text-[#8f9bb0]">
             {generatedAgentAddress
-              ? "Step 2 of 2 · Authorize the trade-only wallet, then Ghola verifies it."
-              : "Step 1 of 2 · Enter the Hyperliquid account that holds your collateral."}
+              ? "Ghola is checking the exact trade-only authorization."
+              : "Connect the wallet that holds your Hyperliquid collateral. No QR or copy/paste."}
           </p>
         )}
 
@@ -6286,6 +6469,25 @@ function HyperliquidConnectModal({
           <>
             {!generatedAgentAddress ? (
               <div className="mt-5 grid gap-4">
+                <button
+                  type="button"
+                  disabled={Boolean(pendingWalletAction) || submitting}
+                  onClick={() => void connectAndAuthorizeInjectedWallet()}
+                  className="h-12 rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {pendingWalletAction === "generate" || submitting
+                    ? "Waiting for wallet…"
+                    : "Connect wallet & authorize"}
+                </button>
+                <p className="text-center text-xs leading-5 text-[#718096]">
+                  {injectedWalletAvailable
+                    ? "One wallet approval creates scoped trading access. Withdrawals remain impossible."
+                    : "Use Chrome with Phantom, or Phantom’s mobile browser. The manual path remains below."}
+                </p>
+
+                <details className="rounded-lg border border-[#253044] bg-[#080b10] p-3">
+                  <summary className="cursor-pointer text-xs font-medium text-[#8290a5]">Manual or existing API wallet</summary>
+                  <div className="mt-4 grid gap-3">
                 <label className="grid gap-1.5">
                   <span className="text-xs font-medium text-[#96a2b7]">Your Hyperliquid account</span>
                   <input
@@ -6316,7 +6518,7 @@ function HyperliquidConnectModal({
                 </button>
                 <p className="text-center text-xs leading-5 text-[#718096]">Encrypted in this browser and resumed after interruptions. It cannot withdraw funds.</p>
 
-                <details className="rounded-lg border border-[#253044] bg-[#080b10] p-3">
+                <details className="border-t border-[#253044] pt-3">
                   <summary className="cursor-pointer text-xs font-medium text-[#8290a5]">Use an existing API wallet</summary>
                   <div className="mt-4 grid gap-3">
                     <label className="grid gap-1.5">
@@ -6369,12 +6571,45 @@ function HyperliquidConnectModal({
                     </details>
                   </div>
                 </details>
+                  </div>
+                </details>
               </div>
             ) : (
               <div className="mt-5 grid gap-4">
+                {!authorizationReady && !namedAgentSlotsFull && (
+                  <button
+                    type="button"
+                    disabled={Boolean(pendingWalletAction) || submitting}
+                    onClick={() => void connectAndAuthorizeInjectedWallet()}
+                    className="h-12 rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {pendingWalletAction === "generate" || submitting
+                      ? "Waiting for wallet…"
+                      : "Authorize with wallet"}
+                  </button>
+                )}
+                {authorizationReady && (
+                  <div className="rounded-lg border border-[#285c49] bg-[#0d251c] px-4 py-3 text-sm text-[#9be4bf]">
+                    Hyperliquid authorization detected. Ghola can finish securely without another wallet prompt.
+                  </div>
+                )}
+                {namedAgentSlotsFull && (
+                  <div className="rounded-lg border border-[#68402f] bg-[#26150d] px-4 py-3 text-xs leading-5 text-[#ffc39a]">
+                    Hyperliquid’s {authorizationStatus?.named_agent_limit || 3} named API-wallet slots are full. Remove one wallet there, then return. Ghola will resume this exact saved wallet—do not generate another.
+                  </div>
+                )}
                 <div className="rounded-lg border border-[#29405b] bg-[#0a1420] p-4">
-                  <p className="text-sm font-semibold text-[#dcecff]">Authorize this address on Hyperliquid</p>
-                  <p className="mt-1 text-xs leading-5 text-[#8197b2]">Copy it into Hyperliquid’s API-wallet form and approve with your owner account.</p>
+                  <p className="text-sm font-semibold text-[#dcecff]">Saved trade-only wallet</p>
+                  <p className="mt-1 text-xs leading-5 text-[#8197b2]">The primary button authorizes it directly. Manual setup uses the fixed name below so reconnecting replaces one Ghola slot instead of consuming another.</p>
+                  <div className="mt-3 rounded-md border border-[#315374] bg-[#070d14] p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-[#6f8ba7]">API-wallet name</span>
+                      <button type="button" onClick={copyAgentName} className="inline-flex items-center gap-1 text-xs text-[#9bcfff] hover:text-white">
+                        <Copy className="h-3.5 w-3.5" /> Copy
+                      </button>
+                    </div>
+                    <p className="mt-2 font-mono text-xs text-[#dcecff]">{GHOLA_HYPERLIQUID_AGENT_NAME}</p>
+                  </div>
                   <div className="mt-3 rounded-md border border-[#315374] bg-[#070d14] p-3">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-[#6f8ba7]">Trade-only address</span>
@@ -6397,11 +6632,16 @@ function HyperliquidConnectModal({
                   }}
                   className="inline-flex h-12 items-center justify-center rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb]"
                 >
-                  Open Hyperliquid to authorize
+                  {namedAgentSlotsFull ? "Manage Hyperliquid API wallets" : "Manual Hyperliquid authorization"}
                 </a>
                 <p className="text-center text-xs leading-5 text-[#718096]">
-                  {authorizationOpened ? "After approval, return here and verify below." : "The address will be copied when Hyperliquid opens."}
+                  {authorizationChecking
+                    ? "Checking Hyperliquid authorization…"
+                    : authorizationOpened
+                      ? "Return here after approval. Ghola detects the venue state automatically."
+                      : `Manual fallback: use name “${GHOLA_HYPERLIQUID_AGENT_NAME}”; the address is copied automatically.`}
                 </p>
+                {authorizationCheckError && <p className="text-center text-xs leading-5 text-amber-200">{authorizationCheckError}</p>}
                 <button
                   type="button"
                   disabled={Boolean(pendingWalletAction)}

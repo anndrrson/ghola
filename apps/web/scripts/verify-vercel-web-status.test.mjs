@@ -118,14 +118,31 @@ test("release keeps Hyperliquid onboarding on one resumable pending wallet", () 
     resolve(webRoot, "src/lib/hyperliquid-pending-api-wallet.ts"),
     "utf8",
   );
+  const ownerAuthorization = readFileSync(
+    resolve(webRoot, "src/lib/hyperliquid-owner-authorization.ts"),
+    "utf8",
+  );
+  const agentPolicy = readFileSync(
+    resolve(webRoot, "src/lib/hyperliquid-agent-policy.ts"),
+    "utf8",
+  );
 
   assert.match(cockpit, /resumePendingHyperliquidApiWallet/);
   assert.match(cockpit, /resumeOrCreatePendingHyperliquidApiWallet/);
   assert.match(cockpit, /getHyperliquidApiWalletAuthorization/);
+  assert.match(cockpit, /authorizeHyperliquidAgentWithInjectedOwner/);
+  assert.match(cockpit, /authorizationStatus\?\.authorized === true/);
+  assert.match(cockpit, /named_slot_available/);
+  assert.match(cockpit, /Ghola detects the venue state automatically/);
   assert.match(cockpit, /Revoke this exact trade-only wallet on Hyperliquid before replacement/);
   assert.match(cockpit, /await clearPendingHyperliquidApiWallet/);
   assert.doesNotMatch(cockpit, /generateHyperliquidApiWallet\(\)/);
   assert.match(pendingStore, /"AES-GCM"/);
   assert.match(pendingStore, /pendingSlotId\(userDid, input\.network\)/);
   assert.match(pendingStore, /objectStore\(STORE_PENDING\)\.add\(row\)/);
+  assert.match(ownerAuthorization, /exchange\.approveAgent/);
+  assert.match(ownerAuthorization, /eth_requestAccounts/);
+  assert.match(agentPolicy, /GHOLA_HYPERLIQUID_AGENT_NAME = "ghola"/);
+  assert.match(agentPolicy, /HYPERLIQUID_NAMED_AGENT_LIMIT = 3/);
+  assert.doesNotMatch(cockpit, /generatedAgentAddress \? authorizationOpened : agentKeyConfirmed/);
 });

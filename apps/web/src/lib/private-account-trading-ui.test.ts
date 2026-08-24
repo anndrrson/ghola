@@ -104,9 +104,10 @@ describe("private account trading UI derivation", () => {
       resolve(process.cwd(), "src/components/private-account/PrivateAccountCockpit.tsx"),
       "utf8",
     );
-    expect(cockpitSource).toContain("const authorizationReady = generatedAgentAddress ? authorizationOpened : agentKeyConfirmed;");
+    expect(cockpitSource).toContain("authorizationStatus?.authorized === true");
     expect(cockpitSource).toContain("if (!authorizationReady)");
     expect(cockpitSource).not.toContain("if (!confirmedAgentKey)");
+    expect(cockpitSource).not.toContain("generatedAgentAddress ? authorizationOpened : agentKeyConfirmed");
   });
 
   it("keeps focused onboarding to sign-in plus two visible Hyperliquid steps", () => {
@@ -122,9 +123,11 @@ describe("private account trading UI derivation", () => {
     expect(cockpitSource).toContain('reason="hyperliquid-setup"');
     expect(cockpitSource).toContain("focusedHyperliquidAuthPrompted.current = true;");
     expect(cockpitSource).toContain("setAuthOpen(true);");
-    expect(cockpitSource).toContain("Step 1 of 2 · Enter the Hyperliquid account");
-    expect(cockpitSource).toContain("Step 2 of 2 · Authorize the trade-only wallet");
-    expect(cockpitSource).toContain("I’ve authorized it — verify");
+    expect(cockpitSource).toContain("Connect wallet & authorize");
+    expect(cockpitSource).toContain("authorizeHyperliquidAgentWithInjectedOwner");
+    expect(cockpitSource).toContain("Ghola detects the venue state automatically");
+    expect(cockpitSource).toContain("named_slot_available");
+    expect(cockpitSource).toContain("Finish secure connection");
     expect(cockpitSource).toContain("hyperliquidSetupAuthRedirect(initialReturnTo)");
     expect(cockpitSource).not.toContain("Return here, confirm authorization, then secure and verify.");
     expect(authModalSource).toContain('reason?: "chat-private" | "hyperliquid-setup";');
