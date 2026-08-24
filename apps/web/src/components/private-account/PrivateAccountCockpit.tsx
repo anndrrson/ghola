@@ -710,6 +710,7 @@ interface HyperliquidNoSubmitResult {
   verification: NoFundsVerificationState;
   connection_proof_persisted?: boolean;
   connection_proof_reason?: string | null;
+  hyperliquid_agent_session?: HyperliquidAgentState;
 }
 
 interface LiveReadinessCertificate {
@@ -1912,12 +1913,10 @@ export function PrivateAccountCockpit({
   }
 
   async function armAndVerifyHyperliquid(vaultOverride?: HyperliquidVaultState) {
-    // The no-submit proof reads the account authoritatively. Avoid a separate
-    // account refresh between arming and verification; it wakes and reads the
-    // same sealed worker twice while adding no proof strength.
-    const armed = await armHyperliquidAgent(false, { refreshAccount: false });
-    if (!armed) return;
-    await verifyHyperliquidNoSubmit(vaultOverride);
+    // The verification request arms the exact sealed-wallet policy and checks
+    // it on one worker wake. Keeping those operations together avoids a secure
+    // control-plane round trip without weakening either check.
+    await verifyHyperliquidNoSubmit(vaultOverride, { armSession: true });
   }
 
   async function allocateHyperliquidManaged() {
@@ -2382,7 +2381,10 @@ export function PrivateAccountCockpit({
     }
   }
 
-  async function verifyHyperliquidNoSubmit(vaultOverride?: HyperliquidVaultState) {
+  async function verifyHyperliquidNoSubmit(
+    vaultOverride?: HyperliquidVaultState,
+    options: { armSession?: boolean } = {},
+  ) {
     setWorking(true);
     setError(null);
     setHyperliquidVerification(null);
@@ -2446,7 +2448,23 @@ export function PrivateAccountCockpit({
         platform_class: "hyperliquid_style_market",
         work_order_commitment: workOrderCommitment,
         encrypted_execution_instruction_bundle: sealed.encrypted_execution_instruction_bundle,
+        ...(options.armSession === true
+          ? {
+              hyperliquid_session: {
+                execution_mode: effectiveVault?.managed_allocation?.status === "allocated"
+                  ? effectiveVault.managed_allocation.execution_mode ?? "managed_testnet"
+                  : "byo_api_key",
+                market_allowlist: defaultHyperliquidMarketAllowlist(),
+                max_notional_bucket: input.amount_bucket,
+                max_order_count: 10,
+                kill_switch: false,
+              },
+            }
+          : {}),
       }) as HyperliquidNoSubmitResult;
+      if (result.hyperliquid_agent_session) {
+        setHyperliquidAgent(result.hyperliquid_agent_session);
+      }
       const verification = result.verification;
       const proofReady = hyperliquidNoSubmitProofReady(result);
       if (!proofReady) {

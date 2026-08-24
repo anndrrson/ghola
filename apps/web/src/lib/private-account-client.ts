@@ -998,6 +998,13 @@ export async function verifyPrivateAccountConnectorNoSubmit(input: {
   platform_class: GholaPlatformClass;
   work_order_commitment: string;
   encrypted_execution_instruction_bundle: unknown;
+  hyperliquid_session?: {
+    execution_mode?: "byo_api_key" | "managed_testnet" | "ghola_pooled";
+    market_allowlist?: string[];
+    max_notional_bucket?: PrivateAccountSafeInput["amount_bucket"];
+    max_order_count?: number;
+    kill_switch?: boolean;
+  };
 }) {
   return privateAccountFetch("/v1/private-account/connectors/verify-no-submit", {
     method: "POST",

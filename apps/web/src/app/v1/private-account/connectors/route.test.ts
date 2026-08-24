@@ -631,12 +631,23 @@ describe("private account connector gateway routes", () => {
             "recipient:mock_attested:dev",
           ].join("|"),
         },
+        hyperliquid_session: {
+          execution_mode: "byo_api_key",
+          market_allowlist: ["HYPE"],
+          max_notional_bucket: "25",
+          max_order_count: 10,
+          kill_switch: false,
+        },
       }),
     );
     const verified = await verifyRes.json();
 
     expect(verifyRes.status, JSON.stringify(verified)).toBe(200);
     expect(verified.verification.status).toBe("verified_no_funds");
+    expect(verified.hyperliquid_agent_session).toMatchObject({
+      status: "armed",
+      execution_mode: "byo_api_key",
+    });
     expect(verified.connection_proof_persisted).toBe(false);
     expect(verified.connection_proof_reason).toBe("local_test_proof_not_persisted");
     expect(verified.verification.checks.transaction_broadcast).toBe(false);
@@ -662,6 +673,7 @@ describe("private account connector gateway routes", () => {
     process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL = "https://worker.ghola.test";
     process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS = "ready";
     process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "test-worker-capability-secret-32-bytes";
+    let sealedAccessPolicy: string | null = null;
     vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
       const url = String(input);
       if (url === "https://api.hyperliquid.xyz/info") {
@@ -677,6 +689,14 @@ describe("private account connector gateway routes", () => {
           name: "ghola-test",
           validUntil: null,
         }]), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url === "https://worker.ghola.test/hyperliquid/sessions") {
+        const body = JSON.parse(String(init?.body || "{}"));
+        expect(body.policy_commitment).toBe(sealedAccessPolicy);
+        return new Response(JSON.stringify({
+          status: "armed",
+          hyperliquid_session_commitment: "hyperliquid_session_combined_test",
+        }), { status: 201, headers: { "content-type": "application/json" } });
       }
       if (url === "https://worker.ghola.test/hyperliquid/verify") {
         return new Response(JSON.stringify({
@@ -745,6 +765,8 @@ describe("private account connector gateway routes", () => {
       }),
     );
     expect(sealRes.status).toBe(201);
+    const sealed = await sealRes.json();
+    sealedAccessPolicy = sealed.hyperliquid_execution_vault.policy_commitment;
 
     const verifyRes = await verifyNoSubmitRoute(
       post("/v1/private-account/connectors/verify-no-submit", {
@@ -761,10 +783,19 @@ describe("private account connector gateway routes", () => {
             "recipient:mock_attested:dev",
           ].join("|"),
         },
+        hyperliquid_session: {
+          execution_mode: "byo_api_key",
+          market_allowlist: ["HYPE"],
+          max_notional_bucket: "25",
+          max_order_count: 10,
+          kill_switch: false,
+        },
       }),
     );
     const verified = await verifyRes.json();
     expect(verifyRes.status, JSON.stringify(verified)).toBe(200);
+    expect(verified.hyperliquid_agent_session.agent_session_commitment)
+      .toBe("hyperliquid_session_combined_test");
     expect(verified.connection_proof_persisted, JSON.stringify(verified)).toBe(true);
     expect(verified.connection_proof_reason).toBeNull();
     expect(verified.release_canary_persisted, JSON.stringify(verified)).toBe(true);

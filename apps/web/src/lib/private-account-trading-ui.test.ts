@@ -251,9 +251,9 @@ describe("private account trading UI derivation", () => {
     expect(cockpitSource).toContain("onAuthenticateTurnkey={authenticateHyperliquidOwner}");
     expect(cockpitSource).toContain("verificationAction.kind === \"authenticate_owner\"");
     expect(cockpitSource).toContain("async function armAndVerifyHyperliquid");
-    expect(cockpitSource).toContain("const armed = await armHyperliquidAgent(false, { refreshAccount: false })");
-    expect(cockpitSource).toContain("if (!armed) return");
-    expect(cockpitSource).toContain("await verifyHyperliquidNoSubmit(vaultOverride)");
+    expect(cockpitSource).toContain("await verifyHyperliquidNoSubmit(vaultOverride, { armSession: true })");
+    expect(cockpitSource).toContain("hyperliquid_session:");
+    expect(cockpitSource).toContain("setHyperliquidAgent(result.hyperliquid_agent_session)");
   });
 
   it("wakes and renews the private worker for every Hyperliquid user-action path", () => {

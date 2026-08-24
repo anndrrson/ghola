@@ -454,7 +454,7 @@ describe("Hyperliquid private-account routes", () => {
     const preflight = await (await vaultStatus(
       request("/v1/private-account/hyperliquid/vault"),
     )).json();
-    await sealVault(
+    const sealed = await (await sealVault(
       request("/v1/private-account/hyperliquid/vault", {
         encrypted_execution_vault: {
           alg: "sealed-provider-v1",
@@ -464,7 +464,7 @@ describe("Hyperliquid private-account routes", () => {
         },
         credential_binding: await credentialBinding(preflight.account_commitment),
       }),
-    );
+    )).json();
     process.env.GHOLA_CONNECTOR_MODE = "http";
     process.env.GHOLA_PRIVATE_AGENT_PROVIDER = "mock_attested";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
@@ -481,6 +481,7 @@ describe("Hyperliquid private-account routes", () => {
           version: 1,
           account_commitment: preflight.account_commitment,
           execution_mode: "byo_api_key",
+          policy_commitment: sealed.hyperliquid_execution_vault.policy_commitment,
         });
         expect(body.encrypted_execution_vault.ciphertext).toBe("sealed-ciphertext-only");
         return Response.json({

@@ -4311,6 +4311,10 @@ async function currentPrivateAgentRecipientIds(): Promise<Set<string>> {
 export async function armHyperliquidAgentSessionFromBody(
   body: unknown,
   owner: PrivateAccountRequestOwner,
+  options: {
+    skip_worker_wake?: boolean;
+    worker_config?: ReturnType<typeof hyperliquidWorkerConfig>;
+  } = {},
 ) {
   const value = objectBody(body);
   const account = await createOrGetStoredPrivateAccount(owner);
@@ -4360,7 +4364,7 @@ export async function armHyperliquidAgentSessionFromBody(
       : null,
     policy,
     fallback_session_commitment: sessionCommitment,
-  });
+  }, options);
   if ("error" in workerSession) return workerSession;
   return {
     version: 1,
@@ -6112,6 +6116,7 @@ export async function connectorVerifyNoSubmitFromBody(
   let executionMode: GholaVenueExecutionMode;
   let hyperliquidNetwork: "mainnet" | "testnet" | null = null;
   let hyperliquidSignerBindingVerified = false;
+  let hyperliquidAgentSession: Awaited<ReturnType<typeof armHyperliquidAgentSessionFromBody>> | null = null;
   let connectorVault: {
     venue_id: string;
     execution_mode: GholaVenueExecutionMode;
@@ -6215,6 +6220,15 @@ export async function connectorVerifyNoSubmitFromBody(
   }
   if (platformClass === "hyperliquid_style_market") {
     await wakePrivateWorkerForUse(`hyperliquid_${executionMode}_no_submit_check`);
+    const requestedSession = objectBody(value.hyperliquid_session);
+    if (Object.keys(requestedSession).length > 0) {
+      const armed = await armHyperliquidAgentSessionFromBody(requestedSession, owner, {
+        skip_worker_wake: true,
+        worker_config: hyperliquidWorkerConfig(null, connectorEnv),
+      });
+      if ("error" in armed && armed.error) return { error: armed.error };
+      hyperliquidAgentSession = armed;
+    }
   } else if (executionMode === "ghola_pooled") {
     await wakePrivateWorkerForUse(`pooled_${pooledWorkerVenueId(venueId) ?? venueId}_no_submit_check`);
   }
@@ -6387,6 +6401,9 @@ export async function connectorVerifyNoSubmitFromBody(
           connection_proof_reason: connectionProofReason,
           release_canary_persisted: releaseCanaryPersisted,
           release_canary_reason: releaseCanaryReason,
+          ...(hyperliquidAgentSession
+            ? { hyperliquid_agent_session: hyperliquidAgentSession }
+            : {}),
         }
       : {}),
   };
@@ -6709,23 +6726,34 @@ async function requestHyperliquidAgentSession(input: {
   allocation: PrivateHyperliquidManagedAllocationRecordV1 | null;
   policy: GholaHyperliquidSessionPolicy;
   fallback_session_commitment: string;
-}): Promise<
+}, options: {
+  skip_worker_wake?: boolean;
+  worker_config?: ReturnType<typeof hyperliquidWorkerConfig>;
+} = {}): Promise<
   | { session_commitment: string }
   | { error: "connector_endpoint_missing" | "worker_unavailable" | "worker_session_rejected" }
 > {
   if (localHyperliquidPilotEnabled()) {
     return { session_commitment: input.fallback_session_commitment };
   }
-  await wakePrivateWorkerForUse("hyperliquid_session_create");
-  const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
-  const cfg = hyperliquidWorkerConfig(runtime);
+  if (options.skip_worker_wake !== true) {
+    await wakePrivateWorkerForUse("hyperliquid_session_create");
+  }
+  const cfg = options.worker_config ?? hyperliquidWorkerConfig(
+    await getPrivateAgentRuntimeStatus().catch(() => null),
+  );
   if (!cfg.url) return { error: "connector_endpoint_missing" };
   const workerPath = "/hyperliquid/sessions";
   const payload = {
     version: 1,
     account_commitment: input.account_commitment,
     execution_mode: input.execution_mode,
-    policy_commitment: input.policy.policy_commitment,
+    // The worker later resolves the session by the access policy carried on
+    // the sealed vault/allocation. Bind to that exact policy, while retaining
+    // the narrower per-session limits in session_policy.
+    policy_commitment: input.execution_mode === "byo_api_key"
+      ? input.vault?.policy_commitment ?? input.policy.policy_commitment
+      : input.allocation?.policy_commitment ?? input.policy.policy_commitment,
     session_policy: publicHyperliquidSessionPolicy(input.policy),
     ...(input.execution_mode === "byo_api_key" && input.vault
       ? {
@@ -7183,6 +7211,7 @@ function hyperliquidSnapshotNextStep(status: string) {
 
 function hyperliquidWorkerConfig(
   runtime: Awaited<ReturnType<typeof getPrivateAgentRuntimeStatus>> | null = null,
+  env: Record<string, string | undefined> = process.env,
 ) {
   const selectedProviderExecutionUrl = runtime
     ? selectedReadyPrivateAgentProvider(runtime)?.execution_url?.trim()
@@ -7190,15 +7219,15 @@ function hyperliquidWorkerConfig(
   return {
     url: resolveHyperliquidWorkerUrl({
       selected_provider_execution_url: selectedProviderExecutionUrl,
-      connector_url: process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL,
-      execution_url: process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL,
-      worker_url: process.env.GHOLA_PRIVATE_AGENT_WORKER_URL,
-      phala_endpoint: process.env.PHALA_AGENT_ENDPOINT,
+      connector_url: env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL,
+      execution_url: env.GHOLA_PRIVATE_AGENT_EXECUTION_URL,
+      worker_url: env.GHOLA_PRIVATE_AGENT_WORKER_URL,
+      phala_endpoint: env.PHALA_AGENT_ENDPOINT,
     }),
     token:
-      process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN?.trim() ||
-      process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
-      process.env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
+      env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN?.trim() ||
+      env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
+      env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
       "",
   };
 }
