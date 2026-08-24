@@ -46,7 +46,7 @@ export const INTENT_SECURITY_HEADERS = SECURITY_HEADERS.map((header) =>
 );
 
 const nextConfig: NextConfig = {
-  output: "standalone",
+  ...(process.env.VERCEL ? {} : { output: "standalone" as const }),
   turbopack: { root: path.resolve(process.cwd(), "../..") },
   transpilePackages: ["@ghola/perps-core"],
   poweredByHeader: false,
