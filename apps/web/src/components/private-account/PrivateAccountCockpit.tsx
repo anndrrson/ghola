@@ -158,6 +158,7 @@ import {
   requiresHyperliquidPoolTerms,
   shouldResetHyperliquidConnectionError,
   shouldReconnectHyperliquidApiWallet,
+  shouldProvisionFocusedHyperliquidWallet,
   shouldShowHyperliquidSetupProgress,
   type TradingActionKind,
   type TradingNextAction,
@@ -872,6 +873,7 @@ export function PrivateAccountCockpit({
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const focusedHyperliquidAuthPrompted = useRef(false);
+  const focusedHyperliquidWalletProvisioning = useRef(false);
   const [hyperliquidConnectOpen, setHyperliquidConnectOpen] = useState(false);
   const initialSetupHandled = useRef(false);
   const verifyHyperliquidAfterConnect = useRef(false);
@@ -1814,6 +1816,29 @@ export function PrivateAccountCockpit({
       if (manageWorking) setWorking(false);
     }
   }
+
+  useEffect(() => {
+    if (!shouldProvisionFocusedHyperliquidWallet({
+      initialSetup: initialSetupVenue === "hyperliquid",
+      authLoading: auth.loading,
+      authenticated: auth.authenticated,
+      walletLoading: turnkeyWallet.loading,
+      walletAddress: turnkeyWallet.walletAddress,
+      provisioning: focusedHyperliquidWalletProvisioning.current,
+    })) return;
+    focusedHyperliquidWalletProvisioning.current = true;
+    void ensureHyperliquidSigningWallet().finally(() => {
+      focusedHyperliquidWalletProvisioning.current = false;
+    });
+  // This bootstraps the signing wallet once after a focused Google redirect.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    auth.authenticated,
+    auth.loading,
+    initialSetupVenue,
+    turnkeyWallet.loading,
+    turnkeyWallet.walletAddress,
+  ]);
 
   async function openHyperliquidConnection() {
     if (!auth.authenticated) {
@@ -3366,7 +3391,16 @@ export function PrivateAccountCockpit({
                 <div className="h-full w-2/3 animate-pulse rounded-full bg-[#4aaef8]" />
               </div>
             )}
-            {error && hyperliquidVault && (
+            {error && !turnkeyWallet.walletAddress && (
+              <button
+                type="button"
+                onClick={() => void ensureHyperliquidSigningWallet()}
+                className="mt-6 h-11 w-full rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb]"
+              >
+                Retry secure setup
+              </button>
+            )}
+            {error && turnkeyWallet.walletAddress && hyperliquidVault && (
               <button
                 type="button"
                 onClick={() => void armAndVerifyHyperliquid(hyperliquidVault)}

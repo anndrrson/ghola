@@ -128,6 +128,8 @@ test("release keeps Hyperliquid onboarding on one resumable pending wallet", () 
   );
 
   assert.match(cockpit, /resumePendingHyperliquidApiWallet/);
+  assert.match(cockpit, /focusedHyperliquidWalletProvisioning\.current = true/);
+  assert.match(cockpit, /void ensureHyperliquidSigningWallet\(\)\.finally/);
   assert.match(cockpit, /resumeOrCreatePendingHyperliquidApiWallet/);
   assert.match(cockpit, /getHyperliquidApiWalletAuthorization/);
   assert.match(cockpit, /authorizeHyperliquidAgentWithInjectedOwner/);

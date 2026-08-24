@@ -60,6 +60,22 @@ export function shouldShowHyperliquidSetupProgress(input: {
   return input.initialSetup && !input.connectOpen;
 }
 
+export function shouldProvisionFocusedHyperliquidWallet(input: {
+  initialSetup: boolean;
+  authLoading: boolean;
+  authenticated: boolean;
+  walletLoading: boolean;
+  walletAddress?: string | null;
+  provisioning: boolean;
+}) {
+  return input.initialSetup &&
+    !input.authLoading &&
+    input.authenticated &&
+    !input.walletLoading &&
+    !input.walletAddress &&
+    !input.provisioning;
+}
+
 export function hyperliquidAccountAddressDraftValue(value: string) {
   const trimmed = value.trim();
   if (trimmed === "") return "";

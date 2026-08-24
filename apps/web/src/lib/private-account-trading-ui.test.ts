@@ -20,6 +20,7 @@ import {
   requiresHyperliquidPoolTerms,
   shouldResetHyperliquidConnectionError,
   shouldReconnectHyperliquidApiWallet,
+  shouldProvisionFocusedHyperliquidWallet,
   shouldShowHyperliquidSetupProgress,
   type TradingUiStateInput,
 } from "./private-account-trading-ui";
@@ -86,6 +87,23 @@ describe("private account trading UI derivation", () => {
     })).toBe(false);
   });
 
+  it("provisions one signing wallet after focused Google auth settles", () => {
+    const ready = {
+      initialSetup: true,
+      authLoading: false,
+      authenticated: true,
+      walletLoading: false,
+      walletAddress: null,
+      provisioning: false,
+    };
+    expect(shouldProvisionFocusedHyperliquidWallet(ready)).toBe(true);
+    expect(shouldProvisionFocusedHyperliquidWallet({ ...ready, authLoading: true })).toBe(false);
+    expect(shouldProvisionFocusedHyperliquidWallet({ ...ready, authenticated: false })).toBe(false);
+    expect(shouldProvisionFocusedHyperliquidWallet({ ...ready, walletLoading: true })).toBe(false);
+    expect(shouldProvisionFocusedHyperliquidWallet({ ...ready, walletAddress: "did:key:ready" })).toBe(false);
+    expect(shouldProvisionFocusedHyperliquidWallet({ ...ready, provisioning: true })).toBe(false);
+  });
+
   it("accepts locally generated Hyperliquid agent keys without the import-only checkbox", () => {
     expect(isHyperliquidAgentKeyConfirmed({
       generatedAgentAddress: "0xabc",
@@ -122,6 +140,9 @@ describe("private account trading UI derivation", () => {
     expect(cockpitSource).toContain("Start trading on Hyperliquid");
     expect(cockpitSource).toContain('reason="hyperliquid-setup"');
     expect(cockpitSource).toContain("focusedHyperliquidAuthPrompted.current = true;");
+    expect(cockpitSource).toContain("focusedHyperliquidWalletProvisioning.current = true;");
+    expect(cockpitSource).toContain("void ensureHyperliquidSigningWallet().finally");
+    expect(cockpitSource).toContain("Retry secure setup");
     expect(cockpitSource).toContain("setAuthOpen(true);");
     expect(cockpitSource).toContain("Connect wallet & authorize");
     expect(cockpitSource).toContain("authorizeHyperliquidAgentWithInjectedOwner");
