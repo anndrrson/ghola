@@ -304,6 +304,16 @@ test("rejects a terminal that trades before authoritative position sync", () => 
   );
 });
 
+test("rejects a terminal that bypasses the three-venue no-submit matrix", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll("preflightCarryExecutionMatrix", "preflightCarryPair"),
+    }),
+    /carry_terminal_three_venue_matrix_missing/,
+  );
+});
+
 test("rejects a terminal that hides monitored margin runway", () => {
   assert.throws(
     () => checkCarryExecutionContract({

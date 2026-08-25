@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   executeCarryPositionEntry: vi.fn(),
   getPrivateAgentPassport: vi.fn(),
   listCarryPositions: vi.fn(),
+  preflightCarryExecutionMatrix: vi.fn(),
   preflightCarryPair: vi.fn(),
   requestCarryPositionExit: vi.fn(),
 }));
@@ -41,11 +42,13 @@ describe("CarryTerminalBuilder", () => {
     api.executeCarryPositionEntry.mockReset();
     api.getPrivateAgentPassport.mockReset();
     api.listCarryPositions.mockReset();
+    api.preflightCarryExecutionMatrix.mockReset();
     api.preflightCarryPair.mockReset();
     api.requestCarryPositionExit.mockReset();
     perps.ensureWalletPair.mockReset();
     perps.signCarryRiskMandate.mockReset();
     api.getPrivateAgentPassport.mockResolvedValue({ owner_commitment: "owner:carry:web:test:0001" });
+    api.preflightCarryExecutionMatrix.mockResolvedValue(readyMatrix());
     perps.ensureWalletPair.mockResolvedValue({ owner: { address: `0x${"11".repeat(20)}` } });
     perps.signCarryRiskMandate.mockResolvedValue(`0x${"22".repeat(65)}`);
   });
@@ -72,6 +75,7 @@ describe("CarryTerminalBuilder", () => {
 
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     await click("NO-SUBMIT CHECK");
+    expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
     expect(api.preflightCarryPair).toHaveBeenCalledOnce();
     expect(api.createCarryPosition).not.toHaveBeenCalled();
     expect(api.executeCarryPositionEntry).not.toHaveBeenCalled();
@@ -89,6 +93,20 @@ describe("CarryTerminalBuilder", () => {
 
     await click("CONFIRM LIVE PAIRED ENTRY");
     expect(api.executeCarryPositionEntry).toHaveBeenCalledWith("carry:position:test", true);
+  });
+
+  it("runs the three-venue matrix before checking or arming one route", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.preflightCarryExecutionMatrix.mockResolvedValue({
+      ...readyMatrix(),
+      no_submit_ready: false,
+      failures: ["pair_not_ready:2"],
+    });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    await click("NO-SUBMIT CHECK");
+    expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
+    expect(api.preflightCarryPair).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("THREE-VENUE NOT READY");
   });
 
   it("returns unified setup to the same terminal route", async () => {
@@ -184,6 +202,19 @@ function snapshot(venueId: string, funding: number) {
     best_bid_e8: 5_999_900_000_000,
     best_ask_e8: 6_000_100_000_000,
     missing_fields: [],
+  };
+}
+
+function readyMatrix() {
+  return {
+    mode: "carry_execution_no_submit_matrix",
+    no_submit_ready: true,
+    transaction_broadcast: false,
+    failures: [],
+    venues: ["hyperliquid", "lighter", "aster"].map((venue_id) => ({
+      venue_id,
+      transaction_broadcast: false,
+    })),
   };
 }
 

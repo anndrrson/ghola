@@ -249,7 +249,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "DATA {liveVenueCount}", "carry_live_data_label_missing");
   forbidText("webCarryChart", "FEEDS {liveVenueCount}", "carry_socket_status_mislabeled_as_live_data");
   forbidText("webCarryChart", "Scanning equivalent perps", "carry_marketing_status_copy_forbidden");
-  requireText("webCarryBuilder", "preflightCarryPair", "carry_terminal_no_submit_missing");
+  requireText("webCarryBuilder", "preflightCarryExecutionMatrix", "carry_terminal_three_venue_matrix_missing");
+  requireText("webCarryBuilder", "preflightCarryPair", "carry_terminal_pair_no_submit_missing");
   requireText("webCarryBuilder", "createCarryPosition", "carry_terminal_position_creation_missing");
   requireText("webCarryBuilder", "executeCarryPositionEntry", "carry_terminal_entry_missing");
   requireText("webCarryBuilder", "requestCarryPositionExit", "carry_terminal_exit_missing");
@@ -260,6 +261,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "MIN RUNWAY", "carry_terminal_runway_display_missing");
   requireText("webCarryBuilder", "window.setTimeout(refresh", "carry_terminal_monitor_refresh_missing");
   requireText("webCarryBuilderTest", "keeps checking and arming no-submit until a separate live-entry click", "carry_terminal_boundary_test_missing");
+  requireText("webCarryBuilderTest", "runs the three-venue matrix before checking or arming one route", "carry_terminal_three_venue_matrix_test_missing");
   requireText("webCarryBuilderTest", "allows a new Carry Position after the previous route proved flat with zero orders", "carry_terminal_repeat_lifecycle_test_missing");
   requireText("webCarryBuilderTest", "fails closed when the initial position sync is unavailable", "carry_terminal_position_sync_test_missing");
   requireText("webCarryBuilderTest", "shows compact live margin-runway evidence inside the terminal", "carry_terminal_runway_display_test_missing");

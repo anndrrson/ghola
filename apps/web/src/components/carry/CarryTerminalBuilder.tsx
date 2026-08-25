@@ -7,6 +7,7 @@ import {
   executeCarryPositionEntry,
   getPrivateAgentPassport,
   listCarryPositions,
+  preflightCarryExecutionMatrix,
   preflightCarryPair,
   requestCarryPositionExit,
 } from "@/lib/private-account-client";
@@ -115,6 +116,15 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     setMessage(null);
     setProof(null);
     try {
+      const matrix = asRecord(await preflightCarryExecutionMatrix({
+        asset: candidate.asset,
+        notional_usd: notional,
+        horizon_days: days,
+      }));
+      if (!readyNoSubmitMatrix(matrix)) {
+        setMessage("THREE-VENUE NOT READY · connect Hyperliquid, Lighter and Aster");
+        return;
+      }
       const result = asRecord(await preflightCarryPair({
         asset: candidate.asset,
         long_venue_id: candidate.long.venue_id as CarryExecutionVenue,
@@ -122,7 +132,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         notional_usd: notional,
         horizon_days: days,
       }));
-      setProof(result);
+      setProof({ ...result, execution_matrix: matrix });
       setMessage(result.live_creation_ready === true
         ? "READY · exact account costs, margin runway and both order shapes verified"
         : result.qualification_pilot_ready === true
@@ -374,6 +384,17 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown) {
   return typeof value === "string" && value ? value : null;
+}
+
+function readyNoSubmitMatrix(value: Record<string, unknown>) {
+  if (value.mode !== "carry_execution_no_submit_matrix" ||
+      value.no_submit_ready !== true ||
+      value.transaction_broadcast !== false ||
+      !Array.isArray(value.failures) || value.failures.length !== 0 ||
+      !Array.isArray(value.venues)) return false;
+  const venues = value.venues.map(asRecord);
+  return ["hyperliquid", "lighter", "aster"].every((venueId) => venues.some((venue) =>
+    venue.venue_id === venueId && venue.transaction_broadcast === false));
 }
 
 function isCarryRecord(value: Record<string, unknown>): value is Record<string, unknown> & CarryRecord {
