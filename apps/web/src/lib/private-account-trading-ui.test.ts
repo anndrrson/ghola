@@ -18,6 +18,7 @@ import {
   isHyperliquidAgentKeyConfirmed,
   phoenixOrderbookClickSide,
   requiresHyperliquidPoolTerms,
+  requiresHyperliquidOwnerAuthentication,
   shouldResetHyperliquidConnectionError,
   shouldReconnectHyperliquidApiWallet,
   shouldProvisionFocusedHyperliquidWallet,
@@ -178,6 +179,20 @@ describe("private account trading UI derivation", () => {
     expect(cockpitSource).toContain(
       "if (shouldResetHyperliquidConnectionError(previousOpenRef.current, open)) setError(null);",
     );
+  });
+
+  it("routes Turnkey owner-auth errors to authentication instead of retry", () => {
+    expect(requiresHyperliquidOwnerAuthentication(
+      "Authenticate with the Turnkey owner wallet first.",
+    )).toBe(true);
+    expect(requiresHyperliquidOwnerAuthentication("Could not verify Hyperliquid connection.")).toBe(false);
+
+    const cockpitSource = readFileSync(
+      resolve(process.cwd(), "src/components/private-account/PrivateAccountCockpit.tsx"),
+      "utf8",
+    );
+    expect(cockpitSource).toContain("if (requiresHyperliquidOwnerAuthentication(error))");
+    expect(cockpitSource).toContain('? "Authenticate owner wallet"');
   });
 
   it("opens wallet replacement only for exact Hyperliquid agent-binding failures", () => {

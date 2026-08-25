@@ -158,6 +158,7 @@ import {
   requiresHyperliquidPoolTerms,
   shouldResetHyperliquidConnectionError,
   shouldReconnectHyperliquidApiWallet,
+  requiresHyperliquidOwnerAuthentication,
   shouldProvisionFocusedHyperliquidWallet,
   shouldShowHyperliquidSetupProgress,
   type TradingActionKind,
@@ -3429,10 +3430,18 @@ export function PrivateAccountCockpit({
             {error && turnkeyWallet.walletAddress && hyperliquidVault && (
               <button
                 type="button"
-                onClick={() => void armAndVerifyHyperliquid(hyperliquidVault)}
+                onClick={() => {
+                  if (requiresHyperliquidOwnerAuthentication(error)) {
+                    void authenticateHyperliquidOwner();
+                    return;
+                  }
+                  void armAndVerifyHyperliquid(hyperliquidVault);
+                }}
                 className="mt-6 h-11 w-full rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb]"
               >
-                Retry verification
+                {requiresHyperliquidOwnerAuthentication(error)
+                  ? "Authenticate owner wallet"
+                  : "Retry verification"}
               </button>
             )}
             <button

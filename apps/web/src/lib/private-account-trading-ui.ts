@@ -50,6 +50,10 @@ export function shouldResetHyperliquidConnectionError(wasOpen: boolean, isOpen: 
   return isOpen && !wasOpen;
 }
 
+export function requiresHyperliquidOwnerAuthentication(error?: string | null) {
+  return Boolean(error && /authenticate with (?:the )?turnkey owner wallet/i.test(error));
+}
+
 export function shouldShowHyperliquidSetupProgress(input: {
   initialSetup: boolean;
   connectOpen: boolean;
