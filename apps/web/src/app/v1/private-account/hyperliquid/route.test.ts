@@ -398,6 +398,32 @@ describe("Hyperliquid private-account routes", () => {
     expect((await sealRes.json()).error).toBe("hyperliquid_agent_not_authorized");
   });
 
+  it("accepts a signed API wallet bound through Hyperliquid's unnamed agent role", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body || "{}")) as { type?: string };
+      return body.type === "extraAgents"
+        ? Response.json([])
+        : Response.json({ role: "agent", data: { user: TEST_HYPERLIQUID_OWNER } });
+    });
+    const preflight = await (await vaultStatus(
+      request("/v1/private-account/hyperliquid/vault"),
+    )).json();
+    const sealRes = await sealVault(
+      request("/v1/private-account/hyperliquid/vault", {
+        encrypted_execution_vault: {
+          alg: "sealed-provider-v1",
+          ciphertext: "sealed-ciphertext-only",
+          recipient: "mock_attested:dev",
+          aad: vaultAad(preflight.account_commitment),
+        },
+        credential_binding: await credentialBinding(preflight.account_commitment),
+      }),
+    );
+
+    expect(sealRes.status).toBe(201);
+    expect((await sealRes.json()).credentials_sealed).toBe(true);
+  });
+
   it("accepts the configured local worker recipient instead of a hardcoded mock recipient", async () => {
     const recipient = "phala:cvm:local-worker";
     process.env.GHOLA_PRIVATE_AGENT_ENCLAVE_KEY_ID = recipient;

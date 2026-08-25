@@ -4142,7 +4142,10 @@ async function verifyHyperliquidAgentAtVenue(input: {
   const authorized = extraAgents.agents.some((candidate) =>
     candidate.address === input.agent_address.trim().toLowerCase(),
   );
-  return authorized
+  if (authorized) return { ok: true };
+  const agentRole = await readHyperliquidAgentOwner(input);
+  if (!agentRole.ok) return agentRole;
+  return agentRole.ownerAddress === input.owner_address.trim().toLowerCase()
     ? { ok: true }
     : { ok: false, error: "hyperliquid_agent_not_authorized" };
 }
@@ -4185,7 +4188,10 @@ async function readHyperliquidExtraAgents(input: {
 async function readHyperliquidAgentOwner(input: {
   network: "mainnet" | "testnet";
   agent_address: string;
-}): Promise<string | null> {
+}): Promise<
+  | { ok: true; ownerAddress: string | null }
+  | { ok: false; error: "hyperliquid_binding_check_unavailable" }
+> {
   const baseUrl = input.network === "testnet"
     ? "https://api.hyperliquid-testnet.xyz"
     : "https://api.hyperliquid.xyz";
@@ -4196,13 +4202,15 @@ async function readHyperliquidAgentOwner(input: {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ type: "userRole", user: input.agent_address }),
     });
-    if (!response.ok) return null;
+    if (!response.ok) return { ok: false, error: "hyperliquid_binding_check_unavailable" };
     const body = objectBody(await response.json().catch(() => null));
-    if (stringValue(body.role).toLowerCase() !== "agent") return null;
+    if (stringValue(body.role).toLowerCase() !== "agent") return { ok: true, ownerAddress: null };
     const ownerAddress = stringValue(objectBody(body.data).user).toLowerCase();
-    return /^0x[0-9a-f]{40}$/.test(ownerAddress) ? ownerAddress : null;
+    return /^0x[0-9a-f]{40}$/.test(ownerAddress)
+      ? { ok: true, ownerAddress }
+      : { ok: false, error: "hyperliquid_binding_check_unavailable" };
   } catch {
-    return null;
+    return { ok: false, error: "hyperliquid_binding_check_unavailable" };
   }
 }
 
@@ -4222,10 +4230,10 @@ export async function hyperliquidAgentAuthorizationStatus(input: {
   });
   if (!checked.ok) return { status: "unavailable" as const, authorized: false };
   const authorizedAgent = checked.agents.find((candidate) => candidate.address === agentAddress);
-  const unnamedAgentOwner = authorizedAgent
+  const unnamedAgentRole = authorizedAgent
     ? null
     : await readHyperliquidAgentOwner({ network: input.network, agent_address: agentAddress });
-  const authorizedAsUnnamedAgent = unnamedAgentOwner === ownerAddress;
+  const authorizedAsUnnamedAgent = unnamedAgentRole?.ok === true && unnamedAgentRole.ownerAddress === ownerAddress;
   const authorized = Boolean(authorizedAgent) || authorizedAsUnnamedAgent;
   const activeNamedAgentCount = checked.agents.filter((candidate) => candidate.name.length > 0).length;
   const observedUnnamedAgentCount = checked.agents.filter((candidate) => candidate.name.length === 0).length;
