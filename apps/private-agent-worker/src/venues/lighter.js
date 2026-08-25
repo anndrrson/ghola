@@ -2,9 +2,14 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { didKeyFromVerifying, openSealedBundle } from "../crypto/envelope.js";
+import { fundingSigningIdentity } from "./shielded_funding_attestation.js";
 
 const ALLOWED = new Set(["read", "limit_order", "cancel", "reconcile"]);
 const OWNER_ONLY = ["withdraw", "transfer", "leverage", "margin", "account_config", "api_key_rotation"];
+const SAFE_COMMITMENT = /^[A-Za-z0-9_.:-]{8,240}$/;
+const UINT48_MAX = 281_474_976_710_655;
+const GOLDILOCKS_MODULUS = 0xffffffff00000001n;
 
 export class LighterExecutionError extends Error {
   constructor(message, status = 400, code = "venue_rejected") {
@@ -15,18 +20,56 @@ export class LighterExecutionError extends Error {
   }
 }
 
-export function lighterCredentialFromVault(vault) {
+export async function openLighterExecutionCredential({
+  bundle,
+  recipient,
+  accountCommitment,
+  sealingIdentity = fundingSigningIdentity,
+}) {
+  const opened = await openSealedBundle(bundle, recipient, {
+    expectedAad: [
+      "ghola/lighter-execution-vault-v1",
+      `account:${accountCommitment}`,
+      `recipient:${recipient.recipient_id}`,
+      "network:mainnet",
+    ].join("|"),
+    expectedKind: "ghola_lighter_execution_vault",
+  });
+  const identity = sealingIdentity();
+  const publicDer = identity?.publicKey?.export?.({ format: "der", type: "spki" });
+  const publicBytes = publicDer ? new Uint8Array(Buffer.from(publicDer).subarray(-32)) : new Uint8Array();
+  if (publicBytes.length !== 32 || opened.senderDid !== didKeyFromVerifying(publicBytes)) {
+    throw new LighterExecutionError("lighter execution vault signer is invalid", 403, "venue_access_required");
+  }
+  return lighterCredentialFromVault(opened.json, { accountCommitment });
+}
+
+export function lighterCredentialFromVault(vault, { accountCommitment } = {}) {
   if (vault?.kind !== "ghola_lighter_execution_vault" || vault?.version !== 1) {
     throw new LighterExecutionError("lighter execution vault is invalid", 400, "venue_access_required");
   }
   const accountIndex = integer(vault.account_index, "lighter account index is invalid");
   const apiKeyIndex = integer(vault.api_key_index, "lighter API key index is invalid");
   const apiPrivateKey = String(vault.api_private_key || "").replace(/^0x/, "");
-  if (!/^[0-9a-f]{64}$/i.test(apiPrivateKey)) {
+  const apiPublicKey = String(vault.api_public_key || "").replace(/^0x/, "").toLowerCase();
+  const sealedAccountCommitment = String(vault.account_commitment || "");
+  if (
+    vault.network !== "mainnet" || accountIndex > UINT48_MAX || apiKeyIndex < 2 || apiKeyIndex > 254 ||
+    !/^0x[0-9a-f]{40}$/i.test(String(vault.owner_address || "")) ||
+    !SAFE_COMMITMENT.test(sealedAccountCommitment) ||
+    (accountCommitment !== undefined && sealedAccountCommitment !== accountCommitment) ||
+    vault.provisioning_status !== "owner_association_verified" ||
+    !exactStringSet(vault.allowed_operations, ALLOWED) || !includesEvery(vault.blocked_operations, OWNER_ONLY) ||
+    !includesEvery(vault.owner_only_operations, OWNER_ONLY)
+  ) {
+    throw new LighterExecutionError("lighter execution vault binding is invalid", 400, "venue_access_required");
+  }
+  if (!/^[0-9a-f]{64}$/i.test(apiPrivateKey) || /^0{64}$/.test(apiPrivateKey)) {
     throw new LighterExecutionError("lighter API private key is invalid", 400, "venue_access_required");
   }
+  assertLighterPublicKey(apiPublicKey);
   const permissions = vault.permissions || {};
-  if (permissions.can_read !== true || permissions.can_trade !== true || permissions.can_withdraw === true || permissions.can_transfer === true) {
+  if (permissions.can_read !== true || permissions.can_trade !== true || permissions.can_withdraw !== false || permissions.can_transfer !== false) {
     throw new LighterExecutionError("lighter authority boundary is invalid", 400, "venue_access_required");
   }
   return {
@@ -47,6 +90,28 @@ export function lighterCredentialFromVault(vault) {
       non_owner_fund_movement_possible: false,
     },
   };
+}
+
+function assertLighterPublicKey(value) {
+  if (!/^[0-9a-f]{80}$/.test(value) || /^0{80}$/.test(value)) {
+    throw new LighterExecutionError("lighter API public key is invalid", 400, "venue_access_required");
+  }
+  const bytes = Buffer.from(value, "hex");
+  for (let offset = 0; offset < bytes.length; offset += 8) {
+    let limb = 0n;
+    for (let index = 7; index >= 0; index -= 1) limb = (limb << 8n) | BigInt(bytes[offset + index]);
+    if (limb >= GOLDILOCKS_MODULUS) {
+      throw new LighterExecutionError("lighter API public key is non-canonical", 400, "venue_access_required");
+    }
+  }
+}
+
+function exactStringSet(value, expected) {
+  return Array.isArray(value) && value.length === expected.size && value.every((entry) => expected.has(entry));
+}
+
+function includesEvery(value, expected) {
+  return Array.isArray(value) && expected.every((entry) => value.includes(entry));
 }
 
 export function assertLighterPilotMode(credential, operationClass, env = process.env) {

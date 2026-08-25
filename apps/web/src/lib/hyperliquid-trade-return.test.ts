@@ -5,6 +5,7 @@ import {
   hyperliquidNoSubmitProofReady,
   hyperliquidSetupAuthRedirect,
   liveHyperliquidReferencePrice,
+  safeHyperliquidSetupReturn,
 } from "./hyperliquid-trade-return";
 
 describe("hyperliquid setup return target", () => {
@@ -27,6 +28,22 @@ describe("hyperliquid setup return target", () => {
     );
     expect(hyperliquidSetupAuthRedirect("https://example.com/trade?venue=hyperliquid&market=HYPE-PERP"))
       .toBe("/account?flow=private-mode&setup=hyperliquid");
+  });
+
+  it("returns Hyperliquid setup to the exact Carry setup before the terminal", () => {
+    const carrySetup = "/account?setup=carry&return_to=%2Ftrade%3Fproduct%3Dperps%26venue%3Dhyperliquid%26market%3DBTC-PERP%26carry%3Dopen";
+    expect(safeHyperliquidSetupReturn(carrySetup)).toBe(true);
+    expect(hyperliquidMarketFromTradeReturn(carrySetup)).toBe("BTC");
+    expect(decodeURIComponent(hyperliquidSetupAuthRedirect(carrySetup))).toContain(carrySetup);
+  });
+
+  it("rejects recursive and externally nested Carry setup returns", () => {
+    expect(safeHyperliquidSetupReturn(
+      "/account?setup=carry&return_to=https%3A%2F%2Fexample.com%2Ftrade%3Fvenue%3Dhyperliquid%26market%3DBTC-PERP",
+    )).toBe(false);
+    expect(safeHyperliquidSetupReturn(
+      "/account?setup=carry&return_to=%2Faccount%3Fsetup%3Dcarry%26return_to%3D%252Ftrade%253Fvenue%253Dhyperliquid%2526market%253DBTC-PERP",
+    )).toBe(false);
   });
 
   it("requires a positive live reference price", () => {

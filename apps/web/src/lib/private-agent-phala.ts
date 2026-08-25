@@ -262,6 +262,59 @@ function expectedHyperliquidWorkerConfig(): Record<string, string> {
   };
 }
 
+function expectedCarryWorkerConfig(): Record<string, string> {
+  return {
+    PRIVATE_AGENT_CARRY_POSITION_LIVE_SUBMIT: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_POSITION_LIVE_SUBMIT",
+      "false",
+    ),
+    PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED",
+      "false",
+    ),
+    PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_MAX_NOTIONAL_MICRO_USDC: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_MAX_NOTIONAL_MICRO_USDC",
+      "11000000",
+    ),
+    PRIVATE_AGENT_CARRY_MAX_UNHEDGED_MS: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_MAX_UNHEDGED_MS",
+      "2000",
+    ),
+    PRIVATE_AGENT_CARRY_AUTO_EXIT_ENABLED: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_AUTO_EXIT_ENABLED",
+      "true",
+    ),
+    PRIVATE_AGENT_CARRY_EXECUTION_SWEEP_MS: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_EXECUTION_SWEEP_MS",
+      "2000",
+    ),
+    PRIVATE_AGENT_CARRY_EXIT_VERIFY_RETRY_MS: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_EXIT_VERIFY_RETRY_MS",
+      "30000",
+    ),
+    PRIVATE_AGENT_CARRY_MONITOR_ENABLED: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_MONITOR_ENABLED",
+      "true",
+    ),
+    PRIVATE_AGENT_CARRY_MONITOR_INITIAL_DELAY_MS: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_MONITOR_INITIAL_DELAY_MS",
+      "5000",
+    ),
+    PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS",
+      "5000",
+    ),
+    PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY",
+      "8",
+    ),
+    PRIVATE_AGENT_CARRY_QUALIFICATION_MAX_AGE_MS: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_QUALIFICATION_MAX_AGE_MS",
+      "7776000000",
+    ),
+  };
+}
+
 function phalaComposeText(info: unknown): string | null {
   if (!info || typeof info !== "object") return null;
   const composeFile = (info as Record<string, unknown>).compose_file;
@@ -302,7 +355,11 @@ export function phalaWorkerRuntimeConfigDrift(info: unknown): string[] {
   if (composeScalar(compose, "image") !== expectedImage) {
     reasons.push("phala_worker_image_mismatch");
   }
-  for (const [name, expected] of Object.entries(expectedHyperliquidWorkerConfig())) {
+  const expectedRuntime = {
+    ...expectedHyperliquidWorkerConfig(),
+    ...expectedCarryWorkerConfig(),
+  };
+  for (const [name, expected] of Object.entries(expectedRuntime)) {
     if (composeScalar(compose, name) !== expected) {
       reasons.push(`${name.toLowerCase()}_mismatch`);
     }
@@ -424,6 +481,7 @@ export function buildPhalaWorkerCompose(input: {
   const imageDigest = input.imageDigest ?? phalaWorkerImageDigest();
   const imageReference = phalaWorkerImageReference(image, imageDigest);
   const hyperliquid = expectedHyperliquidWorkerConfig();
+  const carry = expectedCarryWorkerConfig();
   return [
     "services:",
     "  private-agent-worker:",
@@ -448,6 +506,16 @@ export function buildPhalaWorkerCompose(input: {
     composeEnvLine("PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE", workerEnv("PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE", "60")),
     composeEnvLine("PRIVATE_AGENT_MIN_ORDER_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_MIN_ORDER_NOTIONAL_USD", "0")),
     ...Object.entries(hyperliquid).map(([name, value]) => composeEnvLine(name, value)),
+    ...Object.entries(carry).map(([name, value]) => composeEnvLine(name, value)),
+    composeEnvLine("PRIVATE_AGENT_LIGHTER_ETHEREUM_RPC_URL", workerEnv(
+      "PRIVATE_AGENT_LIGHTER_ETHEREUM_RPC_URL",
+      "",
+      ["GHOLA_LIGHTER_ETHEREUM_RPC_URL"],
+    )),
+    composeEnvLine("PRIVATE_AGENT_LIGHTER_API_URL", workerEnv(
+      "PRIVATE_AGENT_LIGHTER_API_URL",
+      "https://mainnet.zklighter.elliot.ai",
+    )),
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE", "disabled", ["GHOLA_SOLANA_PERPS_LIVE_MODE"])),
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET", "false", ["GHOLA_SOLANA_PERPS_ALLOW_MAINNET"])),
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD", "5", ["GHOLA_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD"])),

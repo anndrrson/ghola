@@ -108,6 +108,16 @@ async def run(payload):
         import lighter
     except Exception:
         fail("lighter python sdk unavailable")
+    action = payload.get("action")
+    if action == "generate_api_key":
+        private_key, public_key, error = lighter.create_api_key()
+        if error is not None:
+            fail("lighter API key generation failed", "key_generation_failed")
+        return {
+            "private_key": private_key,
+            "public_key": public_key,
+            "error": None,
+        }
     credential = payload.get("credential") or {}
     try:
         client = lighter.SignerClient(
@@ -121,7 +131,6 @@ async def run(payload):
         err = client.check_client()
         if err is not None:
             fail("lighter API key is not authorized for this account", "venue_access_required")
-        action = payload.get("action")
         if action == "credential":
             account = await account_for(client, credential["account_index"])
             return {

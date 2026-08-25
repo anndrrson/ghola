@@ -28,16 +28,26 @@ import {
   type PrivateAccountRequestOwner,
 } from "@/app/v1/private-account/_lib";
 import { workerAuthorizationHeader } from "./private-agent-capability";
+import {
+  evaluateVenueExecutionCredential,
+  type TurnkeyAuthorizationRole,
+  type VenueCredentialProvisioningMode,
+  type VenueCredentialSecretHandling,
+  type VenueExecutionPermissionAttestation,
+  type VenueOwnerAuthorizationSource,
+} from "./venue-execution-credential-capability";
 
 const AGENT_VENUES: PrivateAgentVenueId[] = ["hyperliquid", "lighter", "aster", "phoenix", "backpack", "coinbase_advanced", "jupiter"];
 const ARB_MARKETS = ["SOL-USD"];
 
 export interface AgentPassportCapability {
   version: 1;
+  credential_contract_version: 1;
   venue_id: PrivateAgentVenueId;
   platform_class: string;
   execution_mode: GholaVenueExecutionMode;
-  source: "user_provided_credentials";
+  source: "user_provided_credentials" | "turnkey_delegated" | "programmatic_generated";
+  provisioning_mode: VenueCredentialProvisioningMode;
   can_read: boolean;
   can_trade: boolean;
   can_withdraw: false;
@@ -77,6 +87,26 @@ export async function linkAgentPlatformFromBody(
   const account = await createOrGetStoredPrivateAccount(owner);
   const permission = permissionAttestation(value.permission_attestation ?? value.permissions);
   if (!permission.ok) return { error: permission.error };
+  const provisioningMode = credentialProvisioningMode(value.provisioning_mode);
+  if (!provisioningMode) return { error: "provisioning_mode_not_supported" as const };
+  const manualImport = provisioningMode === "manual_sealed_import";
+  const credentialRequest = {
+    venue_id: venueId,
+    provisioning_mode: provisioningMode,
+    turnkey_role: manualImport ? "none" as const : turnkeyAuthorizationRole(value.turnkey_role),
+    owner_authorization_source: manualImport
+      ? "external_owner_signature" as const
+      : ownerAuthorizationSource(value.owner_authorization_source),
+    explicit_owner_authorization: manualImport || value.explicit_owner_authorization === true,
+    owner_binding_verified: manualImport || value.owner_binding_verified === true,
+    secret_handling: manualImport
+      ? "direct_to_attested_runtime" as const
+      : credentialSecretHandling(value.secret_handling),
+    permission_attestation: permission.attestation,
+    silent_provisioning: value.silent_provisioning === true,
+  };
+  const preflightDecision = evaluateVenueExecutionCredential(credentialRequest);
+  if (!preflightDecision.allowed) return { error: preflightDecision.reason_codes[0] };
 
   const executionMode = executionModeForVenue(venueId, value.execution_mode);
   const encryptedVault = recordOrNull(value.encrypted_execution_vault ?? value.encrypted_vault);
@@ -137,6 +167,27 @@ export async function linkAgentPlatformFromBody(
     encrypted_execution_vault: encryptedVault,
   });
   if (!serverVerification.ok) return { error: serverVerification.error };
+
+  const credentialDecision = evaluateVenueExecutionCredential({
+    ...credentialRequest,
+    permission_attestation: {
+      ...permission.attestation,
+      can_read: serverVerification.can_read && permission.attestation.can_read,
+      can_trade: serverVerification.can_trade && permission.attestation.can_trade,
+      can_withdraw: serverVerification.can_withdraw || permission.attestation.can_withdraw,
+      can_transfer: serverVerification.can_transfer || permission.attestation.can_transfer,
+      can_manage_credentials:
+        serverVerification.can_manage_credentials || permission.attestation.can_manage_credentials,
+      can_export_secret: serverVerification.can_export_secret || permission.attestation.can_export_secret,
+      unknown_scopes: Array.from(new Set([
+        ...permission.attestation.unknown_scopes || [],
+        ...serverVerification.unknown_scopes,
+      ])),
+    },
+  });
+  if (!credentialDecision.allowed) {
+    return { error: credentialDecision.reason_codes[0] };
+  }
   if (vaultToStore) await putVenueExecutionVault(vaultToStore);
 
   const capability = buildCapability({
@@ -144,8 +195,9 @@ export async function linkAgentPlatformFromBody(
     account_commitment: account.account_commitment,
     venue_id: venueId,
     execution_mode: executionMode,
-    can_read: serverVerification.can_read && permission.can_read,
-    can_trade: serverVerification.can_trade && permission.can_trade,
+    provisioning_mode: provisioningMode,
+    can_read: serverVerification.can_read && permission.attestation.can_read,
+    can_trade: serverVerification.can_trade && permission.attestation.can_trade,
     vault_commitment: vaultCommitment,
     encrypted_vault_commitment: encryptedVaultCommitment,
     now,
@@ -304,6 +356,7 @@ function buildCapability(input: {
   account_commitment: string;
   venue_id: PrivateAgentVenueId;
   execution_mode: GholaVenueExecutionMode;
+  provisioning_mode: VenueCredentialProvisioningMode;
   can_read: boolean;
   can_trade: boolean;
   vault_commitment: string;
@@ -323,16 +376,22 @@ function buildCapability(input: {
     account_commitment: input.account_commitment,
     venue_id: input.venue_id,
     vault_commitment: input.vault_commitment,
+    credential_contract_version: 1,
+    provisioning_mode: input.provisioning_mode,
     can_read: input.can_read,
     can_trade: input.can_trade,
     can_withdraw: false,
   };
   return {
     version: 1,
+    credential_contract_version: 1,
     venue_id: input.venue_id,
     platform_class: manifest.platform_class,
     execution_mode: input.execution_mode,
-    source: "user_provided_credentials",
+    source: input.provisioning_mode === "manual_sealed_import"
+      ? "user_provided_credentials"
+      : input.provisioning_mode,
+    provisioning_mode: input.provisioning_mode,
     can_read: input.can_read,
     can_trade: input.can_trade,
     can_withdraw: false,
@@ -351,16 +410,26 @@ function buildCapability(input: {
 function publicCapability(record: PrivateVenueCapabilityRecordV1): AgentPassportCapability {
   const raw = record.capability as unknown as Partial<AgentPassportCapability>;
   const fallback = missingCapability(record.venue_id, new Date(record.updated_at));
+  const contractVerified = raw.credential_contract_version === 1;
+  const reasonCodes = Array.isArray(raw.reason_codes)
+    ? raw.reason_codes.filter((reason): reason is string => typeof reason === "string")
+    : [];
   return {
     ...fallback,
     ...raw,
     version: 1,
+    credential_contract_version: 1,
     venue_id: record.venue_id,
-    status: record.status === "ready" ? "ready" : "blocked",
+    status: record.status === "ready" && contractVerified ? "ready" : "blocked",
+    can_read: contractVerified && raw.can_read === true,
+    can_trade: contractVerified && raw.can_trade === true,
     can_withdraw: false,
     vault_commitment: stringValue(raw.vault_commitment) ?? null,
     encrypted_vault_commitment: stringValue(raw.encrypted_vault_commitment) ?? null,
     permission_commitment: record.capability_commitment,
+    reason_codes: contractVerified
+      ? reasonCodes
+      : Array.from(new Set([...reasonCodes, "credential_contract_reverification_required"])),
     created_at: record.created_at,
     updated_at: record.updated_at,
   };
@@ -370,10 +439,12 @@ function missingCapability(venueId: PrivateAgentVenueId, now: Date): AgentPasspo
   const manifest = getVenueManifest(venueId);
   return {
     version: 1,
+    credential_contract_version: 1,
     venue_id: venueId,
     platform_class: manifest.platform_class,
     execution_mode: "byo_api_key",
     source: "user_provided_credentials",
+    provisioning_mode: "manual_sealed_import",
     can_read: false,
     can_trade: false,
     can_withdraw: false,
@@ -470,20 +541,45 @@ function publicArbCanaryReport(report: PrivateAgentArbCanaryReportRecordV1): Rec
 }
 
 function permissionAttestation(value: unknown):
-  | { ok: true; can_read: boolean; can_trade: boolean }
-  | { ok: false; error: "permission_attestation_required" | "read_trade_permission_required" | "withdraw_permission_blocked" } {
+  | { ok: true; attestation: VenueExecutionPermissionAttestation }
+  | { ok: false; error: "permission_attestation_required" | "permission_attestation_incomplete" } {
   const raw = recordOrNull(value);
   if (!raw) return { ok: false, error: "permission_attestation_required" };
-  const scopes = arrayOfStrings(raw.scopes).map((scope) => scope.toLowerCase());
-  const canRead = raw.can_read === true || raw.view === true || scopes.some((scope) => ["read", "view"].includes(scope));
-  const canTrade = raw.can_trade === true || raw.trade === true || scopes.some((scope) => ["trade", "order", "orders"].includes(scope));
-  const canWithdraw = raw.can_withdraw === true ||
-    raw.can_transfer === true ||
-    raw.transfer === true ||
-    scopes.some((scope) => ["withdraw", "transfer", "wallet:transfer"].includes(scope));
-  if (canWithdraw) return { ok: false, error: "withdraw_permission_blocked" };
-  if (!canRead || !canTrade) return { ok: false, error: "read_trade_permission_required" };
-  return { ok: true, can_read: true, can_trade: true };
+  const booleanFields = [
+    "can_read",
+    "can_trade",
+    "can_withdraw",
+    "can_transfer",
+    "can_manage_credentials",
+    "can_export_secret",
+  ] as const;
+  if (booleanFields.some((field) => typeof raw[field] !== "boolean")) {
+    return { ok: false, error: "permission_attestation_incomplete" };
+  }
+  if (!Array.isArray(raw.unknown_scopes) || raw.unknown_scopes.some((scope) => typeof scope !== "string")) {
+    return { ok: false, error: "permission_attestation_incomplete" };
+  }
+  if (raw.scopes !== undefined && (!Array.isArray(raw.scopes) || raw.scopes.some((scope) => typeof scope !== "string"))) {
+    return { ok: false, error: "permission_attestation_incomplete" };
+  }
+  const scopes = arrayOfStrings(raw.scopes).map((scope) => scope.trim().toLowerCase()).filter(Boolean);
+  const knownScopes = new Set(["read", "view", "trade", "order", "orders"]);
+  const unknownScopes = Array.from(new Set([
+    ...arrayOfStrings(raw.unknown_scopes).map((scope) => scope.trim().toLowerCase()).filter(Boolean),
+    ...scopes.filter((scope) => !knownScopes.has(scope)),
+  ]));
+  return {
+    ok: true,
+    attestation: {
+      can_read: raw.can_read === true,
+      can_trade: raw.can_trade === true,
+      can_withdraw: raw.can_withdraw === true,
+      can_transfer: raw.can_transfer === true,
+      can_manage_credentials: raw.can_manage_credentials === true,
+      can_export_secret: raw.can_export_secret === true,
+      unknown_scopes: unknownScopes,
+    },
+  };
 }
 
 async function verifyCredentialServerSide(input: {
@@ -493,7 +589,16 @@ async function verifyCredentialServerSide(input: {
   execution_mode: GholaVenueExecutionMode;
   encrypted_execution_vault: Record<string, unknown> | null;
 }): Promise<
-  | { ok: true; can_read: boolean; can_trade: boolean }
+  | {
+      ok: true;
+      can_read: boolean;
+      can_trade: boolean;
+      can_withdraw: boolean;
+      can_transfer: boolean;
+      can_manage_credentials: boolean;
+      can_export_secret: boolean;
+      unknown_scopes: string[];
+    }
   | { ok: false; error: "server_credential_verification_required" | "credential_verifier_unavailable" | "credential_verification_failed" | "withdraw_permission_blocked" }
 > {
   if (!input.encrypted_execution_vault) {
@@ -502,7 +607,16 @@ async function verifyCredentialServerSide(input: {
   const cfg = workerConfig(process.env);
   if (!cfg.url) {
     if (localCredentialVerificationBypassAllowed()) {
-      return { ok: true, can_read: true, can_trade: true };
+      return {
+        ok: true,
+        can_read: true,
+        can_trade: true,
+        can_withdraw: false,
+        can_transfer: false,
+        can_manage_credentials: false,
+        can_export_secret: false,
+        unknown_scopes: [],
+      };
     }
     return { ok: false, error: "credential_verifier_unavailable" };
   }
@@ -547,7 +661,36 @@ async function verifyCredentialServerSide(input: {
     ok: true,
     can_read: body.can_read === true,
     can_trade: body.can_trade === true,
+    can_withdraw: false,
+    can_transfer: body.can_transfer === true,
+    can_manage_credentials: body.can_manage_credentials === true,
+    can_export_secret: body.can_export_secret === true,
+    unknown_scopes: arrayOfStrings(body.unknown_scopes),
   };
+}
+
+function credentialProvisioningMode(value: unknown): VenueCredentialProvisioningMode | null {
+  if (value === undefined || value === null || value === "") return "manual_sealed_import";
+  return value === "manual_sealed_import" || value === "turnkey_delegated" || value === "programmatic_generated"
+    ? value
+    : null;
+}
+
+function turnkeyAuthorizationRole(value: unknown): TurnkeyAuthorizationRole {
+  return value === "venue_owner" || value === "delegated_agent" ? value : "none";
+}
+
+function ownerAuthorizationSource(value: unknown): VenueOwnerAuthorizationSource {
+  return value === "turnkey_venue_owner" || value === "external_owner_signature" ? value : "none";
+}
+
+function credentialSecretHandling(value: unknown): VenueCredentialSecretHandling {
+  return value === "turnkey_non_exportable" ||
+      value === "direct_to_attested_runtime" ||
+      value === "raw_exportable" ||
+      value === "plaintext_persisted"
+    ? value
+    : "unknown";
 }
 
 function localCredentialVerificationBypassAllowed(): boolean {

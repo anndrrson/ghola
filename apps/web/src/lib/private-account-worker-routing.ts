@@ -1,4 +1,4 @@
-export function resolveHyperliquidWorkerUrl(input: {
+export function resolvePrivateAgentWorkerUrl(input: {
   selected_provider_execution_url?: string | null;
   connector_url?: string | null;
   execution_url?: string | null;
@@ -12,3 +12,5 @@ export function resolveHyperliquidWorkerUrl(input: {
     input.phala_endpoint?.trim() ||
     "";
 }
+
+export const resolveHyperliquidWorkerUrl = resolvePrivateAgentWorkerUrl;

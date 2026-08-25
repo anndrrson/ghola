@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CARRY_BROWSER_STREAM_VENUES,
   CARRY_EXECUTION_VENUES,
   CORE_PERP_VENUES,
   EXECUTION_VENUE_SPECS,
   assessVenueReadiness,
   requiredVenueCapabilities,
   supportsExactQuantityRecovery,
+  venueAdapterCapability,
+  venuesWithAdapterCapability,
 } from "../index.js";
 
 const NOW = 1_800_000_000_000;
@@ -20,6 +23,7 @@ test("registry centralizes five core perp candidates without claiming qualificat
     "dydx",
   ]);
   assert.deepEqual(CARRY_EXECUTION_VENUES, ["hyperliquid", "lighter", "aster"]);
+  assert.deepEqual(CARRY_BROWSER_STREAM_VENUES, ["lighter", "aster", "edgex", "dydx"]);
   assert.equal(EXECUTION_VENUE_SPECS.hyperliquid.qualification_status, "proven");
   assert.equal(EXECUTION_VENUE_SPECS.lighter.qualification_status, "integration");
   assert.equal(EXECUTION_VENUE_SPECS.lighter.worker_routing_status, "implemented_unproven");
@@ -29,8 +33,17 @@ test("registry centralizes five core perp candidates without claiming qualificat
   assert.equal(supportsExactQuantityRecovery("lighter"), false);
   assert.equal(supportsExactQuantityRecovery("aster"), false);
   assert.equal(supportsExactQuantityRecovery("hyperliquid"), true);
+  assert.equal(supportsExactQuantityRecovery("coinbase_advanced"), true);
+  assert.equal(EXECUTION_VENUE_SPECS.coinbase_advanced.exact_quantity_recovery_adapter, "coinbase_advanced_v1");
   assert.equal(EXECUTION_VENUE_SPECS.dydx.qualification_status, "candidate");
   assert.equal(EXECUTION_VENUE_SPECS.variational_omni.qualification_status, "research_only");
+  assert.equal(venueAdapterCapability("dydx", "perp_shadow")?.adapter_id, "dydx_shadow_v1");
+  assert.equal(venueAdapterCapability("dydx", "carry_execution"), null);
+  assert.deepEqual(venuesWithAdapterCapability("perp_shadow", {
+    cohort: "core_perp",
+    product: "perp",
+    statuses: ["enabled"],
+  }), CORE_PERP_VENUES);
 });
 
 test("carry requires contract, history, margin, liquidation, cancel, and reduce-only evidence", () => {

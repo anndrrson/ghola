@@ -5,12 +5,15 @@ const HOUR_MS = 3_600_000;
 const ID = /^[A-Za-z0-9:_-]{8,180}$/;
 const ASSET = /^[A-Z0-9][A-Z0-9._-]{0,31}$/;
 const MARKET = /^[A-Z0-9][A-Z0-9._/-]{0,63}$/;
+const ETH_ADDRESS = /^0x[0-9a-f]{40}$/;
+const ETH_SIGNATURE = /^0x[0-9a-f]{130}$/;
+const ETH_COMMITMENT = /^0x[0-9a-f]{64}$/;
 const POSITION_STATUSES = new Set([
   "draft", "opening", "active", "rebalancing", "exiting", "reconciled", "frozen", "manual_intervention",
 ]);
 const EVENT_TYPES = new Set([
   "preflight_passed", "entry_reconciled", "entry_failed_no_fill", "observation", "manual_exit_requested",
-  "observation_unavailable", "submission_ambiguous", "restart_detected", "recovery_failed", "reconciliation_complete", "exit_reconciled",
+  "observation_unavailable", "mandate_invalid", "submission_ambiguous", "restart_detected", "recovery_failed", "reconciliation_complete", "exit_reconciled",
 ]);
 const VALUE_ENTRY_TYPES = new Set([
   "funding", "trading_fee", "slippage", "gas", "capital_cost", "transfer_fee", "rebate", "settlement_adjustment",
@@ -220,13 +223,26 @@ export function createCarryPosition(value) {
   const shortVenue = venue(raw.short_venue_id, "carry_short_venue");
   if (longVenue === shortVenue) fail("carry_distinct_venues_required");
   if (!venueSupportsProduct(longVenue, "perp") || !venueSupportsProduct(shortVenue, "perp")) fail("carry_perp_venues_required");
-  const mandate = normalizeRiskMandate(raw.risk_mandate);
   const nowMs = positiveInteger(raw.now_ms, "carry_position_now");
+  const mandate = normalizeCarryRiskMandate(raw.risk_mandate);
+  const authorization = normalizeCarryRiskMandateAuthorization(raw.mandate_authorization);
+  const signed = authorization.signed_mandate;
+  if (signed.position_id !== raw.position_id
+    || signed.mandate_id !== raw.mandate_id
+    || signed.asset !== normalized(raw.asset, ASSET, "carry_position_asset")
+    || signed.long_venue_id !== longVenue
+    || signed.short_venue_id !== shortVenue
+    || signed.target_notional_micro_usdc !== raw.target_notional_micro_usdc
+    || JSON.stringify(signed.risk_mandate) !== JSON.stringify(mandate)) {
+    fail("carry_mandate_position_mismatch");
+  }
+  if (signed.issued_at_ms > nowMs + 300_000) fail("carry_mandate_issued_in_future");
+  if (signed.expires_at_ms <= nowMs) fail("carry_mandate_expired");
   return deepFreeze({
     version: 1,
     position_id: identifier(raw.position_id, "carry_position_id"),
     mandate_id: identifier(raw.mandate_id, "carry_mandate_id"),
-    asset: normalized(raw.asset, ASSET, "carry_position_asset"),
+    asset: signed.asset,
     long_venue_id: longVenue,
     short_venue_id: shortVenue,
     target_notional_micro_usdc: positiveInteger(raw.target_notional_micro_usdc, "carry_target_notional"),
@@ -235,6 +251,7 @@ export function createCarryPosition(value) {
     hedge_error_micro_usdc: 0,
     status: "draft",
     risk_mandate: mandate,
+    mandate_authorization: authorization,
     consecutive_exit_observations: 0,
     last_event_sequence: 0,
     processed_event_ids: [],
@@ -353,6 +370,14 @@ export function finalizeCarryValueLedger({ ledger: ledgerInput, evidence: eviden
 }
 
 function applyEvent(position, event, nowMs) {
+  if (event.type === "mandate_invalid") {
+    requireStatus(position, new Set(["active", "rebalancing", "frozen"]));
+    position.status = "exiting";
+    position.next_actions = ["reduce_only_close_both_legs"];
+    position.retry_permitted = false;
+    position.terminal_reason = "risk_mandate_authorization_unverifiable";
+    return;
+  }
   if (event.type === "observation_unavailable") {
     requireStatus(position, new Set(["active", "rebalancing"]));
     position.status = "frozen";
@@ -402,6 +427,15 @@ function applyEvent(position, event, nowMs) {
   }
   if (event.type === "observation") {
     requireStatus(position, new Set(["active", "rebalancing"]));
+    const mandateExpiresAt = position.mandate_authorization?.signed_mandate?.expires_at_ms;
+    if (!Number.isSafeInteger(mandateExpiresAt) || mandateExpiresAt <= nowMs) {
+      position.status = "exiting";
+      position.next_actions = ["reduce_only_close_both_legs"];
+      position.terminal_reason = Number.isSafeInteger(mandateExpiresAt)
+        ? "risk_mandate_expired"
+        : "risk_mandate_authorization_unverifiable";
+      return;
+    }
     const asOf = positiveInteger(event.as_of_ms, "carry_observation_as_of");
     if (asOf > nowMs || nowMs - asOf > position.risk_mandate.max_data_age_ms) {
       position.status = "frozen";
@@ -411,10 +445,33 @@ function applyEvent(position, event, nowMs) {
       return;
     }
     const runways = object(event.margin_runway_ms_by_venue, "carry_observation_runways");
+    const statuses = event.margin_runway_status_by_venue === undefined
+      ? null
+      : object(event.margin_runway_status_by_venue, "carry_observation_runway_statuses");
+    let unverifiableMargin = false;
     const unsafeMargin = [position.long_venue_id, position.short_venue_id].some((venueId) => {
+      if (!Object.hasOwn(runways, venueId)) {
+        unverifiableMargin = true;
+        return false;
+      }
       const runway = runways[venueId];
-      return runway !== null && nonNegativeInteger(runway, "carry_observation_runway") < position.risk_mandate.min_margin_runway_ms;
+      const rawStatus = statuses?.[venueId];
+      const status = rawStatus === undefined
+        ? null
+        : enumValue(rawStatus, new Set(["healthy", "warning", "critical", "breached"]), "carry_observation_runway_status");
+      if (runway === null) {
+        if (status !== "healthy" && status !== "warning") unverifiableMargin = true;
+        return status === "critical" || status === "breached";
+      }
+      const normalizedRunway = nonNegativeInteger(runway, "carry_observation_runway");
+      return status === "critical" || status === "breached" || normalizedRunway < position.risk_mandate.min_margin_runway_ms;
     });
+    if (unverifiableMargin) {
+      position.status = "exiting";
+      position.next_actions = ["reduce_only_close_both_legs"];
+      position.terminal_reason = "margin_runway_unverifiable";
+      return;
+    }
     if (unsafeMargin) {
       position.status = "exiting";
       position.next_actions = ["reduce_only_close_both_legs"];
@@ -485,7 +542,7 @@ function migrationActions(position, event) {
   return ["reduce_only_close_both_legs"];
 }
 
-function normalizeRiskMandate(value) {
+export function normalizeCarryRiskMandate(value) {
   const raw = object(value, "carry_risk_mandate_required");
   return deepFreeze({
     min_expected_net_benefit_bps: boundedInteger(raw.min_expected_net_benefit_bps, 0, 10_000, "carry_mandate_minimum_net"),
@@ -496,6 +553,59 @@ function normalizeRiskMandate(value) {
     max_data_age_ms: boundedInteger(raw.max_data_age_ms, 250, 300_000, "carry_mandate_data_age"),
     allow_migration: raw.allow_migration === true,
     owner_only_operations: Object.freeze(["fund", "withdraw", "transfer"]),
+  });
+}
+
+export function normalizeCarryRiskMandatePayload(value) {
+  const raw = object(value, "carry_signed_mandate_required");
+  exactVersion(raw.version, "carry_signed_mandate_version");
+  if (raw.kind !== "ghola_carry_risk_mandate") fail("carry_signed_mandate_kind");
+  if (raw.strategy_id !== "delta_neutral_carry_v1") fail("carry_signed_mandate_strategy");
+  const ownerWalletAddress = String(raw.owner_wallet_address || "").trim().toLowerCase();
+  if (!ETH_ADDRESS.test(ownerWalletAddress)) fail("carry_signed_mandate_owner_wallet");
+  const issuedAtMs = positiveInteger(raw.issued_at_ms, "carry_signed_mandate_issued_at");
+  const expiresAtMs = positiveInteger(raw.expires_at_ms, "carry_signed_mandate_expires_at");
+  if (expiresAtMs <= issuedAtMs || expiresAtMs - issuedAtMs > 367 * DAY_MS) {
+    fail("carry_signed_mandate_expiry");
+  }
+  const longVenue = venue(raw.long_venue_id, "carry_signed_mandate_long_venue");
+  const shortVenue = venue(raw.short_venue_id, "carry_signed_mandate_short_venue");
+  if (longVenue === shortVenue) fail("carry_signed_mandate_distinct_venues");
+  return deepFreeze({
+    version: 1,
+    kind: "ghola_carry_risk_mandate",
+    strategy_id: "delta_neutral_carry_v1",
+    network: enumValue(raw.network, new Set(["paper", "testnet", "mainnet"]), "carry_signed_mandate_network"),
+    owner_commitment: identifier(raw.owner_commitment, "carry_signed_mandate_owner"),
+    owner_wallet_address: ownerWalletAddress,
+    position_id: identifier(raw.position_id, "carry_signed_mandate_position"),
+    mandate_id: identifier(raw.mandate_id, "carry_signed_mandate_id"),
+    asset: normalized(raw.asset, ASSET, "carry_signed_mandate_asset"),
+    long_venue_id: longVenue,
+    short_venue_id: shortVenue,
+    target_notional_micro_usdc: positiveInteger(raw.target_notional_micro_usdc, "carry_signed_mandate_notional"),
+    risk_mandate: normalizeCarryRiskMandate(raw.risk_mandate),
+    issued_at_ms: issuedAtMs,
+    expires_at_ms: expiresAtMs,
+  });
+}
+
+export function carryRiskMandateMessage(value) {
+  return `Ghola Carry risk mandate v1\n${JSON.stringify(normalizeCarryRiskMandatePayload(value))}`;
+}
+
+export function normalizeCarryRiskMandateAuthorization(value) {
+  const raw = object(value, "carry_mandate_authorization_required");
+  exactVersion(raw.version, "carry_mandate_authorization_version");
+  const signature = String(raw.signature || "").trim().toLowerCase();
+  const mandateCommitment = String(raw.mandate_commitment || "").trim().toLowerCase();
+  if (!ETH_SIGNATURE.test(signature)) fail("carry_mandate_signature_invalid");
+  if (!ETH_COMMITMENT.test(mandateCommitment)) fail("carry_mandate_commitment_invalid");
+  return deepFreeze({
+    version: 1,
+    signed_mandate: normalizeCarryRiskMandatePayload(raw.signed_mandate),
+    signature,
+    mandate_commitment: mandateCommitment,
   });
 }
 

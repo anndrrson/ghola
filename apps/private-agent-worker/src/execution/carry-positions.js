@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 import {
   advanceCarryPosition,
   appendCarryValueLedgerEntry,
-  createCarryPosition,
   createCarryValueLedger,
   finalizeCarryValueLedger,
 } from "@ghola/execution-core";
 import { preflightCarryPair } from "./carry-preflight.js";
+import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 
 const OWNER = /^[A-Za-z0-9:_-]{8,180}$/;
 
@@ -21,6 +21,12 @@ export async function createStoredCarryPosition({
   now_ms: nowMs = Date.now(),
 }) {
   if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
+  const mandate = await verifyCarryRiskMandateAuthorization({
+    owner_commitment: ownerCommitment,
+    position_input: positionInput,
+    now_ms: nowMs,
+  });
+  if (!mandate.ok) return mandate;
   const normalizedPilot = normalizeQualificationPilot({ qualificationPilot, positionInput, opportunity, env });
   if (!normalizedPilot.ok) return denied(normalizedPilot.error);
   const opportunityError = validateCreationOpportunity(positionInput, opportunity, nowMs, normalizedPilot.value);
@@ -28,7 +34,7 @@ export async function createStoredCarryPosition({
   const normalizedMonitoring = normalizeMonitoringContext(monitoringContext, positionInput, ownerCommitment);
   if (!normalizedMonitoring.ok) return normalizedMonitoring;
   try {
-    const position = createCarryPosition({ ...positionInput, version: 1, now_ms: nowMs });
+    const position = mandate.position;
     const ledger = createCarryValueLedger({
       version: 1,
       position_id: position.position_id,
@@ -208,32 +214,36 @@ export async function runCarryMonitoringTick({
   readHyperliquidCarryMetrics,
   readFundingSettlements,
   preflight = preflightCarryPair,
+  env = process.env,
   now_ms: nowMs = Date.now(),
 }) {
   const records = (await Promise.all(["active", "rebalancing"].map((status) =>
     state.listCarryPositionRecords({ status, limit: 500 })
   ))).flat();
-  const results = [];
-  for (const record of records) {
+  const concurrency = boundedInteger(env.PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY, 1, 32, 8);
+  const results = await mapConcurrentOrdered(records, concurrency, async (record) => {
     if (!record.monitoring_context?.venue_access) {
-      results.push({ position_id: record.position?.position_id, ok: false, error: "carry_monitor_context_missing" });
-      continue;
+      return { position_id: record.position?.position_id, ok: false, error: "carry_monitor_context_missing" };
     }
-    const result = await observeStoredCarryPosition({
-      state,
-      owner_commitment: record.owner_commitment,
-      position_id: record.position.position_id,
-      venue_access: record.monitoring_context.venue_access,
-      recipient,
-      verifyOrder,
-      readHyperliquidSnapshot,
-      readHyperliquidCarryMetrics,
-      readFundingSettlements,
-      preflight,
-      now_ms: nowMs,
-    });
-    results.push({ position_id: record.position.position_id, ...result });
-  }
+    try {
+      const result = await observeStoredCarryPosition({
+        state,
+        owner_commitment: record.owner_commitment,
+        position_id: record.position.position_id,
+        venue_access: record.monitoring_context.venue_access,
+        recipient,
+        verifyOrder,
+        readHyperliquidSnapshot,
+        readHyperliquidCarryMetrics,
+        readFundingSettlements,
+        preflight,
+        now_ms: nowMs,
+      });
+      return { position_id: record.position.position_id, ...result };
+    } catch (error) {
+      return { position_id: record.position.position_id, ok: false, error: safeError(error) };
+    }
+  });
   return { ok: results.every((result) => result.ok), checked: records.length, results };
 }
 
@@ -249,7 +259,7 @@ export function startCarryMonitoringLoop({
   now = () => Date.now(),
 } = {}) {
   if (String(env.PRIVATE_AGENT_CARRY_MONITOR_ENABLED ?? "true").toLowerCase() === "false") return { stop() {} };
-  const intervalMs = boundedMs(env.PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS, 5_000, 300_000, 30_000);
+  const intervalMs = boundedMs(env.PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS, 5_000, 300_000, 5_000);
   const initialDelayMs = boundedMs(env.PRIVATE_AGENT_CARRY_MONITOR_INITIAL_DELAY_MS, 0, 60_000, 5_000);
   let timer = null;
   let stopped = false;
@@ -304,6 +314,26 @@ export async function observeStoredCarryPosition({
   }
   const sequence = position.last_event_sequence + 1;
   const eventBase = `carry:monitor:${digest(`${position.position_id}:${sequence}`).slice(0, 32)}`;
+  const mandate = await verifyCarryRiskMandateAuthorization({
+    owner_commitment: ownerCommitment,
+    position_input: position,
+    now_ms: nowMs,
+  });
+  if (!mandate.ok) {
+    return advanceStoredCarryPosition({
+      state,
+      position_id: positionId,
+      owner_commitment: ownerCommitment,
+      event: {
+        version: 1,
+        event_id: `${eventBase}:mandate-invalid`,
+        sequence,
+        type: "mandate_invalid",
+        reason: mandate.error,
+      },
+      now_ms: nowMs,
+    });
+  }
   let observation;
   try {
     observation = await preflight({
@@ -344,6 +374,7 @@ export async function observeStoredCarryPosition({
   }
   const opportunity = observation?.economic_opportunity || {};
   const runways = Object.fromEntries((observation?.margin_runways || []).map((runway) => [runway.venue_id, runway.runway_ms]));
+  const runwayStatuses = Object.fromEntries((observation?.margin_runways || []).map((runway) => [runway.venue_id, runway.status]));
   const advanced = await advanceStoredCarryPosition({
     state,
     position_id: positionId,
@@ -356,6 +387,7 @@ export async function observeStoredCarryPosition({
       as_of_ms: opportunity.checked_at_ms,
       expected_net_value_bps: opportunity.projected_net_value_bps,
       margin_runway_ms_by_venue: runways,
+      margin_runway_status_by_venue: runwayStatuses,
       qualification_reasons: observation.qualification_reasons,
       transaction_broadcast: false,
     },
@@ -566,6 +598,7 @@ function publicObservation(event) {
     as_of_ms: event.as_of_ms,
     expected_net_value_bps: event.expected_net_value_bps,
     margin_runway_ms_by_venue: { ...(event.margin_runway_ms_by_venue || {}) },
+    margin_runway_status_by_venue: { ...(event.margin_runway_status_by_venue || {}) },
     qualification_reasons: Array.isArray(event.qualification_reasons) ? [...event.qualification_reasons] : [],
     transaction_broadcast: false,
     recorded_at_ms: event.recorded_at_ms,
@@ -609,6 +642,24 @@ function signedQuoteMicro(value) {
 }
 
 function boundedMs(value, minimum, maximum, fallback) {
+  return boundedInteger(value, minimum, maximum, fallback);
+}
+
+function boundedInteger(value, minimum, maximum, fallback) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
+}
+
+async function mapConcurrentOrdered(items, concurrency, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }

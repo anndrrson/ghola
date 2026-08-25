@@ -8,6 +8,8 @@ import {
   createCarryValueLedger,
   evaluateCarryOpportunity,
   finalizeCarryValueLedger,
+  normalizeCarryRiskMandateAuthorization,
+  normalizeCarryRiskMandatePayload,
 } from "../index.js";
 
 const NOW = 1_800_000_000_000;
@@ -71,7 +73,7 @@ function costs() {
 }
 
 function position() {
-  return createCarryPosition({
+  const input = {
     version: 1,
     position_id: "carry:position:0001",
     mandate_id: "carry:mandate:0001",
@@ -88,12 +90,61 @@ function position() {
       max_data_age_ms: 30_000,
       allow_migration: true,
     },
+  };
+  return createCarryPosition({
+    ...input,
+    mandate_authorization: mandateAuthorization(input),
     now_ms: NOW,
+  });
+}
+
+function mandateAuthorization(input, overrides = {}) {
+  const signedMandate = normalizeCarryRiskMandatePayload({
+    version: 1,
+    kind: "ghola_carry_risk_mandate",
+    strategy_id: "delta_neutral_carry_v1",
+    network: "mainnet",
+    owner_commitment: "owner:carry:core:0001",
+    owner_wallet_address: `0x${"11".repeat(20)}`,
+    position_id: input.position_id,
+    mandate_id: input.mandate_id,
+    asset: input.asset,
+    long_venue_id: input.long_venue_id,
+    short_venue_id: input.short_venue_id,
+    target_notional_micro_usdc: input.target_notional_micro_usdc,
+    risk_mandate: input.risk_mandate,
+    issued_at_ms: NOW - 1_000,
+    expires_at_ms: NOW + 30 * DAY,
+    ...overrides,
+  });
+  return normalizeCarryRiskMandateAuthorization({
+    version: 1,
+    signed_mandate: signedMandate,
+    signature: `0x${"22".repeat(65)}`,
+    mandate_commitment: `0x${"33".repeat(32)}`,
   });
 }
 
 function event(sequence, type, overrides = {}) {
   return { version: 1, event_id: `event:${String(sequence).padStart(4, "0")}`, sequence, type, ...overrides };
+}
+
+function activePositionForObservation() {
+  let current = position();
+  current = advanceCarryPosition({
+    position: current,
+    event: event(1, "preflight_passed", { opportunity_eligible: true, all_venues_ready: true }),
+    now_ms: NOW + 1,
+  }).position;
+  return advanceCarryPosition({
+    position: current,
+    event: event(2, "entry_reconciled", {
+      long_filled_micro_usdc: 10_000_000_000,
+      short_filled_micro_usdc: 10_000_000_000,
+      hedge_error_micro_usdc: 0,
+    }),
+    now_ms: NOW + 2,
+  }).position;
 }
 
 test("models carry after funding, round-trip costs, capital cost, risk buffer, and break-even", () => {
@@ -284,6 +335,52 @@ test("one margin runway breach triggers an immediate reduce-only exit", () => {
   assert.equal(current.status, "exiting");
   assert.equal(current.terminal_reason, "margin_runway_below_mandate");
   assert.deepEqual(current.next_actions, ["reduce_only_close_both_legs"]);
+});
+
+test("an unverifiable null margin runway triggers an immediate reduce-only exit", () => {
+  const result = advanceCarryPosition({
+    position: activePositionForObservation(),
+    event: event(3, "observation", {
+      as_of_ms: NOW + 3,
+      expected_net_value_bps: 100,
+      margin_runway_ms_by_venue: { hyperliquid: null, lighter: 30 * HOUR },
+    }),
+    now_ms: NOW + 3,
+  });
+  assert.equal(result.position.status, "exiting");
+  assert.equal(result.position.terminal_reason, "margin_runway_unverifiable");
+  assert.deepEqual(result.position.next_actions, ["reduce_only_close_both_legs"]);
+});
+
+test("a verified healthy null runway represents zero modeled burn, not missing evidence", () => {
+  const result = advanceCarryPosition({
+    position: activePositionForObservation(),
+    event: event(3, "observation", {
+      as_of_ms: NOW + 3,
+      expected_net_value_bps: 100,
+      margin_runway_ms_by_venue: { hyperliquid: null, lighter: 30 * HOUR },
+      margin_runway_status_by_venue: { hyperliquid: "healthy", lighter: "healthy" },
+    }),
+    now_ms: NOW + 3,
+  });
+  assert.equal(result.position.status, "active");
+  assert.equal(result.position.terminal_reason, null);
+});
+
+test("an expired signed mandate permits only a reduce-only exit", () => {
+  const active = activePositionForObservation();
+  const result = advanceCarryPosition({
+    position: active,
+    event: event(3, "observation", {
+      as_of_ms: NOW + 31 * DAY,
+      expected_net_value_bps: 100,
+      margin_runway_ms_by_venue: { hyperliquid: 30 * HOUR, lighter: 30 * HOUR },
+    }),
+    now_ms: NOW + 31 * DAY,
+  });
+  assert.equal(result.position.status, "exiting");
+  assert.equal(result.position.terminal_reason, "risk_mandate_expired");
+  assert.deepEqual(result.position.next_actions, ["reduce_only_close_both_legs"]);
 });
 
 test("ambiguous submission freezes and permits reconciliation, never retry", () => {

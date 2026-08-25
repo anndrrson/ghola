@@ -6,8 +6,40 @@ import {
   carryWorkerMaterialCommitment,
   verifyCarryReleaseEvidence,
 } from "./verify-carry-release-evidence.mjs";
+import { carryRiskMandateMessage } from "@ghola/execution-core";
+import { hashMessage } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 
-function fixture() {
+const MANDATE_OWNER = privateKeyToAccount(`0x${"22".repeat(32)}`);
+
+async function fixture() {
+  const signedMandate = {
+    version: 1,
+    kind: "ghola_carry_risk_mandate",
+    strategy_id: "delta_neutral_carry_v1",
+    network: "mainnet",
+    owner_commitment: "owner:carry:mainnet:proof:0001",
+    owner_wallet_address: MANDATE_OWNER.address.toLowerCase(),
+    position_id: "carry:position:mainnet:proof:0001",
+    mandate_id: "carry:mandate:mainnet:proof:0001",
+    asset: "HYPE",
+    long_venue_id: "hyperliquid",
+    short_venue_id: "aster",
+    target_notional_micro_usdc: 11_000_000,
+    risk_mandate: {
+      min_expected_net_benefit_bps: 5,
+      exit_net_value_bps: 0,
+      exit_after_consecutive_observations: 2,
+      min_margin_runway_ms: 21_600_000,
+      max_hedge_error_micro_usdc: 10_000,
+      max_data_age_ms: 60_000,
+      allow_migration: false,
+      owner_only_operations: ["fund", "withdraw", "transfer"],
+    },
+    issued_at_ms: Date.parse("2026-08-23T23:59:00.000Z"),
+    expires_at_ms: Date.parse("2026-09-23T23:59:00.000Z"),
+  };
+  const mandateMessage = carryRiskMandateMessage(signedMandate);
   const evidence = {
     version: 1,
     kind: "ghola_cross_venue_carry_mainnet_lifecycle_proof",
@@ -27,7 +59,9 @@ function fixture() {
       created_at: "2026-08-24T00:00:00.000Z",
     },
     mandate: {
-      policy_commitment: "policy:carry:mainnet:0001",
+      policy_commitment: hashMessage(mandateMessage),
+      signed_mandate: signedMandate,
+      owner_signature: await MANDATE_OWNER.signMessage({ message: mandateMessage }),
       ai_execution_authority: false,
       funding_owner_only: true,
       transfers_owner_only: true,
@@ -53,8 +87,8 @@ function fixture() {
       observation_count: 1,
       funding_flip_checks: 1,
       margin_runways: [
-        { venue_id: "hyperliquid", runway_ms: 86_400_000, stale: false },
-        { venue_id: "aster", runway_ms: 86_400_000, stale: false },
+        { venue_id: "hyperliquid", status: "healthy", runway_ms: 86_400_000, stale: false },
+        { venue_id: "aster", status: "healthy", runway_ms: 86_400_000, stale: false },
       ],
     },
     exit: {
@@ -132,60 +166,83 @@ function leg(venue_id, side, reduce_only, client_order_commitment, fee_micro_usd
   };
 }
 
-test("accepts a capped paired mainnet lifecycle with exact evidence", () => {
-  assert.equal(verifyCarryReleaseEvidence(fixture()).ok, true);
+test("accepts a capped paired mainnet lifecycle with exact evidence", async () => {
+  assert.equal((await verifyCarryReleaseEvidence(await fixture())).ok, true);
 });
 
-test("assembles candidate metadata without changing worker-derived material", () => {
-  const evidence = fixture();
+test("assembles candidate metadata without changing worker-derived material", async () => {
+  const evidence = await fixture();
   const candidate = evidence.candidate;
   const material = structuredClone(evidence);
   delete material.candidate;
   delete material.evidence_commitment;
   const assembled = assembleCarryReleaseEvidence({ material, candidate });
-  assert.equal(verifyCarryReleaseEvidence(assembled).ok, true);
+  assert.equal((await verifyCarryReleaseEvidence(assembled)).ok, true);
 });
 
-test("rejects an ambiguous resubmission", () => {
-  const evidence = fixture();
+test("rejects an ambiguous resubmission", async () => {
+  const evidence = await fixture();
   evidence.entry.legs[1].ambiguity_retry_count = 1;
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
-  assert.throws(() => verifyCarryReleaseEvidence(evidence), /entry_ambiguity_retry_forbidden:aster/);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /entry_ambiguity_retry_forbidden:aster/);
 });
 
-test("rejects an exit that is not exact and reduce-only", () => {
-  const evidence = fixture();
+test("rejects an exit that is not exact and reduce-only", async () => {
+  const evidence = await fixture();
   evidence.exit.legs[1].reduce_only = false;
   evidence.exit.legs[1].filled_base_size = "0.10";
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
-  assert.throws(() => verifyCarryReleaseEvidence(evidence), /exit_reduce_only_invalid:aster|exact_exit_quantity_required:aster/);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /exit_reduce_only_invalid:aster|exact_exit_quantity_required:aster/);
 });
 
-test("rejects missing monitoring and margin-runway proof", () => {
-  const evidence = fixture();
+test("rejects missing monitoring and margin-runway proof", async () => {
+  const evidence = await fixture();
   evidence.monitoring.ended_at = evidence.monitoring.started_at;
   evidence.monitoring.margin_runways = [];
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
-  assert.throws(() => verifyCarryReleaseEvidence(evidence), /monitoring_period_required|margin_runway_venues_mismatch/);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /monitoring_period_required|margin_runway_venues_mismatch/);
 });
 
-test("rejects residual exposure or orders", () => {
-  const evidence = fixture();
+test("rejects margin-runway proof without verified status", async () => {
+  const evidence = await fixture();
+  delete evidence.monitoring.margin_runways[0].status;
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /margin_runway_status_missing:hyperliquid/);
+});
+
+test("accepts a healthy null runway only as verified zero modeled burn", async () => {
+  const evidence = await fixture();
+  evidence.monitoring.margin_runways[0].runway_ms = null;
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  assert.equal((await verifyCarryReleaseEvidence(evidence)).ok, true);
+});
+
+test("rejects residual exposure or orders", async () => {
+  const evidence = await fixture();
   evidence.final_state.venues[0].open_order_count = 1;
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
-  assert.throws(() => verifyCarryReleaseEvidence(evidence), /venue_open_orders_not_zero:hyperliquid/);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /venue_open_orders_not_zero:hyperliquid/);
 });
 
-test("rejects a value ledger that does not reconcile to leg costs", () => {
-  const evidence = fixture();
+test("rejects a value ledger that does not reconcile to leg costs", async () => {
+  const evidence = await fixture();
   evidence.value_ledger.realized.fees_micro_usdc = 19_000;
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
-  assert.throws(() => verifyCarryReleaseEvidence(evidence), /realized_net_value_mismatch|realized_fee_evidence_mismatch/);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /realized_net_value_mismatch|realized_fee_evidence_mismatch/);
 });
 
-test("rejects qualification from a different worker image", () => {
-  const evidence = fixture();
+test("rejects qualification from a different worker image", async () => {
+  const evidence = await fixture();
   evidence.qualification.venues[1].image_digest = "sha256:fedcba9876543210";
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
-  assert.throws(() => verifyCarryReleaseEvidence(evidence), /qualification_image_mismatch:aster/);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /qualification_image_mismatch:aster/);
+});
+
+test("rejects a mutated or replayed owner mandate", async () => {
+  const evidence = await fixture();
+  evidence.mandate.signed_mandate.position_id = "carry:position:mainnet:replayed";
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /signed_mandate_commitment_mismatch|signed_mandate_position_mismatch|owner_signature_mismatch/);
 });

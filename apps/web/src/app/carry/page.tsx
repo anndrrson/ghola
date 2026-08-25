@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { CarryWorkspace } from "@/components/carry/CarryWorkspace";
+import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -9,5 +9,5 @@ export const metadata: Metadata = {
 };
 
 export default function CarryPage() {
-  return <CarryWorkspace />;
+  redirect("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open");
 }

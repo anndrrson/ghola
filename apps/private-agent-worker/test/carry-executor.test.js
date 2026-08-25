@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { executeStoredCarryEntry, executeStoredCarryExit, runCarryExecutionTick } from "../src/execution/carry-executor.js";
-import { advanceStoredCarryPosition, createStoredCarryPosition } from "../src/execution/carry-positions.js";
+import { advanceStoredCarryPosition, createStoredCarryPosition, runCarryMonitoringTick } from "../src/execution/carry-positions.js";
 import { readCarryVenueQualification } from "../src/execution/carry-qualification.js";
 import { recoverDueMultiLegSagas } from "../src/execution/multi-leg-orchestrator.js";
 import { createWorkerState } from "../src/state/private-state.js";
+import { signedCarryPositionInput } from "./carry-mandate-fixture.js";
 
 const NOW = 1_800_000_000_000;
 const OWNER = "owner:carry:executor:0001";
@@ -57,11 +58,11 @@ test("bootstraps one capped candidate only after separate qualification confirma
   const created = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
-    position_input: {
+    position_input: await signedCarryPositionInput({
       ...positionInput(positionId),
       long_venue_id: "hyperliquid",
       short_venue_id: "aster",
-    },
+    }, { ownerCommitment: OWNER, nowMs: NOW }),
     opportunity: {
       ...opportunity(),
       long_venue_id: "hyperliquid",
@@ -381,6 +382,79 @@ test("finalizes modeled-versus-realized value only after exact costs, funding, a
   assert.equal(result.record.value_ledger.finalization_evidence.open_order_count, 0);
 });
 
+test("background monitoring triggers an automatic reduce-only exit and finalizes flat value evidence", async (t) => {
+  const fixture = await setup(t, "automatic-monitored-exit");
+  const entry = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      const receipt = exactValueReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(entry.ok, true);
+
+  const monitoringProof = async () => ({
+    ...preflightProof(),
+    economic_opportunity: {
+      checked_at_ms: NOW + 100,
+      projected_net_value_bps: -1,
+    },
+    margin_runways: [
+      { venue_id: "aster", status: "healthy", runway_ms: 7_200_000 },
+      { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
+    ],
+    qualification_reasons: [],
+  });
+  const firstMonitor = await runCarryMonitoringTick({
+    state: fixture.state,
+    preflight: monitoringProof,
+    now_ms: NOW + 100,
+  });
+  assert.equal(firstMonitor.ok, true);
+  assert.equal(firstMonitor.results[0].record.position.status, "active");
+  const secondMonitor = await runCarryMonitoringTick({
+    state: fixture.state,
+    preflight: monitoringProof,
+    now_ms: NOW + 200,
+  });
+  assert.equal(secondMonitor.ok, true);
+  assert.equal(secondMonitor.results[0].record.position.status, "exiting");
+  assert.equal(secondMonitor.results[0].record.exit_saga_id, undefined);
+
+  const restartedState = createWorkerState(fixture.state_dir);
+  const calls = [];
+  const exit = await runCarryExecutionTick({
+    ...fixture,
+    state: restartedState,
+    preflight: monitoringProof,
+    now: (() => { let value = NOW + 1_000; return () => ++value; })(),
+    readFundingSettlements: async ({ body }) => [{
+      settlement_id: `${body.venue_id}:automatic-exit:1`,
+      occurred_at_ms: Math.min(body.end_time_ms, body.start_time_ms + 1),
+      amount_quote: body.venue_id === "aster" ? "0.020" : "-0.005",
+      quote_asset: "USDC",
+    }],
+    executeOrder: async (args) => {
+      calls.push(args);
+      const receipt = exactValueReceipt(args);
+      await restartedState.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(exit.ok, true);
+  assert.equal(exit.checked, 1);
+  assert.equal(calls.length, 2);
+  assert.equal(calls.every((call) => call.instruction.order.reduce_only === true), true);
+  const result = exit.results[0];
+  assert.equal(result.record.position.status, "reconciled");
+  assert.equal(result.record.final_reconciliation_evidence.account_state_checked, true);
+  assert.equal(result.record.final_reconciliation_evidence.open_order_count, 0);
+  assert.equal(result.value_finalized, true);
+  assert.equal(result.record.value_ledger.status, "finalized");
+  assert.equal(result.record.value_ledger.realized.net_value_micro_usdc, 19_000);
+});
+
 async function setup(t, suffix) {
   const dir = mkdtempSync(join(tmpdir(), `ghola-carry-executor-${suffix}-`));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -389,7 +463,10 @@ async function setup(t, suffix) {
   const created = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
-    position_input: positionInput(positionId),
+    position_input: await signedCarryPositionInput(positionInput(positionId), {
+      ownerCommitment: OWNER,
+      nowMs: NOW,
+    }),
     opportunity: opportunity(),
     monitoring_context: monitoringContext(),
     now_ms: NOW,

@@ -60,6 +60,18 @@ const TEST_ENV_KEYS = [
   "GHOLA_HYPERLIQUID_ALLOW_MAINNET",
   "GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD",
   "GHOLA_HYPERLIQUID_LIVE_MAX_SLIPPAGE_BPS",
+  "GHOLA_LIGHTER_ETHEREUM_RPC_URL",
+  "GHOLA_CARRY_POSITION_LIVE_SUBMIT",
+  "GHOLA_CARRY_QUALIFICATION_PILOT_ENABLED",
+  "GHOLA_CARRY_QUALIFICATION_PILOT_MAX_NOTIONAL_MICRO_USDC",
+  "GHOLA_CARRY_MAX_UNHEDGED_MS",
+  "GHOLA_CARRY_AUTO_EXIT_ENABLED",
+  "GHOLA_CARRY_EXECUTION_SWEEP_MS",
+  "GHOLA_CARRY_EXIT_VERIFY_RETRY_MS",
+  "GHOLA_CARRY_MONITOR_ENABLED",
+  "GHOLA_CARRY_MONITOR_INITIAL_DELAY_MS",
+  "GHOLA_CARRY_MONITOR_INTERVAL_MS",
+  "GHOLA_CARRY_QUALIFICATION_MAX_AGE_MS",
   "PHALA_API_KEY",
   "PHALA_CLOUD_API_KEY",
   "PRIVATE_AGENT_EXECUTION_TOKEN",
@@ -71,6 +83,19 @@ const TEST_ENV_KEYS = [
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS",
+  "PRIVATE_AGENT_LIGHTER_ETHEREUM_RPC_URL",
+  "PRIVATE_AGENT_LIGHTER_API_URL",
+  "PRIVATE_AGENT_CARRY_POSITION_LIVE_SUBMIT",
+  "PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED",
+  "PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_MAX_NOTIONAL_MICRO_USDC",
+  "PRIVATE_AGENT_CARRY_MAX_UNHEDGED_MS",
+  "PRIVATE_AGENT_CARRY_AUTO_EXIT_ENABLED",
+  "PRIVATE_AGENT_CARRY_EXECUTION_SWEEP_MS",
+  "PRIVATE_AGENT_CARRY_EXIT_VERIFY_RETRY_MS",
+  "PRIVATE_AGENT_CARRY_MONITOR_ENABLED",
+  "PRIVATE_AGENT_CARRY_MONITOR_INITIAL_DELAY_MS",
+  "PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS",
+  "PRIVATE_AGENT_CARRY_QUALIFICATION_MAX_AGE_MS",
   "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET",
   "GHOLA_WORKER_CAPABILITY_SECRET",
 ];
@@ -126,6 +151,17 @@ describe("private-agent Phala provisioning", () => {
     expect(compose).toContain(
       'PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS: "50"',
     );
+    expect(compose).toContain('PRIVATE_AGENT_LIGHTER_ETHEREUM_RPC_URL: ""');
+    expect(compose).toContain(
+      'PRIVATE_AGENT_LIGHTER_API_URL: "https://mainnet.zklighter.elliot.ai"',
+    );
+    expect(compose).toContain('PRIVATE_AGENT_CARRY_POSITION_LIVE_SUBMIT: "false"');
+    expect(compose).toContain('PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED: "false"');
+    expect(compose).toContain(
+      'PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_MAX_NOTIONAL_MICRO_USDC: "11000000"',
+    );
+    expect(compose).toContain('PRIVATE_AGENT_CARRY_AUTO_EXIT_ENABLED: "true"');
+    expect(compose).toContain('PRIVATE_AGENT_CARRY_MONITOR_ENABLED: "true"');
     expect(compose).not.toMatch(/PHALA_CLOUD_API_KEY|PHALA_API_KEY/);
     expect(compose).not.toMatch(/prompt|strategy_text|messages|policy:/i);
   });
@@ -154,6 +190,52 @@ describe("private-agent Phala provisioning", () => {
     );
     expect(compose).toContain(
       'PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS: "25"',
+    );
+  });
+
+  it("passes the server-only Lighter mainnet RPC into the attested worker", () => {
+    setTestEnv({
+      GHOLA_LIGHTER_ETHEREUM_RPC_URL: "https://ethereum.example/rpc",
+    });
+    const compose = buildPhalaWorkerCompose({
+      image: "ghcr.io/example/worker@sha256:lighter",
+      imageDigest: "sha256:lighter",
+    });
+    expect(compose).toContain(
+      'PRIVATE_AGENT_LIGHTER_ETHEREUM_RPC_URL: "https://ethereum.example/rpc"',
+    );
+  });
+
+  it("pins an explicitly enabled capped Carry qualification runtime", () => {
+    const digest = `sha256:${"cd".repeat(32)}`;
+    setTestEnv({
+      GHOLA_PRIVATE_AGENT_WORKER_IMAGE: "ghcr.io/example/worker:carry",
+      GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST: digest,
+      GHOLA_CARRY_POSITION_LIVE_SUBMIT: "true",
+      GHOLA_CARRY_QUALIFICATION_PILOT_ENABLED: "true",
+      GHOLA_CARRY_QUALIFICATION_PILOT_MAX_NOTIONAL_MICRO_USDC: "11000000",
+      GHOLA_CARRY_MAX_UNHEDGED_MS: "1500",
+    });
+    const compose = buildPhalaWorkerCompose();
+    const info = { compose_file: { docker_compose_file: compose } };
+
+    expect(compose).toContain('PRIVATE_AGENT_CARRY_POSITION_LIVE_SUBMIT: "true"');
+    expect(compose).toContain('PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED: "true"');
+    expect(compose).toContain('PRIVATE_AGENT_CARRY_MAX_UNHEDGED_MS: "1500"');
+    expect(compose).toContain('PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: "5000"');
+    expect(compose).toContain('PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY: "8"');
+    expect(phalaWorkerRuntimeConfigDrift(info)).toEqual([]);
+
+    const stale = {
+      compose_file: {
+        docker_compose_file: compose.replace(
+          'PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED: "true"',
+          'PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED: "false"',
+        ),
+      },
+    };
+    expect(phalaWorkerRuntimeConfigDrift(stale)).toContain(
+      "private_agent_carry_qualification_pilot_enabled_mismatch",
     );
   });
 

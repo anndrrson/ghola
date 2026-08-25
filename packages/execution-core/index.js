@@ -20,13 +20,18 @@ export {
   appendCarryValueLedgerEntry,
   advanceCarryPosition,
   calculateMarginRunway,
+  carryRiskMandateMessage,
   createCarryPosition,
   createCarryValueLedger,
   evaluateCarryOpportunity,
   finalizeCarryValueLedger,
+  normalizeCarryRiskMandate,
+  normalizeCarryRiskMandateAuthorization,
+  normalizeCarryRiskMandatePayload,
   normalizePerpContractSpec,
 } from "./carry.js";
 export {
+  CARRY_BROWSER_STREAM_VENUES,
   CARRY_EXECUTION_VENUES,
   CORE_PERP_VENUES,
   EXECUTION_VENUE_SPECS,
@@ -37,7 +42,9 @@ export {
   isExecutionVenue,
   requiredVenueCapabilities,
   supportsExactQuantityRecovery,
+  venueAdapterCapability,
   venueSupportsProduct,
+  venuesWithAdapterCapability,
 } from "./venues.js";
 
 export const EXECUTION_CORE_VERSION = 1;

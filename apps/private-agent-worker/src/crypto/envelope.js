@@ -271,7 +271,7 @@ export async function openSealedBundle(bundle, recipient, opts = {}) {
   return { ...opened, associatedDataText: aad, json: parsed };
 }
 
-export async function sealForTest(opts) {
+export async function sealEnvelope(opts) {
   const ephemPriv = x25519.utils.randomPrivateKey();
   const ephemPub = x25519.getPublicKey(ephemPriv);
   const shared = x25519.getSharedSecret(ephemPriv, opts.recipientX25519);
@@ -308,3 +308,7 @@ export async function sealForTest(opts) {
   out.set(signature, bodyBytes.length);
   return out;
 }
+
+// Backwards-compatible test helper name. Production callers should use
+// sealEnvelope so generated credentials never need to leave the worker.
+export const sealForTest = sealEnvelope;

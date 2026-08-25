@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readCarryVenueQualification } from "./carry-qualification.js";
+import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 
 export async function buildCompletedCarryReleaseMaterial({
   state,
@@ -11,6 +12,12 @@ export async function buildCompletedCarryReleaseMaterial({
   const record = await state?.getCarryPositionRecord?.(String(positionId || ""));
   if (!record) return denied("carry_position_not_found");
   if (record.owner_commitment !== ownerCommitment) return denied("carry_position_owner_mismatch");
+  const mandate = await verifyCarryRiskMandateAuthorization({
+    owner_commitment: ownerCommitment,
+    position_input: record.position,
+    now_ms: record.position?.created_at_ms,
+  });
+  if (!mandate.ok) return denied("carry_release_signed_mandate_unproven");
   if (record.position?.status !== "reconciled") return denied("carry_release_position_not_reconciled");
   if (record.value_ledger?.status !== "finalized" || record.value_evidence?.costs_complete !== true) {
     return denied("carry_release_value_ledger_incomplete");
@@ -34,6 +41,12 @@ export async function buildCompletedCarryReleaseMaterial({
   if (observations.length === 0) return denied("carry_release_monitoring_evidence_missing");
   const latestObservation = observations.at(-1);
   const pair = [record.position.long_venue_id, record.position.short_venue_id];
+  const runwayStatuses = latestObservation.margin_runway_status_by_venue || {};
+  const runwayValues = latestObservation.margin_runway_ms_by_venue || {};
+  const validRunwayStatuses = new Set(["healthy", "warning", "critical", "breached"]);
+  if (pair.some((venueId) => !Object.hasOwn(runwayValues, venueId) || !validRunwayStatuses.has(runwayStatuses[venueId]))) {
+    return denied("carry_release_margin_runway_evidence_missing");
+  }
   const qualifications = await Promise.all(pair.map((venueId) => readCarryVenueQualification({
     state,
     venue_id: venueId,
@@ -72,7 +85,9 @@ export async function buildCompletedCarryReleaseMaterial({
       created_at: iso(record.position.created_at_ms),
     },
     mandate: {
-      policy_commitment: record.position.mandate_id,
+      policy_commitment: mandate.authorization.mandate_commitment,
+      signed_mandate: mandate.authorization.signed_mandate,
+      owner_signature: mandate.authorization.signature,
       ai_execution_authority: false,
       funding_owner_only: true,
       transfers_owner_only: true,
@@ -102,7 +117,8 @@ export async function buildCompletedCarryReleaseMaterial({
       funding_flip_checks: observations.length,
       margin_runways: pair.map((venueId) => ({
         venue_id: venueId,
-        runway_ms: latestObservation.margin_runway_ms_by_venue?.[venueId],
+        status: runwayStatuses[venueId],
+        runway_ms: runwayValues[venueId],
         stale: false,
       })),
     },

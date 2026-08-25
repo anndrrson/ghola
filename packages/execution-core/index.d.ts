@@ -6,6 +6,7 @@ export declare const EXECUTION_CORE_VERSION: 1;
 export declare const SUPPORTED_EXECUTION_VENUES: readonly VenueId[];
 export declare const CORE_PERP_VENUES: readonly CorePerpVenueId[];
 export declare const CARRY_EXECUTION_VENUES: readonly CarryExecutionVenueId[];
+export declare const CARRY_BROWSER_STREAM_VENUES: readonly CorePerpVenueId[];
 export declare const EXECUTION_VENUE_SPECS: Readonly<Record<VenueId, Readonly<Record<string, unknown>>>>;
 export declare const SUPPORTED_STRATEGIES: readonly StrategyId[];
 export declare const PORTFOLIO_SIGNING_BOUNDARY: Readonly<Record<string, readonly string[]>>;
@@ -16,6 +17,8 @@ export declare function exactQuantityRecoveryAdapter(venueId: string): string | 
 export declare function isExecutionVenue(venueId: string): boolean;
 export declare function isCarryExecutionVenue(venueId: string): boolean;
 export declare function supportsExactQuantityRecovery(venueId: string): boolean;
+export declare function venueAdapterCapability(venueId: string, capability: string): Readonly<Record<string, unknown>> | null;
+export declare function venuesWithAdapterCapability(capability: string, options?: { cohort?: string | null; product?: string | null; statuses?: readonly string[] }): readonly VenueId[];
 export declare function venueSupportsProduct(venueId: string, productType: string): boolean;
 export declare function requiredVenueCapabilities(input: Record<string, unknown>): readonly string[];
 export declare function normalizePortfolioMandate(value: unknown): Readonly<Record<string, unknown>>;
@@ -33,6 +36,10 @@ export declare function aggregateExecutionQuality(input: unknown[]): Readonly<Re
 export declare function normalizePerpContractSpec(input: unknown): Readonly<Record<string, unknown>>;
 export declare function calculateMarginRunway(input: unknown): Readonly<Record<string, unknown>>;
 export declare function evaluateCarryOpportunity(input: unknown): Readonly<Record<string, unknown>>;
+export declare function normalizeCarryRiskMandate(input: unknown): Readonly<Record<string, unknown>>;
+export declare function normalizeCarryRiskMandatePayload(input: unknown): Readonly<Record<string, unknown>>;
+export declare function normalizeCarryRiskMandateAuthorization(input: unknown): Readonly<Record<string, unknown>>;
+export declare function carryRiskMandateMessage(input: unknown): string;
 export declare function createCarryPosition(input: unknown): Readonly<Record<string, unknown>>;
 export declare function advanceCarryPosition(input: Record<string, unknown>): Readonly<Record<string, unknown>>;
 export declare function createCarryValueLedger(input: unknown): Readonly<Record<string, unknown>>;

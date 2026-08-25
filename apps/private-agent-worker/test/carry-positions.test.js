@@ -12,6 +12,7 @@ import {
   runCarryMonitoringTick,
 } from "../src/execution/carry-positions.js";
 import { createWorkerState } from "../src/state/private-state.js";
+import { signedCarryPositionInput } from "./carry-mandate-fixture.js";
 
 const NOW = 1_800_000_000_000;
 const OWNER = "owner:commitment:0001";
@@ -23,7 +24,7 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
   const created = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
-    position_input: positionInput(),
+    position_input: await positionInput(),
     opportunity: opportunity(),
     monitoring_context: monitoringContext(),
     now_ms: NOW,
@@ -97,7 +98,7 @@ test("rejects stale concurrent Carry Position writers", async (t) => {
   const created = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
-    position_input: positionInput(),
+    position_input: await positionInput(),
     opportunity: opportunity(),
     monitoring_context: monitoringContext(),
     now_ms: NOW,
@@ -116,7 +117,7 @@ test("refuses storage until both venue accounts and margin runways pass", async 
   const notReady = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
-    position_input: positionInput(),
+    position_input: await positionInput(),
     opportunity: { ...opportunity(), all_venues_ready: false },
     monitoring_context: monitoringContext(),
     now_ms: NOW,
@@ -125,7 +126,7 @@ test("refuses storage until both venue accounts and margin runways pass", async 
   const lowRunway = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
-    position_input: positionInput(),
+    position_input: await positionInput(),
     opportunity: { ...opportunity(), long_margin_runway_ms: 1 },
     monitoring_context: monitoringContext(),
     now_ms: NOW,
@@ -147,7 +148,7 @@ test("creates only a capped, explicitly enabled qualification pilot", async (t) 
   const disabled = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
-    position_input: positionInput(),
+    position_input: await positionInput(),
     opportunity: pilotOpportunity,
     monitoring_context: monitoringContext(),
     qualification_pilot: pilot,
@@ -158,7 +159,7 @@ test("creates only a capped, explicitly enabled qualification pilot", async (t) 
   const created = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
-    position_input: positionInput(),
+    position_input: await positionInput(),
     opportunity: pilotOpportunity,
     monitoring_context: monitoringContext(),
     qualification_pilot: pilot,
@@ -189,8 +190,8 @@ test("monitoring records funding flips and deterministically requests exit", asy
       projected_net_value_bps: -1,
     },
     margin_runways: [
-      { venue_id: "hyperliquid", runway_ms: 7_200_000 },
-      { venue_id: "lighter", runway_ms: 7_200_000 },
+      { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
+      { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
     ],
     qualification_reasons: [],
   });
@@ -208,6 +209,7 @@ test("monitoring records funding flips and deterministically requests exit", asy
   assert.equal(first.record.position.consecutive_exit_observations, 1);
   assert.equal(first.record.latest_observation.expected_net_value_bps, -1);
   assert.equal(first.record.latest_observation.margin_runway_ms_by_venue.hyperliquid, 7_200_000);
+  assert.equal(first.record.latest_observation.margin_runway_status_by_venue.hyperliquid, "healthy");
   const second = await observeStoredCarryPosition({ ...dependencies, now_ms: NOW + 200 });
   assert.equal(second.ok, true);
   assert.equal(second.record.position.status, "exiting");
@@ -243,8 +245,8 @@ test("worker monitoring survives without an open browser", async (t) => {
     preflight: async () => ({
       economic_opportunity: { checked_at_ms: NOW + 100, projected_net_value_bps: 9 },
       margin_runways: [
-        { venue_id: "hyperliquid", runway_ms: 7_200_000 },
-        { venue_id: "lighter", runway_ms: 7_200_000 },
+        { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
+        { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
       ],
       qualification_reasons: [],
     }),
@@ -256,6 +258,38 @@ test("worker monitoring survives without an open browser", async (t) => {
   const stored = await state.getCarryPositionRecord(active.position.position_id);
   assert.equal(stored.position.last_event_sequence, 3);
   assert.equal(stored.position.status, "active");
+});
+
+test("monitoring checks independent Carry Positions with bounded concurrency", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-concurrency-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  await activePosition(state, "0001");
+  await activePosition(state, "0002");
+  let started = 0;
+  let release;
+  const bothStarted = new Promise((resolve) => { release = resolve; });
+  const tick = await runCarryMonitoringTick({
+    state,
+    env: { PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY: "2" },
+    preflight: async () => {
+      started += 1;
+      if (started === 2) release();
+      await bothStarted;
+      return {
+        economic_opportunity: { checked_at_ms: NOW + 100, projected_net_value_bps: 9 },
+        margin_runways: [
+          { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
+          { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
+        ],
+        qualification_reasons: [],
+      };
+    },
+    now_ms: NOW + 100,
+  });
+  assert.equal(started, 2);
+  assert.equal(tick.ok, true);
+  assert.equal(tick.checked, 2);
 });
 
 test("monitoring appends only authoritative venue funding settlements", async (t) => {
@@ -271,8 +305,8 @@ test("monitoring appends only authoritative venue funding settlements", async (t
     preflight: async () => ({
       economic_opportunity: { checked_at_ms: NOW + 100, projected_net_value_bps: 9 },
       margin_runways: [
-        { venue_id: "hyperliquid", runway_ms: 7_200_000 },
-        { venue_id: "lighter", runway_ms: 7_200_000 },
+        { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
+        { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
       ],
       qualification_reasons: [],
     }),
@@ -292,11 +326,11 @@ test("monitoring appends only authoritative venue funding settlements", async (t
   assert.equal(result.record.value_evidence.funding.status, "current");
 });
 
-async function activePosition(state) {
+async function activePosition(state, suffix = "0001") {
   const created = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
-    position_input: positionInput(),
+    position_input: await positionInput(suffix),
     opportunity: opportunity(),
     monitoring_context: monitoringContext(),
     now_ms: NOW,
@@ -315,11 +349,11 @@ async function activePosition(state) {
   return record;
 }
 
-function positionInput() {
-  return {
+async function positionInput(suffix = "0001") {
+  return signedCarryPositionInput({
     version: 1,
-    position_id: "carry:position:stored:0001",
-    mandate_id: "carry:mandate:stored:0001",
+    position_id: `carry:position:stored:${suffix}`,
+    mandate_id: `carry:mandate:stored:${suffix}`,
     asset: "BTC",
     long_venue_id: "hyperliquid",
     short_venue_id: "lighter",
@@ -333,7 +367,7 @@ function positionInput() {
       max_data_age_ms: 30_000,
       allow_migration: false,
     },
-  };
+  }, { ownerCommitment: OWNER, nowMs: NOW });
 }
 
 function opportunity() {

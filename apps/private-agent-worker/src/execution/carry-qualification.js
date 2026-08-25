@@ -1,22 +1,22 @@
 import { createHash } from "node:crypto";
-import { executionVenueSpec } from "@ghola/execution-core";
+import { venueAdapterCapability } from "@ghola/execution-core";
 
 const DEFAULT_MAX_AGE_MS = 90 * 86_400_000;
 
 export async function readCarryVenueQualification({ state, venue_id: venueId, now_ms: nowMs = Date.now(), env = process.env }) {
-  const spec = executionVenueSpec(venueId);
-  if (!spec?.exact_quantity_recovery_adapter) return result(false, venueId, ["recovery_adapter_unavailable"]);
-  if (spec.qualification_status === "proven") {
+  const adapters = qualificationAdapters(venueId);
+  if (!adapters) return result(false, venueId, ["qualification_adapters_unavailable"]);
+  if (adapters.status === "proven") {
     return result(true, venueId, [], {
       source: "registry_baseline",
-      adapter_id: spec.exact_quantity_recovery_adapter,
+      adapter_id: adapters.adapter_id,
       image_digest: runtimeImageDigest(env),
     });
   }
   const imageDigest = runtimeImageDigest(env);
   if (!imageDigest) return result(false, venueId, ["runtime_image_digest_missing"]);
   if (typeof state?.getIdempotency !== "function") return result(false, venueId, ["qualification_evidence_missing"]);
-  const stored = await state.getIdempotency(qualificationKey(venueId, spec.exact_quantity_recovery_adapter, imageDigest));
+  const stored = await state.getIdempotency(qualificationKey(venueId, adapters.adapter_id, imageDigest));
   return assessCarryVenueQualification({
     venue_id: venueId,
     evidence: stored?.receipt,
@@ -59,8 +59,8 @@ export async function recordCompletedCarryVenueQualifications({ state, position_
   if (!imageDigest) return { ok: false, error: "runtime_image_digest_missing", qualifications: [] };
   const qualifications = [];
   for (const venueId of [record.position.long_venue_id, record.position.short_venue_id]) {
-    const spec = executionVenueSpec(venueId);
-    if (!spec?.exact_quantity_recovery_adapter || spec.qualification_status === "proven") continue;
+    const adapters = qualificationAdapters(venueId);
+    if (!adapters || adapters.status === "proven") continue;
     const noSubmit = record.qualification_context?.venues?.[venueId];
     const entry = await sagaReceipt({ state, saga: entrySaga, venueId });
     const exit = await sagaReceipt({ state, saga: exitSaga, venueId });
@@ -71,7 +71,7 @@ export async function recordCompletedCarryVenueQualifications({ state, position_
     const evidence = {
       version: 1,
       venue_id: venueId,
-      adapter_id: spec.exact_quantity_recovery_adapter,
+      adapter_id: adapters.adapter_id,
       image_digest: imageDigest,
       network: "mainnet",
       verified_at_ms: nowMs,
@@ -113,16 +113,16 @@ export async function recordCompletedCarryVenueQualifications({ state, position_
 }
 
 export function assessCarryVenueQualification({ venue_id: venueId, evidence, image_digest: imageDigest, now_ms: nowMs = Date.now(), max_age_ms: maxAgeMs = DEFAULT_MAX_AGE_MS }) {
-  const spec = executionVenueSpec(venueId);
+  const adapters = qualificationAdapters(venueId);
   const reasons = [];
-  if (!spec?.exact_quantity_recovery_adapter) reasons.push("recovery_adapter_unavailable");
+  if (!adapters) reasons.push("qualification_adapters_unavailable");
   if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
     reasons.push("qualification_evidence_missing");
     return result(false, venueId, reasons);
   }
   if (evidence.version !== 1) reasons.push("qualification_version_invalid");
   if (evidence.venue_id !== venueId) reasons.push("qualification_venue_mismatch");
-  if (evidence.adapter_id !== spec?.exact_quantity_recovery_adapter) reasons.push("qualification_adapter_mismatch");
+  if (evidence.adapter_id !== adapters?.adapter_id) reasons.push("qualification_adapter_mismatch");
   if (!imageDigest || evidence.image_digest !== imageDigest) reasons.push("qualification_image_mismatch");
   if (evidence.network !== "mainnet") reasons.push("qualification_not_mainnet");
   const verifiedAt = positiveInteger(evidence.verified_at_ms);
@@ -148,6 +148,17 @@ export function assessCarryVenueQualification({ venue_id: venueId, evidence, ima
     verified_at_ms: verifiedAt || null,
     evidence_commitment: commitment(evidence.evidence_commitment) ? evidence.evidence_commitment : evidenceDigest(evidence),
   });
+}
+
+function qualificationAdapters(venueId) {
+  const execution = venueAdapterCapability(venueId, "carry_execution");
+  const noSubmit = venueAdapterCapability(venueId, "no_submit_reconciliation");
+  const recovery = venueAdapterCapability(venueId, "exact_quantity_recovery");
+  if (!execution || !noSubmit || !recovery) return null;
+  if (new Set([execution.adapter_id, noSubmit.adapter_id, recovery.adapter_id]).size !== 1) return null;
+  if (new Set([execution.status, noSubmit.status, recovery.status]).size !== 1) return null;
+  if (!["proven", "implemented_unproven"].includes(execution.status)) return null;
+  return Object.freeze({ adapter_id: execution.adapter_id, status: execution.status });
 }
 
 export function qualificationKey(venueId, adapterId, imageDigest) {

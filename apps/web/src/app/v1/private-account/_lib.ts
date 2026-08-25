@@ -642,6 +642,7 @@ export function rejectForbiddenFields(body: unknown) {
 
 interface PrivateAccountLiveGuardOptions {
   allowMobileWalletProof?: boolean;
+  allowSerializedOwnerTransaction?: boolean;
 }
 
 type PrivateAccountLiveGuardResult =
@@ -670,7 +671,11 @@ export async function privateAccountLiveGuard(
   }
 
   const body = await readJson(req);
-  const forbidden = rejectForbiddenFields(body);
+  const bodyForForbiddenCheck = options.allowSerializedOwnerTransaction && body &&
+      typeof body === "object" && !Array.isArray(body)
+    ? withoutTopLevelField(body as Record<string, unknown>, "raw_transaction")
+    : body;
+  const forbidden = rejectForbiddenFields(bodyForForbiddenCheck);
   if (forbidden) return { ok: false, response: forbidden };
 
   const owner = await privateAccountOwnerFromRequest(req);
@@ -683,6 +688,12 @@ export async function privateAccountLiveGuard(
   if (proofRejected) return { ok: false, response: proofRejected };
 
   return { ok: true, body, owner };
+}
+
+function withoutTopLevelField(value: Record<string, unknown>, field: string) {
+  const copy = { ...value };
+  delete copy[field];
+  return copy;
 }
 
 export interface PrivateAccountAgentBillingGate {

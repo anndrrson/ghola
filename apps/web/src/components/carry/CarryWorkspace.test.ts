@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { buildCandidates, builderModel } from "./CarryWorkspace";
+import {
+  applyCarryLivePatches,
+  buildCandidates,
+  buildPairCandidates,
+  builderModel,
+  carryCandidateAgeMs,
+  quoteCarryCandidate,
+  rankCarryCandidatesByNet,
+} from "@/lib/carry-market";
 
 describe("CarryWorkspace model", () => {
   it("chooses the lowest funding long and highest funding short while excluding quarantined venues", () => {
@@ -14,6 +22,32 @@ describe("CarryWorkspace model", () => {
     expect(candidates[0].exact).toBe(false);
   });
 
+  it("keeps a valid execution route when a better shadow-only venue exists", () => {
+    const venues = [
+      venue("hyperliquid", snapshot("hyperliquid", "BTC", 10_000_000, "ready")),
+      venue("lighter", snapshot("lighter", "BTC", 40_000_000, "ready")),
+      venue("edgex", snapshot("edgex", "BTC", 90_000_000, "ready")),
+    ];
+    expect(buildCandidates(venues)[0].short.venue_id).toBe("edgex");
+    expect(buildCandidates(venues, ["hyperliquid", "lighter", "aster"])[0].short.venue_id).toBe("lighter");
+  });
+
+  it("ranks every equivalent pair by net value instead of gross funding alone", () => {
+    const venues = [
+      venue("hyperliquid", snapshot("hyperliquid", "BTC", 10_000_000, "ready")),
+      venue("lighter", snapshot("lighter", "BTC", 100_000_000, "ready", { taker_fee_bps: 100 })),
+      venue("aster", snapshot("aster", "BTC", 80_000_000, "ready")),
+    ];
+    const pairs = buildPairCandidates(venues);
+    expect(pairs).toHaveLength(3);
+    expect(pairs[0].short.venue_id).toBe("lighter");
+    const ranked = rankCarryCandidatesByNet(pairs);
+    expect(ranked[0].candidate.short.venue_id).toBe("aster");
+    expect(ranked[0].quote.expectedNetDailyUsd).toBeGreaterThan(0);
+    expect(ranked.find((item) => item.candidate.short.venue_id === "lighter")?.quote.expectedNetDailyUsd)
+      .toBeLessThan(0);
+  });
+
   it("prices fees, spread, collateral, and break-even without counting the risk buffer as realized cost", () => {
     const long = snapshot("hyperliquid", "BTC", 10_000_000, "ready");
     const short = snapshot("lighter", "BTC", 40_000_000, "ready");
@@ -26,13 +60,59 @@ describe("CarryWorkspace model", () => {
     expect(result.publicInputsComplete).toBe(true);
     expect(result.creatable).toBe(false);
   });
+
+  it("merges fresh venue ticks before recomputing route economics", () => {
+    const now = 1_800_000_000_000;
+    const hyperliquid = snapshot("hyperliquid", "BTC", 10_000_000, "ready");
+    const lighter = snapshot("lighter", "BTC", 40_000_000, "ready");
+    const updated = applyCarryLivePatches([
+      venue("hyperliquid", hyperliquid),
+      venue("lighter", lighter),
+    ], [{
+      venue_id: "hyperliquid",
+      asset: "BTC",
+      received_at_ms: now - 4,
+      source_at_ms: now - 8,
+      mark_price_e8: 6_000_000_000_000,
+      index_price_e8: 6_000_000_000_000,
+      best_bid_e8: 5_999_990_000_000,
+      best_ask_e8: 6_000_010_000_000,
+      funding_rate_e12_per_interval: 20_000_000,
+      funding_interval_ms: 3_600_000,
+    }], now);
+    const [candidate] = buildCandidates(updated);
+    expect(candidate.long.funding_rate_e12_per_interval).toBe(20_000_000);
+    expect(carryCandidateAgeMs(candidate, now)).toBe(4);
+    const quote = quoteCarryCandidate(candidate, 10_000, 24);
+    expect(quote.grossDailyUsd).toBeGreaterThan(0);
+    expect(quote.expectedNetUsd).toBeTypeOf("number");
+    expect(quote.breakEvenHours).toBeGreaterThan(0);
+  });
+
+  it("ignores expired live patches instead of presenting stale routes", () => {
+    const now = 1_800_000_000_000;
+    const base = venue("hyperliquid", snapshot("hyperliquid", "BTC", 10_000_000, "ready"));
+    const [unchanged] = applyCarryLivePatches([base], [{
+      venue_id: "hyperliquid",
+      asset: "BTC",
+      received_at_ms: now - 6_000,
+      funding_rate_e12_per_interval: 99_000_000,
+    }], now);
+    expect(unchanged).toBe(base);
+  });
 });
 
 function venue(venue_id: string, item: ReturnType<typeof snapshot>) {
   return { venue_id, ok: true, snapshots: [item] };
 }
 
-function snapshot(venue_id: string, asset: string, funding: number, status: "ready" | "degraded" | "quarantined") {
+function snapshot(
+  venue_id: string,
+  asset: string,
+  funding: number,
+  status: "ready" | "degraded" | "quarantined",
+  overrides: Record<string, unknown> = {},
+) {
   return {
     venue_id,
     contract_id: `${venue_id}:${asset}`,
@@ -46,8 +126,12 @@ function snapshot(venue_id: string, asset: string, funding: number, status: "rea
     minimum_notional_micro_usdc: 10_000_000,
     initial_margin_bps: venue_id === "hyperliquid" ? 250 : 500,
     maintenance_margin_bps: venue_id === "hyperliquid" ? 125 : 120,
+    mark_price_e8: 6_000_000_000_000,
+    index_price_e8: 6_000_000_000_000,
     best_bid_e8: 5_999_900_000_000,
     best_ask_e8: 6_000_100_000_000,
+    as_of_ms: 1_800_000_000_000,
     missing_fields: [],
+    ...overrides,
   };
 }

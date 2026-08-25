@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { carryRiskMandateMessage } from "@ghola/execution-core";
+import { hashMessage, recoverMessageAddress } from "viem";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_CARRY_EVIDENCE_PATH = resolve(
@@ -16,7 +18,7 @@ const ADAPTERS = Object.freeze({
   aster: "aster_v1",
 });
 
-export function verifyCarryReleaseEvidence(evidence) {
+export async function verifyCarryReleaseEvidence(evidence) {
   const failures = [];
   const fail = (condition, code) => {
     if (!condition) failures.push(code);
@@ -50,7 +52,35 @@ export function verifyCarryReleaseEvidence(evidence) {
   fail(evidence?.mandate?.funding_owner_only === true, "funding_owner_only_required");
   fail(evidence?.mandate?.transfers_owner_only === true, "transfers_owner_only_required");
   fail(evidence?.mandate?.withdrawals_owner_only === true, "withdrawals_owner_only_required");
-  fail(commitment(evidence?.mandate?.policy_commitment), "policy_commitment_missing");
+  const signedMandate = evidence?.mandate?.signed_mandate;
+  const ownerSignature = String(evidence?.mandate?.owner_signature || "").toLowerCase();
+  let mandateMessage = "";
+  try {
+    mandateMessage = carryRiskMandateMessage(signedMandate);
+  } catch {
+    failures.push("signed_mandate_invalid");
+  }
+  const mandateCommitment = mandateMessage ? hashMessage(mandateMessage) : "";
+  fail(evidence?.mandate?.policy_commitment === mandateCommitment, "signed_mandate_commitment_mismatch");
+  fail(/^0x[0-9a-f]{130}$/.test(ownerSignature), "owner_signature_invalid");
+  if (mandateMessage && /^0x[0-9a-f]{130}$/.test(ownerSignature)) {
+    try {
+      const recovered = await recoverMessageAddress({ message: mandateMessage, signature: ownerSignature });
+      fail(recovered.toLowerCase() === signedMandate.owner_wallet_address, "owner_signature_mismatch");
+    } catch {
+      failures.push("owner_signature_invalid");
+    }
+  }
+  fail(signedMandate?.network === "mainnet", "signed_mandate_mainnet_required");
+  fail(signedMandate?.position_id === position.position_id, "signed_mandate_position_mismatch");
+  fail(signedMandate?.asset === position.asset, "signed_mandate_asset_mismatch");
+  fail(signedMandate?.long_venue_id === pair[0] && signedMandate?.short_venue_id === pair[1], "signed_mandate_pair_mismatch");
+  fail(signedMandate?.target_notional_micro_usdc === notional, "signed_mandate_notional_mismatch");
+  fail(positiveInteger(signedMandate?.issued_at_ms) <= createdAt, "signed_mandate_issued_at_invalid");
+  fail(positiveInteger(signedMandate?.expires_at_ms) > createdAt, "signed_mandate_expired_at_creation");
+  fail(Array.isArray(signedMandate?.risk_mandate?.owner_only_operations)
+    && ["fund", "withdraw", "transfer"].every((item) => signedMandate.risk_mandate.owner_only_operations.includes(item)),
+  "signed_mandate_owner_only_operations_missing");
 
   const qualifications = array(evidence?.qualification?.venues);
   fail(sameVenueSet(qualifications, pair), "qualification_venues_mismatch");
@@ -90,7 +120,15 @@ export function verifyCarryReleaseEvidence(evidence) {
   fail(positiveInteger(monitoring.funding_flip_checks) > 0, "funding_flip_check_missing");
   fail(sameVenueSet(monitoring.margin_runways, pair), "margin_runway_venues_mismatch");
   for (const runway of array(monitoring.margin_runways)) {
-    fail(positiveInteger(runway?.runway_ms) > 0, `margin_runway_missing:${String(runway?.venue_id || "")}`);
+    const venue = String(runway?.venue_id || "");
+    const status = String(runway?.status || "");
+    fail(["healthy", "warning", "critical", "breached"].includes(status), `margin_runway_status_missing:${venue}`);
+    fail(
+      runway?.runway_ms === null
+        ? status === "healthy"
+        : nonNegativeInteger(runway?.runway_ms) !== null,
+      `margin_runway_missing:${venue}`,
+    );
     fail(runway?.stale === false, `margin_runway_stale:${String(runway?.venue_id || "")}`);
   }
 
@@ -281,11 +319,11 @@ function commitment(value) {
   return identifier(value);
 }
 
-function main() {
+async function main() {
   const evidencePath = resolve(process.env.GHOLA_CARRY_RELEASE_EVIDENCE_PATH || DEFAULT_CARRY_EVIDENCE_PATH);
   const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
-  const verified = verifyCarryReleaseEvidence(evidence);
+  const verified = await verifyCarryReleaseEvidence(evidence);
   console.log(`[carry-release-evidence] verified ${verified.evidence_commitment}`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main();
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) await main();

@@ -39,17 +39,68 @@ const SWAP_ROUTE_CAPABILITIES = Object.freeze([
 ]);
 
 const specs = [
-  venue("hyperliquid", "Hyperliquid", "core_perp", "proven", "enabled", "hyperliquid_v1", ["perp"]),
-  venue("lighter", "Lighter", "core_perp", "integration", "implemented_unproven", "lighter_v1", ["perp"]),
-  venue("aster", "Aster", "core_perp", "integration", "implemented_unproven", "aster_v1", ["perp"]),
-  venue("edgex", "edgeX", "core_perp", "candidate", "unimplemented", null, ["perp"]),
-  venue("dydx", "dYdX", "core_perp", "candidate", "unimplemented", null, ["perp"]),
-  venue("variational_omni", "Variational Omni", "adjacent", "research_only", "quarantined", null, ["perp"]),
-  venue("drift", "Drift", "adjacent", "integration", "quarantined", null, ["perp"]),
-  venue("phoenix", "Phoenix", "adjacent", "legacy", "isolated", null, ["perp"]),
-  venue("backpack", "Backpack", "adjacent", "legacy", "isolated", null, ["perp", "spot"]),
-  venue("coinbase_advanced", "Coinbase Advanced", "adjacent", "proven", "enabled", "coinbase_advanced_v1", ["spot"]),
-  venue("jupiter", "Jupiter", "adjacent", "proven", "enabled", null, ["spot"]),
+  venue("hyperliquid", "Hyperliquid", "core_perp", "proven", "enabled", ["perp"], {
+    perp_shadow: adapter("hyperliquid_shadow_v1", "enabled", {
+      read_only: true,
+      source_schema: "hyperliquid_metaAndAssetCtxs_l2Book_v1",
+      trading_api_available: true,
+    }),
+    carry_execution: adapter("hyperliquid_v1", "proven"),
+    no_submit_reconciliation: adapter("hyperliquid_v1", "proven"),
+    exact_quantity_recovery: adapter("hyperliquid_v1", "proven"),
+  }),
+  venue("lighter", "Lighter", "core_perp", "integration", "implemented_unproven", ["perp"], {
+    perp_shadow: adapter("lighter_shadow_v1", "enabled", {
+      read_only: true,
+      source_schema: "lighter_orderBookDetails_fundingRates_v1",
+      trading_api_available: true,
+    }),
+    browser_carry_stream: adapter("lighter_browser_stream_v1", "enabled"),
+    carry_execution: adapter("lighter_v1", "implemented_unproven"),
+    no_submit_reconciliation: adapter("lighter_v1", "implemented_unproven"),
+    exact_quantity_recovery: adapter("lighter_v1", "implemented_unproven"),
+  }),
+  venue("aster", "Aster", "core_perp", "integration", "implemented_unproven", ["perp"], {
+    perp_shadow: adapter("aster_shadow_v1", "enabled", {
+      read_only: true,
+      source_schema: "aster_fapi_v3_fundingInfo_v1",
+      trading_api_available: true,
+    }),
+    browser_carry_stream: adapter("aster_browser_stream_v1", "enabled"),
+    carry_execution: adapter("aster_v1", "implemented_unproven"),
+    no_submit_reconciliation: adapter("aster_v1", "implemented_unproven"),
+    exact_quantity_recovery: adapter("aster_v1", "implemented_unproven"),
+  }),
+  venue("edgex", "edgeX", "core_perp", "candidate", "unimplemented", ["perp"], {
+    perp_shadow: adapter("edgex_shadow_v1", "enabled", {
+      read_only: true,
+      source_schema: "edgex_public_v2",
+      trading_api_available: true,
+    }),
+    browser_carry_stream: adapter("edgex_browser_stream_v1", "enabled"),
+  }),
+  venue("dydx", "dYdX", "core_perp", "candidate", "unimplemented", ["perp"], {
+    perp_shadow: adapter("dydx_shadow_v1", "enabled", {
+      read_only: true,
+      source_schema: "dydx_indexer_v4",
+      trading_api_available: true,
+    }),
+    browser_carry_stream: adapter("dydx_browser_stream_v1", "enabled"),
+  }),
+  venue("variational_omni", "Variational Omni", "adjacent", "research_only", "quarantined", ["perp"], {
+    perp_shadow: adapter("variational_shadow_v1", "quarantined", {
+      read_only: true,
+      source_schema: "variational_metadata_stats_v1",
+      trading_api_available: false,
+    }),
+  }),
+  venue("drift", "Drift", "adjacent", "integration", "quarantined", ["perp"]),
+  venue("phoenix", "Phoenix", "adjacent", "legacy", "isolated", ["perp"]),
+  venue("backpack", "Backpack", "adjacent", "legacy", "isolated", ["perp", "spot"]),
+  venue("coinbase_advanced", "Coinbase Advanced", "adjacent", "proven", "enabled", ["spot"], {
+    exact_quantity_recovery: adapter("coinbase_advanced_v1", "proven"),
+  }),
+  venue("jupiter", "Jupiter", "adjacent", "proven", "enabled", ["spot"]),
 ];
 
 export const EXECUTION_VENUE_SPECS = deepFreeze(
@@ -59,7 +110,9 @@ export const EXECUTION_VENUE_SPECS = deepFreeze(
 export const SUPPORTED_EXECUTION_VENUES = Object.freeze(specs.map((spec) => spec.venue_id));
 
 export const CORE_PERP_VENUES = Object.freeze(
-  specs.filter((spec) => spec.cohort === "core_perp").map((spec) => spec.venue_id),
+  specs
+    .filter((spec) => spec.cohort === "core_perp" && spec.adapter_capabilities.perp_shadow?.status === "enabled")
+    .map((spec) => spec.venue_id),
 );
 
 export const CARRY_EXECUTION_VENUES = Object.freeze(
@@ -67,9 +120,15 @@ export const CARRY_EXECUTION_VENUES = Object.freeze(
     .filter((spec) =>
       spec.cohort === "core_perp" &&
       spec.products.includes("perp") &&
-      spec.exact_quantity_recovery_adapter !== null &&
-      ["enabled", "implemented_unproven"].includes(spec.worker_routing_status)
+      ["proven", "implemented_unproven"].includes(spec.adapter_capabilities.carry_execution?.status) &&
+      ["proven", "implemented_unproven"].includes(spec.adapter_capabilities.exact_quantity_recovery?.status)
     )
+    .map((spec) => spec.venue_id),
+);
+
+export const CARRY_BROWSER_STREAM_VENUES = Object.freeze(
+  specs
+    .filter((spec) => spec.adapter_capabilities.browser_carry_stream?.status === "enabled")
     .map((spec) => spec.venue_id),
 );
 
@@ -90,12 +149,30 @@ export function venueSupportsProduct(venueId, productType) {
 }
 
 export function exactQuantityRecoveryAdapter(venueId) {
-  return executionVenueSpec(venueId)?.exact_quantity_recovery_adapter || null;
+  return venueAdapterCapability(venueId, "exact_quantity_recovery")?.adapter_id || null;
 }
 
 export function supportsExactQuantityRecovery(venueId) {
-  const spec = executionVenueSpec(venueId);
-  return spec?.qualification_status === "proven" && spec.exact_quantity_recovery_adapter !== null;
+  return venueAdapterCapability(venueId, "exact_quantity_recovery")?.status === "proven";
+}
+
+export function venueAdapterCapability(venueId, capability) {
+  if (typeof capability !== "string" || !/^[a-z][a-z0-9_]{2,63}$/.test(capability)) return null;
+  return executionVenueSpec(venueId)?.adapter_capabilities?.[capability] || null;
+}
+
+export function venuesWithAdapterCapability(capability, {
+  cohort = null,
+  product = null,
+  statuses = ["enabled", "proven", "implemented_unproven"],
+} = {}) {
+  const allowedStatuses = new Set(statuses);
+  return Object.freeze(specs.filter((spec) => {
+    const declared = spec.adapter_capabilities[capability];
+    return declared && allowedStatuses.has(declared.status)
+      && (!cohort || spec.cohort === cohort)
+      && (!product || spec.products.includes(product));
+  }).map((spec) => spec.venue_id));
 }
 
 export function requiredVenueCapabilities({
@@ -121,17 +198,23 @@ export function requiredVenueCapabilities({
     : required;
 }
 
-function venue(venueId, label, cohort, qualificationStatus, workerRoutingStatus, recoveryAdapter, products) {
+function venue(venueId, label, cohort, qualificationStatus, workerRoutingStatus, products, adapterCapabilities = {}) {
+  const capabilities = Object.freeze({ ...adapterCapabilities });
   return {
     venue_id: venueId,
     label,
     cohort,
     qualification_status: qualificationStatus,
     worker_routing_status: workerRoutingStatus,
-    exact_quantity_recovery_adapter: recoveryAdapter,
+    exact_quantity_recovery_adapter: capabilities.exact_quantity_recovery?.adapter_id || null,
+    adapter_capabilities: capabilities,
     products: Object.freeze([...products]),
     primary_product: products[0],
   };
+}
+
+function adapter(adapterId, status, metadata = {}) {
+  return Object.freeze({ adapter_id: adapterId, status, ...metadata });
 }
 
 function deepFreeze(value) {

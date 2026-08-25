@@ -15,6 +15,7 @@ import {
 } from "./private-agent-passport";
 import {
   getVenueExecutionVaultByAccount,
+  putPrivateVenueCapability,
   resetPrivateAccountStoreForTests,
 } from "./private-account-store";
 
@@ -48,9 +49,7 @@ describe("agent passport venue linking", () => {
   it("records sealed trade-only venue capabilities and blocks withdrawal scopes", async () => {
     const linked = await linkAgentPlatformFromBody({
       venue_id: "coinbase_advanced",
-      permission_attestation: {
-        scopes: ["view", "trade"],
-      },
+      permission_attestation: tradeOnlyPermissions(),
       encrypted_execution_vault: sealedVault("coinbase"),
     }, owner, new Date("2026-06-03T12:00:00.000Z"));
 
@@ -64,22 +63,15 @@ describe("agent passport venue linking", () => {
 
     const blocked = await linkAgentPlatformFromBody({
       venue_id: "hyperliquid",
-      permission_attestation: {
-        scopes: ["read", "trade", "withdraw"],
-      },
+      permission_attestation: tradeOnlyPermissions({ can_withdraw: true }),
       encrypted_execution_vault: sealedVault("hyperliquid"),
     }, owner);
 
-    expect(blocked).toEqual({ error: "withdraw_permission_blocked" });
+    expect(blocked).toEqual({ error: "withdrawal_permission_blocked" });
 
     const lighter = await linkAgentPlatformFromBody({
       venue_id: "lighter",
-      permission_attestation: {
-        can_read: true,
-        can_trade: true,
-        can_withdraw: false,
-        can_transfer: false,
-      },
+      permission_attestation: tradeOnlyPermissions(),
       encrypted_execution_vault: sealedVault("lighter"),
     }, owner);
     expect("error" in lighter).toBe(false);
@@ -90,10 +82,185 @@ describe("agent passport venue linking", () => {
 
     const transferBlocked = await linkAgentPlatformFromBody({
       venue_id: "lighter",
-      permission_attestation: { can_read: true, can_trade: true, can_transfer: true },
+      permission_attestation: tradeOnlyPermissions({ can_transfer: true }),
       encrypted_execution_vault: sealedVault("lighter"),
     }, owner);
-    expect(transferBlocked).toEqual({ error: "withdraw_permission_blocked" });
+    expect(transferBlocked).toEqual({ error: "transfer_permission_blocked" });
+  });
+
+  it("fails closed when admin, export, or unknown-scope evidence is missing", async () => {
+    const incomplete = await linkAgentPlatformFromBody({
+      venue_id: "hyperliquid",
+      permission_attestation: {
+        can_read: true,
+        can_trade: true,
+        can_withdraw: false,
+        can_transfer: false,
+      },
+      encrypted_execution_vault: sealedVault("secret-must-not-return"),
+    }, owner);
+
+    expect(incomplete).toEqual({ error: "permission_attestation_incomplete" });
+    expect(JSON.stringify(incomplete)).not.toContain("secret-must-not-return");
+  });
+
+  it.each([
+    ["can_manage_credentials", "credential_admin_permission_blocked"],
+    ["can_export_secret", "secret_export_permission_blocked"],
+    ["unknown_scopes", "unknown_permission_scope_blocked"],
+  ] as const)("blocks unsafe %s evidence before persisting the vault", async (field, error) => {
+    const permission = tradeOnlyPermissions(field === "unknown_scopes"
+      ? { unknown_scopes: ["account:admin"] }
+      : { [field]: true });
+    const linked = await linkAgentPlatformFromBody({
+      venue_id: "hyperliquid",
+      permission_attestation: permission,
+      encrypted_execution_vault: sealedVault(`unsafe-${field}`),
+    }, owner);
+
+    expect(linked).toEqual({ error });
+    const account = await createOrGetStoredPrivateAccount(owner);
+    expect(await getVenueExecutionVaultByAccount({
+      account_commitment: account.account_commitment,
+      venue_id: "hyperliquid",
+      execution_mode: "byo_api_key",
+    })).toBeNull();
+    expect(JSON.stringify(linked)).not.toContain(`unsafe-${field}`);
+  });
+
+  it("requires complete owner authorization and non-exportable custody for programmatic setup", async () => {
+    const incomplete = await linkAgentPlatformFromBody({
+      venue_id: "hyperliquid",
+      provisioning_mode: "turnkey_delegated",
+      permission_attestation: tradeOnlyPermissions(),
+      encrypted_execution_vault: sealedVault("turnkey-incomplete"),
+    }, owner);
+    expect(incomplete).toEqual({ error: "explicit_owner_authorization_required" });
+
+    const linked = await linkAgentPlatformFromBody({
+      venue_id: "hyperliquid",
+      provisioning_mode: "turnkey_delegated",
+      turnkey_role: "venue_owner",
+      owner_authorization_source: "turnkey_venue_owner",
+      explicit_owner_authorization: true,
+      owner_binding_verified: true,
+      secret_handling: "turnkey_non_exportable",
+      permission_attestation: tradeOnlyPermissions(),
+      encrypted_execution_vault: sealedVault("turnkey-complete"),
+    }, owner);
+    expect("error" in linked).toBe(false);
+  });
+
+  it("accepts Aster programmatic provisioning only after explicit owner authorization", async () => {
+    const linked = await linkAgentPlatformFromBody({
+      venue_id: "aster",
+      provisioning_mode: "programmatic_generated",
+      turnkey_role: "none",
+      owner_authorization_source: "external_owner_signature",
+      explicit_owner_authorization: true,
+      owner_binding_verified: true,
+      secret_handling: "direct_to_attested_runtime",
+      permission_attestation: tradeOnlyPermissions(),
+      encrypted_execution_vault: sealedVault("aster-programmatic"),
+    }, owner);
+    expect("error" in linked).toBe(false);
+  });
+
+  it("accepts only Turnkey-owner Lighter programmatic association", async () => {
+    const unsafe = await linkAgentPlatformFromBody({
+      venue_id: "lighter",
+      provisioning_mode: "programmatic_generated",
+      turnkey_role: "none",
+      owner_authorization_source: "external_owner_signature",
+      explicit_owner_authorization: true,
+      owner_binding_verified: true,
+      secret_handling: "direct_to_attested_runtime",
+      permission_attestation: tradeOnlyPermissions(),
+      encrypted_execution_vault: sealedVault("lighter-future"),
+    }, owner);
+    expect(unsafe).toEqual({ error: "owner_authorization_source_not_supported" });
+
+    const linked = await linkAgentPlatformFromBody({
+      venue_id: "lighter",
+      provisioning_mode: "programmatic_generated",
+      turnkey_role: "venue_owner",
+      owner_authorization_source: "turnkey_venue_owner",
+      explicit_owner_authorization: true,
+      owner_binding_verified: true,
+      secret_handling: "direct_to_attested_runtime",
+      permission_attestation: tradeOnlyPermissions(),
+      encrypted_execution_vault: sealedVault("lighter-turnkey-owner"),
+    }, owner);
+    expect("error" in linked).toBe(false);
+  });
+
+  it("rejects unsupported manual venue linking even in local verification mode", async () => {
+    const linked = await linkAgentPlatformFromBody({
+      venue_id: "backpack",
+      permission_attestation: tradeOnlyPermissions(),
+      encrypted_execution_vault: sealedVault("backpack-unsupported"),
+    }, owner);
+    expect(linked).toEqual({ error: "venue_not_supported" });
+  });
+
+  it("does not send unsupported or unsafe sealed vaults to the worker", async () => {
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
+    let workerCalls = 0;
+    const oldFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      workerCalls += 1;
+      return new Response(JSON.stringify({ status: "verified" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const unsupported = await linkAgentPlatformFromBody({
+        venue_id: "backpack",
+        permission_attestation: tradeOnlyPermissions(),
+        encrypted_execution_vault: sealedVault("must-not-send-unsupported"),
+      }, owner);
+      const unsafe = await linkAgentPlatformFromBody({
+        venue_id: "hyperliquid",
+        permission_attestation: tradeOnlyPermissions({ can_export_secret: true }),
+        encrypted_execution_vault: sealedVault("must-not-send-unsafe"),
+      }, owner);
+
+      expect(unsupported).toEqual({ error: "venue_not_supported" });
+      expect(unsafe).toEqual({ error: "secret_export_permission_blocked" });
+      expect(workerCalls).toBe(0);
+      expect(JSON.stringify({ unsupported, unsafe })).not.toContain("must-not-send");
+    } finally {
+      globalThis.fetch = oldFetch;
+    }
+  });
+
+  it("downgrades legacy ready capabilities until they pass the credential contract", async () => {
+    const account = await createOrGetStoredPrivateAccount(owner);
+    await putPrivateVenueCapability({
+      version: 1,
+      owner_commitment: owner.owner_commitment,
+      account_commitment: account.account_commitment,
+      venue_id: "hyperliquid",
+      capability_commitment: "legacy_capability_without_contract_evidence",
+      status: "ready",
+      capability: {
+        can_read: true,
+        can_trade: true,
+        can_withdraw: false,
+      },
+      created_at: "2026-06-03T12:00:00.000Z",
+      updated_at: "2026-06-03T12:00:00.000Z",
+    });
+
+    const readiness = await agentPassportReadinessForOwner(owner);
+    const hyperliquid = readiness.passport.venues.find((venue) => venue.venue_id === "hyperliquid");
+    expect(hyperliquid).toMatchObject({
+      status: "blocked",
+      can_read: false,
+      can_trade: false,
+      reason_codes: expect.arrayContaining(["credential_contract_reverification_required"]),
+    });
+    expect(readiness.can_arm).toBe(false);
   });
 
   it("does not persist an encrypted venue vault before worker verification succeeds", async () => {
@@ -105,7 +272,7 @@ describe("agent passport venue linking", () => {
     try {
       const linked = await linkAgentPlatformFromBody({
         venue_id: "aster",
-        permission_attestation: { can_read: true, can_trade: true },
+        permission_attestation: tradeOnlyPermissions(),
         encrypted_execution_vault: sealedVault("aster"),
       }, owner);
       expect(linked).toEqual({ error: "credential_verification_failed" });
@@ -155,7 +322,7 @@ describe("agent passport venue linking", () => {
         const response = await linkPlatformRoute(authedPost("/v1/private-account/platforms/link", {
           venue_id: venue,
           execution_mode: "byo_api_key",
-          permission_attestation: { can_read: true, can_trade: true, can_withdraw: false, can_transfer: false },
+          permission_attestation: tradeOnlyPermissions(),
           encrypted_execution_vault: sealedVault(venue),
         }));
         const body = await response.json();
@@ -196,10 +363,76 @@ describe("agent passport venue linking", () => {
     }
   });
 
-  it("requires Hyperliquid, Phoenix, and Backpack for guarded SOL arbitrage readiness", async () => {
+  it("forwards all three sealed Carry venues through one no-submit matrix", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
+    process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "report_only";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
+    const matrixBodies: Record<string, unknown>[] = [];
+    const oldFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+      if (url === "https://worker.example/venues/credentials/verify") {
+        return new Response(JSON.stringify({ status: "verified", can_read: true, can_trade: true, can_withdraw: false }), { status: 200 });
+      }
+      if (url === "https://worker.example/carry/preflight-matrix") {
+        matrixBodies.push(body);
+        return new Response(JSON.stringify({
+          mode: "carry_execution_no_submit_matrix",
+          no_submit_ready: true,
+          transaction_broadcast: false,
+          venues: ["hyperliquid", "lighter", "aster"].map((venue_id) => ({ venue_id, transaction_broadcast: false })),
+          failures: [],
+        }), { status: 200 });
+      }
+      return oldFetch(input, init);
+    }) as typeof fetch;
+
+    try {
+      for (const venue of ["hyperliquid", "lighter", "aster"] as const) {
+        const linked = await linkPlatformRoute(authedPost("/v1/private-account/platforms/link", {
+          venue_id: venue,
+          execution_mode: "byo_api_key",
+          permission_attestation: tradeOnlyPermissions(),
+          encrypted_execution_vault: sealedVault(venue),
+        }));
+        expect(linked.status).toBe(201);
+      }
+
+      const response = await carryRoute(new NextRequest("https://ghola.test/v1/private-account/carry", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer investor-test-token",
+          "content-type": "application/json",
+          origin: "https://ghola.test",
+        },
+        body: JSON.stringify({ action: "preflight_matrix", asset: "BTC", notional_usd: "11", horizon_days: "1" }),
+      }));
+      const result = await response.json();
+      expect(response.status, JSON.stringify(result)).toBe(200);
+      expect(result.no_submit_ready).toBe(true);
+      expect(result.transaction_broadcast).toBe(false);
+
+      expect(matrixBodies).toHaveLength(1);
+      const matrixBody = matrixBodies[0];
+      const access = matrixBody.venue_access as Record<string, Record<string, unknown>>;
+      expect(Object.keys(access).sort()).toEqual(["aster", "hyperliquid", "lighter"]);
+      for (const venue of Object.keys(access)) {
+        expect(access[venue].owner_commitment).toBe(matrixBody.owner_commitment);
+        expect(access[venue].encrypted_execution_vault).toMatchObject({ ciphertext: `sealed-${venue}-vault` });
+      }
+      expect(matrixBody).not.toHaveProperty("api_private_key");
+      expect(matrixBody).not.toHaveProperty("api_wallet_private_key");
+    } finally {
+      globalThis.fetch = oldFetch;
+    }
+  });
+
+  it("keeps guarded SOL arbitrage blocked while Backpack credential verification is unsupported", async () => {
     await linkAgentPlatformFromBody({
       venue_id: "hyperliquid",
-      permission_attestation: { scopes: ["read", "trade"] },
+      permission_attestation: tradeOnlyPermissions(),
       encrypted_execution_vault: sealedVault("hyperliquid"),
     }, owner);
     let readiness = await agentPassportReadinessForOwner(owner);
@@ -208,12 +441,12 @@ describe("agent passport venue linking", () => {
 
     await linkAgentPlatformFromBody({
       venue_id: "phoenix",
-      permission_attestation: { scopes: ["read", "trade"] },
+      permission_attestation: tradeOnlyPermissions(),
       encrypted_execution_vault: sealedVault("phoenix"),
     }, owner);
-    await linkAgentPlatformFromBody({
+    const backpack = await linkAgentPlatformFromBody({
       venue_id: "backpack",
-      permission_attestation: { scopes: ["read", "trade"] },
+      permission_attestation: tradeOnlyPermissions(),
       encrypted_execution_vault: sealedVault("backpack"),
     }, owner);
     process.env.PRIVATE_AGENT_ARB_LIVE_SUBMIT = "true";
@@ -224,9 +457,11 @@ describe("agent passport venue linking", () => {
     process.env.PRIVATE_AGENT_ARB_MAX_MARKET_DATA_SKEW_MS = "2000";
 
     readiness = await agentPassportReadinessForOwner(owner);
-    expect(readiness.can_arm).toBe(true);
-    expect(readiness.can_live_submit).toBe(true);
-    expect(readiness.ready_venues).toEqual(expect.arrayContaining(["hyperliquid", "phoenix", "backpack"]));
+    expect(backpack).toEqual({ error: "venue_not_supported" });
+    expect(readiness.can_arm).toBe(false);
+    expect(readiness.can_live_submit).toBe(false);
+    expect(readiness.ready_venues).toEqual(expect.arrayContaining(["hyperliquid", "phoenix"]));
+    expect(readiness.blockers).toContain("backpack_required");
   });
 
   it("rejects arm-arb until Agent Passport has a hedged venue pair", async () => {
@@ -304,7 +539,7 @@ describe("agent passport venue linking", () => {
     expect(body.reason_codes).toContain("secret_field_rejected");
   });
 
-  it("fails arm-arb instead of returning a pending session when the worker is unavailable", async () => {
+  it("fails arm-arb before contacting the worker when a required venue is unsupported", async () => {
     process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
     process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "report_only";
     process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "true";
@@ -314,22 +549,22 @@ describe("agent passport venue linking", () => {
     if (!routeOwner) return;
     const linkedHyperliquid = await linkAgentPlatformFromBody({
       venue_id: "hyperliquid",
-      permission_attestation: { scopes: ["read", "trade"] },
+      permission_attestation: tradeOnlyPermissions(),
       encrypted_execution_vault: sealedVault("hyperliquid"),
     }, routeOwner);
     const linkedPhoenix = await linkAgentPlatformFromBody({
       venue_id: "phoenix",
-      permission_attestation: { scopes: ["read", "trade"] },
+      permission_attestation: tradeOnlyPermissions(),
       encrypted_execution_vault: sealedVault("phoenix"),
     }, routeOwner);
     const linkedBackpack = await linkAgentPlatformFromBody({
       venue_id: "backpack",
-      permission_attestation: { scopes: ["read", "trade"] },
+      permission_attestation: tradeOnlyPermissions(),
       encrypted_execution_vault: sealedVault("backpack"),
     }, routeOwner);
     expect("error" in linkedHyperliquid).toBe(false);
     expect("error" in linkedPhoenix).toBe(false);
-    expect("error" in linkedBackpack).toBe(false);
+    expect(linkedBackpack).toEqual({ error: "venue_not_supported" });
 
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "token";
@@ -349,16 +584,15 @@ describe("agent passport venue linking", () => {
       }));
       const body = await res.json();
 
-      expect(res.status, JSON.stringify(body)).toBe(502);
-      expect(body.error).toBe("worker_arb_not_armed");
-      expect(body.session.status).toBe("pending_worker");
-      expect(body.session.worker_autopilot_session_id).toBeNull();
+      expect(res.status, JSON.stringify(body)).toBe(409);
+      expect(body.error).toBe("agent_passport_not_ready");
+      expect(body.blockers).toContain("backpack_required");
     } finally {
       globalThis.fetch = oldFetch;
     }
   });
 
-  it("arms a guarded arbitrage worker session from Agent Passport venues", async () => {
+  it("does not arm a guarded arbitrage worker with an unsupported credential lane", async () => {
     process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
     process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "report_only";
     process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "true";
@@ -374,22 +608,22 @@ describe("agent passport venue linking", () => {
     if (!routeOwner) return;
     const linkedHyperliquid = await linkAgentPlatformFromBody({
       venue_id: "hyperliquid",
-      permission_attestation: { scopes: ["read", "trade"] },
+      permission_attestation: tradeOnlyPermissions(),
       encrypted_execution_vault: sealedVault("hyperliquid"),
     }, routeOwner);
     const linkedPhoenix = await linkAgentPlatformFromBody({
       venue_id: "phoenix",
-      permission_attestation: { scopes: ["read", "trade"] },
+      permission_attestation: tradeOnlyPermissions(),
       encrypted_execution_vault: sealedVault("phoenix"),
     }, routeOwner);
     const linkedBackpack = await linkAgentPlatformFromBody({
       venue_id: "backpack",
-      permission_attestation: { scopes: ["read", "trade"] },
+      permission_attestation: tradeOnlyPermissions(),
       encrypted_execution_vault: sealedVault("backpack"),
     }, routeOwner);
     expect("error" in linkedHyperliquid).toBe(false);
     expect("error" in linkedPhoenix).toBe(false);
-    expect("error" in linkedBackpack).toBe(false);
+    expect(linkedBackpack).toEqual({ error: "venue_not_supported" });
 
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "token";
@@ -452,11 +686,10 @@ describe("agent passport venue linking", () => {
       }));
       const body = await res.json();
 
-      expect(res.status, JSON.stringify(body)).toBe(201);
-      expect(body.session.status).toBe("running");
-      expect(body.session.worker_autopilot_session_id).toBe("worker_arb_123");
-      expect(body.session.session_policy.strategy_id).toBe("hedged_spread_arbitrage_v1");
-      expect(body.readiness.can_live_submit).toBe(true);
+      expect(res.status, JSON.stringify(body)).toBe(409);
+      expect(body.error).toBe("agent_passport_not_ready");
+      expect(body.blockers).toContain("backpack_required");
+      expect(body.readiness.can_live_submit).toBe(false);
     } finally {
       globalThis.fetch = oldFetch;
     }
@@ -469,6 +702,19 @@ function sealedVault(label: string) {
     ciphertext: `sealed-${label}-vault`,
     recipient: "phala:cvm:test",
     aad: `ghola/${label}-execution-vault-v1|account:acct|recipient:phala:cvm:test`,
+  };
+}
+
+function tradeOnlyPermissions(overrides: Record<string, unknown> = {}) {
+  return {
+    can_read: true,
+    can_trade: true,
+    can_withdraw: false,
+    can_transfer: false,
+    can_manage_credentials: false,
+    can_export_secret: false,
+    unknown_scopes: [],
+    ...overrides,
   };
 }
 

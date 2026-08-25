@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { executionVenueSpec } from "@ghola/execution-core";
-import { preflightCarryPair } from "../src/execution/carry-preflight.js";
+import { preflightCarryExecutionMatrix, preflightCarryPair } from "../src/execution/carry-preflight.js";
 import { storeCarryVenueQualification } from "../src/execution/carry-qualification.js";
 
 const NOW = 1_800_000_000_000;
@@ -31,10 +31,10 @@ function snapshot(venueId) {
   };
 }
 
-function access() {
+function access(ownerCommitment = "owner_commitment_0001") {
   return {
     status: "ready",
-    owner_commitment: "owner_commitment_0001",
+    owner_commitment: ownerCommitment,
     account_commitment: "account_commitment_0001",
     vault_commitment: "vault_commitment_0001",
     policy_commitment: "policy_commitment_0001",
@@ -99,6 +99,32 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
   assert.equal(result.economic_opportunity.projected_trading_cost_micro_usdc > 0, true);
 });
 
+test("rejects cross-owner sealed venue access before order verification", async () => {
+  let verified = false;
+  await assert.rejects(
+    preflightCarryPair({
+      body: {
+        version: 1,
+        owner_commitment: "owner_commitment_other",
+        work_order_commitment: "carry_pair_owner_mismatch",
+        asset: "BTC",
+        long_venue_id: "hyperliquid",
+        short_venue_id: "aster",
+        notional_usd: 100,
+        horizon_days: 30,
+        venue_access: { hyperliquid: access(), aster: access() },
+      },
+      recipient: {},
+      state: {},
+      now: () => NOW,
+      fetchVenue: async ({ venue_id }) => [snapshot(venue_id)],
+      verifyOrder: async () => { verified = true; },
+    }),
+    (error) => error?.code === "carry_account_owner_mismatch:hyperliquid",
+  );
+  assert.equal(verified, false);
+});
+
 test("accepts Lighter's owner-destination custody boundary and conservative fee ceiling", async () => {
   const account = {
     can_trade: true,
@@ -121,7 +147,7 @@ test("accepts Lighter's owner-destination custody boundary and conservative fee 
       short_venue_id: "lighter",
       notional_usd: 100,
       horizon_days: 30,
-      venue_access: { hyperliquid: access(), lighter: access() },
+      venue_access: { hyperliquid: access("owner_commitment_0002"), lighter: access("owner_commitment_0002") },
     },
     recipient: {},
     state: {},
@@ -156,6 +182,71 @@ test("accepts Lighter's owner-destination custody boundary and conservative fee 
   assert.ok(result.qualification_reasons.includes("venue_not_proven:lighter"));
   assert.ok(result.qualification_reasons.includes("exact_quantity_recovery_unproven:lighter"));
   assert.equal(result.evidence.find((item) => item.venue_id === "lighter").authority_boundary.venue_native_trade_only, false);
+});
+
+test("verifies all three execution venues through one no-broadcast matrix", async () => {
+  const calls = [];
+  const account = {
+    can_trade: true,
+    available_balance: 500,
+    margin_balance: 500,
+    initial_margin: 0,
+    maintenance_margin: 0,
+    maker_fee_bps: 0,
+    taker_fee_bps: 1,
+    position_count: 0,
+    open_order_count: 0,
+  };
+  const result = await preflightCarryExecutionMatrix({
+    body: {
+      version: 1,
+      owner_commitment: "owner_commitment_matrix_0001",
+      operation_class: "matrix_no_submit",
+      work_order_commitment: "carry_matrix_preflight_0001",
+      asset: "BTC",
+      notional_usd: 100,
+      horizon_days: 30,
+      venue_access: {
+        hyperliquid: access("owner_commitment_matrix_0001"),
+        aster: access("owner_commitment_matrix_0001"),
+        lighter: access("owner_commitment_matrix_0001"),
+      },
+    },
+    recipient: {},
+    state: {},
+    now: () => NOW,
+    fetchVenue: async ({ venue_id }) => [snapshot(venue_id)],
+    verifyOrder: async ({ venue_id, instruction, work_order_commitment }) => {
+      calls.push({ venue_id, side: instruction.order.side });
+      return {
+        status: "verified_ready",
+        work_order_commitment,
+        verification_commitment: `verification_matrix_${venue_id}_${calls.length}`,
+        checks: { order_request_checked: true, transaction_broadcast: false },
+        order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
+        account,
+        ...(venue_id === "lighter" ? {
+          authority_boundary: {
+            venue_native_trade_only: false,
+            withdrawal_request_permitted: false,
+            secure_withdrawal_destination: "owner_l1_only",
+            owner_wallet_key_present: false,
+            non_owner_fund_movement_possible: false,
+          },
+        } : { authority_boundary: { venue_native_trade_only: true } }),
+      };
+    },
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
+    readHyperliquidCarryMetrics: async () => account,
+  });
+
+  assert.equal(result.no_submit_ready, true);
+  assert.equal(result.transaction_broadcast, false);
+  assert.deepEqual(result.venues.map((item) => item.venue_id).sort(), ["aster", "hyperliquid", "lighter"]);
+  assert.equal(result.venues.every((item) => item.checks.transaction_broadcast === false), true);
+  assert.equal(result.pairs.length, 2);
+  assert.equal(result.failures.length, 0);
+  assert.equal(new Set(calls.map((call) => call.venue_id)).size, 3);
 });
 
 test("enables an economically eligible Aster pair only after deployment-bound qualification", async () => {
@@ -203,7 +294,7 @@ test("enables an economically eligible Aster pair only after deployment-bound qu
       short_venue_id: "aster",
       notional_usd: 100,
       horizon_days: 30,
-      venue_access: { hyperliquid: access(), aster: access() },
+      venue_access: { hyperliquid: access("owner_commitment_0003"), aster: access("owner_commitment_0003") },
     },
     recipient: {},
     env: { PRIVATE_AGENT_IMAGE_DIGEST: image },
@@ -232,7 +323,16 @@ test("enables an economically eligible Aster pair only after deployment-bound qu
   assert.equal(result.qualification_reasons.length, 0);
   assert.equal(result.live_creation_ready, true);
   rows.clear();
-  const pilot = await preflightCarryPair({ ...preflightInput, state });
+  const disabledPilot = await preflightCarryPair({ ...preflightInput, state });
+  assert.equal(disabledPilot.qualification_pilot_ready, false);
+  const pilot = await preflightCarryPair({
+    ...preflightInput,
+    state,
+    env: {
+      ...preflightInput.env,
+      PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED: "true",
+    },
+  });
   assert.equal(pilot.live_creation_ready, false);
   assert.equal(pilot.qualification_pilot_ready, true);
   assert.equal(pilot.qualification_pilot_candidate_venue_id, "aster");

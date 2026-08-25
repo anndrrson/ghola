@@ -19,6 +19,8 @@ import type { SolanaSwapEncryptedExecutionVaultBundle } from "./solana-swap-vaul
 import type { CarryExecutionVenue } from "./carry-venues";
 import type { AsterEncryptedExecutionVaultBundle } from "./aster-vault-seal";
 import type { LighterEncryptedExecutionVaultBundle } from "./lighter-vault-seal";
+import type { AsterV3AgentOnboardingContract } from "./aster-agent-onboarding";
+import type { LighterChangePubKeyTransactionPlan } from "./lighter-agent-association";
 import { defaultHyperliquidMarketAllowlist } from "./private-account-hyperliquid-policy";
 
 export type PrivateAccountProductBucket =
@@ -694,7 +696,147 @@ export async function linkPrivateAgentPlatform(input: {
         can_trade: true,
         can_withdraw: false,
         can_transfer: false,
+        can_manage_credentials: false,
+        can_export_secret: false,
+        unknown_scopes: [],
       },
+    }),
+  });
+}
+
+export interface AsterProgrammaticPreparation {
+  version: 1;
+  preparation_id: string;
+  account_commitment: string;
+  venue_id: "aster";
+  credential_provisioning_mode: "programmatic_generated";
+  owner_approval_required: true;
+  authorization_expires_at: string;
+  contract: AsterV3AgentOnboardingContract;
+  encrypted_execution_vault: Record<string, unknown>;
+  permissions: Record<string, unknown>;
+  setup: {
+    may_place_trade: false;
+    transaction_broadcast: false;
+    credential_registered: false;
+  };
+}
+
+export interface AsterPublicRegistrationReceipt {
+  version: 1;
+  venue_id: "aster";
+  status: "registered";
+  preparation_id: string;
+  owner_address: string;
+  signer_address: string;
+  signature_commitment: string;
+  authorization_expires_at: string;
+  permissions: Record<string, unknown>;
+  setup: Record<string, unknown>;
+  registered_at: string | null;
+}
+
+export async function prepareAsterProgrammaticCredential(input: {
+  owner_address: string;
+  agent_name?: string;
+  ip_whitelist?: string[];
+}): Promise<AsterProgrammaticPreparation> {
+  return privateAccountFetch("/v1/private-account/platforms/aster/prepare", {
+    method: "POST",
+    body: JSON.stringify(input),
+  }) as Promise<AsterProgrammaticPreparation>;
+}
+
+export async function completeAsterProgrammaticCredential(input: {
+  preparation: AsterProgrammaticPreparation;
+  signature: `0x${string}`;
+  link_recovery_receipt?: AsterPublicRegistrationReceipt;
+}) {
+  const contract = input.preparation.contract;
+  const parameters = contract.approval.parametersWithoutSignature;
+  return privateAccountFetch("/v1/private-account/platforms/aster/complete", {
+    method: "POST",
+    body: JSON.stringify({
+      preparation_id: input.preparation.preparation_id,
+      owner_address: contract.ownerAuthorization.ownerAddress,
+      signer_address: contract.attestedSigner.publicAddress,
+      agent_name: parameters.agentName,
+      nonce: parameters.nonce,
+      expired: parameters.expired,
+      ip_whitelist: parameters.ipWhitelist ? parameters.ipWhitelist.split(" ").filter(Boolean) : [],
+      signature: input.signature,
+      attested_signer: {
+        provider: contract.attestedSigner.provider,
+        worker_id: contract.attestedSigner.workerId,
+        attestation_sha256: contract.attestedSigner.attestationSha256,
+      },
+      encrypted_execution_vault: input.preparation.encrypted_execution_vault,
+      ...(input.link_recovery_receipt ? {
+        link_recovery: true,
+        registration_receipt: input.link_recovery_receipt,
+      } : {}),
+    }),
+  });
+}
+
+export interface LighterProgrammaticPreparation {
+  version: 1;
+  preparation_id: string;
+  owner_commitment: string;
+  account_commitment: string;
+  venue_id: "lighter";
+  credential_provisioning_mode: "programmatic_generated";
+  owner_approval_required: true;
+  owner_association: {
+    method: "ethereum_change_pub_key";
+    status: "transaction_prepared";
+    ethereum_gas_required: true;
+  };
+  transaction_plan: LighterChangePubKeyTransactionPlan;
+  encrypted_execution_vault: Record<string, unknown>;
+  attested_signer: Record<string, unknown>;
+  authority_boundary: Record<string, unknown>;
+  setup: {
+    may_place_trade: false;
+    transaction_signed: false;
+    transaction_broadcast: false;
+    credential_ready: false;
+  };
+}
+
+export interface LighterAssociationProof {
+  raw_transaction: `0x02${string}`;
+  transaction_hash: `0x${string}`;
+}
+
+export async function prepareLighterProgrammaticCredential(input: {
+  owner_address: string;
+}): Promise<LighterProgrammaticPreparation> {
+  return privateAccountFetch("/v1/private-account/platforms/lighter/prepare", {
+    method: "POST",
+    body: JSON.stringify(input),
+  }) as Promise<LighterProgrammaticPreparation>;
+}
+
+export async function completeLighterProgrammaticCredential(input: {
+  preparation: LighterProgrammaticPreparation;
+  authorization: LighterAssociationProof;
+  reconcile_only?: boolean;
+}) {
+  const plan = input.preparation.transaction_plan;
+  return privateAccountFetch("/v1/private-account/platforms/lighter/complete", {
+    method: "POST",
+    body: JSON.stringify({
+      preparation_id: input.preparation.preparation_id,
+      owner_address: plan.from,
+      account_index: plan.account_index,
+      api_key_index: plan.api_key_index,
+      public_key: plan.public_key,
+      raw_transaction: input.authorization.raw_transaction,
+      transaction_hash: input.authorization.transaction_hash,
+      transaction_plan: plan,
+      encrypted_execution_vault: input.preparation.encrypted_execution_vault,
+      reconcile_only: input.reconcile_only === true,
     }),
   });
 }
@@ -735,6 +877,17 @@ export async function preflightCarryPair(input: {
   return privateAccountFetch("/v1/private-account/carry", {
     method: "POST",
     body: JSON.stringify({ action: "preflight_pair", ...input }),
+  });
+}
+
+export async function preflightCarryExecutionMatrix(input: {
+  asset: string;
+  notional_usd: string;
+  horizon_days: string;
+}) {
+  return privateAccountFetch("/v1/private-account/carry", {
+    method: "POST",
+    body: JSON.stringify({ action: "preflight_matrix", ...input }),
   });
 }
 

@@ -17,6 +17,7 @@
 !deploy
 !deploy/evidence
 !deploy/evidence/hyperliquid-mainnet-proof-2026-08-23.json
+!deploy/evidence/CARRY_MAINNET_PROOF_RUNBOOK.md
 
 # Vercel's linked project root is apps/web. When the CLI applies this
 # ignore file relative to that root, the repo-root exceptions above do

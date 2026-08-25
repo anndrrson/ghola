@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { venueAdapterCapability } from "@ghola/execution-core";
 import { openSealedBundle } from "../crypto/envelope.js";
 import {
   bucketToUsd,
@@ -47,7 +48,7 @@ import {
 } from "../venues/aster.js";
 import {
   lighterClientOrderIndex,
-  lighterCredentialFromVault,
+  openLighterExecutionCredential,
   readLighterFundingSettlements,
   submitAndReconcileLighterExecution,
   verifyLighterCredential,
@@ -64,6 +65,64 @@ export class PrivateExecutionError extends Error {
 
 const AUTOPILOT_INTERNAL_INSTRUCTION = Symbol("ghola.autopilot.internal_instruction");
 const HYPERLIQUID_PROOF_PROTOCOL = "ghola-hyperliquid-proof-v2";
+const ACTIVE_CARRY_ADAPTER_STATUSES = new Set(["proven", "implemented_unproven"]);
+const CARRY_PRIVATE_EXECUTION_ADAPTERS = Object.freeze({
+  hyperliquid_v1: privateCarryAdapter({
+    venueId: "hyperliquid",
+    platformClass: "hyperliquid_style_market",
+    execute: executeHyperliquidOrder,
+    verify: verifyHyperliquidOrderNoSubmit,
+    executeMode: "ghola_pooled",
+    verifyMode: "byo_api_key",
+  }),
+  aster_v1: privateCarryAdapter({
+    venueId: "aster",
+    platformClass: "hyperliquid_style_market",
+    execute: executeAsterOrder,
+    verify: verifyAsterOrderNoSubmit,
+    executeMode: "byo_api_key",
+    verifyMode: "byo_api_key",
+  }),
+  lighter_v1: privateCarryAdapter({
+    venueId: "lighter",
+    platformClass: "hyperliquid_style_market",
+    execute: executeLighterOrder,
+    verify: verifyLighterOrderNoSubmit,
+    executeMode: "byo_api_key",
+    verifyMode: "byo_api_key",
+  }),
+});
+
+export function registeredCarryAdapterId(venueId, capability) {
+  const declared = venueAdapterCapability(venueId, capability);
+  if (!declared || !ACTIVE_CARRY_ADAPTER_STATUSES.has(declared.status)) return null;
+  const registered = CARRY_PRIVATE_EXECUTION_ADAPTERS[declared.adapter_id];
+  if (!registered || registered.venue_id !== venueId) {
+    throw new PrivateExecutionError("carry adapter registry binding is unavailable", 409);
+  }
+  return declared.adapter_id;
+}
+
+function registeredCarryAdapter(venueId, capability) {
+  const adapterId = registeredCarryAdapterId(venueId, capability);
+  return adapterId ? CARRY_PRIVATE_EXECUTION_ADAPTERS[adapterId] : null;
+}
+
+function privateCarryAdapter({ venueId, platformClass, execute, verify, executeMode, verifyMode }) {
+  return Object.freeze({
+    venue_id: venueId,
+    execute,
+    verify,
+    body(body, execution, phase) {
+      return {
+        ...body,
+        venue_id: venueId,
+        platform_class: platformClass,
+        execution_mode: execution.execution_mode || (phase === "execute" ? executeMode : verifyMode),
+      };
+    },
+  });
+}
 
 export function commitment(prefix, value) {
   return `${prefix}_${sha256Hex(canonicalJson(value)).slice(0, 48)}`;
@@ -421,15 +480,16 @@ export async function readCarryFundingSettlements({ body, recipient, state }) {
     start_time_ms: Number(body.start_time_ms),
     end_time_ms: Number(body.end_time_ms),
   };
-  if (venueId === "hyperliquid") {
+  const adapterId = registeredCarryAdapterId(venueId, "carry_execution");
+  if (adapterId === "hyperliquid_v1") {
     const { credential } = await hyperliquidCredentialForBody({ body, recipient, state });
     return readHyperliquidFundingSettlements({ credential, ...common });
   }
-  if (venueId === "aster") {
+  if (adapterId === "aster_v1") {
     const credential = await asterCredentialForBody({ body, recipient });
     return readAsterFundingSettlements({ credential, symbol: common.asset, ...common });
   }
-  if (venueId === "lighter") {
+  if (adapterId === "lighter_v1") {
     const credential = await lighterCredentialForBody({ body, recipient });
     return readLighterFundingSettlements({ credential, market: common.asset, ...common });
   }
@@ -554,7 +614,12 @@ export async function verifyVenueCredential({ body, recipient }) {
   }
   if (venueId === "aster") {
     const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/aster-execution-vault-v1",
+      expectedAad: [
+        "ghola/aster-execution-vault-v1",
+        `account:${body.account_commitment}`,
+        `recipient:${recipient.recipient_id}`,
+        "network:mainnet",
+      ].join("|"),
       expectedKind: "ghola_aster_execution_vault",
     });
     const credential = asterCredentialFromVault(openedVault.json);
@@ -572,11 +637,11 @@ export async function verifyVenueCredential({ body, recipient }) {
     });
   }
   if (venueId === "lighter") {
-    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/lighter-execution-vault-v1",
-      expectedKind: "ghola_lighter_execution_vault",
+    const credential = await openLighterExecutionCredential({
+      bundle: body.encrypted_execution_vault,
+      recipient,
+      accountCommitment: body.account_commitment,
     });
-    const credential = lighterCredentialFromVault(openedVault.json);
     const verification = await verifyLighterCredential({ credential });
     return credentialVerificationResult({
       venue_id: "lighter",
@@ -687,7 +752,7 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
     }
   }
 
-  const clientOrderId = await state.deriveClientOrderId("ghola", body.work_order_commitment);
+  const clientOrderId = await state.deriveClientOrderId("gh", body.work_order_commitment);
   let adapterResult;
   try {
     adapterResult = await submitCoinbaseExecution({
@@ -928,6 +993,14 @@ export async function executeAutopilotOrder({
     [AUTOPILOT_INTERNAL_INSTRUCTION]: instruction,
     ...execution,
   };
+  const carryAdapter = registeredCarryAdapter(venue_id, "carry_execution");
+  if (carryAdapter) {
+    return carryAdapter.execute({
+      body: carryAdapter.body(body, execution, "execute"),
+      recipient,
+      state,
+    });
+  }
   if (venue_id === "jupiter") {
     return executeJupiterSwapOrder({
       body: {
@@ -947,42 +1020,6 @@ export async function executeAutopilotOrder({
         venue_id,
         platform_class: "solana_perps_market",
         execution_mode: execution.execution_mode || "ghola_pooled",
-      },
-      recipient,
-      state,
-    });
-  }
-  if (venue_id === "hyperliquid") {
-    return executeHyperliquidOrder({
-      body: {
-        ...body,
-        venue_id: "hyperliquid",
-        platform_class: "hyperliquid_style_market",
-        execution_mode: execution.execution_mode || "ghola_pooled",
-      },
-      recipient,
-      state,
-    });
-  }
-  if (venue_id === "aster") {
-    return executeAsterOrder({
-      body: {
-        ...body,
-        venue_id: "aster",
-        platform_class: "hyperliquid_style_market",
-        execution_mode: execution.execution_mode || "byo_api_key",
-      },
-      recipient,
-      state,
-    });
-  }
-  if (venue_id === "lighter") {
-    return executeLighterOrder({
-      body: {
-        ...body,
-        venue_id: "lighter",
-        platform_class: "hyperliquid_style_market",
-        execution_mode: execution.execution_mode || "byo_api_key",
       },
       recipient,
       state,
@@ -1023,6 +1060,14 @@ export async function verifyAutopilotOrder({
     [AUTOPILOT_INTERNAL_INSTRUCTION]: instruction,
     ...execution,
   };
+  const carryAdapter = registeredCarryAdapter(venue_id, "no_submit_reconciliation");
+  if (carryAdapter) {
+    return carryAdapter.verify({
+      body: carryAdapter.body(body, execution, "verify"),
+      recipient,
+      state,
+    });
+  }
   if (venue_id === "jupiter") {
     return verifyJupiterSwapNoSubmit({
       body: {
@@ -1030,42 +1075,6 @@ export async function verifyAutopilotOrder({
         venue_id: "jupiter",
         platform_class: "solana_swap_aggregator",
         execution_mode: execution.execution_mode || "user_stealth",
-      },
-      recipient,
-      state,
-    });
-  }
-  if (venue_id === "hyperliquid") {
-    return verifyHyperliquidOrderNoSubmit({
-      body: {
-        ...body,
-        venue_id: "hyperliquid",
-        platform_class: "hyperliquid_style_market",
-        execution_mode: execution.execution_mode || "byo_api_key",
-      },
-      recipient,
-      state,
-    });
-  }
-  if (venue_id === "aster") {
-    return verifyAsterOrderNoSubmit({
-      body: {
-        ...body,
-        venue_id: "aster",
-        platform_class: "hyperliquid_style_market",
-        execution_mode: execution.execution_mode || "byo_api_key",
-      },
-      recipient,
-      state,
-    });
-  }
-  if (venue_id === "lighter") {
-    return verifyLighterOrderNoSubmit({
-      body: {
-        ...body,
-        venue_id: "lighter",
-        platform_class: "hyperliquid_style_market",
-        execution_mode: execution.execution_mode || "byo_api_key",
       },
       recipient,
       state,
@@ -1392,11 +1401,11 @@ export async function verifyLighterOrderNoSubmit({ body, recipient, state }) {
 }
 
 async function lighterCredentialForBody({ body, recipient }) {
-  const opened = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-    aadPrefix: "ghola/lighter-execution-vault-v1",
-    expectedKind: "ghola_lighter_execution_vault",
+  return openLighterExecutionCredential({
+    bundle: body.encrypted_execution_vault,
+    recipient,
+    accountCommitment: body.account_commitment,
   });
-  return lighterCredentialFromVault(opened.json);
 }
 
 export async function verifySolanaPerpsOrderNoSubmit({ body, recipient, state }) {

@@ -9,6 +9,8 @@ export type WorkerCapabilityScope =
   | "carry:read"
   | "carry:write"
   | "credential:verify"
+  | "credential:provision"
+  | "credential:authorize"
   | "session:create"
   | "order:submit"
   | "order:verify"

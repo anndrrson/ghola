@@ -1,9 +1,10 @@
 import {
+  CARRY_EXECUTION_VENUES,
   calculateMarginRunway,
   evaluateCarryOpportunity,
   exactQuantityRecoveryAdapter,
-  executionVenueSpec,
   isCarryExecutionVenue,
+  venueAdapterCapability,
 } from "@ghola/execution-core";
 import { fetchPerpShadowVenue } from "./perp-shadow-adapters.js";
 import { readCarryVenueQualification } from "./carry-qualification.js";
@@ -91,7 +92,6 @@ export async function preflightCarryPair({
   })));
   const qualificationByVenue = new Map(qualifications.map((item) => [item.venue_id, item]));
   const qualificationReasons = evidence.flatMap((leg) => {
-    const spec = executionVenueSpec(leg.venue_id);
     const qualification = qualificationByVenue.get(leg.venue_id);
     return [
       ...(qualification?.proven === true ? [] : [`venue_not_proven:${leg.venue_id}`]),
@@ -113,7 +113,7 @@ export async function preflightCarryPair({
   }
   const unproven = qualifications.filter((item) => item.proven !== true);
   const pilotCandidate = unproven.length === 1
-    && executionVenueSpec(unproven[0].venue_id)?.qualification_status === "integration"
+    && venueAdapterCapability(unproven[0].venue_id, "carry_execution")?.status === "implemented_unproven"
     && exactQuantityRecoveryAdapter(unproven[0].venue_id)
     ? unproven[0].venue_id
     : null;
@@ -121,7 +121,8 @@ export async function preflightCarryPair({
     `venue_not_proven:${pilotCandidate}`,
     `exact_quantity_recovery_unproven:${pilotCandidate}`,
   ] : []);
-  const qualificationPilotReady = Boolean(pilotCandidate)
+  const qualificationPilotReady = env.PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED === "true"
+    && Boolean(pilotCandidate)
     && modeled.no_submit_ready
     && modeled.opportunity.eligible
     && qualificationReasons.every((reason) => pilotAllowedReasons.has(reason));
@@ -152,6 +153,52 @@ export async function preflightCarryPair({
     qualification_pilot_candidate_venue_id: pilotCandidate,
     qualification_reasons: [...new Set(qualificationReasons)],
     checked_at: new Date(modeled.checked_at_ms).toISOString(),
+  };
+}
+
+export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
+  const venues = [...CARRY_EXECUTION_VENUES];
+  if (venues.length < 3) throw carryError("carry_execution_matrix_incomplete", 409);
+  const anchor = venues.find((venueId) => venueAdapterCapability(venueId, "carry_execution")?.status === "proven") || venues[0];
+  const pairs = venues.filter((venueId) => venueId !== anchor).map((venueId, index) => ({
+    long_venue_id: index % 2 === 0 ? anchor : venueId,
+    short_venue_id: index % 2 === 0 ? venueId : anchor,
+  }));
+  const results = await Promise.all(pairs.map((pair, index) => preflightCarryPair({
+    ...dependencies,
+    body: {
+      ...body,
+      operation_class: "paired_no_submit",
+      work_order_commitment: `${body.work_order_commitment}_pair_${index + 1}`,
+      ...pair,
+    },
+  })));
+  const evidence = results.flatMap((result) => result.evidence || []);
+  const venueEvidence = venues.map((venueId) => evidence.find((item) => item.venue_id === venueId)).filter(Boolean);
+  const failures = [];
+  for (const [index, result] of results.entries()) {
+    if (result.transaction_broadcast !== false || result.no_submit_ready !== true) failures.push(`pair_not_ready:${index + 1}`);
+  }
+  for (const venueId of venues) {
+    const item = venueEvidence.find((entry) => entry.venue_id === venueId);
+    if (!item) failures.push(`venue_evidence_missing:${venueId}`);
+    else if (item.transaction_broadcast !== false || item.checks?.transaction_broadcast !== false) failures.push(`venue_broadcast_unsafe:${venueId}`);
+    else if (item.checks?.order_request_built !== true && item.checks?.order_request_checked !== true) failures.push(`venue_order_shape_unverified:${venueId}`);
+  }
+  return {
+    version: 1,
+    mode: "carry_execution_no_submit_matrix",
+    transaction_broadcast: false,
+    no_submit_ready: failures.length === 0,
+    venues: venueEvidence,
+    pairs: results.map((result, index) => ({
+      ...pairs[index],
+      no_submit_ready: result.no_submit_ready === true,
+      transaction_broadcast: false,
+      qualification_reasons: result.qualification_reasons,
+    })),
+    failures,
+    checked_at: results.at(-1)?.checked_at || null,
   };
 }
 
@@ -394,6 +441,7 @@ function selectSnapshot(snapshots, asset, venueId) {
 function venueAccess(body, venueId) {
   const access = body.venue_access?.[venueId];
   if (!access || access.status !== "ready") throw carryError(`carry_account_not_ready:${venueId}`, 409);
+  if (access.owner_commitment !== body.owner_commitment) throw carryError(`carry_account_owner_mismatch:${venueId}`, 403);
   return access;
 }
 

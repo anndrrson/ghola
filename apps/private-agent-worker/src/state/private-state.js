@@ -604,6 +604,30 @@ export function createPostgresWorkerState(databaseUrl) {
       return next;
     },
 
+    async claimExecutionAttempt(workOrderCommitment, attempt) {
+      const sql = await ensureInitialized();
+      const next = {
+        ...attempt,
+        work_order_commitment: workOrderCommitment,
+        updated_at: new Date().toISOString(),
+      };
+      const rows = await sql`
+        INSERT INTO worker_execution_attempts (work_order_commitment, attempt_json, status, updated_at)
+        VALUES (${workOrderCommitment}, ${jsonParam(next)}::jsonb, ${next.status || null}, NOW())
+        ON CONFLICT (work_order_commitment) DO NOTHING
+        RETURNING attempt_json
+      `;
+      if (rows[0]) {
+        return { ok: true, attempt: decodeJson(rows[0].attempt_json) || next };
+      }
+      const existingRows = await sql`
+        SELECT attempt_json
+        FROM worker_execution_attempts
+        WHERE work_order_commitment = ${workOrderCommitment}
+      `;
+      return { ok: false, existing: decodeJson(existingRows[0]?.attempt_json) || null };
+    },
+
     async getExecutionAttempt(workOrderCommitment) {
       const sql = await ensureInitialized();
       const rows = await sql`
@@ -1904,6 +1928,20 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
           updated_at: new Date().toISOString(),
         };
         return state.execution_attempts[workOrderCommitment];
+      });
+    },
+
+    async claimExecutionAttempt(workOrderCommitment, attempt) {
+      return updateState((state) => {
+        const existing = state.execution_attempts[workOrderCommitment] || null;
+        if (existing) return { ok: false, existing };
+        const claimed = {
+          ...attempt,
+          work_order_commitment: workOrderCommitment,
+          updated_at: new Date().toISOString(),
+        };
+        state.execution_attempts[workOrderCommitment] = claimed;
+        return { ok: true, attempt: claimed };
       });
     },
 

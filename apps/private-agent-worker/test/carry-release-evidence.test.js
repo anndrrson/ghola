@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildCompletedCarryReleaseMaterial } from "../src/execution/carry-release-evidence.js";
+import {
+  carryRiskMandateMessage,
+  normalizeCarryRiskMandateAuthorization,
+  normalizeCarryRiskMandatePayload,
+} from "@ghola/execution-core";
+import { hashMessage } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 
 const NOW = 1_800_000_010_000;
 const IMAGE = "sha256:abcdef1234567890";
 const OWNER = "owner:carry:release:0001";
+const MANDATE_OWNER = privateKeyToAccount(`0x${"33".repeat(32)}`);
 
 test("derives release material only from a completed durable lifecycle", async () => {
-  const fixture = stateFixture();
+  const fixture = await stateFixture();
   const result = await buildCompletedCarryReleaseMaterial({
     state: fixture.state,
     owner_commitment: OWNER,
@@ -19,13 +27,14 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.equal(result.material.entry.legs.length, 2);
   assert.equal(result.material.exit.legs.every((leg) => leg.reduce_only), true);
   assert.equal(result.material.monitoring.observation_count, 1);
+  assert.equal(result.material.monitoring.margin_runways[0].status, "healthy");
   assert.equal(result.material.final_state.open_order_count, 0);
   assert.equal(result.material.value_ledger.realized.net_value_micro_usdc, 34);
   assert.match(result.material.worker_material_commitment, /^carry:release:material:[0-9a-f]{64}$/);
 });
 
 test("refuses to manufacture proof without a monitoring period", async () => {
-  const fixture = stateFixture();
+  const fixture = await stateFixture();
   fixture.record.lifecycle_events = fixture.record.lifecycle_events.filter((event) => event.type !== "observation");
   const result = await buildCompletedCarryReleaseMaterial({
     state: fixture.state,
@@ -37,8 +46,21 @@ test("refuses to manufacture proof without a monitoring period", async () => {
   assert.equal(result.error, "carry_release_monitoring_evidence_missing");
 });
 
+test("refuses release evidence without verified margin-runway status", async () => {
+  const fixture = await stateFixture();
+  delete fixture.record.lifecycle_events[0].margin_runway_status_by_venue;
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_margin_runway_evidence_missing");
+});
+
 test("refuses to claim one-submit proof without a durable attempt counter", async () => {
-  const fixture = stateFixture();
+  const fixture = await stateFixture();
   fixture.attempts["work:carry:entry:aster"].submit_count = 2;
   const result = await buildCompletedCarryReleaseMaterial({
     state: fixture.state,
@@ -50,7 +72,7 @@ test("refuses to claim one-submit proof without a durable attempt counter", asyn
   assert.equal(result.error, "carry_release_entry_submission_count_unproven:aster");
 });
 
-function stateFixture() {
+async function stateFixture() {
   const positionId = "carry:position:release:0001";
   const entrySaga = saga("entry", 1_800_000_000_500, 1_800_000_001_000, false);
   const exitSaga = saga("exit", 1_800_000_003_000, 1_800_000_004_000, true);
@@ -63,17 +85,24 @@ function stateFixture() {
     entry_saga_id: entrySaga.saga_id,
     exit_saga_id: exitSaga.saga_id,
     position: {
+      version: 1,
       position_id: positionId,
       mandate_id: "carry:mandate:release:0001",
       asset: "HYPE",
       long_venue_id: "hyperliquid",
       short_venue_id: "aster",
       target_notional_micro_usdc: 11_000_000,
+      risk_mandate: riskMandate(),
       created_at_ms: 1_800_000_000_000,
       status: "reconciled",
     },
     lifecycle_events: [
-      { type: "observation", recorded_at_ms: 1_800_000_002_000, margin_runway_ms_by_venue: { hyperliquid: 86_400_000, aster: 86_400_000 } },
+      {
+        type: "observation",
+        recorded_at_ms: 1_800_000_002_000,
+        margin_runway_ms_by_venue: { hyperliquid: 86_400_000, aster: 86_400_000 },
+        margin_runway_status_by_venue: { hyperliquid: "healthy", aster: "healthy" },
+      },
       { type: "manual_exit_requested", recorded_at_ms: 1_800_000_003_000 },
     ],
     final_reconciliation_evidence: {
@@ -110,6 +139,7 @@ function stateFixture() {
       entries: ledgerEntries,
     },
   };
+  record.position.mandate_authorization = await signedMandateAuthorization(record.position);
   const receipts = Object.fromEntries([
     ...entrySaga.execution_context.legs,
     ...exitSaga.execution_context.legs,
@@ -144,6 +174,45 @@ function stateFixture() {
       : receipts[key] || null,
   };
   return { state, record, attempts };
+}
+
+async function signedMandateAuthorization(position) {
+  const signedMandate = normalizeCarryRiskMandatePayload({
+    version: 1,
+    kind: "ghola_carry_risk_mandate",
+    strategy_id: "delta_neutral_carry_v1",
+    network: "mainnet",
+    owner_commitment: OWNER,
+    owner_wallet_address: MANDATE_OWNER.address.toLowerCase(),
+    position_id: position.position_id,
+    mandate_id: position.mandate_id,
+    asset: position.asset,
+    long_venue_id: position.long_venue_id,
+    short_venue_id: position.short_venue_id,
+    target_notional_micro_usdc: position.target_notional_micro_usdc,
+    risk_mandate: position.risk_mandate,
+    issued_at_ms: position.created_at_ms - 1_000,
+    expires_at_ms: position.created_at_ms + 30 * 86_400_000,
+  });
+  const message = carryRiskMandateMessage(signedMandate);
+  return normalizeCarryRiskMandateAuthorization({
+    version: 1,
+    signed_mandate: signedMandate,
+    signature: await MANDATE_OWNER.signMessage({ message }),
+    mandate_commitment: hashMessage(message),
+  });
+}
+
+function riskMandate() {
+  return {
+    min_expected_net_benefit_bps: 5,
+    exit_net_value_bps: 0,
+    exit_after_consecutive_observations: 2,
+    min_margin_runway_ms: 21_600_000,
+    max_hedge_error_micro_usdc: 10_000,
+    max_data_age_ms: 60_000,
+    allow_migration: false,
+  };
 }
 
 function saga(phase, createdAt, updatedAt, reduceOnly) {

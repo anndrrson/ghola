@@ -7,7 +7,8 @@ import {
 import { workerAuthorizationHeader } from "@/lib/private-agent-capability";
 import { agentPassportVenueAccessForWorker } from "@/lib/private-agent-passport";
 import { randomUUID } from "node:crypto";
-import { isCarryExecutionVenue } from "@/lib/carry-venues";
+import { CARRY_EXECUTION_VENUES, isCarryExecutionVenue } from "@/lib/carry-venues";
+import { verifyCarryRiskMandateAuthorization } from "@/lib/carry-risk-mandate";
 
 export const dynamic = "force-dynamic";
 
@@ -139,6 +140,26 @@ export async function POST(req: NextRequest) {
       },
     };
   }
+  if (action === "preflight_matrix") {
+    const venueAccess = await agentPassportVenueAccessForWorker(owner);
+    const accesses = Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [venueId, record(venueAccess[venueId])]));
+    for (const venueId of CARRY_EXECUTION_VENUES) {
+      if (accesses[venueId].status !== "ready") return response({ error: `${venueId}_account_not_ready` }, 409);
+    }
+    body = {
+      version: 1,
+      owner_commitment: owner.owner_commitment,
+      operation_class: "matrix_no_submit",
+      work_order_commitment: `carry_matrix_preflight_${randomUUID()}`,
+      asset: input.asset,
+      notional_usd: input.notional_usd,
+      horizon_days: input.horizon_days,
+      venue_access: Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [
+        venueId,
+        workerVenueAccess(accesses[venueId], owner.owner_commitment),
+      ])),
+    };
+  }
   if (action === "create") {
     const positionInput = record(input.position_input);
     const longVenue = stringValue(positionInput.long_venue_id);
@@ -152,10 +173,20 @@ export async function POST(req: NextRequest) {
     for (const venueId of selected) {
       if (accesses[venueId].status !== "ready") return response({ error: `${venueId}_account_not_ready` }, 409);
     }
+    const mandate = await verifyCarryRiskMandateAuthorization({
+      owner_commitment: owner.owner_commitment,
+      position_input: positionInput,
+      mandate_authorization: positionInput.mandate_authorization,
+    });
+    if (!mandate.ok) return response({ error: mandate.error }, 403);
     body = {
       version: 1,
       owner_commitment: owner.owner_commitment,
-      position_input: input.position_input,
+      policy_commitment: mandate.authorization.mandate_commitment,
+      position_input: {
+        ...positionInput,
+        mandate_authorization: mandate.authorization,
+      },
       opportunity: input.opportunity,
       qualification_pilot: input.qualification_pilot,
       monitoring_context: {
@@ -224,6 +255,7 @@ export async function POST(req: NextRequest) {
 
 function carryRoute(action: string) {
   if (action === "preflight_pair") return { path: "/carry/preflight", scope: "carry:read" as const, operationClass: "paired_no_submit" };
+  if (action === "preflight_matrix") return { path: "/carry/preflight-matrix", scope: "carry:read" as const, operationClass: "matrix_no_submit" };
   if (action === "preflight_aster") return { path: "/venues/aster/preflight", scope: "order:verify" as const, operationClass: "limit_order" };
   if (action === "preflight_hyperliquid") return { path: "/hyperliquid/preflight", scope: "order:verify" as const, operationClass: "limit_order" };
   if (action === "preflight_lighter") return { path: "/venues/lighter/preflight", scope: "order:verify" as const, operationClass: "limit_order" };

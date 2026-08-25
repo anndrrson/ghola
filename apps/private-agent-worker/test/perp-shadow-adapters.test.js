@@ -19,17 +19,50 @@ test("normalizes Hyperliquid public perp context without claiming missing fee da
       { universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] },
       [{ markPx: "60000.1", oraclePx: "60001.2", funding: "0.0000125", impactPxs: ["59999", "60002"] }],
     ],
+    books: {
+      BTC: {
+        time: NOW,
+        levels: [
+          [{ px: "59998", sz: "1" }],
+          [{ px: "60003", sz: "1" }],
+        ],
+      },
+    },
     now_ms: NOW,
   });
   assert.equal(snapshot.venue_id, "hyperliquid");
+  assert.equal(snapshot.quote_asset, "USDT");
+  assert.equal(snapshot.best_bid_e8, 5_999_800_000_000);
+  assert.equal(snapshot.best_ask_e8, 6_000_300_000_000);
+  assert.equal(snapshot.impact_bid_e8, 5_999_900_000_000);
   assert.equal(snapshot.funding_rate_e12_per_interval, 12_500_000);
   assert.equal(snapshot.funding_interval_ms, 3_600_000);
   assert.equal(snapshot.quantity_step_e8, 1_000);
   assert.equal(snapshot.status, "degraded");
   assert.equal(snapshot.executable, false);
+  assert.ok(snapshot.quality_flags.includes("minimum_notional_unverified"));
+  assert.ok(snapshot.quality_flags.includes("contract_specs_usdt_denominated_usdc_margined"));
 });
 
-test("normalizes Lighter funding as the documented 8-hour-equivalent value", () => {
+test("maps Hyperliquid's documented USDC-denominated validator-perp exceptions", () => {
+  const snapshots = parseHyperliquidShadow({
+    body: [
+      { universe: [
+        { name: "HYPE", szDecimals: 2, maxLeverage: 10 },
+        { name: "PURR", szDecimals: 0, maxLeverage: 3 },
+      ] },
+      [
+        { markPx: "50", oraclePx: "50", funding: "0" },
+        { markPx: "0.1", oraclePx: "0.1", funding: "0" },
+      ],
+    ],
+    now_ms: NOW,
+  });
+  assert.deepEqual(snapshots.map((snapshot) => snapshot.quote_asset), ["USDC", "USDC"]);
+  assert.ok(snapshots.every((snapshot) => snapshot.quality_flags.includes("contract_specs_usdc_denominated_usdc_margined")));
+});
+
+test("normalizes Lighter funding as the documented hourly settlement value", () => {
   const [snapshot] = parseLighterShadow({
     details: {
       order_book_details: [{
@@ -45,6 +78,7 @@ test("normalizes Lighter funding as the documented 8-hour-equivalent value", () 
         supported_size_decimals: 5,
         supported_price_decimals: 1,
         default_initial_margin_fraction: 500,
+        min_initial_margin_fraction: 200,
         maintenance_margin_fraction: 120,
         liquidation_fee: "1.0",
       }],
@@ -53,8 +87,8 @@ test("normalizes Lighter funding as the documented 8-hour-equivalent value", () 
     now_ms: NOW,
   });
   assert.equal(snapshot.funding_rate_e12_per_interval, 100_000_000);
-  assert.equal(snapshot.funding_interval_ms, 28_800_000);
-  assert.equal(snapshot.initial_margin_bps, 500);
+  assert.equal(snapshot.funding_interval_ms, 3_600_000);
+  assert.equal(snapshot.initial_margin_bps, 200);
   assert.equal(snapshot.maintenance_margin_bps, 120);
   assert.equal(snapshot.status, "ready");
 });
@@ -82,11 +116,13 @@ test("normalizes Aster V3 exchange, premium, and book schemas", () => {
     },
     premium_index: [{ symbol: "BTCUSDT", markPrice: "60000", indexPrice: "60001", lastFundingRate: "0.0001", time: NOW }],
     book_tickers: [{ symbol: "BTCUSDT", bidPrice: "59999", askPrice: "60002", time: NOW }],
+    funding_info: [{ symbol: "BTCUSDT", fundingIntervalHours: 4, time: NOW }],
     now_ms: NOW,
   });
   assert.equal(snapshot.contract_id, "aster:BTCUSDT");
   assert.equal(snapshot.price_tick_e8, 10_000_000);
   assert.equal(snapshot.quantity_step_e8, 100_000);
+  assert.equal(snapshot.funding_interval_ms, 14_400_000);
   assert.equal(snapshot.status, "degraded");
 });
 
@@ -103,6 +139,10 @@ test("live Aster shadow selection emits one deterministic contract per asset", a
     if (value.includes("premiumIndex")) return response([
       asterPremium("BTCUSD1"),
       asterPremium("BTCUSDT"),
+    ]);
+    if (value.includes("fundingInfo")) return response([
+      { symbol: "BTCUSD1", fundingIntervalHours: 4, time: NOW },
+      { symbol: "BTCUSDT", fundingIntervalHours: 8, time: NOW },
     ]);
     return response([
       asterBook("BTCUSD1"),
@@ -132,6 +172,8 @@ test("normalizes edgeX funding interval and contract metadata", () => {
         impactBidPrice: "59999",
         impactAskPrice: "60002",
         fundingRateIntervalMin: "240",
+        bestBidE8: 5_999_900_000_000,
+        bestAskE8: 6_000_200_000_000,
       }],
     },
     contracts: [{
@@ -156,6 +198,51 @@ test("normalizes edgeX funding interval and contract metadata", () => {
   assert.equal(snapshot.maintenance_margin_bps, 50);
   assert.equal(snapshot.status, "ready");
   assert.ok(snapshot.quality_flags.includes("impact_mid_used_as_mark_proxy"));
+});
+
+test("keeps fresh edgeX responses live without trusting a stale funding source", () => {
+  const contract = {
+    contractId: "10000001",
+    symbol: "BTCUSDT",
+    baseAsset: "BTC",
+    quoteAsset: "USDT",
+    settleAsset: "USDT",
+    makerFeeRate: "0.0001",
+    takerFeeRate: "0.0002",
+    liquidateFeeRate: "0.01",
+    riskTierList: [{ positionValueUpperBound: "800000", maxLeverage: "100", maintenanceMarginRate: "0.005" }],
+    minNotional: "10",
+    stepSize: "0.001",
+    tickSize: "0.1",
+  };
+  const row = {
+    contractId: contract.contractId,
+    fundingTimestamp: String(NOW - 60_000),
+    observedAtMs: NOW,
+    oraclePrice: "60000",
+    indexPrice: "60001",
+    markPrice: "60000",
+    fundingRate: "0.00005",
+    impactBidPrice: "59999",
+    impactAskPrice: "60002",
+    fundingRateIntervalMin: "240",
+    bestBidE8: 5_999_900_000_000,
+    bestAskE8: 6_000_200_000_000,
+  };
+  const [fresh] = parseEdgeXShadow({ funding: { data: [row], responseTime: String(NOW) }, contracts: [contract], now_ms: NOW });
+  assert.equal(fresh.stale, false);
+  assert.equal(fresh.status, "ready");
+  assert.equal(fresh.as_of_ms, NOW);
+  assert.ok(fresh.quality_flags.includes("funding_source_minute_cadence"));
+
+  const [staleFunding] = parseEdgeXShadow({
+    funding: { data: [{ ...row, fundingTimestamp: String(NOW - 180_000) }], responseTime: String(NOW) },
+    contracts: [contract],
+    now_ms: NOW,
+  });
+  assert.equal(staleFunding.status, "quarantined");
+  assert.ok(staleFunding.missing_fields.includes("funding_rate_e12_per_interval"));
+  assert.ok(staleFunding.quality_flags.includes("funding_source_stale"));
 });
 
 test("fetches fresh edgeX V2 metadata, ticker, and funding", async () => {
@@ -186,6 +273,14 @@ test("fetches fresh edgeX V2 metadata, ticker, and funding", async () => {
     });
     if (value.includes("getTicker")) return response({
       data: [{ contractId: "30000001", markPrice: "60000", indexPrice: "60001" }],
+      responseTime: String(NOW),
+    });
+    if (value.includes("getDepth")) return response({
+      data: [{
+        contractId: "30000001",
+        bids: [{ price: "59999", size: "1" }],
+        asks: [{ price: "60002", size: "1" }],
+      }],
       responseTime: String(NOW),
     });
     return response({
@@ -266,7 +361,7 @@ test("all five shadow fetchers are read-only and never call private or order end
     else if (String(url).includes("orderBookDetails")) body = { order_book_details: [] };
     else if (String(url).includes("funding-rates")) body = { funding_rates: [] };
     else if (String(url).includes("exchangeInfo")) body = { symbols: [] };
-    else if (String(url).includes("premiumIndex") || String(url).includes("bookTicker")) body = [];
+    else if (String(url).includes("premiumIndex") || String(url).includes("bookTicker") || String(url).includes("fundingInfo")) body = [];
     else if (String(url).includes("getLatestFundingRate")) body = { data: [] };
     else if (String(url).includes("perpetualMarkets")) body = { markets: {} };
     else if (String(url).endsWith("/v4/time")) body = { iso: new Date(NOW).toISOString() };
@@ -276,7 +371,7 @@ test("all five shadow fetchers are read-only and never call private or order end
   assert.equal(result.length, 5);
   assert.ok(result.every((item) => item.ok));
   assert.ok(calls.every((call) => call.method === "GET" || (
-    call.method === "POST" && call.url.endsWith("/info") && JSON.parse(call.body).type === "metaAndAssetCtxs"
+    call.method === "POST" && call.url.endsWith("/info") && ["metaAndAssetCtxs", "l2Book"].includes(JSON.parse(call.body).type)
   )));
   assert.ok(calls.every((call) => !/\/private\/|\/order(?:\?|$)/i.test(call.url)));
 });

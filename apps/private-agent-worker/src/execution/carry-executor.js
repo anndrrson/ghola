@@ -7,6 +7,7 @@ import {
   finalizeStoredCarryValueLedger,
 } from "./carry-positions.js";
 import { preflightCarryPair } from "./carry-preflight.js";
+import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 import {
   readCarryVenueQualification,
   recordCompletedCarryVenueQualifications,
@@ -35,6 +36,12 @@ export async function executeStoredCarryEntry({
   if (record.position.status !== "draft") return denied("carry_entry_already_started");
   if (record.entry_saga_id) return denied("carry_entry_already_started");
   if (!record.monitoring_context?.venue_access) return denied("carry_monitor_context_missing");
+  const mandate = await verifyCarryRiskMandateAuthorization({
+    owner_commitment: ownerCommitment,
+    position_input: record.position,
+    now_ms: now(),
+  });
+  if (!mandate.ok) return denied(mandate.error);
   const live = env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true";
   const pilotRecord = record.qualification_pilot?.status === "pending";
   if (live && env.PRIVATE_AGENT_CARRY_POSITION_LIVE_SUBMIT !== "true") return denied("carry_position_live_submit_disabled");
@@ -1104,7 +1111,7 @@ function carrySessionPolicy(record, legs, nowMs) {
   return {
     version: 2,
     strategy_id: "delta_neutral_carry_v1",
-    policy_commitment: record.position.mandate_id,
+    policy_commitment: record.position.mandate_authorization?.mandate_commitment || record.position.mandate_id,
     market_allowlist: [...new Set(legs.map((leg) => leg.market))],
     max_notional_bucket: notionalBucket(notionalUsd),
     max_daily_notional_bucket: notionalBucket(notionalUsd * 2),

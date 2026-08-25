@@ -34,6 +34,8 @@ import { usePerpsTurnkey } from "@/lib/perps-turnkey-provider";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { TurnkeyPerpsManager } from "@/components/trade/TurnkeyPerpsManager";
 import { GholaMarketChart } from "@/components/private-account/GholaMarketChart";
+import { CarryChartStrip } from "@/components/carry/CarryChartStrip";
+import type { CarryLiveMarketPatch } from "@/lib/carry-market";
 import {
   formatAssetQuantity,
   formatCompactUsd,
@@ -911,8 +913,9 @@ function AlternateProductWorkspace({
   const baseSymbol = product === "perps" ? perpMarket : product === "swap" ? "SOL" : referenceProduct.split("-")[0];
   const marketLabel = product === "perps" ? `${baseSymbol}-PERP` : product === "swap" ? "SOL / USDC" : referenceProduct;
   const nativeProtection = selectedVenue?.protective_orders === "native";
-  const setupHref = `/account?flow=private-mode&setup=${encodeURIComponent(venue)}&return_to=${encodeURIComponent(`/trade?product=${product}&venue=${venue}&market=${marketLabel}`)}`;
-  const signinHref = `/signin?redirect=${encodeURIComponent(`/trade?product=${product}&venue=${venue}&market=${marketLabel}`)}`;
+  const tradeReturnHref = `/trade?product=${product}&venue=${venue}&market=${marketLabel}${workspaceParams.get("carry") === "open" ? "&carry=open" : ""}`;
+  const setupHref = `/account?flow=private-mode&setup=${encodeURIComponent(venue)}&return_to=${encodeURIComponent(tradeReturnHref)}`;
+  const signinHref = `/signin?redirect=${encodeURIComponent(tradeReturnHref)}`;
   const legacyHyperliquidApiKeysEnabled =
     process.env.NEXT_PUBLIC_GHOLA_LEGACY_HYPERLIQUID_API_KEYS === "true";
   const useHyperliquidMarket = active && product === "perps" && venue === "hyperliquid";
@@ -924,6 +927,22 @@ function AlternateProductWorkspace({
   }, useHyperliquidMarket);
   const hyperliquidMarket = hyperliquidRecord.snapshot?.platform === "hyperliquid" ? hyperliquidRecord.snapshot : null;
   const hyperliquidStatus = hyperliquidRecord.status;
+  const hyperliquidCarryPatch = useMemo<CarryLiveMarketPatch | null>(() => {
+    if (!hyperliquidMarket || hyperliquidStatus !== "live") return null;
+    const receivedAt = Date.parse(hyperliquidMarket.fetched_at);
+    return {
+      venue_id: "hyperliquid",
+      asset: hyperliquidMarket.coin,
+      received_at_ms: Number.isFinite(receivedAt) ? receivedAt : Date.now(),
+      source_at_ms: hyperliquidMarket.source_timestamp,
+      mark_price_e8: scaledCarryDecimal(hyperliquidMarket.mark_price, 100_000_000),
+      index_price_e8: scaledCarryDecimal(hyperliquidMarket.oracle_price, 100_000_000),
+      best_bid_e8: scaledCarryDecimal(hyperliquidMarket.best_bid, 100_000_000),
+      best_ask_e8: scaledCarryDecimal(hyperliquidMarket.best_ask, 100_000_000),
+      funding_rate_e12_per_interval: scaledCarryDecimal(hyperliquidMarket.funding_rate, 1_000_000_000_000, true),
+      funding_interval_ms: 3_600_000,
+    };
+  }, [hyperliquidMarket, hyperliquidStatus]);
   const requestedReferenceProduct = product === "swap"
     ? "SOL-USD"
     : product === "perps"
@@ -1578,10 +1597,18 @@ function AlternateProductWorkspace({
               <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
                 <PerpDatum label="Mark" value={formatUsdPrice(hyperliquidMarket?.mark_price)} />
                 <PerpDatum label="Oracle" value={formatUsdPrice(hyperliquidMarket?.oracle_price)} />
-                <PerpDatum label="Funding / 8h" value={formatFundingRate(hyperliquidMarket?.funding_rate)} />
+                <PerpDatum label="Funding / 1h" value={formatFundingRate(hyperliquidMarket?.funding_rate)} />
                 <PerpDatum label="Open interest" value={formatPerpValue(hyperliquidMarket?.open_interest)} />
                 <PerpDatum label="Max leverage" value={maxLeverage ? `${maxLeverage}×` : "Unavailable"} />
               </div>
+            )}
+            {active && product === "perps" && (
+              <CarryChartStrip
+                asset={perpMarket}
+                defaultOpen={workspaceParams.get("carry") === "open"}
+                hyperliquidLivePatch={hyperliquidCarryPatch}
+                onAssetSelect={changePerpMarket}
+              />
             )}
             <GholaMarketChart
               label={useHyperliquidMarket ? "Hyperliquid" : referenceMarketProduct ? `Coinbase · ${referenceMarketProduct}` : `${marketLabel} reference`}
@@ -2658,6 +2685,13 @@ function formatStatus(status: string, hasMarketData = false) {
   if (status === "stale") return "Delayed";
   if (status === "error") return "Feed unavailable";
   return hasMarketData ? "Live cache · refreshing" : "Establishing feed";
+}
+
+function scaledCarryDecimal(value: string | null, scale: number, signed = false) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || (!signed && parsed <= 0)) return null;
+  const result = Math.round(parsed * scale);
+  return Number.isSafeInteger(result) ? result : null;
 }
 
 function short(value: string) {

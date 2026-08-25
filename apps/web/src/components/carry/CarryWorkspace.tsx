@@ -5,58 +5,30 @@ import Link from "next/link";
 import {
   createCarryPosition,
   executeCarryPositionEntry,
+  getPrivateAgentPassport,
   listCarryPositions,
   observeCarryPosition,
   preflightCarryPair,
   requestCarryPositionExit,
 } from "@/lib/private-account-client";
+import {
+  buildCarryRiskMandatePayload,
+  carryRiskMandateAuthorization,
+} from "@/lib/carry-risk-mandate";
+import { usePerpsTurnkey } from "@/lib/perps-turnkey-provider";
 import { CORE_PERP_VENUES, isCarryExecutionVenue, type CarryExecutionVenue } from "@/lib/carry-venues";
+import {
+  CARRY_VENUE_LABELS as VENUE_LABELS,
+  annualFundingBps,
+  buildCandidates,
+  builderModel,
+  type CarryShadowResponse as ShadowResponse,
+  type CarryShadowSnapshot as ShadowSnapshot,
+  type CarryShadowStatus as ShadowStatus,
+  type CarryVenueShadow as VenueShadow,
+} from "@/lib/carry-market";
 
-type ShadowStatus = "ready" | "degraded" | "quarantined";
-
-interface ShadowSnapshot {
-  venue_id: string;
-  contract_id: string;
-  asset: string;
-  collateral_asset?: string | null;
-  status: ShadowStatus;
-  stale: boolean;
-  funding_rate_e12_per_interval: number | null;
-  funding_interval_ms: number | null;
-  maker_fee_bps: number | null;
-  taker_fee_bps: number | null;
-  minimum_notional_micro_usdc: number | null;
-  quantity_step_e8?: number | null;
-  initial_margin_bps: number | null;
-  maintenance_margin_bps: number | null;
-  best_bid_e8: number | null;
-  best_ask_e8: number | null;
-  missing_fields: string[];
-}
-
-interface VenueShadow {
-  venue_id: string;
-  ok: boolean;
-  error?: string;
-  snapshots: ShadowSnapshot[];
-}
-
-interface ShadowResponse {
-  version: 1;
-  mode: "shadow_read_only";
-  executable: false;
-  observed_at: string;
-  venues: VenueShadow[];
-  error?: string;
-}
-
-interface CarryCandidate {
-  asset: string;
-  long: ShadowSnapshot;
-  short: ShadowSnapshot;
-  grossAnnualBps: number;
-  exact: boolean;
-}
+export { buildCandidates, builderModel } from "@/lib/carry-market";
 
 interface CarryRecord {
   record_version: number;
@@ -101,15 +73,8 @@ interface CarryRecord {
   updated_at: string;
 }
 
-const VENUE_LABELS: Record<string, string> = {
-  hyperliquid: "Hyperliquid",
-  lighter: "Lighter",
-  aster: "Aster",
-  edgex: "edgeX",
-  dydx: "dYdX",
-};
-
 export function CarryWorkspace() {
+  const perpsTurnkey = usePerpsTurnkey();
   const [data, setData] = useState<ShadowResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -124,8 +89,8 @@ export function CarryWorkspace() {
   const [positionAction, setPositionAction] = useState<string | null>(null);
   const monitoredPositionsRef = useRef<Array<{
     position_id: string;
-    long_venue_id: "hyperliquid" | "aster" | "lighter";
-    short_venue_id: "hyperliquid" | "aster" | "lighter";
+    long_venue_id: CarryExecutionVenue;
+    short_venue_id: CarryExecutionVenue;
   }>>([]);
 
   const load = useCallback(async () => {
@@ -231,26 +196,56 @@ export function CarryWorkspace() {
     const opportunity = recordValue(pairProof.creation_opportunity);
     if (!opportunity) return;
     const id = crypto.randomUUID();
+    const positionId = `carry:position:${id}`;
+    const mandateId = `carry:mandate:${id}`;
+    const notionalMicro = Math.round(Math.max(0, Number(notional) || 0) * 1_000_000);
+    const riskMandate = {
+      min_expected_net_benefit_bps: 5,
+      exit_net_value_bps: 0,
+      exit_after_consecutive_observations: 2,
+      min_margin_runway_ms: 6 * 3_600_000,
+      max_hedge_error_micro_usdc: 10_000,
+      max_data_age_ms: 60_000,
+      allow_migration: false,
+    };
     setPositionAction("Saving qualified Carry Position…");
     try {
+      if (!perpsTurnkey.authenticated) throw new Error("carry_owner_auth_required");
+      const [passportRaw, pair] = await Promise.all([
+        getPrivateAgentPassport(),
+        perpsTurnkey.ensureWalletPair(),
+      ]);
+      const passport = recordValue(passportRaw);
+      const ownerCommitment = passport ? stringValue(passport.owner_commitment) : null;
+      if (!ownerCommitment) throw new Error("carry_owner_auth_required");
+      const issuedAtMs = Date.now();
+      const horizonDays = Math.max(1, Math.min(366, Math.ceil(Number(days) || 1)));
+      const signedMandate = buildCarryRiskMandatePayload({
+        network: "mainnet",
+        owner_commitment: ownerCommitment,
+        owner_wallet_address: pair.owner.address.toLowerCase() as `0x${string}`,
+        position_id: positionId,
+        mandate_id: mandateId,
+        asset: candidate.asset,
+        long_venue_id: candidate.long.venue_id,
+        short_venue_id: candidate.short.venue_id,
+        target_notional_micro_usdc: notionalMicro,
+        risk_mandate: riskMandate,
+        issued_at_ms: issuedAtMs,
+        expires_at_ms: issuedAtMs + horizonDays * 86_400_000 + 3_600_000,
+      });
+      const signature = await perpsTurnkey.signCarryRiskMandate(signedMandate);
       const result = await createCarryPosition({
         position_input: {
           version: 1,
-          position_id: `carry:position:${id}`,
-          mandate_id: `carry:mandate:${id}`,
+          position_id: positionId,
+          mandate_id: mandateId,
           asset: candidate.asset,
           long_venue_id: candidate.long.venue_id,
           short_venue_id: candidate.short.venue_id,
-          target_notional_micro_usdc: Math.round(Math.max(0, Number(notional) || 0) * 1_000_000),
-          risk_mandate: {
-            min_expected_net_benefit_bps: 5,
-            exit_net_value_bps: 0,
-            exit_after_consecutive_observations: 2,
-            min_margin_runway_ms: 6 * 3_600_000,
-            max_hedge_error_micro_usdc: 10_000,
-            max_data_age_ms: 60_000,
-            allow_migration: false,
-          },
+          target_notional_micro_usdc: notionalMicro,
+          risk_mandate: riskMandate,
+          mandate_authorization: carryRiskMandateAuthorization({ signed_mandate: signedMandate, signature }),
         },
         opportunity,
       }) as { ok?: boolean; record?: CarryRecord };
@@ -408,7 +403,7 @@ export function CarryWorkspace() {
               <Link href="/account?setup=carry" className="mt-5 block w-full rounded-md border border-[#315277] bg-[#0d1b2d] px-4 py-3 text-center text-sm font-semibold text-[#a8d8ff] hover:bg-[#11243c]">
                 Connect both venues for account checks
               </Link>
-              {candidate && [candidate.long.venue_id, candidate.short.venue_id].every((venue) => ["aster", "hyperliquid", "lighter"].includes(venue)) && (
+              {candidate && [candidate.long.venue_id, candidate.short.venue_id].every(isCarryExecutionVenue) && (
                 <button type="button" disabled={checkingAccount} onClick={() => void checkCandidateAccounts()} className="mt-2 w-full rounded-md border border-[#244f40] bg-[#0a211a] px-4 py-3 text-sm font-semibold text-[#72dfb2] disabled:opacity-50">
                   {checkingAccount ? "Checking both venues…" : "Run paired no-submit checks"}
                 </button>
@@ -573,66 +568,8 @@ function recordValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-export function buildCandidates(venues: VenueShadow[]): CarryCandidate[] {
-  const byAsset = new Map<string, ShadowSnapshot[]>();
-  for (const venue of venues) {
-    for (const snapshot of venue.snapshots || []) {
-      if (!venue.ok || snapshot.stale || snapshot.status === "quarantined" || snapshot.funding_rate_e12_per_interval == null || !snapshot.funding_interval_ms) continue;
-      byAsset.set(snapshot.asset, [...(byAsset.get(snapshot.asset) || []), snapshot]);
-    }
-  }
-  const result: CarryCandidate[] = [];
-  for (const [asset, snapshots] of byAsset) {
-    if (snapshots.length < 2) continue;
-    const ranked = snapshots.map((snapshot) => ({ snapshot, annualBps: annualFundingBps(snapshot) })).sort((a, b) => a.annualBps - b.annualBps);
-    const long = ranked[0];
-    const short = ranked.at(-1)!;
-    if (long.snapshot.venue_id === short.snapshot.venue_id || short.annualBps <= long.annualBps) continue;
-    result.push({
-      asset,
-      long: long.snapshot,
-      short: short.snapshot,
-      grossAnnualBps: short.annualBps - long.annualBps,
-      exact: long.snapshot.status === "ready" && short.snapshot.status === "ready",
-    });
-  }
-  return result.sort((left, right) => right.grossAnnualBps - left.grossAnnualBps);
-}
-
-function annualFundingBps(snapshot: ShadowSnapshot) {
-  return (snapshot.funding_rate_e12_per_interval! / 1_000_000_000_000) * (365 * 86_400_000 / snapshot.funding_interval_ms!) * 10_000;
-}
-
-export function builderModel(candidate: CarryCandidate, notionalText: string, daysText: string) {
-  const notionalUsd = Math.max(0, Number(notionalText) || 0);
-  const holdingDays = Math.max(1, Number(daysText) || 1);
-  const grossFundingUsd = notionalUsd * (candidate.grossAnnualBps / 10_000) * holdingDays / 365;
-  const legs = [candidate.long, candidate.short];
-  const feesKnown = legs.every((leg) => leg.taker_fee_bps != null && spreadBps(leg) != null);
-  const roundTripCostBps = feesKnown
-    ? legs.reduce((sum, leg) => sum + 2 * leg.taker_fee_bps! + spreadBps(leg)!, 0)
-    : null;
-  const costUsd = roundTripCostBps == null ? null : notionalUsd * roundTripCostBps / 10_000;
-  const netUsd = costUsd == null ? null : grossFundingUsd - costUsd;
-  const dailyGross = grossFundingUsd / holdingDays;
-  const breakEvenDays = costUsd == null || dailyGross <= 0 ? null : costUsd / dailyGross;
-  const minimumCollateralUsd = legs.reduce((sum, leg) => sum + notionalUsd * (leg.initial_margin_bps || 10_000) / 10_000, 0);
-  const marginReady = legs.every((leg) => leg.initial_margin_bps != null && leg.maintenance_margin_bps != null);
-  return {
-    grossFundingUsd,
-    costUsd,
-    netUsd,
-    breakEvenDays,
-    minimumCollateralUsd,
-    publicInputsComplete: candidate.exact && marginReady && costUsd != null && netUsd != null && netUsd > 0,
-    creatable: false,
-  };
-}
-
-function spreadBps(snapshot: ShadowSnapshot) {
-  if (!snapshot.best_bid_e8 || !snapshot.best_ask_e8 || snapshot.best_ask_e8 <= snapshot.best_bid_e8) return null;
-  const mid = (snapshot.best_bid_e8 + snapshot.best_ask_e8) / 2;
-  return (snapshot.best_ask_e8 - snapshot.best_bid_e8) / mid * 10_000;
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function summarizeVenues(venues: VenueShadow[]) {

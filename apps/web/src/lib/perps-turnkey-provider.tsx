@@ -24,6 +24,7 @@ import {
   buildTurnkeyHyperliquidPolicies,
   ownerMandateMessage,
 } from "@ghola/perps-core";
+import { carryRiskMandateMessage } from "@ghola/execution-core";
 import { useThumperAuth } from "./thumper-auth-context";
 import { opaqueTurnkeyWalletScope } from "./turnkey-provider";
 import {
@@ -31,9 +32,16 @@ import {
   parsePerpsTurnkeyBindings,
   type PerpsTurnkeyBindings,
 } from "./perps-turnkey-session-boundary";
+import type { AsterV3AgentApprovalTypedData } from "./aster-agent-onboarding";
+import {
+  signAsterAgentApprovalWithTurnkey,
+  TURNKEY_PERPS_OWNER_PATH,
+} from "./perps-turnkey-aster-signing";
+import type { LighterChangePubKeyTransactionPlan } from "./lighter-agent-association";
+import { signLighterChangePubKeyWithTurnkey } from "./perps-turnkey-lighter-signing";
 
 const PERPS_WALLET_NAME = "Ghola Perps";
-const OWNER_PATH = "m/44'/60'/0'/0/0";
+const OWNER_PATH = TURNKEY_PERPS_OWNER_PATH;
 const AGENT_PATH = "m/44'/60'/0'/0/1";
 const TOMBSTONE_PATH = "m/44'/60'/0'/0/2";
 const SEALING_PATH = "m/44'/501'/0'/0'";
@@ -78,7 +86,13 @@ interface PerpsTurnkeyContextValue {
   ensureWalletPair: (includeTombstone?: boolean) => Promise<PerpsWalletPair>;
   installDelegation: (publicKey: string) => Promise<InstallDelegationResult>;
   signOwnerMandate: (mandate: unknown) => Promise<`0x${string}`>;
+  signCarryRiskMandate: (mandate: unknown) => Promise<`0x${string}`>;
   signAgentBinding: (message: string) => Promise<`0x${string}`>;
+  signAsterAgentApproval: (typedData: AsterV3AgentApprovalTypedData) => Promise<`0x${string}`>;
+  signLighterKeyAssociation: (transactionPlan: LighterChangePubKeyTransactionPlan) => Promise<{
+    raw_transaction: `0x02${string}`;
+    transaction_hash: `0x${string}`;
+  }>;
   signSealingBytes: (bytes: Uint8Array) => Promise<Uint8Array>;
   configureHyperliquid: (input: {
     network: "mainnet" | "testnet";
@@ -108,7 +122,10 @@ const PerpsTurnkeyContext = createContext<PerpsTurnkeyContextValue>({
   ensureWalletPair: unavailable,
   installDelegation: unavailable,
   signOwnerMandate: unavailable,
+  signCarryRiskMandate: unavailable,
   signAgentBinding: unavailable,
+  signAsterAgentApproval: unavailable,
+  signLighterKeyAssociation: unavailable,
   signSealingBytes: unavailable,
   configureHyperliquid: unavailable,
   revokeHyperliquid: unavailable,
@@ -202,7 +219,10 @@ const CONTEXT_DEFAULTS = {
   ensureWalletPair: unavailable,
   installDelegation: unavailable,
   signOwnerMandate: unavailable,
+  signCarryRiskMandate: unavailable,
   signAgentBinding: unavailable,
+  signAsterAgentApproval: unavailable,
+  signLighterKeyAssociation: unavailable,
   signSealingBytes: unavailable,
   configureHyperliquid: unavailable,
   revokeHyperliquid: unavailable,
@@ -450,6 +470,18 @@ function PerpsTurnkeySession({
     return account.signMessage({ message: ownerMandateMessage(mandate) });
   }, [ensureWalletPair, turnkey.httpClient]);
 
+  const signCarryRiskMandate = useCallback(async (mandate: unknown) => {
+    const pair = await ensureWalletPair();
+    if (!turnkey.httpClient) throw new Error("Turnkey signing client is unavailable.");
+    const account = createAccountWithAddress({
+      client: turnkey.httpClient,
+      organizationId: pair.organizationId,
+      signWith: pair.owner.address,
+      ethereumAddress: pair.owner.address,
+    });
+    return account.signMessage({ message: carryRiskMandateMessage(mandate) });
+  }, [ensureWalletPair, turnkey.httpClient]);
+
   const signAgentBinding = useCallback(async (message: string) => {
     const pair = await ensureWalletPair();
     if (!turnkey.httpClient) throw new Error("Turnkey signing client is unavailable.");
@@ -460,6 +492,30 @@ function PerpsTurnkeySession({
       ethereumAddress: pair.agent.address,
     });
     return account.signMessage({ message });
+  }, [ensureWalletPair, turnkey.httpClient]);
+
+  const signAsterAgentApproval = useCallback(async (typedData: AsterV3AgentApprovalTypedData) => {
+    const pair = await ensureWalletPair();
+    if (!turnkey.httpClient) throw new Error("Turnkey signing client is unavailable.");
+    return signAsterAgentApprovalWithTurnkey({
+      client: turnkey.httpClient,
+      organizationId: pair.organizationId,
+      owner: pair.owner,
+      typedData,
+    });
+  }, [ensureWalletPair, turnkey.httpClient]);
+
+  const signLighterKeyAssociation = useCallback(async (
+    transactionPlan: LighterChangePubKeyTransactionPlan,
+  ) => {
+    const pair = await ensureWalletPair();
+    if (!turnkey.httpClient) throw new Error("Turnkey signing client is unavailable.");
+    return signLighterChangePubKeyWithTurnkey({
+      client: turnkey.httpClient,
+      organizationId: pair.organizationId,
+      owner: pair.owner,
+      transactionPlan,
+    });
   }, [ensureWalletPair, turnkey.httpClient]);
 
   const signSealingBytes = useCallback(async (bytes: Uint8Array) => {
@@ -534,7 +590,10 @@ function PerpsTurnkeySession({
     ensureWalletPair,
     installDelegation,
     signOwnerMandate,
+    signCarryRiskMandate,
     signAgentBinding,
+    signAsterAgentApproval,
+    signLighterKeyAssociation,
     signSealingBytes,
     configureHyperliquid,
     revokeHyperliquid,
@@ -549,7 +608,10 @@ function PerpsTurnkeySession({
     organizationId,
     revokeHyperliquid,
     signOwnerMandate,
+    signCarryRiskMandate,
     signAgentBinding,
+    signAsterAgentApproval,
+    signLighterKeyAssociation,
     signSealingBytes,
   ]);
   return <PerpsTurnkeyContext.Provider value={value}>{children}</PerpsTurnkeyContext.Provider>;

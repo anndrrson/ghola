@@ -25,7 +25,7 @@ import { revenueEvidenceStatement } from "./execution/revenue-evidence.js";
 import { publicDecisionProviderStatus } from "./execution/decision-provider.js";
 import { startMultiLegRecoveryLoop } from "./execution/multi-leg-orchestrator.js";
 import { fetchCorePerpShadowSet } from "./execution/perp-shadow-adapters.js";
-import { preflightCarryPair } from "./execution/carry-preflight.js";
+import { preflightCarryExecutionMatrix, preflightCarryPair } from "./execution/carry-preflight.js";
 import { executeStoredCarryEntry, startCarryExecutionLoop } from "./execution/carry-executor.js";
 import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-evidence.js";
 import {
@@ -82,6 +82,16 @@ import {
   loadPooledJupiterCredential,
 } from "./venues/jupiter.js";
 import { loadPartnerCoinbaseCredential } from "./venues/coinbase.js";
+import {
+  authorizeAsterCredential,
+  prepareAsterCredential,
+  recoverAsterCredentialRegistration,
+} from "./venues/aster-provisioning.js";
+import {
+  authorizeLighterCredential,
+  prepareLighterCredential,
+  reconcileLighterCredential,
+} from "./venues/lighter-provisioning.js";
 
 const MAX_BODY_BYTES = 256 * 1024;
 const CARRY_EXECUTION_VENUE_SET = new Set(CARRY_EXECUTION_VENUES);
@@ -1617,12 +1627,23 @@ function validateCarryPairPreflightRequest(body, recipient) {
       errors.push(`${venueId} venue access is required`);
       continue;
     }
+    if (access.owner_commitment !== body.owner_commitment) errors.push(`${venueId} owner commitment mismatch`);
     for (const field of ["account_commitment", "vault_commitment", "policy_commitment"]) {
       if (!isNonEmptyString(access[field])) errors.push(`${venueId} ${field} is required`);
     }
     errors.push(...validateEncryptedBundle(access.encrypted_execution_vault, recipient, `${venueId} encrypted_execution_vault`));
   }
   return errors;
+}
+
+function validateCarryExecutionMatrixRequest(body, recipient) {
+  const [anchor, ...candidates] = CARRY_EXECUTION_VENUES;
+  if (!anchor || candidates.length < 2) return ["carry execution matrix requires at least three venues"];
+  return [...new Set(candidates.flatMap((venueId) => validateCarryPairPreflightRequest({
+    ...body,
+    long_venue_id: anchor,
+    short_venue_id: venueId,
+  }, recipient)))];
 }
 
 function validateCarryMonitoringAccess(body, recipient, mode) {
@@ -2213,6 +2234,172 @@ function validateCredentialVerifyRequest(body, recipient) {
   return errors;
 }
 
+function validateAsterCredentialProvisionRequest(body) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext credentials, strategy, prompt, policy text, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.venue_id !== "aster") errors.push("venue_id must be aster");
+  if (body.platform_class !== "hyperliquid_style_market") {
+    errors.push("platform_class must be hyperliquid_style_market");
+  }
+  if (body.execution_mode !== "worker_generated_agent") {
+    errors.push("execution_mode must be worker_generated_agent");
+  }
+  if (body.operation_class !== "credential_provision") {
+    errors.push("operation_class must be credential_provision");
+  }
+  if (!isNonEmptyString(body.owner_commitment)) errors.push("owner_commitment is required");
+  if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
+  if (!/^0x[0-9a-f]{40}$/i.test(String(body.owner_address || ""))) {
+    errors.push("owner_address must be an EVM address");
+  }
+  if (body.agent_name !== undefined && !/^[A-Za-z0-9._:-]{1,32}$/.test(String(body.agent_name))) {
+    errors.push("agent_name is invalid");
+  }
+  return errors;
+}
+
+function validateLighterCredentialProvisionRequest(body) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext credentials, strategy, prompt, policy text, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.venue_id !== "lighter") errors.push("venue_id must be lighter");
+  if (body.platform_class !== "hyperliquid_style_market") {
+    errors.push("platform_class must be hyperliquid_style_market");
+  }
+  if (body.execution_mode !== "worker_generated_api_key") {
+    errors.push("execution_mode must be worker_generated_api_key");
+  }
+  if (body.operation_class !== "credential_provision") {
+    errors.push("operation_class must be credential_provision");
+  }
+  if (!isNonEmptyString(body.owner_commitment)) errors.push("owner_commitment is required");
+  if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
+  if (!/^0x[0-9a-f]{40}$/i.test(String(body.owner_address || ""))) {
+    errors.push("owner_address must be an EVM address");
+  }
+  if (!Number.isSafeInteger(body.account_index) || body.account_index < 0 || body.account_index > 281_474_976_710_655) {
+    errors.push("account_index must be a uint48 integer");
+  }
+  if (!Number.isInteger(body.api_key_index) || body.api_key_index < 2 || body.api_key_index > 254) {
+    errors.push("api_key_index must be an integer from 2 through 254");
+  }
+  return errors;
+}
+
+function validateLighterCredentialAuthorizeRequest(body, recipient, { receipt = false } = {}) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext credentials, strategy, prompt, policy text, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.venue_id !== "lighter") errors.push("venue_id must be lighter");
+  if (body.platform_class !== "hyperliquid_style_market") {
+    errors.push("platform_class must be hyperliquid_style_market");
+  }
+  if (body.execution_mode !== "worker_generated_api_key") {
+    errors.push("execution_mode must be worker_generated_api_key");
+  }
+  if (body.operation_class !== (receipt ? "credential_receipt" : "credential_authorize")) {
+    errors.push(`operation_class must be ${receipt ? "credential_receipt" : "credential_authorize"}`);
+  }
+  if (!isNonEmptyString(body.owner_commitment)) errors.push("owner_commitment is required");
+  if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
+  if (!/^0x[0-9a-f]{40}$/i.test(String(body.owner_address || ""))) errors.push("owner_address is invalid");
+  if (!/^lighter_prepare_[0-9a-f]{64}$/.test(String(body.preparation_id || ""))) {
+    errors.push("preparation_id is invalid");
+  }
+  if (!Number.isSafeInteger(body.account_index) || body.account_index < 0 || body.account_index > 281_474_976_710_655) {
+    errors.push("account_index must be a uint48 integer");
+  }
+  if (!Number.isInteger(body.api_key_index) || body.api_key_index < 2 || body.api_key_index > 254) {
+    errors.push("api_key_index must be an integer from 2 through 254");
+  }
+  if (!/^[0-9a-f]{80}$/i.test(String(body.public_key || ""))) errors.push("public_key is invalid");
+  if (receipt) {
+    if (!/^0x[0-9a-f]{64}$/i.test(String(body.transaction_hash || ""))) {
+      errors.push("transaction_hash is invalid");
+    }
+  } else if (!/^0x02[0-9a-f]+$/i.test(String(body.raw_transaction || ""))) {
+    errors.push("raw_transaction is invalid");
+  }
+  errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  return errors;
+}
+
+function validateAsterCredentialAuthorizeRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext credentials, strategy, prompt, policy text, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.venue_id !== "aster") errors.push("venue_id must be aster");
+  if (body.platform_class !== "hyperliquid_style_market") {
+    errors.push("platform_class must be hyperliquid_style_market");
+  }
+  if (body.execution_mode !== "worker_generated_agent") {
+    errors.push("execution_mode must be worker_generated_agent");
+  }
+  if (body.operation_class !== "credential_authorize") {
+    errors.push("operation_class must be credential_authorize");
+  }
+  if (!isNonEmptyString(body.owner_commitment)) errors.push("owner_commitment is required");
+  if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
+  if (!/^0x[0-9a-f]{40}$/i.test(String(body.owner_address || ""))) errors.push("owner_address is invalid");
+  if (!/^0x[0-9a-f]{40}$/i.test(String(body.signer_address || ""))) errors.push("signer_address is invalid");
+  if (!/^aster_prepare_[0-9a-f]{64}$/.test(String(body.preparation_id || ""))) {
+    errors.push("preparation_id is invalid");
+  }
+  if (!/^[A-Za-z0-9._:-]{1,32}$/.test(String(body.agent_name || ""))) errors.push("agent_name is invalid");
+  if (!Number.isSafeInteger(body.nonce)) errors.push("nonce must be a safe integer");
+  if (!Number.isSafeInteger(body.expired)) errors.push("expired must be a safe integer");
+  if (!/^0x[0-9a-f]{130}$/i.test(String(body.signature || ""))) errors.push("signature is invalid");
+  if (!Array.isArray(body.ip_whitelist) || body.ip_whitelist.some((entry) => typeof entry !== "string")) {
+    errors.push("ip_whitelist must be an array of strings");
+  }
+  errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  return errors;
+}
+
+function validateAsterCredentialReceiptRequest(body) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext credentials, strategy, prompt, policy text, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.venue_id !== "aster") errors.push("venue_id must be aster");
+  if (body.platform_class !== "hyperliquid_style_market") {
+    errors.push("platform_class must be hyperliquid_style_market");
+  }
+  if (body.execution_mode !== "worker_generated_agent") {
+    errors.push("execution_mode must be worker_generated_agent");
+  }
+  if (body.operation_class !== "credential_receipt") {
+    errors.push("operation_class must be credential_receipt");
+  }
+  if (!isNonEmptyString(body.owner_commitment)) errors.push("owner_commitment is required");
+  if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
+  if (!/^0x[0-9a-f]{40}$/i.test(String(body.owner_address || ""))) errors.push("owner_address is invalid");
+  if (!/^0x[0-9a-f]{40}$/i.test(String(body.signer_address || ""))) errors.push("signer_address is invalid");
+  if (!/^aster_prepare_[0-9a-f]{64}$/.test(String(body.preparation_id || ""))) {
+    errors.push("preparation_id is invalid");
+  }
+  if (!Number.isSafeInteger(body.nonce)) errors.push("nonce must be a safe integer");
+  if (!/^sha256:[0-9a-f]{64}$/.test(String(body.signature_commitment || ""))) {
+    errors.push("signature_commitment is invalid");
+  }
+  return errors;
+}
+
 function validateAutopilotSessionRequest(body, recipient) {
   const errors = [];
   if (!isObject(body)) return ["request body must be an object"];
@@ -2492,6 +2679,40 @@ export function createPrivateAgentWorkerServer(options = {}) {
           return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
         }
         return json(res, 200, await preflightCarryPair({
+          body,
+          recipient,
+          state,
+          verifyOrder: verifyAutopilotOrder,
+          readHyperliquidSnapshot,
+          readHyperliquidCarryMetrics,
+        }));
+      }
+
+      if (req.method === "POST" && url.pathname === "/carry/preflight-matrix") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        if (req.headers["x-ghola-no-submit-verify"] !== "true") {
+          return json(res, 400, { error: "no-submit verification header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "carry:read",
+          state,
+          expected: (body) => ({
+            owner_commitment: body.owner_commitment,
+            work_order_commitment: body.work_order_commitment,
+            operation_class: "matrix_no_submit",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateCarryExecutionMatrixRequest(body, recipient);
+        if (errors.length > 0) return json(res, 400, { error: "invalid carry execution matrix request", details: errors });
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
+        }
+        return json(res, 200, await preflightCarryExecutionMatrix({
           body,
           recipient,
           state,
@@ -3224,6 +3445,239 @@ export function createPrivateAgentWorkerServer(options = {}) {
         }
         const verification = await verifyVenueCredential({ body, recipient, state });
         return json(res, 200, verification);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/lighter/credentials/prepare") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "credential:provision",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "lighter",
+            platform_class: "hyperliquid_style_market",
+            execution_mode: "worker_generated_api_key",
+            operation_class: "credential_provision",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateLighterCredentialProvisionRequest(body);
+        if (errors.length) {
+          return json(res, 400, {
+            error: "invalid Lighter credential provision request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const fundingSigner = fundingSigningIdentity();
+        const attestation = await attestationMetadata(recipient, fundingSigner.public_key_b64);
+        const prepared = await prepareLighterCredential({
+          ownerAddress: body.owner_address,
+          accountCommitment: body.account_commitment,
+          accountIndex: body.account_index,
+          apiKeyIndex: body.api_key_index,
+          recipient,
+          provider: env("PRIVATE_AGENT_PROVIDER_ID", "phala"),
+          attestationEvidence: attestation,
+          generateApiKey: options.lighterGenerateApiKey,
+        });
+        return json(res, 201, prepared);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/lighter/credentials/authorize") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        if (req.headers["x-ghola-credential-authorization-required"] !== "true") {
+          return json(res, 400, { error: "explicit credential authorization header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "credential:authorize",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "lighter",
+            platform_class: "hyperliquid_style_market",
+            execution_mode: "worker_generated_api_key",
+            operation_class: "credential_authorize",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateLighterCredentialAuthorizeRequest(body, recipient);
+        if (errors.length) {
+          return json(res, 400, {
+            error: "invalid Lighter credential authorization request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const receipt = await authorizeLighterCredential({
+          body,
+          recipient,
+          state,
+          ethereumRpcUrl: options.lighterEthereumRpcUrl || env("PRIVATE_AGENT_LIGHTER_ETHEREUM_RPC_URL"),
+          ethereumRpcFetch: options.lighterEthereumRpcFetch || fetch,
+          lighterApiBaseUrl: options.lighterApiBaseUrl || env("PRIVATE_AGENT_LIGHTER_API_URL", "https://mainnet.zklighter.elliot.ai"),
+          lighterFetch: options.lighterApiFetch || fetch,
+        });
+        return json(res, receipt.status === "ready" ? 201 : 202, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/lighter/credentials/receipt") {
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "credential:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "lighter",
+            platform_class: "hyperliquid_style_market",
+            execution_mode: "worker_generated_api_key",
+            operation_class: "credential_receipt",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateLighterCredentialAuthorizeRequest(body, recipient, { receipt: true });
+        if (errors.length) {
+          return json(res, 400, {
+            error: "invalid Lighter credential receipt request",
+            details: errors,
+          });
+        }
+        const receipt = await reconcileLighterCredential({
+          body,
+          recipient,
+          state,
+          ethereumRpcUrl: options.lighterEthereumRpcUrl || env("PRIVATE_AGENT_LIGHTER_ETHEREUM_RPC_URL"),
+          ethereumRpcFetch: options.lighterEthereumRpcFetch || fetch,
+          lighterApiBaseUrl: options.lighterApiBaseUrl || env("PRIVATE_AGENT_LIGHTER_API_URL", "https://mainnet.zklighter.elliot.ai"),
+          lighterFetch: options.lighterApiFetch || fetch,
+        });
+        return json(res, receipt.status === "ready" ? 200 : 202, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/aster/credentials/prepare") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "credential:provision",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "aster",
+            platform_class: "hyperliquid_style_market",
+            execution_mode: "worker_generated_agent",
+            operation_class: "credential_provision",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateAsterCredentialProvisionRequest(body);
+        if (errors.length) {
+          return json(res, 400, {
+            error: "invalid Aster credential provision request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const fundingSigner = fundingSigningIdentity();
+        const attestation = await attestationMetadata(recipient, fundingSigner.public_key_b64);
+        const prepared = await prepareAsterCredential({
+          ownerAddress: body.owner_address,
+          accountCommitment: body.account_commitment,
+          agentName: body.agent_name,
+          recipient,
+          provider: env("PRIVATE_AGENT_PROVIDER_ID", "phala"),
+          attestationEvidence: attestation,
+        });
+        return json(res, 201, prepared);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/aster/credentials/authorize") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        if (req.headers["x-ghola-credential-authorization-required"] !== "true") {
+          return json(res, 400, { error: "explicit credential authorization header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "credential:authorize",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "aster",
+            platform_class: "hyperliquid_style_market",
+            execution_mode: "worker_generated_agent",
+            operation_class: "credential_authorize",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateAsterCredentialAuthorizeRequest(body, recipient);
+        if (errors.length) {
+          return json(res, 400, {
+            error: "invalid Aster credential authorization request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const receipt = await authorizeAsterCredential({
+          body,
+          recipient,
+          state,
+          fetchImpl: options.asterRegistrationFetch || fetch,
+        });
+        return json(res, 201, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/aster/credentials/receipt") {
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "credential:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "aster",
+            platform_class: "hyperliquid_style_market",
+            execution_mode: "worker_generated_agent",
+            operation_class: "credential_receipt",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateAsterCredentialReceiptRequest(body);
+        if (errors.length) {
+          return json(res, 400, {
+            error: "invalid Aster credential receipt request",
+            details: errors,
+          });
+        }
+        const receipt = await recoverAsterCredentialRegistration({ body, state });
+        return json(res, 200, receipt);
       }
 
       if (req.method === "POST" && url.pathname === "/hyperliquid/sessions") {

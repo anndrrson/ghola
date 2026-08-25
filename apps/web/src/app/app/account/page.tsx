@@ -5,6 +5,7 @@ import { PrivateAccountCockpit, type PrivateAccountInitialFlow } from "@/compone
 import { headers } from "next/headers";
 import { resolveGholaProductEnvironment } from "@/lib/product-environment";
 import { CarryAccountSetup } from "@/components/carry/CarryAccountSetup";
+import { safeHyperliquidSetupReturn } from "@/lib/hyperliquid-trade-return";
 
 export default async function GholaAccountPage({
   searchParams,
@@ -107,11 +108,11 @@ export default async function GholaAccountPage({
       )}
 
       <section className={terminalFlow || focusedSetup || focusedCarrySetup ? "px-0 py-0" : "px-4 py-5 sm:px-6 lg:px-8"}>
-        {focusedCarrySetup ? <CarryAccountSetup /> : (
+        {focusedCarrySetup ? <CarryAccountSetup returnTo={returnTo} /> : (
           <PrivateAccountCockpit
             initialFlow={initialFlow}
             initialSetupVenue={setup === "hyperliquid" ? "hyperliquid" : null}
-            initialReturnTo={returnTo === "/carry" || returnTo?.startsWith("/trade?") ? returnTo : null}
+            initialReturnTo={safeHyperliquidSetupReturn(returnTo) ? returnTo : null}
             initialHyperliquidMarket={null}
             initialIosReturnTo={initialIosReturnTo}
             hyperliquidNetwork={hyperliquidNetwork}

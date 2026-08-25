@@ -31,17 +31,23 @@ export function hyperliquidNoSubmitProofOrder(input: {
 export function hyperliquidMarketFromTradeReturn(
   returnTo: string | null | undefined,
 ): GholaHyperliquidMarket | null {
-  if (!returnTo) return null;
+  return hyperliquidMarketFromReturnTarget(returnTo, 0);
+}
+
+export function safeHyperliquidSetupReturn(
+  returnTo: string | null | undefined,
+): boolean {
+  if (!returnTo) return false;
   try {
     const target = new URL(returnTo, "https://ghola.local");
-    if (target.origin !== "https://ghola.local" || target.pathname !== "/trade") return null;
-    if (target.searchParams.get("venue") !== "hyperliquid") return null;
-    const market = target.searchParams.get("market")?.trim().toUpperCase().replace(/-PERP$/, "");
-    return market === "BTC" || market === "ETH" || market === "SOL" || market === "HYPE"
-      ? market
-      : null;
+    if (target.origin !== "https://ghola.local") return false;
+    if (target.pathname === "/carry") return true;
+    if (hyperliquidMarketFromReturnTarget(returnTo, 0)) return true;
+    if (target.pathname !== "/account" || target.searchParams.get("setup") !== "carry") return false;
+    const nested = target.searchParams.get("return_to");
+    return nested === "/carry" || hyperliquidMarketFromReturnTarget(nested, 1) !== null;
   } catch {
-    return null;
+    return false;
   }
 }
 
@@ -52,10 +58,31 @@ export function hyperliquidSetupAuthRedirect(
     flow: "private-mode",
     setup: "hyperliquid",
   });
-  if (returnTo && hyperliquidMarketFromTradeReturn(returnTo)) {
+  if (returnTo && safeHyperliquidSetupReturn(returnTo)) {
     params.set("return_to", returnTo);
   }
   return `/account?${params.toString()}`;
+}
+
+function hyperliquidMarketFromReturnTarget(
+  returnTo: string | null | undefined,
+  depth: number,
+): GholaHyperliquidMarket | null {
+  if (!returnTo) return null;
+  try {
+    const target = new URL(returnTo, "https://ghola.local");
+    if (target.origin !== "https://ghola.local") return null;
+    if (target.pathname === "/account" && depth === 0 && target.searchParams.get("setup") === "carry") {
+      return hyperliquidMarketFromReturnTarget(target.searchParams.get("return_to"), depth + 1);
+    }
+    if (target.pathname !== "/trade" || target.searchParams.get("venue") !== "hyperliquid") return null;
+    const market = target.searchParams.get("market")?.trim().toUpperCase().replace(/-PERP$/, "");
+    return market === "BTC" || market === "ETH" || market === "SOL" || market === "HYPE"
+      ? market
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export function liveHyperliquidReferencePrice(snapshot: {

@@ -39,6 +39,12 @@ export const CONNECT_SRC_HOSTS: readonly string[] = [
   // account/order submission still goes through Ghola's sealed connector.
   "wss://api.hyperliquid.xyz",
   "wss://api.hyperliquid-testnet.xyz",
+  // Public cross-venue quote streams. These carry only market data; all
+  // account state and submissions remain on Ghola's sealed worker path.
+  "wss://mainnet.zklighter.elliot.ai",
+  "wss://fstream.asterdex.com",
+  "wss://indexer.dydx.trade",
+  "wss://edgex-quote-prod-v2.edgex.exchange",
   // Public Phoenix market data stream. This is market-only data;
   // live order submission still goes through Ghola's sealed worker path.
   "https://perp-api.phoenix.trade",

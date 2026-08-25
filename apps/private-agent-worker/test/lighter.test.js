@@ -16,10 +16,17 @@ function credential() {
     version: 1,
     kind: "ghola_lighter_execution_vault",
     network: "mainnet",
+    account_commitment: "private_account_lighter_test",
+    owner_address: `0x${"33".repeat(20)}`,
     account_index: 123,
     api_key_index: 4,
     api_private_key: "11".repeat(32),
+    api_public_key: "22".repeat(40),
+    provisioning_status: "owner_association_verified",
     permissions: { can_read: true, can_trade: true, can_withdraw: false, can_transfer: false },
+    allowed_operations: ["read", "limit_order", "cancel", "reconcile"],
+    blocked_operations: ["withdraw", "transfer", "leverage", "margin", "account_config", "api_key_rotation"],
+    owner_only_operations: ["withdraw", "transfer", "leverage", "margin", "account_config", "api_key_rotation"],
   });
 }
 
@@ -47,6 +54,37 @@ test("keeps Lighter fund operations owner-only inside the attested worker bounda
   assert.ok(result.authority_boundary.owner_only.includes("withdraw"));
   assert.ok(result.authority_boundary.owner_only.includes("transfer"));
   assert.equal(JSON.stringify(result).includes("can_withdraw\":true"), false);
+});
+
+test("rejects a Lighter execution vault outside its exact active account binding", () => {
+  const base = {
+    version: 1,
+    kind: "ghola_lighter_execution_vault",
+    network: "mainnet",
+    account_commitment: "private_account_lighter_test",
+    owner_address: `0x${"33".repeat(20)}`,
+    account_index: 123,
+    api_key_index: 4,
+    api_private_key: "11".repeat(32),
+    api_public_key: "22".repeat(40),
+    provisioning_status: "owner_association_verified",
+    permissions: { can_read: true, can_trade: true, can_withdraw: false, can_transfer: false },
+    allowed_operations: ["read", "limit_order", "cancel", "reconcile"],
+    blocked_operations: ["withdraw", "transfer", "leverage", "margin", "account_config", "api_key_rotation"],
+    owner_only_operations: ["withdraw", "transfer", "leverage", "margin", "account_config", "api_key_rotation"],
+  };
+  assert.throws(
+    () => lighterCredentialFromVault(base, { accountCommitment: "private_account_wrong" }),
+    (error) => error.code === "venue_access_required",
+  );
+  assert.throws(
+    () => lighterCredentialFromVault({ ...base, provisioning_status: "pending_owner_association" }),
+    (error) => error.code === "venue_access_required",
+  );
+  assert.throws(
+    () => lighterCredentialFromVault({ ...base, allowed_operations: ["read"] }),
+    (error) => error.code === "venue_access_required",
+  );
 });
 
 test("authenticates a Lighter key and account without broadcasting", async () => {

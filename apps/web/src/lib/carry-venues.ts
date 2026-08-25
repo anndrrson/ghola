@@ -1,4 +1,5 @@
 import {
+  CARRY_BROWSER_STREAM_VENUES as EXECUTION_CORE_BROWSER_STREAM_VENUES,
   CARRY_EXECUTION_VENUES as EXECUTION_CORE_CARRY_VENUES,
   CORE_PERP_VENUES as EXECUTION_CORE_PERP_VENUES,
   type CarryExecutionVenueId,
@@ -7,6 +8,7 @@ import {
 
 export const CARRY_EXECUTION_VENUES: readonly CarryExecutionVenueId[] = EXECUTION_CORE_CARRY_VENUES;
 export const CORE_PERP_VENUES: readonly CorePerpVenueId[] = EXECUTION_CORE_PERP_VENUES;
+export const CARRY_BROWSER_STREAM_VENUES: readonly CorePerpVenueId[] = EXECUTION_CORE_BROWSER_STREAM_VENUES;
 
 export type CarryExecutionVenue = CarryExecutionVenueId;
 
