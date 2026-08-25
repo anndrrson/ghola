@@ -161,7 +161,8 @@ describe("private account trading UI derivation", () => {
     expect(authModalSource).toContain("initializeGoogleRedirect");
     expect(authModalSource).toContain('z-[110]');
     expect(perpsTurnkeySource).toContain("googleOauthEnabled: true");
-    expect(perpsTurnkeySource).toContain('await turnkey.handleGoogleOauth({ openInPage: false });');
+    expect(perpsTurnkeySource).toContain('await turnkey.handleGoogleOauth({ openInPage: true });');
+    expect(perpsTurnkeySource).toContain("TURNKEY_PENDING_BINDING_STORAGE_KEY");
     expect(perpsTurnkeySource).not.toContain("await turnkey.handleLogin(");
   });
 

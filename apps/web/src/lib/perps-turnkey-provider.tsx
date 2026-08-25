@@ -46,6 +46,7 @@ const AGENT_PATH = "m/44'/60'/0'/0/1";
 const TOMBSTONE_PATH = "m/44'/60'/0'/0/2";
 const SEALING_PATH = "m/44'/501'/0'/0'";
 const TURNKEY_BINDINGS_STORAGE_KEY = "ghola_perps_turnkey_bindings_v1";
+const TURNKEY_PENDING_BINDING_STORAGE_KEY = "ghola_perps_turnkey_pending_binding_v1";
 
 const OWNER_ACCOUNT = {
   curve: "CURVE_SECP256K1",
@@ -252,12 +253,15 @@ function PerpsTurnkeySession({
 
   useEffect(() => {
     let stored: string | null = null;
+    let pending: string | null = null;
     try {
       stored = localStorage.getItem(`${TURNKEY_BINDINGS_STORAGE_KEY}:${parentOrganizationId}`);
+      pending = sessionStorage.getItem(`${TURNKEY_PENDING_BINDING_STORAGE_KEY}:${parentOrganizationId}`);
     } catch {
       // A blocked storage boundary must never restore an unverified session.
     }
     setBindings(parsePerpsTurnkeyBindings(stored));
+    setPendingBindingUserId(pending);
     setBindingsLoaded(true);
   }, []);
 
@@ -301,6 +305,11 @@ function PerpsTurnkeySession({
       return;
     }
     setBindings(next);
+    try {
+      sessionStorage.removeItem(`${TURNKEY_PENDING_BINDING_STORAGE_KEY}:${parentOrganizationId}`);
+    } catch {
+      // The verified binding is already durable; stale session state is ignored.
+    }
     setPendingBindingUserId(null);
     setRequireFreshAuthentication(false);
     clearFreshAuthentication();
@@ -308,6 +317,11 @@ function PerpsTurnkeySession({
 
   useEffect(() => {
     if (!boundary.clearPending || boundary.kind === "bind") return;
+    try {
+      sessionStorage.removeItem(`${TURNKEY_PENDING_BINDING_STORAGE_KEY}:${parentOrganizationId}`);
+    } catch {
+      // A blocked storage boundary is handled by the identity boundary.
+    }
     setPendingBindingUserId(null);
   }, [boundary.clearPending, boundary.kind]);
 
@@ -370,10 +384,12 @@ function PerpsTurnkeySession({
     if (turnkeyAuthenticated || turnkeyOrganizationId) {
       await turnkey.logout();
     }
+    sessionStorage.setItem(`${TURNKEY_PENDING_BINDING_STORAGE_KEY}:${parentOrganizationId}`, userId);
     setPendingBindingUserId(userId);
     try {
-      await turnkey.handleGoogleOauth({ openInPage: false });
+      await turnkey.handleGoogleOauth({ openInPage: true });
     } catch (error) {
+      sessionStorage.removeItem(`${TURNKEY_PENDING_BINDING_STORAGE_KEY}:${parentOrganizationId}`);
       setPendingBindingUserId((current) => (current === userId ? null : current));
       throw error;
     }
@@ -389,6 +405,11 @@ function PerpsTurnkeySession({
   ]);
 
   const logout = useCallback(async () => {
+    try {
+      sessionStorage.removeItem(`${TURNKEY_PENDING_BINDING_STORAGE_KEY}:${parentOrganizationId}`);
+    } catch {
+      // Best-effort cleanup only.
+    }
     setPendingBindingUserId(null);
     setRequireFreshAuthentication(true);
     clearFreshAuthentication();
