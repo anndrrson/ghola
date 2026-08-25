@@ -971,11 +971,14 @@ export async function getHyperliquidApiWalletAuthorization(input: {
   agent_address: string;
   status: "authorized" | "not_authorized";
   authorized: boolean;
+  authorized_agent_name: string | null;
   active_named_agent_count: number;
+  active_unnamed_agent_count: number;
   named_agent_limit: number;
   preferred_agent_name: string;
   preferred_name_in_use: boolean;
   named_slot_available: boolean;
+  unnamed_slot_available: boolean;
 }> {
   const params = new URLSearchParams({
     network: input.network,

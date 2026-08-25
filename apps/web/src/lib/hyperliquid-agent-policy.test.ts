@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { hyperliquidNamedAgentCapacity } from "./hyperliquid-agent-policy";
+import {
+  hyperliquidAgentApprovalTarget,
+  hyperliquidNamedAgentCapacity,
+} from "./hyperliquid-agent-policy";
 
 describe("Hyperliquid named-agent capacity", () => {
   it("allows a fresh named slot", () => {
@@ -21,5 +24,26 @@ describe("Hyperliquid named-agent capacity", () => {
       activeNamedAgentCount: 3,
       preferredNameInUse: false,
     }).namedSlotAvailable).toBe(false);
+  });
+
+  it("keeps deterministic named replacement ahead of the unnamed fallback", () => {
+    expect(hyperliquidAgentApprovalTarget({
+      namedSlotAvailable: true,
+      unnamedSlotAvailable: true,
+    })).toEqual({ mode: "named", agentName: "ghola" });
+  });
+
+  it("uses the unnamed slot only when named slots are full and it is empty", () => {
+    expect(hyperliquidAgentApprovalTarget({
+      namedSlotAvailable: false,
+      unnamedSlotAvailable: true,
+    })).toEqual({ mode: "unnamed", agentName: "" });
+  });
+
+  it("never replaces an occupied unnamed wallet", () => {
+    expect(hyperliquidAgentApprovalTarget({
+      namedSlotAvailable: false,
+      unnamedSlotAvailable: false,
+    })).toEqual({ mode: "unavailable", agentName: null });
   });
 });

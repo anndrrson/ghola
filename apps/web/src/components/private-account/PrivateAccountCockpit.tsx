@@ -73,7 +73,10 @@ import {
 import {
   signHyperliquidApiWalletBinding,
 } from "@/lib/hyperliquid-api-wallet";
-import { GHOLA_HYPERLIQUID_AGENT_NAME } from "@/lib/hyperliquid-agent-policy";
+import {
+  GHOLA_HYPERLIQUID_AGENT_NAME,
+  hyperliquidAgentApprovalTarget,
+} from "@/lib/hyperliquid-agent-policy";
 import {
   authorizeHyperliquidAgentWithInjectedOwner,
   connectInjectedHyperliquidOwner,
@@ -6134,6 +6137,12 @@ function HyperliquidConnectModal({
       !authorizationStatus.authorized &&
       !authorizationStatus.named_slot_available,
   );
+  const unnamedFallbackAvailable = Boolean(
+    namedAgentSlotsFull && authorizationStatus?.unnamed_slot_available,
+  );
+  const allAgentSlotsFull = Boolean(
+    namedAgentSlotsFull && !authorizationStatus?.unnamed_slot_available,
+  );
   const ownerAddressReady = /^0x[0-9a-fA-F]{40}$/.test(draft.hyperliquid_account_address.trim());
   const canSubmit = Boolean(
     accountCommitment &&
@@ -6150,7 +6159,7 @@ function HyperliquidConnectModal({
         ? "Finish secure connection"
         : authorizationChecking
           ? "Checking Hyperliquid…"
-          : namedAgentSlotsFull
+          : allAgentSlotsFull
             ? "Free one API-wallet slot"
             : "Authorize with wallet or Hyperliquid"
     : !accountCommitment || !walletAddress
@@ -6235,29 +6244,32 @@ function HyperliquidConnectModal({
       const pending = await resumePendingHyperliquidApiWallet(pendingInput) ??
         await resumeOrCreatePendingHyperliquidApiWallet(pendingInput);
       applyPendingWallet(pending);
-      const credential: HyperliquidExecutionCredentialDraft = {
-        network: pending.network,
-        hyperliquid_account_address: pending.ownerAddress,
-        api_wallet_private_key: pending.privateKey,
-        agent_name: GHOLA_HYPERLIQUID_AGENT_NAME,
-      };
       let status = await getHyperliquidApiWalletAuthorization({
         network: pending.network,
         ownerAddress: pending.ownerAddress,
         agentAddress: pending.agentAddress,
       });
       setAuthorizationStatus(status);
+      let approvedAgentName = status.authorized
+        ? status.authorized_agent_name ?? ""
+        : GHOLA_HYPERLIQUID_AGENT_NAME;
       if (!status.authorized) {
-        if (!status.named_slot_available) {
+        const approvalTarget = hyperliquidAgentApprovalTarget({
+          namedSlotAvailable: status.named_slot_available,
+          unnamedSlotAvailable: status.unnamed_slot_available,
+        });
+        if (approvalTarget.mode === "unavailable") {
           throw new Error(
-            `Hyperliquid’s ${status.named_agent_limit} named API-wallet slots are full. Remove one on Hyperliquid, then return—Ghola will resume this exact wallet.`,
+            `Hyperliquid’s ${status.named_agent_limit} named API-wallet slots and unnamed slot are full. Remove one on Hyperliquid, then return—Ghola will resume this exact wallet.`,
           );
         }
+        approvedAgentName = approvalTarget.agentName;
         await authorizeHyperliquidAgentWithInjectedOwner({
           provider,
           ownerAddress: pending.ownerAddress as `0x${string}`,
           agentAddress: pending.agentAddress as `0x${string}`,
           network: pending.network,
+          agentName: approvedAgentName,
         });
         status = await waitForHyperliquidAuthorization({
           network: pending.network,
@@ -6267,6 +6279,12 @@ function HyperliquidConnectModal({
         setAuthorizationStatus(status);
       }
       if (!status.authorized) throw new Error("Hyperliquid did not confirm the wallet authorization. Nothing was retried.");
+      const credential: HyperliquidExecutionCredentialDraft = {
+        network: pending.network,
+        hyperliquid_account_address: pending.ownerAddress,
+        api_wallet_private_key: pending.privateKey,
+        agent_name: status.authorized_agent_name ?? approvedAgentName,
+      };
       setSubmitting(true);
       await persistHyperliquidCredential(credential, pending.agentAddress);
     } catch (caught) {
@@ -6610,7 +6628,7 @@ function HyperliquidConnectModal({
               </div>
             ) : (
               <div className="mt-5 grid gap-4">
-                {!authorizationReady && !namedAgentSlotsFull && (
+                {!authorizationReady && !allAgentSlotsFull && (
                   <button
                     type="button"
                     disabled={Boolean(pendingWalletAction) || submitting}
@@ -6619,7 +6637,7 @@ function HyperliquidConnectModal({
                   >
                     {pendingWalletAction === "generate" || submitting
                       ? "Waiting for wallet…"
-                      : "Authorize with wallet"}
+                      : unnamedFallbackAvailable ? "Authorize with free unnamed slot" : "Authorize with wallet"}
                   </button>
                 )}
                 {authorizationReady && (
@@ -6627,9 +6645,14 @@ function HyperliquidConnectModal({
                     Hyperliquid authorization detected. Ghola can finish securely without another wallet prompt.
                   </div>
                 )}
-                {namedAgentSlotsFull && (
+                {allAgentSlotsFull && (
                   <div className="rounded-lg border border-[#68402f] bg-[#26150d] px-4 py-3 text-xs leading-5 text-[#ffc39a]">
-                    Hyperliquid’s {authorizationStatus?.named_agent_limit || 3} named API-wallet slots are full. Remove one wallet there, then return. Ghola will resume this exact saved wallet—do not generate another.
+                    Hyperliquid’s {authorizationStatus?.named_agent_limit || 3} named API-wallet slots and unnamed slot are full. Remove one wallet there, then return. Ghola will resume this exact saved wallet—do not generate another.
+                  </div>
+                )}
+                {unnamedFallbackAvailable && (
+                  <div className="rounded-lg border border-[#29405b] bg-[#0a1420] px-4 py-3 text-xs leading-5 text-[#9bcfff]">
+                    Named API-wallet slots are full. Ghola will authorize this exact pending wallet in the free unnamed slot.
                   </div>
                 )}
                 <div className="rounded-lg border border-[#29405b] bg-[#0a1420] p-4">
@@ -6666,14 +6689,16 @@ function HyperliquidConnectModal({
                   }}
                   className="inline-flex h-12 items-center justify-center rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb]"
                 >
-                  {namedAgentSlotsFull ? "Manage Hyperliquid API wallets" : "Manual Hyperliquid authorization"}
+                  {allAgentSlotsFull ? "Manage Hyperliquid API wallets" : "Manual Hyperliquid authorization"}
                 </a>
                 <p className="text-center text-xs leading-5 text-[#718096]">
                   {authorizationChecking
                     ? "Checking Hyperliquid authorization…"
                     : authorizationOpened
                       ? "Return here after approval. Ghola detects the venue state automatically."
-                      : `Manual fallback: use name “${GHOLA_HYPERLIQUID_AGENT_NAME}”; the address is copied automatically.`}
+                      : unnamedFallbackAvailable
+                        ? "Manual fallback: leave the API-wallet name blank; the address is copied automatically."
+                        : `Manual fallback: use name “${GHOLA_HYPERLIQUID_AGENT_NAME}”; the address is copied automatically.`}
                 </p>
                 {authorizationCheckError && <p className="text-center text-xs leading-5 text-amber-200">{authorizationCheckError}</p>}
                 <button

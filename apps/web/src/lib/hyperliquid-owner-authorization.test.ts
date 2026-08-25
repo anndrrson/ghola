@@ -40,6 +40,17 @@ describe("injected Hyperliquid owner authorization", () => {
     expect(approveAgent).toHaveBeenCalledWith({ agentAddress: AGENT, agentName: "ghola" });
   });
 
+  it("can explicitly approve the free unnamed slot", async () => {
+    await authorizeHyperliquidAgentWithInjectedOwner({
+      provider: { request: vi.fn() },
+      ownerAddress: OWNER,
+      agentAddress: AGENT,
+      network: "mainnet",
+      agentName: "",
+    });
+    expect(approveAgent).toHaveBeenCalledWith({ agentAddress: AGENT, agentName: "" });
+  });
+
   it("turns duplicate approval prompts into a precise recovery message", () => {
     expect(injectedWalletErrorMessage({ code: -32002 })).toContain("already open");
     expect(injectedWalletErrorMessage({ code: 4001 })).toContain("canceled");

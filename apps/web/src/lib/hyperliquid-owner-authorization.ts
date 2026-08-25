@@ -31,6 +31,7 @@ export async function authorizeHyperliquidAgentWithInjectedOwner(input: {
   ownerAddress: `0x${string}`;
   agentAddress: `0x${string}`;
   network: "mainnet" | "testnet";
+  agentName?: string;
 }) {
   const wallet = createWalletClient({
     account: input.ownerAddress as Address,
@@ -42,7 +43,7 @@ export async function authorizeHyperliquidAgentWithInjectedOwner(input: {
   });
   await exchange.approveAgent({
     agentAddress: input.agentAddress,
-    agentName: GHOLA_HYPERLIQUID_AGENT_NAME,
+    agentName: input.agentName ?? GHOLA_HYPERLIQUID_AGENT_NAME,
   });
 }
 

@@ -181,6 +181,9 @@ describe("Hyperliquid private-account routes", () => {
       preferred_agent_name: "ghola",
       preferred_name_in_use: false,
       named_slot_available: true,
+      active_unnamed_agent_count: 0,
+      unnamed_slot_available: true,
+      authorized_agent_name: "ghola-test",
     });
   });
 
@@ -213,6 +216,8 @@ describe("Hyperliquid private-account routes", () => {
       named_agent_limit: 3,
       preferred_name_in_use: false,
       named_slot_available: false,
+      active_unnamed_agent_count: 0,
+      unnamed_slot_available: true,
     });
   });
 
@@ -251,6 +256,27 @@ describe("Hyperliquid private-account routes", () => {
       active_named_agent_count: 2,
       named_agent_limit: 3,
       named_slot_available: true,
+      active_unnamed_agent_count: 1,
+      unnamed_slot_available: false,
+    });
+  });
+
+  it("does not offer unnamed fallback when an unnamed API wallet already exists", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation(async () => Response.json([
+      { name: "", address: `0x${"dd".repeat(20)}`, validUntil: null },
+      { name: "alpha", address: `0x${"aa".repeat(20)}`, validUntil: null },
+      { name: "beta", address: `0x${"bb".repeat(20)}`, validUntil: null },
+      { name: "gamma", address: `0x${"cc".repeat(20)}`, validUntil: null },
+    ]));
+    const res = await agentAuthorization(request(
+      `/v1/private-account/hyperliquid/agent-authorization?network=mainnet&owner=${TEST_HYPERLIQUID_OWNER}&agent=${TEST_HYPERLIQUID_AGENT}`,
+    ));
+
+    expect(await res.json()).toMatchObject({
+      authorized: false,
+      named_slot_available: false,
+      active_unnamed_agent_count: 1,
+      unnamed_slot_available: false,
     });
   });
 

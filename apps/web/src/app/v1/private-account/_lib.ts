@@ -4197,8 +4197,10 @@ export async function hyperliquidAgentAuthorizationStatus(input: {
     owner_address: ownerAddress,
   });
   if (!checked.ok) return { status: "unavailable" as const, authorized: false };
-  const authorized = checked.agents.some((candidate) => candidate.address === agentAddress);
+  const authorizedAgent = checked.agents.find((candidate) => candidate.address === agentAddress);
+  const authorized = Boolean(authorizedAgent);
   const activeNamedAgentCount = checked.agents.filter((candidate) => candidate.name.length > 0).length;
+  const activeUnnamedAgentCount = checked.agents.filter((candidate) => candidate.name.length === 0).length;
   const preferredNameInUse = checked.agents.some((candidate) =>
     candidate.name.toLowerCase() === GHOLA_HYPERLIQUID_AGENT_NAME,
   );
@@ -4206,11 +4208,14 @@ export async function hyperliquidAgentAuthorizationStatus(input: {
   return {
     status: authorized ? "authorized" as const : "not_authorized" as const,
     authorized,
+    authorized_agent_name: authorizedAgent?.name || null,
     active_named_agent_count: capacity.activeNamedAgentCount,
+    active_unnamed_agent_count: activeUnnamedAgentCount,
     named_agent_limit: HYPERLIQUID_NAMED_AGENT_LIMIT,
     preferred_agent_name: GHOLA_HYPERLIQUID_AGENT_NAME,
     preferred_name_in_use: capacity.preferredNameInUse,
     named_slot_available: authorized || capacity.namedSlotAvailable,
+    unnamed_slot_available: activeUnnamedAgentCount === 0,
   };
 }
 
