@@ -137,6 +137,10 @@ describe("private account trading UI derivation", () => {
       resolve(process.cwd(), "src/components/AuthModal.tsx"),
       "utf8",
     );
+    const perpsTurnkeySource = readFileSync(
+      resolve(process.cwd(), "src/lib/perps-turnkey-provider.tsx"),
+      "utf8",
+    );
     expect(cockpitSource).toContain("Start trading on Hyperliquid");
     expect(cockpitSource).toContain('reason="hyperliquid-setup"');
     expect(cockpitSource).toContain("focusedHyperliquidAuthPrompted.current = true;");
@@ -156,6 +160,9 @@ describe("private account trading UI derivation", () => {
     expect(authModalSource).toContain("isSignup && !isHyperliquidSetup");
     expect(authModalSource).toContain("initializeGoogleRedirect");
     expect(authModalSource).toContain('z-[110]');
+    expect(perpsTurnkeySource).toContain("googleOauthEnabled: true");
+    expect(perpsTurnkeySource).toContain('await turnkey.handleGoogleOauth({ openInPage: false });');
+    expect(perpsTurnkeySource).not.toContain("await turnkey.handleLogin(");
   });
 
   it("keeps a Hyperliquid connection error visible until the dialog is reopened", () => {

@@ -165,8 +165,10 @@ export function PerpsTurnkeyProvider({ children }: { children: ReactNode }) {
           emailOtpAuthEnabled: true,
           passkeyAuthEnabled: true,
           walletAuthEnabled: true,
+          googleOauthEnabled: true,
         },
-        methodOrder: ["passkey", "email", "wallet"],
+        methodOrder: ["socials", "passkey", "email", "wallet"],
+        oauthOrder: ["google"],
       },
     },
   };
@@ -370,7 +372,7 @@ function PerpsTurnkeySession({
     }
     setPendingBindingUserId(userId);
     try {
-      await turnkey.handleLogin({ title: "Protect your Ghola perps wallets" });
+      await turnkey.handleGoogleOauth({ openInPage: false });
     } catch (error) {
       setPendingBindingUserId((current) => (current === userId ? null : current));
       throw error;
