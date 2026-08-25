@@ -195,9 +195,11 @@ describe("private account trading UI derivation", () => {
     expect(cockpitSource).toContain('? "Authenticate owner wallet"');
   });
 
-  it("opens wallet replacement only for exact Hyperliquid agent-binding failures", () => {
+  it("opens wallet replacement only for Hyperliquid access failures that require resealing", () => {
     expect(shouldReconnectHyperliquidApiWallet(new Error("hyperliquid_agent_binding_required"))).toBe(true);
     expect(shouldReconnectHyperliquidApiWallet("hyperliquid_agent_not_authorized")).toBe(true);
+    expect(shouldReconnectHyperliquidApiWallet(new Error("hyperliquid_execution_vault_not_ready"))).toBe(true);
+    expect(shouldReconnectHyperliquidApiWallet(new Error("venue_access_required"))).toBe(true);
     expect(shouldReconnectHyperliquidApiWallet(new Error("hyperliquid_binding_check_unavailable"))).toBe(false);
     expect(shouldReconnectHyperliquidApiWallet(new Error("connector_submit_ambiguous"))).toBe(false);
 

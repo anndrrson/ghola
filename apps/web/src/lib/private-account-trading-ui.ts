@@ -36,7 +36,10 @@ export type CustomerExecutionMode = "needs_setup" | "preview" | "live_capped" | 
 
 export function shouldReconnectHyperliquidApiWallet(error: unknown) {
   const code = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-  return code === "hyperliquid_agent_binding_required" || code === "hyperliquid_agent_not_authorized";
+  return code === "hyperliquid_agent_binding_required" ||
+    code === "hyperliquid_agent_not_authorized" ||
+    code === "hyperliquid_execution_vault_not_ready" ||
+    code === "venue_access_required";
 }
 
 export function isHyperliquidAgentKeyConfirmed(input: {
