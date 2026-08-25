@@ -243,11 +243,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "CarryTerminalBuilder", "carry_terminal_builder_missing");
   requireText("webCarryChart", ">XVENUE<", "carry_terminal_rail_missing");
   requireText("webCarryChart", "formatBps", "carry_basis_point_display_missing");
-  requireText("webCarryChart", "FEES —", "carry_fee_confidence_missing");
+  requireText("webCarryChart", "grossDailyBps", "carry_gross_value_display_missing");
+  requireText("webCarryChart", "NET24H", "carry_net_value_display_missing");
+  requireText("webCarryChart", "routeHasPositiveNet", "carry_positive_net_qualification_missing");
+  requireText("webCarryChart", 'data-route-qualified={selectedHasPositiveNet ? "true" : "false"}', "carry_route_qualification_state_missing");
   requireText("webCarryChart", "AGE {formatAge", "carry_feed_age_display_missing");
   requireText("webCarryChart", "% APR", "carry_funding_period_label_missing");
-  requireText("webCarryChart", "DATA {liveVenueCount}", "carry_live_data_label_missing");
+  requireText("webCarryChart", "startTransition(() => setLivePatches(patches))", "carry_nonblocking_ui_publish_missing");
+  forbidText("webCarryChart", "DATA {liveVenueCount}", "carry_socket_status_mislabeled_as_live_data");
   forbidText("webCarryChart", "FEEDS {liveVenueCount}", "carry_socket_status_mislabeled_as_live_data");
+  forbidText("webCarryChart", "QUAL {qualifiedCandidates.length}", "carry_route_count_without_net_proof");
   forbidText("webCarryChart", "Scanning equivalent perps", "carry_marketing_status_copy_forbidden");
   requireText("webCarryBuilder", "preflightCarryExecutionMatrix", "carry_terminal_three_venue_matrix_missing");
   requireText("webCarryBuilder", "preflightCarryPair", "carry_terminal_pair_no_submit_missing");

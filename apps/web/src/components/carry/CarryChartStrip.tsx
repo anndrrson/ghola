@@ -1,12 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { ChevronDown, RefreshCw } from "lucide-react";
 import {
   CARRY_VENUE_LABELS,
-  CARRY_LIVE_PATCH_MAX_AGE_MS,
   applyCarryLivePatches,
   annualFundingBps,
   buildPairCandidates,
@@ -22,7 +21,6 @@ import {
   carryLiveDescriptorKey,
   createCarryPatchPublisher,
   createCarryLiveMarketStream,
-  type CarryLiveVenueStatus,
 } from "@/lib/carry-live-market";
 import { CARRY_EXECUTION_VENUES } from "@/lib/carry-venues";
 
@@ -50,7 +48,6 @@ export function CarryChartStrip({
   const [open, setOpen] = useState(defaultOpen);
   const [clock, setClock] = useState(() => Date.now());
   const [livePatches, setLivePatches] = useState<CarryLiveMarketPatch[]>([]);
-  const [liveStatuses, setLiveStatuses] = useState<Record<string, CarryLiveVenueStatus>>({});
   const [executionRouteKey, setExecutionRouteKey] = useState("");
   const loadedOnceRef = useRef(false);
 
@@ -108,21 +105,20 @@ export function CarryChartStrip({
     if (!descriptorKey) return;
     const publisher = createCarryPatchPublisher({
       intervalMs: CARRY_UI_PUBLISH_INTERVAL_MS,
-      onPublish: setLivePatches,
+      onPublish: (patches) => startTransition(() => setLivePatches(patches)),
     });
     const stream = createCarryLiveMarketStream({
       venues: venueDataRef.current,
       onPatch: publisher.push,
-      onStatus: (venueId, status) => {
-        setLiveStatuses((current) => current[venueId] === status ? current : { ...current, [venueId]: status });
-      },
+      // Connection state is transport telemetry, not proof that a quote is
+      // current. Only normalized, age-gated patches may change the rail.
+      onStatus: () => undefined,
     });
     stream.start();
     return () => {
       stream.stop();
       publisher.stop();
       setLivePatches([]);
-      setLiveStatuses({});
     };
   }, [descriptorKey]);
 
@@ -140,27 +136,16 @@ export function CarryChartStrip({
   const executionCandidates = useMemo(() => rankCarryCandidatesByNet(
     buildPairCandidates(effectiveVenues, CARRY_EXECUTION_VENUES),
   ), [effectiveVenues]);
-  const qualifiedCandidates = useMemo(() => bestRoutePerAsset(pricedCandidates.filter(({ candidate, quote }) =>
-    carryCandidateAgeMs(candidate, clock) <= CARRY_ROUTE_DISPLAY_MAX_AGE_MS &&
-    (!quote.exactCosts || (quote.expectedNetUsd ?? 0) > 0)
+  const observedCandidates = useMemo(() => bestRoutePerAsset(pricedCandidates.filter(({ candidate }) =>
+    carryCandidateAgeMs(candidate, clock) <= CARRY_ROUTE_DISPLAY_MAX_AGE_MS
   )), [clock, pricedCandidates]);
-  const selected = qualifiedCandidates.find(({ candidate }) => candidate.asset === asset) || null;
+  const selected = observedCandidates.find(({ candidate }) => candidate.asset === asset) || null;
   const assetExecutionCandidates = executionCandidates.filter(({ candidate }) => candidate.asset === asset);
   const selectedExecution = assetExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === executionRouteKey)
     || assetExecutionCandidates[0]
     || null;
-  const availableVenueCount = useMemo(() => effectiveVenues.filter((venue) =>
-    venue.ok && venue.snapshots.some((snapshot) => !snapshot.stale && snapshot.status !== "quarantined")
-  ).length, [effectiveVenues]);
   const selectedAgeMs = selected ? carryCandidateAgeMs(selected.candidate, clock) : Number.POSITIVE_INFINITY;
-  const connectedVenueCount = useMemo(() => new Set(
-    Object.entries(liveStatuses).filter(([, status]) => status === "live").map(([venueId]) => venueId)
-  ).size, [liveStatuses]);
-  const liveVenueCount = useMemo(() => new Set([
-    ...effectivePatches
-      .filter((patch) => clock - patch.received_at_ms <= CARRY_LIVE_PATCH_MAX_AGE_MS)
-      .map((patch) => patch.venue_id),
-  ]).size, [clock, effectivePatches]);
+  const selectedHasPositiveNet = selected ? routeHasPositiveNet(selected.quote) : false;
   const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${asset}-PERP&carry=open`;
   const setupHref = `/account?setup=carry&return_to=${encodeURIComponent(terminalReturn)}`;
 
@@ -168,12 +153,12 @@ export function CarryChartStrip({
     <section
       className="mb-2 overflow-hidden rounded-md border border-[#252f3d] bg-[#090d13]"
       aria-label="Cross-venue route intelligence"
-      data-live-venue-count={liveVenueCount}
-      data-connected-venue-count={connectedVenueCount}
+      data-route-qualified={selectedHasPositiveNet ? "true" : "false"}
+      data-cost-basis={selected?.quote.exactCosts ? "net" : "gross-only"}
       data-route-age-ms={Number.isFinite(selectedAgeMs) ? Math.round(selectedAgeMs) : undefined}
     >
       <div className="flex min-h-10 items-center gap-2 px-2.5 sm:px-3">
-        <div className="grid min-w-0 flex-1 grid-cols-[4.75rem_5.5rem_minmax(12rem,1fr)_8.75rem_5.75rem_6.25rem] items-center gap-x-2 font-mono text-[10px] tabular-nums max-[1023px]:grid-cols-[4.75rem_5.5rem_minmax(0,1fr)] max-[639px]:grid-cols-[4.75rem_minmax(0,1fr)]">
+        <div className="grid min-w-0 flex-1 grid-cols-[4.75rem_5.5rem_minmax(12rem,1fr)_8.75rem_10rem_6.25rem] items-center gap-x-2 font-mono text-[10px] tabular-nums max-[1023px]:grid-cols-[4.75rem_5.5rem_minmax(0,1fr)] max-[639px]:grid-cols-[4.75rem_minmax(0,1fr)]">
           <span className="font-semibold tracking-[0.12em] text-[#78bdff]">XVENUE</span>
           <span className="text-[#aeb9c7] max-[639px]:hidden">{asset}-PERP</span>
 
@@ -185,30 +170,33 @@ export function CarryChartStrip({
                 <span className="text-[#657286]">S</span> {venueName(selected.candidate.short.venue_id).toUpperCase()}
               </p>
               <p className="whitespace-nowrap max-[1023px]:hidden">
-                <span className="mr-1.5 text-[#657286]">{selected.quote.exactCosts ? "NET24H" : "GROSS"}</span>
-                <span className={selected.quote.exactCosts ? "font-semibold text-[#72dfb2]" : "font-semibold text-[#d7dde6]"}>
-                  {formatBps(selectedDailyBps(selected.candidate, selected.quote))}
+                <span className="mr-1.5 text-[#657286]">GROSS</span>
+                <span className="font-semibold text-[#d7dde6]">
+                  {formatBps(grossDailyBps(selected.candidate))}
                 </span>
               </p>
-              <p className={selected.quote.exactCosts
-                ? "whitespace-nowrap text-[#72dfb2] max-[1023px]:hidden"
-                : "whitespace-nowrap text-[#d9bd74] max-[1023px]:hidden"}
-              >
-                {selected.quote.exactCosts ? "FEES OK" : "FEES —"}
+              <p className="whitespace-nowrap max-[1023px]:hidden">
+                <span className="mr-1.5 text-[#657286]">NET24H</span>
+                <span className={selected.quote.exactCosts
+                  ? selectedHasPositiveNet ? "font-semibold text-[#72dfb2]" : "font-semibold text-[#e27d89]"
+                  : "font-semibold text-[#d9bd74]"}
+                >
+                  {selected.quote.exactCosts ? formatBps(selectedDailyBps(selected.candidate, selected.quote)) : "—"}
+                </span>
               </p>
               <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">AGE {formatAge(selectedAgeMs)}</p>
             </>
           ) : (
             <>
-              <p className={error && liveVenueCount === 0 ? "truncate text-[#e27d89]" : "truncate text-[#8e9bad]"}>
-                {error && liveVenueCount === 0
+              <p className={error ? "truncate text-[#e27d89]" : "truncate text-[#8e9bad]"}>
+                {error
                   ? "FEED UNAVAILABLE"
                   : loading
                     ? "ROUTE —"
-                    : "NO QUALIFIED ROUTE"}
+                    : "NO FRESH ROUTE"}
               </p>
-              <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">DATA {liveVenueCount}/5</p>
-              <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">QUAL {qualifiedCandidates.length}</p>
+              <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">GROSS —</p>
+              <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">NET24H —</p>
               <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">AGE —</p>
             </>
           )}
@@ -238,9 +226,9 @@ export function CarryChartStrip({
 
       {open && (
         <div className="border-t border-[#1d2733] px-2.5 py-2 sm:px-3">
-          {qualifiedCandidates.length > 0 ? (
+          {observedCandidates.length > 0 ? (
             <div className="grid gap-1.5 lg:grid-cols-3">
-              {qualifiedCandidates.slice(0, 3).map(({ candidate, quote }) => (
+              {observedCandidates.slice(0, 3).map(({ candidate, quote }) => (
                 <button
                   key={candidate.asset}
                   type="button"
@@ -251,21 +239,25 @@ export function CarryChartStrip({
                 >
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-xs font-semibold text-white">{candidate.asset}</span>
-                    <span className="font-mono text-[11px] font-semibold text-[#72dfb2]">
+                    <span className={routeHasPositiveNet(quote)
+                      ? "font-mono text-[11px] font-semibold text-[#72dfb2]"
+                      : quote.exactCosts
+                        ? "font-mono text-[11px] font-semibold text-[#e27d89]"
+                        : "font-mono text-[11px] font-semibold text-[#d9bd74]"}
+                    >
                       {formatCarryValue(candidate, quote)}
                     </span>
                   </div>
                   <p className="mt-1 truncate text-[10px] text-[#718096]">
                     Long {venueName(candidate.long.venue_id)} {formatFundingApr(candidate.long)} · Short {venueName(candidate.short.venue_id)} {formatFundingApr(candidate.short)}
-                    {!quote.exactCosts ? " · fees pending" : ""}
+                    {!quote.exactCosts ? " · exact costs required" : routeHasPositiveNet(quote) ? " · net qualified" : " · no net edge"}
                   </p>
                 </button>
               ))}
             </div>
           ) : (
             <div className="flex min-h-8 items-center gap-3 text-[11px]">
-              <p className="truncate text-[#8995a7]">No safe route now · stale or quarantined feeds stay hidden.</p>
-              <span className="ml-auto shrink-0 text-[#5f6c7e]">{liveVenueCount}/5 data · {availableVenueCount} eligible</span>
+              <p className="truncate text-[#8995a7]">No fresh cross-venue quote pair · stale and quarantined markets are excluded.</p>
               <Link
                 href={setupHref}
                 className="shrink-0 rounded border border-[#2b435e] px-2 py-1 font-mono text-[9px] font-semibold tracking-[0.06em] text-[#8fbae0] hover:bg-[#0d1622]"
@@ -312,14 +304,24 @@ function formatFundingApr(snapshot: CarryCandidate["long"]) {
 }
 
 function formatCarryValue(candidate: CarryCandidate, quote: PricedCarryCandidate["quote"]) {
-  return `${quote.exactCosts ? "NET24H" : "GROSS"} ${formatBps(selectedDailyBps(candidate, quote))}`;
+  const gross = `GROSS ${formatBps(grossDailyBps(candidate))}`;
+  const net = quote.exactCosts ? formatBps(selectedDailyBps(candidate, quote)) : "—";
+  return `${gross} · NET24H ${net}`;
 }
 
 function selectedDailyBps(candidate: CarryCandidate, quote: PricedCarryCandidate["quote"] | null) {
   if (quote?.exactCosts && quote.expectedNetDailyUsd != null && quote.notionalUsd > 0) {
     return quote.expectedNetDailyUsd / quote.notionalUsd * 10_000;
   }
+  return grossDailyBps(candidate);
+}
+
+function grossDailyBps(candidate: CarryCandidate) {
   return candidate.grossAnnualBps / 365;
+}
+
+function routeHasPositiveNet(quote: PricedCarryCandidate["quote"]) {
+  return quote.exactCosts && quote.expectedNetUsd != null && quote.expectedNetUsd > 0;
 }
 
 function bestRoutePerAsset(candidates: PricedCarryCandidate[]) {

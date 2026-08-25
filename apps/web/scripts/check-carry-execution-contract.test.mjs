@@ -212,6 +212,39 @@ test("rejects replacing the terminal rail with marketing status copy", () => {
   );
 });
 
+test("rejects transport activity presented as verified market data", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: `${sources.webCarryChart}\nDATA {liveVenueCount}`,
+    }),
+    /carry_socket_status_mislabeled_as_live_data/,
+  );
+});
+
+test("rejects route qualification that does not prove positive net value", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: sources.webCarryChart.replaceAll("routeHasPositiveNet", "routeHasAnySpread"),
+    }),
+    /carry_positive_net_qualification_missing/,
+  );
+});
+
+test("rejects urgent React updates for the high-frequency quote rail", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: sources.webCarryChart.replace(
+        "startTransition(() => setLivePatches(patches))",
+        "setLivePatches(patches)",
+      ),
+    }),
+    /carry_nonblocking_ui_publish_missing/,
+  );
+});
+
 test("rejects an unrealistic sub-millisecond UI claim", () => {
   assert.throws(
     () => checkCarryExecutionContract({
