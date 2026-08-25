@@ -35,8 +35,11 @@ export const CONNECT_SRC_HOSTS: readonly string[] = [
   // POST /inference/sealed path still works.
   "https://ghola-relay.onrender.com",
   "https://ghola-receipts.onrender.com",
-  // Public Hyperliquid market data stream. This is market-only data;
-  // account/order submission still goes through Ghola's sealed connector.
+  // Hyperliquid public API + market stream. HTTPS is required for the
+  // owner-signed, trade-only API-wallet authorization; order submission
+  // still goes through Ghola's sealed connector.
+  "https://api.hyperliquid.xyz",
+  "https://api.hyperliquid-testnet.xyz",
   "wss://api.hyperliquid.xyz",
   "wss://api.hyperliquid-testnet.xyz",
   // Public cross-venue quote streams. These carry only market data; all
