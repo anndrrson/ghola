@@ -309,18 +309,30 @@ function contractSpec(leg, notionalMicro) {
 function legCosts(leg) {
   const fee = feeE6Bps(leg.account?.taker_fee_bps);
   const snapshot = leg.snapshot;
-  const executionPrice = leg.side === "buy" ? snapshot.best_ask_e8 : snapshot.best_bid_e8;
-  const slippage = executionPrice && snapshot.mark_price_e8
-    ? Math.max(0, Math.ceil(Math.abs(executionPrice - snapshot.mark_price_e8) * 10_000 / snapshot.mark_price_e8))
-    : 5;
+  const entryPrice = leg.side === "buy" ? snapshot.best_ask_e8 : snapshot.best_bid_e8;
+  const exitSide = leg.side === "buy" ? "sell" : "buy";
+  const exitPrice = exitSide === "buy" ? snapshot.best_ask_e8 : snapshot.best_bid_e8;
   return {
     entry_fee_e6_bps: fee,
     exit_fee_e6_bps: fee,
-    entry_slippage_bps: slippage,
-    exit_slippage_bps: slippage,
+    entry_slippage_e6_bps: adverseSlippageE6Bps(leg.side, snapshot.mark_price_e8, entryPrice),
+    exit_slippage_e6_bps: adverseSlippageE6Bps(exitSide, snapshot.mark_price_e8, exitPrice),
     latency_penalty_bps: 1,
     gas_micro_usdc: 0,
   };
+}
+
+function adverseSlippageE6Bps(side, markPriceE8, executionPriceE8) {
+  if (!Number.isSafeInteger(markPriceE8) || markPriceE8 <= 0 ||
+      !Number.isSafeInteger(executionPriceE8) || executionPriceE8 <= 0) {
+    return 5_000_000;
+  }
+  const adverseMove = side === "buy"
+    ? executionPriceE8 - markPriceE8
+    : markPriceE8 - executionPriceE8;
+  if (adverseMove <= 0) return 0;
+  const numerator = BigInt(adverseMove) * 10_000_000_000n;
+  return Number((numerator + BigInt(markPriceE8) - 1n) / BigInt(markPriceE8));
 }
 
 function accountReadiness(leg, notionalMicro) {

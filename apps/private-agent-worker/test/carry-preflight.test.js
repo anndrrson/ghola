@@ -99,6 +99,70 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
   assert.equal(result.economic_opportunity.projected_trading_cost_micro_usdc > 0, true);
 });
 
+test("prices entry and exit from their directional BBOs without whole-bp rounding", async () => {
+  const account = {
+    can_trade: true,
+    available_balance: 500,
+    margin_balance: 500,
+    initial_margin: 0,
+    maintenance_margin: 0,
+    maker_fee_bps: 0,
+    taker_fee_bps: 0,
+    position_count: 0,
+    open_order_count: 0,
+  };
+  const result = await preflightCarryPair({
+    body: {
+      version: 1,
+      owner_commitment: "owner_commitment_slippage_0001",
+      work_order_commitment: "carry_pair_slippage_0001",
+      asset: "BTC",
+      long_venue_id: "hyperliquid",
+      short_venue_id: "aster",
+      notional_usd: 100,
+      horizon_days: 30,
+      venue_access: {
+        hyperliquid: access("owner_commitment_slippage_0001"),
+        aster: access("owner_commitment_slippage_0001"),
+      },
+    },
+    recipient: {},
+    state: {},
+    now: () => NOW,
+    fetchVenue: async ({ venue_id }) => {
+      const value = snapshot(venue_id);
+      return [{
+        ...value,
+        best_bid_e8: venue_id === "hyperliquid"
+          ? value.mark_price_e8 - 750_000_000
+          : value.mark_price_e8 - 1_250_000_000,
+        best_ask_e8: venue_id === "hyperliquid"
+          ? value.mark_price_e8 + 250_000_000
+          : value.mark_price_e8 + 500_000_000,
+      }];
+    },
+    verifyOrder: async ({ venue_id, work_order_commitment }) => ({
+      status: "verified_ready",
+      work_order_commitment,
+      verification_commitment: `verification_${venue_id}`,
+      checks: { order_request_checked: true, transaction_broadcast: false },
+      order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
+      account,
+      authority_boundary: { venue_native_trade_only: true },
+    }),
+    readHyperliquidSnapshot: async () => ({
+      status: "ready_to_trade",
+      trading_enabled: true,
+      position_count: 0,
+      open_order_count: 0,
+    }),
+    readHyperliquidCarryMetrics: async () => account,
+  });
+
+  // 2.75 bps of directional spread plus one 1 bp latency penalty per leg.
+  assert.equal(result.economic_opportunity.projected_trading_cost_micro_usdc, 47_500);
+});
+
 test("rejects cross-owner sealed venue access before order verification", async () => {
   let verified = false;
   await assert.rejects(
