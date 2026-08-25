@@ -4182,6 +4182,30 @@ async function readHyperliquidExtraAgents(input: {
   }
 }
 
+async function readHyperliquidAgentOwner(input: {
+  network: "mainnet" | "testnet";
+  agent_address: string;
+}): Promise<string | null> {
+  const baseUrl = input.network === "testnet"
+    ? "https://api.hyperliquid-testnet.xyz"
+    : "https://api.hyperliquid.xyz";
+  try {
+    const response = await fetchWithTimeout(`${baseUrl}/info`, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "userRole", user: input.agent_address }),
+    });
+    if (!response.ok) return null;
+    const body = objectBody(await response.json().catch(() => null));
+    if (stringValue(body.role).toLowerCase() !== "agent") return null;
+    const ownerAddress = stringValue(objectBody(body.data).user).toLowerCase();
+    return /^0x[0-9a-f]{40}$/.test(ownerAddress) ? ownerAddress : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function hyperliquidAgentAuthorizationStatus(input: {
   network: "mainnet" | "testnet";
   owner_address: string;
@@ -4198,9 +4222,14 @@ export async function hyperliquidAgentAuthorizationStatus(input: {
   });
   if (!checked.ok) return { status: "unavailable" as const, authorized: false };
   const authorizedAgent = checked.agents.find((candidate) => candidate.address === agentAddress);
-  const authorized = Boolean(authorizedAgent);
+  const unnamedAgentOwner = authorizedAgent
+    ? null
+    : await readHyperliquidAgentOwner({ network: input.network, agent_address: agentAddress });
+  const authorizedAsUnnamedAgent = unnamedAgentOwner === ownerAddress;
+  const authorized = Boolean(authorizedAgent) || authorizedAsUnnamedAgent;
   const activeNamedAgentCount = checked.agents.filter((candidate) => candidate.name.length > 0).length;
-  const activeUnnamedAgentCount = checked.agents.filter((candidate) => candidate.name.length === 0).length;
+  const observedUnnamedAgentCount = checked.agents.filter((candidate) => candidate.name.length === 0).length;
+  const authorizedViaUnnamedSlot = authorizedAsUnnamedAgent || authorizedAgent?.name.length === 0;
   const preferredNameInUse = checked.agents.some((candidate) =>
     candidate.name.toLowerCase() === GHOLA_HYPERLIQUID_AGENT_NAME,
   );
@@ -4208,14 +4237,17 @@ export async function hyperliquidAgentAuthorizationStatus(input: {
   return {
     status: authorized ? "authorized" as const : "not_authorized" as const,
     authorized,
-    authorized_agent_name: authorizedAgent?.name || null,
+    authorized_agent_name: authorizedAgent?.name ?? (authorizedAsUnnamedAgent ? "" : null),
     active_named_agent_count: capacity.activeNamedAgentCount,
-    active_unnamed_agent_count: activeUnnamedAgentCount,
+    active_unnamed_agent_count: authorizedViaUnnamedSlot
+      ? Math.max(1, observedUnnamedAgentCount)
+      : observedUnnamedAgentCount,
     named_agent_limit: HYPERLIQUID_NAMED_AGENT_LIMIT,
     preferred_agent_name: GHOLA_HYPERLIQUID_AGENT_NAME,
     preferred_name_in_use: capacity.preferredNameInUse,
     named_slot_available: authorized || capacity.namedSlotAvailable,
-    unnamed_slot_available: activeUnnamedAgentCount === 0,
+    unnamed_slot_available: authorizedViaUnnamedSlot,
+    unnamed_slot_replaceable: true,
   };
 }
 

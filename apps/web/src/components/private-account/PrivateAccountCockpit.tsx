@@ -6138,10 +6138,10 @@ function HyperliquidConnectModal({
       !authorizationStatus.named_slot_available,
   );
   const unnamedFallbackAvailable = Boolean(
-    namedAgentSlotsFull && authorizationStatus?.unnamed_slot_available,
+    namedAgentSlotsFull && authorizationStatus?.unnamed_slot_replaceable,
   );
   const allAgentSlotsFull = Boolean(
-    namedAgentSlotsFull && !authorizationStatus?.unnamed_slot_available,
+    namedAgentSlotsFull && !authorizationStatus?.unnamed_slot_replaceable,
   );
   const ownerAddressReady = /^0x[0-9a-fA-F]{40}$/.test(draft.hyperliquid_account_address.trim());
   const canSubmit = Boolean(
@@ -6256,7 +6256,7 @@ function HyperliquidConnectModal({
       if (!status.authorized) {
         const approvalTarget = hyperliquidAgentApprovalTarget({
           namedSlotAvailable: status.named_slot_available,
-          unnamedSlotAvailable: status.unnamed_slot_available,
+          unnamedSlotAvailable: status.unnamed_slot_replaceable,
         });
         if (approvalTarget.mode === "unavailable") {
           throw new Error(
@@ -6652,7 +6652,7 @@ function HyperliquidConnectModal({
                 )}
                 {unnamedFallbackAvailable && (
                   <div className="rounded-lg border border-[#29405b] bg-[#0a1420] px-4 py-3 text-xs leading-5 text-[#9bcfff]">
-                    Named API-wallet slots are full. Ghola will authorize this exact pending wallet in the free unnamed slot.
+                    Named API-wallet slots are full. Ghola will use the main unnamed API-wallet slot; this replaces any wallet currently occupying that slot.
                   </div>
                 )}
                 <div className="rounded-lg border border-[#29405b] bg-[#0a1420] p-4">

@@ -979,6 +979,7 @@ export async function getHyperliquidApiWalletAuthorization(input: {
   preferred_name_in_use: boolean;
   named_slot_available: boolean;
   unnamed_slot_available: boolean;
+  unnamed_slot_replaceable: boolean;
 }> {
   const params = new URLSearchParams({
     network: input.network,

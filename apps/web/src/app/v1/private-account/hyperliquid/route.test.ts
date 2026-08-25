@@ -182,7 +182,8 @@ describe("Hyperliquid private-account routes", () => {
       preferred_name_in_use: false,
       named_slot_available: true,
       active_unnamed_agent_count: 0,
-      unnamed_slot_available: true,
+      unnamed_slot_available: false,
+      unnamed_slot_replaceable: true,
       authorized_agent_name: "ghola-test",
     });
   });
@@ -217,7 +218,8 @@ describe("Hyperliquid private-account routes", () => {
       preferred_name_in_use: false,
       named_slot_available: false,
       active_unnamed_agent_count: 0,
-      unnamed_slot_available: true,
+      unnamed_slot_available: false,
+      unnamed_slot_replaceable: true,
     });
   });
 
@@ -258,10 +260,11 @@ describe("Hyperliquid private-account routes", () => {
       named_slot_available: true,
       active_unnamed_agent_count: 1,
       unnamed_slot_available: false,
+      unnamed_slot_replaceable: true,
     });
   });
 
-  it("does not offer unnamed fallback when an unnamed API wallet already exists", async () => {
+  it("reports an observed unnamed wallet without silently calling it empty", async () => {
     vi.mocked(globalThis.fetch).mockImplementation(async () => Response.json([
       { name: "", address: `0x${"dd".repeat(20)}`, validUntil: null },
       { name: "alpha", address: `0x${"aa".repeat(20)}`, validUntil: null },
@@ -277,6 +280,34 @@ describe("Hyperliquid private-account routes", () => {
       named_slot_available: false,
       active_unnamed_agent_count: 1,
       unnamed_slot_available: false,
+      unnamed_slot_replaceable: true,
+    });
+  });
+
+  it("recognizes Hyperliquid's unnamed agent through userRole", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body || "{}")) as { type?: string };
+      if (body.type === "extraAgents") {
+        return Response.json([
+          { name: "alpha", address: `0x${"aa".repeat(20)}`, validUntil: null },
+          { name: "beta", address: `0x${"bb".repeat(20)}`, validUntil: null },
+          { name: "gamma", address: `0x${"cc".repeat(20)}`, validUntil: null },
+        ]);
+      }
+      return Response.json({ role: "agent", data: { user: TEST_HYPERLIQUID_OWNER } });
+    });
+    const res = await agentAuthorization(request(
+      `/v1/private-account/hyperliquid/agent-authorization?network=mainnet&owner=${TEST_HYPERLIQUID_OWNER}&agent=${TEST_HYPERLIQUID_AGENT}`,
+    ));
+
+    expect(await res.json()).toMatchObject({
+      authorized: true,
+      authorized_agent_name: "",
+      active_named_agent_count: 3,
+      active_unnamed_agent_count: 1,
+      named_slot_available: true,
+      unnamed_slot_available: true,
+      unnamed_slot_replaceable: true,
     });
   });
 
