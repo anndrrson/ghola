@@ -453,6 +453,17 @@ describe("private agent worker", () => {
     assert.match(healthBody.runtime_policy_commitment, /^runtime_policy_[0-9a-f]{48}$/);
     assert.match(healthBody.runtime_health_commitment, /^runtime_health_[0-9a-f]{48}$/);
 
+    const evidence = await fetch(`${baseUrl}/.well-known/private-agent-evidence`);
+    assert.equal(evidence.status, 200);
+    const evidenceBody = await evidence.json();
+    assert.equal(evidenceBody.version, 1);
+    assert.equal(evidenceBody.recipient.recipient_id, recipientBody.recipient_id);
+    assert.equal(evidenceBody.health.status, "green");
+    assert.equal(
+      evidenceBody.recipient.report_data_hex,
+      evidenceBody.health.report_data_hex,
+    );
+
     const response = await fetch(`${baseUrl}/private-agent/sessions`, {
       method: "POST",
       headers: {

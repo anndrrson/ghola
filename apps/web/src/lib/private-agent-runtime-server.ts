@@ -72,6 +72,12 @@ interface PhalaWorkerRecipient {
   expires_at_unix?: number | null;
 }
 
+interface PhalaWorkerEvidenceBundle {
+  version?: number;
+  recipient?: PhalaWorkerRecipient;
+  health?: PhalaWorkerHealth;
+}
+
 const ATTESTATION_STATUS_MAX_AGE_MS = 5 * 60_000;
 const ATTESTATION_STATUS_FETCH_TIMEOUT_MS = 12_000;
 const WORKER_EVIDENCE_FETCH_TIMEOUT_MS = 18_000;
@@ -298,6 +304,24 @@ export function phalaProviderFromWorkerEvidence(input: {
   };
 }
 
+export function phalaProviderFromWorkerEvidenceBundle(input: {
+  executionUrl: string;
+  bundle: PhalaWorkerEvidenceBundle;
+  fundingSignerPins: string[];
+  imageDigestPin: string;
+  nowMs?: number;
+}): ConfidentialComputeProviderStatus | null {
+  if (!input.bundle.recipient || !input.bundle.health) return null;
+  return phalaProviderFromWorkerEvidence({
+    executionUrl: input.executionUrl,
+    recipient: input.bundle.recipient,
+    health: input.bundle.health,
+    fundingSignerPins: input.fundingSignerPins,
+    imageDigestPin: input.imageDigestPin,
+    nowMs: input.nowMs,
+  });
+}
+
 async function directWorkerPhalaProvider(): Promise<ConfidentialComputeProviderStatus | null> {
   const executionUrl = normalizedHttpsUrl(
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() ||
@@ -314,7 +338,20 @@ async function directWorkerPhalaProvider(): Promise<ConfidentialComputeProviderS
   ).trim();
   if (!executionUrl || fundingSignerPins.length === 0 || !imageDigestPin) return null;
 
-  // The worker obtains fresh Dstack evidence for each response. Fetch these
+  const bundle = await fetchJson<PhalaWorkerEvidenceBundle>(
+    new URL("/.well-known/private-agent-evidence", executionUrl),
+    WORKER_EVIDENCE_FETCH_TIMEOUT_MS,
+  );
+  if (bundle) {
+    return phalaProviderFromWorkerEvidenceBundle({
+      executionUrl,
+      bundle,
+      fundingSignerPins,
+      imageDigestPin,
+    });
+  }
+
+  // Legacy workers expose recipient and health evidence separately. Fetch
   // sequentially to avoid contending on the guest attestation socket.
   const recipient = await fetchJson<PhalaWorkerRecipient>(
     new URL("/.well-known/private-agent-recipient", executionUrl),

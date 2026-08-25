@@ -2633,6 +2633,18 @@ export function createPrivateAgentWorkerServer(options = {}) {
 
       if (
         req.method === "GET" &&
+        url.pathname === "/.well-known/private-agent-evidence"
+      ) {
+        const observedAt = new Date();
+        return json(res, ready.ready ? 200 : 503, {
+          version: 1,
+          recipient: await publicRecipient(recipient),
+          health: await runtimeHealthEvidence(recipient, ready, observedAt),
+        });
+      }
+
+      if (
+        req.method === "GET" &&
         url.pathname === "/.well-known/private-agent-recipient"
       ) {
         return json(res, 200, await publicRecipient(recipient));

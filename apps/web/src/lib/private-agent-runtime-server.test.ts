@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   phalaProviderFromAttestationStatus,
   phalaProviderFromWorkerEvidence,
+  phalaProviderFromWorkerEvidenceBundle,
 } from "./private-agent-runtime-server";
 import type { PrivateAgentRuntimeStatus } from "./private-agent-runtime";
 
@@ -132,6 +133,16 @@ describe("phalaProviderFromWorkerEvidence", () => {
       executionUrl,
       health,
       recipient,
+      fundingSignerPins: [fundingSigner],
+      imageDigestPin: imageDigest,
+      nowMs: Date.parse(checkedAt) + 60_000,
+    })?.evidence?.direct_worker_evidence).toBe(true);
+  });
+
+  it("accepts a single worker evidence bundle", () => {
+    expect(phalaProviderFromWorkerEvidenceBundle({
+      executionUrl,
+      bundle: { version: 1, recipient, health },
       fundingSignerPins: [fundingSigner],
       imageDigestPin: imageDigest,
       nowMs: Date.parse(checkedAt) + 60_000,
