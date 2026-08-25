@@ -275,7 +275,8 @@ describe("private account trading UI derivation", () => {
     expect(cockpitSource).toContain("!LEGACY_HYPERLIQUID_API_KEYS_ENABLED");
     expect(cockpitSource).toContain("let sealingAddress = turnkeyWallet.walletAddress");
     expect(cockpitSource).toContain("let signInstructionBytes = turnkeyWallet.signBytes");
-    expect(cockpitSource).toContain("setHyperliquidOwnerAuthConfirmed(true)");
+    expect(cockpitSource).toContain("await perpsTurnkey.login()");
+    expect(cockpitSource).not.toContain("hyperliquidOwnerAuthConfirmed");
     expect(cockpitSource).toContain("ownerAuthRequired={!LEGACY_HYPERLIQUID_API_KEYS_ENABLED}");
     expect(cockpitSource).toContain("onAuthenticateTurnkey={authenticateHyperliquidOwner}");
     expect(cockpitSource).toContain("verificationAction.kind === \"authenticate_owner\"");

@@ -924,7 +924,6 @@ export function PrivateAccountCockpit({
   const [hyperliquidAccount, setHyperliquidAccount] = useState<HyperliquidAccountSnapshot | null>(null);
   const [hyperliquidAccountStreamStatus, setHyperliquidAccountStreamStatus] = useState<HyperliquidAccountStreamStatus>("connecting");
   const [hyperliquidVerification, setHyperliquidVerification] = useState<NoFundsVerificationState | null>(null);
-  const [hyperliquidOwnerAuthConfirmed, setHyperliquidOwnerAuthConfirmed] = useState(false);
   const [hyperliquidInterval, setHyperliquidInterval] = useState<"1m" | "5m" | "15m" | "1h">("5m");
   const [hyperliquidSetupNotice, setHyperliquidSetupNotice] = useState<SetupNoticeState | null>(null);
   const [hyperliquidLaunchAccepted, setHyperliquidLaunchAccepted] = useState(false);
@@ -1437,7 +1436,7 @@ export function PrivateAccountCockpit({
           input.platform_class === "hyperliquid_style_market" &&
           !LEGACY_HYPERLIQUID_API_KEYS_ENABLED
         ) {
-          if (!perpsTurnkey.configured || !perpsTurnkey.authenticated || !hyperliquidOwnerAuthConfirmed) {
+          if (!perpsTurnkey.configured || !perpsTurnkey.authenticated) {
             throw new Error("Authenticate with the Turnkey owner wallet first.");
           }
           const pair = await perpsTurnkey.ensureWalletPair();
@@ -2401,9 +2400,8 @@ export function PrivateAccountCockpit({
       let leverage = orderDraft.leverage ?? 1;
       let marginMode = orderDraft.margin_mode || "cross";
       if (!LEGACY_HYPERLIQUID_API_KEYS_ENABLED && (
-        !perpsTurnkey.configured || !perpsTurnkey.authenticated || !hyperliquidOwnerAuthConfirmed
+        !perpsTurnkey.configured || !perpsTurnkey.authenticated
       )) {
-        setHyperliquidOwnerAuthConfirmed(false);
         throw new Error("Authenticate with the Turnkey owner wallet first.");
       }
       const effectiveVault = vaultOverride ?? hyperliquidVault;
@@ -2489,9 +2487,6 @@ export function PrivateAccountCockpit({
     } catch (err) {
       const reconnectRequired = shouldReconnectHyperliquidApiWallet(err);
       const message = friendlyPrivateAccountError(err, "Could not verify Hyperliquid connection.");
-      if (message.toLowerCase().includes("authenticate with turnkey")) {
-        setHyperliquidOwnerAuthConfirmed(false);
-      }
       setError(message);
       setHyperliquidSetupNotice({
         tone: "bad",
@@ -2514,7 +2509,6 @@ export function PrivateAccountCockpit({
     });
     try {
       await perpsTurnkey.login();
-      setHyperliquidOwnerAuthConfirmed(true);
       setHyperliquidSetupNotice({
         tone: "good",
         title: "Owner wallet authenticated",
@@ -2669,7 +2663,7 @@ export function PrivateAccountCockpit({
       ownerAuthConfigured: LEGACY_HYPERLIQUID_API_KEYS_ENABLED || perpsTurnkey.configured,
       ownerAuthenticated: LEGACY_HYPERLIQUID_API_KEYS_ENABLED
         ? Boolean(turnkeyWallet.walletAddress)
-        : perpsTurnkey.authenticated && hyperliquidOwnerAuthConfirmed,
+        : perpsTurnkey.authenticated,
       ownerAuthLoading: LEGACY_HYPERLIQUID_API_KEYS_ENABLED ? turnkeyWallet.loading : perpsTurnkey.loading,
       accessLabel: hyperliquidVault?.managed_allocation?.execution_mode === "ghola_pooled"
         ? "Ghola trading access"
@@ -3753,7 +3747,7 @@ export function PrivateAccountCockpit({
                 turnkeyConfigured={LEGACY_HYPERLIQUID_API_KEYS_ENABLED || perpsTurnkey.configured}
                 turnkeyAuthenticated={LEGACY_HYPERLIQUID_API_KEYS_ENABLED
                   ? Boolean(turnkeyWallet.walletAddress)
-                  : perpsTurnkey.authenticated && hyperliquidOwnerAuthConfirmed}
+                  : perpsTurnkey.authenticated}
                 turnkeyLoading={LEGACY_HYPERLIQUID_API_KEYS_ENABLED ? turnkeyWallet.loading : perpsTurnkey.loading}
                 onAuthenticateTurnkey={authenticateHyperliquidOwner}
               />
@@ -10030,6 +10024,9 @@ function friendlyPrivateAccountError(err: unknown, fallback: string) {
   }
   if (message === "worker_session_rejected") {
     return "The private worker rejected the capped trading session. No order was sent.";
+  }
+  if (message === "worker_authorization_misconfigured") {
+    return "Ghola's Preview and private worker authorization do not match. No order was sent.";
   }
   if (message === "invalid_authority_or_access") {
     return "The venue could not use that trading authority or API wallet. Check the credential and venue access.";

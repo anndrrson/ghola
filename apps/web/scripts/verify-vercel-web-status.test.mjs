@@ -204,3 +204,25 @@ test("release isolates local and Turnkey signing sessions by the authenticated u
   assert.match(perpsBoundary, /turnkey_organization_mismatch/);
   assert.match(perpsBoundary, /unbound_turnkey_session/);
 });
+
+test("Hyperliquid owner authentication survives component reloads", () => {
+  const cockpit = readFileSync(
+    resolve(webRoot, "src/components/private-account/PrivateAccountCockpit.tsx"),
+    "utf8",
+  );
+
+  assert.doesNotMatch(cockpit, /hyperliquidOwnerAuthConfirmed/);
+  assert.match(cockpit, /ownerAuthenticated:[\s\S]*?: perpsTurnkey\.authenticated,/);
+});
+
+test("worker authorization drift is surfaced instead of collapsed", () => {
+  const privateAccount = readFileSync(
+    resolve(webRoot, "src/app/v1/private-account/_lib.ts"),
+    "utf8",
+  );
+
+  assert.match(privateAccount, /worker_authorization_misconfigured/);
+  assert.match(privateAccount, /res\.status === 401/);
+  assert.match(privateAccount, /res\.status === 403/);
+  assert.match(privateAccount, /errorCode === "venue_access_required"/);
+});

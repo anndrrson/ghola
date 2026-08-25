@@ -6755,7 +6755,13 @@ async function requestHyperliquidAgentSession(input: {
   worker_config?: ReturnType<typeof hyperliquidWorkerConfig>;
 } = {}): Promise<
   | { session_commitment: string }
-  | { error: "connector_endpoint_missing" | "worker_unavailable" | "worker_session_rejected" }
+  | { error:
+      | "connector_endpoint_missing"
+      | "worker_unavailable"
+      | "worker_session_rejected"
+      | "worker_authorization_misconfigured"
+      | "venue_access_required"
+      | "hyperliquid_managed_allocation_not_ready" }
 > {
   if (localHyperliquidPilotEnabled()) {
     return { session_commitment: input.fallback_session_commitment };
@@ -6816,11 +6822,26 @@ async function requestHyperliquidAgentSession(input: {
     const responseBody = objectBody(await res.json().catch(() => null));
     const sessionCommitment = stringValue(responseBody.hyperliquid_session_commitment);
     if (!res.ok || responseBody.status !== "armed" || !sessionCommitment) {
+      const errorCode = stringValue(responseBody.error_code);
       console.warn("[private-account] Hyperliquid worker session rejected", {
         status: res.status,
-        error_code: stringValue(responseBody.error_code) || null,
+        error_code: errorCode || null,
         error: stringValue(responseBody.error) || null,
       });
+      if (
+        res.status === 401 ||
+        res.status === 403 ||
+        errorCode === "worker_capability_required" ||
+        errorCode === "worker_capability_invalid"
+      ) {
+        return { error: "worker_authorization_misconfigured" };
+      }
+      if (errorCode === "venue_access_required") {
+        return { error: "venue_access_required" };
+      }
+      if (res.status === 404) {
+        return { error: "hyperliquid_managed_allocation_not_ready" };
+      }
       return { error: res.status >= 500 ? "worker_unavailable" : "worker_session_rejected" };
     }
     return { session_commitment: sessionCommitment };

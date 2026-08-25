@@ -1,9 +1,11 @@
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 export function verifyPrivateWorkerRuntimeConfig(env = process.env) {
   if (env.VERCEL !== "1") return { skipped: true };
 
   const rawUrl = first(env,
+    "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL",
     "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
     "GHOLA_PRIVATE_AGENT_WORKER_URL",
     "PHALA_AGENT_ENDPOINT",
@@ -31,6 +33,49 @@ export function verifyPrivateWorkerRuntimeConfig(env = process.env) {
   return { skipped: false, worker_host: url.host };
 }
 
+export async function verifyPrivateWorkerRuntimeAuthorization(
+  env = process.env,
+  fetchImpl = fetch,
+) {
+  const config = verifyPrivateWorkerRuntimeConfig(env);
+  if (config.skipped) return config;
+  const rawUrl = first(env,
+    "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL",
+    "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
+    "GHOLA_PRIVATE_AGENT_WORKER_URL",
+    "PHALA_AGENT_ENDPOINT",
+  );
+  const path = "/hyperliquid/sessions";
+  const body = {
+    version: 1,
+    account_commitment: "vercel_release_auth_probe",
+    execution_mode: "byo_api_key",
+    policy_commitment: "vercel_release_auth_probe",
+    session_policy: {
+      market_allowlist: [],
+      max_notional_bucket: "25",
+      max_order_count: 0,
+      kill_switch: false,
+    },
+  };
+  const authorization = workerAuthorization(env, path, body);
+  const response = await fetchImpl(new URL(path, rawUrl), {
+    method: "POST",
+    headers: {
+      authorization,
+      "content-type": "application/json",
+      "x-ghola-sealed-execution-required": "true",
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  });
+  const responseBody = await response.json().catch(() => ({}));
+  if (response.status !== 400 || responseBody.error_code !== "venue_access_required") {
+    throw new Error(`Vercel release private worker authorization failed (${response.status})`);
+  }
+  return { ...config, worker_authorization: "verified" };
+}
+
 function first(env, ...keys) {
   for (const key of keys) {
     const value = String(env[key] || "").trim();
@@ -39,11 +84,52 @@ function first(env, ...keys) {
   return "";
 }
 
-function main() {
-  const result = verifyPrivateWorkerRuntimeConfig();
-  console.log(result.skipped
-    ? "[private-worker-runtime-config] skipped outside Vercel"
-    : `[private-worker-runtime-config] verified ${result.worker_host}`);
+function workerAuthorization(env, path, body) {
+  const capabilitySecret = first(env,
+    "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET",
+    "GHOLA_WORKER_CAPABILITY_SECRET",
+  );
+  if (!capabilitySecret) {
+    return `Bearer ${first(env, "GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN", "PRIVATE_AGENT_EXECUTION_TOKEN")}`;
+  }
+  const now = Math.floor(Date.now() / 1_000);
+  const payload = {
+    version: 1,
+    issuer: "ghola-web",
+    method: "POST",
+    path,
+    scope: "session:create",
+    body_hash: createHash("sha256").update(stableJson(body)).digest("hex"),
+    jti: randomUUID(),
+    iat: now,
+    nbf: now - 5,
+    exp: now + 300,
+    account_commitment: body.account_commitment,
+    venue_id: "hyperliquid",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: body.execution_mode,
+    policy_commitment: body.policy_commitment,
+  };
+  const encoded = Buffer.from(stableJson(payload), "utf8").toString("base64url");
+  const signature = createHmac("sha256", capabilitySecret).update(encoded).digest("base64url");
+  return `Bearer ghcap_v1.${encoded}.${signature}`;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main();
+function stableJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, item]) => item !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+    .join(",")}}`;
+}
+
+async function main() {
+  const result = await verifyPrivateWorkerRuntimeAuthorization();
+  console.log(result.skipped
+    ? "[private-worker-runtime-config] skipped outside Vercel"
+    : `[private-worker-runtime-config] verified ${result.worker_host} authorization`);
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) await main();
