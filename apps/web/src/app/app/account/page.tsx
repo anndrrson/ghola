@@ -6,6 +6,7 @@ import { headers } from "next/headers";
 import { resolveGholaProductEnvironment } from "@/lib/product-environment";
 import { CarryAccountSetup } from "@/components/carry/CarryAccountSetup";
 import { safeHyperliquidSetupReturn } from "@/lib/hyperliquid-trade-return";
+import { privateAccountInitialFlow } from "@/lib/private-account-entry";
 
 export default async function GholaAccountPage({
   searchParams,
@@ -34,12 +35,7 @@ export default async function GholaAccountPage({
       : null;
   const focusedSetup = setup === "hyperliquid";
   const focusedCarrySetup = setup === "carry";
-  const initialFlow: PrivateAccountInitialFlow =
-    flow === "hyperliquid-live" || flow === "phoenix-live" || flow === "jupiter-live" || flow === "coinbase" || flow === "trade"
-      ? flow
-      : flow === "private-mode" || focusedCarrySetup
-        ? null
-        : "trade";
+  const initialFlow: PrivateAccountInitialFlow = privateAccountInitialFlow({ flow, setup });
   const terminalFlow =
     initialFlow === "trade" || initialFlow === "hyperliquid-live" || initialFlow === "phoenix-live" ||
     initialFlow === "jupiter-live" || initialFlow === "coinbase";

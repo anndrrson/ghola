@@ -38,6 +38,7 @@ import {
   type PendingAsterOnboarding,
   type PendingLighterOnboarding,
 } from "@/lib/carry-onboarding-recovery";
+import { carryAccountConnections } from "@/lib/carry-account-connections";
 
 type VenueState = "connected" | "needed" | "unavailable";
 type PendingAsterLinkRecovery = PendingAsterOnboarding;
@@ -86,19 +87,11 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         getPrivateAgentPassport(),
         getHyperliquidExecutionVaultStatus().catch(() => null),
       ]);
-      const passport = asRecord(passportRaw).passport ? asRecord(asRecord(passportRaw).passport) : asRecord(passportRaw);
-      setAccountCommitment(stringValue(passport.account_commitment));
-      const venues = Array.isArray(passport.venues) ? passport.venues.map(asRecord) : [];
-      setAster(venues.some((venue) => venue.venue_id === "aster" && venue.status === "ready") ? "connected" : "needed");
-      setLighter(venues.some((venue) => venue.venue_id === "lighter" && venue.status === "ready") ? "connected" : "needed");
-      const hyperliquidStatus = asRecord(hyperliquidRaw);
-      setHyperliquid(
-        hyperliquidStatus.status === "sealed" ||
-        Boolean(hyperliquidStatus.vault_commitment) ||
-        venues.some((venue) => venue.venue_id === "hyperliquid" && venue.status === "ready")
-          ? "connected"
-          : "needed",
-      );
+      const connections = carryAccountConnections({ passport: passportRaw, hyperliquidStatus: hyperliquidRaw });
+      setAccountCommitment(connections.accountCommitment);
+      setAster(connections.aster ? "connected" : "needed");
+      setLighter(connections.lighter ? "connected" : "needed");
+      setHyperliquid(connections.hyperliquid ? "connected" : "needed");
       setError(null);
     } catch {
       setError("Account readiness could not be refreshed.");
@@ -537,7 +530,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
 
         {error && <p className="mt-4 rounded-lg border border-[#60303a] bg-[#251116] px-4 py-3 text-sm text-[#ee9da8]">{error}</p>}
         {enoughConnected && (
-          <Link href={safeReturnTo} className="mt-6 block h-12 rounded-lg bg-[#56d6a0] px-4 py-3 text-center font-semibold text-[#06130e]">Continue to Carry</Link>
+          <Link href={safeReturnTo} className="mt-6 block h-12 rounded-lg bg-[#56d6a0] px-4 py-3 text-center font-semibold text-[#06130e]">Continue to route verification</Link>
         )}
         <div className="mt-8 flex items-center justify-center gap-2 text-xs text-[#657188]"><LockKeyhole className="h-4 w-4" /> Secrets are sealed to the attested worker.</div>
       </section>
@@ -564,7 +557,7 @@ function VenueCard({
         </span>
         <div>
           <p className="font-semibold">{name}</p>
-          <p className="mt-0.5 text-xs text-[#718097]">{state === "connected" ? "Connected and verified" : state === "needed" ? onboarding.ux.badge : "Not yet execution-ready"}</p>
+          <p className="mt-0.5 text-xs text-[#718097]">{state === "connected" ? "Trading access connected" : state === "needed" ? onboarding.ux.badge : "Not yet execution-ready"}</p>
         </div>
       </div>
       {children}
