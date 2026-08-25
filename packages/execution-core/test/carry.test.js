@@ -250,6 +250,35 @@ test("preserves account-specific sub-basis-point fee precision", () => {
   assert.equal(result.projected_trading_cost_micro_usdc, 4_200_000);
 });
 
+test("preserves sub-basis-point slippage precision", () => {
+  const preciseCosts = {
+    entry_fee_e6_bps: 0,
+    exit_fee_e6_bps: 0,
+    entry_slippage_e6_bps: 105_000,
+    exit_slippage_e6_bps: 105_000,
+    latency_penalty_bps: 0,
+    gas_micro_usdc: 0,
+  };
+  const result = evaluateCarryOpportunity({
+    version: 1,
+    long_contract: contract("hyperliquid", 1),
+    short_contract: contract("lighter", 4),
+    notional_micro_usdc: 10_000_000_000,
+    capital_committed_micro_usdc: 4_000_000_000,
+    horizon_ms: 7 * DAY,
+    long_costs: preciseCosts,
+    short_costs: preciseCosts,
+    capital_cost_bps_per_day: 0,
+    risk_buffer_bps: 0,
+    min_expected_net_benefit_bps: 0,
+    min_margin_runway_ms: 6 * HOUR,
+    margin_runways: [runway("hyperliquid"), runway("lighter")],
+    now_ms: NOW,
+    max_data_age_ms: 30_000,
+  });
+  assert.equal(result.projected_trading_cost_micro_usdc, 420_000);
+});
+
 test("margin runway exposes owner response risk without granting transfer authority", () => {
   const healthy = runway("hyperliquid");
   assert.equal(healthy.status, "healthy");
@@ -463,10 +492,16 @@ test("exit is complete only when exposure is flat and open orders are zero", () 
     now_ms: NOW + 4,
   }).position;
   assert.equal(notFlat.status, "exiting");
-  const flat = advanceCarryPosition({
+  const residual = advanceCarryPosition({
     position: notFlat,
-    event: event(5, "exit_reconciled", { gross_exposure_micro_usdc: 0, open_order_count: 0 }),
+    event: event(5, "exit_reconciled", { gross_exposure_micro_usdc: 1, open_order_count: 0 }),
     now_ms: NOW + 5,
+  }).position;
+  assert.equal(residual.status, "exiting");
+  const flat = advanceCarryPosition({
+    position: residual,
+    event: event(6, "exit_reconciled", { gross_exposure_micro_usdc: 0, open_order_count: 0 }),
+    now_ms: NOW + 6,
   }).position;
   assert.equal(flat.status, "reconciled");
   assert.deepEqual(flat.next_actions, []);
@@ -516,6 +551,7 @@ test("value ledger reports realized net after every cost and deduplicates eviden
   assert.equal(ledger.modeled.net_value_micro_usdc, 15_000_000);
   assert.equal(ledger.realized.net_value_micro_usdc, 19_500_000);
   assert.equal(ledger.realized.variance_from_modeled_micro_usdc, 4_500_000);
+  assert.equal(ledger.realized.by_venue.hyperliquid.net_value_micro_usdc, 23_000_000);
   const duplicate = appendCarryValueLedgerEntry({
     ledger,
     entry: {
@@ -533,6 +569,89 @@ test("value ledger reports realized net after every cost and deduplicates eviden
     now_ms: NOW + 10,
   });
   assert.equal(duplicate.duplicate, true);
+});
+
+test("value ledger rejects a reused evidence claim under a new entry id", () => {
+  let ledger = createCarryValueLedger({
+    version: 1,
+    position_id: "carry:position:0001",
+    modeled: {
+      gross_funding_micro_usdc: 10,
+      trading_cost_micro_usdc: 2,
+      capital_cost_micro_usdc: 1,
+      risk_buffer_micro_usdc: 1,
+    },
+    now_ms: NOW,
+  });
+  const first = appendCarryValueLedgerEntry({
+    ledger,
+    entry: {
+      version: 1,
+      entry_id: "value:entry:claim:1",
+      sequence: 1,
+      entry_type: "trading_fee",
+      direction: "debit",
+      amount_micro_usdc: 2,
+      venue_id: "hyperliquid",
+      leg_id: "carry:leg:long",
+      occurred_at_ms: NOW + 1,
+      evidence_commitment: "value:evidence:claim:1",
+    },
+    now_ms: NOW + 1,
+  });
+  assert.equal(first.ok, true);
+  ledger = first.ledger;
+  const replayedClaim = appendCarryValueLedgerEntry({
+    ledger,
+    entry: {
+      version: 1,
+      entry_id: "value:entry:claim:2",
+      sequence: 2,
+      entry_type: "trading_fee",
+      direction: "debit",
+      amount_micro_usdc: 2,
+      venue_id: "hyperliquid",
+      leg_id: "carry:leg:long",
+      occurred_at_ms: NOW + 2,
+      evidence_commitment: "value:evidence:claim:1",
+    },
+    now_ms: NOW + 2,
+  });
+  assert.equal(replayedClaim.ok, false);
+  assert.equal(replayedClaim.error, "carry_value_evidence_claim_reused");
+  assert.equal(replayedClaim.ledger.realized.net_value_micro_usdc, -2);
+});
+
+test("rebates can only credit realized value", () => {
+  const ledger = createCarryValueLedger({
+    version: 1,
+    position_id: "carry:position:0001",
+    modeled: {
+      gross_funding_micro_usdc: 10,
+      trading_cost_micro_usdc: 2,
+      capital_cost_micro_usdc: 1,
+      risk_buffer_micro_usdc: 1,
+    },
+    now_ms: NOW,
+  });
+  const invalid = appendCarryValueLedgerEntry({
+    ledger,
+    entry: {
+      version: 1,
+      entry_id: "value:entry:rebate:1",
+      sequence: 1,
+      entry_type: "rebate",
+      direction: "debit",
+      amount_micro_usdc: 2,
+      venue_id: "lighter",
+      leg_id: "carry:leg:short",
+      occurred_at_ms: NOW + 1,
+      evidence_commitment: "value:evidence:rebate:1",
+    },
+    now_ms: NOW + 1,
+  });
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.error, "carry_value_rebate_must_be_credit");
 });
 
 test("value ledger finalizes only with flat exposure, zero orders, and complete costs", () => {

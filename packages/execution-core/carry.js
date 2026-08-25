@@ -21,6 +21,7 @@ const VALUE_ENTRY_TYPES = new Set([
 const DEBIT_ONLY_VALUE_ENTRY_TYPES = new Set([
   "trading_fee", "slippage", "gas", "capital_cost", "transfer_fee",
 ]);
+const CREDIT_ONLY_VALUE_ENTRY_TYPES = new Set(["rebate"]);
 
 export class CarryModelError extends Error {
   constructor(code) {
@@ -313,6 +314,7 @@ export function createCarryValueLedger(value) {
     realized: emptyRealizedValue(modeledNet),
     entries: [],
     processed_entry_ids: [],
+    processed_claim_ids: [],
     last_sequence: 0,
     created_at_ms: positiveInteger(raw.now_ms, "carry_value_created_at"),
     updated_at_ms: positiveInteger(raw.now_ms, "carry_value_updated_at"),
@@ -330,10 +332,13 @@ export function appendCarryValueLedgerEntry({ ledger: ledgerInput, entry: entryI
     if (ledger.processed_entry_ids.includes(entry.entry_id)) {
       return deepFreeze({ ok: true, duplicate: true, ledger: deepFreeze(ledgerInput) });
     }
+    const claimId = valueClaimId(entry);
+    if (ledger.processed_claim_ids.includes(claimId)) fail("carry_value_evidence_claim_reused");
     if (entry.sequence !== ledger.last_sequence + 1) fail("carry_value_entry_sequence_invalid");
     if (entry.occurred_at_ms > nowMs) fail("carry_value_entry_from_future");
     ledger.entries.push(entry);
     ledger.processed_entry_ids.push(entry.entry_id);
+    ledger.processed_claim_ids.push(claimId);
     ledger.last_sequence = entry.sequence;
     ledger.realized = summarizeRealizedValue(ledger.entries, ledger.modeled.net_value_micro_usdc);
     ledger.updated_at_ms = nowMs;
@@ -518,7 +523,7 @@ function applyEvent(position, event, nowMs) {
     requireStatus(position, new Set(["exiting"]));
     const grossExposure = nonNegativeInteger(event.gross_exposure_micro_usdc, "carry_exit_gross_exposure");
     const openOrders = nonNegativeInteger(event.open_order_count, "carry_exit_open_orders");
-    if (grossExposure <= position.risk_mandate.max_hedge_error_micro_usdc && openOrders === 0) {
+    if (grossExposure === 0 && openOrders === 0) {
       position.long_filled_micro_usdc = 0;
       position.short_filled_micro_usdc = 0;
       position.hedge_error_micro_usdc = 0;
@@ -617,11 +622,17 @@ function normalizeLegCosts(value, defaultFeeE6Bps) {
   const exitFeeE6Bps = raw.exit_fee_e6_bps === undefined
     ? (raw.exit_fee_bps === undefined ? defaultFeeE6Bps : boundedInteger(raw.exit_fee_bps, 0, 10_000, "carry_exit_fee") * 1_000_000)
     : boundedInteger(raw.exit_fee_e6_bps, 0, 10_000_000_000, "carry_exit_fee_e6");
+  const entrySlippageE6Bps = raw.entry_slippage_e6_bps === undefined
+    ? boundedInteger(raw.entry_slippage_bps, 0, 10_000, "carry_entry_slippage") * 1_000_000
+    : boundedInteger(raw.entry_slippage_e6_bps, 0, 10_000_000_000, "carry_entry_slippage_e6");
+  const exitSlippageE6Bps = raw.exit_slippage_e6_bps === undefined
+    ? boundedInteger(raw.exit_slippage_bps, 0, 10_000, "carry_exit_slippage") * 1_000_000
+    : boundedInteger(raw.exit_slippage_e6_bps, 0, 10_000_000_000, "carry_exit_slippage_e6");
   return {
     entry_fee_e6_bps: entryFeeE6Bps,
     exit_fee_e6_bps: exitFeeE6Bps,
-    entry_slippage_bps: boundedInteger(raw.entry_slippage_bps, 0, 10_000, "carry_entry_slippage"),
-    exit_slippage_bps: boundedInteger(raw.exit_slippage_bps, 0, 10_000, "carry_exit_slippage"),
+    entry_slippage_e6_bps: entrySlippageE6Bps,
+    exit_slippage_e6_bps: exitSlippageE6Bps,
     latency_penalty_bps: boundedInteger(raw.latency_penalty_bps ?? 0, 0, 10_000, "carry_latency_penalty"),
     gas_micro_usdc: nonNegativeInteger(raw.gas_micro_usdc ?? 0, "carry_gas"),
   };
@@ -661,7 +672,14 @@ function mutableValueLedger(value) {
   enumValue(raw.status, new Set(["open", "finalized"]), "existing_carry_value_ledger_status");
   array(raw.entries, "existing_carry_value_entries", 0, 4_096);
   array(raw.processed_entry_ids, "existing_carry_value_entry_ids", 0, 4_096);
-  return JSON.parse(JSON.stringify(raw));
+  const mutable = JSON.parse(JSON.stringify(raw));
+  mutable.processed_claim_ids = raw.processed_claim_ids === undefined
+    ? raw.entries.map((entry) => valueClaimId(normalizeValueEntry(entry)))
+    : [...array(raw.processed_claim_ids, "existing_carry_value_claim_ids", 0, 4_096)];
+  if (new Set(mutable.processed_claim_ids).size !== mutable.processed_claim_ids.length) {
+    fail("existing_carry_value_claim_ids_duplicate");
+  }
+  return mutable;
 }
 
 function normalizeValueEntry(value) {
@@ -670,6 +688,9 @@ function normalizeValueEntry(value) {
   const direction = enumValue(raw.direction, new Set(["credit", "debit"]), "carry_value_entry_direction");
   if (DEBIT_ONLY_VALUE_ENTRY_TYPES.has(entryType) && direction !== "debit") {
     fail("carry_value_cost_must_be_debit");
+  }
+  if (CREDIT_ONLY_VALUE_ENTRY_TYPES.has(entryType) && direction !== "credit") {
+    fail("carry_value_rebate_must_be_credit");
   }
   return {
     version: 1,
@@ -698,30 +719,50 @@ function emptyRealizedValue(modeledNet) {
     settlement_adjustment_micro_usdc: 0,
     net_value_micro_usdc: 0,
     variance_from_modeled_micro_usdc: -modeledNet,
+    by_venue: {},
   };
 }
 
 function summarizeRealizedValue(entries, modeledNet) {
   const value = emptyRealizedValue(modeledNet);
   for (const entry of entries) {
-    const amount = entry.amount_micro_usdc;
-    if (entry.entry_type === "funding") {
-      value[entry.direction === "credit" ? "funding_credit_micro_usdc" : "funding_debit_micro_usdc"] = safeAdd(
-        value[entry.direction === "credit" ? "funding_credit_micro_usdc" : "funding_debit_micro_usdc"],
-        amount,
-        "carry_value_realized_overflow",
-      );
-    } else if (entry.entry_type === "settlement_adjustment") {
-      value.settlement_adjustment_micro_usdc = safeAdd(
-        value.settlement_adjustment_micro_usdc,
-        entry.direction === "credit" ? amount : -amount,
-        "carry_value_realized_overflow",
-      );
-    } else {
-      const field = `${entry.entry_type}_micro_usdc`;
-      value[field] = safeAdd(value[field], amount, "carry_value_realized_overflow");
+    applyRealizedEntry(value, entry);
+    if (entry.venue_id !== null) {
+      value.by_venue[entry.venue_id] ||= emptyRealizedVenueValue();
+      applyRealizedEntry(value.by_venue[entry.venue_id], entry);
     }
   }
+  value.net_value_micro_usdc = realizedNetValue(value);
+  value.variance_from_modeled_micro_usdc = safeAdd(value.net_value_micro_usdc, -modeledNet, "carry_value_realized_overflow");
+  for (const venueValue of Object.values(value.by_venue)) {
+    venueValue.net_value_micro_usdc = realizedNetValue(venueValue);
+  }
+  return value;
+}
+
+function emptyRealizedVenueValue() {
+  const { variance_from_modeled_micro_usdc: _variance, by_venue: _byVenue, ...value } = emptyRealizedValue(0);
+  return value;
+}
+
+function applyRealizedEntry(value, entry) {
+  const amount = entry.amount_micro_usdc;
+  if (entry.entry_type === "funding") {
+    const field = entry.direction === "credit" ? "funding_credit_micro_usdc" : "funding_debit_micro_usdc";
+    value[field] = safeAdd(value[field], amount, "carry_value_realized_overflow");
+  } else if (entry.entry_type === "settlement_adjustment") {
+    value.settlement_adjustment_micro_usdc = safeAdd(
+      value.settlement_adjustment_micro_usdc,
+      entry.direction === "credit" ? amount : -amount,
+      "carry_value_realized_overflow",
+    );
+  } else {
+    const field = `${entry.entry_type}_micro_usdc`;
+    value[field] = safeAdd(value[field], amount, "carry_value_realized_overflow");
+  }
+}
+
+function realizedNetValue(value) {
   const credits = safeAdd(
     safeAdd(value.funding_credit_micro_usdc, value.rebate_micro_usdc, "carry_value_realized_overflow"),
     Math.max(0, value.settlement_adjustment_micro_usdc),
@@ -736,9 +777,16 @@ function summarizeRealizedValue(entries, modeledNet) {
     value.transfer_fee_micro_usdc,
     Math.max(0, -value.settlement_adjustment_micro_usdc),
   ].reduce((sum, amount) => safeAdd(sum, amount, "carry_value_realized_overflow"), 0);
-  value.net_value_micro_usdc = safeAdd(credits, -debits, "carry_value_realized_overflow");
-  value.variance_from_modeled_micro_usdc = safeAdd(value.net_value_micro_usdc, -modeledNet, "carry_value_realized_overflow");
-  return value;
+  return safeAdd(credits, -debits, "carry_value_realized_overflow");
+}
+
+function valueClaimId(entry) {
+  return [
+    entry.evidence_commitment,
+    entry.entry_type,
+    entry.venue_id || "portfolio",
+    entry.leg_id || "none",
+  ].join("|");
 }
 
 function fundingCashMicro(side, notional, contract, horizonMs) {
@@ -751,8 +799,8 @@ function costE6Bps(costs) {
   return [
     costs.entry_fee_e6_bps,
     costs.exit_fee_e6_bps,
-    costs.entry_slippage_bps * 1_000_000,
-    costs.exit_slippage_bps * 1_000_000,
+    costs.entry_slippage_e6_bps,
+    costs.exit_slippage_e6_bps,
     costs.latency_penalty_bps * 1_000_000,
   ]
     .reduce((sum, value) => safeAdd(sum, value, "carry_cost_bps_overflow"), 0);
