@@ -208,7 +208,7 @@ describe("private account trading UI derivation", () => {
     const input = {
       liveHyperliquidFlow: true,
       connected: true,
-      armed: true,
+      armed: false,
       turnkeyConfigured: true,
       turnkeyLoading: false,
       working: false,
@@ -225,12 +225,18 @@ describe("private account trading UI derivation", () => {
     expect(deriveHyperliquidVerificationAction({
       ...input,
       turnkeyAuthenticated: true,
+    })).toBeNull();
+    expect(deriveHyperliquidVerificationAction({
+      ...input,
+      armed: true,
+      turnkeyAuthenticated: true,
     })).toMatchObject({
       kind: "verify_connection",
       label: "Check connection",
     });
     expect(deriveHyperliquidVerificationAction({
       ...input,
+      armed: true,
       ownerAuthRequired: false,
       turnkeyConfigured: false,
       turnkeyAuthenticated: false,
@@ -375,10 +381,19 @@ describe("private account trading UI derivation", () => {
       ...base,
       platformClass: "hyperliquid_style_market",
       liveHyperliquidFlow: true,
-      hyperliquid: { connected: true, armed: true, verified: false, ownerAuthConfigured: true, ownerAuthenticated: false },
+      hyperliquid: { connected: true, armed: false, verified: false, ownerAuthConfigured: true, ownerAuthenticated: false },
     })).toMatchObject({
       kind: "authenticate_hyperliquid_owner",
       label: "Authenticate owner wallet",
+    });
+    expect(deriveTradingNextAction({
+      ...base,
+      platformClass: "hyperliquid_style_market",
+      liveHyperliquidFlow: true,
+      hyperliquid: { connected: true, armed: false, verified: false, ownerAuthConfigured: true, ownerAuthenticated: true },
+    })).toMatchObject({
+      kind: "arm_hyperliquid",
+      label: "Create agent",
     });
     expect(deriveVenueReadinessSteps({
       ...base,

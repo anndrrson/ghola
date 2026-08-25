@@ -276,7 +276,7 @@ export function requiresHyperliquidPoolTerms(input: {
 export function deriveHyperliquidVerificationAction(
   input: HyperliquidVerificationActionInput,
 ): HyperliquidVerificationAction | null {
-  if (!input.liveHyperliquidFlow || !input.connected || !input.armed) return null;
+  if (!input.liveHyperliquidFlow || !input.connected) return null;
   if (input.ownerAuthRequired !== false && !input.turnkeyConfigured) {
     return {
       kind: "owner_auth_unavailable",
@@ -293,6 +293,7 @@ export function deriveHyperliquidVerificationAction(
       disabled: input.working || input.turnkeyLoading,
     };
   }
+  if (!input.armed) return null;
   return {
     kind: "verify_connection",
     label: input.working ? "Checking" : input.verified ? "Check again" : "Check connection",
@@ -546,9 +547,6 @@ export function deriveTradingNextAction(input: TradingUiStateInput): TradingNext
         ),
       };
     }
-    if (!venue.armed) {
-      return action("arm_hyperliquid", "Create agent", "Bind the selected account to Ghola's capped execution policy.", "primary");
-    }
     if (input.liveHyperliquidFlow && venue.ownerAuthRequired !== false && venue.ownerAuthConfigured === false) {
       return action("idle", "Owner auth unavailable", "Turnkey owner authentication is not configured for this Preview.", "danger", true);
     }
@@ -560,6 +558,9 @@ export function deriveTradingNextAction(input: TradingUiStateInput): TradingNext
         "primary",
         venue.ownerAuthLoading === true,
       );
+    }
+    if (!venue.armed) {
+      return action("arm_hyperliquid", "Create agent", "Bind the selected account to Ghola's capped execution policy.", "primary");
     }
     if (input.liveHyperliquidFlow && (!venue.verified || venue.accountReady === false)) {
       return action("verify_hyperliquid", "Check connection", hyperliquidVerificationCopy(venue), "primary");
