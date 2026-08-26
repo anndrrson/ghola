@@ -60,6 +60,16 @@ describe("Aster onboarding recovery", () => {
     }), PREPARATION).action).toBe("reprepare");
   });
 
+  it("never retries a rejected registration and offers a fresh preparation", () => {
+    expect(classifyAsterOnboardingFailure(apiError({
+      error: "aster_registration_rejected",
+      retry_allowed: false,
+    }), PREPARATION)).toMatchObject({
+      action: "reprepare",
+      message: expect.stringContaining("will not be retried"),
+    });
+  });
+
   it("never offers retry or re-prepare for an ambiguous registration", () => {
     expect(classifyAsterOnboardingFailure(apiError({
       error: "aster_registration_ambiguous",

@@ -14,6 +14,7 @@ const STALE_CODES = new Set([
   "aster_authorization_stale",
   "aster_authorization_expired",
 ]);
+const REJECTED_CODES = new Set(["aster_registration_rejected"]);
 const AMBIGUOUS_CODES = new Set([
   "aster_registration_ambiguous",
   "aster_registration_outcome_ambiguous",
@@ -36,6 +37,12 @@ export function classifyAsterOnboardingFailure(
     return {
       action: "hold_ambiguous",
       message: "Aster registration has an unknown outcome. Do not retry; reconcile the existing attempt.",
+    };
+  }
+  if (REJECTED_CODES.has(errorCode)) {
+    return {
+      action: "reprepare",
+      message: "Aster rejected the retired approval format. Prepare and sign one fresh registration request; the rejected request will not be retried.",
     };
   }
   const receipt = registrationReceipt(body.registration_receipt, preparation);

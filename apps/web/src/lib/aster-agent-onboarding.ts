@@ -18,11 +18,11 @@ export const ASTER_V3_AGENT_MAX_IP_WHITELIST_ENTRIES = 16;
  */
 export const ASTER_V3_AGENT_APPROVAL_SCHEMA = Object.freeze({
   verified: true,
-  endpoint: "/fapi/v3/approveAgent",
+  endpoint: "/fapi/v3/registerAndApproveAgent",
   method: "POST",
-  documentation_commit: "4f653376ea6596f3da493c02f887b11eccd52d94",
+  documentation_commit: "71679b4aa69e80372eb55d437a80df21f135e1bf",
   documentation_url:
-    "https://github.com/asterdex/aster-api-website/blob/4f653376ea6596f3da493c02f887b11eccd52d94/docs/asterCode/endpoints.en.md#create--approve-agent-trade",
+    "https://github.com/asterdex/api-docs/blob/71679b4aa69e80372eb55d437a80df21f135e1bf/V3%28Recommended%29/EN/aster-finance-futures-api-v3.md#register-and-approve-agent-public",
 } as const);
 
 export interface AsterV3AgentPermissions {
@@ -61,6 +61,7 @@ export interface AsterV3AgentApprovalParameters {
   readonly agentAddress: `0x${string}`;
   readonly ipWhitelist: string;
   readonly expired: number;
+  readonly signatureChainId: 56;
   readonly canSpotTrade: false;
   readonly canPerpTrade: true;
   readonly canWithdraw: false;
@@ -76,36 +77,16 @@ export interface AsterV3AgentApprovalTypedData {
       Readonly<{ name: "chainId"; type: "uint256" }>,
       Readonly<{ name: "verifyingContract"; type: "address" }>,
     ];
-    ApproveAgent: readonly [
-      Readonly<{ name: "AgentName"; type: "string" }>,
-      Readonly<{ name: "AgentAddress"; type: "string" }>,
-      Readonly<{ name: "IpWhitelist"; type: "string" }>,
-      Readonly<{ name: "Expired"; type: "uint256" }>,
-      Readonly<{ name: "CanSpotTrade"; type: "bool" }>,
-      Readonly<{ name: "CanPerpTrade"; type: "bool" }>,
-      Readonly<{ name: "CanWithdraw"; type: "bool" }>,
-      Readonly<{ name: "User"; type: "string" }>,
-      Readonly<{ name: "Nonce"; type: "uint256" }>,
-    ];
+    Message: readonly [Readonly<{ name: "msg"; type: "string" }>];
   }>;
-  readonly primaryType: "ApproveAgent";
+  readonly primaryType: "Message";
   readonly domain: Readonly<{
     name: "AsterSignTransaction";
     version: "1";
-    chainId: 1666;
+    chainId: 56;
     verifyingContract: "0x0000000000000000000000000000000000000000";
   }>;
-  readonly message: Readonly<{
-    AgentName: string;
-    AgentAddress: `0x${string}`;
-    IpWhitelist: string;
-    Expired: number;
-    CanSpotTrade: false;
-    CanPerpTrade: true;
-    CanWithdraw: false;
-    User: `0x${string}`;
-    Nonce: number;
-  }>;
+  readonly message: Readonly<{ msg: string }>;
 }
 
 export interface AsterV3AgentOnboardingContract {
@@ -218,6 +199,7 @@ export function buildAsterV3AgentOnboardingContract(
     agentAddress,
     ipWhitelist: ipWhitelist.join(" "),
     expired: input.expiresAtMs,
+    signatureChainId: 56,
     canSpotTrade: false,
     canPerpTrade: true,
     canWithdraw: false,
@@ -225,7 +207,7 @@ export function buildAsterV3AgentOnboardingContract(
     nonce: input.nonceMicros,
   } as const satisfies AsterV3AgentApprovalParameters);
   const message = buildApprovalMessage(parametersWithoutSignature);
-  const typedData = buildApprovalTypedData(parametersWithoutSignature);
+  const typedData = buildApprovalTypedData(message);
 
   return Object.freeze({
     version: 1,
@@ -307,29 +289,26 @@ export function asterApprovalSigningDefinition(typedData: AsterV3AgentApprovalTy
     // before signing and otherwise drops the domain from the wire payload.
     types: typedData.types,
     primaryType: typedData.primaryType,
-    message: {
-      ...typedData.message,
-      Expired: BigInt(typedData.message.Expired),
-      Nonce: BigInt(typedData.message.Nonce),
-    },
+    message: typedData.message,
   } as const;
 }
 
 function buildApprovalMessage(parameters: AsterV3AgentApprovalParameters): string {
   return [
+    `user=${parameters.user}`,
+    `nonce=${parameters.nonce}`,
     `agentName=${parameters.agentName}`,
     `agentAddress=${parameters.agentAddress}`,
-    `ipWhitelist=${parameters.ipWhitelist}`,
     `expired=${parameters.expired}`,
+    `signatureChainId=${parameters.signatureChainId}`,
     `canSpotTrade=${parameters.canSpotTrade}`,
     `canPerpTrade=${parameters.canPerpTrade}`,
     `canWithdraw=${parameters.canWithdraw}`,
-    `user=${parameters.user}`,
-    `nonce=${parameters.nonce}`,
+    `ipWhitelist=${parameters.ipWhitelist}`,
   ].join("&");
 }
 
-function buildApprovalTypedData(parameters: AsterV3AgentApprovalParameters): AsterV3AgentApprovalTypedData {
+function buildApprovalTypedData(message: string): AsterV3AgentApprovalTypedData {
   return Object.freeze({
     types: Object.freeze({
       EIP712Domain: Object.freeze([
@@ -338,36 +317,16 @@ function buildApprovalTypedData(parameters: AsterV3AgentApprovalParameters): Ast
         Object.freeze({ name: "chainId", type: "uint256" }),
         Object.freeze({ name: "verifyingContract", type: "address" }),
       ] as const),
-      ApproveAgent: Object.freeze([
-        Object.freeze({ name: "AgentName", type: "string" }),
-        Object.freeze({ name: "AgentAddress", type: "string" }),
-        Object.freeze({ name: "IpWhitelist", type: "string" }),
-        Object.freeze({ name: "Expired", type: "uint256" }),
-        Object.freeze({ name: "CanSpotTrade", type: "bool" }),
-        Object.freeze({ name: "CanPerpTrade", type: "bool" }),
-        Object.freeze({ name: "CanWithdraw", type: "bool" }),
-        Object.freeze({ name: "User", type: "string" }),
-        Object.freeze({ name: "Nonce", type: "uint256" }),
-      ] as const),
+      Message: Object.freeze([Object.freeze({ name: "msg", type: "string" })] as const),
     }),
-    primaryType: "ApproveAgent",
+    primaryType: "Message",
     domain: Object.freeze({
       name: "AsterSignTransaction",
       version: "1",
-      chainId: 1666,
+      chainId: 56,
       verifyingContract: "0x0000000000000000000000000000000000000000",
     }),
-    message: Object.freeze({
-      AgentName: parameters.agentName,
-      AgentAddress: parameters.agentAddress,
-      IpWhitelist: parameters.ipWhitelist,
-      Expired: parameters.expired,
-      CanSpotTrade: parameters.canSpotTrade,
-      CanPerpTrade: parameters.canPerpTrade,
-      CanWithdraw: parameters.canWithdraw,
-      User: parameters.user,
-      Nonce: parameters.nonce,
-    }),
+    message: Object.freeze({ msg: message }),
   });
 }
 

@@ -70,11 +70,7 @@ describe("Turnkey Aster owner approval", () => {
       domain: { ...approval.domain, chainId: BigInt(approval.domain.chainId) },
       types: approval.types,
       primaryType: approval.primaryType,
-      message: {
-        ...approval.message,
-        Expired: BigInt(approval.message.Expired),
-        Nonce: BigInt(approval.message.Nonce),
-      },
+      message: approval.message,
     }));
     expect(signature).toMatch(/^0x[0-9a-f]{130}$/);
   });
@@ -85,11 +81,7 @@ describe("Turnkey Aster owner approval", () => {
       domain: { ...approval.domain, chainId: BigInt(approval.domain.chainId) },
       types: approval.types,
       primaryType: approval.primaryType,
-      message: {
-        ...approval.message,
-        Expired: BigInt(approval.message.Expired),
-        Nonce: BigInt(approval.message.Nonce),
-      },
+      message: approval.message,
     })) as { domain?: unknown; types?: Record<string, unknown> };
 
     expect(serialized.domain).toEqual({

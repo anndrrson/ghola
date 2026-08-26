@@ -149,21 +149,23 @@ export function checkAsterCredentialProvisioningBoundary(prepareSource, complete
     ["recoverAsterCredentialRegistration", "aster_receipt_only_recovery_required"],
     ["never contacts Aster", "aster_recovery_must_not_resubmit_required"],
     ["canWithdraw: false", "aster_withdrawal_block_required"],
-    ["/fapi/v3/approveAgent", "aster_current_approval_endpoint_required"],
-    ["primaryType: \"ApproveAgent\"", "aster_current_primary_type_required"],
-    ["chainId: 1666", "aster_current_signature_domain_required"],
+    ["/fapi/v3/registerAndApproveAgent", "aster_current_registration_endpoint_required"],
+    ["primaryType: \"Message\"", "aster_current_primary_type_required"],
+    ["chainId: 56", "aster_current_signature_domain_required"],
+    ["signatureChainId: String(parameters.signatureChainId)", "aster_signature_chain_parameter_required"],
   ];
   const contractRequired = [
-    ["endpoint: \"/fapi/v3/approveAgent\"", "aster_contract_current_approval_endpoint_required"],
-    ["primaryType: \"ApproveAgent\"", "aster_contract_current_primary_type_required"],
-    ["chainId: 1666", "aster_contract_current_signature_domain_required"],
-    ["documentation_commit: \"4f653376ea6596f3da493c02f887b11eccd52d94\"", "aster_documentation_pin_required"],
+    ["endpoint: \"/fapi/v3/registerAndApproveAgent\"", "aster_contract_current_registration_endpoint_required"],
+    ["primaryType: \"Message\"", "aster_contract_current_primary_type_required"],
+    ["chainId: 56", "aster_contract_current_signature_domain_required"],
+    ["signatureChainId: 56", "aster_contract_signature_chain_parameter_required"],
+    ["documentation_commit: \"71679b4aa69e80372eb55d437a80df21f135e1bf\"", "aster_documentation_pin_required"],
   ];
   for (const [value, code] of prepareRequired) if (!prepareSource.includes(value)) failures.push(code);
   for (const [value, code] of completeRequired) if (!completeSource.includes(value)) failures.push(code);
   for (const [value, code] of workerRequired) if (!workerSource.includes(value)) failures.push(code);
   for (const [value, code] of contractRequired) if (!contractSource?.includes(value)) failures.push(code);
-  if (workerSource.includes("/fapi/v3/registerAndApproveAgent") || contractSource?.includes("/fapi/v3/registerAndApproveAgent")) {
+  if (workerSource.includes('"/fapi/v3/approveAgent"') || contractSource?.includes('endpoint: "/fapi/v3/approveAgent"')) {
     failures.push("aster_retired_approval_endpoint_forbidden");
   }
   if (failures.length > 0) {

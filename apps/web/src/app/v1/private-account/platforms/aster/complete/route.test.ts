@@ -136,7 +136,7 @@ describe("Aster programmatic credential completion", () => {
     const typedData = prepared.contract.approval.typedData;
     const signature = await OWNER.signTypedData({
       domain: typedData.domain,
-      types: { ApproveAgent: typedData.types.ApproveAgent },
+      types: { Message: typedData.types.Message },
       primaryType: typedData.primaryType,
       message: typedData.message,
     });
@@ -197,7 +197,7 @@ describe("Aster programmatic credential completion", () => {
     const typedData = prepared.contract.approval.typedData;
     const wrongSignature = await privateKeyToAccount(`0x${"43".repeat(32)}`).signTypedData({
       domain: typedData.domain,
-      types: { ApproveAgent: typedData.types.ApproveAgent },
+      types: { Message: typedData.types.Message },
       primaryType: typedData.primaryType,
       message: typedData.message,
     });
@@ -237,7 +237,7 @@ describe("Aster programmatic credential completion", () => {
     const typedData = prepared.contract.approval.typedData;
     const signature = await OWNER.signTypedData({
       domain: typedData.domain,
-      types: { ApproveAgent: typedData.types.ApproveAgent },
+      types: { Message: typedData.types.Message },
       primaryType: typedData.primaryType,
       message: typedData.message,
     });
@@ -281,7 +281,7 @@ describe("Aster programmatic credential completion", () => {
     const typedData = prepared.contract.approval.typedData;
     const signature = await OWNER.signTypedData({
       domain: typedData.domain,
-      types: { ApproveAgent: typedData.types.ApproveAgent },
+      types: { Message: typedData.types.Message },
       primaryType: typedData.primaryType,
       message: typedData.message,
     });
@@ -401,7 +401,7 @@ async function preparedCompletionBody() {
   const typedData = prepared.contract.approval.typedData;
   const signature = await OWNER.signTypedData({
     domain: typedData.domain,
-    types: { ApproveAgent: typedData.types.ApproveAgent },
+    types: { Message: typedData.types.Message },
     primaryType: typedData.primaryType,
     message: typedData.message,
   });

@@ -198,14 +198,15 @@ function validAster(value: unknown, accountCommitment: string): value is Pending
     ASTER_PREPARATION.test(string(preparation.preparation_id)) &&
     (record.signature === undefined || SIGNATURE.test(string(record.signature))) &&
     contract.version === 1 && contract.venue === "aster" && contract.network === "mainnet" &&
-    contract.endpoint === "/fapi/v3/approveAgent" && contract.method === "POST" &&
+    contract.endpoint === "/fapi/v3/registerAndApproveAgent" && contract.method === "POST" &&
     EVM_ADDRESS.test(ownerAddress) && EVM_ADDRESS.test(signerAddress) && ownerAddress !== signerAddress &&
     owner.required === true && owner.status === "signature_required" && owner.algorithm === "EIP-712" &&
     signer.privateKeyExposed === false &&
     permissions.canSpotTrade === false && permissions.canPerpTrade === true && permissions.canWithdraw === false &&
     setup.mayPlaceTrade === false && setup.networkEffects === "none" &&
     parameters.user === ownerAddress && parameters.agentAddress === signerAddress &&
-    typedData.primaryType === "ApproveAgent" && domain.chainId === 1666 &&
+    typedData.primaryType === "Message" && domain.chainId === 56 &&
+    parameters.signatureChainId === 56 &&
     parameters.canSpotTrade === false &&
     parameters.canPerpTrade === true && parameters.canWithdraw === false &&
     Number.isSafeInteger(parameters.nonce) && Number.isSafeInteger(parameters.expired) &&

@@ -117,7 +117,7 @@ describe("Aster programmatic credential preparation", () => {
       canPerpTrade: true,
       canWithdraw: false,
     });
-    expect(body.contract.approval.typedData.primaryType).toBe("ApproveAgent");
+    expect(body.contract.approval.typedData.primaryType).toBe("Message");
     expect(body.contract.approval.parametersWithoutSignature.expired).toBe(
       1_800_000_000_000 + ASTER_V3_AGENT_MAX_LIFETIME_MS,
     );

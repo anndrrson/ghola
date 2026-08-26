@@ -180,7 +180,7 @@ const ASTER: VenueCredentialOnboardingCapability = {
       may_place_trade_during_setup: false,
       requirements: [
         "Generate the Aster signer inside the attested worker and return only its public address.",
-        "Authorize the exact generated signer through Aster V3 approveAgent with canPerpTrade=true and canWithdraw=false.",
+        "Register and authorize the exact generated signer through Aster V3 with canPerpTrade=true and canWithdraw=false.",
       ],
       ux: {
         badge: "One owner approval",

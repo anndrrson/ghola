@@ -16,7 +16,7 @@ const SAFE_AGENT_NAME = /^[A-Za-z0-9._:-]{1,32}$/;
 const SIGNATURE = /^0x[0-9a-f]{130}$/i;
 const PREPARATION_ID = /^aster_prepare_[0-9a-f]{64}$/;
 const MAX_NONCE_SKEW_MS = 10_000;
-const ASTER_REGISTER_PATH = "/fapi/v3/approveAgent";
+const ASTER_REGISTER_PATH = "/fapi/v3/registerAndApproveAgent";
 
 export class AsterProvisioningError extends Error {
   constructor(message, code, status = 400) {
@@ -225,7 +225,7 @@ export async function authorizeAsterCredential({
   try {
     recovered = await recoverTypedDataAddress({
       domain: typedData.domain,
-      types: { ApproveAgent: typedData.types.ApproveAgent },
+      types: { Message: typedData.types.Message },
       primaryType: typedData.primaryType,
       message: typedData.message,
       signature,
@@ -324,6 +324,7 @@ export async function authorizeAsterCredential({
         agentAddress: parameters.agentAddress,
         ipWhitelist: parameters.ipWhitelist,
         expired: String(parameters.expired),
+        signatureChainId: String(parameters.signatureChainId),
         canSpotTrade: String(parameters.canSpotTrade),
         canPerpTrade: String(parameters.canPerpTrade),
         canWithdraw: String(parameters.canWithdraw),
@@ -489,6 +490,7 @@ export function asterRegistrationParameters({ owner, nonce, agentName, signer, e
     agentAddress: signer.toLowerCase(),
     ipWhitelist: [...new Set(ipWhitelist)].sort().join(" "),
     expired,
+    signatureChainId: 56,
     canSpotTrade: false,
     canPerpTrade: true,
     canWithdraw: false,
@@ -498,38 +500,30 @@ export function asterRegistrationParameters({ owner, nonce, agentName, signer, e
 }
 
 export function asterRegistrationTypedData(parameters) {
+  const message = [
+    `user=${parameters.user}`,
+    `nonce=${parameters.nonce}`,
+    `agentName=${parameters.agentName}`,
+    `agentAddress=${parameters.agentAddress}`,
+    `expired=${parameters.expired}`,
+    `signatureChainId=${parameters.signatureChainId}`,
+    `canSpotTrade=${parameters.canSpotTrade}`,
+    `canPerpTrade=${parameters.canPerpTrade}`,
+    `canWithdraw=${parameters.canWithdraw}`,
+    `ipWhitelist=${parameters.ipWhitelist}`,
+  ].join("&");
   return {
     types: {
-      ApproveAgent: [
-        { name: "AgentName", type: "string" },
-        { name: "AgentAddress", type: "string" },
-        { name: "IpWhitelist", type: "string" },
-        { name: "Expired", type: "uint256" },
-        { name: "CanSpotTrade", type: "bool" },
-        { name: "CanPerpTrade", type: "bool" },
-        { name: "CanWithdraw", type: "bool" },
-        { name: "User", type: "string" },
-        { name: "Nonce", type: "uint256" },
-      ],
+      Message: [{ name: "msg", type: "string" }],
     },
-    primaryType: "ApproveAgent",
+    primaryType: "Message",
     domain: {
       name: "AsterSignTransaction",
       version: "1",
-      chainId: 1666,
+      chainId: 56,
       verifyingContract: "0x0000000000000000000000000000000000000000",
     },
-    message: {
-      AgentName: parameters.agentName,
-      AgentAddress: parameters.agentAddress,
-      IpWhitelist: parameters.ipWhitelist,
-      Expired: parameters.expired,
-      CanSpotTrade: parameters.canSpotTrade,
-      CanPerpTrade: parameters.canPerpTrade,
-      CanWithdraw: parameters.canWithdraw,
-      User: parameters.user,
-      Nonce: parameters.nonce,
-    },
+    message: { msg: message },
   };
 }
 

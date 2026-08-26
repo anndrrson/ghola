@@ -39,7 +39,7 @@ describe("Aster V3 agent onboarding contract", () => {
 
     expect(ASTER_V3_AGENT_APPROVAL_SCHEMA).toMatchObject({
       verified: true,
-      endpoint: "/fapi/v3/approveAgent",
+      endpoint: "/fapi/v3/registerAndApproveAgent",
       method: "POST",
     });
     expect(contract).toMatchObject({
@@ -66,6 +66,7 @@ describe("Aster V3 agent onboarding contract", () => {
       agentAddress: "0x1111111111111111111111111111111111111111",
       ipWhitelist: "10.0.0.0/24 2001:db8::1",
       expired: NOW_MS + 60 * 60 * 1_000,
+      signatureChainId: 56,
       canSpotTrade: false,
       canPerpTrade: true,
       canWithdraw: false,
@@ -73,11 +74,12 @@ describe("Aster V3 agent onboarding contract", () => {
       nonce: NOW_MS * 1_000 + 321,
     });
     expect(contract.approval.message).toBe(
-      "agentName=ghola-perps&agentAddress=0x1111111111111111111111111111111111111111" +
-      "&ipWhitelist=10.0.0.0/24 2001:db8::1" +
+      `user=${TEST_OWNER.address.toLowerCase()}&nonce=${NOW_MS * 1_000 + 321}` +
+      "&agentName=ghola-perps&agentAddress=0x1111111111111111111111111111111111111111" +
       `&expired=${NOW_MS + 60 * 60 * 1_000}` +
+      "&signatureChainId=56" +
       "&canSpotTrade=false&canPerpTrade=true&canWithdraw=false" +
-      `&user=${TEST_OWNER.address.toLowerCase()}&nonce=${NOW_MS * 1_000 + 321}`,
+      "&ipWhitelist=10.0.0.0/24 2001:db8::1",
     );
     expect(contract.approval.typedData).toEqual({
       types: {
@@ -87,36 +89,16 @@ describe("Aster V3 agent onboarding contract", () => {
           { name: "chainId", type: "uint256" },
           { name: "verifyingContract", type: "address" },
         ],
-        ApproveAgent: [
-          { name: "AgentName", type: "string" },
-          { name: "AgentAddress", type: "string" },
-          { name: "IpWhitelist", type: "string" },
-          { name: "Expired", type: "uint256" },
-          { name: "CanSpotTrade", type: "bool" },
-          { name: "CanPerpTrade", type: "bool" },
-          { name: "CanWithdraw", type: "bool" },
-          { name: "User", type: "string" },
-          { name: "Nonce", type: "uint256" },
-        ],
+        Message: [{ name: "msg", type: "string" }],
       },
-      primaryType: "ApproveAgent",
+      primaryType: "Message",
       domain: {
         name: "AsterSignTransaction",
         version: "1",
-        chainId: 1666,
+        chainId: 56,
         verifyingContract: "0x0000000000000000000000000000000000000000",
       },
-      message: {
-        AgentName: "ghola-perps",
-        AgentAddress: "0x1111111111111111111111111111111111111111",
-        IpWhitelist: "10.0.0.0/24 2001:db8::1",
-        Expired: NOW_MS + 60 * 60 * 1_000,
-        CanSpotTrade: false,
-        CanPerpTrade: true,
-        CanWithdraw: false,
-        User: TEST_OWNER.address.toLowerCase(),
-        Nonce: NOW_MS * 1_000 + 321,
-      },
+      message: { msg: contract.approval.message },
     });
   });
 
@@ -191,7 +173,7 @@ describe("Aster V3 agent onboarding contract", () => {
     const contract = buildAsterV3AgentOnboardingContract(validInput());
     expect(Object.isFrozen(contract)).toBe(true);
     expect(Object.isFrozen(contract.permissions)).toBe(true);
-    expect(Object.isFrozen(contract.approval.typedData.types.ApproveAgent)).toBe(true);
+    expect(Object.isFrozen(contract.approval.typedData.types.Message)).toBe(true);
     expect(() => {
       (contract.permissions as { canWithdraw: boolean }).canWithdraw = true;
     }).toThrow(TypeError);

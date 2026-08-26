@@ -172,13 +172,13 @@ test("rejects Aster's retired approval endpoint or signing schema", () => {
       asterPrepare,
       asterComplete,
       asterWorker
-        .replaceAll("/fapi/v3/approveAgent", "/fapi/v3/registerAndApproveAgent")
-        .replaceAll('primaryType: "ApproveAgent"', 'primaryType: "Message"')
-        .replaceAll("chainId: 1666", "chainId: 56"),
+        .replaceAll("/fapi/v3/registerAndApproveAgent", "/fapi/v3/approveAgent")
+        .replaceAll('primaryType: "Message"', 'primaryType: "ApproveAgent"')
+        .replaceAll("chainId: 56", "chainId: 1666"),
       asterContract
-        .replaceAll("/fapi/v3/approveAgent", "/fapi/v3/registerAndApproveAgent")
-        .replaceAll('primaryType: "ApproveAgent"', 'primaryType: "Message"')
-        .replaceAll("chainId: 1666", "chainId: 56"),
+        .replaceAll("/fapi/v3/registerAndApproveAgent", "/fapi/v3/approveAgent")
+        .replaceAll('primaryType: "Message"', 'primaryType: "ApproveAgent"')
+        .replaceAll("chainId: 56", "chainId: 1666"),
     ),
     /aster_current_approval_endpoint_required|aster_current_primary_type_required|aster_current_signature_domain_required|aster_retired_approval_endpoint_forbidden/,
   );
