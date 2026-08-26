@@ -26,7 +26,7 @@ const requiredGoogleRedirectSources = [
   {
     file: "vercel.json",
     patterns: [
-      { label: "pnpm patch-aware Vercel install", pattern: /"installCommand":\s*"pnpm install --frozen-lockfile"/ },
+      { label: "pinned patch-aware Vercel install", pattern: /"installCommand":\s*"corepack pnpm@10\.34\.5 install --frozen-lockfile"/ },
     ],
   },
   {

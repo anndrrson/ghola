@@ -1,5 +1,5 @@
 {
-  "installCommand": "pnpm install --frozen-lockfile",
+  "installCommand": "corepack pnpm@10.34.5 install --frozen-lockfile",
   "crons": [
     {
       "path": "/v1/private-account/funding/batch/cron",
