@@ -68,7 +68,7 @@ test("rejects venue onboarding that bypasses server-side live request proof", ()
   );
 });
 
-test("rejects lowercasing Turnkey's case-sensitive owner resource address", () => {
+test("rejects bypassing Turnkey's canonical case-sensitive owner resource address", () => {
   const asterSigning = readFileSync(resolve(HERE, "../src/lib/perps-turnkey-aster-signing.ts"), "utf8");
   assert.throws(
     () => checkTurnkeyVenueOwnerAddressBoundary(

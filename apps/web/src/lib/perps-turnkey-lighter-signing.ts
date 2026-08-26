@@ -1,6 +1,7 @@
 import { createAccountWithAddress } from "@turnkey/viem";
 import {
   decodeFunctionData,
+  getAddress,
   keccak256,
   parseTransaction,
   recoverTransactionAddress,
@@ -26,19 +27,25 @@ const LIGHTER_MAX_PRIORITY_FEE_PER_GAS = BigInt(50_000_000_000);
 export async function signLighterChangePubKeyWithTurnkey(input: {
   client: TurnkeyViemClient;
   organizationId: string;
-  owner: { address: string; path?: string | null };
+  owner: { address: string; path?: string | null; organizationId?: string | null };
   transactionPlan: LighterChangePubKeyTransactionPlan;
 }) {
   if (!input.organizationId.trim()) throw new Error("Turnkey organization is unavailable.");
   if (input.owner.path !== TURNKEY_PERPS_OWNER_PATH) {
     throw new Error("Turnkey Lighter authorization requires the Ghola perps owner account.");
   }
-  const turnkeyOwnerAddress = input.owner.address.trim();
+  const signerOrganizationId = input.owner.organizationId?.trim() || input.organizationId.trim();
+  let turnkeyOwnerAddress: `0x${string}`;
+  try {
+    turnkeyOwnerAddress = getAddress(input.owner.address.trim().toLowerCase());
+  } catch {
+    throw new Error("Turnkey Lighter owner address is invalid.");
+  }
   const ownerAddress = lighterOwnerAddress(turnkeyOwnerAddress);
   const transaction = validatedTransaction(input.transactionPlan, ownerAddress);
   const account = createAccountWithAddress({
     client: input.client,
-    organizationId: input.organizationId,
+    organizationId: signerOrganizationId,
     signWith: turnkeyOwnerAddress,
     ethereumAddress: turnkeyOwnerAddress as `0x${string}`,
   });

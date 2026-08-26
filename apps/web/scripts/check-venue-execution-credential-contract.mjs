@@ -317,8 +317,11 @@ export function checkVenueOnboardingLiveProofBoundary(clientSource, routesSource
 export function checkTurnkeyVenueOwnerAddressBoundary(asterSigningSource, lighterSigningSource) {
   const failures = [];
   for (const [venue, source] of [["aster", asterSigningSource], ["lighter", lighterSigningSource]]) {
-    if (!source.includes("const turnkeyOwnerAddress = input.owner.address.trim()")) {
+    if (!source.includes("getAddress(input.owner.address.trim().toLowerCase())")) {
       failures.push(`${venue}_turnkey_resource_address_required`);
+    }
+    if (!source.includes("input.owner.organizationId?.trim() || input.organizationId.trim()")) {
+      failures.push(`${venue}_turnkey_resource_organization_required`);
     }
     if (!source.includes("signWith: turnkeyOwnerAddress") ||
         !source.includes("ethereumAddress: turnkeyOwnerAddress")) {

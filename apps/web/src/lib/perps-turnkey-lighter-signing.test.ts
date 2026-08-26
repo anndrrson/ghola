@@ -56,13 +56,17 @@ describe("Turnkey Lighter owner association", () => {
     }));
     const result = await signLighterChangePubKeyWithTurnkey({
       client: CLIENT,
-      organizationId: "turnkey-org-owner",
-      owner: { address: OWNER.address, path: TURNKEY_PERPS_OWNER_PATH },
+      organizationId: "turnkey-session-org",
+      owner: {
+        address: OWNER.address.toLowerCase(),
+        path: TURNKEY_PERPS_OWNER_PATH,
+        organizationId: "turnkey-resource-org",
+      },
       transactionPlan: plan(),
     });
     expect(mocks.createAccountWithAddress).toHaveBeenCalledWith({
       client: CLIENT,
-      organizationId: "turnkey-org-owner",
+      organizationId: "turnkey-resource-org",
       signWith: OWNER.address,
       ethereumAddress: OWNER.address,
     });

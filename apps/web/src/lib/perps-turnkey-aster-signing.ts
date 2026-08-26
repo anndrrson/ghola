@@ -1,5 +1,5 @@
 import { createAccountWithAddress } from "@turnkey/viem";
-import { recoverTypedDataAddress, type Hex } from "viem";
+import { getAddress, recoverTypedDataAddress, type Hex } from "viem";
 import type { AsterV3AgentApprovalTypedData } from "./aster-agent-onboarding";
 
 export const TURNKEY_PERPS_OWNER_PATH = "m/44'/60'/0'/0/0";
@@ -9,21 +9,24 @@ type TurnkeyViemClient = Parameters<typeof createAccountWithAddress>[0]["client"
 export async function signAsterAgentApprovalWithTurnkey(input: {
   client: TurnkeyViemClient;
   organizationId: string;
-  owner: { address: string; path?: string | null };
+  owner: { address: string; path?: string | null; organizationId?: string | null };
   typedData: AsterV3AgentApprovalTypedData;
 }): Promise<`0x${string}`> {
   if (!input.organizationId.trim()) throw new Error("Turnkey organization is unavailable.");
   if (input.owner.path !== TURNKEY_PERPS_OWNER_PATH) {
     throw new Error("Turnkey Aster approval requires the Ghola perps owner account.");
   }
-  const turnkeyOwnerAddress = input.owner.address.trim();
-  const ownerAddress = turnkeyOwnerAddress.toLowerCase();
-  if (!/^0x[0-9a-f]{40}$/.test(ownerAddress)) {
+  const signerOrganizationId = input.owner.organizationId?.trim() || input.organizationId.trim();
+  let turnkeyOwnerAddress: `0x${string}`;
+  try {
+    turnkeyOwnerAddress = getAddress(input.owner.address.trim().toLowerCase());
+  } catch {
     throw new Error("Turnkey Aster owner address is invalid.");
   }
+  const ownerAddress = turnkeyOwnerAddress.toLowerCase();
   const account = createAccountWithAddress({
     client: input.client,
-    organizationId: input.organizationId,
+    organizationId: signerOrganizationId,
     signWith: turnkeyOwnerAddress,
     ethereumAddress: turnkeyOwnerAddress as `0x${string}`,
   });
