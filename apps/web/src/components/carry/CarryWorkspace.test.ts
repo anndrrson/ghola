@@ -48,6 +48,19 @@ describe("CarryWorkspace model", () => {
       .toBeLessThan(0);
   });
 
+  it("ranks a proven positive-net route above a larger unpriced spread", () => {
+    const venues = [
+      venue("hyperliquid", snapshot("hyperliquid", "BTC", 10_000_000, "ready")),
+      venue("lighter", snapshot("lighter", "BTC", 200_000_000, "degraded", { taker_fee_bps: null })),
+      venue("aster", snapshot("aster", "BTC", 80_000_000, "ready")),
+    ];
+    const ranked = rankCarryCandidatesByNet(buildPairCandidates(venues));
+    expect(ranked[0].candidate.short.venue_id).toBe("aster");
+    expect(ranked[0].economics_quality).toBe("positive_net");
+    expect(ranked.find((item) => item.candidate.short.venue_id === "lighter")?.economics_quality)
+      .toBe("gross_only");
+  });
+
   it("prices fees, spread, collateral, and break-even without counting the risk buffer as realized cost", () => {
     const long = snapshot("hyperliquid", "BTC", 10_000_000, "ready");
     const short = snapshot("lighter", "BTC", 40_000_000, "ready");
@@ -82,7 +95,7 @@ describe("CarryWorkspace model", () => {
     }], now);
     const [candidate] = buildCandidates(updated);
     expect(candidate.long.funding_rate_e12_per_interval).toBe(20_000_000);
-    expect(carryCandidateAgeMs(candidate, now)).toBe(4);
+    expect(carryCandidateAgeMs(candidate, now)).toBe(8);
     const quote = quoteCarryCandidate(candidate, 10_000, 24);
     expect(quote.grossDailyUsd).toBeGreaterThan(0);
     expect(quote.expectedNetUsd).toBeTypeOf("number");

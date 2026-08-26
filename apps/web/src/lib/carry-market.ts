@@ -77,6 +77,7 @@ export interface PricedCarryCandidate {
   candidate: CarryCandidate;
   quote: CarryQuoteModel;
   daily_value_bps: number;
+  economics_quality: "positive_net" | "exact_nonpositive" | "gross_only";
 }
 
 export const CARRY_LIVE_PATCH_MAX_AGE_MS = 5_000;
@@ -141,10 +142,20 @@ export function rankCarryCandidatesByNet(
     const dailyValueBps = quote.exactCosts && quote.expectedNetDailyUsd != null && quote.notionalUsd > 0
       ? quote.expectedNetDailyUsd / quote.notionalUsd * 10_000
       : candidate.grossAnnualBps / 365;
-    return { candidate, quote, daily_value_bps: dailyValueBps };
+    const economicsQuality: PricedCarryCandidate["economics_quality"] = quote.exactCosts
+      ? quote.expectedNetDailyUsd != null && quote.expectedNetDailyUsd > 0
+        ? "positive_net"
+        : "exact_nonpositive"
+      : "gross_only";
+    return {
+      candidate,
+      quote,
+      daily_value_bps: dailyValueBps,
+      economics_quality: economicsQuality,
+    };
   }).sort((left, right) =>
+    economicsQualityRank(right.economics_quality) - economicsQualityRank(left.economics_quality) ||
     right.daily_value_bps - left.daily_value_bps ||
-    Number(right.quote.exactCosts) - Number(left.quote.exactCosts) ||
     right.candidate.grossAnnualBps - left.candidate.grossAnnualBps
   );
 }
@@ -232,9 +243,15 @@ export function quoteCarryCandidate(
 
 export function carryCandidateAgeMs(candidate: CarryCandidate, nowMs = Date.now()) {
   return Math.max(...[candidate.long, candidate.short].map((leg) => {
-    const observedAt = leg.observed_at_ms ?? leg.as_of_ms;
+    const observedAt = leg.as_of_ms ?? leg.observed_at_ms;
     return observedAt == null ? Number.POSITIVE_INFINITY : Math.max(0, nowMs - observedAt);
   }));
+}
+
+function economicsQualityRank(value: PricedCarryCandidate["economics_quality"]) {
+  if (value === "positive_net") return 2;
+  if (value === "gross_only") return 1;
+  return 0;
 }
 
 export function builderModel(candidate: CarryCandidate, notionalText: string, daysText: string) {
