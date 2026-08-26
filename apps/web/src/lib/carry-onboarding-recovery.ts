@@ -11,8 +11,10 @@ import {
 } from "./lighter-agent-association";
 
 const STORAGE_PREFIX = "ghola:carry-onboarding-recovery:v1:";
+const USER_SCOPE_PREFIX = "ghola:carry-onboarding-recovery-scope:v1:";
 const MAX_AGE_MS = 31 * 24 * 60 * 60 * 1_000;
 const ACCOUNT = /^[A-Za-z0-9_.:-]{8,240}$/;
+const USER_SCOPE = /^[0-9a-f]{64}$/;
 const ASTER_PREPARATION = /^aster_prepare_[0-9a-f]{64}$/;
 const LIGHTER_PREPARATION = /^lighter_prepare_[0-9a-f]{64}$/;
 const SIGNATURE = /^0x[0-9a-f]{130}$/i;
@@ -60,6 +62,27 @@ export function readCarryOnboardingRecovery(
   }
 }
 
+export function readCarryOnboardingRecoveryForUser(
+  storage: Pick<Storage, "getItem" | "removeItem">,
+  userScope: string,
+  nowMs = Date.now(),
+): CarryOnboardingRecovery | null {
+  const key = userScopeKey(userScope);
+  try {
+    const pointer = JSON.parse(storage.getItem(key) || "null") as unknown;
+    if (!validUserScopePointer(pointer, nowMs)) {
+      storage.removeItem(key);
+      return null;
+    }
+    const recovery = readCarryOnboardingRecovery(storage, pointer.account_commitment, nowMs);
+    if (!recovery) storage.removeItem(key);
+    return recovery;
+  } catch {
+    storage.removeItem(key);
+    return null;
+  }
+}
+
 export function writeCarryOnboardingRecovery(
   storage: Pick<Storage, "setItem">,
   accountCommitment: string,
@@ -99,6 +122,40 @@ export function updateCarryOnboardingRecovery(
     return null;
   }
   return writeCarryOnboardingRecovery(storage, accountCommitment, { aster, lighter }, nowMs);
+}
+
+export function updateCarryOnboardingRecoveryForUser(
+  storage: Pick<Storage, "getItem" | "setItem" | "removeItem">,
+  userScope: string,
+  accountCommitment: string,
+  update: { aster?: PendingAsterOnboarding | null; lighter?: PendingLighterOnboarding | null },
+  nowMs = Date.now(),
+): CarryOnboardingRecovery | null {
+  const key = userScopeKey(userScope);
+  const recovery = updateCarryOnboardingRecovery(storage, accountCommitment, update, nowMs);
+  if (!recovery) {
+    storage.removeItem(key);
+    return null;
+  }
+  storage.setItem(key, JSON.stringify({
+    version: 1,
+    account_commitment: recovery.account_commitment,
+    saved_at_ms: recovery.saved_at_ms,
+  }));
+  return recovery;
+}
+
+function validUserScopePointer(
+  value: unknown,
+  nowMs: number,
+): value is { version: 1; account_commitment: string; saved_at_ms: number } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record.version === 1 &&
+    ACCOUNT.test(string(record.account_commitment)) &&
+    Number.isSafeInteger(record.saved_at_ms) &&
+    Number(record.saved_at_ms) <= nowMs + 60_000 &&
+    nowMs - Number(record.saved_at_ms) <= MAX_AGE_MS;
 }
 
 function validRecovery(value: unknown, accountCommitment: string, nowMs: number): value is CarryOnboardingRecovery {
@@ -214,6 +271,12 @@ function validLighter(value: unknown, accountCommitment: string): value is Pendi
 
 function recoveryKey(accountCommitment: string): string {
   return `${STORAGE_PREFIX}${encodeURIComponent(normalizedAccount(accountCommitment))}`;
+}
+
+function userScopeKey(userScope: string): string {
+  const normalized = userScope.trim().toLowerCase();
+  if (!USER_SCOPE.test(normalized)) throw new Error("carry_onboarding_recovery_user_scope_invalid");
+  return `${USER_SCOPE_PREFIX}${normalized}`;
 }
 
 function normalizedAccount(value: string): string {

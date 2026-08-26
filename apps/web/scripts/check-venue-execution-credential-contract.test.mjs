@@ -10,6 +10,7 @@ import {
   checkLighterOnboardingUiBoundary,
   checkVenueOnboardingLiveProofBoundary,
   checkTurnkeyVenueOwnerAddressBoundary,
+  checkTurnkeyPerpsWalletSelectionBoundary,
   checkVenueExecutionCredentialBoundary,
   checkVenueExecutionCredentialContract,
 } from "./check-venue-execution-credential-contract.mjs";
@@ -28,6 +29,7 @@ const lighterPrepare = readFileSync(resolve(HERE, "../src/app/v1/private-account
 const lighterComplete = readFileSync(resolve(HERE, "../src/app/v1/private-account/platforms/lighter/complete/route.ts"), "utf8");
 const lighterWorker = readFileSync(resolve(HERE, "../../private-agent-worker/src/venues/lighter-provisioning.js"), "utf8");
 const lighterSigning = readFileSync(resolve(HERE, "../src/lib/perps-turnkey-lighter-signing.ts"), "utf8");
+const turnkeyProvider = readFileSync(resolve(HERE, "../src/lib/perps-turnkey-provider.tsx"), "utf8");
 const liveClient = readFileSync(resolve(HERE, "../src/lib/private-account-client.ts"), "utf8");
 const liveRoutes = readFileSync(resolve(HERE, "../src/lib/private-account-live-routes.ts"), "utf8");
 const liveProxy = readFileSync(resolve(HERE, "../src/app/api/private-account/live-proxy/route.ts"), "utf8");
@@ -55,6 +57,7 @@ test("accepts the fail-closed venue execution credential contract", () => {
     readFileSync(resolve(HERE, "../src/lib/perps-turnkey-aster-signing.ts"), "utf8"),
     lighterSigning,
   ).ok, true);
+  assert.equal(checkTurnkeyPerpsWalletSelectionBoundary(turnkeyProvider).ok, true);
 });
 
 test("rejects venue onboarding that bypasses server-side live request proof", () => {
@@ -76,6 +79,15 @@ test("rejects changing Turnkey's exact case-sensitive owner resource address", (
       lighterSigning.replaceAll("signWith: turnkeyOwnerAddress", "signWith: ownerAddress"),
     ),
     /turnkey_resource_address_case_must_be_preserved/,
+  );
+});
+
+test("rejects nondeterministic selection among duplicate Turnkey wallets", () => {
+  assert.throws(
+    () => checkTurnkeyPerpsWalletSelectionBoundary(turnkeyProvider
+      .replace("wallet.walletId === boundWalletId", "wallet.walletName === PERPS_WALLET_NAME")
+      .replace("Multiple Ghola perps wallets are active", "Using the first wallet")),
+    /turnkey_exact_bound_wallet_selection_required|turnkey_duplicate_wallet_fail_closed_required/,
   );
 });
 
@@ -165,7 +177,7 @@ test("rejects breaking the Aster prepare, owner-sign, complete, ready UI sequenc
 test("rejects signing an Aster preparation before it is durably resumable", () => {
   assert.throws(
     () => checkAsterOnboardingUiBoundary(asterUi.replace(
-      "persistRecovery(accountCommitment, { aster: unsignedPending })",
+      "persistRecovery(accountCommitment, recoveryUserScope, { aster: unsignedPending })",
       "removedUnsignedPreparationPersistence(accountCommitment)",
     )),
     /aster_prepare_persist_sign_complete_ready_order_required/,

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Check, KeyRound, LockKeyhole } from "lucide-react";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
-import { useTurnkeyWallet } from "@/lib/turnkey-provider";
+import { opaqueTurnkeyWalletScope, useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { usePerpsTurnkey } from "@/lib/perps-turnkey-provider";
 import {
   buildAsterExecutionVaultBundle,
@@ -34,7 +34,8 @@ import {
 } from "@/lib/venue-credential-onboarding";
 import {
   readCarryOnboardingRecovery,
-  updateCarryOnboardingRecovery,
+  readCarryOnboardingRecoveryForUser,
+  updateCarryOnboardingRecoveryForUser,
   type PendingAsterOnboarding,
   type PendingLighterOnboarding,
 } from "@/lib/carry-onboarding-recovery";
@@ -63,6 +64,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const [pendingAsterLinkRecovery, setPendingAsterLinkRecovery] = useState<PendingAsterLinkRecovery | null>(null);
   const [asterReprepareRequired, setAsterReprepareRequired] = useState(false);
   const [asterRegistrationAmbiguous, setAsterRegistrationAmbiguous] = useState(false);
+  const [asterWalletRepairRequired, setAsterWalletRepairRequired] = useState(false);
   const [showLighterManual, setShowLighterManual] = useState(false);
   const [pendingLighterAuthorization, setPendingLighterAuthorization] = useState(false);
   const [pendingLighterAssociation, setPendingLighterAssociation] = useState<PendingLighterAssociation | null>(null);
@@ -78,6 +80,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const safeReturnTo = returnTo === "/carry" || returnTo.startsWith("/trade?") ? returnTo : "/carry";
+  const recoveryUserScope = opaqueTurnkeyWalletScope(auth.user?.id || "");
   const setupReturnTo = `/account?setup=carry&return_to=${encodeURIComponent(safeReturnTo)}`;
 
   const refresh = useCallback(async () => {
@@ -101,20 +104,31 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   useEffect(() => { void refresh(); }, [refresh]);
 
   useEffect(() => {
-    if (!accountCommitment) return;
+    if (new URLSearchParams(window.location.search).get("repair") === "aster-wallet") {
+      setAsterWalletRepairRequired(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!recoveryUserScope) return;
     try {
-      const recovered = readCarryOnboardingRecovery(window.localStorage, accountCommitment);
+      const recovered = accountCommitment
+        ? readCarryOnboardingRecovery(window.localStorage, accountCommitment)
+        : readCarryOnboardingRecoveryForUser(window.localStorage, recoveryUserScope);
+      if (!accountCommitment && recovered?.account_commitment) {
+        setAccountCommitment(recovered.account_commitment);
+      }
       if (recovered?.aster) setPendingAsterLinkRecovery(recovered.aster);
       if (recovered?.lighter) setPendingLighterAssociation(recovered.lighter);
     } catch {
       // Storage may be unavailable; worker-side one-shot guards still apply.
     }
-  }, [accountCommitment]);
+  }, [accountCommitment, recoveryUserScope]);
 
-  const connectAsterProgrammatic = useCallback(async () => {
+  const connectAsterProgrammatic = useCallback(async (forceReprepare = false) => {
     setWorking(true);
     setError(null);
-    let prepared: AsterProgrammaticPreparation | null = pendingAsterLinkRecovery?.signature
+    let prepared: AsterProgrammaticPreparation | null = forceReprepare || pendingAsterLinkRecovery?.signature
       ? null
       : pendingAsterLinkRecovery?.preparation || null;
     let signature: `0x${string}` | null = null;
@@ -128,19 +142,20 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         });
         const unsignedPending = { preparation: prepared };
         setPendingAsterLinkRecovery(unsignedPending);
-        persistRecovery(accountCommitment, { aster: unsignedPending });
+        persistRecovery(accountCommitment, recoveryUserScope, { aster: unsignedPending });
       }
       signature = await perpsTurnkey.signAsterAgentApproval(prepared.contract.approval.typedData);
       const pending = { preparation: prepared, signature };
       setPendingAsterLinkRecovery(pending);
-      persistRecovery(accountCommitment, { aster: pending });
+      persistRecovery(accountCommitment, recoveryUserScope, { aster: pending });
       completionAttempted = true;
       const completed = asRecord(await completeAsterProgrammaticCredential({ preparation: prepared, signature }));
       if (completed.status !== "ready") throw new Error("Aster authorization did not become ready.");
       setPendingAsterLinkRecovery(null);
-      persistRecovery(accountCommitment, { aster: null });
+      persistRecovery(accountCommitment, recoveryUserScope, { aster: null });
       setAsterReprepareRequired(false);
       setAsterRegistrationAmbiguous(false);
+      setAsterWalletRepairRequired(false);
       setAster("connected");
       await refresh();
     } catch (caught) {
@@ -149,11 +164,11 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         if (disposition.action === "finish_link" && signature) {
           const pending = { preparation: prepared, signature, receipt: disposition.receipt };
           setPendingAsterLinkRecovery(pending);
-          persistRecovery(accountCommitment, { aster: pending });
+          persistRecovery(accountCommitment, recoveryUserScope, { aster: pending });
         } else if (disposition.action === "reprepare") {
           setAsterReprepareRequired(true);
           setPendingAsterLinkRecovery(null);
-          persistRecovery(accountCommitment, { aster: null });
+          persistRecovery(accountCommitment, recoveryUserScope, { aster: null });
         } else if (disposition.action === "hold_ambiguous") {
           setAsterRegistrationAmbiguous(true);
         }
@@ -162,14 +177,38 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         if (prepared && !signature) {
           const unsignedPending = { preparation: prepared };
           setPendingAsterLinkRecovery(unsignedPending);
-          persistRecovery(accountCommitment, { aster: unsignedPending });
+          persistRecovery(accountCommitment, recoveryUserScope, { aster: unsignedPending });
         }
-        setError(caught instanceof Error ? caught.message : "Aster authorization failed.");
+        const message = caught instanceof Error ? caught.message : "Aster authorization failed.";
+        if (isTurnkeyResourceMissing(message)) setAsterWalletRepairRequired(true);
+        setError(message);
       }
     } finally {
       setWorking(false);
     }
-  }, [accountCommitment, pendingAsterLinkRecovery, perpsTurnkey, refresh]);
+  }, [accountCommitment, pendingAsterLinkRecovery, perpsTurnkey, recoveryUserScope, refresh]);
+
+  const repairAsterWallet = useCallback(async () => {
+    setWorking(true);
+    setError(null);
+    try {
+      await perpsTurnkey.replaceWalletPair();
+      const url = new URL(window.location.href);
+      url.searchParams.delete("repair");
+      window.history.replaceState(null, "", url);
+      const staleCommitment = accountCommitment ||
+        pendingAsterLinkRecovery?.preparation.account_commitment || null;
+      setPendingAsterLinkRecovery(null);
+      persistRecovery(staleCommitment, recoveryUserScope, { aster: null });
+      setAsterWalletRepairRequired(false);
+      setAsterReprepareRequired(false);
+      await connectAsterProgrammatic(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Secure wallet repair failed.");
+    } finally {
+      setWorking(false);
+    }
+  }, [accountCommitment, connectAsterProgrammatic, pendingAsterLinkRecovery, perpsTurnkey, recoveryUserScope]);
 
   const finishAsterLinkRecovery = useCallback(async () => {
     if (!pendingAsterLinkRecovery?.signature) return;
@@ -185,7 +224,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       }));
       if (completed.status !== "ready") throw new Error("Aster linking did not become ready.");
       setPendingAsterLinkRecovery(null);
-      persistRecovery(accountCommitment, { aster: null });
+      persistRecovery(accountCommitment, recoveryUserScope, { aster: null });
       setAsterRegistrationAmbiguous(false);
       setAster("connected");
       await refresh();
@@ -196,7 +235,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     } finally {
       setWorking(false);
     }
-  }, [accountCommitment, pendingAsterLinkRecovery, refresh]);
+  }, [accountCommitment, pendingAsterLinkRecovery, recoveryUserScope, refresh]);
 
   useEffect(() => {
     if (!pendingAsterAuthorization || !perpsTurnkey.authenticated) return;
@@ -212,6 +251,10 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     }
     if (pendingAsterLinkRecovery?.signature) {
       await finishAsterLinkRecovery();
+      return;
+    }
+    if (asterWalletRepairRequired) {
+      await repairAsterWallet();
       return;
     }
     if (asterRegistrationAmbiguous) {
@@ -311,7 +354,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       const authorization = await perpsTurnkey.signLighterKeyAssociation(preparation.transaction_plan);
       pending = { preparation, authorization };
       setPendingLighterAssociation(pending);
-      persistRecovery(accountCommitment, { lighter: pending });
+      persistRecovery(accountCommitment, recoveryUserScope, { lighter: pending });
       const completed = asRecord(await completeLighterProgrammaticCredential(pending));
       const ready = completed.status === "ready"
         ? completed
@@ -321,7 +364,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         return;
       }
       setPendingLighterAssociation(null);
-      persistRecovery(accountCommitment, { lighter: null });
+      persistRecovery(accountCommitment, recoveryUserScope, { lighter: null });
       setLighter("connected");
       await refresh();
     } catch (caught) {
@@ -333,7 +376,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     } finally {
       setWorking(false);
     }
-  }, [accountCommitment, perpsTurnkey, reconcileLighterAssociation, refresh]);
+  }, [accountCommitment, perpsTurnkey, reconcileLighterAssociation, recoveryUserScope, refresh]);
 
   const finishLighterAssociation = useCallback(async () => {
     if (!pendingLighterAssociation) return;
@@ -346,7 +389,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         return;
       }
       setPendingLighterAssociation(null);
-      persistRecovery(accountCommitment, { lighter: null });
+      persistRecovery(accountCommitment, recoveryUserScope, { lighter: null });
       setLighter("connected");
       await refresh();
     } catch {
@@ -354,7 +397,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     } finally {
       setWorking(false);
     }
-  }, [accountCommitment, pendingLighterAssociation, reconcileLighterAssociation, refresh]);
+  }, [accountCommitment, pendingLighterAssociation, reconcileLighterAssociation, recoveryUserScope, refresh]);
 
   useEffect(() => {
     if (!pendingLighterAuthorization || !perpsTurnkey.authenticated) return;
@@ -468,6 +511,8 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                       ? "Restoring secure wallet…"
                     : working
                       ? "Authorizing…"
+                      : asterWalletRepairRequired
+                        ? "Repair secure wallet"
                       : asterRegistrationAmbiguous
                         ? "Aster reconciliation required"
                         : pendingAsterLinkRecovery
@@ -595,17 +640,31 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function isTurnkeyResourceMissing(message: string): boolean {
+  return message.includes("Could not find any resource to sign with") &&
+    message.includes("Addresses are case sensitive");
+}
+
 function delay(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function persistRecovery(
   accountCommitment: string | null,
+  userScope: string | null,
   update: { aster?: PendingAsterOnboarding | null; lighter?: PendingLighterOnboarding | null },
 ) {
-  if (!accountCommitment) return;
+  const updateCommitment = update.aster?.preparation.account_commitment ||
+    update.lighter?.preparation.account_commitment || null;
+  const recoveryCommitment = accountCommitment || updateCommitment;
+  if (!recoveryCommitment || !userScope) return;
   try {
-    updateCarryOnboardingRecovery(window.localStorage, accountCommitment, update);
+    updateCarryOnboardingRecoveryForUser(
+      window.localStorage,
+      userScope,
+      recoveryCommitment,
+      update,
+    );
   } catch {
     // Storage is a convenience layer; the worker remains the submission authority.
   }

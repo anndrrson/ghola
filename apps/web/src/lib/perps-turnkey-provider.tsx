@@ -49,6 +49,7 @@ const TOMBSTONE_PATH = "m/44'/60'/0'/0/2";
 const SEALING_PATH = "m/44'/501'/0'/0'";
 const TURNKEY_BINDINGS_STORAGE_KEY = "ghola_perps_turnkey_bindings_v1";
 const TURNKEY_PENDING_BINDING_STORAGE_KEY = "ghola_perps_turnkey_pending_binding_v1";
+const TURNKEY_WALLET_BINDINGS_STORAGE_KEY = "ghola_perps_turnkey_wallet_bindings_v1";
 
 const OWNER_ACCOUNT = {
   curve: "CURVE_SECP256K1",
@@ -87,6 +88,7 @@ interface PerpsTurnkeyContextValue {
   login: () => Promise<void>;
   logout: () => Promise<void>;
   ensureWalletPair: (includeTombstone?: boolean) => Promise<PerpsWalletPair>;
+  replaceWalletPair: () => Promise<PerpsWalletPair>;
   installDelegation: (publicKey: string) => Promise<InstallDelegationResult>;
   signOwnerMandate: (mandate: unknown) => Promise<`0x${string}`>;
   signCarryRiskMandate: (mandate: unknown) => Promise<`0x${string}`>;
@@ -123,6 +125,7 @@ const PerpsTurnkeyContext = createContext<PerpsTurnkeyContextValue>({
   login: unavailable,
   logout: async () => {},
   ensureWalletPair: unavailable,
+  replaceWalletPair: unavailable,
   installDelegation: unavailable,
   signOwnerMandate: unavailable,
   signCarryRiskMandate: unavailable,
@@ -225,6 +228,7 @@ const CONTEXT_DEFAULTS = {
   login: unavailable,
   logout: async () => {},
   ensureWalletPair: unavailable,
+  replaceWalletPair: unavailable,
   installDelegation: unavailable,
   signOwnerMandate: unavailable,
   signCarryRiskMandate: unavailable,
@@ -427,7 +431,8 @@ function PerpsTurnkeySession({
       throw new Error("Authenticate with Turnkey before creating the perps wallets.");
     }
     let wallets = await turnkey.refreshWallets({ organizationId });
-    let wallet = findPerpsWallet(wallets);
+    const binding = readPerpsWalletBinding(thumperUserScope, organizationId);
+    let wallet: Wallet | null = findPerpsWallet(wallets, binding?.walletId || null, includeTombstone);
     if (!wallet) {
       const walletId = await turnkey.createWallet({
         organizationId,
@@ -435,7 +440,7 @@ function PerpsTurnkeySession({
         accounts: [OWNER_ACCOUNT, AGENT_ACCOUNT, SEALING_ACCOUNT],
       });
       wallets = await turnkey.refreshWallets({ organizationId });
-      wallet = wallets.find((candidate) => candidate.walletId === walletId) || findPerpsWallet(wallets);
+      wallet = wallets.find((candidate) => candidate.walletId === walletId) || null;
     }
     if (!wallet) throw new Error("Turnkey did not return the Ghola perps wallet.");
     const required = includeTombstone
@@ -443,21 +448,45 @@ function PerpsTurnkeySession({
       : [OWNER_ACCOUNT, AGENT_ACCOUNT, SEALING_ACCOUNT];
     const missing = required.filter((params) => !wallet?.accounts.some((account) => account.path === params.path));
     if (missing.length > 0) {
+      const selectedWalletId = wallet.walletId;
       await turnkey.createWalletAccounts({
         organizationId,
-        walletId: wallet.walletId,
+        walletId: selectedWalletId,
         accounts: missing,
       });
       wallets = await turnkey.refreshWallets({ organizationId });
-      wallet = wallets.find((candidate) => candidate.walletId === wallet?.walletId) || null;
+      wallet = wallets.find((candidate) => candidate.walletId === selectedWalletId) || null;
     }
     if (!wallet) throw new Error("Turnkey perps wallet refresh failed.");
+    writePerpsWalletBinding(thumperUserScope, organizationId, wallet.walletId);
     const owner = accountAt(wallet, OWNER_PATH);
     const agent = accountAt(wallet, AGENT_PATH);
     const sealing = accountAt(wallet, SEALING_PATH);
     const tombstone = includeTombstone ? accountAt(wallet, TOMBSTONE_PATH) : undefined;
     return { organizationId, walletId: wallet.walletId, owner, agent, sealing, tombstone };
-  }, [authenticated, organizationId, turnkey]);
+  }, [authenticated, organizationId, thumperUserScope, turnkey]);
+
+  const replaceWalletPair = useCallback(async () => {
+    if (!organizationId || !turnkey.httpClient || !authenticated || !thumperUserScope) {
+      throw new Error("Authenticate with Turnkey before repairing the perps wallet.");
+    }
+    const walletId = await turnkey.createWallet({
+      organizationId,
+      walletName: PERPS_WALLET_NAME,
+      accounts: [OWNER_ACCOUNT, AGENT_ACCOUNT, SEALING_ACCOUNT],
+    });
+    const wallets = await turnkey.refreshWallets({ organizationId });
+    const wallet = wallets.find((candidate) => candidate.walletId === walletId) || null;
+    if (!wallet) throw new Error("Turnkey did not return the replacement Ghola perps wallet.");
+    writePerpsWalletBinding(thumperUserScope, organizationId, wallet.walletId);
+    return {
+      organizationId,
+      walletId: wallet.walletId,
+      owner: accountAt(wallet, OWNER_PATH),
+      agent: accountAt(wallet, AGENT_PATH),
+      sealing: accountAt(wallet, SEALING_PATH),
+    };
+  }, [authenticated, organizationId, thumperUserScope, turnkey]);
 
   const installDelegation = useCallback(async (publicKey: string) => {
     const pair = await ensureWalletPair();
@@ -617,6 +646,7 @@ function PerpsTurnkeySession({
     login,
     logout,
     ensureWalletPair,
+    replaceWalletPair,
     installDelegation,
     signOwnerMandate,
     signCarryRiskMandate,
@@ -631,6 +661,7 @@ function PerpsTurnkeySession({
     configured,
     configureHyperliquid,
     ensureWalletPair,
+    replaceWalletPair,
     installDelegation,
     loading,
     login,
@@ -651,14 +682,67 @@ export function usePerpsTurnkey() {
   return useContext(PerpsTurnkeyContext);
 }
 
-function findPerpsWallet(wallets: Wallet[]) {
-  return wallets.find((wallet) => wallet.walletName === PERPS_WALLET_NAME) || null;
+function findPerpsWallet(
+  wallets: Wallet[],
+  boundWalletId: string | null,
+  includeTombstone: boolean,
+) {
+  if (boundWalletId) {
+    const bound = wallets.find((wallet) => wallet.walletId === boundWalletId) || null;
+    if (!bound) throw new Error("The bound Ghola perps wallet is unavailable; repair is required.");
+    return bound;
+  }
+  const candidates = wallets.filter((wallet) => wallet.walletName === PERPS_WALLET_NAME);
+  if (candidates.length <= 1) return candidates[0] || null;
+  const requiredPaths = includeTombstone
+    ? [OWNER_PATH, AGENT_PATH, SEALING_PATH, TOMBSTONE_PATH]
+    : [OWNER_PATH, AGENT_PATH, SEALING_PATH];
+  const complete = candidates.filter((wallet) => requiredPaths.every((path) =>
+    wallet.accounts.filter((account) => account.path === path).length === 1
+  ));
+  if (complete.length === 1) return complete[0];
+  throw new Error("Multiple Ghola perps wallets are active; bind or repair one exact wallet before signing.");
 }
 
 function accountAt(wallet: Wallet, path: string) {
-  const account = wallet.accounts.find((candidate) => candidate.path === path);
-  if (!account) throw new Error(`Turnkey wallet account ${path} is unavailable.`);
+  const accounts = wallet.accounts.filter((candidate) => candidate.path === path);
+  if (accounts.length !== 1) throw new Error(`Turnkey wallet account ${path} is unavailable or ambiguous.`);
+  const account = accounts[0];
+  if (account.walletId !== wallet.walletId) {
+    throw new Error(`Turnkey wallet account ${path} is bound to a different wallet.`);
+  }
   return account;
+}
+
+function readPerpsWalletBinding(userScope: string | null, organizationId: string) {
+  if (!userScope) return null;
+  try {
+    const parsed = JSON.parse(localStorage.getItem(TURNKEY_WALLET_BINDINGS_STORAGE_KEY) || "{}") as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const binding = (parsed as Record<string, unknown>)[userScope];
+    if (!binding || typeof binding !== "object" || Array.isArray(binding)) return null;
+    const record = binding as Record<string, unknown>;
+    return record.organizationId === organizationId && typeof record.walletId === "string" && record.walletId
+      ? { organizationId, walletId: record.walletId }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePerpsWalletBinding(userScope: string | null, organizationId: string, walletId: string) {
+  if (!userScope || !walletId) throw new Error("A verified Ghola wallet identity is required.");
+  let current: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem(TURNKEY_WALLET_BINDINGS_STORAGE_KEY) || "{}") as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) current = parsed as Record<string, unknown>;
+    localStorage.setItem(TURNKEY_WALLET_BINDINGS_STORAGE_KEY, JSON.stringify({
+      ...current,
+      [userScope]: { organizationId, walletId },
+    }));
+  } catch {
+    throw new Error("The exact Ghola perps wallet binding could not be saved.");
+  }
 }
 
 function ownerClients(

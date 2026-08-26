@@ -179,6 +179,8 @@ export function checkAsterOnboardingUiBoundary(source) {
     ["asterRegistrationAmbiguous", "aster_ambiguous_ui_hold_required"],
     ["Aster reconciliation required", "aster_ambiguous_retry_block_required"],
     ["Resume Aster signing", "aster_unsigned_preparation_resume_action_required"],
+    ["Repair secure wallet", "aster_broken_wallet_repair_action_required"],
+    ["await perpsTurnkey.replaceWalletPair()", "aster_explicit_wallet_replacement_required"],
     ["30 days of perpetual trading", "aster_expiry_disclosure_required"],
     ["Withdrawals stay disabled", "aster_no_withdrawal_disclosure_required"],
   ];
@@ -188,7 +190,7 @@ export function checkAsterOnboardingUiBoundary(source) {
   const flowEnd = source.indexOf("\n  useEffect(() =>", flowStart);
   const flow = flowStart >= 0 && flowEnd > flowStart ? source.slice(flowStart, flowEnd) : "";
   const prepare = flow.indexOf("await prepareAsterProgrammaticCredential");
-  const persistPrepared = flow.indexOf("persistRecovery(accountCommitment, { aster: unsignedPending })");
+  const persistPrepared = flow.indexOf("persistRecovery(accountCommitment, recoveryUserScope, { aster: unsignedPending })");
   const ownerSign = flow.indexOf("await perpsTurnkey.signAsterAgentApproval");
   const complete = flow.indexOf("await completeAsterProgrammaticCredential");
   const ready = flow.indexOf("completed.status !== \"ready\"");
@@ -337,6 +339,22 @@ export function checkTurnkeyVenueOwnerAddressBoundary(asterSigningSource, lighte
   return { ok: true };
 }
 
+export function checkTurnkeyPerpsWalletSelectionBoundary(providerSource) {
+  const failures = [];
+  const required = [
+    ["TURNKEY_WALLET_BINDINGS_STORAGE_KEY", "turnkey_wallet_binding_storage_required"],
+    ["wallet.walletId === boundWalletId", "turnkey_exact_bound_wallet_selection_required"],
+    ["Multiple Ghola perps wallets are active", "turnkey_duplicate_wallet_fail_closed_required"],
+    ["writePerpsWalletBinding", "turnkey_wallet_binding_persistence_required"],
+    ["const replaceWalletPair = useCallback", "turnkey_explicit_wallet_repair_required"],
+  ];
+  for (const [value, code] of required) if (!providerSource.includes(value)) failures.push(code);
+  if (failures.length > 0) {
+    throw new Error(`Turnkey perps wallet selection boundary failed: ${failures.join(", ")}`);
+  }
+  return { ok: true };
+}
+
 function object(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -387,6 +405,10 @@ function main() {
     readFileSync(resolve(HERE, "../src/lib/perps-turnkey-aster-signing.ts"), "utf8"),
     readFileSync(resolve(HERE, "../src/lib/perps-turnkey-lighter-signing.ts"), "utf8"),
   );
+  checkTurnkeyPerpsWalletSelectionBoundary(readFileSync(
+    resolve(HERE, "../src/lib/perps-turnkey-provider.tsx"),
+    "utf8",
+  ));
   console.log("[venue-execution-credential-contract] verified");
 }
 

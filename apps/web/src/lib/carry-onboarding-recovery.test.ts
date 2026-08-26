@@ -5,7 +5,9 @@ import { buildLighterChangePubKeyIntent } from "./lighter-agent-association";
 import {
   clearCarryOnboardingRecovery,
   readCarryOnboardingRecovery,
+  readCarryOnboardingRecoveryForUser,
   updateCarryOnboardingRecovery,
+  updateCarryOnboardingRecoveryForUser,
   writeCarryOnboardingRecovery,
   type PendingAsterOnboarding,
   type PendingLighterOnboarding,
@@ -13,6 +15,7 @@ import {
 
 const NOW = 1_800_000_000_000;
 const ACCOUNT = "account_commitment_0001";
+const USER_SCOPE = "ab".repeat(32);
 
 beforeEach(() => localStorage.clear());
 
@@ -39,10 +42,18 @@ describe("Carry onboarding recovery", () => {
 
   it("restores an unsigned Aster preparation without creating another signer", () => {
     const unsigned = { preparation: asterPending().preparation };
-    writeCarryOnboardingRecovery(localStorage, ACCOUNT, { aster: unsigned }, NOW);
+    updateCarryOnboardingRecoveryForUser(localStorage, USER_SCOPE, ACCOUNT, { aster: unsigned }, NOW);
 
-    expect(readCarryOnboardingRecovery(localStorage, ACCOUNT, NOW + 1_000)?.aster)
+    expect(readCarryOnboardingRecoveryForUser(localStorage, USER_SCOPE, NOW + 1_000)?.aster)
       .toEqual(unsigned);
+  });
+
+  it("does not restore another Ghola user's pending venue setup", () => {
+    updateCarryOnboardingRecoveryForUser(localStorage, USER_SCOPE, ACCOUNT, {
+      aster: { preparation: asterPending().preparation },
+    }, NOW);
+
+    expect(readCarryOnboardingRecoveryForUser(localStorage, "cd".repeat(32), NOW)).toBeNull();
   });
 
   it("quarantines malformed, cross-account, and stale recovery records", () => {
