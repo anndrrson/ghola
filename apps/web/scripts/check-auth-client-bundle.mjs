@@ -30,6 +30,12 @@ const requiredGoogleRedirectSources = [
     ],
   },
   {
+    file: "pnpm-workspace.yaml",
+    patterns: [
+      { label: "Turnkey OTP patched dependency declaration", pattern: /'@turnkey\/react-wallet-kit@2\.3\.1':\s*patches\/@turnkey__react-wallet-kit@2\.3\.1\.patch/ },
+    ],
+  },
+  {
     file: "package.json",
     patterns: [
       { label: "installed Turnkey OTP pre-build guard", pattern: /check-turnkey-otp-install\.mjs/ },

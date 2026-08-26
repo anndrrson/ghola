@@ -21,3 +21,4 @@ overrides:
   ws: 8.21.2
 patchedDependencies:
   '@turnkey/core@2.5.0': patches/@turnkey__core@2.5.0.patch
+  '@turnkey/react-wallet-kit@2.3.1': patches/@turnkey__react-wallet-kit@2.3.1.patch
