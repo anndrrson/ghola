@@ -167,11 +167,11 @@ export function PerpsTurnkeyProvider({ children }: { children: ReactNode }) {
         methods: {
           emailOtpAuthEnabled: true,
           passkeyAuthEnabled: true,
-          walletAuthEnabled: true,
-          googleOauthEnabled: true,
+          walletAuthEnabled: false,
+          googleOauthEnabled: false,
         },
-        methodOrder: ["socials", "passkey", "email", "wallet"],
-        oauthOrder: ["google"],
+        methodOrder: ["passkey", "email"],
+        oauthOrder: [],
       },
     },
   };
@@ -390,7 +390,7 @@ function PerpsTurnkeySession({
     sessionStorage.setItem(`${TURNKEY_PENDING_BINDING_STORAGE_KEY}:${parentOrganizationId}`, userId);
     setPendingBindingUserId(userId);
     try {
-      await turnkey.handleGoogleOauth({ openInPage: true });
+      await turnkey.handleLogin({ title: "Secure Ghola trading access" });
     } catch (error) {
       sessionStorage.removeItem(`${TURNKEY_PENDING_BINDING_STORAGE_KEY}:${parentOrganizationId}`);
       setPendingBindingUserId((current) => (current === userId ? null : current));

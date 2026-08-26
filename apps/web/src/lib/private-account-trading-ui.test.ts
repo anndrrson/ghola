@@ -163,10 +163,14 @@ describe("private account trading UI derivation", () => {
     expect(authModalSource).toContain("isSignup && !isHyperliquidSetup");
     expect(authModalSource).toContain("initializeGoogleRedirect");
     expect(authModalSource).toContain('z-[110]');
-    expect(perpsTurnkeySource).toContain("googleOauthEnabled: true");
-    expect(perpsTurnkeySource).toContain('await turnkey.handleGoogleOauth({ openInPage: true });');
+    expect(perpsTurnkeySource).toContain("passkeyAuthEnabled: true");
+    expect(perpsTurnkeySource).toContain("emailOtpAuthEnabled: true");
+    expect(perpsTurnkeySource).toContain("googleOauthEnabled: false");
+    expect(perpsTurnkeySource).toContain(
+      'await turnkey.handleLogin({ title: "Secure Ghola trading access" });',
+    );
     expect(perpsTurnkeySource).toContain("TURNKEY_PENDING_BINDING_STORAGE_KEY");
-    expect(perpsTurnkeySource).not.toContain("await turnkey.handleLogin(");
+    expect(perpsTurnkeySource).not.toContain("await turnkey.handleGoogleOauth(");
   });
 
   it("keeps a Hyperliquid connection error visible until the dialog is reopened", () => {
