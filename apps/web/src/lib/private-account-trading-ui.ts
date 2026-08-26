@@ -75,6 +75,22 @@ export function shouldWaitForHyperliquidOwnerSession(input: {
   return input.initialSetup && !input.legacyApiKeysEnabled && input.loading;
 }
 
+export function shouldContinueHyperliquidAfterOwnerAuthentication(input: {
+  requested: boolean;
+  loading: boolean;
+  authenticated: boolean;
+  executionAccessReady: boolean;
+  signingWalletReady: boolean;
+  referencePriceReady: boolean;
+}) {
+  return input.requested &&
+    !input.loading &&
+    input.authenticated &&
+    input.executionAccessReady &&
+    input.signingWalletReady &&
+    input.referencePriceReady;
+}
+
 export function shouldShowHyperliquidSetupProgress(input: {
   initialSetup: boolean;
   connectOpen: boolean;

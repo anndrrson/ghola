@@ -159,6 +159,7 @@ import {
   hyperliquidAccountAddressDraftValue,
   isHyperliquidAgentKeyConfirmed,
   requiresHyperliquidPoolTerms,
+  shouldContinueHyperliquidAfterOwnerAuthentication,
   shouldResetHyperliquidConnectionError,
   shouldReconnectHyperliquidApiWallet,
   shouldAuthenticateHyperliquidOwner,
@@ -883,6 +884,7 @@ export function PrivateAccountCockpit({
   const [hyperliquidConnectOpen, setHyperliquidConnectOpen] = useState(false);
   const initialSetupHandled = useRef(false);
   const verifyHyperliquidAfterConnect = useRef(false);
+  const [continueHyperliquidAfterOwnerAuth, setContinueHyperliquidAfterOwnerAuth] = useState(false);
   const hyperliquidAccountRefresh = useRef<Promise<void> | null>(null);
   const [coinbaseConnectOpen, setCoinbaseConnectOpen] = useState(false);
   const [phoenixConnectOpen, setPhoenixConnectOpen] = useState(false);
@@ -1355,6 +1357,34 @@ export function PrivateAccountCockpit({
     hyperliquidVault?.account_commitment,
     hyperliquidReferencePrice,
     initialSetupVenue,
+    perpsTurnkey.loading,
+    turnkeyWallet.walletAddress,
+  ]);
+
+  useEffect(() => {
+    if (!shouldContinueHyperliquidAfterOwnerAuthentication({
+      requested: continueHyperliquidAfterOwnerAuth,
+      loading: perpsTurnkey.loading,
+      authenticated: perpsTurnkey.authenticated,
+      executionAccessReady:
+        hyperliquidVault?.hyperliquid_execution_vault?.status === "sealed" ||
+        hyperliquidVault?.managed_allocation?.status === "allocated",
+      signingWalletReady: Boolean(turnkeyWallet.walletAddress),
+      referencePriceReady: hyperliquidReferencePrice !== null,
+    })) return;
+    // Consume before submitting so any failure, including ambiguity, requires
+    // an explicit user retry instead of silently repeating the request.
+    setContinueHyperliquidAfterOwnerAuth(false);
+    setError(null);
+    void armAndVerifyHyperliquid(hyperliquidVault || undefined);
+  // Owner authentication is the only automatic continuation. Verification
+  // failures are never retried by this effect.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    continueHyperliquidAfterOwnerAuth,
+    hyperliquidReferencePrice,
+    hyperliquidVault,
+    perpsTurnkey.authenticated,
     perpsTurnkey.loading,
     turnkeyWallet.walletAddress,
   ]);
@@ -2511,20 +2541,22 @@ export function PrivateAccountCockpit({
 
   async function authenticateHyperliquidOwner() {
     setWorking(true);
-    setError(null);
+    setContinueHyperliquidAfterOwnerAuth(true);
+    setError("Complete one passkey or email sign-in to continue.");
     setHyperliquidSetupNotice({
       tone: "working",
-      title: "Authenticating owner wallet",
-      detail: "Complete the Turnkey sign-in. No order will be sent.",
+      title: "Secure trading access",
+      detail: "Use one passkey or email sign-in. No order will be sent.",
     });
     try {
       await perpsTurnkey.login();
       setHyperliquidSetupNotice({
-        tone: "good",
-        title: "Owner wallet authenticated",
-        detail: "Run the connection check before reviewing any trade.",
+        tone: "working",
+        title: "Complete sign-in",
+        detail: "Ghola will run one no-submit check when the owner session is ready.",
       });
     } catch (err) {
+      setContinueHyperliquidAfterOwnerAuth(false);
       const message = friendlyPrivateAccountError(err, "Could not authenticate the Turnkey owner wallet.");
       setError(message);
       setHyperliquidSetupNotice({
@@ -3452,7 +3484,7 @@ export function PrivateAccountCockpit({
                   authenticated: perpsTurnkey.authenticated,
                   error,
                 })
-                  ? "Authenticate owner wallet"
+                  ? "Continue with passkey or email"
                   : "Retry verification"}
               </button>
             )}

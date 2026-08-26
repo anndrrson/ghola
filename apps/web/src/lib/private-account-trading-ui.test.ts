@@ -20,6 +20,7 @@ import {
   requiresHyperliquidPoolTerms,
   requiresHyperliquidOwnerAuthentication,
   shouldAuthenticateHyperliquidOwner,
+  shouldContinueHyperliquidAfterOwnerAuthentication,
   shouldResetHyperliquidConnectionError,
   shouldReconnectHyperliquidApiWallet,
   shouldProvisionFocusedHyperliquidWallet,
@@ -218,7 +219,7 @@ describe("private account trading UI derivation", () => {
       "utf8",
     );
     expect(cockpitSource).toContain("if (shouldAuthenticateHyperliquidOwner({");
-    expect(cockpitSource).toContain('? "Authenticate owner wallet"');
+    expect(cockpitSource).toContain('? "Continue with passkey or email"');
   });
 
   it("waits for the saved Turnkey session before focused verification", () => {
@@ -242,6 +243,33 @@ describe("private account trading UI derivation", () => {
       legacyApiKeysEnabled: true,
       loading: true,
     })).toBe(false);
+  });
+
+  it("continues to no-submit exactly after owner authentication settles", () => {
+    const ready = {
+      requested: true,
+      loading: false,
+      authenticated: true,
+      executionAccessReady: true,
+      signingWalletReady: true,
+      referencePriceReady: true,
+    };
+    expect(shouldContinueHyperliquidAfterOwnerAuthentication(ready)).toBe(true);
+    expect(shouldContinueHyperliquidAfterOwnerAuthentication({ ...ready, requested: false })).toBe(false);
+    expect(shouldContinueHyperliquidAfterOwnerAuthentication({ ...ready, loading: true })).toBe(false);
+    expect(shouldContinueHyperliquidAfterOwnerAuthentication({ ...ready, authenticated: false })).toBe(false);
+    expect(shouldContinueHyperliquidAfterOwnerAuthentication({ ...ready, executionAccessReady: false })).toBe(false);
+    expect(shouldContinueHyperliquidAfterOwnerAuthentication({ ...ready, signingWalletReady: false })).toBe(false);
+    expect(shouldContinueHyperliquidAfterOwnerAuthentication({ ...ready, referencePriceReady: false })).toBe(false);
+
+    const cockpitSource = readFileSync(
+      resolve(process.cwd(), "src/components/private-account/PrivateAccountCockpit.tsx"),
+      "utf8",
+    );
+    const consume = cockpitSource.indexOf("setContinueHyperliquidAfterOwnerAuth(false);");
+    const submit = cockpitSource.indexOf("void armAndVerifyHyperliquid(hyperliquidVault || undefined);");
+    expect(consume).toBeGreaterThan(-1);
+    expect(submit).toBeGreaterThan(consume);
   });
 
   it("opens wallet replacement only for Hyperliquid access failures that require resealing", () => {

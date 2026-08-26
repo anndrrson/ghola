@@ -15,6 +15,36 @@ const authenticated = {
 };
 
 describe("decidePerpsTurnkeyBoundary", () => {
+  it("completes one fresh login and restores the same session without rebinding", () => {
+    expect(decidePerpsTurnkeyBoundary({
+      ...authenticated,
+      thumperUserId: "user-a",
+      turnkeyAuthenticated: false,
+      turnkeyOrganizationId: null,
+      bindings: {},
+    })).toEqual({ kind: "require_turnkey_auth", ready: false, clearPending: false });
+
+    expect(decidePerpsTurnkeyBoundary({
+      ...authenticated,
+      thumperUserId: "user-a",
+      bindings: {},
+      pendingBindingUserId: "user-a",
+      freshAuthenticationOrganizationId: "org-a",
+      requireFreshAuthentication: true,
+    })).toEqual({
+      kind: "bind",
+      ready: false,
+      clearPending: true,
+      binding: { userId: "user-a", organizationId: "org-a" },
+    });
+
+    expect(decidePerpsTurnkeyBoundary({
+      ...authenticated,
+      thumperUserId: "user-a",
+      bindings: { "user-a": "org-a" },
+    })).toEqual({ kind: "ready", ready: true, clearPending: false });
+  });
+
   it("logs Turnkey out when Thumper changes from user A to user B", () => {
     expect(decidePerpsTurnkeyBoundary({
       ...authenticated,
