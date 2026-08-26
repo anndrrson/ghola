@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { serializeTypedData } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 const mocks = vi.hoisted(() => ({ createAccountWithAddress: vi.fn() }));
@@ -66,8 +67,8 @@ describe("Turnkey Aster owner approval", () => {
       ethereumAddress: OWNER.address.toLowerCase(),
     });
     expect(forwarded).toEqual({
-      domain: approval.domain,
-      types: { ApproveAgent: approval.types.ApproveAgent },
+      domain: { ...approval.domain, chainId: BigInt(approval.domain.chainId) },
+      types: approval.types,
       primaryType: approval.primaryType,
       message: {
         ...approval.message,
@@ -76,6 +77,26 @@ describe("Turnkey Aster owner approval", () => {
       },
     });
     expect(signature).toMatch(/^0x[0-9a-f]{130}$/);
+  });
+
+  it("preserves Aster's EIP-712 domain through Turnkey's serialized payload", () => {
+    const approval = typedData();
+    const serialized = JSON.parse(serializeTypedData({
+      domain: { ...approval.domain, chainId: BigInt(approval.domain.chainId) },
+      types: approval.types,
+      primaryType: approval.primaryType,
+      message: {
+        ...approval.message,
+        Expired: BigInt(approval.message.Expired),
+        Nonce: BigInt(approval.message.Nonce),
+      },
+    })) as { domain?: unknown; types?: Record<string, unknown> };
+
+    expect(serialized.domain).toEqual({
+      ...approval.domain,
+      chainId: String(approval.domain.chainId),
+    });
+    expect(serialized.types?.EIP712Domain).toEqual(approval.types.EIP712Domain);
   });
 
   it("canonicalizes Turnkey's recovery parity only when it recovers the configured owner", async () => {

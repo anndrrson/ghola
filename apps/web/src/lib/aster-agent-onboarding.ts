@@ -299,10 +299,13 @@ export async function authorizeAsterV3AgentRegistration(
 /** Converts JSON-safe wire timestamps into viem's exact uint256 values. */
 export function asterApprovalSigningDefinition(typedData: AsterV3AgentApprovalTypedData) {
   return {
-    domain: typedData.domain,
-    // viem derives EIP712Domain from `domain`; the public contract retains
-    // Aster's explicitly documented EIP712Domain fields for wallet RPCs.
-    types: { ApproveAgent: typedData.types.ApproveAgent },
+    domain: {
+      ...typedData.domain,
+      chainId: BigInt(typedData.domain.chainId),
+    },
+    // Keep EIP712Domain explicit. Turnkey's viem adapter serializes typed data
+    // before signing and otherwise drops the domain from the wire payload.
+    types: typedData.types,
     primaryType: typedData.primaryType,
     message: {
       ...typedData.message,
