@@ -36,6 +36,15 @@ const requiredGoogleRedirectSources = [
     ],
   },
   {
+    file: "patches/@turnkey__react-wallet-kit@2.3.1.patch",
+    patterns: [
+      { label: "fresh OTP fields after resend", pattern: /disabled:\s*submitting \|\| verificationAttempted[\s\S]*?otpId/ },
+      { label: "single OTP attempt per challenge", pattern: /if \(submitting \|\| verificationAttempted\) return/ },
+      { label: "actionable Turnkey OTP diagnostics", pattern: /\[Turnkey OTP\] verification rejected/ },
+      { label: "no blind OTP retry", pattern: /Start over; do not retry it/ },
+    ],
+  },
+  {
     file: "src/lib/google-auth-client.ts",
     patterns: [
       { label: "redirect UX mode", pattern: /ux_mode:\s*["']redirect["']/ },
