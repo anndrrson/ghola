@@ -178,6 +178,7 @@ export function checkAsterOnboardingUiBoundary(source) {
     ["classifyAsterOnboardingFailure", "aster_failure_classifier_required"],
     ["asterRegistrationAmbiguous", "aster_ambiguous_ui_hold_required"],
     ["Aster reconciliation required", "aster_ambiguous_retry_block_required"],
+    ["Resume Aster signing", "aster_unsigned_preparation_resume_action_required"],
     ["30 days of perpetual trading", "aster_expiry_disclosure_required"],
     ["Withdrawals stay disabled", "aster_no_withdrawal_disclosure_required"],
   ];
@@ -187,19 +188,21 @@ export function checkAsterOnboardingUiBoundary(source) {
   const flowEnd = source.indexOf("\n  useEffect(() =>", flowStart);
   const flow = flowStart >= 0 && flowEnd > flowStart ? source.slice(flowStart, flowEnd) : "";
   const prepare = flow.indexOf("await prepareAsterProgrammaticCredential");
+  const persistPrepared = flow.indexOf("persistRecovery(accountCommitment, { aster: unsignedPending })");
   const ownerSign = flow.indexOf("await perpsTurnkey.signAsterAgentApproval");
   const complete = flow.indexOf("await completeAsterProgrammaticCredential");
   const ready = flow.indexOf("completed.status !== \"ready\"");
   const connected = flow.indexOf("setAster(\"connected\")");
   if (
     prepare < 0 ||
+    persistPrepared < 0 ||
     ownerSign < 0 ||
     complete < 0 ||
     ready < 0 ||
     connected < 0 ||
-    !(prepare < ownerSign && ownerSign < complete && complete < ready && ready < connected)
+    !(prepare < persistPrepared && persistPrepared < ownerSign && ownerSign < complete && complete < ready && ready < connected)
   ) {
-    failures.push("aster_prepare_sign_complete_ready_order_required");
+    failures.push("aster_prepare_persist_sign_complete_ready_order_required");
   }
 
   const fallbackGuard = source.indexOf("showAsterManual && (");
@@ -317,7 +320,7 @@ export function checkVenueOnboardingLiveProofBoundary(clientSource, routesSource
 export function checkTurnkeyVenueOwnerAddressBoundary(asterSigningSource, lighterSigningSource) {
   const failures = [];
   for (const [venue, source] of [["aster", asterSigningSource], ["lighter", lighterSigningSource]]) {
-    if (!source.includes("getAddress(input.owner.address.trim().toLowerCase())")) {
+    if (!source.includes("const turnkeyOwnerAddress = input.owner.address.trim()")) {
       failures.push(`${venue}_turnkey_resource_address_required`);
     }
     if (!source.includes("input.owner.organizationId?.trim() || input.organizationId.trim()")) {

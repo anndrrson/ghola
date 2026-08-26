@@ -1,5 +1,5 @@
 import { createAccountWithAddress } from "@turnkey/viem";
-import { getAddress, recoverTypedDataAddress, type Hex } from "viem";
+import { recoverTypedDataAddress, type Hex } from "viem";
 import type { AsterV3AgentApprovalTypedData } from "./aster-agent-onboarding";
 
 export const TURNKEY_PERPS_OWNER_PATH = "m/44'/60'/0'/0/0";
@@ -17,13 +17,11 @@ export async function signAsterAgentApprovalWithTurnkey(input: {
     throw new Error("Turnkey Aster approval requires the Ghola perps owner account.");
   }
   const signerOrganizationId = input.owner.organizationId?.trim() || input.organizationId.trim();
-  let turnkeyOwnerAddress: `0x${string}`;
-  try {
-    turnkeyOwnerAddress = getAddress(input.owner.address.trim().toLowerCase());
-  } catch {
+  const turnkeyOwnerAddress = input.owner.address.trim();
+  const ownerAddress = turnkeyOwnerAddress.toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(ownerAddress)) {
     throw new Error("Turnkey Aster owner address is invalid.");
   }
-  const ownerAddress = turnkeyOwnerAddress.toLowerCase();
   const account = createAccountWithAddress({
     client: input.client,
     organizationId: signerOrganizationId,

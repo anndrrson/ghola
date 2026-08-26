@@ -68,7 +68,7 @@ test("rejects venue onboarding that bypasses server-side live request proof", ()
   );
 });
 
-test("rejects bypassing Turnkey's canonical case-sensitive owner resource address", () => {
+test("rejects changing Turnkey's exact case-sensitive owner resource address", () => {
   const asterSigning = readFileSync(resolve(HERE, "../src/lib/perps-turnkey-aster-signing.ts"), "utf8");
   assert.throws(
     () => checkTurnkeyVenueOwnerAddressBoundary(
@@ -158,7 +158,17 @@ test("rejects breaking the Aster prepare, owner-sign, complete, ready UI sequenc
       "await perpsTurnkey.signAsterAgentApproval",
       "await removedOwnerSignature",
     )),
-    /aster_prepare_sign_complete_ready_order_required/,
+    /aster_prepare_persist_sign_complete_ready_order_required/,
+  );
+});
+
+test("rejects signing an Aster preparation before it is durably resumable", () => {
+  assert.throws(
+    () => checkAsterOnboardingUiBoundary(asterUi.replace(
+      "persistRecovery(accountCommitment, { aster: unsignedPending })",
+      "removedUnsignedPreparationPersistence(accountCommitment)",
+    )),
+    /aster_prepare_persist_sign_complete_ready_order_required/,
   );
 });
 

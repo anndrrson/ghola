@@ -62,8 +62,8 @@ describe("Turnkey Aster owner approval", () => {
     expect(mocks.createAccountWithAddress).toHaveBeenCalledWith({
       client: CLIENT,
       organizationId: "turnkey-resource-org",
-      signWith: OWNER.address,
-      ethereumAddress: OWNER.address,
+      signWith: OWNER.address.toLowerCase(),
+      ethereumAddress: OWNER.address.toLowerCase(),
     });
     expect(forwarded).toEqual({
       domain: approval.domain,

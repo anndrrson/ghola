@@ -114,15 +114,22 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const connectAsterProgrammatic = useCallback(async () => {
     setWorking(true);
     setError(null);
-    let prepared: AsterProgrammaticPreparation | null = null;
+    let prepared: AsterProgrammaticPreparation | null = pendingAsterLinkRecovery?.signature
+      ? null
+      : pendingAsterLinkRecovery?.preparation || null;
     let signature: `0x${string}` | null = null;
     let completionAttempted = false;
     try {
       const pair = await perpsTurnkey.ensureWalletPair();
-      prepared = await prepareAsterProgrammaticCredential({
-        owner_address: pair.owner.address,
-        agent_name: "ghola-perps",
-      });
+      if (!prepared) {
+        prepared = await prepareAsterProgrammaticCredential({
+          owner_address: pair.owner.address,
+          agent_name: "ghola-perps",
+        });
+        const unsignedPending = { preparation: prepared };
+        setPendingAsterLinkRecovery(unsignedPending);
+        persistRecovery(accountCommitment, { aster: unsignedPending });
+      }
       signature = await perpsTurnkey.signAsterAgentApproval(prepared.contract.approval.typedData);
       const pending = { preparation: prepared, signature };
       setPendingAsterLinkRecovery(pending);
@@ -152,15 +159,20 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         }
         setError(disposition.message);
       } else {
+        if (prepared && !signature) {
+          const unsignedPending = { preparation: prepared };
+          setPendingAsterLinkRecovery(unsignedPending);
+          persistRecovery(accountCommitment, { aster: unsignedPending });
+        }
         setError(caught instanceof Error ? caught.message : "Aster authorization failed.");
       }
     } finally {
       setWorking(false);
     }
-  }, [accountCommitment, perpsTurnkey, refresh]);
+  }, [accountCommitment, pendingAsterLinkRecovery, perpsTurnkey, refresh]);
 
   const finishAsterLinkRecovery = useCallback(async () => {
-    if (!pendingAsterLinkRecovery) return;
+    if (!pendingAsterLinkRecovery?.signature) return;
     setWorking(true);
     setError(null);
     try {
@@ -198,7 +210,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       setAuthOpen(true);
       return;
     }
-    if (pendingAsterLinkRecovery) {
+    if (pendingAsterLinkRecovery?.signature) {
       await finishAsterLinkRecovery();
       return;
     }
@@ -459,7 +471,9 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                       : asterRegistrationAmbiguous
                         ? "Aster reconciliation required"
                         : pendingAsterLinkRecovery
-                          ? pendingAsterLinkRecovery.receipt ? "Finish Aster linking" : "Resume Aster verification"
+                          ? pendingAsterLinkRecovery.signature
+                            ? pendingAsterLinkRecovery.receipt ? "Finish Aster linking" : "Resume Aster verification"
+                            : "Resume Aster signing"
                         : asterReprepareRequired
                           ? "Re-prepare Aster approval"
                           : ASTER_ONBOARDING.ux.action_label}

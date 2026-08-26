@@ -37,6 +37,14 @@ describe("Carry onboarding recovery", () => {
     expect(readCarryOnboardingRecovery(localStorage, ACCOUNT, NOW)?.aster).toEqual(aster);
   });
 
+  it("restores an unsigned Aster preparation without creating another signer", () => {
+    const unsigned = { preparation: asterPending().preparation };
+    writeCarryOnboardingRecovery(localStorage, ACCOUNT, { aster: unsigned }, NOW);
+
+    expect(readCarryOnboardingRecovery(localStorage, ACCOUNT, NOW + 1_000)?.aster)
+      .toEqual(unsigned);
+  });
+
   it("quarantines malformed, cross-account, and stale recovery records", () => {
     const lighter = lighterPending();
     writeCarryOnboardingRecovery(localStorage, ACCOUNT, { lighter }, NOW);

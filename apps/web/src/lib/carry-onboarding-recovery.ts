@@ -24,7 +24,7 @@ const SIGNATURE_COMMITMENT = /^sha256:[0-9a-f]{64}$/i;
 
 export interface PendingAsterOnboarding {
   preparation: AsterProgrammaticPreparation;
-  signature: `0x${string}`;
+  signature?: `0x${string}`;
   receipt?: AsterPublicRegistrationReceipt;
 }
 
@@ -136,7 +136,8 @@ function validAster(value: unknown, accountCommitment: string): value is Pending
     preparation.account_commitment === accountCommitment &&
     preparation.credential_provisioning_mode === "programmatic_generated" &&
     preparation.owner_approval_required === true &&
-    ASTER_PREPARATION.test(string(preparation.preparation_id)) && SIGNATURE.test(string(record.signature)) &&
+    ASTER_PREPARATION.test(string(preparation.preparation_id)) &&
+    (record.signature === undefined || SIGNATURE.test(string(record.signature))) &&
     contract.version === 1 && contract.venue === "aster" && contract.network === "mainnet" &&
     contract.endpoint === "/fapi/v3/registerAndApproveAgent" && contract.method === "POST" &&
     EVM_ADDRESS.test(ownerAddress) && EVM_ADDRESS.test(signerAddress) && ownerAddress !== signerAddress &&
@@ -153,7 +154,7 @@ function validAster(value: unknown, accountCommitment: string): value is Pending
     asRecord(preparation.setup).may_place_trade === false &&
     asRecord(preparation.setup).transaction_broadcast === false &&
     asRecord(preparation.setup).credential_registered === false &&
-    (!receipt || (
+    (!receipt || (SIGNATURE.test(string(record.signature)) &&
       receipt.version === 1 && receipt.venue_id === "aster" && receipt.status === "registered" &&
       receipt.preparation_id === preparation.preparation_id &&
       string(receipt.owner_address).toLowerCase() === ownerAddress &&

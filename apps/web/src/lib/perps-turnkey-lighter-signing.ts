@@ -1,7 +1,6 @@
 import { createAccountWithAddress } from "@turnkey/viem";
 import {
   decodeFunctionData,
-  getAddress,
   keccak256,
   parseTransaction,
   recoverTransactionAddress,
@@ -35,10 +34,8 @@ export async function signLighterChangePubKeyWithTurnkey(input: {
     throw new Error("Turnkey Lighter authorization requires the Ghola perps owner account.");
   }
   const signerOrganizationId = input.owner.organizationId?.trim() || input.organizationId.trim();
-  let turnkeyOwnerAddress: `0x${string}`;
-  try {
-    turnkeyOwnerAddress = getAddress(input.owner.address.trim().toLowerCase());
-  } catch {
+  const turnkeyOwnerAddress = input.owner.address.trim();
+  if (!/^0x[0-9a-f]{40}$/i.test(turnkeyOwnerAddress)) {
     throw new Error("Turnkey Lighter owner address is invalid.");
   }
   const ownerAddress = lighterOwnerAddress(turnkeyOwnerAddress);
