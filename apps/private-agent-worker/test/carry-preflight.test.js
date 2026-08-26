@@ -21,6 +21,8 @@ function snapshot(venueId) {
     index_price_e8: 10_000_000_000_000,
     best_bid_e8: 9_999_000_000_000,
     best_ask_e8: 10_001_000_000_000,
+    depth_bids: [{ price_e8: 9_999_000_000_000, size_e8: 100_000_000 }],
+    depth_asks: [{ price_e8: 10_001_000_000_000, size_e8: 100_000_000 }],
     funding_rate_e12_per_interval: venueId === "aster" ? 400_000_000 : 100_000_000,
     funding_interval_ms: venueId === "aster" ? 28_800_000 : 3_600_000,
     quantity_step_e8: 1_000,
@@ -99,7 +101,7 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
   assert.equal(result.economic_opportunity.projected_trading_cost_micro_usdc > 0, true);
 });
 
-test("prices entry and exit from their directional BBOs without whole-bp rounding", async () => {
+test("prices entry and exit from notional-weighted depth without whole-bp rounding", async () => {
   const account = {
     can_trade: true,
     available_balance: 500,
@@ -131,14 +133,23 @@ test("prices entry and exit from their directional BBOs without whole-bp roundin
     now: () => NOW,
     fetchVenue: async ({ venue_id }) => {
       const value = snapshot(venue_id);
+      const bestBid = venue_id === "hyperliquid"
+        ? value.mark_price_e8 - 750_000_000
+        : value.mark_price_e8 - 1_250_000_000;
+      const bestAsk = venue_id === "hyperliquid"
+        ? value.mark_price_e8 + 250_000_000
+        : value.mark_price_e8 + 500_000_000;
       return [{
         ...value,
-        best_bid_e8: venue_id === "hyperliquid"
-          ? value.mark_price_e8 - 750_000_000
-          : value.mark_price_e8 - 1_250_000_000,
-        best_ask_e8: venue_id === "hyperliquid"
-          ? value.mark_price_e8 + 250_000_000
-          : value.mark_price_e8 + 500_000_000,
+        best_bid_e8: bestBid,
+        best_ask_e8: bestAsk,
+        depth_bids: [{ price_e8: bestBid, size_e8: 100_000_000 }],
+        depth_asks: venue_id === "hyperliquid"
+          ? [
+              { price_e8: bestAsk, size_e8: 50_000 },
+              { price_e8: value.mark_price_e8 + 1_250_000_000, size_e8: 50_000 },
+            ]
+          : [{ price_e8: bestAsk, size_e8: 100_000_000 }],
       }];
     },
     verifyOrder: async ({ venue_id, work_order_commitment }) => ({
@@ -159,8 +170,63 @@ test("prices entry and exit from their directional BBOs without whole-bp roundin
     readHyperliquidCarryMetrics: async () => account,
   });
 
-  // 2.75 bps of directional spread plus one 1 bp latency penalty per leg.
-  assert.equal(result.economic_opportunity.projected_trading_cost_micro_usdc, 47_500);
+  // 3.25 bps of depth-weighted spread plus one 1 bp latency penalty per leg.
+  assert.equal(result.economic_opportunity.projected_trading_cost_micro_usdc, 52_500);
+  assert.equal(result.economic_opportunity.depth_impact[0].observations[0].status, "sufficient");
+  assert.equal(result.economic_opportunity.depth_impact[0].observations[0].execution_price_e8, 10_000_749_964_998);
+});
+
+test("fails carry economics closed when displayed depth cannot fill the target notional", async () => {
+  const account = {
+    can_trade: true,
+    available_balance: 500,
+    margin_balance: 500,
+    maintenance_margin: 0,
+    maker_fee_bps: 0,
+    taker_fee_bps: 0,
+    position_count: 0,
+    open_order_count: 0,
+  };
+  const result = await preflightCarryPair({
+    body: {
+      version: 1,
+      owner_commitment: "owner_commitment_depth_0001",
+      work_order_commitment: "carry_pair_depth_0001",
+      asset: "BTC",
+      long_venue_id: "hyperliquid",
+      short_venue_id: "aster",
+      notional_usd: 100,
+      horizon_days: 30,
+      venue_access: {
+        hyperliquid: access("owner_commitment_depth_0001"),
+        aster: access("owner_commitment_depth_0001"),
+      },
+    },
+    recipient: {},
+    state: {},
+    now: () => NOW,
+    fetchVenue: async ({ venue_id }) => {
+      const value = snapshot(venue_id);
+      return venue_id === "aster"
+        ? [{ ...value, depth_bids: [{ ...value.depth_bids[0], size_e8: 1 }], depth_asks: [{ ...value.depth_asks[0], size_e8: 1 }] }]
+        : [value];
+    },
+    verifyOrder: async ({ venue_id, work_order_commitment }) => ({
+      status: "verified_ready",
+      work_order_commitment,
+      verification_commitment: `verification_${venue_id}`,
+      checks: { order_request_checked: true, transaction_broadcast: false },
+      order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
+      account,
+      authority_boundary: { venue_native_trade_only: true },
+    }),
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
+    readHyperliquidCarryMetrics: async () => account,
+  });
+
+  assert.equal(result.economic_opportunity.eligible, false);
+  assert.ok(result.economic_opportunity.reasons.includes("depth_insufficient:aster:entry"));
+  assert.ok(result.economic_opportunity.reasons.includes("depth_insufficient:aster:exit"));
 });
 
 test("rejects cross-owner sealed venue access before order verification", async () => {

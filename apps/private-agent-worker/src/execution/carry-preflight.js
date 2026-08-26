@@ -218,7 +218,7 @@ export function modelCarryPairPreflight({ evidence, notional_usd: notionalUsd, h
   const accounts = evidence.map((leg) => accountReadiness(leg, notionalMicro));
   const marginRunways = evidence.map((leg, index) => projectedMarginRunway(leg, accounts[index], notionalMicro, nowMs));
   const contracts = evidence.map((leg) => contractSpec(leg, notionalMicro));
-  const costs = evidence.map((leg) => legCosts(leg));
+  const costs = evidence.map((leg) => legCosts(leg, notionalMicro));
   const collateralBasis = collateralBasisModel(contracts[0].collateral_asset, contracts[1].collateral_asset);
   const noSubmitReady = evidence.every((leg, index) =>
     leg.receipt?.checks?.transaction_broadcast === false &&
@@ -226,7 +226,7 @@ export function modelCarryPairPreflight({ evidence, notional_usd: notionalUsd, h
     accounts[index].authorized &&
     (monitoring ? accounts[index].monitoring_ready : accounts[index].capital_ready)
   );
-  const opportunity = evaluateCarryOpportunity({
+  const evaluatedOpportunity = evaluateCarryOpportunity({
     version: 1,
     long_contract: contracts[0],
     short_contract: contracts[1],
@@ -247,6 +247,18 @@ export function modelCarryPairPreflight({ evidence, notional_usd: notionalUsd, h
     })),
     now_ms: nowMs,
     max_data_age_ms: 60_000,
+  });
+  const depthReasons = costs.flatMap((cost) => cost.depth_impact.flatMap((impact) =>
+    impact.status === "sufficient" ? [] : [`depth_${impact.status}:${cost.venue_id}:${impact.phase}`]
+  ));
+  const opportunity = Object.freeze({
+    ...evaluatedOpportunity,
+    eligible: evaluatedOpportunity.eligible && depthReasons.length === 0,
+    reasons: Object.freeze([...new Set([...evaluatedOpportunity.reasons, ...depthReasons])]),
+    depth_impact: Object.freeze(costs.map((cost) => Object.freeze({
+      venue_id: cost.venue_id,
+      observations: Object.freeze(cost.depth_impact),
+    }))),
   });
   return {
     checked_at_ms: nowMs,
@@ -306,20 +318,85 @@ function contractSpec(leg, notionalMicro) {
   };
 }
 
-function legCosts(leg) {
+function legCosts(leg, notionalMicro) {
   const fee = feeE6Bps(leg.account?.taker_fee_bps);
   const snapshot = leg.snapshot;
-  const entryPrice = leg.side === "buy" ? snapshot.best_ask_e8 : snapshot.best_bid_e8;
   const exitSide = leg.side === "buy" ? "sell" : "buy";
-  const exitPrice = exitSide === "buy" ? snapshot.best_ask_e8 : snapshot.best_bid_e8;
+  const entry = depthExecutionPrice(leg.side, snapshot, notionalMicro, "entry");
+  const exit = depthExecutionPrice(exitSide, snapshot, notionalMicro, "exit");
   return {
+    venue_id: leg.venue_id,
     entry_fee_e6_bps: fee,
     exit_fee_e6_bps: fee,
-    entry_slippage_e6_bps: adverseSlippageE6Bps(leg.side, snapshot.mark_price_e8, entryPrice),
-    exit_slippage_e6_bps: adverseSlippageE6Bps(exitSide, snapshot.mark_price_e8, exitPrice),
+    entry_slippage_e6_bps: adverseSlippageE6Bps(leg.side, snapshot.mark_price_e8, entry.execution_price_e8),
+    exit_slippage_e6_bps: adverseSlippageE6Bps(exitSide, snapshot.mark_price_e8, exit.execution_price_e8),
     latency_penalty_bps: 1,
     gas_micro_usdc: 0,
+    depth_impact: Object.freeze([entry, exit]),
   };
+}
+
+function depthExecutionPrice(side, snapshot, notionalMicro, phase) {
+  const fallbackPrice = side === "buy" ? snapshot.best_ask_e8 : snapshot.best_bid_e8;
+  const levels = side === "buy" ? snapshot.depth_asks : snapshot.depth_bids;
+  if (!Array.isArray(levels) || levels.length === 0) {
+    return Object.freeze({
+      phase,
+      side,
+      status: "unavailable",
+      target_notional_micro_usdc: notionalMicro,
+      displayed_notional_micro_usdc: 0,
+      execution_price_e8: fallbackPrice || null,
+    });
+  }
+  const markPriceE8 = snapshot.mark_price_e8;
+  if (!Number.isSafeInteger(markPriceE8) || markPriceE8 <= 0) {
+    return Object.freeze({
+      phase,
+      side,
+      status: "unavailable",
+      target_notional_micro_usdc: notionalMicro,
+      displayed_notional_micro_usdc: 0,
+      execution_price_e8: fallbackPrice || null,
+    });
+  }
+  const targetQuoteE16 = BigInt(notionalMicro) * 10_000_000_000n;
+  let remainingQuoteE16 = targetQuoteE16;
+  let displayedQuoteE16 = 0n;
+  let filledBaseE8 = 0n;
+  let quotePriceBaseE16 = 0n;
+  const sortedLevels = [...levels].sort((left, right) => side === "buy"
+    ? left.price_e8 - right.price_e8
+    : right.price_e8 - left.price_e8);
+  for (const level of sortedLevels) {
+    if (!Number.isSafeInteger(level?.price_e8) || level.price_e8 <= 0 ||
+        !Number.isSafeInteger(level?.size_e8) || level.size_e8 <= 0) continue;
+    const availableBaseE8 = BigInt(level.size_e8);
+    const availableQuoteE16 = BigInt(level.price_e8) * availableBaseE8;
+    displayedQuoteE16 += availableQuoteE16;
+    if (remainingQuoteE16 <= 0n) continue;
+    const takenQuoteE16 = availableQuoteE16 < remainingQuoteE16 ? availableQuoteE16 : remainingQuoteE16;
+    const takenBaseE8 = takenQuoteE16 === availableQuoteE16
+      ? availableBaseE8
+      : (takenQuoteE16 + BigInt(level.price_e8) - 1n) / BigInt(level.price_e8);
+    filledBaseE8 += takenBaseE8;
+    quotePriceBaseE16 += BigInt(level.price_e8) * takenBaseE8;
+    remainingQuoteE16 -= takenQuoteE16;
+  }
+  const executionPriceE8 = filledBaseE8 > 0n
+    ? Number(side === "buy"
+      ? (quotePriceBaseE16 + filledBaseE8 - 1n) / filledBaseE8
+      : quotePriceBaseE16 / filledBaseE8)
+    : fallbackPrice || null;
+  const displayedNotional = Number(displayedQuoteE16 / 10_000_000_000n);
+  return Object.freeze({
+    phase,
+    side,
+    status: remainingQuoteE16 === 0n ? "sufficient" : "insufficient",
+    target_notional_micro_usdc: notionalMicro,
+    displayed_notional_micro_usdc: Number.isSafeInteger(displayedNotional) ? displayedNotional : Number.MAX_SAFE_INTEGER,
+    execution_price_e8: Number.isSafeInteger(executionPriceE8) ? executionPriceE8 : fallbackPrice || null,
+  });
 }
 
 function adverseSlippageE6Bps(side, markPriceE8, executionPriceE8) {

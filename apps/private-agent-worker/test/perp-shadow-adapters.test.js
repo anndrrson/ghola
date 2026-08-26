@@ -34,6 +34,7 @@ test("normalizes Hyperliquid public perp context without claiming missing fee da
   assert.equal(snapshot.quote_asset, "USDT");
   assert.equal(snapshot.best_bid_e8, 5_999_800_000_000);
   assert.equal(snapshot.best_ask_e8, 6_000_300_000_000);
+  assert.deepEqual(snapshot.depth_bids, [{ price_e8: 5_999_800_000_000, size_e8: 100_000_000 }]);
   assert.equal(snapshot.impact_bid_e8, 5_999_900_000_000);
   assert.equal(snapshot.funding_rate_e12_per_interval, 12_500_000);
   assert.equal(snapshot.funding_interval_ms, 3_600_000);
@@ -83,14 +84,48 @@ test("normalizes Lighter funding as the documented hourly settlement value", () 
         liquidation_fee: "1.0",
       }],
     },
-    funding: { funding_rates: [{ market_id: 0, exchange: "lighter", symbol: "BTC", rate: "0.0001" }] },
+    funding: { timestamp: NOW, funding_rates: [{ market_id: 0, exchange: "lighter", symbol: "BTC", rate: "0.0001", timestamp: NOW }] },
+    order_books: [{
+      market_id: 0,
+      timestamp: NOW,
+      bids: [{ price: "59999", remaining_base_amount: "1.25" }],
+      asks: [{ price: "60002", remaining_base_amount: "0.75" }],
+    }],
     now_ms: NOW,
   });
   assert.equal(snapshot.funding_rate_e12_per_interval, 100_000_000);
   assert.equal(snapshot.funding_interval_ms, 3_600_000);
   assert.equal(snapshot.initial_margin_bps, 200);
   assert.equal(snapshot.maintenance_margin_bps, 120);
+  assert.equal(snapshot.depth_asks[0].size_e8, 75_000_000);
   assert.equal(snapshot.status, "ready");
+});
+
+test("quarantines Lighter when funding age is stale despite a fresh market and book", () => {
+  const [snapshot] = parseLighterShadow({
+    details: { timestamp: Math.floor(NOW / 1_000), order_book_details: [{
+      market_id: 0,
+      symbol: "BTC",
+      mark_price: "60000",
+      index_price: "60001",
+      best_bid: "59999",
+      best_ask: "60002",
+      maker_fee_rate: "0",
+      taker_fee_rate: "0",
+      min_quote_amount: "10",
+      supported_size_decimals: 5,
+      supported_price_decimals: 1,
+      min_initial_margin_fraction: 200,
+      maintenance_margin_fraction: 120,
+      liquidation_fee: "1",
+    }] },
+    funding: { timestamp: NOW - 30_001, funding_rates: [{ market_id: 0, exchange: "lighter", rate: "0.0001" }] },
+    order_books: [{ market_id: 0, timestamp: Math.floor(NOW / 1_000), bids: [{ price: "59999", size: "1" }], asks: [{ price: "60002", size: "1" }] }],
+    now_ms: NOW,
+  });
+  assert.equal(snapshot.stale, true);
+  assert.equal(snapshot.status, "quarantined");
+  assert.deepEqual(snapshot.stale_sources, ["funding"]);
 });
 
 test("normalizes Aster V3 exchange, premium, and book schemas", () => {
@@ -117,13 +152,34 @@ test("normalizes Aster V3 exchange, premium, and book schemas", () => {
     premium_index: [{ symbol: "BTCUSDT", markPrice: "60000", indexPrice: "60001", lastFundingRate: "0.0001", time: NOW }],
     book_tickers: [{ symbol: "BTCUSDT", bidPrice: "59999", askPrice: "60002", time: NOW }],
     funding_info: [{ symbol: "BTCUSDT", fundingIntervalHours: 4, time: NOW }],
+    depth_books: { BTCUSDT: {
+      E: NOW,
+      bids: [["59999", "2"]],
+      asks: [["60002", "3"]],
+    } },
     now_ms: NOW,
   });
   assert.equal(snapshot.contract_id, "aster:BTCUSDT");
   assert.equal(snapshot.price_tick_e8, 10_000_000);
   assert.equal(snapshot.quantity_step_e8, 100_000);
   assert.equal(snapshot.funding_interval_ms, 14_400_000);
+  assert.equal(snapshot.depth_asks[0].size_e8, 300_000_000);
   assert.equal(snapshot.status, "degraded");
+});
+
+test("quarantines Aster when premium funding is stale despite fresh depth", () => {
+  const [snapshot] = parseAsterShadow({
+    exchange_info: { serverTime: NOW, symbols: [asterSymbol("BTCUSDT", "BTC", "USDT")] },
+    premium_index: [asterPremium("BTCUSDT", NOW - 30_001)],
+    book_tickers: [asterBook("BTCUSDT", NOW)],
+    funding_info: [{ symbol: "BTCUSDT", fundingIntervalHours: 8, time: NOW }],
+    depth_books: { BTCUSDT: { E: NOW, bids: [["59999", "1"]], asks: [["60002", "1"]] } },
+    now_ms: NOW,
+  });
+  assert.equal(snapshot.stale, true);
+  assert.equal(snapshot.status, "quarantined");
+  assert.deepEqual(snapshot.stale_sources, ["market", "funding"]);
+  assert.equal(snapshot.as_of_ms, NOW - 30_001);
 });
 
 test("live Aster shadow selection emits one deterministic contract per asset", async () => {
@@ -144,6 +200,11 @@ test("live Aster shadow selection emits one deterministic contract per asset", a
       { symbol: "BTCUSD1", fundingIntervalHours: 4, time: NOW },
       { symbol: "BTCUSDT", fundingIntervalHours: 8, time: NOW },
     ]);
+    if (value.includes("/depth?")) return response({
+      E: NOW,
+      bids: [["59999", "1"]],
+      asks: [["60002", "1"]],
+    });
     return response([
       asterBook("BTCUSD1"),
       asterBook("BTCUSDT"),
@@ -308,6 +369,7 @@ test("fetches fresh edgeX V2 metadata, ticker, and funding", async () => {
   assert.equal(snapshot.collateral_asset, "USDC");
   assert.equal(snapshot.stale, false);
   assert.equal(snapshot.source_schema, "edgex_public_v2");
+  assert.equal(snapshot.depth_bids[0].size_e8, 100_000_000);
 });
 
 test("normalizes dYdX v4 markets, funding, and orderbook without inventing fees", () => {
@@ -322,7 +384,7 @@ test("normalizes dYdX v4 markets, funding, and orderbook without inventing fees"
       tickSize: "1",
       stepSize: "0.0001",
     } } },
-    books: { "BTC-USD": { bids: [{ price: "59999" }], asks: [{ price: "60003" }] } },
+    books: { "BTC-USD": { bids: [{ price: "59999", size: "0.5" }], asks: [{ price: "60003", size: "0.25" }] } },
     server_time: { iso: new Date(NOW).toISOString() },
     now_ms: NOW,
   });
@@ -330,6 +392,7 @@ test("normalizes dYdX v4 markets, funding, and orderbook without inventing fees"
   assert.equal(snapshot.mark_price_e8, 6_000_100_000_000);
   assert.equal(snapshot.funding_rate_e12_per_interval, 3_153_846);
   assert.equal(snapshot.quantity_step_e8, 10_000);
+  assert.equal(snapshot.depth_asks[0].size_e8, 25_000_000);
   assert.equal(snapshot.status, "degraded");
   assert.deepEqual(snapshot.missing_fields, ["maker_fee_bps", "taker_fee_bps", "minimum_notional_micro_usdc", "liquidation_fee_bps"]);
 });
@@ -396,10 +459,10 @@ function asterSymbol(symbol, baseAsset, quoteAsset) {
   };
 }
 
-function asterPremium(symbol) {
-  return { symbol, markPrice: "60000", indexPrice: "60001", lastFundingRate: "0.0001", time: NOW };
+function asterPremium(symbol, time = NOW) {
+  return { symbol, markPrice: "60000", indexPrice: "60001", lastFundingRate: "0.0001", time };
 }
 
-function asterBook(symbol) {
-  return { symbol, bidPrice: "59999", askPrice: "60002", time: NOW };
+function asterBook(symbol, time = NOW) {
+  return { symbol, bidPrice: "59999", askPrice: "60002", time };
 }
