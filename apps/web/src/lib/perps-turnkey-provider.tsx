@@ -29,6 +29,7 @@ import { useThumperAuth } from "./thumper-auth-context";
 import { opaqueTurnkeyWalletScope } from "./turnkey-provider";
 import {
   decidePerpsTurnkeyBoundary,
+  isPerpsTurnkeyClientConfigured,
   isPerpsTurnkeyClientLoading,
   parsePerpsTurnkeyBindings,
   type PerpsTurnkeyBindings,
@@ -362,6 +363,7 @@ function PerpsTurnkeySession({
 
   const organizationId = boundary.ready ? turnkeyOrganizationId : null;
   const authenticated = boundary.ready;
+  const configured = isPerpsTurnkeyClientConfigured(turnkey.clientState);
   const loading =
     isPerpsTurnkeyClientLoading(turnkey.clientState) ||
     thumper.loading ||
@@ -605,7 +607,7 @@ function PerpsTurnkeySession({
   }, [ensureWalletPair, turnkey.httpClient]);
 
   const value = useMemo<PerpsTurnkeyContextValue>(() => ({
-    configured: true,
+    configured,
     authenticated,
     loading,
     organizationId,
@@ -623,6 +625,7 @@ function PerpsTurnkeySession({
     revokeHyperliquid,
   }), [
     authenticated,
+    configured,
     configureHyperliquid,
     ensureWalletPair,
     installDelegation,

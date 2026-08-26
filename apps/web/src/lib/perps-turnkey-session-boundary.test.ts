@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decidePerpsTurnkeyBoundary,
+  isPerpsTurnkeyClientConfigured,
   isPerpsTurnkeyClientLoading,
 } from "./perps-turnkey-session-boundary";
 
@@ -127,5 +128,12 @@ describe("isPerpsTurnkeyClientLoading", () => {
     expect(isPerpsTurnkeyClientLoading("loading")).toBe(true);
     expect(isPerpsTurnkeyClientLoading("ready")).toBe(false);
     expect(isPerpsTurnkeyClientLoading("error")).toBe(false);
+  });
+
+  it("fails configuration closed when Turnkey initialization errors", () => {
+    expect(isPerpsTurnkeyClientConfigured(undefined)).toBe(true);
+    expect(isPerpsTurnkeyClientConfigured("loading")).toBe(true);
+    expect(isPerpsTurnkeyClientConfigured("ready")).toBe(true);
+    expect(isPerpsTurnkeyClientConfigured("error")).toBe(false);
   });
 });

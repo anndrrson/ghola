@@ -22,6 +22,8 @@ export const CONNECT_SRC_HOSTS: readonly string[] = [
   // Auth + identity backends
   "https://accounts.google.com",
   "https://apis.google.com",
+  "https://authproxy.turnkey.com",
+  "https://api.turnkey.com",
   "https://*.supabase.co",
   "wss://*.supabase.co",
   // Ghola / Orni / Thumper service surfaces
