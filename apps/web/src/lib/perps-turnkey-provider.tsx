@@ -29,6 +29,7 @@ import { useThumperAuth } from "./thumper-auth-context";
 import { opaqueTurnkeyWalletScope } from "./turnkey-provider";
 import {
   decidePerpsTurnkeyBoundary,
+  isPerpsTurnkeyClientLoading,
   parsePerpsTurnkeyBindings,
   type PerpsTurnkeyBindings,
 } from "./perps-turnkey-session-boundary";
@@ -362,7 +363,7 @@ function PerpsTurnkeySession({
   const organizationId = boundary.ready ? turnkeyOrganizationId : null;
   const authenticated = boundary.ready;
   const loading =
-    turnkey.clientState === "loading" ||
+    isPerpsTurnkeyClientLoading(turnkey.clientState) ||
     thumper.loading ||
     !bindingsLoaded ||
     boundary.kind === "bind" ||

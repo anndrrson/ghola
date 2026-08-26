@@ -447,9 +447,11 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
             </VenueCard>
             <VenueCard name="Aster" state={aster} onboarding={ASTER_ONBOARDING}>
               {aster !== "connected" && (
-                <button type="button" disabled={working || asterRegistrationAmbiguous} onClick={() => void beginAsterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
+                <button type="button" disabled={working || perpsTurnkey.loading || asterRegistrationAmbiguous} onClick={() => void beginAsterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
                   {pendingAsterAuthorization
                     ? "Authenticating…"
+                    : perpsTurnkey.loading
+                      ? "Restoring secure wallet…"
                     : working
                       ? "Authorizing…"
                       : asterRegistrationAmbiguous
@@ -486,9 +488,11 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
             )}
             <VenueCard name="Lighter" state={lighter} onboarding={LIGHTER_ONBOARDING}>
               {lighter !== "connected" && (
-                <button type="button" disabled={working} onClick={() => void beginLighterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
+                <button type="button" disabled={working || perpsTurnkey.loading} onClick={() => void beginLighterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
                   {pendingLighterAuthorization
                     ? "Authenticating…"
+                    : perpsTurnkey.loading
+                      ? "Restoring secure wallet…"
                     : working
                       ? pendingLighterAssociation ? "Verifying…" : "Authorizing…"
                       : pendingLighterAssociation

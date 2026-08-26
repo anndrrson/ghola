@@ -1,5 +1,11 @@
 export type PerpsTurnkeyBindings = Record<string, string>;
 
+export function isPerpsTurnkeyClientLoading(
+  clientState: "loading" | "ready" | "error" | undefined,
+): boolean {
+  return clientState === undefined || clientState === "loading";
+}
+
 export type PerpsTurnkeyBoundaryDecision =
   | { kind: "loading"; ready: false; clearPending: false }
   | { kind: "require_turnkey_auth"; ready: false; clearPending: boolean }

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { decidePerpsTurnkeyBoundary } from "./perps-turnkey-session-boundary";
+import {
+  decidePerpsTurnkeyBoundary,
+  isPerpsTurnkeyClientLoading,
+} from "./perps-turnkey-session-boundary";
 
 const authenticated = {
   thumperLoading: false,
@@ -115,5 +118,14 @@ describe("decidePerpsTurnkeyBoundary", () => {
       ready: false,
       clearPending: false,
     });
+  });
+});
+
+describe("isPerpsTurnkeyClientLoading", () => {
+  it("stays loading until Turnkey reports a concrete client state", () => {
+    expect(isPerpsTurnkeyClientLoading(undefined)).toBe(true);
+    expect(isPerpsTurnkeyClientLoading("loading")).toBe(true);
+    expect(isPerpsTurnkeyClientLoading("ready")).toBe(false);
+    expect(isPerpsTurnkeyClientLoading("error")).toBe(false);
   });
 });
