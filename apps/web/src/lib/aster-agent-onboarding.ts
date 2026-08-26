@@ -18,11 +18,11 @@ export const ASTER_V3_AGENT_MAX_IP_WHITELIST_ENTRIES = 16;
  */
 export const ASTER_V3_AGENT_APPROVAL_SCHEMA = Object.freeze({
   verified: true,
-  endpoint: "/fapi/v3/registerAndApproveAgent",
+  endpoint: "/fapi/v3/approveAgent",
   method: "POST",
-  documentation_commit: "489533f848bbfd5db922a020bfdd49e0fc2497cd",
+  documentation_commit: "4f653376ea6596f3da493c02f887b11eccd52d94",
   documentation_url:
-    "https://github.com/asterdex/api-docs/blob/489533f848bbfd5db922a020bfdd49e0fc2497cd/V3%28Recommended%29/EN/aster-finance-futures-api-v3.md#register-and-approve-agent-public",
+    "https://github.com/asterdex/aster-api-website/blob/4f653376ea6596f3da493c02f887b11eccd52d94/docs/asterCode/endpoints.en.md#create--approve-agent-trade",
 } as const);
 
 export interface AsterV3AgentPermissions {
@@ -57,16 +57,15 @@ export interface BuildAsterV3AgentOnboardingInput {
 }
 
 export interface AsterV3AgentApprovalParameters {
-  readonly user: `0x${string}`;
-  readonly nonce: number;
   readonly agentName: string;
   readonly agentAddress: `0x${string}`;
+  readonly ipWhitelist: string;
   readonly expired: number;
-  readonly signatureChainId: 56;
   readonly canSpotTrade: false;
   readonly canPerpTrade: true;
   readonly canWithdraw: false;
-  readonly ipWhitelist: string;
+  readonly user: `0x${string}`;
+  readonly nonce: number;
 }
 
 export interface AsterV3AgentApprovalTypedData {
@@ -77,16 +76,36 @@ export interface AsterV3AgentApprovalTypedData {
       Readonly<{ name: "chainId"; type: "uint256" }>,
       Readonly<{ name: "verifyingContract"; type: "address" }>,
     ];
-    Message: readonly [Readonly<{ name: "msg"; type: "string" }>];
+    ApproveAgent: readonly [
+      Readonly<{ name: "AgentName"; type: "string" }>,
+      Readonly<{ name: "AgentAddress"; type: "string" }>,
+      Readonly<{ name: "IpWhitelist"; type: "string" }>,
+      Readonly<{ name: "Expired"; type: "uint256" }>,
+      Readonly<{ name: "CanSpotTrade"; type: "bool" }>,
+      Readonly<{ name: "CanPerpTrade"; type: "bool" }>,
+      Readonly<{ name: "CanWithdraw"; type: "bool" }>,
+      Readonly<{ name: "User"; type: "string" }>,
+      Readonly<{ name: "Nonce"; type: "uint256" }>,
+    ];
   }>;
-  readonly primaryType: "Message";
+  readonly primaryType: "ApproveAgent";
   readonly domain: Readonly<{
     name: "AsterSignTransaction";
     version: "1";
-    chainId: 56;
+    chainId: 1666;
     verifyingContract: "0x0000000000000000000000000000000000000000";
   }>;
-  readonly message: Readonly<{ msg: string }>;
+  readonly message: Readonly<{
+    AgentName: string;
+    AgentAddress: `0x${string}`;
+    IpWhitelist: string;
+    Expired: number;
+    CanSpotTrade: false;
+    CanPerpTrade: true;
+    CanWithdraw: false;
+    User: `0x${string}`;
+    Nonce: number;
+  }>;
 }
 
 export interface AsterV3AgentOnboardingContract {
@@ -195,19 +214,18 @@ export function buildAsterV3AgentOnboardingContract(
 
   const ipWhitelist = normalizeIpWhitelist(input.ipWhitelist ?? []);
   const parametersWithoutSignature = Object.freeze({
-    user: ownerAddress,
-    nonce: input.nonceMicros,
     agentName,
     agentAddress,
+    ipWhitelist: ipWhitelist.join(" "),
     expired: input.expiresAtMs,
-    signatureChainId: 56,
     canSpotTrade: false,
     canPerpTrade: true,
     canWithdraw: false,
-    ipWhitelist: ipWhitelist.join(" "),
+    user: ownerAddress,
+    nonce: input.nonceMicros,
   } as const satisfies AsterV3AgentApprovalParameters);
   const message = buildApprovalMessage(parametersWithoutSignature);
-  const typedData = buildApprovalTypedData(message);
+  const typedData = buildApprovalTypedData(parametersWithoutSignature);
 
   return Object.freeze({
     version: 1,
@@ -253,12 +271,7 @@ export async function authorizeAsterV3AgentRegistration(
   let recovered: string;
   try {
     recovered = await recoverTypedDataAddress({
-      domain: contract.approval.typedData.domain,
-      // viem derives EIP712Domain from `domain`; the public contract retains
-      // Aster's explicitly documented EIP712Domain fields for wallet RPCs.
-      types: { Message: contract.approval.typedData.types.Message },
-      primaryType: contract.approval.typedData.primaryType,
-      message: contract.approval.typedData.message,
+      ...asterApprovalSigningDefinition(contract.approval.typedData),
       signature: signature as Hex,
     });
   } catch {
@@ -283,22 +296,37 @@ export async function authorizeAsterV3AgentRegistration(
   });
 }
 
+/** Converts JSON-safe wire timestamps into viem's exact uint256 values. */
+export function asterApprovalSigningDefinition(typedData: AsterV3AgentApprovalTypedData) {
+  return {
+    domain: typedData.domain,
+    // viem derives EIP712Domain from `domain`; the public contract retains
+    // Aster's explicitly documented EIP712Domain fields for wallet RPCs.
+    types: { ApproveAgent: typedData.types.ApproveAgent },
+    primaryType: typedData.primaryType,
+    message: {
+      ...typedData.message,
+      Expired: BigInt(typedData.message.Expired),
+      Nonce: BigInt(typedData.message.Nonce),
+    },
+  } as const;
+}
+
 function buildApprovalMessage(parameters: AsterV3AgentApprovalParameters): string {
   return [
-    `user=${parameters.user}`,
-    `nonce=${parameters.nonce}`,
     `agentName=${parameters.agentName}`,
     `agentAddress=${parameters.agentAddress}`,
+    `ipWhitelist=${parameters.ipWhitelist}`,
     `expired=${parameters.expired}`,
-    `signatureChainId=${parameters.signatureChainId}`,
     `canSpotTrade=${parameters.canSpotTrade}`,
     `canPerpTrade=${parameters.canPerpTrade}`,
     `canWithdraw=${parameters.canWithdraw}`,
-    `ipWhitelist=${parameters.ipWhitelist}`,
+    `user=${parameters.user}`,
+    `nonce=${parameters.nonce}`,
   ].join("&");
 }
 
-function buildApprovalTypedData(msg: string): AsterV3AgentApprovalTypedData {
+function buildApprovalTypedData(parameters: AsterV3AgentApprovalParameters): AsterV3AgentApprovalTypedData {
   return Object.freeze({
     types: Object.freeze({
       EIP712Domain: Object.freeze([
@@ -307,16 +335,36 @@ function buildApprovalTypedData(msg: string): AsterV3AgentApprovalTypedData {
         Object.freeze({ name: "chainId", type: "uint256" }),
         Object.freeze({ name: "verifyingContract", type: "address" }),
       ] as const),
-      Message: Object.freeze([Object.freeze({ name: "msg", type: "string" })] as const),
+      ApproveAgent: Object.freeze([
+        Object.freeze({ name: "AgentName", type: "string" }),
+        Object.freeze({ name: "AgentAddress", type: "string" }),
+        Object.freeze({ name: "IpWhitelist", type: "string" }),
+        Object.freeze({ name: "Expired", type: "uint256" }),
+        Object.freeze({ name: "CanSpotTrade", type: "bool" }),
+        Object.freeze({ name: "CanPerpTrade", type: "bool" }),
+        Object.freeze({ name: "CanWithdraw", type: "bool" }),
+        Object.freeze({ name: "User", type: "string" }),
+        Object.freeze({ name: "Nonce", type: "uint256" }),
+      ] as const),
     }),
-    primaryType: "Message",
+    primaryType: "ApproveAgent",
     domain: Object.freeze({
       name: "AsterSignTransaction",
       version: "1",
-      chainId: 56,
+      chainId: 1666,
       verifyingContract: "0x0000000000000000000000000000000000000000",
     }),
-    message: Object.freeze({ msg }),
+    message: Object.freeze({
+      AgentName: parameters.agentName,
+      AgentAddress: parameters.agentAddress,
+      IpWhitelist: parameters.ipWhitelist,
+      Expired: parameters.expired,
+      CanSpotTrade: parameters.canSpotTrade,
+      CanPerpTrade: parameters.canPerpTrade,
+      CanWithdraw: parameters.canWithdraw,
+      User: parameters.user,
+      Nonce: parameters.nonce,
+    }),
   });
 }
 

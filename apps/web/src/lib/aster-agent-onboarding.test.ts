@@ -4,6 +4,7 @@ import {
   ASTER_V3_AGENT_APPROVAL_SCHEMA,
   ASTER_V3_AGENT_MAX_LIFETIME_MS,
   AsterV3AgentOnboardingError,
+  asterApprovalSigningDefinition,
   authorizeAsterV3AgentRegistration,
   buildAsterV3AgentOnboardingContract,
   type BuildAsterV3AgentOnboardingInput,
@@ -38,7 +39,7 @@ describe("Aster V3 agent onboarding contract", () => {
 
     expect(ASTER_V3_AGENT_APPROVAL_SCHEMA).toMatchObject({
       verified: true,
-      endpoint: "/fapi/v3/registerAndApproveAgent",
+      endpoint: "/fapi/v3/approveAgent",
       method: "POST",
     });
     expect(contract).toMatchObject({
@@ -61,23 +62,22 @@ describe("Aster V3 agent onboarding contract", () => {
       },
     });
     expect(contract.approval.parametersWithoutSignature).toEqual({
-      user: TEST_OWNER.address.toLowerCase(),
-      nonce: NOW_MS * 1_000 + 321,
       agentName: "ghola-perps",
       agentAddress: "0x1111111111111111111111111111111111111111",
+      ipWhitelist: "10.0.0.0/24 2001:db8::1",
       expired: NOW_MS + 60 * 60 * 1_000,
-      signatureChainId: 56,
       canSpotTrade: false,
       canPerpTrade: true,
       canWithdraw: false,
-      ipWhitelist: "10.0.0.0/24 2001:db8::1",
+      user: TEST_OWNER.address.toLowerCase(),
+      nonce: NOW_MS * 1_000 + 321,
     });
     expect(contract.approval.message).toBe(
-      `user=${TEST_OWNER.address.toLowerCase()}&nonce=${NOW_MS * 1_000 + 321}` +
-      `&agentName=ghola-perps&agentAddress=0x1111111111111111111111111111111111111111` +
-      `&expired=${NOW_MS + 60 * 60 * 1_000}&signatureChainId=56` +
+      "agentName=ghola-perps&agentAddress=0x1111111111111111111111111111111111111111" +
+      "&ipWhitelist=10.0.0.0/24 2001:db8::1" +
+      `&expired=${NOW_MS + 60 * 60 * 1_000}` +
       "&canSpotTrade=false&canPerpTrade=true&canWithdraw=false" +
-      "&ipWhitelist=10.0.0.0/24 2001:db8::1",
+      `&user=${TEST_OWNER.address.toLowerCase()}&nonce=${NOW_MS * 1_000 + 321}`,
     );
     expect(contract.approval.typedData).toEqual({
       types: {
@@ -87,16 +87,36 @@ describe("Aster V3 agent onboarding contract", () => {
           { name: "chainId", type: "uint256" },
           { name: "verifyingContract", type: "address" },
         ],
-        Message: [{ name: "msg", type: "string" }],
+        ApproveAgent: [
+          { name: "AgentName", type: "string" },
+          { name: "AgentAddress", type: "string" },
+          { name: "IpWhitelist", type: "string" },
+          { name: "Expired", type: "uint256" },
+          { name: "CanSpotTrade", type: "bool" },
+          { name: "CanPerpTrade", type: "bool" },
+          { name: "CanWithdraw", type: "bool" },
+          { name: "User", type: "string" },
+          { name: "Nonce", type: "uint256" },
+        ],
       },
-      primaryType: "Message",
+      primaryType: "ApproveAgent",
       domain: {
         name: "AsterSignTransaction",
         version: "1",
-        chainId: 56,
+        chainId: 1666,
         verifyingContract: "0x0000000000000000000000000000000000000000",
       },
-      message: { msg: contract.approval.message },
+      message: {
+        AgentName: "ghola-perps",
+        AgentAddress: "0x1111111111111111111111111111111111111111",
+        IpWhitelist: "10.0.0.0/24 2001:db8::1",
+        Expired: NOW_MS + 60 * 60 * 1_000,
+        CanSpotTrade: false,
+        CanPerpTrade: true,
+        CanWithdraw: false,
+        User: TEST_OWNER.address.toLowerCase(),
+        Nonce: NOW_MS * 1_000 + 321,
+      },
     });
   });
 
@@ -171,7 +191,7 @@ describe("Aster V3 agent onboarding contract", () => {
     const contract = buildAsterV3AgentOnboardingContract(validInput());
     expect(Object.isFrozen(contract)).toBe(true);
     expect(Object.isFrozen(contract.permissions)).toBe(true);
-    expect(Object.isFrozen(contract.approval.typedData.types.Message)).toBe(true);
+    expect(Object.isFrozen(contract.approval.typedData.types.ApproveAgent)).toBe(true);
     expect(() => {
       (contract.permissions as { canWithdraw: boolean }).canWithdraw = true;
     }).toThrow(TypeError);
@@ -190,10 +210,5 @@ describe("Aster V3 agent onboarding contract", () => {
 });
 
 function signingDefinition(contract: ReturnType<typeof buildAsterV3AgentOnboardingContract>) {
-  return {
-    domain: contract.approval.typedData.domain,
-    types: { Message: contract.approval.typedData.types.Message },
-    primaryType: contract.approval.typedData.primaryType,
-    message: contract.approval.typedData.message,
-  } as const;
+  return asterApprovalSigningDefinition(contract.approval.typedData);
 }

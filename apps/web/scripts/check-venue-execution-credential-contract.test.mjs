@@ -24,6 +24,7 @@ const boundary = readFileSync(resolve(HERE, "../src/lib/private-agent-passport.t
 const asterPrepare = readFileSync(resolve(HERE, "../src/app/v1/private-account/platforms/aster/prepare/route.ts"), "utf8");
 const asterComplete = readFileSync(resolve(HERE, "../src/app/v1/private-account/platforms/aster/complete/route.ts"), "utf8");
 const asterWorker = readFileSync(resolve(HERE, "../../private-agent-worker/src/venues/aster-provisioning.js"), "utf8");
+const asterContract = readFileSync(resolve(HERE, "../src/lib/aster-agent-onboarding.ts"), "utf8");
 const asterUi = readFileSync(resolve(HERE, "../src/components/carry/CarryAccountSetup.tsx"), "utf8");
 const lighterPrepare = readFileSync(resolve(HERE, "../src/app/v1/private-account/platforms/lighter/prepare/route.ts"), "utf8");
 const lighterComplete = readFileSync(resolve(HERE, "../src/app/v1/private-account/platforms/lighter/complete/route.ts"), "utf8");
@@ -43,7 +44,7 @@ function changed(mutator) {
 test("accepts the fail-closed venue execution credential contract", () => {
   assert.equal(checkVenueExecutionCredentialContract(contract).ok, true);
   assert.equal(checkVenueExecutionCredentialBoundary(boundary).ok, true);
-  assert.equal(checkAsterCredentialProvisioningBoundary(asterPrepare, asterComplete, asterWorker).ok, true);
+  assert.equal(checkAsterCredentialProvisioningBoundary(asterPrepare, asterComplete, asterWorker, asterContract).ok, true);
   assert.equal(checkAsterOnboardingUiBoundary(asterUi).ok, true);
   assert.equal(checkLighterCredentialProvisioningBoundary(
     lighterPrepare,
@@ -159,8 +160,27 @@ test("rejects Aster provisioning without durable ambiguity or owner-signature gu
       asterWorker
         .replaceAll("state.claimExecutionAttempt", "removedAtomicAttemptClaim")
         .replaceAll("reconcile it instead of retrying", "retry allowed"),
+      asterContract,
     ),
     /aster_owner_signature_verification_required|aster_atomic_attempt_claim_required|aster_no_retry_guard_required/,
+  );
+});
+
+test("rejects Aster's retired approval endpoint or signing schema", () => {
+  assert.throws(
+    () => checkAsterCredentialProvisioningBoundary(
+      asterPrepare,
+      asterComplete,
+      asterWorker
+        .replaceAll("/fapi/v3/approveAgent", "/fapi/v3/registerAndApproveAgent")
+        .replaceAll('primaryType: "ApproveAgent"', 'primaryType: "Message"')
+        .replaceAll("chainId: 1666", "chainId: 56"),
+      asterContract
+        .replaceAll("/fapi/v3/approveAgent", "/fapi/v3/registerAndApproveAgent")
+        .replaceAll('primaryType: "ApproveAgent"', 'primaryType: "Message"')
+        .replaceAll("chainId: 1666", "chainId: 56"),
+    ),
+    /aster_current_approval_endpoint_required|aster_current_primary_type_required|aster_current_signature_domain_required|aster_retired_approval_endpoint_forbidden/,
   );
 });
 
@@ -190,6 +210,7 @@ test("rejects removing receipt-only Aster link recovery or its explicit UI actio
       asterPrepare,
       asterComplete.replaceAll("WORKER_RECEIPT_PATH", "removedReceiptRecoveryPath"),
       asterWorker.replaceAll("recoverAsterCredentialRegistration", "removedReceiptRecovery"),
+      asterContract,
     ),
     /aster_link_recovery_receipt_path_required|aster_receipt_only_recovery_required/,
   );
@@ -209,6 +230,7 @@ test("rejects hiding the bounded Aster expiry or deliberate stale re-prepare", (
       asterPrepare.replaceAll("authorization_expires_at", "hidden_expiry"),
       asterComplete,
       asterWorker,
+      asterContract,
     ),
     /aster_expiry_visibility_required/,
   );

@@ -1,6 +1,9 @@
 import { createAccountWithAddress } from "@turnkey/viem";
 import { recoverTypedDataAddress, type Hex } from "viem";
-import type { AsterV3AgentApprovalTypedData } from "./aster-agent-onboarding";
+import {
+  asterApprovalSigningDefinition,
+  type AsterV3AgentApprovalTypedData,
+} from "./aster-agent-onboarding";
 
 export const TURNKEY_PERPS_OWNER_PATH = "m/44'/60'/0'/0/0";
 
@@ -28,12 +31,7 @@ export async function signAsterAgentApprovalWithTurnkey(input: {
     signWith: turnkeyOwnerAddress,
     ethereumAddress: turnkeyOwnerAddress as `0x${string}`,
   });
-  const request = {
-    domain: input.typedData.domain,
-    types: { Message: input.typedData.types.Message },
-    primaryType: input.typedData.primaryType,
-    message: input.typedData.message,
-  } as const;
+  const request = asterApprovalSigningDefinition(input.typedData);
   const signature = normalizedSignature(await account.signTypedData(request));
   let recovered: string;
   try {
@@ -41,10 +39,21 @@ export async function signAsterAgentApprovalWithTurnkey(input: {
   } catch {
     throw new Error("Turnkey returned an invalid Aster owner signature.");
   }
-  if (recovered.toLowerCase() !== ownerAddress) {
-    throw new Error("Turnkey Aster approval was signed by the wrong wallet.");
+  if (recovered.toLowerCase() === ownerAddress) return signature;
+
+  // Turnkey's viem serializer has historically treated any non-zero recovery
+  // value as yParity=1. Canonicalize only when the alternate parity recovers
+  // the exact configured owner; an unrelated signer still fails closed.
+  const alternate = alternateParitySignature(signature);
+  if (alternate) {
+    try {
+      recovered = await recoverTypedDataAddress({ ...request, signature: alternate });
+      if (recovered.toLowerCase() === ownerAddress) return alternate;
+    } catch {
+      // Preserve the explicit wrong-wallet failure below.
+    }
   }
-  return signature;
+  throw new Error("Turnkey Aster approval was signed by the wrong wallet.");
 }
 
 function normalizedSignature(value: unknown): `0x${string}` {
@@ -54,4 +63,10 @@ function normalizedSignature(value: unknown): `0x${string}` {
     throw new Error("Turnkey returned an invalid Aster owner signature.");
   }
   return signature as Hex;
+}
+
+function alternateParitySignature(signature: `0x${string}`): `0x${string}` | null {
+  const parity = signature.slice(-2);
+  const alternate = parity === "1b" ? "1c" : parity === "1c" ? "1b" : parity === "00" ? "01" : parity === "01" ? "00" : null;
+  return alternate ? `${signature.slice(0, -2)}${alternate}` as `0x${string}` : null;
 }

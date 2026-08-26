@@ -67,11 +67,35 @@ describe("Turnkey Aster owner approval", () => {
     });
     expect(forwarded).toEqual({
       domain: approval.domain,
-      types: { Message: approval.types.Message },
+      types: { ApproveAgent: approval.types.ApproveAgent },
       primaryType: approval.primaryType,
-      message: approval.message,
+      message: {
+        ...approval.message,
+        Expired: BigInt(approval.message.Expired),
+        Nonce: BigInt(approval.message.Nonce),
+      },
     });
     expect(signature).toMatch(/^0x[0-9a-f]{130}$/);
+  });
+
+  it("canonicalizes Turnkey's recovery parity only when it recovers the configured owner", async () => {
+    mocks.createAccountWithAddress.mockImplementation(() => ({
+      signTypedData: async (request: Parameters<typeof OWNER.signTypedData>[0]) => {
+        const signature = await OWNER.signTypedData(request);
+        const parity = signature.slice(-2).toLowerCase();
+        return `${signature.slice(0, -2)}${parity === "1b" ? "1c" : "1b"}`;
+      },
+    }));
+
+    const signature = await signAsterAgentApprovalWithTurnkey({
+      client: CLIENT,
+      organizationId: "turnkey-org-owner",
+      owner: { address: OWNER.address, path: TURNKEY_PERPS_OWNER_PATH },
+      typedData: typedData(),
+    });
+
+    expect(signature).toMatch(/^0x[0-9a-f]{130}$/);
+    expect(signature.slice(-2)).toMatch(/1b|1c/);
   });
 
   it("rejects a wrong derivation path before asking Turnkey to sign", async () => {

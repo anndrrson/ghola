@@ -122,7 +122,7 @@ export function checkVenueExecutionCredentialBoundary(source) {
   return { ok: true };
 }
 
-export function checkAsterCredentialProvisioningBoundary(prepareSource, completeSource, workerSource) {
+export function checkAsterCredentialProvisioningBoundary(prepareSource, completeSource, workerSource, contractSource) {
   const failures = [];
   const prepareRequired = [
     ["scope: \"credential:provision\"", "aster_prepare_capability_required"],
@@ -149,10 +149,23 @@ export function checkAsterCredentialProvisioningBoundary(prepareSource, complete
     ["recoverAsterCredentialRegistration", "aster_receipt_only_recovery_required"],
     ["never contacts Aster", "aster_recovery_must_not_resubmit_required"],
     ["canWithdraw: false", "aster_withdrawal_block_required"],
+    ["/fapi/v3/approveAgent", "aster_current_approval_endpoint_required"],
+    ["primaryType: \"ApproveAgent\"", "aster_current_primary_type_required"],
+    ["chainId: 1666", "aster_current_signature_domain_required"],
+  ];
+  const contractRequired = [
+    ["endpoint: \"/fapi/v3/approveAgent\"", "aster_contract_current_approval_endpoint_required"],
+    ["primaryType: \"ApproveAgent\"", "aster_contract_current_primary_type_required"],
+    ["chainId: 1666", "aster_contract_current_signature_domain_required"],
+    ["documentation_commit: \"4f653376ea6596f3da493c02f887b11eccd52d94\"", "aster_documentation_pin_required"],
   ];
   for (const [value, code] of prepareRequired) if (!prepareSource.includes(value)) failures.push(code);
   for (const [value, code] of completeRequired) if (!completeSource.includes(value)) failures.push(code);
   for (const [value, code] of workerRequired) if (!workerSource.includes(value)) failures.push(code);
+  for (const [value, code] of contractRequired) if (!contractSource?.includes(value)) failures.push(code);
+  if (workerSource.includes("/fapi/v3/registerAndApproveAgent") || contractSource?.includes("/fapi/v3/registerAndApproveAgent")) {
+    failures.push("aster_retired_approval_endpoint_forbidden");
+  }
   if (failures.length > 0) {
     throw new Error(`Aster credential provisioning boundary failed: ${failures.join(", ")}`);
   }
@@ -381,6 +394,7 @@ function main() {
     readFileSync(resolve(HERE, "../src/app/v1/private-account/platforms/aster/prepare/route.ts"), "utf8"),
     readFileSync(resolve(HERE, "../src/app/v1/private-account/platforms/aster/complete/route.ts"), "utf8"),
     readFileSync(resolve(HERE, "../../private-agent-worker/src/venues/aster-provisioning.js"), "utf8"),
+    readFileSync(resolve(HERE, "../src/lib/aster-agent-onboarding.ts"), "utf8"),
   );
   checkAsterOnboardingUiBoundary(readFileSync(
     resolve(HERE, "../src/components/carry/CarryAccountSetup.tsx"),

@@ -101,13 +101,14 @@ test("registers once, caches success, and never submits a trade", async () => {
     let calls = 0;
     const fetchImpl = async (url, init) => {
       calls += 1;
-      assert.equal(String(url), "https://fapi.asterdex.com/fapi/v3/registerAndApproveAgent");
+      assert.equal(String(url), "https://fapi.asterdex.com/fapi/v3/approveAgent");
       assert.equal(init.method, "POST");
       const form = new URLSearchParams(init.body);
       assert.equal(form.get("canPerpTrade"), "true");
       assert.equal(form.get("canSpotTrade"), "false");
       assert.equal(form.get("canWithdraw"), "false");
       assert.equal(form.get("agentAddress"), fixture.body.signer_address);
+      assert.equal(form.has("signatureChainId"), false);
       assert.equal(form.has("symbol"), false);
       return Response.json({ code: 200, msg: "success" });
     };
