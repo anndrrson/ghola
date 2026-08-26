@@ -40,9 +40,19 @@ export function classifyAsterOnboardingFailure(
     };
   }
   if (REJECTED_CODES.has(errorCode)) {
+    const providerCode = Number.isSafeInteger(Number(body.provider_code))
+      ? Number(body.provider_code)
+      : null;
+    const providerMessage = string(body.provider_message).slice(0, 240);
+    const providerDetail = [
+      providerCode == null ? "" : `code ${providerCode}`,
+      providerMessage,
+    ].filter(Boolean).join(": ");
     return {
       action: "reprepare",
-      message: "Aster rejected the retired approval format. Prepare and sign one fresh registration request; the rejected request will not be retried.",
+      message: providerDetail
+        ? `Aster rejected this registration (${providerDetail}). Correct the Aster account or approval, then prepare one fresh request. The rejected request was not retried.`
+        : "Aster rejected this registration. Correct the Aster account or approval, then prepare one fresh request. The rejected request was not retried.",
     };
   }
   const receipt = registrationReceipt(body.registration_receipt, preparation);

@@ -184,6 +184,21 @@ test("rejects Aster's retired approval endpoint or signing schema", () => {
   );
 });
 
+test("rejects changing Aster's canonical signed and submitted field order", () => {
+  assert.throws(
+    () => checkAsterCredentialProvisioningBoundary(
+      asterPrepare,
+      asterComplete,
+      asterWorker.replace(
+        '["user", parameters.user],\n    ["nonce", String(parameters.nonce)]',
+        '["nonce", String(parameters.nonce)],\n    ["user", parameters.user]',
+      ),
+      asterContract,
+    ),
+    /aster_canonical_registration_order_required/,
+  );
+});
+
 test("rejects breaking the Aster prepare, owner-sign, complete, ready UI sequence", () => {
   assert.throws(
     () => checkAsterOnboardingUiBoundary(asterUi.replace(

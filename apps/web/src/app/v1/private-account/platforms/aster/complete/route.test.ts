@@ -351,7 +351,11 @@ describe("Aster programmatic credential completion", () => {
       if (outcome === "consumed") {
         return Response.json({ error: "aster_registration_not_retryable" }, { status: 409 });
       }
-      return Response.json({ error: "aster_registration_rejected" }, { status: 400 });
+      return Response.json({
+        error: "aster_registration_rejected",
+        provider_code: -2015,
+        provider_message: "Invalid Aster account.",
+      }, { status: 400 });
     });
 
     for (const expected of [
@@ -362,7 +366,14 @@ describe("Aster programmatic credential completion", () => {
       outcome = expected[0];
       const response = await complete(request("/v1/private-account/platforms/aster/complete", completionBody));
       expect(response.status).toBe(expected[2]);
-      expect(await response.json()).toEqual({ error: expected[1], retry_allowed: false });
+      const body = await response.json();
+      expect(body).toMatchObject({ error: expected[1], retry_allowed: false });
+      if (outcome === "rejected") {
+        expect(body).toMatchObject({
+          provider_code: -2015,
+          provider_message: "Invalid Aster account.",
+        });
+      }
     }
   });
 

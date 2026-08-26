@@ -4775,11 +4775,14 @@ export function createPrivateAgentWorkerServer(options = {}) {
         route: requestPath,
         error_name: error instanceof Error ? error.name : "unknown",
         error_code: error?.code || error?.error_code || null,
+        provider_code: error?.providerCode ?? null,
         duration_ms: Date.now() - requestStartedAt,
       }));
       return json(res, error.status || 500, {
         error: error.message || "internal error",
         error_code: error.code || error.error_code || undefined,
+        ...(error?.providerCode != null ? { provider_code: error.providerCode } : {}),
+        ...(error?.providerMessage ? { provider_message: error.providerMessage } : {}),
       });
     }
   });

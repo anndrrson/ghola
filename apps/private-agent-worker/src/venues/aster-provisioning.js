@@ -19,11 +19,13 @@ const MAX_NONCE_SKEW_MS = 10_000;
 const ASTER_REGISTER_PATH = "/fapi/v3/registerAndApproveAgent";
 
 export class AsterProvisioningError extends Error {
-  constructor(message, code, status = 400) {
+  constructor(message, code, status = 400, { providerCode = null, providerMessage = null } = {}) {
     super(message);
     this.name = "AsterProvisioningError";
     this.code = code;
     this.status = status;
+    this.providerCode = providerCode;
+    this.providerMessage = providerMessage;
   }
 }
 
@@ -319,19 +321,7 @@ export async function authorizeAsterCredential({
         "content-type": "application/x-www-form-urlencoded",
         "user-agent": "Ghola-Private-Agent/1.0",
       },
-      body: new URLSearchParams({
-        agentName: parameters.agentName,
-        agentAddress: parameters.agentAddress,
-        ipWhitelist: parameters.ipWhitelist,
-        expired: String(parameters.expired),
-        signatureChainId: String(parameters.signatureChainId),
-        canSpotTrade: String(parameters.canSpotTrade),
-        canPerpTrade: String(parameters.canPerpTrade),
-        canWithdraw: String(parameters.canWithdraw),
-        user: parameters.user,
-        nonce: String(parameters.nonce),
-        signature,
-      }),
+      body: asterRegistrationFormBody(parameters, signature),
     });
   } catch {
     await state.putExecutionAttempt(preparationId, {
@@ -347,8 +337,7 @@ export async function authorizeAsterCredential({
     throw new AsterProvisioningError("Aster registration outcome is ambiguous.", "aster_registration_ambiguous", 502);
   }
   const responseBody = await response.json().catch(() => null);
-  if (response.status === 503 || response.status >= 500 || !responseBody ||
-      (response.ok && Number(responseBody.code) !== 200)) {
+  if (response.status === 503 || response.status >= 500 || !responseBody) {
     await state.putExecutionAttempt(preparationId, {
       status: "ambiguous",
       venue_id: "aster",
@@ -363,6 +352,8 @@ export async function authorizeAsterCredential({
     throw new AsterProvisioningError("Aster registration outcome is ambiguous.", "aster_registration_ambiguous", 502);
   }
   if (!response.ok || Number(responseBody.code) !== 200) {
+    const providerCode = sanitizedProviderCode(responseBody.code);
+    const providerMessage = sanitizedProviderMessage(responseBody.msg ?? responseBody.message);
     await state.putExecutionAttempt(preparationId, {
       status: "rejected",
       venue_id: "aster",
@@ -371,10 +362,16 @@ export async function authorizeAsterCredential({
       signer_address: signer,
       signature_commitment: signatureCommitment,
       provider_status: response.status,
-      provider_code: Number(responseBody.code) || null,
+      provider_code: providerCode,
+      provider_message: providerMessage,
       rejected_at: new Date().toISOString(),
     });
-    throw new AsterProvisioningError("Aster rejected credential registration.", "aster_registration_rejected", 400);
+    throw new AsterProvisioningError(
+      "Aster rejected credential registration.",
+      "aster_registration_rejected",
+      400,
+      { providerCode, providerMessage },
+    );
   }
 
   const receipt = {
@@ -500,18 +497,9 @@ export function asterRegistrationParameters({ owner, nonce, agentName, signer, e
 }
 
 export function asterRegistrationTypedData(parameters) {
-  const message = [
-    `user=${parameters.user}`,
-    `nonce=${parameters.nonce}`,
-    `agentName=${parameters.agentName}`,
-    `agentAddress=${parameters.agentAddress}`,
-    `expired=${parameters.expired}`,
-    `signatureChainId=${parameters.signatureChainId}`,
-    `canSpotTrade=${parameters.canSpotTrade}`,
-    `canPerpTrade=${parameters.canPerpTrade}`,
-    `canWithdraw=${parameters.canWithdraw}`,
-    `ipWhitelist=${parameters.ipWhitelist}`,
-  ].join("&");
+  const message = asterRegistrationEntries(parameters)
+    .map(([name, value]) => `${name}=${value}`)
+    .join("&");
   return {
     types: {
       Message: [{ name: "msg", type: "string" }],
@@ -525,6 +513,40 @@ export function asterRegistrationTypedData(parameters) {
     },
     message: { msg: message },
   };
+}
+
+export function asterRegistrationFormBody(parameters, signature) {
+  return new URLSearchParams([
+    ...asterRegistrationEntries(parameters),
+    ["signature", signature],
+  ]);
+}
+
+function asterRegistrationEntries(parameters) {
+  return [
+    ["user", parameters.user],
+    ["nonce", String(parameters.nonce)],
+    ["agentName", parameters.agentName],
+    ["agentAddress", parameters.agentAddress],
+    ["expired", String(parameters.expired)],
+    ["signatureChainId", String(parameters.signatureChainId)],
+    ["canSpotTrade", String(parameters.canSpotTrade)],
+    ["canPerpTrade", String(parameters.canPerpTrade)],
+    ["canWithdraw", String(parameters.canWithdraw)],
+    ["ipWhitelist", parameters.ipWhitelist],
+  ];
+}
+
+function sanitizedProviderCode(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const text = typeof value === "string" ? value.trim() : "";
+  return /^-?[0-9]{1,12}$/.test(text) ? Number(text) : null;
+}
+
+function sanitizedProviderMessage(value) {
+  if (typeof value !== "string") return null;
+  const text = value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  return text ? text.slice(0, 240) : null;
 }
 
 function sameStringSet(value, expected) {

@@ -164,9 +164,13 @@ export async function POST(req: Request) {
   const receipt = record(await response.json().catch(() => null));
   if (!response.ok) {
     const errorCode = string(receipt.error_code) || string(receipt.error) || "aster_registration_failed";
+    const providerCode = providerErrorCode(receipt.provider_code);
+    const providerMessage = string(receipt.provider_message).slice(0, 240);
     return json({
       error: errorCode,
       retry_allowed: !NON_RETRYABLE_REGISTRATION_ERRORS.has(errorCode),
+      ...(providerCode != null ? { provider_code: providerCode } : {}),
+      ...(providerMessage ? { provider_message: providerMessage } : {}),
     }, response.status);
   }
   if (!validRegistrationReceipt(receipt, authorizationPayload)) {
@@ -308,6 +312,11 @@ function strings(value: unknown): string[] | null {
 function positiveSafeInteger(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function providerErrorCode(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function code(error: unknown): string {

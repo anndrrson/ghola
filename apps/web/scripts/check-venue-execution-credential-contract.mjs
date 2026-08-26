@@ -152,7 +152,8 @@ export function checkAsterCredentialProvisioningBoundary(prepareSource, complete
     ["/fapi/v3/registerAndApproveAgent", "aster_current_registration_endpoint_required"],
     ["primaryType: \"Message\"", "aster_current_primary_type_required"],
     ["chainId: 56", "aster_current_signature_domain_required"],
-    ["signatureChainId: String(parameters.signatureChainId)", "aster_signature_chain_parameter_required"],
+    ["asterRegistrationEntries(parameters)", "aster_canonical_registration_entries_required"],
+    ["asterRegistrationFormBody(parameters, signature)", "aster_canonical_form_body_required"],
   ];
   const contractRequired = [
     ["endpoint: \"/fapi/v3/registerAndApproveAgent\"", "aster_contract_current_registration_endpoint_required"],
@@ -165,6 +166,32 @@ export function checkAsterCredentialProvisioningBoundary(prepareSource, complete
   for (const [value, code] of completeRequired) if (!completeSource.includes(value)) failures.push(code);
   for (const [value, code] of workerRequired) if (!workerSource.includes(value)) failures.push(code);
   for (const [value, code] of contractRequired) if (!contractSource?.includes(value)) failures.push(code);
+  const registrationStart = workerSource.indexOf("function asterRegistrationEntries(parameters)");
+  const registrationEnd = workerSource.indexOf("\n}", registrationStart);
+  const registrationSource = registrationStart >= 0 && registrationEnd > registrationStart
+    ? workerSource.slice(registrationStart, registrationEnd)
+    : "";
+  const registrationFields = [
+    '["user", parameters.user]',
+    '["nonce", String(parameters.nonce)]',
+    '["agentName", parameters.agentName]',
+    '["agentAddress", parameters.agentAddress]',
+    '["expired", String(parameters.expired)]',
+    '["signatureChainId", String(parameters.signatureChainId)]',
+    '["canSpotTrade", String(parameters.canSpotTrade)]',
+    '["canPerpTrade", String(parameters.canPerpTrade)]',
+    '["canWithdraw", String(parameters.canWithdraw)]',
+    '["ipWhitelist", parameters.ipWhitelist]',
+  ];
+  let registrationCursor = -1;
+  for (const field of registrationFields) {
+    const position = registrationSource.indexOf(field, registrationCursor + 1);
+    if (position < 0) {
+      failures.push("aster_canonical_registration_order_required");
+      break;
+    }
+    registrationCursor = position;
+  }
   if (workerSource.includes('"/fapi/v3/approveAgent"') || contractSource?.includes('endpoint: "/fapi/v3/approveAgent"')) {
     failures.push("aster_retired_approval_endpoint_forbidden");
   }

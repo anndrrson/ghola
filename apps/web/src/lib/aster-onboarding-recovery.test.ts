@@ -64,9 +64,11 @@ describe("Aster onboarding recovery", () => {
     expect(classifyAsterOnboardingFailure(apiError({
       error: "aster_registration_rejected",
       retry_allowed: false,
+      provider_code: -2015,
+      provider_message: "Invalid Aster account.",
     }), PREPARATION)).toMatchObject({
       action: "reprepare",
-      message: expect.stringContaining("will not be retried"),
+      message: expect.stringContaining("code -2015: Invalid Aster account."),
     });
   });
 

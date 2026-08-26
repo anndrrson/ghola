@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign as edSign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign as edSign } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -104,12 +104,37 @@ test("registers once, caches success, and never submits a trade", async () => {
       assert.equal(String(url), "https://fapi.asterdex.com/fapi/v3/registerAndApproveAgent");
       assert.equal(init.method, "POST");
       const form = new URLSearchParams(init.body);
+      assert.deepEqual([...form.keys()], [
+        "user",
+        "nonce",
+        "agentName",
+        "agentAddress",
+        "expired",
+        "signatureChainId",
+        "canSpotTrade",
+        "canPerpTrade",
+        "canWithdraw",
+        "ipWhitelist",
+        "signature",
+      ]);
       assert.equal(form.get("canPerpTrade"), "true");
       assert.equal(form.get("canSpotTrade"), "false");
       assert.equal(form.get("canWithdraw"), "false");
       assert.equal(form.get("agentAddress"), fixture.body.signer_address);
       assert.equal(form.get("signatureChainId"), "56");
       assert.equal(form.has("symbol"), false);
+      const parameters = asterRegistrationParameters({
+        owner: fixture.body.owner_address,
+        nonce: fixture.body.nonce,
+        agentName: fixture.body.agent_name,
+        signer: fixture.body.signer_address,
+        expired: fixture.body.expired,
+        ipWhitelist: fixture.body.ip_whitelist,
+      });
+      assert.equal(
+        form.toString(),
+        `${asterRegistrationTypedData(parameters).message.msg}&signature=${fixture.body.signature}`,
+      );
       return Response.json({ code: 200, msg: "success" });
     };
     const first = await authorizeAsterCredential({
@@ -143,6 +168,66 @@ test("registers once, caches success, and never submits a trade", async () => {
       nowMs: NOW,
     }), (error) => error.code === "aster_owner_signature_mismatch");
     assert.equal(calls, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("preserves a deterministic Aster rejection without retrying it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-aster-provider-rejection-"));
+  try {
+    const fixture = await authorizationFixture("private_account_aster_provider_rejection");
+    const state = createWorkerState(dir);
+    let calls = 0;
+    await assert.rejects(authorizeAsterCredential({
+      ...fixture,
+      state,
+      fetchImpl: async () => {
+        calls += 1;
+        return Response.json({ code: -2015, msg: "Invalid Aster account." }, { status: 400 });
+      },
+      nowMs: NOW,
+    }), (error) => {
+      assert.equal(error.code, "aster_registration_rejected");
+      assert.equal(error.providerCode, -2015);
+      assert.equal(error.providerMessage, "Invalid Aster account.");
+      return true;
+    });
+    await assert.rejects(authorizeAsterCredential({
+      ...fixture,
+      state,
+      fetchImpl: async () => {
+        calls += 1;
+        return Response.json({ code: 200, msg: "success" });
+      },
+      nowMs: NOW,
+    }), (error) => error.code === "aster_registration_not_retryable");
+    assert.equal(calls, 1);
+    const attempt = await state.getExecutionAttempt(fixture.body.preparation_id);
+    assert.deepEqual({
+      status: attempt.status,
+      venue_id: attempt.venue_id,
+      operation_class: attempt.operation_class,
+      owner_address: attempt.owner_address,
+      signer_address: attempt.signer_address,
+      signature_commitment: attempt.signature_commitment,
+      provider_status: attempt.provider_status,
+      provider_code: attempt.provider_code,
+      provider_message: attempt.provider_message,
+      rejected_at: attempt.rejected_at,
+    }, {
+      status: "rejected",
+      venue_id: "aster",
+      operation_class: "credential_authorize",
+      owner_address: fixture.body.owner_address.toLowerCase(),
+      signer_address: fixture.body.signer_address.toLowerCase(),
+      signature_commitment: `sha256:${createHash("sha256").update(fixture.body.signature).digest("hex")}`,
+      provider_status: 400,
+      provider_code: -2015,
+      provider_message: "Invalid Aster account.",
+      rejected_at: attempt.rejected_at,
+    });
+    assert.match(attempt.rejected_at, /^\d{4}-\d{2}-\d{2}T/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
