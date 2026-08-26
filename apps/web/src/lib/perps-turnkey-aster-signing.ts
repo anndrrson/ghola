@@ -1,5 +1,5 @@
 import { createAccountWithAddress } from "@turnkey/viem";
-import { recoverTypedDataAddress, type Hex } from "viem";
+import { hashTypedData, recoverTypedDataAddress, type Hex } from "viem";
 import {
   asterApprovalSigningDefinition,
   type AsterV3AgentApprovalTypedData,
@@ -32,7 +32,10 @@ export async function signAsterAgentApprovalWithTurnkey(input: {
     ethereumAddress: turnkeyOwnerAddress as `0x${string}`,
   });
   const request = asterApprovalSigningDefinition(input.typedData);
-  const signature = normalizedSignature(await account.signTypedData(request));
+  // Sign the exact locally verified digest. This avoids any divergence between
+  // Turnkey's EIP-712 JSON encoder and viem's verification encoder.
+  if (!account.sign) throw new Error("Turnkey raw Aster signing is unavailable.");
+  const signature = normalizedSignature(await account.sign({ hash: hashTypedData(request) }));
   let recovered: string;
   try {
     recovered = await recoverTypedDataAddress({ ...request, signature });

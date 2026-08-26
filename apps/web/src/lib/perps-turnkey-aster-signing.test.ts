@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { serializeTypedData } from "viem";
+import { hashTypedData, serializeTypedData } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 const mocks = vi.hoisted(() => ({ createAccountWithAddress: vi.fn() }));
@@ -39,11 +39,11 @@ describe("Turnkey Aster owner approval", () => {
 
   it("uses only the exact owner path and forwards the exact typed data", async () => {
     const approval = typedData();
-    let forwarded: unknown;
+    let forwardedHash: unknown;
     mocks.createAccountWithAddress.mockImplementation(() => ({
-      signTypedData: async (request: Parameters<typeof OWNER.signTypedData>[0]) => {
-        forwarded = request;
-        const signature = await OWNER.signTypedData(request);
+      sign: async ({ hash }: { hash: `0x${string}` }) => {
+        forwardedHash = hash;
+        const signature = await OWNER.sign({ hash });
         return signature.toUpperCase().replace("0X", "0x");
       },
     }));
@@ -66,7 +66,7 @@ describe("Turnkey Aster owner approval", () => {
       signWith: OWNER.address.toLowerCase(),
       ethereumAddress: OWNER.address.toLowerCase(),
     });
-    expect(forwarded).toEqual({
+    expect(forwardedHash).toBe(hashTypedData({
       domain: { ...approval.domain, chainId: BigInt(approval.domain.chainId) },
       types: approval.types,
       primaryType: approval.primaryType,
@@ -75,7 +75,7 @@ describe("Turnkey Aster owner approval", () => {
         Expired: BigInt(approval.message.Expired),
         Nonce: BigInt(approval.message.Nonce),
       },
-    });
+    }));
     expect(signature).toMatch(/^0x[0-9a-f]{130}$/);
   });
 
@@ -101,8 +101,8 @@ describe("Turnkey Aster owner approval", () => {
 
   it("canonicalizes Turnkey's recovery parity only when it recovers the configured owner", async () => {
     mocks.createAccountWithAddress.mockImplementation(() => ({
-      signTypedData: async (request: Parameters<typeof OWNER.signTypedData>[0]) => {
-        const signature = await OWNER.signTypedData(request);
+      sign: async ({ hash }: { hash: `0x${string}` }) => {
+        const signature = await OWNER.sign({ hash });
         const parity = signature.slice(-2).toLowerCase();
         return `${signature.slice(0, -2)}${parity === "1b" ? "1c" : "1b"}`;
       },
@@ -131,7 +131,7 @@ describe("Turnkey Aster owner approval", () => {
 
   it("rejects a signature produced by any wallet other than the owner", async () => {
     mocks.createAccountWithAddress.mockImplementation(() => ({
-      signTypedData: (request: Parameters<typeof WRONG.signTypedData>[0]) => WRONG.signTypedData(request),
+      sign: ({ hash }: { hash: `0x${string}` }) => WRONG.sign({ hash }),
     }));
     await expect(signAsterAgentApprovalWithTurnkey({
       client: CLIENT,
@@ -144,7 +144,7 @@ describe("Turnkey Aster owner approval", () => {
 
   it("fails closed when Turnkey signing fails or returns a malformed signature", async () => {
     mocks.createAccountWithAddress.mockImplementationOnce(() => ({
-      signTypedData: async () => { throw new Error("turnkey_signing_failed"); },
+      sign: async () => { throw new Error("turnkey_signing_failed"); },
     }));
     await expect(signAsterAgentApprovalWithTurnkey({
       client: CLIENT,
@@ -154,7 +154,7 @@ describe("Turnkey Aster owner approval", () => {
     })).rejects.toThrow("turnkey_signing_failed");
 
     mocks.createAccountWithAddress.mockImplementationOnce(() => ({
-      signTypedData: async () => "0xdeadbeef",
+      sign: async () => "0xdeadbeef",
     }));
     await expect(signAsterAgentApprovalWithTurnkey({
       client: CLIENT,
