@@ -160,9 +160,9 @@ describe("isPerpsTurnkeyClientLoading", () => {
     expect(isPerpsTurnkeyClientLoading("error")).toBe(false);
   });
 
-  it("fails configuration closed when Turnkey initialization errors", () => {
-    expect(isPerpsTurnkeyClientConfigured(undefined)).toBe(true);
-    expect(isPerpsTurnkeyClientConfigured("loading")).toBe(true);
+  it("fails configuration closed until Turnkey is fully ready", () => {
+    expect(isPerpsTurnkeyClientConfigured(undefined)).toBe(false);
+    expect(isPerpsTurnkeyClientConfigured("loading")).toBe(false);
     expect(isPerpsTurnkeyClientConfigured("ready")).toBe(true);
     expect(isPerpsTurnkeyClientConfigured("error")).toBe(false);
   });

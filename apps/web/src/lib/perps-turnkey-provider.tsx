@@ -139,50 +139,52 @@ const PerpsTurnkeyContext = createContext<PerpsTurnkeyContextValue>({
 
 const parentOrganizationId = process.env.NEXT_PUBLIC_TURNKEY_PERPS_ORGANIZATION_ID || "";
 const authProxyConfigId = process.env.NEXT_PUBLIC_TURNKEY_PERPS_AUTH_PROXY_CONFIG_ID || "";
+const perpsCustomWallet = {
+  walletName: PERPS_WALLET_NAME,
+  walletAccounts: [OWNER_ACCOUNT, AGENT_ACCOUNT, SEALING_ACCOUNT],
+};
+const perpsCreateSuborgParams = { customWallet: perpsCustomWallet };
+const perpsTurnkeyProviderConfig: TurnkeyProviderConfig | null = parentOrganizationId && authProxyConfigId
+  ? {
+      organizationId: parentOrganizationId,
+      authProxyConfigId,
+      passkeyConfig: {
+        withPlatformKey: true,
+      },
+      autoRefreshManagedState: true,
+      auth: {
+        autoRefreshSession: true,
+        createSuborgParams: {
+          emailOtpAuth: perpsCreateSuborgParams,
+          passkeyAuth: perpsCreateSuborgParams,
+          walletAuth: perpsCreateSuborgParams,
+          oauth: perpsCreateSuborgParams,
+        },
+      },
+      ui: {
+        darkMode: true,
+        preferLargeActionButtons: true,
+        borderRadius: 8,
+        authModal: {
+          methods: {
+            emailOtpAuthEnabled: true,
+            passkeyAuthEnabled: true,
+            walletAuthEnabled: false,
+            googleOauthEnabled: false,
+          },
+          methodOrder: ["passkey", "email"],
+          oauthOrder: [],
+        },
+      },
+    }
+  : null;
 
 export function PerpsTurnkeyProvider({ children }: { children: ReactNode }) {
-  if (!parentOrganizationId || !authProxyConfigId) {
+  if (!perpsTurnkeyProviderConfig) {
     return <PerpsTurnkeyContext.Provider value={{ ...CONTEXT_DEFAULTS }}>{children}</PerpsTurnkeyContext.Provider>;
   }
-  const customWallet = {
-    walletName: PERPS_WALLET_NAME,
-    walletAccounts: [OWNER_ACCOUNT, AGENT_ACCOUNT, SEALING_ACCOUNT],
-  };
-  const createSuborgParams = { customWallet };
-  const config: TurnkeyProviderConfig = {
-    organizationId: parentOrganizationId,
-    authProxyConfigId,
-    passkeyConfig: {
-      withPlatformKey: true,
-    },
-    autoRefreshManagedState: true,
-    auth: {
-      autoRefreshSession: true,
-      createSuborgParams: {
-        emailOtpAuth: createSuborgParams,
-        passkeyAuth: createSuborgParams,
-        walletAuth: createSuborgParams,
-        oauth: createSuborgParams,
-      },
-    },
-    ui: {
-      darkMode: true,
-      preferLargeActionButtons: true,
-      borderRadius: 8,
-      authModal: {
-        methods: {
-          emailOtpAuthEnabled: true,
-          passkeyAuthEnabled: true,
-          walletAuthEnabled: false,
-          googleOauthEnabled: false,
-        },
-        methodOrder: ["passkey", "email"],
-        oauthOrder: [],
-      },
-    },
-  };
   return (
-    <ConfiguredPerpsTurnkeyProvider config={config}>
+    <ConfiguredPerpsTurnkeyProvider config={perpsTurnkeyProviderConfig}>
       {children}
     </ConfiguredPerpsTurnkeyProvider>
   );

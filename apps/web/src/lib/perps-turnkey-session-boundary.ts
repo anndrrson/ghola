@@ -9,7 +9,7 @@ export function isPerpsTurnkeyClientLoading(
 export function isPerpsTurnkeyClientConfigured(
   clientState: "loading" | "ready" | "error" | undefined,
 ): boolean {
-  return clientState !== "error";
+  return clientState === "ready";
 }
 
 export type PerpsTurnkeyBoundaryDecision =
