@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Check, KeyRound, LockKeyhole } from "lucide-react";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
@@ -51,6 +52,7 @@ const LIGHTER_ONBOARDING = getCurrentVenueCredentialOnboardingPath("lighter");
 
 export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }) {
   const auth = useThumperAuth();
+  const searchParams = useSearchParams();
   const wallet = useTurnkeyWallet();
   const perpsTurnkey = usePerpsTurnkey();
   const [authOpen, setAuthOpen] = useState(false);
@@ -65,6 +67,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const [asterReprepareRequired, setAsterReprepareRequired] = useState(false);
   const [asterRegistrationAmbiguous, setAsterRegistrationAmbiguous] = useState(false);
   const [asterWalletRepairRequired, setAsterWalletRepairRequired] = useState(false);
+  const [asterWalletRepairCompleted, setAsterWalletRepairCompleted] = useState(false);
   const [showLighterManual, setShowLighterManual] = useState(false);
   const [pendingLighterAuthorization, setPendingLighterAuthorization] = useState(false);
   const [pendingLighterAssociation, setPendingLighterAssociation] = useState<PendingLighterAssociation | null>(null);
@@ -81,6 +84,8 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const [error, setError] = useState<string | null>(null);
   const safeReturnTo = returnTo === "/carry" || returnTo.startsWith("/trade?") ? returnTo : "/carry";
   const recoveryUserScope = opaqueTurnkeyWalletScope(auth.user?.id || "");
+  const asterWalletRepairRequested = asterWalletRepairRequired ||
+    (!asterWalletRepairCompleted && searchParams.get("repair") === "aster-wallet");
   const setupReturnTo = `/account?setup=carry&return_to=${encodeURIComponent(safeReturnTo)}`;
 
   const refresh = useCallback(async () => {
@@ -102,12 +107,6 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   }, [auth.authenticated]);
 
   useEffect(() => { void refresh(); }, [refresh]);
-
-  useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("repair") === "aster-wallet") {
-      setAsterWalletRepairRequired(true);
-    }
-  }, []);
 
   useEffect(() => {
     if (!recoveryUserScope) return;
@@ -156,6 +155,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       setAsterReprepareRequired(false);
       setAsterRegistrationAmbiguous(false);
       setAsterWalletRepairRequired(false);
+      setAsterWalletRepairCompleted(true);
       setAster("connected");
       await refresh();
     } catch (caught) {
@@ -201,6 +201,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       setPendingAsterLinkRecovery(null);
       persistRecovery(staleCommitment, recoveryUserScope, { aster: null });
       setAsterWalletRepairRequired(false);
+      setAsterWalletRepairCompleted(true);
       setAsterReprepareRequired(false);
       await connectAsterProgrammatic(true);
     } catch (caught) {
@@ -253,7 +254,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       await finishAsterLinkRecovery();
       return;
     }
-    if (asterWalletRepairRequired) {
+    if (asterWalletRepairRequested) {
       await repairAsterWallet();
       return;
     }
@@ -511,7 +512,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                       ? "Restoring secure wallet…"
                     : working
                       ? "Authorizing…"
-                      : asterWalletRepairRequired
+                      : asterWalletRepairRequested
                         ? "Repair secure wallet"
                       : asterRegistrationAmbiguous
                         ? "Aster reconciliation required"
