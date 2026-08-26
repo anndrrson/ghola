@@ -33,13 +33,14 @@ export async function signLighterChangePubKeyWithTurnkey(input: {
   if (input.owner.path !== TURNKEY_PERPS_OWNER_PATH) {
     throw new Error("Turnkey Lighter authorization requires the Ghola perps owner account.");
   }
-  const ownerAddress = lighterOwnerAddress(input.owner.address);
+  const turnkeyOwnerAddress = input.owner.address.trim();
+  const ownerAddress = lighterOwnerAddress(turnkeyOwnerAddress);
   const transaction = validatedTransaction(input.transactionPlan, ownerAddress);
   const account = createAccountWithAddress({
     client: input.client,
     organizationId: input.organizationId,
-    signWith: ownerAddress,
-    ethereumAddress: ownerAddress,
+    signWith: turnkeyOwnerAddress,
+    ethereumAddress: turnkeyOwnerAddress as `0x${string}`,
   });
   const rawTransaction = normalizedRawTransaction(await account.signTransaction(transaction));
   return verifyLighterChangePubKeyTransaction({

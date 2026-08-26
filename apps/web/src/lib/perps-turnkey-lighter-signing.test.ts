@@ -63,8 +63,8 @@ describe("Turnkey Lighter owner association", () => {
     expect(mocks.createAccountWithAddress).toHaveBeenCalledWith({
       client: CLIENT,
       organizationId: "turnkey-org-owner",
-      signWith: OWNER.address.toLowerCase(),
-      ethereumAddress: OWNER.address.toLowerCase(),
+      signWith: OWNER.address,
+      ethereumAddress: OWNER.address,
     });
     expect(forwarded).toMatchObject({
       type: "eip1559",

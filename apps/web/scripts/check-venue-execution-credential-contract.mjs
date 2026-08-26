@@ -314,6 +314,23 @@ export function checkVenueOnboardingLiveProofBoundary(clientSource, routesSource
   return { ok: true };
 }
 
+export function checkTurnkeyVenueOwnerAddressBoundary(asterSigningSource, lighterSigningSource) {
+  const failures = [];
+  for (const [venue, source] of [["aster", asterSigningSource], ["lighter", lighterSigningSource]]) {
+    if (!source.includes("const turnkeyOwnerAddress = input.owner.address.trim()")) {
+      failures.push(`${venue}_turnkey_resource_address_required`);
+    }
+    if (!source.includes("signWith: turnkeyOwnerAddress") ||
+        !source.includes("ethereumAddress: turnkeyOwnerAddress")) {
+      failures.push(`${venue}_turnkey_resource_address_case_must_be_preserved`);
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(`Turnkey venue owner address boundary failed: ${failures.join(", ")}`);
+  }
+  return { ok: true };
+}
+
 function object(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -359,6 +376,10 @@ function main() {
     readFileSync(resolve(HERE, "../src/lib/private-account-client.ts"), "utf8"),
     readFileSync(resolve(HERE, "../src/lib/private-account-live-routes.ts"), "utf8"),
     readFileSync(resolve(HERE, "../src/app/api/private-account/live-proxy/route.ts"), "utf8"),
+  );
+  checkTurnkeyVenueOwnerAddressBoundary(
+    readFileSync(resolve(HERE, "../src/lib/perps-turnkey-aster-signing.ts"), "utf8"),
+    readFileSync(resolve(HERE, "../src/lib/perps-turnkey-lighter-signing.ts"), "utf8"),
   );
   console.log("[venue-execution-credential-contract] verified");
 }

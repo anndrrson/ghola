@@ -16,15 +16,16 @@ export async function signAsterAgentApprovalWithTurnkey(input: {
   if (input.owner.path !== TURNKEY_PERPS_OWNER_PATH) {
     throw new Error("Turnkey Aster approval requires the Ghola perps owner account.");
   }
-  const ownerAddress = input.owner.address.trim().toLowerCase();
+  const turnkeyOwnerAddress = input.owner.address.trim();
+  const ownerAddress = turnkeyOwnerAddress.toLowerCase();
   if (!/^0x[0-9a-f]{40}$/.test(ownerAddress)) {
     throw new Error("Turnkey Aster owner address is invalid.");
   }
   const account = createAccountWithAddress({
     client: input.client,
     organizationId: input.organizationId,
-    signWith: ownerAddress,
-    ethereumAddress: ownerAddress,
+    signWith: turnkeyOwnerAddress,
+    ethereumAddress: turnkeyOwnerAddress as `0x${string}`,
   });
   const request = {
     domain: input.typedData.domain,

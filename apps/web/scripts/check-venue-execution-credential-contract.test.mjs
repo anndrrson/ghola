@@ -9,6 +9,7 @@ import {
   checkLighterCredentialProvisioningBoundary,
   checkLighterOnboardingUiBoundary,
   checkVenueOnboardingLiveProofBoundary,
+  checkTurnkeyVenueOwnerAddressBoundary,
   checkVenueExecutionCredentialBoundary,
   checkVenueExecutionCredentialContract,
 } from "./check-venue-execution-credential-contract.mjs";
@@ -50,6 +51,10 @@ test("accepts the fail-closed venue execution credential contract", () => {
   ).ok, true);
   assert.equal(checkLighterOnboardingUiBoundary(asterUi).ok, true);
   assert.equal(checkVenueOnboardingLiveProofBoundary(liveClient, liveRoutes, liveProxy).ok, true);
+  assert.equal(checkTurnkeyVenueOwnerAddressBoundary(
+    readFileSync(resolve(HERE, "../src/lib/perps-turnkey-aster-signing.ts"), "utf8"),
+    lighterSigning,
+  ).ok, true);
 });
 
 test("rejects venue onboarding that bypasses server-side live request proof", () => {
@@ -60,6 +65,17 @@ test("rejects venue onboarding that bypasses server-side live request proof", ()
       liveProxy,
     ),
     /venue_onboarding_live_route_required|venue_client_live_proxy_routing_required/,
+  );
+});
+
+test("rejects lowercasing Turnkey's case-sensitive owner resource address", () => {
+  const asterSigning = readFileSync(resolve(HERE, "../src/lib/perps-turnkey-aster-signing.ts"), "utf8");
+  assert.throws(
+    () => checkTurnkeyVenueOwnerAddressBoundary(
+      asterSigning.replaceAll("signWith: turnkeyOwnerAddress", "signWith: ownerAddress"),
+      lighterSigning.replaceAll("signWith: turnkeyOwnerAddress", "signWith: ownerAddress"),
+    ),
+    /turnkey_resource_address_case_must_be_preserved/,
   );
 });
 
