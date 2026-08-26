@@ -19,10 +19,12 @@ import {
   phoenixOrderbookClickSide,
   requiresHyperliquidPoolTerms,
   requiresHyperliquidOwnerAuthentication,
+  shouldAuthenticateHyperliquidOwner,
   shouldResetHyperliquidConnectionError,
   shouldReconnectHyperliquidApiWallet,
   shouldProvisionFocusedHyperliquidWallet,
   shouldShowHyperliquidSetupProgress,
+  shouldWaitForHyperliquidOwnerSession,
   type TradingUiStateInput,
 } from "./private-account-trading-ui";
 
@@ -186,13 +188,56 @@ describe("private account trading UI derivation", () => {
       "Authenticate with the Turnkey owner wallet first.",
     )).toBe(true);
     expect(requiresHyperliquidOwnerAuthentication("Could not verify Hyperliquid connection.")).toBe(false);
+    expect(shouldAuthenticateHyperliquidOwner({
+      legacyApiKeysEnabled: false,
+      authenticated: false,
+      error: "Could not verify Hyperliquid connection.",
+    })).toBe(true);
+    expect(shouldAuthenticateHyperliquidOwner({
+      legacyApiKeysEnabled: false,
+      authenticated: true,
+      error: "Authenticate with the Turnkey owner wallet first.",
+    })).toBe(true);
+    expect(shouldAuthenticateHyperliquidOwner({
+      legacyApiKeysEnabled: false,
+      authenticated: true,
+      error: "Could not verify Hyperliquid connection.",
+    })).toBe(false);
+    expect(shouldAuthenticateHyperliquidOwner({
+      legacyApiKeysEnabled: true,
+      authenticated: false,
+      error: "Authenticate with the Turnkey owner wallet first.",
+    })).toBe(false);
 
     const cockpitSource = readFileSync(
       resolve(process.cwd(), "src/components/private-account/PrivateAccountCockpit.tsx"),
       "utf8",
     );
-    expect(cockpitSource).toContain("if (requiresHyperliquidOwnerAuthentication(error))");
+    expect(cockpitSource).toContain("if (shouldAuthenticateHyperliquidOwner({");
     expect(cockpitSource).toContain('? "Authenticate owner wallet"');
+  });
+
+  it("waits for the saved Turnkey session before focused verification", () => {
+    expect(shouldWaitForHyperliquidOwnerSession({
+      initialSetup: true,
+      legacyApiKeysEnabled: false,
+      loading: true,
+    })).toBe(true);
+    expect(shouldWaitForHyperliquidOwnerSession({
+      initialSetup: true,
+      legacyApiKeysEnabled: false,
+      loading: false,
+    })).toBe(false);
+    expect(shouldWaitForHyperliquidOwnerSession({
+      initialSetup: false,
+      legacyApiKeysEnabled: false,
+      loading: true,
+    })).toBe(false);
+    expect(shouldWaitForHyperliquidOwnerSession({
+      initialSetup: true,
+      legacyApiKeysEnabled: true,
+      loading: true,
+    })).toBe(false);
   });
 
   it("opens wallet replacement only for Hyperliquid access failures that require resealing", () => {

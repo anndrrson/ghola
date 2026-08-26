@@ -161,9 +161,10 @@ import {
   requiresHyperliquidPoolTerms,
   shouldResetHyperliquidConnectionError,
   shouldReconnectHyperliquidApiWallet,
-  requiresHyperliquidOwnerAuthentication,
+  shouldAuthenticateHyperliquidOwner,
   shouldProvisionFocusedHyperliquidWallet,
   shouldShowHyperliquidSetupProgress,
+  shouldWaitForHyperliquidOwnerSession,
   type TradingActionKind,
   type TradingNextAction,
   type VenueReadinessStep,
@@ -1331,7 +1332,12 @@ export function PrivateAccountCockpit({
       !auth.authenticated ||
       !hyperliquidVault?.account_commitment ||
       !turnkeyWallet.walletAddress ||
-      hyperliquidReferencePrice === null
+      hyperliquidReferencePrice === null ||
+      shouldWaitForHyperliquidOwnerSession({
+        initialSetup: initialSetupVenue === "hyperliquid",
+        legacyApiKeysEnabled: LEGACY_HYPERLIQUID_API_KEYS_ENABLED,
+        loading: perpsTurnkey.loading,
+      })
     ) return;
     initialSetupHandled.current = true;
     setLiveHyperliquidFlow(true);
@@ -1349,6 +1355,7 @@ export function PrivateAccountCockpit({
     hyperliquidVault?.account_commitment,
     hyperliquidReferencePrice,
     initialSetupVenue,
+    perpsTurnkey.loading,
     turnkeyWallet.walletAddress,
   ]);
 
@@ -3428,7 +3435,11 @@ export function PrivateAccountCockpit({
               <button
                 type="button"
                 onClick={() => {
-                  if (requiresHyperliquidOwnerAuthentication(error)) {
+                  if (shouldAuthenticateHyperliquidOwner({
+                    legacyApiKeysEnabled: LEGACY_HYPERLIQUID_API_KEYS_ENABLED,
+                    authenticated: perpsTurnkey.authenticated,
+                    error,
+                  })) {
                     void authenticateHyperliquidOwner();
                     return;
                   }
@@ -3436,7 +3447,11 @@ export function PrivateAccountCockpit({
                 }}
                 className="mt-6 h-11 w-full rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb]"
               >
-                {requiresHyperliquidOwnerAuthentication(error)
+                {shouldAuthenticateHyperliquidOwner({
+                  legacyApiKeysEnabled: LEGACY_HYPERLIQUID_API_KEYS_ENABLED,
+                  authenticated: perpsTurnkey.authenticated,
+                  error,
+                })
                   ? "Authenticate owner wallet"
                   : "Retry verification"}
               </button>

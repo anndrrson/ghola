@@ -57,6 +57,24 @@ export function requiresHyperliquidOwnerAuthentication(error?: string | null) {
   return Boolean(error && /authenticate with (?:the )?turnkey owner wallet/i.test(error));
 }
 
+export function shouldAuthenticateHyperliquidOwner(input: {
+  legacyApiKeysEnabled: boolean;
+  authenticated: boolean;
+  error?: string | null;
+}) {
+  return !input.legacyApiKeysEnabled && (
+    !input.authenticated || requiresHyperliquidOwnerAuthentication(input.error)
+  );
+}
+
+export function shouldWaitForHyperliquidOwnerSession(input: {
+  initialSetup: boolean;
+  legacyApiKeysEnabled: boolean;
+  loading: boolean;
+}) {
+  return input.initialSetup && !input.legacyApiKeysEnabled && input.loading;
+}
+
 export function shouldShowHyperliquidSetupProgress(input: {
   initialSetup: boolean;
   connectOpen: boolean;
