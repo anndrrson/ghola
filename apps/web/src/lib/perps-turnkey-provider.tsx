@@ -149,6 +149,9 @@ export function PerpsTurnkeyProvider({ children }: { children: ReactNode }) {
   const config: TurnkeyProviderConfig = {
     organizationId: parentOrganizationId,
     authProxyConfigId,
+    passkeyConfig: {
+      withPlatformKey: true,
+    },
     autoRefreshManagedState: true,
     auth: {
       autoRefreshSession: true,

@@ -24,6 +24,18 @@ const chunkDirCandidates = [
 
 const requiredGoogleRedirectSources = [
   {
+    file: "src/lib/perps-turnkey-provider.tsx",
+    patterns: [
+      { label: "platform-only Ghola passkey configuration", pattern: /withPlatformKey:\s*true/ },
+    ],
+  },
+  {
+    file: "patches/@turnkey__core@2.5.0.patch",
+    patterns: [
+      { label: "Turnkey platform authenticator selection", pattern: /this\.config\.withPlatformKey[\s\S]*?["']platform["']/ },
+    ],
+  },
+  {
     file: "src/lib/google-auth-client.ts",
     patterns: [
       { label: "redirect UX mode", pattern: /ux_mode:\s*["']redirect["']/ },
