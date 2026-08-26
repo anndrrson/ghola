@@ -232,7 +232,13 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       await refresh();
     } catch (caught) {
       const disposition = classifyAsterOnboardingFailure(caught, pendingAsterLinkRecovery.preparation);
-      if (disposition.action === "hold_ambiguous") setAsterRegistrationAmbiguous(true);
+      if (disposition.action === "reprepare") {
+        setAsterReprepareRequired(true);
+        setPendingAsterLinkRecovery(null);
+        persistRecovery(accountCommitment, recoveryUserScope, { aster: null });
+      } else if (disposition.action === "hold_ambiguous") {
+        setAsterRegistrationAmbiguous(true);
+      }
       setError(disposition.message);
     } finally {
       setWorking(false);
