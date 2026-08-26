@@ -41,6 +41,12 @@ describe("agent passport venue linking", () => {
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE;
     delete process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL;
     delete process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN;
+    delete process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL;
+    delete process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN;
+    delete process.env.GHOLA_PRIVATE_AGENT_WORKER_URL;
+    delete process.env.PRIVATE_AGENT_WORKER_URL;
+    delete process.env.PRIVATE_AGENT_WORKER_TOKEN;
+    delete process.env.PHALA_AGENT_ENDPOINT;
     delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN;
     delete process.env.GHOLA_ARB_CANARY_MAX_STALE_MS;
@@ -291,8 +297,8 @@ describe("agent passport venue linking", () => {
   it("links two Carry venues through authenticated routes and forwards only sealed access to no-submit", async () => {
     process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
     process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "report_only";
-    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
-    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
+    process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL = "https://worker.example";
+    process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN = "worker-token";
     const workerBodies: Record<string, unknown>[] = [];
     const oldFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

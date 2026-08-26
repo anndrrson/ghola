@@ -9,6 +9,7 @@ import { agentPassportVenueAccessForWorker } from "@/lib/private-agent-passport"
 import { randomUUID } from "node:crypto";
 import { CARRY_EXECUTION_VENUES, isCarryExecutionVenue } from "@/lib/carry-venues";
 import { verifyCarryRiskMandateAuthorization } from "@/lib/carry-risk-mandate";
+import { resolvePrivateAgentWorkerUrl } from "@/lib/private-account-worker-routing";
 
 export const dynamic = "force-dynamic";
 
@@ -291,9 +292,12 @@ function stringValue(value: unknown): string | null {
 }
 
 function workerConfig() {
-  const raw = process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() ||
-    process.env.GHOLA_PRIVATE_AGENT_WORKER_URL?.trim() ||
-    process.env.PHALA_AGENT_ENDPOINT?.trim() || "";
+  const raw = resolvePrivateAgentWorkerUrl({
+    connector_url: process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL,
+    execution_url: process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL || process.env.PRIVATE_AGENT_EXECUTION_URL,
+    worker_url: process.env.GHOLA_PRIVATE_AGENT_WORKER_URL || process.env.PRIVATE_AGENT_WORKER_URL,
+    phala_endpoint: process.env.PHALA_AGENT_ENDPOINT,
+  });
   let url: URL | null = null;
   try {
     if (raw) url = new URL(raw);
@@ -302,8 +306,10 @@ function workerConfig() {
   }
   return {
     url,
-    token: process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
-      process.env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() || "",
+    token: process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN?.trim() ||
+      process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
+      process.env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
+      process.env.PRIVATE_AGENT_WORKER_TOKEN?.trim() || "",
   };
 }
 

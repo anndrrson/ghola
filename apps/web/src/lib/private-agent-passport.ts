@@ -28,6 +28,7 @@ import {
   type PrivateAccountRequestOwner,
 } from "@/app/v1/private-account/_lib";
 import { workerAuthorizationHeader } from "./private-agent-capability";
+import { resolvePrivateAgentWorkerUrl } from "./private-account-worker-routing";
 import {
   evaluateVenueExecutionCredential,
   type TurnkeyAuthorizationRole,
@@ -700,17 +701,18 @@ function localCredentialVerificationBypassAllowed(): boolean {
 }
 
 function workerConfig(env: Record<string, string | undefined>) {
-  const url = env.GHOLA_PRIVATE_AGENT_EXECUTION_URL ||
-    env.PRIVATE_AGENT_EXECUTION_URL ||
-    env.PRIVATE_AGENT_WORKER_URL ||
-    "";
-  const token = env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN ||
-    env.PRIVATE_AGENT_EXECUTION_TOKEN ||
-    env.PRIVATE_AGENT_WORKER_TOKEN ||
-    "";
   return {
-    url: url.trim(),
-    token: token.trim(),
+    url: resolvePrivateAgentWorkerUrl({
+      connector_url: env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL,
+      execution_url: env.GHOLA_PRIVATE_AGENT_EXECUTION_URL || env.PRIVATE_AGENT_EXECUTION_URL,
+      worker_url: env.GHOLA_PRIVATE_AGENT_WORKER_URL || env.PRIVATE_AGENT_WORKER_URL,
+      phala_endpoint: env.PHALA_AGENT_ENDPOINT,
+    }),
+    token: env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN?.trim() ||
+      env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
+      env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
+      env.PRIVATE_AGENT_WORKER_TOKEN?.trim() ||
+      "",
   };
 }
 

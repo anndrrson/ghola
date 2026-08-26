@@ -854,6 +854,19 @@ export async function preflightAsterCarry(input: {
   });
 }
 
+export async function preflightLighterCarry(input: {
+  market: string;
+  side: "buy" | "sell";
+  base_size: string;
+  limit_price: string;
+  max_notional_bucket?: PrivateAccountSafeInput["amount_bucket"];
+}) {
+  return privateAccountFetch("/v1/private-account/carry", {
+    method: "POST",
+    body: JSON.stringify({ action: "preflight_lighter", ...input }),
+  });
+}
+
 export async function preflightHyperliquidCarry(input: {
   market: string;
   side: "buy" | "sell";
