@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/check-private-worker-runtime-config.mjs && next build && node scripts/check-review-proof-routes.mjs && node scripts/check-auth-client-bundle.mjs && node scripts/check-venue-execution-credential-contract.mjs && node scripts/check-hyperliquid-execution-contract.mjs && node scripts/check-carry-execution-contract.mjs && node scripts/verify-hyperliquid-release-evidence.mjs && node scripts/build-sri-manifest.mjs",
+    "build": "node scripts/check-private-worker-runtime-config.mjs && node scripts/check-turnkey-otp-install.mjs && next build && node scripts/check-review-proof-routes.mjs && node scripts/check-auth-client-bundle.mjs && node scripts/check-venue-execution-credential-contract.mjs && node scripts/check-hyperliquid-execution-contract.mjs && node scripts/check-carry-execution-contract.mjs && node scripts/verify-hyperliquid-release-evidence.mjs && node scripts/build-sri-manifest.mjs",
     "build:no-sri": "next build && node scripts/check-review-proof-routes.mjs && node scripts/check-auth-client-bundle.mjs",
     "start": "next start",
     "lint": "eslint",

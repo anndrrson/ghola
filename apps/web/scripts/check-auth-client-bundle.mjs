@@ -24,6 +24,18 @@ const chunkDirCandidates = [
 
 const requiredGoogleRedirectSources = [
   {
+    file: "vercel.json",
+    patterns: [
+      { label: "pnpm patch-aware Vercel install", pattern: /"installCommand":\s*"pnpm install --frozen-lockfile"/ },
+    ],
+  },
+  {
+    file: "package.json",
+    patterns: [
+      { label: "installed Turnkey OTP pre-build guard", pattern: /check-turnkey-otp-install\.mjs/ },
+    ],
+  },
+  {
     file: "src/lib/perps-turnkey-provider.tsx",
     patterns: [
       { label: "platform-only Ghola passkey configuration", pattern: /withPlatformKey:\s*true/ },

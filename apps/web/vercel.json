@@ -1,5 +1,5 @@
 {
-  "installCommand": "npm install",
+  "installCommand": "pnpm install --frozen-lockfile",
   "crons": [
     {
       "path": "/v1/private-account/funding/batch/cron",
