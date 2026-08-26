@@ -50,6 +50,33 @@ describe("private account live proxy", () => {
     expect(res.headers.get("server-timing")).toMatch(/^ghola-live-proxy;dur=/);
   });
 
+  it.each([
+    "/v1/private-account/platforms/aster/prepare",
+    "/v1/private-account/platforms/aster/complete",
+    "/v1/private-account/platforms/lighter/prepare",
+    "/v1/private-account/platforms/lighter/complete",
+    "/v1/private-account/platforms/link",
+    "/v1/private-account/funding/import",
+  ])("proxies guarded onboarding mutation %s", async (path) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+
+    const res = await POST(proxyRequest({
+      path,
+      body: path.endsWith("/lighter/complete")
+        ? { raw_transaction: "0x02abcd", transaction_hash: "0x1234" }
+        : { version: 1 },
+    }));
+
+    expect(res.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const [target, init] = fetchSpy.mock.calls[0] as [URL, RequestInit];
+    expect(target.pathname).toBe(path);
+    expect((init.headers as Record<string, string>)["x-ghola-request-proof"]).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it("fails an uncertain execution closed with a retry-forbidden correlation record", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("connection reset"));
 

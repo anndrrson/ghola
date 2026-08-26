@@ -294,6 +294,26 @@ export function checkLighterOnboardingUiBoundary(source) {
   return { ok: true };
 }
 
+export function checkVenueOnboardingLiveProofBoundary(clientSource, routesSource, proxySource) {
+  const failures = [];
+  const required = [
+    [routesSource, "platforms\\/(?:aster|lighter)\\/(?:prepare|complete)", "venue_onboarding_live_route_required"],
+    [routesSource, "allowsSerializedOwnerTransaction", "lighter_serialized_transaction_scope_required"],
+    [routesSource, 'pathname === "/v1/private-account/platforms/lighter/complete"', "lighter_serialized_transaction_exact_path_required"],
+    [clientSource, "isPrivateAccountLiveMutationPath(pathname)", "venue_client_live_proxy_routing_required"],
+    [proxySource, "isPrivateAccountLiveMutationPath(target.pathname)", "venue_server_live_proxy_allowlist_required"],
+    [proxySource, "allowsSerializedOwnerTransaction(target.pathname)", "venue_server_serialized_transaction_guard_required"],
+  ];
+  for (const [source, value, code] of required) if (!source.includes(value)) failures.push(code);
+  if (clientSource.includes("LIVE_GUARDED_MUTATION_PATHS") || proxySource.includes("LIVE_MUTATION_PATHS")) {
+    failures.push("duplicate_live_route_allowlist_forbidden");
+  }
+  if (failures.length > 0) {
+    throw new Error(`Venue onboarding live proof boundary failed: ${failures.join(", ")}`);
+  }
+  return { ok: true };
+}
+
 function object(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -335,6 +355,11 @@ function main() {
     resolve(HERE, "../src/components/carry/CarryAccountSetup.tsx"),
     "utf8",
   ));
+  checkVenueOnboardingLiveProofBoundary(
+    readFileSync(resolve(HERE, "../src/lib/private-account-client.ts"), "utf8"),
+    readFileSync(resolve(HERE, "../src/lib/private-account-live-routes.ts"), "utf8"),
+    readFileSync(resolve(HERE, "../src/app/api/private-account/live-proxy/route.ts"), "utf8"),
+  );
   console.log("[venue-execution-credential-contract] verified");
 }
 

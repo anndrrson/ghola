@@ -8,6 +8,7 @@ import {
   checkAsterOnboardingUiBoundary,
   checkLighterCredentialProvisioningBoundary,
   checkLighterOnboardingUiBoundary,
+  checkVenueOnboardingLiveProofBoundary,
   checkVenueExecutionCredentialBoundary,
   checkVenueExecutionCredentialContract,
 } from "./check-venue-execution-credential-contract.mjs";
@@ -26,6 +27,9 @@ const lighterPrepare = readFileSync(resolve(HERE, "../src/app/v1/private-account
 const lighterComplete = readFileSync(resolve(HERE, "../src/app/v1/private-account/platforms/lighter/complete/route.ts"), "utf8");
 const lighterWorker = readFileSync(resolve(HERE, "../../private-agent-worker/src/venues/lighter-provisioning.js"), "utf8");
 const lighterSigning = readFileSync(resolve(HERE, "../src/lib/perps-turnkey-lighter-signing.ts"), "utf8");
+const liveClient = readFileSync(resolve(HERE, "../src/lib/private-account-client.ts"), "utf8");
+const liveRoutes = readFileSync(resolve(HERE, "../src/lib/private-account-live-routes.ts"), "utf8");
+const liveProxy = readFileSync(resolve(HERE, "../src/app/api/private-account/live-proxy/route.ts"), "utf8");
 
 function changed(mutator) {
   const value = structuredClone(contract);
@@ -45,6 +49,18 @@ test("accepts the fail-closed venue execution credential contract", () => {
     lighterSigning,
   ).ok, true);
   assert.equal(checkLighterOnboardingUiBoundary(asterUi).ok, true);
+  assert.equal(checkVenueOnboardingLiveProofBoundary(liveClient, liveRoutes, liveProxy).ok, true);
+});
+
+test("rejects venue onboarding that bypasses server-side live request proof", () => {
+  assert.throws(
+    () => checkVenueOnboardingLiveProofBoundary(
+      liveClient.replace("isPrivateAccountLiveMutationPath(pathname)", "false"),
+      liveRoutes.replace("platforms\\/(?:aster|lighter)\\/(?:prepare|complete)", "platforms\\/removed"),
+      liveProxy,
+    ),
+    /venue_onboarding_live_route_required|venue_client_live_proxy_routing_required/,
+  );
 });
 
 test("rejects a generic link boundary that skips credential evaluation", () => {

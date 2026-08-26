@@ -7,6 +7,10 @@ import {
   unauthorized,
 } from "@/app/v1/private-account/_lib";
 import { emitOperationalAlert } from "@/lib/operations-alert";
+import {
+  allowsSerializedOwnerTransaction,
+  isPrivateAccountLiveMutationPath,
+} from "@/lib/private-account-live-routes";
 
 export const dynamic = "force-dynamic";
 
@@ -15,19 +19,6 @@ type ProxyBody = {
   method?: unknown;
   body?: unknown;
 };
-
-const LIVE_MUTATION_PATHS = [
-  /^\/v1\/private-account\/actions\/execute$/,
-  /^\/v1\/private-account\/autopilot\/sessions$/,
-  /^\/v1\/private-account\/autopilot\/sessions\/[^/]+$/,
-  /^\/v1\/private-account\/autopilot\/sessions\/[^/]+\/(?:pause|resume|kill)$/,
-  /^\/v1\/private-account\/connectors\/(?:submit|verify-no-submit|reconcile)$/,
-  /^\/v1\/private-account\/hyperliquid\/(?:account-snapshot|managed-allocation)$/,
-  /^\/v1\/private-account\/hyperliquid\/agent\/session$/,
-  /^\/v1\/private-account\/hyperliquid\/vault$/,
-  /^\/v1\/private-account\/omnibus\/(?:allocate|reconcile)$/,
-  /^\/v1\/private-account\/venues\/[^/]+\/(?:agent\/session|eligibility|pool\/allocate|preflight|reconcile|secret-handles\/create|stealth-account\/create|vault)$/,
-];
 
 export async function POST(req: Request) {
   const startedAt = Date.now();
@@ -41,7 +32,10 @@ export async function POST(req: Request) {
   const target = safeLiveMutationTarget(proxyBody.path);
   if (!target) return json({ error: "live_proxy_path_not_allowed" }, 403);
 
-  const forbidden = rejectForbiddenFields(proxyBody.body);
+  const bodyForForbiddenCheck = allowsSerializedOwnerTransaction(target.pathname)
+    ? withoutTopLevelField(proxyBody.body, "raw_transaction")
+    : proxyBody.body;
+  const forbidden = rejectForbiddenFields(bodyForForbiddenCheck);
   if (forbidden) return forbidden;
 
   const proofHeaders = liveRequestProofHeaders({
@@ -147,8 +141,15 @@ function safeLiveMutationTarget(value: unknown): URL | null {
   if (typeof value !== "string" || !value.startsWith("/v1/private-account/")) return null;
   const target = new URL(value, "https://ghola.local");
   if (target.origin !== "https://ghola.local") return null;
-  if (!LIVE_MUTATION_PATHS.some((pattern) => pattern.test(target.pathname))) return null;
+  if (!isPrivateAccountLiveMutationPath(target.pathname)) return null;
   return target;
+}
+
+function withoutTopLevelField(value: unknown, field: string): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const copy = { ...value as Record<string, unknown> };
+  delete copy[field];
+  return copy;
 }
 
 function liveRequestProofHeaders(input: {

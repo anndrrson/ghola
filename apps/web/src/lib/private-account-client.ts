@@ -22,6 +22,7 @@ import type { LighterEncryptedExecutionVaultBundle } from "./lighter-vault-seal"
 import type { AsterV3AgentOnboardingContract } from "./aster-agent-onboarding";
 import type { LighterChangePubKeyTransactionPlan } from "./lighter-agent-association";
 import { defaultHyperliquidMarketAllowlist } from "./private-account-hyperliquid-policy";
+import { isPrivateAccountLiveMutationPath } from "./private-account-live-routes";
 
 export type PrivateAccountProductBucket =
   | "stablecoin"
@@ -1684,21 +1685,8 @@ function requestBodyObject(body: BodyInit | null | undefined) {
 function liveGuardedMutation(path: string, method: string | undefined) {
   if ((method || "GET").toUpperCase() !== "POST") return false;
   const pathname = path.split("?")[0] || path;
-  return LIVE_GUARDED_MUTATION_PATHS.some((pattern) => pattern.test(pathname));
+  return isPrivateAccountLiveMutationPath(pathname);
 }
-
-const LIVE_GUARDED_MUTATION_PATHS = [
-  /^\/v1\/private-account\/actions\/execute$/,
-  /^\/v1\/private-account\/autopilot\/sessions$/,
-  /^\/v1\/private-account\/autopilot\/sessions\/[^/]+$/,
-  /^\/v1\/private-account\/autopilot\/sessions\/[^/]+\/(?:pause|resume|kill)$/,
-  /^\/v1\/private-account\/connectors\/(?:submit|verify-no-submit|reconcile)$/,
-  /^\/v1\/private-account\/hyperliquid\/(?:account-snapshot|managed-allocation)$/,
-  /^\/v1\/private-account\/hyperliquid\/agent\/session$/,
-  /^\/v1\/private-account\/hyperliquid\/vault$/,
-  /^\/v1\/private-account\/omnibus\/(?:allocate|reconcile)$/,
-  /^\/v1\/private-account\/venues\/[^/]+\/(?:agent\/session|eligibility|pool\/allocate|preflight|reconcile|secret-handles\/create|stealth-account\/create|vault)$/,
-];
 
 function thumperToken() {
   try {
