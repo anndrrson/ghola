@@ -63,6 +63,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const [lighter, setLighter] = useState<VenueState>("needed");
   const [showAsterManual, setShowAsterManual] = useState(false);
   const [pendingAsterAuthorization, setPendingAsterAuthorization] = useState(false);
+  const [pendingAsterWalletRepair, setPendingAsterWalletRepair] = useState(false);
   const [pendingAsterLinkRecovery, setPendingAsterLinkRecovery] = useState<PendingAsterLinkRecovery | null>(null);
   const [asterReprepareRequired, setAsterReprepareRequired] = useState(false);
   const [asterRegistrationAmbiguous, setAsterRegistrationAmbiguous] = useState(false);
@@ -240,9 +241,12 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
 
   useEffect(() => {
     if (!pendingAsterAuthorization || !perpsTurnkey.authenticated) return;
+    const repairRequested = pendingAsterWalletRepair;
     setPendingAsterAuthorization(false);
-    void connectAsterProgrammatic();
-  }, [connectAsterProgrammatic, pendingAsterAuthorization, perpsTurnkey.authenticated]);
+    setPendingAsterWalletRepair(false);
+    if (repairRequested) void repairAsterWallet();
+    else void connectAsterProgrammatic();
+  }, [connectAsterProgrammatic, pendingAsterAuthorization, pendingAsterWalletRepair, perpsTurnkey.authenticated, repairAsterWallet]);
 
   async function beginAsterProgrammatic() {
     if (!auth.authenticated) {
@@ -252,10 +256,6 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     }
     if (pendingAsterLinkRecovery?.signature) {
       await finishAsterLinkRecovery();
-      return;
-    }
-    if (asterWalletRepairRequested) {
-      await repairAsterWallet();
       return;
     }
     if (asterRegistrationAmbiguous) {
@@ -269,15 +269,21 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     if (!perpsTurnkey.authenticated) {
       setWorking(true);
       setPendingAsterAuthorization(true);
+      setPendingAsterWalletRepair(asterWalletRepairRequested);
       setError(null);
       try {
         await perpsTurnkey.login();
       } catch (caught) {
         setPendingAsterAuthorization(false);
+        setPendingAsterWalletRepair(false);
         setError(caught instanceof Error ? caught.message : "Secure wallet authentication failed.");
       } finally {
         setWorking(false);
       }
+      return;
+    }
+    if (asterWalletRepairRequested) {
+      await repairAsterWallet();
       return;
     }
     setAsterReprepareRequired(false);
