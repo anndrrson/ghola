@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { ed25519 } from "@noble/curves/ed25519";
 import { Keypair } from "@solana/web3.js";
 import { privateKeyToAccount } from "viem/accounts";
+import { CORE_PERP_VENUES, venueAdapterCapability } from "@ghola/execution-core";
 import {
   createPrivateAgentWorkerServer,
   loadRecipient,
@@ -56,6 +57,39 @@ const JUPITER_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const JUPITER_FEE_OWNER = "Fbw73e5YfhivsTeFud97CFBZc5bZ2PbdDVgcgfYRSgwJ";
 const LIGHTER_PRIVATE_KEY = "11".repeat(32);
 const LIGHTER_PUBLIC_KEY = "22".repeat(40);
+
+function shadowSnapshot(venueId, asset, observedAt) {
+  return {
+    version: 1,
+    venue_id: venueId,
+    adapter_mode: "shadow_read_only",
+    source_schema: venueAdapterCapability(venueId, "perp_shadow").source_schema,
+    trading_api_available: true,
+    contract_id: `${venueId}:${asset}`,
+    economic_equivalence_id: `carry:${asset}-usd-linear`,
+    asset,
+    market: `${asset}-USD`,
+    quote_asset: venueId === "hyperliquid" || venueId === "aster" ? "USDT" : "USD",
+    collateral_asset: venueId === "aster" ? "USDT" : "USDC",
+    contract_type: "linear_perp",
+    mark_price_e8: 10_000_000_000,
+    index_price_e8: 10_000_000_000,
+    best_bid_e8: 9_999_000_000,
+    best_ask_e8: 10_001_000_000,
+    funding_rate_e12_per_interval: 10_000,
+    funding_interval_ms: 3_600_000,
+    quantity_step_e8: 1_000,
+    initial_margin_bps: 500,
+    maintenance_margin_bps: 250,
+    liquidation_model: "test_margin_liquidation",
+    as_of_ms: observedAt,
+    status: "ready",
+    stale: false,
+    missing_fields: [],
+    quality_flags: [],
+    executable: false,
+  };
+}
 
 async function recipient(baseUrl) {
   const response = await fetch(`${baseUrl}/.well-known/private-agent-recipient`);
@@ -421,6 +455,35 @@ describe("private agent worker", () => {
     assert.equal(body.decision_provider.provider_kind, "ollama");
     assert.equal(body.decision_provider.local, true);
     assert.equal(JSON.stringify(body).includes("must-not-leak"), false);
+  });
+
+  it("publishes a deterministic five-venue shadow readiness verdict", async () => {
+    await close(server);
+    let requested;
+    server = createPrivateAgentWorkerServer({
+      fetchPerpShadowSet: async (options) => {
+        requested = options;
+        return CORE_PERP_VENUES.map((venueId) => ({
+          venue_id: venueId,
+          ok: true,
+          snapshots: [shadowSnapshot(venueId, "BTC", options.now_ms)],
+        }));
+      },
+    });
+    baseUrl = await listen(server);
+
+    const response = await fetch(`${baseUrl}/carry/shadow?assets=BTC`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.executable, false);
+    assert.equal(body.readiness.ok, true);
+    assert.equal(body.readiness.venues, 5);
+    assert.equal(body.readiness.expected_snapshots, 5);
+    assert.deepEqual(body.readiness.failures, []);
+    assert.equal(Date.parse(body.observed_at), body.readiness.checked_at_ms);
+    assert.equal(requested.now_ms, body.readiness.checked_at_ms);
+    assert.deepEqual(requested.assets, ["BTC"]);
   });
 
   it("can require dstack quote evidence before accepting production sessions", async () => {

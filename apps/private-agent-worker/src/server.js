@@ -25,6 +25,7 @@ import { revenueEvidenceStatement } from "./execution/revenue-evidence.js";
 import { publicDecisionProviderStatus } from "./execution/decision-provider.js";
 import { startMultiLegRecoveryLoop } from "./execution/multi-leg-orchestrator.js";
 import { fetchCorePerpShadowSet } from "./execution/perp-shadow-adapters.js";
+import { verifyCarryShadowSet } from "./execution/perp-shadow-readiness.js";
 import { preflightCarryExecutionMatrix, preflightCarryPair } from "./execution/carry-preflight.js";
 import { executeStoredCarryEntry, startCarryExecutionLoop } from "./execution/carry-executor.js";
 import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-evidence.js";
@@ -2557,6 +2558,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
     adapterFactory: options.krakenV2AdapterFactory,
     receiptSigner: options.krakenV2ReceiptSigner,
   });
+  const fetchPerpShadowSet = options.fetchPerpShadowSet || fetchCorePerpShadowSet;
   const dueLoop = options.startAutopilotDueLoop === false
     ? null
     : startAutopilotDueLoop({ state, recipient });
@@ -2656,12 +2658,24 @@ export function createPrivateAgentWorkerServer(options = {}) {
           .map((asset) => asset.trim().toUpperCase())
           .filter((asset) => /^[A-Z0-9._-]{1,16}$/.test(asset))
           .slice(0, 10);
-        const venues = await fetchCorePerpShadowSet({ assets, timeout_ms: 8_000, max_age_ms: 60_000 });
+        const observedAtMs = Date.now();
+        const venues = await fetchPerpShadowSet({
+          assets,
+          now_ms: observedAtMs,
+          timeout_ms: 8_000,
+          max_age_ms: 60_000,
+        });
+        const readiness = verifyCarryShadowSet(venues, {
+          assets,
+          now_ms: observedAtMs,
+          max_age_ms: 60_000,
+        });
         return json(res, 200, {
           version: 1,
           mode: "shadow_read_only",
           executable: false,
-          observed_at: new Date().toISOString(),
+          observed_at: new Date(observedAtMs).toISOString(),
+          readiness,
           venues,
         });
       }

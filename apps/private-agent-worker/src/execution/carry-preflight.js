@@ -159,13 +159,15 @@ export async function preflightCarryPair({
 export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
   const venues = [...CARRY_EXECUTION_VENUES];
   if (venues.length < 3) throw carryError("carry_execution_matrix_incomplete", 409);
+  const observedAt = dependencies.now ? dependencies.now() : Date.now();
+  const matrixDependencies = { ...dependencies, now: () => observedAt };
   const anchor = venues.find((venueId) => venueAdapterCapability(venueId, "carry_execution")?.status === "proven") || venues[0];
   const pairs = venues.filter((venueId) => venueId !== anchor).map((venueId, index) => ({
     long_venue_id: index % 2 === 0 ? anchor : venueId,
     short_venue_id: index % 2 === 0 ? venueId : anchor,
   }));
   const results = await Promise.all(pairs.map((pair, index) => preflightCarryPair({
-    ...dependencies,
+    ...matrixDependencies,
     body: {
       ...body,
       operation_class: "paired_no_submit",
@@ -198,7 +200,7 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
       qualification_reasons: result.qualification_reasons,
     })),
     failures,
-    checked_at: results.at(-1)?.checked_at || null,
+    checked_at: new Date(observedAt).toISOString(),
   };
 }
 

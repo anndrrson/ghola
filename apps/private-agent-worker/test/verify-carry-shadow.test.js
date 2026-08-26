@@ -32,6 +32,12 @@ test("rejects missing assets, stale data, and executable shadow adapters", () =>
   assert.ok(result.failures.some((value) => value.startsWith("read_only_boundary_invalid:")));
 });
 
+test("rejects an empty requested asset set", () => {
+  const result = verifyCarryShadowSet(fixture(), { assets: [], now_ms: NOW });
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.includes("asset_set_empty"));
+});
+
 test("rejects normalized gaps without explicit quality evidence", () => {
   const rows = fixture();
   rows[0].snapshots[0].missing_fields = ["maker_fee_bps"];

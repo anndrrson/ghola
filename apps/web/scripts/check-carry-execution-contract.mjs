@@ -25,7 +25,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   qualification: "apps/private-agent-worker/src/execution/carry-qualification.js",
   releaseMaterial: "apps/private-agent-worker/src/execution/carry-release-evidence.js",
   shadow: "apps/private-agent-worker/src/execution/perp-shadow-adapters.js",
-  shadowVerifier: "apps/private-agent-worker/scripts/verify-carry-shadow.mjs",
+  shadowVerifier: "apps/private-agent-worker/src/execution/perp-shadow-readiness.js",
+  shadowVerifierCli: "apps/private-agent-worker/scripts/verify-carry-shadow.mjs",
   shadowVerifierTest: "apps/private-agent-worker/test/verify-carry-shadow.test.js",
   hyperliquid: "apps/private-agent-worker/src/venues/hyperliquid.js",
   aster: "apps/private-agent-worker/src/venues/aster.js",
@@ -133,6 +134,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadow", "funding_source_stale", "edgex_funding_source_staleness_gate_missing");
   requireText("shadowTest", "keeps fresh edgeX responses live without trusting a stale funding source", "edgex_split_freshness_test_missing");
   requireText("workerPackage", '"verify:carry-shadow"', "carry_shadow_verifier_script_missing");
+  requireText("shadowVerifierCli", "verifyCarryShadowSet", "carry_shadow_verifier_cli_runtime_missing");
   requireText("shadowVerifier", "CORE_PERP_VENUES", "carry_shadow_verifier_registry_missing");
   requireText("shadowVerifier", 'Object.freeze(["BTC", "ETH", "SOL"])', "carry_shadow_core_assets_missing");
   requireText("shadowVerifier", "missing_field_unjustified", "carry_shadow_missing_field_evidence_gate_missing");
