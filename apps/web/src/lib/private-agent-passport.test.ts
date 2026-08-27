@@ -478,6 +478,7 @@ describe("agent passport venue linking", () => {
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
     const matrixBodies: Record<string, unknown>[] = [];
+    const readinessBodies: Record<string, unknown>[] = [];
     const oldFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -497,6 +498,14 @@ describe("agent passport venue linking", () => {
             { long_venue_id: "lighter", short_venue_id: "aster", no_submit_ready: false, transaction_broadcast: false, error_code: "carry_account_not_ready:aster" },
           ],
           failures: ["pair_check_failed:2:carry_account_not_ready:aster", "pair_check_failed:3:carry_account_not_ready:aster"],
+        }), { status: 200 });
+      }
+      if (url === "https://worker.example/carry/readiness") {
+        readinessBodies.push(body);
+        return new Response(JSON.stringify({
+          ready: false,
+          reasons: ["carry_readiness_evidence_missing"],
+          diagnostic: { available: true, diagnostic_only: true, reusable_for_readiness: false },
         }), { status: 200 });
       }
       return oldFetch(input, init);
@@ -535,6 +544,25 @@ describe("agent passport venue linking", () => {
         owner_commitment: matrixBodies[0].owner_commitment,
       });
       expect(JSON.stringify(access.aster)).not.toContain("vault");
+
+      const restoredResponse = await carryRoute(new NextRequest("https://ghola.test/v1/private-account/carry", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer investor-test-token",
+          "content-type": "application/json",
+          origin: "https://ghola.test",
+        },
+        body: JSON.stringify({ action: "readiness", asset: "BTC", notional_usd: "11", horizon_days: "1" }),
+      }));
+      const restored = await restoredResponse.json();
+      expect(restoredResponse.status, JSON.stringify(restored)).toBe(200);
+      expect(restored.ready).toBe(false);
+      expect(restored.diagnostic).toMatchObject({ diagnostic_only: true, reusable_for_readiness: false });
+      const restoredAccess = readinessBodies[0].venue_access as Record<string, Record<string, unknown>>;
+      expect(restoredAccess.aster).toEqual({
+        status: "not_ready",
+        owner_commitment: readinessBodies[0].owner_commitment,
+      });
     } finally {
       globalThis.fetch = oldFetch;
     }

@@ -15,6 +15,7 @@ import { verifyCarryShadowSnapshot } from "./perp-shadow-readiness.js";
 import { readCarryVenueQualification } from "./carry-qualification.js";
 import {
   carryAccountStateCommitment,
+  storeCarryExecutionDiagnostic,
   storeCarryExecutionReadiness,
 } from "./carry-readiness.js";
 import { observeCarryFundingPersistence } from "./carry-funding-persistence.js";
@@ -358,6 +359,15 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
     failures,
     checked_at: new Date(observedAt).toISOString(),
   };
+  const diagnostic = await storeCarryExecutionDiagnostic({
+    state: dependencies.state,
+    request: body,
+    matrix,
+    now_ms: observedAt,
+    env: dependencies.env || process.env,
+  });
+  matrix.diagnostic_persisted = diagnostic.ok;
+  if (diagnostic.ok) matrix.diagnostic = diagnostic.diagnostic;
   if (!matrix.no_submit_ready) return matrix;
   const stored = await storeCarryExecutionReadiness({
     state: dependencies.state,

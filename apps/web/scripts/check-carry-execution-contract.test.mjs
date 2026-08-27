@@ -451,6 +451,26 @@ test("rejects a matrix worker that accepts unsanitized not-ready venue markers",
   );
 });
 
+test("rejects partial matrix evidence that can be reused as readiness", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      readiness: sources.readiness.replaceAll("reusable_for_readiness: false", "reusable_for_readiness: true"),
+    }),
+    /carry_partial_matrix_diagnostic_authority_boundary_missing/,
+  );
+});
+
+test("rejects a terminal that forgets diagnostic fleet evidence after refresh", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll("readyStoredDiagnostic", "discardStoredDiagnostic"),
+    }),
+    /carry_terminal_diagnostic_restore_missing/,
+  );
+});
+
 test("rejects a no-submit receipt that is not bound to the verified account", () => {
   assert.throws(
     () => checkCarryExecutionContract({

@@ -56,6 +56,112 @@ export async function readCarryExecutionReadiness({ state, owner_commitment: own
   });
 }
 
+export async function storeCarryExecutionDiagnostic({ state, request, matrix, now_ms: nowMs = Date.now(), env = process.env }) {
+  const evidence = buildCarryExecutionDiagnostic({ request, matrix, now_ms: nowMs, env });
+  const assessed = assessCarryExecutionDiagnostic({
+    evidence,
+    owner_commitment: request?.owner_commitment,
+    asset: request?.asset,
+    notional_usd: request?.notional_usd,
+    horizon_days: request?.horizon_days,
+    now_ms: nowMs,
+    env,
+  });
+  if (!assessed.available) return { ok: false, error: assessed.reasons[0] || "carry_diagnostic_invalid", diagnostic: assessed };
+  if (typeof state?.putIdempotency !== "function") {
+    return { ok: false, error: "carry_diagnostic_state_unavailable", diagnostic: assessed };
+  }
+  await state.putIdempotency(diagnosticKey({
+    owner_commitment: evidence.owner_commitment,
+    image_digest: evidence.image_digest,
+    asset: evidence.asset,
+    notional_usd: evidence.notional_usd,
+    horizon_days: evidence.horizon_days,
+  }), evidence);
+  return { ok: true, diagnostic: assessed };
+}
+
+export async function readCarryExecutionDiagnostic({ state, owner_commitment: ownerCommitment, asset, notional_usd: notionalUsd, horizon_days: horizonDays, now_ms: nowMs = Date.now(), env = process.env }) {
+  const imageDigest = runtimeCarryQualificationImageDigest(env);
+  if (!imageDigest) return diagnosticResult(false, ["runtime_image_digest_missing"]);
+  const route = readinessRoute({ asset, notional_usd: notionalUsd, horizon_days: horizonDays });
+  if (!route) return diagnosticResult(false, ["carry_diagnostic_route_invalid"]);
+  if (typeof state?.getIdempotency !== "function") return diagnosticResult(false, ["carry_diagnostic_state_unavailable"]);
+  const stored = await state.getIdempotency(diagnosticKey({
+    owner_commitment: ownerCommitment,
+    image_digest: imageDigest,
+    ...route,
+  }));
+  return assessCarryExecutionDiagnostic({
+    evidence: stored?.receipt,
+    owner_commitment: ownerCommitment,
+    ...route,
+    now_ms: nowMs,
+    env,
+  });
+}
+
+export function assessCarryExecutionDiagnostic({ evidence, owner_commitment: ownerCommitment, asset, notional_usd: notionalUsd, horizon_days: horizonDays, now_ms: nowMs = Date.now(), env = process.env }) {
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
+    return diagnosticResult(false, ["carry_diagnostic_evidence_missing"]);
+  }
+  const reasons = [];
+  const expectedImage = runtimeCarryQualificationImageDigest(env);
+  const expectedVenues = [...CARRY_EXECUTION_VENUES];
+  const expectedRoute = readinessRoute({ asset, notional_usd: notionalUsd, horizon_days: horizonDays });
+  if (evidence.version !== 1 || evidence.kind !== "carry_execution_matrix_diagnostic") reasons.push("carry_diagnostic_version_invalid");
+  if (evidence.diagnostic_only !== true || evidence.reusable_for_readiness !== false) reasons.push("carry_diagnostic_authority_invalid");
+  if (!ownerCommitment || evidence.owner_commitment !== ownerCommitment) reasons.push("carry_diagnostic_owner_mismatch");
+  if (evidence.operation_class !== "matrix_no_submit" || !commitment(evidence.work_order_commitment)) reasons.push("carry_diagnostic_request_unbound");
+  if (!expectedRoute || evidence.asset !== expectedRoute.asset
+    || evidence.notional_usd !== expectedRoute.notional_usd
+    || evidence.horizon_days !== expectedRoute.horizon_days) reasons.push("carry_diagnostic_route_mismatch");
+  if (!expectedImage || evidence.image_digest !== expectedImage) reasons.push("carry_diagnostic_image_mismatch");
+  if (!sameStrings(evidence.registry_venue_ids, expectedVenues)) reasons.push("carry_diagnostic_registry_mismatch");
+  const checkedAt = positiveInteger(evidence.checked_at_ms);
+  const maxAge = readinessMaxAge(env);
+  if (!checkedAt || checkedAt > nowMs || nowMs - checkedAt > maxAge) reasons.push("carry_diagnostic_stale");
+  if (evidence.transaction_broadcast !== false) reasons.push("carry_diagnostic_broadcast_unsafe");
+  const pairs = Array.isArray(evidence.pairs) ? evidence.pairs : [];
+  const expectedPairs = allVenuePairs(expectedVenues);
+  if (pairs.length !== expectedPairs.length) reasons.push("carry_diagnostic_pair_count_invalid");
+  for (const [left, right] of expectedPairs) {
+    const matches = pairs.filter((pair) => [pair?.long_venue_id, pair?.short_venue_id].includes(left)
+      && [pair?.long_venue_id, pair?.short_venue_id].includes(right)
+      && pair?.long_venue_id !== pair?.short_venue_id);
+    const pair = matches[0];
+    if (matches.length !== 1) {
+      reasons.push(`carry_diagnostic_pair_missing:${left}:${right}`);
+      continue;
+    }
+    if (typeof pair.no_submit_ready !== "boolean" || pair.transaction_broadcast !== false) {
+      reasons.push(`carry_diagnostic_pair_invalid:${left}:${right}`);
+    }
+    if (pair.no_submit_ready === true && pair.error_code !== null) reasons.push(`carry_diagnostic_ready_pair_error:${left}:${right}`);
+    if (pair.no_submit_ready === false && !diagnosticErrorCode(pair.error_code)) reasons.push(`carry_diagnostic_pair_error_missing:${left}:${right}`);
+  }
+  const failures = Array.isArray(evidence.failures) ? evidence.failures : [];
+  if (!failures.every(diagnosticErrorCode)) reasons.push("carry_diagnostic_failure_invalid");
+  if (!commitment(evidence.diagnostic_commitment) || evidence.diagnostic_commitment !== diagnosticCommitment(evidence)) {
+    reasons.push("carry_diagnostic_commitment_invalid");
+  }
+  return diagnosticResult(reasons.length === 0, reasons, {
+    mode: "carry_execution_no_submit_matrix_diagnostic",
+    owner_commitment: evidence.owner_commitment,
+    asset: evidence.asset,
+    notional_usd: evidence.notional_usd,
+    horizon_days: evidence.horizon_days,
+    image_digest: evidence.image_digest,
+    registry_venue_ids: Object.freeze([...expectedVenues]),
+    checked_at_ms: checkedAt || null,
+    expires_at_ms: checkedAt ? checkedAt + maxAge : null,
+    transaction_broadcast: evidence.transaction_broadcast === false ? false : null,
+    pairs: Object.freeze(pairs.map((pair) => Object.freeze({ ...pair }))),
+    failures: Object.freeze([...failures]),
+    diagnostic_commitment: evidence.diagnostic_commitment || null,
+  });
+}
+
 export function assessCarryExecutionReadiness({ evidence, owner_commitment: ownerCommitment, venue_access: venueAccess, asset, notional_usd: notionalUsd, horizon_days: horizonDays, now_ms: nowMs = Date.now(), env = process.env }) {
   const reasons = [];
   const expectedImage = runtimeCarryQualificationImageDigest(env);
@@ -302,13 +408,53 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
   return evidence;
 }
 
+function buildCarryExecutionDiagnostic({ request, matrix, now_ms: nowMs, env }) {
+  const evidence = {
+    version: 1,
+    kind: "carry_execution_matrix_diagnostic",
+    diagnostic_only: true,
+    reusable_for_readiness: false,
+    owner_commitment: String(request?.owner_commitment || ""),
+    operation_class: String(request?.operation_class || ""),
+    work_order_commitment: String(request?.work_order_commitment || ""),
+    asset: String(request?.asset || "").toUpperCase(),
+    notional_usd: canonicalDecimal(request?.notional_usd),
+    horizon_days: canonicalDecimal(request?.horizon_days),
+    image_digest: runtimeCarryQualificationImageDigest(env),
+    registry_venue_ids: [...CARRY_EXECUTION_VENUES],
+    checked_at_ms: nowMs,
+    transaction_broadcast: matrix?.transaction_broadcast === false ? false : null,
+    pairs: (Array.isArray(matrix?.pairs) ? matrix.pairs : []).map((pair) => ({
+      long_venue_id: String(pair?.long_venue_id || ""),
+      short_venue_id: String(pair?.short_venue_id || ""),
+      no_submit_ready: pair?.no_submit_ready === true,
+      transaction_broadcast: pair?.transaction_broadcast === false ? false : null,
+      error_code: pair?.no_submit_ready === true
+        ? null
+        : diagnosticErrorCode(pair?.error_code) || "carry_pair_not_ready",
+    })),
+    failures: (Array.isArray(matrix?.failures) ? matrix.failures : []).filter(diagnosticErrorCode),
+  };
+  evidence.diagnostic_commitment = diagnosticCommitment(evidence);
+  return evidence;
+}
+
 function readinessKey({ owner_commitment: ownerCommitment, image_digest: imageDigest, venue_ids: venueIds, asset, notional_usd: notionalUsd, horizon_days: horizonDays }) {
   return `carry:readiness:${createHash("sha256").update(JSON.stringify({ ownerCommitment, imageDigest, venueIds, asset, notionalUsd, horizonDays })).digest("hex").slice(0, 40)}`;
+}
+
+function diagnosticKey({ owner_commitment: ownerCommitment, image_digest: imageDigest, asset, notional_usd: notionalUsd, horizon_days: horizonDays }) {
+  return `carry:diagnostic:${createHash("sha256").update(JSON.stringify({ ownerCommitment, imageDigest, asset, notionalUsd, horizonDays })).digest("hex").slice(0, 40)}`;
 }
 
 function evidenceCommitment(evidence) {
   const { evidence_commitment: _ignored, ...material } = evidence || {};
   return `carry:readiness:evidence:${createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 40)}`;
+}
+
+function diagnosticCommitment(evidence) {
+  const { diagnostic_commitment: _ignored, ...material } = evidence || {};
+  return `carry:diagnostic:evidence:${createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 40)}`;
 }
 
 export function carryAccountStateCommitment(value) {
@@ -352,6 +498,17 @@ function readinessResult(ready, reasons, extra = {}) {
   });
 }
 
+function diagnosticResult(available, reasons, extra = {}) {
+  return Object.freeze({
+    version: 1,
+    available,
+    diagnostic_only: true,
+    reusable_for_readiness: false,
+    reasons: Object.freeze([...new Set(reasons)]),
+    ...extra,
+  });
+}
+
 function readinessMaxAge(env) {
   const parsed = Number.parseInt(String(env.PRIVATE_AGENT_CARRY_READINESS_MAX_AGE_MS || ""), 10);
   return Number.isInteger(parsed) ? Math.max(60_000, Math.min(86_400_000, parsed)) : DEFAULT_MAX_AGE_MS;
@@ -359,6 +516,10 @@ function readinessMaxAge(env) {
 
 function commitment(value) {
   return typeof value === "string" && /^[A-Za-z0-9:_-]{8,180}$/.test(value);
+}
+
+function diagnosticErrorCode(value) {
+  return typeof value === "string" && /^[a-z][a-z0-9:_-]{2,220}$/.test(value) ? value : null;
 }
 
 function positiveInteger(value) {

@@ -32,7 +32,10 @@ import {
   startCarryFundingObservationLoop,
 } from "./execution/carry-funding-persistence.js";
 import { observeCarryShadowQualification } from "./execution/carry-shadow-qualification.js";
-import { readCarryExecutionReadiness } from "./execution/carry-readiness.js";
+import {
+  readCarryExecutionDiagnostic,
+  readCarryExecutionReadiness,
+} from "./execution/carry-readiness.js";
 import { executeStoredCarryEntry, startCarryExecutionLoop } from "./execution/carry-executor.js";
 import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-evidence.js";
 import {
@@ -1693,11 +1696,22 @@ function validateCarryReadinessRequest(body, recipient) {
   if (!(Number(body?.horizon_days) >= 1) || Number(body?.horizon_days) > 365) errors.push("carry readiness horizon is invalid");
   for (const venueId of CARRY_EXECUTION_VENUES) {
     const access = body?.venue_access?.[venueId];
-    if (!isObject(access) || access.status !== "ready") {
-      errors.push(`${venueId} venue access is required`);
+    if (!isObject(access)) {
+      errors.push(`${venueId} venue access marker is required`);
       continue;
     }
     if (access.owner_commitment !== body.owner_commitment) errors.push(`${venueId} owner commitment mismatch`);
+    if (access.status === "not_ready") {
+      const allowedFields = new Set(["status", "owner_commitment"]);
+      if (Object.keys(access).some((field) => !allowedFields.has(field))) {
+        errors.push(`${venueId} non-ready venue access must be sanitized`);
+      }
+      continue;
+    }
+    if (access.status !== "ready") {
+      errors.push(`${venueId} venue access status is invalid`);
+      continue;
+    }
     for (const field of ["account_commitment", "vault_commitment", "policy_commitment"]) {
       if (!isNonEmptyString(access[field])) errors.push(`${venueId} ${field} is required`);
     }
@@ -2870,14 +2884,27 @@ export function createPrivateAgentWorkerServer(options = {}) {
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
         }
-        return json(res, 200, await readCarryExecutionReadiness({
-          state,
-          owner_commitment: body.owner_commitment,
-          venue_access: body.venue_access,
-          asset: body.asset,
-          notional_usd: body.notional_usd,
-          horizon_days: body.horizon_days,
-        }));
+        const nowMs = Date.now();
+        const [readiness, diagnostic] = await Promise.all([
+          readCarryExecutionReadiness({
+            state,
+            owner_commitment: body.owner_commitment,
+            venue_access: body.venue_access,
+            asset: body.asset,
+            notional_usd: body.notional_usd,
+            horizon_days: body.horizon_days,
+            now_ms: nowMs,
+          }),
+          readCarryExecutionDiagnostic({
+            state,
+            owner_commitment: body.owner_commitment,
+            asset: body.asset,
+            notional_usd: body.notional_usd,
+            horizon_days: body.horizon_days,
+            now_ms: nowMs,
+          }),
+        ]);
+        return json(res, 200, { ...readiness, diagnostic });
       }
 
       if (req.method === "POST" && url.pathname.startsWith("/carry/positions")) {

@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CARRY_EXECUTION_VENUES, venueAdapterCapability } from "@ghola/execution-core";
 import {
+  assessCarryExecutionDiagnostic,
   assessCarryExecutionReadiness,
   carryAccountStateCommitment,
+  readCarryExecutionDiagnostic,
   readCarryExecutionReadiness,
+  storeCarryExecutionDiagnostic,
   storeCarryExecutionReadiness,
 } from "../src/execution/carry-readiness.js";
 
@@ -144,6 +147,79 @@ test("persists deployment-, owner-, account-, and registry-bound three-venue rea
     && item.account_state_checked_at_ms === NOW
     && item.account_state_commitment.startsWith("carry:account-state:")
   ), true);
+});
+
+test("persists partial matrix diagnostics without creating reusable readiness", async () => {
+  const state = memoryState();
+  const partial = matrix();
+  for (const pair of partial.pairs) {
+    if ([pair.long_venue_id, pair.short_venue_id].includes("aster")) {
+      pair.no_submit_ready = false;
+      pair.capital_ready = false;
+      pair.error_code = "carry_account_not_ready:aster";
+      pair.account_readiness = [];
+      pair.leg_evidence = [];
+    }
+  }
+  partial.failures = [
+    "pair_check_failed:2:carry_account_not_ready:aster",
+    "pair_check_failed:3:carry_account_not_ready:aster",
+  ];
+
+  const stored = await storeCarryExecutionDiagnostic({
+    state,
+    request: request(),
+    matrix: partial,
+    now_ms: NOW,
+    env: ENV,
+  });
+  assert.equal(stored.ok, true);
+  assert.equal(stored.diagnostic.available, true);
+  assert.equal(stored.diagnostic.diagnostic_only, true);
+  assert.equal(stored.diagnostic.reusable_for_readiness, false);
+  assert.equal(stored.diagnostic.pairs.filter((pair) => pair.no_submit_ready).length, 1);
+  assert.equal(state.rows.size, 1);
+
+  const diagnostic = await readCarryExecutionDiagnostic({
+    state,
+    owner_commitment: OWNER,
+    asset: "BTC",
+    notional_usd: "11",
+    horizon_days: "30",
+    now_ms: NOW + 1_000,
+    env: ENV,
+  });
+  assert.equal(diagnostic.available, true);
+  assert.equal(diagnostic.reusable_for_readiness, false);
+  assert.ok(diagnostic.diagnostic_commitment.startsWith("carry:diagnostic:evidence:"));
+
+  const readiness = await readCarryExecutionReadiness({
+    state,
+    owner_commitment: OWNER,
+    venue_access: request().venue_access,
+    asset: "BTC",
+    notional_usd: "11",
+    horizon_days: "30",
+    now_ms: NOW + 1_000,
+    env: ENV,
+  });
+  assert.equal(readiness.ready, false);
+  assert.ok(readiness.reasons.includes("carry_readiness_evidence_missing"));
+
+  const evidence = structuredClone([...state.rows.values()][0].receipt);
+  evidence.pairs[0].no_submit_ready = !evidence.pairs[0].no_submit_ready;
+  const tampered = assessCarryExecutionDiagnostic({
+    evidence,
+    owner_commitment: OWNER,
+    asset: "BTC",
+    notional_usd: "11",
+    horizon_days: "30",
+    now_ms: NOW + 1_000,
+    env: ENV,
+  });
+  assert.equal(tampered.available, false);
+  assert.ok(tampered.reasons.some((reason) => reason.startsWith("carry_diagnostic_pair_error_missing:")));
+  assert.ok(tampered.reasons.includes("carry_diagnostic_commitment_invalid"));
 });
 
 test("preserves independent route readiness across assets and parameters", async () => {

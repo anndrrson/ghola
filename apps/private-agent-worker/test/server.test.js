@@ -640,6 +640,7 @@ describe("private agent worker", () => {
 
   it("returns ready-pair evidence when a matrix venue has a sanitized not-ready marker", async () => {
     await close(server);
+    process.env.PHALA_CVM_IMAGE_DIGEST = "sha256:abcdef123456";
     const account = {
       can_trade: true,
       available_balance: 500,
@@ -737,6 +738,33 @@ describe("private agent worker", () => {
     assert.equal(matrix.pairs.filter((pair) => pair.no_submit_ready).length, 1);
     assert.equal(matrix.pairs.find((pair) => pair.no_submit_ready).leg_evidence.length, 2);
     assert.equal(matrix.pairs.filter((pair) => pair.error_code === "carry_account_not_ready:aster").length, 2);
+
+    const diagnosticResponse = await fetch(`${baseUrl}/carry/readiness`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        owner_commitment: ownerCommitment,
+        operation_class: "readiness_read",
+        work_order_commitment: "carry_diagnostic_http_partial_0001",
+        asset: "BTC",
+        notional_usd: "11",
+        horizon_days: "1",
+        venue_access: venueAccess,
+      }),
+    });
+    const restored = await diagnosticResponse.json();
+    assert.equal(diagnosticResponse.status, 200, JSON.stringify(restored));
+    assert.equal(restored.ready, false);
+    assert.equal(restored.diagnostic.available, true);
+    assert.equal(restored.diagnostic.diagnostic_only, true);
+    assert.equal(restored.diagnostic.reusable_for_readiness, false);
+    assert.equal(restored.diagnostic.pairs.filter((pair) => pair.no_submit_ready).length, 1);
   });
 
   it("can require dstack quote evidence before accepting production sessions", async () => {

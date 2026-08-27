@@ -293,6 +293,52 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("1/3 PAIRS · ASTER BLOCKED");
   });
 
+  it("restores fresh diagnostic-only fleet evidence after refresh without treating it as readiness", async () => {
+    const now = Date.now();
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.getCarryExecutionReadiness.mockResolvedValue({
+      ready: false,
+      reasons: ["carry_readiness_evidence_missing"],
+      diagnostic: {
+        version: 1,
+        available: true,
+        diagnostic_only: true,
+        reusable_for_readiness: false,
+        mode: "carry_execution_no_submit_matrix_diagnostic",
+        asset: "BTC",
+        notional_usd: "11",
+        horizon_days: "30",
+        image_digest: "sha256:abcdef123456",
+        registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+        checked_at_ms: now - 120_000,
+        expires_at_ms: now + 60_000,
+        transaction_broadcast: false,
+        diagnostic_commitment: "carry:diagnostic:evidence:abcdef123456",
+        pairs: [
+          { long_venue_id: "hyperliquid", short_venue_id: "aster", no_submit_ready: false, transaction_broadcast: false, error_code: "carry_account_not_ready:aster" },
+          { long_venue_id: "lighter", short_venue_id: "hyperliquid", no_submit_ready: true, transaction_broadcast: false, error_code: null },
+          { long_venue_id: "aster", short_venue_id: "lighter", no_submit_ready: false, transaction_broadcast: false, error_code: "carry_account_not_ready:aster" },
+        ],
+        failures: [
+          "pair_check_failed:1:carry_account_not_ready:aster",
+          "pair_check_failed:3:carry_account_not_ready:aster",
+        ],
+      },
+    });
+
+    await act(async () => {
+      root.render(<CarryTerminalBuilder candidate={candidate()} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("1/3 PAIRS · ASTER BLOCKED · 2M");
+    expect(container.textContent).toContain("NO-SUBMIT CHECK");
+    expect(container.textContent).not.toContain("FLEET READY");
+    expect(api.preflightCarryExecutionMatrix).not.toHaveBeenCalled();
+  });
+
   it("consumes the setup handoff once and runs only the no-submit proof", async () => {
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
     api.preflightCarryPair.mockResolvedValue({

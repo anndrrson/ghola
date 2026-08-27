@@ -259,6 +259,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("preflight", "Promise.allSettled(pairs.map", "carry_no_submit_pair_fault_isolation_missing");
   requireText("server", 'access.status === "not_ready"', "carry_matrix_not_ready_marker_validation_missing");
   requireText("server", "non-ready venue access must be sanitized", "carry_matrix_not_ready_marker_sanitization_missing");
+  requireText("preflight", "storeCarryExecutionDiagnostic", "carry_partial_matrix_diagnostic_store_missing");
+  requireText("readiness", "export async function readCarryExecutionDiagnostic", "carry_partial_matrix_diagnostic_restore_missing");
+  requireText("readiness", "reusable_for_readiness: false", "carry_partial_matrix_diagnostic_authority_boundary_missing");
+  requireText("readinessTest", "persists partial matrix diagnostics without creating reusable readiness", "carry_partial_matrix_diagnostic_test_missing");
   requireText("preflightTest", "isolates failed pairs without discarding successful no-submit evidence or retrying", "carry_no_submit_pair_fault_isolation_test_missing");
   requireText("preflight", "leg_evidence: (result?.evidence || [])", "carry_pair_leg_evidence_missing");
   requireText("privateExecution", "account_commitment: body.account_commitment || null", "carry_no_submit_receipt_account_binding_missing");
@@ -633,6 +637,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("serverTest", "returns ready-pair evidence when a matrix venue has a sanitized not-ready marker", "carry_partial_matrix_http_proof_missing");
   requireText("server", '"/carry/readiness"', "carry_readiness_resume_worker_route_missing");
   requireText("server", "readCarryExecutionReadiness", "carry_readiness_resume_worker_missing");
+  requireText("server", "readCarryExecutionDiagnostic", "carry_diagnostic_resume_worker_missing");
   requireText("webRoute", '"x-ghola-carry-qualification-confirmed": "true"', "web_confirmation_header_missing");
   requireText("webClient", "qualification_pilot_confirmed", "web_confirmation_input_missing");
   requireText("webClient", "preflightCarryExecutionMatrix", "carry_three_venue_no_submit_client_missing");
@@ -701,6 +706,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "CARRY_EXECUTION_VENUES.every", "carry_terminal_matrix_registry_missing");
   requireText("webCarryBuilder", "carryFleetGuardSummary", "carry_terminal_partial_fleet_evidence_missing");
   requireText("webCarryBuilderTest", "FLEET 1/3 · ASTER BLOCKED", "carry_terminal_partial_fleet_evidence_test_missing");
+  requireText("webCarryBuilder", "readyStoredDiagnostic", "carry_terminal_diagnostic_restore_missing");
+  requireText("webCarryBuilderTest", "restores fresh diagnostic-only fleet evidence after refresh without treating it as readiness", "carry_terminal_diagnostic_restore_test_missing");
   forbidText("webCarryBuilder", '["hyperliquid", "lighter", "aster"]', "carry_terminal_matrix_registry_duplicated");
   requireText("webCarryBuilder", "preflightCarryPair", "carry_terminal_pair_no_submit_missing");
   requireText("webCarryBuilder", "long_venue=${encodeURIComponent(candidate.long.venue_id)}", "carry_terminal_pair_setup_binding_missing");

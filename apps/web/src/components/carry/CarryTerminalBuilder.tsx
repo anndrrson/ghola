@@ -217,7 +217,15 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
       horizon_days: days,
     })
       .then((value) => {
-        if (!cancelled) setReadiness(asRecord(value));
+        if (cancelled) return;
+        const next = asRecord(value);
+        setReadiness(next);
+        const diagnostic = asRecord(next.diagnostic);
+        if (readyStoredDiagnostic(diagnostic, candidate.asset, notional, days)) {
+          setExecutionMatrix((current) => matrixCheckedAtMs(diagnostic) > matrixCheckedAtMs(current)
+            ? diagnostic
+            : current);
+        }
       })
       .catch(() => {
         if (!cancelled) setReadiness(null);
@@ -1267,11 +1275,43 @@ export function carryFleetGuardSummary(
     : readyPairs === pairs.length
       ? "EVIDENCE BLOCKED"
       : "DEGRADED";
+  const age = carryMatrixAge(matrix);
   return {
-    value: `${readyPairs}/${pairs.length} PAIRS · ${detail}`,
-    receipt: `${readyPairs}/${pairs.length} · ${detail}`,
+    value: `${readyPairs}/${pairs.length} PAIRS · ${detail}${age ? ` · ${age}` : ""}`,
+    receipt: `${readyPairs}/${pairs.length} · ${detail}${age ? ` · ${age}` : ""}`,
     tone: readyPairs > 0 ? "warn" : "bad",
   };
+}
+
+function readyStoredDiagnostic(value: Record<string, unknown>, asset: string, notional: string, days: string) {
+  if (value.available !== true || value.diagnostic_only !== true || value.reusable_for_readiness !== false) return false;
+  if (value.mode !== "carry_execution_no_submit_matrix_diagnostic" || value.transaction_broadcast !== false) return false;
+  if (value.asset !== asset.toUpperCase() || Number(value.notional_usd) !== Number(notional) || Number(value.horizon_days) !== Number(days)) return false;
+  if (!Number.isSafeInteger(value.checked_at_ms) || !Number.isSafeInteger(value.expires_at_ms) || Number(value.expires_at_ms) <= Date.now()) return false;
+  if (typeof value.image_digest !== "string" || !value.image_digest.startsWith("sha256:")) return false;
+  if (typeof value.diagnostic_commitment !== "string" || !value.diagnostic_commitment.startsWith("carry:diagnostic:evidence:")) return false;
+  const expectedPairCount = CARRY_EXECUTION_VENUES.length * (CARRY_EXECUTION_VENUES.length - 1) / 2;
+  if (!Array.isArray(value.pairs) || value.pairs.length !== expectedPairCount) return false;
+  const registryVenueIds = value.registry_venue_ids;
+  return Array.isArray(registryVenueIds)
+    && registryVenueIds.length === CARRY_EXECUTION_VENUES.length
+    && CARRY_EXECUTION_VENUES.every((venueId, index) => registryVenueIds[index] === venueId);
+}
+
+function matrixCheckedAtMs(value: Record<string, unknown> | null) {
+  if (!value) return 0;
+  if (Number.isSafeInteger(value.checked_at_ms)) return Number(value.checked_at_ms);
+  const parsed = typeof value.checked_at === "string" ? Date.parse(value.checked_at) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function carryMatrixAge(value: Record<string, unknown> | null) {
+  const checkedAt = matrixCheckedAtMs(value);
+  if (!checkedAt) return null;
+  const ageMs = Math.max(0, Date.now() - checkedAt);
+  if (ageMs < 60_000) return "<1M";
+  if (ageMs < 3_600_000) return `${Math.floor(ageMs / 60_000)}M`;
+  return `${Math.floor(ageMs / 3_600_000)}H`;
 }
 
 function readyNoSubmitMatrix(value: Record<string, unknown>, asset: string, notional: string, days: string) {

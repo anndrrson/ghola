@@ -980,7 +980,10 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
   assert.equal(result.readiness.capital_ready, true);
   assert.equal(result.readiness.owner_commitment, "owner_commitment_matrix_0001");
   assert.equal(result.readiness.image_digest, "sha256:abcdef123456");
-  assert.equal(rows.size, 1);
+  assert.equal(result.diagnostic_persisted, true);
+  assert.equal(result.diagnostic.diagnostic_only, true);
+  assert.equal(result.diagnostic.reusable_for_readiness, false);
+  assert.equal(rows.size, 2);
   assert.equal(new Set(calls.map((call) => call.venue_id)).size, 3);
   assert.equal(result.checked_at, new Date(NOW).toISOString());
   assert.equal(nowCalls, 1);
