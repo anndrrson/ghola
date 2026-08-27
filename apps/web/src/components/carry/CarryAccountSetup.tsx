@@ -45,6 +45,7 @@ import {
 import {
   carryAccountConnectionProgress,
   carryAccountConnections,
+  carryNoSubmitVerificationHref,
   carryAccountSetupNextAction,
 } from "@/lib/carry-account-connections";
 import {
@@ -110,6 +111,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const [checkingLighterReadiness, setCheckingLighterReadiness] = useState(false);
   const [injectedOwnerAvailable, setInjectedOwnerAvailable] = useState(false);
   const safeReturnTo = returnTo === "/carry" || returnTo.startsWith("/trade?") ? returnTo : "/carry";
+  const noSubmitReturnTo = carryNoSubmitVerificationHref(safeReturnTo);
   const recoveryUserScope = opaqueTurnkeyWalletScope(auth.user?.id || "");
   const asterWalletRepairRequested = asterWalletRepairRequired ||
     (!asterWalletRepairCompleted && searchParams.get("repair") === "aster-wallet");
@@ -783,7 +785,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                   {connectionProgress.connectedCount}/{connectionProgress.requiredCount}
                 </p>
                 {nextSetupAction.kind === "verify_routes" ? (
-                  <Link href={safeReturnTo} className="inline-flex h-10 items-center rounded-md bg-[#56d6a0] px-4 text-sm font-semibold text-[#06130e]">
+                  <Link href={noSubmitReturnTo} className="inline-flex h-10 items-center rounded-md bg-[#56d6a0] px-4 text-sm font-semibold text-[#06130e]">
                     {nextSetupLabel}
                   </Link>
                 ) : nextSetupAction.venueId === "hyperliquid" ? (

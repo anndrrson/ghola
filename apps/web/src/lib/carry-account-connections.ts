@@ -69,6 +69,15 @@ export function carryAccountSetupNextAction(
   return Object.freeze({ kind: "connect_venue", venueId });
 }
 
+export function carryNoSubmitVerificationHref(returnTo: string): string {
+  const fallback = "/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open";
+  const target = returnTo === "/carry" ? fallback : returnTo.startsWith("/trade?") ? returnTo : fallback;
+  const url = new URL(target, "https://ghola.local");
+  url.searchParams.set("carry", "open");
+  url.searchParams.set("carry_check", "no-submit");
+  return `${url.pathname}?${url.searchParams.toString()}`;
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>

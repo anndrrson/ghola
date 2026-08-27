@@ -273,6 +273,50 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("THREE-VENUE NOT READY");
   });
 
+  it("consumes the setup handoff once and runs only the no-submit proof", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.preflightCarryPair.mockResolvedValue({
+      correlation_id: "ghola-pair-auto-1234",
+      no_submit_ready: true,
+      live_creation_ready: false,
+      qualification_pilot_ready: false,
+      creation_opportunity: { eligible: false },
+    });
+    const consumed = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <CarryTerminalBuilder
+          candidate={candidate()}
+          autoRunNoSubmit
+          onAutoRunNoSubmitConsumed={consumed}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(consumed).toHaveBeenCalledOnce();
+    expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
+    expect(api.preflightCarryPair).toHaveBeenCalledOnce();
+    expect(api.createCarryPosition).not.toHaveBeenCalled();
+    expect(api.executeCarryPositionEntry).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.render(
+        <CarryTerminalBuilder
+          candidate={candidate()}
+          autoRunNoSubmit
+          onAutoRunNoSubmitConsumed={consumed}
+        />,
+      );
+      await Promise.resolve();
+    });
+    expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
+    expect(api.preflightCarryPair).toHaveBeenCalledOnce();
+  });
+
   it("restores fresh deployment-bound readiness after refresh without rerunning the three-venue matrix", async () => {
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
     api.getCarryExecutionReadiness.mockResolvedValue(readyReadiness());

@@ -862,6 +862,8 @@ function AlternateProductWorkspace({
 }) {
   const router = useRouter();
   const workspaceParams = useSearchParams();
+  const workspaceQuery = workspaceParams.toString();
+  const carryNoSubmitQuery = workspaceParams.get("carry_check");
   const perpsTurnkey = usePerpsTurnkey();
   const privateAccountWallet = useTurnkeyWallet();
   // This value must be identical during SSR and the browser's first render.
@@ -895,6 +897,8 @@ function AlternateProductWorkspace({
     notional: string;
   } | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
+  const [carryNoSubmitRequested, setCarryNoSubmitRequested] = useState(false);
+  const carryNoSubmitUrlConsumedRef = useRef(false);
   const [activityTab, setActivityTab] = useState<"positions" | "orders" | "activity">("positions");
   const [perpMarket, setPerpMarket] = useState(initialPerpMarket);
   const [perpMarkets, setPerpMarkets] = useState<Array<{ coin: string; max_leverage: number | null }>>([
@@ -919,6 +923,23 @@ function AlternateProductWorkspace({
   const legacyHyperliquidApiKeysEnabled =
     process.env.NEXT_PUBLIC_GHOLA_LEGACY_HYPERLIQUID_API_KEYS === "true";
   const useHyperliquidMarket = active && product === "perps" && venue === "hyperliquid";
+
+  useEffect(() => {
+    if (carryNoSubmitQuery !== "no-submit") {
+      carryNoSubmitUrlConsumedRef.current = false;
+      return;
+    }
+    if (carryNoSubmitUrlConsumedRef.current) return;
+    carryNoSubmitUrlConsumedRef.current = true;
+    setCarryNoSubmitRequested(true);
+    const params = new URLSearchParams(workspaceQuery);
+    params.delete("carry_check");
+    replaceTradeUrlAfterPaint(`/trade?${params.toString()}`);
+  }, [carryNoSubmitQuery, workspaceQuery]);
+
+  const consumeCarryNoSubmitRequest = useCallback(() => {
+    setCarryNoSubmitRequested(false);
+  }, []);
   const hyperliquidRecord = useMarketData({
     venue: "hyperliquid",
     network: hyperliquidNetwork,
@@ -1606,7 +1627,9 @@ function AlternateProductWorkspace({
               <CarryChartStrip
                 asset={perpMarket}
                 defaultOpen={workspaceParams.get("carry") === "open"}
+                autoRunNoSubmit={carryNoSubmitRequested}
                 hyperliquidLivePatch={hyperliquidCarryPatch}
+                onAutoRunNoSubmitConsumed={consumeCarryNoSubmitRequest}
                 onAssetSelect={changePerpMarket}
               />
             )}

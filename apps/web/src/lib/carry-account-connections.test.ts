@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   carryAccountConnectionProgress,
   carryAccountConnections,
+  carryNoSubmitVerificationHref,
   carryAccountSetupNextAction,
 } from "./carry-account-connections";
 
@@ -75,5 +76,19 @@ describe("Carry account connections", () => {
       venues: { hyperliquid: true, aster: true, lighter: true },
     });
     expect(carryAccountSetupNextAction(progress)).toEqual({ kind: "verify_routes", venueId: null });
+  });
+
+  it("hands completed setup to one explicit no-submit terminal check", () => {
+    expect(carryNoSubmitVerificationHref(
+      "/trade?product=perps&venue=hyperliquid&market=ETH-PERP&carry=open",
+    )).toBe(
+      "/trade?product=perps&venue=hyperliquid&market=ETH-PERP&carry=open&carry_check=no-submit",
+    );
+    expect(carryNoSubmitVerificationHref("/carry")).toBe(
+      "/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&carry_check=no-submit",
+    );
+    expect(carryNoSubmitVerificationHref("https://evil.example/trade")).toBe(
+      "/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&carry_check=no-submit",
+    );
   });
 });

@@ -151,6 +151,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("multiLegOrchestratorTest", "hedgeVenue !== filledVenue", "carry_ordered_pair_recovery_matrix_missing");
   requireText("multiLegOrchestratorTest", "reduce_only === true", "carry_recovery_reduce_only_assertion_missing");
   requireText("webAccountSetup", "shouldResumeUnsignedTurnkeySetup", "carry_setup_session_recovery_missing");
+  requireText("webAccountConnections", "carryNoSubmitVerificationHref", "carry_setup_no_submit_handoff_missing");
+  requireText("webAccountSetup", "href={noSubmitReturnTo}", "carry_setup_no_submit_link_missing");
+  requireText("webTradeWorkspace", 'carryNoSubmitQuery !== "no-submit"', "carry_terminal_no_submit_intent_missing");
+  requireText("webCarryBuilder", "autoRunNoSubmitConsumedRef", "carry_terminal_no_submit_one_shot_missing");
+  requireText("webCarryBuilderTest", "consumes the setup handoff once and runs only the no-submit proof", "carry_terminal_no_submit_handoff_test_missing");
   requireText("webSetupAuthRecovery", "!input.usingTurnkeyOwner || input.authorizationProofCreated", "carry_setup_auth_proof_boundary_missing");
   requireText("webSetupAuthRecoveryTest", "reauthenticates an exact prepared action", "carry_setup_unsigned_recovery_test_missing");
   requireText("webSetupAuthRecoveryTest", "never reauthenticates as a substitute for reconciling", "carry_setup_authorization_reconciliation_test_missing");

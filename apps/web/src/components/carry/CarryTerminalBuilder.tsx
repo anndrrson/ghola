@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   approveCarryCollateralReview,
   createCarryPosition,
@@ -113,8 +113,12 @@ type CarryRecord = {
 
 export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   candidate,
+  autoRunNoSubmit = false,
+  onAutoRunNoSubmitConsumed,
 }: {
   candidate: CarryCandidate;
+  autoRunNoSubmit?: boolean;
+  onAutoRunNoSubmitConsumed?: () => void;
 }) {
   const perpsTurnkey = usePerpsTurnkey();
   const [notional, setNotional] = useState("11");
@@ -132,6 +136,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const [busy, setBusy] = useState<"check" | "save" | "enter" | "exit" | "approve" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [lastCheckReceipt, setLastCheckReceipt] = useState<string | null>(null);
+  const autoRunNoSubmitConsumedRef = useRef(false);
   const routeKey = `${candidate.asset}:${candidate.long.venue_id}:${candidate.short.venue_id}`;
   const model = useMemo(() => builderModel(candidate, notional, days), [candidate, days, notional]);
   const executionPair = isCarryExecutionVenue(candidate.long.venue_id)
@@ -268,7 +273,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     setMessage(null);
   };
 
-  async function runCheck() {
+  const runCheck = useCallback(async () => {
     if (!executionPair) return;
     const localReference = shortReference(`ghola-${Date.now().toString(36)}`);
     const checkedRoute = `${candidate.asset} · L ${venueName(candidate.long.venue_id)} / S ${venueName(candidate.short.venue_id)}`;
@@ -329,7 +334,27 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     } finally {
       setBusy(null);
     }
-  }
+  }, [
+    candidate.asset,
+    candidate.long.venue_id,
+    candidate.short.venue_id,
+    days,
+    executionPair,
+    notional,
+    readiness,
+    restoredReadiness,
+  ]);
+
+  useEffect(() => {
+    if (!autoRunNoSubmit) {
+      autoRunNoSubmitConsumedRef.current = false;
+      return;
+    }
+    if (!executionPair || autoRunNoSubmitConsumedRef.current) return;
+    autoRunNoSubmitConsumedRef.current = true;
+    onAutoRunNoSubmitConsumed?.();
+    void runCheck();
+  }, [autoRunNoSubmit, executionPair, onAutoRunNoSubmitConsumed, runCheck]);
 
   async function savePosition() {
     if (!proof) return;

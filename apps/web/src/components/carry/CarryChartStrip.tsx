@@ -36,12 +36,16 @@ const CARRY_ROUTE_DISPLAY_MAX_AGE_MS = 30_000;
 export function CarryChartStrip({
   asset,
   defaultOpen = false,
+  autoRunNoSubmit = false,
   hyperliquidLivePatch,
+  onAutoRunNoSubmitConsumed,
   onAssetSelect,
 }: {
   asset: string;
   defaultOpen?: boolean;
+  autoRunNoSubmit?: boolean;
   hyperliquidLivePatch?: CarryLiveMarketPatch | null;
+  onAutoRunNoSubmitConsumed?: () => void;
   onAssetSelect: (asset: string) => void;
 }) {
   const [data, setData] = useState<CarryShadowResponse | null>(null);
@@ -320,7 +324,11 @@ export function CarryChartStrip({
                   </select>
                 </label>
               ) : null}
-              <CarryTerminalBuilder candidate={selectedExecution.candidate} />
+              <CarryTerminalBuilder
+                candidate={selectedExecution.candidate}
+                autoRunNoSubmit={autoRunNoSubmit}
+                onAutoRunNoSubmitConsumed={onAutoRunNoSubmitConsumed}
+              />
             </>
           ) : null}
         </div>
