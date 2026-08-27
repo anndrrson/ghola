@@ -899,52 +899,43 @@ export async function collectStoredCarryFundingEvidence({ state, ownerCommitment
   const venues = [initial.position.long_venue_id, initial.position.short_venue_id];
   const cursors = { ...(initial.value_evidence?.funding?.cursor_ms_by_venue || {}) };
   const venueStatus = {};
-  for (const venueId of venues) {
-    let cursor = Number(cursors[venueId] || initial.position.created_at_ms || nowMs);
-    let caughtUp = true;
-    try {
-      for (let page = 0; cursor < nowMs && page < 16; page += 1) {
-        const end = Math.min(nowMs, cursor + 7 * 86_400_000);
-        const access = venueAccess[venueId];
-        const rows = await readFundingSettlements({
-          body: {
-            ...access,
-            venue_id: venueId,
-            asset: initial.position.asset,
-            start_time_ms: cursor,
-            end_time_ms: end,
-          },
-          recipient,
-          state,
-        });
-        for (const row of Array.isArray(rows) ? rows : []) {
-          const amountMicro = signedQuoteMicro(row.amount_quote);
-          const quoteAsset = String(row.quote_asset || "").toUpperCase();
-          const occurredAt = Number(row.occurred_at_ms);
-          if (amountMicro === null
-            || !new Set(["USD", "USDC", "USDT"]).has(quoteAsset)
-            || !Number.isSafeInteger(occurredAt)
-            || occurredAt < cursor
-            || occurredAt > end) throw new Error("funding_settlement_evidence_invalid");
-          const appended = await appendFundingEntryWithRetry({
-            state,
-            ownerCommitment,
-            positionId,
-            venueId,
-            row,
-            amountMicro,
-            nowMs,
-          });
-          if (!appended) throw new Error("funding_settlement_persistence_failed");
-        }
-        cursor = end;
-      }
-      caughtUp = cursor >= nowMs;
-      if (caughtUp) cursors[venueId] = nowMs;
-      venueStatus[venueId] = caughtUp ? "current" : "history_backfill_pending";
-    } catch (error) {
-      venueStatus[venueId] = safeError(error);
+  const venueReads = await Promise.all(venues.map((venueId) => readVenueFundingSettlements({
+    venueId,
+    asset: initial.position.asset,
+    access: venueAccess[venueId],
+    startMs: Number(cursors[venueId] || initial.position.created_at_ms || nowMs),
+    endMs: nowMs,
+    recipient,
+    state,
+    readFundingSettlements,
+  })));
+  for (const read of venueReads) {
+    if (!read.ok) {
+      venueStatus[read.venue_id] = read.error;
+      continue;
     }
+    let persisted = true;
+    for (const entry of read.entries) {
+      const appended = await appendFundingEntryWithRetry({
+        state,
+        ownerCommitment,
+        positionId,
+        venueId: read.venue_id,
+        row: entry.row,
+        amountMicro: entry.amount_micro_usdc,
+        nowMs,
+      });
+      if (!appended) {
+        persisted = false;
+        break;
+      }
+    }
+    if (!persisted) {
+      venueStatus[read.venue_id] = "funding_settlement_persistence_failed";
+      continue;
+    }
+    if (read.caught_up) cursors[read.venue_id] = nowMs;
+    venueStatus[read.venue_id] = read.caught_up ? "current" : "history_backfill_pending";
   }
   let storedRecord = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -972,6 +963,52 @@ export async function collectStoredCarryFundingEvidence({ state, ownerCommitment
     record: storedRecord ? publicRecord(storedRecord) : null,
     summary: { status: venues.every((venueId) => venueStatus[venueId] === "current") ? "current" : "pending", venue_status: venueStatus },
   };
+}
+
+async function readVenueFundingSettlements({ venueId, asset, access, startMs, endMs, recipient, state, readFundingSettlements }) {
+  let cursor = startMs;
+  const entries = [];
+  try {
+    for (let page = 0; cursor < endMs && page < 16; page += 1) {
+      const pageEnd = Math.min(endMs, cursor + 7 * 86_400_000);
+      const rows = await readFundingSettlements({
+        body: {
+          ...access,
+          venue_id: venueId,
+          asset,
+          start_time_ms: cursor,
+          end_time_ms: pageEnd,
+        },
+        recipient,
+        state,
+      });
+      for (const row of Array.isArray(rows) ? rows : []) {
+        const amountMicro = signedQuoteMicro(row.amount_quote);
+        const quoteAsset = String(row.quote_asset || "").toUpperCase();
+        const occurredAt = Number(row.occurred_at_ms);
+        if (amountMicro === null
+          || !new Set(["USD", "USDC", "USDT"]).has(quoteAsset)
+          || !Number.isSafeInteger(occurredAt)
+          || occurredAt < cursor
+          || occurredAt > pageEnd) throw new Error("funding_settlement_evidence_invalid");
+        entries.push({ row, amount_micro_usdc: amountMicro });
+      }
+      cursor = pageEnd;
+    }
+    return {
+      ok: true,
+      venue_id: venueId,
+      caught_up: cursor >= endMs,
+      entries,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      venue_id: venueId,
+      error: safeError(error),
+      entries: [],
+    };
+  }
 }
 
 async function appendFundingEntryWithRetry({ state, ownerCommitment, positionId, venueId, row, amountMicro, nowMs }) {

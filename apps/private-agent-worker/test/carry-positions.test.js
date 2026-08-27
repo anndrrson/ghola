@@ -622,6 +622,47 @@ test("monitoring appends only authoritative venue funding settlements", async (t
   assert.equal(result.record.value_evidence.funding.status, "current");
 });
 
+test("monitoring reads both venue funding ledgers concurrently and commits them deterministically", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-funding-concurrency-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  let activeReads = 0;
+  let maxActiveReads = 0;
+  const result = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => ({
+      economic_opportunity: monitoringOpportunity(NOW + 100, 9),
+      margin_runways: [
+        monitoringRunway("hyperliquid"),
+        monitoringRunway("lighter"),
+      ],
+      qualification_reasons: [],
+    }),
+    readFundingSettlements: async ({ body }) => {
+      activeReads += 1;
+      maxActiveReads = Math.max(maxActiveReads, activeReads);
+      await new Promise((resolve) => setImmediate(resolve));
+      activeReads -= 1;
+      return [{
+        settlement_id: `${body.venue_id}:settlement:parallel`,
+        occurred_at_ms: NOW + 50,
+        amount_quote: body.venue_id === "hyperliquid" ? "0.020" : "-0.005",
+        quote_asset: "USDC",
+      }];
+    },
+    now_ms: NOW + 100,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.funding.status, "current");
+  assert.equal(maxActiveReads, 2);
+  assert.deepEqual(result.record.value_ledger.entries.map((entry) => entry.venue_id), ["hyperliquid", "lighter"]);
+  assert.deepEqual(result.record.value_ledger.entries.map((entry) => entry.sequence), [1, 2]);
+});
+
 test("compiles an owner-only portfolio capital plan from stored monitoring evidence", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-portfolio-capital-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

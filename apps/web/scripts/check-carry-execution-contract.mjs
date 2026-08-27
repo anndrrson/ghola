@@ -458,11 +458,13 @@ export function checkCarryExecutionContract(sources) {
 
   requireText("positions", "PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_MAX_NOTIONAL_MICRO_USDC", "pilot_notional_cap_missing");
   requireText("positions", "margin_runway_status_by_venue", "carry_monitor_runway_status_missing");
+  requireText("positions", "const venueReads = await Promise.all", "carry_funding_parallel_read_missing");
   requireText("positions", 'return "carry_market_data_skew_exceeded"', "carry_storage_skew_gate_missing");
   requireText("positions", 'return "carry_contract_basis_exceeded"', "carry_storage_contract_basis_gate_missing");
   requireText("positions", 'return "carry_unsigned_contract_basis_limit"', "carry_storage_signed_basis_gate_missing");
   requireText("positionsTest", "refuses storage until venue accounts, synchronized equivalent contracts, and margin runways pass", "carry_storage_skew_test_missing");
   requireText("positionsTest", "margin_runway_status_by_venue.hyperliquid", "carry_monitor_runway_status_test_missing");
+  requireText("positionsTest", "monitoring reads both venue funding ledgers concurrently and commits them deterministically", "carry_funding_parallel_read_test_missing");
   requireText("releaseMaterialTest", "refuses release evidence without verified margin-runway status", "carry_release_runway_test_missing");
   requireText("releaseMaterialTest", "refuses release evidence without bounded contract equivalence", "carry_release_contract_basis_test_missing");
   requireText("evidenceVerifier", "margin_runway_status_missing", "carry_evidence_runway_status_gate_missing");

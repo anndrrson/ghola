@@ -504,6 +504,19 @@ test("rejects serial Carry monitoring that lets one venue stall every position",
   );
 });
 
+test("rejects serial funding-history reads across Carry legs", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll(
+        "const venueReads = await Promise.all",
+        "const venueReads = await seriallyRead",
+      ),
+    }),
+    /carry_funding_parallel_read_missing/,
+  );
+});
+
 test("rejects release without an unattended monitor-to-flat lifecycle proof", () => {
   assert.throws(
     () => checkCarryExecutionContract({
