@@ -35,12 +35,19 @@ export interface PendingLighterOnboarding {
   authorization: LighterAssociationProof;
 }
 
+export interface VenueAccountActivationRequirement {
+  owner_address: `0x${string}`;
+  reason: "venue_account_not_found";
+}
+
 export interface CarryOnboardingRecovery {
   version: 1;
   account_commitment: string;
   saved_at_ms: number;
   aster?: PendingAsterOnboarding;
   lighter?: PendingLighterOnboarding;
+  aster_activation?: VenueAccountActivationRequirement;
+  lighter_activation?: VenueAccountActivationRequirement;
 }
 
 export function readCarryOnboardingRecovery(
@@ -86,7 +93,7 @@ export function readCarryOnboardingRecoveryForUser(
 export function writeCarryOnboardingRecovery(
   storage: Pick<Storage, "setItem">,
   accountCommitment: string,
-  pending: Pick<CarryOnboardingRecovery, "aster" | "lighter">,
+  pending: Pick<CarryOnboardingRecovery, "aster" | "lighter" | "aster_activation" | "lighter_activation">,
   nowMs = Date.now(),
 ): CarryOnboardingRecovery {
   const value: CarryOnboardingRecovery = {
@@ -95,6 +102,8 @@ export function writeCarryOnboardingRecovery(
     saved_at_ms: nowMs,
     ...(pending.aster ? { aster: pending.aster } : {}),
     ...(pending.lighter ? { lighter: pending.lighter } : {}),
+    ...(pending.aster_activation ? { aster_activation: pending.aster_activation } : {}),
+    ...(pending.lighter_activation ? { lighter_activation: pending.lighter_activation } : {}),
   };
   if (!validRecovery(value, accountCommitment, nowMs)) throw new Error("carry_onboarding_recovery_invalid");
   storage.setItem(recoveryKey(accountCommitment), JSON.stringify(value));
@@ -111,24 +120,40 @@ export function clearCarryOnboardingRecovery(
 export function updateCarryOnboardingRecovery(
   storage: Pick<Storage, "getItem" | "setItem" | "removeItem">,
   accountCommitment: string,
-  update: { aster?: PendingAsterOnboarding | null; lighter?: PendingLighterOnboarding | null },
+  update: {
+    aster?: PendingAsterOnboarding | null;
+    lighter?: PendingLighterOnboarding | null;
+    asterActivation?: VenueAccountActivationRequirement | null;
+    lighterActivation?: VenueAccountActivationRequirement | null;
+  },
   nowMs = Date.now(),
 ): CarryOnboardingRecovery | null {
   const current = readCarryOnboardingRecovery(storage, accountCommitment, nowMs);
   const aster = Object.hasOwn(update, "aster") ? update.aster ?? undefined : current?.aster;
   const lighter = Object.hasOwn(update, "lighter") ? update.lighter ?? undefined : current?.lighter;
-  if (!aster && !lighter) {
+  const asterActivation = Object.hasOwn(update, "asterActivation")
+    ? update.asterActivation ?? undefined
+    : current?.aster_activation;
+  const lighterActivation = Object.hasOwn(update, "lighterActivation")
+    ? update.lighterActivation ?? undefined
+    : current?.lighter_activation;
+  if (!aster && !lighter && !asterActivation && !lighterActivation) {
     clearCarryOnboardingRecovery(storage, accountCommitment);
     return null;
   }
-  return writeCarryOnboardingRecovery(storage, accountCommitment, { aster, lighter }, nowMs);
+  return writeCarryOnboardingRecovery(storage, accountCommitment, {
+    aster,
+    lighter,
+    aster_activation: asterActivation,
+    lighter_activation: lighterActivation,
+  }, nowMs);
 }
 
 export function updateCarryOnboardingRecoveryForUser(
   storage: Pick<Storage, "getItem" | "setItem" | "removeItem">,
   userScope: string,
   accountCommitment: string,
-  update: { aster?: PendingAsterOnboarding | null; lighter?: PendingLighterOnboarding | null },
+  update: Parameters<typeof updateCarryOnboardingRecovery>[2],
   nowMs = Date.now(),
 ): CarryOnboardingRecovery | null {
   const key = userScopeKey(userScope);
@@ -168,9 +193,18 @@ function validRecovery(value: unknown, accountCommitment: string, nowMs: number)
   ) return false;
   const aster = record.aster;
   const lighter = record.lighter;
-  if (!aster && !lighter) return false;
+  const asterActivation = record.aster_activation;
+  const lighterActivation = record.lighter_activation;
+  if (!aster && !lighter && !asterActivation && !lighterActivation) return false;
   return (!aster || validAster(aster, normalizedAccount(accountCommitment))) &&
-    (!lighter || validLighter(lighter, normalizedAccount(accountCommitment)));
+    (!lighter || validLighter(lighter, normalizedAccount(accountCommitment))) &&
+    (!asterActivation || validActivation(asterActivation)) &&
+    (!lighterActivation || validActivation(lighterActivation));
+}
+
+function validActivation(value: unknown): value is VenueAccountActivationRequirement {
+  const record = asRecord(value);
+  return EVM_ADDRESS.test(string(record.owner_address)) && record.reason === "venue_account_not_found";
 }
 
 function validAster(value: unknown, accountCommitment: string): value is PendingAsterOnboarding {

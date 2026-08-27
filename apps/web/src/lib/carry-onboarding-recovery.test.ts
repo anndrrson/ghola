@@ -92,6 +92,22 @@ describe("Carry onboarding recovery", () => {
     expect(recovered?.aster).toBeUndefined();
     expect(recovered?.lighter).toEqual(lighterPending());
   });
+
+  it("restores and clears a venue-account activation barrier", () => {
+    const requirement = {
+      owner_address: `0x${"77".repeat(20)}` as const,
+      reason: "venue_account_not_found" as const,
+    };
+    updateCarryOnboardingRecoveryForUser(localStorage, USER_SCOPE, ACCOUNT, {
+      lighterActivation: requirement,
+    }, NOW);
+    expect(readCarryOnboardingRecoveryForUser(localStorage, USER_SCOPE, NOW + 1)?.lighter_activation)
+      .toEqual(requirement);
+    updateCarryOnboardingRecoveryForUser(localStorage, USER_SCOPE, ACCOUNT, {
+      lighterActivation: null,
+    }, NOW + 2);
+    expect(readCarryOnboardingRecoveryForUser(localStorage, USER_SCOPE, NOW + 2)).toBeNull();
+  });
 });
 
 function lighterPending(): PendingLighterOnboarding {

@@ -39,6 +39,7 @@ import {
   updateCarryOnboardingRecoveryForUser,
   type PendingAsterOnboarding,
   type PendingLighterOnboarding,
+  type VenueAccountActivationRequirement,
 } from "@/lib/carry-onboarding-recovery";
 import { carryAccountConnections } from "@/lib/carry-account-connections";
 
@@ -122,6 +123,12 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       }
       if (recovered?.aster) setPendingAsterLinkRecovery(recovered.aster);
       if (recovered?.lighter) setPendingLighterAssociation(recovered.lighter);
+      if (recovered?.aster_activation) {
+        setActivationNeeded({ venue: "aster", ownerAddress: recovered.aster_activation.owner_address });
+        setAsterReprepareRequired(true);
+      } else if (recovered?.lighter_activation) {
+        setActivationNeeded({ venue: "lighter", ownerAddress: recovered.lighter_activation.owner_address });
+      }
     } catch {
       // Storage may be unavailable; worker-side one-shot guards still apply.
     }
@@ -186,7 +193,10 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
           setAsterReprepareRequired(true);
           setActivationNeeded({ venue: "aster", ownerAddress });
           setPendingAsterLinkRecovery(null);
-          persistRecovery(accountCommitment, recoveryUserScope, { aster: null });
+          persistRecovery(accountCommitment, recoveryUserScope, {
+            aster: null,
+            asterActivation: activationRequirement(ownerAddress),
+          });
         } else if (disposition.action === "hold_ambiguous") {
           setAsterRegistrationAmbiguous(true);
         }
@@ -246,6 +256,8 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       persistRecovery(accountCommitment, recoveryUserScope, { aster: null });
       setAsterRegistrationAmbiguous(false);
       setAster("connected");
+      setActivationNeeded(null);
+      persistRecovery(accountCommitment, recoveryUserScope, { asterActivation: null });
       await refresh();
     } catch (caught) {
       const disposition = classifyAsterOnboardingFailure(caught, pendingAsterLinkRecovery.preparation);
@@ -411,6 +423,9 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         const failure = venueSetupFailure(caught, "Lighter authorization failed.");
         if (failure.code === "lighter_owner_account_not_found") {
           setActivationNeeded({ venue: "lighter", ownerAddress: failure.ownerAddress });
+          persistRecovery(accountCommitment, recoveryUserScope, {
+            lighterActivation: activationRequirement(failure.ownerAddress),
+          });
         }
         setError(failure.message);
       }
@@ -432,6 +447,8 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       setPendingLighterAssociation(null);
       persistRecovery(accountCommitment, recoveryUserScope, { lighter: null });
       setLighter("connected");
+      setActivationNeeded(null);
+      persistRecovery(accountCommitment, recoveryUserScope, { lighterActivation: null });
       await refresh();
     } catch {
       setError("Lighter association still needs reconciliation. No transaction was resubmitted.");
@@ -529,6 +546,17 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     }
   }
 
+  async function retryAfterVenueActivation() {
+    const requirement = activationNeeded;
+    if (!requirement) return;
+    setActivationNeeded(null);
+    persistRecovery(accountCommitment, recoveryUserScope, requirement.venue === "aster"
+      ? { asterActivation: null }
+      : { lighterActivation: null });
+    if (requirement.venue === "aster") await connectAsterProgrammatic(true);
+    else await connectLighterProgrammatic();
+  }
+
   const enoughConnected = [hyperliquid, aster, lighter].filter((state) => state === "connected").length >= 2;
   return (
     <main className="min-h-screen bg-[#06080c] px-4 pb-20 pt-24 text-[#eef1f8] sm:px-6">
@@ -566,7 +594,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
             </VenueCard>
             <VenueCard name="Aster" state={aster} onboarding={ASTER_ONBOARDING}>
               {aster !== "connected" && (
-                <button type="button" disabled={working || perpsTurnkey.loading || !perpsTurnkey.configured || asterRegistrationAmbiguous} onClick={() => void beginAsterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
+                <button type="button" disabled={working || perpsTurnkey.loading || !perpsTurnkey.configured || asterRegistrationAmbiguous || activationNeeded?.venue === "aster"} onClick={() => void beginAsterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
                   {pendingAsterAuthorization
                     ? working ? "Authenticating…" : "Continue secure authentication"
                     : !perpsTurnkey.configured
@@ -583,6 +611,8 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                           ? pendingAsterLinkRecovery.signature
                             ? pendingAsterLinkRecovery.receipt ? "Finish Aster linking" : "Resume Aster verification"
                             : "Resume Aster signing"
+                        : activationNeeded?.venue === "aster"
+                          ? "Activate owner first"
                         : asterReprepareRequired
                           ? "Re-prepare Aster approval"
                           : ASTER_ONBOARDING.ux.action_label}
@@ -613,13 +643,15 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
             )}
             <VenueCard name="Lighter" state={lighter} onboarding={LIGHTER_ONBOARDING}>
               {lighter !== "connected" && (
-                <button type="button" disabled={working || perpsTurnkey.loading || !perpsTurnkey.configured} onClick={() => void beginLighterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
+                <button type="button" disabled={working || perpsTurnkey.loading || !perpsTurnkey.configured || activationNeeded?.venue === "lighter"} onClick={() => void beginLighterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
                   {pendingLighterAuthorization
                     ? working ? "Authenticating…" : "Continue secure authentication"
                     : !perpsTurnkey.configured
                       ? "Secure wallet unavailable"
                     : perpsTurnkey.loading
                       ? "Restoring secure wallet…"
+                    : activationNeeded?.venue === "lighter"
+                      ? "Activate owner first"
                     : working
                       ? pendingLighterAssociation ? "Verifying…" : "Authorizing…"
                       : pendingLighterAssociation
@@ -668,6 +700,9 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
             <a href={activationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : "https://app.lighter.xyz/"} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff]">
               Open {activationNeeded.venue === "aster" ? "Aster" : "Lighter"}
             </a>
+            <button type="button" disabled={working} onClick={() => void retryAfterVenueActivation()} className="ml-2 mt-3 inline-flex rounded-md bg-[#4aaef8] px-3 py-2 text-xs font-semibold text-[#06111d] disabled:opacity-50">
+              I activated it — recheck once
+            </button>
           </div>
         )}
         {enoughConnected && (
@@ -724,6 +759,13 @@ function venueSetupFailure(error: unknown, fallback: string) {
   };
 }
 
+function activationRequirement(ownerAddress: string): VenueAccountActivationRequirement {
+  return {
+    owner_address: ownerAddress as `0x${string}`,
+    reason: "venue_account_not_found",
+  };
+}
+
 function isTurnkeyResourceMissing(message: string): boolean {
   return message.includes("Could not find any resource to sign with") &&
     message.includes("Addresses are case sensitive");
@@ -741,7 +783,12 @@ function delay(ms: number) {
 function persistRecovery(
   accountCommitment: string | null,
   userScope: string | null,
-  update: { aster?: PendingAsterOnboarding | null; lighter?: PendingLighterOnboarding | null },
+  update: {
+    aster?: PendingAsterOnboarding | null;
+    lighter?: PendingLighterOnboarding | null;
+    asterActivation?: VenueAccountActivationRequirement | null;
+    lighterActivation?: VenueAccountActivationRequirement | null;
+  },
 ) {
   const updateCommitment = update.aster?.preparation.account_commitment ||
     update.lighter?.preparation.account_commitment || null;
