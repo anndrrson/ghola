@@ -285,7 +285,8 @@ describe("private execution instruction sealing", () => {
       margin_mode: "isolated",
       protective_orders: { stop_loss: "145", take_profit: "165" },
     });
-    expect(JSON.stringify(built.encrypted_execution_instruction_bundle)).not.toContain("165");
+    expect(JSON.stringify(built.encrypted_execution_instruction_bundle)).not.toContain("protective_orders");
+    expect(JSON.stringify(built.encrypted_execution_instruction_bundle)).not.toContain("take_profit");
   });
 
   it("rejects invalid leverage and reduce-only brackets before sealing", () => {
