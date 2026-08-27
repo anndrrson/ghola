@@ -217,6 +217,26 @@ describe("Lighter programmatic credential preparation", () => {
     expect(vi.mocked(globalThis.fetch).mock.calls.some(([url]) => String(url).includes("worker.example"))).toBe(false);
   });
 
+  it("reports an inactive Lighter owner without creating a key", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/v1/accountsByL1Address")) {
+        return Response.json({ code: 21100, message: "account not found" }, { status: 400 });
+      }
+      if (url.endsWith("/info")) return Response.json({ contract_address: LIGHTER_MAINNET_PROXY_ADDRESS });
+      return Response.json({ error: "worker_must_not_be_called" }, { status: 500 });
+    });
+    const response = await POST(request({ owner_address: OWNER }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: "lighter_owner_account_not_found",
+      owner_address: OWNER,
+      account_activation_required: true,
+      retry_allowed_after_activation: true,
+    });
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([url]) => String(url).includes("worker.example"))).toBe(false);
+  });
+
   it("does not generate a key when the selected slot is occupied", async () => {
     vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
       const url = String(input);

@@ -51,8 +51,8 @@ export function classifyAsterOnboardingFailure(
     return {
       action: "reprepare",
       message: providerDetail
-        ? `Aster rejected this registration (${providerDetail}). Correct the Aster account or approval, then prepare one fresh request. The rejected request was not retried.`
-        : "Aster rejected this registration. Correct the Aster account or approval, then prepare one fresh request. The rejected request was not retried.",
+        ? `Aster rejected this registration (${providerDetail}). Confirm the exact Ghola owner is active on Aster before preparing one fresh request. The rejected request was not retried.`
+        : "Aster rejected this registration. Confirm the exact Ghola owner is active on Aster before preparing one fresh request. The rejected request was not retried.",
     };
   }
   const receipt = registrationReceipt(body.registration_receipt, preparation);

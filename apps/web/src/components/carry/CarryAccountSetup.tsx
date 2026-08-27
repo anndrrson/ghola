@@ -43,6 +43,7 @@ import {
 import { carryAccountConnections } from "@/lib/carry-account-connections";
 
 type VenueState = "connected" | "needed" | "unavailable";
+type VenueActivation = { venue: "aster" | "lighter"; ownerAddress: string };
 type PendingAsterLinkRecovery = PendingAsterOnboarding;
 type PendingLighterAssociation = PendingLighterOnboarding;
 
@@ -83,6 +84,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   });
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activationNeeded, setActivationNeeded] = useState<VenueActivation | null>(null);
   const safeReturnTo = returnTo === "/carry" || returnTo.startsWith("/trade?") ? returnTo : "/carry";
   const recoveryUserScope = opaqueTurnkeyWalletScope(auth.user?.id || "");
   const asterWalletRepairRequested = asterWalletRepairRequired ||
@@ -128,6 +130,8 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const connectAsterProgrammatic = useCallback(async (forceReprepare = false) => {
     setWorking(true);
     setError(null);
+    setActivationNeeded(null);
+    let ownerAddress = "";
     let prepared: AsterProgrammaticPreparation | null = forceReprepare || pendingAsterLinkRecovery?.signature
       ? null
       : pendingAsterLinkRecovery?.preparation || null;
@@ -135,6 +139,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     let completionAttempted = false;
     try {
       const pair = await perpsTurnkey.ensureWalletPair();
+      ownerAddress = pair.owner.address;
       if (!prepared) {
         prepared = await prepareAsterProgrammaticCredential({
           owner_address: pair.owner.address,
@@ -179,6 +184,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
           persistRecovery(accountCommitment, recoveryUserScope, { aster: pending });
         } else if (disposition.action === "reprepare") {
           setAsterReprepareRequired(true);
+          setActivationNeeded({ venue: "aster", ownerAddress });
           setPendingAsterLinkRecovery(null);
           persistRecovery(accountCommitment, recoveryUserScope, { aster: null });
         } else if (disposition.action === "hold_ambiguous") {
@@ -369,6 +375,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const connectLighterProgrammatic = useCallback(async () => {
     setWorking(true);
     setError(null);
+    setActivationNeeded(null);
     let pending: PendingLighterAssociation | null = null;
     try {
       const pair = await perpsTurnkey.ensureWalletPair();
@@ -401,7 +408,11 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       if (pending) {
         setError("Lighter association needs reconciliation. Ghola will not create or submit another key.");
       } else {
-        setError(caught instanceof Error ? caught.message : "Lighter authorization failed.");
+        const failure = venueSetupFailure(caught, "Lighter authorization failed.");
+        if (failure.code === "lighter_owner_account_not_found") {
+          setActivationNeeded({ venue: "lighter", ownerAddress: failure.ownerAddress });
+        }
+        setError(failure.message);
       }
     } finally {
       setWorking(false);
@@ -649,6 +660,16 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         )}
 
         {error && <p className="mt-4 rounded-lg border border-[#60303a] bg-[#251116] px-4 py-3 text-sm text-[#ee9da8]">{error}</p>}
+        {activationNeeded && (
+          <div className="mt-4 rounded-lg border border-[#315277] bg-[#0b1624] p-4 text-sm">
+            <p className="font-semibold text-[#d8eaff]">Activate this Ghola owner on {activationNeeded.venue === "aster" ? "Aster" : "Lighter"}</p>
+            <p className="mt-2 break-all font-mono text-xs text-[#8fcaff]">{activationNeeded.ownerAddress}</p>
+            <p className="mt-2 text-xs leading-5 text-[#8f9aae]">The venue must recognize this exact address before Ghola can create its sealed trading key. No order, key, deposit, or transfer was submitted.</p>
+            <a href={activationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : "https://app.lighter.xyz/"} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff]">
+              Open {activationNeeded.venue === "aster" ? "Aster" : "Lighter"}
+            </a>
+          </div>
+        )}
         {enoughConnected && (
           <Link href={safeReturnTo} className="mt-6 block h-12 rounded-lg bg-[#56d6a0] px-4 py-3 text-center font-semibold text-[#06130e]">Continue to route verification</Link>
         )}
@@ -691,6 +712,16 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function venueSetupFailure(error: unknown, fallback: string) {
+  const failure = error && typeof error === "object" ? error as { body?: unknown; message?: unknown } : {};
+  const body = asRecord(failure.body);
+  return {
+    code: stringValue(body.error) || "",
+    message: stringValue(body.message) || (typeof failure.message === "string" ? failure.message : fallback),
+    ownerAddress: stringValue(body.owner_address) || "",
+  };
 }
 
 function isTurnkeyResourceMissing(message: string): boolean {

@@ -52,7 +52,24 @@ export async function POST(req: Request) {
     accountsResponse.json().catch(() => null),
     infoResponse.json().catch(() => null),
   ]);
-  if (!accountsResponse.ok || !infoResponse.ok) {
+  if (!accountsResponse.ok) {
+    const lighterError = record(accountsBody);
+    if (
+      accountsResponse.status === 400 &&
+      (Number(lighterError.code) === 21100 || /account not found/i.test(string(lighterError.message)))
+    ) {
+      return json({
+        error: "lighter_owner_account_not_found",
+        message: "Lighter has no account for this Ghola owner. Activate this exact address on Lighter first; no key or transaction was created.",
+        owner_address: ownerAddress,
+        activation_url: "https://app.lighter.xyz/",
+        account_activation_required: true,
+        retry_allowed_after_activation: true,
+      }, 409);
+    }
+    return json({ error: "lighter_account_lookup_unavailable" }, 503);
+  }
+  if (!infoResponse.ok) {
     return json({ error: "lighter_public_preflight_unavailable" }, 503);
   }
   let accountIndex: number;
