@@ -113,7 +113,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
 
   async function runCheck() {
     if (!executionPair) return;
-    const localReference = shortReference(`ghola-${crypto.randomUUID()}`);
+    const localReference = shortReference(`ghola-${Date.now().toString(36)}`);
     const checkedRoute = `${candidate.asset} · L ${venueName(candidate.long.venue_id)} / S ${venueName(candidate.short.venue_id)}`;
     setBusy("check");
     setMessage(null);
