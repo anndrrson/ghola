@@ -135,6 +135,18 @@ async function fixture() {
     },
     exit: {
       reason: "manual",
+      trigger: {
+        kind: "owner_request",
+        observed_at: "2026-08-24T00:00:06.000Z",
+        metric: "owner_request",
+        observed_value: null,
+        signed_threshold_value: null,
+        effective_threshold_value: null,
+        consecutive_observation_count: null,
+        venue_id: null,
+        status: null,
+        transaction_broadcast: false,
+      },
       requested_at: "2026-08-24T00:00:06.000Z",
       reconciled_at: "2026-08-24T00:00:07.000Z",
       legs: [
@@ -239,6 +251,45 @@ test("rejects an exit that is not exact and reduce-only", async () => {
   evidence.exit.legs[1].filled_base_size = "0.10";
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
   await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /exit_reduce_only_invalid:aster|exact_exit_quantity_required:aster/);
+});
+
+test("rejects an exit without exact owner or signed-mandate trigger evidence", async () => {
+  for (const [mutate, expected] of [
+    [(evidence) => { delete evidence.exit.trigger; }, /exit_trigger_missing/],
+    [(evidence) => { evidence.exit.trigger.kind = "net_carry_below_threshold"; }, /owner_exit_trigger_invalid/],
+    [(evidence) => { evidence.exit.trigger.observed_at = evidence.monitoring.ended_at; }, /owner_exit_trigger_invalid/],
+  ]) {
+    const evidence = await fixture();
+    mutate(evidence);
+    evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+    evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+    await assert.rejects(() => verifyCarryReleaseEvidence(evidence), expected);
+  }
+});
+
+test("accepts only a measured signed-threshold funding exit", async () => {
+  const evidence = await fixture();
+  evidence.exit.reason = "funding_flip";
+  evidence.exit.trigger = {
+    kind: "net_carry_below_threshold",
+    observed_at: evidence.monitoring.ended_at,
+    metric: "expected_net_value_bps",
+    observed_value: -1,
+    signed_threshold_value: 0,
+    effective_threshold_value: 0,
+    consecutive_observation_count: 2,
+    venue_id: null,
+    status: null,
+    transaction_broadcast: false,
+  };
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  assert.equal((await verifyCarryReleaseEvidence(evidence)).ok, true);
+
+  evidence.exit.trigger.consecutive_observation_count = 1;
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /funding_exit_cadence_invalid/);
 });
 
 test("rejects missing monitoring and margin-runway proof", async () => {

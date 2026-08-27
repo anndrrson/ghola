@@ -210,7 +210,17 @@ export async function verifyCarryReleaseEvidence(evidence) {
   const exitReconciledAt = timestamp(exit.reconciled_at);
   fail(exitRequestedAt >= monitoringEndedAt, "exit_request_timestamp_invalid");
   fail(exitReconciledAt >= exitRequestedAt, "exit_reconciliation_timestamp_invalid");
-  fail(["manual", "funding_flip", "margin_runway", "risk_mandate"].includes(exit.reason), "exit_reason_invalid");
+  const exitReason = String(exit.reason || "");
+  fail(["manual", "funding_flip", "margin_runway", "risk_mandate"].includes(exitReason), "exit_reason_invalid");
+  verifyExitTrigger({
+    trigger: exit.trigger,
+    reason: exitReason,
+    exitRequestedAt,
+    monitoringEndedAt,
+    pair,
+    signedMandate,
+    fail,
+  });
   const exitLegs = verifyLegs({
     legs: exit.legs,
     pair,
@@ -285,6 +295,82 @@ export function carryWorkerMaterialCommitment(evidence) {
   delete payload.evidence_commitment;
   delete payload.worker_material_commitment;
   return `carry:release:material:${createHash("sha256").update(stableJson(payload)).digest("hex")}`;
+}
+
+function verifyExitTrigger({ trigger: rawTrigger, reason, exitRequestedAt, monitoringEndedAt, pair, signedMandate, fail }) {
+  const trigger = rawTrigger && typeof rawTrigger === "object" ? rawTrigger : {};
+  const kind = String(trigger.kind || "");
+  const metric = String(trigger.metric || "");
+  const observedAt = timestamp(trigger.observed_at);
+  const observed = signedInteger(trigger.observed_value);
+  const signedThreshold = signedInteger(trigger.signed_threshold_value);
+  const effectiveThreshold = signedInteger(trigger.effective_threshold_value);
+  const consecutiveObservations = trigger.consecutive_observation_count == null
+    ? null
+    : positiveInteger(trigger.consecutive_observation_count) || null;
+  const venueId = trigger.venue_id == null ? null : String(trigger.venue_id || "");
+  const status = trigger.status == null ? null : String(trigger.status || "");
+  const mandate = signedMandate?.risk_mandate || {};
+
+  fail(kind.length > 0, "exit_trigger_missing");
+  fail(observedAt >= monitoringEndedAt && observedAt <= exitRequestedAt, "exit_trigger_timestamp_invalid");
+  fail(trigger.transaction_broadcast === false, "exit_trigger_broadcast_detected");
+  if (reason === "manual") {
+    fail(kind === "owner_request" && metric === "owner_request" && observedAt === exitRequestedAt,
+      "owner_exit_trigger_invalid");
+    fail([observed, signedThreshold, effectiveThreshold, consecutiveObservations, venueId, status]
+      .every((value) => value === null), "owner_exit_trigger_overclaimed");
+    return;
+  }
+  if (reason === "funding_flip") {
+    fail(kind === "net_carry_below_threshold" && metric === "expected_net_value_bps",
+      "funding_exit_trigger_invalid");
+    fail(signedThreshold === mandate.exit_net_value_bps && effectiveThreshold === signedThreshold,
+      "funding_exit_threshold_mismatch");
+    fail(observed !== null && observed <= effectiveThreshold, "funding_exit_observation_invalid");
+    fail(consecutiveObservations !== null
+      && consecutiveObservations >= positiveInteger(mandate.exit_after_consecutive_observations),
+    "funding_exit_cadence_invalid");
+    fail(venueId === null && status === null, "funding_exit_scope_invalid");
+    return;
+  }
+  if (reason === "margin_runway") {
+    fail(["margin_runway_below_threshold", "margin_runway_unverifiable"].includes(kind)
+      && metric === "margin_runway_ms", "margin_exit_trigger_invalid");
+    fail(pair.includes(venueId), "margin_exit_venue_invalid");
+    fail(signedThreshold === mandate.min_margin_runway_ms && effectiveThreshold === signedThreshold,
+      "margin_exit_threshold_mismatch");
+    fail(["healthy", "warning", "critical", "breached", null].includes(status), "margin_exit_status_invalid");
+    if (kind === "margin_runway_unverifiable") {
+      fail(observed === null && status !== "healthy", "margin_exit_unverifiable_claim_invalid");
+    } else {
+      fail((observed !== null && observed < effectiveThreshold) || ["critical", "breached"].includes(status),
+        "margin_exit_observation_invalid");
+    }
+    fail(consecutiveObservations === null, "margin_exit_cadence_overclaimed");
+    return;
+  }
+  if (reason === "risk_mandate") {
+    if (kind === "mandate_expired") {
+      fail(metric === "expires_at_ms", "mandate_expiry_trigger_invalid");
+      fail(signedThreshold === positiveInteger(signedMandate?.expires_at_ms)
+        && effectiveThreshold === signedThreshold, "mandate_expiry_threshold_mismatch");
+      fail(observed !== null && observed >= effectiveThreshold, "mandate_expiry_observation_invalid");
+    } else {
+      const limits = {
+        contract_data_skew: ["contract_data_skew_ms", mandate.max_contract_data_skew_ms],
+        index_basis: ["index_price_divergence_bps", mandate.max_index_price_divergence_bps],
+        mark_basis: ["mark_price_divergence_bps", mandate.max_mark_price_divergence_bps],
+      };
+      const expected = limits[kind];
+      fail(Array.isArray(expected) && metric === expected?.[0], "risk_exit_trigger_invalid");
+      fail(signedThreshold === expected?.[1] && effectiveThreshold !== null
+        && effectiveThreshold <= signedThreshold, "risk_exit_threshold_mismatch");
+      fail(observed !== null && observed > effectiveThreshold, "risk_exit_observation_invalid");
+    }
+    fail(consecutiveObservations === null && venueId === null && status === null,
+      "risk_exit_scope_invalid");
+  }
 }
 
 function verifyLegs({ legs, pair, longVenue, reduceOnly, failures, phase }) {

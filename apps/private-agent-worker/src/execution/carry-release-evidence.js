@@ -88,6 +88,13 @@ export async function buildCompletedCarryReleaseMaterial({
     || maxObservationGapMs > maxAllowedObservationGapMs) {
     return denied("carry_release_monitoring_cadence_exceeded");
   }
+  const exitTrigger = releaseExitTrigger({
+    exit_request: exitRequest,
+    exit_requested_at_ms: exitRequestedAt,
+    observations: supervisedObservations,
+    position: record.position,
+  });
+  if (!exitTrigger.ok) return exitTrigger;
   const runwayStatuses = latestObservation.margin_runway_status_by_venue || {};
   const runwayValues = latestObservation.margin_runway_ms_by_venue || {};
   const validRunwayStatuses = new Set(["healthy", "warning", "critical", "breached"]);
@@ -193,7 +200,8 @@ export async function buildCompletedCarryReleaseMaterial({
       })),
     },
     exit: {
-      reason: exitRequest ? "manual" : "risk_mandate",
+      reason: exitTrigger.reason,
+      trigger: exitTrigger.evidence,
       requested_at: iso(exitRequestedAt),
       reconciled_at: iso(exitSaga.updated_at_ms),
       legs: exitLegs.legs,
@@ -218,6 +226,125 @@ export async function buildCompletedCarryReleaseMaterial({
   };
   material.worker_material_commitment = workerMaterialCommitment(material);
   return { ok: true, material };
+}
+
+function releaseExitTrigger({ exit_request: exitRequest, exit_requested_at_ms: exitRequestedAt, observations, position }) {
+  if (exitRequest) {
+    return releaseTrigger("manual", {
+      kind: "owner_request",
+      observed_at: iso(exitRequest.recorded_at_ms),
+      metric: "owner_request",
+    });
+  }
+  const eligible = observations.filter((event) => event.recorded_at_ms <= exitRequestedAt);
+  const latest = eligible.at(-1);
+  if (!latest) return denied("carry_release_exit_trigger_unproven");
+  const mandate = position.risk_mandate || {};
+  const mandateExpiresAt = position.mandate_authorization?.signed_mandate?.expires_at_ms;
+  if (positiveInteger(mandateExpiresAt) && latest.recorded_at_ms >= mandateExpiresAt) {
+    return releaseTrigger("risk_mandate", {
+      kind: "mandate_expired",
+      observed_at: iso(latest.recorded_at_ms),
+      metric: "expires_at_ms",
+      observed_value: latest.recorded_at_ms,
+      signed_threshold_value: mandateExpiresAt,
+      effective_threshold_value: mandateExpiresAt,
+    });
+  }
+
+  const contractSkewTrigger = thresholdTrigger({
+    observation: latest,
+    observedKey: "contract_data_skew_ms",
+    observedLimitKey: "max_contract_data_skew_ms",
+    signedLimit: mandate.max_contract_data_skew_ms,
+    kind: "contract_data_skew",
+  });
+  if (contractSkewTrigger) return releaseTrigger("risk_mandate", contractSkewTrigger);
+  for (const [kind, observedKey, observedLimitKey, signedLimit] of [
+    ["index_basis", "index_price_divergence_bps", "max_index_price_divergence_bps", mandate.max_index_price_divergence_bps],
+    ["mark_basis", "mark_price_divergence_bps", "max_mark_price_divergence_bps", mandate.max_mark_price_divergence_bps],
+  ]) {
+    const trigger = thresholdTrigger({ observation: latest, observedKey, observedLimitKey, signedLimit, kind });
+    if (trigger) return releaseTrigger("risk_mandate", trigger);
+  }
+
+  const runwayValues = latest.margin_runway_ms_by_venue || {};
+  const runwayStatuses = latest.margin_runway_status_by_venue || {};
+  for (const venueId of [position.long_venue_id, position.short_venue_id]) {
+    const runway = runwayValues[venueId];
+    const status = runwayStatuses[venueId];
+    const unverifiable = !Object.hasOwn(runwayValues, venueId) || (runway === null && status !== "healthy");
+    const unsafe = ["critical", "breached"].includes(status)
+      || (Number.isSafeInteger(runway) && runway < mandate.min_margin_runway_ms);
+    if (unverifiable || unsafe) {
+      return releaseTrigger("margin_runway", {
+        kind: unverifiable ? "margin_runway_unverifiable" : "margin_runway_below_threshold",
+        observed_at: iso(latest.recorded_at_ms),
+        metric: "margin_runway_ms",
+        observed_value: Number.isSafeInteger(runway) ? runway : null,
+        signed_threshold_value: mandate.min_margin_runway_ms,
+        effective_threshold_value: mandate.min_margin_runway_ms,
+        venue_id: venueId,
+        status: typeof status === "string" ? status : null,
+      });
+    }
+  }
+
+  const exitThreshold = mandate.exit_net_value_bps;
+  const requiredObservations = mandate.exit_after_consecutive_observations;
+  let consecutiveObservations = 0;
+  for (let index = eligible.length - 1; index >= 0; index -= 1) {
+    if (!Number.isSafeInteger(eligible[index].expected_net_value_bps)
+      || eligible[index].expected_net_value_bps > exitThreshold) break;
+    consecutiveObservations += 1;
+  }
+  if (positiveInteger(requiredObservations) && consecutiveObservations >= requiredObservations) {
+    return releaseTrigger("funding_flip", {
+      kind: "net_carry_below_threshold",
+      observed_at: iso(latest.recorded_at_ms),
+      metric: "expected_net_value_bps",
+      observed_value: latest.expected_net_value_bps,
+      signed_threshold_value: exitThreshold,
+      effective_threshold_value: exitThreshold,
+      consecutive_observation_count: consecutiveObservations,
+    });
+  }
+  return denied("carry_release_exit_trigger_unproven");
+}
+
+function thresholdTrigger({ observation, observedKey, observedLimitKey, signedLimit, kind }) {
+  const observed = observation[observedKey];
+  const observedLimit = observation[observedLimitKey];
+  if (![observed, observedLimit, signedLimit].every((value) => Number.isSafeInteger(value) && value >= 0)) return null;
+  const effectiveLimit = Math.min(observedLimit, signedLimit);
+  if (observed <= effectiveLimit) return null;
+  return {
+    kind,
+    observed_at: iso(observation.recorded_at_ms),
+    metric: observedKey,
+    observed_value: observed,
+    signed_threshold_value: signedLimit,
+    effective_threshold_value: effectiveLimit,
+  };
+}
+
+function releaseTrigger(reason, values) {
+  return {
+    ok: true,
+    reason,
+    evidence: {
+      kind: values.kind,
+      observed_at: values.observed_at,
+      metric: values.metric,
+      observed_value: values.observed_value ?? null,
+      signed_threshold_value: values.signed_threshold_value ?? null,
+      effective_threshold_value: values.effective_threshold_value ?? null,
+      consecutive_observation_count: values.consecutive_observation_count ?? null,
+      venue_id: values.venue_id ?? null,
+      status: values.status ?? null,
+      transaction_broadcast: false,
+    },
+  };
 }
 
 async function materialLegs({ state, saga, record, phase }) {

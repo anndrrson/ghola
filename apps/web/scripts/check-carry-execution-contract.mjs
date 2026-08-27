@@ -691,10 +691,15 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterialTest", "refuses a single unattended observation as a monitoring period", "carry_release_monitoring_cadence_test_missing");
   requireText("releaseMaterialTest", "refuses a lifecycle with a monitoring outage", "carry_release_monitoring_outage_test_missing");
   requireText("releaseMaterialTest", "refuses monitoring gaps beyond the signed freshness budget", "carry_release_monitoring_gap_test_missing");
+  requireText("releaseMaterial", "releaseExitTrigger", "carry_release_exit_trigger_missing");
+  requireText("releaseMaterialTest", "refuses a release without an owner request or measured mandate breach", "carry_release_exit_trigger_test_missing");
+  requireText("releaseMaterialTest", "binds an automatic exit to the signed net-carry threshold", "carry_release_signed_exit_trigger_test_missing");
   requireText("evidenceVerifier", 'supervision.mode === "attested_worker_loop"', "carry_release_supervision_verifier_missing");
   requireText("evidenceVerifier", 'automaticObservations >= 2', "carry_release_monitoring_cadence_verifier_missing");
   requireText("evidenceVerifier", 'supervision.failure_count === 0', "carry_release_monitoring_outage_verifier_missing");
   requireText("evidenceVerifier", 'maxObservationGapMs <= maxAllowedGapMs', "carry_release_monitoring_gap_verifier_missing");
+  requireText("evidenceVerifier", "verifyExitTrigger", "carry_release_exit_trigger_verifier_missing");
+  requireText("evidenceVerifierTest", "rejects an exit without exact owner or signed-mandate trigger evidence", "carry_release_exit_trigger_verifier_test_missing");
   requireText("evidenceVerifierTest", "rejects monitoring that was not produced by the unattended worker loop", "carry_release_supervision_verifier_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: "5000"', "carry_monitor_five_second_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS: "750"', "carry_market_data_skew_runtime_test_missing");

@@ -85,6 +85,16 @@ test("rejects release proof that ignores monitoring outages", () => {
   );
 });
 
+test("rejects release proof that invents an unmeasured exit reason", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier.replaceAll("verifyExitTrigger", "trustExitLabel"),
+    }),
+    /carry_release_exit_trigger_verifier_missing/,
+  );
+});
+
 test("rejects live Carry entry that ignores degraded supervision", () => {
   assert.throws(
     () => checkCarryExecutionContract({

@@ -34,6 +34,9 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.equal(result.material.monitoring.supervision.automatic_observation_count, 2);
   assert.equal(result.material.monitoring.supervision.max_observation_gap_ms, 1_000);
   assert.equal(result.material.monitoring.supervision.failure_count, 0);
+  assert.equal(result.material.exit.reason, "manual");
+  assert.equal(result.material.exit.trigger.kind, "owner_request");
+  assert.equal(result.material.exit.trigger.observed_at, "2027-01-15T08:00:03.000Z");
   assert.equal(result.material.monitoring.margin_runways[0].status, "healthy");
   assert.equal(result.material.contract_equivalence.index_price_divergence_bps, 3);
   assert.equal(result.material.shadow_qualification.proven, true);
@@ -155,6 +158,44 @@ test("refuses monitoring gaps beyond the signed freshness budget", async () => {
     now_ms: NOW,
   });
   assert.equal(result.error, "carry_release_monitoring_cadence_exceeded");
+});
+
+test("refuses a release without an owner request or measured mandate breach", async () => {
+  const fixture = await stateFixture();
+  fixture.record.lifecycle_events = fixture.record.lifecycle_events.filter(
+    (event) => event.type !== "manual_exit_requested",
+  );
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_exit_trigger_unproven");
+});
+
+test("binds an automatic exit to the signed net-carry threshold", async () => {
+  const fixture = await stateFixture();
+  fixture.record.lifecycle_events = fixture.record.lifecycle_events.filter(
+    (event) => event.type !== "manual_exit_requested",
+  );
+  fixture.record.lifecycle_events
+    .filter((event) => event.type === "observation")
+    .forEach((event) => { event.expected_net_value_bps = -1; });
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.material.exit.reason, "funding_flip");
+  assert.equal(result.material.exit.trigger.kind, "net_carry_below_threshold");
+  assert.equal(result.material.exit.trigger.observed_value, -1);
+  assert.equal(result.material.exit.trigger.signed_threshold_value, 0);
+  assert.equal(result.material.exit.trigger.consecutive_observation_count, 2);
 });
 
 test("refuses release evidence without bounded contract equivalence", async () => {
