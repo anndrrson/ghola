@@ -5,6 +5,7 @@ import {
   advanceCarryPosition,
   calculateMarginRunway,
   carryRiskMandateMessage,
+  compileCarryCapitalActionPlan,
   compileCarryMigrationProposal,
   createCarryPosition,
   createCarryValueLedger,
@@ -422,6 +423,79 @@ test("margin runway exposes owner response risk without granting transfer author
   });
   assert.equal(critical.status, "critical");
   assert.equal(critical.owner_action_required, true);
+});
+
+test("capital planner quantifies the minimum owner top-up without transfer authority", () => {
+  const current = activePositionForObservation();
+  const plan = compileCarryCapitalActionPlan({
+    version: 1,
+    position: current,
+    margin_runways: [
+      runway("hyperliquid", {
+        equity_micro_usdc: 1_350_000_000,
+        maintenance_margin_micro_usdc: 500_000_000,
+        safety_buffer_micro_usdc: 500_000_000,
+        owner_transfer_latency_ms: 2 * HOUR,
+        owner_response_buffer_ms: 2 * HOUR,
+      }),
+      runway("lighter"),
+    ],
+    now_ms: NOW,
+  });
+  assert.equal(plan.status, "owner_action_required");
+  assert.equal(plan.recommended_action, "owner_collateral_review");
+  assert.equal(plan.minimum_additional_collateral_micro_usdc, 50_000_014);
+  assert.deepEqual(plan.legs.map((leg) => leg.recommended_action), ["owner_fund_venue", "none"]);
+  assert.equal(plan.proposal_only, true);
+  assert.equal(plan.transaction_broadcast, false);
+  assert.equal(plan.automatic_transfer_permitted, false);
+});
+
+test("capital planner quarantines stale evidence and permits reconciliation only", () => {
+  const current = activePositionForObservation();
+  const plan = compileCarryCapitalActionPlan({
+    version: 1,
+    position: current,
+    margin_runways: [runway("hyperliquid"), runway("lighter")],
+    now_ms: NOW + 30_001,
+  });
+  assert.equal(plan.status, "quarantined");
+  assert.equal(plan.recommended_action, "reconcile_only");
+  assert.equal(plan.reconciliation_required, true);
+  assert.equal(plan.reduce_only_exit_required, false);
+  assert.equal(plan.owner_funding_required, false);
+  assert.equal(plan.minimum_additional_collateral_micro_usdc, 0);
+  assert.ok(plan.reasons.includes("margin_data_stale:hyperliquid"));
+  assert.equal(plan.automatic_transfer_permitted, false);
+});
+
+test("capital planner prioritizes an expired signed mandate over stale evidence", () => {
+  const current = activePositionForObservation();
+  const plan = compileCarryCapitalActionPlan({
+    version: 1,
+    position: current,
+    margin_runways: [runway("hyperliquid"), runway("lighter")],
+    now_ms: NOW + 30 * DAY,
+  });
+  assert.equal(plan.status, "exit_required");
+  assert.equal(plan.recommended_action, "reduce_only_exit");
+  assert.equal(plan.reduce_only_exit_required, true);
+  assert.equal(plan.reconciliation_required, false);
+  assert.ok(plan.reasons.includes("risk_mandate_expired"));
+  assert.equal(plan.transaction_broadcast, false);
+});
+
+test("capital planner rejects evidence that could grant automatic transfer authority", () => {
+  const current = activePositionForObservation();
+  assert.throws(() => compileCarryCapitalActionPlan({
+    version: 1,
+    position: current,
+    margin_runways: [
+      { ...runway("hyperliquid"), automatic_transfer_permitted: true },
+      runway("lighter"),
+    ],
+    now_ms: NOW,
+  }), /carry_capital_automatic_transfer_forbidden/);
 });
 
 test("legacy signed mandates remain verifiable without newly added contract-limit fields", () => {

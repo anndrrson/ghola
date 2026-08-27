@@ -3,6 +3,7 @@ import {
   CARRY_EXECUTION_VENUES,
   advanceCarryPosition,
   appendCarryValueLedgerEntry,
+  compileCarryCapitalActionPlan,
   createCarryValueLedger,
   finalizeCarryValueLedger,
 } from "@ghola/execution-core";
@@ -456,20 +457,46 @@ export async function observeStoredCarryPosition({
     return frozen.ok ? { ...frozen, observation_ok: false, observation: null } : frozen;
   }
   const opportunity = observation?.economic_opportunity || {};
-  const migrationCandidates = await evaluateMigrationCandidates({
-    state,
-    position,
-    record: owned.record,
-    opportunity,
-    venueAccess,
-    recipient,
-    verifyOrder,
-    readHyperliquidSnapshot,
-    readHyperliquidCarryMetrics,
-    preflight,
-    nowMs,
-    sequence,
-  });
+  let capitalActionPlan;
+  try {
+    capitalActionPlan = compileCarryCapitalActionPlan({
+      version: 1,
+      position,
+      margin_runways: observation?.margin_runways,
+      now_ms: nowMs,
+    });
+  } catch (error) {
+    const frozen = await advanceStoredCarryPosition({
+      state,
+      position_id: positionId,
+      owner_commitment: ownerCommitment,
+      event: {
+        version: 1,
+        event_id: `${eventBase}:capital-evidence-unavailable`,
+        sequence,
+        type: "observation_unavailable",
+        reason: `capital_action_plan:${safeError(error)}`,
+      },
+      now_ms: nowMs,
+    });
+    return frozen.ok ? { ...frozen, observation_ok: false, observation: null } : frozen;
+  }
+  const migrationCandidates = ["reduce_only_exit", "reconcile_only"].includes(capitalActionPlan.recommended_action)
+    ? []
+    : await evaluateMigrationCandidates({
+      state,
+      position,
+      record: owned.record,
+      opportunity,
+      venueAccess,
+      recipient,
+      verifyOrder,
+      readHyperliquidSnapshot,
+      readHyperliquidCarryMetrics,
+      preflight,
+      nowMs,
+      sequence,
+    });
   const runways = Object.fromEntries((observation?.margin_runways || []).map((runway) => [runway.venue_id, runway.runway_ms]));
   const runwayStatuses = Object.fromEntries((observation?.margin_runways || []).map((runway) => [runway.venue_id, runway.status]));
   const advanced = await advanceStoredCarryPosition({
@@ -493,6 +520,7 @@ export async function observeStoredCarryPosition({
       max_mark_price_divergence_bps: opportunity.max_mark_price_divergence_bps,
       margin_runway_ms_by_venue: runways,
       margin_runway_status_by_venue: runwayStatuses,
+      capital_action_plan: capitalActionPlan,
       qualification_reasons: observation.qualification_reasons,
       transaction_broadcast: false,
     },
@@ -806,6 +834,9 @@ function publicObservation(event) {
     max_mark_price_divergence_bps: event.max_mark_price_divergence_bps,
     margin_runway_ms_by_venue: { ...(event.margin_runway_ms_by_venue || {}) },
     margin_runway_status_by_venue: { ...(event.margin_runway_status_by_venue || {}) },
+    capital_action_plan: event.capital_action_plan
+      ? JSON.parse(JSON.stringify(event.capital_action_plan))
+      : null,
     qualification_reasons: Array.isArray(event.qualification_reasons) ? [...event.qualification_reasons] : [],
     transaction_broadcast: false,
     recorded_at_ms: event.recorded_at_ms,

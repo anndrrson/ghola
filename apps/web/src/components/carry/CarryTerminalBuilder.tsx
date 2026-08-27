@@ -61,6 +61,16 @@ type CarryRecord = {
     max_mark_price_divergence_bps?: number;
     margin_runway_ms_by_venue?: Record<string, number | null>;
     margin_runway_status_by_venue?: Record<string, "healthy" | "warning" | "critical" | "breached">;
+    capital_action_plan?: {
+      status?: "balanced" | "owner_action_required" | "exit_required" | "quarantined";
+      minimum_additional_collateral_micro_usdc?: number;
+      transaction_broadcast?: boolean;
+      automatic_transfer_permitted?: boolean;
+      legs?: Array<{
+        venue_id?: string;
+        recommended_action?: "none" | "owner_fund_venue" | "owner_review_required" | "reduce_only_exit" | "reconcile_only";
+      }>;
+    } | null;
     recorded_at_ms?: number;
   };
 };
@@ -148,6 +158,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   }, [migrationNotional, notional]);
   const latestObservation = current?.latest_observation || null;
   const runway = carryRunwaySummary(latestObservation, candidate);
+  const capital = carryCapitalSummary(latestObservation?.capital_action_plan);
   const proofOpportunity = proof ? asRecord(proof.creation_opportunity) : null;
 
   const invalidateProof = (setter: (value: string) => void) => (value: string) => {
@@ -330,6 +341,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="BREAK-EVEN" value={model.breakEvenDays == null ? "—" : `${model.breakEvenDays.toFixed(1)}D`} />
         <Metric label="COLLATERAL" value={formatUsd(model.minimumCollateralUsd)} />
         <Metric label="MIN RUNWAY" value={runway.value} tone={runway.tone} />
+        <Metric label="CAPITAL" value={capital.value} tone={capital.tone} />
         <Metric label="SOURCE SYNC" value={proofOpportunity ? formatSkew(proofOpportunity.contract_data_skew_ms) : "PENDING"} />
         <Metric label="INDEX BASIS" value={proofOpportunity ? formatBasis(proofOpportunity.index_price_divergence_bps) : "PENDING"} />
         <Metric label="ROUTE GUARD" value={`${CARRY_EXECUTION_VENUES.length} VENUES · +5BP`} />
@@ -409,6 +421,25 @@ function carryRunwaySummary(observation: CarryRecord["latest_observation"] | nul
   return {
     value: `${formatRunway(minimum)} · ${worst.toUpperCase()}`,
     tone: worst === "healthy" ? "good" : worst === "warning" ? "warn" : "bad",
+  } as const;
+}
+
+function carryCapitalSummary(plan: NonNullable<CarryRecord["latest_observation"]>["capital_action_plan"]) {
+  if (!plan) return { value: "PENDING", tone: undefined } as const;
+  if (plan.transaction_broadcast !== false || plan.automatic_transfer_permitted !== false) {
+    return { value: "UNVERIFIED", tone: "bad" } as const;
+  }
+  if (plan.status === "balanced") return { value: "BALANCED", tone: "good" } as const;
+  if (plan.status === "quarantined") return { value: "RECONCILE ONLY", tone: "bad" } as const;
+  if (plan.status === "exit_required") return { value: "REDUCE-ONLY EXIT", tone: "bad" } as const;
+  const amount = plan.minimum_additional_collateral_micro_usdc;
+  const leg = plan.legs?.find((item) => item.recommended_action === "owner_fund_venue");
+  if (plan.status !== "owner_action_required" || !Number.isSafeInteger(amount) || Number(amount) <= 0 || !leg?.venue_id) {
+    return { value: "OWNER REVIEW", tone: "warn" } as const;
+  }
+  return {
+    value: `${formatUsd(Number(amount) / 1_000_000)} → ${venueName(leg.venue_id)} · OWNER`,
+    tone: "warn",
   } as const;
 }
 

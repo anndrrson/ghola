@@ -242,6 +242,16 @@ describe("CarryTerminalBuilder", () => {
           expected_net_value_bps: 8,
           margin_runway_ms_by_venue: { hyperliquid: 7_200_000, lighter: 3_600_000 },
           margin_runway_status_by_venue: { hyperliquid: "healthy", lighter: "warning" },
+          capital_action_plan: {
+            status: "owner_action_required",
+            minimum_additional_collateral_micro_usdc: 10_000_000,
+            transaction_broadcast: false,
+            automatic_transfer_permitted: false,
+            legs: [
+              { venue_id: "hyperliquid", recommended_action: "none" },
+              { venue_id: "lighter", recommended_action: "owner_fund_venue" },
+            ],
+          },
           recorded_at_ms: Date.now(),
         },
       }],
@@ -249,6 +259,8 @@ describe("CarryTerminalBuilder", () => {
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     expect(container.textContent).toContain("MIN RUNWAY");
     expect(container.textContent).toContain("1.0H · WARNING");
+    expect(container.textContent).toContain("CAPITAL");
+    expect(container.textContent).toContain("$10 → LIGHTER · OWNER");
     expect(container.textContent).toContain("MONITOR");
     expect(container.textContent).toContain("0S AGO");
   });

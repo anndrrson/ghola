@@ -216,8 +216,8 @@ test("monitoring records funding flips and deterministically requests exit", asy
       transaction_broadcast: false,
       economic_opportunity: monitoringOpportunity(NOW + body.work_order_commitment.length, -1),
       margin_runways: [
-        { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
-        { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
+        monitoringRunway("hyperliquid"),
+        monitoringRunway("lighter"),
       ],
       qualification_reasons: [],
     };
@@ -268,8 +268,8 @@ test("monitoring preserves signed migration venues and proposes the best no-subm
         transaction_broadcast: false,
         economic_opportunity: monitoringOpportunity(NOW + phases.length, -1),
         margin_runways: [
-          { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
-          { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
+          monitoringRunway("hyperliquid"),
+          monitoringRunway("lighter"),
         ],
         qualification_reasons: [],
       };
@@ -424,8 +424,8 @@ test("monitoring records a basis breach and immediately requests a reduce-only e
     preflight: async () => ({
       economic_opportunity: monitoringOpportunity(NOW + 100, 9, { index_price_divergence_bps: 26 }),
       margin_runways: [
-        { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
-        { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
+        monitoringRunway("hyperliquid"),
+        monitoringRunway("lighter"),
       ],
       qualification_reasons: ["index_price_divergence_exceeded"],
     }),
@@ -436,6 +436,42 @@ test("monitoring records a basis breach and immediately requests a reduce-only e
   assert.equal(result.record.position.terminal_reason, "contract_basis_outside_mandate");
   assert.equal(result.record.latest_observation.index_price_divergence_bps, 26);
   assert.deepEqual(result.record.position.next_actions, ["reduce_only_close_both_legs"]);
+});
+
+test("monitoring stores an exact owner-only collateral recommendation without transferring", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-capital-plan-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const result = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => ({
+      economic_opportunity: monitoringOpportunity(NOW + 100, 9),
+      margin_runways: [
+        monitoringRunway("hyperliquid", {
+          status: "warning",
+          margin_headroom_micro_usdc: 70_000_000,
+          runway_ms: 7 * 3_600_000,
+          required_owner_response_ms: 4 * 3_600_000,
+        }),
+        monitoringRunway("lighter"),
+      ],
+      qualification_reasons: [],
+    }),
+    now_ms: NOW + 100,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.record.position.status, "active");
+  const plan = result.record.latest_observation.capital_action_plan;
+  assert.equal(plan.status, "owner_action_required");
+  assert.equal(plan.minimum_additional_collateral_micro_usdc, 10_000_003);
+  assert.equal(plan.legs[0].recommended_action, "owner_fund_venue");
+  assert.equal(plan.proposal_only, true);
+  assert.equal(plan.transaction_broadcast, false);
+  assert.equal(plan.automatic_transfer_permitted, false);
 });
 
 test("monitor failure freezes an active position without retry", async (t) => {
@@ -467,8 +503,8 @@ test("worker monitoring survives without an open browser", async (t) => {
     preflight: async () => ({
       economic_opportunity: monitoringOpportunity(NOW + 100, 9),
       margin_runways: [
-        { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
-        { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
+        monitoringRunway("hyperliquid"),
+        monitoringRunway("lighter"),
       ],
       qualification_reasons: [],
     }),
@@ -501,8 +537,8 @@ test("monitoring checks independent Carry Positions with bounded concurrency", a
       return {
         economic_opportunity: monitoringOpportunity(NOW + 100, 9),
         margin_runways: [
-          { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
-          { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
+          monitoringRunway("hyperliquid"),
+          monitoringRunway("lighter"),
         ],
         qualification_reasons: [],
       };
@@ -527,8 +563,8 @@ test("monitoring appends only authoritative venue funding settlements", async (t
     preflight: async () => ({
       economic_opportunity: monitoringOpportunity(NOW + 100, 9),
       margin_runways: [
-        { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
-        { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
+        monitoringRunway("hyperliquid"),
+        monitoringRunway("lighter"),
       ],
       qualification_reasons: [],
     }),
@@ -644,6 +680,22 @@ function monitoringOpportunity(checkedAtMs, projectedNetValueBps, overrides = {}
     mark_price_divergence_bps: 0,
     max_index_price_divergence_bps: 25,
     max_mark_price_divergence_bps: 50,
+    ...overrides,
+  };
+}
+
+function monitoringRunway(venueId, overrides = {}) {
+  return {
+    version: 1,
+    venue_id: venueId,
+    as_of_ms: NOW,
+    status: "healthy",
+    margin_headroom_micro_usdc: 20_000_000,
+    stress_burn_micro_usdc_per_hour: 10_000_000,
+    runway_ms: 7_200_000,
+    required_owner_response_ms: 1_800_000,
+    owner_action_required: false,
+    automatic_transfer_permitted: false,
     ...overrides,
   };
 }

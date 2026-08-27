@@ -117,6 +117,149 @@ export function calculateMarginRunway(value) {
   });
 }
 
+export function compileCarryCapitalActionPlan(value) {
+  const raw = object(value, "carry_capital_plan_required");
+  exactVersion(raw.version, "carry_capital_plan_version");
+  const nowMs = positiveInteger(raw.now_ms, "carry_capital_plan_now");
+  const position = object(raw.position, "carry_capital_plan_position_required");
+  const positionStatus = enumValue(position.status, POSITION_STATUSES, "carry_capital_plan_position_status");
+  if (!new Set(["active", "rebalancing"]).has(positionStatus)) fail("carry_capital_plan_position_not_monitored");
+  const positionId = identifier(position.position_id, "carry_capital_plan_position_id");
+  const asset = normalized(position.asset, ASSET, "carry_capital_plan_asset");
+  const longVenue = carryExecutionVenue(position.long_venue_id, "carry_capital_plan_long_venue");
+  const shortVenue = carryExecutionVenue(position.short_venue_id, "carry_capital_plan_short_venue");
+  if (longVenue === shortVenue) fail("carry_capital_plan_distinct_venues");
+  const targetNotional = positiveInteger(position.target_notional_micro_usdc, "carry_capital_plan_notional");
+  const authorization = normalizeCarryRiskMandateAuthorization(position.mandate_authorization);
+  const signed = authorization.signed_mandate;
+  const mandate = normalizeCarryRiskMandate(position.risk_mandate);
+  if (signed.position_id !== positionId
+    || signed.asset !== asset
+    || signed.long_venue_id !== longVenue
+    || signed.short_venue_id !== shortVenue
+    || signed.target_notional_micro_usdc !== targetNotional
+    || JSON.stringify(signed.risk_mandate) !== JSON.stringify(mandate)) {
+    fail("carry_capital_plan_mandate_position_mismatch");
+  }
+  const evidence = array(raw.margin_runways, "carry_capital_plan_runways", 2, 2)
+    .map(normalizeCapitalRunwayEvidence);
+  const byVenue = new Map(evidence.map((item) => [item.venue_id, item]));
+  if (byVenue.size !== 2 || !byVenue.has(longVenue) || !byVenue.has(shortVenue)) {
+    fail("carry_capital_plan_runway_pair_mismatch");
+  }
+  const expired = signed.expires_at_ms <= nowMs;
+  const reasons = expired ? ["risk_mandate_expired"] : [];
+  const legs = [longVenue, shortVenue].map((venueId) => {
+    const runway = byVenue.get(venueId);
+    const stale = runway.as_of_ms > nowMs + 5_000 || nowMs - runway.as_of_ms > mandate.max_data_age_ms;
+    const unsafe = runway.status === "critical"
+      || runway.status === "breached"
+      || (runway.runway_ms !== null && runway.runway_ms < mandate.min_margin_runway_ms);
+    if (stale) reasons.push(`margin_data_stale:${venueId}`);
+    if (!stale && unsafe) reasons.push(`margin_runway_unsafe:${venueId}`);
+    if (expired) {
+      return Object.freeze({
+        venue_id: venueId,
+        status: runway.status,
+        runway_ms: runway.runway_ms,
+        target_runway_ms: mandate.min_margin_runway_ms,
+        current_headroom_micro_usdc: runway.margin_headroom_micro_usdc,
+        minimum_additional_collateral_micro_usdc: 0,
+        recommended_action: "reduce_only_exit",
+        owner_funding_permitted: false,
+      });
+    }
+    if (stale) {
+      return Object.freeze({
+        venue_id: venueId,
+        status: runway.status,
+        runway_ms: runway.runway_ms,
+        target_runway_ms: mandate.min_margin_runway_ms,
+        current_headroom_micro_usdc: runway.margin_headroom_micro_usdc,
+        minimum_additional_collateral_micro_usdc: 0,
+        recommended_action: "reconcile_only",
+        owner_funding_permitted: false,
+      });
+    }
+    if (unsafe) {
+      return Object.freeze({
+        venue_id: venueId,
+        status: runway.status,
+        runway_ms: runway.runway_ms,
+        target_runway_ms: mandate.min_margin_runway_ms,
+        current_headroom_micro_usdc: runway.margin_headroom_micro_usdc,
+        minimum_additional_collateral_micro_usdc: 0,
+        recommended_action: "reduce_only_exit",
+        owner_funding_permitted: false,
+      });
+    }
+    if (runway.status !== "warning") {
+      return Object.freeze({
+        venue_id: venueId,
+        status: runway.status,
+        runway_ms: runway.runway_ms,
+        target_runway_ms: mandate.min_margin_runway_ms,
+        current_headroom_micro_usdc: runway.margin_headroom_micro_usdc,
+        minimum_additional_collateral_micro_usdc: 0,
+        recommended_action: "none",
+        owner_funding_permitted: false,
+      });
+    }
+    const warningBoundaryMs = safeAdd(
+      safeNumber(BigInt(runway.required_owner_response_ms) * 2n),
+      1,
+      "carry_capital_target_runway_overflow",
+    );
+    const targetRunwayMs = Math.max(mandate.min_margin_runway_ms, warningBoundaryMs);
+    const targetHeadroom = runway.stress_burn_micro_usdc_per_hour === 0
+      ? runway.margin_headroom_micro_usdc
+      : safeNumber(ceilDiv(
+        BigInt(runway.stress_burn_micro_usdc_per_hour) * BigInt(targetRunwayMs),
+        BigInt(HOUR_MS),
+      ));
+    const additional = Math.max(0, targetHeadroom - runway.margin_headroom_micro_usdc);
+    return Object.freeze({
+      venue_id: venueId,
+      status: runway.status,
+      runway_ms: runway.runway_ms,
+      target_runway_ms: targetRunwayMs,
+      current_headroom_micro_usdc: runway.margin_headroom_micro_usdc,
+      minimum_additional_collateral_micro_usdc: additional,
+      recommended_action: additional > 0 ? "owner_fund_venue" : "owner_review_required",
+      owner_funding_permitted: true,
+    });
+  });
+  const reduceOnlyExitRequired = legs.some((leg) => leg.recommended_action === "reduce_only_exit");
+  const reconciliationRequired = !reduceOnlyExitRequired
+    && legs.some((leg) => leg.recommended_action === "reconcile_only");
+  const ownerFundingRequired = !reconciliationRequired && !reduceOnlyExitRequired
+    && legs.some((leg) => leg.recommended_action === "owner_fund_venue"
+      || leg.recommended_action === "owner_review_required");
+  const minimumAdditionalCollateral = legs.reduce(
+    (total, leg) => safeAdd(total, leg.minimum_additional_collateral_micro_usdc, "carry_capital_additional_overflow"),
+    0,
+  );
+  return deepFreeze({
+    version: 1,
+    kind: "ghola_carry_capital_action_plan",
+    position_id: positionId,
+    asset,
+    status: reconciliationRequired ? "quarantined" : reduceOnlyExitRequired ? "exit_required" : ownerFundingRequired ? "owner_action_required" : "balanced",
+    recommended_action: reconciliationRequired ? "reconcile_only" : reduceOnlyExitRequired ? "reduce_only_exit" : ownerFundingRequired ? "owner_collateral_review" : "none",
+    reasons: [...new Set(reasons)],
+    legs,
+    minimum_additional_collateral_micro_usdc: reconciliationRequired || reduceOnlyExitRequired ? 0 : minimumAdditionalCollateral,
+    owner_funding_required: ownerFundingRequired,
+    reduce_only_exit_required: reduceOnlyExitRequired,
+    reconciliation_required: reconciliationRequired,
+    proposal_only: true,
+    transaction_broadcast: false,
+    automatic_transfer_permitted: false,
+    owner_only_operations: ["fund", "transfer", "withdraw"],
+    checked_at_ms: nowMs,
+  });
+}
+
 export function evaluatePerpContractPairBasis(value) {
   const raw = object(value, "carry_contract_pair_required");
   exactVersion(raw.version, "carry_contract_pair_version");
@@ -947,6 +1090,38 @@ function normalizeMarginRunwayResult(value) {
     venue_id: venue(raw.venue_id, "carry_margin_runway_venue"),
     status: enumValue(raw.status, new Set(["healthy", "warning", "critical", "breached"]), "carry_margin_runway_status"),
     runway_ms: raw.runway_ms === null ? null : nonNegativeInteger(raw.runway_ms, "carry_margin_runway_ms"),
+  });
+}
+
+function normalizeCapitalRunwayEvidence(value) {
+  const raw = object(value, "carry_capital_runway_invalid");
+  if (raw.automatic_transfer_permitted !== false) fail("carry_capital_automatic_transfer_forbidden");
+  const headroom = nonNegativeInteger(raw.margin_headroom_micro_usdc, "carry_capital_runway_headroom");
+  const burn = nonNegativeInteger(raw.stress_burn_micro_usdc_per_hour, "carry_capital_runway_burn");
+  const runwayMs = raw.runway_ms === null ? null : nonNegativeInteger(raw.runway_ms, "carry_capital_runway_ms");
+  const expectedRunwayMs = burn === 0
+    ? null
+    : safeNumber((BigInt(headroom) * BigInt(HOUR_MS)) / BigInt(burn));
+  if (runwayMs !== expectedRunwayMs) fail("carry_capital_runway_inconsistent");
+  const requiredResponseMs = nonNegativeInteger(raw.required_owner_response_ms, "carry_capital_runway_response");
+  const status = enumValue(raw.status, new Set(["healthy", "warning", "critical", "breached"]), "carry_capital_runway_status");
+  const minimumStatus = headroom === 0
+    ? "breached"
+    : runwayMs !== null && runwayMs <= requiredResponseMs
+      ? "critical"
+      : runwayMs !== null && runwayMs <= requiredResponseMs * 2
+        ? "warning"
+        : "healthy";
+  const severity = { healthy: 0, warning: 1, critical: 2, breached: 3 };
+  if (severity[status] < severity[minimumStatus]) fail("carry_capital_runway_status_inconsistent");
+  return Object.freeze({
+    venue_id: carryExecutionVenue(raw.venue_id, "carry_capital_runway_venue"),
+    as_of_ms: positiveInteger(raw.as_of_ms, "carry_capital_runway_as_of"),
+    status,
+    margin_headroom_micro_usdc: headroom,
+    stress_burn_micro_usdc_per_hour: burn,
+    runway_ms: runwayMs,
+    required_owner_response_ms: requiredResponseMs,
   });
 }
 

@@ -169,6 +169,39 @@ test("rejects a monitor that treats unverifiable margin runway as safe", () => {
   );
 });
 
+test("rejects a capital planner that could grant automatic transfer authority", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replaceAll(
+        "carry_capital_automatic_transfer_forbidden",
+        "carry_capital_transfer_allowed",
+      ),
+    }),
+    /carry_capital_transfer_boundary_missing/,
+  );
+});
+
+test("rejects monitoring that omits the deterministic capital action plan", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll("compileCarryCapitalActionPlan", "ignoreCarryCapitalRisk"),
+    }),
+    /carry_monitor_capital_plan_missing/,
+  );
+});
+
+test("rejects a terminal that hides the owner-only capital action", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll('label="CAPITAL"', 'label="STATUS"'),
+    }),
+    /carry_terminal_capital_action_missing/,
+  );
+});
+
 test("rejects serial Carry monitoring that lets one venue stall every position", () => {
   assert.throws(
     () => checkCarryExecutionContract({

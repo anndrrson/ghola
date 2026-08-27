@@ -21,6 +21,7 @@ export {
   advanceCarryPosition,
   calculateMarginRunway,
   carryRiskMandateMessage,
+  compileCarryCapitalActionPlan,
   compileCarryMigrationProposal,
   createCarryPosition,
   createCarryValueLedger,

@@ -587,8 +587,8 @@ test("background monitoring triggers an automatic reduce-only exit and finalizes
       max_mark_price_divergence_bps: 50,
     },
     margin_runways: [
-      { venue_id: "aster", status: "healthy", runway_ms: 7_200_000 },
-      { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
+      monitoringRunway("aster"),
+      monitoringRunway("lighter"),
     ],
     qualification_reasons: [],
   });
@@ -758,6 +758,21 @@ function preflightProof() {
       { venue_id: "aster", side: "buy", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: "BTCUSDT", base_size: "0.001", limit_price: "10000" } },
       { venue_id: "lighter", side: "sell", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: "BTC", base_size: "0.001", limit_price: "10000" } },
     ],
+  };
+}
+
+function monitoringRunway(venueId) {
+  return {
+    version: 1,
+    venue_id: venueId,
+    as_of_ms: NOW,
+    status: "healthy",
+    margin_headroom_micro_usdc: 20_000_000,
+    stress_burn_micro_usdc_per_hour: 10_000_000,
+    runway_ms: 7_200_000,
+    required_owner_response_ms: 1_800_000,
+    owner_action_required: false,
+    automatic_transfer_permitted: false,
   };
 }
 
