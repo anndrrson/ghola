@@ -70,12 +70,22 @@ test("rejects Hyperliquid setup that skips the remaining Carry venues", () => {
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      webAccountSetup: sources.webAccountSetup.replace(
+      webAccountSetup: sources.webAccountSetup.replaceAll(
         "return_to=${encodeURIComponent(setupReturnTo)}",
         "return_to=${encodeURIComponent(safeReturnTo)}",
       ),
     }),
     /hyperliquid_setup_carry_resume_missing/,
+  );
+});
+
+test("rejects a Carry setup screen that restores three independent venue choices", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webAccountSetup: sources.webAccountSetup.replaceAll("carryAccountSetupNextAction", "removedGuidedAction"),
+    }),
+    /carry_setup_guided_action_ui_missing/,
   );
 });
 

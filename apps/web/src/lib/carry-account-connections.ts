@@ -13,6 +13,11 @@ export interface CarryAccountConnectionProgress {
   ready: boolean;
 }
 
+export type CarryAccountSetupNextAction = Readonly<
+  | { kind: "connect_venue"; venueId: CarryExecutionVenue }
+  | { kind: "verify_routes"; venueId: null }
+>;
+
 export function carryAccountConnections(input: {
   passport: unknown;
   hyperliquidStatus: unknown;
@@ -51,6 +56,17 @@ export function carryAccountConnectionProgress(connections: CarryAccountConnecti
     requiredCount: CARRY_EXECUTION_VENUES.length,
     ready: missingVenueIds.length === 0,
   });
+}
+
+export function carryAccountSetupNextAction(
+  progress: CarryAccountConnectionProgress,
+  blockedVenueIds: readonly CarryExecutionVenue[] = [],
+): CarryAccountSetupNextAction {
+  if (progress.ready) return Object.freeze({ kind: "verify_routes", venueId: null });
+  const blocked = new Set(blockedVenueIds);
+  const venueId = progress.missingVenueIds.find((candidate) => !blocked.has(candidate))
+    || progress.missingVenueIds[0];
+  return Object.freeze({ kind: "connect_venue", venueId });
 }
 
 function record(value: unknown): Record<string, unknown> {

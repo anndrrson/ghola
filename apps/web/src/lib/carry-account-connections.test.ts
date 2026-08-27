@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { carryAccountConnectionProgress, carryAccountConnections } from "./carry-account-connections";
+import {
+  carryAccountConnectionProgress,
+  carryAccountConnections,
+  carryAccountSetupNextAction,
+} from "./carry-account-connections";
 
 describe("Carry account connections", () => {
   it("recognizes the nested Hyperliquid vault status response", () => {
@@ -54,5 +58,22 @@ describe("Carry account connections", () => {
       accountCommitment: "account_test",
       venues: { hyperliquid: true, aster: true, lighter: true },
     })).toMatchObject({ connectedCount: 3, requiredCount: 3, ready: true, missingVenueIds: [] });
+  });
+
+  it("keeps one guided next action while skipping a venue blocked on external activation", () => {
+    const progress = carryAccountConnectionProgress({
+      accountCommitment: "account_test",
+      venues: { hyperliquid: true, aster: false, lighter: false },
+    });
+    expect(carryAccountSetupNextAction(progress)).toEqual({ kind: "connect_venue", venueId: "lighter" });
+    expect(carryAccountSetupNextAction(progress, ["lighter"])).toEqual({ kind: "connect_venue", venueId: "aster" });
+  });
+
+  it("turns the same guided action into route verification only after all venues connect", () => {
+    const progress = carryAccountConnectionProgress({
+      accountCommitment: "account_test",
+      venues: { hyperliquid: true, aster: true, lighter: true },
+    });
+    expect(carryAccountSetupNextAction(progress)).toEqual({ kind: "verify_routes", venueId: null });
   });
 });

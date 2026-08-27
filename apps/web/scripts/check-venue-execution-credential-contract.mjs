@@ -207,7 +207,7 @@ export function checkAsterOnboardingUiBoundary(source) {
     ["\"use client\";", "aster_ui_client_boundary_required"],
     ["getCurrentVenueCredentialOnboardingPath(\"aster\")", "aster_programmatic_ux_metadata_required"],
     ["const perpsTurnkey = usePerpsTurnkey()", "aster_owner_wallet_boundary_required"],
-    ["onClick={() => void beginAsterProgrammatic()}", "aster_programmatic_primary_action_required"],
+    ["if (nextSetupAction.venueId === \"aster\") void beginAsterProgrammatic();", "aster_programmatic_primary_action_required"],
     ["const [showAsterManual, setShowAsterManual] = useState(false)", "aster_manual_fallback_must_default_hidden"],
     ["showAsterManual && (", "aster_manual_fallback_visibility_guard_required"],
     ["Use an existing Aster wallet instead", "aster_manual_fallback_label_required"],
@@ -317,7 +317,7 @@ export function checkLighterOnboardingUiBoundary(source) {
   const failures = [];
   const required = [
     ["getCurrentVenueCredentialOnboardingPath(\"lighter\")", "lighter_programmatic_ux_metadata_required"],
-    ["onClick={() => void beginLighterProgrammatic()}", "lighter_programmatic_primary_action_required"],
+    ["else if (nextSetupAction.venueId === \"lighter\") void beginLighterProgrammatic();", "lighter_programmatic_primary_action_required"],
     ["const [showLighterManual, setShowLighterManual] = useState(false)", "lighter_manual_fallback_must_default_hidden"],
     ["showLighterManual && lighter !== \"connected\"", "lighter_manual_fallback_visibility_guard_required"],
     ["Use an existing Lighter key instead", "lighter_manual_fallback_label_required"],

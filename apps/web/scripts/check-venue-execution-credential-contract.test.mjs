@@ -261,7 +261,10 @@ test("rejects exposing manual Aster key entry as the default path", () => {
   const exposed = asterUi
     .replace("const [showAsterManual, setShowAsterManual] = useState(false)", "const [showAsterManual, setShowAsterManual] = useState(true)")
     .replace("showAsterManual && (", "true && (")
-    .replace("onClick={() => void beginAsterProgrammatic()}", "onClick={() => void connectAsterManual()}");
+    .replace(
+      "if (nextSetupAction.venueId === \"aster\") void beginAsterProgrammatic();",
+      "if (nextSetupAction.venueId === \"aster\") void connectAsterManual();",
+    );
   assert.throws(
     () => checkAsterOnboardingUiBoundary(exposed),
     /aster_programmatic_primary_action_required|aster_manual_fallback_must_default_hidden|aster_manual_fallback_visibility_guard_required/,
@@ -296,7 +299,10 @@ test("rejects exposing manual Lighter keys or removing reconcile-only recovery",
   const exposed = asterUi
     .replace("const [showLighterManual, setShowLighterManual] = useState(false)", "const [showLighterManual, setShowLighterManual] = useState(true)")
     .replace("showLighterManual && lighter !== \"connected\"", "true && lighter !== \"connected\"")
-    .replace("onClick={() => void beginLighterProgrammatic()}", "onClick={() => void connectLighterManual()}")
+    .replace(
+      "else if (nextSetupAction.venueId === \"lighter\") void beginLighterProgrammatic();",
+      "else if (nextSetupAction.venueId === \"lighter\") void connectLighterManual();",
+    )
     .replace("reconcile_only: true", "reconcile_only: false");
   assert.throws(
     () => checkLighterOnboardingUiBoundary(exposed),

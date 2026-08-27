@@ -42,7 +42,11 @@ import {
   type PendingLighterOnboarding,
   type VenueAccountActivationRequirement,
 } from "@/lib/carry-onboarding-recovery";
-import { carryAccountConnectionProgress, carryAccountConnections } from "@/lib/carry-account-connections";
+import {
+  carryAccountConnectionProgress,
+  carryAccountConnections,
+  carryAccountSetupNextAction,
+} from "@/lib/carry-account-connections";
 import {
   connectInjectedHyperliquidOwner,
   injectedWalletErrorMessage,
@@ -683,6 +687,54 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       lighter: lighter === "connected",
     },
   });
+  const nextSetupAction = carryAccountSetupNextAction(
+    connectionProgress,
+    activationNeeded ? [activationNeeded.venue] : [],
+  );
+  const nextSetupDisabled = nextSetupAction.kind === "connect_venue" && (
+    working ||
+    (nextSetupAction.venueId === "aster" && (
+      (!injectedOwnerAvailable && (perpsTurnkey.loading || !perpsTurnkey.configured)) ||
+      asterRegistrationAmbiguous ||
+      (!injectedOwnerAvailable && activationNeeded?.venue === "aster")
+    )) ||
+    (nextSetupAction.venueId === "lighter" && (
+      (!injectedOwnerAvailable && (perpsTurnkey.loading || !perpsTurnkey.configured)) ||
+      (!injectedOwnerAvailable && activationNeeded?.venue === "lighter") ||
+      pendingLighterAssociation?.submission_ambiguous === true
+    ))
+  );
+  const nextSetupLabel = nextSetupAction.kind === "verify_routes" ? "Verify routes"
+    : nextSetupAction.venueId === "hyperliquid" ? "Continue"
+    : nextSetupAction.venueId === "aster"
+      ? pendingAsterAuthorization
+        ? working ? "Authenticating…" : "Continue authentication"
+        : !injectedOwnerAvailable && !perpsTurnkey.configured ? "Secure wallet unavailable"
+        : !injectedOwnerAvailable && perpsTurnkey.loading ? "Restoring secure wallet…"
+        : working ? "Authorizing…"
+        : asterWalletRepairRequested ? "Repair secure wallet"
+        : asterRegistrationAmbiguous ? "Aster reconciliation required"
+        : pendingAsterLinkRecovery
+          ? pendingAsterLinkRecovery.signature
+            ? pendingAsterLinkRecovery.receipt ? "Finish Aster linking" : "Resume Aster verification"
+            : "Resume Aster signing"
+        : activationNeeded?.venue === "aster" ? "Check Aster activation"
+        : asterReprepareRequired ? "Re-prepare Aster approval"
+        : "Continue"
+      : pendingLighterAuthorization
+        ? working ? "Authenticating…" : "Continue authentication"
+        : !injectedOwnerAvailable && !perpsTurnkey.configured ? "Secure wallet unavailable"
+        : !injectedOwnerAvailable && perpsTurnkey.loading ? "Restoring secure wallet…"
+        : pendingLighterAssociation?.submission_ambiguous ? "Reconciliation required"
+        : activationNeeded?.venue === "lighter" ? "Check Lighter activation"
+        : working ? "Authorizing…"
+        : pendingLighterAssociation ? "Resume Lighter setup"
+        : "Continue";
+  function continueGuidedSetup() {
+    if (nextSetupAction.kind !== "connect_venue") return;
+    if (nextSetupAction.venueId === "aster") void beginAsterProgrammatic();
+    else if (nextSetupAction.venueId === "lighter") void beginLighterProgrammatic();
+  }
   return (
     <main className="min-h-screen bg-[#06080c] px-4 pb-20 pt-24 text-[#eef1f8] sm:px-6">
       <AuthModal mode={authMode} open={authOpen} onClose={() => setAuthOpen(false)} onModeChange={setAuthMode} redirectTo={setupReturnTo} />
@@ -700,16 +752,39 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
 
         {auth.authenticated && (
           <div className="mt-8 space-y-3">
-            <div className="flex items-center justify-between rounded-lg border border-[#25344b] bg-[#090e16] px-4 py-3">
-              <div>
+            <div className="rounded-xl border border-[#315277] bg-[#0b1624] p-4 sm:flex sm:items-center sm:justify-between sm:gap-5">
+              <div className="min-w-0">
                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#718097]">Execution access</p>
-                <p className="mt-1 text-sm text-[#c9d2df]">{connectionProgress.ready
-                  ? "All venues connected. Route verification is unlocked."
-                  : `Connect ${connectionProgress.missingVenueIds.map(venueLabel).join(" + ")} to unlock route verification.`}</p>
+                <p className="mt-1 text-sm font-semibold text-[#d8eaff]">{nextSetupAction.kind === "verify_routes"
+                  ? "Connections complete"
+                  : `Next: ${venueLabel(nextSetupAction.venueId)}`}</p>
+                <p className="mt-1 text-xs leading-5 text-[#8f9aae]">{nextSetupAction.kind === "verify_routes"
+                  ? "Run one no-submit check across every venue and pair."
+                  : `${connectionProgress.missingVenueIds.length} connection${connectionProgress.missingVenueIds.length === 1 ? "" : "s"} remain. Ghola resumes the next safe step.`}</p>
               </div>
-              <p className={`font-mono text-sm font-semibold ${connectionProgress.ready ? "text-[#72dfb2]" : "text-[#d9bd74]"}`}>
-                {connectionProgress.connectedCount}/{connectionProgress.requiredCount}
-              </p>
+              <div className="mt-4 flex shrink-0 items-center gap-3 sm:mt-0">
+                <p className={`font-mono text-sm font-semibold ${connectionProgress.ready ? "text-[#72dfb2]" : "text-[#d9bd74]"}`}>
+                  {connectionProgress.connectedCount}/{connectionProgress.requiredCount}
+                </p>
+                {nextSetupAction.kind === "verify_routes" ? (
+                  <Link href={safeReturnTo} className="inline-flex h-10 items-center rounded-md bg-[#56d6a0] px-4 text-sm font-semibold text-[#06130e]">
+                    {nextSetupLabel}
+                  </Link>
+                ) : nextSetupAction.venueId === "hyperliquid" ? (
+                  <Link href={`/account?setup=hyperliquid&return_to=${encodeURIComponent(setupReturnTo)}`} className="inline-flex h-10 items-center rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d]">
+                    Continue
+                  </Link>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={nextSetupDisabled}
+                    onClick={continueGuidedSetup}
+                    className="h-10 rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] disabled:opacity-50"
+                  >
+                    {nextSetupLabel}
+                  </button>
+                )}
+              </div>
             </div>
             {perpsTurnkey.authenticated && !perpsTurnkey.hasPasskey && (
               <div className="flex items-center justify-between gap-4 rounded-xl border border-[#315277] bg-[#0b1624] p-4">
@@ -722,41 +797,9 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                 </button>
               </div>
             )}
-            <VenueCard name="Hyperliquid" state={hyperliquid} onboarding={HYPERLIQUID_ONBOARDING}>
-              {hyperliquid !== "connected" && (
-                <Link href={`/account?setup=hyperliquid&return_to=${encodeURIComponent(setupReturnTo)}`} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff]">
-                  {HYPERLIQUID_ONBOARDING.ux.action_label}
-                </Link>
-              )}
-            </VenueCard>
-            <VenueCard name="Aster" state={aster} onboarding={ASTER_ONBOARDING}>
-              {aster !== "connected" && (
-                <button type="button" disabled={working || (!injectedOwnerAvailable && (perpsTurnkey.loading || !perpsTurnkey.configured)) || asterRegistrationAmbiguous || (!injectedOwnerAvailable && activationNeeded?.venue === "aster")} onClick={() => void beginAsterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
-                  {pendingAsterAuthorization
-                    ? working ? "Authenticating…" : "Continue secure authentication"
-                    : !injectedOwnerAvailable && !perpsTurnkey.configured
-                      ? "Secure wallet unavailable"
-                    : !injectedOwnerAvailable && perpsTurnkey.loading
-                      ? "Restoring secure wallet…"
-                    : working
-                      ? "Authorizing…"
-                      : asterWalletRepairRequested
-                        ? "Repair secure wallet"
-                      : asterRegistrationAmbiguous
-                        ? "Aster reconciliation required"
-                        : pendingAsterLinkRecovery
-                          ? pendingAsterLinkRecovery.signature
-                            ? pendingAsterLinkRecovery.receipt ? "Finish Aster linking" : "Resume Aster verification"
-                            : "Resume Aster signing"
-                        : activationNeeded?.venue === "aster"
-                          ? injectedOwnerAvailable ? "Check connected wallet" : "Activate owner first"
-                        : asterReprepareRequired
-                          ? "Re-prepare Aster approval"
-                          : ASTER_ONBOARDING.ux.action_label}
-                </button>
-              )}
-            </VenueCard>
-            {aster !== "connected" && (
+            <VenueCard name="Hyperliquid" state={hyperliquid} onboarding={HYPERLIQUID_ONBOARDING} />
+            <VenueCard name="Aster" state={aster} onboarding={ASTER_ONBOARDING} />
+            {aster !== "connected" && nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "aster" && (
               <div className="px-1">
                 <p className="mb-2 text-xs leading-5 text-[#718097]">One owner approval enables 30 days of perpetual trading. Withdrawals stay disabled.</p>
                 <button type="button" onClick={() => setShowAsterManual((value) => !value)} className="text-xs font-semibold text-[#718097] hover:text-[#8fcaff]">
@@ -778,30 +821,8 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                 )}
               </div>
             )}
-            <VenueCard name="Lighter" state={lighter} onboarding={LIGHTER_ONBOARDING}>
-              {lighter !== "connected" && (
-                <button type="button" disabled={working || (!injectedOwnerAvailable && (perpsTurnkey.loading || !perpsTurnkey.configured)) || (!injectedOwnerAvailable && activationNeeded?.venue === "lighter") || pendingLighterAssociation?.submission_ambiguous === true} onClick={() => void beginLighterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
-                  {pendingLighterAuthorization
-                    ? working ? "Authenticating…" : "Continue secure authentication"
-                    : !injectedOwnerAvailable && !perpsTurnkey.configured
-                      ? "Secure wallet unavailable"
-                    : !injectedOwnerAvailable && perpsTurnkey.loading
-                      ? "Restoring secure wallet…"
-                    : pendingLighterAssociation?.submission_ambiguous
-                      ? "Reconciliation required"
-                    : activationNeeded?.venue === "lighter"
-                      ? injectedOwnerAvailable ? "Check connected wallet" : "Activate owner first"
-                    : working
-                      ? pendingLighterAssociation?.authorization ? "Verifying…" : "Authorizing…"
-                      : pendingLighterAssociation?.authorization
-                        ? "Resume verification"
-                        : pendingLighterAssociation
-                          ? "Continue owner approval"
-                        : LIGHTER_ONBOARDING.ux.action_label}
-                </button>
-              )}
-            </VenueCard>
-            {lighter !== "connected" && (
+            <VenueCard name="Lighter" state={lighter} onboarding={LIGHTER_ONBOARDING} />
+            {lighter !== "connected" && nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "lighter" && (
               <div className="px-1">
                 <p className="mb-2 text-xs leading-5 text-[#718097]">One owner approval. The key is created inside the worker; Ethereum and Lighter must both confirm it before use.</p>
                 <button type="button" onClick={() => setShowLighterManual((value) => !value)} className="text-xs font-semibold text-[#718097] hover:text-[#8fcaff]">
@@ -809,7 +830,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                 </button>
               </div>
             )}
-            {showLighterManual && lighter !== "connected" && (
+            {showLighterManual && lighter !== "connected" && nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "lighter" && (
               <div className="rounded-xl border border-[#25344b] bg-[#0b111b] p-5">
                 <p className="text-sm font-semibold">Use an existing Lighter key</p>
                 <p className="mt-1 text-xs leading-5 text-[#718097]">Lighter keys are not venue-native trade-only. Ghola blocks transfers and withdrawals inside its attested worker.</p>
@@ -859,9 +880,6 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
               I activated it — recheck once
             </button>
           </div>
-        )}
-        {connectionProgress.ready && (
-          <Link href={safeReturnTo} className="mt-6 block h-12 rounded-lg bg-[#56d6a0] px-4 py-3 text-center font-semibold text-[#06130e]">Continue to route verification</Link>
         )}
         <div className="mt-8 flex items-center justify-center gap-2 text-xs text-[#657188]"><LockKeyhole className="h-4 w-4" /> Secrets are sealed to the attested worker.</div>
       </section>
@@ -942,7 +960,7 @@ function VenueCard({
   name: string;
   state: VenueState;
   onboarding: VenueCredentialOnboardingPath;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
   return (
     <div className="flex items-center justify-between gap-4 rounded-xl border border-[#1f2c41] bg-[#0a0f17] p-4">

@@ -528,6 +528,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webAccountSetup", "connectionProgress.ready", "carry_setup_all_venues_gate_missing");
   forbidText("webAccountSetup", "length >= 2", "carry_setup_partial_matrix_gate_forbidden");
   requireText("webAccountConnectionsTest", "unlocks route verification only when every execution venue is connected", "carry_setup_all_venues_test_missing");
+  requireText("webAccountConnections", "export function carryAccountSetupNextAction", "carry_setup_guided_action_missing");
+  requireText("webAccountSetup", "carryAccountSetupNextAction", "carry_setup_guided_action_ui_missing");
+  requireText("webAccountConnectionsTest", "keeps one guided next action while skipping a venue blocked on external activation", "carry_setup_blocked_venue_resume_test_missing");
+  requireText("webAccountConnectionsTest", "turns the same guided action into route verification only after all venues connect", "carry_setup_guided_completion_test_missing");
   requireText("webAccountSetup", "buildAsterExecutionVaultBundle", "aster_account_setup_missing");
   requireText("webAccountSetup", "buildLighterExecutionVaultBundle", "lighter_account_setup_missing");
   requireText("webAccountSetup", "href={safeReturnTo}", "carry_setup_terminal_return_missing");
