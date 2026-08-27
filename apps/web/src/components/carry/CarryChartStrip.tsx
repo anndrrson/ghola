@@ -37,6 +37,8 @@ export function CarryChartStrip({
   asset,
   defaultOpen = false,
   autoRunNoSubmit = false,
+  preferredLongVenue,
+  preferredShortVenue,
   hyperliquidLivePatch,
   onAutoRunNoSubmitConsumed,
   onAssetSelect,
@@ -44,6 +46,8 @@ export function CarryChartStrip({
   asset: string;
   defaultOpen?: boolean;
   autoRunNoSubmit?: boolean;
+  preferredLongVenue?: string | null;
+  preferredShortVenue?: string | null;
   hyperliquidLivePatch?: CarryLiveMarketPatch | null;
   onAutoRunNoSubmitConsumed?: () => void;
   onAssetSelect: (asset: string) => void;
@@ -150,7 +154,13 @@ export function CarryChartStrip({
   )), [clock, pricedCandidates]);
   const selected = observedCandidates.find(({ candidate }) => candidate.asset === asset) || null;
   const assetExecutionCandidates = executionCandidates.filter(({ candidate }) => candidate.asset === asset);
+  const preferredExecutionRouteKey = isCarryExecutionVenue(preferredLongVenue)
+    && isCarryExecutionVenue(preferredShortVenue)
+    && preferredLongVenue !== preferredShortVenue
+    ? `${asset}:${preferredLongVenue}:${preferredShortVenue}`
+    : "";
   const selectedExecution = assetExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === executionRouteKey)
+    || assetExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === preferredExecutionRouteKey)
     || assetExecutionCandidates[0]
     || null;
   const selectedAgeMs = selected ? carryCandidateAgeMs(selected.candidate, clock) : Number.POSITIVE_INFINITY;

@@ -510,8 +510,8 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     }
   }
 
-  const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${candidate.asset}-PERP&carry=open`;
-  const setupHref = `/account?setup=carry&return_to=${encodeURIComponent(terminalReturn)}`;
+  const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${candidate.asset}-PERP&carry=open&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}`;
+  const setupHref = `/account?setup=carry&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}&return_to=${encodeURIComponent(terminalReturn)}`;
   const canSave = proof?.live_creation_ready === true || proof?.qualification_pilot_ready === true;
   const canEnter = current?.position.status === "draft";
   const canExit = current ? ["active", "rebalancing", "frozen"].includes(current.position.status) : false;

@@ -72,6 +72,31 @@ describe("CarryChartStrip", () => {
     expect(rail?.textContent).toContain("NET24H*+");
   });
 
+  it("restores only an exact currently qualified execution route", async () => {
+    const body = shadowResponse([
+      snapshot("hyperliquid", 10_000_000),
+      snapshot("aster", 100_000_000),
+      snapshot("lighter", 150_000_000),
+    ]);
+    vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => body } as Response);
+    await act(async () => {
+      root.render(
+        <CarryChartStrip
+          asset="BTC"
+          defaultOpen
+          preferredLongVenue="hyperliquid"
+          preferredShortVenue="aster"
+          onAssetSelect={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const route = container.querySelector<HTMLSelectElement>('[aria-label="Carry execution route"]');
+    expect(route?.value).toBe("BTC:hyperliquid:aster");
+  });
+
   it("shows negative net value without qualifying the route", async () => {
     await renderShadow(shadowResponse([
       snapshot("hyperliquid", 10_000_000),

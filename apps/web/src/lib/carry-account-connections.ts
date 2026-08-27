@@ -47,13 +47,22 @@ export function carryAccountConnections(input: {
 }
 
 export function carryAccountConnectionProgress(connections: CarryAccountConnections): CarryAccountConnectionProgress {
-  const connectedVenueIds = CARRY_EXECUTION_VENUES.filter((venueId) => connections.venues[venueId] === true);
-  const missingVenueIds = CARRY_EXECUTION_VENUES.filter((venueId) => connections.venues[venueId] !== true);
+  return carryAccountConnectionProgressForVenues(connections, CARRY_EXECUTION_VENUES);
+}
+
+export function carryAccountConnectionProgressForVenues(
+  connections: CarryAccountConnections,
+  requiredVenueIds: readonly CarryExecutionVenue[],
+): CarryAccountConnectionProgress {
+  const required = CARRY_EXECUTION_VENUES.filter((venueId) => requiredVenueIds.includes(venueId));
+  const normalizedRequired = required.length >= 2 ? required : CARRY_EXECUTION_VENUES;
+  const connectedVenueIds = normalizedRequired.filter((venueId) => connections.venues[venueId] === true);
+  const missingVenueIds = normalizedRequired.filter((venueId) => connections.venues[venueId] !== true);
   return Object.freeze({
     connectedVenueIds: Object.freeze([...connectedVenueIds]),
     missingVenueIds: Object.freeze([...missingVenueIds]),
     connectedCount: connectedVenueIds.length,
-    requiredCount: CARRY_EXECUTION_VENUES.length,
+    requiredCount: normalizedRequired.length,
     ready: missingVenueIds.length === 0,
   });
 }

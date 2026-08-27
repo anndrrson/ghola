@@ -410,7 +410,11 @@ describe("CarryTerminalBuilder", () => {
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     const link = [...container.querySelectorAll("a")].find((item) => item.textContent === "CONNECT");
     expect(link?.getAttribute("href")).toContain("setup=carry");
-    expect(decodeURIComponent(link?.getAttribute("href") || "")).toContain("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open");
+    expect(link?.getAttribute("href")).toContain("long_venue=hyperliquid");
+    expect(link?.getAttribute("href")).toContain("short_venue=lighter");
+    const decoded = decodeURIComponent(link?.getAttribute("href") || "");
+    expect(decoded).toContain("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open");
+    expect(decoded).toContain("long_venue=hyperliquid&short_venue=lighter");
   });
 
   it("allows a new Carry Position after the previous route proved flat with zero orders", async () => {

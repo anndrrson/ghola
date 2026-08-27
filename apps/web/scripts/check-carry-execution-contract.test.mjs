@@ -141,6 +141,45 @@ test("rejects a Carry setup screen that restores three independent venue choices
   );
 });
 
+test("rejects Carry onboarding that drops the selected pair scope", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webAccountSetup: sources.webAccountSetup.replaceAll(
+        "carryAccountConnectionProgressForVenues",
+        "carryAccountConnectionProgress",
+      ),
+    }),
+    /carry_setup_pair_scope_missing/,
+  );
+});
+
+test("rejects a terminal that does not bind setup to its selected pair", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll(
+        "long_venue=${encodeURIComponent(candidate.long.venue_id)}",
+        "long_venue=hyperliquid",
+      ),
+    }),
+    /carry_terminal_pair_setup_binding_missing/,
+  );
+});
+
+test("rejects a terminal that does not restore its selected pair", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replace(
+        "&carry=open&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}",
+        "&carry=open",
+      ),
+    }),
+    /carry_terminal_pair_return_binding_missing/,
+  );
+});
+
 test("rejects a missing exact-reconciliation adapter", () => {
   assert.throws(
     () => checkCarryExecutionContract({

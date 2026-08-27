@@ -43,11 +43,12 @@ import {
   type VenueAccountActivationRequirement,
 } from "@/lib/carry-onboarding-recovery";
 import {
-  carryAccountConnectionProgress,
+  carryAccountConnectionProgressForVenues,
   carryAccountConnections,
   carryNoSubmitVerificationHref,
   carryAccountSetupNextAction,
 } from "@/lib/carry-account-connections";
+import { CARRY_EXECUTION_VENUES, isCarryExecutionVenue } from "@/lib/carry-venues";
 import {
   connectInjectedHyperliquidOwner,
   injectedWalletErrorMessage,
@@ -111,11 +112,23 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const [checkingLighterReadiness, setCheckingLighterReadiness] = useState(false);
   const [injectedOwnerAvailable, setInjectedOwnerAvailable] = useState(false);
   const safeReturnTo = returnTo === "/carry" || returnTo.startsWith("/trade?") ? returnTo : "/carry";
+  const requestedLongVenue = searchParams.get("long_venue");
+  const requestedShortVenue = searchParams.get("short_venue");
+  const pairScoped = isCarryExecutionVenue(requestedLongVenue)
+    && isCarryExecutionVenue(requestedShortVenue)
+    && requestedLongVenue !== requestedShortVenue;
+  const requiredVenueIds = pairScoped
+    ? CARRY_EXECUTION_VENUES.filter((venueId) => venueId === requestedLongVenue || venueId === requestedShortVenue)
+    : CARRY_EXECUTION_VENUES;
   const noSubmitReturnTo = carryNoSubmitVerificationHref(safeReturnTo);
   const recoveryUserScope = opaqueTurnkeyWalletScope(auth.user?.id || "");
   const asterWalletRepairRequested = asterWalletRepairRequired ||
     (!asterWalletRepairCompleted && searchParams.get("repair") === "aster-wallet");
-  const setupReturnTo = `/account?setup=carry&return_to=${encodeURIComponent(safeReturnTo)}`;
+  const setupReturnTo = `/account?${new URLSearchParams({
+    setup: "carry",
+    ...(pairScoped ? { long_venue: requestedLongVenue, short_venue: requestedShortVenue } : {}),
+    return_to: safeReturnTo,
+  }).toString()}`;
 
   const refresh = useCallback(async () => {
     if (!auth.authenticated) return;
@@ -690,14 +703,14 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     else await connectLighterProgrammatic();
   }
 
-  const connectionProgress = carryAccountConnectionProgress({
+  const connectionProgress = carryAccountConnectionProgressForVenues({
     accountCommitment,
     venues: {
       hyperliquid: hyperliquid === "connected",
       aster: aster === "connected",
       lighter: lighter === "connected",
     },
-  });
+  }, requiredVenueIds);
   const nextSetupAction = carryAccountSetupNextAction(
     connectionProgress,
     activationNeeded ? [activationNeeded.venue] : [],
@@ -777,7 +790,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                   ? "Connections complete"
                   : `Next: ${venueLabel(nextSetupAction.venueId)}`}</p>
                 <p className="mt-1 text-xs leading-5 text-[#8f9aae]">{nextSetupAction.kind === "verify_routes"
-                  ? "Run one no-submit check across every venue and pair."
+                  ? pairScoped ? "Run one no-submit check across this pair." : "Run one no-submit check across every venue and pair."
                   : `${connectionProgress.missingVenueIds.length} connection${connectionProgress.missingVenueIds.length === 1 ? "" : "s"} remain. Ghola resumes the next safe step.`}</p>
               </div>
               <div className="mt-4 flex shrink-0 items-center gap-3 sm:mt-0">
@@ -815,8 +828,8 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                 </button>
               </div>
             )}
-            <VenueCard name="Hyperliquid" state={hyperliquid} onboarding={HYPERLIQUID_ONBOARDING} />
-            <VenueCard name="Aster" state={aster} onboarding={ASTER_ONBOARDING} />
+            {requiredVenueIds.includes("hyperliquid") ? <VenueCard name="Hyperliquid" state={hyperliquid} onboarding={HYPERLIQUID_ONBOARDING} /> : null}
+            {requiredVenueIds.includes("aster") ? <VenueCard name="Aster" state={aster} onboarding={ASTER_ONBOARDING} /> : null}
             {aster !== "connected" && nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "aster" && (
               <div className="px-1">
                 <p className="mb-2 text-xs leading-5 text-[#718097]">One owner approval enables 30 days of perpetual trading. Withdrawals stay disabled.</p>
@@ -839,7 +852,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                 )}
               </div>
             )}
-            <VenueCard name="Lighter" state={lighter} onboarding={LIGHTER_ONBOARDING} />
+            {requiredVenueIds.includes("lighter") ? <VenueCard name="Lighter" state={lighter} onboarding={LIGHTER_ONBOARDING} /> : null}
             {lighter !== "connected" && nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "lighter" && (
               <div className="px-1">
                 <p className="mb-2 text-xs leading-5 text-[#718097]">One owner approval. The key is created inside the worker; Ethereum and Lighter must both confirm it before use.</p>

@@ -1628,6 +1628,8 @@ function AlternateProductWorkspace({
                 asset={perpMarket}
                 defaultOpen={workspaceParams.get("carry") === "open"}
                 autoRunNoSubmit={carryNoSubmitRequested}
+                preferredLongVenue={workspaceParams.get("long_venue")}
+                preferredShortVenue={workspaceParams.get("short_venue")}
                 hyperliquidLivePatch={hyperliquidCarryPatch}
                 onAutoRunNoSubmitConsumed={consumeCarryNoSubmitRequest}
                 onAssetSelect={changePerpMarket}

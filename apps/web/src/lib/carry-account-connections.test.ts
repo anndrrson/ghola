@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   carryAccountConnectionProgress,
+  carryAccountConnectionProgressForVenues,
   carryAccountConnections,
   carryNoSubmitVerificationHref,
   carryAccountSetupNextAction,
@@ -59,6 +60,25 @@ describe("Carry account connections", () => {
       accountCommitment: "account_test",
       venues: { hyperliquid: true, aster: true, lighter: true },
     })).toMatchObject({ connectedCount: 3, requiredCount: 3, ready: true, missingVenueIds: [] });
+  });
+
+  it("scopes guided setup to the selected pair without weakening fleet setup", () => {
+    const connections = {
+      accountCommitment: "account_test",
+      venues: { hyperliquid: true, aster: true, lighter: false },
+    } as const;
+    expect(carryAccountConnectionProgressForVenues(connections, ["hyperliquid", "aster"])).toMatchObject({
+      connectedCount: 2,
+      requiredCount: 2,
+      ready: true,
+      missingVenueIds: [],
+    });
+    expect(carryAccountConnectionProgress(connections)).toMatchObject({
+      connectedCount: 2,
+      requiredCount: 3,
+      ready: false,
+      missingVenueIds: ["lighter"],
+    });
   });
 
   it("keeps one guided next action while skipping a venue blocked on external activation", () => {

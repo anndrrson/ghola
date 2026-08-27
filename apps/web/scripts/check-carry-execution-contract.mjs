@@ -646,6 +646,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "isCarryExecutionVenue(candidate.long.venue_id)", "carry_executable_route_fallback_missing");
   requireText("webCarryChart", "rankCarryCandidatesByNet", "carry_net_route_ranking_missing");
   requireText("webCarryChart", 'aria-label="Carry execution route"', "carry_execution_route_selector_missing");
+  requireText("webCarryChart", "preferredExecutionRouteKey", "carry_execution_route_return_binding_missing");
+  requireText("webCarryChartTest", "restores only an exact currently qualified execution route", "carry_execution_route_return_test_missing");
   requireText("webCarryChart", "CarryTerminalBuilder", "carry_terminal_builder_missing");
   requireText("webCarryChart", ">XVENUE<", "carry_terminal_rail_missing");
   requireText("webCarryChart", "formatBps", "carry_basis_point_display_missing");
@@ -678,6 +680,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "CARRY_EXECUTION_VENUES.every", "carry_terminal_matrix_registry_missing");
   forbidText("webCarryBuilder", '["hyperliquid", "lighter", "aster"]', "carry_terminal_matrix_registry_duplicated");
   requireText("webCarryBuilder", "preflightCarryPair", "carry_terminal_pair_no_submit_missing");
+  requireText("webCarryBuilder", "long_venue=${encodeURIComponent(candidate.long.venue_id)}", "carry_terminal_pair_setup_binding_missing");
+  requireText("webCarryBuilder", "&carry=open&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}", "carry_terminal_pair_return_binding_missing");
   requireText("webCarryBuilder", "createCarryPosition", "carry_terminal_position_creation_missing");
   requireText("webCarryBuilder", "executeCarryPositionEntry", "carry_terminal_entry_missing");
   requireText("webCarryBuilder", "requestCarryPositionExit", "carry_terminal_exit_missing");
@@ -750,8 +754,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webAccountPage", "focusedCarrySetup", "carry_account_route_missing");
   requireText("webAccountPage", "<CarryAccountSetup returnTo={returnTo}", "carry_setup_return_path_missing");
   requireText("webAccountSetup", "connectionProgress.ready", "carry_setup_all_venues_gate_missing");
-  forbidText("webAccountSetup", "length >= 2", "carry_setup_partial_matrix_gate_forbidden");
   requireText("webAccountConnectionsTest", "unlocks route verification only when every execution venue is connected", "carry_setup_all_venues_test_missing");
+  requireText("webAccountConnectionsTest", "scopes guided setup to the selected pair without weakening fleet setup", "carry_setup_pair_scope_test_missing");
+  requireText("webAccountSetup", "carryAccountConnectionProgressForVenues", "carry_setup_pair_scope_missing");
   requireText("webAccountConnections", "export function carryAccountSetupNextAction", "carry_setup_guided_action_missing");
   requireText("webAccountSetup", "carryAccountSetupNextAction", "carry_setup_guided_action_ui_missing");
   requireText("webAccountConnectionsTest", "keeps one guided next action while skipping a venue blocked on external activation", "carry_setup_blocked_venue_resume_test_missing");

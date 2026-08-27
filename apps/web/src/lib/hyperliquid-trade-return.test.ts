@@ -31,7 +31,7 @@ describe("hyperliquid setup return target", () => {
   });
 
   it("returns Hyperliquid setup to the exact Carry setup before the terminal", () => {
-    const carrySetup = "/account?setup=carry&return_to=%2Ftrade%3Fproduct%3Dperps%26venue%3Dhyperliquid%26market%3DBTC-PERP%26carry%3Dopen";
+    const carrySetup = "/account?setup=carry&long_venue=hyperliquid&short_venue=aster&return_to=%2Ftrade%3Fproduct%3Dperps%26venue%3Dhyperliquid%26market%3DBTC-PERP%26carry%3Dopen";
     expect(safeHyperliquidSetupReturn(carrySetup)).toBe(true);
     expect(hyperliquidMarketFromTradeReturn(carrySetup)).toBe("BTC");
     expect(decodeURIComponent(hyperliquidSetupAuthRedirect(carrySetup))).toContain(carrySetup);
