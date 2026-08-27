@@ -336,3 +336,54 @@ index 36ebd580cf8b4bd66cc89e25ed3e0699f1da7afd..6c59aa13eeb4e30194430b709e26a03a
          onChange: function onChange(e) {
            return handleChange(i, e.target.value.toUpperCase());
          },
+diff --git a/dist/components/auth/TurnstileWidget.js b/dist/components/auth/TurnstileWidget.js
+--- a/dist/components/auth/TurnstileWidget.js
++++ b/dist/components/auth/TurnstileWidget.js
+@@ -48,7 +48,12 @@ function useTurnstile(options) {
+     }, turnstileRef);
+     // Timed out with no token — ensure gated actions stay disabled.
+     if (turnstileConfigured && !("captchaToken" in result)) {
+       setAuthEnabled(false);
++      setShowTurnstileExpired(true);
++      setShowTurnstileError(true);
++      setTurnstileErrorMessage("Verification expired. Complete the security check, then try again.");
++      turnstileRef.current?.reset();
++      throw new Error("Turnkey CAPTCHA is required before requesting a sign-in code.");
+     }
+     return result;
+   };
+@@ -57,6 +62,8 @@ function useTurnstile(options) {
+     setTurnstileToken(token);
+     setAuthEnabled(true);
+     setTurnstileErrorMessage(null);
++    setShowTurnstileError(false);
++    setShowTurnstileExpired(false);
+   };
+   const onError = () => {
+     setTurnstileToken(null);
+diff --git a/dist/components/auth/TurnstileWidget.mjs b/dist/components/auth/TurnstileWidget.mjs
+--- a/dist/components/auth/TurnstileWidget.mjs
++++ b/dist/components/auth/TurnstileWidget.mjs
+@@ -74,7 +74,13 @@ function useTurnstile(options) {
+             result = _context.v;
+             // Timed out with no token — ensure gated actions stay disabled.
+             if (turnstileConfigured && !("captchaToken" in result)) {
++              var _turnstileRef$current;
+               setAuthEnabled(false);
++              setShowTurnstileExpired(true);
++              setShowTurnstileError(true);
++              setTurnstileErrorMessage("Verification expired. Complete the security check, then try again.");
++              (_turnstileRef$current = turnstileRef.current) === null || _turnstileRef$current === void 0 ? void 0 : _turnstileRef$current.reset();
++              throw new Error("Turnkey CAPTCHA is required before requesting a sign-in code.");
+             }
+             return _context.a(2, result);
+         }
+@@ -88,6 +94,8 @@ function useTurnstile(options) {
+     setTurnstileToken(token);
+     setAuthEnabled(true);
+     setTurnstileErrorMessage(null);
++    setShowTurnstileError(false);
++    setShowTurnstileExpired(false);
+   };
+   var onError = function onError() {
+     setTurnstileToken(null);

@@ -10,6 +10,12 @@ const required = [
   /Start over; do not retry it/,
 ];
 
+const requiredCaptchaGate = [
+  /Turnkey CAPTCHA is required before requesting a sign-in code/,
+  /Verification expired\. Complete the security check, then try again/,
+  /setShowTurnstileError\(true\)/,
+];
+
 export async function verifyTurnkeyOtpInstall(root = process.cwd()) {
   const files = [
     path.join(root, "node_modules/@turnkey/react-wallet-kit/dist/components/auth/OTP.js"),
@@ -25,6 +31,20 @@ export async function verifyTurnkeyOtpInstall(root = process.cwd()) {
     }
     if (/Error completing OTP/.test(source)) {
       throw new Error(`${path.relative(root, file)} still contains the unsafe OTP retry path`);
+    }
+  }
+
+  const captchaFiles = [
+    path.join(root, "node_modules/@turnkey/react-wallet-kit/dist/components/auth/TurnstileWidget.js"),
+    path.join(root, "node_modules/@turnkey/react-wallet-kit/dist/components/auth/TurnstileWidget.mjs"),
+  ];
+
+  for (const file of captchaFiles) {
+    const source = await readFile(file, "utf8");
+    for (const pattern of requiredCaptchaGate) {
+      if (!pattern.test(source)) {
+        throw new Error(`${path.relative(root, file)} permits OTP initialization without verified CAPTCHA`);
+      }
     }
   }
 }

@@ -13,6 +13,9 @@ test("Turnkey OTP patch prevents stale or repeated verification", async () => {
   assert.match(source, /if \(submitting \|\| verificationAttempted\) return/);
   assert.match(source, /\[Turnkey OTP\] verification rejected/);
   assert.match(source, /Start over; do not retry it/);
+  assert.match(source, /Turnkey CAPTCHA is required before requesting a sign-in code/);
+  assert.match(source, /Verification expired\. Complete the security check, then try again/);
+  assert.match(source, /setShowTurnstileError\(true\)/);
   assert.doesNotMatch(source, /^\+.*throw new Error\(["`]Error completing OTP/gm);
 });
 

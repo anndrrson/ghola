@@ -60,6 +60,8 @@ const requiredGoogleRedirectSources = [
       { label: "single OTP attempt per challenge", pattern: /if \(submitting \|\| verificationAttempted\) return/ },
       { label: "actionable Turnkey OTP diagnostics", pattern: /\[Turnkey OTP\] verification rejected/ },
       { label: "no blind OTP retry", pattern: /Start over; do not retry it/ },
+      { label: "CAPTCHA required before OTP initialization", pattern: /Turnkey CAPTCHA is required before requesting a sign-in code/ },
+      { label: "visible CAPTCHA timeout recovery", pattern: /Verification expired\. Complete the security check, then try again/ },
     ],
   },
   {
