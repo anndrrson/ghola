@@ -260,7 +260,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("preflight", "live_execution_leverage_unchanged: true", "carry_stress_leverage_boundary_missing");
   requireText("preflight", "owner_leverage_configuration_required", "carry_owner_leverage_action_missing");
   requireText("preflight", "executionMandate?.min_margin_runway_ms", "carry_signed_runway_capital_binding_missing");
-  requireText("preflightTest", "reports exact owner-funded opening shortfalls without granting transfer authority", "carry_opening_capital_plan_test_missing");
+  requireText("preflight", "account.opening_collateral_shortfall_micro_usdc === 0", "carry_unfunded_releasable_collateral_gate_missing");
+  requireText("preflightTest", "never advertises releasable collateral", "carry_opening_capital_plan_test_missing");
+  requireText("preflight", "Math.max(reportedMaintenance, contractMaintenanceFloor)", "carry_maintenance_double_count_gate_missing");
+  requireText("preflight", "maintenance_evidence_basis", "carry_maintenance_evidence_basis_missing");
+  requireText("preflightTest", "without double-counting venue totals", "carry_maintenance_double_count_test_missing");
   requireText("preflight", "carry_account_owner_mismatch", "carry_preflight_owner_binding_missing");
   requireText("preflightTest", "rejects cross-owner sealed venue access before order verification", "carry_preflight_owner_binding_test_missing");
   requireText("coreCarry", "collateral_basis_risk_bps", "collateral_basis_stress_missing");

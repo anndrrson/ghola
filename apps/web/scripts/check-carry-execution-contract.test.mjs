@@ -374,6 +374,32 @@ test("rejects durable readiness that drops exact owner-funded shortfalls", () =>
   );
 });
 
+test("rejects capital planning that advertises releasable collateral while funding is short", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll(
+        "account.opening_collateral_shortfall_micro_usdc === 0",
+        "true",
+      ),
+    }),
+    /carry_unfunded_releasable_collateral_gate_missing/,
+  );
+});
+
+test("rejects margin runway that double-counts venue-reported maintenance", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll(
+        "Math.max(reportedMaintenance, contractMaintenanceFloor)",
+        "reportedMaintenance + contractMaintenanceFloor",
+      ),
+    }),
+    /carry_maintenance_double_count_gate_missing/,
+  );
+});
+
 test("rejects a terminal that hides a safe unfunded connection result", () => {
   assert.throws(
     () => checkCarryExecutionContract({

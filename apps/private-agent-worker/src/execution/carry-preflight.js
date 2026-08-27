@@ -475,7 +475,9 @@ function compileOpeningCapitalPlan(evidence, accounts, notionalMicro, minMarginR
         ? "owner_fund_venue"
         : "none",
       stress_adjusted_target_collateral_micro_usdc: stress.target_collateral_micro_usdc,
-      potential_releasable_collateral_micro_usdc: stress.potential_releasable_collateral_micro_usdc,
+      potential_releasable_collateral_micro_usdc: account.opening_collateral_shortfall_micro_usdc === 0
+        ? stress.potential_releasable_collateral_micro_usdc
+        : 0,
       owner_maximum_stress_adjusted_leverage: stress.maximum_safe_leverage,
       owner_leverage_configuration_required: stress.maximum_safe_leverage > account.execution_leverage,
     });
@@ -650,7 +652,9 @@ function accountReadiness(leg, notionalMicro) {
 
 function projectedMarginRunway(leg, readiness, notionalMicro, nowMs) {
   const account = leg.account || {};
-  const maintenance = usdMicro(account.maintenance_margin) + microFromBps(notionalMicro, leg.snapshot.maintenance_margin_bps);
+  const reportedMaintenance = usdMicro(account.maintenance_margin);
+  const contractMaintenanceFloor = microFromBps(notionalMicro, leg.snapshot.maintenance_margin_bps);
+  const maintenance = Math.max(reportedMaintenance, contractMaintenanceFloor);
   const safetyBuffer = Math.max(10_000_000, microFromBps(notionalMicro, 1_000));
   const projectedHeadroom = Math.max(0, readiness.margin_balance_micro_usdc - maintenance - safetyBuffer);
   const fundingDebit = leg.side === "buy"
@@ -672,7 +676,15 @@ function projectedMarginRunway(leg, readiness, notionalMicro, nowMs) {
     minimum_liquidation_distance_bps: 1_000,
     as_of_ms: nowMs,
   });
-  return Object.freeze({ ...runway, account_commitment: readiness.account_commitment });
+  return Object.freeze({
+    ...runway,
+    account_commitment: readiness.account_commitment,
+    reported_maintenance_margin_micro_usdc: reportedMaintenance,
+    contract_maintenance_floor_micro_usdc: contractMaintenanceFloor,
+    maintenance_evidence_basis: reportedMaintenance >= contractMaintenanceFloor
+      ? "venue_account_total"
+      : "contract_spec_floor",
+  });
 }
 
 function orderInstruction(leg, notionalUsd) {
