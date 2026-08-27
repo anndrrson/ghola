@@ -42,7 +42,7 @@ import {
   type PendingLighterOnboarding,
   type VenueAccountActivationRequirement,
 } from "@/lib/carry-onboarding-recovery";
-import { carryAccountConnections } from "@/lib/carry-account-connections";
+import { carryAccountConnectionProgress, carryAccountConnections } from "@/lib/carry-account-connections";
 import {
   connectInjectedHyperliquidOwner,
   injectedWalletErrorMessage,
@@ -119,9 +119,9 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       ]);
       const connections = carryAccountConnections({ passport: passportRaw, hyperliquidStatus: hyperliquidRaw });
       setAccountCommitment(connections.accountCommitment);
-      setAster(connections.aster ? "connected" : "needed");
-      setLighter(connections.lighter ? "connected" : "needed");
-      setHyperliquid(connections.hyperliquid ? "connected" : "needed");
+      setAster(connections.venues.aster ? "connected" : "needed");
+      setLighter(connections.venues.lighter ? "connected" : "needed");
+      setHyperliquid(connections.venues.hyperliquid ? "connected" : "needed");
       setError(null);
     } catch {
       setError("Account readiness could not be refreshed.");
@@ -675,7 +675,14 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     else await connectLighterProgrammatic();
   }
 
-  const enoughConnected = [hyperliquid, aster, lighter].filter((state) => state === "connected").length >= 2;
+  const connectionProgress = carryAccountConnectionProgress({
+    accountCommitment,
+    venues: {
+      hyperliquid: hyperliquid === "connected",
+      aster: aster === "connected",
+      lighter: lighter === "connected",
+    },
+  });
   return (
     <main className="min-h-screen bg-[#06080c] px-4 pb-20 pt-24 text-[#eef1f8] sm:px-6">
       <AuthModal mode={authMode} open={authOpen} onClose={() => setAuthOpen(false)} onModeChange={setAuthMode} redirectTo={setupReturnTo} />
@@ -692,6 +699,17 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
 
         {auth.authenticated && (
           <div className="mt-8 space-y-3">
+            <div className="flex items-center justify-between rounded-lg border border-[#25344b] bg-[#090e16] px-4 py-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#718097]">Execution access</p>
+                <p className="mt-1 text-sm text-[#c9d2df]">{connectionProgress.ready
+                  ? "All venues connected. Route verification is unlocked."
+                  : `Connect ${connectionProgress.missingVenueIds.map(venueLabel).join(" + ")} to unlock route verification.`}</p>
+              </div>
+              <p className={`font-mono text-sm font-semibold ${connectionProgress.ready ? "text-[#72dfb2]" : "text-[#d9bd74]"}`}>
+                {connectionProgress.connectedCount}/{connectionProgress.requiredCount}
+              </p>
+            </div>
             {perpsTurnkey.authenticated && !perpsTurnkey.hasPasskey && (
               <div className="flex items-center justify-between gap-4 rounded-xl border border-[#315277] bg-[#0b1624] p-4">
                 <div>
@@ -841,13 +859,17 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
             </button>
           </div>
         )}
-        {enoughConnected && (
+        {connectionProgress.ready && (
           <Link href={safeReturnTo} className="mt-6 block h-12 rounded-lg bg-[#56d6a0] px-4 py-3 text-center font-semibold text-[#06130e]">Continue to route verification</Link>
         )}
         <div className="mt-8 flex items-center justify-center gap-2 text-xs text-[#657188]"><LockKeyhole className="h-4 w-4" /> Secrets are sealed to the attested worker.</div>
       </section>
     </main>
   );
+}
+
+function venueLabel(venueId: string) {
+  return venueId === "hyperliquid" ? "Hyperliquid" : venueId === "lighter" ? "Lighter" : venueId === "aster" ? "Aster" : venueId;
 }
 
 function LighterReadinessPanel({

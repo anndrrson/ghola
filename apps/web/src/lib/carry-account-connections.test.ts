@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { carryAccountConnections } from "./carry-account-connections";
+import { carryAccountConnectionProgress, carryAccountConnections } from "./carry-account-connections";
 
 describe("Carry account connections", () => {
   it("recognizes the nested Hyperliquid vault status response", () => {
@@ -10,7 +10,7 @@ describe("Carry account connections", () => {
         ready: false,
         hyperliquid_execution_vault: { status: "sealed" },
       },
-    })).toMatchObject({ accountCommitment: "account_test", hyperliquid: true });
+    })).toMatchObject({ accountCommitment: "account_test", venues: { hyperliquid: true } });
   });
 
   it("requires read and trade capability before treating passport venues as connected", () => {
@@ -28,9 +28,7 @@ describe("Carry account connections", () => {
     });
     expect(result).toEqual({
       accountCommitment: "account_test",
-      hyperliquid: false,
-      aster: true,
-      lighter: false,
+      venues: { hyperliquid: false, aster: true, lighter: false },
     });
   });
 
@@ -39,6 +37,22 @@ describe("Carry account connections", () => {
       passport: { account_commitment: "account_test", venues: [] },
       hyperliquidStatus: { credentials_sealed: true, ready: false, connection_proof: null },
     });
-    expect(result.hyperliquid).toBe(true);
+    expect(result.venues.hyperliquid).toBe(true);
+  });
+
+  it("unlocks route verification only when every execution venue is connected", () => {
+    expect(carryAccountConnectionProgress({
+      accountCommitment: "account_test",
+      venues: { hyperliquid: true, aster: true, lighter: false },
+    })).toMatchObject({
+      connectedCount: 2,
+      requiredCount: 3,
+      ready: false,
+      missingVenueIds: ["lighter"],
+    });
+    expect(carryAccountConnectionProgress({
+      accountCommitment: "account_test",
+      venues: { hyperliquid: true, aster: true, lighter: true },
+    })).toMatchObject({ connectedCount: 3, requiredCount: 3, ready: true, missingVenueIds: [] });
   });
 });

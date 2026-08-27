@@ -22,7 +22,7 @@ import {
   createCarryPatchPublisher,
   createCarryLiveMarketStream,
 } from "@/lib/carry-live-market";
-import { CARRY_EXECUTION_VENUES } from "@/lib/carry-venues";
+import { isCarryExecutionVenue } from "@/lib/carry-venues";
 
 const CarryTerminalBuilder = dynamic(
   () => import("./CarryTerminalBuilder").then((module) => module.CarryTerminalBuilder),
@@ -133,9 +133,9 @@ export function CarryChartStrip({
   const pricedCandidates = useMemo(() => rankCarryCandidatesByNet(
     buildPairCandidates(effectiveVenues),
   ), [effectiveVenues]);
-  const executionCandidates = useMemo(() => rankCarryCandidatesByNet(
-    buildPairCandidates(effectiveVenues, CARRY_EXECUTION_VENUES),
-  ), [effectiveVenues]);
+  const executionCandidates = useMemo(() => pricedCandidates.filter(({ candidate }) =>
+    isCarryExecutionVenue(candidate.long.venue_id) && isCarryExecutionVenue(candidate.short.venue_id)
+  ), [pricedCandidates]);
   const observedCandidates = useMemo(() => bestRoutePerAsset(pricedCandidates.filter(({ candidate }) =>
     carryCandidateAgeMs(candidate, clock) <= CARRY_ROUTE_DISPLAY_MAX_AGE_MS
   )), [clock, pricedCandidates]);

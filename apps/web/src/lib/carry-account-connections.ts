@@ -1,8 +1,16 @@
+import { CARRY_EXECUTION_VENUES, type CarryExecutionVenue } from "./carry-venues";
+
 export interface CarryAccountConnections {
   accountCommitment: string | null;
-  hyperliquid: boolean;
-  aster: boolean;
-  lighter: boolean;
+  venues: Readonly<Record<CarryExecutionVenue, boolean>>;
+}
+
+export interface CarryAccountConnectionProgress {
+  connectedVenueIds: readonly CarryExecutionVenue[];
+  missingVenueIds: readonly CarryExecutionVenue[];
+  connectedCount: number;
+  requiredCount: number;
+  ready: boolean;
 }
 
 export function carryAccountConnections(input: {
@@ -18,17 +26,31 @@ export function carryAccountConnections(input: {
   const hyperliquid = record(input.hyperliquidStatus);
   const hyperliquidVault = record(hyperliquid.hyperliquid_execution_vault);
   const managedAllocation = record(hyperliquid.managed_allocation);
-  return {
-    accountCommitment: stringValue(passport.account_commitment),
-    hyperliquid:
+  const hyperliquidReady =
       hyperliquid.ready === true ||
       hyperliquid.credentials_sealed === true ||
       hyperliquidVault.status === "sealed" ||
       managedAllocation.status === "allocated" ||
-      ready("hyperliquid"),
-    aster: ready("aster"),
-    lighter: ready("lighter"),
+      ready("hyperliquid");
+  return {
+    accountCommitment: stringValue(passport.account_commitment),
+    venues: Object.freeze(Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [
+      venueId,
+      venueId === "hyperliquid" ? hyperliquidReady : ready(venueId),
+    ])) as Record<CarryExecutionVenue, boolean>),
   };
+}
+
+export function carryAccountConnectionProgress(connections: CarryAccountConnections): CarryAccountConnectionProgress {
+  const connectedVenueIds = CARRY_EXECUTION_VENUES.filter((venueId) => connections.venues[venueId] === true);
+  const missingVenueIds = CARRY_EXECUTION_VENUES.filter((venueId) => connections.venues[venueId] !== true);
+  return Object.freeze({
+    connectedVenueIds: Object.freeze([...connectedVenueIds]),
+    missingVenueIds: Object.freeze([...missingVenueIds]),
+    connectedCount: connectedVenueIds.length,
+    requiredCount: CARRY_EXECUTION_VENUES.length,
+    ready: missingVenueIds.length === 0,
+  });
 }
 
 function record(value: unknown): Record<string, unknown> {

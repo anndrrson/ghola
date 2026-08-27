@@ -52,6 +52,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webCsp: "apps/web/src/lib/csp-config.ts",
   webAccountPage: "apps/web/src/app/app/account/page.tsx",
   webAccountSetup: "apps/web/src/components/carry/CarryAccountSetup.tsx",
+  webAccountConnections: "apps/web/src/lib/carry-account-connections.ts",
+  webAccountConnectionsTest: "apps/web/src/lib/carry-account-connections.test.ts",
   webOnboardingRecovery: "apps/web/src/lib/carry-onboarding-recovery.ts",
   webOnboardingRecoveryTest: "apps/web/src/lib/carry-onboarding-recovery.test.ts",
   webPassport: "apps/web/src/lib/private-agent-passport.ts",
@@ -340,7 +342,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "CARRY_UI_PUBLISH_INTERVAL_MS", "carry_ui_publish_throttle_missing");
   requireText("webCarryChart", "CARRY_ROUTE_DISPLAY_MAX_AGE_MS", "carry_ui_stale_route_gate_missing");
   requireText("webCarryChart", "expectedNetDailyUsd", "carry_net_value_display_missing");
-  requireText("webCarryChart", "buildPairCandidates(effectiveVenues, CARRY_EXECUTION_VENUES)", "carry_executable_route_fallback_missing");
+  requireText("webCarryChart", "isCarryExecutionVenue(candidate.long.venue_id)", "carry_executable_route_fallback_missing");
   requireText("webCarryChart", "rankCarryCandidatesByNet", "carry_net_route_ranking_missing");
   requireText("webCarryChart", 'aria-label="Carry execution route"', "carry_execution_route_selector_missing");
   requireText("webCarryChart", "CarryTerminalBuilder", "carry_terminal_builder_missing");
@@ -383,6 +385,10 @@ export function checkCarryExecutionContract(sources) {
   const quoteEvaluationCount = String(sources.webCarryChart || "")
     .match(/quoteCarryCandidate\s*\(/g)?.length || 0;
   if (quoteEvaluationCount > 0) failures.push("carry_redundant_quote_rendering");
+  const netRankingCount = String(sources.webCarryChart || "")
+    .match(/rankCarryCandidatesByNet\s*\(/g)?.length || 0;
+  if (netRankingCount !== 1) failures.push("carry_redundant_net_ranking");
+  requireText("webCarryChart", "pricedCandidates.filter", "carry_execution_routes_not_derived_from_single_ranking");
   requireText("webCarryMarket", "CARRY_LIVE_PATCH_MAX_AGE_MS", "carry_live_staleness_gate_missing");
   requireText("webCarryMarket", "applyCarryLivePatches", "carry_incremental_quote_engine_missing");
   requireText("webCarryMarket", "export function buildPairCandidates", "carry_pair_enumeration_missing");
@@ -409,6 +415,9 @@ export function checkCarryExecutionContract(sources) {
   ]) requireText("webCsp", host, `carry_live_csp_missing:${host}`);
   requireText("webAccountPage", "focusedCarrySetup", "carry_account_route_missing");
   requireText("webAccountPage", "<CarryAccountSetup returnTo={returnTo}", "carry_setup_return_path_missing");
+  requireText("webAccountSetup", "connectionProgress.ready", "carry_setup_all_venues_gate_missing");
+  forbidText("webAccountSetup", "length >= 2", "carry_setup_partial_matrix_gate_forbidden");
+  requireText("webAccountConnectionsTest", "unlocks route verification only when every execution venue is connected", "carry_setup_all_venues_test_missing");
   requireText("webAccountSetup", "buildAsterExecutionVaultBundle", "aster_account_setup_missing");
   requireText("webAccountSetup", "buildLighterExecutionVaultBundle", "lighter_account_setup_missing");
   requireText("webAccountSetup", "href={safeReturnTo}", "carry_setup_terminal_return_missing");

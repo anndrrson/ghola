@@ -457,6 +457,16 @@ test("rejects redundant quote evaluation in the carry render path", () => {
   );
 });
 
+test("rejects ranking the same carry universe twice per market update", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: `${sources.webCarryChart}\nrankCarryCandidatesByNet(buildPairCandidates(effectiveVenues))`,
+    }),
+    /carry_redundant_net_ranking/,
+  );
+});
+
 test("rejects cross-venue routing that optimizes gross funding instead of net value", () => {
   assert.throws(
     () => checkCarryExecutionContract({

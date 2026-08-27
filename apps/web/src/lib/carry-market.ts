@@ -171,16 +171,16 @@ export function applyCarryLivePatches(
   if (patches.length === 1) {
     const patch = patches[0];
     if (nowMs - patch.received_at_ms > CARRY_LIVE_PATCH_MAX_AGE_MS) return venues;
-    return venues.map((venue) => {
-      if (venue.venue_id !== patch.venue_id) return venue;
-      let changed = false;
-      const snapshots = venue.snapshots.map((snapshot) => {
-        if (snapshot.asset !== patch.asset) return snapshot;
-        changed = true;
-        return applyCarryLivePatch(snapshot, patch);
-      });
-      return changed ? { ...venue, ok: true, snapshots } : venue;
-    });
+    const venueIndex = venues.findIndex((venue) => venue.venue_id === patch.venue_id);
+    if (venueIndex < 0) return venues;
+    const venue = venues[venueIndex];
+    const snapshotIndex = venue.snapshots.findIndex((snapshot) => snapshot.asset === patch.asset);
+    if (snapshotIndex < 0) return venues;
+    const snapshots = venue.snapshots.slice();
+    snapshots[snapshotIndex] = applyCarryLivePatch(snapshots[snapshotIndex], patch);
+    const next = venues.slice();
+    next[venueIndex] = { ...venue, ok: true, snapshots };
+    return next;
   }
   const byMarket = new Map<string, CarryLiveMarketPatch>();
   for (const patch of patches) {
@@ -202,27 +202,29 @@ export function applyCarryLivePatches(
 }
 
 function applyCarryLivePatch(snapshot: CarryShadowSnapshot, patch: CarryLiveMarketPatch): CarryShadowSnapshot {
-  const next = {
+  const markPrice = patchedNumber(patch.mark_price_e8, snapshot.mark_price_e8);
+  const indexPrice = patchedNumber(patch.index_price_e8, snapshot.index_price_e8);
+  const bestBid = patchedNumber(patch.best_bid_e8, snapshot.best_bid_e8);
+  const bestAsk = patchedNumber(patch.best_ask_e8, snapshot.best_ask_e8);
+  const fundingRate = patchedNumber(patch.funding_rate_e12_per_interval, snapshot.funding_rate_e12_per_interval);
+  const fundingInterval = patchedNumber(patch.funding_interval_ms, snapshot.funding_interval_ms);
+  const values = {
+    mark_price_e8: markPrice,
+    index_price_e8: indexPrice,
+    best_bid_e8: bestBid,
+    best_ask_e8: bestAsk,
+    funding_rate_e12_per_interval: fundingRate,
+    funding_interval_ms: fundingInterval,
+  };
+  const missingFields = snapshot.missing_fields.length === 0
+    ? snapshot.missing_fields
+    : snapshot.missing_fields.filter((field) => values[field as keyof typeof values] == null);
+  const criticalMissing = markPrice == null || indexPrice == null || fundingRate == null || fundingInterval == null;
+  return {
     ...snapshot,
-    mark_price_e8: patchedNumber(patch.mark_price_e8, snapshot.mark_price_e8),
-    index_price_e8: patchedNumber(patch.index_price_e8, snapshot.index_price_e8),
-    best_bid_e8: patchedNumber(patch.best_bid_e8, snapshot.best_bid_e8),
-    best_ask_e8: patchedNumber(patch.best_ask_e8, snapshot.best_ask_e8),
-    funding_rate_e12_per_interval: patchedNumber(
-      patch.funding_rate_e12_per_interval,
-      snapshot.funding_rate_e12_per_interval,
-    ),
-    funding_interval_ms: patchedNumber(patch.funding_interval_ms, snapshot.funding_interval_ms),
+    ...values,
     as_of_ms: patch.source_at_ms ?? patch.received_at_ms,
     observed_at_ms: patch.received_at_ms,
-  };
-  const missingFields = snapshot.missing_fields.filter((field) => next[field as keyof typeof next] == null);
-  const criticalMissing = next.mark_price_e8 == null
-    || next.index_price_e8 == null
-    || next.funding_rate_e12_per_interval == null
-    || next.funding_interval_ms == null;
-  return {
-    ...next,
     stale: false,
     status: criticalMissing ? "quarantined" : missingFields.length > 0 ? "degraded" : "ready",
     missing_fields: missingFields,
