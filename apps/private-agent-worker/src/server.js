@@ -2690,6 +2690,67 @@ export function createPrivateAgentWorkerServer(options = {}) {
   const krakenHeartbeat = options.startKrakenV2Heartbeat === false
     ? null
     : krakenV2.startHeartbeat?.(60_000);
+  const carryShadowRefreshes = new Map();
+  const refreshCarryShadow = (assets) => {
+    const refreshKey = assets.join(",");
+    const activeRefresh = carryShadowRefreshes.get(refreshKey);
+    if (activeRefresh) return activeRefresh;
+    const refresh = (async () => {
+      const observedAtMs = Date.now();
+      const venues = await fetchPerpShadowSet({
+        assets,
+        now_ms: observedAtMs,
+        timeout_ms: 8_000,
+        max_age_ms: 60_000,
+      });
+      const readiness = verifyCarryShadowSet(venues, {
+        assets,
+        now_ms: observedAtMs,
+        max_age_ms: 60_000,
+      });
+      const [fundingPersistence, shadowQualification] = await Promise.all([
+        observeCarryFundingUniverse({
+          state,
+          venues,
+          assets,
+          now_ms: observedAtMs,
+        }),
+        observeCarryShadowQualification({
+          state,
+          venues,
+          assets,
+          now_ms: observedAtMs,
+        }),
+      ]);
+      const storedSnapshot = await writeCarryShadowSnapshot({
+        state,
+        venues,
+        assets,
+        funding_persistence: fundingPersistence,
+        shadow_qualification: shadowQualification,
+        observed_at_ms: observedAtMs,
+      });
+      return {
+        version: 1,
+        mode: "shadow_read_only",
+        executable: false,
+        observed_at: new Date(observedAtMs).toISOString(),
+        readiness,
+        shadow_qualification: shadowQualification,
+        funding_persistence: fundingPersistence,
+        venues,
+        served_from: "live_fetch",
+        cache_age_ms: 0,
+        evidence_commitment: storedSnapshot.evidence_commitment || null,
+      };
+    })();
+    carryShadowRefreshes.set(refreshKey, refresh);
+    const clearRefresh = () => {
+      if (carryShadowRefreshes.get(refreshKey) === refresh) carryShadowRefreshes.delete(refreshKey);
+    };
+    refresh.then(clearRefresh, clearRefresh);
+    return refresh;
+  };
 
   const server = createServer(async (req, res) => {
     const requestStartedAt = Date.now();
@@ -2763,52 +2824,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           now_ms: observedAtMs,
         });
         if (cached.ok) return json(res, 200, cached.snapshot);
-        const venues = await fetchPerpShadowSet({
-          assets,
-          now_ms: observedAtMs,
-          timeout_ms: 8_000,
-          max_age_ms: 60_000,
-        });
-        const readiness = verifyCarryShadowSet(venues, {
-          assets,
-          now_ms: observedAtMs,
-          max_age_ms: 60_000,
-        });
-        const [fundingPersistence, shadowQualification] = await Promise.all([
-          observeCarryFundingUniverse({
-            state,
-            venues,
-            assets,
-            now_ms: observedAtMs,
-          }),
-          observeCarryShadowQualification({
-            state,
-            venues,
-            assets,
-            now_ms: observedAtMs,
-          }),
-        ]);
-        const storedSnapshot = await writeCarryShadowSnapshot({
-          state,
-          venues,
-          assets,
-          funding_persistence: fundingPersistence,
-          shadow_qualification: shadowQualification,
-          observed_at_ms: observedAtMs,
-        });
-        return json(res, 200, {
-          version: 1,
-          mode: "shadow_read_only",
-          executable: false,
-          observed_at: new Date(observedAtMs).toISOString(),
-          readiness,
-          shadow_qualification: shadowQualification,
-          funding_persistence: fundingPersistence,
-          venues,
-          served_from: "live_fetch",
-          cache_age_ms: 0,
-          evidence_commitment: storedSnapshot.evidence_commitment || null,
-        });
+        return json(res, 200, await refreshCarryShadow(assets));
       }
 
       if (req.method === "POST" && url.pathname === "/carry/preflight") {

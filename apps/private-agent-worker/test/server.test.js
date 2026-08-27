@@ -471,7 +471,7 @@ describe("private agent worker", () => {
     assert.equal(JSON.stringify(body).includes("must-not-leak"), false);
   });
 
-  it("publishes a deterministic five-venue shadow readiness verdict", async () => {
+  it("publishes a deterministic five-venue shadow verdict and coalesces concurrent cold reads", async () => {
     await close(server);
     let requested;
     let fetchCount = 0;
@@ -479,6 +479,7 @@ describe("private agent worker", () => {
       fetchPerpShadowSet: async (options) => {
         fetchCount += 1;
         requested = options;
+        await new Promise((resolve) => setTimeout(resolve, 20));
         return CORE_PERP_VENUES.map((venueId) => ({
           venue_id: venueId,
           ok: true,
@@ -488,8 +489,11 @@ describe("private agent worker", () => {
     });
     baseUrl = await listen(server);
 
-    const response = await fetch(`${baseUrl}/carry/shadow?assets=BTC`);
-    const body = await response.json();
+    const [response, joinedResponse] = await Promise.all([
+      fetch(`${baseUrl}/carry/shadow?assets=BTC`),
+      fetch(`${baseUrl}/carry/shadow?assets=BTC`),
+    ]);
+    const [body, joinedBody] = await Promise.all([response.json(), joinedResponse.json()]);
 
     assert.equal(response.status, 200);
     assert.equal(body.executable, false);
@@ -506,6 +510,10 @@ describe("private agent worker", () => {
     assert.equal(requested.now_ms, body.readiness.checked_at_ms);
     assert.deepEqual(requested.assets, ["BTC"]);
     assert.equal(body.served_from, "live_fetch");
+    assert.equal(joinedResponse.status, 200);
+    assert.equal(joinedBody.served_from, "live_fetch");
+    assert.equal(joinedBody.evidence_commitment, body.evidence_commitment);
+    assert.equal(fetchCount, 1);
 
     const cachedResponse = await fetch(`${baseUrl}/carry/shadow?assets=BTC`);
     const cachedBody = await cachedResponse.json();

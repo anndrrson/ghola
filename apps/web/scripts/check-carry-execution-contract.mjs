@@ -627,6 +627,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowSnapshotTest", "rejects stale, tampered, or degraded durable snapshots and forces a live refresh", "carry_shadow_snapshot_fail_closed_test_missing");
   requireText("server", "readCarryShadowSnapshot", "carry_shadow_snapshot_read_path_missing");
   requireText("server", 'served_from: "live_fetch"', "carry_shadow_live_fallback_missing");
+  requireText("server", "carryShadowRefreshes", "carry_shadow_refresh_singleflight_missing");
+  requireText("serverTest", "coalesces concurrent cold reads", "carry_shadow_refresh_singleflight_test_missing");
   requireText("server", "funding_persistence: fundingPersistence", "carry_funding_shadow_cycle_missing");
   requireText("server", "shadow_qualification: shadowQualification", "carry_shadow_qualification_cycle_missing");
   requireText("server", "carryFundingObservationLoop?.stop?.()", "carry_unattended_funding_observer_lifecycle_missing");
