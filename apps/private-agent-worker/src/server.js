@@ -33,6 +33,7 @@ import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-ev
 import {
   advanceStoredCarryPosition,
   appendStoredCarryValueEntry,
+  compileStoredCarryCollateralReview,
   compileStoredCarryPortfolioCapitalPlan,
   compileStoredCarryPortfolioValueReport,
   createStoredCarryPosition,
@@ -2832,7 +2833,8 @@ export function createPrivateAgentWorkerServer(options = {}) {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        if (url.pathname === "/carry/positions/observe" && req.headers["x-ghola-no-submit-verify"] !== "true") {
+        if (["/carry/positions/observe", "/carry/positions/collateral-review"].includes(url.pathname)
+          && req.headers["x-ghola-no-submit-verify"] !== "true") {
           return json(res, 400, { error: "no-submit verification header is required" });
         }
         if (url.pathname === "/carry/positions/execute-entry" && req.headers["x-ghola-live-order-confirmed"] !== "true") {
@@ -2851,6 +2853,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
             ? getStoredCarryPosition({ state, position_id: body.position_id, owner_commitment: body.owner_commitment })
             : listStoredCarryPositions({ state, owner_commitment: body.owner_commitment, status: body.status, limit: body.limit })],
           "/carry/positions/capital-plan": ["carry:read", (body) => compileStoredCarryPortfolioCapitalPlan({
+            state,
+            owner_commitment: body.owner_commitment,
+            owner_capital_budget_micro_usdc: body.owner_capital_budget_micro_usdc,
+            max_data_age_ms: body.max_data_age_ms,
+          })],
+          "/carry/positions/collateral-review": ["carry:read", (body) => compileStoredCarryCollateralReview({
             state,
             owner_commitment: body.owner_commitment,
             owner_capital_budget_micro_usdc: body.owner_capital_budget_micro_usdc,

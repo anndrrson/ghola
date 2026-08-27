@@ -594,6 +594,296 @@ export function compileCarryPortfolioCapitalPlan(value) {
   });
 }
 
+export function compileCarryCollateralReview(value) {
+  const raw = object(value, "carry_collateral_review_required");
+  exactVersion(raw.version, "carry_collateral_review_version");
+  const nowMs = positiveInteger(raw.now_ms, "carry_collateral_review_now");
+  const expiresAtMs = positiveInteger(raw.expires_at_ms, "carry_collateral_review_expires_at");
+  if (expiresAtMs <= nowMs || expiresAtMs - nowMs > 15 * 60_000) {
+    fail("carry_collateral_review_expiry");
+  }
+  const ownerCommitment = identifier(raw.owner_commitment, "carry_collateral_review_owner");
+  const reviewId = identifier(raw.review_id, "carry_collateral_review_id");
+  const capitalPlan = compileCarryPortfolioCapitalPlan({
+    version: 1,
+    now_ms: nowMs,
+    max_data_age_ms: raw.max_data_age_ms,
+    owner_capital_budget_micro_usdc: raw.owner_capital_budget_micro_usdc,
+    position_plans: raw.position_plans,
+  });
+  const blocked = capitalPlan.reconciliation_required === true
+    || capitalPlan.reduce_only_exit_required === true
+    || capitalPlan.status === "quarantined"
+    || capitalPlan.status === "exit_required";
+  const transfers = blocked ? [] : capitalPlan.proposed_reallocations.map((proposal) => Object.freeze({
+    instruction_id: `${reviewId}:transfer:${proposal.priority_rank}`,
+    sequence: proposal.priority_rank,
+    operation: "owner_collateral_transfer_review",
+    from_account_commitment: proposal.from_account_commitment,
+    from_venue_id: proposal.from_venue_id,
+    to_account_commitment: proposal.to_account_commitment,
+    to_venue_id: proposal.to_venue_id,
+    amount_micro_usdc: proposal.amount_micro_usdc,
+    owner_signature_required: true,
+    execution_authorized: false,
+    transaction_broadcast: false,
+  }));
+  const allocations = blocked ? [] : capitalPlan.allocations
+    .filter((allocation) => allocation.proposed_allocation_micro_usdc > 0)
+    .map((allocation) => Object.freeze({
+      instruction_id: `${reviewId}:funding:${allocation.priority_rank}`,
+      sequence: allocation.priority_rank,
+      operation: "owner_new_capital_allocation_review",
+      account_commitment: allocation.account_commitment,
+      venue_id: allocation.venue_id,
+      amount_micro_usdc: allocation.proposed_allocation_micro_usdc,
+      owner_signature_required: true,
+      execution_authorized: false,
+      transaction_broadcast: false,
+    }));
+  const ownerSignatureRequired = transfers.length > 0 || allocations.length > 0;
+  const status = blocked ? "blocked"
+    : ownerSignatureRequired ? "signature_required"
+      : "no_action";
+  return normalizeCarryCollateralReviewPayload({
+    version: 1,
+    kind: "ghola_carry_collateral_review",
+    strategy_id: "delta_neutral_carry_v1",
+    owner_commitment: ownerCommitment,
+    review_id: reviewId,
+    status,
+    capital_plan: capitalPlan,
+    transfer_instructions: transfers,
+    funding_instructions: allocations,
+    owner_signature_required: ownerSignatureRequired,
+    owner_signature_status: ownerSignatureRequired ? "required" : blocked ? "blocked" : "not_required",
+    proposal_only: true,
+    review_only: true,
+    execution_authorized: false,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+    automatic_transfer_permitted: false,
+    withdrawal_permitted: false,
+    trade_permitted: false,
+    owner_only_operations: ["fund", "transfer", "withdraw"],
+    issued_at_ms: nowMs,
+    expires_at_ms: expiresAtMs,
+  });
+}
+
+export function normalizeCarryCollateralReviewPayload(value) {
+  const raw = object(value, "carry_collateral_review_payload_required");
+  exactVersion(raw.version, "carry_collateral_review_payload_version");
+  if (raw.kind !== "ghola_carry_collateral_review") fail("carry_collateral_review_kind");
+  if (raw.strategy_id !== "delta_neutral_carry_v1") fail("carry_collateral_review_strategy");
+  const ownerCommitment = identifier(raw.owner_commitment, "carry_collateral_review_owner");
+  const reviewId = identifier(raw.review_id, "carry_collateral_review_id");
+  const issuedAtMs = positiveInteger(raw.issued_at_ms, "carry_collateral_review_issued_at");
+  const expiresAtMs = positiveInteger(raw.expires_at_ms, "carry_collateral_review_expires_at");
+  if (expiresAtMs <= issuedAtMs || expiresAtMs - issuedAtMs > 15 * 60_000) {
+    fail("carry_collateral_review_expiry");
+  }
+  if (raw.proposal_only !== true || raw.review_only !== true
+    || raw.execution_authorized !== false || raw.fund_movement_authorized !== false
+    || raw.transaction_broadcast !== false || raw.automatic_transfer_permitted !== false
+    || raw.withdrawal_permitted !== false || raw.trade_permitted !== false) {
+    fail("carry_collateral_review_authority_boundary");
+  }
+  const ownerOnlyOperations = array(raw.owner_only_operations, "carry_collateral_review_owner_operations", 3, 3);
+  if (!["fund", "transfer", "withdraw"].every((operation) => ownerOnlyOperations.includes(operation))) {
+    fail("carry_collateral_review_owner_operations");
+  }
+  const capitalPlan = object(raw.capital_plan, "carry_collateral_review_capital_plan_required");
+  exactVersion(capitalPlan.version, "carry_collateral_review_capital_plan_version");
+  const capitalPlanStatus = enumValue(
+    capitalPlan.status,
+    new Set(["balanced", "owner_action_required", "exit_required", "quarantined"]),
+    "carry_collateral_review_capital_plan_status",
+  );
+  const capitalPlanOwnerOperations = array(
+    capitalPlan.owner_only_operations,
+    "carry_collateral_review_capital_plan_owner_operations",
+    3,
+    3,
+  );
+  if (capitalPlan.kind !== "ghola_carry_portfolio_capital_plan"
+    || capitalPlan.proposal_only !== true || capitalPlan.transaction_broadcast !== false
+    || capitalPlan.automatic_transfer_permitted !== false
+    || !["fund", "transfer", "withdraw"].every((operation) => capitalPlanOwnerOperations.includes(operation))) {
+    fail("carry_collateral_review_capital_plan_authority_boundary");
+  }
+  positiveInteger(capitalPlan.checked_at_ms, "carry_collateral_review_capital_plan_checked_at");
+  const transferInstructions = array(
+    raw.transfer_instructions,
+    "carry_collateral_review_transfer_instructions",
+    0,
+    1_000,
+  ).map((value) => normalizeCollateralReviewInstruction(value, reviewId, "transfer"));
+  const fundingInstructions = array(
+    raw.funding_instructions,
+    "carry_collateral_review_funding_instructions",
+    0,
+    1_000,
+  ).map((value) => normalizeCollateralReviewInstruction(value, reviewId, "funding"));
+  const expectedTransfers = array(
+    capitalPlan.proposed_reallocations,
+    "carry_collateral_review_capital_plan_transfers",
+    0,
+    1_000,
+  ).map((proposal) => normalizeCollateralReviewInstruction({
+    instruction_id: `${reviewId}:transfer:${proposal.priority_rank}`,
+    sequence: proposal.priority_rank,
+    operation: "owner_collateral_transfer_review",
+    from_account_commitment: proposal.from_account_commitment,
+    from_venue_id: proposal.from_venue_id,
+    to_account_commitment: proposal.to_account_commitment,
+    to_venue_id: proposal.to_venue_id,
+    amount_micro_usdc: proposal.amount_micro_usdc,
+    owner_signature_required: true,
+    execution_authorized: false,
+    transaction_broadcast: false,
+  }, reviewId, "transfer"));
+  const expectedFunding = array(
+    capitalPlan.allocations,
+    "carry_collateral_review_capital_plan_allocations",
+    0,
+    1_000,
+  ).filter((allocation) => allocation.proposed_allocation_micro_usdc > 0)
+    .map((allocation) => normalizeCollateralReviewInstruction({
+      instruction_id: `${reviewId}:funding:${allocation.priority_rank}`,
+      sequence: allocation.priority_rank,
+      operation: "owner_new_capital_allocation_review",
+      account_commitment: allocation.account_commitment,
+      venue_id: allocation.venue_id,
+      amount_micro_usdc: allocation.proposed_allocation_micro_usdc,
+      owner_signature_required: true,
+      execution_authorized: false,
+      transaction_broadcast: false,
+    }, reviewId, "funding"));
+  const instructionIds = [...transferInstructions, ...fundingInstructions].map((instruction) => instruction.instruction_id);
+  if (new Set(instructionIds).size !== instructionIds.length) fail("carry_collateral_review_instruction_duplicate");
+  const ownerSignatureRequired = transferInstructions.length > 0 || fundingInstructions.length > 0;
+  const blocked = capitalPlan.reconciliation_required === true
+    || capitalPlan.reduce_only_exit_required === true
+    || capitalPlanStatus === "quarantined"
+    || capitalPlanStatus === "exit_required";
+  if (blocked && instructionIds.length > 0) fail("carry_collateral_review_blocked_instruction");
+  const expectedReviewTransfers = blocked ? [] : expectedTransfers;
+  const expectedReviewFunding = blocked ? [] : expectedFunding;
+  if (!sameCollateralInstructions(transferInstructions, expectedReviewTransfers, "transfer")
+    || !sameCollateralInstructions(fundingInstructions, expectedReviewFunding, "funding")) {
+    fail("carry_collateral_review_instruction_plan_mismatch");
+  }
+  const expectedTransferTotal = expectedTransfers.reduce(
+    (sum, instruction) => safeAdd(sum, instruction.amount_micro_usdc, "carry_collateral_review_transfer_overflow"),
+    0,
+  );
+  const expectedFundingTotal = expectedFunding.reduce(
+    (sum, instruction) => safeAdd(sum, instruction.amount_micro_usdc, "carry_collateral_review_funding_overflow"),
+    0,
+  );
+  if (nonNegativeInteger(capitalPlan.total_proposed_internal_reallocation_micro_usdc, "carry_collateral_review_transfer_total") !== expectedTransferTotal
+    || nonNegativeInteger(capitalPlan.total_proposed_allocation_micro_usdc, "carry_collateral_review_funding_total") !== expectedFundingTotal
+    || (capitalPlan.owner_transfer_approval_required === true) !== (expectedTransferTotal > 0)
+    || (capitalPlan.owner_funding_approval_required === true) !== (expectedFundingTotal > 0)
+    || (capitalPlan.owner_approval_required === true) !== (expectedTransferTotal > 0 || expectedFundingTotal > 0)) {
+    fail("carry_collateral_review_total_mismatch");
+  }
+  const status = enumValue(
+    raw.status,
+    new Set(["blocked", "signature_required", "no_action"]),
+    "carry_collateral_review_status",
+  );
+  const expectedStatus = blocked ? "blocked" : ownerSignatureRequired ? "signature_required" : "no_action";
+  if (status !== expectedStatus
+    || raw.owner_signature_required !== ownerSignatureRequired
+    || raw.owner_signature_status !== (ownerSignatureRequired ? "required" : blocked ? "blocked" : "not_required")) {
+    fail("carry_collateral_review_status_inconsistent");
+  }
+  return deepFreeze({
+    version: 1,
+    kind: "ghola_carry_collateral_review",
+    strategy_id: "delta_neutral_carry_v1",
+    owner_commitment: ownerCommitment,
+    review_id: reviewId,
+    status,
+    capital_plan: JSON.parse(JSON.stringify(capitalPlan)),
+    transfer_instructions: transferInstructions,
+    funding_instructions: fundingInstructions,
+    owner_signature_required: ownerSignatureRequired,
+    owner_signature_status: raw.owner_signature_status,
+    proposal_only: true,
+    review_only: true,
+    execution_authorized: false,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+    automatic_transfer_permitted: false,
+    withdrawal_permitted: false,
+    trade_permitted: false,
+    owner_only_operations: ["fund", "transfer", "withdraw"],
+    issued_at_ms: issuedAtMs,
+    expires_at_ms: expiresAtMs,
+  });
+}
+
+export function carryCollateralReviewMessage(value) {
+  return `Ghola Carry collateral review v1\n${JSON.stringify(normalizeCarryCollateralReviewPayload(value))}`;
+}
+
+function normalizeCollateralReviewInstruction(value, reviewId, type) {
+  const raw = object(value, "carry_collateral_review_instruction_required");
+  const sequence = positiveInteger(raw.sequence, "carry_collateral_review_instruction_sequence");
+  const expectedOperation = type === "transfer"
+    ? "owner_collateral_transfer_review"
+    : "owner_new_capital_allocation_review";
+  if (raw.operation !== expectedOperation
+    || raw.owner_signature_required !== true
+    || raw.execution_authorized !== false
+    || raw.transaction_broadcast !== false) {
+    fail("carry_collateral_review_instruction_authority_boundary");
+  }
+  const instructionId = identifier(raw.instruction_id, "carry_collateral_review_instruction_id");
+  if (instructionId !== `${reviewId}:${type}:${sequence}`) fail("carry_collateral_review_instruction_lineage");
+  const base = {
+    instruction_id: instructionId,
+    sequence,
+    operation: expectedOperation,
+    amount_micro_usdc: positiveInteger(raw.amount_micro_usdc, "carry_collateral_review_instruction_amount"),
+    owner_signature_required: true,
+    execution_authorized: false,
+    transaction_broadcast: false,
+  };
+  if (type === "transfer") {
+    const fromAccount = identifier(raw.from_account_commitment, "carry_collateral_review_from_account");
+    const toAccount = identifier(raw.to_account_commitment, "carry_collateral_review_to_account");
+    const fromVenue = carryExecutionVenue(raw.from_venue_id, "carry_collateral_review_from_venue");
+    const toVenue = carryExecutionVenue(raw.to_venue_id, "carry_collateral_review_to_venue");
+    if (fromAccount === toAccount) {
+      fail("carry_collateral_review_transfer_same_account");
+    }
+    return Object.freeze({
+      ...base,
+      from_account_commitment: fromAccount,
+      from_venue_id: fromVenue,
+      to_account_commitment: toAccount,
+      to_venue_id: toVenue,
+    });
+  }
+  return Object.freeze({
+    ...base,
+    account_commitment: identifier(raw.account_commitment, "carry_collateral_review_funding_account"),
+    venue_id: carryExecutionVenue(raw.venue_id, "carry_collateral_review_funding_venue"),
+  });
+}
+
+function sameCollateralInstructions(actual, expected, type) {
+  if (actual.length !== expected.length) return false;
+  const fields = type === "transfer"
+    ? ["instruction_id", "sequence", "operation", "from_account_commitment", "from_venue_id", "to_account_commitment", "to_venue_id", "amount_micro_usdc", "owner_signature_required", "execution_authorized", "transaction_broadcast"]
+    : ["instruction_id", "sequence", "operation", "account_commitment", "venue_id", "amount_micro_usdc", "owner_signature_required", "execution_authorized", "transaction_broadcast"];
+  return actual.every((instruction, index) => fields.every((field) => instruction[field] === expected[index][field]));
+}
+
 export function compileCarryPortfolioValueReport(value) {
   const raw = object(value, "carry_portfolio_value_report_required");
   exactVersion(raw.version, "carry_portfolio_value_report_version");

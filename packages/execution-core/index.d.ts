@@ -36,6 +36,7 @@ export declare function aggregateExecutionQuality(input: unknown[]): Readonly<Re
 export declare function normalizePerpContractSpec(input: unknown): Readonly<Record<string, unknown>>;
 export declare function calculateMarginRunway(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryCapitalActionPlan(input: unknown): Readonly<Record<string, unknown>>;
+export declare function compileCarryCollateralReview(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryPortfolioCapitalPlan(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryPortfolioValueReport(input: unknown): Readonly<Record<string, unknown>>;
 export declare function evaluatePerpContractPairBasis(input: unknown): Readonly<Record<string, unknown>>;
@@ -61,6 +62,8 @@ export declare function adverseExecutionSlippageE6Bps(input: {
 export declare function evaluateCarryOpportunity(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryMigrationProposal(input: unknown): Readonly<Record<string, unknown>>;
 export declare function normalizeCarryRiskMandate(input: unknown): Readonly<Record<string, unknown>>;
+export declare function normalizeCarryCollateralReviewPayload(input: unknown): Readonly<Record<string, unknown>>;
+export declare function carryCollateralReviewMessage(input: unknown): string;
 export declare function normalizeCarryRiskMandatePayload(input: unknown): Readonly<Record<string, unknown>>;
 export declare function normalizeCarryRiskMandateAuthorization(input: unknown): Readonly<Record<string, unknown>>;
 export declare function carryRiskMandateMessage(input: unknown): string;

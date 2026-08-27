@@ -7,6 +7,7 @@ import type { CarryCandidate } from "@/lib/carry-market";
 const api = vi.hoisted(() => ({
   createCarryPosition: vi.fn(),
   executeCarryPositionEntry: vi.fn(),
+  getCarryCollateralReview: vi.fn(),
   getCarryExecutionReadiness: vi.fn(),
   getCarryPortfolioCapitalPlan: vi.fn(),
   getCarryPortfolioValueReport: vi.fn(),
@@ -43,6 +44,7 @@ describe("CarryTerminalBuilder", () => {
     root = createRoot(container);
     api.createCarryPosition.mockReset();
     api.executeCarryPositionEntry.mockReset();
+    api.getCarryCollateralReview.mockReset();
     api.getCarryExecutionReadiness.mockReset();
     api.getCarryPortfolioCapitalPlan.mockReset();
     api.getCarryPortfolioValueReport.mockReset();
@@ -72,6 +74,25 @@ describe("CarryTerminalBuilder", () => {
         transaction_broadcast: false,
         automatic_transfer_permitted: false,
         owner_only_operations: ["fund", "transfer", "withdraw"],
+      },
+    });
+    api.getCarryCollateralReview.mockResolvedValue({
+      ok: true,
+      review: {
+        version: 1,
+        kind: "ghola_carry_collateral_review",
+        status: "no_action",
+        owner_signature_required: false,
+        transfer_instructions: [],
+        funding_instructions: [],
+        proposal_only: true,
+        review_only: true,
+        execution_authorized: false,
+        fund_movement_authorized: false,
+        transaction_broadcast: false,
+        automatic_transfer_permitted: false,
+        withdrawal_permitted: false,
+        trade_permitted: false,
       },
     });
     api.getCarryPortfolioValueReport.mockResolvedValue({
@@ -418,6 +439,30 @@ describe("CarryTerminalBuilder", () => {
         owner_only_operations: ["fund", "transfer", "withdraw"],
       },
     });
+    api.getCarryCollateralReview.mockResolvedValue({
+      ok: true,
+      review: {
+        version: 1,
+        kind: "ghola_carry_collateral_review",
+        status: "signature_required",
+        owner_signature_required: true,
+        transfer_instructions: [{
+          owner_signature_required: true,
+          execution_authorized: false,
+          transaction_broadcast: false,
+          amount_micro_usdc: 15_000_000,
+        }],
+        funding_instructions: [],
+        proposal_only: true,
+        review_only: true,
+        execution_authorized: false,
+        fund_movement_authorized: false,
+        transaction_broadcast: false,
+        automatic_transfer_permitted: false,
+        withdrawal_permitted: false,
+        trade_permitted: false,
+      },
+    });
     api.listCarryPositions.mockResolvedValue({
       ok: true,
       records: [{
@@ -466,6 +511,7 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("MONITOR");
     expect(container.textContent).toContain("0S AGO");
     expect(container.textContent).toContain("PORTFOLIO CAPITAL · $15 REALLOCATE · $10 NEW CASH · OWNER ONLY");
+    expect(container.textContent).toContain("COLLATERAL REVIEW · 1 MOVE · 0 FUND · $15 · REVIEW ONLY");
     expect(container.textContent).toContain("PORTFOLIO VALUE · $19.5 REAL · $10 OPEN MODEL · +$4.5 Δ");
   });
 

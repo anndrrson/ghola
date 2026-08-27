@@ -4,6 +4,7 @@ import {
   advanceCarryPosition,
   appendCarryValueLedgerEntry,
   compileCarryCapitalActionPlan,
+  compileCarryCollateralReview,
   compileCarryPortfolioCapitalPlan,
   compileCarryPortfolioValueReport,
   createCarryValueLedger,
@@ -351,6 +352,58 @@ export async function compileStoredCarryPortfolioCapitalPlan({
       position_plans: unique.map((record) => record.latest_observation.capital_action_plan),
     });
     return { ok: true, plan };
+  } catch (error) {
+    return denied(safeError(error));
+  }
+}
+
+export async function compileStoredCarryCollateralReview({
+  state,
+  owner_commitment: ownerCommitment,
+  owner_capital_budget_micro_usdc: ownerCapitalBudget = 0,
+  max_data_age_ms: maxDataAgeMs = 30_000,
+  now_ms: nowMs = Date.now(),
+}) {
+  if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
+  if (!Number.isSafeInteger(ownerCapitalBudget) || ownerCapitalBudget < 0) {
+    return denied("carry_portfolio_capital_budget_invalid");
+  }
+  const maxAge = boundedInteger(maxDataAgeMs, 250, 300_000, 30_000);
+  const records = (await Promise.all(["active", "rebalancing", "exiting", "frozen"].map((status) =>
+    state.listCarryPositionRecords({ owner_commitment: ownerCommitment, status, limit: 500 })
+  ))).flat();
+  const unique = [...new Map(records.map((record) => [record.position?.position_id, record])).values()];
+  const positionPlans = unique
+    .map((record) => record.latest_observation?.capital_action_plan)
+    .filter(Boolean);
+  if (positionPlans.length !== unique.length) {
+    return {
+      ok: false,
+      error: "carry_portfolio_capital_evidence_incomplete",
+      missing_position_ids: unique
+        .filter((record) => !record.latest_observation?.capital_action_plan)
+        .map((record) => record.position?.position_id)
+        .filter(Boolean),
+      proposal_only: true,
+      review_only: true,
+      execution_authorized: false,
+      transaction_broadcast: false,
+      automatic_transfer_permitted: false,
+    };
+  }
+  try {
+    const lineage = unique.map((record) => record.position.position_id).sort().join(":");
+    const review = compileCarryCollateralReview({
+      version: 1,
+      owner_commitment: ownerCommitment,
+      review_id: `carry:collateral-review:${digest(`${ownerCommitment}:${nowMs}:${lineage}`).slice(0, 24)}`,
+      now_ms: nowMs,
+      expires_at_ms: nowMs + 10 * 60_000,
+      max_data_age_ms: maxAge,
+      owner_capital_budget_micro_usdc: ownerCapitalBudget,
+      position_plans: positionPlans,
+    });
+    return { ok: true, review };
   } catch (error) {
     return denied(safeError(error));
   }

@@ -773,6 +773,30 @@ describe("private agent worker", () => {
     assert.equal(valueReport.report.position_count, 1);
     assert.equal(valueReport.report.transaction_broadcast, false);
 
+    const reviewToken = capabilityToken({
+      path: "/carry/positions/collateral-review",
+      scope: "carry:read",
+      body: valueBody,
+      expected: { owner_commitment: ownerCommitment, operation_class: "/collateral-review" },
+    });
+    const review = await fetch(`${baseUrl}/carry/positions/collateral-review`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${reviewToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify(valueBody),
+    });
+    assert.equal(review.status, 200);
+    const reviewBody = await review.json();
+    assert.equal(reviewBody.ok, true);
+    assert.equal(reviewBody.review.status, "no_action");
+    assert.equal(reviewBody.review.review_only, true);
+    assert.equal(reviewBody.review.execution_authorized, false);
+    assert.equal(reviewBody.review.transaction_broadcast, false);
+
     const releaseToken = capabilityToken({
       path: "/carry/positions/release-evidence",
       scope: "carry:read",

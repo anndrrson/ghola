@@ -269,6 +269,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "carry_portfolio_capital_evidence_incomplete", "carry_portfolio_capital_incomplete_gate_missing");
   requireText("positionsTest", "compiles an owner-only portfolio capital plan from stored monitoring evidence", "carry_portfolio_capital_worker_test_missing");
   requireText("server", '"/carry/positions/capital-plan"', "carry_portfolio_capital_route_missing");
+  requireText("coreCarry", "export function compileCarryCollateralReview", "carry_collateral_review_core_missing");
+  requireText("coreCarry", "fund_movement_authorized: false", "carry_collateral_review_fund_boundary_missing");
+  requireText("coreCarryTest", "binds exact owner-only moves without authorizing fund movement", "carry_collateral_review_core_test_missing");
+  requireText("positions", "export async function compileStoredCarryCollateralReview", "carry_collateral_review_worker_missing");
+  requireText("positionsTest", 'review.review.status, "signature_required"', "carry_collateral_review_worker_test_missing");
+  requireText("server", '"/carry/positions/collateral-review"', "carry_collateral_review_route_missing");
   requireText("positions", "export async function compileStoredCarryPortfolioValueReport", "carry_portfolio_value_worker_missing");
   requireText("positionsTest", 'value.report.value_proof_status, "accruing"', "carry_portfolio_value_worker_test_missing");
   requireText("server", '"/carry/positions/value-report"', "carry_portfolio_value_route_missing");
@@ -284,8 +290,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "automatic_transfer_permitted !== false", "carry_terminal_capital_authority_gate_missing");
   requireText("webCarryBuilder", "STRESS CAPITAL ·", "carry_terminal_stress_capital_missing");
   requireText("webClient", "getCarryPortfolioCapitalPlan", "carry_portfolio_capital_client_missing");
+  requireText("webClient", "getCarryCollateralReview", "carry_collateral_review_client_missing");
   requireText("webRoute", 'action === "capital_plan"', "carry_portfolio_capital_proxy_missing");
+  requireText("webRoute", 'action === "collateral_review"', "carry_collateral_review_proxy_missing");
   requireText("webCarryBuilder", "PORTFOLIO CAPITAL ·", "carry_terminal_portfolio_capital_missing");
+  requireText("webCarryBuilder", "COLLATERAL REVIEW ·", "carry_terminal_collateral_review_missing");
+  requireText("webCarryBuilderTest", "COLLATERAL REVIEW · 1 MOVE · 0 FUND · $15 · REVIEW ONLY", "carry_terminal_collateral_review_test_missing");
   requireText("webClient", "getCarryPortfolioValueReport", "carry_portfolio_value_client_missing");
   requireText("webRoute", 'action === "value_report"', "carry_portfolio_value_proxy_missing");
   requireText("webCarryBuilder", "PORTFOLIO VALUE ·", "carry_terminal_portfolio_value_missing");

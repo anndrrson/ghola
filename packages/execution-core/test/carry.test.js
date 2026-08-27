@@ -5,8 +5,10 @@ import {
   appendCarryValueLedgerEntry,
   advanceCarryPosition,
   calculateMarginRunway,
+  carryCollateralReviewMessage,
   carryRiskMandateMessage,
   compileCarryCapitalActionPlan,
+  compileCarryCollateralReview,
   compileCarryPortfolioCapitalPlan,
   compileCarryPortfolioValueReport,
   compileCarryMigrationProposal,
@@ -17,6 +19,7 @@ import {
   finalizeCarryValueLedger,
   normalizeCarryRiskMandateAuthorization,
   normalizeCarryRiskMandatePayload,
+  normalizeCarryCollateralReviewPayload,
 } from "../index.js";
 
 const NOW = 1_800_000_000_000;
@@ -628,6 +631,77 @@ test("portfolio capital planner rejects one account commitment claimed by multip
     owner_capital_budget_micro_usdc: 0,
     position_plans: [sharedAccountPlan],
   }), /carry_portfolio_capital_account_venue_mismatch/);
+});
+
+test("collateral review binds exact owner-only moves without authorizing fund movement", () => {
+  const positionPlan = compileCarryCapitalActionPlan({
+    version: 1,
+    position: activePositionForObservation(),
+    margin_runways: [
+      runway("hyperliquid", {
+        equity_micro_usdc: 1_350_000_000,
+        maintenance_margin_micro_usdc: 500_000_000,
+        safety_buffer_micro_usdc: 500_000_000,
+        owner_transfer_latency_ms: 2 * HOUR,
+        owner_response_buffer_ms: 2 * HOUR,
+      }),
+      runway("lighter"),
+    ],
+    now_ms: NOW,
+  });
+  const review = compileCarryCollateralReview({
+    version: 1,
+    owner_commitment: "owner:commitment:0001",
+    review_id: "carry:review:0001",
+    now_ms: NOW,
+    expires_at_ms: NOW + 10 * 60_000,
+    max_data_age_ms: 30_000,
+    owner_capital_budget_micro_usdc: 0,
+    position_plans: [positionPlan],
+  });
+  assert.equal(review.status, "signature_required");
+  assert.equal(review.owner_signature_required, true);
+  assert.equal(review.transfer_instructions.length, 1);
+  assert.equal(review.transfer_instructions[0].from_venue_id, "lighter");
+  assert.equal(review.transfer_instructions[0].to_venue_id, "hyperliquid");
+  assert.equal(review.execution_authorized, false);
+  assert.equal(review.fund_movement_authorized, false);
+  assert.equal(review.transaction_broadcast, false);
+  assert.match(carryCollateralReviewMessage(review), /^Ghola Carry collateral review v1\n/);
+  assert.throws(() => normalizeCarryCollateralReviewPayload({
+    ...review,
+    execution_authorized: true,
+  }), /carry_collateral_review_authority_boundary/);
+  assert.throws(() => normalizeCarryCollateralReviewPayload({
+    ...review,
+    transfer_instructions: [{
+      ...review.transfer_instructions[0],
+      amount_micro_usdc: review.transfer_instructions[0].amount_micro_usdc + 1,
+    }],
+  }), /carry_collateral_review_instruction_plan_mismatch/);
+});
+
+test("collateral review exposes no instruction when capital evidence is stale", () => {
+  const positionPlan = compileCarryCapitalActionPlan({
+    version: 1,
+    position: activePositionForObservation(),
+    margin_runways: [runway("hyperliquid"), runway("lighter")],
+    now_ms: NOW,
+  });
+  const review = compileCarryCollateralReview({
+    version: 1,
+    owner_commitment: "owner:commitment:0001",
+    review_id: "carry:review:stale:0001",
+    now_ms: NOW + 30_001,
+    expires_at_ms: NOW + 30_001 + 10 * 60_000,
+    max_data_age_ms: 30_000,
+    owner_capital_budget_micro_usdc: 100_000_000,
+    position_plans: [positionPlan],
+  });
+  assert.equal(review.status, "blocked");
+  assert.equal(review.owner_signature_status, "blocked");
+  assert.deepEqual(review.transfer_instructions, []);
+  assert.deepEqual(review.funding_instructions, []);
 });
 
 test("capital planner quarantines stale evidence and permits reconciliation only", () => {

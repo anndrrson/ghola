@@ -5,6 +5,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   createCarryPosition,
   executeCarryPositionEntry,
+  getCarryCollateralReview,
   getCarryExecutionReadiness,
   getCarryPortfolioCapitalPlan,
   getCarryPortfolioValueReport,
@@ -120,6 +121,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const [readiness, setReadiness] = useState<Record<string, unknown> | null>(null);
   const [records, setRecords] = useState<CarryRecord[]>([]);
   const [portfolioCapitalPlan, setPortfolioCapitalPlan] = useState<Record<string, unknown> | null>(null);
+  const [collateralReview, setCollateralReview] = useState<Record<string, unknown> | null>(null);
   const [portfolioValueReport, setPortfolioValueReport] = useState<Record<string, unknown> | null>(null);
   const [recordsLoaded, setRecordsLoaded] = useState(false);
   const [recordsLoading, setRecordsLoading] = useState(false);
@@ -134,9 +136,10 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const loadRecords = useCallback(async () => {
     setRecordsLoading(true);
     try {
-      const [recordsResult, capitalResult, valueResult] = await Promise.allSettled([
+      const [recordsResult, capitalResult, reviewResult, valueResult] = await Promise.allSettled([
         listCarryPositions(),
         getCarryPortfolioCapitalPlan(0),
+        getCarryCollateralReview(0),
         getCarryPortfolioValueReport(0),
       ]);
       if (recordsResult.status !== "fulfilled") throw new Error("carry_position_sync_failed");
@@ -149,6 +152,12 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         setPortfolioCapitalPlan(capital.ok === true ? asRecord(capital.plan) : capital);
       } else {
         setPortfolioCapitalPlan(null);
+      }
+      if (reviewResult.status === "fulfilled") {
+        const result = asRecord(reviewResult.value);
+        setCollateralReview(result.ok === true ? asRecord(result.review) : result);
+      } else {
+        setCollateralReview(null);
       }
       if (valueResult.status === "fulfilled") {
         const value = asRecord(valueResult.value);
@@ -236,6 +245,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const openingCapital = carryOpeningCapitalSummary(model, proof);
   const stressCapital = carryStressCapitalSummary(proof);
   const portfolioCapital = carryPortfolioCapitalSummary(portfolioCapitalPlan);
+  const collateral = carryCollateralReviewSummary(collateralReview);
   const portfolioValue = carryPortfolioValueSummary(portfolioValueReport);
   const displayedCapital = latestObservation?.capital_action_plan ? capital : openingCapital;
   const restoredReadiness = readyStoredReadiness(readiness, candidate.asset, notional, days);
@@ -500,6 +510,9 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         {portfolioCapital
           ? <p className={`truncate font-mono text-[9px] ${portfolioCapital.tone === "bad" ? "text-[#ef929e]" : portfolioCapital.tone === "warn" ? "text-[#d9bd74]" : "text-[#72bfa2]"}`} title={portfolioCapital.value}>PORTFOLIO CAPITAL · {portfolioCapital.value}</p>
           : null}
+        {collateral
+          ? <p className={`truncate font-mono text-[9px] ${collateral.tone === "bad" ? "text-[#ef929e]" : collateral.tone === "warn" ? "text-[#d9bd74]" : "text-[#72bfa2]"}`} title={collateral.value}>COLLATERAL REVIEW · {collateral.value}</p>
+          : null}
         {portfolioValue
           ? <p className={`truncate font-mono text-[9px] ${portfolioValue.tone === "bad" ? "text-[#ef929e]" : portfolioValue.tone === "warn" ? "text-[#d9bd74]" : "text-[#72bfa2]"}`} title={portfolioValue.value}>PORTFOLIO VALUE · {portfolioValue.value}</p>
           : null}
@@ -638,6 +651,43 @@ function carryPortfolioCapitalSummary(plan: Record<string, unknown> | null) {
     return { value: `${formatMicroUsd(potentialReleasable)} RELEASABLE · OWNER ONLY`, tone: "good" as const };
   }
   return { value: `${positions} POSITION${positions === 1 ? "" : "S"} · BALANCED`, tone: "good" as const };
+}
+
+function carryCollateralReviewSummary(review: Record<string, unknown> | null) {
+  if (!review) return null;
+  if (review.error === "carry_portfolio_capital_evidence_incomplete"
+    && review.proposal_only === true
+    && review.review_only === true
+    && review.execution_authorized === false
+    && review.transaction_broadcast === false
+    && review.automatic_transfer_permitted === false) {
+    return { value: "AWAITING FRESH MONITORING", tone: "bad" as const };
+  }
+  if (review.kind !== "ghola_carry_collateral_review"
+    || review.proposal_only !== true
+    || review.review_only !== true
+    || review.execution_authorized !== false
+    || review.fund_movement_authorized !== false
+    || review.transaction_broadcast !== false
+    || review.automatic_transfer_permitted !== false
+    || review.withdrawal_permitted !== false
+    || review.trade_permitted !== false) return null;
+  const transfers = Array.isArray(review.transfer_instructions) ? review.transfer_instructions.map(asRecord) : [];
+  const funding = Array.isArray(review.funding_instructions) ? review.funding_instructions.map(asRecord) : [];
+  const valid = [...transfers, ...funding].every((instruction) => instruction.owner_signature_required === true
+    && instruction.execution_authorized === false
+    && instruction.transaction_broadcast === false
+    && Number.isSafeInteger(instruction.amount_micro_usdc)
+    && Number(instruction.amount_micro_usdc) > 0);
+  if (!valid) return null;
+  if (review.status === "blocked") return { value: "BLOCKED · RECONCILE OR EXIT FIRST", tone: "bad" as const };
+  if (review.status === "no_action") return { value: "NO MOVE NEEDED", tone: "good" as const };
+  if (review.status !== "signature_required" || review.owner_signature_required !== true) return null;
+  const total = [...transfers, ...funding].reduce((sum, instruction) => sum + Number(instruction.amount_micro_usdc), 0);
+  return {
+    value: `${transfers.length} MOVE${transfers.length === 1 ? "" : "S"} · ${funding.length} FUND · ${formatMicroUsd(total)} · REVIEW ONLY`,
+    tone: "warn" as const,
+  };
 }
 
 function carryPortfolioValueSummary(report: Record<string, unknown> | null) {

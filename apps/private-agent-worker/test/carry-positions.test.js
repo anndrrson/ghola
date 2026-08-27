@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   advanceStoredCarryPosition,
   appendStoredCarryValueEntry,
+  compileStoredCarryCollateralReview,
   compileStoredCarryPortfolioCapitalPlan,
   compileStoredCarryPortfolioValueReport,
   createStoredCarryPosition,
@@ -663,6 +664,21 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
   assert.equal(result.plan.proposal_only, true);
   assert.equal(result.plan.transaction_broadcast, false);
   assert.equal(result.plan.automatic_transfer_permitted, false);
+  const review = await compileStoredCarryCollateralReview({
+    state,
+    owner_commitment: OWNER,
+    owner_capital_budget_micro_usdc: 5_000_000,
+    max_data_age_ms: 30_000,
+    now_ms: NOW + 100,
+  });
+  assert.equal(review.ok, true, JSON.stringify(review));
+  assert.equal(review.review.status, "signature_required");
+  assert.equal(review.review.owner_commitment, OWNER);
+  assert.equal(review.review.transfer_instructions.length, 1);
+  assert.equal(review.review.funding_instructions.length, 1);
+  assert.equal(review.review.execution_authorized, false);
+  assert.equal(review.review.fund_movement_authorized, false);
+  assert.equal(review.review.transaction_broadcast, false);
   const value = await compileStoredCarryPortfolioValueReport({
     state,
     owner_commitment: OWNER,
@@ -696,6 +712,15 @@ test("portfolio capital endpoint fails closed when an active position lacks moni
   assert.equal(result.error, "carry_portfolio_capital_evidence_incomplete");
   assert.deepEqual(result.missing_position_ids, [active.position.position_id]);
   assert.equal(result.transaction_broadcast, false);
+  const review = await compileStoredCarryCollateralReview({
+    state,
+    owner_commitment: OWNER,
+    now_ms: NOW + 100,
+  });
+  assert.equal(review.ok, false);
+  assert.equal(review.error, "carry_portfolio_capital_evidence_incomplete");
+  assert.equal(review.review_only, true);
+  assert.equal(review.execution_authorized, false);
   const value = await compileStoredCarryPortfolioValueReport({
     state,
     owner_commitment: OWNER,
