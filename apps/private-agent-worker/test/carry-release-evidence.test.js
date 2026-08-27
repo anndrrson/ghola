@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildCompletedCarryReleaseMaterial } from "../src/execution/carry-release-evidence.js";
+import { carryPositionLegId } from "../src/execution/carry-positions.js";
 import {
   carryRiskMandateMessage,
   normalizeCarryRiskMandateAuthorization,
@@ -164,8 +165,20 @@ async function stateFixture() {
     { leg_id: leg.leg_id, entry_type: "slippage", direction: "debit", amount_micro_usdc: index === 3 ? 2 : 1 },
   ]);
   ledgerEntries.push(
-    { leg_id: entrySaga.legs[0].leg_id, entry_type: "funding", direction: "credit", amount_micro_usdc: 60 },
-    { leg_id: entrySaga.legs[1].leg_id, entry_type: "funding", direction: "debit", amount_micro_usdc: 10 },
+    {
+      venue_id: "hyperliquid",
+      leg_id: carryPositionLegId({ position_id: positionId, long_venue_id: "hyperliquid", short_venue_id: "aster" }, "hyperliquid"),
+      entry_type: "funding",
+      direction: "credit",
+      amount_micro_usdc: 60,
+    },
+    {
+      venue_id: "aster",
+      leg_id: carryPositionLegId({ position_id: positionId, long_venue_id: "hyperliquid", short_venue_id: "aster" }, "aster"),
+      entry_type: "funding",
+      direction: "debit",
+      amount_micro_usdc: 10,
+    },
   );
   const record = {
     owner_commitment: OWNER,

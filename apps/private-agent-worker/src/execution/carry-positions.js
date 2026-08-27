@@ -1046,7 +1046,7 @@ async function appendFundingEntryWithRetry({ state, ownerCommitment, positionId,
   return false;
 }
 
-function carryPositionLegId(position, venueId) {
+export function carryPositionLegId(position, venueId) {
   const side = venueId === position.long_venue_id
     ? "long"
     : venueId === position.short_venue_id ? "short" : null;

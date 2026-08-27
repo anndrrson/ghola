@@ -447,8 +447,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifier", "final_owner_binding_mismatch", "carry_release_verifier_owner_lineage_missing");
   requireText("evidenceVerifierTest", "rejects lifecycle proof whose owner, position, or leg belongs to another account", "carry_release_verifier_account_lineage_test_missing");
   requireText("releaseMaterial", "worker_material_commitment", "carry_release_material_commitment_missing");
-  requireText("releaseMaterial", 'funding_micro_usdc: sumSignedEntries(ledgerEntries, "funding")', "carry_release_leg_funding_missing");
+  requireText("releaseMaterial", "const fundingLegId = carryPositionLegId(record.position, sagaLeg.venue_id)", "carry_release_canonical_funding_leg_missing");
+  requireText("releaseMaterial", 'funding_micro_usdc: sumSignedEntries(fundingLedgerEntries, "funding")', "carry_release_leg_funding_missing");
   requireText("releaseMaterialTest", "funding_micro_usdc), [60, -10]", "carry_release_leg_funding_test_missing");
+  requireText("releaseMaterialTest", "carryPositionLegId({ position_id: positionId", "carry_release_canonical_funding_leg_test_missing");
   requireText("evidenceVerifier", "realized_funding_evidence_mismatch", "carry_release_funding_reconciliation_missing");
   requireText("evidenceVerifierTest", "rejects funding not reconciled to exact venue legs", "carry_release_funding_reconciliation_test_missing");
   requireText("privateExecution", "submit_count: 1", "durable_submit_count_missing");

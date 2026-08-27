@@ -941,6 +941,19 @@ test("rejects release proof without exact venue-leg funding reconciliation", () 
   );
 });
 
+test("rejects release assembly that ignores canonical position-leg funding", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replaceAll(
+        "const fundingLegId = carryPositionLegId(record.position, sagaLeg.venue_id)",
+        "const fundingLegId = sagaLeg.leg_id",
+      ),
+    }),
+    /carry_release_canonical_funding_leg_missing/,
+  );
+});
+
 test("rejects funding settlements stored without their exact Carry leg", () => {
   assert.throws(
     () => checkCarryExecutionContract({

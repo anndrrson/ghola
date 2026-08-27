@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readCarryVenueQualification } from "./carry-qualification.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
+import { carryPositionLegId } from "./carry-positions.js";
 import { assessCarryFlatReconciliation } from "./carry-reconciliation.js";
 
 export async function buildCompletedCarryReleaseMaterial({
@@ -184,7 +185,14 @@ async function materialLegs({ state, saga, record, phase }) {
     if (proof?.target_client_order_matched !== true || proof?.final_venue_execution_proven !== true || !positiveDecimal(proof?.filled_base_size)) {
       return denied(`carry_release_${phase}_terminal_proof_missing:${sagaLeg.venue_id}`);
     }
-    const ledgerEntries = (record.value_ledger.entries || []).filter((entry) => entry.leg_id === sagaLeg.leg_id);
+    const ledgerEntries = record.value_ledger.entries || [];
+    const executionLedgerEntries = ledgerEntries.filter((entry) => entry.leg_id === sagaLeg.leg_id);
+    const fundingLegId = carryPositionLegId(record.position, sagaLeg.venue_id);
+    const fundingLedgerEntries = phase === "entry"
+      ? ledgerEntries.filter((entry) => entry.entry_type === "funding"
+        && entry.venue_id === sagaLeg.venue_id
+        && entry.leg_id === fundingLegId)
+      : [];
     legs.push({
       venue_id: sagaLeg.venue_id,
       account_commitment: expectedAccountCommitment,
@@ -196,9 +204,9 @@ async function materialLegs({ state, saga, record, phase }) {
       target_client_order_matched: true,
       final_venue_execution_proven: true,
       filled_base_size: String(proof.filled_base_size),
-      funding_micro_usdc: sumSignedEntries(ledgerEntries, "funding"),
-      fee_micro_usdc: sumEntries(ledgerEntries, "trading_fee"),
-      slippage_micro_usdc: sumEntries(ledgerEntries, "slippage"),
+      funding_micro_usdc: sumSignedEntries(fundingLedgerEntries, "funding"),
+      fee_micro_usdc: sumEntries(executionLedgerEntries, "trading_fee"),
+      slippage_micro_usdc: sumEntries(executionLedgerEntries, "slippage"),
       receipt_commitment: receipt?.result_commitment || `receipt:${digest(JSON.stringify(proof))}`,
     });
   }
