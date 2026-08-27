@@ -1058,7 +1058,7 @@ test("enables an economically eligible Aster pair only after deployment-bound qu
       checks: { order_request_checked: true, transaction_broadcast: false, account_state_checked: true },
       order_shape: { market: "BTC-USD", base_size: "0.001", limit_price: "100000", notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
       account,
-      ...(venue_id === "aster" ? { authority_boundary: { venue_native_trade_only: true } } : {}),
+      authority_boundary: { venue_native_trade_only: true },
     }),
     readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
     readHyperliquidCarryMetrics: async () => account,
@@ -1070,6 +1070,18 @@ test("enables an economically eligible Aster pair only after deployment-bound qu
   assert.equal(result.economic_opportunity.collateral_basis_risk_bps, 50);
   assert.equal(result.qualification_reasons.length, 0);
   assert.equal(result.live_creation_ready, true);
+  const missingBoundary = await preflightCarryPair({
+    ...preflightInput,
+    state,
+    verifyOrder: async (input) => {
+      const receipt = await preflightInput.verifyOrder(input);
+      if (input.venue_id !== "hyperliquid") return receipt;
+      const { authority_boundary: _authorityBoundary, ...withoutBoundary } = receipt;
+      return withoutBoundary;
+    },
+  });
+  assert.equal(missingBoundary.live_creation_ready, false);
+  assert.ok(missingBoundary.qualification_reasons.includes("credential_authority_boundary_unacceptable:hyperliquid"));
   rows.clear();
   const disabledPilot = await preflightCarryPair({ ...preflightInput, state });
   assert.equal(disabledPilot.qualification_pilot_ready, false);

@@ -288,6 +288,7 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
       if (item.transaction_broadcast !== false || item.checks?.transaction_broadcast !== false) failures.push(`venue_broadcast_unsafe:${venueId}`);
       if (item.checks?.account_state_checked !== true) failures.push(`venue_account_unverified:${venueId}`);
       if (item.checks?.order_request_built !== true && item.checks?.order_request_checked !== true) failures.push(`venue_order_shape_unverified:${venueId}`);
+      if (!acceptableAuthorityBoundary(item.authority_boundary)) failures.push(`venue_authority_unverified:${venueId}`);
       if (!validCommitment(item.work_order_commitment)) failures.push(`venue_work_order_unbound:${venueId}`);
       if (!validCommitment(item.verification_commitment)) failures.push(`venue_verification_unbound:${venueId}`);
       if (item.account_commitment !== body.venue_access?.[venueId]?.account_commitment) failures.push(`venue_account_binding_mismatch:${venueId}`);
@@ -385,8 +386,11 @@ function validAccountStateEvidence(value, receipt) {
 }
 
 function acceptableAuthorityBoundary(boundary) {
-  if (!boundary || typeof boundary !== "object") return true;
-  if (boundary.venue_native_trade_only === true) return true;
+  if (!boundary || typeof boundary !== "object") return false;
+  if (boundary.venue_native_trade_only === true) {
+    return boundary.withdrawal_request_permitted !== true
+      && boundary.non_owner_fund_movement_possible !== true;
+  }
   return boundary.venue_native_trade_only === false &&
     boundary.withdrawal_request_permitted === false &&
     boundary.secure_withdrawal_destination === "owner_l1_only" &&
