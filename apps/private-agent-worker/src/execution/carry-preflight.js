@@ -1,6 +1,8 @@
 import {
   CARRY_EXECUTION_VENUES,
+  adverseExecutionSlippageE6Bps,
   calculateMarginRunway,
+  estimatePerpDepthExecution,
   evaluateCarryOpportunity,
   evaluatePerpContractPairBasis,
   exactQuantityRecoveryAdapter,
@@ -441,94 +443,38 @@ function legCosts(leg, notionalMicro) {
   const fee = feeE6Bps(leg.account?.taker_fee_bps);
   const snapshot = leg.snapshot;
   const exitSide = leg.side === "buy" ? "sell" : "buy";
-  const entry = depthExecutionPrice(leg.side, snapshot, notionalMicro, "entry");
-  const exit = depthExecutionPrice(exitSide, snapshot, notionalMicro, "exit");
+  const entry = estimatePerpDepthExecution({
+    side: leg.side,
+    depth_levels: leg.side === "buy" ? snapshot.depth_asks : snapshot.depth_bids,
+    fallback_price_e8: leg.side === "buy" ? snapshot.best_ask_e8 : snapshot.best_bid_e8,
+    target_notional_micro_usdc: notionalMicro,
+    phase: "entry",
+  });
+  const exit = estimatePerpDepthExecution({
+    side: exitSide,
+    depth_levels: exitSide === "buy" ? snapshot.depth_asks : snapshot.depth_bids,
+    fallback_price_e8: exitSide === "buy" ? snapshot.best_ask_e8 : snapshot.best_bid_e8,
+    target_notional_micro_usdc: notionalMicro,
+    phase: "exit",
+  });
   return {
     venue_id: leg.venue_id,
     entry_fee_e6_bps: fee,
     exit_fee_e6_bps: fee,
-    entry_slippage_e6_bps: adverseSlippageE6Bps(leg.side, snapshot.mark_price_e8, entry.execution_price_e8),
-    exit_slippage_e6_bps: adverseSlippageE6Bps(exitSide, snapshot.mark_price_e8, exit.execution_price_e8),
+    entry_slippage_e6_bps: adverseExecutionSlippageE6Bps({
+      side: leg.side,
+      mark_price_e8: snapshot.mark_price_e8,
+      execution_price_e8: entry.execution_price_e8,
+    }),
+    exit_slippage_e6_bps: adverseExecutionSlippageE6Bps({
+      side: exitSide,
+      mark_price_e8: snapshot.mark_price_e8,
+      execution_price_e8: exit.execution_price_e8,
+    }),
     latency_penalty_bps: 1,
     gas_micro_usdc: 0,
     depth_impact: Object.freeze([entry, exit]),
   };
-}
-
-function depthExecutionPrice(side, snapshot, notionalMicro, phase) {
-  const fallbackPrice = side === "buy" ? snapshot.best_ask_e8 : snapshot.best_bid_e8;
-  const levels = side === "buy" ? snapshot.depth_asks : snapshot.depth_bids;
-  if (!Array.isArray(levels) || levels.length === 0) {
-    return Object.freeze({
-      phase,
-      side,
-      status: "unavailable",
-      target_notional_micro_usdc: notionalMicro,
-      displayed_notional_micro_usdc: 0,
-      execution_price_e8: fallbackPrice || null,
-    });
-  }
-  const markPriceE8 = snapshot.mark_price_e8;
-  if (!Number.isSafeInteger(markPriceE8) || markPriceE8 <= 0) {
-    return Object.freeze({
-      phase,
-      side,
-      status: "unavailable",
-      target_notional_micro_usdc: notionalMicro,
-      displayed_notional_micro_usdc: 0,
-      execution_price_e8: fallbackPrice || null,
-    });
-  }
-  const targetQuoteE16 = BigInt(notionalMicro) * 10_000_000_000n;
-  let remainingQuoteE16 = targetQuoteE16;
-  let displayedQuoteE16 = 0n;
-  let filledBaseE8 = 0n;
-  let quotePriceBaseE16 = 0n;
-  const sortedLevels = [...levels].sort((left, right) => side === "buy"
-    ? left.price_e8 - right.price_e8
-    : right.price_e8 - left.price_e8);
-  for (const level of sortedLevels) {
-    if (!Number.isSafeInteger(level?.price_e8) || level.price_e8 <= 0 ||
-        !Number.isSafeInteger(level?.size_e8) || level.size_e8 <= 0) continue;
-    const availableBaseE8 = BigInt(level.size_e8);
-    const availableQuoteE16 = BigInt(level.price_e8) * availableBaseE8;
-    displayedQuoteE16 += availableQuoteE16;
-    if (remainingQuoteE16 <= 0n) continue;
-    const takenQuoteE16 = availableQuoteE16 < remainingQuoteE16 ? availableQuoteE16 : remainingQuoteE16;
-    const takenBaseE8 = takenQuoteE16 === availableQuoteE16
-      ? availableBaseE8
-      : (takenQuoteE16 + BigInt(level.price_e8) - 1n) / BigInt(level.price_e8);
-    filledBaseE8 += takenBaseE8;
-    quotePriceBaseE16 += BigInt(level.price_e8) * takenBaseE8;
-    remainingQuoteE16 -= takenQuoteE16;
-  }
-  const executionPriceE8 = filledBaseE8 > 0n
-    ? Number(side === "buy"
-      ? (quotePriceBaseE16 + filledBaseE8 - 1n) / filledBaseE8
-      : quotePriceBaseE16 / filledBaseE8)
-    : fallbackPrice || null;
-  const displayedNotional = Number(displayedQuoteE16 / 10_000_000_000n);
-  return Object.freeze({
-    phase,
-    side,
-    status: remainingQuoteE16 === 0n ? "sufficient" : "insufficient",
-    target_notional_micro_usdc: notionalMicro,
-    displayed_notional_micro_usdc: Number.isSafeInteger(displayedNotional) ? displayedNotional : Number.MAX_SAFE_INTEGER,
-    execution_price_e8: Number.isSafeInteger(executionPriceE8) ? executionPriceE8 : fallbackPrice || null,
-  });
-}
-
-function adverseSlippageE6Bps(side, markPriceE8, executionPriceE8) {
-  if (!Number.isSafeInteger(markPriceE8) || markPriceE8 <= 0 ||
-      !Number.isSafeInteger(executionPriceE8) || executionPriceE8 <= 0) {
-    return 5_000_000;
-  }
-  const adverseMove = side === "buy"
-    ? executionPriceE8 - markPriceE8
-    : markPriceE8 - executionPriceE8;
-  if (adverseMove <= 0) return 0;
-  const numerator = BigInt(adverseMove) * 10_000_000_000n;
-  return Number((numerator + BigInt(markPriceE8) - 1n) / BigInt(markPriceE8));
 }
 
 function accountReadiness(leg, notionalMicro) {

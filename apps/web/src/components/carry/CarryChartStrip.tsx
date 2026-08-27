@@ -132,7 +132,10 @@ export function CarryChartStrip({
   ), [clock, data, effectivePatches]);
   const pricedCandidates = useMemo(() => rankCarryCandidatesByNet(
     buildPairCandidates(effectiveVenues),
-  ), [effectiveVenues]);
+    10_000,
+    24,
+    clock,
+  ), [clock, effectiveVenues]);
   const executionCandidates = useMemo(() => pricedCandidates.filter(({ candidate }) =>
     isCarryExecutionVenue(candidate.long.venue_id) && isCarryExecutionVenue(candidate.short.venue_id)
   ), [pricedCandidates]);

@@ -1,4 +1,5 @@
 import type {
+  CarryDepthLevel,
   CarryLiveMarketPatch,
   CarryShadowSnapshot,
   CarryVenueShadow,
@@ -120,7 +121,7 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
   private readonly reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly reconnectAttempts = new Map<string, number>();
   private readonly books = new Map<string, BookState>();
-  private readonly lastEmittedValues = new Map<string, Record<string, number>>();
+  private readonly lastEmittedValues = new Map<string, Record<string, unknown>>();
   private readonly lastEmittedAt = new Map<string, number>();
   private readonly refs: MarketRef[];
 
@@ -264,6 +265,8 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
     this.emit(ref, {
       best_bid_e8: scaledDecimal(bid.price, 100_000_000),
       best_ask_e8: scaledDecimal(ask.price, 100_000_000),
+      depth_bids: singleDepthLevel(bid.price, bid.size ?? bid.amount ?? bid.quantity),
+      depth_asks: singleDepthLevel(ask.price, ask.size ?? ask.amount ?? ask.quantity),
       mark_price_e8: scaledDecimal(marketStats.mark_price, 100_000_000),
       index_price_e8: scaledDecimal(marketStats.index_price, 100_000_000),
       funding_rate_e12_per_interval: scaledDecimal(
@@ -284,6 +287,8 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
     this.emit(ref, {
       best_bid_e8: scaledDecimal(data.b, 100_000_000),
       best_ask_e8: scaledDecimal(data.a, 100_000_000),
+      depth_bids: singleDepthLevel(data.b, data.B),
+      depth_asks: singleDepthLevel(data.a, data.A),
       mark_price_e8: scaledDecimal(data.p, 100_000_000),
       index_price_e8: scaledDecimal(data.i, 100_000_000),
       funding_rate_e12_per_interval: scaledDecimal(data.r, 1_000_000_000_000, true),
@@ -311,6 +316,9 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
       this.emit(ref, {
         best_bid_e8: bestBookPrice(book, "bid"),
         best_ask_e8: bestBookPrice(book, "ask"),
+        depth_bids: bookDepthLevels(book, "bid"),
+        depth_asks: bookDepthLevels(book, "ask"),
+        depth_complete: true,
       });
       return;
     }
@@ -351,6 +359,9 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
         this.emit(ref, {
           best_bid_e8: bestBookPrice(book, "bid"),
           best_ask_e8: bestBookPrice(book, "ask"),
+          depth_bids: bookDepthLevels(book, "bid"),
+          depth_asks: bookDepthLevels(book, "ask"),
+          depth_complete: true,
           source_at_ms: numericValue(row.timestamp),
         });
       }
@@ -379,9 +390,9 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
     const now = this.options.now?.() ?? Date.now();
     const key = `${ref.venueId}:${ref.asset}`;
     const economicValues = Object.fromEntries(Object.entries(patch)
-      .filter(([field]) => field !== "source_at_ms")) as Record<string, number>;
+      .filter(([field]) => field !== "source_at_ms" && field !== "depth_complete")) as Record<string, unknown>;
     const previous = this.lastEmittedValues.get(key) || {};
-    const changed = Object.entries(economicValues).some(([field, value]) => previous[field] !== value);
+    const changed = Object.entries(economicValues).some(([field, value]) => !samePatchValue(previous[field], value));
     const lastAt = this.lastEmittedAt.get(key) || 0;
     if (!changed && now - lastAt < UNCHANGED_PATCH_HEARTBEAT_MS) return;
     this.lastEmittedValues.set(key, { ...previous, ...economicValues });
@@ -478,6 +489,35 @@ function findBestPrice(levels: Map<number, number>, side: "bid" | "ask") {
 
 function bestBookPrice(book: BookState, side: "bid" | "ask") {
   return scaledDecimal(side === "bid" ? book.bestBid : book.bestAsk, 100_000_000);
+}
+
+function bookDepthLevels(book: BookState, side: "bid" | "ask", limit = 20): CarryDepthLevel[] {
+  const levels = side === "bid" ? book.bids : book.asks;
+  return [...levels.entries()]
+    .filter(([price, size]) => Number.isFinite(price) && price > 0 && Number.isFinite(size) && size > 0)
+    .sort(([left], [right]) => side === "bid" ? right - left : left - right)
+    .slice(0, limit)
+    .flatMap(([price, size]) => {
+      const priceE8 = scaledDecimal(price, 100_000_000);
+      const sizeE8 = scaledDecimal(size, 100_000_000);
+      return priceE8 == null || sizeE8 == null ? [] : [{ price_e8: priceE8, size_e8: sizeE8 }];
+    });
+}
+
+function singleDepthLevel(price: unknown, size: unknown): CarryDepthLevel[] | undefined {
+  const priceE8 = scaledDecimal(price, 100_000_000);
+  const sizeE8 = scaledDecimal(size, 100_000_000);
+  return priceE8 == null || sizeE8 == null ? undefined : [{ price_e8: priceE8, size_e8: sizeE8 }];
+}
+
+function samePatchValue(left: unknown, right: unknown) {
+  if (left === right) return true;
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+  return left.every((value, index) => {
+    const leftLevel = record(value);
+    const rightLevel = record(right[index]);
+    return leftLevel.price_e8 === rightLevel.price_e8 && leftLevel.size_e8 === rightLevel.size_e8;
+  });
 }
 
 function scaledDecimal(value: unknown, scale: number, signed = false) {

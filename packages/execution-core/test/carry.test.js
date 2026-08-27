@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  adverseExecutionSlippageE6Bps,
   appendCarryValueLedgerEntry,
   advanceCarryPosition,
   calculateMarginRunway,
@@ -10,6 +11,7 @@ import {
   createCarryPosition,
   createCarryValueLedger,
   evaluateCarryOpportunity,
+  estimatePerpDepthExecution,
   finalizeCarryValueLedger,
   normalizeCarryRiskMandateAuthorization,
   normalizeCarryRiskMandatePayload,
@@ -18,6 +20,43 @@ import {
 const NOW = 1_800_000_000_000;
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
+
+test("estimates executable price from full depth and fails closed on insufficient liquidity", () => {
+  const sufficient = estimatePerpDepthExecution({
+    side: "buy",
+    depth_levels: [
+      { price_e8: 10_000_000_000, size_e8: 100_000_000 },
+      { price_e8: 10_200_000_000, size_e8: 100_000_000 },
+    ],
+    fallback_price_e8: 10_000_000_000,
+    target_notional_micro_usdc: 150_000_000,
+  });
+  assert.equal(sufficient.status, "sufficient");
+  assert.equal(sufficient.displayed_notional_micro_usdc, 202_000_000);
+  assert.ok(sufficient.execution_price_e8 > 10_000_000_000);
+  assert.ok(sufficient.execution_price_e8 < 10_200_000_000);
+
+  const insufficient = estimatePerpDepthExecution({
+    side: "sell",
+    depth_levels: [{ price_e8: 10_000_000_000, size_e8: 10_000_000 }],
+    target_notional_micro_usdc: 150_000_000,
+  });
+  assert.equal(insufficient.status, "insufficient");
+  assert.equal(insufficient.displayed_notional_micro_usdc, 10_000_000);
+});
+
+test("measures only adverse execution slippage", () => {
+  assert.equal(adverseExecutionSlippageE6Bps({
+    side: "buy",
+    mark_price_e8: 10_000_000_000,
+    execution_price_e8: 10_100_000_000,
+  }), 100_000_000);
+  assert.equal(adverseExecutionSlippageE6Bps({
+    side: "sell",
+    mark_price_e8: 10_000_000_000,
+    execution_price_e8: 10_100_000_000,
+  }), 0);
+});
 
 function contract(venueId, fundingRate, overrides = {}) {
   return {

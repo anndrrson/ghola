@@ -74,6 +74,20 @@ describe("CarryWorkspace model", () => {
     expect(result.creatable).toBe(false);
   });
 
+  it("fails exact economics closed when displayed depth cannot fill the requested notional", () => {
+    const thinDepth = [{ price_e8: 6_000_100_000_000, size_e8: 1_000 }];
+    const long = snapshot("hyperliquid", "BTC", 10_000_000, "ready", {
+      depth_bids: thinDepth,
+      depth_asks: thinDepth,
+    });
+    const short = snapshot("lighter", "BTC", 40_000_000, "ready");
+    const [candidate] = buildCandidates([venue("hyperliquid", long), venue("lighter", short)]);
+    const quote = quoteCarryCandidate(candidate, 10_000, 24, 1_800_000_000_000);
+    expect(quote.depthStatus).toBe("insufficient");
+    expect(quote.exactCosts).toBe(false);
+    expect(quote.expectedNetUsd).toBeNull();
+  });
+
   it("merges fresh venue ticks before recomputing route economics", () => {
     const now = 1_800_000_000_000;
     const hyperliquid = snapshot("hyperliquid", "BTC", 10_000_000, "ready");
@@ -100,6 +114,30 @@ describe("CarryWorkspace model", () => {
     expect(quote.grossDailyUsd).toBeGreaterThan(0);
     expect(quote.expectedNetUsd).toBeTypeOf("number");
     expect(quote.breakEvenHours).toBeGreaterThan(0);
+  });
+
+  it("preserves deeper REST liquidity when a partial top-of-book tick arrives", () => {
+    const now = 1_800_000_000_000;
+    const originalDepthAt = now - 1_000;
+    const base = venue("lighter", snapshot("lighter", "BTC", 40_000_000, "ready", {
+      depth_bids: [
+        { price_e8: 5_999_900_000_000, size_e8: 100_000_000 },
+        { price_e8: 5_999_800_000_000, size_e8: 200_000_000 },
+      ],
+      depth_observed_at_ms: originalDepthAt,
+    }));
+    const [updated] = applyCarryLivePatches([base], [{
+      venue_id: "lighter",
+      asset: "BTC",
+      received_at_ms: now,
+      best_bid_e8: 5_999_850_000_000,
+      depth_bids: [{ price_e8: 5_999_850_000_000, size_e8: 150_000_000 }],
+    }], now);
+    expect(updated.snapshots[0].depth_bids).toEqual([
+      { price_e8: 5_999_850_000_000, size_e8: 150_000_000 },
+      { price_e8: 5_999_800_000_000, size_e8: 200_000_000 },
+    ]);
+    expect(updated.snapshots[0].depth_observed_at_ms).toBe(originalDepthAt);
   });
 
   it("ignores expired live patches instead of presenting stale routes", () => {
@@ -143,6 +181,9 @@ function snapshot(
     index_price_e8: 6_000_000_000_000,
     best_bid_e8: 5_999_900_000_000,
     best_ask_e8: 6_000_100_000_000,
+    depth_bids: [{ price_e8: 5_999_900_000_000, size_e8: 100_000_000 }],
+    depth_asks: [{ price_e8: 6_000_100_000_000, size_e8: 100_000_000 }],
+    depth_observed_at_ms: 1_800_000_000_000,
     as_of_ms: 1_800_000_000_000,
     missing_fields: [],
     ...overrides,

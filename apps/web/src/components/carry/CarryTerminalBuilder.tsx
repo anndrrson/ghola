@@ -17,7 +17,12 @@ import {
   carryRiskMandateAuthorization,
   defaultCarryRiskMandate,
 } from "@/lib/carry-risk-mandate";
-import { builderModel, CARRY_VENUE_LABELS, type CarryCandidate } from "@/lib/carry-market";
+import {
+  builderModel,
+  CARRY_VENUE_LABELS,
+  type CarryCandidate,
+  type CarryQuoteModel,
+} from "@/lib/carry-market";
 import { hasExactCarryFlatReconciliation } from "@/lib/carry-reconciliation";
 import {
   CARRY_EXECUTION_VENUES,
@@ -205,6 +210,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const capital = carryCapitalSummary(latestObservation?.capital_action_plan);
   const ledger = carryLedgerSummary(current?.value_ledger);
   const proofOpportunity = proof ? asRecord(proof.creation_opportunity) : null;
+  const economics = carryTerminalEconomics(model, proofOpportunity);
   const restoredReadiness = readyStoredReadiness(readiness, candidate.asset, notional, days);
 
   const invalidateProof = (setter: (value: string) => void) => (value: string) => {
@@ -396,9 +402,11 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
       <div className="grid gap-1.5 sm:grid-cols-4">
         <Metric label="ROUTE" value={`L ${venueName(candidate.long.venue_id)} / S ${venueName(candidate.short.venue_id)}`} />
         <Metric label="GROSS" value={`${formatSigned(candidate.grossAnnualBps / 365)} BP/D`} tone="good" />
-        <Metric label="FEES + SLIP" value={model.costUsd == null ? "ACCOUNT DATA" : formatUsd(model.costUsd)} />
-        <Metric label={`NET / ${days}D`} value={model.netUsd == null ? "ACCOUNT DATA" : formatUsd(model.netUsd)} tone={model.netUsd != null && model.netUsd > 0 ? "good" : undefined} />
-        <Metric label="BREAK-EVEN" value={model.breakEvenDays == null ? "—" : `${model.breakEvenDays.toFixed(1)}D`} />
+        <Metric label="FEES" value={economics.fees} />
+        <Metric label="SLIPPAGE" value={economics.slippage} tone={economics.depthTone} />
+        <Metric label="USABLE DEPTH" value={economics.depth} tone={economics.depthTone} />
+        <Metric label={`NET / ${days}D`} value={economics.net} tone={economics.netTone} />
+        <Metric label="BREAK-EVEN" value={economics.breakEven} />
         <Metric label="COLLATERAL" value={formatUsd(model.minimumCollateralUsd)} />
         <Metric label="MIN RUNWAY" value={runway.value} tone={runway.tone} />
         <Metric label="CAPITAL" value={capital.value} tone={capital.tone} />
@@ -465,6 +473,67 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
 function Metric({ label, value, tone }: { label: string; value: string; tone?: "good" | "warn" | "bad" }) {
   const color = tone === "good" ? "text-[#72dfb2]" : tone === "warn" ? "text-[#d9bd74]" : tone === "bad" ? "text-[#ef929e]" : "text-[#c8d0dc]";
   return <div className="rounded border border-[#1d2733] bg-[#070a0f] px-2 py-1"><p className="font-mono text-[9px] text-[#5f6c7e]">{label}</p><p className={`mt-0.5 truncate font-mono text-[10px] ${color}`}>{value}</p></div>;
+}
+
+function carryTerminalEconomics(model: ReturnType<typeof builderModel>, opportunity: Record<string, unknown> | null) {
+  const proofFee = microUsdValue(opportunity?.projected_trading_fee_micro_usdc);
+  const proofSlippage = microUsdValue(opportunity?.projected_slippage_micro_usdc);
+  const proofNet = microUsdValue(opportunity?.projected_net_value_micro_usdc);
+  const proofBreakEvenMs = finiteNumber(opportunity?.break_even_ms);
+  const depth = opportunity ? proofDepth(opportunity) : {
+    status: model.depthStatus,
+    minimumUsd: model.minimumDisplayedDepthUsd,
+  };
+  const netUsd = proofNet ?? model.netUsd;
+  return {
+    fees: formatEconomicUsd(proofFee ?? model.tradingFeeUsd),
+    slippage: depth.status === "sufficient"
+      ? formatEconomicUsd(proofSlippage ?? model.slippageUsd)
+      : depth.status === "insufficient" ? "DEPTH LIMITED" : "UNVERIFIED",
+    depth: depth.status === "sufficient" && depth.minimumUsd != null
+      ? `${formatUsd(depth.minimumUsd)} MIN`
+      : depth.status.toUpperCase(),
+    depthTone: depth.status === "sufficient" ? "good" as const : depth.status === "insufficient" ? "bad" as const : "warn" as const,
+    net: formatEconomicUsd(netUsd),
+    netTone: netUsd != null && netUsd > 0 ? "good" as const : undefined,
+    breakEven: proofBreakEvenMs != null
+      ? `${(proofBreakEvenMs / 86_400_000).toFixed(1)}D`
+      : model.breakEvenDays == null ? "—" : `${model.breakEvenDays.toFixed(1)}D`,
+  };
+}
+
+function proofDepth(opportunity: Record<string, unknown>): {
+  status: CarryQuoteModel["depthStatus"];
+  minimumUsd: number | null;
+} {
+  const observations = (Array.isArray(opportunity.depth_impact) ? opportunity.depth_impact : [])
+    .flatMap((venue) => {
+      const row = asRecord(venue);
+      return Array.isArray(row.observations) ? row.observations.map(asRecord) : [];
+    });
+  if (observations.length !== 4) return { status: "unavailable", minimumUsd: null };
+  const statuses = observations.map((item) => stringValue(item.status));
+  const displayed = observations
+    .map((item) => microUsdValue(item.displayed_notional_micro_usdc))
+    .filter((value): value is number => value != null);
+  const minimumUsd = displayed.length === observations.length ? Math.min(...displayed) : null;
+  if (statuses.includes("insufficient")) return { status: "insufficient", minimumUsd };
+  return statuses.every((status) => status === "sufficient")
+    ? { status: "sufficient", minimumUsd }
+    : { status: "unavailable", minimumUsd };
+}
+
+function finiteNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function microUsdValue(value: unknown) {
+  const number = finiteNumber(value);
+  return number == null ? null : number / 1_000_000;
+}
+
+function formatEconomicUsd(value: number | null) {
+  return value == null ? "ACCOUNT DATA" : formatUsd(value);
 }
 
 function carryRunwaySummary(observation: CarryRecord["latest_observation"] | null, candidate: CarryCandidate) {

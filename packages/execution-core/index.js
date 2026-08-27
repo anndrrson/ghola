@@ -17,6 +17,7 @@ export {
 } from "./accounting.js";
 export {
   CarryModelError,
+  adverseExecutionSlippageE6Bps,
   appendCarryValueLedgerEntry,
   advanceCarryPosition,
   calculateMarginRunway,
@@ -27,6 +28,7 @@ export {
   createCarryValueLedger,
   evaluateCarryOpportunity,
   evaluatePerpContractPairBasis,
+  estimatePerpDepthExecution,
   finalizeCarryValueLedger,
   normalizeCarryRiskMandate,
   normalizeCarryRiskMandateAuthorization,

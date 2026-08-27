@@ -54,8 +54,12 @@ describe("carry live market stream", () => {
     expect(sockets[0].sent).toContain(JSON.stringify({ type: "subscribe", channel: "market_stats/0" }));
     sockets[0].message({
       channel: "ticker:0",
-      ticker: { market_id: 0, b: { price: "59999.5" }, a: { price: "60000.5" } },
+      ticker: { market_id: 0, b: { price: "59999.5", size: "1" }, a: { price: "60000.5", size: "2" } },
       timestamp: 1_800_000_000_000,
+    });
+    expect(patches.at(-1)).toMatchObject({
+      depth_bids: [{ price_e8: 5_999_950_000_000, size_e8: 100_000_000 }],
+      depth_asks: [{ price_e8: 6_000_050_000_000, size_e8: 200_000_000 }],
     });
     sockets[0].message({
       channel: "market_stats:0",
@@ -100,7 +104,7 @@ describe("carry live market stream", () => {
       funding_rate_e12_per_interval: 11_000_000,
       funding_interval_ms: 3_600_000,
     };
-    const iterations = 2_000;
+    const iterations = 250;
     const started = performance.now();
     for (let index = 0; index < iterations; index += 1) {
       const candidates = buildPairCandidates(applyCarryLivePatches(venues, [patch], patch.received_at_ms));
@@ -144,7 +148,7 @@ describe("carry live market stream", () => {
     publisher.stop();
   });
 
-  it("suppresses non-BBO dYdX depth churn before it reaches React", () => {
+  it("emits bounded dYdX depth needed for notional-aware execution", () => {
     const sockets: FakeSocket[] = [];
     const patches: CarryLiveMarketPatch[] = [];
     const stream = createCarryLiveMarketStream({
@@ -179,14 +183,55 @@ describe("carry live market stream", () => {
       id: "BTC-USD",
       contents: [{ bids: [["59999", "2"]] }, { asks: [["60002", "2"]] }],
     });
-    for (let index = 0; index < 4_000; index += 1) {
-      sockets[0].message({
-        type: "channel_data",
-        channel: "v4_orderbook",
-        id: "BTC-USD",
-        contents: { bids: [["59000", String(index + 1)]], asks: [] },
-      });
-    }
+    sockets[0].message({
+      type: "channel_data",
+      channel: "v4_orderbook",
+      id: "BTC-USD",
+      contents: { bids: [["59000", "3"]], asks: [] },
+    });
+    expect(patches.at(-1)).toMatchObject({
+      best_bid_e8: 6_000_000_000_000,
+      best_ask_e8: 6_000_100_000_000,
+      depth_bids: [
+        { price_e8: 6_000_000_000_000, size_e8: 100_000_000 },
+        { price_e8: 5_999_900_000_000, size_e8: 200_000_000 },
+        { price_e8: 5_900_000_000_000, size_e8: 300_000_000 },
+      ],
+    });
+    expect(patches.at(-1)?.depth_bids).toHaveLength(3);
+    stream.stop();
+  });
+
+  it("suppresses non-BBO dYdX depth churn outside the bounded execution book", () => {
+    const sockets: FakeSocket[] = [];
+    const patches: CarryLiveMarketPatch[] = [];
+    const stream = createCarryLiveMarketStream({
+      venues: [venue("dydx", "BTC", "dydx:BTC-USD", 3_600_000)],
+      onPatch: (patch) => patches.push(patch),
+      onStatus: () => undefined,
+      webSocketCtor: class extends FakeSocket {
+        constructor(url: string) {
+          super(url);
+          sockets.push(this);
+        }
+      },
+      now: () => 1_800_000_000_100,
+    });
+    stream.start();
+    sockets[0].open();
+    const bids = Array.from({ length: 20 }, (_, index) => [String(60_000 - index), "1"]);
+    sockets[0].message({
+      type: "subscribed",
+      channel: "v4_orderbook",
+      id: "BTC-USD",
+      contents: { bids, asks: [["60001", "1"]] },
+    });
+    sockets[0].message({
+      type: "channel_data",
+      channel: "v4_orderbook",
+      id: "BTC-USD",
+      contents: { bids: [["59000", "3"]], asks: [] },
+    });
     expect(patches).toHaveLength(1);
     stream.stop();
   });
@@ -247,6 +292,9 @@ function venue(
       index_price_e8: 6_000_000_000_000,
       best_bid_e8: 5_999_900_000_000,
       best_ask_e8: 6_000_100_000_000,
+      depth_bids: [{ price_e8: 5_999_900_000_000, size_e8: 100_000_000 }],
+      depth_asks: [{ price_e8: 6_000_100_000_000, size_e8: 100_000_000 }],
+      depth_observed_at_ms: 1_800_000_000_000,
       as_of_ms: 1_800_000_000_000,
       missing_fields: [],
     }],

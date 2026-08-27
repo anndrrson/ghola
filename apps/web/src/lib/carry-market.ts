@@ -1,4 +1,14 @@
+import {
+  adverseExecutionSlippageE6Bps,
+  estimatePerpDepthExecution,
+} from "@ghola/execution-core";
+
 export type CarryShadowStatus = "ready" | "degraded" | "quarantined";
+
+export interface CarryDepthLevel {
+  price_e8: number;
+  size_e8: number;
+}
 
 export interface CarryShadowSnapshot {
   venue_id: string;
@@ -19,6 +29,14 @@ export interface CarryShadowSnapshot {
   index_price_e8?: number | null;
   best_bid_e8: number | null;
   best_ask_e8: number | null;
+  depth_bids?: CarryDepthLevel[];
+  depth_asks?: CarryDepthLevel[];
+  depth_observed_at_ms?: number | null;
+  source_observed_at_ms?: {
+    market?: number | null;
+    funding?: number | null;
+    orderbook?: number | null;
+  };
   as_of_ms?: number | null;
   observed_at_ms?: number | null;
   missing_fields: string[];
@@ -59,6 +77,9 @@ export interface CarryLiveMarketPatch {
   best_ask_e8?: number | null;
   funding_rate_e12_per_interval?: number | null;
   funding_interval_ms?: number | null;
+  depth_bids?: CarryDepthLevel[];
+  depth_asks?: CarryDepthLevel[];
+  depth_complete?: boolean;
 }
 
 export interface CarryQuoteModel {
@@ -71,6 +92,10 @@ export interface CarryQuoteModel {
   expectedNetDailyUsd: number | null;
   breakEvenHours: number | null;
   exactCosts: boolean;
+  tradingFeeUsd: number | null;
+  slippageUsd: number | null;
+  depthStatus: "sufficient" | "insufficient" | "unavailable";
+  minimumDisplayedDepthUsd: number | null;
 }
 
 export interface PricedCarryCandidate {
@@ -81,6 +106,8 @@ export interface PricedCarryCandidate {
 }
 
 export const CARRY_LIVE_PATCH_MAX_AGE_MS = 5_000;
+export const CARRY_DEPTH_MAX_AGE_MS = 30_000;
+const depthExecutionCache = new WeakMap<CarryShadowSnapshot, Map<string, ReturnType<typeof estimatePerpDepthExecution>>>();
 
 export const CARRY_VENUE_LABELS: Record<string, string> = {
   hyperliquid: "Hyperliquid",
@@ -138,9 +165,10 @@ export function rankCarryCandidatesByNet(
   candidates: CarryCandidate[],
   notionalUsd = 10_000,
   horizonHours = 24,
+  nowMs = Date.now(),
 ): PricedCarryCandidate[] {
   return candidates.map((candidate) => {
-    const quote = quoteCarryCandidate(candidate, notionalUsd, horizonHours);
+    const quote = quoteCarryCandidate(candidate, notionalUsd, horizonHours, nowMs);
     const dailyValueBps = quote.exactCosts && quote.expectedNetDailyUsd != null && quote.notionalUsd > 0
       ? quote.expectedNetDailyUsd / quote.notionalUsd * 10_000
       : candidate.grossAnnualBps / 365;
@@ -208,6 +236,24 @@ function applyCarryLivePatch(snapshot: CarryShadowSnapshot, patch: CarryLiveMark
   const bestAsk = patchedNumber(patch.best_ask_e8, snapshot.best_ask_e8);
   const fundingRate = patchedNumber(patch.funding_rate_e12_per_interval, snapshot.funding_rate_e12_per_interval);
   const fundingInterval = patchedNumber(patch.funding_interval_ms, snapshot.funding_interval_ms);
+  const depthBids = patch.depth_bids === undefined
+    ? snapshot.depth_bids
+    : patch.depth_complete === true
+      ? patch.depth_bids
+      : mergePartialDepth(snapshot.depth_bids, patch.depth_bids, "bid", bestBid);
+  const depthAsks = patch.depth_asks === undefined
+    ? snapshot.depth_asks
+    : patch.depth_complete === true
+      ? patch.depth_asks
+      : mergePartialDepth(snapshot.depth_asks, patch.depth_asks, "ask", bestAsk);
+  const depthUpdated = patch.depth_bids !== undefined || patch.depth_asks !== undefined;
+  const sourceAt = patch.source_at_ms ?? patch.received_at_ms;
+  const sourceObservedAt = {
+    ...snapshot.source_observed_at_ms,
+    ...(patch.mark_price_e8 !== undefined || patch.index_price_e8 !== undefined ? { market: sourceAt } : {}),
+    ...(patch.funding_rate_e12_per_interval !== undefined || patch.funding_interval_ms !== undefined ? { funding: sourceAt } : {}),
+    ...(patch.best_bid_e8 !== undefined || patch.best_ask_e8 !== undefined || depthUpdated ? { orderbook: sourceAt } : {}),
+  };
   const values = {
     mark_price_e8: markPrice,
     index_price_e8: indexPrice,
@@ -223,7 +269,13 @@ function applyCarryLivePatch(snapshot: CarryShadowSnapshot, patch: CarryLiveMark
   return {
     ...snapshot,
     ...values,
-    as_of_ms: patch.source_at_ms ?? patch.received_at_ms,
+    depth_bids: depthBids,
+    depth_asks: depthAsks,
+    depth_observed_at_ms: depthUpdated && patch.depth_complete === true
+      ? sourceAt
+      : snapshot.depth_observed_at_ms ?? (depthUpdated ? sourceAt : null),
+    source_observed_at_ms: sourceObservedAt,
+    as_of_ms: oldestObservedAt(sourceObservedAt, snapshot.as_of_ms, sourceAt),
     observed_at_ms: patch.received_at_ms,
     stale: false,
     status: criticalMissing ? "quarantined" : missingFields.length > 0 ? "degraded" : "ready",
@@ -231,24 +283,59 @@ function applyCarryLivePatch(snapshot: CarryShadowSnapshot, patch: CarryLiveMark
   };
 }
 
+function mergePartialDepth(
+  previous: CarryDepthLevel[] | undefined,
+  patch: CarryDepthLevel[],
+  side: "bid" | "ask",
+  bestPriceE8: number | null,
+) {
+  const levels = new Map<number, number>();
+  for (const level of previous || []) {
+    if (!Number.isSafeInteger(level.price_e8) || level.price_e8 <= 0 ||
+        !Number.isSafeInteger(level.size_e8) || level.size_e8 <= 0) continue;
+    if (bestPriceE8 != null && (side === "bid" ? level.price_e8 > bestPriceE8 : level.price_e8 < bestPriceE8)) continue;
+    levels.set(level.price_e8, level.size_e8);
+  }
+  for (const level of patch) {
+    if (!Number.isSafeInteger(level.price_e8) || level.price_e8 <= 0 ||
+        !Number.isSafeInteger(level.size_e8) || level.size_e8 <= 0) continue;
+    levels.set(level.price_e8, level.size_e8);
+  }
+  return [...levels.entries()]
+    .sort(([left], [right]) => side === "bid" ? right - left : left - right)
+    .slice(0, 20)
+    .map(([price_e8, size_e8]) => ({ price_e8, size_e8 }));
+}
+
+function oldestObservedAt(
+  sources: CarryShadowSnapshot["source_observed_at_ms"],
+  fallback: number | null | undefined,
+  latest: number,
+) {
+  const observed = [sources?.market, sources?.funding, sources?.orderbook]
+    .filter((value): value is number => Number.isSafeInteger(value) && Number(value) > 0);
+  return observed.length === 3 ? Math.min(...observed) : fallback ?? latest;
+}
+
 export function quoteCarryCandidate(
   candidate: CarryCandidate,
   notionalUsd = 10_000,
   horizonHours = 24,
+  nowMs = Date.now(),
 ): CarryQuoteModel {
   const safeNotional = Number.isFinite(notionalUsd) ? Math.max(0, notionalUsd) : 0;
   const safeHours = Number.isFinite(horizonHours) ? Math.max(1 / 60, horizonHours) : 24;
   const grossDailyUsd = safeNotional * (candidate.grossAnnualBps / 10_000) / 365;
   const grossFundingUsd = grossDailyUsd * safeHours / 24;
-  const longSpreadBps = spreadBps(candidate.long);
-  const shortSpreadBps = spreadBps(candidate.short);
-  const exactCosts = candidate.long.taker_fee_bps != null && longSpreadBps != null
-    && candidate.short.taker_fee_bps != null && shortSpreadBps != null;
-  const roundTripCostBps = exactCosts
-    ? 2 * candidate.long.taker_fee_bps! + longSpreadBps!
-      + 2 * candidate.short.taker_fee_bps! + shortSpreadBps!
+  const feeBps = candidate.long.taker_fee_bps != null && candidate.short.taker_fee_bps != null
+    ? 2 * candidate.long.taker_fee_bps + 2 * candidate.short.taker_fee_bps
     : null;
+  const depth = carryDepthCost(candidate, safeNotional, nowMs);
+  const exactCosts = feeBps != null && depth.status === "sufficient" && depth.slippage_bps != null;
+  const roundTripCostBps = exactCosts ? feeBps + depth.slippage_bps! : null;
   const roundTripCostUsd = roundTripCostBps == null ? null : safeNotional * roundTripCostBps / 10_000;
+  const tradingFeeUsd = feeBps == null ? null : safeNotional * feeBps / 10_000;
+  const slippageUsd = depth.slippage_bps == null ? null : safeNotional * depth.slippage_bps / 10_000;
   const expectedNetUsd = roundTripCostUsd == null ? null : grossFundingUsd - roundTripCostUsd;
   const grossHourlyUsd = grossDailyUsd / 24;
   const breakEvenHours = roundTripCostUsd == null || grossHourlyUsd <= 0 ? null : roundTripCostUsd / grossHourlyUsd;
@@ -262,6 +349,10 @@ export function quoteCarryCandidate(
     expectedNetDailyUsd: expectedNetUsd == null ? null : expectedNetUsd * 24 / safeHours,
     breakEvenHours,
     exactCosts,
+    tradingFeeUsd,
+    slippageUsd,
+    depthStatus: depth.status,
+    minimumDisplayedDepthUsd: depth.minimum_displayed_depth_usd,
   };
 }
 
@@ -281,13 +372,10 @@ function economicsQualityRank(value: PricedCarryCandidate["economics_quality"]) 
 export function builderModel(candidate: CarryCandidate, notionalText: string, daysText: string) {
   const notionalUsd = Math.max(0, Number(notionalText) || 0);
   const holdingDays = Math.max(1, Number(daysText) || 1);
-  const grossFundingUsd = notionalUsd * (candidate.grossAnnualBps / 10_000) * holdingDays / 365;
+  const quote = quoteCarryCandidate(candidate, notionalUsd, holdingDays * 24);
+  const grossFundingUsd = quote.grossFundingUsd;
   const legs = [candidate.long, candidate.short];
-  const feesKnown = legs.every((leg) => leg.taker_fee_bps != null && spreadBps(leg) != null);
-  const roundTripCostBps = feesKnown
-    ? legs.reduce((sum, leg) => sum + 2 * leg.taker_fee_bps! + spreadBps(leg)!, 0)
-    : null;
-  const costUsd = roundTripCostBps == null ? null : notionalUsd * roundTripCostBps / 10_000;
+  const costUsd = quote.roundTripCostUsd;
   const netUsd = costUsd == null ? null : grossFundingUsd - costUsd;
   const dailyGross = grossFundingUsd / holdingDays;
   const breakEvenDays = costUsd == null || dailyGross <= 0 ? null : costUsd / dailyGross;
@@ -299,7 +387,11 @@ export function builderModel(candidate: CarryCandidate, notionalText: string, da
     netUsd,
     breakEvenDays,
     minimumCollateralUsd,
-    publicInputsComplete: candidate.exact && marginReady && costUsd != null && netUsd != null && netUsd > 0,
+    tradingFeeUsd: quote.tradingFeeUsd,
+    slippageUsd: quote.slippageUsd,
+    depthStatus: quote.depthStatus,
+    minimumDisplayedDepthUsd: quote.minimumDisplayedDepthUsd,
+    publicInputsComplete: candidate.exact && marginReady && quote.exactCosts && netUsd != null && netUsd > 0,
     creatable: false,
   };
 }
@@ -310,10 +402,76 @@ export function annualFundingBps(snapshot: CarryShadowSnapshot) {
     * 10_000;
 }
 
-function spreadBps(snapshot: CarryShadowSnapshot) {
-  if (!snapshot.best_bid_e8 || !snapshot.best_ask_e8 || snapshot.best_ask_e8 <= snapshot.best_bid_e8) return null;
-  const mid = (snapshot.best_bid_e8 + snapshot.best_ask_e8) / 2;
-  return (snapshot.best_ask_e8 - snapshot.best_bid_e8) / mid * 10_000;
+function carryDepthCost(candidate: CarryCandidate, notionalUsd: number, nowMs: number) {
+  const notionalMicro = Math.round(notionalUsd * 1_000_000);
+  if (!Number.isSafeInteger(notionalMicro) || notionalMicro <= 0) {
+    return { status: "unavailable", slippage_bps: null, minimum_displayed_depth_usd: null } as const;
+  }
+  const legs = [
+    { snapshot: candidate.long, entry: "buy" as const, exit: "sell" as const },
+    { snapshot: candidate.short, entry: "sell" as const, exit: "buy" as const },
+  ];
+  const observations = legs.flatMap(({ snapshot, entry, exit }) => {
+    if (depthAgeMs(snapshot, nowMs) > CARRY_DEPTH_MAX_AGE_MS) return [];
+    return [entry, exit].map((side, index) => cachedDepthExecution(
+      snapshot,
+      side,
+      notionalMicro,
+      index === 0 ? "entry" : "exit",
+    ));
+  });
+  if (observations.length !== 4 || observations.some((item) => item.status === "unavailable")) {
+    return { status: "unavailable", slippage_bps: null, minimum_displayed_depth_usd: null } as const;
+  }
+  const minimumDisplayedDepthUsd = Math.min(...observations.map((item) => item.displayed_notional_micro_usdc / 1_000_000));
+  if (observations.some((item) => item.status !== "sufficient")) {
+    return { status: "insufficient", slippage_bps: null, minimum_displayed_depth_usd: minimumDisplayedDepthUsd } as const;
+  }
+  const sides = ["buy", "sell", "sell", "buy"] as const;
+  const marks = [candidate.long.mark_price_e8, candidate.long.mark_price_e8, candidate.short.mark_price_e8, candidate.short.mark_price_e8];
+  const slippageE6Bps = observations.reduce((sum, item, index) => sum + adverseExecutionSlippageE6Bps({
+    side: sides[index],
+    mark_price_e8: marks[index],
+    execution_price_e8: item.execution_price_e8,
+  }), 0);
+  return {
+    status: "sufficient",
+    slippage_bps: slippageE6Bps / 1_000_000,
+    minimum_displayed_depth_usd: minimumDisplayedDepthUsd,
+  } as const;
+}
+
+function cachedDepthExecution(
+  snapshot: CarryShadowSnapshot,
+  side: "buy" | "sell",
+  notionalMicro: number,
+  phase: "entry" | "exit",
+) {
+  let cache = depthExecutionCache.get(snapshot);
+  if (!cache) {
+    cache = new Map();
+    depthExecutionCache.set(snapshot, cache);
+  }
+  const key = `${side}:${notionalMicro}:${phase}`;
+  const cached = cache.get(key);
+  if (cached) return cached;
+  const result = estimatePerpDepthExecution({
+    side,
+    depth_levels: side === "buy" ? snapshot.depth_asks : snapshot.depth_bids,
+    fallback_price_e8: side === "buy" ? snapshot.best_ask_e8 : snapshot.best_bid_e8,
+    target_notional_micro_usdc: notionalMicro,
+    phase,
+  });
+  cache.set(key, result);
+  return result;
+}
+
+function depthAgeMs(snapshot: CarryShadowSnapshot, nowMs: number) {
+  const observedAt = snapshot.depth_observed_at_ms
+    ?? snapshot.source_observed_at_ms?.orderbook
+    ?? snapshot.as_of_ms
+    ?? snapshot.observed_at_ms;
+  return observedAt == null ? Number.POSITIVE_INFINITY : Math.max(0, nowMs - observedAt);
 }
 
 function patchedNumber(patch: number | null | undefined, fallback: number | null | undefined) {

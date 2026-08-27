@@ -32,6 +32,79 @@ export class CarryModelError extends Error {
   }
 }
 
+export function estimatePerpDepthExecution({
+  side,
+  depth_levels: depthLevels,
+  fallback_price_e8: fallbackPriceE8 = null,
+  target_notional_micro_usdc: targetNotionalMicroUsdc,
+  phase = "entry",
+} = {}) {
+  const fallback = Number.isSafeInteger(fallbackPriceE8) && fallbackPriceE8 > 0 ? fallbackPriceE8 : null;
+  if ((side !== "buy" && side !== "sell") ||
+      !Number.isSafeInteger(targetNotionalMicroUsdc) || targetNotionalMicroUsdc <= 0 ||
+      !Array.isArray(depthLevels) || depthLevels.length === 0) {
+    return deepFreeze({
+      phase,
+      side,
+      status: "unavailable",
+      target_notional_micro_usdc: targetNotionalMicroUsdc,
+      displayed_notional_micro_usdc: 0,
+      execution_price_e8: fallback,
+    });
+  }
+  const targetQuoteE16 = BigInt(targetNotionalMicroUsdc) * 10_000_000_000n;
+  let remainingQuoteE16 = targetQuoteE16;
+  let displayedQuoteE16 = 0n;
+  let filledBaseE8 = 0n;
+  let quotePriceBaseE16 = 0n;
+  const sortedLevels = [...depthLevels].sort((left, right) => side === "buy"
+    ? Number(left?.price_e8 || 0) - Number(right?.price_e8 || 0)
+    : Number(right?.price_e8 || 0) - Number(left?.price_e8 || 0));
+  for (const level of sortedLevels) {
+    if (!Number.isSafeInteger(level?.price_e8) || level.price_e8 <= 0 ||
+        !Number.isSafeInteger(level?.size_e8) || level.size_e8 <= 0) continue;
+    const availableBaseE8 = BigInt(level.size_e8);
+    const availableQuoteE16 = BigInt(level.price_e8) * availableBaseE8;
+    displayedQuoteE16 += availableQuoteE16;
+    if (remainingQuoteE16 <= 0n) continue;
+    const takenQuoteE16 = availableQuoteE16 < remainingQuoteE16 ? availableQuoteE16 : remainingQuoteE16;
+    const takenBaseE8 = takenQuoteE16 === availableQuoteE16
+      ? availableBaseE8
+      : (takenQuoteE16 + BigInt(level.price_e8) - 1n) / BigInt(level.price_e8);
+    filledBaseE8 += takenBaseE8;
+    quotePriceBaseE16 += BigInt(level.price_e8) * takenBaseE8;
+    remainingQuoteE16 -= takenQuoteE16;
+  }
+  const executionPriceE8 = filledBaseE8 > 0n
+    ? Number(side === "buy"
+      ? (quotePriceBaseE16 + filledBaseE8 - 1n) / filledBaseE8
+      : quotePriceBaseE16 / filledBaseE8)
+    : fallback;
+  const displayedNotional = Number(displayedQuoteE16 / 10_000_000_000n);
+  return deepFreeze({
+    phase,
+    side,
+    status: remainingQuoteE16 === 0n ? "sufficient" : "insufficient",
+    target_notional_micro_usdc: targetNotionalMicroUsdc,
+    displayed_notional_micro_usdc: Number.isSafeInteger(displayedNotional) ? displayedNotional : Number.MAX_SAFE_INTEGER,
+    execution_price_e8: Number.isSafeInteger(executionPriceE8) ? executionPriceE8 : fallback,
+  });
+}
+
+export function adverseExecutionSlippageE6Bps({ side, mark_price_e8: markPriceE8, execution_price_e8: executionPriceE8 } = {}) {
+  if ((side !== "buy" && side !== "sell") ||
+      !Number.isSafeInteger(markPriceE8) || markPriceE8 <= 0 ||
+      !Number.isSafeInteger(executionPriceE8) || executionPriceE8 <= 0) {
+    return 5_000_000;
+  }
+  const adverseMove = side === "buy"
+    ? executionPriceE8 - markPriceE8
+    : markPriceE8 - executionPriceE8;
+  if (adverseMove <= 0) return 0;
+  const numerator = BigInt(adverseMove) * 10_000_000_000n;
+  return Number((numerator + BigInt(markPriceE8) - 1n) / BigInt(markPriceE8));
+}
+
 export function normalizePerpContractSpec(value) {
   const raw = object(value, "contract_required");
   exactVersion(raw.version, "contract_version");

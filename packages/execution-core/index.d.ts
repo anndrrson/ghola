@@ -37,6 +37,25 @@ export declare function normalizePerpContractSpec(input: unknown): Readonly<Reco
 export declare function calculateMarginRunway(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryCapitalActionPlan(input: unknown): Readonly<Record<string, unknown>>;
 export declare function evaluatePerpContractPairBasis(input: unknown): Readonly<Record<string, unknown>>;
+export declare function estimatePerpDepthExecution(input: {
+  side: "buy" | "sell";
+  depth_levels?: readonly { price_e8: number; size_e8: number }[] | null;
+  fallback_price_e8?: number | null;
+  target_notional_micro_usdc: number;
+  phase?: string;
+}): Readonly<{
+  phase: string;
+  side: "buy" | "sell";
+  status: "sufficient" | "insufficient" | "unavailable";
+  target_notional_micro_usdc: number;
+  displayed_notional_micro_usdc: number;
+  execution_price_e8: number | null;
+}>;
+export declare function adverseExecutionSlippageE6Bps(input: {
+  side: "buy" | "sell";
+  mark_price_e8: number | null | undefined;
+  execution_price_e8: number | null | undefined;
+}): number;
 export declare function evaluateCarryOpportunity(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryMigrationProposal(input: unknown): Readonly<Record<string, unknown>>;
 export declare function normalizeCarryRiskMandate(input: unknown): Readonly<Record<string, unknown>>;
