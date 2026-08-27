@@ -160,6 +160,17 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       setAster("connected");
       await refresh();
     } catch (caught) {
+      if (!completionAttempted && isExpiredPerpsSession(caught)) {
+        if (prepared && !signature) {
+          const unsignedPending = { preparation: prepared };
+          setPendingAsterLinkRecovery(unsignedPending);
+          persistRecovery(accountCommitment, recoveryUserScope, { aster: unsignedPending });
+        }
+        await perpsTurnkey.logout().catch(() => {});
+        setPendingAsterAuthorization(true);
+        setError("Secure wallet session expired. Reauthenticate to continue; no Aster approval was submitted.");
+        return;
+      }
       if (prepared && signature && completionAttempted) {
         const disposition = classifyAsterOnboardingFailure(caught, prepared);
         if (disposition.action === "finish_link" && signature) {
@@ -254,6 +265,22 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     else void connectAsterProgrammatic();
   }, [connectAsterProgrammatic, pendingAsterAuthorization, pendingAsterWalletRepair, perpsTurnkey.authenticated, repairAsterWallet]);
 
+  useEffect(() => {
+    if ((!pendingAsterAuthorization && !pendingLighterAuthorization) ||
+        perpsTurnkey.authenticated || perpsTurnkey.loading || !perpsTurnkey.configured) return;
+    const requestedAster = pendingAsterAuthorization;
+    const requestedLighter = pendingLighterAuthorization;
+    setWorking(true);
+    void perpsTurnkey.login().catch((caught) => {
+      if (requestedAster) {
+        setPendingAsterAuthorization(false);
+        setPendingAsterWalletRepair(false);
+      }
+      if (requestedLighter) setPendingLighterAuthorization(false);
+      setError(caught instanceof Error ? caught.message : "Secure wallet authentication failed.");
+    }).finally(() => setWorking(false));
+  }, [pendingAsterAuthorization, pendingLighterAuthorization, perpsTurnkey]);
+
   async function beginAsterProgrammatic() {
     if (!auth.authenticated) {
       setAuthMode("signin");
@@ -273,19 +300,9 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       return;
     }
     if (!perpsTurnkey.authenticated) {
-      setWorking(true);
       setPendingAsterAuthorization(true);
       setPendingAsterWalletRepair(asterWalletRepairRequested);
       setError(null);
-      try {
-        await perpsTurnkey.login();
-      } catch (caught) {
-        setPendingAsterAuthorization(false);
-        setPendingAsterWalletRepair(false);
-        setError(caught instanceof Error ? caught.message : "Secure wallet authentication failed.");
-      } finally {
-        setWorking(false);
-      }
       return;
     }
     if (asterWalletRepairRequested) {
@@ -381,6 +398,12 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       setLighter("connected");
       await refresh();
     } catch (caught) {
+      if (!pending && isExpiredPerpsSession(caught)) {
+        await perpsTurnkey.logout().catch(() => {});
+        setPendingLighterAuthorization(true);
+        setError("Secure wallet session expired. Reauthenticate to continue; no Lighter key was submitted.");
+        return;
+      }
       if (pending) {
         setError("Lighter association needs reconciliation. Ghola will not create or submit another key.");
       } else {
@@ -433,17 +456,8 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       return;
     }
     if (!perpsTurnkey.authenticated) {
-      setWorking(true);
       setPendingLighterAuthorization(true);
       setError(null);
-      try {
-        await perpsTurnkey.login();
-      } catch (caught) {
-        setPendingLighterAuthorization(false);
-        setError(caught instanceof Error ? caught.message : "Secure wallet authentication failed.");
-      } finally {
-        setWorking(false);
-      }
       return;
     }
     await connectLighterProgrammatic();
@@ -656,6 +670,11 @@ function stringValue(value: unknown): string | null {
 function isTurnkeyResourceMissing(message: string): boolean {
   return message.includes("Could not find any resource to sign with") &&
     message.includes("Addresses are case sensitive");
+}
+
+function isExpiredPerpsSession(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /no active session found|requires a valid session/i.test(message);
 }
 
 function delay(ms: number) {
