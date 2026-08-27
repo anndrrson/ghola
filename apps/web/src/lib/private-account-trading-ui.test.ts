@@ -187,6 +187,9 @@ describe("private account trading UI derivation", () => {
     expect(carryAccountSetupSource).not.toContain("void perpsTurnkey.login().catch");
     expect(carryAccountSetupSource).toContain("Continue secure authentication");
     expect(carryAccountSetupSource).toContain("Enable Touch ID");
+    expect(carryAccountSetupSource).toContain("Live route intelligence works without a deposit.");
+    expect(carryAccountSetupSource).toContain("Explore live routes");
+    expect(carryAccountSetupSource).toContain("Capital · later");
     expect(turnkeyCorePatch).toContain("this.config.withPlatformKey");
     expect(turnkeyCorePatch).toContain('? "platform"');
   });

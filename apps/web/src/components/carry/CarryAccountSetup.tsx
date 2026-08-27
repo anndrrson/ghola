@@ -741,8 +741,15 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       <section className="mx-auto max-w-2xl">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#5aa7ff]">Carry setup</p>
         <h1 className="mt-2 text-4xl font-semibold tracking-[-0.04em]">Connect once. Trade as one position.</h1>
-        <p className="mt-3 text-sm leading-6 text-[#8f9aae]">Ghola&apos;s execution policy permits reads, orders, cancellation, and reconciliation only.</p>
-        <p className="mt-1 text-sm leading-6 text-[#8f9aae]">Verify every connection before depositing. Ghola shows the exact owner-funded requirement before live execution can unlock.</p>
+        <p className="mt-3 text-sm leading-6 text-[#8f9aae]">Live route intelligence works without a deposit. Connect execution access, pass one no-submit check, then fund only the venues you choose to activate.</p>
+
+        <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 border-y border-[#172234] py-3 font-mono text-[11px] uppercase tracking-[0.1em] text-[#718097]">
+          <span className="text-[#72dfb2]">Markets · explore now</span>
+          <span>Access · {connectionProgress.connectedCount}/{connectionProgress.requiredCount}</span>
+          <span>Proof · {connectionProgress.ready ? "next" : "after access"}</span>
+          <span>Capital · later</span>
+          <Link href={safeReturnTo} className="ml-auto text-[#8fcaff] hover:text-[#c4e5ff]">Explore live routes</Link>
+        </div>
 
         {!auth.authenticated && !auth.loading && (
           <button type="button" onClick={() => setAuthOpen(true)} className="mt-8 h-12 w-full rounded-lg bg-[#4aaef8] font-semibold text-[#06111d]">
