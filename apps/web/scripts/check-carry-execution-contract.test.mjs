@@ -835,6 +835,32 @@ test("rejects transfer routes that are not committed by the worker", () => {
   );
 });
 
+test("rejects collateral route observation without all-in fee verification", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      transferRoutes: sources.transferRoutes.replaceAll(
+        "all_in_fee_verified",
+        "partial_fee_estimate",
+      ),
+    }),
+    /carry_transfer_route_all_in_fee_missing/,
+  );
+});
+
+test("rejects collateral routes detached from the latest account state", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replaceAll(
+        "route.source_account_state_commitment === source.account_state_commitment",
+        "true",
+      ),
+    }),
+    /carry_transfer_source_state_binding_missing/,
+  );
+});
+
 test("rejects browser-supplied collateral routes", () => {
   assert.throws(
     () => checkCarryExecutionContract({

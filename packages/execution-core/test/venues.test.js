@@ -46,6 +46,11 @@ test("registry centralizes five core perp candidates without claiming qualificat
   assert.equal(EXECUTION_VENUE_SPECS.variational_omni.qualification_status, "research_only");
   assert.equal(venueAdapterCapability("dydx", "perp_shadow")?.adapter_id, "dydx_shadow_v1");
   assert.equal(venueAdapterCapability("dydx", "carry_execution"), null);
+  assert.deepEqual(venuesWithAdapterCapability("collateral_route_observer", {
+    cohort: "core_perp",
+    product: "perp",
+  }), ["hyperliquid", "lighter", "aster"]);
+  assert.equal(venueAdapterCapability("hyperliquid", "collateral_route_observer")?.owner_approval_required, true);
   assert.deepEqual(venuesWithAdapterCapability("perp_shadow", {
     cohort: "core_perp",
     product: "perp",

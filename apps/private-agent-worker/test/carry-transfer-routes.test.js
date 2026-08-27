@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   loadCarryTransferRouteEvidence,
+  observeCarryTransferRoutes,
   storeCarryTransferRouteEvidence,
   verifyCarryTransferRouteEvidence,
 } from "../src/execution/carry-transfer-routes.js";
@@ -12,6 +13,63 @@ import { createWorkerState } from "../src/state/private-state.js";
 
 const NOW = 1_800_000_000_000;
 const OWNER = "owner:commitment:0001";
+
+test("observes all-in collateral routes internally without authorizing movement", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-transfer-routes-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const requests = [];
+  const result = await observeCarryTransferRoutes({
+    state: createWorkerState(dir),
+    owner_commitment: OWNER,
+    worker_image_digest: `sha256:${"d".repeat(64)}`,
+    accounts: observerAccounts(),
+    probe_route: async (request) => {
+      requests.push(request);
+      return observedQuote();
+    },
+    checked_at_ms: NOW,
+    now_ms: NOW,
+  });
+  assert.equal(result.observed_route_count, 2);
+  assert.equal(result.available_route_count, 2);
+  assert.deepEqual(result.failures, []);
+  assert.equal(requests.every((request) => request.transaction_broadcast === false), true);
+  assert.equal(requests.every((request) => request.fund_movement_authorized === false), true);
+  assert.equal(result.evidence.routes.every((item) => item.quote_verified === true), true);
+  assert.equal(result.evidence.routes.every((item) => item.all_in_fee_verified === true), true);
+  assert.equal(result.transaction_broadcast, false);
+  assert.equal(result.fund_movement_authorized, false);
+});
+
+test("keeps incomplete or missing route probes unavailable", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-transfer-routes-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const result = await observeCarryTransferRoutes({
+    state: createWorkerState(dir),
+    owner_commitment: OWNER,
+    worker_image_digest: `sha256:${"e".repeat(64)}`,
+    accounts: observerAccounts(),
+    probe_route: async () => observedQuote({ all_in_fee_verified: false }),
+    checked_at_ms: NOW,
+    now_ms: NOW,
+  });
+  assert.equal(result.available_route_count, 0);
+  assert.equal(result.failures.length, 2);
+  assert.equal(result.evidence.routes.every((item) => item.status === "unavailable"), true);
+  assert.equal(result.evidence.routes.every((item) => item.maximum_transfer_micro_usdc === 0), true);
+
+  await assert.rejects(() => observeCarryTransferRoutes({
+    state: createWorkerState(dir),
+    owner_commitment: OWNER,
+    worker_image_digest: `sha256:${"e".repeat(64)}`,
+    accounts: observerAccounts().map((account) => ({
+      ...account,
+      account_state_checked_at_ms: NOW - 30_001,
+    })),
+    checked_at_ms: NOW,
+    now_ms: NOW,
+  }), /carry_transfer_route_account_state_stale/);
+});
 
 test("stores only commitment-backed worker transfer-route evidence", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-transfer-routes-"));
@@ -103,16 +161,54 @@ function route(overrides = {}) {
     from_venue_id: "lighter",
     to_account_commitment: "account:hyperliquid:0001",
     to_venue_id: "hyperliquid",
-    source_adapter_id: "lighter_v1",
-    destination_adapter_id: "hyperliquid_v1",
+    source_adapter_id: "lighter_arbitrum_usdc_v1",
+    destination_adapter_id: "hyperliquid_arbitrum_usdc_v1",
     source_account_state_commitment: "carry:account-state:lighter:0001",
     destination_account_state_commitment: "carry:account-state:hyperliquid:0001",
     quote_commitment: "carry:transfer-quote:0001",
     settlement_asset: "USDC",
     status: "available",
+    quote_verified: true,
+    all_in_fee_verified: true,
     minimum_transfer_micro_usdc: 0,
     maximum_transfer_micro_usdc: 100_000_000,
     fee_micro_usdc: 1_000,
+    estimated_latency_ms: 60_000,
+    as_of_ms: NOW,
+    owner_approval_required: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+    automatic_transfer_permitted: false,
+    ...overrides,
+  };
+}
+
+function observerAccounts() {
+  return [
+    {
+      venue_id: "lighter",
+      account_commitment: "account:lighter:0001",
+      account_state_commitment: "carry:account-state:lighter:0001",
+      account_state_checked_at_ms: NOW,
+    },
+    {
+      venue_id: "hyperliquid",
+      account_commitment: "account:hyperliquid:0001",
+      account_state_commitment: "carry:account-state:hyperliquid:0001",
+      account_state_checked_at_ms: NOW,
+    },
+  ];
+}
+
+function observedQuote(overrides = {}) {
+  return {
+    settlement_asset: "USDC",
+    status: "available",
+    quote_verified: true,
+    all_in_fee_verified: true,
+    minimum_transfer_micro_usdc: 5_000_000,
+    maximum_transfer_micro_usdc: 100_000_000,
+    fee_micro_usdc: 10_000,
     estimated_latency_ms: 60_000,
     as_of_ms: NOW,
     owner_approval_required: true,

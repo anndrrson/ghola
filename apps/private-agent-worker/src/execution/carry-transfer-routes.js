@@ -6,6 +6,62 @@ const COMMITMENT = /^[A-Za-z0-9_.:-]{8,240}$/;
 const IMAGE_DIGEST = /^sha256:[a-f0-9]{64}$/;
 const STATUSES = new Set(["available", "degraded", "unavailable"]);
 
+export async function observeCarryTransferRoutes({
+  state,
+  owner_commitment: ownerCommitment,
+  worker_image_digest: workerImageDigest,
+  accounts,
+  probe_route: probeRoute,
+  checked_at_ms: checkedAtMs = Date.now(),
+  expires_at_ms: expiresAtMs = checkedAtMs + 30_000,
+  max_account_state_age_ms: maxAccountStateAgeMs = 30_000,
+  now_ms: nowMs = checkedAtMs,
+}) {
+  const normalizedAccounts = normalizeObserverAccounts(accounts, checkedAtMs, maxAccountStateAgeMs);
+  const routes = [];
+  const failures = [];
+  for (const source of normalizedAccounts) {
+    for (const destination of normalizedAccounts) {
+      if (source.venue_id === destination.venue_id
+        || source.account_commitment === destination.account_commitment) continue;
+      const request = observerRequest(source, destination, checkedAtMs);
+      let quote;
+      try {
+        if (typeof probeRoute !== "function") fail("carry_transfer_route_probe_unavailable");
+        quote = normalizeObservedQuote(await probeRoute(request), request, checkedAtMs);
+      } catch (error) {
+        const reason = safeError(error);
+        failures.push(`${source.venue_id}:${destination.venue_id}:${reason}`);
+        quote = unavailableObservedQuote(request, checkedAtMs, reason);
+      }
+      routes.push(Object.freeze({
+        ...request,
+        ...quote,
+        quote_commitment: quoteCommitment(request, quote),
+      }));
+    }
+  }
+  const evidence = await storeCarryTransferRouteEvidence({
+    state,
+    owner_commitment: ownerCommitment,
+    worker_image_digest: workerImageDigest,
+    routes,
+    checked_at_ms: checkedAtMs,
+    expires_at_ms: expiresAtMs,
+    now_ms: nowMs,
+  });
+  return Object.freeze({
+    evidence,
+    observed_route_count: evidence.routes.length,
+    available_route_count: evidence.routes.filter((route) => route.status === "available").length,
+    failures: Object.freeze(failures),
+    owner_approval_required: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+    automatic_transfer_permitted: false,
+  });
+}
+
 export async function storeCarryTransferRouteEvidence({
   state,
   owner_commitment: ownerCommitment,
@@ -138,8 +194,8 @@ function normalizeRoute(value, checkedAtMs) {
   const toVenueId = String(value.to_venue_id || "");
   const fromAccountCommitment = requiredCommitment(value.from_account_commitment, "carry_transfer_route_from_account_invalid");
   const toAccountCommitment = requiredCommitment(value.to_account_commitment, "carry_transfer_route_to_account_invalid");
-  const sourceAdapterId = venueAdapterCapability(fromVenueId, "carry_execution")?.adapter_id || null;
-  const destinationAdapterId = venueAdapterCapability(toVenueId, "carry_execution")?.adapter_id || null;
+  const sourceAdapterId = venueAdapterCapability(fromVenueId, "collateral_route_observer")?.adapter_id || null;
+  const destinationAdapterId = venueAdapterCapability(toVenueId, "collateral_route_observer")?.adapter_id || null;
   if (!sourceAdapterId || !destinationAdapterId
     || value.source_adapter_id !== sourceAdapterId
     || value.destination_adapter_id !== destinationAdapterId
@@ -152,6 +208,13 @@ function normalizeRoute(value, checkedAtMs) {
   const minimum = nonnegativeInteger(value.minimum_transfer_micro_usdc, "carry_transfer_route_minimum_invalid");
   const maximum = nonnegativeInteger(value.maximum_transfer_micro_usdc, "carry_transfer_route_maximum_invalid");
   if (maximum < minimum) fail("carry_transfer_route_capacity_invalid");
+  const routeStatus = status(value.status);
+  const quoteVerified = value.quote_verified === true;
+  const allInFeeVerified = value.all_in_fee_verified === true;
+  if ((routeStatus === "available" && maximum === 0)
+    || (routeStatus !== "unavailable" && (!quoteVerified || !allInFeeVerified))) {
+    fail("carry_transfer_route_quote_unverified");
+  }
   if (value.owner_approval_required !== true
     || value.fund_movement_authorized !== false
     || value.transaction_broadcast !== false
@@ -171,7 +234,9 @@ function normalizeRoute(value, checkedAtMs) {
     destination_account_state_commitment: requiredCommitment(value.destination_account_state_commitment, "carry_transfer_route_destination_state_invalid"),
     quote_commitment: requiredCommitment(value.quote_commitment, "carry_transfer_route_quote_invalid"),
     settlement_asset: "USDC",
-    status: status(value.status),
+    status: routeStatus,
+    quote_verified: quoteVerified,
+    all_in_fee_verified: allInFeeVerified,
     minimum_transfer_micro_usdc: minimum,
     maximum_transfer_micro_usdc: maximum,
     fee_micro_usdc: nonnegativeInteger(value.fee_micro_usdc, "carry_transfer_route_fee_invalid"),
@@ -182,6 +247,144 @@ function normalizeRoute(value, checkedAtMs) {
     transaction_broadcast: false,
     automatic_transfer_permitted: false,
   });
+}
+
+function normalizeObserverAccounts(value, checkedAtMs, maxAccountStateAgeMs) {
+  if (!Array.isArray(value) || value.length > 20) fail("carry_transfer_route_accounts_invalid");
+  const maximumAge = boundedInteger(
+    maxAccountStateAgeMs,
+    1,
+    300_000,
+    "carry_transfer_route_account_state_age_invalid",
+  );
+  const accounts = value.map((account) => {
+    if (!account || typeof account !== "object" || Array.isArray(account)) {
+      fail("carry_transfer_route_account_invalid");
+    }
+    const venueId = String(account.venue_id || "");
+    const capability = venueAdapterCapability(venueId, "collateral_route_observer");
+    if (!capability?.adapter_id || capability.read_only !== true || capability.owner_approval_required !== true) {
+      fail("carry_transfer_route_account_adapter_invalid");
+    }
+    const stateCheckedAtMs = positiveInteger(
+      account.account_state_checked_at_ms,
+      "carry_transfer_route_account_state_time_invalid",
+    );
+    if (stateCheckedAtMs > checkedAtMs + 5_000 || checkedAtMs - stateCheckedAtMs > maximumAge) {
+      fail("carry_transfer_route_account_state_stale");
+    }
+    return Object.freeze({
+      venue_id: venueId,
+      account_commitment: requiredCommitment(account.account_commitment, "carry_transfer_route_account_invalid"),
+      account_state_commitment: requiredCommitment(
+        account.account_state_commitment,
+        "carry_transfer_route_account_state_invalid",
+      ),
+      account_state_checked_at_ms: stateCheckedAtMs,
+      observer_adapter_id: capability.adapter_id,
+    });
+  });
+  if (new Set(accounts.map((account) => account.account_commitment)).size !== accounts.length) {
+    fail("carry_transfer_route_account_duplicate");
+  }
+  return accounts.sort((left, right) => left.venue_id.localeCompare(right.venue_id)
+    || left.account_commitment.localeCompare(right.account_commitment));
+}
+
+function observerRequest(source, destination, checkedAtMs) {
+  const lineage = `${source.account_commitment}:${destination.account_commitment}`;
+  return Object.freeze({
+    version: 1,
+    route_id: `carry:transfer-route:${source.venue_id}-${destination.venue_id}:${createHash("sha256").update(lineage).digest("hex").slice(0, 16)}`,
+    from_account_commitment: source.account_commitment,
+    from_venue_id: source.venue_id,
+    to_account_commitment: destination.account_commitment,
+    to_venue_id: destination.venue_id,
+    source_adapter_id: source.observer_adapter_id,
+    destination_adapter_id: destination.observer_adapter_id,
+    source_account_state_commitment: source.account_state_commitment,
+    destination_account_state_commitment: destination.account_state_commitment,
+    settlement_asset: "USDC",
+    checked_at_ms: checkedAtMs,
+    owner_approval_required: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+    automatic_transfer_permitted: false,
+  });
+}
+
+function normalizeObservedQuote(value, request, checkedAtMs) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    fail("carry_transfer_route_probe_invalid");
+  }
+  if (value.settlement_asset !== "USDC"
+    || value.owner_approval_required !== true
+    || value.fund_movement_authorized !== false
+    || value.transaction_broadcast !== false
+    || value.automatic_transfer_permitted !== false) {
+    fail("carry_transfer_route_probe_authority_boundary");
+  }
+  const routeStatus = status(value.status);
+  if (routeStatus !== "unavailable"
+    && (value.quote_verified !== true || value.all_in_fee_verified !== true)) {
+    fail("carry_transfer_route_probe_quote_unverified");
+  }
+  const minimum = nonnegativeInteger(value.minimum_transfer_micro_usdc, "carry_transfer_route_probe_minimum_invalid");
+  const maximum = nonnegativeInteger(value.maximum_transfer_micro_usdc, "carry_transfer_route_probe_maximum_invalid");
+  if (maximum < minimum || (routeStatus === "available" && maximum === 0)) {
+    fail("carry_transfer_route_probe_capacity_invalid");
+  }
+  const asOfMs = positiveInteger(value.as_of_ms, "carry_transfer_route_probe_as_of_invalid");
+  if (asOfMs > checkedAtMs + 5_000 || checkedAtMs - asOfMs > 300_000) {
+    fail("carry_transfer_route_probe_as_of_invalid");
+  }
+  return Object.freeze({
+    status: routeStatus,
+    quote_verified: value.quote_verified === true,
+    all_in_fee_verified: value.all_in_fee_verified === true,
+    minimum_transfer_micro_usdc: minimum,
+    maximum_transfer_micro_usdc: maximum,
+    fee_micro_usdc: nonnegativeInteger(value.fee_micro_usdc, "carry_transfer_route_probe_fee_invalid"),
+    estimated_latency_ms: boundedInteger(
+      value.estimated_latency_ms,
+      0,
+      7 * 86_400_000,
+      "carry_transfer_route_probe_latency_invalid",
+    ),
+    as_of_ms: asOfMs,
+    observation_binding: `${request.source_account_state_commitment}:${request.destination_account_state_commitment}`,
+  });
+}
+
+function unavailableObservedQuote(request, checkedAtMs, reason) {
+  return Object.freeze({
+    status: "unavailable",
+    quote_verified: false,
+    all_in_fee_verified: false,
+    minimum_transfer_micro_usdc: 0,
+    maximum_transfer_micro_usdc: 0,
+    fee_micro_usdc: 0,
+    estimated_latency_ms: 0,
+    as_of_ms: checkedAtMs,
+    observation_binding: `${request.source_account_state_commitment}:${request.destination_account_state_commitment}:${reason}`,
+  });
+}
+
+function quoteCommitment(request, quote) {
+  return `carry:transfer-quote:${createHash("sha256").update(JSON.stringify({
+    route_id: request.route_id,
+    source_account_state_commitment: request.source_account_state_commitment,
+    destination_account_state_commitment: request.destination_account_state_commitment,
+    status: quote.status,
+    quote_verified: quote.quote_verified,
+    all_in_fee_verified: quote.all_in_fee_verified,
+    minimum_transfer_micro_usdc: quote.minimum_transfer_micro_usdc,
+    maximum_transfer_micro_usdc: quote.maximum_transfer_micro_usdc,
+    fee_micro_usdc: quote.fee_micro_usdc,
+    estimated_latency_ms: quote.estimated_latency_ms,
+    as_of_ms: quote.as_of_ms,
+    observation_binding: quote.observation_binding,
+  })).digest("hex").slice(0, 40)}`;
 }
 
 function evidenceCommitment(value) {

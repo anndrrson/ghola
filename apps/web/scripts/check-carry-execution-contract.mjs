@@ -147,6 +147,13 @@ export function checkCarryExecutionContract(sources) {
     requireText("registry", `adapter("${adapterId}", "enabled"`, `shadow_adapter_missing:${venue}`);
   }
   requireText("registry", "export const CARRY_EXECUTION_VENUES", "capability_registry_missing");
+  for (const adapterId of [
+    "hyperliquid_arbitrum_usdc_v1",
+    "lighter_arbitrum_usdc_v1",
+    "aster_arbitrum_usdc_v1",
+  ]) {
+    requireText("registry", `adapter("${adapterId}", "implemented_unproven"`, `carry_collateral_route_adapter_missing:${adapterId}`);
+  }
   requireText(
     "registry",
     '"carry_execution",\n  "no_submit_reconciliation",\n  "exact_quantity_recovery",',
@@ -363,6 +370,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreIndex", "compileCarryPortfolioCapitalPlan", "carry_portfolio_capital_export_missing");
   requireText("coreCarry", "carry_portfolio_capital_position_authority_boundary", "carry_portfolio_capital_authority_gate_missing");
   requireText("coreCarry", 'account_commitment: identifier(raw.account_commitment, "carry_capital_runway_account")', "carry_capital_account_normalization_missing");
+  requireText("coreCarry", 'account_state_commitment: identifier(raw.account_state_commitment, "carry_capital_runway_account_state")', "carry_capital_account_state_normalization_missing");
+  requireText("preflight", "account_state_commitment: accountReadiness[index].account_state_commitment", "carry_capital_account_state_propagation_missing");
   requireText("coreCarry", "const accountGroups = new Map();", "carry_portfolio_capital_account_aggregation_missing");
   requireText("coreCarry", "proposed_reallocations: proposedReallocations", "carry_portfolio_capital_reallocation_missing");
   requireText("coreCarry", "owner_transfer_approval_required", "carry_portfolio_capital_transfer_approval_missing");
@@ -372,8 +381,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarry", "route_verified: true", "carry_transfer_route_proof_missing");
   requireText("coreCarry", 'evidence_source: raw.evidence_source === "attested_worker"', "carry_transfer_attested_source_gate_missing");
   requireText("coreCarry", "carry_transfer_route_adapter_binding", "carry_transfer_adapter_binding_missing");
+  requireText("coreCarry", 'route.source_account_state_commitment === source.account_state_commitment', "carry_transfer_source_state_binding_missing");
+  requireText("coreCarry", 'route.destination_account_state_commitment === request.account_state_commitment', "carry_transfer_destination_state_binding_missing");
+  requireText("coreCarry", "carry_transfer_route_quote_unverified", "carry_transfer_all_in_quote_gate_missing");
   requireText("coreCarryTest", "aggregates shared accounts and proposes owner-only reallocation", "carry_portfolio_capital_account_test_missing");
   requireText("coreCarryTest", "never treats an unverified or late transfer as rescued margin", "carry_transfer_route_failure_test_missing");
+  requireText("coreCarryTest", "carry:account-state:lighter:stale", "carry_transfer_stale_account_state_test_missing");
   requireText("coreCarryTest", "rejects one account commitment claimed by multiple venues", "carry_portfolio_capital_account_collision_test_missing");
   requireText("coreCarryTest", "quarantines stale evidence and allocates nothing", "carry_portfolio_capital_stale_test_missing");
   requireText("coreCarry", "export function compileCarryPortfolioValueReport", "carry_portfolio_value_compiler_missing");
@@ -424,12 +437,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("positionsTest", "stores an exact owner-only collateral recommendation without transferring", "carry_monitor_capital_plan_test_missing");
   requireText("positions", "export async function compileStoredCarryPortfolioCapitalPlan", "carry_portfolio_capital_worker_missing");
   requireText("transferRoutes", "export async function storeCarryTransferRouteEvidence", "carry_transfer_route_store_missing");
+  requireText("transferRoutes", "export async function observeCarryTransferRoutes", "carry_transfer_route_observer_missing");
+  requireText("transferRoutes", "all_in_fee_verified", "carry_transfer_route_all_in_fee_missing");
+  requireText("transferRoutes", "carry_transfer_route_probe_authority_boundary", "carry_transfer_route_probe_authority_missing");
   requireText("transferRoutes", "export async function loadCarryTransferRouteEvidence", "carry_transfer_route_loader_missing");
   requireText("transferRoutes", "evidenceCommitment(evidence)", "carry_transfer_route_commitment_missing");
   requireText("transferRoutes", 'evidence_source: "attested_worker"', "carry_transfer_route_attestation_missing");
   requireText("transferRoutes", "venueAdapterCapability", "carry_transfer_route_registry_binding_missing");
   requireText("transferRoutesTest", "stores only commitment-backed worker transfer-route evidence", "carry_transfer_route_worker_test_missing");
   requireText("transferRoutesTest", "rejects tampered, stale, and registry-mismatched transfer routes", "carry_transfer_route_failure_test_missing");
+  requireText("transferRoutesTest", "keeps incomplete or missing route probes unavailable", "carry_transfer_route_probe_fail_closed_test_missing");
   requireText("positions", "loadCarryTransferRouteEvidence", "carry_transfer_routes_worker_binding_missing");
   requireText("positions", 'transfer_route_evidence_status: routeEvidence.ok ? "verified" : "unavailable"', "carry_transfer_route_status_missing");
   requireText("positions", "carry_portfolio_capital_evidence_incomplete", "carry_portfolio_capital_incomplete_gate_missing");

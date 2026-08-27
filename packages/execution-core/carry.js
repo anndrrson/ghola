@@ -246,6 +246,7 @@ export function compileCarryCapitalActionPlan(value) {
     const base = {
       venue_id: venueId,
       account_commitment: runway.account_commitment,
+      account_state_commitment: runway.account_state_commitment,
       status: runway.status,
       runway_ms: runway.runway_ms,
       target_runway_ms: targetRunwayMs,
@@ -393,8 +394,19 @@ export function compileCarryPortfolioCapitalPlan(value) {
       const group = existing || {
         account_commitment: leg.account_commitment,
         venue_id: leg.venue_id,
+        account_state_commitment: leg.account_state_commitment,
+        account_state_checked_at_ms: plan.checked_at_ms,
         entries: [],
       };
+      if (existing
+        && plan.checked_at_ms === group.account_state_checked_at_ms
+        && leg.account_state_commitment !== group.account_state_commitment) {
+        fail("carry_portfolio_capital_account_state_ambiguous");
+      }
+      if (plan.checked_at_ms > group.account_state_checked_at_ms) {
+        group.account_state_commitment = leg.account_state_commitment;
+        group.account_state_checked_at_ms = plan.checked_at_ms;
+      }
       group.entries.push({ position_id: plan.position_id, plan, leg });
       accountGroups.set(leg.account_commitment, group);
     }
@@ -424,6 +436,7 @@ export function compileCarryPortfolioCapitalPlan(value) {
       : safeAdd(runwayEvidenceAsOfMs, runwayMs, "carry_portfolio_capital_runway_deadline_overflow");
     return Object.freeze({
       account_commitment: group.account_commitment,
+      account_state_commitment: group.account_state_commitment,
       venue_id: group.venue_id,
       position_ids: Object.freeze(positionIds),
       position_count: positionIds.length,
@@ -466,8 +479,10 @@ export function compileCarryPortfolioCapitalPlan(value) {
         const candidateRoutes = transferRoutes
           .filter((route) => route.from_account_commitment === source.account_commitment
             && route.from_venue_id === source.venue_id
+            && route.source_account_state_commitment === source.account_state_commitment
             && route.to_account_commitment === request.account_commitment
-            && route.to_venue_id === request.venue_id)
+            && route.to_venue_id === request.venue_id
+            && route.destination_account_state_commitment === request.account_state_commitment)
           .sort((left, right) => left.estimated_latency_ms - right.estimated_latency_ms
             || left.fee_micro_usdc - right.fee_micro_usdc
             || left.route_id.localeCompare(right.route_id));
@@ -2092,6 +2107,7 @@ function normalizeCapitalRunwayEvidence(value) {
   return Object.freeze({
     venue_id: carryExecutionVenue(raw.venue_id, "carry_capital_runway_venue"),
     account_commitment: identifier(raw.account_commitment, "carry_capital_runway_account"),
+    account_state_commitment: identifier(raw.account_state_commitment, "carry_capital_runway_account_state"),
     as_of_ms: positiveInteger(raw.as_of_ms, "carry_capital_runway_as_of"),
     status,
     margin_headroom_micro_usdc: headroom,
@@ -2371,8 +2387,8 @@ function normalizeCarryTransferRouteEvidence(value) {
   const sourceAdapterId = identifier(raw.source_adapter_id, "carry_transfer_route_source_adapter");
   const destinationAdapterId = identifier(raw.destination_adapter_id, "carry_transfer_route_destination_adapter");
   if (fromVenue === toVenue
-    || venueAdapterCapability(fromVenue, "carry_execution")?.adapter_id !== sourceAdapterId
-    || venueAdapterCapability(toVenue, "carry_execution")?.adapter_id !== destinationAdapterId) {
+    || venueAdapterCapability(fromVenue, "collateral_route_observer")?.adapter_id !== sourceAdapterId
+    || venueAdapterCapability(toVenue, "collateral_route_observer")?.adapter_id !== destinationAdapterId) {
     fail("carry_transfer_route_adapter_binding");
   }
   const evidenceCheckedAtMs = positiveInteger(raw.evidence_checked_at_ms, "carry_transfer_route_evidence_checked_at");
@@ -2383,6 +2399,17 @@ function normalizeCarryTransferRouteEvidence(value) {
   const minimumTransfer = nonNegativeInteger(raw.minimum_transfer_micro_usdc, "carry_transfer_route_minimum");
   const maximumTransfer = nonNegativeInteger(raw.maximum_transfer_micro_usdc, "carry_transfer_route_maximum");
   if (maximumTransfer < minimumTransfer) fail("carry_transfer_route_capacity_invalid");
+  const routeStatus = enumValue(
+    raw.status,
+    new Set(["available", "degraded", "unavailable"]),
+    "carry_transfer_route_status",
+  );
+  const quoteVerified = raw.quote_verified === true;
+  const allInFeeVerified = raw.all_in_fee_verified === true;
+  if ((routeStatus === "available" && maximumTransfer === 0)
+    || (routeStatus !== "unavailable" && (!quoteVerified || !allInFeeVerified))) {
+    fail("carry_transfer_route_quote_unverified");
+  }
   return Object.freeze({
     version: 1,
     route_id: identifier(raw.route_id, "carry_transfer_route_id"),
@@ -2402,7 +2429,9 @@ function normalizeCarryTransferRouteEvidence(value) {
     destination_account_state_commitment: identifier(raw.destination_account_state_commitment, "carry_transfer_route_destination_state"),
     quote_commitment: identifier(raw.quote_commitment, "carry_transfer_route_quote"),
     settlement_asset: "USDC",
-    status: enumValue(raw.status, new Set(["available", "degraded", "unavailable"]), "carry_transfer_route_status"),
+    status: routeStatus,
+    quote_verified: quoteVerified,
+    all_in_fee_verified: allInFeeVerified,
     minimum_transfer_micro_usdc: minimumTransfer,
     maximum_transfer_micro_usdc: maximumTransfer,
     fee_micro_usdc: nonNegativeInteger(raw.fee_micro_usdc, "carry_transfer_route_fee"),
@@ -2474,6 +2503,10 @@ function normalizePortfolioCapitalPositionPlan(value) {
       account_commitment: identifier(
         leg.account_commitment,
         "carry_portfolio_capital_position_leg_account",
+      ),
+      account_state_commitment: identifier(
+        leg.account_state_commitment,
+        "carry_portfolio_capital_position_leg_account_state",
       ),
       runway_ms: leg.runway_ms === null
         ? null

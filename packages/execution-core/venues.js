@@ -56,6 +56,12 @@ const specs = [
     carry_execution: adapter("hyperliquid_v1", "proven"),
     no_submit_reconciliation: adapter("hyperliquid_v1", "proven"),
     exact_quantity_recovery: adapter("hyperliquid_v1", "proven"),
+    collateral_route_observer: adapter("hyperliquid_arbitrum_usdc_v1", "implemented_unproven", {
+      read_only: true,
+      settlement_asset: "USDC",
+      chain_id: 42161,
+      owner_approval_required: true,
+    }),
   }),
   venue("lighter", "Lighter", "core_perp", "integration", "implemented_unproven", ["perp"], {
     perp_shadow: adapter("lighter_shadow_v1", "enabled", {
@@ -67,6 +73,12 @@ const specs = [
     carry_execution: adapter("lighter_v1", "implemented_unproven"),
     no_submit_reconciliation: adapter("lighter_v1", "implemented_unproven"),
     exact_quantity_recovery: adapter("lighter_v1", "implemented_unproven"),
+    collateral_route_observer: adapter("lighter_arbitrum_usdc_v1", "implemented_unproven", {
+      read_only: true,
+      settlement_asset: "USDC",
+      chain_id: 42161,
+      owner_approval_required: true,
+    }),
   }),
   venue("aster", "Aster", "core_perp", "integration", "implemented_unproven", ["perp"], {
     perp_shadow: adapter("aster_shadow_v1", "enabled", {
@@ -78,6 +90,12 @@ const specs = [
     carry_execution: adapter("aster_v1", "implemented_unproven"),
     no_submit_reconciliation: adapter("aster_v1", "implemented_unproven"),
     exact_quantity_recovery: adapter("aster_v1", "implemented_unproven"),
+    collateral_route_observer: adapter("aster_arbitrum_usdc_v1", "implemented_unproven", {
+      read_only: true,
+      settlement_asset: "USDC",
+      chain_id: 42161,
+      owner_approval_required: true,
+    }),
   }),
   venue("edgex", "edgeX", "core_perp", "candidate", "unimplemented", ["perp"], {
     perp_shadow: adapter("edgex_shadow_v1", "enabled", {

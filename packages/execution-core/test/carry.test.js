@@ -109,6 +109,7 @@ function runway(venueId, overrides = {}) {
     ...overrides,
     }),
     account_commitment: overrides.account_commitment || `account:${venueId}:0001`,
+    account_state_commitment: overrides.account_state_commitment || `carry:account-state:${venueId}:0001`,
   };
 }
 
@@ -124,13 +125,15 @@ function transferRoute(overrides = {}) {
     from_venue_id: "lighter",
     to_account_commitment: "account:hyperliquid:0001",
     to_venue_id: "hyperliquid",
-    source_adapter_id: "lighter_v1",
-    destination_adapter_id: "hyperliquid_v1",
+    source_adapter_id: "lighter_arbitrum_usdc_v1",
+    destination_adapter_id: "hyperliquid_arbitrum_usdc_v1",
     source_account_state_commitment: "carry:account-state:lighter:0001",
     destination_account_state_commitment: "carry:account-state:hyperliquid:0001",
     quote_commitment: "carry:transfer-quote:0001",
     settlement_asset: "USDC",
     status: "available",
+    quote_verified: true,
+    all_in_fee_verified: true,
     minimum_transfer_micro_usdc: 0,
     maximum_transfer_micro_usdc: 1_000_000_000,
     fee_micro_usdc: 1_000,
@@ -645,6 +648,19 @@ test("portfolio capital planner never treats an unverified or late transfer as r
     position_plans: [positionPlan],
   }), /carry_transfer_route_evidence_source/);
 
+  const staleAccountRoute = compileCarryPortfolioCapitalPlan({
+    version: 1,
+    now_ms: NOW,
+    max_data_age_ms: 30_000,
+    owner_capital_budget_micro_usdc: 0,
+    transfer_routes: [transferRoute({
+      source_account_state_commitment: "carry:account-state:lighter:stale",
+    })],
+    position_plans: [positionPlan],
+  });
+  assert.equal(staleAccountRoute.total_proposed_internal_reallocation_micro_usdc, 0);
+  assert.equal(staleAccountRoute.transfer_route_failures[0].startsWith("transfer_route_missing:"), true);
+
   const lateRoute = compileCarryPortfolioCapitalPlan({
     version: 1,
     now_ms: NOW,
@@ -726,6 +742,29 @@ test("portfolio capital planner rejects one account commitment claimed by multip
     owner_capital_budget_micro_usdc: 0,
     position_plans: [sharedAccountPlan],
   }), /carry_portfolio_capital_account_venue_mismatch/);
+});
+
+test("portfolio capital planner rejects conflicting account states at the same observation time", () => {
+  const positionPlan = compileCarryCapitalActionPlan({
+    version: 1,
+    position: activePositionForObservation(),
+    margin_runways: [runway("hyperliquid"), runway("lighter")],
+    now_ms: NOW,
+  });
+  const conflictingPlan = {
+    ...positionPlan,
+    position_id: "carry:position:0002",
+    legs: positionPlan.legs.map((leg) => leg.venue_id === "lighter"
+      ? { ...leg, account_state_commitment: "carry:account-state:lighter:conflict" }
+      : leg),
+  };
+  assert.throws(() => compileCarryPortfolioCapitalPlan({
+    version: 1,
+    now_ms: NOW,
+    max_data_age_ms: 30_000,
+    owner_capital_budget_micro_usdc: 0,
+    position_plans: [positionPlan, conflictingPlan],
+  }), /carry_portfolio_capital_account_state_ambiguous/);
 });
 
 test("collateral review binds exact owner-only moves without authorizing fund movement", () => {

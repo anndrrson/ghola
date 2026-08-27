@@ -225,6 +225,10 @@ export async function preflightCarryPair({
   };
   const accountReadiness = modeled.account_readiness.map((account, index) =>
     bindAccountStateEvidence(account, evidence[index]));
+  const marginRunways = modeled.margin_runways.map((runway, index) => Object.freeze({
+    ...runway,
+    account_state_commitment: accountReadiness[index].account_state_commitment,
+  }));
   return {
     version: 1,
     mode: phase === "monitoring"
@@ -241,7 +245,7 @@ export async function preflightCarryPair({
     funding_persistence: fundingPersistence,
     collateral_basis: modeled.collateral_basis,
     contract_pair_basis: modeled.opportunity.contract_pair_basis,
-    margin_runways: modeled.margin_runways,
+    margin_runways: marginRunways,
     account_readiness: accountReadiness,
     opening_capital_plan: modeled.opening_capital_plan,
     evidence: evidence.map((leg, index) => publicEvidence(
