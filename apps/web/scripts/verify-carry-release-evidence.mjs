@@ -171,16 +171,18 @@ export async function verifyCarryReleaseEvidence(evidence) {
   const monitoringEndedAt = timestamp(monitoring.ended_at);
   fail(monitoringStartedAt >= entryReconciledAt, "monitoring_start_invalid");
   fail(monitoringEndedAt > monitoringStartedAt, "monitoring_period_required");
-  fail(positiveInteger(monitoring.observation_count) > 0, "monitoring_observation_missing");
-  fail(positiveInteger(monitoring.funding_flip_checks) > 0, "funding_flip_check_missing");
+  fail(positiveInteger(monitoring.observation_count) >= 2, "monitoring_observation_cadence_missing");
+  fail(positiveInteger(monitoring.funding_flip_checks) >= 2, "funding_flip_check_cadence_missing");
   const supervision = monitoring.supervision || {};
   const automaticObservations = positiveInteger(supervision.automatic_observation_count);
   const firstAutomaticObservation = timestamp(supervision.first_automatic_observed_at);
   const lastAutomaticObservation = timestamp(supervision.last_automatic_observed_at);
   fail(supervision.mode === "attested_worker_loop", "supervised_monitoring_required");
+  fail(automaticObservations >= 2, "supervised_monitoring_cadence_missing");
   fail(automaticObservations === positiveInteger(monitoring.observation_count), "supervised_observation_count_mismatch");
   fail(firstAutomaticObservation >= monitoringStartedAt && firstAutomaticObservation <= monitoringEndedAt,
     "supervised_monitoring_start_invalid");
+  fail(firstAutomaticObservation < lastAutomaticObservation, "supervised_monitoring_period_required");
   fail(lastAutomaticObservation === monitoringEndedAt, "supervised_monitoring_end_invalid");
   fail(supervision.transaction_broadcast === false, "supervised_monitoring_broadcast_detected");
   fail(sameVenueSet(monitoring.margin_runways, pair), "margin_runway_venues_mismatch");

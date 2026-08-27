@@ -59,6 +59,19 @@ test("rejects release proof that accepts manual-only monitoring", () => {
   );
 });
 
+test("rejects release proof that accepts one unattended observation", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier.replace(
+        "automaticObservations >= 2",
+        "automaticObservations >= 1",
+      ),
+    }),
+    /carry_release_monitoring_cadence_verifier_missing/,
+  );
+});
+
 test("rejects live Carry entry that ignores degraded supervision", () => {
   assert.throws(
     () => checkCarryExecutionContract({

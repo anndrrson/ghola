@@ -116,11 +116,11 @@ async function fixture() {
     monitoring: {
       started_at: "2026-08-24T00:00:03.000Z",
       ended_at: "2026-08-24T00:00:05.000Z",
-      observation_count: 1,
-      funding_flip_checks: 1,
+      observation_count: 2,
+      funding_flip_checks: 2,
       supervision: {
         mode: "attested_worker_loop",
-        automatic_observation_count: 1,
+        automatic_observation_count: 2,
         first_automatic_observed_at: "2026-08-24T00:00:04.000Z",
         last_automatic_observed_at: "2026-08-24T00:00:05.000Z",
         transaction_broadcast: false,
@@ -259,6 +259,20 @@ test("rejects monitoring that was not produced by the unattended worker loop", a
   evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
   await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /supervised_monitoring_required/);
+});
+
+test("rejects a single unattended observation as continuous monitoring", async () => {
+  const evidence = await fixture();
+  evidence.monitoring.observation_count = 1;
+  evidence.monitoring.funding_flip_checks = 1;
+  evidence.monitoring.supervision.automatic_observation_count = 1;
+  evidence.monitoring.supervision.first_automatic_observed_at = evidence.monitoring.supervision.last_automatic_observed_at;
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(
+    () => verifyCarryReleaseEvidence(evidence),
+    /monitoring_observation_cadence_missing|supervised_monitoring_cadence_missing|supervised_monitoring_period_required/,
+  );
 });
 
 test("rejects same-ticker proof whose contract basis exceeds the verified budget", async () => {

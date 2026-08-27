@@ -64,6 +64,7 @@ export async function buildCompletedCarryReleaseMaterial({
   if (observations.length === 0) return denied("carry_release_monitoring_evidence_missing");
   const supervisedObservations = observations.filter((event) => event?.observation_source === "supervised_loop");
   if (supervisedObservations.length === 0) return denied("carry_release_supervised_monitoring_missing");
+  if (supervisedObservations.length < 2) return denied("carry_release_supervised_monitoring_insufficient");
   const latestObservation = supervisedObservations.at(-1);
   const runwayStatuses = latestObservation.margin_runway_status_by_venue || {};
   const runwayValues = latestObservation.margin_runway_ms_by_venue || {};
