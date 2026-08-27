@@ -144,6 +144,15 @@ export async function recoverDueMultiLegSagas({
   };
 }
 
+export async function readDurableRecoveryAccounting({ state, saga_id: sagaId, leg_id: legId, action }) {
+  if (!state || typeof state.getIdempotency !== "function") return null;
+  const stored = await state.getIdempotency(recoveryAccountingKey(sagaId, legId, action));
+  const evidence = stored?.receipt;
+  return evidence?.version === 1 && evidence?.kind === "multi_leg_recovery_accounting"
+    ? structuredClone(evidence)
+    : null;
+}
+
 export function startMultiLegRecoveryLoop({
   state,
   recipient = null,
@@ -353,6 +362,16 @@ async function executeCompensatingRecovery({
         workOrderCommitment,
         instruction: unwindInstruction,
       }));
+      await storeRecoveryAccounting({
+        state,
+        saga: current,
+        leg,
+        action: "unwind",
+        workOrderCommitment,
+        referenceMarkPrice: price,
+        receipt,
+        nowMs,
+      });
       const progress = unwindProgress({ receipt, requestedBase: remainingBase, remainingMicro, env });
       if (progress.filledMicro > 0) {
         current = await recoveryEvent({
@@ -473,6 +492,16 @@ async function executeRiskReducingCompletion({
         workOrderCommitment,
         instruction,
       }));
+      await storeRecoveryAccounting({
+        state,
+        saga: current,
+        leg,
+        action: "completion",
+        workOrderCommitment,
+        referenceMarkPrice: price,
+        receipt,
+        nowMs,
+      });
       const progress = unwindProgress({ receipt, requestedBase: remainingBase, remainingMicro, env });
       if (progress.filledMicro > 0) {
         current = await recoveryEvent({
@@ -836,6 +865,46 @@ function originalVenueMarket(leg, context) {
 
 function recoveryWorkOrder(saga, leg, action, amount) {
   return `work:recovery:${hash(`${saga.saga_id}:${leg.leg_id}:${action}:${amount}`).slice(0, 40)}`;
+}
+
+function recoveryAccountingKey(sagaId, legId, action) {
+  return `accounting:recovery:${hash(`${sagaId}:${legId}:${action}`).slice(0, 40)}`;
+}
+
+async function storeRecoveryAccounting({ state, saga, leg, action, workOrderCommitment, referenceMarkPrice, receipt, nowMs }) {
+  if (typeof state.getIdempotency !== "function" || typeof state.putIdempotency !== "function") return;
+  const key = recoveryAccountingKey(saga.saga_id, leg.leg_id, action);
+  const prior = await readDurableRecoveryAccounting({ state, saga_id: saga.saga_id, leg_id: leg.leg_id, action });
+  const executions = Array.isArray(prior?.executions) ? prior.executions : [];
+  if (executions.some((item) => item.work_order_commitment === workOrderCommitment)) return;
+  const referenceMarkPriceE8 = Math.round(Number(referenceMarkPrice) * 100_000_000);
+  if (!Number.isSafeInteger(referenceMarkPriceE8) || referenceMarkPriceE8 <= 0) return;
+  await state.putIdempotency(key, {
+    version: 1,
+    kind: "multi_leg_recovery_accounting",
+    saga_id: saga.saga_id,
+    leg_id: leg.leg_id,
+    venue_id: leg.venue_id,
+    action,
+    executions: [...executions, {
+      version: 1,
+      work_order_commitment: workOrderCommitment,
+      reference_mark_price_e8: referenceMarkPriceE8,
+      receipt: accountingReceipt(receipt),
+      recorded_at_ms: nowMs,
+    }],
+    updated_at_ms: nowMs,
+  });
+}
+
+function accountingReceipt(receipt) {
+  return {
+    status: receipt?.status || null,
+    provider_ref_commitment: receipt?.provider_ref_commitment || null,
+    result_commitment: receipt?.result_commitment || null,
+    fills: Array.isArray(receipt?.fills) ? structuredClone(receipt.fills) : [],
+    final_proof: receipt?.final_proof ? structuredClone(receipt.final_proof) : null,
+  };
 }
 
 function positiveNumber(value) {

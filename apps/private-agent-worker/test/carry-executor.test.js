@@ -293,6 +293,67 @@ test("terminal entry recovery synchronizes flat parent after restart without res
   assert.equal(synced.results[0].record.final_reconciliation_evidence.account_state_checked, true);
 });
 
+test("aborted entry recovery finalizes exact fees, slippage, and round-trip value", async (t) => {
+  const fixture = await setup(t, "aborted-entry-value");
+  const started = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      if (args.venue_id === "lighter") {
+        const error = new Error("submission outcome ambiguous");
+        error.code = "submission_ambiguous";
+        throw error;
+      }
+      const receipt = exactValueReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(started.record.position.status, "frozen");
+  const recovered = await recoverDueMultiLegSagas({
+    state: fixture.state,
+    now_ms: started.saga.unhedged_deadline_ms,
+    recipient: fixture.recipient,
+    verifyOrder: fixture.verifyOrder,
+    fetchImpl: async () => ({ ok: true, json: async () => ({ markPrice: "10000" }) }),
+    env: fixture.env,
+    executeOrder: async (args) => {
+      if (args.operation_class === "cancel") return { status: "cancelled" };
+      if (args.operation_class === "reconcile") return { status: "reconciled", fills: [] };
+      const receipt = exactValueReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.recovered[0].saga.status, "unwound");
+  const restartedState = createWorkerState(fixture.state_dir);
+  const reconciled = await runCarryExecutionTick({
+    ...fixture,
+    state: restartedState,
+  });
+  assert.equal(reconciled.ok, true);
+  assert.equal(reconciled.results[0].record.position.status, "reconciled");
+  assert.equal(reconciled.results[0].record.value_evidence.aborted_entry_recovery.status, "complete");
+  assert.equal(reconciled.results[0].record.value_ledger.status, "open");
+  const finalizedState = createWorkerState(fixture.state_dir);
+  const synced = await runCarryExecutionTick({
+    ...fixture,
+    state: finalizedState,
+    readFundingSettlements: async () => [],
+  });
+  assert.equal(synced.ok, true);
+  const record = synced.results[0].record;
+  assert.equal(record.position.status, "reconciled");
+  assert.equal(record.value_evidence.aborted_entry_recovery.status, "complete");
+  assert.equal(record.value_evidence.aborted_entry_recovery.contract_pnl_micro_usdc, 9_000);
+  assert.equal(record.value_evidence.costs_complete, true);
+  assert.equal(record.value_ledger.status, "finalized");
+  assert.equal(record.value_ledger.realized.trading_fee_micro_usdc, 6_000);
+  assert.equal(record.value_ledger.realized.slippage_micro_usdc, 1_000);
+  assert.equal(record.value_ledger.realized.settlement_adjustment_micro_usdc, 10_000);
+  assert.equal(record.value_ledger.realized.net_value_micro_usdc, 3_000);
+});
+
 test("records a fully rejected pair as flat with no recovery order", async (t) => {
   const fixture = await setup(t, "no-fill");
   const result = await executeStoredCarryEntry({

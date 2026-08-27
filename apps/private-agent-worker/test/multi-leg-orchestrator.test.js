@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   applyDurableMultiLegEvent,
   createDurableMultiLegSaga,
+  readDurableRecoveryAccounting,
   recoverDueMultiLegSagas,
 } from "../src/execution/multi-leg-orchestrator.js";
 import { createWorkerState } from "../src/state/private-state.js";
@@ -277,6 +278,15 @@ test("cancels, reconciles, and exactly unwinds a one-leg fill", async (t) => {
   assert.equal(unwind.instruction.order.side, "sell");
   assert.equal(unwind.instruction.order.base_size, "0.1");
   assert.equal(verified.length, 1);
+  const accounting = await readDurableRecoveryAccounting({
+    state,
+    saga_id: created.saga.saga_id,
+    leg_id: "leg:coinbase:0001",
+    action: "unwind",
+  });
+  assert.equal(accounting.executions.length, 1);
+  assert.equal(accounting.executions[0].work_order_commitment, unwind.work_order_commitment);
+  assert.equal(accounting.executions[0].reference_mark_price_e8 > 0, true);
   const positions = await state.listAutopilotPositions(context.autopilot_session_id);
   assert.equal(positions[0].signed_notional_micro_usdc, 0);
   assert.equal(positions[0].signed_base_size, 0);
