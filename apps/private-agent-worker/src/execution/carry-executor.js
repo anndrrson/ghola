@@ -10,6 +10,7 @@ import { preflightCarryPair } from "./carry-preflight.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 import { hasExactCarryFlatReconciliation } from "./carry-reconciliation.js";
 import { listAllCarryPositionRecords } from "./carry-record-scan.js";
+import { createCarryLoopSupervisor, disabledCarryLoopHealth } from "./carry-loop-supervisor.js";
 import {
   readCarryVenueQualification,
   recordCompletedCarryVenueQualifications,
@@ -1535,23 +1536,50 @@ function signedRoundedDiv(numerator, denominator) {
 }
 
 export function startCarryExecutionLoop({ state, recipient, verifyOrder, executeOrder, readFundingSettlements, preflight = preflightCarryPair, env = process.env, now = () => Date.now() } = {}) {
-  if (String(env.PRIVATE_AGENT_CARRY_AUTO_EXIT_ENABLED ?? "true").toLowerCase() === "false") return { stop() {} };
+  if (String(env.PRIVATE_AGENT_CARRY_AUTO_EXIT_ENABLED ?? "true").toLowerCase() === "false") {
+    const health = disabledCarryLoopHealth("carry_execution");
+    return {
+      ready: Promise.resolve({ ok: false, error: "carry_execution_disabled" }),
+      runNow: async () => ({ ok: false, error: "carry_execution_disabled" }),
+      health: () => health,
+      stop() {},
+    };
+  }
   const intervalMs = boundedMs(env.PRIVATE_AGENT_CARRY_EXECUTION_SWEEP_MS, 1_000, 60_000, 2_000);
   let timer = null;
   let stopped = false;
   const startupAt = now();
-  const ready = auditCarryPositionsAfterRestart({ state, now_ms: startupAt }).catch(() => null);
+  const ready = auditCarryPositionsAfterRestart({ state, now_ms: startupAt })
+    .catch(() => ({ ok: false, error: "carry_restart_audit_threw" }));
+  const supervisor = createCarryLoopSupervisor({
+    name: "carry_execution",
+    now,
+    run: async () => {
+      const audit = await ready;
+      if (audit?.ok !== true) return { ok: false, error: audit?.error || "carry_restart_audit_failed" };
+      return runCarryExecutionTick({ state, recipient, verifyOrder, executeOrder, readFundingSettlements, preflight, env, now });
+    },
+  });
   const schedule = (delay) => {
     if (stopped) return;
     timer = setTimeout(async () => {
-      await ready;
-      await runCarryExecutionTick({ state, recipient, verifyOrder, executeOrder, readFundingSettlements, preflight, env, now }).catch(() => null);
+      await supervisor.runOnce();
       schedule(intervalMs);
     }, delay);
     timer.unref?.();
   };
   schedule(intervalMs);
-  return { ready, stop() { stopped = true; if (timer) clearTimeout(timer); timer = null; } };
+  return {
+    ready,
+    runNow: supervisor.runOnce,
+    health: supervisor.health,
+    stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      supervisor.stop();
+    },
+  };
 }
 
 async function exactEntryBases(state, saga) {

@@ -26,6 +26,16 @@ test("rejects a full-book scan without its composite database index", () => {
   );
 });
 
+test("rejects background Carry failures that are no longer supervised", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      loopSupervisor: sources.loopSupervisor.replaceAll("consecutive_failures", "ignored_failures"),
+    }),
+    /carry_loop_health_state_missing/,
+  );
+});
+
 test("rejects carry entry without durable adverse funding evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({

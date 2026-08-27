@@ -17,6 +17,7 @@ import { preflightCarryPair } from "./carry-preflight.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 import { hasExactCarryFlatReconciliation } from "./carry-reconciliation.js";
 import { listAllCarryPositionRecords } from "./carry-record-scan.js";
+import { createCarryLoopSupervisor, disabledCarryLoopHealth } from "./carry-loop-supervisor.js";
 
 const OWNER = /^[A-Za-z0-9:_-]{8,180}$/;
 
@@ -713,34 +714,45 @@ export function startCarryMonitoringLoop({
   env = process.env,
   now = () => Date.now(),
 } = {}) {
-  if (String(env.PRIVATE_AGENT_CARRY_MONITOR_ENABLED ?? "true").toLowerCase() === "false") return { stop() {} };
+  if (String(env.PRIVATE_AGENT_CARRY_MONITOR_ENABLED ?? "true").toLowerCase() === "false") {
+    const health = disabledCarryLoopHealth("carry_monitor");
+    return { runNow: async () => ({ ok: false, error: "carry_monitor_disabled" }), health: () => health, stop() {} };
+  }
   const intervalMs = boundedMs(env.PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS, 5_000, 300_000, 5_000);
   const initialDelayMs = boundedMs(env.PRIVATE_AGENT_CARRY_MONITOR_INITIAL_DELAY_MS, 0, 60_000, 5_000);
   let timer = null;
   let stopped = false;
+  const supervisor = createCarryLoopSupervisor({
+    name: "carry_monitor",
+    now,
+    run: () => runCarryMonitoringTick({
+      state,
+      recipient,
+      verifyOrder,
+      readHyperliquidSnapshot,
+      readHyperliquidCarryMetrics,
+      readFundingSettlements,
+      preflight,
+      now_ms: now(),
+    }),
+  });
   const schedule = (delay) => {
     if (stopped) return;
     timer = setTimeout(async () => {
-      await runCarryMonitoringTick({
-        state,
-        recipient,
-        verifyOrder,
-        readHyperliquidSnapshot,
-        readHyperliquidCarryMetrics,
-        readFundingSettlements,
-        preflight,
-        now_ms: now(),
-      }).catch(() => null);
+      await supervisor.runOnce();
       schedule(intervalMs);
     }, delay);
     timer.unref?.();
   };
   schedule(initialDelayMs);
   return {
+    runNow: supervisor.runOnce,
+    health: supervisor.health,
     stop() {
       stopped = true;
       if (timer) clearTimeout(timer);
       timer = null;
+      supervisor.stop();
     },
   };
 }

@@ -459,6 +459,50 @@ describe("private agent worker", () => {
     );
   });
 
+  it("reports degraded Carry supervision without pretending the worker stopped", async () => {
+    await close(server);
+    process.env.PRIVATE_AGENT_ATTESTED_READY = "true";
+    process.env.PHALA_CVM_IMAGE_DIGEST = "sha256:carry-supervision-test";
+    process.env.PRIVATE_AGENT_MEASUREMENT_HEX = "carry-supervision-measurement";
+    process.env.PRIVATE_AGENT_ATTESTATION_HASH = "carry-supervision-attestation";
+    const health = (name, status, error = null) => ({
+      health: () => ({
+        name,
+        status,
+        running: false,
+        run_count: 4,
+        consecutive_failures: error ? 2 : 0,
+        last_started_at: "2027-01-15T08:00:00.000Z",
+        last_completed_at: "2027-01-15T08:00:00.025Z",
+        last_success_at: error ? null : "2027-01-15T08:00:00.025Z",
+        last_error_code: error,
+      }),
+      stop() {},
+    });
+    server = createPrivateAgentWorkerServer({
+      carryMonitoringLoop: health("carry_monitor", "healthy"),
+      carryExecutionLoop: health("carry_execution", "degraded", "carry_exit_preflight_not_ready"),
+      startAutopilotDueLoop: false,
+      startMultiLegRecoveryLoop: false,
+      startCarryFundingObservationLoop: false,
+      startKrakenV2Heartbeat: false,
+    });
+    baseUrl = await listen(server);
+
+    const response = await fetch(`${baseUrl}/health`);
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.status, "green");
+    assert.equal(body.carry_supervision.status, "degraded");
+    assert.equal(body.carry_supervision.ready, false);
+    assert.equal(body.carry_supervision.monitoring.status, "healthy");
+    assert.equal(body.carry_supervision.execution.last_error_code, "carry_exit_preflight_not_ready");
+
+    const readyResponse = await fetch(`${baseUrl}/ready`);
+    const ready = await readyResponse.json();
+    assert.equal(ready.carry_supervision.status, "degraded");
+  });
+
   it("publishes redacted proposal-model status with readiness", async () => {
     process.env.PRIVATE_AGENT_AI_PROVIDER_KIND = "ollama";
     process.env.PRIVATE_AGENT_AI_MODEL = "local-proposal-model";

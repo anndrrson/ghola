@@ -26,6 +26,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   workerMandate: "apps/private-agent-worker/src/execution/carry-mandate.js",
   positions: "apps/private-agent-worker/src/execution/carry-positions.js",
   recordScan: "apps/private-agent-worker/src/execution/carry-record-scan.js",
+  loopSupervisor: "apps/private-agent-worker/src/execution/carry-loop-supervisor.js",
   executor: "apps/private-agent-worker/src/execution/carry-executor.js",
   privateExecution: "apps/private-agent-worker/src/execution/private-execution.js",
   adapterRegistryTest: "apps/private-agent-worker/test/carry-adapter-registry.test.js",
@@ -92,6 +93,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   workerMandateTest: "apps/private-agent-worker/test/carry-mandate.test.js",
   positionsTest: "apps/private-agent-worker/test/carry-positions.test.js",
   recordScanTest: "apps/private-agent-worker/test/carry-record-scan.test.js",
+  loopSupervisorTest: "apps/private-agent-worker/test/carry-loop-supervisor.test.js",
   preflightTest: "apps/private-agent-worker/test/carry-preflight.test.js",
   fundingPersistenceTest: "apps/private-agent-worker/test/carry-funding-persistence.test.js",
   shadowQualificationTest: "apps/private-agent-worker/test/carry-shadow-qualification.test.js",
@@ -664,6 +666,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "listAllCarryPositionRecords", "carry_monitor_full_scan_missing");
   requireText("executor", "listAllCarryPositionRecords", "carry_recovery_full_scan_missing");
   requireText("recordScanTest", "beyond the 500-record storage page", "carry_record_scan_scale_test_missing");
+  requireText("loopSupervisor", "consecutive_failures", "carry_loop_health_state_missing");
+  requireText("positions", "supervisor.runOnce", "carry_monitor_supervision_missing");
+  requireText("executor", "supervisor.runOnce", "carry_execution_supervision_missing");
+  requireText("server", "carry_supervision: carrySupervision", "carry_supervision_health_missing");
+  requireText("loopSupervisorTest", "without leaking exception text", "carry_loop_error_redaction_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: "5000"', "carry_monitor_five_second_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS: "750"', "carry_market_data_skew_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS: "12"', "carry_index_basis_runtime_test_missing");

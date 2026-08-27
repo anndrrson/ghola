@@ -42,6 +42,7 @@ import {
 } from "./execution/carry-readiness.js";
 import { executeStoredCarryEntry, startCarryExecutionLoop } from "./execution/carry-executor.js";
 import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-evidence.js";
+import { carrySupervisionHealth } from "./execution/carry-loop-supervisor.js";
 import {
   approveStoredCarryCollateralReview,
   compileStoredCarryCollateralReview,
@@ -440,7 +441,7 @@ async function publicRecipient(recipient) {
   };
 }
 
-async function runtimeHealthEvidence(recipient, ready, observedAt = new Date()) {
+async function runtimeHealthEvidence(recipient, ready, observedAt = new Date(), carrySupervision = null) {
   const fundingSigner = fundingSigningIdentity();
   const attestation = await attestationMetadata(recipient, fundingSigner.public_key_b64);
   const imageDigest = env("PHALA_CVM_IMAGE_DIGEST", env("PRIVATE_AGENT_IMAGE_DIGEST", null));
@@ -500,6 +501,7 @@ async function runtimeHealthEvidence(recipient, ready, observedAt = new Date()) 
       runtime_attestation_commitment: runtimeAttestationCommitment,
       runtime_measurement_commitment: runtimeMeasurementCommitment,
       runtime_policy_commitment: runtimePolicyCommitment,
+      carry_supervision: carrySupervision,
       observed_at: observedAt.toISOString(),
     }),
     runtime_attestation_commitment: runtimeAttestationCommitment,
@@ -511,6 +513,7 @@ async function runtimeHealthEvidence(recipient, ready, observedAt = new Date()) 
     image_digest: imageDigest,
     report_data_hex: attestation.report_data_hex,
     quote_hash: attestation.quote_hash,
+    carry_supervision: carrySupervision,
     missing: ready.missing,
     reason: status === "green"
       ? null
@@ -2668,9 +2671,11 @@ export function createPrivateAgentWorkerServer(options = {}) {
         executeOrder: executeAutopilotOrder,
         verifyOrder: verifyAutopilotOrder,
       });
-  const carryMonitoringLoop = options.startCarryMonitoringLoop === false
-    ? null
-    : startCarryMonitoringLoop({
+  const carryMonitoringLoop = options.carryMonitoringLoop !== undefined
+    ? options.carryMonitoringLoop
+    : options.startCarryMonitoringLoop === false
+      ? null
+      : startCarryMonitoringLoop({
         state,
         recipient,
         verifyOrder: verifyAutopilotOrder,
@@ -2678,9 +2683,11 @@ export function createPrivateAgentWorkerServer(options = {}) {
         readHyperliquidCarryMetrics,
         readFundingSettlements: readCarryFundingSettlements,
       });
-  const carryExecutionLoop = options.startCarryExecutionLoop === false
-    ? null
-    : startCarryExecutionLoop({
+  const carryExecutionLoop = options.carryExecutionLoop !== undefined
+    ? options.carryExecutionLoop
+    : options.startCarryExecutionLoop === false
+      ? null
+      : startCarryExecutionLoop({
         state,
         recipient,
         verifyOrder: verifyAutopilotOrder,
@@ -2778,9 +2785,13 @@ export function createPrivateAgentWorkerServer(options = {}) {
     try {
       const url = new URL(req.url || "/", "http://localhost");
       const ready = await readiness(recipient);
+      const carrySupervision = carrySupervisionHealth({
+        monitoring: carryMonitoringLoop,
+        execution: carryExecutionLoop,
+      });
 
       if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/healthz")) {
-        return json(res, ready.ready ? 200 : 503, await runtimeHealthEvidence(recipient, ready));
+        return json(res, ready.ready ? 200 : 503, await runtimeHealthEvidence(recipient, ready, new Date(), carrySupervision));
       }
 
       if (req.method === "GET" && url.pathname === "/ready") {
@@ -2789,6 +2800,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           missing: ready.missing,
           execution_protocols: ["ghola-hyperliquid-proof-v2"],
           decision_provider: publicDecisionProviderStatus(),
+          carry_supervision: carrySupervision,
         });
       }
 
@@ -2800,7 +2812,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return json(res, ready.ready ? 200 : 503, {
           version: 1,
           recipient: await publicRecipient(recipient),
-          health: await runtimeHealthEvidence(recipient, ready, observedAt),
+          health: await runtimeHealthEvidence(recipient, ready, observedAt, carrySupervision),
         });
       }
 
