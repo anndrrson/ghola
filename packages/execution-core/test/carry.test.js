@@ -116,10 +116,19 @@ function transferRoute(overrides = {}) {
   return {
     version: 1,
     route_id: "carry:transfer-route:lighter-hyperliquid:0001",
+    evidence_source: "attested_worker",
+    evidence_commitment: "carry:transfer-routes:evidence:0001",
+    evidence_checked_at_ms: NOW,
+    worker_image_digest: `sha256:${"a".repeat(64)}`,
     from_account_commitment: "account:lighter:0001",
     from_venue_id: "lighter",
     to_account_commitment: "account:hyperliquid:0001",
     to_venue_id: "hyperliquid",
+    source_adapter_id: "lighter_v1",
+    destination_adapter_id: "hyperliquid_v1",
+    source_account_state_commitment: "carry:account-state:lighter:0001",
+    destination_account_state_commitment: "carry:account-state:hyperliquid:0001",
+    quote_commitment: "carry:transfer-quote:0001",
     settlement_asset: "USDC",
     status: "available",
     minimum_transfer_micro_usdc: 0,
@@ -128,6 +137,7 @@ function transferRoute(overrides = {}) {
     estimated_latency_ms: 30 * 60_000,
     as_of_ms: NOW,
     owner_approval_required: true,
+    fund_movement_authorized: false,
     transaction_broadcast: false,
     automatic_transfer_permitted: false,
     ...overrides,
@@ -625,6 +635,15 @@ test("portfolio capital planner never treats an unverified or late transfer as r
   assert.equal(missingRoute.net_new_owner_capital_requested_micro_usdc, missingRoute.total_requested_micro_usdc);
   assert.equal(missingRoute.routeable_capital_optimization_available, false);
   assert.ok(missingRoute.transfer_route_failures.some((reason) => reason.startsWith("transfer_route_missing:")));
+
+  assert.throws(() => compileCarryPortfolioCapitalPlan({
+    version: 1,
+    now_ms: NOW,
+    max_data_age_ms: 30_000,
+    owner_capital_budget_micro_usdc: 0,
+    transfer_routes: [transferRoute({ evidence_source: "browser" })],
+    position_plans: [positionPlan],
+  }), /carry_transfer_route_evidence_source/);
 
   const lateRoute = compileCarryPortfolioCapitalPlan({
     version: 1,

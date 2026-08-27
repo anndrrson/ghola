@@ -1,4 +1,4 @@
-import { isCarryExecutionVenue, isExecutionVenue, venueSupportsProduct } from "./venues.js";
+import { isCarryExecutionVenue, isExecutionVenue, venueAdapterCapability, venueSupportsProduct } from "./venues.js";
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
@@ -521,10 +521,19 @@ export function compileCarryPortfolioCapitalPlan(value) {
             priority_rank: proposedReallocations.length + 1,
             route_id: route.route_id,
             route_evidence_as_of_ms: route.as_of_ms,
+            route_evidence_commitment: route.evidence_commitment,
+            route_evidence_checked_at_ms: route.evidence_checked_at_ms,
+            route_evidence_source: route.evidence_source,
+            route_observer_image_digest: route.worker_image_digest,
             from_account_commitment: source.account_commitment,
             from_venue_id: source.venue_id,
             to_account_commitment: request.account_commitment,
             to_venue_id: request.venue_id,
+            source_adapter_id: route.source_adapter_id,
+            destination_adapter_id: route.destination_adapter_id,
+            source_account_state_commitment: route.source_account_state_commitment,
+            destination_account_state_commitment: route.destination_account_state_commitment,
+            route_quote_commitment: route.quote_commitment,
             amount_micro_usdc: maximumNet,
             gross_debit_micro_usdc: grossDebit,
             fee_micro_usdc: route.fee_micro_usdc,
@@ -724,10 +733,19 @@ export function compileCarryCollateralReview(value) {
     operation: "owner_collateral_transfer_review",
     route_id: proposal.route_id,
     route_evidence_as_of_ms: proposal.route_evidence_as_of_ms,
+    route_evidence_commitment: proposal.route_evidence_commitment,
+    route_evidence_checked_at_ms: proposal.route_evidence_checked_at_ms,
+    route_evidence_source: proposal.route_evidence_source,
+    route_observer_image_digest: proposal.route_observer_image_digest,
     from_account_commitment: proposal.from_account_commitment,
     from_venue_id: proposal.from_venue_id,
     to_account_commitment: proposal.to_account_commitment,
     to_venue_id: proposal.to_venue_id,
+    source_adapter_id: proposal.source_adapter_id,
+    destination_adapter_id: proposal.destination_adapter_id,
+    source_account_state_commitment: proposal.source_account_state_commitment,
+    destination_account_state_commitment: proposal.destination_account_state_commitment,
+    route_quote_commitment: proposal.route_quote_commitment,
     amount_micro_usdc: proposal.amount_micro_usdc,
     gross_debit_micro_usdc: proposal.gross_debit_micro_usdc,
     fee_micro_usdc: proposal.fee_micro_usdc,
@@ -890,10 +908,19 @@ export function normalizeCarryCollateralReviewPayload(value) {
     operation: "owner_collateral_transfer_review",
     route_id: proposal.route_id,
     route_evidence_as_of_ms: proposal.route_evidence_as_of_ms,
+    route_evidence_commitment: proposal.route_evidence_commitment,
+    route_evidence_checked_at_ms: proposal.route_evidence_checked_at_ms,
+    route_evidence_source: proposal.route_evidence_source,
+    route_observer_image_digest: proposal.route_observer_image_digest,
     from_account_commitment: proposal.from_account_commitment,
     from_venue_id: proposal.from_venue_id,
     to_account_commitment: proposal.to_account_commitment,
     to_venue_id: proposal.to_venue_id,
+    source_adapter_id: proposal.source_adapter_id,
+    destination_adapter_id: proposal.destination_adapter_id,
+    source_account_state_commitment: proposal.source_account_state_commitment,
+    destination_account_state_commitment: proposal.destination_account_state_commitment,
+    route_quote_commitment: proposal.route_quote_commitment,
     amount_micro_usdc: proposal.amount_micro_usdc,
     gross_debit_micro_usdc: proposal.gross_debit_micro_usdc,
     fee_micro_usdc: proposal.fee_micro_usdc,
@@ -1074,10 +1101,21 @@ function normalizeCollateralReviewInstruction(value, reviewId, type) {
       ...base,
       route_id: identifier(raw.route_id, "carry_collateral_review_transfer_route"),
       route_evidence_as_of_ms: positiveInteger(raw.route_evidence_as_of_ms, "carry_collateral_review_transfer_route_as_of"),
+      route_evidence_commitment: identifier(raw.route_evidence_commitment, "carry_collateral_review_transfer_route_evidence"),
+      route_evidence_checked_at_ms: positiveInteger(raw.route_evidence_checked_at_ms, "carry_collateral_review_transfer_route_checked_at"),
+      route_evidence_source: raw.route_evidence_source === "attested_worker"
+        ? "attested_worker"
+        : fail("carry_collateral_review_transfer_route_source"),
+      route_observer_image_digest: identifier(raw.route_observer_image_digest, "carry_collateral_review_transfer_route_image"),
       from_account_commitment: fromAccount,
       from_venue_id: fromVenue,
       to_account_commitment: toAccount,
       to_venue_id: toVenue,
+      source_adapter_id: identifier(raw.source_adapter_id, "carry_collateral_review_transfer_source_adapter"),
+      destination_adapter_id: identifier(raw.destination_adapter_id, "carry_collateral_review_transfer_destination_adapter"),
+      source_account_state_commitment: identifier(raw.source_account_state_commitment, "carry_collateral_review_transfer_source_state"),
+      destination_account_state_commitment: identifier(raw.destination_account_state_commitment, "carry_collateral_review_transfer_destination_state"),
+      route_quote_commitment: identifier(raw.route_quote_commitment, "carry_collateral_review_transfer_quote"),
       gross_debit_micro_usdc: grossDebit,
       fee_micro_usdc: fee,
       estimated_latency_ms: estimatedLatency,
@@ -1098,7 +1136,7 @@ function normalizeCollateralReviewInstruction(value, reviewId, type) {
 function sameCollateralInstructions(actual, expected, type) {
   if (actual.length !== expected.length) return false;
   const fields = type === "transfer"
-    ? ["instruction_id", "sequence", "operation", "route_id", "route_evidence_as_of_ms", "from_account_commitment", "from_venue_id", "to_account_commitment", "to_venue_id", "amount_micro_usdc", "gross_debit_micro_usdc", "fee_micro_usdc", "estimated_latency_ms", "expected_arrival_at_ms", "destination_runway_deadline_at_ms", "destination_runway_at_arrival_ms", "minimum_arrival_buffer_ms", "route_verified", "owner_signature_required", "execution_authorized", "transaction_broadcast"]
+    ? ["instruction_id", "sequence", "operation", "route_id", "route_evidence_as_of_ms", "route_evidence_commitment", "route_evidence_checked_at_ms", "route_evidence_source", "route_observer_image_digest", "from_account_commitment", "from_venue_id", "to_account_commitment", "to_venue_id", "source_adapter_id", "destination_adapter_id", "source_account_state_commitment", "destination_account_state_commitment", "route_quote_commitment", "amount_micro_usdc", "gross_debit_micro_usdc", "fee_micro_usdc", "estimated_latency_ms", "expected_arrival_at_ms", "destination_runway_deadline_at_ms", "destination_runway_at_arrival_ms", "minimum_arrival_buffer_ms", "route_verified", "owner_signature_required", "execution_authorized", "transaction_broadcast"]
     : ["instruction_id", "sequence", "operation", "account_commitment", "venue_id", "amount_micro_usdc", "owner_signature_required", "execution_authorized", "transaction_broadcast"];
   return actual.every((instruction, index) => fields.every((field) => instruction[field] === expected[index][field]));
 }
@@ -2320,6 +2358,7 @@ function normalizeCarryTransferRouteEvidence(value) {
   exactVersion(raw.version, "carry_transfer_route_version");
   if (raw.settlement_asset !== "USDC") fail("carry_transfer_route_settlement_asset");
   if (raw.owner_approval_required !== true
+    || raw.fund_movement_authorized !== false
     || raw.transaction_broadcast !== false
     || raw.automatic_transfer_permitted !== false) {
     fail("carry_transfer_route_authority_boundary");
@@ -2327,24 +2366,50 @@ function normalizeCarryTransferRouteEvidence(value) {
   const fromAccount = identifier(raw.from_account_commitment, "carry_transfer_route_from_account");
   const toAccount = identifier(raw.to_account_commitment, "carry_transfer_route_to_account");
   if (fromAccount === toAccount) fail("carry_transfer_route_distinct_accounts");
+  const fromVenue = carryExecutionVenue(raw.from_venue_id, "carry_transfer_route_from_venue");
+  const toVenue = carryExecutionVenue(raw.to_venue_id, "carry_transfer_route_to_venue");
+  const sourceAdapterId = identifier(raw.source_adapter_id, "carry_transfer_route_source_adapter");
+  const destinationAdapterId = identifier(raw.destination_adapter_id, "carry_transfer_route_destination_adapter");
+  if (fromVenue === toVenue
+    || venueAdapterCapability(fromVenue, "carry_execution")?.adapter_id !== sourceAdapterId
+    || venueAdapterCapability(toVenue, "carry_execution")?.adapter_id !== destinationAdapterId) {
+    fail("carry_transfer_route_adapter_binding");
+  }
+  const evidenceCheckedAtMs = positiveInteger(raw.evidence_checked_at_ms, "carry_transfer_route_evidence_checked_at");
+  const asOfMs = positiveInteger(raw.as_of_ms, "carry_transfer_route_as_of");
+  if (asOfMs > evidenceCheckedAtMs + 5_000 || evidenceCheckedAtMs - asOfMs > 300_000) {
+    fail("carry_transfer_route_evidence_time_mismatch");
+  }
   const minimumTransfer = nonNegativeInteger(raw.minimum_transfer_micro_usdc, "carry_transfer_route_minimum");
   const maximumTransfer = nonNegativeInteger(raw.maximum_transfer_micro_usdc, "carry_transfer_route_maximum");
   if (maximumTransfer < minimumTransfer) fail("carry_transfer_route_capacity_invalid");
   return Object.freeze({
     version: 1,
     route_id: identifier(raw.route_id, "carry_transfer_route_id"),
+    evidence_source: raw.evidence_source === "attested_worker"
+      ? "attested_worker"
+      : fail("carry_transfer_route_evidence_source"),
+    evidence_commitment: identifier(raw.evidence_commitment, "carry_transfer_route_evidence_commitment"),
+    evidence_checked_at_ms: evidenceCheckedAtMs,
+    worker_image_digest: identifier(raw.worker_image_digest, "carry_transfer_route_worker_image"),
     from_account_commitment: fromAccount,
-    from_venue_id: carryExecutionVenue(raw.from_venue_id, "carry_transfer_route_from_venue"),
+    from_venue_id: fromVenue,
     to_account_commitment: toAccount,
-    to_venue_id: carryExecutionVenue(raw.to_venue_id, "carry_transfer_route_to_venue"),
+    to_venue_id: toVenue,
+    source_adapter_id: sourceAdapterId,
+    destination_adapter_id: destinationAdapterId,
+    source_account_state_commitment: identifier(raw.source_account_state_commitment, "carry_transfer_route_source_state"),
+    destination_account_state_commitment: identifier(raw.destination_account_state_commitment, "carry_transfer_route_destination_state"),
+    quote_commitment: identifier(raw.quote_commitment, "carry_transfer_route_quote"),
     settlement_asset: "USDC",
     status: enumValue(raw.status, new Set(["available", "degraded", "unavailable"]), "carry_transfer_route_status"),
     minimum_transfer_micro_usdc: minimumTransfer,
     maximum_transfer_micro_usdc: maximumTransfer,
     fee_micro_usdc: nonNegativeInteger(raw.fee_micro_usdc, "carry_transfer_route_fee"),
     estimated_latency_ms: boundedInteger(raw.estimated_latency_ms, 0, 7 * DAY_MS, "carry_transfer_route_latency"),
-    as_of_ms: positiveInteger(raw.as_of_ms, "carry_transfer_route_as_of"),
+    as_of_ms: asOfMs,
     owner_approval_required: true,
+    fund_movement_authorized: false,
     transaction_broadcast: false,
     automatic_transfer_permitted: false,
   });

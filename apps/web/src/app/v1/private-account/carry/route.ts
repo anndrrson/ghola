@@ -259,6 +259,22 @@ export async function POST(req: NextRequest) {
       venue_access: Object.fromEntries(selected.map((venueId) => [venueId, workerVenueAccess(accesses[venueId], owner.owner_commitment)])),
     };
   }
+  if (["capital_plan", "collateral_review", "value_report"].includes(action)) {
+    body = {
+      version: 1,
+      owner_commitment: owner.owner_commitment,
+      owner_capital_budget_micro_usdc: input.owner_capital_budget_micro_usdc,
+      max_data_age_ms: input.max_data_age_ms,
+      minimum_transfer_arrival_buffer_ms: input.minimum_transfer_arrival_buffer_ms,
+    };
+  }
+  if (action === "approve_collateral_review") {
+    body = {
+      version: 1,
+      owner_commitment: owner.owner_commitment,
+      authorization: input.authorization,
+    };
+  }
   const authorization = workerAuthorizationHeader({
     fallbackToken: worker.token,
     method: "POST",

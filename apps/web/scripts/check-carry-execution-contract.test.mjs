@@ -822,6 +822,39 @@ test("rejects collateral review that can sign an unverified transfer route", () 
   );
 });
 
+test("rejects transfer routes that are not committed by the worker", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      transferRoutes: sources.transferRoutes.replaceAll(
+        "evidenceCommitment(evidence)",
+        '"caller_supplied_commitment"',
+      ),
+    }),
+    /carry_transfer_route_commitment_missing/,
+  );
+});
+
+test("rejects browser-supplied collateral routes", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webClient: `${sources.webClient}\nconst transfer_routes = [];`,
+    }),
+    /carry_transfer_routes_browser_injection_present/,
+  );
+});
+
+test("rejects a proxy that forwards collateral-route claims", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webRoute: `${sources.webRoute}\nconst transfer_routes = input.transfer_routes;`,
+    }),
+    /carry_transfer_routes_proxy_injection_present/,
+  );
+});
+
 test("rejects collateral review approval without durable replay protection", () => {
   assert.throws(
     () => checkCarryExecutionContract({

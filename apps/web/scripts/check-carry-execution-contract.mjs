@@ -25,6 +25,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   shadowSnapshot: "apps/private-agent-worker/src/execution/carry-shadow-snapshot.js",
   workerMandate: "apps/private-agent-worker/src/execution/carry-mandate.js",
   positions: "apps/private-agent-worker/src/execution/carry-positions.js",
+  transferRoutes: "apps/private-agent-worker/src/execution/carry-transfer-routes.js",
   recordScan: "apps/private-agent-worker/src/execution/carry-record-scan.js",
   loopSupervisor: "apps/private-agent-worker/src/execution/carry-loop-supervisor.js",
   executor: "apps/private-agent-worker/src/execution/carry-executor.js",
@@ -92,6 +93,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   lifecycleTest: "apps/private-agent-worker/test/carry-executor.test.js",
   workerMandateTest: "apps/private-agent-worker/test/carry-mandate.test.js",
   positionsTest: "apps/private-agent-worker/test/carry-positions.test.js",
+  transferRoutesTest: "apps/private-agent-worker/test/carry-transfer-routes.test.js",
   recordScanTest: "apps/private-agent-worker/test/carry-record-scan.test.js",
   loopSupervisorTest: "apps/private-agent-worker/test/carry-loop-supervisor.test.js",
   preflightTest: "apps/private-agent-worker/test/carry-preflight.test.js",
@@ -368,6 +370,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarry", "transfer_route_arrival_unsafe", "carry_transfer_arrival_safety_gate_missing");
   requireText("coreCarry", "gross_debit_micro_usdc", "carry_transfer_fee_debit_accounting_missing");
   requireText("coreCarry", "route_verified: true", "carry_transfer_route_proof_missing");
+  requireText("coreCarry", 'evidence_source: raw.evidence_source === "attested_worker"', "carry_transfer_attested_source_gate_missing");
+  requireText("coreCarry", "carry_transfer_route_adapter_binding", "carry_transfer_adapter_binding_missing");
   requireText("coreCarryTest", "aggregates shared accounts and proposes owner-only reallocation", "carry_portfolio_capital_account_test_missing");
   requireText("coreCarryTest", "never treats an unverified or late transfer as rescued margin", "carry_transfer_route_failure_test_missing");
   requireText("coreCarryTest", "rejects one account commitment claimed by multiple venues", "carry_portfolio_capital_account_collision_test_missing");
@@ -419,12 +423,20 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "capital_action_plan: capitalActionPlan", "carry_monitor_capital_evidence_missing");
   requireText("positionsTest", "stores an exact owner-only collateral recommendation without transferring", "carry_monitor_capital_plan_test_missing");
   requireText("positions", "export async function compileStoredCarryPortfolioCapitalPlan", "carry_portfolio_capital_worker_missing");
-  requireText("positions", "transfer_routes: transferRoutes", "carry_transfer_routes_worker_binding_missing");
+  requireText("transferRoutes", "export async function storeCarryTransferRouteEvidence", "carry_transfer_route_store_missing");
+  requireText("transferRoutes", "export async function loadCarryTransferRouteEvidence", "carry_transfer_route_loader_missing");
+  requireText("transferRoutes", "evidenceCommitment(evidence)", "carry_transfer_route_commitment_missing");
+  requireText("transferRoutes", 'evidence_source: "attested_worker"', "carry_transfer_route_attestation_missing");
+  requireText("transferRoutes", "venueAdapterCapability", "carry_transfer_route_registry_binding_missing");
+  requireText("transferRoutesTest", "stores only commitment-backed worker transfer-route evidence", "carry_transfer_route_worker_test_missing");
+  requireText("transferRoutesTest", "rejects tampered, stale, and registry-mismatched transfer routes", "carry_transfer_route_failure_test_missing");
+  requireText("positions", "loadCarryTransferRouteEvidence", "carry_transfer_routes_worker_binding_missing");
+  requireText("positions", 'transfer_route_evidence_status: routeEvidence.ok ? "verified" : "unavailable"', "carry_transfer_route_status_missing");
   requireText("positions", "carry_portfolio_capital_evidence_incomplete", "carry_portfolio_capital_incomplete_gate_missing");
   requireText("positionsTest", "compiles an owner-only portfolio capital plan from stored monitoring evidence", "carry_portfolio_capital_worker_test_missing");
   requireText("positionsTest", "transfer_route_missing:", "carry_transfer_routes_worker_test_missing");
   requireText("server", '"/carry/positions/capital-plan"', "carry_portfolio_capital_route_missing");
-  requireText("server", "transfer_routes: body.transfer_routes", "carry_transfer_routes_server_binding_missing");
+  forbidText("server", "transfer_routes: body.transfer_routes", "carry_transfer_routes_client_trust_present");
   requireText("coreCarry", "export function compileCarryCollateralReview", "carry_collateral_review_core_missing");
   requireText("coreCarry", "fund_movement_authorized: false", "carry_collateral_review_fund_boundary_missing");
   requireText("coreCarry", "carry_collateral_review_transfer_route_unverified", "carry_collateral_review_route_gate_missing");
@@ -463,10 +475,13 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "STRESS CAPITAL ·", "carry_terminal_stress_capital_missing");
   requireText("webClient", "getCarryPortfolioCapitalPlan", "carry_portfolio_capital_client_missing");
   requireText("webClient", "minimum_transfer_arrival_buffer_ms", "carry_transfer_routes_client_binding_missing");
+  forbidText("webClient", "transfer_routes", "carry_transfer_routes_browser_injection_present");
   requireText("webClient", "getCarryCollateralReview", "carry_collateral_review_client_missing");
   requireText("webClient", "approveCarryCollateralReview", "carry_collateral_review_approval_client_missing");
   requireText("webCollateralReview", "buildCarryCollateralReviewAuthorization", "carry_collateral_review_web_authorization_missing");
   requireText("webRoute", 'action === "capital_plan"', "carry_portfolio_capital_proxy_missing");
+  requireText("webRoute", '["capital_plan", "collateral_review", "value_report"].includes(action)', "carry_capital_proxy_allowlist_missing");
+  forbidText("webRoute", "transfer_routes", "carry_transfer_routes_proxy_injection_present");
   requireText("webRoute", 'action === "collateral_review"', "carry_collateral_review_proxy_missing");
   requireText("webRoute", 'action === "approve_collateral_review"', "carry_collateral_review_approval_proxy_missing");
   requireText("webCarryBuilder", "PORTFOLIO CAPITAL ·", "carry_terminal_portfolio_capital_missing");

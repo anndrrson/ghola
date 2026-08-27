@@ -18,6 +18,8 @@ import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 import { hasExactCarryFlatReconciliation } from "./carry-reconciliation.js";
 import { listAllCarryPositionRecords } from "./carry-record-scan.js";
 import { createCarryLoopSupervisor, disabledCarryLoopHealth } from "./carry-loop-supervisor.js";
+import { loadCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
+import { runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
 
 const OWNER = /^[A-Za-z0-9:_-]{8,180}$/;
 
@@ -346,7 +348,7 @@ export async function compileStoredCarryPortfolioCapitalPlan({
   owner_capital_budget_micro_usdc: ownerCapitalBudget = 0,
   max_data_age_ms: maxDataAgeMs = 30_000,
   minimum_transfer_arrival_buffer_ms: minimumTransferArrivalBufferMs = 300_000,
-  transfer_routes: transferRoutes = [],
+  env = process.env,
   now_ms: nowMs = Date.now(),
 }) {
   if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
@@ -373,16 +375,29 @@ export async function compileStoredCarryPortfolioCapitalPlan({
     };
   }
   try {
+    const routeEvidence = await loadCarryTransferRouteEvidence({
+      state,
+      owner_commitment: ownerCommitment,
+      now_ms: nowMs,
+      max_data_age_ms: maxAge,
+      expected_worker_image_digest: runtimeCarryQualificationImageDigest(env),
+    });
     const plan = compileCarryPortfolioCapitalPlan({
       version: 1,
       now_ms: nowMs,
       max_data_age_ms: maxAge,
       owner_capital_budget_micro_usdc: ownerCapitalBudget,
       minimum_transfer_arrival_buffer_ms: minimumTransferArrivalBufferMs,
-      transfer_routes: transferRoutes,
+      transfer_routes: routeEvidence.ok ? routeEvidence.routes : [],
       position_plans: unique.map((record) => record.latest_observation.capital_action_plan),
     });
-    return { ok: true, plan };
+    return {
+      ok: true,
+      plan,
+      transfer_route_evidence_status: routeEvidence.ok ? "verified" : "unavailable",
+      transfer_route_evidence_commitment: routeEvidence.ok ? routeEvidence.evidence.evidence_commitment : null,
+      transfer_route_evidence_error: routeEvidence.ok ? null : routeEvidence.error,
+    };
   } catch (error) {
     return denied(safeError(error));
   }
@@ -394,7 +409,7 @@ export async function compileStoredCarryCollateralReview({
   owner_capital_budget_micro_usdc: ownerCapitalBudget = 0,
   max_data_age_ms: maxDataAgeMs = 30_000,
   minimum_transfer_arrival_buffer_ms: minimumTransferArrivalBufferMs = 300_000,
-  transfer_routes: transferRoutes = [],
+  env = process.env,
   now_ms: nowMs = Date.now(),
 }) {
   if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
@@ -425,6 +440,13 @@ export async function compileStoredCarryCollateralReview({
     };
   }
   try {
+    const routeEvidence = await loadCarryTransferRouteEvidence({
+      state,
+      owner_commitment: ownerCommitment,
+      now_ms: nowMs,
+      max_data_age_ms: maxAge,
+      expected_worker_image_digest: runtimeCarryQualificationImageDigest(env),
+    });
     const ownerWallets = [...new Set(unique.map((record) =>
       record.position?.mandate_authorization?.signed_mandate?.owner_wallet_address
     ).filter(Boolean).map((address) => String(address).toLowerCase()))];
@@ -442,7 +464,7 @@ export async function compileStoredCarryCollateralReview({
       max_data_age_ms: maxAge,
       owner_capital_budget_micro_usdc: ownerCapitalBudget,
       minimum_transfer_arrival_buffer_ms: minimumTransferArrivalBufferMs,
-      transfer_routes: transferRoutes,
+      transfer_routes: routeEvidence.ok ? routeEvidence.routes : [],
       position_plans: positionPlans,
     });
     const planCommitment = collateralReviewPlanCommitment(review);
@@ -473,6 +495,9 @@ export async function compileStoredCarryCollateralReview({
       approval_receipt: activeApproval,
       followup_approval_receipt: latestApproval,
       outcome_receipt: outcomeReceipt,
+      transfer_route_evidence_status: routeEvidence.ok ? "verified" : "unavailable",
+      transfer_route_evidence_commitment: routeEvidence.ok ? routeEvidence.evidence.evidence_commitment : null,
+      transfer_route_evidence_error: routeEvidence.ok ? null : routeEvidence.error,
     };
   } catch (error) {
     return denied(safeError(error));
@@ -483,6 +508,7 @@ export async function approveStoredCarryCollateralReview({
   state,
   owner_commitment: ownerCommitment,
   authorization: authorizationInput,
+  env = process.env,
   now_ms: nowMs = Date.now(),
 }) {
   if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
@@ -509,7 +535,7 @@ export async function approveStoredCarryCollateralReview({
       owner_capital_budget_micro_usdc: signed.capital_plan.owner_capital_budget_micro_usdc,
       max_data_age_ms: signed.max_data_age_ms,
       minimum_transfer_arrival_buffer_ms: signed.minimum_transfer_arrival_buffer_ms,
-      transfer_routes: signed.transfer_routes,
+      env,
       now_ms: signed.issued_at_ms,
     });
     if (!current.ok || carryCollateralReviewMessage(current.review) !== message) {
@@ -641,7 +667,7 @@ export async function compileStoredCarryPortfolioValueReport({
   owner_capital_budget_micro_usdc: ownerCapitalBudget = 0,
   max_data_age_ms: maxDataAgeMs = 30_000,
   minimum_transfer_arrival_buffer_ms: minimumTransferArrivalBufferMs = 300_000,
-  transfer_routes: transferRoutes = [],
+  env = process.env,
   now_ms: nowMs = Date.now(),
 }) {
   if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
@@ -652,7 +678,7 @@ export async function compileStoredCarryPortfolioValueReport({
     owner_capital_budget_micro_usdc: ownerCapitalBudget,
     max_data_age_ms: maxDataAgeMs,
     minimum_transfer_arrival_buffer_ms: minimumTransferArrivalBufferMs,
-    transfer_routes: transferRoutes,
+    env,
     now_ms: nowMs,
   });
   if (!capital.ok && capital.error !== "carry_portfolio_capital_evidence_incomplete") return capital;

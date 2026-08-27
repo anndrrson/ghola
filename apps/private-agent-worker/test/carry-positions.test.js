@@ -16,6 +16,7 @@ import {
   requestStoredCarryPositionExit,
   runCarryMonitoringTick,
 } from "../src/execution/carry-positions.js";
+import { storeCarryTransferRouteEvidence } from "../src/execution/carry-transfer-routes.js";
 import { createWorkerState } from "../src/state/private-state.js";
 import {
   signedCarryCollateralReviewAuthorization,
@@ -25,6 +26,7 @@ import {
 
 const NOW = 1_800_000_000_000;
 const OWNER = "owner:commitment:0001";
+const ROUTE_ENV = { PRIVATE_AGENT_IMAGE_DIGEST: `sha256:${"a".repeat(64)}` };
 
 test("persists a Carry Position, lifecycle, and final value proof across state reload", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-"));
@@ -817,15 +819,27 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
   assert.equal(unrouted.plan.total_proposed_internal_reallocation_micro_usdc, 0);
   assert.equal(unrouted.plan.net_new_owner_capital_requested_micro_usdc, 10_000_003);
   assert.ok(unrouted.plan.transfer_route_failures.some((reason) => reason.startsWith("transfer_route_missing:")));
+  assert.equal(unrouted.transfer_route_evidence_status, "unavailable");
+  await storeCarryTransferRouteEvidence({
+    state,
+    owner_commitment: OWNER,
+    worker_image_digest: ROUTE_ENV.PRIVATE_AGENT_IMAGE_DIGEST,
+    routes: [transferRoute()],
+    checked_at_ms: NOW + 100,
+    expires_at_ms: NOW + 30_000,
+    now_ms: NOW + 100,
+  });
   const result = await compileStoredCarryPortfolioCapitalPlan({
     state,
     owner_commitment: OWNER,
     owner_capital_budget_micro_usdc: 5_000_000,
     max_data_age_ms: 30_000,
-    transfer_routes: [transferRoute()],
+    env: ROUTE_ENV,
     now_ms: NOW + 100,
   });
   assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.transfer_route_evidence_status, "verified");
+  assert.match(result.transfer_route_evidence_commitment, /^carry:transfer-routes:evidence:/);
   assert.equal(result.plan.status, "owner_action_required");
   assert.equal(result.plan.total_requested_micro_usdc, 10_000_003);
   assert.equal(result.plan.total_potential_releasable_micro_usdc, 9_999_997);
@@ -846,7 +860,7 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
     owner_commitment: OWNER,
     owner_capital_budget_micro_usdc: 5_000_000,
     max_data_age_ms: 30_000,
-    transfer_routes: [transferRoute()],
+    env: ROUTE_ENV,
     now_ms: NOW + 100,
   });
   assert.equal(review.ok, true, JSON.stringify(review));
@@ -863,6 +877,7 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
     state,
     owner_commitment: OWNER,
     authorization: reviewAuthorization,
+    env: ROUTE_ENV,
     now_ms: NOW + 101,
   })));
   const approval = concurrentApprovals.find((result) => result.ok === true);
@@ -881,7 +896,7 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
     owner_commitment: OWNER,
     owner_capital_budget_micro_usdc: 5_000_000,
     max_data_age_ms: 30_000,
-    transfer_routes: [transferRoute()],
+    env: ROUTE_ENV,
     now_ms: NOW + 103,
   });
   assert.equal(persistedApproval.ok, true, JSON.stringify(persistedApproval));
@@ -894,6 +909,7 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
     state: createWorkerState(dir),
     owner_commitment: OWNER,
     authorization: reviewAuthorization,
+    env: ROUTE_ENV,
     now_ms: NOW + 102,
   });
   assert.deepEqual(replay, { ok: false, error: "carry_collateral_review_replayed" });
@@ -902,7 +918,7 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
     owner_commitment: OWNER,
     owner_capital_budget_micro_usdc: 5_000_000,
     max_data_age_ms: 30_000,
-    transfer_routes: [transferRoute()],
+    env: ROUTE_ENV,
     now_ms: NOW + 100,
   });
   assert.equal(value.ok, true, JSON.stringify(value));
@@ -941,7 +957,7 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
     owner_commitment: OWNER,
     owner_capital_budget_micro_usdc: 5_000_000,
     max_data_age_ms: 30_000,
-    transfer_routes: [transferRoute()],
+    env: ROUTE_ENV,
     now_ms: NOW + 201,
   });
   assert.equal(verifiedOutcome.ok, true, JSON.stringify(verifiedOutcome));
@@ -1132,6 +1148,11 @@ function transferRoute(overrides = {}) {
     from_venue_id: "lighter",
     to_account_commitment: "account:hyperliquid:0001",
     to_venue_id: "hyperliquid",
+    source_adapter_id: "lighter_v1",
+    destination_adapter_id: "hyperliquid_v1",
+    source_account_state_commitment: "carry:account-state:lighter:0001",
+    destination_account_state_commitment: "carry:account-state:hyperliquid:0001",
+    quote_commitment: "carry:transfer-quote:0001",
     settlement_asset: "USDC",
     status: "available",
     minimum_transfer_micro_usdc: 0,
@@ -1140,6 +1161,7 @@ function transferRoute(overrides = {}) {
     estimated_latency_ms: 60_000,
     as_of_ms: NOW + 100,
     owner_approval_required: true,
+    fund_movement_authorized: false,
     transaction_broadcast: false,
     automatic_transfer_permitted: false,
     ...overrides,

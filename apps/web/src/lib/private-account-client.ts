@@ -942,7 +942,6 @@ export async function listCarryPositions() {
 
 export async function getCarryPortfolioCapitalPlan(
   owner_capital_budget_micro_usdc = 0,
-  transfer_routes: Record<string, unknown>[] = [],
   minimum_transfer_arrival_buffer_ms = 300_000,
 ) {
   return privateAccountFetch("/v1/private-account/carry", {
@@ -952,14 +951,12 @@ export async function getCarryPortfolioCapitalPlan(
       owner_capital_budget_micro_usdc,
       max_data_age_ms: 30_000,
       minimum_transfer_arrival_buffer_ms,
-      transfer_routes,
     }),
   });
 }
 
 export async function getCarryCollateralReview(
   owner_capital_budget_micro_usdc = 0,
-  transfer_routes: Record<string, unknown>[] = [],
   minimum_transfer_arrival_buffer_ms = 300_000,
 ) {
   return privateAccountFetch("/v1/private-account/carry", {
@@ -969,7 +966,6 @@ export async function getCarryCollateralReview(
       owner_capital_budget_micro_usdc,
       max_data_age_ms: 30_000,
       minimum_transfer_arrival_buffer_ms,
-      transfer_routes,
     }),
   });
 }
@@ -983,7 +979,6 @@ export async function approveCarryCollateralReview(authorization: Record<string,
 
 export async function getCarryPortfolioValueReport(
   owner_capital_budget_micro_usdc = 0,
-  transfer_routes: Record<string, unknown>[] = [],
   minimum_transfer_arrival_buffer_ms = 300_000,
 ) {
   return privateAccountFetch("/v1/private-account/carry", {
@@ -993,7 +988,6 @@ export async function getCarryPortfolioValueReport(
       owner_capital_budget_micro_usdc,
       max_data_age_ms: 30_000,
       minimum_transfer_arrival_buffer_ms,
-      transfer_routes,
     }),
   });
 }
