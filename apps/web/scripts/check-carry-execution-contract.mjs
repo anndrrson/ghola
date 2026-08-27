@@ -20,6 +20,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   workerPackage: "apps/private-agent-worker/package.json",
   preflight: "apps/private-agent-worker/src/execution/carry-preflight.js",
   fundingPersistence: "apps/private-agent-worker/src/execution/carry-funding-persistence.js",
+  shadowQualification: "apps/private-agent-worker/src/execution/carry-shadow-qualification.js",
   workerMandate: "apps/private-agent-worker/src/execution/carry-mandate.js",
   positions: "apps/private-agent-worker/src/execution/carry-positions.js",
   executor: "apps/private-agent-worker/src/execution/carry-executor.js",
@@ -79,6 +80,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   positionsTest: "apps/private-agent-worker/test/carry-positions.test.js",
   preflightTest: "apps/private-agent-worker/test/carry-preflight.test.js",
   fundingPersistenceTest: "apps/private-agent-worker/test/carry-funding-persistence.test.js",
+  shadowQualificationTest: "apps/private-agent-worker/test/carry-shadow-qualification.test.js",
   serverTest: "apps/private-agent-worker/test/server.test.js",
   qualificationTest: "apps/private-agent-worker/test/carry-qualification.test.js",
   readinessTest: "apps/private-agent-worker/test/carry-readiness.test.js",
@@ -465,12 +467,17 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifier", "final_owner_binding_mismatch", "carry_release_verifier_owner_lineage_missing");
   requireText("evidenceVerifierTest", "rejects lifecycle proof whose owner, position, or leg belongs to another account", "carry_release_verifier_account_lineage_test_missing");
   requireText("releaseMaterial", "worker_material_commitment", "carry_release_material_commitment_missing");
+  requireText("releaseMaterial", "readCarryShadowQualification", "carry_release_shadow_qualification_gate_missing");
+  requireText("releaseMaterial", "shadow_qualification: {", "carry_release_shadow_qualification_evidence_missing");
   requireText("releaseMaterial", "const fundingLegId = carryPositionLegId(record.position, sagaLeg.venue_id)", "carry_release_canonical_funding_leg_missing");
   requireText("releaseMaterial", 'funding_micro_usdc: sumSignedEntries(fundingLedgerEntries, "funding")', "carry_release_leg_funding_missing");
   requireText("releaseMaterialTest", "funding_micro_usdc), [60, -10]", "carry_release_leg_funding_test_missing");
   requireText("releaseMaterialTest", "carryPositionLegId({ position_id: positionId", "carry_release_canonical_funding_leg_test_missing");
   requireText("evidenceVerifier", "realized_funding_evidence_mismatch", "carry_release_funding_reconciliation_missing");
+  requireText("evidenceVerifier", "shadow_qualification_image_mismatch", "carry_release_shadow_image_verifier_missing");
+  requireText("evidenceVerifier", "shadow_qualification_samples_incomplete", "carry_release_shadow_soak_verifier_missing");
   requireText("evidenceVerifierTest", "rejects funding not reconciled to exact venue legs", "carry_release_funding_reconciliation_test_missing");
+  requireText("evidenceVerifierTest", "rejects missing, incomplete, or image-mismatched five-venue shadow qualification", "carry_release_shadow_qualification_test_missing");
   requireText("privateExecution", "submit_count: 1", "durable_submit_count_missing");
   requireText("privateExecution", "ambiguity_retry_count: 0", "durable_retry_count_missing");
   requireText("privateExecution", 'venueAdapterCapability(venueId, capability)', "worker_carry_capability_registry_missing");
@@ -533,7 +540,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("fundingPersistence", "percentile(shortRates, 0.25", "carry_funding_adverse_short_quartile_missing");
   requireText("fundingPersistence", "observeCarryFundingUniverse", "carry_funding_shadow_observer_missing");
   requireText("fundingPersistence", "startCarryFundingObservationLoop", "carry_unattended_funding_observer_missing");
+  requireText("fundingPersistence", "observeCarryShadowQualification", "carry_shadow_qualification_observer_missing");
+  requireText("shadowQualification", "verifyCarryShadowSoak", "carry_shadow_qualification_soak_missing");
+  requireText("shadowQualification", "PHALA_CVM_IMAGE_DIGEST", "carry_shadow_qualification_image_binding_missing");
+  requireText("shadowQualification", "sample_results: sampleResults", "carry_shadow_qualification_persistence_missing");
+  requireText("shadowQualification", "transaction_broadcast: false", "carry_shadow_qualification_no_broadcast_missing");
+  requireText("shadowQualificationTest", "persists three consecutive complete five-venue samples without broadcasting", "carry_shadow_qualification_test_missing");
+  requireText("shadowQualificationTest", "resets consecutive qualification after one failed venue sample", "carry_shadow_qualification_reset_test_missing");
+  requireText("shadowQualificationTest", "fails closed for stale, tampered, or differently pinned qualification", "carry_shadow_qualification_integrity_test_missing");
   requireText("server", "funding_persistence: fundingPersistence", "carry_funding_shadow_cycle_missing");
+  requireText("server", "shadow_qualification: shadowQualification", "carry_shadow_qualification_cycle_missing");
   requireText("server", "carryFundingObservationLoop?.stop?.()", "carry_unattended_funding_observer_lifecycle_missing");
   requireText("fundingPersistenceTest", "does not manufacture persistence from rapid duplicate checks", "carry_funding_duplicate_observation_test_missing");
   requireText("fundingPersistenceTest", "clips a current funding spike to adverse historical quartiles", "carry_funding_spike_test_missing");
@@ -551,12 +567,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS', "carry_monitor_interval_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ENABLED', "carry_shadow_observer_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_INTERVAL_MS', "carry_shadow_observer_interval_compose_missing");
+  requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_SAMPLES', "carry_shadow_qualification_samples_compose_missing");
+  requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_MAX_AGE_MS', "carry_shadow_qualification_freshness_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY', "carry_monitor_concurrency_compose_missing");
   requireText("positions", "mapConcurrentOrdered(records, concurrency", "carry_monitor_bounded_concurrency_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: "5000"', "carry_monitor_five_second_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS: "750"', "carry_market_data_skew_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS: "12"', "carry_index_basis_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS: "24"', "carry_mark_basis_runtime_test_missing");
+  requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_SAMPLES: "3"', "carry_shadow_qualification_samples_runtime_test_missing");
+  requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_MAX_AGE_MS: "600000"', "carry_shadow_qualification_freshness_runtime_test_missing");
   requireText("phalaConfig", "...expectedCarryWorkerConfig()", "carry_runtime_drift_gate_missing");
   requireText("phalaConfigTest", "pins an explicitly enabled capped Carry qualification runtime", "carry_runtime_drift_test_missing");
   requireText("server", 'req.headers["x-ghola-carry-qualification-confirmed"] === "true"', "worker_confirmation_header_missing");

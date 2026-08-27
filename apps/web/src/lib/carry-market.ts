@@ -88,12 +88,28 @@ export interface CarryFundingEvidence {
   detail: string;
 }
 
+export interface CarryShadowQualificationSummary {
+  version: 1;
+  ready: boolean;
+  release_bound: boolean;
+  transaction_broadcast: false;
+  image_digest: string;
+  checked_at_ms: number | null;
+  required_samples: number;
+  completed_samples: number;
+  venues: number;
+  assets: number;
+  requested_assets: string[];
+  failures: string[];
+}
+
 export interface CarryShadowResponse {
   version: 1;
   mode: "shadow_read_only";
   executable: false;
   observed_at: string;
   funding_persistence?: CarryFundingPersistenceSummary;
+  shadow_qualification?: CarryShadowQualificationSummary;
   venues: CarryVenueShadow[];
   error?: string;
 }

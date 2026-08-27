@@ -3,6 +3,7 @@ import { readCarryVenueQualification } from "./carry-qualification.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 import { carryPositionLegId } from "./carry-positions.js";
 import { assessCarryFlatReconciliation } from "./carry-reconciliation.js";
+import { readCarryShadowQualification } from "./carry-shadow-qualification.js";
 
 export async function buildCompletedCarryReleaseMaterial({
   state,
@@ -26,6 +27,14 @@ export async function buildCompletedCarryReleaseMaterial({
   }
   const contractEquivalence = releaseContractEquivalence(record.opportunity);
   if (!contractEquivalence.ok) return contractEquivalence;
+  const shadowQualification = await readCarryShadowQualification({
+    state,
+    now_ms: nowMs,
+    env,
+  });
+  if (!shadowQualification.ready || !shadowQualification.release_bound) {
+    return denied("carry_release_shadow_qualification_unproven");
+  }
   const finalState = record.final_reconciliation_evidence;
   const pair = [record.position.long_venue_id, record.position.short_venue_id];
   const accountCommitments = Object.fromEntries(pair.map((venueId) => [
@@ -98,6 +107,21 @@ export async function buildCompletedCarryReleaseMaterial({
       created_at: iso(record.position.created_at_ms),
     },
     contract_equivalence: contractEquivalence.evidence,
+    shadow_qualification: {
+      proven: true,
+      image_digest: shadowQualification.image_digest,
+      checked_at: iso(shadowQualification.checked_at_ms),
+      venues: shadowQualification.venues,
+      assets: shadowQualification.assets,
+      requested_assets: shadowQualification.requested_assets,
+      required_samples: shadowQualification.required_samples,
+      completed_samples: shadowQualification.completed_samples,
+      duration_ms: shadowQualification.duration_ms,
+      expected_snapshots_per_sample: shadowQualification.expected_snapshots_per_sample,
+      sample_commitments: shadowQualification.sample_commitments,
+      transaction_broadcast: false,
+      evidence_commitment: shadowQualification.evidence_commitment,
+    },
     mandate: {
       policy_commitment: mandate.authorization.mandate_commitment,
       signed_mandate: mandate.authorization.signed_mandate,

@@ -164,6 +164,18 @@ test("rejects five-venue shadow qualification based on one lucky snapshot", () =
   );
 });
 
+test("rejects release qualification that is not persistent and image-bound", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowQualification: sources.shadowQualification
+        .replaceAll("PHALA_CVM_IMAGE_DIGEST", "UNBOUND_IMAGE")
+        .replaceAll("sample_results: sampleResults", "sample_results: []"),
+    }),
+    /carry_shadow_qualification_image_binding_missing|carry_shadow_qualification_persistence_missing/,
+  );
+});
+
 test("rejects five-venue shadow evidence without exact sample commitments", () => {
   assert.throws(
     () => checkCarryExecutionContract({

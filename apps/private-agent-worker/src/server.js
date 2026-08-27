@@ -31,6 +31,7 @@ import {
   observeCarryFundingUniverse,
   startCarryFundingObservationLoop,
 } from "./execution/carry-funding-persistence.js";
+import { observeCarryShadowQualification } from "./execution/carry-shadow-qualification.js";
 import { readCarryExecutionReadiness } from "./execution/carry-readiness.js";
 import { executeStoredCarryEntry, startCarryExecutionLoop } from "./execution/carry-executor.js";
 import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-evidence.js";
@@ -2723,18 +2724,27 @@ export function createPrivateAgentWorkerServer(options = {}) {
           now_ms: observedAtMs,
           max_age_ms: 60_000,
         });
-        const fundingPersistence = await observeCarryFundingUniverse({
-          state,
-          venues,
-          assets,
-          now_ms: observedAtMs,
-        });
+        const [fundingPersistence, shadowQualification] = await Promise.all([
+          observeCarryFundingUniverse({
+            state,
+            venues,
+            assets,
+            now_ms: observedAtMs,
+          }),
+          observeCarryShadowQualification({
+            state,
+            venues,
+            assets,
+            now_ms: observedAtMs,
+          }),
+        ]);
         return json(res, 200, {
           version: 1,
           mode: "shadow_read_only",
           executable: false,
           observed_at: new Date(observedAtMs).toISOString(),
           readiness,
+          shadow_qualification: shadowQualification,
           funding_persistence: fundingPersistence,
           venues,
         });

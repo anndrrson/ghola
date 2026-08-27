@@ -495,6 +495,9 @@ describe("private agent worker", () => {
     assert.equal(body.readiness.venues, 5);
     assert.equal(body.readiness.expected_snapshots, 5);
     assert.deepEqual(body.readiness.failures, []);
+    assert.equal(body.shadow_qualification.ready, false);
+    assert.equal(body.shadow_qualification.completed_samples, 1);
+    assert.equal(body.shadow_qualification.transaction_broadcast, false);
     assert.equal(body.funding_persistence.transaction_broadcast, false);
     assert.equal(body.funding_persistence.observed_route_count, 6);
     assert.equal(Date.parse(body.observed_at), body.readiness.checked_at_ms);

@@ -37,6 +37,32 @@ export async function verifyCarryReleaseEvidence(evidence) {
   fail(/^https:\/\/[^/]+\.vercel\.app$/i.test(previewUrl), "candidate_url_invalid");
   fail(/^sha256:[0-9a-f]{12,128}$/.test(imageDigest), "worker_image_digest_invalid");
 
+  const shadowQualification = evidence?.shadow_qualification || {};
+  const shadowCheckedAt = timestamp(shadowQualification.checked_at);
+  const shadowRequiredSamples = positiveInteger(shadowQualification.required_samples);
+  const shadowCompletedSamples = positiveInteger(shadowQualification.completed_samples);
+  const shadowSampleCommitments = array(shadowQualification.sample_commitments);
+  fail(shadowQualification.proven === true, "shadow_qualification_unproven");
+  fail(String(shadowQualification.image_digest || "").toLowerCase() === imageDigest,
+    "shadow_qualification_image_mismatch");
+  fail(shadowQualification.venues === 5, "shadow_qualification_venue_coverage_invalid");
+  fail(shadowQualification.assets === 3, "shadow_qualification_asset_coverage_invalid");
+  fail(sameStrings(shadowQualification.requested_assets, ["BTC", "ETH", "SOL"]),
+    "shadow_qualification_assets_invalid");
+  fail(shadowRequiredSamples >= 3, "shadow_qualification_sample_floor_invalid");
+  fail(shadowCompletedSamples >= shadowRequiredSamples, "shadow_qualification_samples_incomplete");
+  fail(nonNegativeInteger(shadowQualification.duration_ms) !== null,
+    "shadow_qualification_duration_invalid");
+  fail(shadowQualification.expected_snapshots_per_sample === 15,
+    "shadow_qualification_snapshot_coverage_invalid");
+  fail(shadowSampleCommitments.length === shadowCompletedSamples
+    && new Set(shadowSampleCommitments).size === shadowSampleCommitments.length
+    && shadowSampleCommitments.every((value) => /^carry:shadow:sample:[0-9a-f]{64}$/.test(String(value || ""))),
+  "shadow_qualification_commitments_invalid");
+  fail(shadowQualification.transaction_broadcast === false, "shadow_qualification_broadcast_detected");
+  fail(/^carry:shadow:qualification:[0-9a-f]{64}$/.test(String(shadowQualification.evidence_commitment || "")),
+    "shadow_qualification_commitment_invalid");
+
   const position = evidence?.position || {};
   const notional = positiveInteger(position.target_notional_micro_usdc);
   const pair = [String(position.long_venue_id || ""), String(position.short_venue_id || "")];
@@ -48,6 +74,7 @@ export async function verifyCarryReleaseEvidence(evidence) {
 
   const createdAt = timestamp(position.created_at);
   fail(createdAt > 0, "position_timestamp_invalid");
+  fail(shadowCheckedAt > 0 && shadowCheckedAt <= createdAt, "shadow_qualification_timestamp_invalid");
   const contractEquivalence = evidence?.contract_equivalence || {};
   const equivalenceCheckedAt = timestamp(contractEquivalence.checked_at);
   const dataSkewMs = nonNegativeInteger(contractEquivalence.contract_data_skew_ms);
@@ -304,6 +331,13 @@ function verifyValueLedger({ ledger, entryLegs, exitLegs, failures }) {
 function sameVenueSet(rows, pair) {
   const venues = array(rows).map((row) => String(row?.venue_id || ""));
   return venues.length === pair.length && new Set(venues).size === pair.length && pair.every((venue) => venues.includes(venue));
+}
+
+function sameStrings(left, right) {
+  return Array.isArray(left)
+    && Array.isArray(right)
+    && left.length === right.length
+    && left.every((value, index) => value === right[index]);
 }
 
 function stableJson(value) {

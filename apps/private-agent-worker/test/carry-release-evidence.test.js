@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildCompletedCarryReleaseMaterial } from "../src/execution/carry-release-evidence.js";
 import { carryPositionLegId } from "../src/execution/carry-positions.js";
+import { observeCarryShadowQualification } from "../src/execution/carry-shadow-qualification.js";
+import { carryShadowFixture } from "./carry-shadow-fixture.js";
 import {
   carryRiskMandateMessage,
   normalizeCarryRiskMandateAuthorization,
@@ -30,6 +32,8 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.equal(result.material.monitoring.observation_count, 1);
   assert.equal(result.material.monitoring.margin_runways[0].status, "healthy");
   assert.equal(result.material.contract_equivalence.index_price_divergence_bps, 3);
+  assert.equal(result.material.shadow_qualification.proven, true);
+  assert.equal(result.material.shadow_qualification.completed_samples, 3);
   assert.equal(result.material.final_state.open_order_count, 0);
   assert.equal(result.material.final_state.owner_commitment, OWNER);
   assert.equal(result.material.final_state.carry_position_id, fixture.record.position.position_id);
@@ -294,13 +298,33 @@ async function stateFixture() {
     context.work_order_commitment,
     { submit_count: 1, ambiguity_retry_count: 0 },
   ]));
+  const shadowRows = new Map();
+  const shadowState = {
+    getIdempotency: async (key) => shadowRows.get(key) || null,
+    putIdempotency: async (key, receipt) => {
+      shadowRows.set(key, { receipt: structuredClone(receipt) });
+      return receipt;
+    },
+  };
+  for (let index = 0; index < 3; index += 1) {
+    const nowMs = NOW - 120_000 + index * 60_000;
+    await observeCarryShadowQualification({
+      state: shadowState,
+      venues: carryShadowFixture(nowMs),
+      now_ms: nowMs,
+      env: {
+        PHALA_CVM_IMAGE_DIGEST: IMAGE,
+        PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_SAMPLES: "3",
+      },
+    });
+  }
   const state = {
     getCarryPositionRecord: async () => record,
     getMultiLegSaga: async (id) => id === entrySaga.saga_id ? entrySaga : exitSaga,
     getExecutionAttempt: async (key) => attempts[key] || null,
     getIdempotency: async (key) => key.startsWith("carry:qualification:aster:")
       ? { receipt: qualification }
-      : receipts[key] || null,
+      : shadowRows.get(key) || receipts[key] || null,
   };
   return { state, record, attempts, receipts };
 }
