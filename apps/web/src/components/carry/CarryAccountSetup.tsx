@@ -60,6 +60,7 @@ import {
   fetchLighterActivationReadiness,
   type LighterActivationReadiness,
 } from "@/lib/lighter-activation-readiness";
+import { shouldResumeUnsignedTurnkeySetup } from "@/lib/carry-setup-auth-recovery";
 
 type VenueState = "connected" | "needed" | "unavailable";
 type VenueActivation = { venue: "aster" | "lighter"; ownerAddress: string };
@@ -242,7 +243,11 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       setAster("connected");
       await refresh();
     } catch (caught) {
-      if (usingTurnkeyOwner && !completionAttempted && isExpiredPerpsSession(caught)) {
+      if (shouldResumeUnsignedTurnkeySetup({
+        usingTurnkeyOwner,
+        authorizationProofCreated: completionAttempted,
+        error: caught,
+      })) {
         if (prepared && !signature) {
           const unsignedPending = { preparation: prepared };
           setPendingAsterLinkRecovery(unsignedPending);
@@ -519,7 +524,11 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       setLighter("connected");
       await refresh();
     } catch (caught) {
-      if (usingTurnkeyOwner && !pending && isExpiredPerpsSession(caught)) {
+      if (shouldResumeUnsignedTurnkeySetup({
+        usingTurnkeyOwner,
+        authorizationProofCreated: Boolean(pending?.authorization),
+        error: caught,
+      })) {
         await perpsTurnkey.logout().catch(() => {});
         setPendingLighterAuthorization(true);
         setError("Secure wallet session expired. Continue authentication below; no Lighter key was submitted.");
@@ -1013,11 +1022,6 @@ function activationRequirement(ownerAddress: string): VenueAccountActivationRequ
 function isTurnkeyResourceMissing(message: string): boolean {
   return message.includes("Could not find any resource to sign with") &&
     message.includes("Addresses are case sensitive");
-}
-
-function isExpiredPerpsSession(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error || "");
-  return /no active session found|requires a valid session/i.test(message);
 }
 
 function walletErrorCode(error: unknown): number {

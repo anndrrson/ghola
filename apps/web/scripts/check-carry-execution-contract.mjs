@@ -62,6 +62,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webAccountConnectionsTest: "apps/web/src/lib/carry-account-connections.test.ts",
   webOnboardingRecovery: "apps/web/src/lib/carry-onboarding-recovery.ts",
   webOnboardingRecoveryTest: "apps/web/src/lib/carry-onboarding-recovery.test.ts",
+  webSetupAuthRecovery: "apps/web/src/lib/carry-setup-auth-recovery.ts",
+  webSetupAuthRecoveryTest: "apps/web/src/lib/carry-setup-auth-recovery.test.ts",
   webPrivateAccount: "apps/web/src/lib/private-account.ts",
   webPrivateAccountTest: "apps/web/src/lib/private-account.test.ts",
   webPrivateAccountStore: "apps/web/src/lib/private-account-store.ts",
@@ -146,6 +148,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("multiLegOrchestratorTest", "CARRY_EXECUTION_VENUES.flatMap", "carry_three_venue_recovery_matrix_missing");
   requireText("multiLegOrchestratorTest", "hedgeVenue !== filledVenue", "carry_ordered_pair_recovery_matrix_missing");
   requireText("multiLegOrchestratorTest", "reduce_only === true", "carry_recovery_reduce_only_assertion_missing");
+  requireText("webAccountSetup", "shouldResumeUnsignedTurnkeySetup", "carry_setup_session_recovery_missing");
+  requireText("webSetupAuthRecovery", "!input.usingTurnkeyOwner || input.authorizationProofCreated", "carry_setup_auth_proof_boundary_missing");
+  requireText("webSetupAuthRecoveryTest", "reauthenticates an exact prepared action", "carry_setup_unsigned_recovery_test_missing");
+  requireText("webSetupAuthRecoveryTest", "never reauthenticates as a substitute for reconciling", "carry_setup_authorization_reconciliation_test_missing");
   requireText("registry", "export const CARRY_BROWSER_STREAM_VENUES", "browser_stream_capability_registry_missing");
   requireText("registry", "export function venueAdapterCapability", "adapter_capability_lookup_missing");
   requireText("registry", "export function venuesWithAdapterCapability", "adapter_capability_query_missing");
