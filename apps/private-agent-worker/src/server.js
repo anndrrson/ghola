@@ -46,6 +46,7 @@ import { carrySupervisionHealth } from "./execution/carry-loop-supervisor.js";
 import { createCarryTransferRouteProbe } from "./execution/carry-transfer-probe.js";
 import { createCarryTransferVenueReaders } from "./execution/carry-transfer-venue-readers.js";
 import { createAsterStablecoinConversionQuoteReader } from "./execution/carry-stablecoin-conversion.js";
+import { createCarryDepositQuoteReader } from "./execution/carry-deposit-quote.js";
 import {
   approveStoredCarryCollateralReview,
   compileStoredCarryCollateralReview,
@@ -2662,8 +2663,15 @@ export function createPrivateAgentWorkerServer(options = {}) {
     receiptSigner: options.krakenV2ReceiptSigner,
   });
   const fetchPerpShadowSet = options.fetchPerpShadowSet || fetchCorePerpShadowSet;
+  const readCarryDepositQuote = options.readCarryDepositQuote
+    || (options.carryDepositPolicies
+      ? createCarryDepositQuoteReader({
+          deposit_policies: options.carryDepositPolicies,
+          fetchImpl: options.fetchImpl || fetch,
+        })
+      : undefined);
   const carryTransferRouteReaders = options.carryTransferRouteReaders
-    || (options.readCarryDepositQuote
+    || (readCarryDepositQuote
       ? createCarryTransferVenueReaders({
           read_account_capacity: options.readCarryAccountCapacity
             || ((request, probeContext) => readPrivateCarryAccountCapacity({
@@ -2671,7 +2679,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
               probe_context: probeContext,
               recipient,
             })),
-          read_deposit_quote: options.readCarryDepositQuote,
+          read_deposit_quote: readCarryDepositQuote,
           read_lighter_withdrawal_quote: options.readLighterWithdrawalQuote
             || ((request, probeContext) => readLighterCarryWithdrawalRoute({
               request,
