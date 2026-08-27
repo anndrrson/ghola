@@ -146,12 +146,13 @@ export function CarryChartStrip({
     24,
     clock,
   ), [clock, effectiveVenues]);
-  const executionCandidates = useMemo(() => pricedCandidates.filter(({ candidate }) =>
-    isCarryExecutionVenue(candidate.long.venue_id) && isCarryExecutionVenue(candidate.short.venue_id)
-  ), [pricedCandidates]);
-  const observedCandidates = useMemo(() => bestRoutePerAsset(pricedCandidates.filter(({ candidate }) =>
+  const freshCandidates = useMemo(() => pricedCandidates.filter(({ candidate }) =>
     carryCandidateAgeMs(candidate, clock) <= CARRY_ROUTE_DISPLAY_MAX_AGE_MS
-  )), [clock, pricedCandidates]);
+  ), [clock, pricedCandidates]);
+  const executionCandidates = useMemo(() => freshCandidates.filter(({ candidate }) =>
+    isCarryExecutionVenue(candidate.long.venue_id) && isCarryExecutionVenue(candidate.short.venue_id)
+  ), [freshCandidates]);
+  const observedCandidates = useMemo(() => bestRoutePerAsset(freshCandidates), [freshCandidates]);
   const selected = observedCandidates.find(({ candidate }) => candidate.asset === asset) || null;
   const assetExecutionCandidates = executionCandidates.filter(({ candidate }) => candidate.asset === asset);
   const preferredExecutionRouteKey = isCarryExecutionVenue(preferredLongVenue)
@@ -160,8 +161,9 @@ export function CarryChartStrip({
     ? `${asset}:${preferredLongVenue}:${preferredShortVenue}`
     : "";
   const selectedExecution = assetExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === executionRouteKey)
-    || assetExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === preferredExecutionRouteKey)
-    || assetExecutionCandidates[0]
+    || (preferredExecutionRouteKey
+      ? assetExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === preferredExecutionRouteKey)
+      : assetExecutionCandidates[0])
     || null;
   const selectedAgeMs = selected ? carryCandidateAgeMs(selected.candidate, clock) : Number.POSITIVE_INFINITY;
   const selectedHasPositiveNet = selected ? routeHasPositiveNet(selected.quote) : false;
@@ -340,6 +342,17 @@ export function CarryChartStrip({
                 onAutoRunNoSubmitConsumed={onAutoRunNoSubmitConsumed}
               />
             </>
+          ) : preferredExecutionRouteKey && assetExecutionCandidates.length > 0 ? (
+            <div className="mt-2 flex min-h-8 items-center justify-between gap-3 rounded border border-[#4b3840] bg-[#160d11] px-2.5 text-[10px] text-[#d6959f]">
+              <span>SELECTED ROUTE STALE OR UNAVAILABLE · NO CHECK STARTED</span>
+              <button
+                type="button"
+                onClick={() => setExecutionRouteKey(carryRouteKey(assetExecutionCandidates[0].candidate))}
+                className="shrink-0 rounded border border-[#684b55] px-2 py-1 font-mono font-semibold text-[#efb0ba] hover:bg-white/5"
+              >
+                USE CURRENT QUALIFIED ROUTE
+              </button>
+            </div>
           ) : null}
         </div>
       )}

@@ -180,6 +180,16 @@ test("rejects a terminal that does not restore its selected pair", () => {
   );
 });
 
+test("rejects a terminal rail that can execute aged routes", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: sources.webCarryChart.replace("const freshCandidates", "const visibleCandidates"),
+    }),
+    /carry_ui_execution_stale_route_gate_missing/,
+  );
+});
+
 test("rejects a missing exact-reconciliation adapter", () => {
   assert.throws(
     () => checkCarryExecutionContract({

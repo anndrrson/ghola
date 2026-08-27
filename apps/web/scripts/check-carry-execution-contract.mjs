@@ -642,12 +642,15 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "createCarryPatchPublisher", "carry_ui_publication_coalescer_missing");
   requireText("webCarryChart", "CARRY_UI_PUBLISH_INTERVAL_MS", "carry_ui_publish_throttle_missing");
   requireText("webCarryChart", "CARRY_ROUTE_DISPLAY_MAX_AGE_MS", "carry_ui_stale_route_gate_missing");
+  requireText("webCarryChart", "const freshCandidates", "carry_ui_execution_stale_route_gate_missing");
   requireText("webCarryChart", "expectedNetDailyUsd", "carry_net_value_display_missing");
   requireText("webCarryChart", "isCarryExecutionVenue(candidate.long.venue_id)", "carry_executable_route_fallback_missing");
   requireText("webCarryChart", "rankCarryCandidatesByNet", "carry_net_route_ranking_missing");
   requireText("webCarryChart", 'aria-label="Carry execution route"', "carry_execution_route_selector_missing");
   requireText("webCarryChart", "preferredExecutionRouteKey", "carry_execution_route_return_binding_missing");
   requireText("webCarryChartTest", "restores only an exact currently qualified execution route", "carry_execution_route_return_test_missing");
+  requireText("webCarryChartTest", "never substitutes another route when the requested pair is stale", "carry_execution_route_substitution_test_missing");
+  requireText("webCarryChartTest", "quarantines aged quotes from both display and execution", "carry_ui_execution_stale_route_test_missing");
   requireText("webCarryChart", "CarryTerminalBuilder", "carry_terminal_builder_missing");
   requireText("webCarryChart", ">XVENUE<", "carry_terminal_rail_missing");
   requireText("webCarryChart", "formatBps", "carry_basis_point_display_missing");

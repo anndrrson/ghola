@@ -97,6 +97,48 @@ describe("CarryChartStrip", () => {
     expect(route?.value).toBe("BTC:hyperliquid:aster");
   });
 
+  it("never substitutes another route when the requested pair is stale", async () => {
+    const staleAt = Date.now() - 31_000;
+    const body = shadowResponse([
+      snapshot("hyperliquid", 10_000_000, {
+        as_of_ms: staleAt,
+        observed_at_ms: staleAt,
+        depth_observed_at_ms: staleAt,
+      }),
+      snapshot("aster", 100_000_000),
+      snapshot("lighter", 150_000_000),
+    ]);
+    vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => body } as Response);
+    await act(async () => {
+      root.render(
+        <CarryChartStrip
+          asset="BTC"
+          defaultOpen
+          preferredLongVenue="hyperliquid"
+          preferredShortVenue="aster"
+          onAssetSelect={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[aria-label="Carry position builder"]')).toBeNull();
+    expect(container.textContent).toContain("SELECTED ROUTE STALE OR UNAVAILABLE · NO CHECK STARTED");
+    expect(container.textContent).toContain("USE CURRENT QUALIFIED ROUTE");
+  });
+
+  it("quarantines aged quotes from both display and execution", async () => {
+    const staleAt = Date.now() - 31_000;
+    await renderShadow(shadowResponse([
+      snapshot("hyperliquid", 10_000_000, { as_of_ms: staleAt, observed_at_ms: staleAt }),
+      snapshot("lighter", 150_000_000, { as_of_ms: staleAt, observed_at_ms: staleAt }),
+    ]), true);
+
+    expect(container.textContent).toContain("NO FRESH ROUTE");
+    expect(container.querySelector('[aria-label="Carry position builder"]')).toBeNull();
+  });
+
   it("shows negative net value without qualifying the route", async () => {
     await renderShadow(shadowResponse([
       snapshot("hyperliquid", 10_000_000),
