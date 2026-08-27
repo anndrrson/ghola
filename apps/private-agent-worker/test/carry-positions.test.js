@@ -110,7 +110,7 @@ test("rejects stale concurrent Carry Position writers", async (t) => {
   assert.equal(stale.error, "carry_record_version_conflict");
 });
 
-test("refuses storage until both venue accounts and margin runways pass", async (t) => {
+test("refuses storage until venue accounts, synchronized data, and margin runways pass", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-readiness-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
@@ -132,6 +132,15 @@ test("refuses storage until both venue accounts and margin runways pass", async 
     now_ms: NOW,
   });
   assert.deepEqual(lowRunway, { ok: false, error: "carry_margin_runway_insufficient" });
+  const skewed = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: await positionInput(),
+    opportunity: { ...opportunity(), contract_data_skew_ms: 2_001 },
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  assert.deepEqual(skewed, { ok: false, error: "carry_market_data_skew_exceeded" });
 });
 
 test("creates only a capped, explicitly enabled qualification pilot", async (t) => {
@@ -388,6 +397,8 @@ function opportunity() {
     projected_net_value_micro_usdc: 20_000,
     projected_net_value_bps: 20,
     break_even_ms: 3_600_000,
+    contract_data_skew_ms: 0,
+    max_contract_data_skew_ms: 2_000,
     checked_at_ms: NOW,
     all_venues_ready: true,
     live_creation_ready: true,

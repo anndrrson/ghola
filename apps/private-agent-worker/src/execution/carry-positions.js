@@ -99,6 +99,14 @@ function validateCreationOpportunity(positionInput, opportunity, nowMs, qualific
     || !Number.isInteger(opportunity.short_margin_runway_ms)
     || opportunity.long_margin_runway_ms < minRunwayMs
     || opportunity.short_margin_runway_ms < minRunwayMs) return "carry_margin_runway_insufficient";
+  if (!Number.isInteger(opportunity.contract_data_skew_ms)
+    || !Number.isInteger(opportunity.max_contract_data_skew_ms)
+    || opportunity.contract_data_skew_ms < 0
+    || opportunity.max_contract_data_skew_ms < 0
+    || opportunity.max_contract_data_skew_ms > maxAgeMs) return "carry_market_data_skew_invalid";
+  if (opportunity.contract_data_skew_ms > opportunity.max_contract_data_skew_ms) {
+    return "carry_market_data_skew_exceeded";
+  }
   const modeledAmounts = [
     opportunity.notional_micro_usdc,
     opportunity.capital_committed_micro_usdc,
@@ -585,6 +593,8 @@ function publicOpportunity(value) {
     projected_net_value_micro_usdc: value.projected_net_value_micro_usdc,
     projected_net_value_bps: value.projected_net_value_bps,
     break_even_ms: value.break_even_ms,
+    contract_data_skew_ms: value.contract_data_skew_ms,
+    max_contract_data_skew_ms: value.max_contract_data_skew_ms,
     checked_at_ms: value.checked_at_ms,
     all_venues_ready: value.all_venues_ready === true,
     live_creation_ready: value.live_creation_ready === true,

@@ -524,6 +524,8 @@ function opportunity() {
     projected_net_value_micro_usdc: 20_000,
     projected_net_value_bps: 20,
     break_even_ms: 3_600_000,
+    contract_data_skew_ms: 0,
+    max_contract_data_skew_ms: 2_000,
     checked_at_ms: NOW,
     all_venues_ready: true,
     live_creation_ready: true,

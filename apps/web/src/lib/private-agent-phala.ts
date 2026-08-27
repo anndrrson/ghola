@@ -280,6 +280,10 @@ function expectedCarryWorkerConfig(): Record<string, string> {
       "PRIVATE_AGENT_CARRY_MAX_UNHEDGED_MS",
       "2000",
     ),
+    PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS",
+      "2000",
+    ),
     PRIVATE_AGENT_CARRY_AUTO_EXIT_ENABLED: workerLiveEnv(
       "PRIVATE_AGENT_CARRY_AUTO_EXIT_ENABLED",
       "true",

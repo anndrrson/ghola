@@ -69,7 +69,11 @@ describe("CarryTerminalBuilder", () => {
       live_creation_ready: false,
       qualification_pilot_ready: true,
       qualification_pilot_candidate_venue_id: "lighter",
-      creation_opportunity: { eligible: true },
+      creation_opportunity: {
+        eligible: true,
+        contract_data_skew_ms: 400,
+        max_contract_data_skew_ms: 2_000,
+      },
     });
     api.createCarryPosition.mockResolvedValue({ ok: true, record });
     api.executeCarryPositionEntry.mockResolvedValue({ ok: true });
@@ -81,6 +85,8 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("NO-SUBMIT RECEIPT");
     expect(container.textContent).toContain("MATRIX MATRIX-TEST-");
     expect(container.textContent).toContain("PAIR PAIR-TEST-12");
+    expect(container.textContent).toContain("SOURCE SYNC");
+    expect(container.textContent).toContain("400MS");
     expect(api.createCarryPosition).not.toHaveBeenCalled();
     expect(api.executeCarryPositionEntry).not.toHaveBeenCalled();
 

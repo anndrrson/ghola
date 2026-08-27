@@ -164,6 +164,7 @@ test("models carry after funding, round-trip costs, capital cost, risk buffer, a
     margin_runways: [runway("hyperliquid"), runway("lighter")],
     now_ms: NOW,
     max_data_age_ms: 30_000,
+    max_contract_data_skew_ms: 2_000,
   });
   assert.equal(result.eligible, true);
   assert.equal(result.projected_gross_funding_micro_usdc, 63_000_000);
@@ -192,6 +193,7 @@ test("prices collateral basis stress separately from the base risk buffer", () =
     margin_runways: [runway("hyperliquid"), runway("lighter")],
     now_ms: NOW,
     max_data_age_ms: 30_000,
+    max_contract_data_skew_ms: 2_000,
   });
   assert.equal(result.base_risk_buffer_micro_usdc, 3_000_000);
   assert.equal(result.collateral_basis_risk_micro_usdc, 50_000_000);
@@ -216,6 +218,7 @@ test("preserves sub-basis-point funding precision", () => {
     margin_runways: [runway("hyperliquid"), runway("lighter")],
     now_ms: NOW,
     max_data_age_ms: 30_000,
+    max_contract_data_skew_ms: 2_000,
   });
   assert.equal(result.projected_gross_funding_micro_usdc, 4_200_000);
   assert.equal(result.eligible, true);
@@ -246,6 +249,7 @@ test("preserves account-specific sub-basis-point fee precision", () => {
     margin_runways: [runway("hyperliquid"), runway("lighter")],
     now_ms: NOW,
     max_data_age_ms: 30_000,
+    max_contract_data_skew_ms: 2_000,
   });
   assert.equal(result.projected_trading_cost_micro_usdc, 4_200_000);
 });
@@ -275,8 +279,33 @@ test("preserves sub-basis-point slippage precision", () => {
     margin_runways: [runway("hyperliquid"), runway("lighter")],
     now_ms: NOW,
     max_data_age_ms: 30_000,
+    max_contract_data_skew_ms: 2_000,
   });
   assert.equal(result.projected_trading_cost_micro_usdc, 420_000);
+});
+
+test("rejects a false carry spread built from cross-venue observations outside the skew budget", () => {
+  const result = evaluateCarryOpportunity({
+    version: 1,
+    long_contract: contract("hyperliquid", 1, { as_of_ms: NOW - 500 }),
+    short_contract: contract("lighter", 4, { as_of_ms: NOW - 5_000 }),
+    notional_micro_usdc: 10_000_000_000,
+    capital_committed_micro_usdc: 4_000_000_000,
+    horizon_ms: 7 * DAY,
+    long_costs: costs(),
+    short_costs: costs(),
+    capital_cost_bps_per_day: 1,
+    risk_buffer_bps: 3,
+    min_expected_net_benefit_bps: 5,
+    min_margin_runway_ms: 6 * HOUR,
+    margin_runways: [runway("hyperliquid"), runway("lighter")],
+    now_ms: NOW,
+    max_data_age_ms: 30_000,
+    max_contract_data_skew_ms: 2_000,
+  });
+  assert.equal(result.contract_data_skew_ms, 4_500);
+  assert.equal(result.eligible, false);
+  assert.ok(result.reasons.includes("contract_data_skew_exceeded"));
 });
 
 test("margin runway exposes owner response risk without granting transfer authority", () => {

@@ -109,6 +109,26 @@ test("rejects Carry preflight without exact owner binding", () => {
   );
 });
 
+test("rejects Carry preflight without a cross-venue market-data skew veto", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll("carry_market_data_skew_exceeded", "carry_market_data_accepted"),
+    }),
+    /carry_market_data_skew_gate_missing/,
+  );
+});
+
+test("rejects a terminal that hides cross-venue source synchronization", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll('label="SOURCE SYNC"', 'label="DATA"'),
+    }),
+    /carry_terminal_source_sync_missing/,
+  );
+});
+
 test("rejects release evidence without durable one-submit counters", () => {
   assert.throws(
     () => checkCarryExecutionContract({

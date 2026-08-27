@@ -229,6 +229,39 @@ test("fails carry economics closed when displayed depth cannot fill the target n
   assert.ok(result.economic_opportunity.reasons.includes("depth_insufficient:aster:exit"));
 });
 
+test("rejects cross-venue market data skew before account or order verification", async () => {
+  let verified = false;
+  await assert.rejects(
+    preflightCarryPair({
+      body: {
+        version: 1,
+        owner_commitment: "owner_commitment_skew_0001",
+        work_order_commitment: "carry_pair_skew_0001",
+        asset: "BTC",
+        long_venue_id: "hyperliquid",
+        short_venue_id: "aster",
+        notional_usd: 100,
+        horizon_days: 30,
+        venue_access: {
+          hyperliquid: access("owner_commitment_skew_0001"),
+          aster: access("owner_commitment_skew_0001"),
+        },
+      },
+      recipient: {},
+      state: {},
+      env: { PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS: "2000" },
+      now: () => NOW,
+      fetchVenue: async ({ venue_id }) => [{
+        ...snapshot(venue_id),
+        as_of_ms: venue_id === "aster" ? NOW - 5_000 : NOW,
+      }],
+      verifyOrder: async () => { verified = true; },
+    }),
+    (error) => error?.code === "carry_market_data_skew_exceeded",
+  );
+  assert.equal(verified, false);
+});
+
 test("rejects cross-owner sealed venue access before order verification", async () => {
   let verified = false;
   await assert.rejects(

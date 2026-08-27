@@ -665,6 +665,8 @@ describe("private agent worker", () => {
         projected_net_value_micro_usdc: 20_000,
         projected_net_value_bps: 20,
         break_even_ms: 3_600_000,
+        contract_data_skew_ms: 0,
+        max_contract_data_skew_ms: 2_000,
         checked_at_ms: checkedAt,
         long_margin_runway_ms: 7_200_000,
         short_margin_runway_ms: 7_200_000,

@@ -104,6 +104,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     && record.final_reconciliation_evidence?.open_order_count === 0);
   const latestObservation = current?.latest_observation || null;
   const runway = carryRunwaySummary(latestObservation, candidate);
+  const proofOpportunity = proof ? asRecord(proof.creation_opportunity) : null;
 
   const invalidateProof = (setter: (value: string) => void) => (value: string) => {
     setter(value);
@@ -138,7 +139,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
       }));
       setProof({ ...result, execution_matrix: matrix });
       const outcome = result.live_creation_ready === true
-        ? "READY · exact account costs, margin runway and both order shapes verified"
+        ? "READY · synchronized market data, exact costs, margin runway and both order shapes verified"
         : result.qualification_pilot_ready === true
           ? "PROOF READY · one capped qualification lifecycle can be armed"
           : result.no_submit_ready === true
@@ -284,6 +285,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="BREAK-EVEN" value={model.breakEvenDays == null ? "—" : `${model.breakEvenDays.toFixed(1)}D`} />
         <Metric label="COLLATERAL" value={formatUsd(model.minimumCollateralUsd)} />
         <Metric label="MIN RUNWAY" value={runway.value} tone={runway.tone} />
+        <Metric label="SOURCE SYNC" value={proofOpportunity ? formatSkew(proofOpportunity.contract_data_skew_ms) : "PENDING"} />
         <Metric label="MONITOR" value={monitorAge(latestObservation?.recorded_at_ms)} />
       </div>
 
@@ -374,6 +376,12 @@ function monitorAge(recordedAtMs: number | undefined) {
   if (!Number.isSafeInteger(recordedAtMs)) return "PENDING";
   const ageMs = Math.max(0, Date.now() - Number(recordedAtMs));
   return ageMs < 60_000 ? `${Math.round(ageMs / 1_000)}S AGO` : `${Math.round(ageMs / 60_000)}M AGO`;
+}
+
+function formatSkew(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value < 1_000 ? `${Math.round(value)}MS` : `${(value / 1_000).toFixed(1)}S`
+    : "UNVERIFIED";
 }
 
 function venueName(venueId: string) {

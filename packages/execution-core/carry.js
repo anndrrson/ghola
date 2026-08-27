@@ -123,6 +123,12 @@ export function evaluateCarryOpportunity(value) {
   const shortContract = normalizePerpContractSpec(raw.short_contract);
   const nowMs = positiveInteger(raw.now_ms, "carry_now");
   const maxAgeMs = boundedInteger(raw.max_data_age_ms, 250, 300_000, "carry_max_data_age");
+  const maxContractDataSkewMs = boundedInteger(
+    raw.max_contract_data_skew_ms,
+    0,
+    maxAgeMs,
+    "carry_max_contract_data_skew",
+  );
   const notional = positiveInteger(raw.notional_micro_usdc, "carry_notional");
   const capitalCommitted = positiveInteger(raw.capital_committed_micro_usdc, "carry_capital_committed");
   const horizonMs = boundedInteger(raw.horizon_ms, 60_000, 366 * DAY_MS, "carry_horizon");
@@ -145,6 +151,8 @@ export function evaluateCarryOpportunity(value) {
   for (const contract of [longContract, shortContract]) {
     if (contract.as_of_ms > nowMs || nowMs - contract.as_of_ms > maxAgeMs) reasons.push(`contract_stale:${contract.venue_id}`);
   }
+  const contractDataSkewMs = Math.abs(longContract.as_of_ms - shortContract.as_of_ms);
+  if (contractDataSkewMs > maxContractDataSkewMs) reasons.push("contract_data_skew_exceeded");
   const marginByVenue = new Map(marginRunways.map((runway) => [runway.venue_id, runway]));
   for (const venueId of [longContract.venue_id, shortContract.venue_id]) {
     const runway = marginByVenue.get(venueId);
@@ -212,6 +220,8 @@ export function evaluateCarryOpportunity(value) {
     projected_net_value_bps: expectedNetBps,
     recurring_net_value_micro_usdc_per_day: netRecurringPerDay,
     break_even_ms: breakEvenMs,
+    contract_data_skew_ms: contractDataSkewMs,
+    max_contract_data_skew_ms: maxContractDataSkewMs,
     margin_runways: marginRunways,
     checked_at_ms: nowMs,
   });

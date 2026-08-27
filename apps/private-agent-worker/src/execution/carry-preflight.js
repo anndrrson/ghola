@@ -33,12 +33,17 @@ export async function preflightCarryPair({
   }
 
   const observedAt = now();
+  const maxContractDataSkewMs = carryMarketDataSkewMs(env);
   const [longSnapshots, shortSnapshots] = await Promise.all([
     fetchVenue({ venue_id: longVenue, assets: [asset], now_ms: observedAt, max_age_ms: 60_000 }),
     fetchVenue({ venue_id: shortVenue, assets: [asset], now_ms: observedAt, max_age_ms: 60_000 }),
   ]);
   const longSnapshot = selectSnapshot(longSnapshots, asset, longVenue);
   const shortSnapshot = selectSnapshot(shortSnapshots, asset, shortVenue);
+  const contractDataSkewMs = Math.abs(longSnapshot.as_of_ms - shortSnapshot.as_of_ms);
+  if (!Number.isSafeInteger(contractDataSkewMs) || contractDataSkewMs > maxContractDataSkewMs) {
+    throw carryError("carry_market_data_skew_exceeded", 409);
+  }
   const legs = [
     { venue_id: longVenue, side: "buy", snapshot: longSnapshot },
     { venue_id: shortVenue, side: "sell", snapshot: shortSnapshot },
@@ -83,6 +88,7 @@ export async function preflightCarryPair({
     horizon_days: horizonDays,
     now_ms: now(),
     phase,
+    max_contract_data_skew_ms: maxContractDataSkewMs,
   });
   const qualifications = await Promise.all(evidence.map((leg) => readCarryVenueQualification({
     state,
@@ -214,7 +220,14 @@ function acceptableAuthorityBoundary(boundary) {
     boundary.non_owner_fund_movement_possible === false;
 }
 
-export function modelCarryPairPreflight({ evidence, notional_usd: notionalUsd, horizon_days: horizonDays, now_ms: nowMs, phase = "opening" }) {
+export function modelCarryPairPreflight({
+  evidence,
+  notional_usd: notionalUsd,
+  horizon_days: horizonDays,
+  now_ms: nowMs,
+  phase = "opening",
+  max_contract_data_skew_ms: maxContractDataSkewMs = 2_000,
+}) {
   const notionalMicro = usdMicro(notionalUsd);
   const monitoring = phase === "monitoring";
   const accounts = evidence.map((leg) => accountReadiness(leg, notionalMicro));
@@ -249,6 +262,7 @@ export function modelCarryPairPreflight({ evidence, notional_usd: notionalUsd, h
     })),
     now_ms: nowMs,
     max_data_age_ms: 60_000,
+    max_contract_data_skew_ms: maxContractDataSkewMs,
   });
   const depthReasons = costs.flatMap((cost) => cost.depth_impact.flatMap((impact) =>
     impact.status === "sufficient" ? [] : [`depth_${impact.status}:${cost.venue_id}:${impact.phase}`]
@@ -607,6 +621,11 @@ function positiveInteger(value, code) {
 
 function microFromBps(amount, bps) {
   return Math.ceil(amount * bps / 10_000);
+}
+
+function carryMarketDataSkewMs(env) {
+  const parsed = Number.parseInt(String(env.PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS || ""), 10);
+  return Number.isSafeInteger(parsed) ? Math.max(50, Math.min(60_000, parsed)) : 2_000;
 }
 
 function carryError(code, status) {
