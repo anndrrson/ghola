@@ -153,7 +153,7 @@ export function CarryChartStrip({
     isCarryExecutionVenue(candidate.long.venue_id) && isCarryExecutionVenue(candidate.short.venue_id)
   ), [freshCandidates]);
   const observedCandidates = useMemo(() => bestRoutePerAsset(freshCandidates), [freshCandidates]);
-  const selected = observedCandidates.find(({ candidate }) => candidate.asset === asset) || null;
+  const selectedObserved = observedCandidates.find(({ candidate }) => candidate.asset === asset) || null;
   const assetExecutionCandidates = executionCandidates.filter(({ candidate }) => candidate.asset === asset);
   const preferredExecutionRouteKey = isCarryExecutionVenue(preferredLongVenue)
     && isCarryExecutionVenue(preferredShortVenue)
@@ -165,6 +165,10 @@ export function CarryChartStrip({
       ? assetExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === preferredExecutionRouteKey)
       : assetExecutionCandidates[0])
     || null;
+  const selected = preferredExecutionRouteKey
+    ? selectedExecution
+    : selectedExecution || selectedObserved;
+  const routeMode = selectedExecution ? "execution" : selected ? "shadow" : "none";
   const selectedAgeMs = selected ? carryCandidateAgeMs(selected.candidate, clock) : Number.POSITIVE_INFINITY;
   const selectedHasPositiveNet = selected ? routeHasPositiveNet(selected.quote) : false;
   const edgeEvidence = carryFundingEvidenceForCandidate(
@@ -180,6 +184,7 @@ export function CarryChartStrip({
       className="mb-2 overflow-hidden rounded-md border border-[#252f3d] bg-[#090d13]"
       aria-label="Cross-venue route intelligence"
       data-modeled-net-positive={selectedHasPositiveNet ? "true" : "false"}
+      data-route-mode={routeMode}
       data-edge-evidence={edgeEvidence.status}
       data-market-evidence={marketEvidence.status}
       data-cost-basis={selected?.quote.exactCosts ? "net" : "gross-only"}

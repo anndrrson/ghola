@@ -190,6 +190,16 @@ test("rejects a terminal rail that can execute aged routes", () => {
   );
 });
 
+test("rejects a headline route that can diverge from the executable builder", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: sources.webCarryChart.replace("selectedExecution || selectedObserved", "selectedObserved"),
+    }),
+    /carry_primary_rail_execution_alignment_missing/,
+  );
+});
+
 test("rejects a missing exact-reconciliation adapter", () => {
   assert.throws(
     () => checkCarryExecutionContract({

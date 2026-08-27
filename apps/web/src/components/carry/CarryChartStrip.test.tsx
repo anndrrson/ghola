@@ -72,6 +72,32 @@ describe("CarryChartStrip", () => {
     expect(rail?.textContent).toContain("NET24H*+");
   });
 
+  it("keeps the primary rail aligned with the executable builder route", async () => {
+    await renderShadow(shadowResponse([
+      snapshot("hyperliquid", 10_000_000),
+      snapshot("aster", 100_000_000),
+      snapshot("edgex", 200_000_000),
+    ]), true);
+
+    const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
+    const primary = rail?.firstElementChild?.textContent || "";
+    expect(rail?.getAttribute("data-route-mode")).toBe("execution");
+    expect(primary).toContain("HYPERLIQUID");
+    expect(primary).toContain("ASTER");
+    expect(primary).not.toContain("EDGEX");
+  });
+
+  it("labels a five-venue opportunity as shadow when no execution adapter is qualified", async () => {
+    await renderShadow(shadowResponse([
+      snapshot("edgex", 10_000_000),
+      snapshot("dydx", 150_000_000),
+    ]));
+
+    const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
+    expect(rail?.getAttribute("data-route-mode")).toBe("shadow");
+    expect(container.querySelector('[aria-label="Carry position builder"]')).toBeNull();
+  });
+
   it("restores only an exact currently qualified execution route", async () => {
     const body = shadowResponse([
       snapshot("hyperliquid", 10_000_000),
@@ -124,6 +150,7 @@ describe("CarryChartStrip", () => {
     });
 
     expect(container.querySelector('[aria-label="Carry position builder"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Cross-venue route intelligence"]')?.getAttribute("data-route-mode")).toBe("none");
     expect(container.textContent).toContain("SELECTED ROUTE STALE OR UNAVAILABLE · NO CHECK STARTED");
     expect(container.textContent).toContain("USE CURRENT QUALIFIED ROUTE");
   });

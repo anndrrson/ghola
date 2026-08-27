@@ -648,7 +648,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "rankCarryCandidatesByNet", "carry_net_route_ranking_missing");
   requireText("webCarryChart", 'aria-label="Carry execution route"', "carry_execution_route_selector_missing");
   requireText("webCarryChart", "preferredExecutionRouteKey", "carry_execution_route_return_binding_missing");
+  requireText("webCarryChart", "selectedExecution || selectedObserved", "carry_primary_rail_execution_alignment_missing");
+  requireText("webCarryChart", "data-route-mode={routeMode}", "carry_primary_rail_route_mode_missing");
   requireText("webCarryChartTest", "restores only an exact currently qualified execution route", "carry_execution_route_return_test_missing");
+  requireText("webCarryChartTest", "keeps the primary rail aligned with the executable builder route", "carry_primary_rail_execution_alignment_test_missing");
+  requireText("webCarryChartTest", "labels a five-venue opportunity as shadow when no execution adapter is qualified", "carry_primary_rail_shadow_test_missing");
   requireText("webCarryChartTest", "never substitutes another route when the requested pair is stale", "carry_execution_route_substitution_test_missing");
   requireText("webCarryChartTest", "quarantines aged quotes from both display and execution", "carry_ui_execution_stale_route_test_missing");
   requireText("webCarryChart", "CarryTerminalBuilder", "carry_terminal_builder_missing");
