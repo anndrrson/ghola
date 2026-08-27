@@ -16,7 +16,11 @@ import {
   carryRiskMandateAuthorization,
 } from "@/lib/carry-risk-mandate";
 import { builderModel, CARRY_VENUE_LABELS, type CarryCandidate } from "@/lib/carry-market";
-import { isCarryExecutionVenue, type CarryExecutionVenue } from "@/lib/carry-venues";
+import {
+  CARRY_EXECUTION_VENUES,
+  isCarryExecutionVenue,
+  type CarryExecutionVenue,
+} from "@/lib/carry-venues";
 import { usePerpsTurnkey } from "@/lib/perps-turnkey-provider";
 
 type CarryRecord = {
@@ -428,7 +432,7 @@ function carryCheckFailure(error: unknown, fallback: string) {
   const candidate = error && typeof error === "object" ? error as { message?: unknown; correlationId?: unknown } : {};
   const code = typeof candidate.message === "string" ? candidate.message : "carry_check_failed";
   const reference = shortReference(typeof candidate.correlationId === "string" ? candidate.correlationId : fallback);
-  const venue = code.match(/^(hyperliquid|lighter|aster)_account_not_ready$/)?.[1];
+  const venue = CARRY_EXECUTION_VENUES.find((venueId) => code === `${venueId}_account_not_ready`);
   return {
     label: venue ? `${venueName(venue)} NOT READY` : code === "carry_worker_unavailable" ? "WORKER UNAVAILABLE" : "CHECK FAILED",
     reference,
@@ -442,7 +446,7 @@ function readyNoSubmitMatrix(value: Record<string, unknown>) {
       !Array.isArray(value.failures) || value.failures.length !== 0 ||
       !Array.isArray(value.venues)) return false;
   const venues = value.venues.map(asRecord);
-  return ["hyperliquid", "lighter", "aster"].every((venueId) => venues.some((venue) =>
+  return CARRY_EXECUTION_VENUES.every((venueId) => venues.some((venue) =>
     venue.venue_id === venueId && venue.transaction_broadcast === false));
 }
 

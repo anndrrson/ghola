@@ -387,6 +387,19 @@ test("rejects a terminal that bypasses the three-venue no-submit matrix", () => 
   );
 });
 
+test("rejects a terminal whose no-submit matrix drifts from the capability registry", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll(
+        "CARRY_EXECUTION_VENUES.every",
+        '["hyperliquid", "lighter", "aster"].every',
+      ),
+    }),
+    /carry_terminal_matrix_registry_(missing|duplicated)/,
+  );
+});
+
 test("rejects a terminal that hides monitored margin runway", () => {
   assert.throws(
     () => checkCarryExecutionContract({

@@ -288,6 +288,8 @@ export function checkCarryExecutionContract(sources) {
   forbidText("webCarryChart", "QUAL {qualifiedCandidates.length}", "carry_route_count_without_net_proof");
   forbidText("webCarryChart", "Scanning equivalent perps", "carry_marketing_status_copy_forbidden");
   requireText("webCarryBuilder", "preflightCarryExecutionMatrix", "carry_terminal_three_venue_matrix_missing");
+  requireText("webCarryBuilder", "CARRY_EXECUTION_VENUES.every", "carry_terminal_matrix_registry_missing");
+  forbidText("webCarryBuilder", '["hyperliquid", "lighter", "aster"]', "carry_terminal_matrix_registry_duplicated");
   requireText("webCarryBuilder", "preflightCarryPair", "carry_terminal_pair_no_submit_missing");
   requireText("webCarryBuilder", "createCarryPosition", "carry_terminal_position_creation_missing");
   requireText("webCarryBuilder", "executeCarryPositionEntry", "carry_terminal_entry_missing");
