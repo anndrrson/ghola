@@ -48,6 +48,29 @@ test("accepts a fully configured Vercel artifact", () => {
   });
 });
 
+test("validates a dedicated public Carry shadow worker without using it for execution", () => {
+  assert.deepEqual(verifyPrivateWorkerRuntimeConfig({
+    VERCEL: "1",
+    GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://execution.example",
+    GHOLA_CARRY_SHADOW_WORKER_URL: "https://shadow.example",
+    PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "secret",
+  }), {
+    skipped: false,
+    worker_host: "execution.example",
+    carry_shadow_worker_host: "shadow.example",
+  });
+
+  assert.throws(
+    () => verifyPrivateWorkerRuntimeConfig({
+      VERCEL: "1",
+      GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://execution.example",
+      GHOLA_CARRY_SHADOW_WORKER_URL: "http://shadow.example",
+      PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "secret",
+    }),
+    /Carry shadow worker URL must use HTTPS/,
+  );
+});
+
 test("proves Vercel and the worker share authorization before deployment", async () => {
   let attempts = 0;
   const result = await verifyPrivateWorkerRuntimeAuthorization({

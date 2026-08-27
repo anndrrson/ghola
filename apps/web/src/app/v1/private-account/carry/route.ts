@@ -9,14 +9,17 @@ import { agentPassportVenueAccessForWorker } from "@/lib/private-agent-passport"
 import { randomUUID } from "node:crypto";
 import { CARRY_EXECUTION_VENUES, isCarryExecutionVenue } from "@/lib/carry-venues";
 import { verifyCarryRiskMandateAuthorization } from "@/lib/carry-risk-mandate";
-import { resolvePrivateAgentWorkerUrl } from "@/lib/private-account-worker-routing";
+import {
+  resolveCarryShadowWorkerUrl,
+  resolvePrivateAgentWorkerUrl,
+} from "@/lib/private-account-worker-routing";
 
 export const dynamic = "force-dynamic";
 
 const NO_STORE = { "cache-control": "no-store, max-age=0" };
 
 export async function GET(req: NextRequest) {
-  const worker = workerConfig();
+  const worker = carryShadowWorkerConfig();
   if (!worker.url) return response({ error: "carry_worker_unavailable" }, 503);
   const assets = req.nextUrl.searchParams.get("assets") || "BTC,ETH,SOL";
   const target = new URL("/carry/shadow", worker.url);
@@ -27,6 +30,17 @@ export async function GET(req: NextRequest) {
   } catch {
     return response({ error: "carry_worker_unavailable" }, 503);
   }
+}
+
+function carryShadowWorkerConfig() {
+  const raw = resolveCarryShadowWorkerUrl({
+    shadow_url: process.env.GHOLA_CARRY_SHADOW_WORKER_URL,
+    connector_url: process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL,
+    execution_url: process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL || process.env.PRIVATE_AGENT_EXECUTION_URL,
+    worker_url: process.env.GHOLA_PRIVATE_AGENT_WORKER_URL || process.env.PRIVATE_AGENT_WORKER_URL,
+    phala_endpoint: process.env.PHALA_AGENT_ENDPOINT,
+  });
+  return { url: parseWorkerUrl(raw) };
 }
 
 export async function POST(req: NextRequest) {
@@ -354,19 +368,21 @@ function workerConfig() {
     worker_url: process.env.GHOLA_PRIVATE_AGENT_WORKER_URL || process.env.PRIVATE_AGENT_WORKER_URL,
     phala_endpoint: process.env.PHALA_AGENT_ENDPOINT,
   });
-  let url: URL | null = null;
-  try {
-    if (raw) url = new URL(raw);
-  } catch {
-    url = null;
-  }
   return {
-    url,
+    url: parseWorkerUrl(raw),
     token: process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN?.trim() ||
       process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
       process.env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
       process.env.PRIVATE_AGENT_WORKER_TOKEN?.trim() || "",
   };
+}
+
+function parseWorkerUrl(raw: string) {
+  try {
+    return raw ? new URL(raw) : null;
+  } catch {
+    return null;
+  }
 }
 
 function requestCorrelationId(req: NextRequest) {

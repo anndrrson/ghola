@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { resolveHyperliquidWorkerUrl } from "./private-account-worker-routing";
+import {
+  resolveCarryShadowWorkerUrl,
+  resolveHyperliquidWorkerUrl,
+} from "./private-account-worker-routing";
 
 describe("resolveHyperliquidWorkerUrl", () => {
   it("prefers the selected attested provider over stale static endpoints", () => {
@@ -18,5 +21,21 @@ describe("resolveHyperliquidWorkerUrl", () => {
       worker_url: "https://worker.example",
       phala_endpoint: "https://phala.example",
     })).toBe("https://connector.example");
+  });
+});
+
+describe("resolveCarryShadowWorkerUrl", () => {
+  it("keeps public Carry intelligence independent from private execution", () => {
+    expect(resolveCarryShadowWorkerUrl({
+      shadow_url: "https://shadow.example",
+      execution_url: "https://execution.example",
+      worker_url: "https://worker.example",
+    })).toBe("https://shadow.example");
+  });
+
+  it("preserves the private worker as a backwards-compatible fallback", () => {
+    expect(resolveCarryShadowWorkerUrl({
+      worker_url: "https://worker.example",
+    })).toBe("https://worker.example");
   });
 });

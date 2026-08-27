@@ -40,6 +40,9 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   lighter: "apps/private-agent-worker/src/venues/lighter.js",
   lighterRunner: "apps/private-agent-worker/src/venues/lighter_runner.py",
   webRoute: "apps/web/src/app/v1/private-account/carry/route.ts",
+  webWorkerRouting: "apps/web/src/lib/private-account-worker-routing.ts",
+  webWorkerRoutingTest: "apps/web/src/lib/private-account-worker-routing.test.ts",
+  webEnvExample: "apps/web/.env.example",
   webClient: "apps/web/src/lib/private-account-client.ts",
   webMandate: "apps/web/src/lib/carry-risk-mandate.ts",
   webMandateTest: "apps/web/src/lib/carry-risk-mandate.test.ts",
@@ -199,6 +202,12 @@ export function checkCarryExecutionContract(sources) {
   forbidText("webPassport", '["hyperliquid", "lighter", "aster",', "private_agent_passport_registry_duplicated");
   requireText("webWorkspace", "every(isCarryExecutionVenue)", "carry_workspace_execution_registry_missing");
   forbidText("webWorkspace", '["aster", "hyperliquid", "lighter"]', "carry_workspace_execution_registry_duplicated");
+
+  requireText("webRoute", "const worker = carryShadowWorkerConfig();", "carry_public_shadow_worker_boundary_missing");
+  requireText("webRoute", "shadow_url: process.env.GHOLA_CARRY_SHADOW_WORKER_URL", "carry_public_shadow_worker_env_missing");
+  requireText("webWorkerRouting", "export function resolveCarryShadowWorkerUrl", "carry_public_shadow_worker_resolver_missing");
+  requireText("webWorkerRoutingTest", "keeps public Carry intelligence independent from private execution", "carry_public_shadow_worker_boundary_test_missing");
+  requireText("webEnvExample", "GHOLA_CARRY_SHADOW_WORKER_URL", "carry_public_shadow_worker_example_missing");
 
   requireText("shadow", "CORE_PERP_VENUES.map", "shadow_registry_iteration_missing");
   requireText("shadow", "SUPPORTED_EXECUTION_VENUES.flatMap", "shadow_capability_registry_missing");

@@ -65,6 +65,19 @@ test("rejects credential onboarding that duplicates the Carry venue union", () =
   );
 });
 
+test("rejects coupling public Carry intelligence back to private execution", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webRoute: sources.webRoute.replace(
+        "const worker = carryShadowWorkerConfig();",
+        "const worker = workerConfig();",
+      ),
+    }),
+    /carry_public_shadow_worker_boundary_missing/,
+  );
+});
+
 test("rejects qualification evidence not bound to the deployed image", () => {
   assert.throws(
     () => checkCarryExecutionContract({

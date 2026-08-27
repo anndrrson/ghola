@@ -22,6 +22,11 @@ export function verifyPrivateWorkerRuntimeConfig(env = process.env) {
     throw new Error("Vercel release private worker URL must use HTTPS");
   }
 
+  const carryShadowUrl = optionalHttpsUrl(
+    env.GHOLA_CARRY_SHADOW_WORKER_URL,
+    "Vercel release Carry shadow worker URL",
+  );
+
   const workerAuth = first(env,
     "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET",
     "GHOLA_WORKER_CAPABILITY_SECRET",
@@ -30,7 +35,11 @@ export function verifyPrivateWorkerRuntimeConfig(env = process.env) {
   );
   if (!workerAuth) throw new Error("Vercel release is missing private worker authentication");
 
-  return { skipped: false, worker_host: url.host };
+  return {
+    skipped: false,
+    worker_host: url.host,
+    ...(carryShadowUrl ? { carry_shadow_worker_host: carryShadowUrl.host } : {}),
+  };
 }
 
 export async function verifyPrivateWorkerRuntimeAuthorization(
@@ -82,6 +91,19 @@ function first(env, ...keys) {
     if (value) return value;
   }
   return "";
+}
+
+function optionalHttpsUrl(raw, label) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${label} is invalid`);
+  }
+  if (url.protocol !== "https:") throw new Error(`${label} must use HTTPS`);
+  return url;
 }
 
 function workerAuthorization(env, path, body) {
