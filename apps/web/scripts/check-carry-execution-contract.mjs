@@ -17,6 +17,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   registry: "packages/execution-core/venues.js",
   registryTest: "packages/execution-core/test/venues.test.js",
   server: "apps/private-agent-worker/src/server.js",
+  workerState: "apps/private-agent-worker/src/state/private-state.js",
   workerPackage: "apps/private-agent-worker/package.json",
   preflight: "apps/private-agent-worker/src/execution/carry-preflight.js",
   fundingPersistence: "apps/private-agent-worker/src/execution/carry-funding-persistence.js",
@@ -658,6 +659,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("executor", "mapConcurrentOrdered(tasks, concurrency", "carry_execution_bounded_concurrency_missing");
   requireText("lifecycleTest", "recovery work is bounded-concurrent and failure-isolated", "carry_execution_concurrency_test_missing");
   requireText("recordScan", "before_updated_at", "carry_record_scan_cursor_missing");
+  requireText("workerState", "idx_worker_carry_positions_owner_status_scan", "carry_record_scan_composite_index_missing");
+  requireText("workerState", "(record_json->>'updated_at') DESC, position_id DESC", "carry_record_scan_index_order_missing");
   requireText("positions", "listAllCarryPositionRecords", "carry_monitor_full_scan_missing");
   requireText("executor", "listAllCarryPositionRecords", "carry_recovery_full_scan_missing");
   requireText("recordScanTest", "beyond the 500-record storage page", "carry_record_scan_scale_test_missing");

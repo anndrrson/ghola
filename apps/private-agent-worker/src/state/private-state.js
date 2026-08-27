@@ -440,6 +440,22 @@ export function createPostgresWorkerState(databaseUrl) {
           ON worker_carry_positions (status, updated_at DESC)
         `;
         await sql`
+          CREATE INDEX IF NOT EXISTS idx_worker_carry_positions_scan
+          ON worker_carry_positions ((record_json->>'updated_at') DESC, position_id DESC)
+        `;
+        await sql`
+          CREATE INDEX IF NOT EXISTS idx_worker_carry_positions_owner_scan
+          ON worker_carry_positions (owner_commitment, (record_json->>'updated_at') DESC, position_id DESC)
+        `;
+        await sql`
+          CREATE INDEX IF NOT EXISTS idx_worker_carry_positions_status_scan
+          ON worker_carry_positions (status, (record_json->>'updated_at') DESC, position_id DESC)
+        `;
+        await sql`
+          CREATE INDEX IF NOT EXISTS idx_worker_carry_positions_owner_status_scan
+          ON worker_carry_positions (owner_commitment, status, (record_json->>'updated_at') DESC, position_id DESC)
+        `;
+        await sql`
           CREATE TABLE IF NOT EXISTS worker_revenue_events (
             revenue_event_id TEXT PRIMARY KEY,
             work_order_commitment TEXT UNIQUE,

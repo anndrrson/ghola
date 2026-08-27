@@ -13,6 +13,19 @@ test("accepts the complete cross-venue Carry execution contract", () => {
   assert.equal(checkCarryExecutionContract(sources).ok, true);
 });
 
+test("rejects a full-book scan without its composite database index", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      workerState: sources.workerState.replace(
+        "idx_worker_carry_positions_owner_status_scan",
+        "idx_worker_carry_positions_owner_status_legacy",
+      ),
+    }),
+    /carry_record_scan_composite_index_missing/,
+  );
+});
+
 test("rejects carry entry without durable adverse funding evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({
