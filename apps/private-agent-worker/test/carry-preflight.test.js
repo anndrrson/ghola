@@ -1040,7 +1040,11 @@ test("enables an economically eligible Aster pair only after deployment-bound qu
       venue_access: { hyperliquid: access("owner_commitment_0003"), aster: access("owner_commitment_0003") },
     },
     recipient: {},
-    env: { PRIVATE_AGENT_IMAGE_DIGEST: image },
+    env: {
+      PRIVATE_AGENT_IMAGE_DIGEST: image,
+      PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SAMPLES: "1",
+      PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SPAN_MS: "0",
+    },
     now: () => NOW,
     fetchVenue: async ({ venue_id }) => [{
       ...snapshot(venue_id),

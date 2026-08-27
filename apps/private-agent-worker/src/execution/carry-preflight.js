@@ -17,6 +17,7 @@ import {
   carryAccountStateCommitment,
   storeCarryExecutionReadiness,
 } from "./carry-readiness.js";
+import { observeCarryFundingPersistence } from "./carry-funding-persistence.js";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -133,6 +134,14 @@ export async function preflightCarryPair({
     };
   }));
 
+  const fundingPersistence = await observeCarryFundingPersistence({
+    state,
+    evidence,
+    phase,
+    now_ms: observedAt,
+    env,
+  });
+
   const modeled = modelCarryPairPreflight({
     evidence,
     notional_usd: notionalUsd,
@@ -143,6 +152,7 @@ export async function preflightCarryPair({
     max_index_price_divergence_bps: maxIndexPriceDivergenceBps,
     max_mark_price_divergence_bps: maxMarkPriceDivergenceBps,
     min_margin_runway_ms: executionMandate?.min_margin_runway_ms ?? 6 * HOUR_MS,
+    conservative_funding_rate_e12_by_venue: fundingPersistence.conservative_funding_rate_e12_by_venue,
   });
   const qualifications = await Promise.all(evidence.map((leg) => readCarryVenueQualification({
     state,
@@ -171,6 +181,18 @@ export async function preflightCarryPair({
   if (modeled.collateral_basis.supported !== true) {
     qualificationReasons.push("cross_collateral_basis_risk_unmodeled");
   }
+  if (phase !== "monitoring" && fundingPersistence.ready !== true) {
+    qualificationReasons.push(...fundingPersistence.reasons);
+  }
+  const economicOpportunity = Object.freeze({
+    ...modeled.opportunity,
+    eligible: modeled.opportunity.eligible && (phase === "monitoring" || fundingPersistence.ready === true),
+    reasons: Object.freeze([...new Set([
+      ...modeled.opportunity.reasons,
+      ...(phase === "monitoring" ? [] : fundingPersistence.reasons),
+    ])]),
+    funding_persistence: fundingPersistence,
+  });
   const unproven = qualifications.filter((item) => item.proven !== true);
   const pilotCandidate = unproven.length === 1
     && venueAdapterCapability(unproven[0].venue_id, "carry_execution")?.status === "implemented_unproven"
@@ -185,14 +207,14 @@ export async function preflightCarryPair({
     && Boolean(pilotCandidate)
     && modeled.no_submit_ready
     && modeled.capital_ready
-    && modeled.opportunity.eligible
+    && economicOpportunity.eligible
     && qualificationReasons.every((reason) => pilotAllowedReasons.has(reason));
   const liveCreationReady = modeled.no_submit_ready
     && modeled.capital_ready
-    && modeled.opportunity.eligible
+    && economicOpportunity.eligible
     && qualificationReasons.length === 0;
   const creationOpportunity = {
-    ...modeled.opportunity,
+    ...economicOpportunity,
     all_venues_ready: modeled.no_submit_ready,
     live_creation_ready: liveCreationReady,
     qualification_pilot_ready: qualificationPilotReady,
@@ -213,8 +235,9 @@ export async function preflightCarryPair({
     transaction_broadcast: false,
     no_submit_ready: modeled.no_submit_ready,
     capital_ready: modeled.capital_ready,
-    economic_opportunity: modeled.opportunity,
+    economic_opportunity: economicOpportunity,
     creation_opportunity: creationOpportunity,
+    funding_persistence: fundingPersistence,
     collateral_basis: modeled.collateral_basis,
     contract_pair_basis: modeled.opportunity.contract_pair_basis,
     margin_runways: modeled.margin_runways,
@@ -386,13 +409,18 @@ export function modelCarryPairPreflight({
   max_index_price_divergence_bps: maxIndexPriceDivergenceBps = 25,
   max_mark_price_divergence_bps: maxMarkPriceDivergenceBps = 50,
   min_margin_runway_ms: minMarginRunwayMs = 6 * HOUR_MS,
+  conservative_funding_rate_e12_by_venue: conservativeFundingRates = null,
 }) {
   const notionalMicro = usdMicro(notionalUsd);
   const monitoring = phase === "monitoring";
   const accounts = evidence.map((leg) => accountReadiness(leg, notionalMicro));
   const openingCapitalPlan = compileOpeningCapitalPlan(evidence, accounts, notionalMicro, minMarginRunwayMs);
   const marginRunways = evidence.map((leg, index) => projectedMarginRunway(leg, accounts[index], notionalMicro, nowMs));
-  const contracts = evidence.map((leg) => contractSpec(leg, notionalMicro));
+  const contracts = evidence.map((leg) => contractSpec(
+    leg,
+    notionalMicro,
+    conservativeFundingRates?.[leg.venue_id],
+  ));
   const costs = evidence.map((leg) => legCosts(leg, notionalMicro));
   const collateralBasis = collateralBasisModel(contracts[0].collateral_asset, contracts[1].collateral_asset);
   const connectionReady = evidence.every((leg, index) =>
@@ -535,7 +563,7 @@ function collateralBasisModel(longAsset, shortAsset) {
   return Object.freeze({ supported: false, mode: "unsupported_cross_collateral", risk_bps: 10_000 });
 }
 
-function contractSpec(leg, notionalMicro) {
+function contractSpec(leg, notionalMicro, conservativeFundingRate) {
   const snapshot = leg.snapshot;
   const shape = leg.receipt?.order_shape || {};
   const account = leg.account || {};
@@ -553,8 +581,14 @@ function contractSpec(leg, notionalMicro) {
     contract_type: snapshot.contract_type,
     mark_price_e8: snapshot.mark_price_e8,
     index_price_e8: snapshot.index_price_e8,
-    funding_rate_bps_per_interval: Math.trunc(snapshot.funding_rate_e12_per_interval / 100_000_000),
-    funding_rate_e12_per_interval: snapshot.funding_rate_e12_per_interval,
+    funding_rate_bps_per_interval: Math.trunc(
+      (Number.isSafeInteger(conservativeFundingRate)
+        ? conservativeFundingRate
+        : snapshot.funding_rate_e12_per_interval) / 100_000_000,
+    ),
+    funding_rate_e12_per_interval: Number.isSafeInteger(conservativeFundingRate)
+      ? conservativeFundingRate
+      : snapshot.funding_rate_e12_per_interval,
     funding_interval_ms: snapshot.funding_interval_ms,
     maker_fee_bps: Math.ceil(account.maker_fee_bps),
     taker_fee_bps: Math.ceil(account.taker_fee_bps),
