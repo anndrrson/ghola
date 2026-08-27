@@ -6,6 +6,7 @@ import {
   carryCapitalEfficiencySummary,
   carryFundingPersistenceSummary,
   carryOpeningCapitalSummary,
+  carryPortfolioRunwaySummary,
   carryTerminalEconomics,
   carryTerminalGrossFunding,
   carryVenueMinimumMarginSummary,
@@ -514,6 +515,51 @@ describe("CarryTerminalBuilder", () => {
     });
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     expect(container.textContent).toContain("PORTFOLIO CAPITAL · $12.5 RELEASABLE · OWNER ONLY");
+  });
+
+  it("shows the worst verified shared-account runway across the portfolio", () => {
+    expect(carryPortfolioRunwaySummary({
+      kind: "ghola_carry_portfolio_capital_plan",
+      status: "owner_action_required",
+      position_count: 2,
+      proposal_only: true,
+      transaction_broadcast: false,
+      automatic_transfer_permitted: false,
+      accounts: [
+        {
+          venue_id: "hyperliquid",
+          aggregate_runway_ms: 7_200_000,
+          aggregate_stress_burn_micro_usdc_per_hour: 5_000_000,
+          target_runway_ms: 3_600_000,
+          risk_action_required: false,
+        },
+        {
+          venue_id: "lighter",
+          aggregate_runway_ms: 3_600_000,
+          aggregate_stress_burn_micro_usdc_per_hour: 10_000_000,
+          target_runway_ms: 3_600_000,
+          risk_action_required: false,
+        },
+      ],
+    })).toEqual({ value: "LTR 1.0H · 2 ACCTS", tone: "warn" });
+  });
+
+  it("fails closed when portfolio runway evidence is internally inconsistent", () => {
+    expect(carryPortfolioRunwaySummary({
+      kind: "ghola_carry_portfolio_capital_plan",
+      status: "balanced",
+      position_count: 1,
+      proposal_only: true,
+      transaction_broadcast: false,
+      automatic_transfer_permitted: false,
+      accounts: [{
+        venue_id: "lighter",
+        aggregate_runway_ms: null,
+        aggregate_stress_burn_micro_usdc_per_hour: 10_000_000,
+        target_runway_ms: 3_600_000,
+        risk_action_required: false,
+      }],
+    })).toEqual({ value: "UNVERIFIED", tone: "bad" });
   });
 
   it("shows compact live margin-runway evidence inside the terminal", async () => {

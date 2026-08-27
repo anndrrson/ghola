@@ -689,6 +689,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", 'label="CARRY SIGNAL"', "carry_terminal_funding_flip_signal_missing");
   requireText("webCarryBuilder", "carryFundingFlipSummary", "carry_terminal_funding_flip_derivation_missing");
   requireText("webCarryBuilderTest", "shows the deterministic funding-flip count before reduce-only exit", "carry_terminal_funding_flip_test_missing");
+  requireText("webCarryBuilder", 'label="PORTFOLIO RUNWAY"', "carry_terminal_portfolio_runway_missing");
+  requireText("webCarryBuilder", "carryPortfolioRunwaySummary", "carry_terminal_portfolio_runway_derivation_missing");
+  requireText("webCarryBuilderTest", "shows the worst verified shared-account runway across the portfolio", "carry_terminal_portfolio_runway_test_missing");
   requireText("webCarryBuilder", 'label="EDGE CONF"', "carry_terminal_funding_persistence_missing");
   requireText("webCarryBuilderTest", "shows only commitment-backed persistent funding as durable", "carry_terminal_funding_persistence_test_missing");
   requireText("webCarryBuilder", "window.setTimeout(refresh", "carry_terminal_monitor_refresh_missing");

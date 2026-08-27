@@ -267,6 +267,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const openingCapital = carryOpeningCapitalSummary(model, proof);
   const stressCapital = carryStressCapitalSummary(proof);
   const portfolioCapital = carryPortfolioCapitalSummary(portfolioCapitalPlan);
+  const portfolioRunway = carryPortfolioRunwaySummary(portfolioCapitalPlan);
   const collateral = carryCollateralReviewSummary(collateralReview);
   const portfolioValue = carryPortfolioValueSummary(portfolioValueReport);
   const capitalEfficiency = carryCapitalEfficiencySummary(portfolioValueReport);
@@ -517,6 +518,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="BREAK-EVEN" value={economics.breakEven} />
         <Metric label={proof ? "VENUE MIN MARGIN" : "VENUE MIN MARGIN EST"} value={venueMinimumMargin.value} tone={venueMinimumMargin.tone} />
         <Metric label="LEG RUNWAY" value={runway.value} tone={runway.tone} />
+        {portfolioRunway ? <Metric label="PORTFOLIO RUNWAY" value={portfolioRunway.value} tone={portfolioRunway.tone} /> : null}
         <Metric label="CARRY SIGNAL" value={carrySignal.value} tone={carrySignal.tone} />
         <Metric label="OWNER CAPITAL" value={displayedCapital.value} tone={displayedCapital.tone} />
         <Metric label="LEDGER" value={ledger.value} tone={ledger.tone} />
@@ -838,6 +840,52 @@ function carryPortfolioCapitalSummary(plan: Record<string, unknown> | null) {
     return { value: `${formatMicroUsd(potentialReleasable)} RELEASABLE · OWNER ONLY`, tone: "good" as const };
   }
   return { value: `${positions} POSITION${positions === 1 ? "" : "S"} · BALANCED`, tone: "good" as const };
+}
+
+export function carryPortfolioRunwaySummary(plan: Record<string, unknown> | null) {
+  if (!plan) return null;
+  const positions = finiteNumber(plan.position_count);
+  if (positions === 0) return null;
+  if (!Number.isSafeInteger(positions) || Number(positions) < 0
+    || plan.kind !== "ghola_carry_portfolio_capital_plan"
+    || plan.proposal_only !== true
+    || plan.transaction_broadcast !== false
+    || plan.automatic_transfer_permitted !== false) {
+    return { value: "UNVERIFIED", tone: "bad" as const };
+  }
+  const accounts = Array.isArray(plan.accounts) ? plan.accounts.map(asRecord) : [];
+  if (accounts.length === 0) return { value: "UNVERIFIED", tone: "bad" as const };
+  const normalized = accounts.map((account) => {
+    const venueId = stringValue(account.venue_id);
+    const runway = account.aggregate_runway_ms;
+    const burn = account.aggregate_stress_burn_micro_usdc_per_hour;
+    const target = account.target_runway_ms;
+    if (!venueId || !Number.isSafeInteger(burn) || Number(burn) < 0
+      || !Number.isSafeInteger(target) || Number(target) < 0
+      || (Number(burn) === 0 && runway !== null)
+      || (Number(burn) > 0 && (!Number.isSafeInteger(runway) || Number(runway) < 0))) return null;
+    return {
+      venueId,
+      runway: runway === null ? null : Number(runway),
+      target: Number(target),
+      risk: account.risk_action_required === true,
+    };
+  });
+  if (normalized.some((account) => account === null)) return { value: "UNVERIFIED", tone: "bad" as const };
+  const verified = normalized.filter((account): account is NonNullable<typeof account> => account !== null);
+  const worst = [...verified].sort((left, right) => {
+    const leftRunway = left.runway ?? Number.MAX_SAFE_INTEGER;
+    const rightRunway = right.runway ?? Number.MAX_SAFE_INTEGER;
+    return leftRunway - rightRunway || left.venueId.localeCompare(right.venueId);
+  })[0];
+  const unsafe = worst.risk || (worst.runway !== null && worst.runway < worst.target);
+  const warning = plan.status === "owner_action_required";
+  return {
+    value: `${runwayVenueCode(worst.venueId)} ${worst.runway === null ? "∞" : formatRunway(worst.runway)} · ${accounts.length} ACCT${accounts.length === 1 ? "" : "S"}`,
+    tone: unsafe || ["quarantined", "exit_required"].includes(String(plan.status))
+      ? "bad" as const
+      : warning ? "warn" as const : "good" as const,
+  };
 }
 
 function carryCollateralReviewSummary(review: Record<string, unknown> | null) {
