@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Check, KeyRound, LockKeyhole } from "lucide-react";
+import { Check, Copy, KeyRound, LoaderCircle, LockKeyhole, RefreshCw, X } from "lucide-react";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { opaqueTurnkeyWalletScope, useTurnkeyWallet } from "@/lib/turnkey-provider";
@@ -52,6 +52,10 @@ import {
   sendLighterKeyAssociationWithInjectedOwner,
   signAsterAgentApprovalWithInjectedOwner,
 } from "@/lib/injected-venue-owner";
+import {
+  fetchLighterActivationReadiness,
+  type LighterActivationReadiness,
+} from "@/lib/lighter-activation-readiness";
 
 type VenueState = "connected" | "needed" | "unavailable";
 type VenueActivation = { venue: "aster" | "lighter"; ownerAddress: string };
@@ -96,6 +100,9 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activationNeeded, setActivationNeeded] = useState<VenueActivation | null>(null);
+  const [lighterReadiness, setLighterReadiness] = useState<LighterActivationReadiness | null>(null);
+  const [lighterReadinessError, setLighterReadinessError] = useState<string | null>(null);
+  const [checkingLighterReadiness, setCheckingLighterReadiness] = useState(false);
   const [injectedOwnerAvailable, setInjectedOwnerAvailable] = useState(false);
   const safeReturnTo = returnTo === "/carry" || returnTo.startsWith("/trade?") ? returnTo : "/carry";
   const recoveryUserScope = opaqueTurnkeyWalletScope(auth.user?.id || "");
@@ -148,6 +155,30 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       // Storage may be unavailable; worker-side one-shot guards still apply.
     }
   }, [accountCommitment, recoveryUserScope]);
+
+  const refreshLighterReadiness = useCallback(async (ownerAddress?: string) => {
+    const owner = ownerAddress || (activationNeeded?.venue === "lighter" ? activationNeeded.ownerAddress : "");
+    if (!owner) return;
+    setCheckingLighterReadiness(true);
+    setLighterReadinessError(null);
+    try {
+      setLighterReadiness(await fetchLighterActivationReadiness(owner));
+    } catch (caught) {
+      setLighterReadiness(null);
+      setLighterReadinessError(caught instanceof Error ? caught.message : "Readiness check unavailable.");
+    } finally {
+      setCheckingLighterReadiness(false);
+    }
+  }, [activationNeeded]);
+
+  useEffect(() => {
+    if (activationNeeded?.venue === "lighter") {
+      void refreshLighterReadiness(activationNeeded.ownerAddress);
+    } else {
+      setLighterReadiness(null);
+      setLighterReadinessError(null);
+    }
+  }, [activationNeeded, refreshLighterReadiness]);
 
   const connectAsterProgrammatic = useCallback(async (forceReprepare = false) => {
     setWorking(true);
@@ -786,12 +817,26 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         {activationNeeded && (
           <div className="mt-4 rounded-lg border border-[#315277] bg-[#0b1624] p-4 text-sm">
             <p className="font-semibold text-[#d8eaff]">Activate this connected owner wallet on {activationNeeded.venue === "aster" ? "Aster" : "Lighter"}</p>
-            <p className="mt-2 break-all font-mono text-xs text-[#8fcaff]">{activationNeeded.ownerAddress}</p>
-            <p className="mt-2 text-xs leading-5 text-[#8f9aae]">The venue must recognize this exact address before Ghola can create its sealed trading key. No order, key, deposit, or transfer was submitted.</p>
+            <div className="mt-2 flex items-center gap-2">
+              <p className="min-w-0 break-all font-mono text-xs text-[#8fcaff]">{activationNeeded.ownerAddress}</p>
+              <button type="button" aria-label="Copy owner address" onClick={() => void navigator.clipboard.writeText(activationNeeded.ownerAddress)} className="shrink-0 rounded-md p-1.5 text-[#718097] hover:bg-[#132238] hover:text-[#a8d8ff]">
+                <Copy className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            {activationNeeded.venue === "lighter" ? (
+              <LighterReadinessPanel
+                readiness={lighterReadiness}
+                error={lighterReadinessError}
+                checking={checkingLighterReadiness}
+                onRefresh={() => void refreshLighterReadiness()}
+              />
+            ) : (
+              <p className="mt-2 text-xs leading-5 text-[#8f9aae]">The venue must recognize this exact address before Ghola can create its sealed trading key. No order, key, deposit, or transfer was submitted.</p>
+            )}
             <a href={activationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : "https://app.lighter.xyz/"} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff]">
-              Open {activationNeeded.venue === "aster" ? "Aster" : "Lighter"}
+              {activationNeeded.venue === "aster" ? "Open Aster" : "Open Lighter deposit"}
             </a>
-            <button type="button" disabled={working} onClick={() => void retryAfterVenueActivation()} className="ml-2 mt-3 inline-flex rounded-md bg-[#4aaef8] px-3 py-2 text-xs font-semibold text-[#06111d] disabled:opacity-50">
+            <button type="button" disabled={working || (activationNeeded.venue === "lighter" && !lighterReadiness?.ready)} onClick={() => void retryAfterVenueActivation()} className="ml-2 mt-3 inline-flex rounded-md bg-[#4aaef8] px-3 py-2 text-xs font-semibold text-[#06111d] disabled:opacity-50">
               I activated it — recheck once
             </button>
           </div>
@@ -803,6 +848,66 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       </section>
     </main>
   );
+}
+
+function LighterReadinessPanel({
+  readiness,
+  error,
+  checking,
+  onRefresh,
+}: {
+  readiness: LighterActivationReadiness | null;
+  error: string | null;
+  checking: boolean;
+  onRefresh: () => void;
+}) {
+  const baseCollateralReady = readiness
+    ? BigInt(readiness.base_usdc_microunits) >= BigInt(3_000_000)
+    : false;
+  const baseGasReady = readiness
+    ? !readiness.blockers.includes("lighter_base_gas_required")
+    : false;
+  return (
+    <div className="mt-3 rounded-lg border border-[#263851] bg-[#080e17] p-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8fcaff]">Activation readiness</p>
+        <button type="button" disabled={checking} onClick={onRefresh} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-[#8f9aae] hover:bg-[#132238] hover:text-[#d8eaff] disabled:opacity-50">
+          {checking ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+          Refresh
+        </button>
+      </div>
+      {readiness ? (
+        <div className="mt-2 divide-y divide-[#1b283b]">
+          <ReadinessRow label="Lighter collateral" value={`${formatDecimalUnits(readiness.base_usdc_microunits, 6, 2)} USDC on Base`} ready={baseCollateralReady} />
+          <ReadinessRow label="Base network fee" value={baseGasReady ? "Funded" : `${formatDecimalUnits(readiness.estimated_base_gas_wei, 18, 6)} ETH required`} ready={baseGasReady} />
+          <ReadinessRow label="Ethereum owner association" value={readiness.ethereum_association_ready ? "Funded" : `${formatDecimalUnits(readiness.estimated_ethereum_association_gas_wei, 18, 6)} ETH required`} ready={readiness.ethereum_association_ready} />
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-[#8f9aae]">{checking ? "Checking both networks…" : error || "Readiness has not been checked."}</p>
+      )}
+      <p className="mt-2 text-[11px] leading-4 text-[#657188]">Read-only balances and current gas estimates. No payment, transfer, key, or order is submitted by this check.</p>
+    </div>
+  );
+}
+
+function ReadinessRow({ label, value, ready }: { label: string; value: string; ready: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-4 py-2 text-xs">
+      <span className="text-[#8f9aae]">{label}</span>
+      <span className={`inline-flex items-center gap-1.5 text-right font-medium ${ready ? "text-[#72dfb2]" : "text-[#ee9da8]"}`}>
+        {ready ? <Check className="h-3.5 w-3.5" /> : <X className="h-3.5 w-3.5" />}
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function formatDecimalUnits(value: string, decimals: number, precision: number) {
+  const amount = BigInt(value);
+  const divisor = BigInt(10) ** BigInt(decimals);
+  const whole = amount / divisor;
+  const fraction = (amount % divisor).toString().padStart(decimals, "0").slice(0, precision);
+  return `${whole}.${fraction.padEnd(precision, "0")}`;
 }
 
 function VenueCard({
