@@ -495,6 +495,8 @@ describe("private agent worker", () => {
     assert.equal(body.readiness.venues, 5);
     assert.equal(body.readiness.expected_snapshots, 5);
     assert.deepEqual(body.readiness.failures, []);
+    assert.equal(body.funding_persistence.transaction_broadcast, false);
+    assert.equal(body.funding_persistence.observed_route_count, 6);
     assert.equal(Date.parse(body.observed_at), body.readiness.checked_at_ms);
     assert.equal(requested.now_ms, body.readiness.checked_at_ms);
     assert.deepEqual(requested.assets, ["BTC"]);

@@ -27,6 +27,7 @@ import { startMultiLegRecoveryLoop } from "./execution/multi-leg-orchestrator.js
 import { fetchCorePerpShadowSet } from "./execution/perp-shadow-adapters.js";
 import { verifyCarryShadowSet } from "./execution/perp-shadow-readiness.js";
 import { preflightCarryExecutionMatrix, preflightCarryPair } from "./execution/carry-preflight.js";
+import { observeCarryFundingUniverse } from "./execution/carry-funding-persistence.js";
 import { readCarryExecutionReadiness } from "./execution/carry-readiness.js";
 import { executeStoredCarryEntry, startCarryExecutionLoop } from "./execution/carry-executor.js";
 import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-evidence.js";
@@ -2716,12 +2717,19 @@ export function createPrivateAgentWorkerServer(options = {}) {
           now_ms: observedAtMs,
           max_age_ms: 60_000,
         });
+        const fundingPersistence = await observeCarryFundingUniverse({
+          state,
+          venues,
+          assets,
+          now_ms: observedAtMs,
+        });
         return json(res, 200, {
           version: 1,
           mode: "shadow_read_only",
           executable: false,
           observed_at: new Date(observedAtMs).toISOString(),
           readiness,
+          funding_persistence: fundingPersistence,
           venues,
         });
       }

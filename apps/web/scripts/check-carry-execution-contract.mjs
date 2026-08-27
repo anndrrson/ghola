@@ -530,9 +530,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("fundingPersistence", '"funding_not_persistent"', "carry_funding_flip_entry_gate_missing");
   requireText("fundingPersistence", "percentile(longRates, 0.75", "carry_funding_adverse_long_quartile_missing");
   requireText("fundingPersistence", "percentile(shortRates, 0.25", "carry_funding_adverse_short_quartile_missing");
+  requireText("fundingPersistence", "observeCarryFundingUniverse", "carry_funding_shadow_observer_missing");
+  requireText("server", "funding_persistence: fundingPersistence", "carry_funding_shadow_cycle_missing");
   requireText("fundingPersistenceTest", "does not manufacture persistence from rapid duplicate checks", "carry_funding_duplicate_observation_test_missing");
   requireText("fundingPersistenceTest", "clips a current funding spike to adverse historical quartiles", "carry_funding_spike_test_missing");
   requireText("fundingPersistenceTest", "rejects carry whose historical funding advantage is not persistent", "carry_funding_persistence_test_missing");
+  requireText("fundingPersistenceTest", "collects every trusted executable route during the normal shadow cycle", "carry_funding_shadow_observer_test_missing");
   requireText("phalaConfig", "expectedCarryWorkerConfig", "carry_runtime_config_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_POSITION_LIVE_SUBMIT', "carry_live_submit_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED', "carry_pilot_compose_missing");

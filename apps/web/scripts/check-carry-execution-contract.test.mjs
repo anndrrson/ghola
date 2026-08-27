@@ -1057,6 +1057,16 @@ test("rejects funding history that cannot resume a bounded backfill", () => {
   );
 });
 
+test("rejects carry funding persistence that requires manual preflight checks", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replaceAll("funding_persistence: fundingPersistence", "funding_persistence: null"),
+    }),
+    /carry_funding_shadow_cycle_missing/,
+  );
+});
+
 test("rejects release proof without exact venue-leg funding reconciliation", () => {
   assert.throws(
     () => checkCarryExecutionContract({

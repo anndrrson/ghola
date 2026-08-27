@@ -1,19 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { observeCarryFundingPersistence } from "../src/execution/carry-funding-persistence.js";
+import {
+  observeCarryFundingPersistence,
+  observeCarryFundingUniverse,
+} from "../src/execution/carry-funding-persistence.js";
 
 const NOW = 1_800_000_000_000;
 const FIVE_MINUTES = 5 * 60_000;
 
 function stateStore(initial = new Map()) {
-  return {
+  const state = {
     rows: initial,
+    writes: 0,
     getIdempotency: async (key) => initial.get(key) || null,
     putIdempotency: async (key, receipt) => {
+      state.writes += 1;
       initial.set(key, { receipt });
       return receipt;
     },
   };
+  return state;
 }
 
 function evidence({ longRate = 0, shortRate = 100_000_000 } = {}) {
@@ -69,6 +75,7 @@ test("does not manufacture persistence from rapid duplicate checks", async () =>
   const duplicate = await observeCarryFundingPersistence({ state, evidence: evidence(), now_ms: NOW + 10_000 });
   assert.equal(duplicate.ready, false);
   assert.equal(duplicate.sample_count, 1);
+  assert.equal(state.writes, 1);
   assert.ok(duplicate.reasons.includes("funding_history_insufficient"));
 });
 
@@ -105,4 +112,84 @@ test("rejects carry whose historical funding advantage is not persistent", async
   assert.equal(result.ready, false);
   assert.ok(result.reasons.includes("funding_not_persistent"));
   assert.equal(result.conservative_funding_rate_e12_by_venue.lighter, -100_000_000);
+});
+
+test("collects every trusted executable route during the normal shadow cycle", async () => {
+  const state = stateStore();
+  const venueRates = { hyperliquid: 10_000, lighter: 30_000, aster: -20_000 };
+  const snapshot = (venueId) => ({
+    version: 1,
+    venue_id: venueId,
+    contract_id: `${venueId}:BTC`,
+    economic_equivalence_id: "carry:BTC-usd-linear",
+    asset: "BTC",
+    contract_type: "linear_perp",
+    quote_asset: "USDC",
+    mark_price_e8: 10_000_000_000,
+    index_price_e8: 10_000_000_000,
+    funding_rate_e12_per_interval: venueRates[venueId],
+    funding_interval_ms: 3_600_000,
+    as_of_ms: NOW,
+    source_observed_at_ms: { funding: NOW },
+    source_max_age_ms: { funding: 60_000 },
+    stale_sources: [],
+    status: "ready",
+    stale: false,
+  });
+  const venues = ["hyperliquid", "lighter", "aster", "edgex"].map((venueId) => ({
+    venue_id: venueId,
+    ok: true,
+    snapshots: [snapshot(venueId)],
+  }));
+  const result = await observeCarryFundingUniverse({
+    state,
+    venues,
+    assets: ["BTC"],
+    now_ms: NOW,
+    env: {
+      PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SAMPLES: "1",
+      PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SPAN_MS: "0",
+    },
+  });
+
+  assert.equal(result.transaction_broadcast, false);
+  assert.equal(result.observed_route_count, 6);
+  assert.equal(result.ready_route_count, 3);
+  assert.equal(state.rows.size, 6);
+  assert.equal(result.routes.some((route) => route.long_venue_id === "edgex"), false);
+});
+
+test("ignores stale funding during automatic shadow observation", async () => {
+  const state = stateStore();
+  const snapshot = (venueId, stale) => ({
+    version: 1,
+    venue_id: venueId,
+    contract_id: `${venueId}:BTC`,
+    economic_equivalence_id: "carry:BTC-usd-linear",
+    asset: "BTC",
+    contract_type: "linear_perp",
+    quote_asset: "USDC",
+    mark_price_e8: 10_000_000_000,
+    index_price_e8: 10_000_000_000,
+    funding_rate_e12_per_interval: 10_000,
+    funding_interval_ms: 3_600_000,
+    as_of_ms: NOW,
+    source_observed_at_ms: { funding: NOW },
+    source_max_age_ms: { funding: 60_000 },
+    stale_sources: stale ? ["funding"] : [],
+    status: "ready",
+    stale: false,
+  });
+  const result = await observeCarryFundingUniverse({
+    state,
+    venues: [
+      { venue_id: "hyperliquid", ok: true, snapshots: [snapshot("hyperliquid", false)] },
+      { venue_id: "lighter", ok: true, snapshots: [snapshot("lighter", true)] },
+      { venue_id: "aster", ok: true, snapshots: [snapshot("aster", false)] },
+    ],
+    assets: ["BTC"],
+    now_ms: NOW,
+  });
+  assert.equal(result.observed_route_count, 2);
+  assert.equal(result.routes.every((route) => ![route.long_venue_id, route.short_venue_id].includes("lighter")), true);
 });

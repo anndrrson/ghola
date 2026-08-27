@@ -1,9 +1,114 @@
 import { createHash } from "node:crypto";
+import {
+  CARRY_EXECUTION_VENUES,
+  evaluatePerpContractPairBasis,
+} from "@ghola/execution-core";
 
 const HOUR_MS = 3_600_000;
 const DEFAULT_MIN_SAMPLES = 8;
 const DEFAULT_MIN_SPAN_MS = 30 * 60_000;
 const DEFAULT_MAX_AGE_MS = 24 * HOUR_MS;
+const DEFAULT_MAX_DATA_SKEW_MS = 2_000;
+
+export async function observeCarryFundingUniverse({
+  state,
+  venues,
+  assets = [],
+  now_ms: nowMs = Date.now(),
+  env = process.env,
+}) {
+  const requestedAssets = new Set(assets.map((asset) => String(asset).trim().toUpperCase()).filter(Boolean));
+  const executionVenues = new Map((Array.isArray(venues) ? venues : [])
+    .filter((venue) => CARRY_EXECUTION_VENUES.includes(venue?.venue_id))
+    .map((venue) => [venue.venue_id, venue]));
+  const discoveredAssets = new Set([...executionVenues.values()]
+    .flatMap((venue) => Array.isArray(venue.snapshots) ? venue.snapshots : [])
+    .map((snapshot) => snapshot?.asset)
+    .filter((asset) => typeof asset === "string" && (!requestedAssets.size || requestedAssets.has(asset))));
+  const maxDataSkewMs = boundedEnvInteger(
+    env.PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS,
+    0,
+    60_000,
+    DEFAULT_MAX_DATA_SKEW_MS,
+  );
+  const routes = [];
+
+  for (const asset of [...discoveredAssets].sort()) {
+    const snapshots = new Map();
+    for (const venueId of CARRY_EXECUTION_VENUES) {
+      const venue = executionVenues.get(venueId);
+      const snapshot = venue?.snapshots?.find((candidate) => candidate?.asset === asset);
+      if (venue?.ok === true && validTrustedSnapshot(snapshot, venueId, nowMs)) snapshots.set(venueId, snapshot);
+    }
+    for (const longVenueId of CARRY_EXECUTION_VENUES) {
+      for (const shortVenueId of CARRY_EXECUTION_VENUES) {
+        if (longVenueId === shortVenueId) continue;
+        const longSnapshot = snapshots.get(longVenueId);
+        const shortSnapshot = snapshots.get(shortVenueId);
+        if (!longSnapshot || !shortSnapshot) continue;
+        const skewMs = Math.abs(longSnapshot.as_of_ms - shortSnapshot.as_of_ms);
+        let pairBasis;
+        try {
+          pairBasis = evaluatePerpContractPairBasis({
+            version: 1,
+            long_contract: longSnapshot,
+            short_contract: shortSnapshot,
+            max_index_price_divergence_bps: boundedEnvInteger(
+              env.PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS,
+              0,
+              10_000,
+              25,
+            ),
+            max_mark_price_divergence_bps: boundedEnvInteger(
+              env.PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS,
+              0,
+              10_000,
+              50,
+            ),
+          });
+        } catch {
+          continue;
+        }
+        if (!pairBasis.eligible || skewMs > maxDataSkewMs) continue;
+        let persistence;
+        try {
+          persistence = await observeCarryFundingPersistence({
+            state,
+            evidence: [
+              { venue_id: longVenueId, side: "buy", snapshot: longSnapshot },
+              { venue_id: shortVenueId, side: "sell", snapshot: shortSnapshot },
+            ],
+            now_ms: nowMs,
+            env,
+          });
+        } catch {
+          persistence = result(false, ["funding_persistence_observation_failed"]);
+        }
+        routes.push(Object.freeze({
+          asset,
+          long_venue_id: longVenueId,
+          short_venue_id: shortVenueId,
+          ready: persistence.ready,
+          reasons: persistence.reasons,
+          sample_count: persistence.sample_count || 0,
+          minimum_samples: persistence.minimum_samples || 0,
+          observed_span_ms: persistence.observed_span_ms || 0,
+          minimum_span_ms: persistence.minimum_span_ms || 0,
+          conservative_hourly_spread_e12: persistence.conservative_hourly_spread_e12 ?? null,
+          evidence_commitment: persistence.evidence_commitment || null,
+        }));
+      }
+    }
+  }
+
+  return Object.freeze({
+    version: 1,
+    transaction_broadcast: false,
+    observed_route_count: routes.length,
+    ready_route_count: routes.filter((route) => route.ready).length,
+    routes: Object.freeze(routes),
+  });
+}
 
 export async function observeCarryFundingPersistence({
   state,
@@ -22,22 +127,31 @@ export async function observeCarryFundingPersistence({
   const minimumSamples = boundedEnvInteger(env.PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SAMPLES, 1, 96, DEFAULT_MIN_SAMPLES);
   const minimumSpanMs = boundedEnvInteger(env.PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SPAN_MS, 0, DEFAULT_MAX_AGE_MS, DEFAULT_MIN_SPAN_MS);
   const maxAgeMs = boundedEnvInteger(env.PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MAX_AGE_MS, minimumSpanMs || 1, 7 * DEFAULT_MAX_AGE_MS, DEFAULT_MAX_AGE_MS);
+  const minimumObservationIntervalMs = minimumSamples > 1
+    ? Math.max(30_000, Math.floor(minimumSpanMs / (minimumSamples - 1)))
+    : 30_000;
   const key = persistenceKey(route);
   const stored = await state.getIdempotency(key);
-  const prior = validRecord(stored?.receipt, route) ? stored.receipt.observations : [];
-  const storageInvalid = Boolean(stored?.receipt) && prior.length === 0;
+  const storedValid = validRecord(stored?.receipt, route);
+  const prior = storedValid ? stored.receipt.observations : [];
+  const storageInvalid = Boolean(stored?.receipt) && !storedValid;
   const current = observation(route, nowMs);
   const retained = prior.filter((item) => item.observed_at_ms >= nowMs - maxAgeMs && item.observed_at_ms <= nowMs);
-  const observations = appendDistinct(retained, current).slice(-96);
-  const record = {
-    version: 1,
-    kind: "carry_funding_persistence",
-    route,
-    observations,
-    updated_at_ms: nowMs,
-  };
-  record.evidence_commitment = commitment(record);
-  await state.putIdempotency(key, record);
+  const observations = appendDistinct(retained, current, minimumObservationIntervalMs).slice(-96);
+  const observationsChanged = !sameObservations(prior, observations);
+  const record = observationsChanged || !storedValid
+    ? {
+        version: 1,
+        kind: "carry_funding_persistence",
+        route,
+        observations,
+        updated_at_ms: nowMs,
+      }
+    : stored.receipt;
+  if (observationsChanged || !storedValid) {
+    record.evidence_commitment = commitment(record);
+    await state.putIdempotency(key, record);
+  }
 
   const sampleCount = observations.length;
   const observedSpanMs = sampleCount > 1
@@ -110,6 +224,18 @@ function validLeg(value) {
     && value.snapshot.funding_interval_ms > 0;
 }
 
+function validTrustedSnapshot(value, expectedVenueId, nowMs) {
+  if (!value || value.stale === true || value.status === "quarantined") return false;
+  if (value.venue_id !== expectedVenueId) return false;
+  if (!Number.isSafeInteger(value.as_of_ms) || value.as_of_ms > nowMs) return false;
+  if (!Number.isSafeInteger(value.source_observed_at_ms?.funding)) return false;
+  if (!Number.isSafeInteger(value.source_max_age_ms?.funding) || value.source_max_age_ms.funding < 0) return false;
+  if (value.source_observed_at_ms.funding > nowMs
+    || nowMs - value.source_observed_at_ms.funding > value.source_max_age_ms.funding) return false;
+  if (Array.isArray(value.stale_sources) && value.stale_sources.includes("funding")) return false;
+  return validLeg({ venue_id: value.venue_id, snapshot: value });
+}
+
 function observation(route, nowMs) {
   return Object.freeze({
     observed_at_ms: nowMs,
@@ -120,12 +246,23 @@ function observation(route, nowMs) {
   });
 }
 
-function appendDistinct(items, next) {
+function appendDistinct(items, next, minimumObservationIntervalMs) {
   const duplicate = items.some((item) => item.observed_at_ms === next.observed_at_ms
     || (item.long_rate_e12_per_interval === next.long_rate_e12_per_interval
       && item.short_rate_e12_per_interval === next.short_rate_e12_per_interval
-      && next.observed_at_ms - item.observed_at_ms < 30_000));
+      && next.observed_at_ms - item.observed_at_ms < minimumObservationIntervalMs));
   return duplicate ? items : [...items, next];
+}
+
+function sameObservations(left, right) {
+  return left.length === right.length && left.every((item, index) => {
+    const candidate = right[index];
+    return item.observed_at_ms === candidate.observed_at_ms
+      && item.long_rate_e12_per_interval === candidate.long_rate_e12_per_interval
+      && item.short_rate_e12_per_interval === candidate.short_rate_e12_per_interval
+      && item.long_interval_ms === candidate.long_interval_ms
+      && item.short_interval_ms === candidate.short_interval_ms;
+  });
 }
 
 function validRecord(value, route) {
