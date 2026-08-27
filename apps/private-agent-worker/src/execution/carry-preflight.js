@@ -169,9 +169,13 @@ export async function preflightCarryPair({
   const qualificationPilotReady = env.PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED === "true"
     && Boolean(pilotCandidate)
     && modeled.no_submit_ready
+    && modeled.capital_ready
     && modeled.opportunity.eligible
     && qualificationReasons.every((reason) => pilotAllowedReasons.has(reason));
-  const liveCreationReady = modeled.no_submit_ready && modeled.opportunity.eligible && qualificationReasons.length === 0;
+  const liveCreationReady = modeled.no_submit_ready
+    && modeled.capital_ready
+    && modeled.opportunity.eligible
+    && qualificationReasons.length === 0;
   const creationOpportunity = {
     ...modeled.opportunity,
     all_venues_ready: modeled.no_submit_ready,
@@ -191,6 +195,7 @@ export async function preflightCarryPair({
     asset,
     transaction_broadcast: false,
     no_submit_ready: modeled.no_submit_ready,
+    capital_ready: modeled.capital_ready,
     economic_opportunity: modeled.opportunity,
     creation_opportunity: creationOpportunity,
     collateral_basis: modeled.collateral_basis,
@@ -268,13 +273,16 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
     mode: "carry_execution_no_submit_matrix",
     transaction_broadcast: false,
     no_submit_ready: failures.length === 0,
+    capital_ready: results.every((result) => result.capital_ready === true),
     venues: venueEvidence,
     pairs: results.map((result, index) => ({
       ...pairs[index],
       work_order_commitment: `${body.work_order_commitment}_pair_${index + 1}`,
       no_submit_ready: result.no_submit_ready === true,
+      capital_ready: result.capital_ready === true,
       transaction_broadcast: false,
       qualification_reasons: result.qualification_reasons,
+      account_readiness: result.account_readiness,
       leg_evidence: (result.evidence || []).map((item) => ({
         venue_id: item.venue_id,
         work_order_commitment: item.work_order_commitment,
@@ -338,12 +346,14 @@ export function modelCarryPairPreflight({
   const contracts = evidence.map((leg) => contractSpec(leg, notionalMicro));
   const costs = evidence.map((leg) => legCosts(leg, notionalMicro));
   const collateralBasis = collateralBasisModel(contracts[0].collateral_asset, contracts[1].collateral_asset);
-  const noSubmitReady = evidence.every((leg, index) =>
+  const connectionReady = evidence.every((leg, index) =>
     leg.receipt?.checks?.transaction_broadcast === false &&
     (leg.receipt?.checks?.order_request_built === true || leg.receipt?.checks?.order_request_checked === true) &&
-    accounts[index].authorized &&
-    (monitoring ? accounts[index].monitoring_ready : accounts[index].capital_ready)
+    accounts[index].authorized
   );
+  const capitalReady = accounts.every((account) => account.capital_ready);
+  const monitoringReady = accounts.every((account) => account.monitoring_ready);
+  const noSubmitReady = connectionReady && (!monitoring || monitoringReady);
   const evaluatedOpportunity = evaluateCarryOpportunity({
     version: 1,
     long_contract: contracts[0],
@@ -383,7 +393,10 @@ export function modelCarryPairPreflight({
   });
   return {
     checked_at_ms: nowMs,
+    connection_ready: connectionReady,
     no_submit_ready: noSubmitReady,
+    capital_ready: capitalReady,
+    monitoring_ready: monitoringReady,
     opportunity: Object.freeze({
       ...opportunity,
       collateral_basis_mode: collateralBasis.mode,

@@ -123,6 +123,7 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
   }
   const pairs = Array.isArray(evidence.pairs) ? evidence.pairs : [];
   const expectedPairs = allVenuePairs(expectedVenues);
+  const capitalByVenue = new Map(expectedVenues.map((venueId) => [venueId, []]));
   if (pairs.length !== expectedPairs.length) reasons.push("carry_readiness_pair_count_invalid");
   for (const [pairIndex, [left, right]] of expectedPairs.entries()) {
     const matchingPairs = pairs.filter((item) => new Set([item?.long_venue_id, item?.short_venue_id]).size === 2
@@ -160,6 +161,45 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
         reasons.push(`carry_readiness_leg_venue_binding_mismatch:${left}:${right}:${venueId}`);
       }
     }
+    const accounts = Array.isArray(pair.account_readiness) ? pair.account_readiness : [];
+    if (accounts.length !== 2 || new Set(accounts.map((item) => item?.venue_id)).size !== 2
+      || ![left, right].every((venueId) => accounts.some((item) => item?.venue_id === venueId))) {
+      reasons.push(`carry_readiness_capital_plan_invalid:${left}:${right}`);
+      continue;
+    }
+    let pairCapitalReady = true;
+    for (const venueId of [left, right]) {
+      const account = accounts.find((item) => item?.venue_id === venueId);
+      const available = nonnegativeInteger(account?.available_balance_micro_usdc);
+      const venueMinimum = nonnegativeInteger(account?.venue_minimum_margin_micro_usdc);
+      const required = positiveInteger(account?.required_opening_collateral_micro_usdc);
+      const shortfall = nonnegativeInteger(account?.opening_collateral_shortfall_micro_usdc);
+      const valid = typeof account?.authorized === "boolean"
+        && typeof account?.flat_zero_orders === "boolean"
+        && typeof account?.capital_ready === "boolean"
+        && account?.execution_leverage === 1
+        && account?.owner_only_funding === true
+        && available !== null
+        && venueMinimum !== null
+        && required > 0
+        && shortfall !== null
+        && venueMinimum <= required
+        && shortfall === Math.max(0, required - available)
+        && account.capital_ready === (account.authorized && account.flat_zero_orders && shortfall === 0);
+      if (!valid) reasons.push(`carry_readiness_capital_invalid:${left}:${right}:${venueId}`);
+      pairCapitalReady = pairCapitalReady && account?.capital_ready === true;
+      capitalByVenue.get(venueId)?.push(capitalRecord(account));
+    }
+    if (pair.capital_ready !== pairCapitalReady) {
+      reasons.push(`carry_readiness_pair_capital_mismatch:${left}:${right}`);
+    }
+  }
+  for (const venueId of expectedVenues) {
+    const records = capitalByVenue.get(venueId) || [];
+    if (records.length !== expectedVenues.length - 1
+      || records.some((record) => JSON.stringify(record) !== JSON.stringify(records[0]))) {
+      reasons.push(`carry_readiness_capital_inconsistent:${venueId}`);
+    }
   }
   if (!commitment(evidence.evidence_commitment) || evidence.evidence_commitment !== evidenceCommitment(evidence)) {
     reasons.push("carry_readiness_commitment_invalid");
@@ -175,6 +215,8 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
     checked_at_ms: checkedAt || null,
     expires_at_ms: checkedAt ? checkedAt + maxAge : null,
     evidence_commitment: evidence.evidence_commitment || null,
+    capital_ready: expectedVenues.every((venueId) => capitalByVenue.get(venueId)?.[0]?.capital_ready === true),
+    capital_plan: Object.freeze(expectedVenues.map((venueId) => capitalByVenue.get(venueId)?.[0]).filter(Boolean)),
   });
 }
 
@@ -214,8 +256,10 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
       long_venue_id: String(pair?.long_venue_id || ""),
       short_venue_id: String(pair?.short_venue_id || ""),
       no_submit_ready: pair?.no_submit_ready === true,
+      capital_ready: pair?.capital_ready === true,
       transaction_broadcast: pair?.transaction_broadcast === false ? false : null,
       work_order_commitment: String(pair?.work_order_commitment || ""),
+      account_readiness: (Array.isArray(pair?.account_readiness) ? pair.account_readiness : []).map(capitalRecord),
       leg_evidence: (Array.isArray(pair?.leg_evidence) ? pair.leg_evidence : []).map((leg) => ({
         venue_id: String(leg?.venue_id || ""),
         work_order_commitment: String(leg?.work_order_commitment || ""),
@@ -259,6 +303,25 @@ function commitment(value) {
 
 function positiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function nonnegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function capitalRecord(value) {
+  return {
+    venue_id: String(value?.venue_id || ""),
+    authorized: value?.authorized === true,
+    flat_zero_orders: value?.flat_zero_orders === true,
+    capital_ready: value?.capital_ready === true,
+    available_balance_micro_usdc: value?.available_balance_micro_usdc,
+    venue_minimum_margin_micro_usdc: value?.venue_minimum_margin_micro_usdc,
+    required_opening_collateral_micro_usdc: value?.required_opening_collateral_micro_usdc,
+    opening_collateral_shortfall_micro_usdc: value?.opening_collateral_shortfall_micro_usdc,
+    execution_leverage: value?.execution_leverage,
+    owner_only_funding: value?.owner_only_funding === true,
+  };
 }
 
 function positiveDecimal(value) {

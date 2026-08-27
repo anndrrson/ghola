@@ -261,6 +261,8 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         ? "READY · synchronized market data, exact costs, margin runway and both order shapes verified"
         : result.qualification_pilot_ready === true
           ? "PROOF READY · one capped qualification lifecycle can be armed"
+          : result.no_submit_ready === true && result.capital_ready !== true
+            ? "CONNECTED · exact owner funding shortfall shown; no order submitted"
           : result.no_submit_ready === true
             ? "CHECKED · execution remains locked pending venue qualification"
             : "NOT READY · connect and fund both trade-only accounts";

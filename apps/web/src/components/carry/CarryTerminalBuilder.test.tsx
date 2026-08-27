@@ -160,6 +160,33 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("MATRIX CARRY:READIN");
   });
 
+  it("proves the capital-free connection while keeping live entry locked", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.preflightCarryExecutionMatrix.mockResolvedValue({
+      ...readyMatrix(),
+      capital_ready: false,
+      readiness: { ...readyReadiness(), capital_ready: false },
+    });
+    api.preflightCarryPair.mockResolvedValue({
+      correlation_id: "ghola-pair-unfunded-1234",
+      no_submit_ready: true,
+      capital_ready: false,
+      live_creation_ready: false,
+      qualification_pilot_ready: false,
+      account_readiness: ["hyperliquid", "lighter"].map((venue_id) => ({
+        venue_id,
+        opening_collateral_shortfall_micro_usdc: 11_000_000,
+      })),
+      creation_opportunity: { eligible: false },
+    });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    await click("NO-SUBMIT CHECK");
+    expect(container.textContent).toContain("CONNECTED · exact owner funding shortfall shown; no order submitted");
+    expect(container.textContent).toContain("$22 SHORT · OWNER");
+    expect(api.createCarryPosition).not.toHaveBeenCalled();
+    expect(api.executeCarryPositionEntry).not.toHaveBeenCalled();
+  });
+
   it("surfaces the exact failed venue and correlation receipt", async () => {
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
     api.preflightCarryExecutionMatrix.mockRejectedValue(Object.assign(

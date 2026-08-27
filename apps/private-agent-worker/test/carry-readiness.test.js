@@ -68,7 +68,20 @@ function matrix(workOrderCommitment = request().work_order_commitment) {
         short_venue_id: right,
         work_order_commitment: pairWorkOrder,
         no_submit_ready: true,
+        capital_ready: true,
         transaction_broadcast: false,
+        account_readiness: [left, right].map((venueId) => ({
+          venue_id: venueId,
+          authorized: true,
+          flat_zero_orders: true,
+          capital_ready: true,
+          available_balance_micro_usdc: 11_000_000,
+          venue_minimum_margin_micro_usdc: 550_000,
+          required_opening_collateral_micro_usdc: 11_000_000,
+          opening_collateral_shortfall_micro_usdc: 0,
+          execution_leverage: 1,
+          owner_only_funding: true,
+        })),
         leg_evidence: legEvidence,
       };
     });
@@ -100,6 +113,8 @@ test("persists deployment-, owner-, account-, and registry-bound three-venue rea
   assert.equal(read.ready, true);
   assert.equal(read.image_digest, ENV.PHALA_CVM_IMAGE_DIGEST);
   assert.ok(read.evidence_commitment.startsWith("carry:readiness:evidence:"));
+  assert.equal(read.capital_ready, true);
+  assert.equal(read.capital_plan.length, CARRY_EXECUTION_VENUES.length);
 });
 
 test("preserves independent route readiness across assets and parameters", async () => {
@@ -226,5 +241,50 @@ test("binds every pair to both exact no-submit leg receipts", async () => {
       env: ENV,
     });
     assert.equal(stored.ok, false);
+  }
+});
+
+test("persists capital-free technical readiness while binding exact owner shortfalls", async () => {
+  const candidate = matrix();
+  for (const pair of candidate.pairs) {
+    pair.capital_ready = false;
+    for (const account of pair.account_readiness) {
+      account.available_balance_micro_usdc = 0;
+      account.capital_ready = false;
+      account.opening_collateral_shortfall_micro_usdc = 11_000_000;
+    }
+  }
+  const stored = await storeCarryExecutionReadiness({
+    state: memoryState(),
+    request: request(),
+    matrix: candidate,
+    now_ms: NOW,
+    env: ENV,
+  });
+  assert.equal(stored.ok, true);
+  assert.equal(stored.readiness.ready, true);
+  assert.equal(stored.readiness.capital_ready, false);
+  assert.equal(stored.readiness.capital_plan.every((item) =>
+    item.owner_only_funding === true && item.opening_collateral_shortfall_micro_usdc === 11_000_000
+  ), true);
+});
+
+test("rejects inconsistent or mathematically false capital evidence", async () => {
+  for (const mutate of [
+    (value) => { value.pairs[0].account_readiness[0].opening_collateral_shortfall_micro_usdc = 1; },
+    (value) => { value.pairs[0].account_readiness[0].owner_only_funding = false; },
+    (value) => { value.pairs[0].account_readiness[0].available_balance_micro_usdc = 10_000_000; },
+  ]) {
+    const candidate = matrix();
+    mutate(candidate);
+    const stored = await storeCarryExecutionReadiness({
+      state: memoryState(),
+      request: request(),
+      matrix: candidate,
+      now_ms: NOW,
+      env: ENV,
+    });
+    assert.equal(stored.ok, false);
+    assert.ok(stored.readiness.reasons.some((reason) => reason.includes("carry_readiness_capital_")));
   }
 });
