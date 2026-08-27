@@ -32,6 +32,10 @@ const perps = vi.hoisted(() => ({
   signCarryRiskMandate: vi.fn(),
   signCarryCollateralReview: vi.fn(),
 }));
+const auth = vi.hoisted(() => ({
+  authenticated: true,
+  loading: false,
+}));
 
 vi.mock("@/lib/private-account-client", () => api);
 vi.mock("@/lib/perps-turnkey-provider", () => ({
@@ -42,6 +46,9 @@ vi.mock("@/lib/perps-turnkey-provider", () => ({
     signCarryCollateralReview: perps.signCarryCollateralReview,
   }),
 }));
+vi.mock("@/lib/thumper-auth-context", () => ({
+  useThumperAuth: () => auth,
+}));
 vi.mock("next/link", () => ({ default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => <a href={href} {...props}>{children}</a> }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -51,6 +58,8 @@ describe("CarryTerminalBuilder", () => {
   let root: Root;
 
   beforeEach(() => {
+    auth.authenticated = true;
+    auth.loading = false;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -291,6 +300,31 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("PAIR PAIR-ISOLATE");
     expect(container.textContent).toContain("FLEET 1/3 · ASTER BLOCKED");
     expect(container.textContent).toContain("1/3 PAIRS · ASTER BLOCKED");
+  });
+
+  it("does not poll private Carry state before Ghola authentication", async () => {
+    auth.authenticated = false;
+    await act(async () => {
+      root.render(
+        <CarryTerminalBuilder
+          candidate={candidate()}
+          autoRunNoSubmit
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("CONNECT TO VERIFY & TRADE");
+    expect(container.textContent).not.toContain("RETRY POSITION SYNC");
+    expect(container.textContent).not.toContain("NO-SUBMIT CHECK");
+    expect(api.listCarryPositions).not.toHaveBeenCalled();
+    expect(api.getCarryExecutionReadiness).not.toHaveBeenCalled();
+    expect(api.getCarryPortfolioCapitalPlan).not.toHaveBeenCalled();
+    expect(api.getCarryCollateralReview).not.toHaveBeenCalled();
+    expect(api.getCarryPortfolioValueReport).not.toHaveBeenCalled();
+    expect(api.preflightCarryPair).not.toHaveBeenCalled();
+    expect(api.preflightCarryExecutionMatrix).not.toHaveBeenCalled();
   });
 
   it("restores fresh diagnostic-only fleet evidence after refresh without treating it as readiness", async () => {

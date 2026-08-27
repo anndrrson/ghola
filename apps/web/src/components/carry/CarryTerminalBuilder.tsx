@@ -35,6 +35,7 @@ import {
   type CarryExecutionVenue,
 } from "@/lib/carry-venues";
 import { usePerpsTurnkey } from "@/lib/perps-turnkey-provider";
+import { useThumperAuth } from "@/lib/thumper-auth-context";
 
 type CarryRecord = {
   qualification_pilot?: { enabled?: boolean; candidate_venue_id?: string };
@@ -126,6 +127,8 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   onAutoRunNoSubmitConsumed?: () => void;
 }) {
   const perpsTurnkey = usePerpsTurnkey();
+  const auth = useThumperAuth();
+  const privateSessionReady = auth.authenticated && !auth.loading;
   const [notional, setNotional] = useState("11");
   const [days, setDays] = useState("30");
   const [proof, setProof] = useState<Record<string, unknown> | null>(null);
@@ -149,6 +152,17 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     && isCarryExecutionVenue(candidate.short.venue_id);
 
   const loadRecords = useCallback(async () => {
+    if (!privateSessionReady) {
+      setRecords([]);
+      setPortfolioCapitalPlan(null);
+      setCollateralReview(null);
+      setCollateralApproval(null);
+      setCollateralOutcome(null);
+      setPortfolioValueReport(null);
+      setRecordsLoaded(!auth.loading);
+      setRecordsLoading(false);
+      return;
+    }
     setRecordsLoading(true);
     try {
       const [recordsResult, capitalResult, reviewResult, valueResult] = await Promise.allSettled([
@@ -189,9 +203,13 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     } finally {
       setRecordsLoading(false);
     }
-  }, []);
+  }, [auth.loading, privateSessionReady]);
 
   useEffect(() => {
+    if (!privateSessionReady) {
+      void loadRecords();
+      return;
+    }
     let stopped = false;
     let timer: number | null = null;
     const refresh = async () => {
@@ -203,13 +221,18 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
       stopped = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [loadRecords]);
+  }, [loadRecords, privateSessionReady]);
   useEffect(() => {
     setProof(null);
     setExecutionMatrix(null);
     setMessage(null);
   }, [routeKey]);
   useEffect(() => {
+    if (!privateSessionReady) {
+      setReadiness(null);
+      setExecutionMatrix(null);
+      return;
+    }
     let cancelled = false;
     void getCarryExecutionReadiness({
       asset: candidate.asset,
@@ -231,7 +254,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         if (!cancelled) setReadiness(null);
       });
     return () => { cancelled = true; };
-  }, [candidate.asset, days, notional, routeKey]);
+  }, [candidate.asset, days, notional, privateSessionReady, routeKey]);
 
   const routeRecords = records.filter((record) => record.position.asset === candidate.asset
     && record.position.long_venue_id === candidate.long.venue_id
@@ -293,7 +316,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   };
 
   const runCheck = useCallback(async () => {
-    if (!executionPair) return;
+    if (!executionPair || !privateSessionReady) return;
     const localReference = shortReference(`ghola-${Date.now().toString(36)}`);
     const checkedRoute = `${candidate.asset} · L ${venueName(candidate.long.venue_id)} / S ${venueName(candidate.short.venue_id)}`;
     setBusy("check");
@@ -372,6 +395,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     days,
     executionPair,
     notional,
+    privateSessionReady,
     readiness,
     restoredReadiness,
   ]);
@@ -381,11 +405,11 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
       autoRunNoSubmitConsumedRef.current = false;
       return;
     }
-    if (!executionPair || autoRunNoSubmitConsumedRef.current) return;
+    if (!executionPair || !privateSessionReady || autoRunNoSubmitConsumedRef.current) return;
     autoRunNoSubmitConsumedRef.current = true;
     onAutoRunNoSubmitConsumed?.();
     void runCheck();
-  }, [autoRunNoSubmit, executionPair, onAutoRunNoSubmitConsumed, runCheck]);
+  }, [autoRunNoSubmit, executionPair, onAutoRunNoSubmitConsumed, privateSessionReady, runCheck]);
 
   async function savePosition() {
     if (!proof) return;
@@ -567,8 +591,10 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         </div>
 
         <div className="grid grid-cols-2 gap-1.5">
-          <Link href={setupHref} className="rounded border border-[#293a50] px-2 py-2 text-center font-mono text-[10px] font-semibold text-[#8fbbe2] hover:bg-[#0d1622]">CONNECT</Link>
-          {!recordsLoaded ? (
+          <Link href={setupHref} className={`rounded border border-[#293a50] px-2 py-2 text-center font-mono text-[10px] font-semibold text-[#8fbbe2] hover:bg-[#0d1622] ${privateSessionReady ? "" : "col-span-2"}`}>
+            {auth.loading ? "CHECKING SIGN-IN…" : privateSessionReady ? "CONNECT" : "CONNECT TO VERIFY & TRADE"}
+          </Link>
+          {!privateSessionReady ? null : !recordsLoaded ? (
             <button type="button" disabled={recordsLoading} onClick={() => void loadRecords()} className="rounded border border-[#594b2b] bg-[#1e190c] px-2 py-2 font-mono text-[10px] font-semibold text-[#d9bd74] disabled:opacity-40">
               {recordsLoading ? "SYNCING POSITIONS…" : "RETRY POSITION SYNC"}
             </button>

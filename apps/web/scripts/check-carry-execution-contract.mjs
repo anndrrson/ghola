@@ -208,6 +208,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webWorkerRouting", "export function resolveCarryShadowWorkerUrl", "carry_public_shadow_worker_resolver_missing");
   requireText("webWorkerRoutingTest", "keeps public Carry intelligence independent from private execution", "carry_public_shadow_worker_boundary_test_missing");
   requireText("webEnvExample", "GHOLA_CARRY_SHADOW_WORKER_URL", "carry_public_shadow_worker_example_missing");
+  requireText("webCarryBuilder", "const auth = useThumperAuth();", "carry_private_poll_auth_boundary_missing");
+  requireText("webCarryBuilder", "const privateSessionReady = auth.authenticated && !auth.loading;", "carry_private_poll_auth_gate_missing");
+  requireText("webCarryBuilderTest", "does not poll private Carry state before Ghola authentication", "carry_private_poll_auth_test_missing");
 
   requireText("shadow", "CORE_PERP_VENUES.map", "shadow_registry_iteration_missing");
   requireText("shadow", "SUPPORTED_EXECUTION_VENUES.flatMap", "shadow_capability_registry_missing");

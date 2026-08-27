@@ -78,6 +78,19 @@ test("rejects coupling public Carry intelligence back to private execution", () 
   );
 });
 
+test("rejects private Carry polling before Ghola authentication", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replace(
+        "const privateSessionReady = auth.authenticated && !auth.loading;",
+        "const privateSessionReady = true;",
+      ),
+    }),
+    /carry_private_poll_auth_gate_missing/,
+  );
+});
+
 test("rejects qualification evidence not bound to the deployed image", () => {
   assert.throws(
     () => checkCarryExecutionContract({
