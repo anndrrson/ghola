@@ -4,6 +4,23 @@ import { CORE_PERP_VENUES, venueAdapterCapability } from "@ghola/execution-core"
 export const DEFAULT_CARRY_SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
 const REQUIRED_SOURCES = Object.freeze(["market", "funding", "orderbook"]);
 
+const NORMALIZED_FIELDS = Object.freeze([
+  "mark_price_e8",
+  "index_price_e8",
+  "best_bid_e8",
+  "best_ask_e8",
+  "funding_rate_e12_per_interval",
+  "funding_interval_ms",
+  "maker_fee_bps",
+  "taker_fee_bps",
+  "minimum_notional_micro_usdc",
+  "quantity_step_e8",
+  "price_tick_e8",
+  "initial_margin_bps",
+  "maintenance_margin_bps",
+  "liquidation_fee_bps",
+]);
+
 const REQUIRED_FIELDS = Object.freeze([
   "mark_price_e8",
   "index_price_e8",
@@ -305,8 +322,15 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
   }
   if (!Array.isArray(snapshot.quality_flags)) failures.push(`quality_flags_invalid:${prefix}`);
   if (!Array.isArray(snapshot.missing_fields)) failures.push(`missing_fields_invalid:${prefix}`);
+  const actualMissingFields = NORMALIZED_FIELDS.filter((field) => snapshot[field] === null || snapshot[field] === undefined);
+  const declaredMissingFields = Array.isArray(snapshot.missing_fields) ? snapshot.missing_fields : [];
+  if (!sameStrings(declaredMissingFields, actualMissingFields)) {
+    failures.push(`missing_field_manifest_mismatch:${prefix}`);
+  }
+  const expectedStatus = actualMissingFields.length > 0 ? "degraded" : "ready";
+  if (snapshot.status !== expectedStatus) failures.push(`snapshot_status_inconsistent:${prefix}`);
   const flags = new Set(Array.isArray(snapshot.quality_flags) ? snapshot.quality_flags : []);
-  for (const field of Array.isArray(snapshot.missing_fields) ? snapshot.missing_fields : []) {
+  for (const field of actualMissingFields) {
     const requiredFlag = MISSING_FIELD_EVIDENCE[field];
     if (!requiredFlag || !flags.has(requiredFlag)) failures.push(`missing_field_unjustified:${prefix}:${field}`);
   }

@@ -56,11 +56,21 @@ test("binds custom requested assets without narrowing evidence to the default se
 
 test("rejects normalized gaps without explicit quality evidence", () => {
   const rows = fixture();
+  rows[0].snapshots[0].maker_fee_bps = null;
   rows[0].snapshots[0].missing_fields = ["maker_fee_bps"];
+  rows[0].snapshots[0].status = "degraded";
   const result = verifyCarryShadowSet(rows, { now_ms: NOW });
   assert.ok(result.failures.includes("missing_field_unjustified:hyperliquid:BTC:maker_fee_bps"));
   rows[0].snapshots[0].quality_flags = ["fees_account_specific"];
   assert.equal(verifyCarryShadowSet(rows, { now_ms: NOW }).ok, true);
+});
+
+test("rejects a missing-field manifest or readiness status that contradicts normalized data", () => {
+  const rows = fixture();
+  rows[0].snapshots[0].maker_fee_bps = null;
+  const result = verifyCarryShadowSet(rows, { now_ms: NOW });
+  assert.ok(result.failures.includes("missing_field_manifest_mismatch:hyperliquid:BTC"));
+  assert.ok(result.failures.includes("snapshot_status_inconsistent:hyperliquid:BTC"));
 });
 
 test("rejects crossed books, registry drift, and invalid margin evidence", () => {
@@ -227,9 +237,14 @@ function snapshot(venueId, asset) {
     depth_asks: [{ price_e8: 10_001_000_000, size_e8: 100_000_000 }],
     funding_rate_e12_per_interval: 10_000,
     funding_interval_ms: 3_600_000,
+    maker_fee_bps: 1,
+    taker_fee_bps: 2,
+    minimum_notional_micro_usdc: 1_000_000,
     quantity_step_e8: 1_000,
+    price_tick_e8: 1_000,
     initial_margin_bps: 500,
     maintenance_margin_bps: 250,
+    liquidation_fee_bps: 0,
     liquidation_model: "test_margin_liquidation",
     as_of_ms: NOW,
     source_observed_at_ms: { market: NOW, funding: NOW, orderbook: NOW },

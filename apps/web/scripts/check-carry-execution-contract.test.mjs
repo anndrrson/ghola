@@ -190,6 +190,19 @@ test("rejects five-venue shadow qualification without component freshness valida
   );
 });
 
+test("rejects five-venue shadow evidence with an unaudited missing-field manifest", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowVerifier: sources.shadowVerifier.replaceAll(
+        "missing_field_manifest_mismatch",
+        "missing_field_manifest_trusted",
+      ),
+    }),
+    /carry_shadow_missing_manifest_gate_missing/,
+  );
+});
+
 test("rejects release without a joined three-venue no-submit matrix", () => {
   assert.throws(
     () => checkCarryExecutionContract({

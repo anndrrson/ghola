@@ -192,6 +192,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifier", "reference_price_invalid", "carry_shadow_reference_price_gate_missing");
   requireText("shadowVerifier", "liquidity_depth_missing", "carry_shadow_liquidity_depth_gate_missing");
   requireText("shadowVerifier", "source_observation_stale", "carry_shadow_component_freshness_gate_missing");
+  requireText("shadowVerifier", "missing_field_manifest_mismatch", "carry_shadow_missing_manifest_gate_missing");
+  requireText("shadowVerifier", "snapshot_status_inconsistent", "carry_shadow_status_integrity_gate_missing");
   requireText("shadowVerifierTest", "accepts one fresh normalized shadow for every venue and core asset", "carry_shadow_complete_set_test_missing");
   requireText("shadowVerifierTest", "qualifies only consecutive complete five-venue shadow samples", "carry_shadow_soak_test_missing");
   requireText("shadowVerifierTest", "rejects tampered or reused shadow sample commitments", "carry_shadow_commitment_test_missing");
@@ -200,6 +202,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifierTest", "rejects duplicate or unregistered venue rows", "carry_shadow_duplicate_venue_test_missing");
   requireText("shadowVerifierTest", "rejects normalized shadow proof without valid two-sided liquidity depth", "carry_shadow_liquidity_depth_test_missing");
   requireText("shadowVerifierTest", "rejects stale component feeds hidden behind a fresh aggregate timestamp", "carry_shadow_component_freshness_test_missing");
+  requireText("shadowVerifierTest", "rejects a missing-field manifest or readiness status that contradicts normalized data", "carry_shadow_manifest_integrity_test_missing");
   requireText("preflight", "carry_shadow_unavailable", "stale_shadow_quarantine_missing");
   requireText("preflight", "verifyCarryShadowSnapshot", "carry_preflight_shared_shadow_contract_missing");
   requireText("preflight", "trustedAccountFeeEvidence", "carry_account_fee_provenance_gate_missing");
