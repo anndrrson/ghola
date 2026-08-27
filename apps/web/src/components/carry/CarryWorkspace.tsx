@@ -28,6 +28,7 @@ import {
   type CarryShadowStatus as ShadowStatus,
   type CarryVenueShadow as VenueShadow,
 } from "@/lib/carry-market";
+import { hasExactCarryFlatReconciliation } from "@/lib/carry-reconciliation";
 
 export { buildCandidates, builderModel } from "@/lib/carry-market";
 
@@ -70,6 +71,17 @@ interface CarryRecord {
     gross_exposure_micro_usdc: number;
     open_order_count: number;
     account_state_checked: boolean;
+    transaction_broadcast?: boolean;
+    checked_at_ms?: number;
+    reconciliation_commitment?: string;
+    venues?: Array<{
+      venue_id?: string;
+      authorized?: boolean;
+      flat_zero_orders?: boolean;
+      position_count?: number;
+      open_order_count?: number;
+      account_state_checked?: boolean;
+    }>;
   };
   updated_at: string;
 }
@@ -436,6 +448,10 @@ function CarryPositionsPanel({ records, onEnter, onExit }: { records: CarryRecor
           {records.map((record) => {
             const position = record.position;
             const finalized = record.value_ledger.status === "finalized";
+            const exactFlat = hasExactCarryFlatReconciliation(record.final_reconciliation_evidence, [
+              position.long_venue_id,
+              position.short_venue_id,
+            ]);
             const currentRunways = record.latest_observation?.margin_runway_ms_by_venue;
             const longRunway = currentRunways?.[position.long_venue_id] ?? record.opportunity.long_margin_runway_ms;
             const shortRunway = currentRunways?.[position.short_venue_id] ?? record.opportunity.short_margin_runway_ms;
@@ -464,9 +480,9 @@ function CarryPositionsPanel({ records, onEnter, onExit }: { records: CarryRecor
                   <PositionLine label="Collateral basis stress" value={microUsd(record.opportunity.collateral_basis_risk_micro_usdc)} />
                   <PositionLine label={finalized ? "Realized net" : "Value evidence"} value={finalized ? microUsd(record.value_ledger.realized.net_value_micro_usdc) : "Pending exact costs"} />
                   <PositionLine label="Final proof" value={finalized
-                    ? `${record.value_ledger.finalization_evidence?.gross_exposure_micro_usdc === 0 ? "Flat" : "Exposure"} · ${record.value_ledger.finalization_evidence?.open_order_count ?? "—"} orders`
+                    ? exactFlat ? "Flat · 0 orders · both venues verified" : "Venue proof incomplete"
                     : position.status === "reconciled"
-                      ? "Flat; costs pending evidence"
+                      ? exactFlat ? "Flat; costs pending evidence" : "Awaiting venue-specific flat proof"
                       : "Pending reconciliation"} />
                 </div>
                 <div>

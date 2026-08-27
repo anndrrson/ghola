@@ -26,6 +26,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   adapterRegistryTest: "apps/private-agent-worker/test/carry-adapter-registry.test.js",
   qualification: "apps/private-agent-worker/src/execution/carry-qualification.js",
   readiness: "apps/private-agent-worker/src/execution/carry-readiness.js",
+  reconciliation: "apps/private-agent-worker/src/execution/carry-reconciliation.js",
   releaseMaterial: "apps/private-agent-worker/src/execution/carry-release-evidence.js",
   shadow: "apps/private-agent-worker/src/execution/perp-shadow-adapters.js",
   shadowVerifier: "apps/private-agent-worker/src/execution/perp-shadow-readiness.js",
@@ -73,6 +74,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   preflightTest: "apps/private-agent-worker/test/carry-preflight.test.js",
   qualificationTest: "apps/private-agent-worker/test/carry-qualification.test.js",
   readinessTest: "apps/private-agent-worker/test/carry-readiness.test.js",
+  reconciliationTest: "apps/private-agent-worker/test/carry-reconciliation.test.js",
   releaseMaterialTest: "apps/private-agent-worker/test/carry-release-evidence.test.js",
   shadowTest: "apps/private-agent-worker/test/perp-shadow-adapters.test.js",
   asterTest: "apps/private-agent-worker/test/aster.test.js",
@@ -80,6 +82,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   hyperliquidMetricsTest: "apps/private-agent-worker/test/hyperliquid-account-metrics.test.js",
   evidenceVerifier: "apps/web/scripts/verify-carry-release-evidence.mjs",
   evidenceVerifierTest: "apps/web/scripts/verify-carry-release-evidence.test.mjs",
+  webReconciliation: "apps/web/src/lib/carry-reconciliation.ts",
+  webReconciliationTest: "apps/web/src/lib/carry-reconciliation.test.ts",
   proofRunbook: "deploy/evidence/CARRY_MAINNET_PROOF_RUNBOOK.md",
 });
 
@@ -268,8 +272,15 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterial", "attempt?.submit_count !== 1", "carry_release_submit_count_gate_missing");
   requireText("releaseMaterial", "attempt?.ambiguity_retry_count !== 0", "carry_release_retry_count_gate_missing");
   requireText("executor", "venues: venueProof", "carry_reconciliation_venue_rows_missing");
-  requireText("releaseMaterial", "releaseFinalVenueState(finalState.venues, pair)", "carry_release_venue_final_state_gate_missing");
-  requireText("releaseMaterial", "carry_release_venue_final_state_unproven", "carry_release_venue_final_state_error_missing");
+  requireText("reconciliation", "assessCarryFlatReconciliation", "carry_exact_flat_reconciliation_gate_missing");
+  requireText("reconciliationTest", "rejects aggregate-only, unsafe, duplicate, and residual venue claims", "carry_exact_flat_reconciliation_test_missing");
+  requireText("releaseMaterial", "assessCarryFlatReconciliation", "carry_release_venue_final_state_gate_missing");
+  requireText("qualification", "hasExactCarryFlatReconciliation", "carry_qualification_exact_flat_gate_missing");
+  requireText("positions", "hasExactCarryFlatReconciliation", "carry_migration_exact_flat_gate_missing");
+  requireText("webCarryBuilder", "hasExactCarryFlatReconciliation", "carry_terminal_exact_flat_gate_missing");
+  requireText("webCarryBuilderTest", "does not claim flat from aggregate-only reconciliation", "carry_terminal_aggregate_flat_rejection_test_missing");
+  requireText("webWorkspace", "hasExactCarryFlatReconciliation", "carry_workspace_exact_flat_display_missing");
+  requireText("webReconciliationTest", "rejects aggregate-only flat claims", "carry_web_exact_flat_test_missing");
   requireText("releaseMaterialTest", "refuses aggregate-only final reconciliation evidence", "carry_release_aggregate_only_rejection_test_missing");
   requireText("releaseMaterialTest", "refuses duplicate, mismatched, or non-flat venue final state", "carry_release_venue_final_state_test_missing");
   requireText("releaseMaterial", "worker_material_commitment", "carry_release_material_commitment_missing");

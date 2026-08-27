@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readCarryVenueQualification } from "./carry-qualification.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
+import { assessCarryFlatReconciliation } from "./carry-reconciliation.js";
 
 export async function buildCompletedCarryReleaseMaterial({
   state,
@@ -25,12 +26,9 @@ export async function buildCompletedCarryReleaseMaterial({
   const contractEquivalence = releaseContractEquivalence(record.opportunity);
   if (!contractEquivalence.ok) return contractEquivalence;
   const finalState = record.final_reconciliation_evidence;
-  if (finalState?.account_state_checked !== true || finalState.gross_exposure_micro_usdc !== 0 || finalState.open_order_count !== 0) {
-    return denied("carry_release_final_state_unproven");
-  }
   const pair = [record.position.long_venue_id, record.position.short_venue_id];
-  const finalVenueState = releaseFinalVenueState(finalState.venues, pair);
-  if (!finalVenueState.ok) return finalVenueState;
+  const finalAssessment = assessCarryFlatReconciliation({ evidence: finalState, venue_ids: pair });
+  if (!finalAssessment.flat) return denied("carry_release_final_state_unproven");
   const [entrySaga, exitSaga] = await Promise.all([
     state.getMultiLegSaga?.(record.entry_saga_id),
     state.getMultiLegSaga?.(record.exit_saga_id),
@@ -137,41 +135,19 @@ export async function buildCompletedCarryReleaseMaterial({
       checked_at: iso(finalState.checked_at_ms),
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,
-      venues: finalVenueState.venues,
+      venues: finalAssessment.venues.map((item) => ({
+        venue_id: item.venue_id,
+        authorized: true,
+        flat_zero_orders: true,
+        nonzero_position_count: item.position_count,
+        open_order_count: item.open_order_count,
+        account_state_checked: true,
+      })),
     },
     value_ledger: releaseValueLedger(record),
   };
   material.worker_material_commitment = workerMaterialCommitment(material);
   return { ok: true, material };
-}
-
-function releaseFinalVenueState(values, pair) {
-  if (!Array.isArray(values) || values.length !== pair.length) {
-    return denied("carry_release_venue_final_state_unproven");
-  }
-  const venueIds = values.map((item) => String(item?.venue_id || ""));
-  if (new Set(venueIds).size !== pair.length || pair.some((venueId) => !venueIds.includes(venueId))) {
-    return denied("carry_release_venue_final_state_unproven");
-  }
-  const venues = pair.map((venueId) => values.find((item) => item?.venue_id === venueId));
-  if (venues.some((item) => item?.authorized !== true
-    || item?.flat_zero_orders !== true
-    || item?.account_state_checked !== true
-    || item?.position_count !== 0
-    || item?.open_order_count !== 0)) {
-    return denied("carry_release_venue_final_state_unproven");
-  }
-  return {
-    ok: true,
-    venues: venues.map((item) => ({
-      venue_id: item.venue_id,
-      authorized: true,
-      flat_zero_orders: true,
-      nonzero_position_count: item.position_count,
-      open_order_count: item.open_order_count,
-      account_state_checked: true,
-    })),
-  };
 }
 
 async function materialLegs({ state, saga, record, phase }) {

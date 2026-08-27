@@ -106,7 +106,7 @@ test("refuses aggregate-only final reconciliation evidence", async () => {
     env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
     now_ms: NOW,
   });
-  assert.equal(result.error, "carry_release_venue_final_state_unproven");
+  assert.equal(result.error, "carry_release_final_state_unproven");
 });
 
 test("refuses duplicate, mismatched, or non-flat venue final state", async () => {
@@ -125,7 +125,7 @@ test("refuses duplicate, mismatched, or non-flat venue final state", async () =>
       env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
       now_ms: NOW,
     });
-    assert.equal(result.error, "carry_release_venue_final_state_unproven");
+    assert.equal(result.error, "carry_release_final_state_unproven");
   }
 });
 
@@ -177,6 +177,7 @@ async function stateFixture() {
     ],
     final_reconciliation_evidence: {
       account_state_checked: true,
+      transaction_broadcast: false,
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,
       checked_at_ms: 1_800_000_005_000,

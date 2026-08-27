@@ -8,6 +8,7 @@ import {
 } from "./carry-positions.js";
 import { preflightCarryPair } from "./carry-preflight.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
+import { hasExactCarryFlatReconciliation } from "./carry-reconciliation.js";
 import {
   readCarryVenueQualification,
   recordCompletedCarryVenueQualifications,
@@ -1134,9 +1135,7 @@ async function finalizeAbortedCarryValueEvidenceIfComplete({ state, record, reci
   }
   const reconciliation = record.final_reconciliation_evidence;
   const exitAtMs = Number(reconciliation?.checked_at_ms);
-  if (reconciliation?.account_state_checked !== true
-    || reconciliation?.gross_exposure_micro_usdc !== 0
-    || reconciliation?.open_order_count !== 0
+  if (!hasExactCarryFlatReconciliation(reconciliation, [record.position.long_venue_id, record.position.short_venue_id])
     || !Number.isSafeInteger(exitAtMs)
     || exitAtMs <= 0) {
     return { ok: false, error: "carry_aborted_flat_proof_invalid", finalized: false, record: publicCarryRecord(record) };
@@ -1299,7 +1298,7 @@ async function finalizeCarryValueEvidenceIfComplete({ state, ownerCommitment, po
   }
   if (current.value_evidence?.costs_complete !== true) return { finalized: false, record: publicCarryRecord(current) };
   const reconciliation = current.final_reconciliation_evidence;
-  if (reconciliation?.account_state_checked !== true || reconciliation?.gross_exposure_micro_usdc !== 0 || reconciliation?.open_order_count !== 0) {
+  if (!hasExactCarryFlatReconciliation(reconciliation, [current.position.long_venue_id, current.position.short_venue_id])) {
     return { finalized: false, record: publicCarryRecord(current) };
   }
   const finalized = await finalizeStoredCarryValueLedger({

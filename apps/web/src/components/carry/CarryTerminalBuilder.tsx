@@ -18,6 +18,7 @@ import {
   defaultCarryRiskMandate,
 } from "@/lib/carry-risk-mandate";
 import { builderModel, CARRY_VENUE_LABELS, type CarryCandidate } from "@/lib/carry-market";
+import { hasExactCarryFlatReconciliation } from "@/lib/carry-reconciliation";
 import {
   CARRY_EXECUTION_VENUES,
   isCarryExecutionVenue,
@@ -51,6 +52,17 @@ type CarryRecord = {
     gross_exposure_micro_usdc?: number;
     open_order_count?: number;
     account_state_checked?: boolean;
+    transaction_broadcast?: boolean;
+    checked_at_ms?: number;
+    reconciliation_commitment?: string;
+    venues?: Array<{
+      venue_id?: string;
+      authorized?: boolean;
+      flat_zero_orders?: boolean;
+      position_count?: number;
+      open_order_count?: number;
+      account_state_checked?: boolean;
+    }>;
   };
   value_ledger?: {
     status?: "open" | "finalized";
@@ -159,15 +171,17 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const current = routeRecords.find((record) =>
     !["reconciled", "manual_intervention"].includes(record.position.status)) || null;
   const lastFlat = routeRecords.some((record) => record.position.status === "reconciled"
-    && record.final_reconciliation_evidence?.gross_exposure_micro_usdc === 0
-    && record.final_reconciliation_evidence?.open_order_count === 0
-    && record.final_reconciliation_evidence?.account_state_checked === true);
+    && hasExactCarryFlatReconciliation(record.final_reconciliation_evidence, [
+      record.position.long_venue_id,
+      record.position.short_venue_id,
+    ]));
   const migrationSource = records.find((record) => {
     const selected = record.position.pending_migration?.selected_candidate;
     return record.position.status === "reconciled"
-      && record.final_reconciliation_evidence?.gross_exposure_micro_usdc === 0
-      && record.final_reconciliation_evidence?.open_order_count === 0
-      && record.final_reconciliation_evidence?.account_state_checked === true
+      && hasExactCarryFlatReconciliation(record.final_reconciliation_evidence, [
+        record.position.long_venue_id,
+        record.position.short_venue_id,
+      ])
       && record.position.pending_migration?.status === "owner_signature_required"
       && selected?.long_venue_id === candidate.long.venue_id
       && selected?.short_venue_id === candidate.short.venue_id

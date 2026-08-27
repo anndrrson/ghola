@@ -9,6 +9,7 @@ import {
 } from "@ghola/execution-core";
 import { preflightCarryPair } from "./carry-preflight.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
+import { hasExactCarryFlatReconciliation } from "./carry-reconciliation.js";
 
 const OWNER = /^[A-Za-z0-9:_-]{8,180}$/;
 
@@ -197,11 +198,10 @@ async function validateMigrationLineage({ state, ownerCommitment, position, oppo
   const pending = parent.position?.pending_migration;
   const selected = pending?.selected_candidate;
   const finalState = parent.final_reconciliation_evidence;
+  const parentPair = [parent.position?.long_venue_id, parent.position?.short_venue_id];
   if (parent.position?.status !== "reconciled"
     || pending?.status !== "owner_signature_required"
-    || finalState?.gross_exposure_micro_usdc !== 0
-    || finalState?.open_order_count !== 0
-    || finalState?.account_state_checked !== true) {
+    || !hasExactCarryFlatReconciliation(finalState, parentPair)) {
     return denied("carry_migration_parent_not_flat");
   }
   if (selected?.candidate_id !== candidateId

@@ -181,6 +181,21 @@ describe("CarryTerminalBuilder", () => {
       records: [{
         ...carryRecord(),
         position: { ...carryRecord().position, status: "reconciled" },
+        final_reconciliation_evidence: flatEvidence(["hyperliquid", "lighter"]),
+      }],
+    });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    expect(container.textContent).toContain("LAST FLAT · 0 ORDERS");
+    expect([...container.querySelectorAll("button")].some((button) =>
+      button.textContent?.includes("NO-SUBMIT CHECK"))).toBe(true);
+  });
+
+  it("does not claim flat from aggregate-only reconciliation", async () => {
+    api.listCarryPositions.mockResolvedValue({
+      ok: true,
+      records: [{
+        ...carryRecord(),
+        position: { ...carryRecord().position, status: "reconciled" },
         final_reconciliation_evidence: {
           gross_exposure_micro_usdc: 0,
           open_order_count: 0,
@@ -189,9 +204,7 @@ describe("CarryTerminalBuilder", () => {
       }],
     });
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
-    expect(container.textContent).toContain("LAST FLAT · 0 ORDERS");
-    expect([...container.querySelectorAll("button")].some((button) =>
-      button.textContent?.includes("NO-SUBMIT CHECK"))).toBe(true);
+    expect(container.textContent).not.toContain("LAST FLAT · 0 ORDERS");
   });
 
   it("binds a replacement signature to the selected flat migration parent", async () => {
@@ -212,11 +225,7 @@ describe("CarryTerminalBuilder", () => {
           },
         },
       },
-      final_reconciliation_evidence: {
-        gross_exposure_micro_usdc: 0,
-        open_order_count: 0,
-        account_state_checked: true,
-      },
+      final_reconciliation_evidence: flatEvidence(["aster", "hyperliquid"]),
     };
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [parent] });
     api.preflightCarryPair.mockResolvedValue({
@@ -389,5 +398,24 @@ function carryRecord() {
       next_actions: ["run_preflight"],
       last_event_sequence: 0,
     },
+  };
+}
+
+function flatEvidence(venueIds: string[]) {
+  return {
+    gross_exposure_micro_usdc: 0,
+    open_order_count: 0,
+    account_state_checked: true,
+    transaction_broadcast: false,
+    checked_at_ms: 1_800_000_000_000,
+    reconciliation_commitment: "carry:reconciliation:web-terminal:0001",
+    venues: venueIds.map((venue_id) => ({
+      venue_id,
+      authorized: true,
+      flat_zero_orders: true,
+      position_count: 0,
+      open_order_count: 0,
+      account_state_checked: true,
+    })),
   };
 }

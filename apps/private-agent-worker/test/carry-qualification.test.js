@@ -99,7 +99,18 @@ test("derives qualification only from a completed durable flat lifecycle", async
     position: { position_id: "carry:position:0001", status: "reconciled", long_venue_id: "hyperliquid", short_venue_id: "aster" },
     entry_saga_id: "saga:entry:0001",
     exit_saga_id: "saga:exit:0001",
-    final_reconciliation_evidence: { account_state_checked: true, gross_exposure_micro_usdc: 0, open_order_count: 0 },
+    final_reconciliation_evidence: {
+      account_state_checked: true,
+      transaction_broadcast: false,
+      gross_exposure_micro_usdc: 0,
+      open_order_count: 0,
+      checked_at_ms: NOW,
+      reconciliation_commitment: "carry:reconciliation:qualification:0001",
+      venues: [
+        { venue_id: "hyperliquid", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
+        { venue_id: "aster", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
+      ],
+    },
     qualification_context: {
       venues: {
         aster: {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { venueAdapterCapability } from "@ghola/execution-core";
+import { hasExactCarryFlatReconciliation } from "./carry-reconciliation.js";
 
 const DEFAULT_MAX_AGE_MS = 90 * 86_400_000;
 
@@ -45,7 +46,8 @@ export async function storeCarryVenueQualification({ state, evidence, now_ms: no
 export async function recordCompletedCarryVenueQualifications({ state, position_id: positionId, now_ms: nowMs = Date.now(), env = process.env }) {
   const record = await state?.getCarryPositionRecord?.(String(positionId || ""));
   const flat = record?.final_reconciliation_evidence;
-  if (record?.position?.status !== "reconciled" || flat?.account_state_checked !== true || flat.gross_exposure_micro_usdc !== 0 || flat.open_order_count !== 0) {
+  const pair = [record?.position?.long_venue_id, record?.position?.short_venue_id];
+  if (record?.position?.status !== "reconciled" || !hasExactCarryFlatReconciliation(flat, pair)) {
     return { ok: false, error: "qualification_completed_flat_lifecycle_required", qualifications: [] };
   }
   const [entrySaga, exitSaga] = await Promise.all([
