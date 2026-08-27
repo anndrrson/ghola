@@ -125,6 +125,16 @@ test("Vercel auth validation scans source when the Next adapter owns emitted chu
   assert.match(authGuard, /Vercel adapter owns emitted chunks/);
 });
 
+test("Vercel does not download unused ONNX CUDA binaries", () => {
+  const vercelConfig = JSON.parse(readFileSync(resolve(webRoot, "vercel.json"), "utf8"));
+  const privateVoice = readFileSync(resolve(webRoot, "src/lib/private-voice.ts"), "utf8");
+
+  assert.match(vercelConfig.installCommand, /^ONNXRUNTIME_NODE_INSTALL=skip /);
+  assert.match(privateVoice, /^"use client";/);
+  assert.match(privateVoice, /device: "webgpu"/);
+  assert.match(privateVoice, /local WASM transcription/);
+});
+
 test("release keeps Hyperliquid onboarding on one resumable wallet per authenticated owner lane", () => {
   const cockpit = readFileSync(
     resolve(webRoot, "src/components/private-account/PrivateAccountCockpit.tsx"),
