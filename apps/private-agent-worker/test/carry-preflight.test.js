@@ -69,6 +69,8 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
     maintenance_margin: 0,
     maker_fee_bps: 1.05,
     taker_fee_bps: 3.15,
+    position_count: 0,
+    open_order_count: 0,
   };
   const result = await preflightCarryPair({
     body: {
@@ -99,7 +101,7 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
         ...(venue_id === "aster" ? { account } : {}),
       };
     },
-    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true }),
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
     readHyperliquidCarryMetrics: async () => account,
   });
 
@@ -563,6 +565,8 @@ test("enables an economically eligible Aster pair only after deployment-bound qu
     maintenance_margin: 0,
     maker_fee_bps: 0,
     taker_fee_bps: 0,
+    position_count: 0,
+    open_order_count: 0,
   };
   const preflightInput = {
     body: {
@@ -592,7 +596,7 @@ test("enables an economically eligible Aster pair only after deployment-bound qu
       account,
       ...(venue_id === "aster" ? { authority_boundary: { venue_native_trade_only: true } } : {}),
     }),
-    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true }),
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
     readHyperliquidCarryMetrics: async () => account,
   };
   const result = await preflightCarryPair({ ...preflightInput, state });

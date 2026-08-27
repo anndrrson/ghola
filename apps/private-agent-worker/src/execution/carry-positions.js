@@ -198,7 +198,11 @@ export async function advanceStoredCarryPosition({ state, position_id: positionI
     position: advanced.position,
     lifecycle_events: [...record.record.lifecycle_events, recordedEvent].slice(-256),
     ...(event.type === "observation" ? { latest_observation: publicObservation(recordedEvent) } : {}),
-    ...(event.type === "exit_reconciled" ? { final_reconciliation_evidence: publicReconciliationEvidence(event, nowMs) } : {}),
+    ...((event.type === "exit_reconciled" || (
+      event.type === "reconciliation_complete"
+      && event.known_flat === true
+      && event.open_order_count === 0
+    )) ? { final_reconciliation_evidence: publicReconciliationEvidence(event, nowMs) } : {}),
     updated_at: new Date(nowMs).toISOString(),
   };
   return storeUpdate(state, next, record.record.record_version);

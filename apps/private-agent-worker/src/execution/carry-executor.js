@@ -416,7 +416,10 @@ export async function runCarryExecutionTick({
   env = process.env,
   now = () => Date.now(),
 }) {
-  const records = await state.listCarryPositionRecords({ status: "exiting", limit: 500 });
+  const [records, frozenRecords] = await Promise.all([
+    state.listCarryPositionRecords({ status: "exiting", limit: 500 }),
+    state.listCarryPositionRecords({ status: "frozen", limit: 500 }),
+  ]);
   const results = [];
   for (const record of records) {
     if (!record.exit_saga_id) {
@@ -502,10 +505,110 @@ export async function runCarryExecutionTick({
       }));
     }
   }
-  return { ok: results.every((result) => result.ok), checked: records.length, results };
+  for (const record of frozenRecords) {
+    results.push(await synchronizeFrozenCarryRecovery({
+      state,
+      record,
+      recipient,
+      verifyOrder,
+      readFundingSettlements,
+      preflight,
+      env,
+      now,
+    }));
+  }
+  return { ok: results.every((result) => result.ok), checked: records.length + frozenRecords.length, results };
+}
+
+export async function auditCarryPositionsAfterRestart({ state, now_ms: nowMs = Date.now() }) {
+  const records = await state.listCarryPositionRecords({ status: "opening", limit: 500 });
+  const cutoff = new Date(nowMs).getTime();
+  const results = [];
+  for (const record of records) {
+    const updatedAt = new Date(record.updated_at || record.created_at || 0).getTime();
+    if (Number.isFinite(updatedAt) && updatedAt > cutoff) continue;
+    results.push(await advanceStoredCarryPosition({
+      state,
+      owner_commitment: record.owner_commitment,
+      position_id: record.position.position_id,
+      event: carryEvent(record.position, "restart_detected"),
+      now_ms: nowMs,
+    }));
+  }
+  return { ok: results.every((result) => result.ok), checked: records.length, frozen: results.filter((result) => result.ok).length, results };
+}
+
+async function synchronizeFrozenCarryRecovery({ state, record, recipient, verifyOrder, readFundingSettlements, preflight, env, now }) {
+  const sagaId = record.exit_saga_id || record.entry_saga_id;
+  if (!sagaId) return denied("carry_frozen_recovery_saga_missing");
+  const saga = await state.getMultiLegSaga(sagaId);
+  if (!saga) return denied("carry_frozen_recovery_saga_missing");
+  if (!saga.terminal) return { ok: true, pending: true, error: "carry_recovery_in_progress", saga_status: saga.status };
+  if (saga.status === "manual_intervention") {
+    return { ok: false, error: "carry_recovery_requires_owner_review", saga_status: saga.status };
+  }
+  if (!["reconciled", "unwound", "failed_no_fill", "failed_no_submit"].includes(saga.status)) {
+    return { ok: false, error: "carry_recovery_terminal_state_unrecognized", saga_status: saga.status };
+  }
+  const checkedAt = now();
+  const accountState = await inspectCarryAccountState({
+    state,
+    record,
+    saga,
+    recipient,
+    verifyOrder,
+    preflight,
+    env,
+    nowMs: checkedAt,
+  });
+  if (!accountState.ok) return accountState;
+  if (!accountState.known_flat) {
+    return {
+      ok: false,
+      error: "carry_recovery_exposure_requires_owner_review",
+      saga_status: saga.status,
+      transaction_broadcast: false,
+    };
+  }
+  const advanced = await advanceStoredCarryPosition({
+    state,
+    owner_commitment: record.owner_commitment,
+    position_id: record.position.position_id,
+    event: carryEvent(record.position, "reconciliation_complete", {
+      known_flat: true,
+      ...accountState.evidence,
+    }),
+    now_ms: checkedAt,
+  });
+  if (!advanced.ok || !record.exit_saga_id) return advanced;
+  const accounting = await recordRecoveredExitValueEvidence({
+    state,
+    ownerCommitment: record.owner_commitment,
+    positionId: record.position.position_id,
+    saga,
+    env,
+    nowMs: checkedAt,
+  });
+  const finalized = await finalizeCarryValueEvidenceIfComplete({
+    state,
+    ownerCommitment: record.owner_commitment,
+    positionId: record.position.position_id,
+    venueAccess: record.monitoring_context.venue_access,
+    recipient,
+    readFundingSettlements,
+    nowMs: checkedAt,
+  });
+  return { ...advanced, record: finalized.record || accounting.record || advanced.record, accounting: accounting.summary, value_finalized: finalized.finalized };
 }
 
 async function verifyFlatExitProof({ state, record, saga, recipient, verifyOrder, preflight, env, nowMs }) {
+  const accountState = await inspectCarryAccountState({ state, record, saga, recipient, verifyOrder, preflight, env, nowMs });
+  if (!accountState.ok) return accountState;
+  if (!accountState.known_flat) return denied("carry_exit_not_flat_or_open_orders_nonzero");
+  return { ok: true, evidence: accountState.evidence };
+}
+
+async function inspectCarryAccountState({ state, record, saga, recipient, verifyOrder, preflight, env, nowMs }) {
   let proof;
   try {
     proof = await preflight({
@@ -519,20 +622,25 @@ async function verifyFlatExitProof({ state, record, saga, recipient, verifyOrder
   } catch (error) {
     return denied(errorCode(error, "carry_exit_final_account_proof_unavailable"));
   }
-  if (proof?.transaction_broadcast !== false || proof?.no_submit_ready !== true) {
+  if (proof?.transaction_broadcast !== false) {
     return denied("carry_exit_final_account_proof_unavailable");
   }
   const readiness = Array.isArray(proof.account_readiness) ? proof.account_readiness : [];
   const venues = [record.position.long_venue_id, record.position.short_venue_id];
   const venueProof = venues.map((venueId) => readiness.find((item) => item?.venue_id === venueId));
-  if (venueProof.some((item) => item?.flat_zero_orders !== true || item?.authorized !== true)) {
-    return denied("carry_exit_not_flat_or_open_orders_nonzero");
+  if (venueProof.some((item) => item?.authorized !== true)) {
+    return denied("carry_exit_final_account_proof_unavailable");
   }
+  const knownFlat = venueProof.every((item) => item.flat_zero_orders === true);
+  const openOrderCount = knownFlat
+    ? 0
+    : venueProof.reduce((sum, item) => sum + Math.max(0, Number(item.open_order_count || 0)), 0);
   return {
     ok: true,
+    known_flat: knownFlat,
     evidence: {
-      gross_exposure_micro_usdc: 0,
-      open_order_count: 0,
+      gross_exposure_micro_usdc: knownFlat ? 0 : record.position.target_notional_micro_usdc,
+      open_order_count: openOrderCount,
       account_state_checked: true,
       transaction_broadcast: false,
       checked_at_ms: nowMs,
@@ -543,7 +651,9 @@ async function verifyFlatExitProof({ state, record, saga, recipient, verifyOrder
         venue_readiness: venueProof.map((item) => ({
           venue_id: item.venue_id,
           authorized: true,
-          flat_zero_orders: true,
+          flat_zero_orders: item.flat_zero_orders === true,
+          position_count: Number(item.position_count || 0),
+          open_order_count: Number(item.open_order_count || 0),
         })),
       })).slice(0, 40)}`,
     },
@@ -951,16 +1061,19 @@ export function startCarryExecutionLoop({ state, recipient, verifyOrder, execute
   const intervalMs = boundedMs(env.PRIVATE_AGENT_CARRY_EXECUTION_SWEEP_MS, 1_000, 60_000, 2_000);
   let timer = null;
   let stopped = false;
+  const startupAt = now();
+  const ready = auditCarryPositionsAfterRestart({ state, now_ms: startupAt }).catch(() => null);
   const schedule = (delay) => {
     if (stopped) return;
     timer = setTimeout(async () => {
+      await ready;
       await runCarryExecutionTick({ state, recipient, verifyOrder, executeOrder, readFundingSettlements, preflight, env, now }).catch(() => null);
       schedule(intervalMs);
     }, delay);
     timer.unref?.();
   };
   schedule(intervalMs);
-  return { stop() { stopped = true; if (timer) clearTimeout(timer); timer = null; } };
+  return { ready, stop() { stopped = true; if (timer) clearTimeout(timer); timer = null; } };
 }
 
 async function exactEntryBases(state, saga) {
@@ -1029,6 +1142,7 @@ function preflightBody(record, nowMs) {
     short_venue_id: record.position.short_venue_id,
     notional_usd: String(record.position.target_notional_micro_usdc / 1_000_000),
     horizon_days: String(Math.max(1, Math.ceil(record.opportunity.horizon_ms / 86_400_000))),
+    risk_mandate: record.position.risk_mandate,
     venue_access: record.monitoring_context.venue_access,
   };
 }

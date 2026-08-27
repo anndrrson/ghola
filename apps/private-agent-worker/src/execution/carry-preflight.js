@@ -472,18 +472,28 @@ function accountReadiness(leg, notionalMicro) {
   const accountSnapshotReady = leg.venue_id !== "hyperliquid" || (
     leg.account_snapshot?.status === "ready_to_trade" && leg.account_snapshot?.trading_enabled === true
   );
-  const positionCount = leg.venue_id === "hyperliquid"
-    ? Number(leg.account_snapshot?.position_count || 0)
-    : Number(account.position_count || 0);
-  const openOrderCount = leg.venue_id === "hyperliquid"
-    ? Number(leg.account_snapshot?.open_order_count || 0)
-    : Number(account.open_order_count || 0);
-  const flat = positionCount === 0 && openOrderCount === 0;
+  const rawPositionCount = leg.venue_id === "hyperliquid"
+    ? leg.account_snapshot?.position_count
+    : account.position_count;
+  const rawOpenOrderCount = leg.venue_id === "hyperliquid"
+    ? leg.account_snapshot?.open_order_count
+    : account.open_order_count;
+  const positionCount = Number(rawPositionCount);
+  const openOrderCount = Number(rawOpenOrderCount);
+  const countsKnown = rawPositionCount !== undefined
+    && rawOpenOrderCount !== undefined
+    && Number.isSafeInteger(positionCount)
+    && positionCount >= 0
+    && Number.isSafeInteger(openOrderCount)
+    && openOrderCount >= 0;
+  const flat = countsKnown && positionCount === 0 && openOrderCount === 0;
   const authorized = leg.receipt?.checks?.transaction_broadcast === false && account.can_trade === true && accountSnapshotReady;
   return {
     venue_id: leg.venue_id,
     authorized,
     flat_zero_orders: flat,
+    position_count: countsKnown ? positionCount : null,
+    open_order_count: countsKnown ? openOrderCount : null,
     capital_ready: authorized && flat && available >= notionalMicro,
     monitoring_ready: authorized && balance > 0,
     available_balance_micro_usdc: available,

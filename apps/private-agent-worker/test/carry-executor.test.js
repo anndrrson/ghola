@@ -3,10 +3,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { executeStoredCarryEntry, executeStoredCarryExit, runCarryExecutionTick } from "../src/execution/carry-executor.js";
+import {
+  auditCarryPositionsAfterRestart,
+  executeStoredCarryEntry,
+  executeStoredCarryExit,
+  runCarryExecutionTick,
+} from "../src/execution/carry-executor.js";
 import { advanceStoredCarryPosition, createStoredCarryPosition, runCarryMonitoringTick } from "../src/execution/carry-positions.js";
 import { readCarryVenueQualification } from "../src/execution/carry-qualification.js";
-import { recoverDueMultiLegSagas } from "../src/execution/multi-leg-orchestrator.js";
+import { applyDurableMultiLegEvent, recoverDueMultiLegSagas } from "../src/execution/multi-leg-orchestrator.js";
 import { createWorkerState } from "../src/state/private-state.js";
 import { signedCarryPositionInput } from "./carry-mandate-fixture.js";
 
@@ -172,6 +177,120 @@ test("freezes an ambiguous leg and never submits the entry again", async (t) => 
   const retried = await executeStoredCarryEntry({ ...fixture, executeOrder: async () => { calls += 1; } });
   assert.equal(retried.error, "carry_entry_already_started");
   assert.equal(calls, 2);
+});
+
+test("restart audit freezes an in-flight opening without resubmission", async (t) => {
+  const fixture = await setup(t, "restart-opening");
+  const record = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  const opening = await advanceStoredCarryPosition({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.position_id,
+    event: {
+      version: 1,
+      event_id: "carry:restart:opening:preflight",
+      sequence: record.position.last_event_sequence + 1,
+      type: "preflight_passed",
+      opportunity_eligible: true,
+      all_venues_ready: true,
+    },
+    now_ms: NOW + 1,
+  });
+  assert.equal(opening.record.position.status, "opening");
+  const restartedState = createWorkerState(fixture.state_dir);
+  const audited = await auditCarryPositionsAfterRestart({ state: restartedState, now_ms: NOW + 2 });
+  assert.equal(audited.ok, true);
+  assert.equal(audited.frozen, 1);
+  const frozen = await restartedState.getCarryPositionRecord(fixture.position_id);
+  assert.equal(frozen.position.status, "frozen");
+  assert.equal(frozen.position.retry_permitted, false);
+  assert.deepEqual(frozen.position.next_actions, ["reconcile_only"]);
+});
+
+test("terminal entry recovery synchronizes flat parent after restart without resubmission", async (t) => {
+  const fixture = await setup(t, "restart-recovered-flat");
+  let submissions = 0;
+  const started = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      submissions += 1;
+      if (args.venue_id === "lighter") {
+        const error = new Error("submission outcome ambiguous");
+        error.code = "submission_ambiguous";
+        throw error;
+      }
+      return filledReceipt(args);
+    },
+  });
+  assert.equal(started.record.position.status, "frozen");
+  let saga = await fixture.state.getMultiLegSaga(started.saga.saga_id);
+  saga = (await applyDurableMultiLegEvent({
+    state: fixture.state,
+    saga_id: saga.saga_id,
+    now_ms: saga.unhedged_deadline_ms,
+    event: {
+      version: 1,
+      event_id: "carry:restart:recovery:timeout",
+      sequence: saga.last_event_sequence + 1,
+      type: "timeout",
+    },
+  })).saga;
+  const filledLeg = saga.legs.find((leg) => leg.filled_micro_usdc > 0);
+  const uncertainLeg = saga.legs.find((leg) => leg.filled_micro_usdc === 0);
+  saga = (await applyDurableMultiLegEvent({
+    state: fixture.state,
+    saga_id: saga.saga_id,
+    now_ms: saga.updated_at_ms + 1,
+    event: {
+      version: 1,
+      event_id: "carry:restart:recovery:cancel",
+      sequence: saga.last_event_sequence + 1,
+      type: "cancel_confirmed",
+      leg_id: uncertainLeg.leg_id,
+      cumulative_filled_micro_usdc: 0,
+    },
+  })).saga;
+  saga = (await applyDurableMultiLegEvent({
+    state: fixture.state,
+    saga_id: saga.saga_id,
+    now_ms: saga.updated_at_ms + 1,
+    event: {
+      version: 1,
+      event_id: "carry:restart:recovery:unwind",
+      sequence: saga.last_event_sequence + 1,
+      type: "unwind_fill",
+      leg_id: filledLeg.leg_id,
+      cumulative_filled_micro_usdc: filledLeg.filled_micro_usdc,
+    },
+  })).saga;
+  assert.equal(saga.status, "unwound");
+  const restartedState = createWorkerState(fixture.state_dir);
+  const uncertain = await runCarryExecutionTick({
+    ...fixture,
+    state: restartedState,
+    preflight: async () => ({
+      ...preflightProof(),
+      account_readiness: [
+        { venue_id: "aster", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
+        { venue_id: "lighter", authorized: true, flat_zero_orders: false, position_count: 1, open_order_count: 0 },
+      ],
+    }),
+    executeOrder: async () => { submissions += 1; throw new Error("unexpected submit"); },
+  });
+  assert.equal(uncertain.ok, false);
+  assert.equal(uncertain.results[0].error, "carry_recovery_exposure_requires_owner_review");
+  assert.equal((await restartedState.getCarryPositionRecord(fixture.position_id)).position.status, "frozen");
+  assert.equal(submissions, 2);
+  const synced = await runCarryExecutionTick({
+    ...fixture,
+    state: restartedState,
+    executeOrder: async () => { submissions += 1; throw new Error("unexpected submit"); },
+  });
+  assert.equal(synced.ok, true);
+  assert.equal(submissions, 2);
+  assert.equal(synced.results[0].record.position.status, "reconciled");
+  assert.equal(synced.results[0].record.final_reconciliation_evidence.open_order_count, 0);
+  assert.equal(synced.results[0].record.final_reconciliation_evidence.account_state_checked, true);
 });
 
 test("records a fully rejected pair as flat with no recovery order", async (t) => {
