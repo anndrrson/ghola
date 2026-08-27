@@ -213,6 +213,19 @@ test("rejects a headline route that can diverge from the executable builder", ()
   );
 });
 
+test("rejects a headline that hides execution versus shadow status", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: sources.webCarryChart.replace(
+        '{routeMode === "execution" ? "EXEC" : "SHADOW"}',
+        '"XVENUE"',
+      ),
+    }),
+    /carry_primary_rail_visible_route_mode_missing/,
+  );
+});
+
 test("rejects a missing exact-reconciliation adapter", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -926,7 +939,7 @@ test("rejects replacing the terminal rail with marketing status copy", () => {
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      webCarryChart: sources.webCarryChart.replace(">XVENUE<", ">Scanning equivalent perps<"),
+      webCarryChart: sources.webCarryChart.replace("XVENUE", "Scanning equivalent perps"),
     }),
     /carry_terminal_rail_missing|carry_marketing_status_copy_forbidden/,
   );

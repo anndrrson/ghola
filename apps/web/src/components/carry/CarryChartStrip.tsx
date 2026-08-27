@@ -191,8 +191,18 @@ export function CarryChartStrip({
       data-route-age-ms={Number.isFinite(selectedAgeMs) ? Math.round(selectedAgeMs) : undefined}
     >
       <div className="flex min-h-10 items-center gap-2 px-2.5 sm:px-3">
-        <div className="grid min-w-0 flex-1 grid-cols-[4.75rem_5.5rem_minmax(12rem,1fr)_8.75rem_10rem_6.25rem_6.5rem] items-center gap-x-2 font-mono text-[10px] tabular-nums max-[1023px]:grid-cols-[4.75rem_5.5rem_minmax(0,1fr)] max-[639px]:grid-cols-[4.75rem_minmax(0,1fr)]">
-          <span className="font-semibold tracking-[0.12em] text-[#78bdff]">XVENUE</span>
+        <div className="grid min-w-0 flex-1 grid-cols-[7rem_5.5rem_minmax(12rem,1fr)_8.75rem_10rem_6.25rem_6.5rem] items-center gap-x-2 font-mono text-[10px] tabular-nums max-[1023px]:grid-cols-[7rem_5.5rem_minmax(0,1fr)] max-[639px]:grid-cols-[7rem_minmax(0,1fr)]">
+          <span className="flex items-center gap-1.5 font-semibold tracking-[0.12em] text-[#78bdff]">
+            XVENUE
+            {routeMode !== "none" ? (
+              <span className={routeMode === "execution"
+                ? "rounded border border-[#285040] px-1 py-0.5 text-[8px] tracking-[0.08em] text-[#72bfa2]"
+                : "rounded border border-[#4a4350] px-1 py-0.5 text-[8px] tracking-[0.08em] text-[#a69aae]"}
+              >
+                {routeMode === "execution" ? "EXEC" : "SHADOW"}
+              </span>
+            ) : null}
+          </span>
           <span className="text-[#aeb9c7] max-[639px]:hidden">{asset}-PERP</span>
 
           {selected ? (

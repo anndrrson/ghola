@@ -82,6 +82,7 @@ describe("CarryChartStrip", () => {
     const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
     const primary = rail?.firstElementChild?.textContent || "";
     expect(rail?.getAttribute("data-route-mode")).toBe("execution");
+    expect(primary).toContain("EXEC");
     expect(primary).toContain("HYPERLIQUID");
     expect(primary).toContain("ASTER");
     expect(primary).not.toContain("EDGEX");
@@ -95,6 +96,7 @@ describe("CarryChartStrip", () => {
 
     const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
     expect(rail?.getAttribute("data-route-mode")).toBe("shadow");
+    expect(rail?.firstElementChild?.textContent).toContain("SHADOW");
     expect(container.querySelector('[aria-label="Carry position builder"]')).toBeNull();
   });
 
