@@ -183,12 +183,15 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifier", "missing_field_unjustified", "carry_shadow_missing_field_evidence_gate_missing");
   requireText("shadowVerifier", "export function verifyCarryShadowSoak", "carry_shadow_soak_verifier_missing");
   requireText("shadowVerifier", "shadow_soak_sample_failed", "carry_shadow_soak_intermittent_failure_gate_missing");
+  requireText("shadowVerifier", "snapshot_evidence", "carry_shadow_snapshot_evidence_missing");
+  requireText("shadowVerifier", "shadow_soak_sample_commitment_invalid", "carry_shadow_sample_commitment_gate_missing");
   requireText("shadowVerifier", "read_only_boundary_invalid", "carry_shadow_read_only_gate_missing");
   requireText("shadowVerifier", "snapshot_stale", "carry_shadow_freshness_gate_missing");
   requireText("shadowVerifier", "venue_duplicate", "carry_shadow_duplicate_venue_gate_missing");
   requireText("shadowVerifier", "reference_price_invalid", "carry_shadow_reference_price_gate_missing");
   requireText("shadowVerifierTest", "accepts one fresh normalized shadow for every venue and core asset", "carry_shadow_complete_set_test_missing");
   requireText("shadowVerifierTest", "qualifies only consecutive complete five-venue shadow samples", "carry_shadow_soak_test_missing");
+  requireText("shadowVerifierTest", "rejects tampered or reused shadow sample commitments", "carry_shadow_commitment_test_missing");
   requireText("shadowVerifierTest", "rejects a one-shot snapshot as durable shadow qualification", "carry_shadow_one_shot_rejection_test_missing");
   requireText("shadowVerifierTest", "rejects normalized gaps without explicit quality evidence", "carry_shadow_quality_evidence_test_missing");
   requireText("shadowVerifierTest", "rejects duplicate or unregistered venue rows", "carry_shadow_duplicate_venue_test_missing");

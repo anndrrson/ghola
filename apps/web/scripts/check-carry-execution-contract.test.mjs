@@ -151,6 +151,19 @@ test("rejects five-venue shadow qualification based on one lucky snapshot", () =
   );
 });
 
+test("rejects five-venue shadow evidence without exact sample commitments", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowVerifier: sources.shadowVerifier.replaceAll(
+        "shadow_soak_sample_commitment_invalid",
+        "shadow_soak_sample_commitment_ignored",
+      ),
+    }),
+    /carry_shadow_sample_commitment_gate_missing/,
+  );
+});
+
 test("rejects release without a joined three-venue no-submit matrix", () => {
   assert.throws(
     () => checkCarryExecutionContract({

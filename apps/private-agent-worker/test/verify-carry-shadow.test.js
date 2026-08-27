@@ -11,14 +11,17 @@ const NOW = 1_800_000_000_000;
 
 test("accepts one fresh normalized shadow for every venue and core asset", () => {
   const result = verifyCarryShadowSet(fixture(), { now_ms: NOW });
-  assert.deepEqual(result, {
-    ok: true,
-    checked_at_ms: NOW,
-    venues: 5,
-    assets: 3,
-    expected_snapshots: 15,
-    failures: [],
-  });
+  assert.equal(result.ok, true);
+  assert.equal(result.checked_at_ms, NOW);
+  assert.equal(result.venues, 5);
+  assert.equal(result.assets, 3);
+  assert.deepEqual(result.requested_assets, ["BTC", "ETH", "SOL"]);
+  assert.equal(result.expected_snapshots, 15);
+  assert.equal(result.snapshot_evidence.length, 15);
+  assert.equal(new Set(result.snapshot_evidence.map((row) => `${row.venue_id}:${row.asset}`)).size, 15);
+  assert.equal(result.snapshot_evidence.every((row) => /^carry:shadow:snapshot:[0-9a-f]{64}$/.test(row.snapshot_commitment)), true);
+  assert.match(result.sample_commitment, /^carry:shadow:sample:[0-9a-f]{64}$/);
+  assert.deepEqual(result.failures, []);
 });
 
 test("rejects missing assets, stale data, and executable shadow adapters", () => {
@@ -37,6 +40,18 @@ test("rejects an empty requested asset set", () => {
   const result = verifyCarryShadowSet(fixture(), { assets: [], now_ms: NOW });
   assert.equal(result.ok, false);
   assert.ok(result.failures.includes("asset_set_empty"));
+});
+
+test("binds custom requested assets without narrowing evidence to the default set", () => {
+  const result = verifyCarryShadowSet(fixture(["HYPE"]), { assets: ["HYPE"], now_ms: NOW });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.requested_assets, ["HYPE"]);
+  assert.equal(result.snapshot_evidence.length, 5);
+  assert.equal(verifyCarryShadowSoak([
+    result,
+    verifyCarryShadowSet(fixture(["HYPE"]), { assets: ["HYPE"], now_ms: NOW + 1_000 }),
+    verifyCarryShadowSet(fixture(["HYPE"]), { assets: ["HYPE"], now_ms: NOW + 2_000 }),
+  ]).ok, true);
 });
 
 test("rejects normalized gaps without explicit quality evidence", () => {
@@ -91,16 +106,36 @@ test("qualifies only consecutive complete five-venue shadow samples", () => {
   const samples = [0, 1, 2].map((offset) => verifyCarryShadowSet(fixture(), {
     now_ms: NOW + offset * 1_000,
   }));
-  assert.deepEqual(verifyCarryShadowSoak(samples), {
-    ok: true,
-    required_samples: 3,
-    completed_samples: 3,
-    duration_ms: 2_000,
-    venues: 5,
-    assets: 3,
-    expected_snapshots_per_sample: 15,
-    failures: [],
-  });
+  const result = verifyCarryShadowSoak(samples);
+  assert.equal(result.ok, true);
+  assert.equal(result.required_samples, 3);
+  assert.equal(result.completed_samples, 3);
+  assert.equal(result.duration_ms, 2_000);
+  assert.equal(result.venues, 5);
+  assert.equal(result.assets, 3);
+  assert.deepEqual(result.requested_assets, ["BTC", "ETH", "SOL"]);
+  assert.equal(result.expected_snapshots_per_sample, 15);
+  assert.deepEqual(result.sample_commitments, samples.map((sample) => sample.sample_commitment));
+  assert.deepEqual(result.failures, []);
+});
+
+test("rejects tampered or reused shadow sample commitments", () => {
+  const samples = [0, 1, 2].map((offset) => verifyCarryShadowSet(fixture(), {
+    now_ms: NOW + offset * 1_000,
+  }));
+  samples[1] = {
+    ...samples[1],
+    snapshot_evidence: samples[1].snapshot_evidence.map((row, index) => index === 0
+      ? { ...row, contract_id: "lighter:tampered" }
+      : row),
+  };
+  samples[2] = { ...samples[2], sample_commitment: samples[0].sample_commitment };
+  const result = verifyCarryShadowSoak(samples);
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.includes("shadow_soak_snapshot_evidence_invalid:1"));
+  assert.ok(result.failures.includes("shadow_soak_sample_commitment_invalid:1"));
+  assert.ok(result.failures.includes("shadow_soak_sample_commitment_invalid:2"));
+  assert.ok(result.failures.includes("shadow_soak_sample_commitments_reused"));
 });
 
 test("rejects intermittent failure, coverage drift, and non-monotonic shadow samples", () => {
@@ -123,11 +158,11 @@ test("rejects a one-shot snapshot as durable shadow qualification", () => {
   assert.ok(result.failures.includes("shadow_soak_samples_insufficient:1:3"));
 });
 
-function fixture() {
+function fixture(assets = DEFAULT_CARRY_SHADOW_ASSETS) {
   return CORE_PERP_VENUES.map((venueId) => ({
     venue_id: venueId,
     ok: true,
-    snapshots: DEFAULT_CARRY_SHADOW_ASSETS.map((asset) => snapshot(venueId, asset)),
+    snapshots: assets.map((asset) => snapshot(venueId, asset)),
   }));
 }
 
@@ -142,7 +177,7 @@ function snapshot(venueId, asset) {
     economic_equivalence_id: `carry:${asset}-usd-linear`,
     asset,
     market: `${asset}-USD`,
-    quote_asset: venueId === "hyperliquid" || venueId === "aster" ? "USDT" : "USD",
+    quote_asset: venueId === "hyperliquid" ? asset === "HYPE" ? "USDC" : "USDT" : venueId === "aster" ? "USDT" : "USD",
     collateral_asset: venueId === "aster" ? "USDT" : "USDC",
     contract_type: "linear_perp",
     mark_price_e8: 10_000_000_000,

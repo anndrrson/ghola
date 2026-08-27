@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { CORE_PERP_VENUES, venueAdapterCapability } from "@ghola/execution-core";
 
 export const DEFAULT_CARRY_SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
@@ -47,6 +48,7 @@ export function verifyCarryShadowSet(rows, {
   if (!Array.isArray(assets)) failures.push("asset_set_invalid");
   const normalizedAssets = [...new Set(requestedAssets.map((asset) => String(asset).toUpperCase()))];
   if (normalizedAssets.length === 0) failures.push("asset_set_empty");
+  const snapshotEvidence = [];
 
   for (const venueId of CORE_PERP_VENUES) {
     const venue = byVenue.get(venueId);
@@ -63,15 +65,21 @@ export function verifyCarryShadowSet(rows, {
         continue;
       }
       verifySnapshot(matches[0], { venueId, asset, nowMs, maxAgeMs, failures });
+      snapshotEvidence.push(snapshotEvidenceRow(matches[0], nowMs));
     }
   }
+
+  const frozenEvidence = Object.freeze(snapshotEvidence.map((row) => Object.freeze(row)));
 
   return Object.freeze({
     ok: failures.length === 0,
     checked_at_ms: nowMs,
     venues: CORE_PERP_VENUES.length,
     assets: normalizedAssets.length,
+    requested_assets: Object.freeze(normalizedAssets),
     expected_snapshots: CORE_PERP_VENUES.length * normalizedAssets.length,
+    snapshot_evidence: frozenEvidence,
+    sample_commitment: shadowSampleCommitment(nowMs, frozenEvidence),
     failures: Object.freeze(failures),
   });
 }
@@ -91,7 +99,9 @@ export function verifyCarryShadowSoak(sampleResults, {
   let previousCheckedAt = 0;
   let expectedVenues = null;
   let expectedAssets = null;
+  let expectedRequestedAssets = null;
   let expectedSnapshots = null;
+  const sampleCommitments = [];
   samples.forEach((sample, index) => {
     if (sample?.ok !== true || (Array.isArray(sample?.failures) && sample.failures.length > 0)) {
       failures.push(`shadow_soak_sample_failed:${index}`);
@@ -102,13 +112,27 @@ export function verifyCarryShadowSoak(sampleResults, {
     previousCheckedAt = Number.isSafeInteger(sample?.checked_at_ms) ? sample.checked_at_ms : previousCheckedAt;
     expectedVenues ??= sample?.venues;
     expectedAssets ??= sample?.assets;
+    expectedRequestedAssets ??= Array.isArray(sample?.requested_assets) ? sample.requested_assets : null;
     expectedSnapshots ??= sample?.expected_snapshots;
     if (
       sample?.venues !== expectedVenues ||
       sample?.assets !== expectedAssets ||
+      !sameStrings(sample?.requested_assets, expectedRequestedAssets) ||
       sample?.expected_snapshots !== expectedSnapshots
     ) failures.push(`shadow_soak_coverage_drift:${index}`);
+    const evidence = Array.isArray(sample?.snapshot_evidence) ? sample.snapshot_evidence : [];
+    if (!validSnapshotEvidence(evidence, sample?.expected_snapshots, sample?.requested_assets)) {
+      failures.push(`shadow_soak_snapshot_evidence_invalid:${index}`);
+    }
+    const sampleCommitment = String(sample?.sample_commitment || "");
+    if (sampleCommitment !== shadowSampleCommitment(sample?.checked_at_ms, evidence)) {
+      failures.push(`shadow_soak_sample_commitment_invalid:${index}`);
+    }
+    sampleCommitments.push(sampleCommitment);
   });
+  if (new Set(sampleCommitments).size !== sampleCommitments.length) {
+    failures.push("shadow_soak_sample_commitments_reused");
+  }
   const firstCheckedAt = samples[0]?.checked_at_ms;
   const lastCheckedAt = samples.at(-1)?.checked_at_ms;
   return Object.freeze({
@@ -120,9 +144,75 @@ export function verifyCarryShadowSoak(sampleResults, {
       : 0,
     venues: expectedVenues,
     assets: expectedAssets,
+    requested_assets: Object.freeze([...(expectedRequestedAssets || [])]),
     expected_snapshots_per_sample: expectedSnapshots,
+    sample_commitments: Object.freeze(sampleCommitments),
     failures: Object.freeze(failures),
   });
+}
+
+function snapshotEvidenceRow(snapshot, nowMs) {
+  return {
+    venue_id: snapshot?.venue_id,
+    asset: snapshot?.asset,
+    contract_id: snapshot?.contract_id,
+    source_schema: snapshot?.source_schema,
+    as_of_ms: Number.isSafeInteger(snapshot?.as_of_ms) ? snapshot.as_of_ms : null,
+    age_ms: Number.isSafeInteger(snapshot?.as_of_ms) ? Math.max(0, nowMs - snapshot.as_of_ms) : null,
+    status: snapshot?.status,
+    snapshot_commitment: `carry:shadow:snapshot:${digest(stableJson(snapshot))}`,
+  };
+}
+
+function validSnapshotEvidence(evidence, expectedSnapshots, requestedAssets) {
+  if (!Number.isSafeInteger(expectedSnapshots) || evidence.length !== expectedSnapshots) return false;
+  const allowedAssets = new Set(Array.isArray(requestedAssets) ? requestedAssets : []);
+  if (allowedAssets.size === 0) return false;
+  const pairs = new Set();
+  for (const row of evidence) {
+    const venueId = String(row?.venue_id || "");
+    const asset = String(row?.asset || "");
+    const declared = venueAdapterCapability(venueId, "perp_shadow");
+    if (!CORE_PERP_VENUES.includes(venueId)
+      || !allowedAssets.has(asset)
+      || row?.source_schema !== declared?.source_schema
+      || typeof row?.contract_id !== "string"
+      || !row.contract_id.startsWith(`${venueId}:`)
+      || !Number.isSafeInteger(row?.as_of_ms)
+      || !Number.isSafeInteger(row?.age_ms)
+      || row.age_ms < 0
+      || !/^carry:shadow:snapshot:[0-9a-f]{64}$/.test(String(row?.snapshot_commitment || ""))) return false;
+    pairs.add(`${venueId}:${asset}`);
+  }
+  return pairs.size === expectedSnapshots;
+}
+
+function sameStrings(left, right) {
+  return Array.isArray(left)
+    && Array.isArray(right)
+    && left.length === right.length
+    && left.every((value, index) => value === right[index]);
+}
+
+function shadowSampleCommitment(checkedAtMs, snapshotEvidence) {
+  return `carry:shadow:sample:${digest(stableJson({
+    checked_at_ms: checkedAtMs,
+    snapshot_evidence: snapshotEvidence,
+  }))}`;
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, child]) => child !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+    .join(",")}}`;
+}
+
+function digest(value) {
+  return createHash("sha256").update(String(value)).digest("hex");
 }
 
 function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures }) {
@@ -148,7 +238,8 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
   if (!["USD", "USDC", "USDT"].includes(snapshot.quote_asset) || !["USDC", "USDT"].includes(snapshot.collateral_asset)) {
     failures.push(`settlement_asset_invalid:${prefix}`);
   }
-  if (venueId === "hyperliquid" && (snapshot.quote_asset !== "USDT" || snapshot.collateral_asset !== "USDC")) {
+  const expectedHyperliquidQuote = ["HYPE", "PURR"].includes(asset) ? "USDC" : "USDT";
+  if (venueId === "hyperliquid" && (snapshot.quote_asset !== expectedHyperliquidQuote || snapshot.collateral_asset !== "USDC")) {
     failures.push(`hyperliquid_core_contract_assets_invalid:${prefix}`);
   }
   if (snapshot.status === "quarantined" || snapshot.stale !== false) failures.push(`snapshot_quarantined:${prefix}`);
