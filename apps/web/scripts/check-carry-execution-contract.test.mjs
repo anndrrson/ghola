@@ -139,6 +139,52 @@ test("rejects a terminal that discards fresh readiness after refresh", () => {
   );
 });
 
+test("rejects reconnecting no-submit verification to deposited capital", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replace(
+        "const noSubmitReady = connectionReady && (!monitoring || monitoringReady);",
+        "const noSubmitReady = connectionReady && capitalReady && (!monitoring || monitoringReady);",
+      ),
+    }),
+    /carry_capital_free_no_submit_missing/,
+  );
+});
+
+test("rejects live Carry creation that ignores exact capital readiness", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll("&& modeled.capital_ready", "&& true"),
+    }),
+    /carry_live_capital_gate_missing/,
+  );
+});
+
+test("rejects durable readiness that drops exact owner-funded shortfalls", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      readiness: sources.readiness.replaceAll("opening_collateral_shortfall_micro_usdc", "capital_gap"),
+    }),
+    /carry_readiness_shortfall_binding_missing/,
+  );
+});
+
+test("rejects a terminal that hides a safe unfunded connection result", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replace(
+        "exact owner funding shortfall shown; no order submitted",
+        "not ready",
+      ),
+    }),
+    /carry_terminal_capital_free_status_missing/,
+  );
+});
+
 test("rejects Carry preflight without exact owner binding", () => {
   assert.throws(
     () => checkCarryExecutionContract({

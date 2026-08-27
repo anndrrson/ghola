@@ -180,6 +180,13 @@ export function checkCarryExecutionContract(sources) {
   requireText("readinessTest", "binds every pair to both exact no-submit leg receipts", "carry_pair_leg_receipt_binding_test_missing");
   requireText("readiness", "notionalUsd, horizonDays", "carry_readiness_route_key_missing");
   requireText("readinessTest", "preserves independent route readiness across assets and parameters", "carry_readiness_route_isolation_test_missing");
+  requireText("preflight", "const noSubmitReady = connectionReady && (!monitoring || monitoringReady);", "carry_capital_free_no_submit_missing");
+  requireText("preflight", "connection_ready: connectionReady", "carry_connection_readiness_evidence_missing");
+  requireText("preflight", "&& modeled.capital_ready", "carry_live_capital_gate_missing");
+  requireText("readiness", "opening_collateral_shortfall_micro_usdc", "carry_readiness_shortfall_binding_missing");
+  requireText("readiness", "owner_only_funding", "carry_readiness_owner_funding_boundary_missing");
+  requireText("readinessTest", "persists capital-free technical readiness while binding exact owner shortfalls", "carry_capital_free_readiness_test_missing");
+  requireText("webCarryBuilder", "exact owner funding shortfall shown; no order submitted", "carry_terminal_capital_free_status_missing");
   requireText("preflight", "carry_account_owner_mismatch", "carry_preflight_owner_binding_missing");
   requireText("preflightTest", "rejects cross-owner sealed venue access before order verification", "carry_preflight_owner_binding_test_missing");
   requireText("coreCarry", "collateral_basis_risk_bps", "collateral_basis_stress_missing");
