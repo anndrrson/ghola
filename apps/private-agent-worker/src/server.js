@@ -1646,14 +1646,40 @@ function validateCarryPairPreflightRequest(body, recipient) {
 }
 
 function validateCarryExecutionMatrixRequest(body, recipient) {
-  if (CARRY_EXECUTION_VENUES.length < 3) return ["carry execution matrix requires at least three venues"];
-  const pairs = CARRY_EXECUTION_VENUES.flatMap((left, leftIndex) =>
-    CARRY_EXECUTION_VENUES.slice(leftIndex + 1).map((right) => [left, right]));
-  return [...new Set(pairs.flatMap(([longVenueId, shortVenueId]) => validateCarryPairPreflightRequest({
-    ...body,
-    long_venue_id: longVenueId,
-    short_venue_id: shortVenueId,
-  }, recipient)))];
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (CARRY_EXECUTION_VENUES.length < 3) errors.push("carry execution matrix requires at least three venues");
+  if (containsPlaintextLeakKey(body)) errors.push("request must not contain plaintext credentials or order payloads");
+  if (body.version !== 1) errors.push("version must be 1");
+  if (!isNonEmptyString(body.owner_commitment)) errors.push("owner_commitment is required");
+  if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
+  if (!/^[A-Z0-9._-]{1,16}$/.test(String(body.asset || ""))) errors.push("asset is invalid");
+  if (!(Number(body.notional_usd) > 0) || Number(body.notional_usd) > 1_000) errors.push("notional_usd is outside the pilot limit");
+  if (!(Number(body.horizon_days) >= 1) || Number(body.horizon_days) > 365) errors.push("horizon_days is invalid");
+  for (const venueId of CARRY_EXECUTION_VENUES) {
+    const access = body.venue_access?.[venueId];
+    if (!isObject(access)) {
+      errors.push(`${venueId} venue access marker is required`);
+      continue;
+    }
+    if (access.owner_commitment !== body.owner_commitment) errors.push(`${venueId} owner commitment mismatch`);
+    if (access.status === "not_ready") {
+      const allowedFields = new Set(["status", "owner_commitment"]);
+      if (Object.keys(access).some((field) => !allowedFields.has(field))) {
+        errors.push(`${venueId} non-ready venue access must be sanitized`);
+      }
+      continue;
+    }
+    if (access.status !== "ready") {
+      errors.push(`${venueId} venue access status is invalid`);
+      continue;
+    }
+    for (const field of ["account_commitment", "vault_commitment", "policy_commitment"]) {
+      if (!isNonEmptyString(access[field])) errors.push(`${venueId} ${field} is required`);
+    }
+    errors.push(...validateEncryptedBundle(access.encrypted_execution_vault, recipient, `${venueId} encrypted_execution_vault`));
+  }
+  return errors;
 }
 
 function validateCarryReadinessRequest(body, recipient) {

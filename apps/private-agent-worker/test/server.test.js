@@ -638,6 +638,107 @@ describe("private agent worker", () => {
     assert.equal(verificationCount, 6);
   });
 
+  it("returns ready-pair evidence when a matrix venue has a sanitized not-ready marker", async () => {
+    await close(server);
+    const account = {
+      can_trade: true,
+      available_balance: 500,
+      margin_balance: 500,
+      initial_margin: 0,
+      maintenance_margin: 0,
+      maker_fee_bps: 0,
+      taker_fee_bps: 1,
+      fee_source: "test_account_fee_schedule",
+      fees_exact_for_account: true,
+      fees_conservative_upper_bound: false,
+      position_count: 0,
+      open_order_count: 0,
+    };
+    server = createPrivateAgentWorkerServer({
+      carryFetchVenue: async ({ venue_id, assets, now_ms }) => assets.map((asset) => ({
+        ...shadowSnapshot(venue_id, asset, now_ms),
+        price_tick_e8: 1_000,
+        depth_bids: [{ price_e8: 9_999_000_000, size_e8: 100_000_000 }],
+        depth_asks: [{ price_e8: 10_001_000_000, size_e8: 100_000_000 }],
+      })),
+      carryVerifyOrder: async ({ venue_id, work_order_commitment, execution }) => ({
+        status: "verified_ready",
+        work_order_commitment,
+        account_commitment: execution.account_commitment,
+        verification_commitment: `verification_http_partial_${venue_id}`,
+        checks: { order_request_checked: true, transaction_broadcast: false },
+        order_shape: { notional_micro_usdc: 11_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000 },
+        account,
+        authority_boundary: venue_id === "lighter" ? {
+          venue_native_trade_only: false,
+          withdrawal_request_permitted: false,
+          secure_withdrawal_destination: "owner_l1_only",
+          owner_wallet_key_present: false,
+          non_owner_fund_movement_possible: false,
+        } : { venue_native_trade_only: true },
+      }),
+      carryReadHyperliquidSnapshot: async () => ({
+        status: "ready_to_trade",
+        trading_enabled: true,
+        position_count: 0,
+        open_order_count: 0,
+      }),
+      carryReadHyperliquidMetrics: async () => account,
+      startAutopilotDueLoop: false,
+      startMultiLegRecoveryLoop: false,
+      startCarryMonitoringLoop: false,
+      startCarryExecutionLoop: false,
+      startKrakenV2Heartbeat: false,
+    });
+    baseUrl = await listen(server);
+
+    const ownerCommitment = "owner_commitment_http_partial_matrix_0001";
+    const venueAccess = {
+      aster: { status: "not_ready", owner_commitment: ownerCommitment },
+    };
+    for (const venueId of ["hyperliquid", "lighter"]) {
+      venueAccess[venueId] = {
+        status: "ready",
+        owner_commitment: ownerCommitment,
+        account_commitment: `account_commitment_http_${venueId}`,
+        vault_commitment: `vault_commitment_http_${venueId}`,
+        policy_commitment: `policy_commitment_http_${venueId}`,
+        encrypted_execution_vault: await sealedBundle(
+          baseUrl,
+          { version: 1, kind: `test_${venueId}_vault` },
+          `carry-http-partial-matrix:${venueId}`,
+        ),
+      };
+    }
+    const response = await fetch(`${baseUrl}/carry/preflight-matrix`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        owner_commitment: ownerCommitment,
+        operation_class: "matrix_no_submit",
+        work_order_commitment: "carry_matrix_http_partial_0001",
+        asset: "BTC",
+        notional_usd: "11",
+        horizon_days: "1",
+        venue_access: venueAccess,
+      }),
+    });
+    const matrix = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(matrix));
+    assert.equal(matrix.no_submit_ready, false);
+    assert.equal(matrix.transaction_broadcast, false);
+    assert.equal(matrix.readiness, undefined);
+    assert.equal(matrix.pairs.filter((pair) => pair.no_submit_ready).length, 1);
+    assert.equal(matrix.pairs.find((pair) => pair.no_submit_ready).leg_evidence.length, 2);
+    assert.equal(matrix.pairs.filter((pair) => pair.error_code === "carry_account_not_ready:aster").length, 2);
+  });
+
   it("can require dstack quote evidence before accepting production sessions", async () => {
     await close(server);
     process.env.PRIVATE_AGENT_ALLOW_UNATTESTED_DEV = "false";

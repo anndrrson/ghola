@@ -257,6 +257,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("preflight", "export async function preflightCarryExecutionMatrix", "carry_three_venue_no_submit_matrix_missing");
   requireText("preflight", "allVenuePairs(orderedVenues)", "carry_all_pair_no_submit_matrix_missing");
   requireText("preflight", "Promise.allSettled(pairs.map", "carry_no_submit_pair_fault_isolation_missing");
+  requireText("server", 'access.status === "not_ready"', "carry_matrix_not_ready_marker_validation_missing");
+  requireText("server", "non-ready venue access must be sanitized", "carry_matrix_not_ready_marker_sanitization_missing");
   requireText("preflightTest", "isolates failed pairs without discarding successful no-submit evidence or retrying", "carry_no_submit_pair_fault_isolation_test_missing");
   requireText("preflight", "leg_evidence: (result?.evidence || [])", "carry_pair_leg_evidence_missing");
   requireText("privateExecution", "account_commitment: body.account_commitment || null", "carry_no_submit_receipt_account_binding_missing");
@@ -628,6 +630,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("serverTest", '"/carry/positions/value-entries"', "carry_retired_value_mutation_route_test_missing");
   requireText("server", '"/carry/preflight-matrix"', "carry_three_venue_no_submit_worker_route_missing");
   requireText("serverTest", "proves the three-venue no-submit matrix and durable exact account state over HTTP", "carry_three_venue_no_submit_http_proof_missing");
+  requireText("serverTest", "returns ready-pair evidence when a matrix venue has a sanitized not-ready marker", "carry_partial_matrix_http_proof_missing");
   requireText("server", '"/carry/readiness"', "carry_readiness_resume_worker_route_missing");
   requireText("server", "readCarryExecutionReadiness", "carry_readiness_resume_worker_missing");
   requireText("webRoute", '"x-ghola-carry-qualification-confirmed": "true"', "web_confirmation_header_missing");
@@ -636,6 +639,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webClient", "getCarryExecutionReadiness", "carry_readiness_resume_client_missing");
   requireText("webCarryBuilder", "asset: candidate.asset", "carry_readiness_route_client_binding_missing");
   requireText("webRoute", 'action === "preflight_matrix"', "carry_three_venue_no_submit_web_route_missing");
+  requireText("webRoute", "workerMatrixVenueAccess", "carry_partial_matrix_gateway_missing");
+  requireText("webPassportTest", "forwards sanitized missing-venue markers so ready Carry pairs still produce evidence", "carry_partial_matrix_gateway_test_missing");
   requireText("webRoute", 'action === "readiness"', "carry_readiness_resume_web_route_missing");
   requireText("webRoute", 'action === "request_exit"', "carry_owner_exit_web_route_missing");
   requireText("webClient", 'action: "request_exit"', "carry_owner_exit_client_missing");

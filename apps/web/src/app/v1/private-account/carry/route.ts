@@ -152,9 +152,6 @@ export async function POST(req: NextRequest) {
   if (action === "preflight_matrix") {
     const venueAccess = await agentPassportVenueAccessForWorker(owner);
     const accesses = Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [venueId, record(venueAccess[venueId])]));
-    for (const venueId of CARRY_EXECUTION_VENUES) {
-      if (accesses[venueId].status !== "ready") return response({ error: `${venueId}_account_not_ready` }, 409, correlationId);
-    }
     body = {
       version: 1,
       owner_commitment: owner.owner_commitment,
@@ -165,7 +162,7 @@ export async function POST(req: NextRequest) {
       horizon_days: input.horizon_days,
       venue_access: Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [
         venueId,
-        workerVenueAccess(accesses[venueId], owner.owner_commitment),
+        workerMatrixVenueAccess(accesses[venueId], owner.owner_commitment),
       ])),
     };
   }
@@ -334,6 +331,14 @@ function workerVenueAccess(access: Record<string, unknown>, ownerCommitment: str
     encrypted_vault_commitment: access.encrypted_vault_commitment,
     policy_commitment: access.policy_commitment,
     encrypted_execution_vault: access.encrypted_execution_vault,
+  };
+}
+
+function workerMatrixVenueAccess(access: Record<string, unknown>, ownerCommitment: string) {
+  if (access.status === "ready") return workerVenueAccess(access, ownerCommitment);
+  return {
+    status: "not_ready",
+    owner_commitment: ownerCommitment,
   };
 }
 

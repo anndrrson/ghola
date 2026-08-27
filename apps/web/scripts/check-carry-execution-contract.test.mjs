@@ -431,6 +431,26 @@ test("rejects a three-venue matrix that discards successful evidence when one pa
   );
 });
 
+test("rejects a matrix gateway that discards partial venue readiness", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webRoute: sources.webRoute.replaceAll("workerMatrixVenueAccess", "workerVenueAccess"),
+    }),
+    /carry_partial_matrix_gateway_missing/,
+  );
+});
+
+test("rejects a matrix worker that accepts unsanitized not-ready venue markers", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replaceAll("non-ready venue access must be sanitized", "non-ready venue access accepted"),
+    }),
+    /carry_matrix_not_ready_marker_sanitization_missing/,
+  );
+});
+
 test("rejects a no-submit receipt that is not bound to the verified account", () => {
   assert.throws(
     () => checkCarryExecutionContract({

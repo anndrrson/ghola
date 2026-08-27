@@ -472,6 +472,74 @@ describe("agent passport venue linking", () => {
     }
   });
 
+  it("forwards sanitized missing-venue markers so ready Carry pairs still produce evidence", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
+    process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "report_only";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
+    const matrixBodies: Record<string, unknown>[] = [];
+    const oldFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+      if (url === "https://worker.example/venues/credentials/verify") {
+        return new Response(JSON.stringify({ status: "verified", can_read: true, can_trade: true, can_withdraw: false }), { status: 200 });
+      }
+      if (url === "https://worker.example/carry/preflight-matrix") {
+        matrixBodies.push(body);
+        return new Response(JSON.stringify({
+          mode: "carry_execution_no_submit_matrix",
+          no_submit_ready: false,
+          transaction_broadcast: false,
+          pairs: [
+            { long_venue_id: "hyperliquid", short_venue_id: "lighter", no_submit_ready: true, transaction_broadcast: false },
+            { long_venue_id: "aster", short_venue_id: "hyperliquid", no_submit_ready: false, transaction_broadcast: false, error_code: "carry_account_not_ready:aster" },
+            { long_venue_id: "lighter", short_venue_id: "aster", no_submit_ready: false, transaction_broadcast: false, error_code: "carry_account_not_ready:aster" },
+          ],
+          failures: ["pair_check_failed:2:carry_account_not_ready:aster", "pair_check_failed:3:carry_account_not_ready:aster"],
+        }), { status: 200 });
+      }
+      return oldFetch(input, init);
+    }) as typeof fetch;
+
+    try {
+      for (const venue of ["hyperliquid", "lighter"] as const) {
+        const linked = await linkPlatformRoute(authedPost("/v1/private-account/platforms/link", {
+          venue_id: venue,
+          execution_mode: "byo_api_key",
+          permission_attestation: tradeOnlyPermissions(),
+          encrypted_execution_vault: sealedVault(venue),
+        }));
+        expect(linked.status).toBe(201);
+      }
+
+      const response = await carryRoute(new NextRequest("https://ghola.test/v1/private-account/carry", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer investor-test-token",
+          "content-type": "application/json",
+          origin: "https://ghola.test",
+        },
+        body: JSON.stringify({ action: "preflight_matrix", asset: "BTC", notional_usd: "11", horizon_days: "1" }),
+      }));
+      const result = await response.json();
+      expect(response.status, JSON.stringify(result)).toBe(200);
+      expect(result.no_submit_ready).toBe(false);
+      expect(result.transaction_broadcast).toBe(false);
+
+      const access = matrixBodies[0].venue_access as Record<string, Record<string, unknown>>;
+      expect(access.hyperliquid.status).toBe("ready");
+      expect(access.lighter.status).toBe("ready");
+      expect(access.aster).toEqual({
+        status: "not_ready",
+        owner_commitment: matrixBodies[0].owner_commitment,
+      });
+      expect(JSON.stringify(access.aster)).not.toContain("vault");
+    } finally {
+      globalThis.fetch = oldFetch;
+    }
+  });
+
   it("keeps guarded SOL arbitrage blocked while Backpack credential verification is unsupported", async () => {
     await linkAgentPlatformFromBody({
       venue_id: "hyperliquid",
