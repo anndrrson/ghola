@@ -61,6 +61,10 @@ describe("CarryTerminalBuilder", () => {
         status: "balanced",
         position_count: 0,
         total_requested_micro_usdc: 0,
+        total_potential_releasable_micro_usdc: 0,
+        total_proposed_internal_reallocation_micro_usdc: 0,
+        net_new_owner_capital_requested_micro_usdc: 0,
+        total_proposed_allocation_micro_usdc: 0,
         total_uncovered_shortfall_micro_usdc: 0,
         proposal_only: true,
         transaction_broadcast: false,
@@ -327,6 +331,32 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).not.toContain("CONFIRM LIVE PAIRED ENTRY");
   });
 
+  it("shows owner-only releasable collateral without implying an automatic transfer", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.getCarryPortfolioCapitalPlan.mockResolvedValue({
+      ok: true,
+      plan: {
+        version: 1,
+        kind: "ghola_carry_portfolio_capital_plan",
+        status: "balanced",
+        position_count: 1,
+        total_requested_micro_usdc: 0,
+        total_potential_releasable_micro_usdc: 12_500_000,
+        total_proposed_internal_reallocation_micro_usdc: 0,
+        net_new_owner_capital_requested_micro_usdc: 0,
+        total_proposed_allocation_micro_usdc: 0,
+        total_uncovered_shortfall_micro_usdc: 0,
+        capital_optimization_available: true,
+        proposal_only: true,
+        transaction_broadcast: false,
+        automatic_transfer_permitted: false,
+        owner_only_operations: ["fund", "transfer", "withdraw"],
+      },
+    });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    expect(container.textContent).toContain("PORTFOLIO CAPITAL · $12.5 RELEASABLE · OWNER ONLY");
+  });
+
   it("shows compact live margin-runway evidence inside the terminal", async () => {
     api.getCarryPortfolioCapitalPlan.mockResolvedValue({
       ok: true,
@@ -336,7 +366,11 @@ describe("CarryTerminalBuilder", () => {
         status: "owner_action_required",
         position_count: 2,
         total_requested_micro_usdc: 25_000_000,
-        total_uncovered_shortfall_micro_usdc: 25_000_000,
+        total_potential_releasable_micro_usdc: 15_000_000,
+        total_proposed_internal_reallocation_micro_usdc: 15_000_000,
+        net_new_owner_capital_requested_micro_usdc: 10_000_000,
+        total_proposed_allocation_micro_usdc: 0,
+        total_uncovered_shortfall_micro_usdc: 10_000_000,
         proposal_only: true,
         transaction_broadcast: false,
         automatic_transfer_permitted: false,
@@ -390,7 +424,7 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("FEE +$0.5 · SLIP −$0.25");
     expect(container.textContent).toContain("MONITOR");
     expect(container.textContent).toContain("0S AGO");
-    expect(container.textContent).toContain("PORTFOLIO CAPITAL · $25 REQUESTED · $25 UNFUNDED · OWNER ONLY");
+    expect(container.textContent).toContain("PORTFOLIO CAPITAL · $15 REALLOCATE · $10 NEW CASH · OWNER ONLY");
   });
 
   async function click(label: string) {

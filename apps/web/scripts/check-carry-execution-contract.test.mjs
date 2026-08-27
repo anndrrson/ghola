@@ -208,6 +208,32 @@ test("rejects portfolio capital allocation without its owner-only authority gate
   );
 });
 
+test("rejects portfolio capital planning that stops aggregating shared venue accounts", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replace(
+        "const accountGroups = new Map();",
+        "const accountGroupsRemoved = new Map();",
+      ),
+    }),
+    /carry_portfolio_capital_account_aggregation_missing/,
+  );
+});
+
+test("rejects capital evidence that loses its sealed account scope", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll(
+        "account_commitment: access.account_commitment",
+        "account_commitment: undefined",
+      ),
+    }),
+    /carry_capital_account_scope_missing/,
+  );
+});
+
 test("rejects a stress-capital proposal that silently changes live leverage", () => {
   assert.throws(
     () => checkCarryExecutionContract({

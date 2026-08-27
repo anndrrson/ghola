@@ -116,7 +116,13 @@ export async function preflightCarryPair({
         readHyperliquidCarryMetrics({ body: execution, recipient, state }),
       ]);
     }
-    return { ...leg, receipt, account, account_snapshot: accountSnapshot };
+    return {
+      ...leg,
+      receipt,
+      account,
+      account_snapshot: accountSnapshot,
+      account_commitment: access.account_commitment,
+    };
   }));
 
   const modeled = modelCarryPairPreflight({
@@ -586,6 +592,7 @@ function accountReadiness(leg, notionalMicro) {
   const authorized = leg.receipt?.checks?.transaction_broadcast === false && account.can_trade === true && accountSnapshotReady;
   return {
     venue_id: leg.venue_id,
+    account_commitment: leg.account_commitment,
     authorized,
     flat_zero_orders: flat,
     position_count: countsKnown ? positionCount : null,
@@ -610,7 +617,7 @@ function projectedMarginRunway(leg, readiness, notionalMicro, nowMs) {
   const fundingDebit = leg.side === "buy"
     ? Math.max(0, Math.ceil(leg.snapshot.funding_rate_e12_per_interval / 100_000_000))
     : Math.max(0, Math.ceil(-leg.snapshot.funding_rate_e12_per_interval / 100_000_000));
-  return calculateMarginRunway({
+  const runway = calculateMarginRunway({
     version: 1,
     venue_id: leg.venue_id,
     equity_micro_usdc: readiness.margin_balance_micro_usdc,
@@ -626,6 +633,7 @@ function projectedMarginRunway(leg, readiness, notionalMicro, nowMs) {
     minimum_liquidation_distance_bps: 1_000,
     as_of_ms: nowMs,
   });
+  return Object.freeze({ ...runway, account_commitment: readiness.account_commitment });
 }
 
 function orderInstruction(leg, notionalUsd) {

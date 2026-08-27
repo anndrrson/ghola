@@ -182,6 +182,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("readinessTest", "preserves independent route readiness across assets and parameters", "carry_readiness_route_isolation_test_missing");
   requireText("preflight", "const noSubmitReady = connectionReady && (!monitoring || monitoringReady);", "carry_capital_free_no_submit_missing");
   requireText("preflight", "connection_ready: connectionReady", "carry_connection_readiness_evidence_missing");
+  requireText("preflight", "account_commitment: access.account_commitment", "carry_capital_account_scope_missing");
   requireText("preflight", "&& modeled.capital_ready", "carry_live_capital_gate_missing");
   requireText("readiness", "opening_collateral_shortfall_micro_usdc", "carry_readiness_shortfall_binding_missing");
   requireText("readiness", "owner_only_funding", "carry_readiness_owner_funding_boundary_missing");
@@ -214,7 +215,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarry", "export function compileCarryPortfolioCapitalPlan", "carry_portfolio_capital_compiler_missing");
   requireText("coreIndex", "compileCarryPortfolioCapitalPlan", "carry_portfolio_capital_export_missing");
   requireText("coreCarry", "carry_portfolio_capital_position_authority_boundary", "carry_portfolio_capital_authority_gate_missing");
-  requireText("coreCarryTest", "prioritizes shortest runway within an owner-approved budget", "carry_portfolio_capital_priority_test_missing");
+  requireText("coreCarry", 'account_commitment: identifier(raw.account_commitment, "carry_capital_runway_account")', "carry_capital_account_normalization_missing");
+  requireText("coreCarry", "const accountGroups = new Map();", "carry_portfolio_capital_account_aggregation_missing");
+  requireText("coreCarry", "proposed_reallocations: proposedReallocations", "carry_portfolio_capital_reallocation_missing");
+  requireText("coreCarry", "owner_transfer_approval_required", "carry_portfolio_capital_transfer_approval_missing");
+  requireText("coreCarryTest", "aggregates shared accounts and proposes owner-only reallocation", "carry_portfolio_capital_account_test_missing");
+  requireText("coreCarryTest", "rejects one account commitment claimed by multiple venues", "carry_portfolio_capital_account_collision_test_missing");
   requireText("coreCarryTest", "quarantines stale evidence and allocates nothing", "carry_portfolio_capital_stale_test_missing");
   requireText("coreCarry", "projected_trading_fee_micro_usdc", "carry_modeled_fee_attribution_missing");
   requireText("coreCarry", "carry_value_modeled_trading_breakdown_mismatch", "carry_modeled_cost_reconciliation_missing");
@@ -272,7 +278,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webRoute", 'action === "capital_plan"', "carry_portfolio_capital_proxy_missing");
   requireText("webCarryBuilder", "PORTFOLIO CAPITAL ·", "carry_terminal_portfolio_capital_missing");
   requireText("webCarryBuilder", "STALE EVIDENCE · RECONCILE ONLY", "carry_terminal_portfolio_stale_gate_missing");
-  requireText("webCarryBuilderTest", "PORTFOLIO CAPITAL · $25 REQUESTED · $25 UNFUNDED · OWNER ONLY", "carry_terminal_portfolio_capital_test_missing");
+  requireText("webCarryBuilderTest", "PORTFOLIO CAPITAL · $15 REALLOCATE · $10 NEW CASH · OWNER ONLY", "carry_terminal_portfolio_capital_test_missing");
+  requireText("webCarryBuilderTest", "PORTFOLIO CAPITAL · $12.5 RELEASABLE · OWNER ONLY", "carry_terminal_portfolio_optimization_test_missing");
   requireText("webCarryBuilder", "live_execution_leverage_unchanged !== true", "carry_terminal_stress_leverage_boundary_missing");
   requireText("webCarryBuilderTest", "UP TO 1× OWNER CONFIG", "carry_terminal_stress_capital_test_missing");
   requireText("webCarryBuilderTest", '$10 → LIGHTER · OWNER', "carry_terminal_capital_action_test_missing");

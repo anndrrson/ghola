@@ -228,56 +228,6 @@ export function compileCarryCapitalActionPlan(value) {
     const unsafe = runway.status === "critical"
       || runway.status === "breached"
       || (runway.runway_ms !== null && runway.runway_ms < mandate.min_margin_runway_ms);
-    if (stale) reasons.push(`margin_data_stale:${venueId}`);
-    if (!stale && unsafe) reasons.push(`margin_runway_unsafe:${venueId}`);
-    if (expired) {
-      return Object.freeze({
-        venue_id: venueId,
-        status: runway.status,
-        runway_ms: runway.runway_ms,
-        target_runway_ms: mandate.min_margin_runway_ms,
-        current_headroom_micro_usdc: runway.margin_headroom_micro_usdc,
-        minimum_additional_collateral_micro_usdc: 0,
-        recommended_action: "reduce_only_exit",
-        owner_funding_permitted: false,
-      });
-    }
-    if (stale) {
-      return Object.freeze({
-        venue_id: venueId,
-        status: runway.status,
-        runway_ms: runway.runway_ms,
-        target_runway_ms: mandate.min_margin_runway_ms,
-        current_headroom_micro_usdc: runway.margin_headroom_micro_usdc,
-        minimum_additional_collateral_micro_usdc: 0,
-        recommended_action: "reconcile_only",
-        owner_funding_permitted: false,
-      });
-    }
-    if (unsafe) {
-      return Object.freeze({
-        venue_id: venueId,
-        status: runway.status,
-        runway_ms: runway.runway_ms,
-        target_runway_ms: mandate.min_margin_runway_ms,
-        current_headroom_micro_usdc: runway.margin_headroom_micro_usdc,
-        minimum_additional_collateral_micro_usdc: 0,
-        recommended_action: "reduce_only_exit",
-        owner_funding_permitted: false,
-      });
-    }
-    if (runway.status !== "warning") {
-      return Object.freeze({
-        venue_id: venueId,
-        status: runway.status,
-        runway_ms: runway.runway_ms,
-        target_runway_ms: mandate.min_margin_runway_ms,
-        current_headroom_micro_usdc: runway.margin_headroom_micro_usdc,
-        minimum_additional_collateral_micro_usdc: 0,
-        recommended_action: "none",
-        owner_funding_permitted: false,
-      });
-    }
     const warningBoundaryMs = safeAdd(
       safeNumber(BigInt(runway.required_owner_response_ms) * 2n),
       1,
@@ -290,13 +240,64 @@ export function compileCarryCapitalActionPlan(value) {
         BigInt(runway.stress_burn_micro_usdc_per_hour) * BigInt(targetRunwayMs),
         BigInt(HOUR_MS),
       ));
-    const additional = Math.max(0, targetHeadroom - runway.margin_headroom_micro_usdc);
-    return Object.freeze({
+    const releasable = !expired && !stale && !unsafe && runway.status === "healthy"
+      ? Math.max(0, runway.margin_headroom_micro_usdc - targetHeadroom)
+      : 0;
+    const base = {
       venue_id: venueId,
+      account_commitment: runway.account_commitment,
       status: runway.status,
       runway_ms: runway.runway_ms,
       target_runway_ms: targetRunwayMs,
       current_headroom_micro_usdc: runway.margin_headroom_micro_usdc,
+      target_headroom_micro_usdc: targetHeadroom,
+      stress_burn_micro_usdc_per_hour: runway.stress_burn_micro_usdc_per_hour,
+      potential_releasable_collateral_micro_usdc: releasable,
+      owner_release_permitted: releasable > 0,
+    };
+    if (stale) reasons.push(`margin_data_stale:${venueId}`);
+    if (!stale && unsafe) reasons.push(`margin_runway_unsafe:${venueId}`);
+    if (expired) {
+      return Object.freeze({
+        ...base,
+        potential_releasable_collateral_micro_usdc: 0,
+        owner_release_permitted: false,
+        minimum_additional_collateral_micro_usdc: 0,
+        recommended_action: "reduce_only_exit",
+        owner_funding_permitted: false,
+      });
+    }
+    if (stale) {
+      return Object.freeze({
+        ...base,
+        potential_releasable_collateral_micro_usdc: 0,
+        owner_release_permitted: false,
+        minimum_additional_collateral_micro_usdc: 0,
+        recommended_action: "reconcile_only",
+        owner_funding_permitted: false,
+      });
+    }
+    if (unsafe) {
+      return Object.freeze({
+        ...base,
+        potential_releasable_collateral_micro_usdc: 0,
+        owner_release_permitted: false,
+        minimum_additional_collateral_micro_usdc: 0,
+        recommended_action: "reduce_only_exit",
+        owner_funding_permitted: false,
+      });
+    }
+    if (runway.status !== "warning") {
+      return Object.freeze({
+        ...base,
+        minimum_additional_collateral_micro_usdc: 0,
+        recommended_action: "none",
+        owner_funding_permitted: false,
+      });
+    }
+    const additional = Math.max(0, targetHeadroom - runway.margin_headroom_micro_usdc);
+    return Object.freeze({
+      ...base,
       minimum_additional_collateral_micro_usdc: additional,
       recommended_action: additional > 0 ? "owner_fund_venue" : "owner_review_required",
       owner_funding_permitted: true,
@@ -312,6 +313,10 @@ export function compileCarryCapitalActionPlan(value) {
     (total, leg) => safeAdd(total, leg.minimum_additional_collateral_micro_usdc, "carry_capital_additional_overflow"),
     0,
   );
+  const potentialReleasableCollateral = legs.reduce(
+    (total, leg) => safeAdd(total, leg.potential_releasable_collateral_micro_usdc, "carry_capital_releasable_overflow"),
+    0,
+  );
   return deepFreeze({
     version: 1,
     kind: "ghola_carry_capital_action_plan",
@@ -322,6 +327,8 @@ export function compileCarryCapitalActionPlan(value) {
     reasons: [...new Set(reasons)],
     legs,
     minimum_additional_collateral_micro_usdc: reconciliationRequired || reduceOnlyExitRequired ? 0 : minimumAdditionalCollateral,
+    potential_releasable_collateral_micro_usdc: reconciliationRequired || reduceOnlyExitRequired ? 0 : potentialReleasableCollateral,
+    capital_optimization_available: !reconciliationRequired && !reduceOnlyExitRequired && potentialReleasableCollateral > 0,
     owner_funding_required: ownerFundingRequired,
     reduce_only_exit_required: reduceOnlyExitRequired,
     reconciliation_required: reconciliationRequired,
@@ -361,30 +368,110 @@ export function compileCarryPortfolioCapitalPlan(value) {
     .filter((plan) => plan.checked_at_ms > nowMs + 5_000 || nowMs - plan.checked_at_ms > maxDataAgeMs)
     .map((plan) => plan.position_id);
   const allocationPermitted = stalePositionIds.length === 0;
-  const requests = positionPlans.flatMap((plan) => plan.legs
-    .filter((leg) => leg.recommended_action === "owner_fund_venue" && leg.minimum_additional_collateral_micro_usdc > 0)
-    .map((leg) => ({
-      position_id: plan.position_id,
-      venue_id: leg.venue_id,
-      runway_ms: leg.runway_ms,
-      requested_micro_usdc: leg.minimum_additional_collateral_micro_usdc,
-    })))
-    .sort((left, right) => {
-      const leftRunway = left.runway_ms === null ? Number.MAX_SAFE_INTEGER : left.runway_ms;
-      const rightRunway = right.runway_ms === null ? Number.MAX_SAFE_INTEGER : right.runway_ms;
-      return leftRunway - rightRunway
-        || left.position_id.localeCompare(right.position_id)
-        || left.venue_id.localeCompare(right.venue_id);
+  const accountGroups = new Map();
+  for (const plan of positionPlans) {
+    for (const leg of plan.legs) {
+      const existing = accountGroups.get(leg.account_commitment);
+      if (existing && existing.venue_id !== leg.venue_id) {
+        fail("carry_portfolio_capital_account_venue_mismatch");
+      }
+      const group = existing || {
+        account_commitment: leg.account_commitment,
+        venue_id: leg.venue_id,
+        entries: [],
+      };
+      group.entries.push({ position_id: plan.position_id, plan, leg });
+      accountGroups.set(leg.account_commitment, group);
+    }
+  }
+  const accounts = [...accountGroups.values()].map((group) => {
+    const positionIds = [...new Set(group.entries.map((entry) => entry.position_id))].sort();
+    const blocked = group.entries.some((entry) => entry.plan.reconciliation_required
+      || entry.plan.reduce_only_exit_required
+      || ["reconcile_only", "reduce_only_exit"].includes(entry.leg.recommended_action));
+    const currentHeadroom = group.entries.length === 0
+      ? 0
+      : Math.min(...group.entries.map((entry) => entry.leg.current_headroom_micro_usdc));
+    const stressBurn = group.entries.reduce(
+      (sum, entry) => safeAdd(sum, entry.leg.stress_burn_micro_usdc_per_hour, "carry_portfolio_capital_account_burn_overflow"),
+      0,
+    );
+    const targetRunway = Math.max(0, ...group.entries.map((entry) => entry.leg.target_runway_ms));
+    const targetHeadroom = stressBurn === 0
+      ? currentHeadroom
+      : safeNumber(ceilDiv(BigInt(stressBurn) * BigInt(targetRunway), BigInt(HOUR_MS)));
+    const runwayMs = stressBurn === 0
+      ? null
+      : safeNumber((BigInt(currentHeadroom) * BigInt(HOUR_MS)) / BigInt(stressBurn));
+    return Object.freeze({
+      account_commitment: group.account_commitment,
+      venue_id: group.venue_id,
+      position_ids: Object.freeze(positionIds),
+      position_count: positionIds.length,
+      current_headroom_micro_usdc: currentHeadroom,
+      aggregate_stress_burn_micro_usdc_per_hour: stressBurn,
+      aggregate_runway_ms: runwayMs,
+      target_runway_ms: targetRunway,
+      target_headroom_micro_usdc: targetHeadroom,
+      requested_micro_usdc: allocationPermitted && !blocked ? Math.max(0, targetHeadroom - currentHeadroom) : 0,
+      potential_releasable_micro_usdc: allocationPermitted && !blocked ? Math.max(0, currentHeadroom - targetHeadroom) : 0,
+      risk_action_required: blocked,
     });
+  }).sort((left, right) => left.venue_id.localeCompare(right.venue_id)
+    || left.account_commitment.localeCompare(right.account_commitment));
+  const requests = accounts.filter((account) => account.requested_micro_usdc > 0)
+    .sort((left, right) => {
+      const leftRunway = left.aggregate_runway_ms === null ? Number.MAX_SAFE_INTEGER : left.aggregate_runway_ms;
+      const rightRunway = right.aggregate_runway_ms === null ? Number.MAX_SAFE_INTEGER : right.aggregate_runway_ms;
+      return leftRunway - rightRunway
+        || left.venue_id.localeCompare(right.venue_id)
+        || left.account_commitment.localeCompare(right.account_commitment);
+    });
+  const releaseCandidates = accounts.filter((account) => account.potential_releasable_micro_usdc > 0)
+    .map((account) => ({ ...account, remaining_micro_usdc: account.potential_releasable_micro_usdc }))
+    .sort((left, right) => right.remaining_micro_usdc - left.remaining_micro_usdc
+      || left.venue_id.localeCompare(right.venue_id)
+      || left.account_commitment.localeCompare(right.account_commitment));
+  const remainingByAccount = new Map(requests.map((request) => [request.account_commitment, request.requested_micro_usdc]));
+  const proposedReallocations = [];
+  if (allocationPermitted) {
+    for (const request of requests) {
+      for (const source of releaseCandidates) {
+        const needed = remainingByAccount.get(request.account_commitment) || 0;
+        if (needed === 0) break;
+        if (source.account_commitment === request.account_commitment || source.remaining_micro_usdc === 0) continue;
+        const amount = Math.min(needed, source.remaining_micro_usdc);
+        source.remaining_micro_usdc -= amount;
+        remainingByAccount.set(request.account_commitment, needed - amount);
+        proposedReallocations.push(Object.freeze({
+          priority_rank: proposedReallocations.length + 1,
+          from_account_commitment: source.account_commitment,
+          from_venue_id: source.venue_id,
+          to_account_commitment: request.account_commitment,
+          to_venue_id: request.venue_id,
+          amount_micro_usdc: amount,
+          owner_transfer_approval_required: true,
+          automatic_transfer_permitted: false,
+          transaction_broadcast: false,
+        }));
+      }
+    }
+  }
   let remainingBudget = allocationPermitted ? ownerCapitalBudget : 0;
   const allocations = requests.map((request, index) => {
-    const proposed = Math.min(remainingBudget, request.requested_micro_usdc);
+    const remainingRequest = remainingByAccount.get(request.account_commitment) || 0;
+    const proposed = Math.min(remainingBudget, remainingRequest);
     remainingBudget -= proposed;
     return Object.freeze({
       priority_rank: index + 1,
-      ...request,
+      account_commitment: request.account_commitment,
+      venue_id: request.venue_id,
+      position_ids: request.position_ids,
+      aggregate_runway_ms: request.aggregate_runway_ms,
+      requested_micro_usdc: request.requested_micro_usdc,
+      proposed_internal_reallocation_micro_usdc: request.requested_micro_usdc - remainingRequest,
       proposed_allocation_micro_usdc: proposed,
-      uncovered_shortfall_micro_usdc: request.requested_micro_usdc - proposed,
+      uncovered_shortfall_micro_usdc: remainingRequest - proposed,
       owner_approval_required: proposed > 0,
       transaction_broadcast: false,
     });
@@ -393,28 +480,49 @@ export function compileCarryPortfolioCapitalPlan(value) {
     (sum, request) => safeAdd(sum, request.requested_micro_usdc, "carry_portfolio_capital_requested_overflow"),
     0,
   );
+  const totalPotentialReleasable = accounts.reduce(
+    (sum, account) => safeAdd(sum, account.potential_releasable_micro_usdc, "carry_portfolio_capital_releasable_overflow"),
+    0,
+  );
+  const totalInternalReallocation = proposedReallocations.reduce(
+    (sum, proposal) => safeAdd(sum, proposal.amount_micro_usdc, "carry_portfolio_capital_reallocation_overflow"),
+    0,
+  );
   const totalProposed = allocations.reduce(
     (sum, allocation) => safeAdd(sum, allocation.proposed_allocation_micro_usdc, "carry_portfolio_capital_proposed_overflow"),
     0,
   );
-  const uncovered = totalRequested - totalProposed;
-  const venueIds = [...new Set(positionPlans.flatMap((plan) => plan.legs.map((leg) => leg.venue_id)))].sort();
+  const netNewOwnerCapitalRequested = totalRequested - totalInternalReallocation;
+  const uncovered = netNewOwnerCapitalRequested - totalProposed;
+  const venueIds = [...new Set(accounts.map((account) => account.venue_id))].sort();
   const venues = venueIds.map((venueId) => {
     const venueRequests = allocations.filter((allocation) => allocation.venue_id === venueId);
+    const venueAccounts = accounts.filter((account) => account.venue_id === venueId);
     const requested = venueRequests.reduce(
       (sum, item) => safeAdd(sum, item.requested_micro_usdc, "carry_portfolio_capital_venue_requested_overflow"),
+      0,
+    );
+    const internallyReallocated = venueRequests.reduce(
+      (sum, item) => safeAdd(sum, item.proposed_internal_reallocation_micro_usdc, "carry_portfolio_capital_venue_reallocation_overflow"),
       0,
     );
     const proposed = venueRequests.reduce(
       (sum, item) => safeAdd(sum, item.proposed_allocation_micro_usdc, "carry_portfolio_capital_venue_proposed_overflow"),
       0,
     );
+    const releasable = venueAccounts.reduce(
+      (sum, item) => safeAdd(sum, item.potential_releasable_micro_usdc, "carry_portfolio_capital_venue_releasable_overflow"),
+      0,
+    );
     return Object.freeze({
       venue_id: venueId,
+      account_count: venueAccounts.length,
       requested_micro_usdc: requested,
+      potential_releasable_micro_usdc: releasable,
+      proposed_internal_reallocation_micro_usdc: internallyReallocated,
       proposed_allocation_micro_usdc: proposed,
-      uncovered_shortfall_micro_usdc: requested - proposed,
-      affected_position_count: new Set(venueRequests.map((item) => item.position_id)).size,
+      uncovered_shortfall_micro_usdc: requested - internallyReallocated - proposed,
+      affected_position_count: new Set(venueRequests.flatMap((item) => item.position_ids)).size,
     });
   });
   const riskActions = positionPlans
@@ -432,6 +540,7 @@ export function compileCarryPortfolioCapitalPlan(value) {
   const reconciliationRequired = positionPlans.some((plan) => plan.reconciliation_required);
   const reduceOnlyExitRequired = positionPlans.some((plan) => plan.reduce_only_exit_required);
   const ownerActionRequired = totalRequested > 0 || reviewOnlyCount > 0;
+  const capitalOptimizationAvailable = totalPotentialReleasable > totalInternalReallocation;
   const status = stalePositionIds.length > 0 || reconciliationRequired
     ? "quarantined"
     : reduceOnlyExitRequired
@@ -452,8 +561,12 @@ export function compileCarryPortfolioCapitalPlan(value) {
     status,
     recommended_action: recommendedAction,
     position_count: positionPlans.length,
+    account_count: accounts.length,
     owner_capital_budget_micro_usdc: ownerCapitalBudget,
     total_requested_micro_usdc: totalRequested,
+    total_potential_releasable_micro_usdc: totalPotentialReleasable,
+    total_proposed_internal_reallocation_micro_usdc: totalInternalReallocation,
+    net_new_owner_capital_requested_micro_usdc: netNewOwnerCapitalRequested,
     total_proposed_allocation_micro_usdc: totalProposed,
     total_uncovered_shortfall_micro_usdc: uncovered,
     unallocated_owner_capital_micro_usdc: allocationPermitted ? remainingBudget : ownerCapitalBudget,
@@ -462,8 +575,14 @@ export function compileCarryPortfolioCapitalPlan(value) {
     reconciliation_required: reconciliationRequired || stalePositionIds.length > 0,
     reduce_only_exit_required: reduceOnlyExitRequired,
     owner_action_required: ownerActionRequired,
-    owner_approval_required: totalProposed > 0,
+    capital_optimization_available: capitalOptimizationAvailable,
+    owner_approval_required: totalInternalReallocation > 0 || totalProposed > 0,
+    owner_transfer_approval_required: totalInternalReallocation > 0,
+    owner_funding_approval_required: totalProposed > 0,
     review_only_action_count: reviewOnlyCount,
+    accounts,
+    release_candidates: releaseCandidates.map(({ remaining_micro_usdc: _remaining, ...candidate }) => Object.freeze(candidate)),
+    proposed_reallocations: proposedReallocations,
     allocations,
     venues,
     risk_actions: riskActions,
@@ -1345,6 +1464,7 @@ function normalizeCapitalRunwayEvidence(value) {
   if (severity[status] < severity[minimumStatus]) fail("carry_capital_runway_status_inconsistent");
   return Object.freeze({
     venue_id: carryExecutionVenue(raw.venue_id, "carry_capital_runway_venue"),
+    account_commitment: identifier(raw.account_commitment, "carry_capital_runway_account"),
     as_of_ms: positiveInteger(raw.as_of_ms, "carry_capital_runway_as_of"),
     status,
     margin_headroom_micro_usdc: headroom,
@@ -1439,20 +1559,55 @@ function normalizePortfolioCapitalPositionPlan(value) {
       leg.minimum_additional_collateral_micro_usdc,
       "carry_portfolio_capital_position_leg_additional",
     );
+    const currentHeadroom = nonNegativeInteger(
+      leg.current_headroom_micro_usdc,
+      "carry_portfolio_capital_position_leg_headroom",
+    );
+    const targetHeadroom = nonNegativeInteger(
+      leg.target_headroom_micro_usdc,
+      "carry_portfolio_capital_position_leg_target_headroom",
+    );
+    const stressBurn = nonNegativeInteger(
+      leg.stress_burn_micro_usdc_per_hour,
+      "carry_portfolio_capital_position_leg_stress_burn",
+    );
+    const releasable = nonNegativeInteger(
+      leg.potential_releasable_collateral_micro_usdc,
+      "carry_portfolio_capital_position_leg_releasable",
+    );
     const ownerFundingPermitted = leg.owner_funding_permitted === true;
+    const ownerReleasePermitted = leg.owner_release_permitted === true;
     if (["owner_fund_venue", "owner_review_required"].includes(recommendedAction) !== ownerFundingPermitted
       || (recommendedAction === "owner_fund_venue" && additional === 0)
       || (!["owner_fund_venue", "owner_review_required"].includes(recommendedAction) && additional !== 0)) {
       fail("carry_portfolio_capital_position_leg_authority_semantics");
     }
+    if ((releasable > 0) !== ownerReleasePermitted
+      || (ownerReleasePermitted && recommendedAction !== "none")
+      || (ownerReleasePermitted && releasable !== Math.max(0, currentHeadroom - targetHeadroom))) {
+      fail("carry_portfolio_capital_position_leg_release_semantics");
+    }
     return Object.freeze({
       venue_id: carryExecutionVenue(leg.venue_id, "carry_portfolio_capital_position_leg_venue"),
+      account_commitment: identifier(
+        leg.account_commitment,
+        "carry_portfolio_capital_position_leg_account",
+      ),
       runway_ms: leg.runway_ms === null
         ? null
         : nonNegativeInteger(leg.runway_ms, "carry_portfolio_capital_position_leg_runway"),
+      target_runway_ms: nonNegativeInteger(
+        leg.target_runway_ms,
+        "carry_portfolio_capital_position_leg_target_runway",
+      ),
+      current_headroom_micro_usdc: currentHeadroom,
+      target_headroom_micro_usdc: targetHeadroom,
+      stress_burn_micro_usdc_per_hour: stressBurn,
       minimum_additional_collateral_micro_usdc: additional,
+      potential_releasable_collateral_micro_usdc: releasable,
       recommended_action: recommendedAction,
       owner_funding_permitted: ownerFundingPermitted,
+      owner_release_permitted: ownerReleasePermitted,
     });
   });
   if (new Set(legs.map((leg) => leg.venue_id)).size !== 2) {
@@ -1467,6 +1622,18 @@ function normalizePortfolioCapitalPositionPlan(value) {
     0,
   );
   if (minimumAdditional !== legAdditional) fail("carry_portfolio_capital_position_additional_mismatch");
+  const potentialReleasable = nonNegativeInteger(
+    raw.potential_releasable_collateral_micro_usdc,
+    "carry_portfolio_capital_position_releasable",
+  );
+  const legReleasable = legs.reduce(
+    (sum, leg) => safeAdd(sum, leg.potential_releasable_collateral_micro_usdc, "carry_portfolio_capital_position_releasable_overflow"),
+    0,
+  );
+  if (potentialReleasable !== legReleasable
+    || (raw.capital_optimization_available === true) !== (potentialReleasable > 0)) {
+    fail("carry_portfolio_capital_position_releasable_mismatch");
+  }
   if (raw.proposal_only !== true
     || raw.transaction_broadcast !== false
     || raw.automatic_transfer_permitted !== false
@@ -1512,6 +1679,7 @@ function normalizePortfolioCapitalPositionPlan(value) {
     recommended_action: recommendedAction,
     reasons: Array.isArray(raw.reasons) ? [...new Set(raw.reasons.filter((reason) => typeof reason === "string"))] : [],
     minimum_additional_collateral_micro_usdc: minimumAdditional,
+    potential_releasable_collateral_micro_usdc: potentialReleasable,
     owner_funding_required: ownerFundingRequired,
     reduce_only_exit_required: reduceOnlyExitRequired,
     reconciliation_required: reconciliationRequired,

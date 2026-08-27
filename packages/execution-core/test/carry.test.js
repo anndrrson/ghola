@@ -85,7 +85,8 @@ function contract(venueId, fundingRate, overrides = {}) {
 }
 
 function runway(venueId, overrides = {}) {
-  return calculateMarginRunway({
+  return {
+    ...calculateMarginRunway({
     version: 1,
     venue_id: venueId,
     equity_micro_usdc: 2_500_000_000,
@@ -101,7 +102,9 @@ function runway(venueId, overrides = {}) {
     minimum_liquidation_distance_bps: 1_000,
     as_of_ms: NOW,
     ...overrides,
-  });
+    }),
+    account_commitment: overrides.account_commitment || `account:${venueId}:0001`,
+  };
 }
 
 function costs() {
@@ -502,7 +505,7 @@ test("capital planner quantifies the minimum owner top-up without transfer autho
   assert.equal(plan.automatic_transfer_permitted, false);
 });
 
-test("portfolio capital planner prioritizes shortest runway within an owner-approved budget", () => {
+test("portfolio capital planner aggregates shared accounts and proposes owner-only reallocation", () => {
   const positionPlan = compileCarryCapitalActionPlan({
     version: 1,
     position: activePositionForObservation(),
@@ -538,12 +541,20 @@ test("portfolio capital planner prioritizes shortest runway within an owner-appr
     position_plans: [positionPlan, secondPlan],
   });
   assert.equal(plan.status, "owner_action_required");
-  assert.equal(plan.total_requested_micro_usdc, 75_000_014);
-  assert.equal(plan.total_proposed_allocation_micro_usdc, 40_000_000);
-  assert.equal(plan.total_uncovered_shortfall_micro_usdc, 35_000_014);
-  assert.equal(plan.allocations[0].position_id, "carry:position:0002");
-  assert.equal(plan.allocations[0].proposed_allocation_micro_usdc, 25_000_000);
-  assert.equal(plan.allocations[1].proposed_allocation_micro_usdc, 15_000_000);
+  assert.equal(plan.position_count, 2);
+  assert.equal(plan.account_count, 2);
+  assert.equal(plan.total_requested_micro_usdc, 450_000_028);
+  assert.equal(plan.total_potential_releasable_micro_usdc, 900_000_000);
+  assert.equal(plan.total_proposed_internal_reallocation_micro_usdc, 450_000_028);
+  assert.equal(plan.net_new_owner_capital_requested_micro_usdc, 0);
+  assert.equal(plan.total_proposed_allocation_micro_usdc, 0);
+  assert.equal(plan.total_uncovered_shortfall_micro_usdc, 0);
+  assert.deepEqual(plan.allocations[0].position_ids, ["carry:position:0001", "carry:position:0002"]);
+  assert.equal(plan.allocations[0].proposed_internal_reallocation_micro_usdc, 450_000_028);
+  assert.equal(plan.proposed_reallocations[0].from_venue_id, "lighter");
+  assert.equal(plan.proposed_reallocations[0].to_venue_id, "hyperliquid");
+  assert.equal(plan.proposed_reallocations[0].amount_micro_usdc, 450_000_028);
+  assert.equal(plan.owner_transfer_approval_required, true);
   assert.equal(plan.owner_approval_required, true);
   assert.equal(plan.proposal_only, true);
   assert.equal(plan.transaction_broadcast, false);
@@ -594,6 +605,28 @@ test("portfolio capital planner rejects any plan that weakens owner-only authori
     owner_capital_budget_micro_usdc: 0,
     position_plans: [{ ...positionPlan, automatic_transfer_permitted: true }],
   }), /carry_portfolio_capital_position_authority_boundary/);
+});
+
+test("portfolio capital planner rejects one account commitment claimed by multiple venues", () => {
+  const positionPlan = compileCarryCapitalActionPlan({
+    version: 1,
+    position: activePositionForObservation(),
+    margin_runways: [runway("hyperliquid"), runway("lighter")],
+    now_ms: NOW,
+  });
+  const sharedAccountPlan = {
+    ...positionPlan,
+    legs: positionPlan.legs.map((leg) => leg.venue_id === "lighter"
+      ? { ...leg, account_commitment: "account:hyperliquid:0001" }
+      : leg),
+  };
+  assert.throws(() => compileCarryPortfolioCapitalPlan({
+    version: 1,
+    now_ms: NOW,
+    max_data_age_ms: 30_000,
+    owner_capital_budget_micro_usdc: 0,
+    position_plans: [sharedAccountPlan],
+  }), /carry_portfolio_capital_account_venue_mismatch/);
 });
 
 test("capital planner quarantines stale evidence and permits reconciliation only", () => {

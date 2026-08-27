@@ -919,6 +919,7 @@ function monitoringRunway(venueId) {
   return {
     version: 1,
     venue_id: venueId,
+    account_commitment: `account:${venueId}:0001`,
     as_of_ms: NOW,
     status: "healthy",
     margin_headroom_micro_usdc: 20_000_000,

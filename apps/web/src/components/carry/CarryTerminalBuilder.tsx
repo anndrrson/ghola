@@ -598,16 +598,31 @@ function carryPortfolioCapitalSummary(plan: Record<string, unknown> | null) {
     || !["fund", "transfer", "withdraw"].every((operation) => ownerOnlyOperations.includes(operation))) return null;
   const positions = finiteNumber(plan.position_count);
   const requested = finiteNumber(plan.total_requested_micro_usdc);
+  const potentialReleasable = finiteNumber(plan.total_potential_releasable_micro_usdc);
+  const internalReallocation = finiteNumber(plan.total_proposed_internal_reallocation_micro_usdc);
+  const netNewOwnerCapital = finiteNumber(plan.net_new_owner_capital_requested_micro_usdc);
+  const proposedOwnerCapital = finiteNumber(plan.total_proposed_allocation_micro_usdc);
   const uncovered = finiteNumber(plan.total_uncovered_shortfall_micro_usdc);
-  if (positions == null || requested == null || uncovered == null || positions < 0 || requested < 0 || uncovered < 0) return null;
+  if (positions == null || requested == null || potentialReleasable == null || internalReallocation == null
+    || netNewOwnerCapital == null || proposedOwnerCapital == null || uncovered == null
+    || positions < 0 || requested < 0 || potentialReleasable < 0 || internalReallocation < 0
+    || netNewOwnerCapital < 0 || proposedOwnerCapital < 0 || uncovered < 0
+    || internalReallocation > potentialReleasable
+    || requested !== internalReallocation + netNewOwnerCapital
+    || netNewOwnerCapital !== proposedOwnerCapital + uncovered) return null;
   if (positions === 0) return null;
   if (plan.status === "quarantined") return { value: "STALE EVIDENCE · RECONCILE ONLY", tone: "bad" as const };
   if (plan.status === "exit_required") return { value: "EXIT PRIORITY · REDUCE ONLY", tone: "bad" as const };
   if (plan.status === "owner_action_required") {
     return {
-      value: `${formatMicroUsd(requested)} REQUESTED · ${formatMicroUsd(uncovered)} UNFUNDED · OWNER ONLY`,
+      value: internalReallocation > 0
+        ? `${formatMicroUsd(internalReallocation)} REALLOCATE · ${formatMicroUsd(netNewOwnerCapital)} NEW CASH · OWNER ONLY`
+        : `${formatMicroUsd(netNewOwnerCapital)} NEW CASH · ${formatMicroUsd(uncovered)} UNFUNDED · OWNER ONLY`,
       tone: "warn" as const,
     };
+  }
+  if (plan.capital_optimization_available === true && potentialReleasable > 0) {
+    return { value: `${formatMicroUsd(potentialReleasable)} RELEASABLE · OWNER ONLY`, tone: "good" as const };
   }
   return { value: `${positions} POSITION${positions === 1 ? "" : "S"} · BALANCED`, tone: "good" as const };
 }

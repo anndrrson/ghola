@@ -649,9 +649,15 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.plan.status, "owner_action_required");
   assert.equal(result.plan.total_requested_micro_usdc, 10_000_003);
-  assert.equal(result.plan.total_proposed_allocation_micro_usdc, 5_000_000);
-  assert.equal(result.plan.total_uncovered_shortfall_micro_usdc, 5_000_003);
+  assert.equal(result.plan.total_potential_releasable_micro_usdc, 9_999_997);
+  assert.equal(result.plan.total_proposed_internal_reallocation_micro_usdc, 9_999_997);
+  assert.equal(result.plan.net_new_owner_capital_requested_micro_usdc, 6);
+  assert.equal(result.plan.total_proposed_allocation_micro_usdc, 6);
+  assert.equal(result.plan.total_uncovered_shortfall_micro_usdc, 0);
   assert.equal(result.plan.allocations[0].venue_id, "hyperliquid");
+  assert.equal(result.plan.proposed_reallocations[0].from_venue_id, "lighter");
+  assert.equal(result.plan.proposed_reallocations[0].to_venue_id, "hyperliquid");
+  assert.equal(result.plan.owner_transfer_approval_required, true);
   assert.equal(result.plan.owner_approval_required, true);
   assert.equal(result.plan.proposal_only, true);
   assert.equal(result.plan.transaction_broadcast, false);
@@ -785,6 +791,7 @@ function monitoringRunway(venueId, overrides = {}) {
   return {
     version: 1,
     venue_id: venueId,
+    account_commitment: `account:${venueId}:0001`,
     as_of_ms: NOW,
     status: "healthy",
     margin_headroom_micro_usdc: 20_000_000,
