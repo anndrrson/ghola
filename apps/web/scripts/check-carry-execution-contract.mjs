@@ -698,7 +698,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilderTest", "shows only commitment-backed persistent funding as durable", "carry_terminal_funding_persistence_test_missing");
   requireText("webCarryBuilder", "window.setTimeout(refresh", "carry_terminal_monitor_refresh_missing");
   requireText("webCarryBuilderTest", "keeps checking and arming no-submit until a separate live-entry click", "carry_terminal_boundary_test_missing");
-  requireText("webCarryBuilderTest", "runs the three-venue matrix before checking or arming one route", "carry_terminal_three_venue_matrix_test_missing");
+  requireText("webCarryBuilderTest", "keeps the selected pair usable when the three-venue fleet matrix is not ready", "carry_terminal_pair_isolation_test_missing");
   requireText("webCarryBuilderTest", "restores fresh deployment-bound readiness after refresh without rerunning the three-venue matrix", "carry_terminal_readiness_restore_test_missing");
   requireText("webCarryBuilderTest", "allows a new Carry Position after the previous route proved flat with zero orders", "carry_terminal_repeat_lifecycle_test_missing");
   requireText("webCarryBuilderTest", "fails closed when the initial position sync is unavailable", "carry_terminal_position_sync_test_missing");

@@ -289,32 +289,39 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     setProof(null);
     setLastCheckReceipt(`${checkedRoute} · CHECKING · REF ${localReference}`);
     try {
-      let matrix: Record<string, unknown> | null = null;
       let activeReadiness = restoredReadiness ? readiness : null;
-      if (!activeReadiness) {
-        matrix = asRecord(await preflightCarryExecutionMatrix({
+      const [pairAttempt, matrixAttempt] = await Promise.allSettled([
+        preflightCarryPair({
           asset: candidate.asset,
+          long_venue_id: candidate.long.venue_id as CarryExecutionVenue,
+          short_venue_id: candidate.short.venue_id as CarryExecutionVenue,
           notional_usd: notional,
           horizon_days: days,
-        }));
-        if (!readyNoSubmitMatrix(matrix, candidate.asset, notional, days)) {
-          setReadiness(null);
-          setLastCheckReceipt(`${checkedRoute} · THREE-VENUE NOT READY · REF ${shortReference(stringValue(matrix.correlation_id) || localReference)}`);
-          return;
-        }
+        }),
+        activeReadiness
+          ? Promise.resolve(null)
+          : preflightCarryExecutionMatrix({
+            asset: candidate.asset,
+            notional_usd: notional,
+            horizon_days: days,
+          }),
+      ]);
+      let matrix: Record<string, unknown> | null = null;
+      if (matrixAttempt.status === "fulfilled" && matrixAttempt.value) {
+        matrix = asRecord(matrixAttempt.value);
+      }
+      if (matrix && readyNoSubmitMatrix(matrix, candidate.asset, notional, days)) {
         activeReadiness = asRecord(matrix.readiness);
         setReadiness(activeReadiness);
+      } else if (!activeReadiness) {
+        setReadiness(null);
       }
-      const result = asRecord(await preflightCarryPair({
-        asset: candidate.asset,
-        long_venue_id: candidate.long.venue_id as CarryExecutionVenue,
-        short_venue_id: candidate.short.venue_id as CarryExecutionVenue,
-        notional_usd: notional,
-        horizon_days: days,
-      }));
+      if (pairAttempt.status === "rejected") throw pairAttempt.reason;
+      const result = asRecord(pairAttempt.value);
       setProof({
         ...result,
-        ...(matrix ? { execution_matrix: matrix } : { execution_readiness: activeReadiness }),
+        ...(matrix ? { execution_matrix: matrix } : {}),
+        ...(activeReadiness ? { execution_readiness: activeReadiness } : {}),
       });
       const checkedFunding = carryFundingPersistenceSummary(asRecord(result.creation_opportunity));
       const outcome = result.live_creation_ready === true
@@ -328,13 +335,15 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
           : result.no_submit_ready === true
             ? "CHECKED · execution remains locked pending venue qualification"
             : "NOT READY · connect and fund both trade-only accounts";
-      const matrixReference = shortReference(
-        stringValue(matrix?.correlation_id)
-        || stringValue(activeReadiness?.evidence_commitment)
-        || localReference,
-      );
+      const matrixReference = activeReadiness
+        ? shortReference(
+          stringValue(matrix?.correlation_id)
+          || stringValue(activeReadiness.evidence_commitment)
+          || "ready",
+        )
+        : "PENDING";
       const pairReference = shortReference(stringValue(result.correlation_id) || localReference);
-      setLastCheckReceipt(`${checkedRoute} · ${outcome} · MATRIX ${matrixReference} · PAIR ${pairReference}`);
+      setLastCheckReceipt(`${checkedRoute} · ${outcome} · PAIR ${pairReference} · FLEET ${matrixReference}`);
     } catch (error) {
       const failure = carryCheckFailure(error, localReference);
       setLastCheckReceipt(`${checkedRoute} · ${failure.label} · REF ${failure.reference}`);
@@ -526,7 +535,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="SOURCE SYNC" value={proofOpportunity ? formatSkew(proofOpportunity.contract_data_skew_ms) : "PENDING"} />
         <Metric label="INDEX BASIS" value={proofOpportunity ? formatBasis(proofOpportunity.index_price_divergence_bps) : "PENDING"} />
         <Metric label="EDGE CONF" value={fundingPersistence.value} tone={fundingPersistence.tone} />
-        <Metric label="ROUTE GUARD" value={`${CARRY_EXECUTION_VENUES.length} VENUES · ${restoredReadiness ? "READY" : "PENDING"}`} tone={restoredReadiness ? "good" : undefined} />
+        <Metric label="FLEET GUARD" value={`${CARRY_EXECUTION_VENUES.length} VENUES · ${restoredReadiness ? "READY" : "PENDING"}`} tone={restoredReadiness ? "good" : undefined} />
         <Metric label="MONITOR" value={monitorAge(latestObservation?.recorded_at_ms)} />
       </div>
 
@@ -550,7 +559,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
             </button>
           ) : !current && !canSave ? (
             <button type="button" disabled={!executionPair || busy !== null} onClick={() => void runCheck()} className="rounded border border-[#285040] bg-[#0a1b16] px-2 py-2 font-mono text-[10px] font-semibold text-[#75d9b0] disabled:opacity-40">
-              {busy === "check" ? "CHECKING…" : executionPair ? restoredReadiness ? "CHECK ROUTE · MATRIX READY" : "NO-SUBMIT CHECK" : "READ-ONLY ROUTE"}
+              {busy === "check" ? "CHECKING…" : executionPair ? restoredReadiness ? "CHECK PAIR · FLEET READY" : "NO-SUBMIT CHECK" : "READ-ONLY ROUTE"}
             </button>
           ) : !current && canSave ? (
             <button type="button" disabled={busy !== null} onClick={() => void savePosition()} className="rounded border border-[#31577a] bg-[#10243a] px-2 py-2 font-mono text-[10px] font-semibold text-[#b7ddff] disabled:opacity-40">

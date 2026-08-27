@@ -226,8 +226,8 @@ describe("CarryTerminalBuilder", () => {
     expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
     expect(api.preflightCarryPair).toHaveBeenCalledOnce();
     expect(container.textContent).toContain("NO-SUBMIT RECEIPT");
-    expect(container.textContent).toContain("MATRIX MATRIX-TEST-");
     expect(container.textContent).toContain("PAIR PAIR-TEST-12");
+    expect(container.textContent).toContain("FLEET MATRIX-TEST-");
     expect(container.textContent).toContain("SOURCE SYNC");
     expect(container.textContent).toContain("400MS");
     expect(container.textContent).toContain("INDEX BASIS");
@@ -260,18 +260,27 @@ describe("CarryTerminalBuilder", () => {
     expect(api.executeCarryPositionEntry).toHaveBeenCalledWith("carry:position:test", true);
   });
 
-  it("runs the three-venue matrix before checking or arming one route", async () => {
+  it("keeps the selected pair usable when the three-venue fleet matrix is not ready", async () => {
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
     api.preflightCarryExecutionMatrix.mockResolvedValue({
       ...readyMatrix(),
       no_submit_ready: false,
       failures: ["pair_not_ready:2"],
     });
+    api.preflightCarryPair.mockResolvedValue({
+      correlation_id: "ghola-pair-isolated-1234",
+      no_submit_ready: true,
+      capital_ready: false,
+      live_creation_ready: false,
+      qualification_pilot_ready: false,
+      creation_opportunity: { eligible: false },
+    });
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     await click("NO-SUBMIT CHECK");
     expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
-    expect(api.preflightCarryPair).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("THREE-VENUE NOT READY");
+    expect(api.preflightCarryPair).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain("PAIR PAIR-ISOLATE");
+    expect(container.textContent).toContain("FLEET PENDING");
   });
 
   it("consumes the setup handoff once and runs only the no-submit proof", async () => {
@@ -334,11 +343,11 @@ describe("CarryTerminalBuilder", () => {
       notional_usd: "11",
       horizon_days: "30",
     });
-    expect(container.textContent).toContain("CHECK ROUTE · MATRIX READY");
-    await click("CHECK ROUTE · MATRIX READY");
+    expect(container.textContent).toContain("CHECK PAIR · FLEET READY");
+    await click("CHECK PAIR · FLEET READY");
     expect(api.preflightCarryExecutionMatrix).not.toHaveBeenCalled();
     expect(api.preflightCarryPair).toHaveBeenCalledOnce();
-    expect(container.textContent).toContain("MATRIX CARRY:READIN");
+    expect(container.textContent).toContain("FLEET CARRY:READIN");
   });
 
   it("proves the capital-free connection while keeping live entry locked", async () => {
@@ -385,7 +394,7 @@ describe("CarryTerminalBuilder", () => {
 
   it("surfaces the exact failed venue and correlation receipt", async () => {
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
-    api.preflightCarryExecutionMatrix.mockRejectedValue(Object.assign(
+    api.preflightCarryPair.mockRejectedValue(Object.assign(
       new Error("lighter_account_not_ready"),
       { correlationId: "ghola-lighter-ref-1234" },
     ));
