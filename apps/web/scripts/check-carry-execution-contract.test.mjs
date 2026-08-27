@@ -13,6 +13,19 @@ test("accepts the complete cross-venue Carry execution contract", () => {
   assert.equal(checkCarryExecutionContract(sources).ok, true);
 });
 
+test("rejects carry entry without durable adverse funding evidence", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      fundingPersistence: sources.fundingPersistence.replaceAll(
+        '"funding_not_persistent"',
+        '"funding_tick_accepted"',
+      ),
+    }),
+    /carry_funding_flip_entry_gate_missing/,
+  );
+});
+
 test("rejects a Carry venue contract that omits no-submit reconciliation", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -839,6 +852,16 @@ test("rejects route qualification that does not prove positive net value", () =>
       webCarryChart: sources.webCarryChart.replaceAll("routeHasPositiveNet", "routeHasAnySpread"),
     }),
     /carry_positive_net_qualification_missing/,
+  );
+});
+
+test("rejects promoting a point-in-time net tick to a qualified route", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: `${sources.webCarryChart}\ndata-route-qualified={selectedHasPositiveNet ? "true" : "false"}`,
+    }),
+    /carry_single_tick_route_qualification_forbidden/,
   );
 });
 

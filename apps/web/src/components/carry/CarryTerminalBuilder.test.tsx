@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CarryTerminalBuilder,
   carryCapitalEfficiencySummary,
+  carryFundingPersistenceSummary,
   carryOpeningCapitalSummary,
   carryTerminalEconomics,
   carryTerminalGrossFunding,
@@ -175,6 +176,24 @@ describe("CarryTerminalBuilder", () => {
     }).value).toBe("$5");
   });
 
+  it("shows only commitment-backed persistent funding as durable", () => {
+    expect(carryFundingPersistenceSummary({
+      funding_persistence: readyFundingPersistence(),
+    })).toEqual({ value: "8/8 · 35M · DURABLE", tone: "good", ready: true });
+    expect(carryFundingPersistenceSummary({
+      funding_persistence: {
+        version: 1,
+        ready: false,
+        reasons: ["funding_history_insufficient", "funding_observation_span_insufficient"],
+        sample_count: 2,
+        minimum_samples: 8,
+        observed_span_ms: 300_000,
+        minimum_span_ms: 1_800_000,
+        conservative_hourly_spread_e12: 100_000_000,
+      },
+    })).toEqual({ value: "2/8 · 5M OBSERVED", tone: "warn", ready: false });
+  });
+
   it("keeps checking and arming no-submit until a separate live-entry click", async () => {
     const record = carryRecord();
     api.listCarryPositions
@@ -194,6 +213,7 @@ describe("CarryTerminalBuilder", () => {
         mark_price_divergence_bps: 7,
         max_index_price_divergence_bps: 25,
         max_mark_price_divergence_bps: 50,
+        funding_persistence: readyFundingPersistence(),
       },
     });
     api.createCarryPosition.mockResolvedValue({ ok: true, record });
@@ -211,6 +231,8 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("400MS");
     expect(container.textContent).toContain("INDEX BASIS");
     expect(container.textContent).toContain("3BP");
+    expect(container.textContent).toContain("EDGE CONF");
+    expect(container.textContent).toContain("8/8 · 35M · DURABLE");
     expect(api.createCarryPosition).not.toHaveBeenCalled();
     expect(api.executeCarryPositionEntry).not.toHaveBeenCalled();
 
@@ -699,6 +721,20 @@ function snapshot(venueId: string, funding: number) {
     depth_observed_at_ms: Date.now(),
     as_of_ms: Date.now(),
     missing_fields: [],
+  };
+}
+
+function readyFundingPersistence() {
+  return {
+    version: 1,
+    ready: true,
+    reasons: [],
+    sample_count: 8,
+    minimum_samples: 8,
+    observed_span_ms: 2_100_000,
+    minimum_span_ms: 1_800_000,
+    conservative_hourly_spread_e12: 100_000_000,
+    evidence_commitment: `carry:funding:${"a".repeat(64)}`,
   };
 }
 

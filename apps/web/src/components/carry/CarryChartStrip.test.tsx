@@ -51,14 +51,15 @@ describe("CarryChartStrip", () => {
 
     const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
     expect(rail?.getAttribute("data-modeled-net-positive")).toBe("false");
+    expect(rail?.getAttribute("data-edge-evidence")).toBe("indicative");
     expect(rail?.getAttribute("data-cost-basis")).toBe("gross-only");
     expect(rail?.textContent).toContain("GROSS");
-    expect(rail?.textContent).toContain("NET24H—");
+    expect(rail?.textContent).toContain("NET24H*—");
     expect(rail?.textContent).not.toContain("DATA");
     expect(rail?.textContent).not.toContain("QUAL");
   });
 
-  it("marks only an exact conservative model as net positive", async () => {
+  it("marks an exact point-in-time model as indicative net positive", async () => {
     await renderShadow(shadowResponse([
       snapshot("hyperliquid", 10_000_000),
       snapshot("lighter", 150_000_000),
@@ -68,7 +69,7 @@ describe("CarryChartStrip", () => {
     expect(rail?.getAttribute("data-modeled-net-positive")).toBe("true");
     expect(rail?.getAttribute("data-cost-basis")).toBe("net");
     expect(rail?.textContent).toContain("GROSS");
-    expect(rail?.textContent).toContain("NET24H+");
+    expect(rail?.textContent).toContain("NET24H*+");
   });
 
   it("shows negative net value without qualifying the route", async () => {
@@ -79,7 +80,7 @@ describe("CarryChartStrip", () => {
 
     const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
     expect(rail?.getAttribute("data-modeled-net-positive")).toBe("false");
-    expect(rail?.textContent).toContain("NET24H−");
+    expect(rail?.textContent).toContain("NET24H*−");
   });
 
   async function renderShadow(body: CarryShadowResponse) {

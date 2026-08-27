@@ -249,6 +249,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const capital = carryCapitalSummary(latestObservation?.capital_action_plan);
   const ledger = carryLedgerSummary(current?.value_ledger);
   const proofOpportunity = proof ? asRecord(proof.creation_opportunity) : null;
+  const fundingPersistence = carryFundingPersistenceSummary(proofOpportunity);
   const economics = carryTerminalEconomics(model, proofOpportunity);
   const grossFunding = carryTerminalGrossFunding(candidate, proof ? proofOpportunity || {} : null);
   const venueMinimumMargin = carryVenueMinimumMarginSummary(model, proof);
@@ -303,12 +304,15 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         ...result,
         ...(matrix ? { execution_matrix: matrix } : { execution_readiness: activeReadiness }),
       });
+      const checkedFunding = carryFundingPersistenceSummary(asRecord(result.creation_opportunity));
       const outcome = result.live_creation_ready === true
         ? "READY · synchronized market data, exact costs, margin runway and both order shapes verified"
         : result.qualification_pilot_ready === true
           ? "PROOF READY · one capped qualification lifecycle can be armed"
           : result.no_submit_ready === true && result.capital_ready !== true
             ? "CONNECTED · exact owner funding shortfall shown; no order submitted"
+          : result.no_submit_ready === true && checkedFunding.ready !== true
+            ? `OBSERVING · ${checkedFunding.value} · no order submitted`
           : result.no_submit_ready === true
             ? "CHECKED · execution remains locked pending venue qualification"
             : "NOT READY · connect and fund both trade-only accounts";
@@ -487,6 +491,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="EXEC Δ" value={ledger.execution} tone={ledger.executionTone} />
         <Metric label="SOURCE SYNC" value={proofOpportunity ? formatSkew(proofOpportunity.contract_data_skew_ms) : "PENDING"} />
         <Metric label="INDEX BASIS" value={proofOpportunity ? formatBasis(proofOpportunity.index_price_divergence_bps) : "PENDING"} />
+        <Metric label="EDGE CONF" value={fundingPersistence.value} tone={fundingPersistence.tone} />
         <Metric label="ROUTE GUARD" value={`${CARRY_EXECUTION_VENUES.length} VENUES · ${restoredReadiness ? "READY" : "PENDING"}`} tone={restoredReadiness ? "good" : undefined} />
         <Metric label="MONITOR" value={monitorAge(latestObservation?.recorded_at_ms)} />
       </div>
@@ -628,6 +633,56 @@ export function carryTerminalGrossFunding(
     value: `${formatSigned(grossBpsPerDay)} BP/D`,
     tone: grossBpsPerDay > 0 ? "good" as const : undefined,
   };
+}
+
+export function carryFundingPersistenceSummary(opportunity: Record<string, unknown> | null) {
+  if (!opportunity) return { value: "PENDING", tone: undefined, ready: false } as const;
+  const persistence = asRecord(opportunity.funding_persistence);
+  const reasons = Array.isArray(persistence.reasons)
+    ? persistence.reasons.filter((value): value is string => typeof value === "string")
+    : [];
+  const sampleCount = finiteNumber(persistence.sample_count);
+  const minimumSamples = finiteNumber(persistence.minimum_samples);
+  const spanMs = finiteNumber(persistence.observed_span_ms);
+  const minimumSpanMs = finiteNumber(persistence.minimum_span_ms);
+  const spread = finiteNumber(persistence.conservative_hourly_spread_e12);
+  const commitment = stringValue(persistence.evidence_commitment);
+  if (persistence.version !== 1
+    || !Number.isSafeInteger(sampleCount)
+    || !Number.isSafeInteger(minimumSamples)
+    || !Number.isSafeInteger(spanMs)
+    || !Number.isSafeInteger(minimumSpanMs)
+    || Number(sampleCount) < 1
+    || Number(minimumSamples) < 1
+    || Number(spanMs) < 0
+    || Number(minimumSpanMs) < 0) {
+    return { value: "UNVERIFIED", tone: "bad", ready: false } as const;
+  }
+  if (persistence.ready === true) {
+    const valid = reasons.length === 0
+      && Number(sampleCount) >= Number(minimumSamples)
+      && Number(spanMs) >= Number(minimumSpanMs)
+      && spread != null
+      && spread > 0
+      && /^carry:funding:[a-f0-9]{64}$/.test(commitment || "");
+    return valid
+      ? { value: `${sampleCount}/${minimumSamples} · ${formatRunway(Number(spanMs))} · DURABLE`, tone: "good", ready: true } as const
+      : { value: "UNVERIFIED", tone: "bad", ready: false } as const;
+  }
+  if (reasons.includes("funding_persistence_evidence_invalid")) {
+    return { value: "EVIDENCE INVALID", tone: "bad", ready: false } as const;
+  }
+  if (reasons.includes("funding_persistence_state_unavailable")) {
+    return { value: "HISTORY UNAVAILABLE", tone: "bad", ready: false } as const;
+  }
+  if (reasons.includes("funding_not_persistent")) {
+    return { value: "NO DURABLE EDGE", tone: "bad", ready: false } as const;
+  }
+  return {
+    value: `${sampleCount}/${minimumSamples} · ${formatRunway(Number(spanMs))} OBSERVED`,
+    tone: "warn",
+    ready: false,
+  } as const;
 }
 
 export function carryVenueMinimumMarginSummary(

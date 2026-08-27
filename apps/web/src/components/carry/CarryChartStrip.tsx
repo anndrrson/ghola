@@ -157,6 +157,7 @@ export function CarryChartStrip({
       className="mb-2 overflow-hidden rounded-md border border-[#252f3d] bg-[#090d13]"
       aria-label="Cross-venue route intelligence"
       data-modeled-net-positive={selectedHasPositiveNet ? "true" : "false"}
+      data-edge-evidence="indicative"
       data-cost-basis={selected?.quote.exactCosts ? "net" : "gross-only"}
       data-route-age-ms={Number.isFinite(selectedAgeMs) ? Math.round(selectedAgeMs) : undefined}
     >
@@ -179,7 +180,12 @@ export function CarryChartStrip({
                 </span>
               </p>
               <p className="whitespace-nowrap max-[1023px]:hidden">
-                <span className="mr-1.5 text-[#657286]">NET24H</span>
+                <span
+                  className="mr-1.5 text-[#657286]"
+                  title="Indicative point-in-time economics. Live entry requires durable funding evidence."
+                >
+                  NET24H*
+                </span>
                 <span className={selected.quote.exactCosts
                   ? selectedHasPositiveNet ? "font-semibold text-[#72dfb2]" : "font-semibold text-[#e27d89]"
                   : "font-semibold text-[#d9bd74]"}
@@ -199,7 +205,7 @@ export function CarryChartStrip({
                     : "NO FRESH ROUTE"}
               </p>
               <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">GROSS —</p>
-              <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">NET24H —</p>
+              <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">NET24H* —</p>
               <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">AGE —</p>
             </>
           )}
@@ -253,7 +259,11 @@ export function CarryChartStrip({
                   </div>
                   <p className="mt-1 truncate text-[10px] text-[#718096]">
                     Long {venueName(candidate.long.venue_id)} {formatFundingApr(candidate.long)} · Short {venueName(candidate.short.venue_id)} {formatFundingApr(candidate.short)}
-                    {!quote.exactCosts ? " · exact costs required" : routeHasPositiveNet(quote) ? " · modeled net positive" : " · no net edge"}
+                    {!quote.exactCosts
+                      ? " · exact costs required"
+                      : routeHasPositiveNet(quote)
+                        ? " · indicative net · durability check required"
+                        : " · no net edge"}
                   </p>
                 </button>
               ))}
@@ -309,7 +319,7 @@ function formatFundingApr(snapshot: CarryCandidate["long"]) {
 function formatCarryValue(candidate: CarryCandidate, quote: PricedCarryCandidate["quote"]) {
   const gross = `GROSS ${formatBps(grossDailyBps(candidate))}`;
   const net = quote.exactCosts ? formatBps(selectedDailyBps(candidate, quote)) : "—";
-  return `${gross} · NET24H ${net}`;
+  return `${gross} · NET24H* ${net}`;
 }
 
 function selectedDailyBps(candidate: CarryCandidate, quote: PricedCarryCandidate["quote"] | null) {

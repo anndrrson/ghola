@@ -19,6 +19,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   server: "apps/private-agent-worker/src/server.js",
   workerPackage: "apps/private-agent-worker/package.json",
   preflight: "apps/private-agent-worker/src/execution/carry-preflight.js",
+  fundingPersistence: "apps/private-agent-worker/src/execution/carry-funding-persistence.js",
   workerMandate: "apps/private-agent-worker/src/execution/carry-mandate.js",
   positions: "apps/private-agent-worker/src/execution/carry-positions.js",
   executor: "apps/private-agent-worker/src/execution/carry-executor.js",
@@ -76,6 +77,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   workerMandateTest: "apps/private-agent-worker/test/carry-mandate.test.js",
   positionsTest: "apps/private-agent-worker/test/carry-positions.test.js",
   preflightTest: "apps/private-agent-worker/test/carry-preflight.test.js",
+  fundingPersistenceTest: "apps/private-agent-worker/test/carry-funding-persistence.test.js",
   serverTest: "apps/private-agent-worker/test/server.test.js",
   qualificationTest: "apps/private-agent-worker/test/carry-qualification.test.js",
   readinessTest: "apps/private-agent-worker/test/carry-readiness.test.js",
@@ -520,6 +522,17 @@ export function checkCarryExecutionContract(sources) {
   requireText("executor", 'transaction_broadcast: false', "carry_restart_zero_broadcast_evidence_missing");
   requireText("executor", "carry_exit_not_flat_or_open_orders_nonzero", "carry_final_flat_gate_missing");
   requireText("preflight", 'PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED === "true"', "pilot_runtime_preflight_gate_missing");
+  requireText("preflight", "observeCarryFundingPersistence", "carry_funding_persistence_preflight_missing");
+  requireText("preflight", "conservative_funding_rate_e12_by_venue", "carry_conservative_funding_pricing_missing");
+  requireText("fundingPersistence", "DEFAULT_MIN_SAMPLES = 8", "carry_funding_sample_floor_missing");
+  requireText("fundingPersistence", "DEFAULT_MIN_SPAN_MS = 30 * 60_000", "carry_funding_span_floor_missing");
+  requireText("fundingPersistence", "appendDistinct", "carry_funding_duplicate_observation_gate_missing");
+  requireText("fundingPersistence", '"funding_not_persistent"', "carry_funding_flip_entry_gate_missing");
+  requireText("fundingPersistence", "percentile(longRates, 0.75", "carry_funding_adverse_long_quartile_missing");
+  requireText("fundingPersistence", "percentile(shortRates, 0.25", "carry_funding_adverse_short_quartile_missing");
+  requireText("fundingPersistenceTest", "does not manufacture persistence from rapid duplicate checks", "carry_funding_duplicate_observation_test_missing");
+  requireText("fundingPersistenceTest", "clips a current funding spike to adverse historical quartiles", "carry_funding_spike_test_missing");
+  requireText("fundingPersistenceTest", "rejects carry whose historical funding advantage is not persistent", "carry_funding_persistence_test_missing");
   requireText("phalaConfig", "expectedCarryWorkerConfig", "carry_runtime_config_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_POSITION_LIVE_SUBMIT', "carry_live_submit_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED', "carry_pilot_compose_missing");
@@ -583,7 +596,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "grossDailyBps", "carry_gross_value_display_missing");
   requireText("webCarryChart", "NET24H", "carry_net_value_display_missing");
   requireText("webCarryChart", "routeHasPositiveNet", "carry_positive_net_qualification_missing");
-  requireText("webCarryChart", 'data-route-qualified={selectedHasPositiveNet ? "true" : "false"}', "carry_route_qualification_state_missing");
+  requireText("webCarryChart", 'data-edge-evidence="indicative"', "carry_indicative_edge_label_missing");
+  requireText("webCarryChart", "durability check required", "carry_point_in_time_edge_warning_missing");
+  requireText("webCarryChart", 'data-modeled-net-positive={selectedHasPositiveNet ? "true" : "false"}', "carry_point_in_time_net_state_missing");
+  forbidText("webCarryChart", 'data-route-qualified={selectedHasPositiveNet ? "true" : "false"}', "carry_single_tick_route_qualification_forbidden");
   requireText("webCarryChart", "AGE {formatAge", "carry_feed_age_display_missing");
   requireText("webCarryChart", "% APR", "carry_funding_period_label_missing");
   requireText("webCarryChart", "startTransition(() => setLivePatches(patches))", "carry_nonblocking_ui_publish_missing");
@@ -605,6 +621,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "FLAT · 0 ORDERS", "carry_terminal_flat_state_missing");
   requireText("webCarryBuilder", "RETRY POSITION SYNC", "carry_terminal_position_sync_gate_missing");
   requireText("webCarryBuilder", "MIN RUNWAY", "carry_terminal_runway_display_missing");
+  requireText("webCarryBuilder", 'label="EDGE CONF"', "carry_terminal_funding_persistence_missing");
+  requireText("webCarryBuilderTest", "shows only commitment-backed persistent funding as durable", "carry_terminal_funding_persistence_test_missing");
   requireText("webCarryBuilder", "window.setTimeout(refresh", "carry_terminal_monitor_refresh_missing");
   requireText("webCarryBuilderTest", "keeps checking and arming no-submit until a separate live-entry click", "carry_terminal_boundary_test_missing");
   requireText("webCarryBuilderTest", "runs the three-venue matrix before checking or arming one route", "carry_terminal_three_venue_matrix_test_missing");
