@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { CARRY_EXECUTION_VENUES } from "@ghola/execution-core";
 import {
   applyDurableMultiLegEvent,
   createDurableMultiLegSaga,
@@ -293,7 +294,11 @@ test("cancels, reconciles, and exactly unwinds a one-leg fill", async (t) => {
   assert.equal((await state.getAutopilotSession(context.autopilot_session_id)).status, "paused");
 });
 
-for (const [filledVenue, hedgeVenue] of [["aster", "lighter"], ["lighter", "aster"]]) {
+for (const [filledVenue, hedgeVenue] of CARRY_EXECUTION_VENUES.flatMap((filledVenue) =>
+  CARRY_EXECUTION_VENUES
+    .filter((hedgeVenue) => hedgeVenue !== filledVenue)
+    .map((hedgeVenue) => [filledVenue, hedgeVenue]),
+)) {
   test(`exactly recovers a filled ${filledVenue} leg against an unfilled ${hedgeVenue} leg`, async (t) => {
     const dir = mkdtempSync(join(tmpdir(), `ghola-${filledVenue}-recovery-`));
     t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -356,8 +361,8 @@ for (const [filledVenue, hedgeVenue] of [["aster", "lighter"], ["lighter", "aste
         max_slippage_bps: 10,
       },
       venue_access: {
-        aster: { status: "ready", execution_mode: "byo_api_key" },
-        lighter: { status: "ready", execution_mode: "byo_api_key" },
+        [filledVenue]: { status: "ready", execution_mode: "byo_api_key" },
+        [hedgeVenue]: { status: "ready", execution_mode: "byo_api_key" },
       },
       updated_at: new Date(NOW).toISOString(),
     });

@@ -20,6 +20,10 @@ test("worker Carry dispatch follows the execution-core capability registry", () 
       registeredCarryAdapterId(venueId, "no_submit_reconciliation"),
       venueAdapterCapability(venueId, "no_submit_reconciliation").adapter_id,
     );
+    assert.equal(
+      registeredCarryAdapterId(venueId, "exact_quantity_recovery"),
+      venueAdapterCapability(venueId, "exact_quantity_recovery").adapter_id,
+    );
   }
 });
 

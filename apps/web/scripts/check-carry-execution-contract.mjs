@@ -26,6 +26,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   executor: "apps/private-agent-worker/src/execution/carry-executor.js",
   privateExecution: "apps/private-agent-worker/src/execution/private-execution.js",
   adapterRegistryTest: "apps/private-agent-worker/test/carry-adapter-registry.test.js",
+  multiLegOrchestratorTest: "apps/private-agent-worker/test/multi-leg-orchestrator.test.js",
   qualification: "apps/private-agent-worker/src/execution/carry-qualification.js",
   readiness: "apps/private-agent-worker/src/execution/carry-readiness.js",
   reconciliation: "apps/private-agent-worker/src/execution/carry-reconciliation.js",
@@ -141,6 +142,10 @@ export function checkCarryExecutionContract(sources) {
   );
   requireText("registry", "export function carryExecutionQualification", "carry_qualification_report_missing");
   requireText("registryTest", "candidate venues cannot enter Carry until the identical execution contract is complete", "carry_candidate_fail_closed_test_missing");
+  requireText("adapterRegistryTest", 'registeredCarryAdapterId(venueId, "exact_quantity_recovery")', "carry_worker_recovery_registry_test_missing");
+  requireText("multiLegOrchestratorTest", "CARRY_EXECUTION_VENUES.flatMap", "carry_three_venue_recovery_matrix_missing");
+  requireText("multiLegOrchestratorTest", "hedgeVenue !== filledVenue", "carry_ordered_pair_recovery_matrix_missing");
+  requireText("multiLegOrchestratorTest", "reduce_only === true", "carry_recovery_reduce_only_assertion_missing");
   requireText("registry", "export const CARRY_BROWSER_STREAM_VENUES", "browser_stream_capability_registry_missing");
   requireText("registry", "export function venueAdapterCapability", "adapter_capability_lookup_missing");
   requireText("registry", "export function venuesWithAdapterCapability", "adapter_capability_query_missing");
