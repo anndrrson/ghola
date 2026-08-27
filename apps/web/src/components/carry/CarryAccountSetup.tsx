@@ -708,7 +708,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     : nextSetupAction.venueId === "hyperliquid" ? "Continue"
     : nextSetupAction.venueId === "aster"
       ? pendingAsterAuthorization
-        ? working ? "Authenticating…" : "Continue authentication"
+        ? working ? "Authenticating…" : "Continue secure authentication"
         : !injectedOwnerAvailable && !perpsTurnkey.configured ? "Secure wallet unavailable"
         : !injectedOwnerAvailable && perpsTurnkey.loading ? "Restoring secure wallet…"
         : working ? "Authorizing…"
@@ -722,7 +722,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         : asterReprepareRequired ? "Re-prepare Aster approval"
         : "Continue"
       : pendingLighterAuthorization
-        ? working ? "Authenticating…" : "Continue authentication"
+        ? working ? "Authenticating…" : "Continue secure authentication"
         : !injectedOwnerAvailable && !perpsTurnkey.configured ? "Secure wallet unavailable"
         : !injectedOwnerAvailable && perpsTurnkey.loading ? "Restoring secure wallet…"
         : pendingLighterAssociation?.submission_ambiguous ? "Reconciliation required"

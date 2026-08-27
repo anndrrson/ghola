@@ -26,6 +26,19 @@ test("rejects a Carry venue contract that omits no-submit reconciliation", () =>
   );
 });
 
+test("rejects private-account policy that drifts from the Carry registry", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivateAccount: sources.webPrivateAccount.replaceAll(
+        "if (isCarryExecutionVenue(venueId))",
+        'if (venueId === "hyperliquid")',
+      ),
+    }),
+    /private_account_policy_registry_missing/,
+  );
+});
+
 test("rejects qualification evidence not bound to the deployed image", () => {
   assert.throws(
     () => checkCarryExecutionContract({

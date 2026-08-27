@@ -227,6 +227,9 @@ export function checkAsterOnboardingUiBoundary(source) {
     ["Withdrawals stay disabled", "aster_no_withdrawal_disclosure_required"],
   ];
   for (const [value, code] of required) if (!source.includes(value)) failures.push(code);
+  if (source.split("setAsterRegistrationAmbiguous(true);").length - 1 < 2) {
+    failures.push("aster_ambiguous_all_completion_paths_required");
+  }
 
   const flowStart = source.indexOf("const connectAsterProgrammatic = useCallback");
   const flowEnd = source.indexOf("\n  useEffect(() =>", flowStart);

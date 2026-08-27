@@ -16,6 +16,7 @@ import {
   getHyperliquidExecutionVaultByAccount,
   getVenueExecutionVaultByAccount,
   listPrivateVenueCapabilities,
+  PRIVATE_AGENT_VENUE_IDS,
   putPrivateAgentPassport,
   putPrivateVenueCapability,
   putVenueExecutionVault,
@@ -38,7 +39,6 @@ import {
   type VenueOwnerAuthorizationSource,
 } from "./venue-execution-credential-capability";
 
-const AGENT_VENUES: PrivateAgentVenueId[] = ["hyperliquid", "lighter", "aster", "phoenix", "backpack", "coinbase_advanced", "jupiter"];
 const ARB_MARKETS = ["SOL-USD"];
 
 export interface AgentPassportCapability {
@@ -317,7 +317,7 @@ async function refreshAgentPassport(
     account_commitment: account.account_commitment,
   });
   const latest = latestCapabilities(capabilities);
-  const venues = AGENT_VENUES.map((venueId) => {
+  const venues = PRIVATE_AGENT_VENUE_IDS.map((venueId) => {
     const stored = latest.get(venueId);
     if (stored) return publicCapability(stored);
     return missingCapability(venueId, now);
@@ -725,14 +725,8 @@ function agentVenueForPlatform(value: unknown): PrivateAgentVenueId | null {
 }
 
 function agentVenueId(value: unknown): PrivateAgentVenueId | null {
-  return value === "hyperliquid" ||
-    value === "lighter" ||
-    value === "aster" ||
-    value === "phoenix" ||
-    value === "backpack" ||
-    value === "coinbase_advanced" ||
-    value === "jupiter"
-    ? value
+  return typeof value === "string" && PRIVATE_AGENT_VENUE_IDS.includes(value as PrivateAgentVenueId)
+    ? value as PrivateAgentVenueId
     : null;
 }
 

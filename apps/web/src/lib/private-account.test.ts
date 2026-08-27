@@ -1,16 +1,32 @@
 import { describe, expect, it } from "vitest";
+import { CARRY_EXECUTION_VENUES } from "@ghola/execution-core";
 import {
+  blockedVenueOperations,
   buildPrivateAccountReceipt,
   containsForbiddenPublicPrivateAccountField,
   createPrivateAccountAction,
   createPrivateExecutionAccount,
   isPrivateModeAvailableStatus,
+  listVenueManifests,
   listPlatformPrivacyProfiles,
   previewPrivateAccountAction,
   requiresPrivateSettlementBinding,
+  supportedVenueOperations,
+  venuePlatformClass,
 } from "./private-account";
 
 describe("private account anonymity engine", () => {
+  it("derives Carry private-account policy from the execution registry", () => {
+    const carryVenueIds = new Set<string>(CARRY_EXECUTION_VENUES);
+    for (const venueId of CARRY_EXECUTION_VENUES) {
+      expect(venuePlatformClass(venueId)).toBe("hyperliquid_style_market");
+      expect(supportedVenueOperations(venueId)).toEqual(["read", "limit_order", "cancel", "reconcile"]);
+      expect(blockedVenueOperations(venueId)).toEqual(["withdraw", "vault_transfer", "leverage_escalation"]);
+    }
+    expect(listVenueManifests().filter((manifest) => carryVenueIds.has(manifest.venue_id)).map((manifest) => manifest.venue_id))
+      .toEqual(CARRY_EXECUTION_VENUES);
+  });
+
   it("allows full anonymity only when the private rail and anonymity set pass", () => {
     const account = createPrivateExecutionAccount({ vaultReady: true });
     const action = createPrivateAccountAction({

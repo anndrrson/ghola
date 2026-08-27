@@ -58,6 +58,9 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webAccountConnectionsTest: "apps/web/src/lib/carry-account-connections.test.ts",
   webOnboardingRecovery: "apps/web/src/lib/carry-onboarding-recovery.ts",
   webOnboardingRecoveryTest: "apps/web/src/lib/carry-onboarding-recovery.test.ts",
+  webPrivateAccount: "apps/web/src/lib/private-account.ts",
+  webPrivateAccountTest: "apps/web/src/lib/private-account.test.ts",
+  webPrivateAccountStore: "apps/web/src/lib/private-account-store.ts",
   webPassport: "apps/web/src/lib/private-agent-passport.ts",
   webPassportTest: "apps/web/src/lib/private-agent-passport.test.ts",
   phalaConfig: "apps/web/src/lib/private-agent-phala.ts",
@@ -146,6 +149,19 @@ export function checkCarryExecutionContract(sources) {
   requireText("webRegistry", "EXECUTION_CORE_PERP_VENUES", "web_shadow_registry_missing");
   requireText("webRegistry", "EXECUTION_CORE_BROWSER_STREAM_VENUES", "web_stream_registry_missing");
   forbidText("webRegistry", '["hyperliquid", "lighter", "aster"]', "web_execution_registry_duplicated");
+  requireText("webPrivateAccount", "...CARRY_EXECUTION_VENUES", "private_account_manifest_registry_missing");
+  requireText("webPrivateAccount", "type CarryExecutionVenueId", "private_account_venue_type_registry_missing");
+  if (String(sources.webPrivateAccount || "").split("if (isCarryExecutionVenue(venueId))").length - 1 < 3) {
+    failures.push("private_account_policy_registry_missing");
+  }
+  requireText("webPrivateAccountTest", "derives Carry private-account policy from the execution registry", "private_account_policy_registry_test_missing");
+  requireText("webPrivateAccountStore", "...CARRY_EXECUTION_VENUES", "private_agent_registry_bridge_missing");
+  requireText("webPrivateAccountStore", "export const PRIVATE_AGENT_VENUE_IDS", "private_agent_registry_missing");
+  requireText("webPassport", "PRIVATE_AGENT_VENUE_IDS.map", "private_agent_passport_registry_missing");
+  requireText("webPassport", "PRIVATE_AGENT_VENUE_IDS.includes", "private_agent_venue_validation_registry_missing");
+  forbidText("webPrivateAccount", 'venueId === "hyperliquid" || venueId === "lighter" || venueId === "aster"', "private_account_policy_registry_duplicated");
+  forbidText("webPrivateAccountStore", '["hyperliquid", "lighter", "aster",', "private_agent_registry_duplicated");
+  forbidText("webPassport", '["hyperliquid", "lighter", "aster",', "private_agent_passport_registry_duplicated");
   requireText("webWorkspace", "every(isCarryExecutionVenue)", "carry_workspace_execution_registry_missing");
   forbidText("webWorkspace", '["aster", "hyperliquid", "lighter"]', "carry_workspace_execution_registry_duplicated");
 

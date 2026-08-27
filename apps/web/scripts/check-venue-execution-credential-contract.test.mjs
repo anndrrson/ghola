@@ -239,6 +239,13 @@ test("rejects removing receipt-only Aster link recovery or its explicit UI actio
   );
 });
 
+test("rejects an Aster completion path that does not freeze ambiguity", () => {
+  assert.throws(
+    () => checkAsterOnboardingUiBoundary(asterUi.replace("setAsterRegistrationAmbiguous(true);", "ambiguityNotPersisted();")),
+    /aster_ambiguous_all_completion_paths_required/,
+  );
+});
+
 test("rejects hiding the bounded Aster expiry or deliberate stale re-prepare", () => {
   assert.throws(
     () => checkAsterCredentialProvisioningBoundary(
