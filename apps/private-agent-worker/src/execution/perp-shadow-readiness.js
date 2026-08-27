@@ -146,6 +146,7 @@ export function verifyCarryShadowSoak(sampleResults, {
   let expectedRequestedAssets = null;
   let expectedSnapshots = null;
   const sampleCommitments = [];
+  let degradedSnapshots = 0;
   samples.forEach((sample, index) => {
     if (sample?.ok !== true || (Array.isArray(sample?.failures) && sample.failures.length > 0)) {
       failures.push(`shadow_soak_sample_failed:${index}`);
@@ -167,6 +168,12 @@ export function verifyCarryShadowSoak(sampleResults, {
     const evidence = Array.isArray(sample?.snapshot_evidence) ? sample.snapshot_evidence : [];
     if (!validSnapshotEvidence(evidence, sample?.expected_snapshots, sample?.requested_assets)) {
       failures.push(`shadow_soak_snapshot_evidence_invalid:${index}`);
+    }
+    for (const row of evidence) {
+      if (row?.status !== "ready") {
+        degradedSnapshots += 1;
+        failures.push(`shadow_soak_snapshot_not_ready:${index}:${row?.venue_id || "unknown"}:${row?.asset || "unknown"}`);
+      }
     }
     const sampleCommitment = String(sample?.sample_commitment || "");
     if (sampleCommitment !== shadowSampleCommitment(sample?.checked_at_ms, evidence)) {
@@ -190,6 +197,7 @@ export function verifyCarryShadowSoak(sampleResults, {
     assets: expectedAssets,
     requested_assets: Object.freeze([...(expectedRequestedAssets || [])]),
     expected_snapshots_per_sample: expectedSnapshots,
+    degraded_snapshots: degradedSnapshots,
     sample_commitments: Object.freeze(sampleCommitments),
     failures: Object.freeze(failures),
   });
@@ -227,6 +235,7 @@ function validSnapshotEvidence(evidence, expectedSnapshots, requestedAssets) {
       || !Number.isSafeInteger(row?.as_of_ms)
       || !Number.isSafeInteger(row?.age_ms)
       || row.age_ms < 0
+      || !["ready", "degraded"].includes(row?.status)
       || !validSourceEvidence(row?.source_observed_at_ms, row?.source_max_age_ms)
       || !/^carry:shadow:snapshot:[0-9a-f]{64}$/.test(String(row?.snapshot_commitment || ""))) return false;
     pairs.add(`${venueId}:${asset}`);

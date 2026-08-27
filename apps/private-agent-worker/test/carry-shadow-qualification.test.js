@@ -65,6 +65,24 @@ test("resets consecutive qualification after one failed venue sample", async () 
   assert.ok(result.failures.some((failure) => failure.startsWith("venue_fetch_failed:lighter")));
 });
 
+test("does not qualify complete-looking samples with degraded venue economics", async () => {
+  const state = stateStore();
+  let result;
+  for (let index = 0; index < 3; index += 1) {
+    const nowMs = NOW + index * 60_000;
+    const venues = carryShadowFixture(nowMs);
+    const snapshot = venues.find((venue) => venue.venue_id === "hyperliquid").snapshots[0];
+    snapshot.maker_fee_bps = null;
+    snapshot.missing_fields = ["maker_fee_bps"];
+    snapshot.quality_flags = ["fees_account_specific"];
+    snapshot.status = "degraded";
+    result = await observeCarryShadowQualification({ state, venues, now_ms: nowMs, env: ENV });
+  }
+  assert.equal(result.ready, false);
+  assert.equal(result.degraded_snapshots, 3);
+  assert.ok(result.failures.some((failure) => failure.startsWith("shadow_soak_snapshot_not_ready:")));
+});
+
 test("fails closed for stale, tampered, or differently pinned qualification", async () => {
   const state = stateStore();
   for (let index = 0; index < 3; index += 1) {

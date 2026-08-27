@@ -183,6 +183,7 @@ function qualificationResult({
     assets: soak.assets || 0,
     requested_assets: Object.freeze([...(soak.requested_assets || [])]),
     expected_snapshots_per_sample: soak.expected_snapshots_per_sample || 0,
+    degraded_snapshots: soak.degraded_snapshots || 0,
     sample_commitments: Object.freeze([...(soak.sample_commitments || [])]),
     evidence_commitment: evidenceCommitment,
     failures: Object.freeze(uniqueFailures),

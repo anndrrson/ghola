@@ -300,6 +300,19 @@ test("rejects five-venue shadow evidence without exact sample commitments", () =
   );
 });
 
+test("rejects durable five-venue qualification that can promote degraded economics", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowVerifier: sources.shadowVerifier.replaceAll(
+        "shadow_soak_snapshot_not_ready",
+        "shadow_soak_snapshot_degraded_but_accepted",
+      ),
+    }),
+    /carry_shadow_degraded_qualification_gate_missing/,
+  );
+});
+
 test("rejects five-venue shadow qualification without liquidity-depth validation", () => {
   assert.throws(
     () => checkCarryExecutionContract({

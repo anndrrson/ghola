@@ -65,6 +65,25 @@ test("rejects normalized gaps without explicit quality evidence", () => {
   assert.equal(verifyCarryShadowSet(rows, { now_ms: NOW }).ok, true);
 });
 
+test("allows degraded snapshots for observation but never promotes them to durable qualification", () => {
+  const samples = [0, 1, 2].map((offset) => {
+    const rows = fixture();
+    const snapshot = rows[0].snapshots[0];
+    snapshot.maker_fee_bps = null;
+    snapshot.missing_fields = ["maker_fee_bps"];
+    snapshot.quality_flags = ["fees_account_specific"];
+    snapshot.status = "degraded";
+    return verifyCarryShadowSet(rows, { now_ms: NOW + offset * 1_000 });
+  });
+  assert.equal(samples.every((sample) => sample.ok), true);
+  const result = verifyCarryShadowSoak(samples);
+  assert.equal(result.ok, false);
+  assert.equal(result.degraded_snapshots, 3);
+  assert.ok(result.failures.includes("shadow_soak_snapshot_not_ready:0:hyperliquid:BTC"));
+  assert.ok(result.failures.includes("shadow_soak_snapshot_not_ready:1:hyperliquid:BTC"));
+  assert.ok(result.failures.includes("shadow_soak_snapshot_not_ready:2:hyperliquid:BTC"));
+});
+
 test("rejects a missing-field manifest or readiness status that contradicts normalized data", () => {
   const rows = fixture();
   rows[0].snapshots[0].maker_fee_bps = null;
@@ -181,6 +200,7 @@ test("qualifies only consecutive complete five-venue shadow samples", () => {
   assert.equal(result.assets, 3);
   assert.deepEqual(result.requested_assets, ["BTC", "ETH", "SOL"]);
   assert.equal(result.expected_snapshots_per_sample, 15);
+  assert.equal(result.degraded_snapshots, 0);
   assert.deepEqual(result.sample_commitments, samples.map((sample) => sample.sample_commitment));
   assert.deepEqual(result.failures, []);
 });

@@ -222,6 +222,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifier", "shadow_soak_sample_failed", "carry_shadow_soak_intermittent_failure_gate_missing");
   requireText("shadowVerifier", "snapshot_evidence", "carry_shadow_snapshot_evidence_missing");
   requireText("shadowVerifier", "shadow_soak_sample_commitment_invalid", "carry_shadow_sample_commitment_gate_missing");
+  requireText("shadowVerifier", "shadow_soak_snapshot_not_ready", "carry_shadow_degraded_qualification_gate_missing");
   requireText("shadowVerifier", "read_only_boundary_invalid", "carry_shadow_read_only_gate_missing");
   requireText("shadowVerifier", "snapshot_stale", "carry_shadow_freshness_gate_missing");
   requireText("shadowVerifier", "venue_duplicate", "carry_shadow_duplicate_venue_gate_missing");
@@ -237,6 +238,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifierTest", "rejects tampered or reused shadow sample commitments", "carry_shadow_commitment_test_missing");
   requireText("shadowVerifierTest", "rejects a one-shot snapshot as durable shadow qualification", "carry_shadow_one_shot_rejection_test_missing");
   requireText("shadowVerifierTest", "rejects normalized gaps without explicit quality evidence", "carry_shadow_quality_evidence_test_missing");
+  requireText("shadowVerifierTest", "never promotes them to durable qualification", "carry_shadow_degraded_qualification_test_missing");
   requireText("shadowVerifierTest", "rejects duplicate or unregistered venue rows", "carry_shadow_duplicate_venue_test_missing");
   requireText("shadowVerifierTest", "rejects normalized shadow proof without valid two-sided liquidity depth", "carry_shadow_liquidity_depth_test_missing");
   requireText("shadowVerifierTest", "rejects stale component feeds hidden behind a fresh aggregate timestamp", "carry_shadow_component_freshness_test_missing");
@@ -588,6 +590,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowQualification", "transaction_broadcast: false", "carry_shadow_qualification_no_broadcast_missing");
   requireText("shadowQualificationTest", "persists three consecutive complete five-venue samples without broadcasting", "carry_shadow_qualification_test_missing");
   requireText("shadowQualificationTest", "resets consecutive qualification after one failed venue sample", "carry_shadow_qualification_reset_test_missing");
+  requireText("shadowQualificationTest", "does not qualify complete-looking samples with degraded venue economics", "carry_shadow_qualification_degraded_test_missing");
   requireText("shadowQualificationTest", "fails closed for stale, tampered, or differently pinned qualification", "carry_shadow_qualification_integrity_test_missing");
   requireText("server", "funding_persistence: fundingPersistence", "carry_funding_shadow_cycle_missing");
   requireText("server", "shadow_qualification: shadowQualification", "carry_shadow_qualification_cycle_missing");
