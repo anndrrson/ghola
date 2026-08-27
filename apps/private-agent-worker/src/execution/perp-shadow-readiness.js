@@ -65,7 +65,12 @@ export function verifyCarryShadowSet(rows, {
         failures.push(`asset_snapshot_count:${venueId}:${asset}:${matches.length}`);
         continue;
       }
-      verifySnapshot(matches[0], { venueId, asset, nowMs, maxAgeMs, failures });
+      failures.push(...verifyCarryShadowSnapshot(matches[0], {
+        venue_id: venueId,
+        asset,
+        now_ms: nowMs,
+        max_age_ms: maxAgeMs,
+      }).failures);
       snapshotEvidence.push(snapshotEvidenceRow(matches[0], nowMs));
     }
   }
@@ -81,6 +86,27 @@ export function verifyCarryShadowSet(rows, {
     expected_snapshots: CORE_PERP_VENUES.length * normalizedAssets.length,
     snapshot_evidence: frozenEvidence,
     sample_commitment: shadowSampleCommitment(nowMs, frozenEvidence),
+    failures: Object.freeze(failures),
+  });
+}
+
+export function verifyCarryShadowSnapshot(snapshot, {
+  venue_id: venueId = snapshot?.venue_id,
+  asset = snapshot?.asset,
+  now_ms: nowMs = Date.now(),
+  max_age_ms: maxAgeMs = 30_000,
+} = {}) {
+  const failures = [];
+  verifySnapshot(snapshot || {}, {
+    venueId: String(venueId || "unknown"),
+    asset: String(asset || "unknown").toUpperCase(),
+    nowMs,
+    maxAgeMs,
+    failures,
+  });
+  return Object.freeze({
+    ok: failures.length === 0,
+    checked_at_ms: nowMs,
     failures: Object.freeze(failures),
   });
 }

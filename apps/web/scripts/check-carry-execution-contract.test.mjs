@@ -200,6 +200,19 @@ test("rejects release without a joined three-venue no-submit matrix", () => {
   );
 });
 
+test("rejects executable Carry preflight that bypasses the shared shadow contract", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll(
+        "verifyCarryShadowSnapshot",
+        "acceptNarrowShadowSnapshot",
+      ),
+    }),
+    /carry_preflight_shared_shadow_contract_missing/,
+  );
+});
+
 test("rejects release without a positive three-venue no-submit HTTP proof", () => {
   assert.throws(
     () => checkCarryExecutionContract({

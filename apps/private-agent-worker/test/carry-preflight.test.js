@@ -14,11 +14,14 @@ function snapshot(venueId) {
   return {
     version: 1,
     venue_id: venueId,
+    adapter_mode: "shadow_read_only",
+    source_schema: executionVenueSpec(venueId).adapter_capabilities.perp_shadow.source_schema,
+    trading_api_available: true,
     contract_id: `${venueId}:BTC`,
     economic_equivalence_id: "carry:BTC-usd-linear",
     asset: "BTC",
     market: "BTC-USD",
-    quote_asset: venueId === "aster" ? "USDT" : "USD",
+    quote_asset: venueId === "hyperliquid" || venueId === "aster" ? "USDT" : "USD",
     collateral_asset: venueId === "aster" ? "USDT" : "USDC",
     contract_type: "linear_perp",
     mark_price_e8: 10_000_000_000_000,
@@ -29,14 +32,55 @@ function snapshot(venueId) {
     depth_asks: [{ price_e8: 10_001_000_000_000, size_e8: 100_000_000 }],
     funding_rate_e12_per_interval: venueId === "aster" ? 400_000_000 : 100_000_000,
     funding_interval_ms: venueId === "aster" ? 28_800_000 : 3_600_000,
+    maker_fee_bps: 0,
+    taker_fee_bps: 1,
+    minimum_notional_micro_usdc: 1_000_000,
     quantity_step_e8: 1_000,
     price_tick_e8: 1_000_000,
-    initial_margin_bps: 500,
+    initial_margin_bps: 1_000,
     maintenance_margin_bps: 500,
+    liquidation_fee_bps: 0,
+    liquidation_model: "test_margin_liquidation",
     as_of_ms: NOW,
+    source_observed_at_ms: { market: NOW, funding: NOW, orderbook: NOW },
+    source_max_age_ms: { market: 60_000, funding: 60_000, orderbook: 60_000 },
+    stale_sources: [],
+    status: "ready",
     stale: false,
+    missing_fields: [],
+    quality_flags: [],
+    executable: false,
   };
 }
+
+test("rejects missing margin evidence through the shared shadow contract before account verification", async () => {
+  let verificationCalls = 0;
+  await assert.rejects(preflightCarryPair({
+    body: {
+      version: 1,
+      owner_commitment: "owner_commitment_0001",
+      work_order_commitment: "carry_pair_margin_gap_0001",
+      asset: "BTC",
+      long_venue_id: "hyperliquid",
+      short_venue_id: "lighter",
+      notional_usd: 100,
+      horizon_days: 30,
+      venue_access: { hyperliquid: access(), lighter: access() },
+    },
+    recipient: {},
+    state: {},
+    now: () => NOW,
+    fetchVenue: async ({ venue_id }) => [{
+      ...snapshot(venue_id),
+      ...(venue_id === "hyperliquid" ? { maintenance_margin_bps: null } : {}),
+    }],
+    verifyOrder: async () => {
+      verificationCalls += 1;
+      throw new Error("must_not_verify_account");
+    },
+  }), /carry_shadow_unavailable:hyperliquid:normalized_field_missing:hyperliquid:BTC:maintenance_margin_bps/);
+  assert.equal(verificationCalls, 0);
+});
 
 function access(ownerCommitment = "owner_commitment_0001") {
   return {
@@ -128,8 +172,8 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
     shortfall: item.opening_collateral_shortfall_micro_usdc,
     leverage: item.execution_leverage,
   })), [
-    { venue_id: "hyperliquid", required: 100_000_000, venue_minimum: 5_000_000, shortfall: 0, leverage: 1 },
-    { venue_id: "aster", required: 100_000_000, venue_minimum: 5_000_000, shortfall: 0, leverage: 1 },
+    { venue_id: "hyperliquid", required: 100_000_000, venue_minimum: 10_000_000, shortfall: 0, leverage: 1 },
+    { venue_id: "aster", required: 100_000_000, venue_minimum: 10_000_000, shortfall: 0, leverage: 1 },
   ]);
   assert.deepEqual(result.opening_capital_plan, {
     version: 1,

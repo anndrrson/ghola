@@ -11,6 +11,7 @@ import {
   venueAdapterCapability,
 } from "@ghola/execution-core";
 import { fetchPerpShadowVenue } from "./perp-shadow-adapters.js";
+import { verifyCarryShadowSnapshot } from "./perp-shadow-readiness.js";
 import { readCarryVenueQualification } from "./carry-qualification.js";
 import {
   carryAccountStateCommitment,
@@ -68,8 +69,8 @@ export async function preflightCarryPair({
     fetchVenue({ venue_id: longVenue, assets: [asset], now_ms: observedAt, max_age_ms: 60_000 }),
     fetchVenue({ venue_id: shortVenue, assets: [asset], now_ms: observedAt, max_age_ms: 60_000 }),
   ]);
-  const longSnapshot = selectSnapshot(longSnapshots, asset, longVenue);
-  const shortSnapshot = selectSnapshot(shortSnapshots, asset, shortVenue);
+  const longSnapshot = selectSnapshot(longSnapshots, asset, longVenue, observedAt);
+  const shortSnapshot = selectSnapshot(shortSnapshots, asset, shortVenue, observedAt);
   const contractDataSkewMs = Math.abs(longSnapshot.as_of_ms - shortSnapshot.as_of_ms);
   if (!Number.isSafeInteger(contractDataSkewMs)
     || (phase !== "monitoring" && contractDataSkewMs > maxContractDataSkewMs)) {
@@ -495,7 +496,7 @@ function compileOpeningCapitalPlan(evidence, accounts, notionalMicro, minMarginR
 }
 
 function stressAdjustedCapitalTarget(leg, notionalMicro, minMarginRunwayMs) {
-  const maintenance = microFromBps(notionalMicro, leg.snapshot.maintenance_margin_bps || 500);
+  const maintenance = microFromBps(notionalMicro, leg.snapshot.maintenance_margin_bps);
   const safetyBuffer = Math.max(10_000_000, microFromBps(notionalMicro, 1_000));
   const stressLossPerHour = microFromBps(notionalMicro, 100);
   const fundingDebitBps = leg.side === "buy"
@@ -507,7 +508,7 @@ function stressAdjustedCapitalTarget(leg, notionalMicro, minMarginRunwayMs) {
   const runwayReserve = Math.ceil(
     (stressLossPerHour + fundingDebitPerHour) * minMarginRunwayMs / HOUR_MS,
   );
-  const venueMinimum = microFromBps(notionalMicro, leg.snapshot.initial_margin_bps ?? 10_000);
+  const venueMinimum = microFromBps(notionalMicro, leg.snapshot.initial_margin_bps);
   const target = Math.min(notionalMicro, Math.max(venueMinimum, maintenance + safetyBuffer + runwayReserve));
   return Object.freeze({
     target_collateral_micro_usdc: target,
@@ -601,7 +602,7 @@ function accountReadiness(leg, notionalMicro) {
   const account = leg.account || {};
   const available = usdMicro(account.available_balance);
   const balance = usdMicro(account.margin_balance);
-  const venueMinimumMargin = microFromBps(notionalMicro, leg.snapshot.initial_margin_bps ?? 10_000);
+  const venueMinimumMargin = microFromBps(notionalMicro, leg.snapshot.initial_margin_bps);
   const requiredOpeningCollateral = notionalMicro;
   const openingCollateralShortfall = Math.max(0, requiredOpeningCollateral - available);
   const accountSnapshotReady = leg.venue_id !== "hyperliquid" || (
@@ -644,7 +645,7 @@ function accountReadiness(leg, notionalMicro) {
 
 function projectedMarginRunway(leg, readiness, notionalMicro, nowMs) {
   const account = leg.account || {};
-  const maintenance = usdMicro(account.maintenance_margin) + microFromBps(notionalMicro, leg.snapshot.maintenance_margin_bps || 500);
+  const maintenance = usdMicro(account.maintenance_margin) + microFromBps(notionalMicro, leg.snapshot.maintenance_margin_bps);
   const safetyBuffer = Math.max(10_000_000, microFromBps(notionalMicro, 1_000));
   const projectedHeadroom = Math.max(0, readiness.margin_balance_micro_usdc - maintenance - safetyBuffer);
   const fundingDebit = leg.side === "buy"
@@ -721,11 +722,16 @@ function orderInstruction(leg, notionalUsd) {
   };
 }
 
-function selectSnapshot(snapshots, asset, venueId) {
+function selectSnapshot(snapshots, asset, venueId, nowMs) {
   const snapshot = snapshots.find((item) => item.asset === asset);
-  const essential = ["mark_price_e8", "index_price_e8", "funding_rate_e12_per_interval", "funding_interval_ms"];
-  if (!snapshot || snapshot.stale || essential.some((field) => snapshot[field] === null)) {
-    throw carryError(`carry_shadow_unavailable:${venueId}`, 409);
+  const verification = verifyCarryShadowSnapshot(snapshot, {
+    venue_id: venueId,
+    asset,
+    now_ms: nowMs,
+    max_age_ms: 60_000,
+  });
+  if (!verification.ok) {
+    throw carryError(`carry_shadow_unavailable:${venueId}:${verification.failures[0]}`, 409);
   }
   return snapshot;
 }
