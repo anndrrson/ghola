@@ -10,7 +10,11 @@ export function createAsterStablecoinConversionQuoteReader({
     const checkedAtMs = positiveInteger(request?.checked_at_ms, "carry_conversion_checked_at_invalid");
     const observedAtMs = positiveInteger(now(), "carry_conversion_now_invalid");
     if (Math.abs(observedAtMs - checkedAtMs) > 5_000) fail("carry_conversion_checked_at_stale");
-    const normalizedPolicy = conversionPolicy(policy, checkedAtMs);
+    const normalizedPolicy = conversionPolicy(resolvePolicy(policy, {
+      checked_at_ms: checkedAtMs,
+      source_collateral_asset: request?.source_collateral_asset,
+      destination_collateral_asset: request?.destination_collateral_asset,
+    }), checkedAtMs);
     const sourceAsset = String(request?.source_collateral_asset || "");
     const destinationAsset = String(request?.destination_collateral_asset || "");
     if (!((sourceAsset === "USDC" && destinationAsset === "USDT")
@@ -72,6 +76,10 @@ export function createAsterStablecoinConversionQuoteReader({
       as_of_ms: bookTimeMs,
     });
   };
+}
+
+function resolvePolicy(value, context) {
+  return typeof value === "function" ? value(Object.freeze(context)) : value;
 }
 
 function conversionPolicy(value, checkedAtMs) {

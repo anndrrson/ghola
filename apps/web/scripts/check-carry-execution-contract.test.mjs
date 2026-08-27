@@ -144,6 +144,29 @@ test("rejects a Carry venue contract that omits no-submit reconciliation", () =>
   );
 });
 
+test("rejects a worker that silently disables default collateral-route observation", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replaceAll("createReadOnlyCarryRuntimePolicies", "disabledCarryRuntimePolicies"),
+    }),
+    /carry_runtime_route_policy_default_missing/,
+  );
+});
+
+test("rejects private-prime readiness that overstates no-submit evidence as live proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replace(
+        "live_paired_lifecycle_proven: false",
+        "live_paired_lifecycle_proven: true",
+      ),
+    }),
+    /carry_private_prime_live_proof_boundary_missing/,
+  );
+});
+
 test("rejects private-account policy that drifts from the Carry registry", () => {
   assert.throws(
     () => checkCarryExecutionContract({

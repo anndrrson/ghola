@@ -21,7 +21,7 @@ export function createCarryTransferVenueReaders({
         venueId: "hyperliquid",
         asset: "USDC",
         readAccountCapacity,
-        policy: withdrawalPolicies?.hyperliquid,
+        policy: withdrawalPolicySource(withdrawalPolicies, "hyperliquid"),
         now,
       }),
       read_deposit_quote: deposit("hyperliquid"),
@@ -38,7 +38,7 @@ export function createCarryTransferVenueReaders({
     aster: Object.freeze({
       read_withdrawal_quote: asterWithdrawalReader({
         readAccountCapacity,
-        policy: withdrawalPolicies?.aster,
+        policy: withdrawalPolicySource(withdrawalPolicies, "aster"),
         fetchImpl,
         now,
       }),
@@ -50,7 +50,11 @@ export function createCarryTransferVenueReaders({
 function policyWithdrawalReader({ venueId, asset, readAccountCapacity, policy, now }) {
   return async (request, probeContext) => {
     const observedAtMs = now();
-    const normalizedPolicy = withdrawalPolicy(policy, venueId, asset, observedAtMs);
+    const normalizedPolicy = withdrawalPolicy(resolvePolicy(policy, {
+      venue_id: venueId,
+      collateral_asset: asset,
+      checked_at_ms: observedAtMs,
+    }), venueId, asset, observedAtMs);
     const capacity = await accountCapacity(await readAccountCapacity(Object.freeze({
       ...request,
       venue_id: venueId,
@@ -71,7 +75,11 @@ function policyWithdrawalReader({ venueId, asset, readAccountCapacity, policy, n
 function asterWithdrawalReader({ readAccountCapacity, policy, fetchImpl, now }) {
   return async (request, probeContext) => {
     const observedAtMs = now();
-    const normalizedPolicy = withdrawalPolicy(policy, "aster", "USDT", observedAtMs);
+    const normalizedPolicy = withdrawalPolicy(resolvePolicy(policy, {
+      venue_id: "aster",
+      collateral_asset: "USDT",
+      checked_at_ms: observedAtMs,
+    }), "aster", "USDT", observedAtMs);
     const [capacityValue, response] = await Promise.all([
       readAccountCapacity(Object.freeze({
         ...request,
@@ -101,6 +109,14 @@ function asterWithdrawalReader({ readAccountCapacity, policy, fetchImpl, now }) 
       asOfMs: Math.min(capacity.as_of_ms, observedAtMs),
     });
   };
+}
+
+function withdrawalPolicySource(policies, venueId) {
+  return typeof policies === "function" ? policies : policies?.[venueId];
+}
+
+function resolvePolicy(value, context) {
+  return typeof value === "function" ? value(Object.freeze(context)) : value;
 }
 
 function withdrawalPolicy(value, venueId, asset, nowMs) {

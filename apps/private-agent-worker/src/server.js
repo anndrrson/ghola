@@ -31,7 +31,10 @@ import {
   observeCarryFundingUniverse,
   startCarryFundingObservationLoop,
 } from "./execution/carry-funding-persistence.js";
-import { observeCarryShadowQualification } from "./execution/carry-shadow-qualification.js";
+import {
+  observeCarryShadowQualification,
+  readCarryShadowQualification,
+} from "./execution/carry-shadow-qualification.js";
 import {
   readCarryShadowSnapshot,
   writeCarryShadowSnapshot,
@@ -47,6 +50,8 @@ import { createCarryTransferRouteProbe } from "./execution/carry-transfer-probe.
 import { createCarryTransferVenueReaders } from "./execution/carry-transfer-venue-readers.js";
 import { createAsterStablecoinConversionQuoteReader } from "./execution/carry-stablecoin-conversion.js";
 import { createCarryDepositQuoteReader } from "./execution/carry-deposit-quote.js";
+import { createReadOnlyCarryRuntimePolicies } from "./execution/carry-runtime-risk-policies.js";
+import { buildCarryPrivatePrimeReadiness } from "./execution/carry-private-prime-readiness.js";
 import {
   approveStoredCarryCollateralReview,
   compileStoredCarryCollateralReview,
@@ -2663,10 +2668,19 @@ export function createPrivateAgentWorkerServer(options = {}) {
     receiptSigner: options.krakenV2ReceiptSigner,
   });
   const fetchPerpShadowSet = options.fetchPerpShadowSet || fetchCorePerpShadowSet;
+  const carryRuntimeRiskPolicies = options.carryRuntimeRiskPolicies === false
+    ? null
+    : options.carryRuntimeRiskPolicies || createReadOnlyCarryRuntimePolicies();
+  const carryDepositPolicies = options.carryDepositPolicies
+    || carryRuntimeRiskPolicies?.deposit_policy_provider;
+  const carryWithdrawalPolicies = options.carryWithdrawalPolicies
+    || carryRuntimeRiskPolicies?.withdrawal_policy_provider;
+  const carryConversionPolicy = options.carryConversionPolicy
+    || carryRuntimeRiskPolicies?.conversion_policy_provider;
   const readCarryDepositQuote = options.readCarryDepositQuote
-    || (options.carryDepositPolicies
+    || (carryDepositPolicies
       ? createCarryDepositQuoteReader({
-          deposit_policies: options.carryDepositPolicies,
+          deposit_policies: carryDepositPolicies,
           fetchImpl: options.fetchImpl || fetch,
         })
       : undefined);
@@ -2686,7 +2700,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
               probe_context: probeContext,
               recipient,
             })),
-          withdrawal_policies: options.carryWithdrawalPolicies,
+          withdrawal_policies: carryWithdrawalPolicies,
           fetchImpl: options.fetchImpl || fetch,
         })
       : undefined);
@@ -2695,9 +2709,9 @@ export function createPrivateAgentWorkerServer(options = {}) {
       ? createCarryTransferRouteProbe({
           venue_route_readers: carryTransferRouteReaders,
           read_conversion_quote: options.readCarryConversionQuote
-            || (options.carryConversionPolicy
+            || (carryConversionPolicy
               ? createAsterStablecoinConversionQuoteReader({
-                  policy: options.carryConversionPolicy,
+                  policy: carryConversionPolicy,
                   fetchImpl: options.fetchImpl || fetch,
                 })
               : undefined),
@@ -2982,7 +2996,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
         }
         const nowMs = Date.now();
-        const [readiness, diagnostic] = await Promise.all([
+        const [readiness, diagnostic, shadowQualification] = await Promise.all([
           readCarryExecutionReadiness({
             state,
             owner_commitment: body.owner_commitment,
@@ -3000,8 +3014,23 @@ export function createPrivateAgentWorkerServer(options = {}) {
             horizon_days: body.horizon_days,
             now_ms: nowMs,
           }),
+          readCarryShadowQualification({ state, now_ms: nowMs }),
         ]);
-        return json(res, 200, { ...readiness, diagnostic, carry_supervision: carrySupervision });
+        const privatePrimeReadiness = buildCarryPrivatePrimeReadiness({
+          readiness,
+          diagnostic,
+          shadow_qualification: shadowQualification,
+          carry_supervision: carrySupervision,
+          route_observation_configured: typeof probeCarryTransferRoute === "function",
+          now_ms: nowMs,
+        });
+        return json(res, 200, {
+          ...readiness,
+          diagnostic,
+          shadow_qualification: shadowQualification,
+          private_prime_readiness: privatePrimeReadiness,
+          carry_supervision: carrySupervision,
+        });
       }
 
       if (req.method === "POST" && url.pathname.startsWith("/carry/positions")) {

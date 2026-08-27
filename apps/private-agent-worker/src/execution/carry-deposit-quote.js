@@ -15,7 +15,10 @@ export function createCarryDepositQuoteReader({
     const checkedAtMs = positiveInteger(request?.checked_at_ms, "carry_deposit_checked_at_invalid");
     const observedAtMs = positiveInteger(now(), "carry_deposit_now_invalid");
     if (Math.abs(observedAtMs - checkedAtMs) > 5_000) fail("carry_deposit_checked_at_stale");
-    const policy = depositPolicy(depositPolicies?.[venueId], venueId, checkedAtMs);
+    const policy = depositPolicy(resolvePolicy(depositPolicies, {
+      venue_id: venueId,
+      checked_at_ms: checkedAtMs,
+    }), venueId, checkedAtMs);
     const supportRead = venueId === "hyperliquid"
       ? hyperliquidSupport({ request, fetchImpl, checkedAtMs })
       : venueId === "lighter"
@@ -171,6 +174,10 @@ async function asterSupport({ request, fetchImpl, checkedAtMs }) {
     minimum_transfer_micro_usdc: decimalToMicroCeiling(row.minDeposit ?? 0),
     as_of_ms: checkedAtMs,
   });
+}
+
+function resolvePolicy(policies, context) {
+  return typeof policies === "function" ? policies(Object.freeze(context)) : policies?.[context.venue_id];
 }
 
 function depositPolicy(value, venueId, checkedAtMs) {

@@ -29,6 +29,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   transferVenueReaders: "apps/private-agent-worker/src/execution/carry-transfer-venue-readers.js",
   stablecoinConversion: "apps/private-agent-worker/src/execution/carry-stablecoin-conversion.js",
   depositQuote: "apps/private-agent-worker/src/execution/carry-deposit-quote.js",
+  runtimeRiskPolicies: "apps/private-agent-worker/src/execution/carry-runtime-risk-policies.js",
+  privatePrimeReadiness: "apps/private-agent-worker/src/execution/carry-private-prime-readiness.js",
   transferRoutes: "apps/private-agent-worker/src/execution/carry-transfer-routes.js",
   recordScan: "apps/private-agent-worker/src/execution/carry-record-scan.js",
   loopSupervisor: "apps/private-agent-worker/src/execution/carry-loop-supervisor.js",
@@ -101,6 +103,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   transferVenueReadersTest: "apps/private-agent-worker/test/carry-transfer-venue-readers.test.js",
   stablecoinConversionTest: "apps/private-agent-worker/test/carry-stablecoin-conversion.test.js",
   depositQuoteTest: "apps/private-agent-worker/test/carry-deposit-quote.test.js",
+  runtimeRiskPoliciesTest: "apps/private-agent-worker/test/carry-runtime-risk-policies.test.js",
+  privatePrimeReadinessTest: "apps/private-agent-worker/test/carry-private-prime-readiness.test.js",
   transferRoutesTest: "apps/private-agent-worker/test/carry-transfer-routes.test.js",
   recordScanTest: "apps/private-agent-worker/test/carry-record-scan.test.js",
   loopSupervisorTest: "apps/private-agent-worker/test/carry-loop-supervisor.test.js",
@@ -823,6 +827,15 @@ export function checkCarryExecutionContract(sources) {
   requireText("server", '"/carry/readiness"', "carry_readiness_resume_worker_route_missing");
   requireText("server", "readCarryExecutionReadiness", "carry_readiness_resume_worker_missing");
   requireText("server", "readCarryExecutionDiagnostic", "carry_diagnostic_resume_worker_missing");
+  requireText("server", "createReadOnlyCarryRuntimePolicies", "carry_runtime_route_policy_default_missing");
+  requireText("server", "route_observation_configured: typeof probeCarryTransferRoute", "carry_runtime_route_observation_status_missing");
+  requireText("runtimeRiskPolicies", "owner_approval_required: true", "carry_runtime_route_owner_gate_missing");
+  requireText("runtimeRiskPolicies", "fund_movement_authorized: false", "carry_runtime_route_movement_gate_missing");
+  requireText("runtimeRiskPolicies", "transaction_broadcast: false", "carry_runtime_route_broadcast_gate_missing");
+  requireText("runtimeRiskPoliciesTest", "unsupported runtime policy bindings", "carry_runtime_route_fail_closed_test_missing");
+  requireText("privatePrimeReadiness", 'proof_level: "pre_broadcast_readiness"', "carry_private_prime_proof_level_missing");
+  requireText("privatePrimeReadiness", "live_paired_lifecycle_proven: false", "carry_private_prime_live_proof_boundary_missing");
+  requireText("privatePrimeReadinessTest", "without overstating live proof", "carry_private_prime_proof_boundary_test_missing");
   requireText("webRoute", '"x-ghola-carry-qualification-confirmed": "true"', "web_confirmation_header_missing");
   requireText("webClient", "qualification_pilot_confirmed", "web_confirmation_input_missing");
   requireText("webClient", "preflightCarryExecutionMatrix", "carry_three_venue_no_submit_client_missing");
