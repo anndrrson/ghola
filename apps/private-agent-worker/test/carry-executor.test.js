@@ -207,6 +207,108 @@ test("restart audit freezes an in-flight opening without resubmission", async (t
   assert.deepEqual(frozen.position.next_actions, ["reconcile_only"]);
 });
 
+test("restart releases a linked entry only when its saga proves no submit occurred", async (t) => {
+  const fixture = await setup(t, "restart-entry-before-submit");
+  const putRecord = fixture.state.putCarryPositionRecord.bind(fixture.state);
+  let crashed = false;
+  fixture.state.putCarryPositionRecord = async (record, options) => {
+    const stored = await putRecord(record, options);
+    if (!crashed && stored.ok && record.entry_saga_id) {
+      crashed = true;
+      throw new Error("simulated worker crash after entry saga link");
+    }
+    return stored;
+  };
+  await assert.rejects(executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async () => { throw new Error("submit must not start"); },
+  }), /simulated worker crash/);
+  fixture.state.putCarryPositionRecord = putRecord;
+
+  const linked = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  assert.equal(linked.position.status, "draft");
+  assert.ok(linked.entry_saga_id);
+  const linkedSaga = await fixture.state.getMultiLegSaga(linked.entry_saga_id);
+  assert.equal(linkedSaga.status, "preflighting");
+
+  fixture.state.putCarryPositionRecord = async (record, options) => record.restart_recovery
+    ? { ok: false, error: "carry_record_version_conflict", record: await fixture.state.getCarryPositionRecord(fixture.position_id) }
+    : putRecord(record, options);
+  const conflictedAudit = await auditCarryPositionsAfterRestart({ state: fixture.state, now_ms: fixture.now() });
+  assert.equal(conflictedAudit.ok, false);
+  assert.equal((await fixture.state.getMultiLegSaga(linked.entry_saga_id)).status, "failed_no_submit");
+  fixture.state.putCarryPositionRecord = putRecord;
+
+  const audit = await auditCarryPositionsAfterRestart({ state: fixture.state, now_ms: fixture.now() });
+  assert.equal(audit.ok, true);
+  assert.equal(audit.recovered, 1, JSON.stringify(audit));
+  assert.equal((await fixture.state.getMultiLegSaga(linked.entry_saga_id)).status, "failed_no_submit");
+  const released = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  assert.equal(released.entry_saga_id, null);
+  assert.equal(released.restart_recovery.transaction_broadcast, false);
+  assert.equal(released.restart_recovery.retry_permitted, true);
+
+  let submissions = 0;
+  const retried = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => { submissions += 1; return filledReceipt(args); },
+  });
+  assert.equal(retried.ok, true);
+  assert.equal(submissions, 2);
+});
+
+test("restart safely retries an exit linked before any submission", async (t) => {
+  const fixture = await setup(t, "restart-exit-before-submit");
+  await openActive(fixture);
+  const active = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  await advanceStoredCarryPosition({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.position_id,
+    event: { version: 1, event_id: "carry:exit:request:restart-pre-submit", sequence: active.position.last_event_sequence + 1, type: "manual_exit_requested" },
+    now_ms: fixture.now(),
+  });
+  const putRecord = fixture.state.putCarryPositionRecord.bind(fixture.state);
+  let crashed = false;
+  fixture.state.putCarryPositionRecord = async (record, options) => {
+    const stored = await putRecord(record, options);
+    if (!crashed && stored.ok && record.exit_saga_id) {
+      crashed = true;
+      throw new Error("simulated worker crash after exit saga link");
+    }
+    return stored;
+  };
+  await assert.rejects(executeStoredCarryExit({
+    ...fixture,
+    executeOrder: async () => { throw new Error("submit must not start"); },
+  }), /simulated worker crash/);
+  fixture.state.putCarryPositionRecord = putRecord;
+
+  const linked = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  const abandonedSagaId = linked.exit_saga_id;
+  assert.equal(linked.position.status, "exiting");
+  const audit = await auditCarryPositionsAfterRestart({ state: fixture.state, now_ms: fixture.now() });
+  assert.equal(audit.ok, true);
+  assert.equal(audit.recovered, 1);
+  assert.equal((await fixture.state.getMultiLegSaga(abandonedSagaId)).status, "failed_no_submit");
+  assert.equal((await fixture.state.getCarryPositionRecord(fixture.position_id)).exit_saga_id, null);
+
+  let submissions = 0;
+  const closed = await executeStoredCarryExit({
+    ...fixture,
+    executeOrder: async (args) => {
+      submissions += 1;
+      const receipt = filledReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(closed.ok, true);
+  assert.equal(submissions, 2);
+  assert.equal(closed.record.position.status, "reconciled");
+  assert.equal(closed.record.final_reconciliation_evidence.open_order_count, 0);
+});
+
 test("terminal entry recovery synchronizes flat parent after restart without resubmission", async (t) => {
   const fixture = await setup(t, "restart-recovered-flat");
   let submissions = 0;

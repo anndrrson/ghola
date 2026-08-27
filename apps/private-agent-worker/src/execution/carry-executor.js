@@ -540,12 +540,47 @@ export async function runCarryExecutionTick({
 }
 
 export async function auditCarryPositionsAfterRestart({ state, now_ms: nowMs = Date.now() }) {
-  const records = await state.listCarryPositionRecords({ status: "opening", limit: 500 });
+  const [draftRecords, openingRecords, exitingRecords] = await Promise.all([
+    state.listCarryPositionRecords({ status: "draft", limit: 500 }),
+    state.listCarryPositionRecords({ status: "opening", limit: 500 }),
+    state.listCarryPositionRecords({ status: "exiting", limit: 500 }),
+  ]);
+  const records = [...draftRecords, ...openingRecords, ...exitingRecords];
   const cutoff = new Date(nowMs).getTime();
   const results = [];
   for (const record of records) {
     const updatedAt = new Date(record.updated_at || record.created_at || 0).getTime();
     if (Number.isFinite(updatedAt) && updatedAt > cutoff) continue;
+    const phase = ["draft", "opening"].includes(record.position.status) && record.entry_saga_id
+      ? "entry"
+      : record.position.status === "exiting" && record.exit_saga_id ? "exit" : null;
+    const sagaId = phase === "entry" ? record.entry_saga_id : phase === "exit" ? record.exit_saga_id : null;
+    const saga = sagaId ? await state.getMultiLegSaga(sagaId) : null;
+    if (phase && provablyPreSubmitCarrySaga(saga, record, phase)) {
+      let cancelled = saga;
+      if (saga.terminal !== true) {
+        try {
+          cancelled = await sagaEvent(state, sagaId, "cancel_before_submit", {}, nowMs);
+        } catch (error) {
+          results.push(denied(errorCode(error, "carry_restart_pre_submit_cancel_failed")));
+          continue;
+        }
+      }
+      if (phase === "entry" && record.position.status === "opening") {
+        const reconciled = await advanceStoredCarryPosition({
+          state,
+          owner_commitment: record.owner_commitment,
+          position_id: record.position.position_id,
+          event: carryEvent(record.position, "entry_failed_no_fill"),
+          now_ms: nowMs,
+        });
+        results.push({ ...reconciled, restart_action: "entry_cancelled_before_submit", saga: cancelled });
+      } else {
+        results.push(await detachPreSubmitCarrySaga({ state, record, phase, saga: cancelled, nowMs }));
+      }
+      continue;
+    }
+    if (record.position.status !== "opening") continue;
     results.push(await advanceStoredCarryPosition({
       state,
       owner_commitment: record.owner_commitment,
@@ -554,7 +589,54 @@ export async function auditCarryPositionsAfterRestart({ state, now_ms: nowMs = D
       now_ms: nowMs,
     }));
   }
-  return { ok: results.every((result) => result.ok), checked: records.length, frozen: results.filter((result) => result.ok).length, results };
+  return {
+    ok: results.every((result) => result.ok),
+    checked: records.length,
+    recovered: results.filter((result) => result.restart_action).length,
+    frozen: results.filter((result) => result.ok && !result.restart_action).length,
+    results,
+  };
+}
+
+function provablyPreSubmitCarrySaga(saga, record, phase) {
+  const prefix = phase === "entry" ? "saga:carry:" : "saga:carry:exit:";
+  const recoveryMode = phase === "entry" ? "unwind" : "complete_reduce_only";
+  const cancellable = saga?.terminal !== true && ["preflighting", "ready"].includes(saga?.status);
+  const alreadyCancelled = saga?.terminal === true
+    && saga?.status === "failed_no_submit"
+    && saga?.terminal_reason === "cancelled_before_submit";
+  return Boolean(saga)
+    && (cancellable || alreadyCancelled)
+    && saga.saga_id.startsWith(prefix)
+    && saga.recovery_mode === recoveryMode
+    && saga.unhedged_deadline_ms === null
+    && saga.execution_context?.carry_position_id === record.position.position_id
+    && saga.execution_context?.owner_commitment === record.owner_commitment
+    && Array.isArray(saga.legs)
+    && saga.legs.length === 2
+    && saga.legs.every((leg) => leg.submission_status === "pending"
+      && leg.provider_ref_commitment === null
+      && leg.filled_micro_usdc === 0);
+}
+
+async function detachPreSubmitCarrySaga({ state, record, phase, saga, nowMs }) {
+  const field = phase === "entry" ? "entry_saga_id" : "exit_saga_id";
+  const stored = await state.putCarryPositionRecord({
+    ...record,
+    [field]: null,
+    restart_recovery: {
+      version: 1,
+      phase,
+      status: "cancelled_before_submit",
+      saga_id: saga.saga_id,
+      transaction_broadcast: false,
+      retry_permitted: true,
+      checked_at_ms: nowMs,
+    },
+  }, { expected_version: record.record_version });
+  return stored.ok
+    ? { ok: true, restart_action: `${phase}_cancelled_before_submit`, saga, record: publicCarryRecord(stored.record) }
+    : { ok: false, error: stored.error || "carry_restart_record_conflict", saga };
 }
 
 async function synchronizeFrozenCarryRecovery({ state, record, recipient, verifyOrder, readFundingSettlements, preflight, env, now }) {

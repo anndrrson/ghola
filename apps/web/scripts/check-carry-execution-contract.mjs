@@ -12,6 +12,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   coreIndex: "packages/execution-core/index.js",
   coreCarry: "packages/execution-core/carry.js",
   coreCarryTest: "packages/execution-core/test/carry.test.js",
+  coreMultiLeg: "packages/execution-core/multi-leg.js",
+  coreMultiLegTest: "packages/execution-core/test/multi-leg.test.js",
   registry: "packages/execution-core/venues.js",
   registryTest: "packages/execution-core/test/venues.test.js",
   server: "apps/private-agent-worker/src/server.js",
@@ -294,6 +296,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifierTest", "rejects contract limits that differ from the signed risk mandate", "carry_evidence_signed_basis_test_missing");
   requireText("executor", "carry_qualification_pilot_confirmation_required", "pilot_confirmation_gate_missing");
   requireText("executor", "submission_ambiguous", "carry_ambiguity_freeze_missing");
+  requireText("coreMultiLeg", "cancel_before_submit", "carry_pre_submit_cancel_event_missing");
+  requireText("coreMultiLegTest", "only while submission is provably absent", "carry_pre_submit_cancel_test_missing");
+  requireText("executor", "provablyPreSubmitCarrySaga", "carry_restart_pre_submit_proof_missing");
+  requireText("executor", 'transaction_broadcast: false', "carry_restart_zero_broadcast_evidence_missing");
   requireText("executor", "carry_exit_not_flat_or_open_orders_nonzero", "carry_final_flat_gate_missing");
   requireText("preflight", 'PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED === "true"', "pilot_runtime_preflight_gate_missing");
   requireText("phalaConfig", "expectedCarryWorkerConfig", "carry_runtime_config_missing");
@@ -439,6 +445,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("lifecycleTest", "const secondMonitor = await runCarryMonitoringTick", "carry_automatic_exit_monitor_test_missing");
   requireText("lifecycleTest", "const restartedState = createWorkerState(fixture.state_dir)", "carry_automatic_exit_restart_test_missing");
   requireText("lifecycleTest", "calls.every((call) => call.instruction.order.reduce_only === true)", "carry_automatic_exit_reduce_only_test_missing");
+  requireText("lifecycleTest", "restart releases a linked entry only when its saga proves no submit occurred", "carry_restart_entry_pre_submit_test_missing");
+  requireText("lifecycleTest", "restart safely retries an exit linked before any submission", "carry_restart_exit_pre_submit_test_missing");
   requireText("evidenceVerifier", "ghola_cross_venue_carry_mainnet_lifecycle_proof", "carry_release_evidence_kind_missing");
   requireText("evidenceVerifier", "exact_exit_quantity_required", "carry_release_exact_exit_gate_missing");
   requireText("evidenceVerifier", "final_open_orders_not_zero", "carry_release_zero_orders_gate_missing");

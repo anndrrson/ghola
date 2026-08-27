@@ -130,6 +130,27 @@ test("preflight failure is terminal and never creates an unwind or submit", () =
   assert.deepEqual(saga.next_actions, []);
 });
 
+test("cancels a persisted saga only while submission is provably absent", () => {
+  const preflighting = advance(create(), 1, "cancel_before_submit");
+  assert.equal(preflighting.status, "failed_no_submit");
+  assert.equal(preflighting.terminal_reason, "cancelled_before_submit");
+  assert.equal(preflighting.legs.every((leg) => leg.submission_status === "pending"), true);
+
+  const ready = advance(readySaga(), 3, "cancel_before_submit");
+  assert.equal(ready.status, "failed_no_submit");
+  assert.equal(ready.terminal, true);
+
+  let submitted = readySaga();
+  submitted = advance(submitted, 3, "submission_started");
+  const refused = advanceMultiLegSaga({
+    saga: submitted,
+    event: event(4, "cancel_before_submit"),
+    now_ms: NOW + 400,
+  });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error, "event_not_allowed_in_state");
+});
+
 test("partial fill plus peer failure creates deterministic inverse compensation", () => {
   let saga = readySaga();
   saga = advance(saga, 3, "submission_started");

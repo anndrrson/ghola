@@ -255,6 +255,16 @@ test("rejects release without an unattended monitor-to-flat lifecycle proof", ()
   );
 });
 
+test("rejects restart recovery that cannot distinguish pre-submit from ambiguity", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreMultiLeg: sources.coreMultiLeg.replaceAll("cancel_before_submit", "retry_after_restart"),
+    }),
+    /carry_pre_submit_cancel_event_missing/,
+  );
+});
+
 test("rejects monitoring that cannot compile signed no-submit migration candidates", () => {
   assert.throws(
     () => checkCarryExecutionContract({

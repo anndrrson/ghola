@@ -5,7 +5,7 @@ import { SUPPORTED_EXECUTION_VENUES } from "./venues.js";
 const VENUES = new Set(SUPPORTED_EXECUTION_VENUES);
 const STRATEGIES = new Set(["spot_perp_hedge", "delta_neutral_carry", "exposure_rebalance", "hedged_spread_arbitrage"]);
 const EVENT_TYPES = new Set([
-  "preflight_passed", "preflight_failed", "submission_started", "leg_acknowledged",
+  "preflight_passed", "preflight_failed", "cancel_before_submit", "submission_started", "leg_acknowledged",
   "leg_fill", "leg_failed", "leg_reconciled", "reconciliation_failed",
   "cancel_confirmed", "unwind_fill", "unwind_failed", "completion_fill", "completion_failed", "timeout",
 ]);
@@ -97,6 +97,10 @@ function applyEvent(saga, event, nowMs) {
     leg.preflight_status = "failed";
     leg.failure_code = failureCode(event.failure_code);
     terminal(saga, "failed_no_submit", "preflight_failed");
+    return;
+  }
+  if (event.type === "cancel_before_submit") {
+    terminal(saga, "failed_no_submit", "cancelled_before_submit");
     return;
   }
   if (event.type === "submission_started") {
@@ -367,8 +371,8 @@ function mutableSaga(value) {
 }
 
 function allowedEvents(status) {
-  if (status === "preflighting") return new Set(["preflight_passed", "preflight_failed"]);
-  if (status === "ready") return new Set(["submission_started"]);
+  if (status === "preflighting") return new Set(["preflight_passed", "preflight_failed", "cancel_before_submit"]);
+  if (status === "ready") return new Set(["submission_started", "cancel_before_submit"]);
   if (status === "submitting" || status === "partially_hedged") {
     return new Set(["leg_acknowledged", "leg_fill", "leg_failed", "cancel_confirmed", "timeout"]);
   }
