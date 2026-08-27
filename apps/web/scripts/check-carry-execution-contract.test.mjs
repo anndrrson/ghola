@@ -395,6 +395,16 @@ test("rejects dYdX economics that lose their live chain provenance", () => {
   );
 });
 
+test("rejects dYdX economics without independent chain-source consensus", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadow: sources.shadow.replaceAll("fees_chain_source_consensus", "fees_chain_single_source"),
+    }),
+    /dydx_chain_fee_consensus_missing/,
+  );
+});
+
 test("rejects release without a joined three-venue no-submit matrix", () => {
   assert.throws(
     () => checkCarryExecutionContract({

@@ -416,10 +416,14 @@ test("normalizes dYdX v4 markets with conservative live chain economics", () => 
       stepSize: "0.0001",
     } } },
     books: { "BTC-USD": { bids: [{ price: "59999", size: "0.5" }], asks: [{ price: "60003", size: "0.25" }] } },
-    fee_params: { params: { tiers: [
-      { maker_fee_ppm: 100, taker_fee_ppm: 500 },
-      { maker_fee_ppm: -70, taker_fee_ppm: 250 },
-    ] } },
+    fee_params: {
+      params: { tiers: [
+        { maker_fee_ppm: 100, taker_fee_ppm: 500 },
+        { maker_fee_ppm: -70, taker_fee_ppm: 250 },
+      ] },
+      ghola_source_consensus: true,
+      ghola_source_count: 2,
+    },
     server_time: { iso: new Date(NOW).toISOString() },
     now_ms: NOW,
   });
@@ -434,6 +438,7 @@ test("normalizes dYdX v4 markets with conservative live chain economics", () => 
   assert.equal(snapshot.liquidation_fee_bps, 100);
   assert.equal(snapshot.status, "ready");
   assert.ok(snapshot.quality_flags.includes("fees_chain_parameter_ceiling"));
+  assert.ok(snapshot.quality_flags.includes("fees_chain_source_consensus"));
   assert.ok(snapshot.quality_flags.includes("minimum_notional_market_step"));
   assert.ok(snapshot.quality_flags.includes("liquidation_fee_protocol_default"));
 });
@@ -453,6 +458,66 @@ test("keeps dYdX degraded when its live chain fee parameters are unavailable", (
     books: { "BTC-USD": { bids: [{ price: "59999", size: "0.5" }], asks: [{ price: "60003", size: "0.25" }] } },
     server_time: { iso: new Date(NOW).toISOString() },
     now_ms: NOW,
+  });
+  assert.equal(snapshot.status, "degraded");
+  assert.deepEqual(snapshot.missing_fields, ["maker_fee_bps", "taker_fee_bps"]);
+  assert.ok(snapshot.quality_flags.includes("fees_chain_params_unavailable"));
+});
+
+test("requires matching dYdX fee parameters from two independent chain nodes", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    const value = String(url);
+    calls.push(value);
+    if (value.includes("perpetualMarkets")) return response({ markets: { "BTC-USD": {
+      ticker: "BTC-USD",
+      status: "ACTIVE",
+      oraclePrice: "60001",
+      nextFundingRate: "0.0001",
+      initialMarginFraction: "0.02",
+      maintenanceMarginFraction: "0.012",
+      tickSize: "1",
+      stepSize: "0.0001",
+    } } });
+    if (value.endsWith("/v4/time")) return response({ iso: new Date(NOW).toISOString() });
+    if (value.includes("orderbooks")) return response({ bids: [{ price: "59999", size: "1" }], asks: [{ price: "60003", size: "1" }] });
+    if (value.includes("kingnodes")) return { ok: false, status: 503, json: async () => ({}) };
+    return response({ params: { tiers: [{ maker_fee_ppm: 100, taker_fee_ppm: 500 }] } });
+  };
+  const [snapshot] = await fetchPerpShadowVenue({
+    venue_id: "dydx",
+    fetchImpl,
+    now_ms: NOW,
+    assets: ["BTC"],
+  });
+  assert.equal(snapshot.status, "ready");
+  assert.ok(snapshot.quality_flags.includes("fees_chain_source_consensus"));
+  assert.equal(calls.filter((url) => url.includes("perpetual_fee_params")).length, 3);
+});
+
+test("degrades dYdX instead of choosing between conflicting chain fee sources", async () => {
+  const fetchImpl = async (url) => {
+    const value = String(url);
+    if (value.includes("perpetualMarkets")) return response({ markets: { "BTC-USD": {
+      ticker: "BTC-USD",
+      status: "ACTIVE",
+      oraclePrice: "60001",
+      nextFundingRate: "0.0001",
+      initialMarginFraction: "0.02",
+      maintenanceMarginFraction: "0.012",
+      tickSize: "1",
+      stepSize: "0.0001",
+    } } });
+    if (value.endsWith("/v4/time")) return response({ iso: new Date(NOW).toISOString() });
+    if (value.includes("orderbooks")) return response({ bids: [{ price: "59999", size: "1" }], asks: [{ price: "60003", size: "1" }] });
+    const taker = value.includes("polkachu") ? 500 : value.includes("publicnode") ? 350 : 200;
+    return response({ params: { tiers: [{ maker_fee_ppm: 100, taker_fee_ppm: taker }] } });
+  };
+  const [snapshot] = await fetchPerpShadowVenue({
+    venue_id: "dydx",
+    fetchImpl,
+    now_ms: NOW,
+    assets: ["BTC"],
   });
   assert.equal(snapshot.status, "degraded");
   assert.deepEqual(snapshot.missing_fields, ["maker_fee_bps", "taker_fee_bps"]);

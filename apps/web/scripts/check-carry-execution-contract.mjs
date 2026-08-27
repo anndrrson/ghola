@@ -216,9 +216,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadow", "fees_venue_base_schedule", "aster_base_fee_provenance_missing");
   requireText("shadowTest", "keeps unsupported Aster quote fee schedules degraded", "aster_unknown_fee_schedule_test_missing");
   requireText("shadow", "fees_chain_parameter_ceiling", "dydx_chain_fee_provenance_missing");
+  requireText("shadow", "fees_chain_source_consensus", "dydx_chain_fee_consensus_missing");
   requireText("shadow", "minimum_notional_market_step", "dydx_minimum_notional_provenance_missing");
   requireText("shadow", "liquidation_fee_protocol_default", "dydx_liquidation_fee_provenance_missing");
   requireText("shadowTest", "keeps dYdX degraded when its live chain fee parameters are unavailable", "dydx_missing_chain_fee_gate_test_missing");
+  requireText("shadowTest", "degrades dYdX instead of choosing between conflicting chain fee sources", "dydx_chain_fee_conflict_gate_test_missing");
   requireText("workerPackage", '"verify:carry-shadow"', "carry_shadow_verifier_script_missing");
   requireText("shadowVerifierCli", "verifyCarryShadowSet", "carry_shadow_verifier_cli_runtime_missing");
   requireText("shadowVerifierCli", "verifyCarryShadowSoak(sampleResults", "carry_shadow_soak_cli_missing");

@@ -16,7 +16,11 @@ const HYPERLIQUID_QUOTE_ASSETS = Object.freeze({
 const HYPERLIQUID_BASE_MAKER_FEE_BPS_CEILING = 2;
 const HYPERLIQUID_BASE_TAKER_FEE_BPS_CEILING = 5;
 const HYPERLIQUID_MINIMUM_NOTIONAL_MICRO_USDC = 10_000_000;
-const DYDX_DEFAULT_CHAIN_REST = "https://dydx-dao-api.polkachu.com";
+const DYDX_DEFAULT_CHAIN_RESTS = Object.freeze([
+  "https://dydx-dao-api.polkachu.com",
+  "https://dydx-rest.publicnode.com",
+  "https://dydx-rest.kingnodes.com:443",
+]);
 const DYDX_LIQUIDATION_FEE_BPS = 100;
 
 export const PERP_SHADOW_ADAPTERS = Object.freeze(Object.fromEntries(
@@ -183,16 +187,11 @@ export async function fetchPerpShadowVenue({
     return selectAssets(parseEdgeXShadow({ funding, contracts: selectedContracts, now_ms: nowMs, max_age_ms: maxAgeMs }), assets);
   }
   if (adapterId === "dydx_shadow_v1") {
-    const chainRest = String(marketMetadata.dydx_chain_rest || DYDX_DEFAULT_CHAIN_REST).replace(/\/+$/, "");
+    const chainRests = dydxChainRestUrls(marketMetadata);
     const [markets, serverTime, feeParams] = await Promise.all([
       jsonRequest(fetchImpl, "https://indexer.dydx.trade/v4/perpetualMarkets", {}, timeoutMs),
       jsonRequest(fetchImpl, "https://indexer.dydx.trade/v4/time", {}, timeoutMs),
-      optionalJsonRequest(
-        fetchImpl,
-        `${chainRest}/dydxprotocol/v4/feetiers/perpetual_fee_params`,
-        {},
-        timeoutMs,
-      ),
+      fetchDydxConsensusFeeParams(fetchImpl, chainRests, timeoutMs),
     ]);
     const allowed = normalizedAssetSet(assets);
     const selectedMarkets = Object.values(markets?.markets || {})
@@ -515,7 +514,11 @@ export function parseDydxShadow({
         "orderbook_mid_used_as_mark_proxy",
         ...(publicFees.maker === null
           ? ["fees_chain_params_unavailable"]
-          : ["fees_chain_parameter_ceiling", "fee_precision_rounded_up_to_bps"]),
+          : [
+            "fees_chain_parameter_ceiling",
+            "fee_precision_rounded_up_to_bps",
+            ...(feeParams?.ghola_source_consensus === true ? ["fees_chain_source_consensus"] : []),
+          ]),
         "minimum_notional_market_step",
         "liquidation_fee_protocol_default",
       ],
@@ -641,6 +644,34 @@ async function optionalJsonRequest(fetchImpl, url, options, timeoutMs) {
   }
 }
 
+async function fetchDydxConsensusFeeParams(fetchImpl, chainRests, timeoutMs) {
+  const responses = await Promise.all(chainRests.map((baseUrl) => optionalJsonRequest(
+    fetchImpl,
+    `${baseUrl}/dydxprotocol/v4/feetiers/perpetual_fee_params`,
+    {},
+    timeoutMs,
+  )));
+  const groups = new Map();
+  for (const response of responses) {
+    const fees = dydxBaseFeeBps(response);
+    if (fees.maker === null || fees.taker === null) continue;
+    const key = `${fees.maker}:${fees.taker}`;
+    const group = groups.get(key) || { fees, count: 0 };
+    group.count += 1;
+    groups.set(key, group);
+  }
+  const consensus = [...groups.values()].sort((left, right) => right.count - left.count)[0];
+  if (!consensus || consensus.count < 2) return null;
+  return {
+    params: { tiers: [{
+      maker_fee_ppm: consensus.fees.maker * 100,
+      taker_fee_ppm: consensus.fees.taker * 100,
+    }] },
+    ghola_source_consensus: true,
+    ghola_source_count: consensus.count,
+  };
+}
+
 function withTimeout(promise, timeoutMs) {
   let timer;
   return Promise.race([
@@ -723,6 +754,16 @@ function dydxBaseFeeBps(feeParams) {
     maker: ppmToBpsCeiling(Math.max(...makerPpm)),
     taker: ppmToBpsCeiling(Math.max(...takerPpm)),
   };
+}
+
+function dydxChainRestUrls(marketMetadata) {
+  const configured = Array.isArray(marketMetadata?.dydx_chain_rests)
+    ? marketMetadata.dydx_chain_rests
+    : DYDX_DEFAULT_CHAIN_RESTS;
+  return Object.freeze([...new Set(configured
+    .map((value) => String(value || "").trim().replace(/\/+$/, ""))
+    .filter((value) => /^https:\/\/[a-z0-9.-]+(?::\d+)?(?:\/[^?#]*)?$/i.test(value)))]
+    .slice(0, 5));
 }
 
 function signedInteger(value) {
