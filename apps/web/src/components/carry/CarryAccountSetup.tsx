@@ -506,6 +506,18 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     }
   }
 
+  async function enableGholaTouchId() {
+    setWorking(true);
+    setError(null);
+    try {
+      await perpsTurnkey.addPasskey();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Touch ID enrollment failed.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
   const enoughConnected = [hyperliquid, aster, lighter].filter((state) => state === "connected").length >= 2;
   return (
     <main className="min-h-screen bg-[#06080c] px-4 pb-20 pt-24 text-[#eef1f8] sm:px-6">
@@ -523,6 +535,17 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
 
         {auth.authenticated && (
           <div className="mt-8 space-y-3">
+            {perpsTurnkey.authenticated && !perpsTurnkey.hasPasskey && (
+              <div className="flex items-center justify-between gap-4 rounded-xl border border-[#315277] bg-[#0b1624] p-4">
+                <div>
+                  <p className="font-semibold">Make future sign-ins one click</p>
+                  <p className="mt-1 text-xs leading-5 text-[#8f9aae]">Add Touch ID for this Ghola address. Turnkey Dashboard passkeys cannot cross domains.</p>
+                </div>
+                <button type="button" disabled={working} onClick={() => void enableGholaTouchId()} className="shrink-0 rounded-md bg-[#4aaef8] px-3 py-2 text-sm font-semibold text-[#06111d] disabled:opacity-50">
+                  {working ? "Enabling…" : "Enable Touch ID"}
+                </button>
+              </div>
+            )}
             <VenueCard name="Hyperliquid" state={hyperliquid} onboarding={HYPERLIQUID_ONBOARDING}>
               {hyperliquid !== "connected" && (
                 <Link href={`/account?setup=hyperliquid&return_to=${encodeURIComponent(setupReturnTo)}`} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff]">

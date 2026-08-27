@@ -90,8 +90,10 @@ interface PerpsTurnkeyContextValue {
   authenticated: boolean;
   loading: boolean;
   organizationId: string | null;
+  hasPasskey: boolean;
   login: () => Promise<void>;
   logout: () => Promise<void>;
+  addPasskey: () => Promise<void>;
   ensureWalletPair: (includeTombstone?: boolean) => Promise<PerpsWalletPair>;
   replaceWalletPair: () => Promise<PerpsWalletPair>;
   installDelegation: (publicKey: string) => Promise<InstallDelegationResult>;
@@ -127,8 +129,10 @@ const PerpsTurnkeyContext = createContext<PerpsTurnkeyContextValue>({
   authenticated: false,
   loading: false,
   organizationId: null,
+  hasPasskey: false,
   login: unavailable,
   logout: async () => {},
+  addPasskey: unavailable,
   ensureWalletPair: unavailable,
   replaceWalletPair: unavailable,
   installDelegation: unavailable,
@@ -219,8 +223,10 @@ const CONTEXT_DEFAULTS = {
   authenticated: false,
   loading: false,
   organizationId: null,
+  hasPasskey: false,
   login: unavailable,
   logout: async () => {},
+  addPasskey: unavailable,
   ensureWalletPair: unavailable,
   replaceWalletPair: unavailable,
   installDelegation: unavailable,
@@ -365,6 +371,7 @@ function PerpsTurnkeySession({
 
   const organizationId = boundary.ready ? turnkeyOrganizationId : null;
   const authenticated = boundary.ready;
+  const hasPasskey = (turnkey.user?.authenticators.length || 0) > 0;
   const configured = isPerpsTurnkeyClientConfigured(turnkey.clientState);
   const loading =
     isPerpsTurnkeyClientLoading(turnkey.clientState) ||
@@ -420,6 +427,18 @@ function PerpsTurnkeySession({
     clearFreshAuthentication();
     await turnkey.logout();
   }, [clearFreshAuthentication, turnkey]);
+
+  const addPasskey = useCallback(async () => {
+    if (!organizationId || !authenticated) {
+      throw new Error("Authenticate with email before enabling Touch ID.");
+    }
+    await turnkey.handleAddPasskey({
+      organizationId,
+      name: "Ghola Touch ID",
+      displayName: "Ghola Touch ID",
+      successPageDuration: 1200,
+    });
+  }, [authenticated, organizationId, turnkey]);
 
   const ensureWalletPair = useCallback((includeTombstone = false) => enqueueWalletProvisioning(async () => {
     try {
@@ -642,8 +661,10 @@ function PerpsTurnkeySession({
     authenticated,
     loading,
     organizationId,
+    hasPasskey,
     login,
     logout,
+    addPasskey,
     ensureWalletPair,
     replaceWalletPair,
     installDelegation,
@@ -665,6 +686,8 @@ function PerpsTurnkeySession({
     loading,
     login,
     logout,
+    addPasskey,
+    hasPasskey,
     organizationId,
     revokeHyperliquid,
     signOwnerMandate,
