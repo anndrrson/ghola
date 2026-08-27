@@ -141,8 +141,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifier", "missing_field_unjustified", "carry_shadow_missing_field_evidence_gate_missing");
   requireText("shadowVerifier", "read_only_boundary_invalid", "carry_shadow_read_only_gate_missing");
   requireText("shadowVerifier", "snapshot_stale", "carry_shadow_freshness_gate_missing");
+  requireText("shadowVerifier", "venue_duplicate", "carry_shadow_duplicate_venue_gate_missing");
+  requireText("shadowVerifier", "reference_price_invalid", "carry_shadow_reference_price_gate_missing");
   requireText("shadowVerifierTest", "accepts one fresh normalized shadow for every venue and core asset", "carry_shadow_complete_set_test_missing");
   requireText("shadowVerifierTest", "rejects normalized gaps without explicit quality evidence", "carry_shadow_quality_evidence_test_missing");
+  requireText("shadowVerifierTest", "rejects duplicate or unregistered venue rows", "carry_shadow_duplicate_venue_test_missing");
   requireText("preflight", "carry_shadow_unavailable", "stale_shadow_quarantine_missing");
   requireText("preflight", "carry_market_data_skew_exceeded", "carry_market_data_skew_gate_missing");
   requireText("preflightTest", "rejects cross-venue market data skew before account or order verification", "carry_market_data_skew_test_missing");

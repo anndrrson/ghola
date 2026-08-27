@@ -28,8 +28,24 @@ export function verifyCarryShadowSet(rows, {
   max_age_ms: maxAgeMs = 30_000,
 } = {}) {
   const failures = [];
-  const byVenue = new Map((Array.isArray(rows) ? rows : []).map((row) => [row?.venue_id, row]));
-  const normalizedAssets = [...new Set(assets.map((asset) => String(asset).toUpperCase()))];
+  const inputRows = Array.isArray(rows) ? rows : [];
+  if (!Array.isArray(rows)) failures.push("shadow_set_invalid");
+  const byVenue = new Map();
+  for (const row of inputRows) {
+    const venueId = typeof row?.venue_id === "string" ? row.venue_id : "unknown";
+    if (!CORE_PERP_VENUES.includes(venueId)) {
+      failures.push(`venue_unregistered:${venueId}`);
+      continue;
+    }
+    if (byVenue.has(venueId)) {
+      failures.push(`venue_duplicate:${venueId}`);
+      continue;
+    }
+    byVenue.set(venueId, row);
+  }
+  const requestedAssets = Array.isArray(assets) ? assets : [];
+  if (!Array.isArray(assets)) failures.push("asset_set_invalid");
+  const normalizedAssets = [...new Set(requestedAssets.map((asset) => String(asset).toUpperCase()))];
   if (normalizedAssets.length === 0) failures.push("asset_set_empty");
 
   for (const venueId of CORE_PERP_VENUES) {
@@ -63,6 +79,7 @@ export function verifyCarryShadowSet(rows, {
 function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures }) {
   const prefix = `${venueId}:${asset}`;
   const declared = venueAdapterCapability(venueId, "perp_shadow");
+  if (snapshot.version !== 1) failures.push(`snapshot_version_invalid:${prefix}`);
   if (snapshot.venue_id !== venueId) failures.push(`venue_mismatch:${prefix}`);
   if (declared?.read_only !== true || declared?.status !== "enabled") failures.push(`registry_boundary_invalid:${prefix}`);
   if (snapshot.source_schema !== declared?.source_schema) failures.push(`source_schema_mismatch:${prefix}`);
@@ -75,6 +92,9 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
   }
   if (snapshot.contract_type !== "linear_perp" || snapshot.market !== `${asset}-USD`) {
     failures.push(`contract_shape_invalid:${prefix}`);
+  }
+  if (typeof snapshot.contract_id !== "string" || !snapshot.contract_id.startsWith(`${venueId}:`)) {
+    failures.push(`contract_id_invalid:${prefix}`);
   }
   if (!["USD", "USDC", "USDT"].includes(snapshot.quote_asset) || !["USDC", "USDT"].includes(snapshot.collateral_asset)) {
     failures.push(`settlement_asset_invalid:${prefix}`);
@@ -89,6 +109,9 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
   for (const field of REQUIRED_FIELDS) {
     if (!Number.isSafeInteger(snapshot[field])) failures.push(`normalized_field_missing:${prefix}:${field}`);
   }
+  if (!(snapshot.mark_price_e8 > 0) || !(snapshot.index_price_e8 > 0)) {
+    failures.push(`reference_price_invalid:${prefix}`);
+  }
   if (!(snapshot.best_bid_e8 > 0) || !(snapshot.best_ask_e8 > snapshot.best_bid_e8)) {
     failures.push(`orderbook_bbo_invalid:${prefix}`);
   }
@@ -102,6 +125,8 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
   if (!snapshot.liquidation_model || snapshot.liquidation_model === "unavailable") {
     failures.push(`liquidation_evidence_invalid:${prefix}`);
   }
+  if (!Array.isArray(snapshot.quality_flags)) failures.push(`quality_flags_invalid:${prefix}`);
+  if (!Array.isArray(snapshot.missing_fields)) failures.push(`missing_fields_invalid:${prefix}`);
   const flags = new Set(Array.isArray(snapshot.quality_flags) ? snapshot.quality_flags : []);
   for (const field of Array.isArray(snapshot.missing_fields) ? snapshot.missing_fields : []) {
     const requiredFlag = MISSING_FIELD_EVIDENCE[field];

@@ -59,6 +59,33 @@ test("rejects crossed books, registry drift, and invalid margin evidence", () =>
   assert.ok(result.failures.includes("margin_evidence_invalid:hyperliquid:BTC"));
 });
 
+test("rejects duplicate or unregistered venue rows instead of silently overwriting them", () => {
+  const rows = fixture();
+  rows.push(structuredClone(rows[0]));
+  rows.push({ venue_id: "unknown_perp", ok: true, snapshots: [] });
+  const result = verifyCarryShadowSet(rows, { now_ms: NOW });
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.includes("venue_duplicate:hyperliquid"));
+  assert.ok(result.failures.includes("venue_unregistered:unknown_perp"));
+});
+
+test("rejects malformed snapshot identity, prices, and evidence arrays", () => {
+  const rows = fixture();
+  const snapshot = rows[0].snapshots[0];
+  snapshot.version = 2;
+  snapshot.contract_id = "lighter:BTC";
+  snapshot.mark_price_e8 = 0;
+  snapshot.index_price_e8 = -1;
+  snapshot.quality_flags = null;
+  snapshot.missing_fields = null;
+  const result = verifyCarryShadowSet(rows, { now_ms: NOW });
+  assert.ok(result.failures.includes("snapshot_version_invalid:hyperliquid:BTC"));
+  assert.ok(result.failures.includes("contract_id_invalid:hyperliquid:BTC"));
+  assert.ok(result.failures.includes("reference_price_invalid:hyperliquid:BTC"));
+  assert.ok(result.failures.includes("quality_flags_invalid:hyperliquid:BTC"));
+  assert.ok(result.failures.includes("missing_fields_invalid:hyperliquid:BTC"));
+});
+
 function fixture() {
   return CORE_PERP_VENUES.map((venueId) => ({
     venue_id: venueId,
