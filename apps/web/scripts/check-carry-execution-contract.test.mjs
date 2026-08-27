@@ -796,6 +796,32 @@ test("rejects portfolio capital allocation without its owner-only authority gate
   );
 });
 
+test("rejects collateral rescue that ignores route arrival safety", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replaceAll(
+        "transfer_route_arrival_unsafe",
+        "transfer_arrival_assumed_safe",
+      ),
+    }),
+    /carry_transfer_arrival_safety_gate_missing/,
+  );
+});
+
+test("rejects collateral review that can sign an unverified transfer route", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replaceAll(
+        "carry_collateral_review_transfer_route_unverified",
+        "transfer_route_not_checked",
+      ),
+    }),
+    /carry_collateral_review_route_gate_missing/,
+  );
+});
+
 test("rejects collateral review approval without durable replay protection", () => {
   assert.throws(
     () => checkCarryExecutionContract({

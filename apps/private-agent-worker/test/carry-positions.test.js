@@ -806,11 +806,23 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
   });
   assert.equal(observed.ok, true, JSON.stringify(observed));
   assert.equal(observed.observation_ok, true, JSON.stringify(observed));
+  const unrouted = await compileStoredCarryPortfolioCapitalPlan({
+    state,
+    owner_commitment: OWNER,
+    owner_capital_budget_micro_usdc: 5_000_000,
+    max_data_age_ms: 30_000,
+    now_ms: NOW + 100,
+  });
+  assert.equal(unrouted.ok, true, JSON.stringify(unrouted));
+  assert.equal(unrouted.plan.total_proposed_internal_reallocation_micro_usdc, 0);
+  assert.equal(unrouted.plan.net_new_owner_capital_requested_micro_usdc, 10_000_003);
+  assert.ok(unrouted.plan.transfer_route_failures.some((reason) => reason.startsWith("transfer_route_missing:")));
   const result = await compileStoredCarryPortfolioCapitalPlan({
     state,
     owner_commitment: OWNER,
     owner_capital_budget_micro_usdc: 5_000_000,
     max_data_age_ms: 30_000,
+    transfer_routes: [transferRoute()],
     now_ms: NOW + 100,
   });
   assert.equal(result.ok, true, JSON.stringify(result));
@@ -834,6 +846,7 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
     owner_commitment: OWNER,
     owner_capital_budget_micro_usdc: 5_000_000,
     max_data_age_ms: 30_000,
+    transfer_routes: [transferRoute()],
     now_ms: NOW + 100,
   });
   assert.equal(review.ok, true, JSON.stringify(review));
@@ -868,6 +881,7 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
     owner_commitment: OWNER,
     owner_capital_budget_micro_usdc: 5_000_000,
     max_data_age_ms: 30_000,
+    transfer_routes: [transferRoute()],
     now_ms: NOW + 103,
   });
   assert.equal(persistedApproval.ok, true, JSON.stringify(persistedApproval));
@@ -888,6 +902,7 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
     owner_commitment: OWNER,
     owner_capital_budget_micro_usdc: 5_000_000,
     max_data_age_ms: 30_000,
+    transfer_routes: [transferRoute()],
     now_ms: NOW + 100,
   });
   assert.equal(value.ok, true, JSON.stringify(value));
@@ -926,6 +941,7 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
     owner_commitment: OWNER,
     owner_capital_budget_micro_usdc: 5_000_000,
     max_data_age_ms: 30_000,
+    transfer_routes: [transferRoute()],
     now_ms: NOW + 201,
   });
   assert.equal(verifiedOutcome.ok, true, JSON.stringify(verifiedOutcome));
@@ -1103,6 +1119,28 @@ function monitoringRunway(venueId, overrides = {}) {
     runway_ms: 7_200_000,
     required_owner_response_ms: 1_800_000,
     owner_action_required: false,
+    automatic_transfer_permitted: false,
+    ...overrides,
+  };
+}
+
+function transferRoute(overrides = {}) {
+  return {
+    version: 1,
+    route_id: "carry:transfer-route:lighter-hyperliquid:0001",
+    from_account_commitment: "account:lighter:0001",
+    from_venue_id: "lighter",
+    to_account_commitment: "account:hyperliquid:0001",
+    to_venue_id: "hyperliquid",
+    settlement_asset: "USDC",
+    status: "available",
+    minimum_transfer_micro_usdc: 0,
+    maximum_transfer_micro_usdc: 100_000_000,
+    fee_micro_usdc: 0,
+    estimated_latency_ms: 60_000,
+    as_of_ms: NOW + 100,
+    owner_approval_required: true,
+    transaction_broadcast: false,
     automatic_transfer_permitted: false,
     ...overrides,
   };

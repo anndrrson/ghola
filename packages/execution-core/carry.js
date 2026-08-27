@@ -354,6 +354,21 @@ export function compileCarryPortfolioCapitalPlan(value) {
     raw.owner_capital_budget_micro_usdc,
     "carry_portfolio_capital_plan_owner_budget",
   );
+  const minimumTransferArrivalBufferMs = boundedInteger(
+    raw.minimum_transfer_arrival_buffer_ms ?? 300_000,
+    0,
+    DAY_MS,
+    "carry_portfolio_capital_plan_transfer_arrival_buffer",
+  );
+  const transferRoutes = array(
+    raw.transfer_routes ?? [],
+    "carry_portfolio_capital_plan_transfer_routes",
+    0,
+    1_000,
+  ).map(normalizeCarryTransferRouteEvidence);
+  if (new Set(transferRoutes.map((route) => route.route_id)).size !== transferRoutes.length) {
+    fail("carry_portfolio_capital_plan_duplicate_transfer_route");
+  }
   const positionPlans = array(
     raw.position_plans,
     "carry_portfolio_capital_plan_positions",
@@ -403,6 +418,10 @@ export function compileCarryPortfolioCapitalPlan(value) {
     const runwayMs = stressBurn === 0
       ? null
       : safeNumber((BigInt(currentHeadroom) * BigInt(HOUR_MS)) / BigInt(stressBurn));
+    const runwayEvidenceAsOfMs = Math.min(...group.entries.map((entry) => entry.plan.checked_at_ms));
+    const runwayDeadlineAtMs = runwayMs === null
+      ? null
+      : safeAdd(runwayEvidenceAsOfMs, runwayMs, "carry_portfolio_capital_runway_deadline_overflow");
     return Object.freeze({
       account_commitment: group.account_commitment,
       venue_id: group.venue_id,
@@ -411,6 +430,8 @@ export function compileCarryPortfolioCapitalPlan(value) {
       current_headroom_micro_usdc: currentHeadroom,
       aggregate_stress_burn_micro_usdc_per_hour: stressBurn,
       aggregate_runway_ms: runwayMs,
+      runway_evidence_as_of_ms: runwayEvidenceAsOfMs,
+      aggregate_runway_deadline_at_ms: runwayDeadlineAtMs,
       target_runway_ms: targetRunway,
       target_headroom_micro_usdc: targetHeadroom,
       requested_micro_usdc: allocationPermitted && !blocked ? Math.max(0, targetHeadroom - currentHeadroom) : 0,
@@ -433,27 +454,96 @@ export function compileCarryPortfolioCapitalPlan(value) {
       || left.venue_id.localeCompare(right.venue_id)
       || left.account_commitment.localeCompare(right.account_commitment));
   const remainingByAccount = new Map(requests.map((request) => [request.account_commitment, request.requested_micro_usdc]));
+  const remainingRouteCapacity = new Map(transferRoutes.map((route) => [route.route_id, route.maximum_transfer_micro_usdc]));
   const proposedReallocations = [];
+  const transferRouteFailures = [];
   if (allocationPermitted) {
     for (const request of requests) {
       for (const source of releaseCandidates) {
         const needed = remainingByAccount.get(request.account_commitment) || 0;
         if (needed === 0) break;
         if (source.account_commitment === request.account_commitment || source.remaining_micro_usdc === 0) continue;
-        const amount = Math.min(needed, source.remaining_micro_usdc);
-        source.remaining_micro_usdc -= amount;
-        remainingByAccount.set(request.account_commitment, needed - amount);
-        proposedReallocations.push(Object.freeze({
-          priority_rank: proposedReallocations.length + 1,
-          from_account_commitment: source.account_commitment,
-          from_venue_id: source.venue_id,
-          to_account_commitment: request.account_commitment,
-          to_venue_id: request.venue_id,
-          amount_micro_usdc: amount,
-          owner_transfer_approval_required: true,
-          automatic_transfer_permitted: false,
-          transaction_broadcast: false,
-        }));
+        const candidateRoutes = transferRoutes
+          .filter((route) => route.from_account_commitment === source.account_commitment
+            && route.from_venue_id === source.venue_id
+            && route.to_account_commitment === request.account_commitment
+            && route.to_venue_id === request.venue_id)
+          .sort((left, right) => left.estimated_latency_ms - right.estimated_latency_ms
+            || left.fee_micro_usdc - right.fee_micro_usdc
+            || left.route_id.localeCompare(right.route_id));
+        if (candidateRoutes.length === 0) {
+          transferRouteFailures.push(`transfer_route_missing:${source.account_commitment}:${request.account_commitment}`);
+          continue;
+        }
+        let allocated = false;
+        for (const route of candidateRoutes) {
+          const currentNeed = remainingByAccount.get(request.account_commitment) || 0;
+          if (currentNeed === 0) break;
+          const stale = route.as_of_ms > nowMs + 5_000 || nowMs - route.as_of_ms > maxDataAgeMs;
+          const expectedArrivalAtMs = safeAdd(
+            nowMs,
+            route.estimated_latency_ms,
+            "carry_portfolio_capital_transfer_arrival_overflow",
+          );
+          const arrivalTooLate = request.aggregate_runway_deadline_at_ms !== null
+            && safeAdd(
+              expectedArrivalAtMs,
+              minimumTransferArrivalBufferMs,
+              "carry_portfolio_capital_transfer_arrival_overflow",
+            ) >= request.aggregate_runway_deadline_at_ms;
+          const routeCapacity = remainingRouteCapacity.get(route.route_id) || 0;
+          if (route.status !== "available") {
+            transferRouteFailures.push(`transfer_route_unavailable:${route.route_id}`);
+            continue;
+          }
+          if (stale) {
+            transferRouteFailures.push(`transfer_route_stale:${route.route_id}`);
+            continue;
+          }
+          if (arrivalTooLate) {
+            transferRouteFailures.push(`transfer_route_arrival_unsafe:${route.route_id}`);
+            continue;
+          }
+          const maximumNet = Math.min(
+            currentNeed,
+            Math.max(0, source.remaining_micro_usdc - route.fee_micro_usdc),
+            Math.max(0, routeCapacity - route.fee_micro_usdc),
+          );
+          const grossDebit = maximumNet + route.fee_micro_usdc;
+          if (maximumNet <= 0 || grossDebit < route.minimum_transfer_micro_usdc) {
+            transferRouteFailures.push(`transfer_route_capacity_insufficient:${route.route_id}`);
+            continue;
+          }
+          source.remaining_micro_usdc -= grossDebit;
+          remainingRouteCapacity.set(route.route_id, routeCapacity - grossDebit);
+          remainingByAccount.set(request.account_commitment, currentNeed - maximumNet);
+          proposedReallocations.push(Object.freeze({
+            priority_rank: proposedReallocations.length + 1,
+            route_id: route.route_id,
+            route_evidence_as_of_ms: route.as_of_ms,
+            from_account_commitment: source.account_commitment,
+            from_venue_id: source.venue_id,
+            to_account_commitment: request.account_commitment,
+            to_venue_id: request.venue_id,
+            amount_micro_usdc: maximumNet,
+            gross_debit_micro_usdc: grossDebit,
+            fee_micro_usdc: route.fee_micro_usdc,
+            estimated_latency_ms: route.estimated_latency_ms,
+            expected_arrival_at_ms: expectedArrivalAtMs,
+            destination_runway_deadline_at_ms: request.aggregate_runway_deadline_at_ms,
+            destination_runway_at_arrival_ms: request.aggregate_runway_deadline_at_ms === null
+              ? null
+              : request.aggregate_runway_deadline_at_ms - expectedArrivalAtMs,
+            minimum_arrival_buffer_ms: minimumTransferArrivalBufferMs,
+            route_verified: true,
+            owner_transfer_approval_required: true,
+            automatic_transfer_permitted: false,
+            transaction_broadcast: false,
+          }));
+          allocated = true;
+          if ((remainingByAccount.get(request.account_commitment) || 0) === 0) break;
+        }
+        if (!allocated && candidateRoutes.length > 0) continue;
       }
     }
   }
@@ -486,6 +576,10 @@ export function compileCarryPortfolioCapitalPlan(value) {
   );
   const totalInternalReallocation = proposedReallocations.reduce(
     (sum, proposal) => safeAdd(sum, proposal.amount_micro_usdc, "carry_portfolio_capital_reallocation_overflow"),
+    0,
+  );
+  const totalInternalReallocationFees = proposedReallocations.reduce(
+    (sum, proposal) => safeAdd(sum, proposal.fee_micro_usdc, "carry_portfolio_capital_reallocation_fee_overflow"),
     0,
   );
   const totalProposed = allocations.reduce(
@@ -559,6 +653,7 @@ export function compileCarryPortfolioCapitalPlan(value) {
     version: 1,
     kind: "ghola_carry_portfolio_capital_plan",
     max_data_age_ms: maxDataAgeMs,
+    minimum_transfer_arrival_buffer_ms: minimumTransferArrivalBufferMs,
     status,
     recommended_action: recommendedAction,
     position_count: positionPlans.length,
@@ -567,6 +662,7 @@ export function compileCarryPortfolioCapitalPlan(value) {
     total_requested_micro_usdc: totalRequested,
     total_potential_releasable_micro_usdc: totalPotentialReleasable,
     total_proposed_internal_reallocation_micro_usdc: totalInternalReallocation,
+    total_proposed_internal_reallocation_fees_micro_usdc: totalInternalReallocationFees,
     net_new_owner_capital_requested_micro_usdc: netNewOwnerCapitalRequested,
     total_proposed_allocation_micro_usdc: totalProposed,
     total_uncovered_shortfall_micro_usdc: uncovered,
@@ -577,6 +673,10 @@ export function compileCarryPortfolioCapitalPlan(value) {
     reduce_only_exit_required: reduceOnlyExitRequired,
     owner_action_required: ownerActionRequired,
     capital_optimization_available: capitalOptimizationAvailable,
+    routeable_capital_optimization_available: totalInternalReallocation > 0,
+    transfer_route_count: transferRoutes.length,
+    verified_transfer_route_count: new Set(proposedReallocations.map((proposal) => proposal.route_id)).size,
+    transfer_route_failures: [...new Set(transferRouteFailures)],
     owner_approval_required: totalInternalReallocation > 0 || totalProposed > 0,
     owner_transfer_approval_required: totalInternalReallocation > 0,
     owner_funding_approval_required: totalProposed > 0,
@@ -610,6 +710,8 @@ export function compileCarryCollateralReview(value) {
     now_ms: nowMs,
     max_data_age_ms: raw.max_data_age_ms,
     owner_capital_budget_micro_usdc: raw.owner_capital_budget_micro_usdc,
+    minimum_transfer_arrival_buffer_ms: raw.minimum_transfer_arrival_buffer_ms,
+    transfer_routes: raw.transfer_routes,
     position_plans: raw.position_plans,
   });
   const blocked = capitalPlan.reconciliation_required === true
@@ -620,11 +722,21 @@ export function compileCarryCollateralReview(value) {
     instruction_id: `${reviewId}:transfer:${proposal.priority_rank}`,
     sequence: proposal.priority_rank,
     operation: "owner_collateral_transfer_review",
+    route_id: proposal.route_id,
+    route_evidence_as_of_ms: proposal.route_evidence_as_of_ms,
     from_account_commitment: proposal.from_account_commitment,
     from_venue_id: proposal.from_venue_id,
     to_account_commitment: proposal.to_account_commitment,
     to_venue_id: proposal.to_venue_id,
     amount_micro_usdc: proposal.amount_micro_usdc,
+    gross_debit_micro_usdc: proposal.gross_debit_micro_usdc,
+    fee_micro_usdc: proposal.fee_micro_usdc,
+    estimated_latency_ms: proposal.estimated_latency_ms,
+    expected_arrival_at_ms: proposal.expected_arrival_at_ms,
+    destination_runway_deadline_at_ms: proposal.destination_runway_deadline_at_ms,
+    destination_runway_at_arrival_ms: proposal.destination_runway_at_arrival_ms,
+    minimum_arrival_buffer_ms: proposal.minimum_arrival_buffer_ms,
+    route_verified: true,
     owner_signature_required: true,
     execution_authorized: false,
     transaction_broadcast: false,
@@ -660,6 +772,8 @@ export function compileCarryCollateralReview(value) {
     owner_commitment: ownerCommitment,
     owner_wallet_address: ownerWalletAddress,
     max_data_age_ms: capitalPlan.max_data_age_ms,
+    minimum_transfer_arrival_buffer_ms: capitalPlan.minimum_transfer_arrival_buffer_ms,
+    transfer_routes: raw.transfer_routes ?? [],
     review_id: reviewId,
     status,
     capital_plan: capitalPlan,
@@ -700,6 +814,21 @@ export function normalizeCarryCollateralReviewPayload(value) {
     300_000,
     "carry_collateral_review_max_data_age",
   );
+  const minimumTransferArrivalBufferMs = boundedInteger(
+    raw.minimum_transfer_arrival_buffer_ms ?? 300_000,
+    0,
+    DAY_MS,
+    "carry_collateral_review_transfer_arrival_buffer",
+  );
+  const transferRoutes = array(
+    raw.transfer_routes ?? [],
+    "carry_collateral_review_transfer_routes",
+    0,
+    1_000,
+  ).map(normalizeCarryTransferRouteEvidence);
+  if (new Set(transferRoutes.map((route) => route.route_id)).size !== transferRoutes.length) {
+    fail("carry_collateral_review_duplicate_transfer_route");
+  }
   const issuedAtMs = positiveInteger(raw.issued_at_ms, "carry_collateral_review_issued_at");
   const expiresAtMs = positiveInteger(raw.expires_at_ms, "carry_collateral_review_expires_at");
   if (expiresAtMs <= issuedAtMs || expiresAtMs - issuedAtMs > 15 * 60_000) {
@@ -730,6 +859,8 @@ export function normalizeCarryCollateralReviewPayload(value) {
   );
   if (capitalPlan.kind !== "ghola_carry_portfolio_capital_plan"
     || capitalPlan.max_data_age_ms !== maxDataAgeMs
+    || capitalPlan.minimum_transfer_arrival_buffer_ms !== minimumTransferArrivalBufferMs
+    || capitalPlan.transfer_route_count !== transferRoutes.length
     || capitalPlan.proposal_only !== true || capitalPlan.transaction_broadcast !== false
     || capitalPlan.automatic_transfer_permitted !== false
     || !["fund", "transfer", "withdraw"].every((operation) => capitalPlanOwnerOperations.includes(operation))) {
@@ -757,11 +888,21 @@ export function normalizeCarryCollateralReviewPayload(value) {
     instruction_id: `${reviewId}:transfer:${proposal.priority_rank}`,
     sequence: proposal.priority_rank,
     operation: "owner_collateral_transfer_review",
+    route_id: proposal.route_id,
+    route_evidence_as_of_ms: proposal.route_evidence_as_of_ms,
     from_account_commitment: proposal.from_account_commitment,
     from_venue_id: proposal.from_venue_id,
     to_account_commitment: proposal.to_account_commitment,
     to_venue_id: proposal.to_venue_id,
     amount_micro_usdc: proposal.amount_micro_usdc,
+    gross_debit_micro_usdc: proposal.gross_debit_micro_usdc,
+    fee_micro_usdc: proposal.fee_micro_usdc,
+    estimated_latency_ms: proposal.estimated_latency_ms,
+    expected_arrival_at_ms: proposal.expected_arrival_at_ms,
+    destination_runway_deadline_at_ms: proposal.destination_runway_deadline_at_ms,
+    destination_runway_at_arrival_ms: proposal.destination_runway_at_arrival_ms,
+    minimum_arrival_buffer_ms: proposal.minimum_arrival_buffer_ms,
+    route_verified: proposal.route_verified,
     owner_signature_required: true,
     execution_authorized: false,
     transaction_broadcast: false,
@@ -831,6 +972,8 @@ export function normalizeCarryCollateralReviewPayload(value) {
     owner_commitment: ownerCommitment,
     owner_wallet_address: ownerWalletAddress,
     max_data_age_ms: maxDataAgeMs,
+    minimum_transfer_arrival_buffer_ms: minimumTransferArrivalBufferMs,
+    transfer_routes: transferRoutes,
     review_id: reviewId,
     status,
     capital_plan: JSON.parse(JSON.stringify(capitalPlan)),
@@ -906,12 +1049,43 @@ function normalizeCollateralReviewInstruction(value, reviewId, type) {
     if (fromAccount === toAccount) {
       fail("carry_collateral_review_transfer_same_account");
     }
+    const fee = nonNegativeInteger(raw.fee_micro_usdc, "carry_collateral_review_transfer_fee");
+    const grossDebit = positiveInteger(raw.gross_debit_micro_usdc, "carry_collateral_review_transfer_gross_debit");
+    if (grossDebit !== safeAdd(base.amount_micro_usdc, fee, "carry_collateral_review_transfer_gross_overflow")) {
+      fail("carry_collateral_review_transfer_net_mismatch");
+    }
+    const estimatedLatency = nonNegativeInteger(raw.estimated_latency_ms, "carry_collateral_review_transfer_latency");
+    const expectedArrivalAt = positiveInteger(raw.expected_arrival_at_ms, "carry_collateral_review_transfer_arrival");
+    const destinationRunwayDeadlineAt = raw.destination_runway_deadline_at_ms === null
+      ? null
+      : positiveInteger(raw.destination_runway_deadline_at_ms, "carry_collateral_review_transfer_destination_runway_deadline");
+    const destinationRunwayAtArrival = raw.destination_runway_at_arrival_ms === null
+      ? null
+      : nonNegativeInteger(raw.destination_runway_at_arrival_ms, "carry_collateral_review_transfer_destination_runway");
+    const minimumArrivalBuffer = nonNegativeInteger(raw.minimum_arrival_buffer_ms, "carry_collateral_review_transfer_arrival_buffer");
+    if ((destinationRunwayDeadlineAt === null) !== (destinationRunwayAtArrival === null)
+      || (destinationRunwayDeadlineAt !== null
+        && destinationRunwayDeadlineAt !== safeAdd(expectedArrivalAt, destinationRunwayAtArrival, "carry_collateral_review_transfer_runway_overflow"))
+      || raw.route_verified !== true
+      || (destinationRunwayAtArrival !== null && destinationRunwayAtArrival <= minimumArrivalBuffer)) {
+      fail("carry_collateral_review_transfer_route_unverified");
+    }
     return Object.freeze({
       ...base,
+      route_id: identifier(raw.route_id, "carry_collateral_review_transfer_route"),
+      route_evidence_as_of_ms: positiveInteger(raw.route_evidence_as_of_ms, "carry_collateral_review_transfer_route_as_of"),
       from_account_commitment: fromAccount,
       from_venue_id: fromVenue,
       to_account_commitment: toAccount,
       to_venue_id: toVenue,
+      gross_debit_micro_usdc: grossDebit,
+      fee_micro_usdc: fee,
+      estimated_latency_ms: estimatedLatency,
+      expected_arrival_at_ms: expectedArrivalAt,
+      destination_runway_deadline_at_ms: destinationRunwayDeadlineAt,
+      destination_runway_at_arrival_ms: destinationRunwayAtArrival,
+      minimum_arrival_buffer_ms: minimumArrivalBuffer,
+      route_verified: true,
     });
   }
   return Object.freeze({
@@ -924,7 +1098,7 @@ function normalizeCollateralReviewInstruction(value, reviewId, type) {
 function sameCollateralInstructions(actual, expected, type) {
   if (actual.length !== expected.length) return false;
   const fields = type === "transfer"
-    ? ["instruction_id", "sequence", "operation", "from_account_commitment", "from_venue_id", "to_account_commitment", "to_venue_id", "amount_micro_usdc", "owner_signature_required", "execution_authorized", "transaction_broadcast"]
+    ? ["instruction_id", "sequence", "operation", "route_id", "route_evidence_as_of_ms", "from_account_commitment", "from_venue_id", "to_account_commitment", "to_venue_id", "amount_micro_usdc", "gross_debit_micro_usdc", "fee_micro_usdc", "estimated_latency_ms", "expected_arrival_at_ms", "destination_runway_deadline_at_ms", "destination_runway_at_arrival_ms", "minimum_arrival_buffer_ms", "route_verified", "owner_signature_required", "execution_authorized", "transaction_broadcast"]
     : ["instruction_id", "sequence", "operation", "account_commitment", "venue_id", "amount_micro_usdc", "owner_signature_required", "execution_authorized", "transaction_broadcast"];
   return actual.every((instruction, index) => fields.every((field) => instruction[field] === expected[index][field]));
 }
@@ -2139,6 +2313,41 @@ function portfolioRealizedTotals(positions, code) {
     field === "realized_net_value_micro_usdc" ? "net_value_micro_usdc" : field,
     positions.reduce((total, position) => safeAdd(total, position[field], code), 0),
   ]));
+}
+
+function normalizeCarryTransferRouteEvidence(value) {
+  const raw = object(value, "carry_transfer_route_required");
+  exactVersion(raw.version, "carry_transfer_route_version");
+  if (raw.settlement_asset !== "USDC") fail("carry_transfer_route_settlement_asset");
+  if (raw.owner_approval_required !== true
+    || raw.transaction_broadcast !== false
+    || raw.automatic_transfer_permitted !== false) {
+    fail("carry_transfer_route_authority_boundary");
+  }
+  const fromAccount = identifier(raw.from_account_commitment, "carry_transfer_route_from_account");
+  const toAccount = identifier(raw.to_account_commitment, "carry_transfer_route_to_account");
+  if (fromAccount === toAccount) fail("carry_transfer_route_distinct_accounts");
+  const minimumTransfer = nonNegativeInteger(raw.minimum_transfer_micro_usdc, "carry_transfer_route_minimum");
+  const maximumTransfer = nonNegativeInteger(raw.maximum_transfer_micro_usdc, "carry_transfer_route_maximum");
+  if (maximumTransfer < minimumTransfer) fail("carry_transfer_route_capacity_invalid");
+  return Object.freeze({
+    version: 1,
+    route_id: identifier(raw.route_id, "carry_transfer_route_id"),
+    from_account_commitment: fromAccount,
+    from_venue_id: carryExecutionVenue(raw.from_venue_id, "carry_transfer_route_from_venue"),
+    to_account_commitment: toAccount,
+    to_venue_id: carryExecutionVenue(raw.to_venue_id, "carry_transfer_route_to_venue"),
+    settlement_asset: "USDC",
+    status: enumValue(raw.status, new Set(["available", "degraded", "unavailable"]), "carry_transfer_route_status"),
+    minimum_transfer_micro_usdc: minimumTransfer,
+    maximum_transfer_micro_usdc: maximumTransfer,
+    fee_micro_usdc: nonNegativeInteger(raw.fee_micro_usdc, "carry_transfer_route_fee"),
+    estimated_latency_ms: boundedInteger(raw.estimated_latency_ms, 0, 7 * DAY_MS, "carry_transfer_route_latency"),
+    as_of_ms: positiveInteger(raw.as_of_ms, "carry_transfer_route_as_of"),
+    owner_approval_required: true,
+    transaction_broadcast: false,
+    automatic_transfer_permitted: false,
+  });
 }
 
 function normalizePortfolioCapitalPositionPlan(value) {

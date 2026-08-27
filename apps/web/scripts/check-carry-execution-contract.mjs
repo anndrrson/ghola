@@ -364,7 +364,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarry", "const accountGroups = new Map();", "carry_portfolio_capital_account_aggregation_missing");
   requireText("coreCarry", "proposed_reallocations: proposedReallocations", "carry_portfolio_capital_reallocation_missing");
   requireText("coreCarry", "owner_transfer_approval_required", "carry_portfolio_capital_transfer_approval_missing");
+  requireText("coreCarry", "function normalizeCarryTransferRouteEvidence", "carry_transfer_route_normalization_missing");
+  requireText("coreCarry", "transfer_route_arrival_unsafe", "carry_transfer_arrival_safety_gate_missing");
+  requireText("coreCarry", "gross_debit_micro_usdc", "carry_transfer_fee_debit_accounting_missing");
+  requireText("coreCarry", "route_verified: true", "carry_transfer_route_proof_missing");
   requireText("coreCarryTest", "aggregates shared accounts and proposes owner-only reallocation", "carry_portfolio_capital_account_test_missing");
+  requireText("coreCarryTest", "never treats an unverified or late transfer as rescued margin", "carry_transfer_route_failure_test_missing");
   requireText("coreCarryTest", "rejects one account commitment claimed by multiple venues", "carry_portfolio_capital_account_collision_test_missing");
   requireText("coreCarryTest", "quarantines stale evidence and allocates nothing", "carry_portfolio_capital_stale_test_missing");
   requireText("coreCarry", "export function compileCarryPortfolioValueReport", "carry_portfolio_value_compiler_missing");
@@ -414,11 +419,15 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "capital_action_plan: capitalActionPlan", "carry_monitor_capital_evidence_missing");
   requireText("positionsTest", "stores an exact owner-only collateral recommendation without transferring", "carry_monitor_capital_plan_test_missing");
   requireText("positions", "export async function compileStoredCarryPortfolioCapitalPlan", "carry_portfolio_capital_worker_missing");
+  requireText("positions", "transfer_routes: transferRoutes", "carry_transfer_routes_worker_binding_missing");
   requireText("positions", "carry_portfolio_capital_evidence_incomplete", "carry_portfolio_capital_incomplete_gate_missing");
   requireText("positionsTest", "compiles an owner-only portfolio capital plan from stored monitoring evidence", "carry_portfolio_capital_worker_test_missing");
+  requireText("positionsTest", "transfer_route_missing:", "carry_transfer_routes_worker_test_missing");
   requireText("server", '"/carry/positions/capital-plan"', "carry_portfolio_capital_route_missing");
+  requireText("server", "transfer_routes: body.transfer_routes", "carry_transfer_routes_server_binding_missing");
   requireText("coreCarry", "export function compileCarryCollateralReview", "carry_collateral_review_core_missing");
   requireText("coreCarry", "fund_movement_authorized: false", "carry_collateral_review_fund_boundary_missing");
+  requireText("coreCarry", "carry_collateral_review_transfer_route_unverified", "carry_collateral_review_route_gate_missing");
   requireText("coreCarryTest", "binds exact owner-only moves without authorizing fund movement", "carry_collateral_review_core_test_missing");
   requireText("positions", "export async function compileStoredCarryCollateralReview", "carry_collateral_review_worker_missing");
   requireText("positionsTest", 'review.review.status, "signature_required"', "carry_collateral_review_worker_test_missing");
@@ -453,6 +462,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "automatic_transfer_permitted !== false", "carry_terminal_capital_authority_gate_missing");
   requireText("webCarryBuilder", "STRESS CAPITAL ·", "carry_terminal_stress_capital_missing");
   requireText("webClient", "getCarryPortfolioCapitalPlan", "carry_portfolio_capital_client_missing");
+  requireText("webClient", "minimum_transfer_arrival_buffer_ms", "carry_transfer_routes_client_binding_missing");
   requireText("webClient", "getCarryCollateralReview", "carry_collateral_review_client_missing");
   requireText("webClient", "approveCarryCollateralReview", "carry_collateral_review_approval_client_missing");
   requireText("webCollateralReview", "buildCarryCollateralReviewAuthorization", "carry_collateral_review_web_authorization_missing");

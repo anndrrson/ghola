@@ -112,6 +112,28 @@ function runway(venueId, overrides = {}) {
   };
 }
 
+function transferRoute(overrides = {}) {
+  return {
+    version: 1,
+    route_id: "carry:transfer-route:lighter-hyperliquid:0001",
+    from_account_commitment: "account:lighter:0001",
+    from_venue_id: "lighter",
+    to_account_commitment: "account:hyperliquid:0001",
+    to_venue_id: "hyperliquid",
+    settlement_asset: "USDC",
+    status: "available",
+    minimum_transfer_micro_usdc: 0,
+    maximum_transfer_micro_usdc: 1_000_000_000,
+    fee_micro_usdc: 1_000,
+    estimated_latency_ms: 30 * 60_000,
+    as_of_ms: NOW,
+    owner_approval_required: true,
+    transaction_broadcast: false,
+    automatic_transfer_permitted: false,
+    ...overrides,
+  };
+}
+
 function costs() {
   return {
     entry_fee_bps: 2,
@@ -543,6 +565,7 @@ test("portfolio capital planner aggregates shared accounts and proposes owner-on
     now_ms: NOW,
     max_data_age_ms: 30_000,
     owner_capital_budget_micro_usdc: 40_000_000,
+    transfer_routes: [transferRoute()],
     position_plans: [positionPlan, secondPlan],
   });
   assert.equal(plan.status, "owner_action_required");
@@ -559,11 +582,63 @@ test("portfolio capital planner aggregates shared accounts and proposes owner-on
   assert.equal(plan.proposed_reallocations[0].from_venue_id, "lighter");
   assert.equal(plan.proposed_reallocations[0].to_venue_id, "hyperliquid");
   assert.equal(plan.proposed_reallocations[0].amount_micro_usdc, 450_000_028);
+  assert.equal(plan.proposed_reallocations[0].gross_debit_micro_usdc, 450_001_028);
+  assert.equal(plan.proposed_reallocations[0].route_verified, true);
+  assert.equal(plan.proposed_reallocations[0].expected_arrival_at_ms, NOW + 30 * 60_000);
+  assert.equal(
+    plan.proposed_reallocations[0].destination_runway_at_arrival_ms,
+    plan.proposed_reallocations[0].destination_runway_deadline_at_ms
+      - plan.proposed_reallocations[0].expected_arrival_at_ms,
+  );
+  assert.equal(plan.total_proposed_internal_reallocation_fees_micro_usdc, 1_000);
   assert.equal(plan.owner_transfer_approval_required, true);
   assert.equal(plan.owner_approval_required, true);
   assert.equal(plan.proposal_only, true);
   assert.equal(plan.transaction_broadcast, false);
   assert.equal(plan.automatic_transfer_permitted, false);
+});
+
+test("portfolio capital planner never treats an unverified or late transfer as rescued margin", () => {
+  const positionPlan = compileCarryCapitalActionPlan({
+    version: 1,
+    position: activePositionForObservation(),
+    margin_runways: [
+      runway("hyperliquid", {
+        equity_micro_usdc: 1_350_000_000,
+        maintenance_margin_micro_usdc: 500_000_000,
+        safety_buffer_micro_usdc: 500_000_000,
+        owner_transfer_latency_ms: 2 * HOUR,
+        owner_response_buffer_ms: 2 * HOUR,
+      }),
+      runway("lighter"),
+    ],
+    now_ms: NOW,
+  });
+  const missingRoute = compileCarryPortfolioCapitalPlan({
+    version: 1,
+    now_ms: NOW,
+    max_data_age_ms: 30_000,
+    owner_capital_budget_micro_usdc: 0,
+    position_plans: [positionPlan],
+  });
+  assert.equal(missingRoute.total_proposed_internal_reallocation_micro_usdc, 0);
+  assert.equal(missingRoute.net_new_owner_capital_requested_micro_usdc, missingRoute.total_requested_micro_usdc);
+  assert.equal(missingRoute.routeable_capital_optimization_available, false);
+  assert.ok(missingRoute.transfer_route_failures.some((reason) => reason.startsWith("transfer_route_missing:")));
+
+  const lateRoute = compileCarryPortfolioCapitalPlan({
+    version: 1,
+    now_ms: NOW,
+    max_data_age_ms: 30_000,
+    minimum_transfer_arrival_buffer_ms: HOUR,
+    owner_capital_budget_micro_usdc: 0,
+    transfer_routes: [transferRoute({ estimated_latency_ms: 7 * HOUR })],
+    position_plans: [positionPlan],
+  });
+  assert.equal(lateRoute.total_proposed_internal_reallocation_micro_usdc, 0);
+  assert.deepEqual(lateRoute.transfer_route_failures, [
+    "transfer_route_arrival_unsafe:carry:transfer-route:lighter-hyperliquid:0001",
+  ]);
 });
 
 test("portfolio capital planner quarantines stale evidence and allocates nothing", () => {
@@ -659,6 +734,7 @@ test("collateral review binds exact owner-only moves without authorizing fund mo
     expires_at_ms: NOW + 10 * 60_000,
     max_data_age_ms: 30_000,
     owner_capital_budget_micro_usdc: 0,
+    transfer_routes: [transferRoute()],
     position_plans: [positionPlan],
   });
   assert.equal(review.status, "signature_required");
@@ -667,6 +743,8 @@ test("collateral review binds exact owner-only moves without authorizing fund mo
   assert.equal(review.transfer_instructions.length, 1);
   assert.equal(review.transfer_instructions[0].from_venue_id, "lighter");
   assert.equal(review.transfer_instructions[0].to_venue_id, "hyperliquid");
+  assert.equal(review.transfer_instructions[0].route_verified, true);
+  assert.equal(review.transfer_instructions[0].fee_micro_usdc, 1_000);
   assert.equal(review.execution_authorized, false);
   assert.equal(review.fund_movement_authorized, false);
   assert.equal(review.transaction_broadcast, false);
@@ -689,7 +767,7 @@ test("collateral review binds exact owner-only moves without authorizing fund mo
       ...review.transfer_instructions[0],
       amount_micro_usdc: review.transfer_instructions[0].amount_micro_usdc + 1,
     }],
-  }), /carry_collateral_review_instruction_plan_mismatch/);
+  }), /carry_collateral_review_transfer_net_mismatch|carry_collateral_review_instruction_plan_mismatch/);
 });
 
 test("collateral review exposes no instruction when capital evidence is stale", () => {

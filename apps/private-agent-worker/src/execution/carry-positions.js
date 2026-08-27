@@ -345,6 +345,8 @@ export async function compileStoredCarryPortfolioCapitalPlan({
   owner_commitment: ownerCommitment,
   owner_capital_budget_micro_usdc: ownerCapitalBudget = 0,
   max_data_age_ms: maxDataAgeMs = 30_000,
+  minimum_transfer_arrival_buffer_ms: minimumTransferArrivalBufferMs = 300_000,
+  transfer_routes: transferRoutes = [],
   now_ms: nowMs = Date.now(),
 }) {
   if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
@@ -376,6 +378,8 @@ export async function compileStoredCarryPortfolioCapitalPlan({
       now_ms: nowMs,
       max_data_age_ms: maxAge,
       owner_capital_budget_micro_usdc: ownerCapitalBudget,
+      minimum_transfer_arrival_buffer_ms: minimumTransferArrivalBufferMs,
+      transfer_routes: transferRoutes,
       position_plans: unique.map((record) => record.latest_observation.capital_action_plan),
     });
     return { ok: true, plan };
@@ -389,6 +393,8 @@ export async function compileStoredCarryCollateralReview({
   owner_commitment: ownerCommitment,
   owner_capital_budget_micro_usdc: ownerCapitalBudget = 0,
   max_data_age_ms: maxDataAgeMs = 30_000,
+  minimum_transfer_arrival_buffer_ms: minimumTransferArrivalBufferMs = 300_000,
+  transfer_routes: transferRoutes = [],
   now_ms: nowMs = Date.now(),
 }) {
   if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
@@ -435,6 +441,8 @@ export async function compileStoredCarryCollateralReview({
       expires_at_ms: nowMs + 10 * 60_000,
       max_data_age_ms: maxAge,
       owner_capital_budget_micro_usdc: ownerCapitalBudget,
+      minimum_transfer_arrival_buffer_ms: minimumTransferArrivalBufferMs,
+      transfer_routes: transferRoutes,
       position_plans: positionPlans,
     });
     const planCommitment = collateralReviewPlanCommitment(review);
@@ -500,6 +508,8 @@ export async function approveStoredCarryCollateralReview({
       owner_commitment: ownerCommitment,
       owner_capital_budget_micro_usdc: signed.capital_plan.owner_capital_budget_micro_usdc,
       max_data_age_ms: signed.max_data_age_ms,
+      minimum_transfer_arrival_buffer_ms: signed.minimum_transfer_arrival_buffer_ms,
+      transfer_routes: signed.transfer_routes,
       now_ms: signed.issued_at_ms,
     });
     if (!current.ok || carryCollateralReviewMessage(current.review) !== message) {
@@ -630,6 +640,8 @@ export async function compileStoredCarryPortfolioValueReport({
   owner_commitment: ownerCommitment,
   owner_capital_budget_micro_usdc: ownerCapitalBudget = 0,
   max_data_age_ms: maxDataAgeMs = 30_000,
+  minimum_transfer_arrival_buffer_ms: minimumTransferArrivalBufferMs = 300_000,
+  transfer_routes: transferRoutes = [],
   now_ms: nowMs = Date.now(),
 }) {
   if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
@@ -639,6 +651,8 @@ export async function compileStoredCarryPortfolioValueReport({
     owner_commitment: ownerCommitment,
     owner_capital_budget_micro_usdc: ownerCapitalBudget,
     max_data_age_ms: maxDataAgeMs,
+    minimum_transfer_arrival_buffer_ms: minimumTransferArrivalBufferMs,
+    transfer_routes: transferRoutes,
     now_ms: nowMs,
   });
   if (!capital.ok && capital.error !== "carry_portfolio_capital_evidence_incomplete") return capital;
@@ -1362,9 +1376,17 @@ function digest(value) {
 }
 
 function collateralReviewPlanCommitment(review) {
-  const capitalPlan = { ...review.capital_plan };
+  const instructions = (items) => items.map(({
+    instruction_id: _instructionId,
+    expected_arrival_at_ms: _expectedArrivalAtMs,
+    destination_runway_at_arrival_ms: _destinationRunwayAtArrivalMs,
+    ...instruction
+  }) => instruction);
+  const capitalPlan = {
+    ...review.capital_plan,
+    proposed_reallocations: instructions(review.capital_plan.proposed_reallocations),
+  };
   delete capitalPlan.checked_at_ms;
-  const instructions = (items) => items.map(({ instruction_id: _instructionId, ...instruction }) => instruction);
   return `0x${digest(JSON.stringify({
     owner_commitment: review.owner_commitment,
     owner_wallet_address: review.owner_wallet_address,

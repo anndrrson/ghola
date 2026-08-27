@@ -2991,12 +2991,16 @@ export function createPrivateAgentWorkerServer(options = {}) {
             owner_commitment: body.owner_commitment,
             owner_capital_budget_micro_usdc: body.owner_capital_budget_micro_usdc,
             max_data_age_ms: body.max_data_age_ms,
+            minimum_transfer_arrival_buffer_ms: body.minimum_transfer_arrival_buffer_ms,
+            transfer_routes: body.transfer_routes,
           })],
           "/carry/positions/collateral-review": ["carry:read", (body) => compileStoredCarryCollateralReview({
             state,
             owner_commitment: body.owner_commitment,
             owner_capital_budget_micro_usdc: body.owner_capital_budget_micro_usdc,
             max_data_age_ms: body.max_data_age_ms,
+            minimum_transfer_arrival_buffer_ms: body.minimum_transfer_arrival_buffer_ms,
+            transfer_routes: body.transfer_routes,
           })],
           "/carry/positions/collateral-review/approve": ["carry:write", (body) => approveStoredCarryCollateralReview({
             state,
@@ -3008,6 +3012,8 @@ export function createPrivateAgentWorkerServer(options = {}) {
             owner_commitment: body.owner_commitment,
             owner_capital_budget_micro_usdc: body.owner_capital_budget_micro_usdc,
             max_data_age_ms: body.max_data_age_ms,
+            minimum_transfer_arrival_buffer_ms: body.minimum_transfer_arrival_buffer_ms,
+            transfer_routes: body.transfer_routes,
           })],
           "/carry/positions/release-evidence": ["carry:read", (body) => buildCompletedCarryReleaseMaterial({
             state,
