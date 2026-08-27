@@ -282,8 +282,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "state.consumeCapabilityJti", "carry_collateral_review_replay_gate_missing");
   requireText("positions", "carry-collateral-plan:", "carry_collateral_review_durable_approval_missing");
   requireText("positions", "carry_collateral_review_stale", "carry_collateral_review_stale_gate_missing");
+  requireText("positions", "ghola_carry_collateral_outcome_receipt", "carry_collateral_outcome_receipt_missing");
+  requireText("positions", "safe_runway_verified", "carry_collateral_safe_runway_verification_missing");
+  requireText("positions", "owner_action_causality_claimed: false", "carry_collateral_outcome_causality_boundary_missing");
+  requireText("positions", "fund_movement_verified: false", "carry_collateral_outcome_fund_claim_boundary_missing");
+  requireText("positions", "carry-collateral-latest:", "carry_collateral_followup_persistence_missing");
   requireText("positionsTest", 'approval.receipt.status, "owner_signature_verified"', "carry_collateral_review_approval_test_missing");
   requireText("positionsTest", "carry_collateral_review_replayed", "carry_collateral_review_replay_test_missing");
+  requireText("positionsTest", 'verifiedOutcome.outcome_receipt.status, "safe_runway_verified"', "carry_collateral_outcome_test_missing");
   requireText("server", '"/carry/positions/collateral-review/approve"', "carry_collateral_review_approval_route_missing");
   requireText("positions", "export async function compileStoredCarryPortfolioValueReport", "carry_portfolio_value_worker_missing");
   requireText("positionsTest", 'value.report.value_proof_status, "accruing"', "carry_portfolio_value_worker_test_missing");
@@ -310,8 +316,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "COLLATERAL REVIEW ·", "carry_terminal_collateral_review_missing");
   requireText("webCarryBuilder", "SIGN CAPITAL REVIEW", "carry_terminal_collateral_review_approval_missing");
   requireText("webCarryBuilder", "OWNER VERIFIED · NO FUNDS MOVED", "carry_terminal_collateral_review_receipt_missing");
+  requireText("webCarryBuilder", "SAFE RUNWAY VERIFIED · NO FUNDS MOVED", "carry_terminal_collateral_outcome_missing");
   requireText("webPerpsTurnkey", "signCarryCollateralReview", "carry_collateral_review_turnkey_signing_missing");
   requireText("webCarryBuilderTest", "COLLATERAL REVIEW · 1 MOVE · 0 FUND · $15 · REVIEW ONLY", "carry_terminal_collateral_review_test_missing");
+  requireText("webCarryBuilderTest", "shows fresh account-state proof after an approved capital plan restores safe runway", "carry_terminal_collateral_outcome_test_missing");
   requireText("webClient", "getCarryPortfolioValueReport", "carry_portfolio_value_client_missing");
   requireText("webRoute", 'action === "value_report"', "carry_portfolio_value_proxy_missing");
   requireText("webCarryBuilder", "PORTFOLIO VALUE ·", "carry_terminal_portfolio_value_missing");

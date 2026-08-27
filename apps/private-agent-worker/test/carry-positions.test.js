@@ -698,6 +698,8 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
   assert.equal(approval.ok, true, JSON.stringify(approval));
   assert.equal(approval.receipt.status, "owner_signature_verified");
   assert.equal(approval.receipt.instruction_count, 2);
+  assert.equal(approval.receipt.approved_target_accounts.length, 1);
+  assert.equal(approval.receipt.approved_target_accounts[0].venue_id, "hyperliquid");
   assert.equal(approval.receipt.execution_authorized, false);
   assert.equal(approval.receipt.fund_movement_authorized, false);
   assert.equal(approval.receipt.transaction_broadcast, false);
@@ -712,6 +714,8 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
   assert.equal(persistedApproval.approval_receipt.status, "owner_signature_verified");
   assert.equal(persistedApproval.approval_receipt.plan_commitment, persistedApproval.plan_commitment);
   assert.equal(persistedApproval.approval_receipt.transaction_broadcast, false);
+  assert.equal(persistedApproval.outcome_receipt.status, "owner_action_pending");
+  assert.equal(persistedApproval.outcome_receipt.capital_outcome_verified, false);
   const replay = await approveStoredCarryCollateralReview({
     state: createWorkerState(dir),
     owner_commitment: OWNER,
@@ -735,6 +739,48 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
   assert.equal(value.report.capital_efficiency.potential_new_cash_avoided_micro_usdc, 9_999_997);
   assert.equal(value.report.capital_efficiency.new_owner_cash_requested_micro_usdc, 6);
   assert.equal(value.report.transaction_broadcast, false);
+  const restored = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => ({
+      economic_opportunity: monitoringOpportunity(NOW + 200, 9),
+      margin_runways: [
+        monitoringRunway("hyperliquid", {
+          as_of_ms: NOW + 200,
+          status: "healthy",
+          margin_headroom_micro_usdc: 90_000_000,
+          runway_ms: 9 * 3_600_000,
+          required_owner_response_ms: 4 * 3_600_000,
+        }),
+        monitoringRunway("lighter", { as_of_ms: NOW + 200 }),
+      ],
+      qualification_reasons: [],
+    }),
+    now_ms: NOW + 200,
+  });
+  assert.equal(restored.ok, true, JSON.stringify(restored));
+  const verifiedOutcome = await compileStoredCarryCollateralReview({
+    state: createWorkerState(dir),
+    owner_commitment: OWNER,
+    owner_capital_budget_micro_usdc: 5_000_000,
+    max_data_age_ms: 30_000,
+    now_ms: NOW + 201,
+  });
+  assert.equal(verifiedOutcome.ok, true, JSON.stringify(verifiedOutcome));
+  assert.equal(verifiedOutcome.review.status, "no_action");
+  assert.equal(verifiedOutcome.outcome_receipt.status, "safe_runway_verified");
+  assert.equal(verifiedOutcome.outcome_receipt.capital_outcome_verified, true);
+  assert.equal(verifiedOutcome.outcome_receipt.account_state_checked, true);
+  assert.equal(verifiedOutcome.outcome_receipt.fund_movement_verified, false);
+  assert.equal(verifiedOutcome.outcome_receipt.transaction_broadcast, false);
+  assert.equal(verifiedOutcome.outcome_receipt.accounts[0].status, "safe_runway_verified");
+  const durableOutcome = await createWorkerState(dir).getIdempotency(
+    `carry-collateral-outcome:${approval.receipt.plan_commitment}`,
+  );
+  assert.equal(durableOutcome.receipt.status, "safe_runway_verified");
+  assert.equal(durableOutcome.receipt.capital_outcome_verified, true);
 });
 
 test("portfolio capital endpoint fails closed when an active position lacks monitoring evidence", async (t) => {

@@ -125,6 +125,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const [portfolioCapitalPlan, setPortfolioCapitalPlan] = useState<Record<string, unknown> | null>(null);
   const [collateralReview, setCollateralReview] = useState<Record<string, unknown> | null>(null);
   const [collateralApproval, setCollateralApproval] = useState<Record<string, unknown> | null>(null);
+  const [collateralOutcome, setCollateralOutcome] = useState<Record<string, unknown> | null>(null);
   const [portfolioValueReport, setPortfolioValueReport] = useState<Record<string, unknown> | null>(null);
   const [recordsLoaded, setRecordsLoaded] = useState(false);
   const [recordsLoading, setRecordsLoading] = useState(false);
@@ -160,9 +161,11 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         const result = asRecord(reviewResult.value);
         setCollateralReview(result.ok === true ? asRecord(result.review) : result);
         setCollateralApproval(result.ok === true && result.approval_receipt ? asRecord(result.approval_receipt) : null);
+        setCollateralOutcome(result.ok === true && result.outcome_receipt ? asRecord(result.outcome_receipt) : null);
       } else {
         setCollateralReview(null);
         setCollateralApproval(null);
+        setCollateralOutcome(null);
       }
       if (valueResult.status === "fulfilled") {
         const value = asRecord(valueResult.value);
@@ -541,8 +544,10 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         {collateral
           ? <div className="flex min-w-0 items-center gap-2">
               <p className={`min-w-0 flex-1 truncate font-mono text-[9px] ${collateral.tone === "bad" ? "text-[#ef929e]" : collateral.tone === "warn" ? "text-[#d9bd74]" : "text-[#72bfa2]"}`} title={collateral.value}>COLLATERAL REVIEW · {collateral.value}</p>
-              {collateralApproval?.status === "owner_signature_verified"
-                ? <span className="shrink-0 font-mono text-[8px] font-semibold text-[#72bfa2]">OWNER VERIFIED · NO FUNDS MOVED</span>
+              {collateralOutcome?.capital_outcome_verified === true
+                ? <span className="shrink-0 font-mono text-[8px] font-semibold text-[#72bfa2]">SAFE RUNWAY VERIFIED · NO FUNDS MOVED</span>
+                : collateralApproval?.status === "owner_signature_verified"
+                  ? <span className="shrink-0 font-mono text-[8px] font-semibold text-[#d9bd74]">OWNER VERIFIED · NO FUNDS MOVED · MONITORING</span>
                 : collateralReview?.status === "signature_required"
                 ? <button type="button" disabled={busy !== null || !perpsTurnkey.authenticated} onClick={() => void approveCollateralReview()} className="shrink-0 rounded border border-[#594b2b] px-1.5 py-0.5 font-mono text-[8px] font-semibold text-[#d9bd74] disabled:opacity-40">{busy === "approve" ? "SIGNING…" : "SIGN CAPITAL REVIEW"}</button>
                 : null}

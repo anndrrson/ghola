@@ -64,6 +64,9 @@ switch; reduce-only mode; and explicit owner mainnet activation.
   compensation for Coinbase Advanced and Hyperliquid.
 - Hosted and local model adapters whose output is proposal-only; carry entry,
   sizing, venue selection, and exit remain deterministic.
+- Replay-safe owner collateral reviews now remain non-custodial and are followed
+  by fresh account-state checks that prove safe margin runway was restored,
+  without claiming Ghola moved funds or caused the owner action.
 - Existing web and mobile controls map to the new behavior without adding a
   trading terminal. No infrastructure was deployed and no live trade ran.
 

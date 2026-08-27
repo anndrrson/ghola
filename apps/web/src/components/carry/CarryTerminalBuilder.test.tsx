@@ -523,6 +523,38 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("PORTFOLIO VALUE · $19.5 REAL · $10 OPEN MODEL · +$4.5 Δ");
   });
 
+  it("shows fresh account-state proof after an approved capital plan restores safe runway", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.getCarryCollateralReview.mockResolvedValue({
+      ok: true,
+      review: {
+        version: 1,
+        kind: "ghola_carry_collateral_review",
+        status: "no_action",
+        owner_signature_required: false,
+        transfer_instructions: [],
+        funding_instructions: [],
+        proposal_only: true,
+        review_only: true,
+        execution_authorized: false,
+        fund_movement_authorized: false,
+        transaction_broadcast: false,
+        automatic_transfer_permitted: false,
+        withdrawal_permitted: false,
+        trade_permitted: false,
+      },
+      outcome_receipt: {
+        status: "safe_runway_verified",
+        capital_outcome_verified: true,
+        account_state_checked: true,
+        fund_movement_verified: false,
+        transaction_broadcast: false,
+      },
+    });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    expect(container.textContent).toContain("SAFE RUNWAY VERIFIED · NO FUNDS MOVED");
+  });
+
   async function click(label: string) {
     const button = [...container.querySelectorAll("button")].find((item) => item.textContent?.includes(label));
     expect(button, `missing button: ${label}`).toBeTruthy();

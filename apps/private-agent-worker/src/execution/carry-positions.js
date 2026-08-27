@@ -424,7 +424,24 @@ export async function compileStoredCarryCollateralReview({
       && approvalReceipt.expires_at_ms > nowMs
       ? approvalReceipt
       : null;
-    return { ok: true, review, plan_commitment: planCommitment, approval_receipt: activeApproval };
+    const latestStored = await state.getIdempotency(`carry-collateral-latest:${ownerCommitment}`);
+    const latestApproval = normalizeStoredCollateralApproval(latestStored?.receipt, ownerCommitment, nowMs);
+    const outcomeReceipt = latestApproval
+      ? await compileCollateralReviewOutcome({
+          state,
+          approvalReceipt: latestApproval,
+          currentReview: review,
+          nowMs,
+        })
+      : null;
+    return {
+      ok: true,
+      review,
+      plan_commitment: planCommitment,
+      approval_receipt: activeApproval,
+      followup_approval_receipt: latestApproval,
+      outcome_receipt: outcomeReceipt,
+    };
   } catch (error) {
     return denied(safeError(error));
   }
@@ -480,6 +497,9 @@ export async function approveStoredCarryCollateralReview({
       review_commitment: authorization.review_commitment,
       status: "owner_signature_verified",
       instruction_count: signed.transfer_instructions.length + signed.funding_instructions.length,
+      approved_target_accounts: collateralReviewTargets(signed),
+      owner_capital_budget_micro_usdc: signed.capital_plan.owner_capital_budget_micro_usdc,
+      max_data_age_ms: signed.max_data_age_ms,
       execution_authorized: false,
       fund_movement_authorized: false,
       transaction_broadcast: false,
@@ -488,12 +508,97 @@ export async function approveStoredCarryCollateralReview({
       trade_permitted: false,
       verified_at_ms: nowMs,
       expires_at_ms: signed.expires_at_ms,
+      followup_expires_at_ms: nowMs + 24 * 60 * 60_000,
     };
     await state.putIdempotency(`carry-collateral-plan:${planCommitment}`, receipt);
+    await state.putIdempotency(`carry-collateral-latest:${ownerCommitment}`, receipt);
     return { ok: true, receipt };
   } catch (error) {
     return denied(safeError(error));
   }
+}
+
+async function compileCollateralReviewOutcome({ state, approvalReceipt, currentReview, nowMs }) {
+  const currentPlan = currentReview.capital_plan;
+  const currentByAccount = new Map(currentPlan.accounts.map((account) => [account.account_commitment, account]));
+  const accounts = approvalReceipt.approved_target_accounts.map((target) => {
+    const current = currentByAccount.get(target.account_commitment);
+    const satisfied = Boolean(current)
+      && current.requested_micro_usdc === 0
+      && current.risk_action_required !== true
+      && current.current_headroom_micro_usdc >= current.target_headroom_micro_usdc;
+    return {
+      account_commitment: target.account_commitment,
+      venue_id: target.venue_id,
+      status: current ? (satisfied ? "safe_runway_verified" : "owner_action_pending") : "account_evidence_missing",
+      current_headroom_micro_usdc: current?.current_headroom_micro_usdc ?? null,
+      target_headroom_micro_usdc: current?.target_headroom_micro_usdc ?? target.target_headroom_micro_usdc,
+      requested_micro_usdc: current?.requested_micro_usdc ?? null,
+    };
+  });
+  const allTargetsSafe = accounts.length > 0
+    && accounts.every((account) => account.status === "safe_runway_verified");
+  const status = currentPlan.status === "quarantined"
+    ? "reconciliation_required"
+    : currentPlan.status === "exit_required"
+      ? "reduce_only_exit_required"
+      : currentPlan.status === "balanced" && allTargetsSafe
+        ? "safe_runway_verified"
+        : "owner_action_pending";
+  const receipt = {
+    version: 1,
+    kind: "ghola_carry_collateral_outcome_receipt",
+    review_id: approvalReceipt.review_id,
+    plan_commitment: approvalReceipt.plan_commitment,
+    owner_commitment: approvalReceipt.owner_commitment,
+    owner_wallet_address: approvalReceipt.owner_wallet_address,
+    status,
+    capital_outcome_verified: status === "safe_runway_verified",
+    owner_action_causality_claimed: false,
+    fund_movement_verified: false,
+    account_state_checked: currentPlan.reconciliation_required !== true,
+    accounts,
+    current_plan_status: currentPlan.status,
+    execution_authorized: false,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+    automatic_transfer_permitted: false,
+    withdrawal_permitted: false,
+    trade_permitted: false,
+    checked_at_ms: nowMs,
+    evidence_expires_at_ms: nowMs + currentReview.max_data_age_ms,
+  };
+  if (receipt.capital_outcome_verified) {
+    const outcomeKey = `carry-collateral-outcome:${approvalReceipt.plan_commitment}`;
+    const existing = await state.getIdempotency(outcomeKey);
+    if (!existing?.receipt) await state.putIdempotency(outcomeKey, receipt);
+  }
+  return receipt;
+}
+
+function collateralReviewTargets(review) {
+  const targetIds = new Set([
+    ...review.transfer_instructions.map((instruction) => instruction.to_account_commitment),
+    ...review.funding_instructions.map((instruction) => instruction.account_commitment),
+  ]);
+  return review.capital_plan.accounts
+    .filter((account) => targetIds.has(account.account_commitment))
+    .map((account) => ({
+      account_commitment: account.account_commitment,
+      venue_id: account.venue_id,
+      target_headroom_micro_usdc: account.target_headroom_micro_usdc,
+    }));
+}
+
+function normalizeStoredCollateralApproval(receipt, ownerCommitment, nowMs) {
+  if (!receipt || receipt.kind !== "ghola_carry_collateral_review_approval_receipt"
+    || receipt.status !== "owner_signature_verified"
+    || receipt.owner_commitment !== ownerCommitment
+    || !Array.isArray(receipt.approved_target_accounts)
+    || receipt.approved_target_accounts.length === 0
+    || !Number.isSafeInteger(receipt.followup_expires_at_ms)
+    || receipt.followup_expires_at_ms <= nowMs) return null;
+  return receipt;
 }
 
 export async function compileStoredCarryPortfolioValueReport({
