@@ -168,7 +168,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         }
         await perpsTurnkey.logout().catch(() => {});
         setPendingAsterAuthorization(true);
-        setError("Secure wallet session expired. Reauthenticate to continue; no Aster approval was submitted.");
+        setError("Secure wallet session expired. Continue authentication below; no Aster approval was submitted.");
         return;
       }
       if (prepared && signature && completionAttempted) {
@@ -265,22 +265,6 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     else void connectAsterProgrammatic();
   }, [connectAsterProgrammatic, pendingAsterAuthorization, pendingAsterWalletRepair, perpsTurnkey.authenticated, repairAsterWallet]);
 
-  useEffect(() => {
-    if ((!pendingAsterAuthorization && !pendingLighterAuthorization) ||
-        perpsTurnkey.authenticated || perpsTurnkey.loading || !perpsTurnkey.configured) return;
-    const requestedAster = pendingAsterAuthorization;
-    const requestedLighter = pendingLighterAuthorization;
-    setWorking(true);
-    void perpsTurnkey.login().catch((caught) => {
-      if (requestedAster) {
-        setPendingAsterAuthorization(false);
-        setPendingAsterWalletRepair(false);
-      }
-      if (requestedLighter) setPendingLighterAuthorization(false);
-      setError(caught instanceof Error ? caught.message : "Secure wallet authentication failed.");
-    }).finally(() => setWorking(false));
-  }, [pendingAsterAuthorization, pendingLighterAuthorization, perpsTurnkey]);
-
   async function beginAsterProgrammatic() {
     if (!auth.authenticated) {
       setAuthMode("signin");
@@ -300,9 +284,19 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       return;
     }
     if (!perpsTurnkey.authenticated) {
+      setWorking(true);
       setPendingAsterAuthorization(true);
       setPendingAsterWalletRepair(asterWalletRepairRequested);
       setError(null);
+      try {
+        await perpsTurnkey.login();
+      } catch (caught) {
+        setPendingAsterAuthorization(false);
+        setPendingAsterWalletRepair(false);
+        setError(caught instanceof Error ? caught.message : "Secure wallet authentication failed.");
+      } finally {
+        setWorking(false);
+      }
       return;
     }
     if (asterWalletRepairRequested) {
@@ -401,7 +395,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       if (!pending && isExpiredPerpsSession(caught)) {
         await perpsTurnkey.logout().catch(() => {});
         setPendingLighterAuthorization(true);
-        setError("Secure wallet session expired. Reauthenticate to continue; no Lighter key was submitted.");
+        setError("Secure wallet session expired. Continue authentication below; no Lighter key was submitted.");
         return;
       }
       if (pending) {
@@ -456,8 +450,17 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       return;
     }
     if (!perpsTurnkey.authenticated) {
+      setWorking(true);
       setPendingLighterAuthorization(true);
       setError(null);
+      try {
+        await perpsTurnkey.login();
+      } catch (caught) {
+        setPendingLighterAuthorization(false);
+        setError(caught instanceof Error ? caught.message : "Secure wallet authentication failed.");
+      } finally {
+        setWorking(false);
+      }
       return;
     }
     await connectLighterProgrammatic();
@@ -531,7 +534,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
               {aster !== "connected" && (
                 <button type="button" disabled={working || perpsTurnkey.loading || !perpsTurnkey.configured || asterRegistrationAmbiguous} onClick={() => void beginAsterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
                   {pendingAsterAuthorization
-                    ? "Authenticating…"
+                    ? working ? "Authenticating…" : "Continue secure authentication"
                     : !perpsTurnkey.configured
                       ? "Secure wallet unavailable"
                     : perpsTurnkey.loading
@@ -578,7 +581,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
               {lighter !== "connected" && (
                 <button type="button" disabled={working || perpsTurnkey.loading || !perpsTurnkey.configured} onClick={() => void beginLighterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
                   {pendingLighterAuthorization
-                    ? "Authenticating…"
+                    ? working ? "Authenticating…" : "Continue secure authentication"
                     : !perpsTurnkey.configured
                       ? "Secure wallet unavailable"
                     : perpsTurnkey.loading

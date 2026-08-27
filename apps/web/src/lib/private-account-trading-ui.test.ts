@@ -145,6 +145,10 @@ describe("private account trading UI derivation", () => {
       resolve(process.cwd(), "src/lib/perps-turnkey-provider.tsx"),
       "utf8",
     );
+    const carryAccountSetupSource = readFileSync(
+      resolve(process.cwd(), "src/components/carry/CarryAccountSetup.tsx"),
+      "utf8",
+    );
     const turnkeyCorePatch = readFileSync(
       resolve(process.cwd(), "patches/@turnkey__core@2.5.0.patch"),
       "utf8",
@@ -177,6 +181,9 @@ describe("private account trading UI derivation", () => {
     );
     expect(perpsTurnkeySource).toContain("TURNKEY_PENDING_BINDING_STORAGE_KEY");
     expect(perpsTurnkeySource).not.toContain("await turnkey.handleGoogleOauth(");
+    expect(carryAccountSetupSource).toContain("await perpsTurnkey.login();");
+    expect(carryAccountSetupSource).not.toContain("void perpsTurnkey.login().catch");
+    expect(carryAccountSetupSource).toContain("Continue secure authentication");
     expect(turnkeyCorePatch).toContain("this.config.withPlatformKey");
     expect(turnkeyCorePatch).toContain('? "platform"');
   });
