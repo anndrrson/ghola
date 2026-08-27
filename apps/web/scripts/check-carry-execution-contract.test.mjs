@@ -72,6 +72,19 @@ test("rejects release proof that accepts one unattended observation", () => {
   );
 });
 
+test("rejects release proof that ignores monitoring outages", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier.replace(
+        "supervision.failure_count === 0",
+        "supervision.failure_count >= 0",
+      ),
+    }),
+    /carry_release_monitoring_outage_verifier_missing/,
+  );
+});
+
 test("rejects live Carry entry that ignores degraded supervision", () => {
   assert.throws(
     () => checkCarryExecutionContract({

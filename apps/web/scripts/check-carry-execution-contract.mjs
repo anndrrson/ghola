@@ -689,8 +689,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterial", 'event?.observation_source === "supervised_loop"', "carry_release_supervised_monitoring_missing");
   requireText("releaseMaterialTest", "refuses release evidence assembled from manual-only monitoring", "carry_release_supervised_monitoring_test_missing");
   requireText("releaseMaterialTest", "refuses a single unattended observation as a monitoring period", "carry_release_monitoring_cadence_test_missing");
+  requireText("releaseMaterialTest", "refuses a lifecycle with a monitoring outage", "carry_release_monitoring_outage_test_missing");
+  requireText("releaseMaterialTest", "refuses monitoring gaps beyond the signed freshness budget", "carry_release_monitoring_gap_test_missing");
   requireText("evidenceVerifier", 'supervision.mode === "attested_worker_loop"', "carry_release_supervision_verifier_missing");
   requireText("evidenceVerifier", 'automaticObservations >= 2', "carry_release_monitoring_cadence_verifier_missing");
+  requireText("evidenceVerifier", 'supervision.failure_count === 0', "carry_release_monitoring_outage_verifier_missing");
+  requireText("evidenceVerifier", 'maxObservationGapMs <= maxAllowedGapMs', "carry_release_monitoring_gap_verifier_missing");
   requireText("evidenceVerifierTest", "rejects monitoring that was not produced by the unattended worker loop", "carry_release_supervision_verifier_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: "5000"', "carry_monitor_five_second_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS: "750"', "carry_market_data_skew_runtime_test_missing");

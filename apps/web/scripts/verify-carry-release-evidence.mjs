@@ -177,6 +177,8 @@ export async function verifyCarryReleaseEvidence(evidence) {
   const automaticObservations = positiveInteger(supervision.automatic_observation_count);
   const firstAutomaticObservation = timestamp(supervision.first_automatic_observed_at);
   const lastAutomaticObservation = timestamp(supervision.last_automatic_observed_at);
+  const maxObservationGapMs = nonNegativeInteger(supervision.max_observation_gap_ms);
+  const maxAllowedGapMs = positiveInteger(supervision.max_allowed_gap_ms);
   fail(supervision.mode === "attested_worker_loop", "supervised_monitoring_required");
   fail(automaticObservations >= 2, "supervised_monitoring_cadence_missing");
   fail(automaticObservations === positiveInteger(monitoring.observation_count), "supervised_observation_count_mismatch");
@@ -184,6 +186,10 @@ export async function verifyCarryReleaseEvidence(evidence) {
     "supervised_monitoring_start_invalid");
   fail(firstAutomaticObservation < lastAutomaticObservation, "supervised_monitoring_period_required");
   fail(lastAutomaticObservation === monitoringEndedAt, "supervised_monitoring_end_invalid");
+  fail(supervision.failure_count === 0, "supervised_monitoring_failure_detected");
+  fail(maxAllowedGapMs === maxDataAgeMs, "supervised_monitoring_gap_budget_mismatch");
+  fail(maxObservationGapMs !== null && maxObservationGapMs <= maxAllowedGapMs,
+    "supervised_monitoring_gap_exceeded");
   fail(supervision.transaction_broadcast === false, "supervised_monitoring_broadcast_detected");
   fail(sameVenueSet(monitoring.margin_runways, pair), "margin_runway_venues_mismatch");
   for (const runway of array(monitoring.margin_runways)) {

@@ -56,16 +56,38 @@ export async function buildCompletedCarryReleaseMaterial({
   if (entrySaga?.status !== "reconciled" || exitSaga?.status !== "reconciled") {
     return denied("carry_release_sagas_not_reconciled");
   }
+  const entryReconciledAt = entrySaga.updated_at_ms;
   const events = Array.isArray(record.lifecycle_events) ? record.lifecycle_events : [];
   if (events.some((event) => ["submission_ambiguous", "recovery_failed"].includes(event?.type))) {
     return denied("carry_release_ambiguous_or_recovered_lifecycle");
   }
+  const exitRequest = [...events].reverse().find((event) => event?.type === "manual_exit_requested");
+  const exitRequestedAt = exitRequest?.recorded_at_ms || exitSaga.created_at_ms;
+  const monitoringFailures = events.filter((event) => ["observation_unavailable", "mandate_invalid"].includes(event?.type)
+    && positiveInteger(event.recorded_at_ms)
+    && event.recorded_at_ms >= entryReconciledAt
+    && event.recorded_at_ms <= exitRequestedAt);
+  if (monitoringFailures.length > 0) return denied("carry_release_monitoring_failure_detected");
   const observations = events.filter((event) => event?.type === "observation" && positiveInteger(event.recorded_at_ms));
   if (observations.length === 0) return denied("carry_release_monitoring_evidence_missing");
   const supervisedObservations = observations.filter((event) => event?.observation_source === "supervised_loop");
   if (supervisedObservations.length === 0) return denied("carry_release_supervised_monitoring_missing");
   if (supervisedObservations.length < 2) return denied("carry_release_supervised_monitoring_insufficient");
+  supervisedObservations.sort((left, right) => left.recorded_at_ms - right.recorded_at_ms);
   const latestObservation = supervisedObservations.at(-1);
+  const observationTimes = supervisedObservations.map((event) => event.recorded_at_ms);
+  const observationGaps = [
+    observationTimes[0] - entryReconciledAt,
+    ...observationTimes.slice(1).map((value, index) => value - observationTimes[index]),
+    exitRequestedAt - observationTimes.at(-1),
+  ];
+  const maxAllowedObservationGapMs = record.position.risk_mandate.max_data_age_ms;
+  const maxObservationGapMs = Math.max(...observationGaps);
+  if (observationGaps.some((value) => value < 0)
+    || !positiveInteger(maxAllowedObservationGapMs)
+    || maxObservationGapMs > maxAllowedObservationGapMs) {
+    return denied("carry_release_monitoring_cadence_exceeded");
+  }
   const runwayStatuses = latestObservation.margin_runway_status_by_venue || {};
   const runwayValues = latestObservation.margin_runway_ms_by_venue || {};
   const validRunwayStatuses = new Set(["healthy", "warning", "critical", "breached"]);
@@ -87,11 +109,8 @@ export async function buildCompletedCarryReleaseMaterial({
   ]);
   if (!entryLegs.ok) return entryLegs;
   if (!exitLegs.ok) return exitLegs;
-  const exitRequest = [...events].reverse().find((event) => event?.type === "manual_exit_requested");
-  const entryReconciledAt = entrySaga.updated_at_ms;
   const monitoringEndedAt = latestObservation.recorded_at_ms;
   if (monitoringEndedAt <= entryReconciledAt) return denied("carry_release_monitoring_period_missing");
-  const exitRequestedAt = exitRequest?.recorded_at_ms || exitSaga.created_at_ms;
   if (!positiveInteger(exitRequestedAt) || exitRequestedAt < monitoringEndedAt) {
     return denied("carry_release_exit_timestamp_invalid");
   }
@@ -161,6 +180,9 @@ export async function buildCompletedCarryReleaseMaterial({
         automatic_observation_count: supervisedObservations.length,
         first_automatic_observed_at: iso(supervisedObservations[0].recorded_at_ms),
         last_automatic_observed_at: iso(monitoringEndedAt),
+        max_observation_gap_ms: maxObservationGapMs,
+        max_allowed_gap_ms: maxAllowedObservationGapMs,
+        failure_count: 0,
         transaction_broadcast: false,
       },
       margin_runways: pair.map((venueId) => ({

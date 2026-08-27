@@ -32,6 +32,8 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.equal(result.material.monitoring.observation_count, 2);
   assert.equal(result.material.monitoring.supervision.mode, "attested_worker_loop");
   assert.equal(result.material.monitoring.supervision.automatic_observation_count, 2);
+  assert.equal(result.material.monitoring.supervision.max_observation_gap_ms, 1_000);
+  assert.equal(result.material.monitoring.supervision.failure_count, 0);
   assert.equal(result.material.monitoring.margin_runways[0].status, "healthy");
   assert.equal(result.material.contract_equivalence.index_price_divergence_bps, 3);
   assert.equal(result.material.shadow_qualification.proven, true);
@@ -118,6 +120,41 @@ test("refuses a single unattended observation as a monitoring period", async () 
     now_ms: NOW,
   });
   assert.equal(result.error, "carry_release_supervised_monitoring_insufficient");
+});
+
+test("refuses a lifecycle with a monitoring outage", async () => {
+  const fixture = await stateFixture();
+  fixture.record.lifecycle_events.splice(1, 0, {
+    type: "observation_unavailable",
+    recorded_at_ms: 1_800_000_002_250,
+    reason: "venue_read_unavailable",
+  });
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_monitoring_failure_detected");
+});
+
+test("refuses monitoring gaps beyond the signed freshness budget", async () => {
+  const fixture = await stateFixture();
+  fixture.record.position.risk_mandate.max_data_age_ms = 2_000;
+  fixture.record.position.mandate_authorization = await signedMandateAuthorization(fixture.record.position);
+  const observations = fixture.record.lifecycle_events.filter((event) => event.type === "observation");
+  observations[0].recorded_at_ms = 1_800_000_003_500;
+  observations[1].recorded_at_ms = 1_800_000_003_750;
+  fixture.record.lifecycle_events.find((event) => event.type === "manual_exit_requested").recorded_at_ms = 1_800_000_004_000;
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_monitoring_cadence_exceeded");
 });
 
 test("refuses release evidence without bounded contract equivalence", async () => {

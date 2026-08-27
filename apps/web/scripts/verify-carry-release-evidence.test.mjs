@@ -123,6 +123,9 @@ async function fixture() {
         automatic_observation_count: 2,
         first_automatic_observed_at: "2026-08-24T00:00:04.000Z",
         last_automatic_observed_at: "2026-08-24T00:00:05.000Z",
+        max_observation_gap_ms: 2_000,
+        max_allowed_gap_ms: 60_000,
+        failure_count: 0,
         transaction_broadcast: false,
       },
       margin_runways: [
@@ -273,6 +276,23 @@ test("rejects a single unattended observation as continuous monitoring", async (
     () => verifyCarryReleaseEvidence(evidence),
     /monitoring_observation_cadence_missing|supervised_monitoring_cadence_missing|supervised_monitoring_period_required/,
   );
+});
+
+test("rejects monitoring outages and gaps beyond the signed freshness budget", async () => {
+  for (const mutate of [
+    (evidence) => { evidence.monitoring.supervision.failure_count = 1; },
+    (evidence) => { evidence.monitoring.supervision.max_observation_gap_ms = 60_001; },
+    (evidence) => { evidence.monitoring.supervision.max_allowed_gap_ms = 120_000; },
+  ]) {
+    const evidence = await fixture();
+    mutate(evidence);
+    evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+    evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+    await assert.rejects(
+      () => verifyCarryReleaseEvidence(evidence),
+      /supervised_monitoring_failure_detected|supervised_monitoring_gap_exceeded|supervised_monitoring_gap_budget_mismatch/,
+    );
+  }
 });
 
 test("rejects same-ticker proof whose contract basis exceeds the verified budget", async () => {
