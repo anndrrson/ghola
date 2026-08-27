@@ -9,6 +9,7 @@ test("combines five-venue shadow and three-venue no-submit evidence without over
     readiness: {
       ready: true,
       owner_commitment: "owner_commitment_0001",
+      image_digest: "sha256:abcdef123456",
       network: "mainnet",
       asset: "BTC",
       expires_at_ms: NOW + 120_000,
@@ -25,6 +26,7 @@ test("combines five-venue shadow and three-venue no-submit evidence without over
     },
     carry_supervision: { ready: true, status: "healthy" },
     route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
     now_ms: NOW,
   });
   assert.equal(result.ready, true);
@@ -53,10 +55,16 @@ test("fails closed when shadow, supervision, or route evidence is missing", () =
 
 test("keeps technically connected but unfunded accounts pre-broadcast blocked", () => {
   const result = buildCarryPrivatePrimeReadiness({
-    readiness: { ready: true, capital_ready: false },
+    readiness: {
+      ready: true,
+      capital_ready: false,
+      owner_commitment: "owner_commitment_0001",
+      image_digest: "sha256:abcdef123456",
+    },
     shadow_qualification: { ready: true, venues: 5 },
     carry_supervision: { ready: true, status: "healthy" },
     route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
     now_ms: NOW,
   });
   assert.equal(result.ready, false);
@@ -64,3 +72,47 @@ test("keeps technically connected but unfunded accounts pre-broadcast blocked", 
   assert.equal(result.three_venue_execution.ready, true);
   assert.equal(result.three_venue_execution.capital_ready, false);
 });
+
+test("rejects a configured route probe without fresh owner-bound route evidence", () => {
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: {
+      ready: true,
+      capital_ready: true,
+      owner_commitment: "owner_commitment_0001",
+      image_digest: "sha256:abcdef123456",
+    },
+    shadow_qualification: { ready: true, venues: 5 },
+    carry_supervision: { ready: true, status: "healthy" },
+    route_observation_configured: true,
+    route_evidence: { ok: false, error: "carry_transfer_route_evidence_missing" },
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.reasons, ["collateral_route_evidence_unverified"]);
+  assert.equal(result.collateral_route_observation.configured, true);
+  assert.equal(result.collateral_route_observation.verified, false);
+  assert.equal(result.collateral_route_observation.available_route_count, 0);
+});
+
+function verifiedRouteEvidence() {
+  return {
+    ok: true,
+    evidence: {
+      owner_commitment: "owner_commitment_0001",
+      worker_image_digest: "sha256:abcdef123456",
+      checked_at_ms: NOW,
+      expires_at_ms: NOW + 30_000,
+      evidence_commitment: "carry:transfer-routes:evidence:abcdef123456",
+    },
+    routes: [{
+      status: "available",
+      quote_verified: true,
+      all_in_fee_verified: true,
+      valuation_basis_verified: true,
+      owner_approval_required: true,
+      fund_movement_authorized: false,
+      transaction_broadcast: false,
+      automatic_transfer_permitted: false,
+    }],
+  };
+}

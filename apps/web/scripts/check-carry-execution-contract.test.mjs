@@ -154,6 +154,16 @@ test("rejects a worker that silently disables default collateral-route observati
   );
 });
 
+test("rejects private-prime readiness backed only by a configured route probe", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replaceAll("route_evidence: routeEvidence", "route_evidence: null"),
+    }),
+    /carry_private_prime_route_evidence_binding_missing/,
+  );
+});
+
 test("rejects private-prime readiness that overstates no-submit evidence as live proof", () => {
   assert.throws(
     () => checkCarryExecutionContract({

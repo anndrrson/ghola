@@ -28,9 +28,22 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && venues.length === CARRY_EXECUTION_VENUES.length
     && CARRY_EXECUTION_VENUES.every((venueId, index) => venues[index] === venueId);
   const capitalReady = execution.capital_ready === true;
+  const routeCheckedAt = integer(route.checked_at_ms);
+  const routeExpiresAt = integer(route.expires_at_ms);
   const routesReady = route.configured === true
+    && route.verified === true
+    && Number(route.route_count) > 0
+    && Number(route.available_route_count) > 0
+    && routeCheckedAt !== null
+    && routeCheckedAt <= nowMs
+    && routeExpiresAt !== null
+    && routeExpiresAt > nowMs
+    && typeof route.evidence_commitment === "string"
+    && route.evidence_commitment.startsWith("carry:transfer-routes:evidence:")
     && route.read_only === true
     && route.owner_approval_required === true
+    && route.fund_movement_authorized === false
+    && route.transaction_broadcast === false
     && route.automatic_transfer_permitted === false;
   const supervisionReady = supervision.ready === true && supervision.status === "healthy";
   const expectedReady = shadowReady && executionReady && capitalReady && routesReady && supervisionReady && reasons.length === 0;
@@ -67,6 +80,8 @@ function reasonLabel(reason: string) {
   if (reason === "five_venue_shadow_unproven") return "DATA SOAK REQUIRED";
   if (reason === "carry_supervision_unready") return "RISK ENGINE UNREADY";
   if (reason === "collateral_route_observation_unavailable") return "ROUTES UNAVAILABLE";
+  if (reason === "collateral_route_evidence_unverified") return "ROUTES UNVERIFIED";
+  if (reason === "collateral_route_unavailable") return "NO SAFE ROUTE";
   return "CHECK REQUIRED";
 }
 

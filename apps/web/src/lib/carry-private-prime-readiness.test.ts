@@ -30,6 +30,27 @@ describe("private-prime readiness", () => {
     expect(carryPrivatePrimeSummary(proof({ expires_at_ms: NOW }), NOW).status).toBe("invalid");
     expect(carryPrivatePrimeSummary(proof({ live_paired_lifecycle_proven: true }), NOW).status).toBe("invalid");
   });
+
+  it("does not treat a configured probe as verified collateral routing", () => {
+    expect(carryPrivatePrimeSummary(proof({
+      ready: false,
+      reasons: ["collateral_route_evidence_unverified"],
+      collateral_route_observation: {
+        ...proof().collateral_route_observation,
+        verified: false,
+        route_count: 0,
+        available_route_count: 0,
+        checked_at_ms: null,
+        expires_at_ms: null,
+        evidence_commitment: null,
+      },
+    }), NOW)).toEqual({
+      status: "blocked",
+      value: "5/5 DATA · 3/3 EXEC · NO ROUTES",
+      detail: "ROUTES UNVERIFIED",
+      tone: "bad",
+    });
+  });
 });
 
 function proof(overrides: Record<string, unknown> = {}) {
@@ -48,8 +69,16 @@ function proof(overrides: Record<string, unknown> = {}) {
     },
     collateral_route_observation: {
       configured: true,
+      verified: true,
+      route_count: 2,
+      available_route_count: 2,
+      checked_at_ms: NOW,
+      expires_at_ms: NOW + 30_000,
+      evidence_commitment: "carry:transfer-routes:evidence:abcdef123456",
       read_only: true,
       owner_approval_required: true,
+      fund_movement_authorized: false,
+      transaction_broadcast: false,
       automatic_transfer_permitted: false,
     },
     supervision: { ready: true, status: "healthy" },

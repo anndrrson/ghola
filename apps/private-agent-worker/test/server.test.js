@@ -683,6 +683,10 @@ describe("private agent worker", () => {
     assert.equal(matrix.transaction_broadcast, false);
     assert.equal(matrix.pairs.length, 3);
     assert.equal(matrix.carry_supervision.status, "disabled");
+    assert.equal(matrix.private_prime_readiness.ready, false);
+    assert.equal(matrix.private_prime_readiness.collateral_route_observation.configured, true);
+    assert.equal(matrix.private_prime_readiness.collateral_route_observation.verified, false);
+    assert.ok(matrix.private_prime_readiness.reasons.includes("collateral_route_evidence_unverified"));
     assert.equal(matrix.pairs.every((pair) => pair.leg_evidence.every((leg) =>
       leg.account_state.position_count === 0
       && leg.account_state.open_order_count === 0
@@ -707,6 +711,9 @@ describe("private agent worker", () => {
     assert.equal(readinessResponse.status, 200, JSON.stringify(readiness));
     assert.equal(readiness.ready, true);
     assert.equal(readiness.carry_supervision.status, "disabled");
+    assert.equal(readiness.private_prime_readiness.ready, false);
+    assert.equal(readiness.private_prime_readiness.collateral_route_observation.verified, false);
+    assert.ok(readiness.private_prime_readiness.reasons.includes("collateral_route_evidence_unverified"));
     assert.equal(readiness.capital_plan.every((item) =>
       item.position_count === 0
       && item.open_order_count === 0
