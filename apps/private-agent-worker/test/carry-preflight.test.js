@@ -375,6 +375,57 @@ test("monitoring measures a signed basis breach without submitting or hiding it 
   assert.ok(result.economic_opportunity.reasons.includes("index_price_divergence_exceeded"));
 });
 
+test("migration preflight applies signed opening limits and never broadcasts", async () => {
+  const account = {
+    can_trade: true,
+    available_balance: 500,
+    margin_balance: 500,
+    initial_margin: 0,
+    maintenance_margin: 0,
+    maker_fee_bps: 1,
+    taker_fee_bps: 3,
+    position_count: 0,
+    open_order_count: 0,
+  };
+  const result = await preflightCarryPair({
+    body: {
+      version: 1,
+      phase: "migration",
+      owner_commitment: "owner_commitment_migration_0001",
+      work_order_commitment: "carry_pair_migration_0001",
+      asset: "BTC",
+      long_venue_id: "hyperliquid",
+      short_venue_id: "lighter",
+      notional_usd: 100,
+      horizon_days: 30,
+      risk_mandate: riskMandate(),
+      venue_access: {
+        hyperliquid: access("owner_commitment_migration_0001"),
+        lighter: access("owner_commitment_migration_0001"),
+      },
+    },
+    recipient: {},
+    state: {},
+    now: () => NOW,
+    fetchVenue: async ({ venue_id }) => [snapshot(venue_id)],
+    verifyOrder: async ({ venue_id, work_order_commitment }) => ({
+      status: "verified_ready",
+      work_order_commitment,
+      verification_commitment: `verification_${venue_id}`,
+      checks: { order_request_checked: true, transaction_broadcast: false },
+      order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
+      account,
+      authority_boundary: { venue_native_trade_only: true },
+    }),
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
+    readHyperliquidCarryMetrics: async () => account,
+  });
+  assert.equal(result.mode, "paired_migration_no_submit");
+  assert.equal(result.transaction_broadcast, false);
+  assert.equal(result.no_submit_ready, true);
+  assert.equal(result.economic_opportunity.max_contract_data_skew_ms, 2_000);
+});
+
 test("rejects cross-owner sealed venue access before order verification", async () => {
   let verified = false;
   await assert.rejects(

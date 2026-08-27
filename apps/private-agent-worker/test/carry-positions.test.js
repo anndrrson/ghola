@@ -243,6 +243,69 @@ test("monitoring records funding flips and deterministically requests exit", asy
   assert.deepEqual(second.record.position.next_actions, ["reduce_only_close_both_legs"]);
 });
 
+test("monitoring preserves signed migration venues and proposes the best no-submit route only after the exit threshold", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-migration-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const risk = {
+    allow_migration: true,
+    min_migration_improvement_bps: 1,
+    migration_venue_allowlist: ["hyperliquid", "lighter", "aster"],
+  };
+  const context = monitoringContext(["hyperliquid", "lighter", "aster"]);
+  const active = await activePosition(state, "migration", risk, context);
+  const stored = await state.getCarryPositionRecord(active.position.position_id);
+  assert.deepEqual(Object.keys(stored.monitoring_context.venue_access).sort(), ["aster", "hyperliquid", "lighter"]);
+
+  const phases = [];
+  const preflight = async ({ body }) => {
+    phases.push(body.phase);
+    if (body.phase === "monitoring") {
+      return {
+        version: 1,
+        mode: "paired_monitoring_no_submit",
+        no_submit_ready: true,
+        transaction_broadcast: false,
+        economic_opportunity: monitoringOpportunity(NOW + phases.length, -1),
+        margin_runways: [
+          { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
+          { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
+        ],
+        qualification_reasons: [],
+      };
+    }
+    const best = body.long_venue_id === "aster" && body.short_venue_id === "lighter";
+    return {
+      version: 1,
+      mode: "paired_migration_no_submit",
+      no_submit_ready: true,
+      transaction_broadcast: false,
+      live_creation_ready: true,
+      economic_opportunity: monitoringOpportunity(NOW + 200, best ? 30 : 10, { eligible: true }),
+      qualification_reasons: [],
+    };
+  };
+  const dependencies = {
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: context.venue_access,
+    preflight,
+  };
+  const first = await observeStoredCarryPosition({ ...dependencies, now_ms: NOW + 100 });
+  assert.equal(first.record.position.status, "active");
+  assert.deepEqual(phases, ["monitoring"]);
+  const second = await observeStoredCarryPosition({ ...dependencies, now_ms: NOW + 200 });
+  assert.equal(second.record.position.status, "exiting");
+  assert.deepEqual(second.record.position.next_actions, ["reduce_only_close_both_legs"]);
+  assert.ok(second.record.position.pending_migration, JSON.stringify(second.record.lifecycle_events.at(-1)));
+  assert.equal(second.record.position.pending_migration.status, "awaiting_flat_exit");
+  assert.equal(second.record.position.pending_migration.transaction_broadcast, false);
+  assert.equal(second.record.position.pending_migration.selected_candidate.long_venue_id, "aster");
+  assert.equal(second.record.position.pending_migration.selected_candidate.short_venue_id, "lighter");
+  assert.equal(phases.filter((phase) => phase === "migration").length, 5);
+});
+
 test("monitoring records a basis breach and immediately requests a reduce-only exit", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-basis-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -380,13 +443,13 @@ test("monitoring appends only authoritative venue funding settlements", async (t
   assert.equal(result.record.value_evidence.funding.status, "current");
 });
 
-async function activePosition(state, suffix = "0001") {
+async function activePosition(state, suffix = "0001", riskOverrides = {}, context = monitoringContext()) {
   const created = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
-    position_input: await positionInput(suffix),
+    position_input: await positionInput(suffix, riskOverrides),
     opportunity: opportunity(),
-    monitoring_context: monitoringContext(),
+    monitoring_context: context,
     now_ms: NOW,
   });
   let record = created.record;
@@ -468,6 +531,7 @@ function monitoringOpportunity(checkedAtMs, projectedNetValueBps, overrides = {}
   return {
     checked_at_ms: checkedAtMs,
     projected_net_value_bps: projectedNetValueBps,
+    economic_equivalence_id: "carry:BTC-usd-linear",
     contract_data_skew_ms: 0,
     max_contract_data_skew_ms: 2_000,
     index_price_divergence_bps: 0,
@@ -478,7 +542,7 @@ function monitoringOpportunity(checkedAtMs, projectedNetValueBps, overrides = {}
   };
 }
 
-function monitoringContext() {
+function monitoringContext(venueIds = ["hyperliquid", "lighter"]) {
   const access = (venueId) => ({
     status: "ready",
     owner_commitment: OWNER,
@@ -490,10 +554,7 @@ function monitoringContext() {
   });
   return {
     version: 1,
-    venue_access: {
-      hyperliquid: access("hyperliquid"),
-      lighter: access("lighter"),
-    },
+    venue_access: Object.fromEntries(venueIds.map((venueId) => [venueId, access(venueId)])),
   };
 }
 

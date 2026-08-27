@@ -192,6 +192,16 @@ test("rejects release without an unattended monitor-to-flat lifecycle proof", ()
   );
 });
 
+test("rejects monitoring that cannot compile signed no-submit migration candidates", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll("migration_candidates: migrationCandidates", "migration_candidates: []"),
+    }),
+    /carry_monitor_migration_candidates_missing/,
+  );
+});
+
 test("rejects Carry creation without a recovered owner signature", () => {
   assert.throws(
     () => checkCarryExecutionContract({

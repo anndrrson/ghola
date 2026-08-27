@@ -174,6 +174,13 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarryTest", "selects only the best fresh route inside the signed venue allowlist", "carry_migration_selection_test_missing");
   requireText("coreCarryTest", "fails closed for unsigned, stale, or unqualified destinations", "carry_migration_failure_test_missing");
   requireText("coreCarryTest", "closes the old route first and persists an owner-signature request", "carry_migration_flat_transition_test_missing");
+  requireText("preflight", "paired_migration_no_submit", "carry_migration_no_submit_mode_missing");
+  requireText("preflightTest", "migration preflight applies signed opening limits and never broadcasts", "carry_migration_preflight_test_missing");
+  requireText("positions", "migration_candidates: migrationCandidates", "carry_monitor_migration_candidates_missing");
+  requireText("positions", "Promise.allSettled", "carry_monitor_migration_single_attempt_missing");
+  requireText("positionsTest", "proposes the best no-submit route only after the exit threshold", "carry_monitor_migration_test_missing");
+  requireText("server", "outside the signed migration allowlist", "carry_monitor_migration_allowlist_gate_missing");
+  requireText("webRoute", "migration_venue_allowlist", "carry_web_migration_access_missing");
   requireText("coreCarry", "carry_mandate_position_mismatch", "carry_signed_mandate_position_binding_missing");
   requireText("coreCarry", "risk_mandate_expired", "carry_signed_mandate_expiry_exit_missing");
   requireText("coreCarry", "contract_basis_outside_mandate", "carry_signed_basis_exit_missing");

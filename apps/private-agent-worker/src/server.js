@@ -1654,9 +1654,27 @@ function validateCarryMonitoringAccess(body, recipient, mode) {
   if (!isObject(accessByVenue)) return ["carry monitoring venue_access is required"];
   if (containsPlaintextLeakKey(accessByVenue)) errors.push("carry monitoring access must not contain plaintext credentials");
   const entries = Object.entries(accessByVenue);
-  if (entries.length !== 2) errors.push("carry monitoring requires exactly two venues");
+  const selected = mode === "create"
+    ? new Set([body.position_input?.long_venue_id, body.position_input?.short_venue_id])
+    : null;
+  const migrationAllowed = mode === "create"
+    && body.position_input?.risk_mandate?.allow_migration === true
+    && Array.isArray(body.position_input.risk_mandate.migration_venue_allowlist)
+    ? new Set(body.position_input.risk_mandate.migration_venue_allowlist)
+    : new Set();
+  if (mode === "create") {
+    for (const venueId of selected) {
+      if (!isNonEmptyString(venueId) || !accessByVenue[venueId]) errors.push(`${venueId || "selected"} monitoring access is required`);
+    }
+    if (entries.length < 2 || entries.length > supported.size) errors.push("carry monitoring venue count is invalid");
+  } else if (entries.length !== 2) {
+    errors.push("carry monitoring requires exactly two venues");
+  }
   for (const [venueId, access] of entries) {
     if (!supported.has(venueId)) errors.push(`${venueId} is unsupported for carry monitoring`);
+    if (mode === "create" && !selected.has(venueId) && !migrationAllowed.has(venueId)) {
+      errors.push(`${venueId} is outside the signed migration allowlist`);
+    }
     if (!isObject(access) || access.status !== "ready") {
       errors.push(`${venueId} monitoring access must be ready`);
       continue;

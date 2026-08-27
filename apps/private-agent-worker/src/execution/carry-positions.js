@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  CARRY_EXECUTION_VENUES,
   advanceCarryPosition,
   appendCarryValueLedgerEntry,
   createCarryValueLedger,
@@ -31,7 +32,7 @@ export async function createStoredCarryPosition({
   if (!normalizedPilot.ok) return denied(normalizedPilot.error);
   const opportunityError = validateCreationOpportunity(positionInput, opportunity, nowMs, normalizedPilot.value);
   if (opportunityError) return denied(opportunityError);
-  const normalizedMonitoring = normalizeMonitoringContext(monitoringContext, positionInput, ownerCommitment);
+  const normalizedMonitoring = normalizeMonitoringContext(monitoringContext, mandate.position, ownerCommitment);
   if (!normalizedMonitoring.ok) return normalizedMonitoring;
   try {
     const position = mandate.position;
@@ -413,6 +414,20 @@ export async function observeStoredCarryPosition({
     return frozen.ok ? { ...frozen, observation_ok: false, observation: null } : frozen;
   }
   const opportunity = observation?.economic_opportunity || {};
+  const migrationCandidates = await evaluateMigrationCandidates({
+    state,
+    position,
+    record: owned.record,
+    opportunity,
+    venueAccess,
+    recipient,
+    verifyOrder,
+    readHyperliquidSnapshot,
+    readHyperliquidCarryMetrics,
+    preflight,
+    nowMs,
+    sequence,
+  });
   const runways = Object.fromEntries((observation?.margin_runways || []).map((runway) => [runway.venue_id, runway.runway_ms]));
   const runwayStatuses = Object.fromEntries((observation?.margin_runways || []).map((runway) => [runway.venue_id, runway.status]));
   const advanced = await advanceStoredCarryPosition({
@@ -426,6 +441,8 @@ export async function observeStoredCarryPosition({
       type: "observation",
       as_of_ms: opportunity.checked_at_ms,
       expected_net_value_bps: opportunity.projected_net_value_bps,
+      economic_equivalence_id: opportunity.economic_equivalence_id,
+      migration_candidates: migrationCandidates,
       contract_data_skew_ms: opportunity.contract_data_skew_ms,
       max_contract_data_skew_ms: opportunity.max_contract_data_skew_ms,
       index_price_divergence_bps: opportunity.index_price_divergence_bps,
@@ -584,10 +601,16 @@ function normalizeMonitoringContext(value, positionInput, ownerCommitment) {
     return denied("carry_monitor_context_required");
   }
   const selected = [positionInput?.long_venue_id, positionInput?.short_venue_id];
+  const migrationVenues = positionInput?.risk_mandate?.allow_migration === true
+    && Array.isArray(positionInput.risk_mandate.migration_venue_allowlist)
+    ? positionInput.risk_mandate.migration_venue_allowlist
+    : [];
+  const permitted = [...new Set([...selected, ...migrationVenues])];
   const venueAccess = {};
-  for (const venueId of selected) {
+  for (const venueId of permitted) {
     const access = value.venue_access[venueId];
     if (!access || access.status !== "ready" || access.owner_commitment !== ownerCommitment) {
+      if (!selected.includes(venueId)) continue;
       return denied("carry_monitor_access_invalid");
     }
     venueAccess[venueId] = {
@@ -601,6 +624,86 @@ function normalizeMonitoringContext(value, positionInput, ownerCommitment) {
     };
   }
   return { ok: true, context: { version: 1, venue_access: venueAccess } };
+}
+
+async function evaluateMigrationCandidates({
+  state,
+  position,
+  record,
+  opportunity,
+  venueAccess,
+  recipient,
+  verifyOrder,
+  readHyperliquidSnapshot,
+  readHyperliquidCarryMetrics,
+  preflight,
+  nowMs,
+  sequence,
+}) {
+  const mandate = position.risk_mandate;
+  const thresholdReached = Number.isSafeInteger(opportunity.projected_net_value_bps)
+    && opportunity.projected_net_value_bps <= mandate.exit_net_value_bps
+    && position.consecutive_exit_observations + 1 >= mandate.exit_after_consecutive_observations;
+  if (mandate.allow_migration !== true || !thresholdReached) return [];
+  const allowlist = Array.isArray(mandate.migration_venue_allowlist)
+    ? mandate.migration_venue_allowlist.filter((venueId) => CARRY_EXECUTION_VENUES.includes(venueId) && venueAccess?.[venueId])
+    : [];
+  const pairs = allowlist.flatMap((longVenue) => allowlist
+    .filter((shortVenue) => shortVenue !== longVenue)
+    .map((shortVenue) => [longVenue, shortVenue]))
+    .filter(([longVenue, shortVenue]) => longVenue !== position.long_venue_id || shortVenue !== position.short_venue_id);
+  if (pairs.length === 0) return [];
+  const horizonDays = String(Math.max(1, Math.ceil(Number(record.opportunity?.horizon_ms || 86_400_000) / 86_400_000)));
+  const transitionCostBps = conservativeTransitionCostBps(record.opportunity, position.target_notional_micro_usdc);
+  const settled = await Promise.allSettled(pairs.map(([longVenue, shortVenue], index) => preflight({
+    body: {
+      version: 1,
+      phase: "migration",
+      owner_commitment: record.owner_commitment,
+      work_order_commitment: `carry_migration_${digest(`${position.position_id}:${sequence}:${index}:${nowMs}`).slice(0, 32)}`,
+      asset: position.asset,
+      long_venue_id: longVenue,
+      short_venue_id: shortVenue,
+      notional_usd: String(position.target_notional_micro_usdc / 1_000_000),
+      horizon_days: horizonDays,
+      risk_mandate: mandate,
+      venue_access: venueAccess,
+    },
+    recipient,
+    state,
+    verifyOrder,
+    readHyperliquidSnapshot,
+    readHyperliquidCarryMetrics,
+    now: () => nowMs,
+  })));
+  return settled.flatMap((outcome, index) => {
+    if (outcome.status !== "fulfilled") return [];
+    const result = outcome.value || {};
+    const modeled = result.economic_opportunity || {};
+    const [longVenue, shortVenue] = pairs[index];
+    return [{
+      candidate_id: `carry:migration:${digest(`${position.position_id}:${longVenue}:${shortVenue}:${nowMs}`).slice(0, 32)}`,
+      asset: position.asset,
+      economic_equivalence_id: modeled.economic_equivalence_id,
+      long_venue_id: longVenue,
+      short_venue_id: shortVenue,
+      expected_net_value_bps: modeled.projected_net_value_bps,
+      transition_cost_bps: transitionCostBps,
+      eligible: modeled.eligible === true && result.live_creation_ready === true,
+      no_submit_ready: result.no_submit_ready === true,
+      transaction_broadcast: false,
+      qualification_reasons: Array.isArray(result.qualification_reasons) ? result.qualification_reasons : ["migration_qualification_unverifiable"],
+      checked_at_ms: modeled.checked_at_ms,
+    }];
+  });
+}
+
+function conservativeTransitionCostBps(opportunity, notionalMicro) {
+  const tradingCost = Number(opportunity?.projected_trading_cost_micro_usdc);
+  if (!Number.isSafeInteger(tradingCost) || tradingCost < 0 || !Number.isSafeInteger(notionalMicro) || notionalMicro <= 0) {
+    return 10_000;
+  }
+  return Math.min(10_000, Math.ceil((tradingCost * 10_000) / notionalMicro));
 }
 
 function publicStoredResult(stored) {

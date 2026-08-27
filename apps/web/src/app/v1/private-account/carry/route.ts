@@ -178,7 +178,13 @@ export async function POST(req: NextRequest) {
     }
     const venueAccess = await agentPassportVenueAccessForWorker(owner);
     const selected = [longVenue, shortVenue];
-    const accesses = Object.fromEntries(selected.map((venueId) => [venueId, record(venueAccess[venueId as keyof typeof venueAccess])]));
+    const riskMandate = record(positionInput.risk_mandate);
+    const migrationVenues = riskMandate.allow_migration === true && Array.isArray(riskMandate.migration_venue_allowlist)
+      ? riskMandate.migration_venue_allowlist.filter((venueId): venueId is string =>
+          typeof venueId === "string" && isCarryExecutionVenue(venueId))
+      : [];
+    const permitted = [...new Set([...selected, ...migrationVenues])];
+    const accesses = Object.fromEntries(permitted.map((venueId) => [venueId, record(venueAccess[venueId as keyof typeof venueAccess])]));
     for (const venueId of selected) {
       if (accesses[venueId].status !== "ready") return response({ error: `${venueId}_account_not_ready` }, 409, correlationId);
     }
@@ -200,7 +206,9 @@ export async function POST(req: NextRequest) {
       qualification_pilot: input.qualification_pilot,
       monitoring_context: {
         version: 1,
-        venue_access: Object.fromEntries(selected.map((venueId) => [venueId, workerVenueAccess(accesses[venueId], owner.owner_commitment)])),
+        venue_access: Object.fromEntries(permitted
+          .filter((venueId) => accesses[venueId].status === "ready")
+          .map((venueId) => [venueId, workerVenueAccess(accesses[venueId], owner.owner_commitment)])),
       },
     };
   }

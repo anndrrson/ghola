@@ -34,12 +34,16 @@ export async function preflightCarryPair({
     throw carryError("carry_pair_not_execution_qualified", 422);
   }
 
-  const phase = body.phase === "monitoring" ? "monitoring" : "opening";
+  const phase = body.phase === "monitoring"
+    ? "monitoring"
+    : body.phase === "migration"
+      ? "migration"
+      : "opening";
   const observedAt = now();
   const runtimeMaxContractDataSkewMs = carryMarketDataSkewMs(env);
   const runtimeMaxIndexPriceDivergenceBps = carryBasisBudgetBps(env, "PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS", 25);
   const runtimeMaxMarkPriceDivergenceBps = carryBasisBudgetBps(env, "PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS", 50);
-  const monitoringMandate = phase === "monitoring" && body.risk_mandate
+  const monitoringMandate = phase !== "opening" && body.risk_mandate
     ? normalizeCarryRiskMandate(body.risk_mandate)
     : null;
   const maxContractDataSkewMs = Math.min(
@@ -62,7 +66,7 @@ export async function preflightCarryPair({
   const shortSnapshot = selectSnapshot(shortSnapshots, asset, shortVenue);
   const contractDataSkewMs = Math.abs(longSnapshot.as_of_ms - shortSnapshot.as_of_ms);
   if (!Number.isSafeInteger(contractDataSkewMs)
-    || (phase === "opening" && contractDataSkewMs > maxContractDataSkewMs)) {
+    || (phase !== "monitoring" && contractDataSkewMs > maxContractDataSkewMs)) {
     throw carryError("carry_market_data_skew_exceeded", 409);
   }
   const contractPairBasis = evaluatePerpContractPairBasis({
@@ -72,7 +76,7 @@ export async function preflightCarryPair({
     max_index_price_divergence_bps: maxIndexPriceDivergenceBps,
     max_mark_price_divergence_bps: maxMarkPriceDivergenceBps,
   });
-  if (phase === "opening" && !contractPairBasis.eligible) {
+  if (phase !== "monitoring" && !contractPairBasis.eligible) {
     throw carryError(`carry_contract_equivalence_failed:${contractPairBasis.reasons[0]}`, 409);
   }
   const legs = [
@@ -176,7 +180,11 @@ export async function preflightCarryPair({
   };
   return {
     version: 1,
-    mode: phase === "monitoring" ? "paired_monitoring_no_submit" : "paired_no_submit",
+    mode: phase === "monitoring"
+      ? "paired_monitoring_no_submit"
+      : phase === "migration"
+        ? "paired_migration_no_submit"
+        : "paired_no_submit",
     asset,
     transaction_broadcast: false,
     no_submit_ready: modeled.no_submit_ready,
