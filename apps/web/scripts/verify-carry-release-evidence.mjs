@@ -260,6 +260,7 @@ function verifyLegs({ legs, pair, longVenue, reduceOnly, failures, phase }) {
     if (!commitment(leg?.account_commitment)) failures.push(`${phase}_account_commitment_invalid:${venue}`);
     if (!commitment(leg?.client_order_commitment)) failures.push(`${phase}_client_order_commitment_invalid:${venue}`);
     if (!commitment(leg?.receipt_commitment)) failures.push(`${phase}_receipt_commitment_missing:${venue}`);
+    if (signedInteger(leg?.funding_micro_usdc) === null) failures.push(`${phase}_funding_invalid:${venue}`);
     if (nonNegativeInteger(leg?.fee_micro_usdc) === null) failures.push(`${phase}_fee_invalid:${venue}`);
     if (nonNegativeInteger(leg?.slippage_micro_usdc) === null) failures.push(`${phase}_slippage_invalid:${venue}`);
   }
@@ -291,6 +292,8 @@ function verifyValueLedger({ ledger, entryLegs, exitLegs, failures }) {
   }
   const legFees = [...entryLegs, ...exitLegs].reduce((sum, leg) => sum + (nonNegativeInteger(leg?.fee_micro_usdc) ?? 0), 0);
   const legSlippage = [...entryLegs, ...exitLegs].reduce((sum, leg) => sum + (nonNegativeInteger(leg?.slippage_micro_usdc) ?? 0), 0);
+  const legFunding = [...entryLegs, ...exitLegs].reduce((sum, leg) => sum + (signedInteger(leg?.funding_micro_usdc) ?? 0), 0);
+  if (funding !== legFunding) failures.push("realized_funding_evidence_mismatch");
   if (fees !== legFees) failures.push("realized_fee_evidence_mismatch");
   if (slippage !== legSlippage) failures.push("realized_slippage_evidence_mismatch");
   if (ledger?.finalized !== true || ledger?.complete_costs !== true || !commitment(ledger?.evidence_commitment)) {

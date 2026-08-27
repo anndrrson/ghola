@@ -94,8 +94,8 @@ async function fixture() {
       started_at: "2026-08-24T00:00:01.000Z",
       reconciled_at: "2026-08-24T00:00:02.000Z",
       legs: [
-        leg("hyperliquid", "buy", false, "order:entry:hyperliquid:0001", 5_000, 1_000),
-        leg("aster", "sell", false, "order:entry:aster:0001", 5_000, 1_000),
+        leg("hyperliquid", "buy", false, "order:entry:hyperliquid:0001", 5_000, 1_000, 60_000),
+        leg("aster", "sell", false, "order:entry:aster:0001", 5_000, 1_000, -10_000),
       ],
     },
     monitoring: {
@@ -168,7 +168,7 @@ function qualification(venue_id, adapter_id, source) {
   };
 }
 
-function leg(venue_id, side, reduce_only, client_order_commitment, fee_micro_usdc, slippage_micro_usdc) {
+function leg(venue_id, side, reduce_only, client_order_commitment, fee_micro_usdc, slippage_micro_usdc, funding_micro_usdc = 0) {
   return {
     venue_id,
     account_commitment: `account:${venue_id}:release:0001`,
@@ -180,6 +180,7 @@ function leg(venue_id, side, reduce_only, client_order_commitment, fee_micro_usd
     target_client_order_matched: true,
     final_venue_execution_proven: true,
     filled_base_size: "0.11",
+    funding_micro_usdc,
     fee_micro_usdc,
     slippage_micro_usdc,
     receipt_commitment: `receipt:${client_order_commitment}`,
@@ -292,6 +293,14 @@ test("rejects a value ledger that does not reconcile to leg costs", async () => 
   evidence.value_ledger.realized.fees_micro_usdc = 19_000;
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
   await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /realized_net_value_mismatch|realized_fee_evidence_mismatch/);
+});
+
+test("rejects funding not reconciled to exact venue legs", async () => {
+  const evidence = await fixture();
+  evidence.entry.legs[0].funding_micro_usdc += 1;
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /realized_funding_evidence_mismatch/);
 });
 
 test("rejects qualification from a different worker image", async () => {

@@ -866,6 +866,29 @@ test("rejects a Carry ledger that accepts conflicting evidence replays", () => {
   );
 });
 
+test("rejects release proof without exact venue-leg funding reconciliation", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier.replaceAll("realized_funding_evidence_mismatch", "funding_not_checked"),
+    }),
+    /carry_release_funding_reconciliation_missing/,
+  );
+});
+
+test("rejects funding settlements stored without their exact Carry leg", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll(
+        "legId: carryPositionLegId(initial.position, read.venue_id)",
+        "legId: null",
+      ),
+    }),
+    /carry_funding_leg_binding_missing/,
+  );
+});
+
 test("rejects non-canonical venue settlement ordering", () => {
   assert.throws(
     () => checkCarryExecutionContract({

@@ -921,6 +921,7 @@ export async function collectStoredCarryFundingEvidence({ state, ownerCommitment
         ownerCommitment,
         positionId,
         venueId: read.venue_id,
+        legId: carryPositionLegId(initial.position, read.venue_id),
         row: entry.row,
         amountMicro: entry.amount_micro_usdc,
         nowMs,
@@ -1014,7 +1015,7 @@ async function readVenueFundingSettlements({ venueId, asset, access, startMs, en
   }
 }
 
-async function appendFundingEntryWithRetry({ state, ownerCommitment, positionId, venueId, row, amountMicro, nowMs }) {
+async function appendFundingEntryWithRetry({ state, ownerCommitment, positionId, venueId, legId, row, amountMicro, nowMs }) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const current = await state.getCarryPositionRecord(positionId);
     if (!current) return false;
@@ -1033,7 +1034,7 @@ async function appendFundingEntryWithRetry({ state, ownerCommitment, positionId,
         direction: amountMicro < 0 ? "debit" : "credit",
         amount_micro_usdc: Math.abs(amountMicro),
         venue_id: venueId,
-        leg_id: null,
+        leg_id: legId,
         occurred_at_ms: Number(row.occurred_at_ms),
         evidence_commitment: `carry:value:funding:evidence:${evidenceId.slice(0, 32)}`,
       },
@@ -1043,6 +1044,14 @@ async function appendFundingEntryWithRetry({ state, ownerCommitment, positionId,
     if (result.error !== "carry_record_version_conflict") return false;
   }
   return false;
+}
+
+function carryPositionLegId(position, venueId) {
+  const side = venueId === position.long_venue_id
+    ? "long"
+    : venueId === position.short_venue_id ? "short" : null;
+  if (side === null) throw new Error("funding_settlement_venue_outside_position");
+  return `leg:carry:${digest(`${position.position_id}:${side}`).slice(0, 32)}`;
 }
 
 function compareFundingEntries(left, right) {

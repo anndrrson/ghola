@@ -433,6 +433,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifier", "final_owner_binding_mismatch", "carry_release_verifier_owner_lineage_missing");
   requireText("evidenceVerifierTest", "rejects lifecycle proof whose owner, position, or leg belongs to another account", "carry_release_verifier_account_lineage_test_missing");
   requireText("releaseMaterial", "worker_material_commitment", "carry_release_material_commitment_missing");
+  requireText("releaseMaterial", 'funding_micro_usdc: sumSignedEntries(ledgerEntries, "funding")', "carry_release_leg_funding_missing");
+  requireText("releaseMaterialTest", "funding_micro_usdc), [60, -10]", "carry_release_leg_funding_test_missing");
+  requireText("evidenceVerifier", "realized_funding_evidence_mismatch", "carry_release_funding_reconciliation_missing");
+  requireText("evidenceVerifierTest", "rejects funding not reconciled to exact venue legs", "carry_release_funding_reconciliation_test_missing");
   requireText("privateExecution", "submit_count: 1", "durable_submit_count_missing");
   requireText("privateExecution", "ambiguity_retry_count: 0", "durable_retry_count_missing");
   requireText("privateExecution", 'venueAdapterCapability(venueId, capability)', "worker_carry_capability_registry_missing");
@@ -462,6 +466,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "margin_runway_status_by_venue", "carry_monitor_runway_status_missing");
   requireText("positions", "const venueReads = await Promise.all", "carry_funding_parallel_read_missing");
   requireText("positions", "entries.sort(compareFundingEntries)", "carry_funding_canonical_order_missing");
+  requireText("positions", "legId: carryPositionLegId(initial.position, read.venue_id)", "carry_funding_leg_binding_missing");
   requireText("positions", 'return "carry_market_data_skew_exceeded"', "carry_storage_skew_gate_missing");
   requireText("positions", 'return "carry_contract_basis_exceeded"', "carry_storage_contract_basis_gate_missing");
   requireText("positions", 'return "carry_unsigned_contract_basis_limit"', "carry_storage_signed_basis_gate_missing");

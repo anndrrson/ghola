@@ -32,6 +32,8 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.equal(result.material.final_state.open_order_count, 0);
   assert.equal(result.material.final_state.owner_commitment, OWNER);
   assert.equal(result.material.final_state.carry_position_id, fixture.record.position.position_id);
+  assert.deepEqual(result.material.entry.legs.map((item) => item.funding_micro_usdc), [60, -10]);
+  assert.deepEqual(result.material.exit.legs.map((item) => item.funding_micro_usdc), [0, 0]);
   assert.deepEqual(result.material.entry.legs.map((item) => item.account_commitment), [
     "account:hyperliquid:release:0001",
     "account:aster:release:0001",
@@ -161,6 +163,10 @@ async function stateFixture() {
     { leg_id: leg.leg_id, entry_type: "trading_fee", direction: "debit", amount_micro_usdc: 5 },
     { leg_id: leg.leg_id, entry_type: "slippage", direction: "debit", amount_micro_usdc: index === 3 ? 2 : 1 },
   ]);
+  ledgerEntries.push(
+    { leg_id: entrySaga.legs[0].leg_id, entry_type: "funding", direction: "credit", amount_micro_usdc: 60 },
+    { leg_id: entrySaga.legs[1].leg_id, entry_type: "funding", direction: "debit", amount_micro_usdc: 10 },
+  );
   const record = {
     owner_commitment: OWNER,
     entry_saga_id: entrySaga.saga_id,
@@ -233,8 +239,8 @@ async function stateFixture() {
         net_value_micro_usdc: 200,
       },
       realized: {
-        funding_credit_micro_usdc: 50,
-        funding_debit_micro_usdc: 0,
+        funding_credit_micro_usdc: 60,
+        funding_debit_micro_usdc: 10,
         trading_fee_micro_usdc: 20,
         slippage_micro_usdc: 5,
         gas_micro_usdc: 0,

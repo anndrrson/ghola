@@ -196,6 +196,7 @@ async function materialLegs({ state, saga, record, phase }) {
       target_client_order_matched: true,
       final_venue_execution_proven: true,
       filled_base_size: String(proof.filled_base_size),
+      funding_micro_usdc: sumSignedEntries(ledgerEntries, "funding"),
       fee_micro_usdc: sumEntries(ledgerEntries, "trading_fee"),
       slippage_micro_usdc: sumEntries(ledgerEntries, "slippage"),
       receipt_commitment: receipt?.result_commitment || `receipt:${digest(JSON.stringify(proof))}`,
@@ -286,6 +287,11 @@ function providerCommitment(value) {
 function sumEntries(entries, type) {
   return entries.filter((entry) => entry.entry_type === type && entry.direction === "debit")
     .reduce((sum, entry) => sum + Number(entry.amount_micro_usdc || 0), 0);
+}
+
+function sumSignedEntries(entries, type) {
+  return entries.filter((entry) => entry.entry_type === type)
+    .reduce((sum, entry) => sum + (entry.direction === "credit" ? 1 : -1) * Number(entry.amount_micro_usdc || 0), 0);
 }
 
 function stableJson(value) {
