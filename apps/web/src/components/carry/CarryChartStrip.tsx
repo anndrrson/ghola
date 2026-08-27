@@ -11,6 +11,7 @@ import {
   buildPairCandidates,
   carryCandidateAgeMs,
   carryFundingEvidenceForCandidate,
+  carryMarketQualificationEvidence,
   rankCarryCandidatesByNet,
   type CarryCandidate,
   type CarryLiveMarketPatch,
@@ -154,6 +155,7 @@ export function CarryChartStrip({
     data,
     selected?.candidate || null,
   );
+  const marketEvidence = carryMarketQualificationEvidence(data);
   const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${asset}-PERP&carry=open`;
   const setupHref = `/account?setup=carry&return_to=${encodeURIComponent(terminalReturn)}`;
 
@@ -163,6 +165,7 @@ export function CarryChartStrip({
       aria-label="Cross-venue route intelligence"
       data-modeled-net-positive={selectedHasPositiveNet ? "true" : "false"}
       data-edge-evidence={edgeEvidence.status}
+      data-market-evidence={marketEvidence.status}
       data-cost-basis={selected?.quote.exactCosts ? "net" : "gross-only"}
       data-route-age-ms={Number.isFinite(selectedAgeMs) ? Math.round(selectedAgeMs) : undefined}
     >
@@ -247,6 +250,13 @@ export function CarryChartStrip({
 
       {open && (
         <div className="border-t border-[#1d2733] px-2.5 py-2 sm:px-3">
+          <div className="mb-1.5 flex min-h-5 items-center gap-2 font-mono text-[9px] tabular-nums">
+            <span className="tracking-[0.08em] text-[#657286]">MKT</span>
+            <span className={`font-semibold ${marketEvidenceTone(marketEvidence.status)}`} title={marketEvidence.detail}>
+              {marketEvidence.value}
+            </span>
+            <span className="truncate text-[#657286]">{marketEvidence.detail}</span>
+          </div>
           {observedCandidates.length > 0 ? (
             <div className="grid gap-1.5 lg:grid-cols-3">
               {observedCandidates.slice(0, 3).map(({ candidate, quote }) => (
@@ -378,4 +388,10 @@ function edgeEvidenceTone(status: ReturnType<typeof carryFundingEvidenceForCandi
   if (status === "rejected") return "text-[#e27d89]";
   if (status === "observing") return "text-[#d9bd74]";
   return "text-[#7d899a]";
+}
+
+function marketEvidenceTone(status: ReturnType<typeof carryMarketQualificationEvidence>["status"]) {
+  if (status === "ready") return "text-[#72dfb2]";
+  if (status === "rejected") return "text-[#e27d89]";
+  return "text-[#d9bd74]";
 }

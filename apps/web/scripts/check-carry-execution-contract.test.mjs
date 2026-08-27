@@ -176,6 +176,19 @@ test("rejects release qualification that is not persistent and image-bound", () 
   );
 });
 
+test("rejects a terminal that relabels unbound market data as qualified", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryMarket: sources.webCarryMarket.replaceAll(
+        "CARRY_SHADOW_QUALIFICATION_COMMITMENT",
+        "IGNORED_SHADOW_COMMITMENT",
+      ),
+    }),
+    /carry_market_qualification_commitment_gate_missing/,
+  );
+});
+
 test("rejects five-venue shadow evidence without exact sample commitments", () => {
   assert.throws(
     () => checkCarryExecutionContract({

@@ -628,11 +628,17 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "carryFundingEvidenceForCandidate", "carry_public_funding_evidence_missing");
   requireText("webCarryChart", "data-edge-evidence={edgeEvidence.status}", "carry_funding_evidence_state_missing");
   requireText("webCarryChart", "EVID {edgeEvidence.value}", "carry_funding_evidence_display_missing");
+  requireText("webCarryMarket", "carryMarketQualificationEvidence", "carry_market_qualification_model_missing");
+  requireText("webCarryMarket", "CARRY_SHADOW_QUALIFICATION_COMMITMENT", "carry_market_qualification_commitment_gate_missing");
+  requireText("webCarryChart", "data-market-evidence={marketEvidence.status}", "carry_market_qualification_state_missing");
+  requireText("webCarryChart", "{marketEvidence.value}", "carry_market_qualification_display_missing");
   requireText("webCarryMarket", "durability check required", "carry_point_in_time_edge_warning_missing");
   requireText("webCarryChart", 'data-modeled-net-positive={selectedHasPositiveNet ? "true" : "false"}', "carry_point_in_time_net_state_missing");
   forbidText("webCarryChart", 'data-route-qualified={selectedHasPositiveNet ? "true" : "false"}', "carry_single_tick_route_qualification_forbidden");
   requireText("webCarryChart", "AGE {formatAge", "carry_feed_age_display_missing");
   requireText("webCarryChartTest", "shows only commitment-backed worker history as durable route evidence", "carry_public_funding_evidence_test_missing");
+  requireText("webCarryChartTest", "shows compact worker-bound five-venue market evidence", "carry_market_qualification_display_test_missing");
+  requireText("webCarryChartTest", "fails closed when five-venue market readiness is not release-bound", "carry_market_qualification_fail_closed_test_missing");
   requireText("webCarryChart", "% APR", "carry_funding_period_label_missing");
   requireText("webCarryChart", "startTransition(() => setLivePatches(patches))", "carry_nonblocking_ui_publish_missing");
   forbidText("webCarryChart", "DATA {liveVenueCount}", "carry_socket_status_mislabeled_as_live_data");

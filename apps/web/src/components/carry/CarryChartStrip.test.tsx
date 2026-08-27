@@ -97,7 +97,7 @@ describe("CarryChartStrip", () => {
       conservative_hourly_spread_e12: 100_000_000,
       evidence_commitment: `carry:funding:${"a".repeat(64)}`,
     });
-    await renderShadow(body);
+    await renderShadow(body, true);
 
     const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
     expect(rail?.getAttribute("data-edge-evidence")).toBe("durable");
@@ -118,7 +118,7 @@ describe("CarryChartStrip", () => {
       conservative_hourly_spread_e12: 100_000_000,
       evidence_commitment: null,
     });
-    await renderShadow(body);
+    await renderShadow(body, true);
 
     const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
     expect(rail?.getAttribute("data-edge-evidence")).toBe("rejected");
@@ -144,13 +144,39 @@ describe("CarryChartStrip", () => {
     expect(rail?.textContent).toContain("EVID 2/8");
   });
 
-  async function renderShadow(body: CarryShadowResponse) {
+  it("shows compact worker-bound five-venue market evidence", async () => {
+    const body = shadowResponse([
+      snapshot("hyperliquid", 10_000_000),
+      snapshot("lighter", 150_000_000),
+    ]);
+    body.shadow_qualification = marketQualification();
+    await renderShadow(body, true);
+
+    const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
+    expect(rail?.getAttribute("data-market-evidence")).toBe("ready");
+    expect(rail?.textContent).toContain("MKT5V 3/3");
+  });
+
+  it("fails closed when five-venue market readiness is not release-bound", async () => {
+    const body = shadowResponse([
+      snapshot("hyperliquid", 10_000_000),
+      snapshot("lighter", 150_000_000),
+    ]);
+    body.shadow_qualification = marketQualification({ release_bound: false });
+    await renderShadow(body, true);
+
+    const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
+    expect(rail?.getAttribute("data-market-evidence")).toBe("rejected");
+    expect(rail?.textContent).toContain("MKTFAIL");
+  });
+
+  async function renderShadow(body: CarryShadowResponse, defaultOpen = false) {
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
       json: async () => body,
     } as Response);
     await act(async () => {
-      root.render(<CarryChartStrip asset="BTC" onAssetSelect={vi.fn()} />);
+      root.render(<CarryChartStrip asset="BTC" defaultOpen={defaultOpen} onAssetSelect={vi.fn()} />);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -187,6 +213,31 @@ function fundingPersistence(route: Partial<NonNullable<CarryShadowResponse["fund
       evidence_commitment: null,
       ...route,
     }],
+  };
+}
+
+function marketQualification(
+  overrides: Partial<NonNullable<CarryShadowResponse["shadow_qualification"]>> = {},
+): NonNullable<CarryShadowResponse["shadow_qualification"]> {
+  return {
+    version: 1,
+    kind: "carry_shadow_qualification",
+    ready: true,
+    release_bound: true,
+    transaction_broadcast: false,
+    image_digest: `sha256:${"1".repeat(64)}`,
+    checked_at_ms: Date.now(),
+    required_samples: 3,
+    completed_samples: 3,
+    venues: 5,
+    assets: 3,
+    requested_assets: ["BTC", "ETH", "SOL"],
+    duration_ms: 120_000,
+    expected_snapshots_per_sample: 15,
+    sample_commitments: ["2", "3", "4"].map((value) => `carry:shadow:sample:${value.repeat(64)}`),
+    evidence_commitment: `carry:shadow:qualification:${"5".repeat(64)}`,
+    failures: [],
+    ...overrides,
   };
 }
 
