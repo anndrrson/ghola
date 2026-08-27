@@ -1457,6 +1457,68 @@ export async function readLighterCarryWithdrawalRoute({
   });
 }
 
+export async function readPrivateCarryAccountCapacity({
+  request,
+  probe_context: probeContext,
+  recipient,
+  now = () => Date.now(),
+  openExecutionVault = openAccountBoundExecutionVault,
+  readHyperliquidMetrics = readHyperliquidCarryAccountMetrics,
+  readAsterState = readAsterAccountState,
+}) {
+  const venueId = String(request?.venue_id || "");
+  const accountCommitment = String(request?.from_account_commitment || "");
+  const access = probeContext?.venue_access_by_account?.[accountCommitment];
+  if (probeContext?.owner_commitment !== access?.owner_commitment
+    || access?.status !== "ready"
+    || access?.account_commitment !== accountCommitment
+    || !access?.encrypted_execution_vault) {
+    throw new PrivateExecutionError(`${venueId || "carry"} account capacity access is unavailable`, 409);
+  }
+  const venue = venueId === "hyperliquid"
+    ? {
+        asset: "USDC",
+        expectedKind: "ghola_hyperliquid_execution_vault",
+        allowedNetworks: ["mainnet", "testnet"],
+      }
+    : venueId === "aster"
+      ? {
+          asset: "USDT",
+          expectedKind: "ghola_aster_execution_vault",
+          allowedNetworks: ["mainnet"],
+        }
+      : null;
+  if (!venue || request?.collateral_asset !== venue.asset) {
+    throw new PrivateExecutionError("carry account capacity venue is unsupported", 400);
+  }
+  const opened = await openExecutionVault({
+    body: {
+      account_commitment: accountCommitment,
+      encrypted_execution_vault: access.encrypted_execution_vault,
+    },
+    recipient,
+    venueId,
+    expectedKind: venue.expectedKind,
+    allowedNetworks: venue.allowedNetworks,
+  });
+  const account = venueId === "hyperliquid"
+    ? await readHyperliquidMetrics({ credential: hyperliquidCredentialFromVault(opened.json) })
+    : await readAsterState({ credential: asterCredentialFromVault(opened.json), symbol: "BTCUSDT" });
+  const maximum = decimalNumberToMicroFloor(account?.available_balance);
+  return Object.freeze({
+    verified: true,
+    venue_id: venueId,
+    collateral_asset: venue.asset,
+    account_state_commitment: request.source_account_state_commitment,
+    read_only: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+    minimum_transfer_micro_usdc: 0,
+    maximum_transfer_micro_usdc: maximum,
+    as_of_ms: positiveSafeInteger(now(), "carry account capacity time is invalid"),
+  });
+}
+
 async function lighterCredentialForBody({ body, recipient }) {
   return openLighterExecutionCredential({
     bundle: body.encrypted_execution_vault,
@@ -2053,6 +2115,20 @@ function dryRunHyperliquidCredential() {
     api_wallet_private_key: "0x1111111111111111111111111111111111111111111111111111111111111111",
     agent_name: "dry-run-byo",
   };
+}
+
+function decimalNumberToMicroFloor(value) {
+  const amount = Number(value);
+  const micro = Math.floor(amount * 1_000_000);
+  if (!Number.isFinite(amount) || amount < 0 || !Number.isSafeInteger(micro)) {
+    throw new PrivateExecutionError("carry account capacity is invalid", 502);
+  }
+  return micro;
+}
+
+function positiveSafeInteger(value, message) {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new PrivateExecutionError(message, 500);
+  return value;
 }
 
 function sha256Hex(value) {

@@ -480,6 +480,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("server", "probeTransferRoute: probeCarryTransferRoute", "carry_transfer_route_server_injection_missing");
   requireText("privateExecution", "export async function readLighterCarryWithdrawalRoute", "carry_transfer_lighter_private_reader_missing");
   requireText("adapterRegistryTest", "Lighter route reads open only the exact sealed monitoring account", "carry_transfer_lighter_private_reader_test_missing");
+  requireText("privateExecution", "export async function readPrivateCarryAccountCapacity", "carry_transfer_private_capacity_reader_missing");
+  requireText("privateExecution", "fund_movement_authorized: false", "carry_transfer_private_capacity_authority_missing");
+  requireText("server", "readPrivateCarryAccountCapacity", "carry_transfer_private_capacity_wiring_missing");
+  requireText("adapterRegistryTest", "Carry route capacity opens only the exact sealed venue account", "carry_transfer_private_capacity_test_missing");
   requireText("positions", 'transfer_route_evidence_status: routeEvidence.ok ? "verified" : "unavailable"', "carry_transfer_route_status_missing");
   requireText("positions", "carry_portfolio_capital_evidence_incomplete", "carry_portfolio_capital_incomplete_gate_missing");
   requireText("positionsTest", "compiles an owner-only portfolio capital plan from stored monitoring evidence", "carry_portfolio_capital_worker_test_missing");

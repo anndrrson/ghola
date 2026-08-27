@@ -70,6 +70,7 @@ import {
   readHyperliquidCarryMetrics,
   readHyperliquidSnapshot,
   readLighterCarryWithdrawalRoute,
+  readPrivateCarryAccountCapacity,
   reconcileHyperliquidOrder,
   reconcileStoredExecution,
   streamHyperliquidAccountState,
@@ -2661,9 +2662,14 @@ export function createPrivateAgentWorkerServer(options = {}) {
   });
   const fetchPerpShadowSet = options.fetchPerpShadowSet || fetchCorePerpShadowSet;
   const carryTransferRouteReaders = options.carryTransferRouteReaders
-    || (options.readCarryAccountCapacity && options.readCarryDepositQuote
+    || (options.readCarryDepositQuote
       ? createCarryTransferVenueReaders({
-          read_account_capacity: options.readCarryAccountCapacity,
+          read_account_capacity: options.readCarryAccountCapacity
+            || ((request, probeContext) => readPrivateCarryAccountCapacity({
+              request,
+              probe_context: probeContext,
+              recipient,
+            })),
           read_deposit_quote: options.readCarryDepositQuote,
           read_lighter_withdrawal_quote: options.readLighterWithdrawalQuote
             || ((request, probeContext) => readLighterCarryWithdrawalRoute({

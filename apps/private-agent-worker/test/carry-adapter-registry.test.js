@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { privateKeyToAccount } from "viem/accounts";
 import {
   CARRY_EXECUTION_VENUES,
   carryExecutionQualification,
@@ -8,6 +9,7 @@ import {
 import {
   readCarryFundingSettlements,
   readLighterCarryWithdrawalRoute,
+  readPrivateCarryAccountCapacity,
   registeredCarryAdapterId,
 } from "../src/execution/private-execution.js";
 
@@ -26,6 +28,94 @@ test("worker Carry dispatch follows the execution-core capability registry", () 
       venueAdapterCapability(venueId, "exact_quantity_recovery").adapter_id,
     );
   }
+});
+
+test("Carry route capacity opens only the exact sealed venue account", async () => {
+  const ownerCommitment = "owner:carry:0001";
+  const accountCommitment = "account:hyperliquid:0001";
+  const encryptedVault = { ciphertext: "sealed" };
+  const capacity = await readPrivateCarryAccountCapacity({
+    request: {
+      venue_id: "hyperliquid",
+      collateral_asset: "USDC",
+      from_account_commitment: accountCommitment,
+      source_account_state_commitment: "carry:account-state:hyperliquid:0001",
+    },
+    probe_context: {
+      owner_commitment: ownerCommitment,
+      venue_access_by_account: {
+        [accountCommitment]: {
+          status: "ready",
+          owner_commitment: ownerCommitment,
+          account_commitment: accountCommitment,
+          encrypted_execution_vault: encryptedVault,
+        },
+      },
+    },
+    recipient: { recipient_id: "recipient:0001" },
+    now: () => 1_800_000_000_000,
+    openExecutionVault: async ({ body, venueId }) => {
+      assert.equal(body.account_commitment, accountCommitment);
+      assert.equal(body.encrypted_execution_vault, encryptedVault);
+      assert.equal(venueId, "hyperliquid");
+      return {
+        json: {
+          kind: "ghola_hyperliquid_execution_vault",
+          network: "mainnet",
+          hyperliquid_account_address: `0x${"22".repeat(20)}`,
+          api_wallet_private_key: `0x${"11".repeat(32)}`,
+        },
+      };
+    },
+    readHyperliquidMetrics: async () => ({ available_balance: 12.3456789 }),
+  });
+  assert.equal(capacity.maximum_transfer_micro_usdc, 12_345_678);
+  assert.equal(capacity.account_state_commitment, "carry:account-state:hyperliquid:0001");
+  assert.equal(capacity.transaction_broadcast, false);
+});
+
+test("Carry route capacity supports sealed Aster state and rejects account drift", async () => {
+  const ownerCommitment = "owner:carry:0001";
+  const accountCommitment = "account:aster:0001";
+  const key = `0x${"11".repeat(32)}`;
+  const access = {
+    status: "ready",
+    owner_commitment: ownerCommitment,
+    account_commitment: accountCommitment,
+    encrypted_execution_vault: { ciphertext: "sealed" },
+  };
+  const common = {
+    request: {
+      venue_id: "aster",
+      collateral_asset: "USDT",
+      from_account_commitment: accountCommitment,
+      source_account_state_commitment: "carry:account-state:aster:0001",
+    },
+    probe_context: {
+      owner_commitment: ownerCommitment,
+      venue_access_by_account: { [accountCommitment]: access },
+    },
+    recipient: { recipient_id: "recipient:0001" },
+    now: () => 1_800_000_000_000,
+    openExecutionVault: async () => ({
+      json: {
+        kind: "ghola_aster_execution_vault",
+        network: "mainnet",
+        user_address: `0x${"22".repeat(20)}`,
+        signer_address: privateKeyToAccount(key).address,
+        api_wallet_private_key: key,
+      },
+    }),
+    readAsterState: async () => ({ available_balance: 7.5 }),
+  };
+  const capacity = await readPrivateCarryAccountCapacity(common);
+  assert.equal(capacity.maximum_transfer_micro_usdc, 7_500_000);
+  assert.equal(capacity.collateral_asset, "USDT");
+
+  await assert.rejects(() => readPrivateCarryAccountCapacity({
+    ...common,
+    request: { ...common.request, from_account_commitment: "account:aster:other" },
+  }), /account capacity access is unavailable/);
 });
 
 test("shadow-only candidates cannot enter worker Carry dispatch", () => {
