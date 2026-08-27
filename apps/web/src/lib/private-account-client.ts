@@ -995,14 +995,10 @@ export async function requestCarryPositionExit(input: {
   return privateAccountFetch("/v1/private-account/carry", {
     method: "POST",
     body: JSON.stringify({
-      action: "event",
+      action: "request_exit",
       position_id: input.position_id,
-      event: {
-        version: 1,
-        event_id: input.event_id,
-        sequence: input.sequence,
-        type: "manual_exit_requested",
-      },
+      event_id: input.event_id,
+      sequence: input.sequence,
     }),
   });
 }

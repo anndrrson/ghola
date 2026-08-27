@@ -531,6 +531,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("phalaConfigTest", "pins an explicitly enabled capped Carry qualification runtime", "carry_runtime_drift_test_missing");
   requireText("server", 'req.headers["x-ghola-carry-qualification-confirmed"] === "true"', "worker_confirmation_header_missing");
   requireText("server", '"/carry/positions/release-evidence"', "worker_release_evidence_route_missing");
+  requireText("server", '"/carry/positions/exit-request"', "carry_owner_exit_route_missing");
+  requireText("server", "requestStoredCarryPositionExit", "carry_owner_exit_boundary_missing");
+  requireText("positions", "type: \"manual_exit_requested\"", "carry_owner_exit_event_missing");
+  requireText("positionsTest", "requestStoredCarryPositionExit", "carry_owner_exit_boundary_test_missing");
+  forbidText("server", '"/carry/positions/events"', "carry_client_lifecycle_mutation_exposed");
+  forbidText("server", '"/carry/positions/value-entries"', "carry_client_value_entry_mutation_exposed");
+  forbidText("server", '"/carry/positions/finalize"', "carry_client_value_finalization_exposed");
+  requireText("serverTest", '"/carry/positions/value-entries"', "carry_retired_value_mutation_route_test_missing");
   requireText("server", '"/carry/preflight-matrix"', "carry_three_venue_no_submit_worker_route_missing");
   requireText("serverTest", "proves the three-venue no-submit matrix and durable exact account state over HTTP", "carry_three_venue_no_submit_http_proof_missing");
   requireText("server", '"/carry/readiness"', "carry_readiness_resume_worker_route_missing");
@@ -542,6 +550,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "asset: candidate.asset", "carry_readiness_route_client_binding_missing");
   requireText("webRoute", 'action === "preflight_matrix"', "carry_three_venue_no_submit_web_route_missing");
   requireText("webRoute", 'action === "readiness"', "carry_readiness_resume_web_route_missing");
+  requireText("webRoute", 'action === "request_exit"', "carry_owner_exit_web_route_missing");
+  requireText("webClient", 'action: "request_exit"', "carry_owner_exit_client_missing");
+  forbidText("webRoute", 'action === "event"', "carry_web_generic_event_mutation_exposed");
+  forbidText("webRoute", 'action === "value_entry"', "carry_web_value_entry_mutation_exposed");
+  forbidText("webRoute", 'action === "finalize"', "carry_web_value_finalization_exposed");
   requireText("webRoute", "horizon_days: input.horizon_days", "carry_readiness_route_web_binding_missing");
   requireText("webPage", "carry=open", "carry_chart_redirect_missing");
   requireText("webTradeWorkspace", "CarryChartStrip", "carry_chart_strip_missing");

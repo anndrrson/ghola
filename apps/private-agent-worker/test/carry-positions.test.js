@@ -13,6 +13,7 @@ import {
   createStoredCarryPosition,
   finalizeStoredCarryValueLedger,
   observeStoredCarryPosition,
+  requestStoredCarryPositionExit,
   runCarryMonitoringTick,
 } from "../src/execution/carry-positions.js";
 import { createWorkerState } from "../src/state/private-state.js";
@@ -44,13 +45,22 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
 
   let record = created.record;
   for (const event of lifecycle()) {
-    const advanced = await advanceStoredCarryPosition({
-      state,
-      position_id: record.position.position_id,
-      owner_commitment: OWNER,
-      event,
-      now_ms: NOW + event.sequence,
-    });
+    const advanced = event.type === "manual_exit_requested"
+      ? await requestStoredCarryPositionExit({
+        state,
+        position_id: record.position.position_id,
+        owner_commitment: OWNER,
+        event_id: event.event_id,
+        sequence: event.sequence,
+        now_ms: NOW + event.sequence,
+      })
+      : await advanceStoredCarryPosition({
+        state,
+        position_id: record.position.position_id,
+        owner_commitment: OWNER,
+        event,
+        now_ms: NOW + event.sequence,
+      });
     assert.equal(advanced.ok, true, advanced.error);
     record = advanced.record;
   }

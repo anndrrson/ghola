@@ -874,6 +874,47 @@ describe("private agent worker", () => {
     assert.equal(createdBody.record.opportunity.all_venues_ready, true);
     assert.equal("monitoring_context" in createdBody.record, false);
 
+    const exitBody = {
+      owner_commitment: ownerCommitment,
+      position_id: "carry:position:server:0001",
+      event_id: "carry:owner-exit:server:0001",
+      sequence: 1,
+    };
+    const exitToken = capabilityToken({
+      path: "/carry/positions/exit-request",
+      scope: "carry:write",
+      body: exitBody,
+      expected: { owner_commitment: ownerCommitment, operation_class: "/exit-request" },
+    });
+    const exit = await fetch(`${baseUrl}/carry/positions/exit-request`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${exitToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(exitBody),
+    });
+    assert.equal(exit.status, 400);
+    assert.equal((await exit.json()).error, "carry_event_not_allowed_in_state");
+
+    for (const retiredPath of [
+      "/carry/positions/events",
+      "/carry/positions/value-entries",
+      "/carry/positions/finalize",
+    ]) {
+      const retired = await fetch(`${baseUrl}${retiredPath}`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer secret",
+          "content-type": "application/json",
+          "x-ghola-sealed-execution-required": "true",
+        },
+        body: JSON.stringify({ owner_commitment: ownerCommitment }),
+      });
+      assert.equal(retired.status, 404, retiredPath);
+    }
+
     const readBody = { owner_commitment: ownerCommitment, position_id: "carry:position:server:0001" };
     const readToken = capabilityToken({
       path: "/carry/positions/read",

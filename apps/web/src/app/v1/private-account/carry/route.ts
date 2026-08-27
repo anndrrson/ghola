@@ -319,11 +319,9 @@ function carryRoute(action: string) {
   if (action === "approve_collateral_review") return { path: "/carry/positions/collateral-review/approve", scope: "carry:write" as const, operationClass: "/collateral-review/approve" };
   if (action === "value_report") return { path: "/carry/positions/value-report", scope: "carry:read" as const, operationClass: "/value-report" };
   if (action === "release_evidence") return { path: "/carry/positions/release-evidence", scope: "carry:read" as const, operationClass: "/release-evidence" };
-  if (action === "event") return { path: "/carry/positions/events", scope: "carry:write" as const, operationClass: "/events" };
+  if (action === "request_exit") return { path: "/carry/positions/exit-request", scope: "carry:write" as const, operationClass: "/exit-request" };
   if (action === "observe") return { path: "/carry/positions/observe", scope: "carry:write" as const, operationClass: "/observe" };
   if (action === "execute_entry") return { path: "/carry/positions/execute-entry", scope: "order:submit" as const, operationClass: "/execute-entry" };
-  if (action === "value_entry") return { path: "/carry/positions/value-entries", scope: "carry:write" as const, operationClass: "/value-entries" };
-  if (action === "finalize") return { path: "/carry/positions/finalize", scope: "carry:write" as const, operationClass: "/finalize" };
   return null;
 }
 

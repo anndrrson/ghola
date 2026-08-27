@@ -279,6 +279,28 @@ export async function advanceStoredCarryPosition({ state, position_id: positionI
   return storeUpdate(state, next, record.record.record_version);
 }
 
+export async function requestStoredCarryPositionExit({
+  state,
+  position_id: positionId,
+  owner_commitment: ownerCommitment,
+  event_id: eventId,
+  sequence,
+  now_ms: nowMs = Date.now(),
+}) {
+  return advanceStoredCarryPosition({
+    state,
+    position_id: positionId,
+    owner_commitment: ownerCommitment,
+    event: {
+      version: 1,
+      event_id: eventId,
+      sequence,
+      type: "manual_exit_requested",
+    },
+    now_ms: nowMs,
+  });
+}
+
 export async function appendStoredCarryValueEntry({ state, position_id: positionId, owner_commitment: ownerCommitment, entry, now_ms: nowMs = Date.now() }) {
   const record = await ownedRecord(state, positionId, ownerCommitment);
   if (!record.ok) return record;

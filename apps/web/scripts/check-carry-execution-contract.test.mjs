@@ -931,6 +931,17 @@ test("rejects a Carry ledger that accepts conflicting evidence replays", () => {
   );
 });
 
+test("rejects client-reachable Carry lifecycle or realized-value mutation", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: `${sources.server}\nconst route = \"/carry/positions/value-entries\";`,
+      webRoute: `${sources.webRoute}\nif (action === \"event\") return null;`,
+    }),
+    /carry_client_value_entry_mutation_exposed|carry_web_generic_event_mutation_exposed/,
+  );
+});
+
 test("rejects release proof without exact venue-leg funding reconciliation", () => {
   assert.throws(
     () => checkCarryExecutionContract({

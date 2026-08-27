@@ -31,17 +31,15 @@ import { readCarryExecutionReadiness } from "./execution/carry-readiness.js";
 import { executeStoredCarryEntry, startCarryExecutionLoop } from "./execution/carry-executor.js";
 import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-evidence.js";
 import {
-  advanceStoredCarryPosition,
   approveStoredCarryCollateralReview,
-  appendStoredCarryValueEntry,
   compileStoredCarryCollateralReview,
   compileStoredCarryPortfolioCapitalPlan,
   compileStoredCarryPortfolioValueReport,
   createStoredCarryPosition,
-  finalizeStoredCarryValueLedger,
   getStoredCarryPosition,
   listStoredCarryPositions,
   observeStoredCarryPosition,
+  requestStoredCarryPositionExit,
   startCarryMonitoringLoop,
 } from "./execution/carry-positions.js";
 import {
@@ -2883,11 +2881,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
             position_id: body.position_id,
             owner_commitment: body.owner_commitment,
           })],
-          "/carry/positions/events": ["carry:write", (body) => advanceStoredCarryPosition({
+          "/carry/positions/exit-request": ["carry:write", (body) => requestStoredCarryPositionExit({
             state,
             position_id: body.position_id,
             owner_commitment: body.owner_commitment,
-            event: body.event,
+            event_id: body.event_id,
+            sequence: body.sequence,
           })],
           "/carry/positions/observe": ["carry:write", (body) => observeStoredCarryPosition({
             state,
@@ -2908,18 +2907,6 @@ export function createPrivateAgentWorkerServer(options = {}) {
             verifyOrder: verifyAutopilotOrder,
             executeOrder: executeAutopilotOrder,
             qualification_confirmed: req.headers["x-ghola-carry-qualification-confirmed"] === "true",
-          })],
-          "/carry/positions/value-entries": ["carry:write", (body) => appendStoredCarryValueEntry({
-            state,
-            position_id: body.position_id,
-            owner_commitment: body.owner_commitment,
-            entry: body.entry,
-          })],
-          "/carry/positions/finalize": ["carry:write", (body) => finalizeStoredCarryValueLedger({
-            state,
-            position_id: body.position_id,
-            owner_commitment: body.owner_commitment,
-            evidence: body.evidence,
           })],
         };
         const route = carryRoutes[url.pathname];
