@@ -64,6 +64,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webOnboardingRecoveryTest: "apps/web/src/lib/carry-onboarding-recovery.test.ts",
   webSetupAuthRecovery: "apps/web/src/lib/carry-setup-auth-recovery.ts",
   webSetupAuthRecoveryTest: "apps/web/src/lib/carry-setup-auth-recovery.test.ts",
+  lighterActivationReadiness: "apps/web/src/lib/lighter-activation-readiness.ts",
+  lighterActivationReadinessTest: "apps/web/src/lib/lighter-activation-readiness.test.ts",
   webPrivateAccount: "apps/web/src/lib/private-account.ts",
   webPrivateAccountTest: "apps/web/src/lib/private-account.test.ts",
   webPrivateAccountStore: "apps/web/src/lib/private-account-store.ts",
@@ -152,6 +154,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("webSetupAuthRecovery", "!input.usingTurnkeyOwner || input.authorizationProofCreated", "carry_setup_auth_proof_boundary_missing");
   requireText("webSetupAuthRecoveryTest", "reauthenticates an exact prepared action", "carry_setup_unsigned_recovery_test_missing");
   requireText("webSetupAuthRecoveryTest", "never reauthenticates as a substitute for reconciling", "carry_setup_authorization_reconciliation_test_missing");
+  requireText("lighterActivationReadiness", "LIGHTER_ACTIVATION_READINESS_MAX_AGE_MS", "lighter_activation_freshness_gate_missing");
+  requireText("lighterActivationReadiness", "responseOwner.toLowerCase() !== ownerAddress.toLowerCase()", "lighter_activation_owner_binding_missing");
+  requireText("lighterActivationReadiness", "body.ready !== (baseDepositReady && ethereumAssociationReady)", "lighter_activation_evidence_consistency_missing");
+  requireText("lighterActivationReadinessTest", "rejects another owner and stale evidence", "lighter_activation_owner_freshness_test_missing");
+  requireText("lighterActivationReadinessTest", "rejects flags or blockers that contradict", "lighter_activation_consistency_test_missing");
   requireText("registry", "export const CARRY_BROWSER_STREAM_VENUES", "browser_stream_capability_registry_missing");
   requireText("registry", "export function venueAdapterCapability", "adapter_capability_lookup_missing");
   requireText("registry", "export function venuesWithAdapterCapability", "adapter_capability_query_missing");
