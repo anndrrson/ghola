@@ -26,9 +26,27 @@ describe("private-prime readiness", () => {
     });
   });
 
+  it("shows live paired proof only from complete worker lifecycle evidence", () => {
+    expect(carryPrivatePrimeSummary(proof({
+      proof_level: "live_paired_lifecycle",
+      live_paired_lifecycle_proven: true,
+      paired_lifecycle: pairedLifecycle(),
+    }), NOW)).toEqual({
+      status: "ready",
+      value: "5/5 DATA · 3/3 EXEC · ROUTES",
+      detail: "LIVE PAIRED PROOF · FLAT VERIFIED · OWNER CONTROLLED",
+      tone: "good",
+    });
+  });
+
   it("rejects stale or overstated evidence", () => {
     expect(carryPrivatePrimeSummary(proof({ expires_at_ms: NOW }), NOW).status).toBe("invalid");
     expect(carryPrivatePrimeSummary(proof({ live_paired_lifecycle_proven: true }), NOW).status).toBe("invalid");
+    expect(carryPrivatePrimeSummary(proof({
+      proof_level: "live_paired_lifecycle",
+      live_paired_lifecycle_proven: true,
+      paired_lifecycle: pairedLifecycle({ final_flat_zero_orders: false }),
+    }), NOW).status).toBe("invalid");
   });
 
   it("does not treat a configured probe as verified collateral routing", () => {
@@ -59,6 +77,8 @@ function proof(overrides: Record<string, unknown> = {}) {
     kind: "ghola_private_prime_no_submit_readiness",
     ready: true,
     proof_level: "pre_broadcast_readiness",
+    owner_commitment: "owner_commitment_0001",
+    asset: "BTC",
     checked_at_ms: NOW,
     expires_at_ms: NOW + 60_000,
     five_venue_shadow: { ready: true, venue_count: 5 },
@@ -89,6 +109,30 @@ function proof(overrides: Record<string, unknown> = {}) {
     transaction_broadcast: false,
     reasons: [],
     evidence_commitment: "carry:private-prime:abcdef123456",
+    ...overrides,
+  };
+}
+
+function pairedLifecycle(overrides: Record<string, unknown> = {}) {
+  return {
+    verified: true,
+    position_id: "carry:position:live:0001",
+    asset: "BTC",
+    venue_ids: ["hyperliquid", "aster"],
+    verified_at_ms: NOW - 1_000,
+    expires_at_ms: NOW + 86_400_000,
+    account_bindings_verified: true,
+    live_entry_exit_proven: true,
+    supervised_monitoring_proven: true,
+    final_flat_zero_orders: true,
+    value_ledger_finalized: true,
+    ambiguity_retry_count: 0,
+    owner_only_funding: true,
+    owner_only_transfers: true,
+    owner_only_withdrawals: true,
+    transaction_broadcast: false,
+    worker_material_commitment: `carry:release:material:${"a".repeat(64)}`,
+    evidence_commitment: `carry:lifecycle-proof:evidence:${"b".repeat(64)}`,
     ...overrides,
   };
 }

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildCompletedCarryReleaseMaterial } from "../src/execution/carry-release-evidence.js";
+import {
+  buildCompletedCarryReleaseMaterial,
+  readCompletedCarryLifecycleProof,
+  recordCompletedCarryLifecycleProof,
+} from "../src/execution/carry-release-evidence.js";
 import { carryPositionLegId } from "../src/execution/carry-positions.js";
 import { observeCarryShadowQualification } from "../src/execution/carry-shadow-qualification.js";
 import { carryShadowFixture } from "./carry-shadow-fixture.js";
@@ -66,6 +70,58 @@ test("derives release material only from a completed durable lifecycle", async (
   ]);
   assert.equal(result.material.value_ledger.realized.net_value_micro_usdc, 34);
   assert.match(result.material.worker_material_commitment, /^carry:release:material:[0-9a-f]{64}$/);
+});
+
+test("records a durable owner- and image-bound paired lifecycle proof", async () => {
+  const fixture = await stateFixture();
+  const recorded = await recordCompletedCarryLifecycleProof({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(recorded.ok, true, JSON.stringify(recorded));
+  assert.equal(recorded.proof.live_entry_exit_proven, true);
+  assert.equal(recorded.proof.final_flat_zero_orders, true);
+  assert.equal(recorded.proof.ambiguity_retry_count, 0);
+  assert.deepEqual(recorded.proof.venue_ids, ["hyperliquid", "aster"]);
+  assert.match(recorded.proof.evidence_commitment, /^carry:lifecycle-proof:evidence:[0-9a-f]{64}$/);
+
+  const loaded = await readCompletedCarryLifecycleProof({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW + 1,
+  });
+  assert.equal(loaded.ok, true);
+  assert.equal(loaded.proof.position_id, fixture.record.position.position_id);
+  assert.equal(loaded.proof.worker_image_digest, IMAGE);
+});
+
+test("does not reuse lifecycle proof across owners or worker images", async () => {
+  const fixture = await stateFixture();
+  await recordCompletedCarryLifecycleProof({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  const wrongOwner = await readCompletedCarryLifecycleProof({
+    state: fixture.state,
+    owner_commitment: "owner:carry:release:other",
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  const wrongImage = await readCompletedCarryLifecycleProof({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    env: { PHALA_CVM_IMAGE_DIGEST: "sha256:123456abcdef" },
+    now_ms: NOW,
+  });
+  assert.equal(wrongOwner.error, "carry_lifecycle_proof_missing");
+  assert.equal(wrongImage.error, "carry_lifecycle_proof_missing");
 });
 
 test("refuses to manufacture proof without a monitoring period", async () => {
@@ -222,6 +278,19 @@ test("refuses to claim one-submit proof without a durable attempt counter", asyn
     now_ms: NOW,
   });
   assert.equal(result.error, "carry_release_entry_submission_count_unproven:aster");
+});
+
+test("refuses to promote a lifecycle without live broadcast proof on every leg", async () => {
+  const fixture = await stateFixture();
+  fixture.receipts["work:carry:entry:hyperliquid"].receipt.final_proof.broadcast_performed = false;
+  const result = await recordCompletedCarryLifecycleProof({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_entry_terminal_proof_missing:hyperliquid");
 });
 
 test("refuses aggregate-only final reconciliation evidence", async () => {
@@ -402,6 +471,7 @@ async function stateFixture() {
         provider_ref_commitment: `provider:carry:release:${index}`,
         result_commitment: `result:carry:release:${index}`,
         final_proof: {
+          broadcast_performed: true,
           target_client_order_matched: true,
           final_venue_execution_proven: true,
           filled_base_size: "0.11",
@@ -444,6 +514,10 @@ async function stateFixture() {
     getIdempotency: async (key) => key.startsWith("carry:qualification:aster:")
       ? { receipt: qualification }
       : shadowRows.get(key) || receipts[key] || null,
+    putIdempotency: async (key, receipt) => {
+      shadowRows.set(key, { receipt: structuredClone(receipt) });
+      return receipt;
+    },
   };
   return { state, record, attempts, receipts };
 }

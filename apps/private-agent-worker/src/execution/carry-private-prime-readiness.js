@@ -7,6 +7,7 @@ export function buildCarryPrivatePrimeReadiness({
   carry_supervision: carrySupervision,
   route_observation_configured: routeObservationConfigured,
   route_evidence: routeEvidence,
+  lifecycle_proof: lifecycleProof,
   now_ms: nowMs = Date.now(),
 }) {
   const routeObservation = verifiedRouteObservation({
@@ -15,6 +16,7 @@ export function buildCarryPrivatePrimeReadiness({
     routeObservationConfigured,
     nowMs,
   });
+  const pairedLifecycle = verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs });
   const reasons = [];
   if (readiness?.ready !== true) reasons.push("three_venue_no_submit_unproven");
   if (readiness?.ready === true && readiness?.capital_ready !== true) reasons.push("opening_capital_shortfall");
@@ -29,7 +31,7 @@ export function buildCarryPrivatePrimeReadiness({
     version: 1,
     kind: "ghola_private_prime_no_submit_readiness",
     ready: reasons.length === 0,
-    proof_level: "pre_broadcast_readiness",
+    proof_level: pairedLifecycle.verified ? "live_paired_lifecycle" : "pre_broadcast_readiness",
     owner_commitment: readiness?.owner_commitment || null,
     network: readiness?.network || "mainnet",
     asset: readiness?.asset || null,
@@ -38,6 +40,7 @@ export function buildCarryPrivatePrimeReadiness({
       readiness?.expires_at_ms,
       shadowQualification?.checked_at_ms,
       routeObservation.expires_at_ms,
+      pairedLifecycle.verified ? pairedLifecycle.expires_at_ms : null,
     ),
     five_venue_shadow: {
       ready: shadowQualification?.ready === true && shadowQualification?.venues >= 5,
@@ -56,7 +59,8 @@ export function buildCarryPrivatePrimeReadiness({
       ready: carrySupervision?.ready === true,
       status: carrySupervision?.status || "unavailable",
     },
-    live_paired_lifecycle_proven: false,
+    paired_lifecycle: pairedLifecycle,
+    live_paired_lifecycle_proven: pairedLifecycle.verified,
     owner_only_funding: true,
     owner_only_transfers: true,
     owner_only_withdrawals: true,
@@ -65,6 +69,57 @@ export function buildCarryPrivatePrimeReadiness({
   };
   material.evidence_commitment = evidenceCommitment(material);
   return Object.freeze(material);
+}
+
+function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {
+  const proof = lifecycleProof?.proof;
+  const venueIds = Array.isArray(proof?.venue_ids) ? proof.venue_ids : [];
+  const registryVenueIds = new Set(Array.isArray(readiness?.registry_venue_ids) ? readiness.registry_venue_ids : []);
+  const verified = lifecycleProof?.ok === true
+    && proof?.version === 1
+    && proof?.kind === "ghola_carry_live_paired_lifecycle_proof"
+    && proof?.network === "mainnet"
+    && proof?.owner_commitment === readiness?.owner_commitment
+    && proof?.worker_image_digest === readiness?.image_digest
+    && proof?.asset === readiness?.asset
+    && venueIds.length === 2
+    && new Set(venueIds).size === 2
+    && venueIds.every((venueId) => registryVenueIds.has(venueId))
+    && Number.isSafeInteger(proof?.verified_at_ms)
+    && proof.verified_at_ms <= nowMs + 5_000
+    && Number.isSafeInteger(proof?.expires_at_ms)
+    && proof.expires_at_ms > nowMs
+    && proof?.live_entry_exit_proven === true
+    && proof?.supervised_monitoring_proven === true
+    && proof?.final_flat_zero_orders === true
+    && proof?.value_ledger_finalized === true
+    && proof?.ambiguity_retry_count === 0
+    && proof?.owner_only_funding === true
+    && proof?.owner_only_transfers === true
+    && proof?.owner_only_withdrawals === true
+    && proof?.recording_transaction_broadcast === false
+    && /^carry:release:material:[0-9a-f]{64}$/.test(String(proof?.worker_material_commitment || ""))
+    && /^carry:lifecycle-proof:evidence:[0-9a-f]{64}$/.test(String(proof?.evidence_commitment || ""));
+  return Object.freeze({
+    verified,
+    position_id: verified ? proof.position_id : null,
+    asset: verified ? proof.asset : null,
+    venue_ids: verified ? venueIds : [],
+    verified_at_ms: verified ? proof.verified_at_ms : null,
+    expires_at_ms: verified ? proof.expires_at_ms : null,
+    account_bindings_verified: verified,
+    live_entry_exit_proven: verified,
+    supervised_monitoring_proven: verified,
+    final_flat_zero_orders: verified,
+    value_ledger_finalized: verified,
+    ambiguity_retry_count: verified ? 0 : null,
+    owner_only_funding: true,
+    owner_only_transfers: true,
+    owner_only_withdrawals: true,
+    transaction_broadcast: false,
+    worker_material_commitment: verified ? proof.worker_material_commitment : null,
+    evidence_commitment: verified ? proof.evidence_commitment : null,
+  });
 }
 
 function verifiedRouteObservation({ readiness, routeEvidence, routeObservationConfigured, nowMs }) {

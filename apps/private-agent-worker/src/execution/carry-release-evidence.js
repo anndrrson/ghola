@@ -1,9 +1,135 @@
 import { createHash } from "node:crypto";
-import { readCarryVenueQualification } from "./carry-qualification.js";
+import { readCarryVenueQualification, runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 import { carryPositionLegId } from "./carry-positions.js";
 import { assessCarryFlatReconciliation } from "./carry-reconciliation.js";
 import { readCarryShadowQualification } from "./carry-shadow-qualification.js";
+
+const DEFAULT_LIFECYCLE_PROOF_MAX_AGE_MS = 90 * 86_400_000;
+
+export async function recordCompletedCarryLifecycleProof({
+  state,
+  owner_commitment: ownerCommitment,
+  position_id: positionId,
+  env = process.env,
+  now_ms: nowMs = Date.now(),
+}) {
+  if (typeof state?.putIdempotency !== "function") return denied("carry_lifecycle_proof_state_unavailable");
+  const imageDigest = runtimeCarryQualificationImageDigest(env);
+  if (!imageDigest) return denied("carry_lifecycle_proof_image_missing");
+  const completed = await buildCompletedCarryReleaseMaterial({
+    state,
+    owner_commitment: ownerCommitment,
+    position_id: positionId,
+    env,
+    now_ms: nowMs,
+  });
+  if (!completed.ok) return completed;
+  const material = completed.material;
+  const venueIds = [material.position.long_venue_id, material.position.short_venue_id];
+  const proof = {
+    version: 1,
+    kind: "ghola_carry_live_paired_lifecycle_proof",
+    network: "mainnet",
+    owner_commitment: ownerCommitment,
+    worker_image_digest: imageDigest,
+    position_id: material.position.position_id,
+    asset: material.position.asset,
+    venue_ids: venueIds,
+    account_commitments: Object.fromEntries(material.final_state.venues.map((venue) => [
+      venue.venue_id,
+      venue.account_commitment,
+    ])),
+    verified_at_ms: nowMs,
+    expires_at_ms: nowMs + lifecycleProofMaxAge(env),
+    live_entry_exit_proven: true,
+    supervised_monitoring_proven: true,
+    final_flat_zero_orders: true,
+    value_ledger_finalized: true,
+    ambiguity_retry_count: 0,
+    owner_only_funding: true,
+    owner_only_transfers: true,
+    owner_only_withdrawals: true,
+    recording_transaction_broadcast: false,
+    realized_net_value_micro_usdc: material.value_ledger.realized.net_value_micro_usdc,
+    worker_material_commitment: material.worker_material_commitment,
+  };
+  proof.evidence_commitment = lifecycleProofCommitment(proof);
+  const assessed = assessCompletedCarryLifecycleProof({
+    proof,
+    owner_commitment: ownerCommitment,
+    image_digest: imageDigest,
+    now_ms: nowMs,
+  });
+  if (!assessed.ok) return assessed;
+  await state.putIdempotency(carryLifecycleProofKey(ownerCommitment, imageDigest), structuredClone(proof));
+  return { ok: true, proof: assessed.proof };
+}
+
+export async function readCompletedCarryLifecycleProof({
+  state,
+  owner_commitment: ownerCommitment,
+  env = process.env,
+  now_ms: nowMs = Date.now(),
+}) {
+  const imageDigest = runtimeCarryQualificationImageDigest(env);
+  if (!imageDigest) return denied("carry_lifecycle_proof_image_missing");
+  if (typeof state?.getIdempotency !== "function") return denied("carry_lifecycle_proof_state_unavailable");
+  const stored = await state.getIdempotency(carryLifecycleProofKey(ownerCommitment, imageDigest));
+  return assessCompletedCarryLifecycleProof({
+    proof: stored?.receipt,
+    owner_commitment: ownerCommitment,
+    image_digest: imageDigest,
+    now_ms: nowMs,
+  });
+}
+
+export function assessCompletedCarryLifecycleProof({
+  proof,
+  owner_commitment: ownerCommitment,
+  image_digest: imageDigest,
+  now_ms: nowMs = Date.now(),
+}) {
+  if (!proof || typeof proof !== "object" || Array.isArray(proof)) return denied("carry_lifecycle_proof_missing");
+  const venueIds = Array.isArray(proof.venue_ids) ? proof.venue_ids : [];
+  const accountCommitments = proof.account_commitments && typeof proof.account_commitments === "object"
+    ? proof.account_commitments
+    : {};
+  const valid = proof.version === 1
+    && proof.kind === "ghola_carry_live_paired_lifecycle_proof"
+    && proof.network === "mainnet"
+    && proof.owner_commitment === ownerCommitment
+    && proof.worker_image_digest === imageDigest
+    && commitment(proof.position_id)
+    && /^[A-Z0-9]{1,20}$/.test(String(proof.asset || ""))
+    && venueIds.length === 2
+    && new Set(venueIds).size === 2
+    && venueIds.every((venueId) => commitment(venueId) && commitment(accountCommitments[venueId]))
+    && positiveInteger(proof.verified_at_ms)
+    && proof.verified_at_ms <= nowMs + 5_000
+    && positiveInteger(proof.expires_at_ms)
+    && proof.expires_at_ms > nowMs
+    && proof.expires_at_ms > proof.verified_at_ms
+    && proof.expires_at_ms - proof.verified_at_ms <= 365 * 86_400_000
+    && proof.live_entry_exit_proven === true
+    && proof.supervised_monitoring_proven === true
+    && proof.final_flat_zero_orders === true
+    && proof.value_ledger_finalized === true
+    && proof.ambiguity_retry_count === 0
+    && proof.owner_only_funding === true
+    && proof.owner_only_transfers === true
+    && proof.owner_only_withdrawals === true
+    && proof.recording_transaction_broadcast === false
+    && Number.isSafeInteger(proof.realized_net_value_micro_usdc)
+    && /^carry:release:material:[0-9a-f]{64}$/.test(String(proof.worker_material_commitment || ""))
+    && proof.evidence_commitment === lifecycleProofCommitment(proof);
+  if (!valid) return denied("carry_lifecycle_proof_invalid");
+  return { ok: true, proof: Object.freeze(structuredClone(proof)) };
+}
+
+export function carryLifecycleProofKey(ownerCommitment, imageDigest) {
+  return `carry:lifecycle-proof:${digest(`${ownerCommitment}\0${imageDigest}`).slice(0, 40)}`;
+}
 
 export async function buildCompletedCarryReleaseMaterial({
   state,
@@ -365,7 +491,10 @@ async function materialLegs({ state, saga, record, phase }) {
     if (attempt?.submit_count !== 1 || attempt?.ambiguity_retry_count !== 0) {
       return denied(`carry_release_${phase}_submission_count_unproven:${sagaLeg.venue_id}`);
     }
-    if (proof?.target_client_order_matched !== true || proof?.final_venue_execution_proven !== true || !positiveDecimal(proof?.filled_base_size)) {
+    if (proof?.broadcast_performed !== true
+      || proof?.target_client_order_matched !== true
+      || proof?.final_venue_execution_proven !== true
+      || !positiveDecimal(proof?.filled_base_size)) {
       return denied(`carry_release_${phase}_terminal_proof_missing:${sagaLeg.venue_id}`);
     }
     const ledgerEntries = record.value_ledger.entries || [];
@@ -384,6 +513,7 @@ async function materialLegs({ state, saga, record, phase }) {
       client_order_commitment: receipt?.provider_ref_commitment || providerCommitment(attempt?.provider_ref_seed),
       submit_count: attempt.submit_count,
       ambiguity_retry_count: attempt.ambiguity_retry_count,
+      live_order_broadcast: true,
       target_client_order_matched: true,
       final_venue_execution_proven: true,
       filled_base_size: String(proof.filled_base_size),
@@ -469,6 +599,23 @@ function workerMaterialCommitment(material) {
   const payload = { ...material };
   delete payload.worker_material_commitment;
   return `carry:release:material:${digest(stableJson(payload))}`;
+}
+
+function lifecycleProofCommitment(proof) {
+  const payload = { ...proof };
+  delete payload.evidence_commitment;
+  return `carry:lifecycle-proof:evidence:${digest(stableJson(payload))}`;
+}
+
+function lifecycleProofMaxAge(env) {
+  const parsed = Number.parseInt(String(env.PRIVATE_AGENT_CARRY_LIFECYCLE_PROOF_MAX_AGE_MS || ""), 10);
+  return Number.isInteger(parsed)
+    ? Math.max(86_400_000, Math.min(365 * 86_400_000, parsed))
+    : DEFAULT_LIFECYCLE_PROOF_MAX_AGE_MS;
+}
+
+function commitment(value) {
+  return typeof value === "string" && /^[A-Za-z0-9:_-]{3,180}$/.test(value);
 }
 
 function providerCommitment(value) {

@@ -214,6 +214,7 @@ function leg(venue_id, side, reduce_only, client_order_commitment, fee_micro_usd
     client_order_commitment,
     submit_count: 1,
     ambiguity_retry_count: 0,
+    live_order_broadcast: true,
     target_client_order_matched: true,
     final_venue_execution_proven: true,
     filled_base_size: "0.11",
@@ -243,6 +244,14 @@ test("rejects an ambiguous resubmission", async () => {
   evidence.entry.legs[1].ambiguity_retry_count = 1;
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
   await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /entry_ambiguity_retry_forbidden:aster/);
+});
+
+test("rejects a paired lifecycle without live broadcast proof on every leg", async () => {
+  const evidence = await fixture();
+  evidence.entry.legs[0].live_order_broadcast = false;
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /entry_live_broadcast_unproven:hyperliquid/);
 });
 
 test("rejects an exit that is not exact and reduce-only", async () => {

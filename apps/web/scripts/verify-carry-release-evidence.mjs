@@ -385,6 +385,7 @@ function verifyLegs({ legs, pair, longVenue, reduceOnly, failures, phase }) {
     if (leg?.reduce_only !== reduceOnly) failures.push(`${phase}_reduce_only_invalid:${venue}`);
     if (leg?.submit_count !== 1) failures.push(`${phase}_single_submit_required:${venue}`);
     if (leg?.ambiguity_retry_count !== 0) failures.push(`${phase}_ambiguity_retry_forbidden:${venue}`);
+    if (leg?.live_order_broadcast !== true) failures.push(`${phase}_live_broadcast_unproven:${venue}`);
     if (leg?.target_client_order_matched !== true) failures.push(`${phase}_target_order_unproven:${venue}`);
     if (leg?.final_venue_execution_proven !== true) failures.push(`${phase}_terminal_execution_unproven:${venue}`);
     if (!positiveDecimal(leg?.filled_base_size)) failures.push(`${phase}_fill_missing:${venue}`);

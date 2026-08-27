@@ -187,16 +187,16 @@ test("rejects private-prime readiness backed only by a configured route probe", 
   );
 });
 
-test("rejects private-prime readiness that overstates no-submit evidence as live proof", () => {
+test("rejects private-prime readiness that hard-codes live proof", () => {
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
       privatePrimeReadiness: sources.privatePrimeReadiness.replace(
-        "live_paired_lifecycle_proven: false",
-        "live_paired_lifecycle_proven: true",
+        'proof_level: pairedLifecycle.verified ? "live_paired_lifecycle" : "pre_broadcast_readiness"',
+        'proof_level: "live_paired_lifecycle"',
       ),
     }),
-    /carry_private_prime_live_proof_boundary_missing/,
+    /carry_private_prime_proof_level_missing/,
   );
 });
 

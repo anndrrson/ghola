@@ -18,6 +18,7 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
   const execution = record(value.three_venue_execution);
   const route = record(value.collateral_route_observation);
   const supervision = record(value.supervision);
+  const pairedLifecycle = record(value.paired_lifecycle);
   const reasons = strings(value.reasons);
   const venues = strings(execution.venue_ids);
   const checkedAt = integer(value.checked_at_ms);
@@ -46,11 +47,40 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && route.transaction_broadcast === false
     && route.automatic_transfer_permitted === false;
   const supervisionReady = supervision.ready === true && supervision.status === "healthy";
+  const lifecycleVenues = strings(pairedLifecycle.venue_ids);
+  const lifecycleVerifiedAt = integer(pairedLifecycle.verified_at_ms);
+  const lifecycleExpiresAt = integer(pairedLifecycle.expires_at_ms);
+  const lifecycleReady = pairedLifecycle.verified === true
+    && pairedLifecycle.asset === value.asset
+    && lifecycleVenues.length === 2
+    && new Set(lifecycleVenues).size === 2
+    && lifecycleVenues.every((venueId) => CARRY_EXECUTION_VENUES.includes(venueId as typeof CARRY_EXECUTION_VENUES[number]))
+    && lifecycleVerifiedAt !== null
+    && lifecycleVerifiedAt <= nowMs
+    && lifecycleExpiresAt !== null
+    && lifecycleExpiresAt > nowMs
+    && pairedLifecycle.account_bindings_verified === true
+    && pairedLifecycle.live_entry_exit_proven === true
+    && pairedLifecycle.supervised_monitoring_proven === true
+    && pairedLifecycle.final_flat_zero_orders === true
+    && pairedLifecycle.value_ledger_finalized === true
+    && pairedLifecycle.ambiguity_retry_count === 0
+    && pairedLifecycle.owner_only_funding === true
+    && pairedLifecycle.owner_only_transfers === true
+    && pairedLifecycle.owner_only_withdrawals === true
+    && pairedLifecycle.transaction_broadcast === false
+    && /^carry:release:material:[0-9a-f]{64}$/.test(String(pairedLifecycle.worker_material_commitment || ""))
+    && /^carry:lifecycle-proof:evidence:[0-9a-f]{64}$/.test(String(pairedLifecycle.evidence_commitment || ""));
+  const proofBoundaryValid = (value.proof_level === "pre_broadcast_readiness"
+      && value.live_paired_lifecycle_proven === false
+      && pairedLifecycle.verified !== true)
+    || (value.proof_level === "live_paired_lifecycle"
+      && value.live_paired_lifecycle_proven === true
+      && lifecycleReady);
   const expectedReady = shadowReady && executionReady && capitalReady && routesReady && supervisionReady && reasons.length === 0;
   const valid = value.version === 1
     && value.kind === "ghola_private_prime_no_submit_readiness"
-    && value.proof_level === "pre_broadcast_readiness"
-    && value.live_paired_lifecycle_proven === false
+    && proofBoundaryValid
     && value.owner_only_funding === true
     && value.owner_only_transfers === true
     && value.owner_only_withdrawals === true
@@ -63,7 +93,14 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
 
   const statusValue = `${shadowReady ? shadowCount : 0}/${CORE_PERP_VENUES.length} DATA · ${executionReady ? venues.length : 0}/${CARRY_EXECUTION_VENUES.length} EXEC · ${routesReady ? "ROUTES" : "NO ROUTES"}`;
   if (expectedReady) {
-    return { status: "ready", value: statusValue, detail: "PRE-BROADCAST · CAPITAL READY · OWNER CONTROLLED", tone: "good" };
+    return {
+      status: "ready",
+      value: statusValue,
+      detail: lifecycleReady
+        ? "LIVE PAIRED PROOF · FLAT VERIFIED · OWNER CONTROLLED"
+        : "PRE-BROADCAST · CAPITAL READY · OWNER CONTROLLED",
+      tone: "good",
+    };
   }
   const labels = reasons.map(reasonLabel);
   return {

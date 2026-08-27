@@ -16,6 +16,7 @@ import {
   recordCompletedCarryVenueQualifications,
   runtimeCarryQualificationImageDigest,
 } from "./carry-qualification.js";
+import { recordCompletedCarryLifecycleProof } from "./carry-release-evidence.js";
 import {
   applyDurableMultiLegEvent,
   createDurableMultiLegSaga,
@@ -407,7 +408,15 @@ export async function executeStoredCarryExit({
     nowMs: now(),
   });
   const qualification = await recordCompletedCarryVenueQualifications({ state, position_id: positionId, now_ms: now(), env });
-  return { ok: true, saga, record: finalized.record || accounting.record || advanced.record, accounting: accounting.summary, value_finalized: finalized.finalized, qualification };
+  const lifecycleProof = await recordLifecycleProofAfterExit({
+    state,
+    ownerCommitment,
+    positionId,
+    qualification,
+    env,
+    nowMs: now(),
+  });
+  return { ok: true, saga, record: finalized.record || accounting.record || advanced.record, accounting: accounting.summary, value_finalized: finalized.finalized, qualification, lifecycle_proof: lifecycleProof };
 }
 
 export async function runCarryExecutionTick({
@@ -572,7 +581,30 @@ async function processExitingCarryRecord({
     now_ms: now(),
     env,
   });
-  return { ...advanced, record: finalized.record || accounting.record || advanced.record, accounting: accounting.summary, value_finalized: finalized.finalized, qualification };
+  const lifecycleProof = await recordLifecycleProofAfterExit({
+    state,
+    ownerCommitment: record.owner_commitment,
+    positionId: record.position.position_id,
+    qualification,
+    env,
+    nowMs: now(),
+  });
+  return { ...advanced, record: finalized.record || accounting.record || advanced.record, accounting: accounting.summary, value_finalized: finalized.finalized, qualification, lifecycle_proof: lifecycleProof };
+}
+
+async function recordLifecycleProofAfterExit({ state, ownerCommitment, positionId, qualification, env, nowMs }) {
+  if (qualification?.ok !== true) return denied(qualification?.error || "carry_lifecycle_qualification_unproven");
+  try {
+    return await recordCompletedCarryLifecycleProof({
+      state,
+      owner_commitment: ownerCommitment,
+      position_id: positionId,
+      env,
+      now_ms: nowMs,
+    });
+  } catch (error) {
+    return denied(errorCode(error, "carry_lifecycle_proof_record_failed"));
+  }
 }
 
 export async function auditCarryPositionsAfterRestart({ state, now_ms: nowMs = Date.now() }) {
