@@ -18,7 +18,7 @@ import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 import { hasExactCarryFlatReconciliation } from "./carry-reconciliation.js";
 import { listAllCarryPositionRecords } from "./carry-record-scan.js";
 import { createCarryLoopSupervisor, disabledCarryLoopHealth } from "./carry-loop-supervisor.js";
-import { loadCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
+import { loadCarryTransferRouteEvidence, observeCarryTransferRoutes } from "./carry-transfer-routes.js";
 import { runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
 
 const OWNER = /^[A-Za-z0-9:_-]{8,180}$/;
@@ -403,6 +403,60 @@ export async function compileStoredCarryPortfolioCapitalPlan({
   }
 }
 
+export async function refreshStoredCarryTransferRoutes({
+  state,
+  owner_commitment: ownerCommitment,
+  probe_transfer_route: probeTransferRoute,
+  max_account_state_age_ms: maxAccountStateAgeMs = 30_000,
+  env = process.env,
+  now_ms: nowMs = Date.now(),
+}) {
+  if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
+  const records = (await Promise.all(["active", "rebalancing"].map((status) =>
+    listAllCarryPositionRecords({ state, owner_commitment: ownerCommitment, status })
+  ))).flat();
+  const unique = [...new Map(records.map((record) => [record.position?.position_id, record])).values()];
+  const plans = unique.map((record) => record.latest_observation?.capital_action_plan);
+  if (plans.some((plan) => !plan)) return denied("carry_portfolio_capital_evidence_incomplete");
+  const accounts = new Map();
+  try {
+    for (const plan of plans) {
+      for (const leg of plan.legs) {
+        const current = accounts.get(leg.account_commitment);
+        if (current && current.venue_id !== leg.venue_id) {
+          return denied("carry_portfolio_capital_account_venue_mismatch");
+        }
+        if (current
+          && current.account_state_checked_at_ms === plan.checked_at_ms
+          && current.account_state_commitment !== leg.account_state_commitment) {
+          return denied("carry_portfolio_capital_account_state_ambiguous");
+        }
+        if (!current || plan.checked_at_ms > current.account_state_checked_at_ms) {
+          accounts.set(leg.account_commitment, {
+            venue_id: leg.venue_id,
+            account_commitment: leg.account_commitment,
+            account_state_commitment: leg.account_state_commitment,
+            account_state_checked_at_ms: plan.checked_at_ms,
+          });
+        }
+      }
+    }
+    const observation = await observeCarryTransferRoutes({
+      state,
+      owner_commitment: ownerCommitment,
+      worker_image_digest: runtimeCarryQualificationImageDigest(env),
+      accounts: [...accounts.values()],
+      probe_route: probeTransferRoute,
+      checked_at_ms: nowMs,
+      max_account_state_age_ms: maxAccountStateAgeMs,
+      now_ms: nowMs,
+    });
+    return { ok: true, ...observation };
+  } catch (error) {
+    return denied(safeError(error));
+  }
+}
+
 export async function compileStoredCarryCollateralReview({
   state,
   owner_commitment: ownerCommitment,
@@ -709,6 +763,7 @@ export async function runCarryMonitoringTick({
   readHyperliquidSnapshot,
   readHyperliquidCarryMetrics,
   readFundingSettlements,
+  probeTransferRoute,
   preflight = preflightCarryPair,
   env = process.env,
   now_ms: nowMs = Date.now(),
@@ -741,7 +796,26 @@ export async function runCarryMonitoringTick({
       return { position_id: record.position.position_id, ok: false, error: safeError(error) };
     }
   });
-  return { ok: results.every((result) => result.ok), checked: records.length, results };
+  const refreshedOwners = records
+    .filter((_record, index) => results[index]?.ok === true && results[index]?.observation_ok === true)
+    .map((record) => record.owner_commitment)
+    .filter(Boolean);
+  const routeObservations = typeof probeTransferRoute === "function"
+    ? await Promise.all([...new Set(refreshedOwners)].sort()
+      .map((ownerCommitment) => refreshStoredCarryTransferRoutes({
+        state,
+        owner_commitment: ownerCommitment,
+        probe_transfer_route: probeTransferRoute,
+        env,
+        now_ms: nowMs,
+      })))
+    : [];
+  return {
+    ok: results.every((result) => result.ok),
+    checked: records.length,
+    results,
+    route_observations: routeObservations,
+  };
 }
 
 export function startCarryMonitoringLoop({
@@ -751,6 +825,7 @@ export function startCarryMonitoringLoop({
   readHyperliquidSnapshot,
   readHyperliquidCarryMetrics,
   readFundingSettlements,
+  probeTransferRoute,
   preflight = preflightCarryPair,
   env = process.env,
   now = () => Date.now(),
@@ -780,6 +855,7 @@ export function startCarryMonitoringLoop({
       readHyperliquidSnapshot,
       readHyperliquidCarryMetrics,
       readFundingSettlements,
+      probeTransferRoute,
       preflight,
       now_ms: now(),
     }),

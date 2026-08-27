@@ -569,6 +569,52 @@ test("worker monitoring survives without an open browser", async (t) => {
   assert.equal(stored.lifecycle_events.at(-1).observation_source, "supervised_loop");
 });
 
+test("worker monitoring refreshes owner-scoped collateral routes from exact account state", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-background-routes-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  await activePosition(state);
+  const tick = await runCarryMonitoringTick({
+    state,
+    env: ROUTE_ENV,
+    preflight: async () => ({
+      economic_opportunity: monitoringOpportunity(NOW + 100, 9),
+      margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
+      qualification_reasons: [],
+    }),
+    probeTransferRoute: async (request) => ({
+      settlement_asset: "USDC",
+      status: "available",
+      quote_verified: true,
+      all_in_fee_verified: true,
+      minimum_transfer_micro_usdc: 5_000_000,
+      maximum_transfer_micro_usdc: 100_000_000,
+      fee_micro_usdc: 10_000,
+      estimated_latency_ms: 60_000,
+      as_of_ms: request.checked_at_ms,
+      owner_approval_required: true,
+      fund_movement_authorized: false,
+      transaction_broadcast: false,
+      automatic_transfer_permitted: false,
+    }),
+    now_ms: NOW + 100,
+  });
+  assert.equal(tick.ok, true, JSON.stringify(tick));
+  assert.equal(tick.route_observations.length, 1);
+  assert.equal(tick.route_observations[0].ok, true);
+  assert.equal(tick.route_observations[0].observed_route_count, 2);
+  assert.equal(tick.route_observations[0].available_route_count, 2);
+  assert.equal(tick.route_observations[0].transaction_broadcast, false);
+  const capital = await compileStoredCarryPortfolioCapitalPlan({
+    state,
+    owner_commitment: OWNER,
+    env: ROUTE_ENV,
+    now_ms: NOW + 101,
+  });
+  assert.equal(capital.ok, true, JSON.stringify(capital));
+  assert.equal(capital.transfer_route_evidence_status, "verified");
+});
+
 test("monitoring checks independent Carry Positions with bounded concurrency", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-concurrency-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

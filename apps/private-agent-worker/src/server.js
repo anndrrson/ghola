@@ -2682,6 +2682,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         readHyperliquidSnapshot,
         readHyperliquidCarryMetrics,
         readFundingSettlements: readCarryFundingSettlements,
+        probeTransferRoute: options.probeCarryTransferRoute,
       });
   const carryExecutionLoop = options.carryExecutionLoop !== undefined
     ? options.carryExecutionLoop

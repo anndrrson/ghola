@@ -848,6 +848,19 @@ test("rejects collateral route observation without all-in fee verification", () 
   );
 });
 
+test("rejects collateral routes that are not refreshed by worker supervision", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll(
+        "export async function refreshStoredCarryTransferRoutes",
+        "async function refreshStoredCarryTransferRoutes",
+      ),
+    }),
+    /carry_transfer_route_supervised_refresh_missing/,
+  );
+});
+
 test("rejects collateral routes detached from the latest account state", () => {
   assert.throws(
     () => checkCarryExecutionContract({

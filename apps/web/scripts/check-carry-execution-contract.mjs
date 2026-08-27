@@ -448,10 +448,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("transferRoutesTest", "rejects tampered, stale, and registry-mismatched transfer routes", "carry_transfer_route_failure_test_missing");
   requireText("transferRoutesTest", "keeps incomplete or missing route probes unavailable", "carry_transfer_route_probe_fail_closed_test_missing");
   requireText("positions", "loadCarryTransferRouteEvidence", "carry_transfer_routes_worker_binding_missing");
+  requireText("positions", "export async function refreshStoredCarryTransferRoutes", "carry_transfer_route_supervised_refresh_missing");
+  requireText("positions", "probe_transfer_route: probeTransferRoute", "carry_transfer_route_internal_probe_missing");
+  requireText("server", "probeTransferRoute: options.probeCarryTransferRoute", "carry_transfer_route_server_injection_missing");
   requireText("positions", 'transfer_route_evidence_status: routeEvidence.ok ? "verified" : "unavailable"', "carry_transfer_route_status_missing");
   requireText("positions", "carry_portfolio_capital_evidence_incomplete", "carry_portfolio_capital_incomplete_gate_missing");
   requireText("positionsTest", "compiles an owner-only portfolio capital plan from stored monitoring evidence", "carry_portfolio_capital_worker_test_missing");
   requireText("positionsTest", "transfer_route_missing:", "carry_transfer_routes_worker_test_missing");
+  requireText("positionsTest", "worker monitoring refreshes owner-scoped collateral routes from exact account state", "carry_transfer_route_supervision_test_missing");
   requireText("server", '"/carry/positions/capital-plan"', "carry_portfolio_capital_route_missing");
   forbidText("server", "transfer_routes: body.transfer_routes", "carry_transfer_routes_client_trust_present");
   requireText("coreCarry", "export function compileCarryCollateralReview", "carry_collateral_review_core_missing");
