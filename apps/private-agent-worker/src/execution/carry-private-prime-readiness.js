@@ -10,6 +10,7 @@ export function buildCarryPrivatePrimeReadiness({
 }) {
   const reasons = [];
   if (readiness?.ready !== true) reasons.push("three_venue_no_submit_unproven");
+  if (readiness?.ready === true && readiness?.capital_ready !== true) reasons.push("opening_capital_shortfall");
   if (shadowQualification?.ready !== true || shadowQualification?.venues < 5) {
     reasons.push("five_venue_shadow_unproven");
   }

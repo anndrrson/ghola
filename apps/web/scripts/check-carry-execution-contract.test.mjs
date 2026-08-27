@@ -167,6 +167,16 @@ test("rejects private-prime readiness that overstates no-submit evidence as live
   );
 });
 
+test("rejects a terminal that presents private-prime status without validating worker proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll("carryPrivatePrimeSummary", "trustPrivatePrimeStatus"),
+    }),
+    /carry_private_prime_terminal_validation_missing/,
+  );
+});
+
 test("rejects private-account policy that drifts from the Carry registry", () => {
   assert.throws(
     () => checkCarryExecutionContract({

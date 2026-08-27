@@ -2968,7 +2968,20 @@ export function createPrivateAgentWorkerServer(options = {}) {
           readHyperliquidCarryMetrics: options.carryReadHyperliquidMetrics || readHyperliquidCarryMetrics,
           ...(options.carryFetchVenue ? { fetchVenue: options.carryFetchVenue } : {}),
         });
-        return json(res, 200, { ...matrix, carry_supervision: carrySupervision });
+        const shadowQualification = await readCarryShadowQualification({ state });
+        const privatePrimeReadiness = buildCarryPrivatePrimeReadiness({
+          readiness: matrix.readiness,
+          diagnostic: matrix.diagnostic,
+          shadow_qualification: shadowQualification,
+          carry_supervision: carrySupervision,
+          route_observation_configured: typeof probeCarryTransferRoute === "function",
+        });
+        return json(res, 200, {
+          ...matrix,
+          shadow_qualification: shadowQualification,
+          private_prime_readiness: privatePrimeReadiness,
+          carry_supervision: carrySupervision,
+        });
       }
 
       if (req.method === "POST" && url.pathname === "/carry/readiness") {

@@ -58,6 +58,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webMandate: "apps/web/src/lib/carry-risk-mandate.ts",
   webMandateTest: "apps/web/src/lib/carry-risk-mandate.test.ts",
   webCollateralReview: "apps/web/src/lib/carry-collateral-review.ts",
+  webPrivatePrimeReadiness: "apps/web/src/lib/carry-private-prime-readiness.ts",
+  webPrivatePrimeReadinessTest: "apps/web/src/lib/carry-private-prime-readiness.test.ts",
   webPerpsTurnkey: "apps/web/src/lib/perps-turnkey-provider.tsx",
   webRegistry: "apps/web/src/lib/carry-venues.ts",
   webCredentialOnboarding: "apps/web/src/lib/venue-credential-onboarding.ts",
@@ -836,6 +838,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadiness", 'proof_level: "pre_broadcast_readiness"', "carry_private_prime_proof_level_missing");
   requireText("privatePrimeReadiness", "live_paired_lifecycle_proven: false", "carry_private_prime_live_proof_boundary_missing");
   requireText("privatePrimeReadinessTest", "without overstating live proof", "carry_private_prime_proof_boundary_test_missing");
+  requireText("webPrivatePrimeReadiness", 'proof_level === "pre_broadcast_readiness"', "carry_private_prime_ui_proof_level_gate_missing");
+  requireText("webPrivatePrimeReadiness", "live_paired_lifecycle_proven === false", "carry_private_prime_ui_live_proof_gate_missing");
+  requireText("webPrivatePrimeReadinessTest", "without claiming tradable readiness", "carry_private_prime_ui_capital_test_missing");
+  requireText("webCarryBuilder", 'label="PRIVATE PRIME"', "carry_private_prime_terminal_metric_missing");
+  requireText("webCarryBuilder", "carryPrivatePrimeSummary", "carry_private_prime_terminal_validation_missing");
+  requireText("webCarryBuilderTest", "without claiming a live lifecycle", "carry_private_prime_terminal_test_missing");
   requireText("webRoute", '"x-ghola-carry-qualification-confirmed": "true"', "web_confirmation_header_missing");
   requireText("webClient", "qualification_pilot_confirmed", "web_confirmation_input_missing");
   requireText("webClient", "preflightCarryExecutionMatrix", "carry_three_venue_no_submit_client_missing");

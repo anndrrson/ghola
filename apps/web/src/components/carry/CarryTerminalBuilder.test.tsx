@@ -209,6 +209,20 @@ describe("CarryTerminalBuilder", () => {
     })).toEqual({ value: "2/8 · 5M OBSERVED", tone: "warn", ready: false });
   });
 
+  it("shows compact private-prime readiness without claiming a live lifecycle", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.getCarryExecutionReadiness.mockResolvedValue({
+      ...readyReadiness(),
+      private_prime_readiness: privatePrimeReadiness(),
+      carry_supervision: healthySupervision(),
+    });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    expect(container.textContent).toContain("PRIVATE PRIME");
+    expect(container.textContent).toContain("5/5 DATA · 3/3 EXEC · ROUTES");
+    expect(container.textContent).toContain("PRE-BROADCAST · CAPITAL READY · OWNER CONTROLLED");
+    expect(container.textContent).not.toContain("LIVE PAIRED LIFECYCLE PROVEN");
+  });
+
   it("keeps checking and arming no-submit until a separate live-entry click", async () => {
     const record = carryRecord();
     api.listCarryPositions
@@ -1057,6 +1071,37 @@ function readyReadiness() {
     registry_venue_ids: ["hyperliquid", "lighter", "aster"],
     expires_at_ms: Date.now() + 60_000,
     evidence_commitment: "carry:readiness:evidence:abcdef123456",
+  };
+}
+
+function privatePrimeReadiness() {
+  return {
+    version: 1,
+    kind: "ghola_private_prime_no_submit_readiness",
+    ready: true,
+    proof_level: "pre_broadcast_readiness",
+    checked_at_ms: Date.now(),
+    expires_at_ms: Date.now() + 60_000,
+    five_venue_shadow: { ready: true, venue_count: 5 },
+    three_venue_execution: {
+      ready: true,
+      venue_ids: ["hyperliquid", "lighter", "aster"],
+      capital_ready: true,
+    },
+    collateral_route_observation: {
+      configured: true,
+      read_only: true,
+      owner_approval_required: true,
+      automatic_transfer_permitted: false,
+    },
+    supervision: { ready: true, status: "healthy" },
+    live_paired_lifecycle_proven: false,
+    owner_only_funding: true,
+    owner_only_transfers: true,
+    owner_only_withdrawals: true,
+    transaction_broadcast: false,
+    reasons: [],
+    evidence_commitment: "carry:private-prime:abcdef123456",
   };
 }
 

@@ -50,3 +50,17 @@ test("fails closed when shadow, supervision, or route evidence is missing", () =
     "collateral_route_observation_unavailable",
   ]);
 });
+
+test("keeps technically connected but unfunded accounts pre-broadcast blocked", () => {
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: { ready: true, capital_ready: false },
+    shadow_qualification: { ready: true, venues: 5 },
+    carry_supervision: { ready: true, status: "healthy" },
+    route_observation_configured: true,
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.reasons, ["opening_capital_shortfall"]);
+  assert.equal(result.three_venue_execution.ready, true);
+  assert.equal(result.three_venue_execution.capital_ready, false);
+});

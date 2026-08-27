@@ -22,6 +22,7 @@ import {
   defaultCarryRiskMandate,
 } from "@/lib/carry-risk-mandate";
 import { buildCarryCollateralReviewAuthorization } from "@/lib/carry-collateral-review";
+import { carryPrivatePrimeSummary } from "@/lib/carry-private-prime-readiness";
 import {
   builderModel,
   CARRY_VENUE_LABELS,
@@ -315,6 +316,12 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const displayedCapital = latestObservation?.capital_action_plan ? capital : openingCapital;
   const restoredReadiness = readyStoredReadiness(readiness, candidate.asset, notional, days);
   const fleetGuard = carryFleetGuardSummary(executionMatrix, restoredReadiness);
+  const workerPrivatePrime = carryPrivatePrimeSummary(readiness?.private_prime_readiness);
+  const privatePrime = !privateSessionReady
+    ? { status: "pending" as const, value: "SIGN IN REQUIRED", detail: "AUTHENTICATE TO VERIFY" }
+    : !recordsLoaded
+      ? { status: "pending" as const, value: "SYNC REQUIRED", detail: "SYNC POSITIONS FIRST" }
+      : workerPrivatePrime;
   const supervision = carrySupervisionSummary(asRecord(
     readiness?.carry_supervision || executionMatrix?.carry_supervision,
   ));
@@ -359,7 +366,12 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         setExecutionMatrix(matrix);
       }
       if (matrix && readyNoSubmitMatrix(matrix, candidate.asset, notional, days)) {
-        activeReadiness = asRecord(matrix.readiness);
+        activeReadiness = {
+          ...asRecord(matrix.readiness),
+          private_prime_readiness: matrix.private_prime_readiness,
+          shadow_qualification: matrix.shadow_qualification,
+          carry_supervision: matrix.carry_supervision,
+        };
         setReadiness(activeReadiness);
       } else if (!activeReadiness) {
         setReadiness(null);
@@ -585,7 +597,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="SOURCE SYNC" value={proofOpportunity ? formatSkew(proofOpportunity.contract_data_skew_ms) : "PENDING"} />
         <Metric label="INDEX BASIS" value={proofOpportunity ? formatBasis(proofOpportunity.index_price_divergence_bps) : "PENDING"} />
         <Metric label="EDGE CONF" value={fundingPersistence.value} tone={fundingPersistence.tone} />
-        <Metric label="FLEET GUARD" value={fleetGuard.value} tone={fleetGuard.tone} />
+        <Metric label="PRIVATE PRIME" value={privatePrime.value} tone={privatePrime.tone} />
         <Metric label="RISK ENGINE" value={supervision.value} tone={supervision.tone} />
         <Metric label="MONITOR" value={monitorAge(latestObservation?.recorded_at_ms)} />
       </div>
@@ -646,6 +658,8 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         {stressCapital
           ? <p className="truncate font-mono text-[9px] text-[#72bfa2]" title={stressCapital}>STRESS CAPITAL · {stressCapital}</p>
           : null}
+        <p className={`truncate font-mono text-[9px] ${privatePrime.tone === "good" ? "text-[#72bfa2]" : privatePrime.tone === "bad" ? "text-[#ef929e]" : "text-[#d9bd74]"}`} title={privatePrime.detail}>PRIVATE PRIME · {privatePrime.detail}</p>
+        <p className={`truncate font-mono text-[9px] ${fleetGuard.tone === "good" ? "text-[#72bfa2]" : fleetGuard.tone === "bad" ? "text-[#ef929e]" : "text-[#8996a8]"}`} title={fleetGuard.value}>FLEET · {fleetGuard.value}</p>
         {portfolioCapital
           ? <p className={`truncate font-mono text-[9px] ${portfolioCapital.tone === "bad" ? "text-[#ef929e]" : portfolioCapital.tone === "warn" ? "text-[#d9bd74]" : "text-[#72bfa2]"}`} title={portfolioCapital.value}>PORTFOLIO CAPITAL · {portfolioCapital.value}</p>
           : null}
