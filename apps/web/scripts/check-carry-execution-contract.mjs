@@ -303,6 +303,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarryTest", "rejects same-ticker contracts whose index or mark basis exceeds equivalence budgets", "carry_contract_basis_model_test_missing");
   requireText("coreCarry", "calculateMarginRunway", "margin_runway_model_missing");
   requireText("coreCarry", "margin_runway_unverifiable", "margin_runway_unverifiable_exit_missing");
+  requireText("coreCarry", 'if (status !== "healthy") unverifiableMargin = true', "margin_runway_null_status_gate_missing");
+  requireText("coreCarryTest", "a warning cannot relabel a null margin runway as verified infinity", "margin_runway_null_warning_test_missing");
   requireText("coreCarry", "export function compileCarryCapitalActionPlan", "carry_capital_action_compiler_missing");
   requireText("coreIndex", "compileCarryCapitalActionPlan", "carry_capital_action_export_missing");
   requireText("coreCarry", "carry_capital_automatic_transfer_forbidden", "carry_capital_transfer_boundary_missing");

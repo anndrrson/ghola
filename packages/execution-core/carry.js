@@ -1614,8 +1614,8 @@ function applyEvent(position, event, nowMs) {
         ? null
         : enumValue(rawStatus, new Set(["healthy", "warning", "critical", "breached"]), "carry_observation_runway_status");
       if (runway === null) {
-        if (status !== "healthy" && status !== "warning") unverifiableMargin = true;
-        return status === "critical" || status === "breached";
+        if (status !== "healthy") unverifiableMargin = true;
+        return false;
       }
       const normalizedRunway = nonNegativeInteger(runway, "carry_observation_runway");
       return status === "critical" || status === "breached" || normalizedRunway < position.risk_mandate.min_margin_runway_ms;

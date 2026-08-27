@@ -1065,6 +1065,23 @@ test("a verified healthy null runway represents zero modeled burn, not missing e
   assert.equal(result.position.terminal_reason, null);
 });
 
+test("a warning cannot relabel a null margin runway as verified infinity", () => {
+  const result = advanceCarryPosition({
+    position: activePositionForObservation(),
+    event: event(3, "observation", {
+      ...contractObservation(),
+      as_of_ms: NOW + 3,
+      expected_net_value_bps: 100,
+      margin_runway_ms_by_venue: { hyperliquid: null, lighter: 30 * HOUR },
+      margin_runway_status_by_venue: { hyperliquid: "warning", lighter: "healthy" },
+    }),
+    now_ms: NOW + 3,
+  });
+  assert.equal(result.position.status, "exiting");
+  assert.equal(result.position.terminal_reason, "margin_runway_unverifiable");
+  assert.deepEqual(result.position.next_actions, ["reduce_only_close_both_legs"]);
+});
+
 test("an expired signed mandate permits only a reduce-only exit", () => {
   const active = activePositionForObservation();
   const result = advanceCarryPosition({
