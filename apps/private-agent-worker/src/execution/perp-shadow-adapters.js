@@ -382,10 +382,14 @@ export function parseEdgeXShadow({ funding, contracts = [], now_ms: nowMs, max_a
     const ask = integerOrNull(row.bestAskE8);
     const mark = priceE8(row.markPrice) || midpoint(impactBid, impactAsk) || priceE8(row.oraclePrice);
     const fundingSourceAt = timestamp(row.fundingTimestamp);
+    const fundingMaxAgeMs = Math.max(
+      maxAgeMs,
+      PERP_SHADOW_ADAPTERS.edgex.source_max_age_ms?.funding || 0,
+    );
     const fundingSourceFresh = observationFresh(
       fundingSourceAt,
       nowMs,
-      Math.max(maxAgeMs, 2 * 60_000),
+      fundingMaxAgeMs,
     );
     const marginTiers = normalizedEdgeXMarginTiers(contract.riskTierList);
     const firstMarginTier = marginTiers[0] || {};
@@ -421,7 +425,7 @@ export function parseEdgeXShadow({ funding, contracts = [], now_ms: nowMs, max_a
         funding: fundingSourceAt || timestamp(row.fundingObservedAtMs) || nowMs,
         orderbook: timestamp(row.orderbookObservedAtMs) || nowMs,
       },
-      source_max_age_ms: { funding: Math.max(maxAgeMs, 2 * 60_000) },
+      source_max_age_ms: { funding: fundingMaxAgeMs },
       now_ms: nowMs,
       max_age_ms: maxAgeMs,
       quality_flags: [
@@ -568,6 +572,12 @@ function shadowSnapshot(value) {
     liquidation_model: value.liquidation_model,
     as_of_ms: value.as_of_ms,
     source_observed_at_ms: Object.freeze({ ...(value.source_observed_at_ms || {}) }),
+    source_max_age_ms: Object.freeze(Object.fromEntries(
+      Object.keys(value.source_observed_at_ms || {}).map((source) => [
+        source,
+        value.source_max_age_ms?.[source] ?? value.max_age_ms,
+      ]),
+    )),
     stale_sources: Object.freeze(staleSourceNames),
     observed_at_ms: value.now_ms,
     status,

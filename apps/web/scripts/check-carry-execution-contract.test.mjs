@@ -177,6 +177,19 @@ test("rejects five-venue shadow qualification without liquidity-depth validation
   );
 });
 
+test("rejects five-venue shadow qualification without component freshness validation", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowVerifier: sources.shadowVerifier.replaceAll(
+        "source_observation_stale",
+        "source_observation_ignored",
+      ),
+    }),
+    /carry_shadow_component_freshness_gate_missing/,
+  );
+});
+
 test("rejects release without a joined three-venue no-submit matrix", () => {
   assert.throws(
     () => checkCarryExecutionContract({

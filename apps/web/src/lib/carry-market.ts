@@ -37,6 +37,11 @@ export interface CarryShadowSnapshot {
     funding?: number | null;
     orderbook?: number | null;
   };
+  source_max_age_ms?: {
+    market?: number | null;
+    funding?: number | null;
+    orderbook?: number | null;
+  };
   as_of_ms?: number | null;
   observed_at_ms?: number | null;
   missing_fields: string[];

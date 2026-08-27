@@ -91,6 +91,29 @@ test("rejects normalized shadow proof without valid two-sided liquidity depth", 
   assert.ok(result.failures.includes("liquidity_depth_crossed:edgex:BTC"));
 });
 
+test("rejects stale component feeds hidden behind a fresh aggregate timestamp", () => {
+  const rows = fixture();
+  rows[0].snapshots[0].source_observed_at_ms.funding = NOW - 30_001;
+  rows[1].snapshots[0].source_observed_at_ms.orderbook = null;
+  rows[2].snapshots[0].source_max_age_ms.market = 600_000;
+  rows[3].snapshots[0].stale_sources = ["funding"];
+  const result = verifyCarryShadowSet(rows, { now_ms: NOW });
+  assert.ok(result.failures.includes("source_observation_stale:hyperliquid:BTC:funding"));
+  assert.ok(result.failures.includes("source_observation_missing:lighter:BTC:orderbook"));
+  assert.ok(result.failures.includes("source_freshness_policy_mismatch:aster:BTC:market"));
+  assert.ok(result.failures.includes("stale_source_evidence_invalid:edgex:BTC"));
+});
+
+test("honors only the registry-declared edgeX funding cadence exception", () => {
+  const rows = fixture();
+  rows[3].snapshots[0].source_observed_at_ms.funding = NOW - 119_999;
+  rows[3].snapshots[0].source_max_age_ms.funding = 120_000;
+  assert.equal(verifyCarryShadowSet(rows, { now_ms: NOW }).ok, true);
+  rows[3].snapshots[0].source_observed_at_ms.funding = NOW - 120_001;
+  const result = verifyCarryShadowSet(rows, { now_ms: NOW });
+  assert.ok(result.failures.includes("source_observation_stale:edgex:BTC:funding"));
+});
+
 test("rejects duplicate or unregistered venue rows instead of silently overwriting them", () => {
   const rows = fixture();
   rows.push(structuredClone(rows[0]));
@@ -209,6 +232,13 @@ function snapshot(venueId, asset) {
     maintenance_margin_bps: 250,
     liquidation_model: "test_margin_liquidation",
     as_of_ms: NOW,
+    source_observed_at_ms: { market: NOW, funding: NOW, orderbook: NOW },
+    source_max_age_ms: {
+      market: 30_000,
+      funding: venueId === "edgex" ? 120_000 : 30_000,
+      orderbook: 30_000,
+    },
+    stale_sources: [],
     status: "ready",
     stale: false,
     missing_fields: [],

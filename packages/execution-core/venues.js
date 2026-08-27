@@ -84,6 +84,7 @@ const specs = [
       read_only: true,
       source_schema: "edgex_public_v2",
       trading_api_available: true,
+      source_max_age_ms: Object.freeze({ funding: 120_000 }),
     }),
     browser_carry_stream: adapter("edgex_browser_stream_v1", "enabled"),
   }),

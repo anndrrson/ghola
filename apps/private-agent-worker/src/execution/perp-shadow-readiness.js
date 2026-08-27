@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { CORE_PERP_VENUES, venueAdapterCapability } from "@ghola/execution-core";
 
 export const DEFAULT_CARRY_SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
+const REQUIRED_SOURCES = Object.freeze(["market", "funding", "orderbook"]);
 
 const REQUIRED_FIELDS = Object.freeze([
   "mark_price_e8",
@@ -160,6 +161,8 @@ function snapshotEvidenceRow(snapshot, nowMs) {
     as_of_ms: Number.isSafeInteger(snapshot?.as_of_ms) ? snapshot.as_of_ms : null,
     age_ms: Number.isSafeInteger(snapshot?.as_of_ms) ? Math.max(0, nowMs - snapshot.as_of_ms) : null,
     status: snapshot?.status,
+    source_observed_at_ms: Object.freeze({ ...(snapshot?.source_observed_at_ms || {}) }),
+    source_max_age_ms: Object.freeze({ ...(snapshot?.source_max_age_ms || {}) }),
     snapshot_commitment: `carry:shadow:snapshot:${digest(stableJson(snapshot))}`,
   };
 }
@@ -181,6 +184,7 @@ function validSnapshotEvidence(evidence, expectedSnapshots, requestedAssets) {
       || !Number.isSafeInteger(row?.as_of_ms)
       || !Number.isSafeInteger(row?.age_ms)
       || row.age_ms < 0
+      || !validSourceEvidence(row?.source_observed_at_ms, row?.source_max_age_ms)
       || !/^carry:shadow:snapshot:[0-9a-f]{64}$/.test(String(row?.snapshot_commitment || ""))) return false;
     pairs.add(`${venueId}:${asset}`);
   }
@@ -246,6 +250,7 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
   if (!Number.isSafeInteger(snapshot.as_of_ms) || snapshot.as_of_ms > nowMs + 5_000 || nowMs - snapshot.as_of_ms > maxAgeMs) {
     failures.push(`snapshot_stale:${prefix}`);
   }
+  verifySourceFreshness(snapshot, { declared, prefix, nowMs, maxAgeMs, failures });
   for (const field of REQUIRED_FIELDS) {
     if (!Number.isSafeInteger(snapshot[field])) failures.push(`normalized_field_missing:${prefix}:${field}`);
   }
@@ -279,6 +284,43 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
     const requiredFlag = MISSING_FIELD_EVIDENCE[field];
     if (!requiredFlag || !flags.has(requiredFlag)) failures.push(`missing_field_unjustified:${prefix}:${field}`);
   }
+}
+
+function verifySourceFreshness(snapshot, { declared, prefix, nowMs, maxAgeMs, failures }) {
+  const observed = snapshot?.source_observed_at_ms;
+  const policies = snapshot?.source_max_age_ms;
+  if (!observed || typeof observed !== "object" || Array.isArray(observed)) {
+    failures.push(`source_observations_invalid:${prefix}`);
+    return;
+  }
+  if (!policies || typeof policies !== "object" || Array.isArray(policies)) {
+    failures.push(`source_freshness_policy_invalid:${prefix}`);
+    return;
+  }
+  for (const source of REQUIRED_SOURCES) {
+    const observedAt = observed[source];
+    const allowedAgeMs = Math.max(maxAgeMs, declared?.source_max_age_ms?.[source] || 0);
+    if (!Number.isSafeInteger(observedAt) || observedAt <= 0) {
+      failures.push(`source_observation_missing:${prefix}:${source}`);
+    } else if (observedAt > nowMs + 5_000 || nowMs - observedAt > allowedAgeMs) {
+      failures.push(`source_observation_stale:${prefix}:${source}`);
+    }
+    if (policies[source] !== allowedAgeMs) {
+      failures.push(`source_freshness_policy_mismatch:${prefix}:${source}`);
+    }
+  }
+  if (!Array.isArray(snapshot.stale_sources) || snapshot.stale_sources.length !== 0) {
+    failures.push(`stale_source_evidence_invalid:${prefix}`);
+  }
+}
+
+function validSourceEvidence(observed, policies) {
+  return observed && typeof observed === "object" && !Array.isArray(observed)
+    && policies && typeof policies === "object" && !Array.isArray(policies)
+    && REQUIRED_SOURCES.every((source) => Number.isSafeInteger(observed[source])
+      && observed[source] > 0
+      && Number.isSafeInteger(policies[source])
+      && policies[source] > 0);
 }
 
 function verifyDepthLadder(levels, { prefix, side, failures }) {

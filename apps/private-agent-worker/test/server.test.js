@@ -85,6 +85,13 @@ function shadowSnapshot(venueId, asset, observedAt) {
     maintenance_margin_bps: 250,
     liquidation_model: "test_margin_liquidation",
     as_of_ms: observedAt,
+    source_observed_at_ms: { market: observedAt, funding: observedAt, orderbook: observedAt },
+    source_max_age_ms: {
+      market: 60_000,
+      funding: venueId === "edgex" ? 120_000 : 60_000,
+      orderbook: 60_000,
+    },
+    stale_sources: [],
     status: "ready",
     stale: false,
     missing_fields: [],
