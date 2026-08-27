@@ -650,6 +650,8 @@ function carryRecord() {
 
 function flatEvidence(venueIds: string[]) {
   return {
+    owner_commitment: "owner:carry:web-terminal:0001",
+    carry_position_id: "carry:position:web-terminal:0001",
     gross_exposure_micro_usdc: 0,
     open_order_count: 0,
     account_state_checked: true,
@@ -658,6 +660,7 @@ function flatEvidence(venueIds: string[]) {
     reconciliation_commitment: "carry:reconciliation:web-terminal:0001",
     venues: venueIds.map((venue_id) => ({
       venue_id,
+      account_commitment: `account:${venue_id}:web-terminal:0001`,
       authorized: true,
       flat_zero_orders: true,
       position_count: 0,

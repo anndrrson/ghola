@@ -204,6 +204,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("preflight", "leg_evidence: (result.evidence || [])", "carry_pair_leg_evidence_missing");
   requireText("privateExecution", "account_commitment: body.account_commitment || null", "carry_no_submit_receipt_account_binding_missing");
   requireText("privateExecution", "account_commitment: allocation?.account_commitment || body.account_commitment || null", "carry_hyperliquid_no_submit_account_binding_missing");
+  requireText("privateExecution", "account_commitment: input.account_commitment || input.body.account_commitment || null", "carry_live_receipt_account_binding_missing");
   requireText("preflight", "carry_account_verification_mismatch", "carry_no_submit_account_match_gate_missing");
   requireText("readiness", "leg.account_commitment !== venue?.account_commitment", "carry_readiness_leg_account_binding_missing");
   requireText("preflightTest", "verifies all three execution venues through one no-broadcast matrix", "carry_three_venue_no_submit_matrix_test_missing");
@@ -389,6 +390,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("qualification", "ambiguous_submission_retry_count: 0", "qualification_no_retry_proof_missing");
   requireText("qualification", "gross_exposure_micro_usdc: 0", "qualification_flat_proof_missing");
   requireText("qualification", "open_order_count: 0", "qualification_zero_orders_proof_missing");
+  requireText("qualification", "qualification_account_binding_mismatch", "qualification_account_lineage_gate_missing");
   requireText("releaseMaterial", "buildCompletedCarryReleaseMaterial", "carry_release_material_builder_missing");
   requireText("releaseMaterial", "carry_release_monitoring_evidence_missing", "carry_release_monitoring_gate_missing");
   requireText("releaseMaterial", "carry_release_margin_runway_evidence_missing", "carry_release_runway_gate_missing");
@@ -400,7 +402,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterial", "attempt?.submit_count !== 1", "carry_release_submit_count_gate_missing");
   requireText("releaseMaterial", "attempt?.ambiguity_retry_count !== 0", "carry_release_retry_count_gate_missing");
   requireText("executor", "venues: venueProof", "carry_reconciliation_venue_rows_missing");
+  requireText("executor", "item.account_commitment !== expectedAccountCommitment", "carry_exit_account_lineage_gate_missing");
   requireText("reconciliation", "assessCarryFlatReconciliation", "carry_exact_flat_reconciliation_gate_missing");
+  requireText("reconciliation", "carry_reconciliation_account_binding_mismatch", "carry_reconciliation_account_lineage_gate_missing");
+  requireText("webReconciliation", "commitment(item.account_commitment)", "carry_web_reconciliation_account_lineage_gate_missing");
   requireText("reconciliationTest", "rejects aggregate-only, unsafe, duplicate, and residual venue claims", "carry_exact_flat_reconciliation_test_missing");
   requireText("releaseMaterial", "assessCarryFlatReconciliation", "carry_release_venue_final_state_gate_missing");
   requireText("qualification", "hasExactCarryFlatReconciliation", "carry_qualification_exact_flat_gate_missing");
@@ -411,6 +416,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webReconciliationTest", "rejects aggregate-only flat claims", "carry_web_exact_flat_test_missing");
   requireText("releaseMaterialTest", "refuses aggregate-only final reconciliation evidence", "carry_release_aggregate_only_rejection_test_missing");
   requireText("releaseMaterialTest", "refuses duplicate, mismatched, or non-flat venue final state", "carry_release_venue_final_state_test_missing");
+  requireText("releaseMaterial", "carry_release_${phase}_account_binding_mismatch", "carry_release_receipt_account_lineage_gate_missing");
+  requireText("releaseMaterialTest", "refuses release evidence assembled from another account's execution receipt", "carry_release_receipt_account_lineage_test_missing");
   requireText("releaseMaterial", "worker_material_commitment", "carry_release_material_commitment_missing");
   requireText("privateExecution", "submit_count: 1", "durable_submit_count_missing");
   requireText("privateExecution", "ambiguity_retry_count: 0", "durable_retry_count_missing");

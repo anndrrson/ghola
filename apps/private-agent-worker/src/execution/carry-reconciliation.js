@@ -1,4 +1,10 @@
-export function assessCarryFlatReconciliation({ evidence, venue_ids: venueIds }) {
+export function assessCarryFlatReconciliation({
+  evidence,
+  venue_ids: venueIds,
+  owner_commitment: expectedOwnerCommitment = null,
+  carry_position_id: expectedPositionId = null,
+  account_commitments: expectedAccountCommitments = null,
+}) {
   const reasons = [];
   const pair = Array.isArray(venueIds) ? venueIds.map(String) : [];
   if (pair.length !== 2 || new Set(pair).size !== 2 || pair.some((venueId) => !identifier(venueId))) {
@@ -9,6 +15,10 @@ export function assessCarryFlatReconciliation({ evidence, venue_ids: venueIds })
   }
   if (evidence.account_state_checked !== true) reasons.push("carry_reconciliation_account_unchecked");
   if (evidence.transaction_broadcast !== false) reasons.push("carry_reconciliation_broadcast_unsafe");
+  if (!commitment(evidence.owner_commitment)) reasons.push("carry_reconciliation_owner_binding_invalid");
+  if (expectedOwnerCommitment && evidence.owner_commitment !== expectedOwnerCommitment) reasons.push("carry_reconciliation_owner_binding_mismatch");
+  if (!commitment(evidence.carry_position_id)) reasons.push("carry_reconciliation_position_binding_invalid");
+  if (expectedPositionId && evidence.carry_position_id !== expectedPositionId) reasons.push("carry_reconciliation_position_binding_mismatch");
   if (evidence.gross_exposure_micro_usdc !== 0) reasons.push("carry_reconciliation_exposure_nonzero");
   if (evidence.open_order_count !== 0) reasons.push("carry_reconciliation_orders_nonzero");
   if (!Number.isSafeInteger(evidence.checked_at_ms) || evidence.checked_at_ms <= 0) reasons.push("carry_reconciliation_timestamp_invalid");
@@ -27,6 +37,10 @@ export function assessCarryFlatReconciliation({ evidence, venue_ids: venueIds })
       continue;
     }
     const item = matching[0];
+    if (!commitment(item.account_commitment)) reasons.push(`carry_reconciliation_account_binding_invalid:${venueId}`);
+    const expectedAccountCommitment = expectedAccountCommitments?.[venueId];
+    if (expectedAccountCommitments && !commitment(expectedAccountCommitment)) reasons.push(`carry_reconciliation_expected_account_missing:${venueId}`);
+    if (expectedAccountCommitment && item.account_commitment !== expectedAccountCommitment) reasons.push(`carry_reconciliation_account_binding_mismatch:${venueId}`);
     if (item.authorized !== true) reasons.push(`carry_reconciliation_venue_unauthorized:${venueId}`);
     if (item.account_state_checked !== true) reasons.push(`carry_reconciliation_venue_unchecked:${venueId}`);
     if (item.flat_zero_orders !== true) reasons.push(`carry_reconciliation_venue_flat_unproven:${venueId}`);
@@ -38,8 +52,8 @@ export function assessCarryFlatReconciliation({ evidence, venue_ids: venueIds })
   });
 }
 
-export function hasExactCarryFlatReconciliation(evidence, venueIds) {
-  return assessCarryFlatReconciliation({ evidence, venue_ids: venueIds }).flat;
+export function hasExactCarryFlatReconciliation(evidence, venueIds, expected = {}) {
+  return assessCarryFlatReconciliation({ evidence, venue_ids: venueIds, ...expected }).flat;
 }
 
 function result(flat, reasons, extra = {}) {

@@ -47,7 +47,8 @@ export async function recordCompletedCarryVenueQualifications({ state, position_
   const record = await state?.getCarryPositionRecord?.(String(positionId || ""));
   const flat = record?.final_reconciliation_evidence;
   const pair = [record?.position?.long_venue_id, record?.position?.short_venue_id];
-  if (record?.position?.status !== "reconciled" || !hasExactCarryFlatReconciliation(flat, pair)) {
+  const reconciliationBinding = qualificationReconciliationBinding(record);
+  if (record?.position?.status !== "reconciled" || !hasExactCarryFlatReconciliation(flat, pair, reconciliationBinding)) {
     return { ok: false, error: "qualification_completed_flat_lifecycle_required", qualifications: [] };
   }
   const [entrySaga, exitSaga] = await Promise.all([
@@ -66,6 +67,18 @@ export async function recordCompletedCarryVenueQualifications({ state, position_
     const noSubmit = record.qualification_context?.venues?.[venueId];
     const entry = await sagaReceipt({ state, saga: entrySaga, venueId });
     const exit = await sagaReceipt({ state, saga: exitSaga, venueId });
+    const expectedAccountCommitment = reconciliationBinding.account_commitments[venueId];
+    const flatAccountCommitment = flat.venues.find((item) => item?.venue_id === venueId)?.account_commitment;
+    const accountBindings = [
+      noSubmit?.account_commitment,
+      entry.receipt?.account_commitment,
+      exit.receipt?.account_commitment,
+      flatAccountCommitment,
+    ];
+    if (!commitment(expectedAccountCommitment) || accountBindings.some((value) => value !== expectedAccountCommitment)) {
+      qualifications.push({ venue_id: venueId, ok: false, error: "qualification_account_binding_mismatch" });
+      continue;
+    }
     const entryProof = entry.receipt?.final_proof || {};
     const exitProof = exit.receipt?.final_proof || {};
     const exactBase = equalPositiveDecimal(entryProof.filled_base_size, exitProof.filled_base_size);
@@ -73,17 +86,22 @@ export async function recordCompletedCarryVenueQualifications({ state, position_
     const evidence = {
       version: 1,
       venue_id: venueId,
+      owner_commitment: record.owner_commitment,
+      carry_position_id: record.position.position_id,
+      account_commitment: expectedAccountCommitment,
       adapter_id: adapters.adapter_id,
       image_digest: imageDigest,
       network: "mainnet",
       verified_at_ms: nowMs,
       no_submit: {
+        account_commitment: expectedAccountCommitment,
         transaction_broadcast: noSubmit?.transaction_broadcast,
         account_state_checked: noSubmit?.account_state_checked,
         order_request_checked: noSubmit?.order_request_checked,
         evidence_commitment: noSubmit?.evidence_commitment,
       },
       entry_reconciliation: {
+        account_commitment: expectedAccountCommitment,
         live_order_broadcast: entryProof.broadcast_performed === true,
         target_client_order_matched: entryProof.target_client_order_matched === true,
         final_venue_execution_proven: entryProof.final_venue_execution_proven === true,
@@ -91,6 +109,7 @@ export async function recordCompletedCarryVenueQualifications({ state, position_
         evidence_commitment: receiptCommitment("entry", entry.receipt),
       },
       exit_recovery: {
+        account_commitment: expectedAccountCommitment,
         live_order_broadcast: exitProof.broadcast_performed === true,
         reduce_only: exit.context?.instruction?.order?.reduce_only === true,
         exact_base_quantity: exactBase,
@@ -124,20 +143,26 @@ export function assessCarryVenueQualification({ venue_id: venueId, evidence, ima
   }
   if (evidence.version !== 1) reasons.push("qualification_version_invalid");
   if (evidence.venue_id !== venueId) reasons.push("qualification_venue_mismatch");
+  if (!commitment(evidence.owner_commitment)) reasons.push("qualification_owner_binding_invalid");
+  if (!commitment(evidence.carry_position_id)) reasons.push("qualification_position_binding_invalid");
+  if (!commitment(evidence.account_commitment)) reasons.push("qualification_account_binding_invalid");
   if (evidence.adapter_id !== adapters?.adapter_id) reasons.push("qualification_adapter_mismatch");
   if (!imageDigest || evidence.image_digest !== imageDigest) reasons.push("qualification_image_mismatch");
   if (evidence.network !== "mainnet") reasons.push("qualification_not_mainnet");
   const verifiedAt = positiveInteger(evidence.verified_at_ms);
   if (!verifiedAt || verifiedAt > nowMs || nowMs - verifiedAt > maxAgeMs) reasons.push("qualification_stale");
   const noSubmit = evidence.no_submit || {};
+  if (noSubmit.account_commitment !== evidence.account_commitment) reasons.push("no_submit_account_binding_mismatch");
   if (noSubmit.transaction_broadcast !== false || noSubmit.account_state_checked !== true || noSubmit.order_request_checked !== true || !commitment(noSubmit.evidence_commitment)) {
     reasons.push("no_submit_proof_incomplete");
   }
   const entry = evidence.entry_reconciliation || {};
+  if (entry.account_commitment !== evidence.account_commitment) reasons.push("entry_account_binding_mismatch");
   if (entry.live_order_broadcast !== true || entry.target_client_order_matched !== true || entry.final_venue_execution_proven !== true || !positiveDecimal(entry.filled_base_size) || !commitment(entry.evidence_commitment)) {
     reasons.push("entry_reconciliation_proof_incomplete");
   }
   const exit = evidence.exit_recovery || {};
+  if (exit.account_commitment !== evidence.account_commitment) reasons.push("exit_account_binding_mismatch");
   if (exit.live_order_broadcast !== true || exit.reduce_only !== true || exit.exact_base_quantity !== true || exit.final_venue_execution_proven !== true || exit.account_state_checked !== true || exit.gross_exposure_micro_usdc !== 0 || exit.open_order_count !== 0 || !commitment(exit.evidence_commitment)) {
     reasons.push("exit_recovery_proof_incomplete");
   }
@@ -161,6 +186,18 @@ function qualificationAdapters(venueId) {
   if (new Set([execution.status, noSubmit.status, recovery.status]).size !== 1) return null;
   if (!["proven", "implemented_unproven"].includes(execution.status)) return null;
   return Object.freeze({ adapter_id: execution.adapter_id, status: execution.status });
+}
+
+function qualificationReconciliationBinding(record) {
+  const venueIds = [record?.position?.long_venue_id, record?.position?.short_venue_id].filter(Boolean);
+  return {
+    owner_commitment: record?.owner_commitment,
+    carry_position_id: record?.position?.position_id,
+    account_commitments: Object.fromEntries(venueIds.map((venueId) => [
+      venueId,
+      record?.monitoring_context?.venue_access?.[venueId]?.account_commitment,
+    ])),
+  };
 }
 
 export function qualificationKey(venueId, adapterId, imageDigest) {

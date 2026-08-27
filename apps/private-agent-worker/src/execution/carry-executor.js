@@ -758,9 +758,11 @@ async function inspectCarryAccountState({ state, record, saga, recipient, verify
     const matches = readiness.filter((item) => item?.venue_id === venueId);
     if (matches.length !== 1) return null;
     const item = matches[0];
+    const expectedAccountCommitment = record.monitoring_context?.venue_access?.[venueId]?.account_commitment;
     const positionCount = item.position_count;
     const openOrderCount = item.open_order_count;
     if (item.authorized !== true
+      || item.account_commitment !== expectedAccountCommitment
       || !Number.isSafeInteger(positionCount)
       || positionCount < 0
       || !Number.isSafeInteger(openOrderCount)
@@ -771,6 +773,7 @@ async function inspectCarryAccountState({ state, record, saga, recipient, verify
     if (item.flat_zero_orders !== flatZeroOrders) return null;
     return Object.freeze({
       venue_id: venueId,
+      account_commitment: expectedAccountCommitment,
       authorized: true,
       flat_zero_orders: flatZeroOrders,
       position_count: positionCount,
@@ -787,6 +790,8 @@ async function inspectCarryAccountState({ state, record, saga, recipient, verify
     ok: true,
     known_flat: knownFlat,
     evidence: {
+      owner_commitment: record.owner_commitment,
+      carry_position_id: record.position.position_id,
       gross_exposure_micro_usdc: knownFlat ? 0 : record.position.target_notional_micro_usdc,
       open_order_count: openOrderCount,
       account_state_checked: true,
@@ -794,6 +799,7 @@ async function inspectCarryAccountState({ state, record, saga, recipient, verify
       checked_at_ms: nowMs,
       venues: venueProof,
       reconciliation_commitment: `carry:reconciliation:${digest(JSON.stringify({
+        owner_commitment: record.owner_commitment,
         position_id: record.position.position_id,
         saga_id: saga.saga_id,
         checked_at_ms: nowMs,
@@ -1135,7 +1141,11 @@ async function finalizeAbortedCarryValueEvidenceIfComplete({ state, record, reci
   }
   const reconciliation = record.final_reconciliation_evidence;
   const exitAtMs = Number(reconciliation?.checked_at_ms);
-  if (!hasExactCarryFlatReconciliation(reconciliation, [record.position.long_venue_id, record.position.short_venue_id])
+  if (!hasExactCarryFlatReconciliation(
+    reconciliation,
+    [record.position.long_venue_id, record.position.short_venue_id],
+    carryReconciliationBinding(record),
+  )
     || !Number.isSafeInteger(exitAtMs)
     || exitAtMs <= 0) {
     return { ok: false, error: "carry_aborted_flat_proof_invalid", finalized: false, record: publicCarryRecord(record) };
@@ -1298,7 +1308,11 @@ async function finalizeCarryValueEvidenceIfComplete({ state, ownerCommitment, po
   }
   if (current.value_evidence?.costs_complete !== true) return { finalized: false, record: publicCarryRecord(current) };
   const reconciliation = current.final_reconciliation_evidence;
-  if (!hasExactCarryFlatReconciliation(reconciliation, [current.position.long_venue_id, current.position.short_venue_id])) {
+  if (!hasExactCarryFlatReconciliation(
+    reconciliation,
+    [current.position.long_venue_id, current.position.short_venue_id],
+    carryReconciliationBinding(current),
+  )) {
     return { finalized: false, record: publicCarryRecord(current) };
   }
   const finalized = await finalizeStoredCarryValueLedger({
@@ -1577,11 +1591,24 @@ function preflightBody(record, nowMs) {
   };
 }
 
+function carryReconciliationBinding(record) {
+  const venueIds = [record.position.long_venue_id, record.position.short_venue_id];
+  return {
+    owner_commitment: record.owner_commitment,
+    carry_position_id: record.position.position_id,
+    account_commitments: Object.fromEntries(venueIds.map((venueId) => [
+      venueId,
+      record.monitoring_context?.venue_access?.[venueId]?.account_commitment,
+    ])),
+  };
+}
+
 function qualificationContext(proof, checkedAtMs) {
   const venues = {};
   for (const item of Array.isArray(proof?.evidence) ? proof.evidence : []) {
     const checks = item?.checks || {};
     venues[item.venue_id] = {
+      account_commitment: String(item.account_commitment || ""),
       transaction_broadcast: item.transaction_broadcast === false ? false : null,
       account_state_checked: checks.account_state_checked === true,
       order_request_checked: checks.order_request_checked === true || checks.order_request_built === true,

@@ -111,8 +111,8 @@ test("bootstraps one capped candidate only after separate qualification confirma
     qualification_pilot_ready: true,
     qualification_pilot_candidate_venue_id: "aster",
     evidence: [
-      { venue_id: "hyperliquid", side: "buy", transaction_broadcast: false, verification_commitment: "verify_hyperliquid_pilot", checks: { account_state_checked: true, order_request_checked: true }, authority_boundary: { venue_native_trade_only: true }, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: "BTC", base_size: "0.001", limit_price: "10000" } },
-      { venue_id: "aster", side: "sell", transaction_broadcast: false, verification_commitment: "verify_aster_pilot", checks: { account_state_checked: true, order_request_checked: true }, authority_boundary: { venue_native_trade_only: true }, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: "BTCUSDT", base_size: "0.001", limit_price: "10000" } },
+      { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:pilot", side: "buy", transaction_broadcast: false, verification_commitment: "verify_hyperliquid_pilot", checks: { account_state_checked: true, order_request_checked: true }, authority_boundary: { venue_native_trade_only: true }, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: "BTC", base_size: "0.001", limit_price: "10000" } },
+      { venue_id: "aster", account_commitment: "account:aster:pilot", side: "sell", transaction_broadcast: false, verification_commitment: "verify_aster_pilot", checks: { account_state_checked: true, order_request_checked: true }, authority_boundary: { venue_native_trade_only: true }, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: "BTCUSDT", base_size: "0.001", limit_price: "10000" } },
     ],
   };
   const args = {
@@ -154,8 +154,8 @@ test("bootstraps one capped candidate only after separate qualification confirma
     preflight: async () => ({
       ...proof,
       account_readiness: [
-        { venue_id: "hyperliquid", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
-        { venue_id: "aster", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
+        { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:pilot", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
+        { venue_id: "aster", account_commitment: "account:aster:pilot", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
       ],
     }),
   });
@@ -402,8 +402,8 @@ test("terminal entry recovery synchronizes flat parent after restart without res
     preflight: async () => ({
       ...preflightProof(),
       account_readiness: [
-        { venue_id: "aster", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
-        { venue_id: "lighter", authorized: true, flat_zero_orders: false, position_count: 1, open_order_count: 0 },
+        { venue_id: "aster", account_commitment: "account:aster:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
+        { venue_id: "lighter", account_commitment: "account:lighter:0001", authorized: true, flat_zero_orders: false, position_count: 1, open_order_count: 0 },
       ],
     }),
     executeOrder: async () => { submissions += 1; throw new Error("unexpected submit"); },
@@ -629,8 +629,8 @@ test("does not claim a recovered exit is flat when a venue omits exact account c
   const preflight = async () => ({
     ...preflightProof(),
     account_readiness: [
-      { venue_id: "aster", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
-      { venue_id: "lighter", authorized: true, flat_zero_orders: false, position_count: null, open_order_count: 0 },
+      { venue_id: "aster", account_commitment: "account:aster:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
+      { venue_id: "lighter", account_commitment: "account:lighter:0001", authorized: true, flat_zero_orders: false, position_count: null, open_order_count: 0 },
     ],
   });
   const result = await executeStoredCarryExit({
@@ -646,6 +646,33 @@ test("does not claim a recovered exit is flat when a venue omits exact account c
   assert.equal(result.error, "carry_exit_final_account_proof_unavailable");
   assert.equal(result.record.position.status, "exiting");
   assert.equal(result.record.exit_verification.status, "pending");
+  assert.equal(result.record.final_reconciliation_evidence, undefined);
+});
+
+test("does not claim flat when account proof belongs to another venue account", async (t) => {
+  const fixture = await setup(t, "exit-account-mismatch");
+  await openActive(fixture);
+  const active = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  await advanceStoredCarryPosition({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.position_id,
+    event: { version: 1, event_id: "carry:exit:request:account-mismatch", sequence: active.position.last_event_sequence + 1, type: "manual_exit_requested" },
+    now_ms: NOW + 50,
+  });
+  const proof = preflightProof();
+  proof.account_readiness[1].account_commitment = "account:lighter:wrong:0001";
+  const result = await executeStoredCarryExit({
+    ...fixture,
+    preflight: async () => proof,
+    executeOrder: async (args) => {
+      const receipt = filledReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "carry_exit_final_account_proof_unavailable");
   assert.equal(result.record.final_reconciliation_evidence, undefined);
 });
 
@@ -897,12 +924,12 @@ function preflightProof(pair = { long: "aster", short: "lighter" }) {
     no_submit_ready: true,
     live_creation_ready: true,
     account_readiness: [
-      { venue_id: pair.long, authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
-      { venue_id: pair.short, authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
+      { venue_id: pair.long, account_commitment: `account:${pair.long}:0001`, authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
+      { venue_id: pair.short, account_commitment: `account:${pair.short}:0001`, authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
     ],
     evidence: [
-      { venue_id: pair.long, side: "buy", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.long), base_size: "0.001", limit_price: "10000" } },
-      { venue_id: pair.short, side: "sell", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.short), base_size: "0.001", limit_price: "10000" } },
+      { venue_id: pair.long, account_commitment: `account:${pair.long}:0001`, side: "buy", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.long), base_size: "0.001", limit_price: "10000" } },
+      { venue_id: pair.short, account_commitment: `account:${pair.short}:0001`, side: "sell", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.short), base_size: "0.001", limit_price: "10000" } },
     ],
   };
 }
@@ -946,6 +973,7 @@ async function openActive(fixture) {
 function filledReceipt(args) {
   return {
     status: "filled",
+    account_commitment: args.execution?.account_commitment,
     provider_ref_commitment: `provider:${args.venue_id}:filled`,
     final_proof: {
       final_venue_execution_proven: true,

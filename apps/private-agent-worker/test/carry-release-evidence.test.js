@@ -115,6 +115,7 @@ test("refuses duplicate, mismatched, or non-flat venue final state", async () =>
     (venues) => { venues[1].venue_id = "lighter"; },
     (venues) => { venues[1].position_count = 1; venues[1].flat_zero_orders = false; },
     (venues) => { venues[1].open_order_count = 1; venues[1].flat_zero_orders = false; },
+    (venues) => { venues[1].account_commitment = "account:aster:wrong:0001"; },
   ]) {
     const fixture = await stateFixture();
     mutate(fixture.record.final_reconciliation_evidence.venues);
@@ -129,6 +130,19 @@ test("refuses duplicate, mismatched, or non-flat venue final state", async () =>
   }
 });
 
+test("refuses release evidence assembled from another account's execution receipt", async () => {
+  const fixture = await stateFixture();
+  fixture.receipts["work:carry:entry:aster"].receipt.account_commitment = "account:aster:wrong:0001";
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_entry_account_binding_mismatch:aster");
+});
+
 async function stateFixture() {
   const positionId = "carry:position:release:0001";
   const entrySaga = saga("entry", 1_800_000_000_500, 1_800_000_001_000, false);
@@ -141,6 +155,12 @@ async function stateFixture() {
     owner_commitment: OWNER,
     entry_saga_id: entrySaga.saga_id,
     exit_saga_id: exitSaga.saga_id,
+    monitoring_context: {
+      venue_access: {
+        hyperliquid: { account_commitment: "account:hyperliquid:release:0001" },
+        aster: { account_commitment: "account:aster:release:0001" },
+      },
+    },
     position: {
       version: 1,
       position_id: positionId,
@@ -176,6 +196,8 @@ async function stateFixture() {
       { type: "manual_exit_requested", recorded_at_ms: 1_800_000_003_000 },
     ],
     final_reconciliation_evidence: {
+      owner_commitment: OWNER,
+      carry_position_id: positionId,
       account_state_checked: true,
       transaction_broadcast: false,
       gross_exposure_micro_usdc: 0,
@@ -183,8 +205,8 @@ async function stateFixture() {
       checked_at_ms: 1_800_000_005_000,
       reconciliation_commitment: "carry:reconciliation:release:0001",
       venues: [
-        { venue_id: "hyperliquid", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
-        { venue_id: "aster", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
+        { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:release:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
+        { venue_id: "aster", account_commitment: "account:aster:release:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
       ],
     },
     value_evidence: {
@@ -222,6 +244,9 @@ async function stateFixture() {
     context.work_order_commitment,
     {
       receipt: {
+        account_commitment: context.work_order_commitment.endsWith(":aster")
+          ? "account:aster:release:0001"
+          : "account:hyperliquid:release:0001",
         provider_ref_commitment: `provider:carry:release:${index}`,
         result_commitment: `result:carry:release:${index}`,
         final_proof: {
@@ -248,7 +273,7 @@ async function stateFixture() {
       ? { receipt: qualification }
       : receipts[key] || null,
   };
-  return { state, record, attempts };
+  return { state, record, attempts, receipts };
 }
 
 async function signedMandateAuthorization(position) {
@@ -316,20 +341,26 @@ function saga(phase, createdAt, updatedAt, reduceOnly) {
 }
 
 function qualificationEvidence() {
+  const accountCommitment = "account:aster:release:0001";
   return {
     version: 1,
     venue_id: "aster",
+    owner_commitment: OWNER,
+    carry_position_id: "carry:position:release:0001",
+    account_commitment: accountCommitment,
     adapter_id: "aster_v1",
     image_digest: IMAGE,
     network: "mainnet",
     verified_at_ms: NOW - 1,
     no_submit: {
+      account_commitment: accountCommitment,
       transaction_broadcast: false,
       account_state_checked: true,
       order_request_checked: true,
       evidence_commitment: "qualification:no-submit:aster:0001",
     },
     entry_reconciliation: {
+      account_commitment: accountCommitment,
       live_order_broadcast: true,
       target_client_order_matched: true,
       final_venue_execution_proven: true,
@@ -337,6 +368,7 @@ function qualificationEvidence() {
       evidence_commitment: "qualification:entry:aster:0001",
     },
     exit_recovery: {
+      account_commitment: accountCommitment,
       live_order_broadcast: true,
       reduce_only: true,
       exact_base_quantity: true,

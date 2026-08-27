@@ -207,7 +207,7 @@ async function validateMigrationLineage({ state, ownerCommitment, position, oppo
   const parentPair = [parent.position?.long_venue_id, parent.position?.short_venue_id];
   if (parent.position?.status !== "reconciled"
     || pending?.status !== "owner_signature_required"
-    || !hasExactCarryFlatReconciliation(finalState, parentPair)) {
+    || !hasExactCarryFlatReconciliation(finalState, parentPair, reconciliationBinding(parent))) {
     return denied("carry_migration_parent_not_flat");
   }
   if (selected?.candidate_id !== candidateId
@@ -1217,6 +1217,8 @@ function publicObservation(event) {
 
 function publicReconciliationEvidence(event, nowMs) {
   return Object.freeze({
+    owner_commitment: String(event.owner_commitment || ""),
+    carry_position_id: String(event.carry_position_id || ""),
     gross_exposure_micro_usdc: event.gross_exposure_micro_usdc,
     open_order_count: event.open_order_count,
     account_state_checked: event.account_state_checked === true,
@@ -1225,6 +1227,7 @@ function publicReconciliationEvidence(event, nowMs) {
     checked_at_ms: Number.isSafeInteger(event.checked_at_ms) ? event.checked_at_ms : nowMs,
     venues: Object.freeze((Array.isArray(event.venues) ? event.venues : []).map((item) => Object.freeze({
       venue_id: String(item?.venue_id || ""),
+      account_commitment: String(item?.account_commitment || ""),
       authorized: item?.authorized === true,
       flat_zero_orders: item?.flat_zero_orders === true,
       position_count: item?.position_count,
@@ -1232,6 +1235,18 @@ function publicReconciliationEvidence(event, nowMs) {
       account_state_checked: item?.account_state_checked === true,
     }))),
   });
+}
+
+function reconciliationBinding(record) {
+  const venueIds = [record.position.long_venue_id, record.position.short_venue_id];
+  return {
+    owner_commitment: record.owner_commitment,
+    carry_position_id: record.position.position_id,
+    account_commitments: Object.fromEntries(venueIds.map((venueId) => [
+      venueId,
+      record.monitoring_context?.venue_access?.[venueId]?.account_commitment,
+    ])),
+  };
 }
 
 function denied(error) {

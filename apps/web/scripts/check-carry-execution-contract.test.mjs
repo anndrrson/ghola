@@ -49,6 +49,19 @@ test("rejects qualification evidence not bound to the deployed image", () => {
   );
 });
 
+test("rejects final flat evidence that is not bound to the exact venue account", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      reconciliation: sources.reconciliation.replaceAll(
+        "carry_reconciliation_account_binding_mismatch",
+        "carry_reconciliation_account_not_checked",
+      ),
+    }),
+    /carry_reconciliation_account_lineage_gate_missing/,
+  );
+});
+
 test("rejects removal of separate live qualification confirmation", () => {
   assert.throws(
     () => checkCarryExecutionContract({

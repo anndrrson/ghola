@@ -387,9 +387,12 @@ test("creates an owner-signed migration replacement only from the selected flat 
     now_ms: NOW + 5,
   });
   assert.equal(reconciled.record.position.pending_migration.status, "owner_signature_required");
+  const storedParent = await state.getCarryPositionRecord(parent.position.position_id);
   const finalizedParent = await state.putCarryPositionRecord({
-    ...reconciled.record,
+    ...storedParent,
     final_reconciliation_evidence: {
+      owner_commitment: OWNER,
+      carry_position_id: parent.position.position_id,
       account_state_checked: true,
       transaction_broadcast: false,
       gross_exposure_micro_usdc: 0,
@@ -397,11 +400,11 @@ test("creates an owner-signed migration replacement only from the selected flat 
       checked_at_ms: NOW + 5,
       reconciliation_commitment: "carry:reconciliation:migration-parent:0001",
       venues: [
-        { venue_id: "hyperliquid", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
-        { venue_id: "lighter", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
+        { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
+        { venue_id: "lighter", account_commitment: "account:lighter:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
       ],
     },
-  }, { expected_version: reconciled.record.record_version });
+  }, { expected_version: storedParent.record_version });
   assert.equal(finalizedParent.ok, true);
 
   const replacementBase = {

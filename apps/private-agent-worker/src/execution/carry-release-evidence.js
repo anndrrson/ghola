@@ -27,7 +27,17 @@ export async function buildCompletedCarryReleaseMaterial({
   if (!contractEquivalence.ok) return contractEquivalence;
   const finalState = record.final_reconciliation_evidence;
   const pair = [record.position.long_venue_id, record.position.short_venue_id];
-  const finalAssessment = assessCarryFlatReconciliation({ evidence: finalState, venue_ids: pair });
+  const accountCommitments = Object.fromEntries(pair.map((venueId) => [
+    venueId,
+    record.monitoring_context?.venue_access?.[venueId]?.account_commitment,
+  ]));
+  const finalAssessment = assessCarryFlatReconciliation({
+    evidence: finalState,
+    venue_ids: pair,
+    owner_commitment: record.owner_commitment,
+    carry_position_id: record.position.position_id,
+    account_commitments: accountCommitments,
+  });
   if (!finalAssessment.flat) return denied("carry_release_final_state_unproven");
   const [entrySaga, exitSaga] = await Promise.all([
     state.getMultiLegSaga?.(record.entry_saga_id),
@@ -132,11 +142,14 @@ export async function buildCompletedCarryReleaseMaterial({
       legs: exitLegs.legs,
     },
     final_state: {
+      owner_commitment: record.owner_commitment,
+      carry_position_id: record.position.position_id,
       checked_at: iso(finalState.checked_at_ms),
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,
       venues: finalAssessment.venues.map((item) => ({
         venue_id: item.venue_id,
+        account_commitment: item.account_commitment,
         authorized: true,
         flat_zero_orders: true,
         nonzero_position_count: item.position_count,
@@ -160,6 +173,10 @@ async function materialLegs({ state, saga, record, phase }) {
       state.getExecutionAttempt?.(context.work_order_commitment),
     ]);
     const receipt = cached?.receipt || attempt || null;
+    const expectedAccountCommitment = record.monitoring_context?.venue_access?.[sagaLeg.venue_id]?.account_commitment;
+    if (!expectedAccountCommitment || receipt?.account_commitment !== expectedAccountCommitment) {
+      return denied(`carry_release_${phase}_account_binding_mismatch:${sagaLeg.venue_id}`);
+    }
     const proof = receipt?.final_proof || attempt?.final_proof || null;
     if (attempt?.submit_count !== 1 || attempt?.ambiguity_retry_count !== 0) {
       return denied(`carry_release_${phase}_submission_count_unproven:${sagaLeg.venue_id}`);
@@ -170,6 +187,7 @@ async function materialLegs({ state, saga, record, phase }) {
     const ledgerEntries = (record.value_ledger.entries || []).filter((entry) => entry.leg_id === sagaLeg.leg_id);
     legs.push({
       venue_id: sagaLeg.venue_id,
+      account_commitment: expectedAccountCommitment,
       side: context.instruction?.order?.side,
       reduce_only: context.instruction?.order?.reduce_only === true,
       client_order_commitment: receipt?.provider_ref_commitment || providerCommitment(attempt?.provider_ref_seed),

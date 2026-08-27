@@ -367,6 +367,7 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
   const cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
   const pendingAttempt = {
     venue_id: "hyperliquid",
+    account_commitment: allocation?.account_commitment || body.account_commitment || null,
     platform_class: "hyperliquid_style_market",
     execution_mode: executionMode,
     submit_count: 1,
@@ -416,6 +417,7 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     execution_mode: executionMode,
     instruction,
     body,
+    account_commitment: allocation?.account_commitment || body.account_commitment || null,
     status: adapterResult.status,
     provider_ref_seed: adapterResult.provider_ref_seed,
     result_seed: adapterResult.result_seed,
@@ -1158,6 +1160,7 @@ export async function executeAsterOrder({ body, recipient, state }) {
   const clientOrderId = await state.deriveClientOrderId("gh", body.work_order_commitment);
   const pending = {
     venue_id: "aster",
+    account_commitment: body.account_commitment || null,
     platform_class: "hyperliquid_style_market",
     execution_mode: "byo_api_key",
     submit_count: 1,
@@ -1315,6 +1318,7 @@ export async function executeLighterOrder({ body, recipient, state }) {
   const clientOrderIndex = lighterClientOrderIndex(body.work_order_commitment);
   const pending = {
     venue_id: "lighter",
+    account_commitment: body.account_commitment || null,
     platform_class: "hyperliquid_style_market",
     execution_mode: "byo_api_key",
     submit_count: 1,
@@ -1917,6 +1921,7 @@ function executionReceipt(input) {
     execution_mode: input.execution_mode || undefined,
     status: input.status || "submitted",
     work_order_commitment: input.body.work_order_commitment,
+    account_commitment: input.account_commitment || input.body.account_commitment || null,
     vault_commitment: input.body.vault_commitment || null,
     allocation_commitment: input.body.omnibus_allocation?.allocation_commitment ||
       input.body.managed_allocation_commitment ||

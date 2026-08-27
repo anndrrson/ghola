@@ -2337,6 +2337,7 @@ describe("private agent worker", () => {
     assert.equal(orderResponse.status, 202);
     const body = await orderResponse.json();
     assert.equal(body.execution_mode, "managed_testnet");
+    assert.equal(body.account_commitment, allocation.account_commitment);
     assert.equal(body.allocation_commitment, allocation.allocation_commitment);
     assert.equal(body.visibility_summary.hyperliquid_sees, "execution_account_and_order_activity");
     assert.equal(JSON.stringify(body).includes("api_wallet_private_key"), false);

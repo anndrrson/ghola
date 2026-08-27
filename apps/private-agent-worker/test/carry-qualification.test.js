@@ -37,6 +37,15 @@ test("accepts only complete deployment-bound mainnet lifecycle evidence", () => 
     image_digest: IMAGE,
     now_ms: NOW,
   }).reasons.includes("exit_recovery_proof_incomplete"));
+
+  const wrongAccount = structuredClone(valid);
+  wrongAccount.exit_recovery.account_commitment = "account:lighter:wrong:0001";
+  assert.ok(assessCarryVenueQualification({
+    venue_id: "lighter",
+    evidence: wrongAccount,
+    image_digest: IMAGE,
+    now_ms: NOW,
+  }).reasons.includes("exit_account_binding_mismatch"));
 });
 
 test("expires stale lifecycle evidence", () => {
@@ -92,14 +101,23 @@ test("derives qualification only from a completed durable flat lifecycle", async
   const entryWork = "work:carry:aster:entry:0001";
   const exitWork = "work:carry:aster:exit:0001";
   const map = new Map([
-    [entryWork, { receipt: executionReceipt("0.001") }],
-    [exitWork, { receipt: executionReceipt("0.001") }],
+    [entryWork, { receipt: executionReceipt("0.001", "account:aster:qualification:0001") }],
+    [exitWork, { receipt: executionReceipt("0.001", "account:aster:qualification:0001") }],
   ]);
   const record = {
+    owner_commitment: "owner:carry:qualification:0001",
     position: { position_id: "carry:position:0001", status: "reconciled", long_venue_id: "hyperliquid", short_venue_id: "aster" },
     entry_saga_id: "saga:entry:0001",
     exit_saga_id: "saga:exit:0001",
+    monitoring_context: {
+      venue_access: {
+        hyperliquid: { account_commitment: "account:hyperliquid:qualification:0001" },
+        aster: { account_commitment: "account:aster:qualification:0001" },
+      },
+    },
     final_reconciliation_evidence: {
+      owner_commitment: "owner:carry:qualification:0001",
+      carry_position_id: "carry:position:0001",
       account_state_checked: true,
       transaction_broadcast: false,
       gross_exposure_micro_usdc: 0,
@@ -107,13 +125,14 @@ test("derives qualification only from a completed durable flat lifecycle", async
       checked_at_ms: NOW,
       reconciliation_commitment: "carry:reconciliation:qualification:0001",
       venues: [
-        { venue_id: "hyperliquid", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
-        { venue_id: "aster", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
+        { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:qualification:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
+        { venue_id: "aster", account_commitment: "account:aster:qualification:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
       ],
     },
     qualification_context: {
       venues: {
         aster: {
+          account_commitment: "account:aster:qualification:0001",
           transaction_broadcast: false,
           account_state_checked: true,
           order_request_checked: true,
@@ -155,20 +174,26 @@ test("derives qualification only from a completed durable flat lifecycle", async
 });
 
 function evidence(venueId) {
+  const accountCommitment = `account:${venueId}:qualification:0001`;
   return {
     version: 1,
     venue_id: venueId,
+    owner_commitment: "owner:carry:qualification:0001",
+    carry_position_id: "carry:position:qualification:0001",
+    account_commitment: accountCommitment,
     adapter_id: executionVenueSpec(venueId).exact_quantity_recovery_adapter,
     image_digest: IMAGE,
     network: "mainnet",
     verified_at_ms: NOW,
     no_submit: {
+      account_commitment: accountCommitment,
       transaction_broadcast: false,
       account_state_checked: true,
       order_request_checked: true,
       evidence_commitment: "no_submit_evidence_0001",
     },
     entry_reconciliation: {
+      account_commitment: accountCommitment,
       live_order_broadcast: true,
       target_client_order_matched: true,
       final_venue_execution_proven: true,
@@ -176,6 +201,7 @@ function evidence(venueId) {
       evidence_commitment: "entry_evidence_0001",
     },
     exit_recovery: {
+      account_commitment: accountCommitment,
       live_order_broadcast: true,
       reduce_only: true,
       exact_base_quantity: true,
@@ -191,8 +217,9 @@ function evidence(venueId) {
   };
 }
 
-function executionReceipt(filledBaseSize) {
+function executionReceipt(filledBaseSize, accountCommitment) {
   return {
+    account_commitment: accountCommitment,
     provider_ref_commitment: "provider_reference_0001",
     result_commitment: "result_commitment_0001",
     final_proof: {
