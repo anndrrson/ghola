@@ -42,6 +42,7 @@ export interface CarryShadowSnapshot {
     funding?: number | null;
     orderbook?: number | null;
   };
+  stale_sources?: string[];
   as_of_ms?: number | null;
   observed_at_ms?: number | null;
   missing_fields: string[];
@@ -210,7 +211,7 @@ export function applyCarryLivePatches(
     const snapshotIndex = venue.snapshots.findIndex((snapshot) => snapshot.asset === patch.asset);
     if (snapshotIndex < 0) return venues;
     const snapshots = venue.snapshots.slice();
-    snapshots[snapshotIndex] = applyCarryLivePatch(snapshots[snapshotIndex], patch);
+    snapshots[snapshotIndex] = applyCarryLivePatch(snapshots[snapshotIndex], patch, nowMs);
     const next = venues.slice();
     next[venueIndex] = { ...venue, ok: true, snapshots };
     return next;
@@ -228,13 +229,17 @@ export function applyCarryLivePatches(
       const patch = byMarket.get(`${snapshot.venue_id}:${snapshot.asset}`);
       if (!patch) return snapshot;
       changed = true;
-      return applyCarryLivePatch(snapshot, patch);
+      return applyCarryLivePatch(snapshot, patch, nowMs);
     });
     return changed ? { ...venue, ok: true, snapshots } : venue;
   });
 }
 
-function applyCarryLivePatch(snapshot: CarryShadowSnapshot, patch: CarryLiveMarketPatch): CarryShadowSnapshot {
+function applyCarryLivePatch(
+  snapshot: CarryShadowSnapshot,
+  patch: CarryLiveMarketPatch,
+  nowMs: number,
+): CarryShadowSnapshot {
   const markPrice = patchedNumber(patch.mark_price_e8, snapshot.mark_price_e8);
   const indexPrice = patchedNumber(patch.index_price_e8, snapshot.index_price_e8);
   const bestBid = patchedNumber(patch.best_bid_e8, snapshot.best_bid_e8);
@@ -271,6 +276,7 @@ function applyCarryLivePatch(snapshot: CarryShadowSnapshot, patch: CarryLiveMark
     ? snapshot.missing_fields
     : snapshot.missing_fields.filter((field) => values[field as keyof typeof values] == null);
   const criticalMissing = markPrice == null || indexPrice == null || fundingRate == null || fundingInterval == null;
+  const staleSources = carryStaleSources(snapshot, sourceObservedAt, nowMs);
   return {
     ...snapshot,
     ...values,
@@ -282,10 +288,31 @@ function applyCarryLivePatch(snapshot: CarryShadowSnapshot, patch: CarryLiveMark
     source_observed_at_ms: sourceObservedAt,
     as_of_ms: oldestObservedAt(sourceObservedAt, snapshot.as_of_ms, sourceAt),
     observed_at_ms: patch.received_at_ms,
-    stale: false,
-    status: criticalMissing ? "quarantined" : missingFields.length > 0 ? "degraded" : "ready",
+    stale_sources: staleSources,
+    stale: staleSources.length > 0,
+    status: criticalMissing || staleSources.length > 0
+      ? "quarantined"
+      : missingFields.length > 0
+        ? "degraded"
+        : "ready",
     missing_fields: missingFields,
   };
+}
+
+function carryStaleSources(
+  snapshot: CarryShadowSnapshot,
+  observations: CarryShadowSnapshot["source_observed_at_ms"],
+  nowMs: number,
+) {
+  return (["market", "funding", "orderbook"] as const).filter((source) => {
+    const observedAt = observations?.[source] ?? snapshot.as_of_ms ?? snapshot.observed_at_ms;
+    const declaredMaxAge = snapshot.source_max_age_ms?.[source];
+    const maxAge = Number.isSafeInteger(declaredMaxAge) && Number(declaredMaxAge) > 0
+      ? Number(declaredMaxAge)
+      : CARRY_DEPTH_MAX_AGE_MS;
+    return !Number.isSafeInteger(observedAt) || Number(observedAt) <= 0 ||
+      Number(observedAt) > nowMs + CARRY_LIVE_PATCH_MAX_AGE_MS || nowMs - Number(observedAt) > maxAge;
+  });
 }
 
 function mergePartialDepth(

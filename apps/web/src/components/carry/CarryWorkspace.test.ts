@@ -156,6 +156,35 @@ describe("CarryWorkspace model", () => {
     }], now);
     expect(unchanged).toBe(base);
   });
+
+  it("does not let an orderbook patch revive stale funding", () => {
+    const now = 1_800_000_000_000;
+    const base = venue("hyperliquid", snapshot("hyperliquid", "BTC", 10_000_000, "quarantined", {
+      stale: true,
+      source_observed_at_ms: {
+        market: now - 1_000,
+        funding: now - 31_000,
+        orderbook: now - 1_000,
+      },
+      source_max_age_ms: { market: 30_000, funding: 30_000, orderbook: 30_000 },
+    }));
+    const [updated] = applyCarryLivePatches([base], [{
+      venue_id: "hyperliquid",
+      asset: "BTC",
+      received_at_ms: now,
+      best_bid_e8: 5_999_990_000_000,
+      best_ask_e8: 6_000_010_000_000,
+    }], now);
+    expect(updated.snapshots[0]).toMatchObject({
+      stale: true,
+      status: "quarantined",
+      stale_sources: ["funding"],
+    });
+    expect(buildPairCandidates([
+      updated,
+      venue("lighter", snapshot("lighter", "BTC", 40_000_000, "ready")),
+    ])).toHaveLength(0);
+  });
 });
 
 function venue(venue_id: string, item: ReturnType<typeof snapshot>) {

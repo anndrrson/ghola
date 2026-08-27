@@ -782,6 +782,16 @@ test("rejects removal of the incremental carry quote engine", () => {
   );
 });
 
+test("rejects a partial live patch that can revive a stale component", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryMarket: sources.webCarryMarket.replaceAll("carryStaleSources", "ignoreComponentStaleness"),
+    }),
+    /carry_component_staleness_gate_missing/,
+  );
+});
+
 test("rejects replacing the terminal rail with marketing status copy", () => {
   assert.throws(
     () => checkCarryExecutionContract({

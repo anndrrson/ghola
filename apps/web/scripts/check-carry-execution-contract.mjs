@@ -622,7 +622,10 @@ export function checkCarryExecutionContract(sources) {
   if (netRankingCount !== 1) failures.push("carry_redundant_net_ranking");
   requireText("webCarryChart", "pricedCandidates.filter", "carry_execution_routes_not_derived_from_single_ranking");
   requireText("webCarryMarket", "CARRY_LIVE_PATCH_MAX_AGE_MS", "carry_live_staleness_gate_missing");
+  requireText("webCarryMarket", "carryStaleSources", "carry_component_staleness_gate_missing");
+  requireText("webCarryMarket", "stale_sources: staleSources", "carry_stale_source_evidence_missing");
   requireText("webCarryMarket", "applyCarryLivePatches", "carry_incremental_quote_engine_missing");
+  requireText("webWorkspaceTest", "does not let an orderbook patch revive stale funding", "carry_partial_patch_staleness_test_missing");
   requireText("webCarryMarket", "export function buildPairCandidates", "carry_pair_enumeration_missing");
   requireText("webCarryMarket", "export function rankCarryCandidatesByNet", "carry_net_ranking_engine_missing");
   requireText("webCarryLiveMarket", "wss://mainnet.zklighter.elliot.ai", "lighter_live_feed_missing");
