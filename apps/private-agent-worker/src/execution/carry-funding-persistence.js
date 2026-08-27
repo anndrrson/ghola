@@ -4,6 +4,7 @@ import {
   evaluatePerpContractPairBasis,
 } from "@ghola/execution-core";
 import { observeCarryShadowQualification } from "./carry-shadow-qualification.js";
+import { writeCarryShadowSnapshot } from "./carry-shadow-snapshot.js";
 
 const HOUR_MS = 3_600_000;
 const DEFAULT_MIN_SAMPLES = 8;
@@ -45,6 +46,14 @@ export async function runCarryFundingObservationTick({
       env,
     }),
   ]);
+  const shadowSnapshot = await writeCarryShadowSnapshot({
+    state,
+    venues,
+    assets: normalizedAssets,
+    funding_persistence: fundingPersistence,
+    shadow_qualification: shadowQualification,
+    observed_at_ms: nowMs,
+  });
   return Object.freeze({
     version: 1,
     ok: fundingPersistence.observed_route_count > 0,
@@ -53,6 +62,7 @@ export async function runCarryFundingObservationTick({
     assets: Object.freeze(normalizedAssets),
     funding_persistence: fundingPersistence,
     shadow_qualification: shadowQualification,
+    shadow_snapshot: shadowSnapshot,
   });
 }
 

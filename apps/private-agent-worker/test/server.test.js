@@ -474,8 +474,10 @@ describe("private agent worker", () => {
   it("publishes a deterministic five-venue shadow readiness verdict", async () => {
     await close(server);
     let requested;
+    let fetchCount = 0;
     server = createPrivateAgentWorkerServer({
       fetchPerpShadowSet: async (options) => {
+        fetchCount += 1;
         requested = options;
         return CORE_PERP_VENUES.map((venueId) => ({
           venue_id: venueId,
@@ -503,6 +505,14 @@ describe("private agent worker", () => {
     assert.equal(Date.parse(body.observed_at), body.readiness.checked_at_ms);
     assert.equal(requested.now_ms, body.readiness.checked_at_ms);
     assert.deepEqual(requested.assets, ["BTC"]);
+    assert.equal(body.served_from, "live_fetch");
+
+    const cachedResponse = await fetch(`${baseUrl}/carry/shadow?assets=BTC`);
+    const cachedBody = await cachedResponse.json();
+    assert.equal(cachedResponse.status, 200);
+    assert.equal(cachedBody.served_from, "durable_observer");
+    assert.equal(cachedBody.readiness.ok, true);
+    assert.equal(fetchCount, 1);
   });
 
   it("proves the three-venue no-submit matrix and durable exact account state over HTTP", async () => {

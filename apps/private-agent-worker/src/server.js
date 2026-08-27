@@ -33,6 +33,10 @@ import {
 } from "./execution/carry-funding-persistence.js";
 import { observeCarryShadowQualification } from "./execution/carry-shadow-qualification.js";
 import {
+  readCarryShadowSnapshot,
+  writeCarryShadowSnapshot,
+} from "./execution/carry-shadow-snapshot.js";
+import {
   readCarryExecutionDiagnostic,
   readCarryExecutionReadiness,
 } from "./execution/carry-readiness.js";
@@ -2753,6 +2757,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
           .filter((asset) => /^[A-Z0-9._-]{1,16}$/.test(asset))
           .slice(0, 10);
         const observedAtMs = Date.now();
+        const cached = await readCarryShadowSnapshot({
+          state,
+          assets,
+          now_ms: observedAtMs,
+        });
+        if (cached.ok) return json(res, 200, cached.snapshot);
         const venues = await fetchPerpShadowSet({
           assets,
           now_ms: observedAtMs,
@@ -2778,6 +2788,14 @@ export function createPrivateAgentWorkerServer(options = {}) {
             now_ms: observedAtMs,
           }),
         ]);
+        const storedSnapshot = await writeCarryShadowSnapshot({
+          state,
+          venues,
+          assets,
+          funding_persistence: fundingPersistence,
+          shadow_qualification: shadowQualification,
+          observed_at_ms: observedAtMs,
+        });
         return json(res, 200, {
           version: 1,
           mode: "shadow_read_only",
@@ -2787,6 +2805,9 @@ export function createPrivateAgentWorkerServer(options = {}) {
           shadow_qualification: shadowQualification,
           funding_persistence: fundingPersistence,
           venues,
+          served_from: "live_fetch",
+          cache_age_ms: 0,
+          evidence_commitment: storedSnapshot.evidence_commitment || null,
         });
       }
 

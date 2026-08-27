@@ -203,5 +203,7 @@ test("collects funding history without an open browser", async () => {
   assert.deepEqual(request.assets, ["BTC"]);
   assert.equal(result.funding_persistence.observed_route_count, 6);
   assert.equal(result.shadow_qualification.transaction_broadcast, false);
-  assert.equal(state.rows.size, 7);
+  assert.equal(result.shadow_snapshot.stored, true);
+  assert.equal(result.shadow_snapshot.ready, false);
+  assert.equal(state.rows.size, 8);
 });

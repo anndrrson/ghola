@@ -21,6 +21,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   preflight: "apps/private-agent-worker/src/execution/carry-preflight.js",
   fundingPersistence: "apps/private-agent-worker/src/execution/carry-funding-persistence.js",
   shadowQualification: "apps/private-agent-worker/src/execution/carry-shadow-qualification.js",
+  shadowSnapshot: "apps/private-agent-worker/src/execution/carry-shadow-snapshot.js",
   workerMandate: "apps/private-agent-worker/src/execution/carry-mandate.js",
   positions: "apps/private-agent-worker/src/execution/carry-positions.js",
   executor: "apps/private-agent-worker/src/execution/carry-executor.js",
@@ -91,6 +92,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   preflightTest: "apps/private-agent-worker/test/carry-preflight.test.js",
   fundingPersistenceTest: "apps/private-agent-worker/test/carry-funding-persistence.test.js",
   shadowQualificationTest: "apps/private-agent-worker/test/carry-shadow-qualification.test.js",
+  shadowSnapshotTest: "apps/private-agent-worker/test/carry-shadow-snapshot.test.js",
   serverTest: "apps/private-agent-worker/test/server.test.js",
   qualificationTest: "apps/private-agent-worker/test/carry-qualification.test.js",
   readinessTest: "apps/private-agent-worker/test/carry-readiness.test.js",
@@ -606,6 +608,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("fundingPersistence", "observeCarryFundingUniverse", "carry_funding_shadow_observer_missing");
   requireText("fundingPersistence", "startCarryFundingObservationLoop", "carry_unattended_funding_observer_missing");
   requireText("fundingPersistence", "observeCarryShadowQualification", "carry_shadow_qualification_observer_missing");
+  requireText("fundingPersistence", "writeCarryShadowSnapshot", "carry_shadow_snapshot_observer_missing");
   requireText("shadowQualification", "verifyCarryShadowSoak", "carry_shadow_qualification_soak_missing");
   requireText("shadowQualification", "PHALA_CVM_IMAGE_DIGEST", "carry_shadow_qualification_image_binding_missing");
   requireText("shadowQualification", "sample_results: sampleResults", "carry_shadow_qualification_persistence_missing");
@@ -614,6 +617,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowQualificationTest", "resets consecutive qualification after one failed venue sample", "carry_shadow_qualification_reset_test_missing");
   requireText("shadowQualificationTest", "does not qualify complete-looking samples with degraded venue economics", "carry_shadow_qualification_degraded_test_missing");
   requireText("shadowQualificationTest", "fails closed for stale, tampered, or differently pinned qualification", "carry_shadow_qualification_integrity_test_missing");
+  requireText("shadowSnapshot", "verifyCarryShadowSet", "carry_shadow_snapshot_reverification_missing");
+  requireText("shadowSnapshot", "shadow_snapshot_evidence_invalid", "carry_shadow_snapshot_integrity_gate_missing");
+  requireText("shadowSnapshot", "shadow_snapshot_stale", "carry_shadow_snapshot_freshness_gate_missing");
+  requireText("shadowSnapshot", "shadow_snapshot_source_stale", "carry_shadow_snapshot_source_freshness_gate_missing");
+  requireText("shadowSnapshot", "shadow_snapshot_proof_incomplete", "carry_shadow_snapshot_proof_gate_missing");
+  requireText("shadowSnapshot", "transaction_broadcast: false", "carry_shadow_snapshot_no_broadcast_missing");
+  requireText("shadowSnapshotTest", "serves a fresh commitment-backed five-venue snapshot from the durable observer", "carry_shadow_snapshot_cache_test_missing");
+  requireText("shadowSnapshotTest", "rejects stale, tampered, or degraded durable snapshots and forces a live refresh", "carry_shadow_snapshot_fail_closed_test_missing");
+  requireText("server", "readCarryShadowSnapshot", "carry_shadow_snapshot_read_path_missing");
+  requireText("server", 'served_from: "live_fetch"', "carry_shadow_live_fallback_missing");
   requireText("server", "funding_persistence: fundingPersistence", "carry_funding_shadow_cycle_missing");
   requireText("server", "shadow_qualification: shadowQualification", "carry_shadow_qualification_cycle_missing");
   requireText("server", "carryFundingObservationLoop?.stop?.()", "carry_unattended_funding_observer_lifecycle_missing");
