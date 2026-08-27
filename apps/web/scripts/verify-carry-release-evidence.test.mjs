@@ -118,12 +118,14 @@ async function fixture() {
       ],
     },
     final_state: {
+      owner_commitment: "owner:carry:mainnet:proof:0001",
+      carry_position_id: "carry:position:mainnet:proof:0001",
       checked_at: "2026-08-24T00:00:08.000Z",
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,
       venues: [
-        { venue_id: "hyperliquid", authorized: true, flat_zero_orders: true, nonzero_position_count: 0, open_order_count: 0, account_state_checked: true },
-        { venue_id: "aster", authorized: true, flat_zero_orders: true, nonzero_position_count: 0, open_order_count: 0, account_state_checked: true },
+        { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:release:0001", authorized: true, flat_zero_orders: true, nonzero_position_count: 0, open_order_count: 0, account_state_checked: true },
+        { venue_id: "aster", account_commitment: "account:aster:release:0001", authorized: true, flat_zero_orders: true, nonzero_position_count: 0, open_order_count: 0, account_state_checked: true },
       ],
     },
     value_ledger: {
@@ -169,6 +171,7 @@ function qualification(venue_id, adapter_id, source) {
 function leg(venue_id, side, reduce_only, client_order_commitment, fee_micro_usdc, slippage_micro_usdc) {
   return {
     venue_id,
+    account_commitment: `account:${venue_id}:release:0001`,
     side,
     reduce_only,
     client_order_commitment,
@@ -267,6 +270,21 @@ test("rejects final venue rows that are not directly authorized and flat", async
     () => verifyCarryReleaseEvidence(evidence),
     /venue_not_authorized:hyperliquid|venue_flat_state_unproven:hyperliquid/,
   );
+});
+
+test("rejects lifecycle proof whose owner, position, or leg belongs to another account", async () => {
+  for (const [mutate, expected] of [
+    [(evidence) => { evidence.final_state.owner_commitment = "owner:carry:mainnet:wrong:0001"; }, /final_owner_binding_mismatch/],
+    [(evidence) => { evidence.final_state.carry_position_id = "carry:position:mainnet:wrong:0001"; }, /final_position_binding_mismatch/],
+    [(evidence) => { evidence.entry.legs[1].account_commitment = "account:aster:wrong:0001"; }, /entry_account_binding_mismatch:aster/],
+    [(evidence) => { evidence.exit.legs[0].account_commitment = "account:hyperliquid:wrong:0001"; }, /exit_account_binding_mismatch:hyperliquid/],
+  ]) {
+    const evidence = await fixture();
+    mutate(evidence);
+    evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+    evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+    await assert.rejects(() => verifyCarryReleaseEvidence(evidence), expected);
+  }
 });
 
 test("rejects a value ledger that does not reconcile to leg costs", async () => {

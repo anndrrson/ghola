@@ -184,12 +184,20 @@ export async function verifyCarryReleaseEvidence(evidence) {
   fail(clientOrderCommitments.length === 4 && new Set(clientOrderCommitments).size === 4, "client_order_commitments_not_unique");
 
   const finalState = evidence?.final_state || {};
+  fail(commitment(finalState.owner_commitment), "final_owner_commitment_invalid");
+  fail(finalState.owner_commitment === signedMandate?.owner_commitment, "final_owner_binding_mismatch");
+  fail(finalState.carry_position_id === position.position_id, "final_position_binding_mismatch");
   fail(timestamp(finalState.checked_at) >= exitReconciledAt, "final_state_timestamp_invalid");
   fail(finalState.gross_exposure_micro_usdc === 0, "final_exposure_not_flat");
   fail(finalState.open_order_count === 0, "final_open_orders_not_zero");
   fail(sameVenueSet(finalState.venues, pair), "final_state_venues_mismatch");
   for (const venueState of array(finalState.venues)) {
     const venue = String(venueState?.venue_id || "");
+    const opened = entryLegs.find((leg) => leg.venue_id === venue);
+    const closed = exitLegs.find((leg) => leg.venue_id === venue);
+    fail(commitment(venueState?.account_commitment), `final_account_commitment_invalid:${venue}`);
+    fail(opened?.account_commitment === venueState?.account_commitment, `entry_account_binding_mismatch:${venue}`);
+    fail(closed?.account_commitment === venueState?.account_commitment, `exit_account_binding_mismatch:${venue}`);
     fail(venueState?.authorized === true, `venue_not_authorized:${venue}`);
     fail(venueState?.flat_zero_orders === true, `venue_flat_state_unproven:${venue}`);
     fail(venueState?.nonzero_position_count === 0, `venue_position_not_flat:${venue}`);
@@ -249,6 +257,7 @@ function verifyLegs({ legs, pair, longVenue, reduceOnly, failures, phase }) {
     if (leg?.target_client_order_matched !== true) failures.push(`${phase}_target_order_unproven:${venue}`);
     if (leg?.final_venue_execution_proven !== true) failures.push(`${phase}_terminal_execution_unproven:${venue}`);
     if (!positiveDecimal(leg?.filled_base_size)) failures.push(`${phase}_fill_missing:${venue}`);
+    if (!commitment(leg?.account_commitment)) failures.push(`${phase}_account_commitment_invalid:${venue}`);
     if (!commitment(leg?.client_order_commitment)) failures.push(`${phase}_client_order_commitment_invalid:${venue}`);
     if (!commitment(leg?.receipt_commitment)) failures.push(`${phase}_receipt_commitment_missing:${venue}`);
     if (nonNegativeInteger(leg?.fee_micro_usdc) === null) failures.push(`${phase}_fee_invalid:${venue}`);

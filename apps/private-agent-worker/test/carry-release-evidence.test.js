@@ -30,6 +30,16 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.equal(result.material.monitoring.margin_runways[0].status, "healthy");
   assert.equal(result.material.contract_equivalence.index_price_divergence_bps, 3);
   assert.equal(result.material.final_state.open_order_count, 0);
+  assert.equal(result.material.final_state.owner_commitment, OWNER);
+  assert.equal(result.material.final_state.carry_position_id, fixture.record.position.position_id);
+  assert.deepEqual(result.material.entry.legs.map((item) => item.account_commitment), [
+    "account:hyperliquid:release:0001",
+    "account:aster:release:0001",
+  ]);
+  assert.deepEqual(result.material.exit.legs.map((item) => item.account_commitment), [
+    "account:hyperliquid:release:0001",
+    "account:aster:release:0001",
+  ]);
   assert.deepEqual(result.material.final_state.venues.map((item) => ({
     venue_id: item.venue_id,
     authorized: item.authorized,

@@ -418,6 +418,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterialTest", "refuses duplicate, mismatched, or non-flat venue final state", "carry_release_venue_final_state_test_missing");
   requireText("releaseMaterial", "carry_release_${phase}_account_binding_mismatch", "carry_release_receipt_account_lineage_gate_missing");
   requireText("releaseMaterialTest", "refuses release evidence assembled from another account's execution receipt", "carry_release_receipt_account_lineage_test_missing");
+  requireText("evidenceVerifier", "entry_account_binding_mismatch", "carry_release_verifier_entry_account_lineage_missing");
+  requireText("evidenceVerifier", "exit_account_binding_mismatch", "carry_release_verifier_exit_account_lineage_missing");
+  requireText("evidenceVerifier", "final_owner_binding_mismatch", "carry_release_verifier_owner_lineage_missing");
+  requireText("evidenceVerifierTest", "rejects lifecycle proof whose owner, position, or leg belongs to another account", "carry_release_verifier_account_lineage_test_missing");
   requireText("releaseMaterial", "worker_material_commitment", "carry_release_material_commitment_missing");
   requireText("privateExecution", "submit_count: 1", "durable_submit_count_missing");
   requireText("privateExecution", "ambiguity_retry_count: 0", "durable_retry_count_missing");

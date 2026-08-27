@@ -574,6 +574,18 @@ test("rejects release evidence that does not verify the signed mandate", () => {
   );
 });
 
+test("rejects an independent release verifier that ignores exact lifecycle accounts", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier
+        .replaceAll("entry_account_binding_mismatch", "entry_account_binding_ignored")
+        .replaceAll("exit_account_binding_mismatch", "exit_account_binding_ignored"),
+    }),
+    /carry_release_verifier_entry_account_lineage_missing|carry_release_verifier_exit_account_lineage_missing/,
+  );
+});
+
 test("rejects an independent verifier that ignores runway status", () => {
   assert.throws(
     () => checkCarryExecutionContract({
