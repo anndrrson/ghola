@@ -421,6 +421,16 @@ test("rejects a three-venue matrix that does not verify every unique pair", () =
   );
 });
 
+test("rejects a three-venue matrix that discards successful evidence when one pair fails", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll("Promise.allSettled(pairs.map", "Promise.all(pairs.map"),
+    }),
+    /carry_no_submit_pair_fault_isolation_missing/,
+  );
+});
+
 test("rejects a no-submit receipt that is not bound to the verified account", () => {
   assert.throws(
     () => checkCarryExecutionContract({

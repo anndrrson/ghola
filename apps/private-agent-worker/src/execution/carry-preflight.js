@@ -267,7 +267,7 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
     long_venue_id: index % 2 === 0 ? left : right,
     short_venue_id: index % 2 === 0 ? right : left,
   }));
-  const results = await Promise.all(pairs.map((pair, index) => preflightCarryPair({
+  const settledResults = await Promise.allSettled(pairs.map((pair, index) => preflightCarryPair({
     ...matrixDependencies,
     body: {
       ...body,
@@ -276,10 +276,15 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
       ...pair,
     },
   })));
-  const evidence = results.flatMap((result) => result.evidence || []);
+  const results = settledResults.map((result) => result.status === "fulfilled" ? result.value : null);
+  const evidence = results.flatMap((result) => result?.evidence || []);
   const failures = [];
-  for (const [index, result] of results.entries()) {
-    if (result.transaction_broadcast !== false || result.no_submit_ready !== true) failures.push(`pair_not_ready:${index + 1}`);
+  for (const [index, result] of settledResults.entries()) {
+    if (result.status === "rejected") {
+      failures.push(`pair_check_failed:${index + 1}:${carryPairFailureCode(result.reason)}`);
+    } else if (result.value.transaction_broadcast !== false || result.value.no_submit_ready !== true) {
+      failures.push(`pair_not_ready:${index + 1}`);
+    }
   }
   const venueEvidence = venues.map((venueId) => {
     const items = evidence.filter((item) => item.venue_id === venueId);
@@ -322,27 +327,34 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
     mode: "carry_execution_no_submit_matrix",
     transaction_broadcast: false,
     no_submit_ready: failures.length === 0,
-    capital_ready: results.every((result) => result.capital_ready === true),
+    capital_ready: results.every((result) => result?.capital_ready === true),
     venues: venueEvidence,
-    pairs: results.map((result, index) => ({
-      ...pairs[index],
-      work_order_commitment: `${body.work_order_commitment}_pair_${index + 1}`,
-      no_submit_ready: result.no_submit_ready === true,
-      capital_ready: result.capital_ready === true,
-      transaction_broadcast: false,
-      qualification_reasons: result.qualification_reasons,
-      account_readiness: result.account_readiness,
-      leg_evidence: (result.evidence || []).map((item) => ({
-        venue_id: item.venue_id,
-        account_commitment: item.account_commitment,
-        work_order_commitment: item.work_order_commitment,
-        verification_commitment: item.verification_commitment,
-        account_state: item.account_state,
-        transaction_broadcast: item.transaction_broadcast === false && item.checks?.transaction_broadcast === false ? false : null,
-        account_state_checked: item.checks?.account_state_checked === true,
-        order_request_checked: item.checks?.order_request_built === true || item.checks?.order_request_checked === true,
-      })),
-    })),
+    pairs: pairs.map((pair, index) => {
+      const result = results[index];
+      const errorCode = settledResults[index].status === "rejected"
+        ? carryPairFailureCode(settledResults[index].reason)
+        : null;
+      return {
+        ...pair,
+        work_order_commitment: `${body.work_order_commitment}_pair_${index + 1}`,
+        no_submit_ready: result?.no_submit_ready === true,
+        capital_ready: result?.capital_ready === true,
+        transaction_broadcast: false,
+        error_code: errorCode,
+        qualification_reasons: result?.qualification_reasons || [],
+        account_readiness: result?.account_readiness || [],
+        leg_evidence: (result?.evidence || []).map((item) => ({
+          venue_id: item.venue_id,
+          account_commitment: item.account_commitment,
+          work_order_commitment: item.work_order_commitment,
+          verification_commitment: item.verification_commitment,
+          account_state: item.account_state,
+          transaction_broadcast: item.transaction_broadcast === false && item.checks?.transaction_broadcast === false ? false : null,
+          account_state_checked: item.checks?.account_state_checked === true,
+          order_request_checked: item.checks?.order_request_built === true || item.checks?.order_request_checked === true,
+        })),
+      };
+    }),
     failures,
     checked_at: new Date(observedAt).toISOString(),
   };
@@ -360,6 +372,17 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
   }
   matrix.readiness = stored.readiness;
   return matrix;
+}
+
+function carryPairFailureCode(reason) {
+  const candidate = typeof reason?.code === "string"
+    ? reason.code
+    : typeof reason?.message === "string"
+      ? reason.message
+      : "";
+  return /^[a-z][a-z0-9:_-]{2,180}$/.test(candidate)
+    ? candidate
+    : "carry_pair_check_failed";
 }
 
 function allVenuePairs(venues) {

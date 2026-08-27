@@ -256,7 +256,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("preflight", "collateral_basis", "collateral_basis_model_missing");
   requireText("preflight", "export async function preflightCarryExecutionMatrix", "carry_three_venue_no_submit_matrix_missing");
   requireText("preflight", "allVenuePairs(orderedVenues)", "carry_all_pair_no_submit_matrix_missing");
-  requireText("preflight", "leg_evidence: (result.evidence || [])", "carry_pair_leg_evidence_missing");
+  requireText("preflight", "Promise.allSettled(pairs.map", "carry_no_submit_pair_fault_isolation_missing");
+  requireText("preflightTest", "isolates failed pairs without discarding successful no-submit evidence or retrying", "carry_no_submit_pair_fault_isolation_test_missing");
+  requireText("preflight", "leg_evidence: (result?.evidence || [])", "carry_pair_leg_evidence_missing");
   requireText("privateExecution", "account_commitment: body.account_commitment || null", "carry_no_submit_receipt_account_binding_missing");
   requireText("privateExecution", "account_commitment: allocation?.account_commitment || body.account_commitment || null", "carry_hyperliquid_no_submit_account_binding_missing");
   requireText("privateExecution", "account_commitment: input.account_commitment || input.body.account_commitment || null", "carry_live_receipt_account_binding_missing");
