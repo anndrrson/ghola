@@ -93,7 +93,7 @@ export function assertLighterOwnerAccount(input: {
     string(body.l1_address).toLowerCase() !== owner ||
     !rows.some((row) => Number(row.index) === accountIndex && string(row.l1_address).toLowerCase() === owner)
   ) {
-    throw new Error("The selected Lighter account is not owned by this Turnkey wallet.");
+    throw new Error("The selected Lighter account is not owned by this connected wallet.");
   }
   return { owner_address: owner, account_index: accountIndex };
 }
@@ -107,7 +107,7 @@ export function selectLighterOwnerAccount(input: {
   const owner = lighterOwnerAddress(input.ownerAddress);
   const rows = Array.isArray(body.sub_accounts) ? body.sub_accounts.map(record) : [];
   if (Number(body.code) !== 200 || string(body.l1_address).toLowerCase() !== owner) {
-    throw new Error("Lighter accounts could not be verified for this Turnkey wallet.");
+    throw new Error("Lighter accounts could not be verified for this connected wallet.");
   }
   const owned = rows
     .filter((row) => string(row.l1_address).toLowerCase() === owner)
@@ -116,11 +116,11 @@ export function selectLighterOwnerAccount(input: {
       account_type: Number(row.account_type),
     }))
     .sort((left, right) => left.account_index - right.account_index);
-  if (owned.length === 0) throw new Error("This Turnkey wallet does not have a Lighter account yet.");
+  if (owned.length === 0) throw new Error("This connected wallet does not have a Lighter account yet.");
   if (input.requestedAccountIndex != null) {
     const requested = lighterAccountIndex(input.requestedAccountIndex);
     const match = owned.find((row) => row.account_index === requested);
-    if (!match) throw new Error("The selected Lighter account is not owned by this Turnkey wallet.");
+    if (!match) throw new Error("The selected Lighter account is not owned by this connected wallet.");
     return match;
   }
   return owned.find((row) => row.account_type === 0) ?? owned[0];

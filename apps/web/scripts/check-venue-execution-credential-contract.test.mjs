@@ -271,7 +271,7 @@ test("rejects exposing manual Aster key entry as the default path", () => {
 test("rejects unsafe Lighter authorization sources or owner-key handling", () => {
   assert.throws(
     () => checkVenueExecutionCredentialContract(changed((value) => {
-      value.venues.lighter.programmatic_authorizers.push("external_owner_signature");
+      value.venues.lighter.programmatic_authorizers.push("unverified_browser_wallet");
       value.venues.lighter.owner_private_key_handling = "accepted";
     })),
     /lighter_owner_authorizer_contract_invalid|lighter_non_exportable_owner_transaction_required/,

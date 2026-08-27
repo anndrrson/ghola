@@ -172,8 +172,8 @@ describe("agent passport venue linking", () => {
     expect("error" in linked).toBe(false);
   });
 
-  it("accepts only Turnkey-owner Lighter programmatic association", async () => {
-    const unsafe = await linkAgentPlatformFromBody({
+  it("accepts verified external or Turnkey-owner Lighter association", async () => {
+    const external = await linkAgentPlatformFromBody({
       venue_id: "lighter",
       provisioning_mode: "programmatic_generated",
       turnkey_role: "none",
@@ -184,7 +184,7 @@ describe("agent passport venue linking", () => {
       permission_attestation: tradeOnlyPermissions(),
       encrypted_execution_vault: sealedVault("lighter-future"),
     }, owner);
-    expect(unsafe).toEqual({ error: "owner_authorization_source_not_supported" });
+    expect("error" in external).toBe(false);
 
     const linked = await linkAgentPlatformFromBody({
       venue_id: "lighter",

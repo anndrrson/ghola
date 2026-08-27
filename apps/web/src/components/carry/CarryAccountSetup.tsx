@@ -27,6 +27,7 @@ import {
   prepareAsterProgrammaticCredential,
   prepareLighterProgrammaticCredential,
   type AsterProgrammaticPreparation,
+  type LighterProgrammaticPreparation,
 } from "@/lib/private-account-client";
 import { classifyAsterOnboardingFailure } from "@/lib/aster-onboarding-recovery";
 import {
@@ -42,6 +43,15 @@ import {
   type VenueAccountActivationRequirement,
 } from "@/lib/carry-onboarding-recovery";
 import { carryAccountConnections } from "@/lib/carry-account-connections";
+import {
+  connectInjectedHyperliquidOwner,
+  injectedWalletErrorMessage,
+  resolveInjectedEvmProvider,
+} from "@/lib/hyperliquid-owner-authorization";
+import {
+  sendLighterKeyAssociationWithInjectedOwner,
+  signAsterAgentApprovalWithInjectedOwner,
+} from "@/lib/injected-venue-owner";
 
 type VenueState = "connected" | "needed" | "unavailable";
 type VenueActivation = { venue: "aster" | "lighter"; ownerAddress: string };
@@ -86,6 +96,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activationNeeded, setActivationNeeded] = useState<VenueActivation | null>(null);
+  const [injectedOwnerAvailable, setInjectedOwnerAvailable] = useState(false);
   const safeReturnTo = returnTo === "/carry" || returnTo.startsWith("/trade?") ? returnTo : "/carry";
   const recoveryUserScope = opaqueTurnkeyWalletScope(auth.user?.id || "");
   const asterWalletRepairRequested = asterWalletRepairRequired ||
@@ -111,6 +122,10 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   }, [auth.authenticated]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  useEffect(() => {
+    setInjectedOwnerAvailable(Boolean(resolveInjectedEvmProvider()));
+  }, []);
 
   useEffect(() => {
     if (!recoveryUserScope) return;
@@ -144,19 +159,39 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       : pendingAsterLinkRecovery?.preparation || null;
     let signature: `0x${string}` | null = null;
     let completionAttempted = false;
+    let usingTurnkeyOwner = false;
     try {
-      const pair = await perpsTurnkey.ensureWalletPair();
-      ownerAddress = pair.owner.address;
+      const provider = resolveInjectedEvmProvider();
+      let pair: Awaited<ReturnType<typeof perpsTurnkey.ensureWalletPair>> | null = null;
+      if (provider) {
+        ownerAddress = await connectInjectedHyperliquidOwner(provider);
+      } else {
+        usingTurnkeyOwner = true;
+        pair = await perpsTurnkey.ensureWalletPair();
+        ownerAddress = pair.owner.address;
+      }
+      const preparedOwner = prepared?.contract.ownerAuthorization.ownerAddress.toLowerCase();
+      if (preparedOwner && preparedOwner !== ownerAddress.toLowerCase()) {
+        prepared = null;
+        setPendingAsterLinkRecovery(null);
+        persistRecovery(accountCommitment, recoveryUserScope, { aster: null });
+      }
       if (!prepared) {
         prepared = await prepareAsterProgrammaticCredential({
-          owner_address: pair.owner.address,
+          owner_address: ownerAddress,
           agent_name: "ghola-perps",
         });
         const unsignedPending = { preparation: prepared };
         setPendingAsterLinkRecovery(unsignedPending);
         persistRecovery(accountCommitment, recoveryUserScope, { aster: unsignedPending });
       }
-      signature = await perpsTurnkey.signAsterAgentApproval(prepared.contract.approval.typedData);
+      signature = provider
+        ? await signAsterAgentApprovalWithInjectedOwner({
+          provider,
+          ownerAddress: ownerAddress as `0x${string}`,
+          typedData: prepared.contract.approval.typedData,
+        })
+        : await perpsTurnkey.signAsterAgentApproval(prepared.contract.approval.typedData);
       const pending = { preparation: prepared, signature };
       setPendingAsterLinkRecovery(pending);
       persistRecovery(accountCommitment, recoveryUserScope, { aster: pending });
@@ -172,7 +207,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       setAster("connected");
       await refresh();
     } catch (caught) {
-      if (!completionAttempted && isExpiredPerpsSession(caught)) {
+      if (usingTurnkeyOwner && !completionAttempted && isExpiredPerpsSession(caught)) {
         if (prepared && !signature) {
           const unsignedPending = { preparation: prepared };
           setPendingAsterLinkRecovery(unsignedPending);
@@ -207,7 +242,9 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
           setPendingAsterLinkRecovery(unsignedPending);
           persistRecovery(accountCommitment, recoveryUserScope, { aster: unsignedPending });
         }
-        const message = caught instanceof Error ? caught.message : "Aster authorization failed.";
+        const message = resolveInjectedEvmProvider()
+          ? injectedWalletErrorMessage(caught)
+          : caught instanceof Error ? caught.message : "Aster authorization failed.";
         if (isTurnkeyResourceMissing(message)) setAsterWalletRepairRequired(true);
         setError(message);
       }
@@ -297,11 +334,11 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       setError("Aster registration needs reconciliation before another signer can be created.");
       return;
     }
-    if (!perpsTurnkey.configured) {
+    if (!injectedOwnerAvailable && !perpsTurnkey.configured) {
       setError("Secure perps wallet setup is unavailable in this preview.");
       return;
     }
-    if (!perpsTurnkey.authenticated) {
+    if (!injectedOwnerAvailable && !perpsTurnkey.authenticated) {
       setWorking(true);
       setPendingAsterAuthorization(true);
       setPendingAsterWalletRepair(asterWalletRepairRequested);
@@ -317,7 +354,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       }
       return;
     }
-    if (asterWalletRepairRequested) {
+    if (!injectedOwnerAvailable && asterWalletRepairRequested) {
       await repairAsterWallet();
       return;
     }
@@ -369,10 +406,13 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     pending: PendingLighterAssociation,
     attempts = 8,
   ) => {
+    if (!pending.authorization) throw new Error("Lighter association proof is unavailable.");
+    const authorization = pending.authorization;
     let last: Record<string, unknown> = {};
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       last = asRecord(await completeLighterProgrammaticCredential({
-        ...pending,
+        preparation: pending.preparation,
+        authorization,
         reconcile_only: true,
       }));
       if (last.status === "ready") return last;
@@ -388,17 +428,50 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     setWorking(true);
     setError(null);
     setActivationNeeded(null);
-    let pending: PendingLighterAssociation | null = null;
+    let pending: PendingLighterAssociation | null = pendingLighterAssociation;
+    let preparation: LighterProgrammaticPreparation | null = pending?.preparation || null;
+    let usingTurnkeyOwner = false;
+    let walletSubmissionStarted = false;
     try {
-      const pair = await perpsTurnkey.ensureWalletPair();
-      const preparation = await prepareLighterProgrammaticCredential({
-        owner_address: pair.owner.address,
-      });
-      const authorization = await perpsTurnkey.signLighterKeyAssociation(preparation.transaction_plan);
+      if (pending?.submission_ambiguous) {
+        setError("Lighter wallet submission is ambiguous. Ghola will not submit it again; reconcile the wallet activity first.");
+        return;
+      }
+      const provider = resolveInjectedEvmProvider();
+      let ownerAddress = "";
+      if (provider) {
+        ownerAddress = await connectInjectedHyperliquidOwner(provider);
+      } else {
+        usingTurnkeyOwner = true;
+        ownerAddress = (await perpsTurnkey.ensureWalletPair()).owner.address;
+      }
+      if (preparation && preparation.transaction_plan.from.toLowerCase() !== ownerAddress.toLowerCase()) {
+        preparation = null;
+        pending = null;
+        setPendingLighterAssociation(null);
+        persistRecovery(accountCommitment, recoveryUserScope, {
+          lighter: null,
+          lighterActivation: null,
+        });
+      }
+      if (!preparation) {
+        preparation = await prepareLighterProgrammaticCredential({ owner_address: ownerAddress });
+        pending = { preparation };
+        setPendingLighterAssociation(pending);
+        persistRecovery(accountCommitment, recoveryUserScope, { lighter: pending });
+      }
+      walletSubmissionStarted = true;
+      const authorization = provider
+        ? await sendLighterKeyAssociationWithInjectedOwner({
+          provider,
+          ownerAddress: ownerAddress as `0x${string}`,
+          transactionPlan: preparation.transaction_plan,
+        })
+        : await perpsTurnkey.signLighterKeyAssociation(preparation.transaction_plan);
       pending = { preparation, authorization };
       setPendingLighterAssociation(pending);
       persistRecovery(accountCommitment, recoveryUserScope, { lighter: pending });
-      const completed = asRecord(await completeLighterProgrammaticCredential(pending));
+      const completed = asRecord(await completeLighterProgrammaticCredential({ preparation, authorization }));
       const ready = completed.status === "ready"
         ? completed
         : await reconcileLighterAssociation(pending);
@@ -411,14 +484,24 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       setLighter("connected");
       await refresh();
     } catch (caught) {
-      if (!pending && isExpiredPerpsSession(caught)) {
+      if (usingTurnkeyOwner && !pending && isExpiredPerpsSession(caught)) {
         await perpsTurnkey.logout().catch(() => {});
         setPendingLighterAuthorization(true);
         setError("Secure wallet session expired. Continue authentication below; no Lighter key was submitted.");
         return;
       }
-      if (pending) {
+      if (pending?.authorization) {
         setError("Lighter association needs reconciliation. Ghola will not create or submit another key.");
+      } else if (walletSubmissionStarted) {
+        const code = walletErrorCode(caught);
+        if ([4001, 4100].includes(code)) {
+          setError(injectedWalletErrorMessage(caught));
+        } else if (preparation) {
+          const ambiguous = { preparation, submission_ambiguous: true as const };
+          setPendingLighterAssociation(ambiguous);
+          persistRecovery(accountCommitment, recoveryUserScope, { lighter: ambiguous });
+          setError("Lighter wallet outcome is ambiguous. Ghola froze this preparation and will not submit it again.");
+        }
       } else {
         const failure = venueSetupFailure(caught, "Lighter authorization failed.");
         if (failure.code === "lighter_owner_account_not_found") {
@@ -432,10 +515,10 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     } finally {
       setWorking(false);
     }
-  }, [accountCommitment, perpsTurnkey, reconcileLighterAssociation, recoveryUserScope, refresh]);
+  }, [accountCommitment, pendingLighterAssociation, perpsTurnkey, reconcileLighterAssociation, recoveryUserScope, refresh]);
 
   const finishLighterAssociation = useCallback(async () => {
-    if (!pendingLighterAssociation) return;
+    if (!pendingLighterAssociation?.authorization) return;
     setWorking(true);
     setError(null);
     try {
@@ -469,15 +552,19 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       setAuthOpen(true);
       return;
     }
-    if (pendingLighterAssociation) {
+    if (pendingLighterAssociation?.submission_ambiguous) {
+      setError("Lighter wallet submission is ambiguous. Ghola will not submit it again; reconcile the wallet activity first.");
+      return;
+    }
+    if (pendingLighterAssociation?.authorization) {
       await finishLighterAssociation();
       return;
     }
-    if (!perpsTurnkey.configured) {
+    if (!injectedOwnerAvailable && !perpsTurnkey.configured) {
       setError("Secure perps wallet setup is unavailable in this preview.");
       return;
     }
-    if (!perpsTurnkey.authenticated) {
+    if (!injectedOwnerAvailable && !perpsTurnkey.authenticated) {
       setWorking(true);
       setPendingLighterAuthorization(true);
       setError(null);
@@ -594,12 +681,12 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
             </VenueCard>
             <VenueCard name="Aster" state={aster} onboarding={ASTER_ONBOARDING}>
               {aster !== "connected" && (
-                <button type="button" disabled={working || perpsTurnkey.loading || !perpsTurnkey.configured || asterRegistrationAmbiguous || activationNeeded?.venue === "aster"} onClick={() => void beginAsterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
+                <button type="button" disabled={working || (!injectedOwnerAvailable && (perpsTurnkey.loading || !perpsTurnkey.configured)) || asterRegistrationAmbiguous || (!injectedOwnerAvailable && activationNeeded?.venue === "aster")} onClick={() => void beginAsterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
                   {pendingAsterAuthorization
                     ? working ? "Authenticating…" : "Continue secure authentication"
-                    : !perpsTurnkey.configured
+                    : !injectedOwnerAvailable && !perpsTurnkey.configured
                       ? "Secure wallet unavailable"
-                    : perpsTurnkey.loading
+                    : !injectedOwnerAvailable && perpsTurnkey.loading
                       ? "Restoring secure wallet…"
                     : working
                       ? "Authorizing…"
@@ -612,7 +699,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                             ? pendingAsterLinkRecovery.receipt ? "Finish Aster linking" : "Resume Aster verification"
                             : "Resume Aster signing"
                         : activationNeeded?.venue === "aster"
-                          ? "Activate owner first"
+                          ? injectedOwnerAvailable ? "Check connected wallet" : "Activate owner first"
                         : asterReprepareRequired
                           ? "Re-prepare Aster approval"
                           : ASTER_ONBOARDING.ux.action_label}
@@ -643,19 +730,23 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
             )}
             <VenueCard name="Lighter" state={lighter} onboarding={LIGHTER_ONBOARDING}>
               {lighter !== "connected" && (
-                <button type="button" disabled={working || perpsTurnkey.loading || !perpsTurnkey.configured || activationNeeded?.venue === "lighter"} onClick={() => void beginLighterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
+                <button type="button" disabled={working || (!injectedOwnerAvailable && (perpsTurnkey.loading || !perpsTurnkey.configured)) || (!injectedOwnerAvailable && activationNeeded?.venue === "lighter") || pendingLighterAssociation?.submission_ambiguous === true} onClick={() => void beginLighterProgrammatic()} className="rounded-md border border-[#315277] px-3 py-2 text-sm font-semibold text-[#a8d8ff] disabled:opacity-50">
                   {pendingLighterAuthorization
                     ? working ? "Authenticating…" : "Continue secure authentication"
-                    : !perpsTurnkey.configured
+                    : !injectedOwnerAvailable && !perpsTurnkey.configured
                       ? "Secure wallet unavailable"
-                    : perpsTurnkey.loading
+                    : !injectedOwnerAvailable && perpsTurnkey.loading
                       ? "Restoring secure wallet…"
+                    : pendingLighterAssociation?.submission_ambiguous
+                      ? "Reconciliation required"
                     : activationNeeded?.venue === "lighter"
-                      ? "Activate owner first"
+                      ? injectedOwnerAvailable ? "Check connected wallet" : "Activate owner first"
                     : working
-                      ? pendingLighterAssociation ? "Verifying…" : "Authorizing…"
-                      : pendingLighterAssociation
+                      ? pendingLighterAssociation?.authorization ? "Verifying…" : "Authorizing…"
+                      : pendingLighterAssociation?.authorization
                         ? "Resume verification"
+                        : pendingLighterAssociation
+                          ? "Continue owner approval"
                         : LIGHTER_ONBOARDING.ux.action_label}
                 </button>
               )}
@@ -694,7 +785,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         {error && <p className="mt-4 rounded-lg border border-[#60303a] bg-[#251116] px-4 py-3 text-sm text-[#ee9da8]">{error}</p>}
         {activationNeeded && (
           <div className="mt-4 rounded-lg border border-[#315277] bg-[#0b1624] p-4 text-sm">
-            <p className="font-semibold text-[#d8eaff]">Activate this Ghola owner on {activationNeeded.venue === "aster" ? "Aster" : "Lighter"}</p>
+            <p className="font-semibold text-[#d8eaff]">Activate this connected owner wallet on {activationNeeded.venue === "aster" ? "Aster" : "Lighter"}</p>
             <p className="mt-2 break-all font-mono text-xs text-[#8fcaff]">{activationNeeded.ownerAddress}</p>
             <p className="mt-2 text-xs leading-5 text-[#8f9aae]">The venue must recognize this exact address before Ghola can create its sealed trading key. No order, key, deposit, or transfer was submitted.</p>
             <a href={activationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : "https://app.lighter.xyz/"} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff]">
@@ -774,6 +865,12 @@ function isTurnkeyResourceMissing(message: string): boolean {
 function isExpiredPerpsSession(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error || "");
   return /no active session found|requires a valid session/i.test(message);
+}
+
+function walletErrorCode(error: unknown): number {
+  return error && typeof error === "object" && "code" in error
+    ? Number((error as { code?: unknown }).code)
+    : Number.NaN;
 }
 
 function delay(ms: number) {

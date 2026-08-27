@@ -14,7 +14,7 @@ const EXPECTED_PROGRAMMATIC = new Map([
 const EXPECTED_AUTHORIZERS = new Map([
   ["hyperliquid", ["turnkey_venue_owner"]],
   ["aster", ["turnkey_venue_owner", "external_owner_signature"]],
-  ["lighter", ["turnkey_venue_owner"]],
+  ["lighter", ["turnkey_venue_owner", "external_owner_signature"]],
 ]);
 const EXPECTED_GENERATED_CUSTODY = new Map([
   ["hyperliquid", ["turnkey_non_exportable"]],
@@ -56,7 +56,7 @@ export function checkVenueExecutionCredentialContract(contract) {
   }
 
   const lighter = object(venues.lighter);
-  if (lighter.owner_private_key_handling !== "turnkey_non_exportable_change_pub_key_transaction") {
+  if (lighter.owner_private_key_handling !== "external_wallet_or_turnkey_non_exportable_change_pub_key_transaction") {
     failures.push("lighter_non_exportable_owner_transaction_required");
   }
 
@@ -274,11 +274,13 @@ export function checkLighterCredentialProvisioningBoundary(prepareSource, comple
   ];
   const completeRequired = [
     ["verifyLighterChangePubKeyTransaction", "lighter_signed_transaction_verification_required"],
+    ["verifyExternalLighterChangePubKeyTransaction", "lighter_external_transaction_verification_required"],
+    ["eth_getTransactionByHash", "lighter_external_transaction_observation_required"],
     ["x-ghola-credential-authorization-required", "lighter_explicit_authorization_header_required"],
     ["WORKER_RECEIPT_PATH", "lighter_receipt_reconciliation_path_required"],
     ["retry_allowed: false", "lighter_web_retry_block_required"],
     ["linkAgentPlatformFromBody", "lighter_verified_platform_link_required"],
-    ["owner_authorization_source: \"turnkey_venue_owner\"", "lighter_turnkey_owner_source_required"],
+    ["externalBroadcast ? \"external_owner_signature\" : \"turnkey_venue_owner\"", "lighter_verified_owner_sources_required"],
   ];
   const workerRequired = [
     ["recoverTransactionAddress", "lighter_worker_owner_recovery_required"],
@@ -322,6 +324,7 @@ export function checkLighterOnboardingUiBoundary(source) {
     ["onClick={() => void connectLighterManual()}", "lighter_manual_fallback_action_required"],
     ["prepareLighterProgrammaticCredential", "lighter_prepare_step_required"],
     ["signLighterKeyAssociation", "lighter_turnkey_owner_sign_step_required"],
+    ["sendLighterKeyAssociationWithInjectedOwner", "lighter_external_owner_submit_step_required"],
     ["completeLighterProgrammaticCredential", "lighter_complete_step_required"],
     ["reconcile_only: true", "lighter_reconcile_only_polling_required"],
     ["Ghola will not create or submit another key", "lighter_ambiguity_ui_hold_required"],
@@ -330,7 +333,7 @@ export function checkLighterOnboardingUiBoundary(source) {
   for (const [value, code] of required) if (!source.includes(value)) failures.push(code);
   const prepare = source.indexOf("await prepareLighterProgrammaticCredential");
   const ownerSign = source.indexOf("await perpsTurnkey.signLighterKeyAssociation");
-  const complete = source.indexOf("await completeLighterProgrammaticCredential(pending)");
+  const complete = source.indexOf("await completeLighterProgrammaticCredential({ preparation, authorization })");
   const connected = source.indexOf("setLighter(\"connected\")", complete);
   if (prepare < 0 || ownerSign < prepare || complete < ownerSign || connected < complete) {
     failures.push("lighter_prepare_sign_complete_ready_order_required");

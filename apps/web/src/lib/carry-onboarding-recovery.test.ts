@@ -28,6 +28,28 @@ describe("Carry onboarding recovery", () => {
       .toEqual(lighter);
   });
 
+  it("restores a prepared Lighter key before owner approval", () => {
+    const lighter = { preparation: lighterPending().preparation };
+    writeCarryOnboardingRecovery(localStorage, ACCOUNT, { lighter }, NOW);
+
+    expect(readCarryOnboardingRecovery(localStorage, ACCOUNT, NOW + 1_000)?.lighter)
+      .toEqual(lighter);
+  });
+
+  it("restores an externally broadcast Lighter transaction by hash only", () => {
+    const lighter = {
+      preparation: lighterPending().preparation,
+      authorization: {
+        external_broadcast: true as const,
+        transaction_hash: `0x${"88".repeat(32)}` as const,
+      },
+    };
+    writeCarryOnboardingRecovery(localStorage, ACCOUNT, { lighter }, NOW);
+
+    expect(readCarryOnboardingRecovery(localStorage, ACCOUNT, NOW + 1_000)?.lighter)
+      .toEqual(lighter);
+  });
+
   it("keeps only sealed Aster material and its public authorization proof", () => {
     const aster = asterPending();
     writeCarryOnboardingRecovery(localStorage, ACCOUNT, { aster }, NOW);
@@ -68,6 +90,8 @@ describe("Carry onboarding recovery", () => {
 
   it("rejects tampered account bindings and signed Lighter transaction hashes", () => {
     const lighter = lighterPending();
+    if (!lighter.authorization || lighter.authorization.external_broadcast === true) throw new Error("test fixture invalid");
+    const authorization = lighter.authorization;
     expect(() => writeCarryOnboardingRecovery(localStorage, ACCOUNT, {
       lighter: {
         ...lighter,
@@ -77,7 +101,7 @@ describe("Carry onboarding recovery", () => {
     expect(() => writeCarryOnboardingRecovery(localStorage, ACCOUNT, {
       lighter: {
         ...lighter,
-        authorization: { ...lighter.authorization, transaction_hash: `0x${"99".repeat(32)}` },
+        authorization: { ...authorization, transaction_hash: `0x${"99".repeat(32)}` },
       },
     }, NOW)).toThrow("carry_onboarding_recovery_invalid");
   });

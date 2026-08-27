@@ -10,6 +10,7 @@ const OWNER = privateKeyToAccount(`0x${"42".repeat(32)}`);
 const PUBLIC_KEY = "22".repeat(40);
 let accountCommitment = "";
 let workerDisposition: "ready" | "submitted" = "ready";
+let externalTransaction: Record<string, unknown> | null = null;
 
 function auth() {
   return `Bearer ${[
@@ -31,6 +32,7 @@ describe("Lighter programmatic credential completion", () => {
   beforeEach(() => {
     accountCommitment = "";
     workerDisposition = "ready";
+    externalTransaction = null;
     process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
     process.env.GHOLA_CONNECTOR_MODE = "local_test";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
@@ -57,6 +59,7 @@ describe("Lighter programmatic credential completion", () => {
           eth_estimateGas: "0x30d40",
           eth_maxPriorityFeePerGas: "0x3b9aca00",
           eth_getBlockByNumber: { baseFeePerGas: "0x6fc23ac00" },
+          eth_getTransactionByHash: externalTransaction,
         }[rpc.method];
         return Response.json({ jsonrpc: "2.0", id: rpc.method, result });
       }
@@ -88,9 +91,11 @@ describe("Lighter programmatic credential completion", () => {
           },
         }, { status: 201 });
       }
-      if (url.includes("/venues/lighter/credentials/authorize")) {
+      if (url.includes("/venues/lighter/credentials/authorize") || url.includes("/venues/lighter/credentials/receipt")) {
         const payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        const transactionHash = keccak256(String(payload.raw_transaction) as `0x${string}`);
+        const transactionHash = typeof payload.transaction_hash === "string"
+          ? payload.transaction_hash
+          : keccak256(String(payload.raw_transaction) as `0x${string}`);
         if (workerDisposition === "submitted") {
           return Response.json({
             version: 1,
@@ -242,6 +247,61 @@ describe("Lighter programmatic credential completion", () => {
       String(url).includes("/venues/lighter/credentials/authorize"),
     );
     expect(authorizeCalls).toHaveLength(0);
+  });
+
+  it("verifies an externally broadcast owner transaction and only reconciles it", async () => {
+    const prepared = await preparedCredential();
+    const transactionHash = `0x${"77".repeat(32)}`;
+    externalTransaction = {
+      hash: transactionHash,
+      from: prepared.transaction_plan.from,
+      to: prepared.transaction_plan.to,
+      input: prepared.transaction_plan.data,
+      value: prepared.transaction_plan.value,
+      nonce: prepared.transaction_plan.nonce,
+      gas: prepared.transaction_plan.gas,
+      maxFeePerGas: prepared.transaction_plan.max_fee_per_gas,
+      maxPriorityFeePerGas: prepared.transaction_plan.max_priority_fee_per_gas,
+      type: "0x2",
+    };
+    const response = await complete(request("/v1/private-account/platforms/lighter/complete", {
+      preparation_id: prepared.preparation_id,
+      owner_address: prepared.transaction_plan.from,
+      account_index: prepared.transaction_plan.account_index,
+      api_key_index: prepared.transaction_plan.api_key_index,
+      public_key: prepared.transaction_plan.public_key,
+      external_broadcast: true,
+      transaction_hash: transactionHash,
+      transaction_plan: prepared.transaction_plan,
+      encrypted_execution_vault: prepared.encrypted_execution_vault,
+    }));
+    const body = await response.json();
+    expect(response.status, JSON.stringify(body)).toBe(201);
+    expect(body).toMatchObject({ status: "ready", transaction_hash: transactionHash });
+    const calls = vi.mocked(globalThis.fetch).mock.calls.map(([url]) => String(url));
+    expect(calls.some((url) => url.includes("/venues/lighter/credentials/receipt"))).toBe(true);
+    expect(calls.some((url) => url.includes("/venues/lighter/credentials/authorize"))).toBe(false);
+  });
+
+  it("holds an externally broadcast transaction until Ethereum can return it", async () => {
+    const prepared = await preparedCredential();
+    const response = await complete(request("/v1/private-account/platforms/lighter/complete", {
+      preparation_id: prepared.preparation_id,
+      owner_address: prepared.transaction_plan.from,
+      account_index: prepared.transaction_plan.account_index,
+      api_key_index: prepared.transaction_plan.api_key_index,
+      public_key: prepared.transaction_plan.public_key,
+      external_broadcast: true,
+      transaction_hash: `0x${"66".repeat(32)}`,
+      transaction_plan: prepared.transaction_plan,
+      encrypted_execution_vault: prepared.encrypted_execution_vault,
+    }));
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ retry_allowed: false, reconcile_only: true });
+    const receiptCalls = vi.mocked(globalThis.fetch).mock.calls.filter(([url]) =>
+      String(url).includes("/venues/lighter/credentials/receipt"),
+    );
+    expect(receiptCalls).toHaveLength(0);
   });
 });
 

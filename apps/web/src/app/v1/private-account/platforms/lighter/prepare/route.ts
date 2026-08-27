@@ -60,7 +60,7 @@ export async function POST(req: Request) {
     ) {
       return json({
         error: "lighter_owner_account_not_found",
-        message: "Lighter has no account for this Ghola owner. Activate this exact address on Lighter first; no key or transaction was created.",
+        message: "Lighter has no account for this connected owner wallet. Activate this exact address on Lighter first; no key or transaction was created.",
         owner_address: ownerAddress,
         activation_url: "https://app.lighter.xyz/",
         account_activation_required: true,

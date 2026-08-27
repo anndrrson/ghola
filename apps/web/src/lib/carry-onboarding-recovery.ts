@@ -32,7 +32,8 @@ export interface PendingAsterOnboarding {
 
 export interface PendingLighterOnboarding {
   preparation: LighterProgrammaticPreparation;
-  authorization: LighterAssociationProof;
+  authorization?: LighterAssociationProof;
+  submission_ambiguous?: true;
 }
 
 export interface VenueAccountActivationRequirement {
@@ -271,6 +272,7 @@ function validLighter(value: unknown, accountCommitment: string): value is Pendi
   const setup = asRecord(preparation.setup);
   const rawTransaction = string(authorization.raw_transaction);
   const transactionHash = string(authorization.transaction_hash).toLowerCase();
+  const externalBroadcast = authorization.external_broadcast === true;
   let expectedData = "";
   try {
     expectedData = buildLighterChangePubKeyIntent({
@@ -303,8 +305,15 @@ function validLighter(value: unknown, accountCommitment: string): value is Pendi
     string(encryptedVault.ciphertext).length > 0 &&
     setup.may_place_trade === false && setup.transaction_signed === false &&
     setup.transaction_broadcast === false && setup.credential_ready === false &&
-    RAW_TRANSACTION.test(rawTransaction) && TRANSACTION_HASH.test(transactionHash) &&
-    keccak256(rawTransaction as `0x${string}`).toLowerCase() === transactionHash;
+    (record.submission_ambiguous === undefined || record.submission_ambiguous === true) &&
+    !(record.submission_ambiguous === true && record.authorization !== undefined) &&
+    (record.authorization === undefined || (
+      TRANSACTION_HASH.test(transactionHash) &&
+      (externalBroadcast
+        ? rawTransaction === ""
+        : RAW_TRANSACTION.test(rawTransaction) &&
+          keccak256(rawTransaction as `0x${string}`).toLowerCase() === transactionHash)
+    ));
 }
 
 function recoveryKey(accountCommitment: string): string {

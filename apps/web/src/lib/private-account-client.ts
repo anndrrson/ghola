@@ -805,10 +805,14 @@ export interface LighterProgrammaticPreparation {
   };
 }
 
-export interface LighterAssociationProof {
+export type LighterAssociationProof = {
   raw_transaction: `0x02${string}`;
   transaction_hash: `0x${string}`;
-}
+  external_broadcast?: false;
+} | {
+  transaction_hash: `0x${string}`;
+  external_broadcast: true;
+};
 
 export async function prepareLighterProgrammaticCredential(input: {
   owner_address: string;
@@ -833,7 +837,9 @@ export async function completeLighterProgrammaticCredential(input: {
       account_index: plan.account_index,
       api_key_index: plan.api_key_index,
       public_key: plan.public_key,
-      raw_transaction: input.authorization.raw_transaction,
+      ...(input.authorization.external_broadcast === true
+        ? { external_broadcast: true }
+        : { raw_transaction: input.authorization.raw_transaction }),
       transaction_hash: input.authorization.transaction_hash,
       transaction_plan: plan,
       encrypted_execution_vault: input.preparation.encrypted_execution_vault,

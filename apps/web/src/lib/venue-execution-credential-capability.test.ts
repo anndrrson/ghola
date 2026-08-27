@@ -82,17 +82,14 @@ describe("venue execution credential capability", () => {
     expect(decision).toMatchObject({ allowed: true, disposition: "provision" });
   });
 
-  it("rejects external Lighter signatures because the implemented path requires the Turnkey venue owner", () => {
+  it("accepts a verified external Lighter owner transaction", () => {
     const decision = evaluateVenueExecutionCredential({
       ...programmatic("lighter"),
       turnkey_role: "none",
       owner_authorization_source: "external_owner_signature",
       secret_handling: "direct_to_attested_runtime",
     });
-    expect(decision).toMatchObject({
-      allowed: false,
-      reason_codes: expect.arrayContaining(["owner_authorization_source_not_supported"]),
-    });
+    expect(decision).toMatchObject({ allowed: true, disposition: "provision" });
   });
 
   it("never treats programmatic generation as silent key creation", () => {
