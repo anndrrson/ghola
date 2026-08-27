@@ -414,6 +414,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("privateExecution", 'registeredCarryAdapter(venue_id, "carry_execution")', "worker_carry_execution_registry_dispatch_missing");
   requireText("privateExecution", 'registeredCarryAdapter(venue_id, "no_submit_reconciliation")', "worker_carry_no_submit_registry_dispatch_missing");
   requireText("privateExecution", 'registeredCarryAdapterId(venueId, "carry_execution")', "worker_carry_funding_registry_dispatch_missing");
+  requireText("privateExecution", "openAccountBoundExecutionVault", "carry_execution_vault_account_binding_missing");
+  requireText("privateExecution", "opened.associatedDataText !== expectedAad", "carry_execution_vault_exact_aad_missing");
+  requireText("privateExecution", '`account:${accountCommitment}`', "carry_execution_vault_account_commitment_missing");
+  forbidText("privateExecution", 'aadPrefix: "ghola/hyperliquid-execution-vault-v1"', "hyperliquid_prefix_only_vault_open_forbidden");
+  forbidText("privateExecution", 'aadPrefix: "ghola/aster-execution-vault-v1"', "aster_prefix_only_vault_open_forbidden");
   requireText("adapterRegistryTest", "shadow-only candidates cannot enter worker Carry dispatch", "worker_carry_registry_fail_closed_test_missing");
   requireText("adapterRegistryTest", "adapter_missing:no_submit_reconciliation", "worker_carry_no_submit_registry_gate_missing");
   requireText("adapterRegistryTest", "Carry funding history dispatches through the registered Aster adapter", "worker_carry_funding_registry_test_missing");

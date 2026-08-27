@@ -1573,6 +1573,7 @@ describe("private agent worker", () => {
       },
       body: JSON.stringify({
         version: 1,
+        account_commitment: vault.account_commitment,
         work_order_commitment: workOrderCommitment,
         vault_commitment: vault.vault_commitment,
         policy_commitment: vault.policy_commitment,
@@ -1611,6 +1612,7 @@ describe("private agent worker", () => {
     const workOrderCommitment = "connector_work_order_hl_ambiguous_123";
     const requestBody = {
       version: 1,
+      account_commitment: vault.account_commitment,
       work_order_commitment: workOrderCommitment,
       vault_commitment: vault.vault_commitment,
       policy_commitment: vault.policy_commitment,
@@ -1786,6 +1788,7 @@ describe("private agent worker", () => {
       },
       body: JSON.stringify({
         version: 1,
+        account_commitment: vault.account_commitment,
         work_order_commitment: workOrderCommitment,
         preview_commitment: previewCommitment,
         vault_commitment: "hyperliquid_vault_commitment_123",
@@ -1831,6 +1834,7 @@ describe("private agent worker", () => {
       },
       body: JSON.stringify({
         version: 1,
+        account_commitment: vault.account_commitment,
         work_order_commitment: "connector_work_order_cancel_123",
         vault_commitment: "hyperliquid_vault_commitment_123",
         policy_commitment: "hyperliquid_policy_commitment_123",
@@ -2421,6 +2425,7 @@ describe("private agent worker", () => {
     const requestBody = {
       version: 1,
       venue_id: "aster",
+      account_commitment: "acct_commitment_aster_123",
       platform_class: "hyperliquid_style_market",
       execution_mode: "byo_api_key",
       work_order_commitment: workOrderCommitment,
@@ -2463,6 +2468,19 @@ describe("private agent worker", () => {
     assert.equal(receipt.venue_id, "aster");
     assert.equal(receipt.platform_class, "hyperliquid_style_market");
     assert.equal(JSON.stringify(receipt).includes("api_wallet_private_key"), false);
+
+    const mismatchedAccount = await fetch(`${baseUrl}/venues/aster/verify`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify({ ...requestBody, account_commitment: "acct_commitment_wrong_123" }),
+    });
+    assert.equal(mismatchedAccount.status, 403);
+    assert.match((await mismatchedAccount.json()).error, /account binding mismatch/);
 
     const missingHeader = await fetch(`${baseUrl}/venues/aster/verify`, {
       method: "POST",
@@ -2554,6 +2572,7 @@ describe("private agent worker", () => {
       },
       body: JSON.stringify({
         version: 1,
+        account_commitment: "acct_commitment_123",
         work_order_commitment: "connector_work_order_mainnet_123",
         vault_commitment: "hyperliquid_vault_commitment_123",
         policy_commitment: "hyperliquid_policy_commitment_123",
@@ -2598,6 +2617,7 @@ describe("private agent worker", () => {
       },
       body: JSON.stringify({
         version: 1,
+        account_commitment: "acct_commitment_123",
         work_order_commitment: "connector_work_order_mainnet_non_tiny_123",
         vault_commitment: "hyperliquid_vault_commitment_123",
         policy_commitment: "hyperliquid_policy_commitment_123",
@@ -2645,6 +2665,7 @@ describe("private agent worker", () => {
       },
       body: JSON.stringify({
         version: 1,
+        account_commitment: "acct_commitment_123",
         work_order_commitment: "connector_work_order_mainnet_tiny_123",
         vault_commitment: "hyperliquid_vault_commitment_123",
         policy_commitment: "hyperliquid_policy_commitment_123",
@@ -2689,7 +2710,34 @@ describe("private agent worker", () => {
     process.env.PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD = "25";
     const workOrderCommitment = "connector_work_order_hyperliquid_verify_123";
     const mainnetVault = await encryptedHyperliquidExecutionVaultForNetwork(baseUrl, "mainnet");
-
+    const requestBody = {
+      version: 1,
+      account_commitment: "acct_commitment_123",
+      work_order_commitment: workOrderCommitment,
+      vault_commitment: "hyperliquid_vault_commitment_123",
+      policy_commitment: "hyperliquid_policy_commitment_123",
+      operation_class: "limit_order",
+      encrypted_execution_vault: mainnetVault,
+      encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+        venue_id: "hyperliquid",
+        work_order_commitment: workOrderCommitment,
+        operation_class: "limit_order",
+        order: {
+          market: "BTC",
+          side: "buy",
+          quote_size: "5",
+          max_slippage_bps: "50",
+          live_order_mode: "tiny_fill",
+          tif: "Ioc",
+        },
+      }),
+      session_policy: {
+        market_allowlist: ["BTC"],
+        max_notional_bucket: "25",
+        max_order_count: 5,
+        kill_switch: false,
+      },
+    };
     const response = await fetch(`${baseUrl}/hyperliquid/verify`, {
       method: "POST",
       headers: {
@@ -2698,33 +2746,7 @@ describe("private agent worker", () => {
         "x-ghola-sealed-execution-required": "true",
         "x-ghola-no-submit-verify": "true",
       },
-      body: JSON.stringify({
-        version: 1,
-        work_order_commitment: workOrderCommitment,
-        vault_commitment: "hyperliquid_vault_commitment_123",
-        policy_commitment: "hyperliquid_policy_commitment_123",
-        operation_class: "limit_order",
-        encrypted_execution_vault: mainnetVault,
-        encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
-          venue_id: "hyperliquid",
-          work_order_commitment: workOrderCommitment,
-          operation_class: "limit_order",
-          order: {
-            market: "BTC",
-            side: "buy",
-            quote_size: "5",
-            max_slippage_bps: "50",
-            live_order_mode: "tiny_fill",
-            tif: "Ioc",
-          },
-        }),
-        session_policy: {
-          market_allowlist: ["BTC"],
-          max_notional_bucket: "25",
-          max_order_count: 5,
-          kill_switch: false,
-        },
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     assert.equal(response.status, 200);
@@ -2745,6 +2767,19 @@ describe("private agent worker", () => {
     assert.equal(body.visibility_summary.venue_gate, "not_tested_without_submit");
     assert.equal(JSON.stringify(body).includes("api_wallet_private_key"), false);
     assert.equal(JSON.stringify(body).includes("0x1111111111111111111111111111111111111111111111111111111111111111"), false);
+
+    const mismatchedAccount = await fetch(`${baseUrl}/hyperliquid/verify`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify({ ...requestBody, account_commitment: "acct_commitment_wrong_123" }),
+    });
+    assert.equal(mismatchedAccount.status, 403);
+    assert.match((await mismatchedAccount.json()).error, /account binding mismatch/);
   });
 
   it("requires the no-submit header for Hyperliquid verification", async () => {
@@ -2804,6 +2839,7 @@ describe("private agent worker", () => {
       },
       body: JSON.stringify({
         version: 1,
+        account_commitment: "acct_commitment_123",
         work_order_commitment: "connector_work_order_mainnet_tiny_over_cap_123",
         vault_commitment: "hyperliquid_vault_commitment_123",
         policy_commitment: "hyperliquid_policy_commitment_123",
@@ -2847,6 +2883,7 @@ describe("private agent worker", () => {
       },
       body: JSON.stringify({
         version: 1,
+        account_commitment: vault.account_commitment,
         work_order_commitment: "connector_work_order_cancel_unknown_123",
         vault_commitment: "hyperliquid_vault_commitment_123",
         policy_commitment: "hyperliquid_policy_commitment_123",

@@ -65,6 +65,7 @@ export class PrivateExecutionError extends Error {
 
 const AUTOPILOT_INTERNAL_INSTRUCTION = Symbol("ghola.autopilot.internal_instruction");
 const HYPERLIQUID_PROOF_PROTOCOL = "ghola-hyperliquid-proof-v2";
+const ACCOUNT_BOUND_COMMITMENT = /^[A-Za-z0-9_.:-]{8,240}$/;
 const ACTIVE_CARRY_ADAPTER_STATUSES = new Set(["proven", "implemented_unproven"]);
 const CARRY_PRIVATE_EXECUTION_ADAPTERS = Object.freeze({
   hyperliquid_v1: privateCarryAdapter({
@@ -156,9 +157,12 @@ export async function storePrivateAgentSession({ body, recipient, state, provide
 export async function storeHyperliquidSession({ body, recipient, state, provider }) {
   const executionMode = hyperliquidExecutionMode(body);
   if (executionMode === "byo_api_key") {
-    await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+    await openAccountBoundExecutionVault({
+      body,
+      recipient,
+      venueId: "hyperliquid",
       expectedKind: "ghola_hyperliquid_execution_vault",
+      allowedNetworks: ["mainnet", "testnet"],
     });
   } else if (body.managed_allocation?.credential_ref) {
     await state.putHyperliquidManagedAllocation(body.managed_allocation);
@@ -338,28 +342,7 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
       409,
     );
   }
-  const executionMode = hyperliquidExecutionMode(body);
-  let credential;
-  let allocation = null;
-  if (isHyperliquidAllocationMode(executionMode)) {
-    const allocationCommitment = body.managed_allocation_commitment || body.allocation_commitment;
-    const record = await state.getHyperliquidManagedAllocation(allocationCommitment);
-    if (!record?.allocation || record.allocation.status !== "allocated") {
-      throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
-    }
-    allocation = record.allocation;
-    credential = loadManagedHyperliquidCredential(allocation);
-  } else {
-    if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
-      credential = dryRunHyperliquidCredential();
-    } else {
-      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/hyperliquid-execution-vault-v1",
-        expectedKind: "ghola_hyperliquid_execution_vault",
-      });
-      credential = hyperliquidCredentialFromVault(openedVault.json);
-    }
-  }
+  const { executionMode, credential, allocation } = await hyperliquidCredentialForBody({ body, recipient, state });
   const session = await state.findSession({
     venue_id: "hyperliquid",
     vault_commitment: executionMode === "byo_api_key" ? body.vault_commitment : undefined,
@@ -591,9 +574,12 @@ export async function verifyVenueCredential({ body, recipient }) {
     });
   }
   if (venueId === "hyperliquid") {
-    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+    const openedVault = await openAccountBoundExecutionVault({
+      body,
+      recipient,
+      venueId: "hyperliquid",
       expectedKind: "ghola_hyperliquid_execution_vault",
+      allowedNetworks: ["mainnet", "testnet"],
     });
     const credential = hyperliquidCredentialFromVault(openedVault.json);
     const snapshot = await readHyperliquidAccountSnapshot({
@@ -682,25 +668,61 @@ export async function verifyVenueCredential({ body, recipient }) {
 async function hyperliquidCredentialForBody({ body, recipient, state }) {
   const executionMode = hyperliquidExecutionMode(body);
   let credential;
+  let allocation = null;
   if (isHyperliquidAllocationMode(executionMode)) {
     const allocationCommitment = body.managed_allocation_commitment || body.allocation_commitment;
     const record = await state.getHyperliquidManagedAllocation(allocationCommitment);
     if (!record?.allocation || record.allocation.status !== "allocated") {
       throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
     }
-    credential = loadManagedHyperliquidCredential(record.allocation);
+    allocation = record.allocation;
+    credential = loadManagedHyperliquidCredential(allocation);
   } else {
     if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
       credential = dryRunHyperliquidCredential();
     } else {
-      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+      const openedVault = await openAccountBoundExecutionVault({
+        body,
+        recipient,
+        venueId: "hyperliquid",
         expectedKind: "ghola_hyperliquid_execution_vault",
+        allowedNetworks: ["mainnet", "testnet"],
       });
       credential = hyperliquidCredentialFromVault(openedVault.json);
     }
   }
-  return { executionMode, credential };
+  return { executionMode, credential, allocation };
+}
+
+async function openAccountBoundExecutionVault({
+  body,
+  recipient,
+  venueId,
+  expectedKind,
+  allowedNetworks,
+}) {
+  const accountCommitment = String(body?.account_commitment || "");
+  if (!ACCOUNT_BOUND_COMMITMENT.test(accountCommitment)) {
+    throw new PrivateExecutionError(`${venueId} account commitment is unavailable`, 400);
+  }
+  const opened = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+    aadPrefix: `ghola/${venueId}-execution-vault-v1`,
+    expectedKind,
+  });
+  const network = String(opened.json?.network || "");
+  if (!allowedNetworks.includes(network)) {
+    throw new PrivateExecutionError(`${venueId} execution vault network is invalid`, 400);
+  }
+  const expectedAad = [
+    `ghola/${venueId}-execution-vault-v1`,
+    `account:${accountCommitment}`,
+    `recipient:${recipient.recipient_id}`,
+    `network:${network}`,
+  ].join("|");
+  if (opened.associatedDataText !== expectedAad) {
+    throw new PrivateExecutionError(`${venueId} execution vault account binding mismatch`, 403);
+  }
+  return opened;
 }
 
 export async function executeCoinbaseOrder({ body, recipient, state }) {
@@ -1253,9 +1275,12 @@ export async function verifyAsterOrderNoSubmit({ body, recipient, state }) {
 
 async function asterCredentialForBody({ body, recipient }) {
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) return dryRunAsterCredential();
-  const opened = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-    aadPrefix: "ghola/aster-execution-vault-v1",
+  const opened = await openAccountBoundExecutionVault({
+    body,
+    recipient,
+    venueId: "aster",
     expectedKind: "ghola_aster_execution_vault",
+    allowedNetworks: ["mainnet"],
   });
   return asterCredentialFromVault(opened.json);
 }
@@ -1635,28 +1660,7 @@ export async function verifyJupiterSwapNoSubmit({ body, recipient, state }) {
 }
 
 export async function verifyHyperliquidOrderNoSubmit({ body, recipient, state }) {
-  const executionMode = hyperliquidExecutionMode(body);
-  let credential;
-  let allocation = null;
-  if (isHyperliquidAllocationMode(executionMode)) {
-    const allocationCommitment = body.managed_allocation_commitment || body.allocation_commitment;
-    const record = await state.getHyperliquidManagedAllocation(allocationCommitment);
-    if (!record?.allocation || record.allocation.status !== "allocated") {
-      throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
-    }
-    allocation = record.allocation;
-    credential = loadManagedHyperliquidCredential(allocation);
-  } else {
-    if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
-      credential = dryRunHyperliquidCredential();
-    } else {
-      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/hyperliquid-execution-vault-v1",
-        expectedKind: "ghola_hyperliquid_execution_vault",
-      });
-      credential = hyperliquidCredentialFromVault(openedVault.json);
-    }
-  }
+  const { executionMode, credential, allocation } = await hyperliquidCredentialForBody({ body, recipient, state });
   const session = await state.findSession({
     venue_id: "hyperliquid",
     vault_commitment: executionMode === "byo_api_key" ? body.vault_commitment : undefined,

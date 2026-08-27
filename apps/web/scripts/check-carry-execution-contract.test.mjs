@@ -465,6 +465,19 @@ test("rejects an executor proven only for one hard-coded venue pair", () => {
   );
 });
 
+test("rejects Carry vault verification outside its exact account binding", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privateExecution: sources.privateExecution.replace(
+        "if (opened.associatedDataText !== expectedAad)",
+        "if (false)",
+      ),
+    }),
+    /carry_execution_vault_exact_aad_missing/,
+  );
+});
+
 test("rejects restart recovery that cannot distinguish pre-submit from ambiguity", () => {
   assert.throws(
     () => checkCarryExecutionContract({
