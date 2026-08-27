@@ -35,8 +35,8 @@ describe("CarryWorkspace model", () => {
   it("ranks every equivalent pair by net value instead of gross funding alone", () => {
     const venues = [
       venue("hyperliquid", snapshot("hyperliquid", "BTC", 10_000_000, "ready")),
-      venue("lighter", snapshot("lighter", "BTC", 100_000_000, "ready", { taker_fee_bps: 100 })),
-      venue("aster", snapshot("aster", "BTC", 80_000_000, "ready")),
+      venue("lighter", snapshot("lighter", "BTC", 200_000_000, "ready", { taker_fee_bps: 100 })),
+      venue("aster", snapshot("aster", "BTC", 150_000_000, "ready")),
     ];
     const pairs = buildPairCandidates(venues);
     expect(pairs).toHaveLength(3);
@@ -52,7 +52,7 @@ describe("CarryWorkspace model", () => {
     const venues = [
       venue("hyperliquid", snapshot("hyperliquid", "BTC", 10_000_000, "ready")),
       venue("lighter", snapshot("lighter", "BTC", 200_000_000, "degraded", { taker_fee_bps: null })),
-      venue("aster", snapshot("aster", "BTC", 80_000_000, "ready")),
+      venue("aster", snapshot("aster", "BTC", 150_000_000, "ready")),
     ];
     const ranked = rankCarryCandidatesByNet(buildPairCandidates(venues));
     expect(ranked[0].candidate.short.venue_id).toBe("aster");
@@ -80,12 +80,14 @@ describe("CarryWorkspace model", () => {
       .toHaveLength(0);
   });
 
-  it("prices fees, spread, collateral, and break-even without counting the risk buffer as realized cost", () => {
+  it("separates execution cost from conservative risk-adjusted projected net", () => {
     const long = snapshot("hyperliquid", "BTC", 10_000_000, "ready");
     const short = snapshot("lighter", "BTC", 40_000_000, "ready");
     const [candidate] = buildCandidates([venue("hyperliquid", long), venue("lighter", short)]);
     const result = builderModel(candidate, "10000", "30");
     expect(result.costUsd).not.toBeNull();
+    expect(result.costUsd).toBeGreaterThan(result.tradingFeeUsd! + result.slippageUsd!);
+    expect(result.netUsd).toBe(result.grossFundingUsd - result.costUsd!);
     expect(result.minimumCollateralUsd).toBe(750);
     expect(result.requiredOpeningCapitalUsd).toBe(20_000);
     expect(result.capitalPlan).toEqual([
@@ -96,6 +98,21 @@ describe("CarryWorkspace model", () => {
     expect(result.netUsd).toBeTypeOf("number");
     expect(result.publicInputsComplete).toBe(true);
     expect(result.creatable).toBe(false);
+  });
+
+  it("charges capital, latency, and cross-collateral basis buffers before ranking net value", () => {
+    const candidate = buildPairCandidates([
+      venue("hyperliquid", snapshot("hyperliquid", "BTC", 10_000_000, "ready", { collateral_asset: "USDC" })),
+      venue("lighter", snapshot("lighter", "BTC", 150_000_000, "ready", { collateral_asset: "USDT" })),
+    ])[0];
+    const quote = quoteCarryCandidate(candidate, 10_000, 24, 1_800_000_000_000);
+    expect(quote.latencyBufferUsd).toBe(2);
+    expect(quote.capitalCostUsd).toBe(2);
+    expect(quote.collateralBasisRiskUsd).toBe(50);
+    expect(quote.riskBufferUsd).toBe(60);
+    expect(quote.modeledTotalCostUsd).toBe(
+      quote.roundTripCostUsd! + quote.latencyBufferUsd! + quote.capitalCostUsd! + quote.riskBufferUsd!,
+    );
   });
 
   it("fails exact economics closed when displayed depth cannot fill the requested notional", () => {

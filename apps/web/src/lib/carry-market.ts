@@ -98,6 +98,7 @@ export interface CarryQuoteModel {
   horizonHours: number;
   grossFundingUsd: number;
   roundTripCostUsd: number | null;
+  modeledTotalCostUsd: number | null;
   expectedNetUsd: number | null;
   grossDailyUsd: number;
   expectedNetDailyUsd: number | null;
@@ -105,6 +106,10 @@ export interface CarryQuoteModel {
   exactCosts: boolean;
   tradingFeeUsd: number | null;
   slippageUsd: number | null;
+  latencyBufferUsd: number | null;
+  capitalCostUsd: number | null;
+  riskBufferUsd: number | null;
+  collateralBasisRiskUsd: number | null;
   depthStatus: "sufficient" | "insufficient" | "unavailable";
   minimumDisplayedDepthUsd: number | null;
 }
@@ -121,6 +126,10 @@ export const CARRY_DEPTH_MAX_AGE_MS = 30_000;
 export const CARRY_MAX_CONTRACT_DATA_SKEW_MS = 2_000;
 export const CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS = 25;
 export const CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS = 50;
+export const CARRY_CAPITAL_COST_BPS_PER_DAY = 1;
+export const CARRY_BASE_RISK_BUFFER_BPS = 10;
+export const CARRY_LATENCY_BUFFER_BPS_PER_LEG = 1;
+export const CARRY_STABLE_COLLATERAL_BASIS_RISK_BPS = 50;
 const depthExecutionCache = new WeakMap<CarryShadowSnapshot, Map<string, ReturnType<typeof estimatePerpDepthExecution>>>();
 const pairCompatibilityCache = new WeakMap<CarryShadowSnapshot, WeakMap<CarryShadowSnapshot, boolean>>();
 
@@ -405,19 +414,47 @@ export function quoteCarryCandidate(
     ? 2 * candidate.long.taker_fee_bps + 2 * candidate.short.taker_fee_bps
     : null;
   const depth = carryDepthCost(candidate, safeNotional, nowMs);
-  const exactCosts = feeBps != null && depth.status === "sufficient" && depth.slippage_bps != null;
-  const roundTripCostBps = exactCosts ? feeBps + depth.slippage_bps! : null;
+  const collateralBasisRiskBps = carryCollateralBasisRiskBps(candidate);
+  const directCostsExact = feeBps != null && depth.status === "sufficient" && depth.slippage_bps != null;
+  const exactCosts = directCostsExact && collateralBasisRiskBps != null;
+  const roundTripCostBps = directCostsExact ? feeBps + depth.slippage_bps! : null;
   const roundTripCostUsd = roundTripCostBps == null ? null : safeNotional * roundTripCostBps / 10_000;
   const tradingFeeUsd = feeBps == null ? null : safeNotional * feeBps / 10_000;
   const slippageUsd = depth.slippage_bps == null ? null : safeNotional * depth.slippage_bps / 10_000;
-  const expectedNetUsd = roundTripCostUsd == null ? null : grossFundingUsd - roundTripCostUsd;
+  const latencyBufferUsd = directCostsExact
+    ? safeNotional * CARRY_LATENCY_BUFFER_BPS_PER_LEG * 2 / 10_000
+    : null;
+  const capitalCostUsd = exactCosts
+    ? safeNotional * 2 * CARRY_CAPITAL_COST_BPS_PER_DAY / 10_000 * safeHours / 24
+    : null;
+  const collateralBasisRiskUsd = collateralBasisRiskBps == null
+    ? null
+    : safeNotional * collateralBasisRiskBps / 10_000;
+  const riskBufferUsd = collateralBasisRiskUsd == null
+    ? null
+    : safeNotional * CARRY_BASE_RISK_BUFFER_BPS / 10_000 + collateralBasisRiskUsd;
+  const modeledTotalCostUsd = roundTripCostUsd == null || latencyBufferUsd == null ||
+      capitalCostUsd == null || riskBufferUsd == null
+    ? null
+    : roundTripCostUsd + latencyBufferUsd + capitalCostUsd + riskBufferUsd;
+  const expectedNetUsd = modeledTotalCostUsd == null ? null : grossFundingUsd - modeledTotalCostUsd;
   const grossHourlyUsd = grossDailyUsd / 24;
-  const breakEvenHours = roundTripCostUsd == null || grossHourlyUsd <= 0 ? null : roundTripCostUsd / grossHourlyUsd;
+  const capitalCostHourlyUsd = exactCosts
+    ? safeNotional * 2 * CARRY_CAPITAL_COST_BPS_PER_DAY / 10_000 / 24
+    : null;
+  const recurringNetHourlyUsd = capitalCostHourlyUsd == null ? null : grossHourlyUsd - capitalCostHourlyUsd;
+  const oneTimeModeledCostUsd = roundTripCostUsd == null || latencyBufferUsd == null || riskBufferUsd == null
+    ? null
+    : roundTripCostUsd + latencyBufferUsd + riskBufferUsd;
+  const breakEvenHours = oneTimeModeledCostUsd == null || recurringNetHourlyUsd == null || recurringNetHourlyUsd <= 0
+    ? null
+    : oneTimeModeledCostUsd / recurringNetHourlyUsd;
   return {
     notionalUsd: safeNotional,
     horizonHours: safeHours,
     grossFundingUsd,
     roundTripCostUsd,
+    modeledTotalCostUsd,
     expectedNetUsd,
     grossDailyUsd,
     expectedNetDailyUsd: expectedNetUsd == null ? null : expectedNetUsd * 24 / safeHours,
@@ -425,6 +462,10 @@ export function quoteCarryCandidate(
     exactCosts,
     tradingFeeUsd,
     slippageUsd,
+    latencyBufferUsd,
+    capitalCostUsd,
+    riskBufferUsd,
+    collateralBasisRiskUsd,
     depthStatus: depth.status,
     minimumDisplayedDepthUsd: depth.minimum_displayed_depth_usd,
   };
@@ -449,8 +490,8 @@ export function builderModel(candidate: CarryCandidate, notionalText: string, da
   const quote = quoteCarryCandidate(candidate, notionalUsd, holdingDays * 24);
   const grossFundingUsd = quote.grossFundingUsd;
   const legs = [candidate.long, candidate.short];
-  const costUsd = quote.roundTripCostUsd;
-  const netUsd = costUsd == null ? null : grossFundingUsd - costUsd;
+  const costUsd = quote.modeledTotalCostUsd;
+  const netUsd = quote.expectedNetUsd;
   const dailyGross = grossFundingUsd / holdingDays;
   const breakEvenDays = costUsd == null || dailyGross <= 0 ? null : costUsd / dailyGross;
   const capitalPlan = legs.map((leg) => ({
@@ -478,6 +519,17 @@ export function builderModel(candidate: CarryCandidate, notionalText: string, da
     publicInputsComplete: candidate.exact && marginReady && quote.exactCosts && netUsd != null && netUsd > 0,
     creatable: false,
   };
+}
+
+function carryCollateralBasisRiskBps(candidate: CarryCandidate) {
+  const longCollateral = candidate.long.collateral_asset;
+  const shortCollateral = candidate.short.collateral_asset;
+  if (typeof longCollateral !== "string" || typeof shortCollateral !== "string") return null;
+  if (longCollateral === shortCollateral) return 0;
+  const stablecoins = new Set(["USDC", "USDT"]);
+  return stablecoins.has(longCollateral) && stablecoins.has(shortCollateral)
+    ? CARRY_STABLE_COLLATERAL_BASIS_RISK_BPS
+    : null;
 }
 
 export function annualFundingBps(snapshot: CarryShadowSnapshot) {

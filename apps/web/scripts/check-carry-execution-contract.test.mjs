@@ -802,6 +802,16 @@ test("rejects terminal routing that skips exact contract equivalence", () => {
   );
 });
 
+test("rejects terminal net value that omits conservative worker costs", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryMarket: sources.webCarryMarket.replaceAll("CARRY_CAPITAL_COST_BPS_PER_DAY", "IGNORED_CAPITAL_COST_BPS"),
+    }),
+    /carry_terminal_capital_cost_missing/,
+  );
+});
+
 test("rejects replacing the terminal rail with marketing status copy", () => {
   assert.throws(
     () => checkCarryExecutionContract({

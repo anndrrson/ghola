@@ -156,7 +156,7 @@ export function CarryChartStrip({
     <section
       className="mb-2 overflow-hidden rounded-md border border-[#252f3d] bg-[#090d13]"
       aria-label="Cross-venue route intelligence"
-      data-route-qualified={selectedHasPositiveNet ? "true" : "false"}
+      data-modeled-net-positive={selectedHasPositiveNet ? "true" : "false"}
       data-cost-basis={selected?.quote.exactCosts ? "net" : "gross-only"}
       data-route-age-ms={Number.isFinite(selectedAgeMs) ? Math.round(selectedAgeMs) : undefined}
     >
@@ -253,7 +253,7 @@ export function CarryChartStrip({
                   </div>
                   <p className="mt-1 truncate text-[10px] text-[#718096]">
                     Long {venueName(candidate.long.venue_id)} {formatFundingApr(candidate.long)} · Short {venueName(candidate.short.venue_id)} {formatFundingApr(candidate.short)}
-                    {!quote.exactCosts ? " · exact costs required" : routeHasPositiveNet(quote) ? " · net qualified" : " · no net edge"}
+                    {!quote.exactCosts ? " · exact costs required" : routeHasPositiveNet(quote) ? " · modeled net positive" : " · no net edge"}
                   </p>
                 </button>
               ))}

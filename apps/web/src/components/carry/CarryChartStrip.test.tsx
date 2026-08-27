@@ -50,7 +50,7 @@ describe("CarryChartStrip", () => {
     ]));
 
     const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
-    expect(rail?.getAttribute("data-route-qualified")).toBe("false");
+    expect(rail?.getAttribute("data-modeled-net-positive")).toBe("false");
     expect(rail?.getAttribute("data-cost-basis")).toBe("gross-only");
     expect(rail?.textContent).toContain("GROSS");
     expect(rail?.textContent).toContain("NET24H—");
@@ -58,14 +58,14 @@ describe("CarryChartStrip", () => {
     expect(rail?.textContent).not.toContain("QUAL");
   });
 
-  it("marks only an exact positive-net route as qualified", async () => {
+  it("marks only an exact conservative model as net positive", async () => {
     await renderShadow(shadowResponse([
       snapshot("hyperliquid", 10_000_000),
-      snapshot("lighter", 100_000_000),
+      snapshot("lighter", 150_000_000),
     ]));
 
     const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
-    expect(rail?.getAttribute("data-route-qualified")).toBe("true");
+    expect(rail?.getAttribute("data-modeled-net-positive")).toBe("true");
     expect(rail?.getAttribute("data-cost-basis")).toBe("net");
     expect(rail?.textContent).toContain("GROSS");
     expect(rail?.textContent).toContain("NET24H+");
@@ -78,7 +78,7 @@ describe("CarryChartStrip", () => {
     ]));
 
     const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
-    expect(rail?.getAttribute("data-route-qualified")).toBe("false");
+    expect(rail?.getAttribute("data-modeled-net-positive")).toBe("false");
     expect(rail?.textContent).toContain("NET24H−");
   });
 
