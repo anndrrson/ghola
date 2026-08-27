@@ -6,7 +6,13 @@ const DEFAULT_MAX_AGE_MS = 15 * 60_000;
 
 export async function storeCarryExecutionReadiness({ state, request, matrix, now_ms: nowMs = Date.now(), env = process.env }) {
   const evidence = buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env });
-  const assessed = assessCarryExecutionReadiness({ evidence, owner_commitment: request?.owner_commitment, now_ms: nowMs, env });
+  const assessed = assessCarryExecutionReadiness({
+    evidence,
+    owner_commitment: request?.owner_commitment,
+    venue_access: request?.venue_access,
+    now_ms: nowMs,
+    env,
+  });
   if (!assessed.ready) return { ok: false, error: assessed.reasons[0] || "carry_readiness_invalid", readiness: assessed };
   if (typeof state?.putIdempotency !== "function") {
     return { ok: false, error: "carry_readiness_state_unavailable", readiness: assessed };
@@ -19,19 +25,28 @@ export async function storeCarryExecutionReadiness({ state, request, matrix, now
   return { ok: true, readiness: assessed };
 }
 
-export async function readCarryExecutionReadiness({ state, owner_commitment: ownerCommitment, now_ms: nowMs = Date.now(), env = process.env }) {
+export async function readCarryExecutionReadiness({ state, owner_commitment: ownerCommitment, venue_access: venueAccess, now_ms: nowMs = Date.now(), env = process.env }) {
   const imageDigest = runtimeCarryQualificationImageDigest(env);
   if (!imageDigest) return readinessResult(false, ["runtime_image_digest_missing"]);
+  if (!venueAccess || typeof venueAccess !== "object" || Array.isArray(venueAccess)) {
+    return readinessResult(false, ["carry_readiness_access_missing"]);
+  }
   if (typeof state?.getIdempotency !== "function") return readinessResult(false, ["carry_readiness_state_unavailable"]);
   const stored = await state.getIdempotency(readinessKey({
     owner_commitment: ownerCommitment,
     image_digest: imageDigest,
     venue_ids: CARRY_EXECUTION_VENUES,
   }));
-  return assessCarryExecutionReadiness({ evidence: stored?.receipt, owner_commitment: ownerCommitment, now_ms: nowMs, env });
+  return assessCarryExecutionReadiness({
+    evidence: stored?.receipt,
+    owner_commitment: ownerCommitment,
+    venue_access: venueAccess,
+    now_ms: nowMs,
+    env,
+  });
 }
 
-export function assessCarryExecutionReadiness({ evidence, owner_commitment: ownerCommitment, now_ms: nowMs = Date.now(), env = process.env }) {
+export function assessCarryExecutionReadiness({ evidence, owner_commitment: ownerCommitment, venue_access: venueAccess, now_ms: nowMs = Date.now(), env = process.env }) {
   const reasons = [];
   const expectedImage = runtimeCarryQualificationImageDigest(env);
   const expectedVenues = [...CARRY_EXECUTION_VENUES];
@@ -43,6 +58,7 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
   if (evidence.operation_class !== "matrix_no_submit" || !commitment(evidence.work_order_commitment)) reasons.push("carry_readiness_request_unbound");
   if (evidence.network !== "mainnet") reasons.push("carry_readiness_network_invalid");
   if (!/^[A-Z0-9]{2,16}$/.test(String(evidence.asset || ""))) reasons.push("carry_readiness_asset_invalid");
+  if (!positiveDecimal(evidence.notional_usd) || !positiveDecimal(evidence.horizon_days)) reasons.push("carry_readiness_parameters_invalid");
   if (!expectedImage || evidence.image_digest !== expectedImage) reasons.push("carry_readiness_image_mismatch");
   if (!sameStrings(evidence.registry_venue_ids, expectedVenues)) reasons.push("carry_readiness_registry_mismatch");
   const checkedAt = positiveInteger(evidence.checked_at_ms);
@@ -66,6 +82,13 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
     if (!commitment(venue.account_commitment) || !commitment(venue.vault_commitment) || !commitment(venue.policy_commitment)) {
       reasons.push(`carry_readiness_access_unbound:${venueId}`);
     }
+    const currentAccess = venueAccess?.[venueId];
+    if (venueAccess && (!currentAccess
+      || venue.account_commitment !== currentAccess.account_commitment
+      || venue.vault_commitment !== currentAccess.vault_commitment
+      || venue.policy_commitment !== currentAccess.policy_commitment)) {
+      reasons.push(`carry_readiness_access_rotated:${venueId}`);
+    }
   }
   const pairs = Array.isArray(evidence.pairs) ? evidence.pairs : [];
   const [anchor, ...candidates] = expectedVenues;
@@ -83,6 +106,10 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
   }
   return readinessResult(reasons.length === 0, reasons, {
     owner_commitment: evidence.owner_commitment,
+    asset: evidence.asset,
+    network: evidence.network,
+    notional_usd: evidence.notional_usd,
+    horizon_days: evidence.horizon_days,
     image_digest: evidence.image_digest,
     registry_venue_ids: Object.freeze([...expectedVenues]),
     checked_at_ms: checkedAt || null,
@@ -101,6 +128,8 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
     operation_class: String(request?.operation_class || ""),
     work_order_commitment: String(request?.work_order_commitment || ""),
     asset: String(request?.asset || "").toUpperCase(),
+    notional_usd: String(request?.notional_usd || ""),
+    horizon_days: String(request?.horizon_days || ""),
     image_digest: runtimeCarryQualificationImageDigest(env),
     registry_venue_ids: registryVenueIds,
     checked_at_ms: nowMs,
@@ -160,6 +189,10 @@ function commitment(value) {
 
 function positiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function positiveDecimal(value) {
+  return /^\d+(?:\.\d+)?$/.test(String(value || "")) && Number(value) > 0;
 }
 
 function sameStrings(left, right) {

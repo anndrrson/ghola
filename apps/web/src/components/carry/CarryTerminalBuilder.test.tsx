@@ -7,6 +7,7 @@ import type { CarryCandidate } from "@/lib/carry-market";
 const api = vi.hoisted(() => ({
   createCarryPosition: vi.fn(),
   executeCarryPositionEntry: vi.fn(),
+  getCarryExecutionReadiness: vi.fn(),
   getPrivateAgentPassport: vi.fn(),
   listCarryPositions: vi.fn(),
   preflightCarryExecutionMatrix: vi.fn(),
@@ -40,6 +41,7 @@ describe("CarryTerminalBuilder", () => {
     root = createRoot(container);
     api.createCarryPosition.mockReset();
     api.executeCarryPositionEntry.mockReset();
+    api.getCarryExecutionReadiness.mockReset();
     api.getPrivateAgentPassport.mockReset();
     api.listCarryPositions.mockReset();
     api.preflightCarryExecutionMatrix.mockReset();
@@ -48,6 +50,7 @@ describe("CarryTerminalBuilder", () => {
     perps.ensureWalletPair.mockReset();
     perps.signCarryRiskMandate.mockReset();
     api.getPrivateAgentPassport.mockResolvedValue({ owner_commitment: "owner:carry:web:test:0001" });
+    api.getCarryExecutionReadiness.mockResolvedValue({ ready: false, reasons: ["carry_readiness_evidence_missing"] });
     api.preflightCarryExecutionMatrix.mockResolvedValue(readyMatrix());
     perps.ensureWalletPair.mockResolvedValue({ owner: { address: `0x${"11".repeat(20)}` } });
     perps.signCarryRiskMandate.mockResolvedValue(`0x${"22".repeat(65)}`);
@@ -131,6 +134,24 @@ describe("CarryTerminalBuilder", () => {
     expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
     expect(api.preflightCarryPair).not.toHaveBeenCalled();
     expect(container.textContent).toContain("THREE-VENUE NOT READY");
+  });
+
+  it("restores fresh deployment-bound readiness after refresh without rerunning the three-venue matrix", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.getCarryExecutionReadiness.mockResolvedValue(readyReadiness());
+    api.preflightCarryPair.mockResolvedValue({
+      correlation_id: "ghola-pair-restored-1234",
+      no_submit_ready: true,
+      live_creation_ready: false,
+      qualification_pilot_ready: false,
+      creation_opportunity: { eligible: false, contract_data_skew_ms: 200, index_price_divergence_bps: 2 },
+    });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    expect(container.textContent).toContain("CHECK ROUTE · MATRIX READY");
+    await click("CHECK ROUTE · MATRIX READY");
+    expect(api.preflightCarryExecutionMatrix).not.toHaveBeenCalled();
+    expect(api.preflightCarryPair).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain("MATRIX CARRY:READIN");
   });
 
   it("surfaces the exact failed venue and correlation receipt", async () => {
@@ -337,6 +358,21 @@ function readyMatrix() {
       venue_id,
       transaction_broadcast: false,
     })),
+    readiness: readyReadiness(),
+  };
+}
+
+function readyReadiness() {
+  return {
+    ready: true,
+    network: "mainnet",
+    asset: "BTC",
+    notional_usd: "11",
+    horizon_days: "30",
+    image_digest: "sha256:abcdef123456",
+    registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+    expires_at_ms: Date.now() + 60_000,
+    evidence_commitment: "carry:readiness:evidence:abcdef123456",
   };
 }
 

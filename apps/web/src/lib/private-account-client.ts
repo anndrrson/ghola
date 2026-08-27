@@ -911,6 +911,13 @@ export async function preflightCarryExecutionMatrix(input: {
   });
 }
 
+export async function getCarryExecutionReadiness() {
+  return privateAccountFetch("/v1/private-account/carry", {
+    method: "POST",
+    body: JSON.stringify({ action: "readiness" }),
+  });
+}
+
 export async function createCarryPosition(input: {
   position_input: Record<string, unknown>;
   opportunity: Record<string, unknown>;

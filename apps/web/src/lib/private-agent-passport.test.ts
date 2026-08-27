@@ -377,6 +377,7 @@ describe("agent passport venue linking", () => {
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
     const matrixBodies: Record<string, unknown>[] = [];
+    const readinessBodies: Record<string, unknown>[] = [];
     const oldFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -392,6 +393,19 @@ describe("agent passport venue linking", () => {
           transaction_broadcast: false,
           venues: ["hyperliquid", "lighter", "aster"].map((venue_id) => ({ venue_id, transaction_broadcast: false })),
           failures: [],
+        }), { status: 200 });
+      }
+      if (url === "https://worker.example/carry/readiness") {
+        readinessBodies.push(body);
+        return new Response(JSON.stringify({
+          ready: true,
+          network: "mainnet",
+          asset: "BTC",
+          notional_usd: "11",
+          horizon_days: "1",
+          registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+          expires_at_ms: Date.now() + 60_000,
+          evidence_commitment: "carry:readiness:evidence:test",
         }), { status: 200 });
       }
       return oldFetch(input, init);
@@ -432,6 +446,26 @@ describe("agent passport venue linking", () => {
       }
       expect(matrixBody).not.toHaveProperty("api_private_key");
       expect(matrixBody).not.toHaveProperty("api_wallet_private_key");
+
+      const readinessResponse = await carryRoute(new NextRequest("https://ghola.test/v1/private-account/carry", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer investor-test-token",
+          "content-type": "application/json",
+          origin: "https://ghola.test",
+        },
+        body: JSON.stringify({ action: "readiness" }),
+      }));
+      const readinessResult = await readinessResponse.json();
+      expect(readinessResponse.status, JSON.stringify(readinessResult)).toBe(200);
+      expect(readinessResult.ready).toBe(true);
+      expect(readinessBodies).toHaveLength(1);
+      const readinessAccess = readinessBodies[0].venue_access as Record<string, Record<string, unknown>>;
+      expect(Object.keys(readinessAccess).sort()).toEqual(["aster", "hyperliquid", "lighter"]);
+      for (const venue of Object.keys(readinessAccess)) {
+        expect(readinessAccess[venue].owner_commitment).toBe(readinessBodies[0].owner_commitment);
+        expect(readinessAccess[venue].encrypted_execution_vault).toMatchObject({ ciphertext: `sealed-${venue}-vault` });
+      }
     } finally {
       globalThis.fetch = oldFetch;
     }

@@ -5,6 +5,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   createCarryPosition,
   executeCarryPositionEntry,
+  getCarryExecutionReadiness,
   getPrivateAgentPassport,
   listCarryPositions,
   preflightCarryExecutionMatrix,
@@ -97,6 +98,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const [notional, setNotional] = useState("11");
   const [days, setDays] = useState("30");
   const [proof, setProof] = useState<Record<string, unknown> | null>(null);
+  const [readiness, setReadiness] = useState<Record<string, unknown> | null>(null);
   const [records, setRecords] = useState<CarryRecord[]>([]);
   const [recordsLoaded, setRecordsLoaded] = useState(false);
   const [recordsLoading, setRecordsLoading] = useState(false);
@@ -139,6 +141,17 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     setProof(null);
     setMessage(null);
   }, [routeKey]);
+  useEffect(() => {
+    let cancelled = false;
+    void getCarryExecutionReadiness()
+      .then((value) => {
+        if (!cancelled) setReadiness(asRecord(value));
+      })
+      .catch(() => {
+        if (!cancelled) setReadiness(null);
+      });
+    return () => { cancelled = true; };
+  }, [routeKey]);
 
   const routeRecords = records.filter((record) => record.position.asset === candidate.asset
     && record.position.long_venue_id === candidate.long.venue_id
@@ -174,6 +187,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const capital = carryCapitalSummary(latestObservation?.capital_action_plan);
   const ledger = carryLedgerSummary(current?.value_ledger);
   const proofOpportunity = proof ? asRecord(proof.creation_opportunity) : null;
+  const restoredReadiness = readyStoredReadiness(readiness, candidate.asset, notional, days);
 
   const invalidateProof = (setter: (value: string) => void) => (value: string) => {
     setter(value);
@@ -190,14 +204,21 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     setProof(null);
     setLastCheckReceipt(`${checkedRoute} · CHECKING · REF ${localReference}`);
     try {
-      const matrix = asRecord(await preflightCarryExecutionMatrix({
-        asset: candidate.asset,
-        notional_usd: notional,
-        horizon_days: days,
-      }));
-      if (!readyNoSubmitMatrix(matrix)) {
-        setLastCheckReceipt(`${checkedRoute} · THREE-VENUE NOT READY · REF ${shortReference(stringValue(matrix.correlation_id) || localReference)}`);
-        return;
+      let matrix: Record<string, unknown> | null = null;
+      let activeReadiness = restoredReadiness ? readiness : null;
+      if (!activeReadiness) {
+        matrix = asRecord(await preflightCarryExecutionMatrix({
+          asset: candidate.asset,
+          notional_usd: notional,
+          horizon_days: days,
+        }));
+        if (!readyNoSubmitMatrix(matrix, candidate.asset, notional, days)) {
+          setReadiness(null);
+          setLastCheckReceipt(`${checkedRoute} · THREE-VENUE NOT READY · REF ${shortReference(stringValue(matrix.correlation_id) || localReference)}`);
+          return;
+        }
+        activeReadiness = asRecord(matrix.readiness);
+        setReadiness(activeReadiness);
       }
       const result = asRecord(await preflightCarryPair({
         asset: candidate.asset,
@@ -206,7 +227,10 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         notional_usd: notional,
         horizon_days: days,
       }));
-      setProof({ ...result, execution_matrix: matrix });
+      setProof({
+        ...result,
+        ...(matrix ? { execution_matrix: matrix } : { execution_readiness: activeReadiness }),
+      });
       const outcome = result.live_creation_ready === true
         ? "READY · synchronized market data, exact costs, margin runway and both order shapes verified"
         : result.qualification_pilot_ready === true
@@ -214,7 +238,11 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
           : result.no_submit_ready === true
             ? "CHECKED · execution remains locked pending venue qualification"
             : "NOT READY · connect and fund both trade-only accounts";
-      const matrixReference = shortReference(stringValue(matrix.correlation_id) || localReference);
+      const matrixReference = shortReference(
+        stringValue(matrix?.correlation_id)
+        || stringValue(activeReadiness?.evidence_commitment)
+        || localReference,
+      );
       const pairReference = shortReference(stringValue(result.correlation_id) || localReference);
       setLastCheckReceipt(`${checkedRoute} · ${outcome} · MATRIX ${matrixReference} · PAIR ${pairReference}`);
     } catch (error) {
@@ -360,7 +388,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="EXEC Δ" value={ledger.execution} tone={ledger.executionTone} />
         <Metric label="SOURCE SYNC" value={proofOpportunity ? formatSkew(proofOpportunity.contract_data_skew_ms) : "PENDING"} />
         <Metric label="INDEX BASIS" value={proofOpportunity ? formatBasis(proofOpportunity.index_price_divergence_bps) : "PENDING"} />
-        <Metric label="ROUTE GUARD" value={`${CARRY_EXECUTION_VENUES.length} VENUES · +5BP`} />
+        <Metric label="ROUTE GUARD" value={`${CARRY_EXECUTION_VENUES.length} VENUES · ${restoredReadiness ? "READY" : "PENDING"}`} tone={restoredReadiness ? "good" : undefined} />
         <Metric label="MONITOR" value={monitorAge(latestObservation?.recorded_at_ms)} />
       </div>
 
@@ -384,7 +412,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
             </button>
           ) : !current && !canSave ? (
             <button type="button" disabled={!executionPair || busy !== null} onClick={() => void runCheck()} className="rounded border border-[#285040] bg-[#0a1b16] px-2 py-2 font-mono text-[10px] font-semibold text-[#75d9b0] disabled:opacity-40">
-              {busy === "check" ? "CHECKING…" : executionPair ? "NO-SUBMIT CHECK" : "READ-ONLY ROUTE"}
+              {busy === "check" ? "CHECKING…" : executionPair ? restoredReadiness ? "CHECK ROUTE · MATRIX READY" : "NO-SUBMIT CHECK" : "READ-ONLY ROUTE"}
             </button>
           ) : !current && canSave ? (
             <button type="button" disabled={busy !== null} onClick={() => void savePosition()} className="rounded border border-[#31577a] bg-[#10243a] px-2 py-2 font-mono text-[10px] font-semibold text-[#b7ddff] disabled:opacity-40">
@@ -557,15 +585,28 @@ function carryCheckFailure(error: unknown, fallback: string) {
   };
 }
 
-function readyNoSubmitMatrix(value: Record<string, unknown>) {
+function readyNoSubmitMatrix(value: Record<string, unknown>, asset: string, notional: string, days: string) {
   if (value.mode !== "carry_execution_no_submit_matrix" ||
       value.no_submit_ready !== true ||
       value.transaction_broadcast !== false ||
       !Array.isArray(value.failures) || value.failures.length !== 0 ||
-      !Array.isArray(value.venues)) return false;
+      !Array.isArray(value.venues) ||
+      !readyStoredReadiness(asRecord(value.readiness), asset, notional, days)) return false;
   const venues = value.venues.map(asRecord);
   return CARRY_EXECUTION_VENUES.every((venueId) => venues.some((venue) =>
     venue.venue_id === venueId && venue.transaction_broadcast === false));
+}
+
+function readyStoredReadiness(value: Record<string, unknown> | null, asset: string, notional: string, days: string) {
+  if (!value || value.ready !== true || value.network !== "mainnet" || value.asset !== asset.toUpperCase()) return false;
+  if (Number(value.notional_usd) !== Number(notional) || Number(value.horizon_days) !== Number(days)) return false;
+  if (!Number.isSafeInteger(value.expires_at_ms) || Number(value.expires_at_ms) <= Date.now()) return false;
+  if (typeof value.image_digest !== "string" || !value.image_digest.startsWith("sha256:")) return false;
+  if (typeof value.evidence_commitment !== "string" || !value.evidence_commitment.startsWith("carry:readiness:evidence:")) return false;
+  const registryVenueIds = value.registry_venue_ids;
+  return Array.isArray(registryVenueIds)
+    && registryVenueIds.length === CARRY_EXECUTION_VENUES.length
+    && CARRY_EXECUTION_VENUES.every((venueId, index) => registryVenueIds[index] === venueId);
 }
 
 function isCarryRecord(value: Record<string, unknown>): value is Record<string, unknown> & CarryRecord {

@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
     correlation_id: correlationId,
     action,
     operation_class: route.operationClass,
-    no_submit: action.startsWith("preflight_"),
+    no_submit: action.startsWith("preflight_") || action === "readiness",
   });
   let body: Record<string, unknown> = {
     ...input,
@@ -169,6 +169,23 @@ export async function POST(req: NextRequest) {
       ])),
     };
   }
+  if (action === "readiness") {
+    const venueAccess = await agentPassportVenueAccessForWorker(owner);
+    const accesses = Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [venueId, record(venueAccess[venueId])]));
+    for (const venueId of CARRY_EXECUTION_VENUES) {
+      if (accesses[venueId].status !== "ready") return response({ error: `${venueId}_account_not_ready` }, 409, correlationId);
+    }
+    body = {
+      version: 1,
+      owner_commitment: owner.owner_commitment,
+      operation_class: "readiness_read",
+      work_order_commitment: `carry_readiness_${randomUUID()}`,
+      venue_access: Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [
+        venueId,
+        workerVenueAccess(accesses[venueId], owner.owner_commitment),
+      ])),
+    };
+  }
   if (action === "create") {
     const positionInput = record(input.position_input);
     const longVenue = stringValue(positionInput.long_venue_id);
@@ -256,7 +273,7 @@ export async function POST(req: NextRequest) {
       headers: {
         "content-type": "application/json",
         "x-ghola-sealed-execution-required": "true",
-        ...(action.startsWith("preflight_") || action === "observe" ? { "x-ghola-no-submit-verify": "true" } : {}),
+        ...(action.startsWith("preflight_") || action === "readiness" || action === "observe" ? { "x-ghola-no-submit-verify": "true" } : {}),
         ...(action === "execute_entry" ? { "x-ghola-live-order-confirmed": "true" } : {}),
         ...(action === "create" && record(input.qualification_pilot).enabled === true ? { "x-ghola-carry-qualification-planned": "true" } : {}),
         ...(action === "execute_entry" && input.qualification_pilot_confirmed === true ? { "x-ghola-carry-qualification-confirmed": "true" } : {}),
@@ -288,6 +305,7 @@ export async function POST(req: NextRequest) {
 function carryRoute(action: string) {
   if (action === "preflight_pair") return { path: "/carry/preflight", scope: "carry:read" as const, operationClass: "paired_no_submit" };
   if (action === "preflight_matrix") return { path: "/carry/preflight-matrix", scope: "carry:read" as const, operationClass: "matrix_no_submit" };
+  if (action === "readiness") return { path: "/carry/readiness", scope: "carry:read" as const, operationClass: "readiness_read" };
   if (action === "preflight_aster") return { path: "/venues/aster/preflight", scope: "order:verify" as const, operationClass: "limit_order" };
   if (action === "preflight_hyperliquid") return { path: "/hyperliquid/preflight", scope: "order:verify" as const, operationClass: "limit_order" };
   if (action === "preflight_lighter") return { path: "/venues/lighter/preflight", scope: "order:verify" as const, operationClass: "limit_order" };

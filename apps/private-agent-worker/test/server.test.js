@@ -2457,6 +2457,19 @@ describe("private agent worker", () => {
     });
     assert.equal(invalidMatrix.status, 400);
     assert.equal((await invalidMatrix.json()).error, "invalid carry execution matrix request");
+
+    const invalidReadiness = await fetch(`${baseUrl}/carry/readiness`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify({ version: 1 }),
+    });
+    assert.equal(invalidReadiness.status, 400);
+    assert.equal((await invalidReadiness.json()).error, "invalid carry readiness request");
   });
 
   it("rejects Hyperliquid mainnet credentials during the testnet pilot", async () => {

@@ -119,6 +119,16 @@ test("rejects durable readiness that can outlive its freshness window", () => {
   );
 });
 
+test("rejects a terminal that discards fresh readiness after refresh", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll("getCarryExecutionReadiness", "discardCarryExecutionReadiness"),
+    }),
+    /carry_terminal_readiness_restore_missing/,
+  );
+});
+
 test("rejects Carry preflight without exact owner binding", () => {
   assert.throws(
     () => checkCarryExecutionContract({

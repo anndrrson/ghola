@@ -25,6 +25,8 @@ function request() {
     operation_class: "matrix_no_submit",
     work_order_commitment: "carry_matrix_readiness_0001",
     asset: "BTC",
+    notional_usd: "11",
+    horizon_days: "30",
     venue_access: Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [venueId, access(venueId)])),
   };
 }
@@ -68,7 +70,7 @@ test("persists deployment-, owner-, account-, and registry-bound three-venue rea
   assert.deepEqual(stored.readiness.registry_venue_ids, [...CARRY_EXECUTION_VENUES]);
   assert.equal(state.rows.size, 1);
 
-  const read = await readCarryExecutionReadiness({ state, owner_commitment: OWNER, now_ms: NOW + 1_000, env: ENV });
+  const read = await readCarryExecutionReadiness({ state, owner_commitment: OWNER, venue_access: request().venue_access, now_ms: NOW + 1_000, env: ENV });
   assert.equal(read.ready, true);
   assert.equal(read.image_digest, ENV.PHALA_CVM_IMAGE_DIGEST);
   assert.ok(read.evidence_commitment.startsWith("carry:readiness:evidence:"));
@@ -77,7 +79,7 @@ test("persists deployment-, owner-, account-, and registry-bound three-venue rea
 test("rejects stale or tampered readiness instead of reusing transient UI state", async () => {
   const state = memoryState();
   await storeCarryExecutionReadiness({ state, request: request(), matrix: matrix(), now_ms: NOW, env: ENV });
-  const stale = await readCarryExecutionReadiness({ state, owner_commitment: OWNER, now_ms: NOW + 16 * 60_000, env: ENV });
+  const stale = await readCarryExecutionReadiness({ state, owner_commitment: OWNER, venue_access: request().venue_access, now_ms: NOW + 16 * 60_000, env: ENV });
   assert.equal(stale.ready, false);
   assert.ok(stale.reasons.includes("carry_readiness_stale"));
 
@@ -98,4 +100,15 @@ test("fails closed when durable state or a deployment digest is unavailable", as
   const noDigest = await storeCarryExecutionReadiness({ state: memoryState(), request: request(), matrix: matrix(), now_ms: NOW, env: {} });
   assert.equal(noDigest.ok, false);
   assert.equal(noDigest.error, "carry_readiness_image_mismatch");
+});
+
+test("rejects readiness after any sealed venue binding rotates", async () => {
+  const state = memoryState();
+  const original = request();
+  await storeCarryExecutionReadiness({ state, request: original, matrix: matrix(), now_ms: NOW, env: ENV });
+  const rotated = structuredClone(original.venue_access);
+  rotated.lighter.vault_commitment = "vault_commitment_lighter_rotated";
+  const read = await readCarryExecutionReadiness({ state, owner_commitment: OWNER, venue_access: rotated, now_ms: NOW + 1_000, env: ENV });
+  assert.equal(read.ready, false);
+  assert.ok(read.reasons.includes("carry_readiness_access_rotated:lighter"));
 });

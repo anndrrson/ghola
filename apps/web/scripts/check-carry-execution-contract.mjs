@@ -164,6 +164,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("readiness", "carry_readiness_commitment_invalid", "carry_readiness_integrity_gate_missing");
   requireText("readinessTest", "persists deployment-, owner-, account-, and registry-bound three-venue readiness", "carry_readiness_binding_test_missing");
   requireText("readinessTest", "rejects stale or tampered readiness instead of reusing transient UI state", "carry_readiness_stale_test_missing");
+  requireText("readinessTest", "rejects readiness after any sealed venue binding rotates", "carry_readiness_rotation_test_missing");
   requireText("preflight", "carry_account_owner_mismatch", "carry_preflight_owner_binding_missing");
   requireText("preflightTest", "rejects cross-owner sealed venue access before order verification", "carry_preflight_owner_binding_test_missing");
   requireText("coreCarry", "collateral_basis_risk_bps", "collateral_basis_stress_missing");
@@ -315,10 +316,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("server", 'req.headers["x-ghola-carry-qualification-confirmed"] === "true"', "worker_confirmation_header_missing");
   requireText("server", '"/carry/positions/release-evidence"', "worker_release_evidence_route_missing");
   requireText("server", '"/carry/preflight-matrix"', "carry_three_venue_no_submit_worker_route_missing");
+  requireText("server", '"/carry/readiness"', "carry_readiness_resume_worker_route_missing");
+  requireText("server", "readCarryExecutionReadiness", "carry_readiness_resume_worker_missing");
   requireText("webRoute", '"x-ghola-carry-qualification-confirmed": "true"', "web_confirmation_header_missing");
   requireText("webClient", "qualification_pilot_confirmed", "web_confirmation_input_missing");
   requireText("webClient", "preflightCarryExecutionMatrix", "carry_three_venue_no_submit_client_missing");
+  requireText("webClient", "getCarryExecutionReadiness", "carry_readiness_resume_client_missing");
   requireText("webRoute", 'action === "preflight_matrix"', "carry_three_venue_no_submit_web_route_missing");
+  requireText("webRoute", 'action === "readiness"', "carry_readiness_resume_web_route_missing");
   requireText("webPage", "carry=open", "carry_chart_redirect_missing");
   requireText("webTradeWorkspace", "CarryChartStrip", "carry_chart_strip_missing");
   requireText("webTradeWorkspace", 'label="Funding / 1h"', "hyperliquid_funding_interval_label_incorrect");
@@ -345,6 +350,8 @@ export function checkCarryExecutionContract(sources) {
   forbidText("webCarryChart", "QUAL {qualifiedCandidates.length}", "carry_route_count_without_net_proof");
   forbidText("webCarryChart", "Scanning equivalent perps", "carry_marketing_status_copy_forbidden");
   requireText("webCarryBuilder", "preflightCarryExecutionMatrix", "carry_terminal_three_venue_matrix_missing");
+  requireText("webCarryBuilder", "getCarryExecutionReadiness", "carry_terminal_readiness_restore_missing");
+  requireText("webCarryBuilder", "readyStoredReadiness", "carry_terminal_readiness_freshness_missing");
   requireText("webCarryBuilder", "CARRY_EXECUTION_VENUES.every", "carry_terminal_matrix_registry_missing");
   forbidText("webCarryBuilder", '["hyperliquid", "lighter", "aster"]', "carry_terminal_matrix_registry_duplicated");
   requireText("webCarryBuilder", "preflightCarryPair", "carry_terminal_pair_no_submit_missing");
@@ -359,6 +366,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "window.setTimeout(refresh", "carry_terminal_monitor_refresh_missing");
   requireText("webCarryBuilderTest", "keeps checking and arming no-submit until a separate live-entry click", "carry_terminal_boundary_test_missing");
   requireText("webCarryBuilderTest", "runs the three-venue matrix before checking or arming one route", "carry_terminal_three_venue_matrix_test_missing");
+  requireText("webCarryBuilderTest", "restores fresh deployment-bound readiness after refresh without rerunning the three-venue matrix", "carry_terminal_readiness_restore_test_missing");
   requireText("webCarryBuilderTest", "allows a new Carry Position after the previous route proved flat with zero orders", "carry_terminal_repeat_lifecycle_test_missing");
   requireText("webCarryBuilderTest", "fails closed when the initial position sync is unavailable", "carry_terminal_position_sync_test_missing");
   requireText("webCarryBuilderTest", "shows compact live margin-runway evidence inside the terminal", "carry_terminal_runway_display_test_missing");

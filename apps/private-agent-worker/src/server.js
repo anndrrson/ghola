@@ -27,6 +27,7 @@ import { startMultiLegRecoveryLoop } from "./execution/multi-leg-orchestrator.js
 import { fetchCorePerpShadowSet } from "./execution/perp-shadow-adapters.js";
 import { verifyCarryShadowSet } from "./execution/perp-shadow-readiness.js";
 import { preflightCarryExecutionMatrix, preflightCarryPair } from "./execution/carry-preflight.js";
+import { readCarryExecutionReadiness } from "./execution/carry-readiness.js";
 import { executeStoredCarryEntry, startCarryExecutionLoop } from "./execution/carry-executor.js";
 import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-evidence.js";
 import {
@@ -1647,6 +1648,27 @@ function validateCarryExecutionMatrixRequest(body, recipient) {
   }, recipient)))];
 }
 
+function validateCarryReadinessRequest(body, recipient) {
+  const errors = [];
+  if (body?.version !== 1) errors.push("carry readiness version is invalid");
+  if (body?.operation_class !== "readiness_read") errors.push("carry readiness operation class is invalid");
+  if (!isNonEmptyString(body?.owner_commitment)) errors.push("carry readiness owner commitment is required");
+  if (!isNonEmptyString(body?.work_order_commitment)) errors.push("carry readiness work order commitment is required");
+  for (const venueId of CARRY_EXECUTION_VENUES) {
+    const access = body?.venue_access?.[venueId];
+    if (!isObject(access) || access.status !== "ready") {
+      errors.push(`${venueId} venue access is required`);
+      continue;
+    }
+    if (access.owner_commitment !== body.owner_commitment) errors.push(`${venueId} owner commitment mismatch`);
+    for (const field of ["account_commitment", "vault_commitment", "policy_commitment"]) {
+      if (!isNonEmptyString(access[field])) errors.push(`${venueId} ${field} is required`);
+    }
+    errors.push(...validateEncryptedBundle(access.encrypted_execution_vault, recipient, `${venueId} encrypted_execution_vault`));
+  }
+  return errors;
+}
+
 function validateCarryMonitoringAccess(body, recipient, mode) {
   const errors = [];
   const supported = CARRY_EXECUTION_VENUE_SET;
@@ -2763,6 +2785,37 @@ export function createPrivateAgentWorkerServer(options = {}) {
           verifyOrder: verifyAutopilotOrder,
           readHyperliquidSnapshot,
           readHyperliquidCarryMetrics,
+        }));
+      }
+
+      if (req.method === "POST" && url.pathname === "/carry/readiness") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        if (req.headers["x-ghola-no-submit-verify"] !== "true") {
+          return json(res, 400, { error: "no-submit verification header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "carry:read",
+          state,
+          expected: (body) => ({
+            owner_commitment: body.owner_commitment,
+            work_order_commitment: body.work_order_commitment,
+            operation_class: "readiness_read",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateCarryReadinessRequest(body, recipient);
+        if (errors.length > 0) return json(res, 400, { error: "invalid carry readiness request", details: errors });
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
+        }
+        return json(res, 200, await readCarryExecutionReadiness({
+          state,
+          owner_commitment: body.owner_commitment,
+          venue_access: body.venue_access,
         }));
       }
 
