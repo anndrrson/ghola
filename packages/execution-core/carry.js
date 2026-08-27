@@ -360,12 +360,16 @@ export function evaluateCarryOpportunity(value) {
   const longFunding = fundingCashMicro("long", notional, longContract, horizonMs);
   const shortFunding = fundingCashMicro("short", notional, shortContract, horizonMs);
   const grossFunding = safeAdd(longFunding, shortFunding, "carry_funding_overflow");
-  const legCostE6Bps = safeAdd(costE6Bps(longCosts), costE6Bps(shortCosts), "carry_cost_bps_overflow");
-  const fixedTradingCost = safeAdd(
-    microFromE6BpsCeil(notional, legCostE6Bps),
-    safeAdd(longCosts.gas_micro_usdc, shortCosts.gas_micro_usdc, "carry_gas_overflow"),
-    "carry_fixed_cost_overflow",
+  const feeE6Bps = sumCostFields([longCosts, shortCosts], ["entry_fee_e6_bps", "exit_fee_e6_bps"]);
+  const slippageE6Bps = sumCostFields([longCosts, shortCosts], ["entry_slippage_e6_bps", "exit_slippage_e6_bps"]);
+  const latencyE6Bps = sumCostFields([longCosts, shortCosts], ["latency_penalty_bps"], 1_000_000);
+  const [tradingFeeCost, slippageCost, latencyBuffer] = allocateE6BpsMicroCosts(
+    notional,
+    [feeE6Bps, slippageE6Bps, latencyE6Bps],
   );
+  const gasCost = safeAdd(longCosts.gas_micro_usdc, shortCosts.gas_micro_usdc, "carry_gas_overflow");
+  const fixedTradingCost = [tradingFeeCost, slippageCost, latencyBuffer, gasCost]
+    .reduce((sum, amount) => safeAdd(sum, amount, "carry_fixed_cost_overflow"), 0);
   const baseRiskBuffer = microFromBpsCeil(notional, riskBufferBps);
   const collateralBasisRisk = microFromBpsCeil(notional, collateralBasisRiskBps);
   const riskBuffer = safeAdd(baseRiskBuffer, collateralBasisRisk, "carry_risk_buffer_overflow");
@@ -404,6 +408,12 @@ export function evaluateCarryOpportunity(value) {
     projected_long_funding_micro_usdc: longFunding,
     projected_short_funding_micro_usdc: shortFunding,
     projected_gross_funding_micro_usdc: grossFunding,
+    projected_funding_credit_micro_usdc: safeAdd(Math.max(0, longFunding), Math.max(0, shortFunding), "carry_funding_overflow"),
+    projected_funding_debit_micro_usdc: safeAdd(Math.max(0, -longFunding), Math.max(0, -shortFunding), "carry_funding_overflow"),
+    projected_trading_fee_micro_usdc: tradingFeeCost,
+    projected_slippage_micro_usdc: slippageCost,
+    projected_gas_micro_usdc: gasCost,
+    projected_latency_buffer_micro_usdc: latencyBuffer,
     projected_trading_cost_micro_usdc: fixedTradingCost,
     projected_capital_cost_micro_usdc: capitalCost,
     base_risk_buffer_micro_usdc: baseRiskBuffer,
@@ -645,19 +655,22 @@ export function createCarryValueLedger(value) {
     -safeAdd(safeAdd(tradingCost, capitalCost, "carry_value_modeled_cost_overflow"), riskBuffer, "carry_value_modeled_cost_overflow"),
     "carry_value_modeled_net_overflow",
   );
+  const breakdown = normalizeModeledValueBreakdown(modeled, grossFunding, tradingCost);
+  const modeledValue = {
+    gross_funding_micro_usdc: grossFunding,
+    trading_cost_micro_usdc: tradingCost,
+    capital_cost_micro_usdc: capitalCost,
+    risk_buffer_micro_usdc: riskBuffer,
+    net_value_micro_usdc: modeledNet,
+    ...breakdown,
+  };
   return deepFreeze({
     version: 1,
     position_id: identifier(raw.position_id, "carry_value_position_id"),
     currency: "USDC",
     status: "open",
-    modeled: {
-      gross_funding_micro_usdc: grossFunding,
-      trading_cost_micro_usdc: tradingCost,
-      capital_cost_micro_usdc: capitalCost,
-      risk_buffer_micro_usdc: riskBuffer,
-      net_value_micro_usdc: modeledNet,
-    },
-    realized: emptyRealizedValue(modeledNet),
+    modeled: modeledValue,
+    realized: emptyRealizedValue(modeledValue),
     entries: [],
     processed_entry_ids: [],
     processed_claim_ids: [],
@@ -686,7 +699,7 @@ export function appendCarryValueLedgerEntry({ ledger: ledgerInput, entry: entryI
     ledger.processed_entry_ids.push(entry.entry_id);
     ledger.processed_claim_ids.push(claimId);
     ledger.last_sequence = entry.sequence;
-    ledger.realized = summarizeRealizedValue(ledger.entries, ledger.modeled.net_value_micro_usdc);
+    ledger.realized = summarizeRealizedValue(ledger.entries, ledger.modeled);
     ledger.updated_at_ms = nowMs;
     return deepFreeze({ ok: true, duplicate: false, ledger: deepFreeze(ledger) });
   } catch (error) {
@@ -708,6 +721,7 @@ export function finalizeCarryValueLedger({ ledger: ledgerInput, evidence: eviden
     ledger.status = "finalized";
     ledger.updated_at_ms = nowMs;
     ledger.finalized_at_ms = nowMs;
+    ledger.realized.attribution = summarizeValueAttribution(ledger.modeled, ledger.realized, true);
     ledger.finalization_evidence = {
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,
@@ -1184,8 +1198,38 @@ function normalizeValueEntry(value) {
   };
 }
 
-function emptyRealizedValue(modeledNet) {
-  return {
+function normalizeModeledValueBreakdown(modeled, grossFunding, tradingCost) {
+  const fields = [
+    "funding_credit_micro_usdc",
+    "funding_debit_micro_usdc",
+    "trading_fee_micro_usdc",
+    "slippage_micro_usdc",
+    "gas_micro_usdc",
+    "latency_buffer_micro_usdc",
+  ];
+  const provided = fields.filter((field) => modeled[field] !== undefined);
+  if (provided.length === 0) return { breakdown_complete: false };
+  if (provided.length !== fields.length) fail("carry_value_modeled_breakdown_incomplete");
+  const values = Object.fromEntries(fields.map((field) => [
+    field,
+    nonNegativeInteger(modeled[field], `carry_value_modeled_${field}`),
+  ]));
+  if (safeAdd(values.funding_credit_micro_usdc, -values.funding_debit_micro_usdc, "carry_value_modeled_funding_overflow") !== grossFunding) {
+    fail("carry_value_modeled_funding_breakdown_mismatch");
+  }
+  const modeledTradingCost = [
+    values.trading_fee_micro_usdc,
+    values.slippage_micro_usdc,
+    values.gas_micro_usdc,
+    values.latency_buffer_micro_usdc,
+  ].reduce((sum, amount) => safeAdd(sum, amount, "carry_value_modeled_cost_overflow"), 0);
+  if (modeledTradingCost !== tradingCost) fail("carry_value_modeled_trading_breakdown_mismatch");
+  return { breakdown_complete: true, ...values };
+}
+
+function emptyRealizedValue(modeled) {
+  const modeledNet = typeof modeled === "number" ? modeled : modeled.net_value_micro_usdc;
+  const value = {
     funding_credit_micro_usdc: 0,
     funding_debit_micro_usdc: 0,
     trading_fee_micro_usdc: 0,
@@ -1199,10 +1243,16 @@ function emptyRealizedValue(modeledNet) {
     variance_from_modeled_micro_usdc: -modeledNet,
     by_venue: {},
   };
+  value.attribution = summarizeValueAttribution(
+    typeof modeled === "number" ? { net_value_micro_usdc: modeled, breakdown_complete: false } : modeled,
+    value,
+    false,
+  );
+  return value;
 }
 
-function summarizeRealizedValue(entries, modeledNet) {
-  const value = emptyRealizedValue(modeledNet);
+function summarizeRealizedValue(entries, modeled) {
+  const value = emptyRealizedValue(modeled);
   for (const entry of entries) {
     applyRealizedEntry(value, entry);
     if (entry.venue_id !== null) {
@@ -1211,16 +1261,55 @@ function summarizeRealizedValue(entries, modeledNet) {
     }
   }
   value.net_value_micro_usdc = realizedNetValue(value);
-  value.variance_from_modeled_micro_usdc = safeAdd(value.net_value_micro_usdc, -modeledNet, "carry_value_realized_overflow");
+  value.variance_from_modeled_micro_usdc = safeAdd(value.net_value_micro_usdc, -modeled.net_value_micro_usdc, "carry_value_realized_overflow");
   for (const venueValue of Object.values(value.by_venue)) {
     venueValue.net_value_micro_usdc = realizedNetValue(venueValue);
   }
+  value.attribution = summarizeValueAttribution(modeled, value, false);
   return value;
 }
 
 function emptyRealizedVenueValue() {
-  const { variance_from_modeled_micro_usdc: _variance, by_venue: _byVenue, ...value } = emptyRealizedValue(0);
+  const {
+    variance_from_modeled_micro_usdc: _variance,
+    attribution: _attribution,
+    by_venue: _byVenue,
+    ...value
+  } = emptyRealizedValue(0);
   return value;
+}
+
+function summarizeValueAttribution(modeled, realized, finalized) {
+  const netVariance = safeAdd(
+    realized.net_value_micro_usdc,
+    -modeled.net_value_micro_usdc,
+    "carry_value_realized_overflow",
+  );
+  if (modeled.breakdown_complete !== true) {
+    return {
+      status: finalized ? "finalized_net_only" : "net_only",
+      funding_micro_usdc: null,
+      trading_fee_micro_usdc: null,
+      slippage_micro_usdc: null,
+      gas_micro_usdc: null,
+      capital_cost_micro_usdc: null,
+      net_value_micro_usdc: netVariance,
+    };
+  }
+  const realizedFunding = safeAdd(
+    realized.funding_credit_micro_usdc,
+    -realized.funding_debit_micro_usdc,
+    "carry_value_realized_overflow",
+  );
+  return {
+    status: finalized ? "finalized" : "accruing",
+    funding_micro_usdc: safeAdd(realizedFunding, -modeled.gross_funding_micro_usdc, "carry_value_realized_overflow"),
+    trading_fee_micro_usdc: safeAdd(modeled.trading_fee_micro_usdc, -realized.trading_fee_micro_usdc, "carry_value_realized_overflow"),
+    slippage_micro_usdc: safeAdd(modeled.slippage_micro_usdc, -realized.slippage_micro_usdc, "carry_value_realized_overflow"),
+    gas_micro_usdc: safeAdd(modeled.gas_micro_usdc, -realized.gas_micro_usdc, "carry_value_realized_overflow"),
+    capital_cost_micro_usdc: safeAdd(modeled.capital_cost_micro_usdc, -realized.capital_cost_micro_usdc, "carry_value_realized_overflow"),
+    net_value_micro_usdc: netVariance,
+  };
 }
 
 function applyRealizedEntry(value, entry) {
@@ -1273,15 +1362,30 @@ function fundingCashMicro(side, notional, contract, horizonMs) {
   return safeNumber(floorDiv(numerator, 1_000_000_000_000n * BigInt(contract.funding_interval_ms)));
 }
 
-function costE6Bps(costs) {
-  return [
-    costs.entry_fee_e6_bps,
-    costs.exit_fee_e6_bps,
-    costs.entry_slippage_e6_bps,
-    costs.exit_slippage_e6_bps,
-    costs.latency_penalty_bps * 1_000_000,
-  ]
+function sumCostFields(costs, fields, multiplier = 1) {
+  return costs.flatMap((cost) => fields.map((field) => cost[field] * multiplier))
     .reduce((sum, value) => safeAdd(sum, value, "carry_cost_bps_overflow"), 0);
+}
+
+function allocateE6BpsMicroCosts(amount, e6BpsComponents) {
+  const denominator = 10_000_000_000n;
+  const rows = e6BpsComponents.map((e6Bps, index) => {
+    const numerator = BigInt(amount) * BigInt(e6Bps);
+    return { index, quotient: numerator / denominator, remainder: numerator % denominator };
+  });
+  const totalNumerator = rows.reduce((sum, row) => sum + row.quotient * denominator + row.remainder, 0n);
+  const target = ceilDiv(totalNumerator, denominator);
+  let remainderUnits = target - rows.reduce((sum, row) => sum + row.quotient, 0n);
+  for (const row of [...rows].sort((left, right) => {
+    if (left.remainder === right.remainder) return left.index - right.index;
+    return left.remainder > right.remainder ? -1 : 1;
+  })) {
+    if (remainderUnits === 0n || row.remainder === 0n) break;
+    row.quotient += 1n;
+    remainderUnits -= 1n;
+  }
+  if (remainderUnits !== 0n) fail("carry_cost_allocation_invalid");
+  return rows.sort((left, right) => left.index - right.index).map((row) => safeNumber(row.quotient));
 }
 
 function microFromBpsCeil(amount, bps) {

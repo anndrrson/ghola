@@ -238,6 +238,17 @@ test("models carry after funding, round-trip costs, capital cost, risk buffer, a
     max_contract_data_skew_ms: 2_000,
   });
   assert.equal(result.eligible, true);
+  assert.equal(
+    result.projected_trading_fee_micro_usdc
+      + result.projected_slippage_micro_usdc
+      + result.projected_gas_micro_usdc
+      + result.projected_latency_buffer_micro_usdc,
+    result.projected_trading_cost_micro_usdc,
+  );
+  assert.equal(
+    result.projected_funding_credit_micro_usdc - result.projected_funding_debit_micro_usdc,
+    result.projected_gross_funding_micro_usdc,
+  );
   assert.equal(result.projected_gross_funding_micro_usdc, 63_000_000);
   assert.equal(result.projected_trading_cost_micro_usdc, 12_000_000);
   assert.equal(result.projected_capital_cost_micro_usdc, 2_800_000);
@@ -925,6 +936,12 @@ test("value ledger reports realized net after every cost and deduplicates eviden
       trading_cost_micro_usdc: 10_000_000,
       capital_cost_micro_usdc: 2_000_000,
       risk_buffer_micro_usdc: 3_000_000,
+      funding_credit_micro_usdc: 30_000_000,
+      funding_debit_micro_usdc: 0,
+      trading_fee_micro_usdc: 8_000_000,
+      slippage_micro_usdc: 1_500_000,
+      gas_micro_usdc: 0,
+      latency_buffer_micro_usdc: 500_000,
     },
     now_ms: NOW,
   });
@@ -957,6 +974,11 @@ test("value ledger reports realized net after every cost and deduplicates eviden
   assert.equal(ledger.modeled.net_value_micro_usdc, 15_000_000);
   assert.equal(ledger.realized.net_value_micro_usdc, 19_500_000);
   assert.equal(ledger.realized.variance_from_modeled_micro_usdc, 4_500_000);
+  assert.equal(ledger.realized.attribution.status, "accruing");
+  assert.equal(ledger.realized.attribution.funding_micro_usdc, 1_000_000);
+  assert.equal(ledger.realized.attribution.trading_fee_micro_usdc, 0);
+  assert.equal(ledger.realized.attribution.slippage_micro_usdc, 0);
+  assert.equal(ledger.realized.attribution.net_value_micro_usdc, 4_500_000);
   assert.equal(ledger.realized.by_venue.hyperliquid.net_value_micro_usdc, 23_000_000);
   const duplicate = appendCarryValueLedgerEntry({
     ledger,
@@ -975,6 +997,26 @@ test("value ledger reports realized net after every cost and deduplicates eviden
     now_ms: NOW + 10,
   });
   assert.equal(duplicate.duplicate, true);
+});
+
+test("value ledger rejects modeled component totals that do not reconcile", () => {
+  assert.throws(() => createCarryValueLedger({
+    version: 1,
+    position_id: "carry:position:0001",
+    modeled: {
+      gross_funding_micro_usdc: 10,
+      trading_cost_micro_usdc: 5,
+      capital_cost_micro_usdc: 0,
+      risk_buffer_micro_usdc: 0,
+      funding_credit_micro_usdc: 10,
+      funding_debit_micro_usdc: 0,
+      trading_fee_micro_usdc: 2,
+      slippage_micro_usdc: 2,
+      gas_micro_usdc: 0,
+      latency_buffer_micro_usdc: 0,
+    },
+    now_ms: NOW,
+  }), /carry_value_modeled_trading_breakdown_mismatch/);
 });
 
 test("value ledger rejects a reused evidence claim under a new entry id", () => {

@@ -51,6 +51,19 @@ type CarryRecord = {
     open_order_count?: number;
     account_state_checked?: boolean;
   };
+  value_ledger?: {
+    status?: "open" | "finalized";
+    modeled?: { net_value_micro_usdc?: number };
+    realized?: {
+      net_value_micro_usdc?: number;
+      variance_from_modeled_micro_usdc?: number;
+      attribution?: {
+        status?: "accruing" | "finalized" | "net_only" | "finalized_net_only";
+        trading_fee_micro_usdc?: number | null;
+        slippage_micro_usdc?: number | null;
+      };
+    };
+  };
   latest_observation?: {
     expected_net_value_bps?: number;
     contract_data_skew_ms?: number;
@@ -159,6 +172,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const latestObservation = current?.latest_observation || null;
   const runway = carryRunwaySummary(latestObservation, candidate);
   const capital = carryCapitalSummary(latestObservation?.capital_action_plan);
+  const ledger = carryLedgerSummary(current?.value_ledger);
   const proofOpportunity = proof ? asRecord(proof.creation_opportunity) : null;
 
   const invalidateProof = (setter: (value: string) => void) => (value: string) => {
@@ -342,6 +356,8 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="COLLATERAL" value={formatUsd(model.minimumCollateralUsd)} />
         <Metric label="MIN RUNWAY" value={runway.value} tone={runway.tone} />
         <Metric label="CAPITAL" value={capital.value} tone={capital.tone} />
+        <Metric label="LEDGER" value={ledger.value} tone={ledger.tone} />
+        <Metric label="EXEC Δ" value={ledger.execution} tone={ledger.executionTone} />
         <Metric label="SOURCE SYNC" value={proofOpportunity ? formatSkew(proofOpportunity.contract_data_skew_ms) : "PENDING"} />
         <Metric label="INDEX BASIS" value={proofOpportunity ? formatBasis(proofOpportunity.index_price_divergence_bps) : "PENDING"} />
         <Metric label="ROUTE GUARD" value={`${CARRY_EXECUTION_VENUES.length} VENUES · +5BP`} />
@@ -443,6 +459,36 @@ function carryCapitalSummary(plan: NonNullable<CarryRecord["latest_observation"]
   } as const;
 }
 
+function carryLedgerSummary(ledger: CarryRecord["value_ledger"]) {
+  if (!ledger) return { value: "PENDING", execution: "PENDING" } as const;
+  const modeled = ledger.modeled?.net_value_micro_usdc;
+  if (!Number.isSafeInteger(modeled)) return { value: "UNVERIFIED", execution: "UNVERIFIED", tone: "bad", executionTone: "bad" } as const;
+  if (ledger.status !== "finalized") {
+    return { value: `${formatMicroUsd(Number(modeled))} MODEL`, execution: "ACCRUING" } as const;
+  }
+  const realized = ledger.realized?.net_value_micro_usdc;
+  const variance = ledger.realized?.variance_from_modeled_micro_usdc;
+  if (!Number.isSafeInteger(realized) || !Number.isSafeInteger(variance)) {
+    return { value: "UNVERIFIED", execution: "UNVERIFIED", tone: "bad", executionTone: "bad" } as const;
+  }
+  const attribution = ledger.realized?.attribution;
+  const fee = attribution?.trading_fee_micro_usdc;
+  const slippage = attribution?.slippage_micro_usdc;
+  const executionVerified = attribution?.status === "finalized"
+    && Number.isSafeInteger(fee)
+    && Number.isSafeInteger(slippage);
+  return {
+    value: `${formatMicroUsd(Number(realized))} REAL · ${formatSignedMicroUsd(Number(variance))} Δ`,
+    execution: executionVerified
+      ? `FEE ${formatSignedMicroUsd(Number(fee))} · SLIP ${formatSignedMicroUsd(Number(slippage))}`
+      : "NET PROOF ONLY",
+    tone: Number(realized) >= 0 ? "good" : "bad",
+    executionTone: executionVerified
+      ? Number(fee) + Number(slippage) >= 0 ? "good" : "warn"
+      : "warn",
+  } as const;
+}
+
 function formatRunway(value: number) {
   if (!Number.isFinite(value)) return "∞";
   if (value < 60_000) return `${Math.max(0, Math.round(value / 1_000))}S`;
@@ -474,6 +520,14 @@ function venueName(venueId: string) {
 
 function formatUsd(value: number) {
   return `$${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
+
+function formatMicroUsd(value: number) {
+  return formatUsd(value / 1_000_000);
+}
+
+function formatSignedMicroUsd(value: number) {
+  return `${value >= 0 ? "+" : "−"}${formatUsd(Math.abs(value) / 1_000_000)}`;
 }
 
 function formatSigned(value: number) {

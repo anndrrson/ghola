@@ -52,6 +52,7 @@ export async function createStoredCarryPosition({
         trading_cost_micro_usdc: opportunity.projected_trading_cost_micro_usdc,
         capital_cost_micro_usdc: opportunity.projected_capital_cost_micro_usdc,
         risk_buffer_micro_usdc: opportunity.risk_buffer_micro_usdc,
+        ...modeledValueBreakdown(opportunity),
       },
       now_ms: nowMs,
     });
@@ -161,6 +162,26 @@ function validateCreationOpportunity(positionInput, opportunity, nowMs, qualific
     || !Number.isInteger(opportunity.projected_net_value_bps)
     || opportunity.projected_net_value_bps < positionInput?.risk_mandate?.min_expected_net_benefit_bps
     || opportunity.break_even_ms > opportunity.horizon_ms) return "carry_expected_value_insufficient";
+  const breakdown = modeledValueBreakdown(opportunity);
+  const breakdownFields = [
+    "funding_credit_micro_usdc",
+    "funding_debit_micro_usdc",
+    "trading_fee_micro_usdc",
+    "slippage_micro_usdc",
+    "gas_micro_usdc",
+    "latency_buffer_micro_usdc",
+  ];
+  const sourceFields = breakdownFields.map((field) => `projected_${field}`);
+  const suppliedBreakdownCount = sourceFields.filter((field) => opportunity[field] !== undefined).length;
+  if (suppliedBreakdownCount !== 0 && suppliedBreakdownCount !== sourceFields.length) {
+    return "carry_value_breakdown_incomplete";
+  }
+  if (suppliedBreakdownCount > 0 && (
+    Object.keys(breakdown).length !== breakdownFields.length
+    || breakdown.funding_credit_micro_usdc - breakdown.funding_debit_micro_usdc !== opportunity.projected_gross_funding_micro_usdc
+    || breakdown.trading_fee_micro_usdc + breakdown.slippage_micro_usdc
+      + breakdown.gas_micro_usdc + breakdown.latency_buffer_micro_usdc !== opportunity.projected_trading_cost_micro_usdc
+  )) return "carry_value_breakdown_invalid";
   return null;
 }
 
@@ -798,6 +819,12 @@ function publicOpportunity(value) {
     capital_committed_micro_usdc: value.capital_committed_micro_usdc,
     horizon_ms: value.horizon_ms,
     projected_gross_funding_micro_usdc: value.projected_gross_funding_micro_usdc,
+    projected_funding_credit_micro_usdc: value.projected_funding_credit_micro_usdc,
+    projected_funding_debit_micro_usdc: value.projected_funding_debit_micro_usdc,
+    projected_trading_fee_micro_usdc: value.projected_trading_fee_micro_usdc,
+    projected_slippage_micro_usdc: value.projected_slippage_micro_usdc,
+    projected_gas_micro_usdc: value.projected_gas_micro_usdc,
+    projected_latency_buffer_micro_usdc: value.projected_latency_buffer_micro_usdc,
     projected_trading_cost_micro_usdc: value.projected_trading_cost_micro_usdc,
     projected_capital_cost_micro_usdc: value.projected_capital_cost_micro_usdc,
     risk_buffer_micro_usdc: value.risk_buffer_micro_usdc,
@@ -820,6 +847,20 @@ function publicOpportunity(value) {
     long_margin_runway_ms: value.long_margin_runway_ms,
     short_margin_runway_ms: value.short_margin_runway_ms,
   });
+}
+
+function modeledValueBreakdown(value) {
+  const mapping = {
+    funding_credit_micro_usdc: value?.projected_funding_credit_micro_usdc,
+    funding_debit_micro_usdc: value?.projected_funding_debit_micro_usdc,
+    trading_fee_micro_usdc: value?.projected_trading_fee_micro_usdc,
+    slippage_micro_usdc: value?.projected_slippage_micro_usdc,
+    gas_micro_usdc: value?.projected_gas_micro_usdc,
+    latency_buffer_micro_usdc: value?.projected_latency_buffer_micro_usdc,
+  };
+  return Object.values(mapping).every((amount) => Number.isSafeInteger(amount) && amount >= 0)
+    ? mapping
+    : {};
 }
 
 function publicObservation(event) {

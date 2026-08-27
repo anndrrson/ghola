@@ -31,6 +31,8 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
   });
   assert.equal(created.ok, true);
   assert.equal(created.record.record_version, 1);
+  assert.equal(created.record.value_ledger.modeled.breakdown_complete, true);
+  assert.equal(created.record.value_ledger.modeled.trading_fee_micro_usdc, 2_000);
 
   let record = created.record;
   for (const event of lifecycle()) {
@@ -88,6 +90,7 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
   const reloaded = await state.getCarryPositionRecord(record.position.position_id);
   assert.equal(reloaded.position.status, "reconciled");
   assert.equal(reloaded.value_ledger.realized.net_value_micro_usdc, 21_000);
+  assert.equal(reloaded.value_ledger.realized.attribution.status, "finalized");
   assert.equal(reloaded.value_ledger.finalization_evidence.open_order_count, 0);
 });
 
@@ -159,6 +162,24 @@ test("refuses storage until venue accounts, synchronized equivalent contracts, a
     now_ms: NOW,
   });
   assert.deepEqual(mismatchedSignedLimit, { ok: false, error: "carry_unsigned_contract_basis_limit" });
+  const incompleteValueBreakdown = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: await positionInput("incomplete-value"),
+    opportunity: { ...opportunity(), projected_slippage_micro_usdc: undefined },
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  assert.deepEqual(incompleteValueBreakdown, { ok: false, error: "carry_value_breakdown_incomplete" });
+  const mismatchedValueBreakdown = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: await positionInput("mismatched-value"),
+    opportunity: { ...opportunity(), projected_trading_fee_micro_usdc: 1 },
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  assert.deepEqual(mismatchedValueBreakdown, { ok: false, error: "carry_value_breakdown_invalid" });
 });
 
 test("creates only a capped, explicitly enabled qualification pilot", async (t) => {
@@ -644,6 +665,12 @@ function opportunity(overrides = {}) {
     capital_committed_micro_usdc: 4_000_000,
     horizon_ms: 86_400_000,
     projected_gross_funding_micro_usdc: 25_000,
+    projected_funding_credit_micro_usdc: 25_000,
+    projected_funding_debit_micro_usdc: 0,
+    projected_trading_fee_micro_usdc: 2_000,
+    projected_slippage_micro_usdc: 1_000,
+    projected_gas_micro_usdc: 0,
+    projected_latency_buffer_micro_usdc: 0,
     projected_trading_cost_micro_usdc: 3_000,
     projected_capital_cost_micro_usdc: 1_000,
     risk_buffer_micro_usdc: 1_000,

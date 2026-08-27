@@ -170,6 +170,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarry", "carry_capital_automatic_transfer_forbidden", "carry_capital_transfer_boundary_missing");
   requireText("coreCarryTest", "quantifies the minimum owner top-up without transfer authority", "carry_capital_owner_plan_test_missing");
   requireText("coreCarryTest", "quarantines stale evidence and permits reconciliation only", "carry_capital_stale_quarantine_test_missing");
+  requireText("coreCarry", "projected_trading_fee_micro_usdc", "carry_modeled_fee_attribution_missing");
+  requireText("coreCarry", "carry_value_modeled_trading_breakdown_mismatch", "carry_modeled_cost_reconciliation_missing");
+  requireText("coreCarry", "summarizeValueAttribution", "carry_value_attribution_missing");
+  requireText("coreCarryTest", "rejects modeled component totals that do not reconcile", "carry_modeled_cost_reconciliation_test_missing");
   requireText("coreCarry", "carryRiskMandateMessage", "carry_signed_mandate_message_missing");
   requireText("coreCarry", "export function compileCarryMigrationProposal", "carry_migration_compiler_missing");
   requireText("coreCarry", "migration_venue_allowlist", "carry_migration_signed_allowlist_missing");
@@ -203,6 +207,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "compileCarryCapitalActionPlan", "carry_monitor_capital_plan_missing");
   requireText("positions", "capital_action_plan: capitalActionPlan", "carry_monitor_capital_evidence_missing");
   requireText("positionsTest", "stores an exact owner-only collateral recommendation without transferring", "carry_monitor_capital_plan_test_missing");
+  requireText("positions", "modeledValueBreakdown", "carry_worker_value_breakdown_missing");
+  requireText("positionsTest", "value_ledger.modeled.breakdown_complete", "carry_worker_value_breakdown_test_missing");
   requireText("executor", "verifyCarryRiskMandateAuthorization", "carry_entry_signature_gate_missing");
   requireText("webRoute", "verifyCarryRiskMandateAuthorization", "carry_route_signature_gate_missing");
   requireText("webPerpsTurnkey", "signCarryRiskMandate", "carry_turnkey_owner_signing_missing");
@@ -212,6 +218,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", 'label="CAPITAL"', "carry_terminal_capital_action_missing");
   requireText("webCarryBuilder", "automatic_transfer_permitted !== false", "carry_terminal_capital_authority_gate_missing");
   requireText("webCarryBuilderTest", '$10 → LIGHTER · OWNER', "carry_terminal_capital_action_test_missing");
+  requireText("webCarryBuilder", 'label="LEDGER"', "carry_terminal_value_ledger_missing");
+  requireText("webCarryBuilder", 'label="EXEC Δ"', "carry_terminal_execution_attribution_missing");
+  requireText("webCarryBuilderTest", "FEE +$0.5 · SLIP −$0.25", "carry_terminal_execution_attribution_test_missing");
   requireText("webMandate", "defaultCarryRiskMandate", "carry_default_migration_mandate_missing");
   requireText("webMandate", "allow_migration: true", "carry_default_migration_disabled");
   requireText("webCarryBuilder", "SIGN MIGRATION", "carry_terminal_migration_signing_missing");

@@ -35,6 +35,7 @@ export declare function buildExecutionQualityReceipt(input: unknown): Readonly<R
 export declare function aggregateExecutionQuality(input: unknown[]): Readonly<Record<string, unknown>>;
 export declare function normalizePerpContractSpec(input: unknown): Readonly<Record<string, unknown>>;
 export declare function calculateMarginRunway(input: unknown): Readonly<Record<string, unknown>>;
+export declare function compileCarryCapitalActionPlan(input: unknown): Readonly<Record<string, unknown>>;
 export declare function evaluatePerpContractPairBasis(input: unknown): Readonly<Record<string, unknown>>;
 export declare function evaluateCarryOpportunity(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryMigrationProposal(input: unknown): Readonly<Record<string, unknown>>;

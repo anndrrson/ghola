@@ -483,6 +483,26 @@ test("rejects a terminal that hides monitored margin runway", () => {
   );
 });
 
+test("rejects removal of component-level carry value attribution", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replaceAll("summarizeValueAttribution", "summarizeNetOnly"),
+    }),
+    /carry_value_attribution_missing/,
+  );
+});
+
+test("rejects a terminal that hides realized execution attribution", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll('label="EXEC Δ"', 'label="COST"'),
+    }),
+    /carry_terminal_execution_attribution_missing/,
+  );
+});
+
 test("reports required sources absent from git", () => {
   const tracked = new Set(Object.values(CARRY_RELEASE_FILES).slice(0, -1));
   const untracked = findUntrackedCarryReleaseFiles({

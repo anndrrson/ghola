@@ -238,6 +238,19 @@ describe("CarryTerminalBuilder", () => {
       records: [{
         ...carryRecord(),
         position: { ...carryRecord().position, status: "active" },
+        value_ledger: {
+          status: "finalized",
+          modeled: { net_value_micro_usdc: 15_000_000 },
+          realized: {
+            net_value_micro_usdc: 19_500_000,
+            variance_from_modeled_micro_usdc: 4_500_000,
+            attribution: {
+              status: "finalized",
+              trading_fee_micro_usdc: 500_000,
+              slippage_micro_usdc: -250_000,
+            },
+          },
+        },
         latest_observation: {
           expected_net_value_bps: 8,
           margin_runway_ms_by_venue: { hyperliquid: 7_200_000, lighter: 3_600_000 },
@@ -261,6 +274,10 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("1.0H · WARNING");
     expect(container.textContent).toContain("CAPITAL");
     expect(container.textContent).toContain("$10 → LIGHTER · OWNER");
+    expect(container.textContent).toContain("LEDGER");
+    expect(container.textContent).toContain("$19.5 REAL · +$4.5 Δ");
+    expect(container.textContent).toContain("EXEC Δ");
+    expect(container.textContent).toContain("FEE +$0.5 · SLIP −$0.25");
     expect(container.textContent).toContain("MONITOR");
     expect(container.textContent).toContain("0S AGO");
   });

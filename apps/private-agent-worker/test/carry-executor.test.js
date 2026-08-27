@@ -559,6 +559,9 @@ test("finalizes modeled-versus-realized value only after exact costs, funding, a
   assert.equal(result.record.value_ledger.realized.funding_debit_micro_usdc, 5_000);
   assert.equal(result.record.value_ledger.realized.trading_fee_micro_usdc, 14_000);
   assert.equal(result.record.value_ledger.realized.net_value_micro_usdc, 19_000);
+  assert.equal(result.record.value_ledger.realized.attribution.status, "finalized");
+  assert.equal(result.record.value_ledger.realized.attribution.trading_fee_micro_usdc, -12_000);
+  assert.equal(result.record.value_ledger.realized.attribution.net_value_micro_usdc, -1_000);
   assert.equal(result.record.value_ledger.finalization_evidence.open_order_count, 0);
 });
 
@@ -707,6 +710,12 @@ function opportunity() {
     capital_committed_micro_usdc: 4_000_000,
     horizon_ms: 86_400_000,
     projected_gross_funding_micro_usdc: 25_000,
+    projected_funding_credit_micro_usdc: 25_000,
+    projected_funding_debit_micro_usdc: 0,
+    projected_trading_fee_micro_usdc: 2_000,
+    projected_slippage_micro_usdc: 1_000,
+    projected_gas_micro_usdc: 0,
+    projected_latency_buffer_micro_usdc: 0,
     projected_trading_cost_micro_usdc: 3_000,
     projected_capital_cost_micro_usdc: 1_000,
     risk_buffer_micro_usdc: 1_000,
