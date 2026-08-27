@@ -71,6 +71,77 @@ test("keeps incomplete or missing route probes unavailable", async (t) => {
   }), /carry_transfer_route_account_state_stale/);
 });
 
+test("requires explicit USDC-USDT conversion economics for Aster routes", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-transfer-routes-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const accounts = [
+    observerAccounts()[1],
+    {
+      venue_id: "aster",
+      account_commitment: "account:aster:0001",
+      account_state_commitment: "carry:account-state:aster:0001",
+      account_state_checked_at_ms: NOW,
+    },
+  ];
+  const incomplete = await observeCarryTransferRoutes({
+    state: createWorkerState(dir),
+    owner_commitment: OWNER,
+    worker_image_digest: `sha256:${"f".repeat(64)}`,
+    accounts,
+    probe_route: async (request) => observedQuote({
+      source_collateral_asset: request.source_collateral_asset,
+      destination_collateral_asset: request.destination_collateral_asset,
+      conversion_required: true,
+      conversion_quote_verified: false,
+      conversion_rate_e8: 0,
+    }),
+    checked_at_ms: NOW,
+    now_ms: NOW,
+  });
+  assert.equal(incomplete.available_route_count, 0);
+  assert.equal(incomplete.evidence.routes.every((item) => item.status === "unavailable"), true);
+
+  const zeroRate = await observeCarryTransferRoutes({
+    state: createWorkerState(dir),
+    owner_commitment: OWNER,
+    worker_image_digest: `sha256:${"f".repeat(64)}`,
+    accounts,
+    probe_route: async (request) => observedQuote({
+      source_collateral_asset: request.source_collateral_asset,
+      destination_collateral_asset: request.destination_collateral_asset,
+      conversion_required: true,
+      conversion_quote_verified: true,
+      conversion_rate_e8: 0,
+    }),
+    checked_at_ms: NOW,
+    now_ms: NOW,
+  });
+  assert.equal(zeroRate.available_route_count, 0);
+  assert.equal(zeroRate.evidence.routes.every((item) => item.status === "unavailable"), true);
+
+  const verified = await observeCarryTransferRoutes({
+    state: createWorkerState(dir),
+    owner_commitment: OWNER,
+    worker_image_digest: `sha256:${"f".repeat(64)}`,
+    accounts,
+    probe_route: async (request) => observedQuote({
+      source_collateral_asset: request.source_collateral_asset,
+      destination_collateral_asset: request.destination_collateral_asset,
+      conversion_required: true,
+      conversion_quote_verified: true,
+      conversion_rate_e8: 99_950_000,
+      withdrawal_fee_micro_usdc: 5_000,
+      conversion_fee_micro_usdc: 3_000,
+      conversion_slippage_micro_usdc: 2_000,
+    }),
+    checked_at_ms: NOW,
+    now_ms: NOW,
+  });
+  assert.equal(verified.available_route_count, 2);
+  assert.equal(verified.evidence.routes.every((item) => item.conversion_required === true), true);
+  assert.equal(verified.evidence.routes.every((item) => item.source_collateral_asset !== item.destination_collateral_asset), true);
+});
+
 test("stores only commitment-backed worker transfer-route evidence", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-transfer-routes-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -117,7 +188,11 @@ test("rejects tampered, stale, and registry-mismatched transfer routes", async (
   });
   assert.deepEqual(verifyCarryTransferRouteEvidence({
     ...evidence,
-    routes: [{ ...evidence.routes[0], fee_micro_usdc: 99 }],
+    routes: [{
+      ...evidence.routes[0],
+      withdrawal_fee_micro_usdc: 99,
+      fee_micro_usdc: 99,
+    }],
   }), {
     ok: false,
     error: "carry_transfer_route_commitment_invalid",
@@ -166,12 +241,22 @@ function route(overrides = {}) {
     source_account_state_commitment: "carry:account-state:lighter:0001",
     destination_account_state_commitment: "carry:account-state:hyperliquid:0001",
     quote_commitment: "carry:transfer-quote:0001",
-    settlement_asset: "USDC",
+    valuation_asset: "USD",
+    source_collateral_asset: "USDC",
+    destination_collateral_asset: "USDC",
+    conversion_required: false,
     status: "available",
     quote_verified: true,
     all_in_fee_verified: true,
+    valuation_basis_verified: true,
+    conversion_quote_verified: true,
+    conversion_rate_e8: 100_000_000,
     minimum_transfer_micro_usdc: 0,
     maximum_transfer_micro_usdc: 100_000_000,
+    withdrawal_fee_micro_usdc: 1_000,
+    deposit_fee_micro_usdc: 0,
+    conversion_fee_micro_usdc: 0,
+    conversion_slippage_micro_usdc: 0,
     fee_micro_usdc: 1_000,
     estimated_latency_ms: 60_000,
     as_of_ms: NOW,
@@ -202,12 +287,22 @@ function observerAccounts() {
 
 function observedQuote(overrides = {}) {
   return {
-    settlement_asset: "USDC",
+    valuation_asset: "USD",
+    source_collateral_asset: "USDC",
+    destination_collateral_asset: "USDC",
+    conversion_required: false,
     status: "available",
     quote_verified: true,
     all_in_fee_verified: true,
+    valuation_basis_verified: true,
+    conversion_quote_verified: true,
+    conversion_rate_e8: 100_000_000,
     minimum_transfer_micro_usdc: 5_000_000,
     maximum_transfer_micro_usdc: 100_000_000,
+    withdrawal_fee_micro_usdc: 10_000,
+    deposit_fee_micro_usdc: 0,
+    conversion_fee_micro_usdc: 0,
+    conversion_slippage_micro_usdc: 0,
     fee_micro_usdc: 10_000,
     estimated_latency_ms: 60_000,
     as_of_ms: NOW,

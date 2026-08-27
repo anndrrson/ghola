@@ -150,10 +150,11 @@ export function checkCarryExecutionContract(sources) {
   for (const adapterId of [
     "hyperliquid_arbitrum_usdc_v1",
     "lighter_arbitrum_usdc_v1",
-    "aster_arbitrum_usdc_v1",
+    "aster_arbitrum_usdt_v1",
   ]) {
     requireText("registry", `adapter("${adapterId}", "implemented_unproven"`, `carry_collateral_route_adapter_missing:${adapterId}`);
   }
+  requireText("registry", 'collateral_asset: "USDT"', "carry_aster_usdt_collateral_missing");
   requireText(
     "registry",
     '"carry_execution",\n  "no_submit_reconciliation",\n  "exact_quantity_recovery",',
@@ -384,6 +385,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarry", 'route.source_account_state_commitment === source.account_state_commitment', "carry_transfer_source_state_binding_missing");
   requireText("coreCarry", 'route.destination_account_state_commitment === request.account_state_commitment', "carry_transfer_destination_state_binding_missing");
   requireText("coreCarry", "carry_transfer_route_quote_unverified", "carry_transfer_all_in_quote_gate_missing");
+  requireText("coreCarry", "carry_transfer_route_asset_binding", "carry_transfer_asset_binding_missing");
+  requireText("coreCarry", "carry_collateral_review_transfer_conversion_unverified", "carry_transfer_conversion_review_gate_missing");
   requireText("coreCarryTest", "aggregates shared accounts and proposes owner-only reallocation", "carry_portfolio_capital_account_test_missing");
   requireText("coreCarryTest", "never treats an unverified or late transfer as rescued margin", "carry_transfer_route_failure_test_missing");
   requireText("coreCarryTest", "carry:account-state:lighter:stale", "carry_transfer_stale_account_state_test_missing");
@@ -439,6 +442,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("transferRoutes", "export async function storeCarryTransferRouteEvidence", "carry_transfer_route_store_missing");
   requireText("transferRoutes", "export async function observeCarryTransferRoutes", "carry_transfer_route_observer_missing");
   requireText("transferRoutes", "all_in_fee_verified", "carry_transfer_route_all_in_fee_missing");
+  requireText("transferRoutes", "source_collateral_asset", "carry_transfer_route_collateral_assets_missing");
   requireText("transferRoutes", "carry_transfer_route_probe_authority_boundary", "carry_transfer_route_probe_authority_missing");
   requireText("transferRoutes", "export async function loadCarryTransferRouteEvidence", "carry_transfer_route_loader_missing");
   requireText("transferRoutes", "evidenceCommitment(evidence)", "carry_transfer_route_commitment_missing");
@@ -447,6 +451,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("transferRoutesTest", "stores only commitment-backed worker transfer-route evidence", "carry_transfer_route_worker_test_missing");
   requireText("transferRoutesTest", "rejects tampered, stale, and registry-mismatched transfer routes", "carry_transfer_route_failure_test_missing");
   requireText("transferRoutesTest", "keeps incomplete or missing route probes unavailable", "carry_transfer_route_probe_fail_closed_test_missing");
+  requireText("transferRoutesTest", "requires explicit USDC-USDT conversion economics for Aster routes", "carry_transfer_route_conversion_test_missing");
   requireText("positions", "loadCarryTransferRouteEvidence", "carry_transfer_routes_worker_binding_missing");
   requireText("positions", "export async function refreshStoredCarryTransferRoutes", "carry_transfer_route_supervised_refresh_missing");
   requireText("positions", "probe_transfer_route: probeTransferRoute", "carry_transfer_route_internal_probe_missing");

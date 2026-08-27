@@ -848,6 +848,19 @@ test("rejects collateral route observation without all-in fee verification", () 
   );
 });
 
+test("rejects a route model that hides Aster USDT conversion", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      registry: sources.registry.replaceAll(
+        'collateral_asset: "USDT"',
+        'collateral_asset: "USDC"',
+      ),
+    }),
+    /carry_aster_usdt_collateral_missing/,
+  );
+});
+
 test("rejects collateral routes that are not refreshed by worker supervision", () => {
   assert.throws(
     () => checkCarryExecutionContract({

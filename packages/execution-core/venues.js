@@ -58,7 +58,7 @@ const specs = [
     exact_quantity_recovery: adapter("hyperliquid_v1", "proven"),
     collateral_route_observer: adapter("hyperliquid_arbitrum_usdc_v1", "implemented_unproven", {
       read_only: true,
-      settlement_asset: "USDC",
+      collateral_asset: "USDC",
       chain_id: 42161,
       owner_approval_required: true,
     }),
@@ -75,7 +75,7 @@ const specs = [
     exact_quantity_recovery: adapter("lighter_v1", "implemented_unproven"),
     collateral_route_observer: adapter("lighter_arbitrum_usdc_v1", "implemented_unproven", {
       read_only: true,
-      settlement_asset: "USDC",
+      collateral_asset: "USDC",
       chain_id: 42161,
       owner_approval_required: true,
     }),
@@ -90,9 +90,9 @@ const specs = [
     carry_execution: adapter("aster_v1", "implemented_unproven"),
     no_submit_reconciliation: adapter("aster_v1", "implemented_unproven"),
     exact_quantity_recovery: adapter("aster_v1", "implemented_unproven"),
-    collateral_route_observer: adapter("aster_arbitrum_usdc_v1", "implemented_unproven", {
+    collateral_route_observer: adapter("aster_arbitrum_usdt_v1", "implemented_unproven", {
       read_only: true,
-      settlement_asset: "USDC",
+      collateral_asset: "USDT",
       chain_id: 42161,
       owner_approval_required: true,
     }),

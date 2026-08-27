@@ -5,6 +5,7 @@ const OWNER = /^[A-Za-z0-9_.:-]{8,240}$/;
 const COMMITMENT = /^[A-Za-z0-9_.:-]{8,240}$/;
 const IMAGE_DIGEST = /^sha256:[a-f0-9]{64}$/;
 const STATUSES = new Set(["available", "degraded", "unavailable"]);
+const COLLATERAL_ASSETS = new Set(["USDC", "USDT"]);
 
 export async function observeCarryTransferRoutes({
   state,
@@ -189,19 +190,27 @@ function normalizeEvidence(value, { requireCommitment }) {
 
 function normalizeRoute(value, checkedAtMs) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("carry_transfer_route_invalid");
-  if (value.version !== 1 || value.settlement_asset !== "USDC") fail("carry_transfer_route_invalid");
+  if (value.version !== 1 || value.valuation_asset !== "USD") fail("carry_transfer_route_invalid");
   const fromVenueId = String(value.from_venue_id || "");
   const toVenueId = String(value.to_venue_id || "");
   const fromAccountCommitment = requiredCommitment(value.from_account_commitment, "carry_transfer_route_from_account_invalid");
   const toAccountCommitment = requiredCommitment(value.to_account_commitment, "carry_transfer_route_to_account_invalid");
   const sourceAdapterId = venueAdapterCapability(fromVenueId, "collateral_route_observer")?.adapter_id || null;
   const destinationAdapterId = venueAdapterCapability(toVenueId, "collateral_route_observer")?.adapter_id || null;
+  const sourceCollateralAsset = collateralAsset(value.source_collateral_asset);
+  const destinationCollateralAsset = collateralAsset(value.destination_collateral_asset);
+  const conversionRequired = sourceCollateralAsset !== destinationCollateralAsset;
   if (!sourceAdapterId || !destinationAdapterId
     || value.source_adapter_id !== sourceAdapterId
     || value.destination_adapter_id !== destinationAdapterId
     || fromVenueId === toVenueId
     || fromAccountCommitment === toAccountCommitment) {
     fail("carry_transfer_route_adapter_binding_invalid");
+  }
+  if (venueAdapterCapability(fromVenueId, "collateral_route_observer")?.collateral_asset !== sourceCollateralAsset
+    || venueAdapterCapability(toVenueId, "collateral_route_observer")?.collateral_asset !== destinationCollateralAsset
+    || value.conversion_required !== conversionRequired) {
+    fail("carry_transfer_route_asset_binding_invalid");
   }
   const asOfMs = positiveInteger(value.as_of_ms, "carry_transfer_route_as_of_invalid");
   if (asOfMs > checkedAtMs + 5_000 || checkedAtMs - asOfMs > 300_000) fail("carry_transfer_route_as_of_invalid");
@@ -211,8 +220,20 @@ function normalizeRoute(value, checkedAtMs) {
   const routeStatus = status(value.status);
   const quoteVerified = value.quote_verified === true;
   const allInFeeVerified = value.all_in_fee_verified === true;
+  const valuationBasisVerified = value.valuation_basis_verified === true;
+  const conversionQuoteVerified = value.conversion_quote_verified === true;
+  const conversionRateE8 = nonnegativeInteger(value.conversion_rate_e8, "carry_transfer_route_conversion_rate_invalid");
+  const withdrawalFee = nonnegativeInteger(value.withdrawal_fee_micro_usdc, "carry_transfer_route_withdrawal_fee_invalid");
+  const depositFee = nonnegativeInteger(value.deposit_fee_micro_usdc, "carry_transfer_route_deposit_fee_invalid");
+  const conversionFee = nonnegativeInteger(value.conversion_fee_micro_usdc, "carry_transfer_route_conversion_fee_invalid");
+  const conversionSlippage = nonnegativeInteger(value.conversion_slippage_micro_usdc, "carry_transfer_route_conversion_slippage_invalid");
+  const totalFee = nonnegativeInteger(value.fee_micro_usdc, "carry_transfer_route_fee_invalid");
   if ((routeStatus === "available" && maximum === 0)
-    || (routeStatus !== "unavailable" && (!quoteVerified || !allInFeeVerified))) {
+    || (routeStatus !== "unavailable" && (!quoteVerified || !allInFeeVerified || !valuationBasisVerified))
+    || (conversionRequired && routeStatus !== "unavailable" && !conversionQuoteVerified)
+    || (conversionRequired && routeStatus !== "unavailable" && conversionRateE8 === 0)
+    || (!conversionRequired && (conversionRateE8 !== 100_000_000 || conversionFee !== 0 || conversionSlippage !== 0))
+    || totalFee !== feeTotal(withdrawalFee, depositFee, conversionFee, conversionSlippage)) {
     fail("carry_transfer_route_quote_unverified");
   }
   if (value.owner_approval_required !== true
@@ -233,13 +254,23 @@ function normalizeRoute(value, checkedAtMs) {
     source_account_state_commitment: requiredCommitment(value.source_account_state_commitment, "carry_transfer_route_source_state_invalid"),
     destination_account_state_commitment: requiredCommitment(value.destination_account_state_commitment, "carry_transfer_route_destination_state_invalid"),
     quote_commitment: requiredCommitment(value.quote_commitment, "carry_transfer_route_quote_invalid"),
-    settlement_asset: "USDC",
+    valuation_asset: "USD",
+    source_collateral_asset: sourceCollateralAsset,
+    destination_collateral_asset: destinationCollateralAsset,
+    conversion_required: conversionRequired,
     status: routeStatus,
     quote_verified: quoteVerified,
     all_in_fee_verified: allInFeeVerified,
+    valuation_basis_verified: valuationBasisVerified,
+    conversion_quote_verified: conversionQuoteVerified,
+    conversion_rate_e8: conversionRateE8,
     minimum_transfer_micro_usdc: minimum,
     maximum_transfer_micro_usdc: maximum,
-    fee_micro_usdc: nonnegativeInteger(value.fee_micro_usdc, "carry_transfer_route_fee_invalid"),
+    withdrawal_fee_micro_usdc: withdrawalFee,
+    deposit_fee_micro_usdc: depositFee,
+    conversion_fee_micro_usdc: conversionFee,
+    conversion_slippage_micro_usdc: conversionSlippage,
+    fee_micro_usdc: totalFee,
     estimated_latency_ms: boundedInteger(value.estimated_latency_ms, 0, 7 * 86_400_000, "carry_transfer_route_latency_invalid"),
     as_of_ms: asOfMs,
     owner_approval_required: true,
@@ -282,6 +313,7 @@ function normalizeObserverAccounts(value, checkedAtMs, maxAccountStateAgeMs) {
       ),
       account_state_checked_at_ms: stateCheckedAtMs,
       observer_adapter_id: capability.adapter_id,
+      collateral_asset: collateralAsset(capability.collateral_asset),
     });
   });
   if (new Set(accounts.map((account) => account.account_commitment)).size !== accounts.length) {
@@ -304,7 +336,10 @@ function observerRequest(source, destination, checkedAtMs) {
     destination_adapter_id: destination.observer_adapter_id,
     source_account_state_commitment: source.account_state_commitment,
     destination_account_state_commitment: destination.account_state_commitment,
-    settlement_asset: "USDC",
+    valuation_asset: "USD",
+    source_collateral_asset: source.collateral_asset,
+    destination_collateral_asset: destination.collateral_asset,
+    conversion_required: source.collateral_asset !== destination.collateral_asset,
     checked_at_ms: checkedAtMs,
     owner_approval_required: true,
     fund_movement_authorized: false,
@@ -317,7 +352,10 @@ function normalizeObservedQuote(value, request, checkedAtMs) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     fail("carry_transfer_route_probe_invalid");
   }
-  if (value.settlement_asset !== "USDC"
+  if (value.valuation_asset !== "USD"
+    || value.source_collateral_asset !== request.source_collateral_asset
+    || value.destination_collateral_asset !== request.destination_collateral_asset
+    || value.conversion_required !== request.conversion_required
     || value.owner_approval_required !== true
     || value.fund_movement_authorized !== false
     || value.transaction_broadcast !== false
@@ -326,7 +364,10 @@ function normalizeObservedQuote(value, request, checkedAtMs) {
   }
   const routeStatus = status(value.status);
   if (routeStatus !== "unavailable"
-    && (value.quote_verified !== true || value.all_in_fee_verified !== true)) {
+    && (value.quote_verified !== true
+      || value.all_in_fee_verified !== true
+      || value.valuation_basis_verified !== true
+      || (request.conversion_required && value.conversion_quote_verified !== true))) {
     fail("carry_transfer_route_probe_quote_unverified");
   }
   const minimum = nonnegativeInteger(value.minimum_transfer_micro_usdc, "carry_transfer_route_probe_minimum_invalid");
@@ -338,13 +379,31 @@ function normalizeObservedQuote(value, request, checkedAtMs) {
   if (asOfMs > checkedAtMs + 5_000 || checkedAtMs - asOfMs > 300_000) {
     fail("carry_transfer_route_probe_as_of_invalid");
   }
+  const conversionRateE8 = nonnegativeInteger(value.conversion_rate_e8, "carry_transfer_route_probe_conversion_rate_invalid");
+  const withdrawalFee = nonnegativeInteger(value.withdrawal_fee_micro_usdc, "carry_transfer_route_probe_withdrawal_fee_invalid");
+  const depositFee = nonnegativeInteger(value.deposit_fee_micro_usdc, "carry_transfer_route_probe_deposit_fee_invalid");
+  const conversionFee = nonnegativeInteger(value.conversion_fee_micro_usdc, "carry_transfer_route_probe_conversion_fee_invalid");
+  const conversionSlippage = nonnegativeInteger(value.conversion_slippage_micro_usdc, "carry_transfer_route_probe_conversion_slippage_invalid");
+  const totalFee = nonnegativeInteger(value.fee_micro_usdc, "carry_transfer_route_probe_fee_invalid");
+  if ((request.conversion_required && routeStatus !== "unavailable" && conversionRateE8 === 0)
+    || (!request.conversion_required && (conversionRateE8 !== 100_000_000 || conversionFee !== 0 || conversionSlippage !== 0))
+    || totalFee !== feeTotal(withdrawalFee, depositFee, conversionFee, conversionSlippage)) {
+    fail("carry_transfer_route_probe_fee_breakdown_invalid");
+  }
   return Object.freeze({
     status: routeStatus,
     quote_verified: value.quote_verified === true,
     all_in_fee_verified: value.all_in_fee_verified === true,
+    valuation_basis_verified: value.valuation_basis_verified === true,
+    conversion_quote_verified: value.conversion_quote_verified === true,
+    conversion_rate_e8: conversionRateE8,
     minimum_transfer_micro_usdc: minimum,
     maximum_transfer_micro_usdc: maximum,
-    fee_micro_usdc: nonnegativeInteger(value.fee_micro_usdc, "carry_transfer_route_probe_fee_invalid"),
+    withdrawal_fee_micro_usdc: withdrawalFee,
+    deposit_fee_micro_usdc: depositFee,
+    conversion_fee_micro_usdc: conversionFee,
+    conversion_slippage_micro_usdc: conversionSlippage,
+    fee_micro_usdc: totalFee,
     estimated_latency_ms: boundedInteger(
       value.estimated_latency_ms,
       0,
@@ -361,8 +420,15 @@ function unavailableObservedQuote(request, checkedAtMs, reason) {
     status: "unavailable",
     quote_verified: false,
     all_in_fee_verified: false,
+    valuation_basis_verified: false,
+    conversion_quote_verified: false,
+    conversion_rate_e8: request.conversion_required ? 0 : 100_000_000,
     minimum_transfer_micro_usdc: 0,
     maximum_transfer_micro_usdc: 0,
+    withdrawal_fee_micro_usdc: 0,
+    deposit_fee_micro_usdc: 0,
+    conversion_fee_micro_usdc: 0,
+    conversion_slippage_micro_usdc: 0,
     fee_micro_usdc: 0,
     estimated_latency_ms: 0,
     as_of_ms: checkedAtMs,
@@ -378,8 +444,18 @@ function quoteCommitment(request, quote) {
     status: quote.status,
     quote_verified: quote.quote_verified,
     all_in_fee_verified: quote.all_in_fee_verified,
+    valuation_basis_verified: quote.valuation_basis_verified,
+    source_collateral_asset: request.source_collateral_asset,
+    destination_collateral_asset: request.destination_collateral_asset,
+    conversion_required: request.conversion_required,
+    conversion_quote_verified: quote.conversion_quote_verified,
+    conversion_rate_e8: quote.conversion_rate_e8,
     minimum_transfer_micro_usdc: quote.minimum_transfer_micro_usdc,
     maximum_transfer_micro_usdc: quote.maximum_transfer_micro_usdc,
+    withdrawal_fee_micro_usdc: quote.withdrawal_fee_micro_usdc,
+    deposit_fee_micro_usdc: quote.deposit_fee_micro_usdc,
+    conversion_fee_micro_usdc: quote.conversion_fee_micro_usdc,
+    conversion_slippage_micro_usdc: quote.conversion_slippage_micro_usdc,
     fee_micro_usdc: quote.fee_micro_usdc,
     estimated_latency_ms: quote.estimated_latency_ms,
     as_of_ms: quote.as_of_ms,
@@ -417,8 +493,19 @@ function boundedInteger(value, minimum, maximum, code) {
   return value;
 }
 
+function feeTotal(...values) {
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (!Number.isSafeInteger(total)) fail("carry_transfer_route_fee_overflow");
+  return total;
+}
+
 function status(value) {
   if (!STATUSES.has(value)) fail("carry_transfer_route_status_invalid");
+  return value;
+}
+
+function collateralAsset(value) {
+  if (!COLLATERAL_ASSETS.has(value)) fail("carry_transfer_route_collateral_asset_invalid");
   return value;
 }
 

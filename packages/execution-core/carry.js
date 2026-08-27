@@ -549,8 +549,18 @@ export function compileCarryPortfolioCapitalPlan(value) {
             source_account_state_commitment: route.source_account_state_commitment,
             destination_account_state_commitment: route.destination_account_state_commitment,
             route_quote_commitment: route.quote_commitment,
+            valuation_asset: route.valuation_asset,
+            source_collateral_asset: route.source_collateral_asset,
+            destination_collateral_asset: route.destination_collateral_asset,
+            conversion_required: route.conversion_required,
+            conversion_quote_verified: route.conversion_quote_verified,
+            conversion_rate_e8: route.conversion_rate_e8,
             amount_micro_usdc: maximumNet,
             gross_debit_micro_usdc: grossDebit,
+            withdrawal_fee_micro_usdc: route.withdrawal_fee_micro_usdc,
+            deposit_fee_micro_usdc: route.deposit_fee_micro_usdc,
+            conversion_fee_micro_usdc: route.conversion_fee_micro_usdc,
+            conversion_slippage_micro_usdc: route.conversion_slippage_micro_usdc,
             fee_micro_usdc: route.fee_micro_usdc,
             estimated_latency_ms: route.estimated_latency_ms,
             expected_arrival_at_ms: expectedArrivalAtMs,
@@ -761,8 +771,18 @@ export function compileCarryCollateralReview(value) {
     source_account_state_commitment: proposal.source_account_state_commitment,
     destination_account_state_commitment: proposal.destination_account_state_commitment,
     route_quote_commitment: proposal.route_quote_commitment,
+    valuation_asset: proposal.valuation_asset,
+    source_collateral_asset: proposal.source_collateral_asset,
+    destination_collateral_asset: proposal.destination_collateral_asset,
+    conversion_required: proposal.conversion_required,
+    conversion_quote_verified: proposal.conversion_quote_verified,
+    conversion_rate_e8: proposal.conversion_rate_e8,
     amount_micro_usdc: proposal.amount_micro_usdc,
     gross_debit_micro_usdc: proposal.gross_debit_micro_usdc,
+    withdrawal_fee_micro_usdc: proposal.withdrawal_fee_micro_usdc,
+    deposit_fee_micro_usdc: proposal.deposit_fee_micro_usdc,
+    conversion_fee_micro_usdc: proposal.conversion_fee_micro_usdc,
+    conversion_slippage_micro_usdc: proposal.conversion_slippage_micro_usdc,
     fee_micro_usdc: proposal.fee_micro_usdc,
     estimated_latency_ms: proposal.estimated_latency_ms,
     expected_arrival_at_ms: proposal.expected_arrival_at_ms,
@@ -936,8 +956,18 @@ export function normalizeCarryCollateralReviewPayload(value) {
     source_account_state_commitment: proposal.source_account_state_commitment,
     destination_account_state_commitment: proposal.destination_account_state_commitment,
     route_quote_commitment: proposal.route_quote_commitment,
+    valuation_asset: proposal.valuation_asset,
+    source_collateral_asset: proposal.source_collateral_asset,
+    destination_collateral_asset: proposal.destination_collateral_asset,
+    conversion_required: proposal.conversion_required,
+    conversion_quote_verified: proposal.conversion_quote_verified,
+    conversion_rate_e8: proposal.conversion_rate_e8,
     amount_micro_usdc: proposal.amount_micro_usdc,
     gross_debit_micro_usdc: proposal.gross_debit_micro_usdc,
+    withdrawal_fee_micro_usdc: proposal.withdrawal_fee_micro_usdc,
+    deposit_fee_micro_usdc: proposal.deposit_fee_micro_usdc,
+    conversion_fee_micro_usdc: proposal.conversion_fee_micro_usdc,
+    conversion_slippage_micro_usdc: proposal.conversion_slippage_micro_usdc,
     fee_micro_usdc: proposal.fee_micro_usdc,
     estimated_latency_ms: proposal.estimated_latency_ms,
     expected_arrival_at_ms: proposal.expected_arrival_at_ms,
@@ -1092,6 +1122,52 @@ function normalizeCollateralReviewInstruction(value, reviewId, type) {
       fail("carry_collateral_review_transfer_same_account");
     }
     const fee = nonNegativeInteger(raw.fee_micro_usdc, "carry_collateral_review_transfer_fee");
+    if (raw.valuation_asset !== "USD") fail("carry_collateral_review_transfer_valuation_asset");
+    const sourceCollateralAsset = enumValue(
+      raw.source_collateral_asset,
+      new Set(["USDC", "USDT"]),
+      "carry_collateral_review_transfer_source_asset",
+    );
+    const destinationCollateralAsset = enumValue(
+      raw.destination_collateral_asset,
+      new Set(["USDC", "USDT"]),
+      "carry_collateral_review_transfer_destination_asset",
+    );
+    const conversionRequired = sourceCollateralAsset !== destinationCollateralAsset;
+    const conversionQuoteVerified = raw.conversion_quote_verified === true;
+    const conversionRateE8 = nonNegativeInteger(
+      raw.conversion_rate_e8,
+      "carry_collateral_review_transfer_conversion_rate",
+    );
+    const withdrawalFee = nonNegativeInteger(
+      raw.withdrawal_fee_micro_usdc,
+      "carry_collateral_review_transfer_withdrawal_fee",
+    );
+    const depositFee = nonNegativeInteger(
+      raw.deposit_fee_micro_usdc,
+      "carry_collateral_review_transfer_deposit_fee",
+    );
+    const conversionFee = nonNegativeInteger(
+      raw.conversion_fee_micro_usdc,
+      "carry_collateral_review_transfer_conversion_fee",
+    );
+    const conversionSlippage = nonNegativeInteger(
+      raw.conversion_slippage_micro_usdc,
+      "carry_collateral_review_transfer_conversion_slippage",
+    );
+    if (raw.conversion_required !== conversionRequired
+      || venueAdapterCapability(fromVenue, "collateral_route_observer")?.collateral_asset !== sourceCollateralAsset
+      || venueAdapterCapability(toVenue, "collateral_route_observer")?.collateral_asset !== destinationCollateralAsset
+      || (conversionRequired && !conversionQuoteVerified)
+      || (conversionRequired && conversionRateE8 === 0)
+      || (!conversionRequired && (conversionRateE8 !== 100_000_000 || conversionFee !== 0 || conversionSlippage !== 0))
+      || fee !== safeAdd(
+        safeAdd(withdrawalFee, depositFee, "carry_collateral_review_transfer_fee_overflow"),
+        safeAdd(conversionFee, conversionSlippage, "carry_collateral_review_transfer_fee_overflow"),
+        "carry_collateral_review_transfer_fee_overflow",
+      )) {
+      fail("carry_collateral_review_transfer_conversion_unverified");
+    }
     const grossDebit = positiveInteger(raw.gross_debit_micro_usdc, "carry_collateral_review_transfer_gross_debit");
     if (grossDebit !== safeAdd(base.amount_micro_usdc, fee, "carry_collateral_review_transfer_gross_overflow")) {
       fail("carry_collateral_review_transfer_net_mismatch");
@@ -1131,7 +1207,17 @@ function normalizeCollateralReviewInstruction(value, reviewId, type) {
       source_account_state_commitment: identifier(raw.source_account_state_commitment, "carry_collateral_review_transfer_source_state"),
       destination_account_state_commitment: identifier(raw.destination_account_state_commitment, "carry_collateral_review_transfer_destination_state"),
       route_quote_commitment: identifier(raw.route_quote_commitment, "carry_collateral_review_transfer_quote"),
+      valuation_asset: "USD",
+      source_collateral_asset: sourceCollateralAsset,
+      destination_collateral_asset: destinationCollateralAsset,
+      conversion_required: conversionRequired,
+      conversion_quote_verified: conversionQuoteVerified,
+      conversion_rate_e8: conversionRateE8,
       gross_debit_micro_usdc: grossDebit,
+      withdrawal_fee_micro_usdc: withdrawalFee,
+      deposit_fee_micro_usdc: depositFee,
+      conversion_fee_micro_usdc: conversionFee,
+      conversion_slippage_micro_usdc: conversionSlippage,
       fee_micro_usdc: fee,
       estimated_latency_ms: estimatedLatency,
       expected_arrival_at_ms: expectedArrivalAt,
@@ -1151,7 +1237,7 @@ function normalizeCollateralReviewInstruction(value, reviewId, type) {
 function sameCollateralInstructions(actual, expected, type) {
   if (actual.length !== expected.length) return false;
   const fields = type === "transfer"
-    ? ["instruction_id", "sequence", "operation", "route_id", "route_evidence_as_of_ms", "route_evidence_commitment", "route_evidence_checked_at_ms", "route_evidence_source", "route_observer_image_digest", "from_account_commitment", "from_venue_id", "to_account_commitment", "to_venue_id", "source_adapter_id", "destination_adapter_id", "source_account_state_commitment", "destination_account_state_commitment", "route_quote_commitment", "amount_micro_usdc", "gross_debit_micro_usdc", "fee_micro_usdc", "estimated_latency_ms", "expected_arrival_at_ms", "destination_runway_deadline_at_ms", "destination_runway_at_arrival_ms", "minimum_arrival_buffer_ms", "route_verified", "owner_signature_required", "execution_authorized", "transaction_broadcast"]
+    ? ["instruction_id", "sequence", "operation", "route_id", "route_evidence_as_of_ms", "route_evidence_commitment", "route_evidence_checked_at_ms", "route_evidence_source", "route_observer_image_digest", "from_account_commitment", "from_venue_id", "to_account_commitment", "to_venue_id", "source_adapter_id", "destination_adapter_id", "source_account_state_commitment", "destination_account_state_commitment", "route_quote_commitment", "valuation_asset", "source_collateral_asset", "destination_collateral_asset", "conversion_required", "conversion_quote_verified", "conversion_rate_e8", "amount_micro_usdc", "gross_debit_micro_usdc", "withdrawal_fee_micro_usdc", "deposit_fee_micro_usdc", "conversion_fee_micro_usdc", "conversion_slippage_micro_usdc", "fee_micro_usdc", "estimated_latency_ms", "expected_arrival_at_ms", "destination_runway_deadline_at_ms", "destination_runway_at_arrival_ms", "minimum_arrival_buffer_ms", "route_verified", "owner_signature_required", "execution_authorized", "transaction_broadcast"]
     : ["instruction_id", "sequence", "operation", "account_commitment", "venue_id", "amount_micro_usdc", "owner_signature_required", "execution_authorized", "transaction_broadcast"];
   return actual.every((instruction, index) => fields.every((field) => instruction[field] === expected[index][field]));
 }
@@ -2372,7 +2458,7 @@ function portfolioRealizedTotals(positions, code) {
 function normalizeCarryTransferRouteEvidence(value) {
   const raw = object(value, "carry_transfer_route_required");
   exactVersion(raw.version, "carry_transfer_route_version");
-  if (raw.settlement_asset !== "USDC") fail("carry_transfer_route_settlement_asset");
+  if (raw.valuation_asset !== "USD") fail("carry_transfer_route_valuation_asset");
   if (raw.owner_approval_required !== true
     || raw.fund_movement_authorized !== false
     || raw.transaction_broadcast !== false
@@ -2386,10 +2472,28 @@ function normalizeCarryTransferRouteEvidence(value) {
   const toVenue = carryExecutionVenue(raw.to_venue_id, "carry_transfer_route_to_venue");
   const sourceAdapterId = identifier(raw.source_adapter_id, "carry_transfer_route_source_adapter");
   const destinationAdapterId = identifier(raw.destination_adapter_id, "carry_transfer_route_destination_adapter");
+  const sourceCapability = venueAdapterCapability(fromVenue, "collateral_route_observer");
+  const destinationCapability = venueAdapterCapability(toVenue, "collateral_route_observer");
+  const sourceCollateralAsset = enumValue(
+    raw.source_collateral_asset,
+    new Set(["USDC", "USDT"]),
+    "carry_transfer_route_source_collateral_asset",
+  );
+  const destinationCollateralAsset = enumValue(
+    raw.destination_collateral_asset,
+    new Set(["USDC", "USDT"]),
+    "carry_transfer_route_destination_collateral_asset",
+  );
+  const conversionRequired = sourceCollateralAsset !== destinationCollateralAsset;
   if (fromVenue === toVenue
-    || venueAdapterCapability(fromVenue, "collateral_route_observer")?.adapter_id !== sourceAdapterId
-    || venueAdapterCapability(toVenue, "collateral_route_observer")?.adapter_id !== destinationAdapterId) {
+    || sourceCapability?.adapter_id !== sourceAdapterId
+    || destinationCapability?.adapter_id !== destinationAdapterId) {
     fail("carry_transfer_route_adapter_binding");
+  }
+  if (sourceCapability?.collateral_asset !== sourceCollateralAsset
+    || destinationCapability?.collateral_asset !== destinationCollateralAsset
+    || raw.conversion_required !== conversionRequired) {
+    fail("carry_transfer_route_asset_binding");
   }
   const evidenceCheckedAtMs = positiveInteger(raw.evidence_checked_at_ms, "carry_transfer_route_evidence_checked_at");
   const asOfMs = positiveInteger(raw.as_of_ms, "carry_transfer_route_as_of");
@@ -2406,8 +2510,24 @@ function normalizeCarryTransferRouteEvidence(value) {
   );
   const quoteVerified = raw.quote_verified === true;
   const allInFeeVerified = raw.all_in_fee_verified === true;
+  const valuationBasisVerified = raw.valuation_basis_verified === true;
+  const conversionQuoteVerified = raw.conversion_quote_verified === true;
+  const conversionRateE8 = nonNegativeInteger(raw.conversion_rate_e8, "carry_transfer_route_conversion_rate");
+  const withdrawalFee = nonNegativeInteger(raw.withdrawal_fee_micro_usdc, "carry_transfer_route_withdrawal_fee");
+  const depositFee = nonNegativeInteger(raw.deposit_fee_micro_usdc, "carry_transfer_route_deposit_fee");
+  const conversionFee = nonNegativeInteger(raw.conversion_fee_micro_usdc, "carry_transfer_route_conversion_fee");
+  const conversionSlippage = nonNegativeInteger(raw.conversion_slippage_micro_usdc, "carry_transfer_route_conversion_slippage");
+  const totalFee = nonNegativeInteger(raw.fee_micro_usdc, "carry_transfer_route_fee");
   if ((routeStatus === "available" && maximumTransfer === 0)
-    || (routeStatus !== "unavailable" && (!quoteVerified || !allInFeeVerified))) {
+    || (routeStatus !== "unavailable" && (!quoteVerified || !allInFeeVerified || !valuationBasisVerified))
+    || (conversionRequired && routeStatus !== "unavailable" && !conversionQuoteVerified)
+    || (conversionRequired && routeStatus !== "unavailable" && conversionRateE8 === 0)
+    || (!conversionRequired && (conversionRateE8 !== 100_000_000 || conversionFee !== 0 || conversionSlippage !== 0))
+    || totalFee !== safeAdd(
+      safeAdd(withdrawalFee, depositFee, "carry_transfer_route_fee_overflow"),
+      safeAdd(conversionFee, conversionSlippage, "carry_transfer_route_fee_overflow"),
+      "carry_transfer_route_fee_overflow",
+    )) {
     fail("carry_transfer_route_quote_unverified");
   }
   return Object.freeze({
@@ -2428,13 +2548,23 @@ function normalizeCarryTransferRouteEvidence(value) {
     source_account_state_commitment: identifier(raw.source_account_state_commitment, "carry_transfer_route_source_state"),
     destination_account_state_commitment: identifier(raw.destination_account_state_commitment, "carry_transfer_route_destination_state"),
     quote_commitment: identifier(raw.quote_commitment, "carry_transfer_route_quote"),
-    settlement_asset: "USDC",
+    valuation_asset: "USD",
+    source_collateral_asset: sourceCollateralAsset,
+    destination_collateral_asset: destinationCollateralAsset,
+    conversion_required: conversionRequired,
     status: routeStatus,
     quote_verified: quoteVerified,
     all_in_fee_verified: allInFeeVerified,
+    valuation_basis_verified: valuationBasisVerified,
+    conversion_quote_verified: conversionQuoteVerified,
+    conversion_rate_e8: conversionRateE8,
     minimum_transfer_micro_usdc: minimumTransfer,
     maximum_transfer_micro_usdc: maximumTransfer,
-    fee_micro_usdc: nonNegativeInteger(raw.fee_micro_usdc, "carry_transfer_route_fee"),
+    withdrawal_fee_micro_usdc: withdrawalFee,
+    deposit_fee_micro_usdc: depositFee,
+    conversion_fee_micro_usdc: conversionFee,
+    conversion_slippage_micro_usdc: conversionSlippage,
+    fee_micro_usdc: totalFee,
     estimated_latency_ms: boundedInteger(raw.estimated_latency_ms, 0, 7 * DAY_MS, "carry_transfer_route_latency"),
     as_of_ms: asOfMs,
     owner_approval_required: true,
