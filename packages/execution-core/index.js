@@ -24,6 +24,7 @@ export {
   carryRiskMandateMessage,
   compileCarryCapitalActionPlan,
   compileCarryPortfolioCapitalPlan,
+  compileCarryPortfolioValueReport,
   compileCarryMigrationProposal,
   createCarryPosition,
   createCarryValueLedger,

@@ -5,6 +5,7 @@ import {
   appendCarryValueLedgerEntry,
   compileCarryCapitalActionPlan,
   compileCarryPortfolioCapitalPlan,
+  compileCarryPortfolioValueReport,
   createCarryValueLedger,
   finalizeCarryValueLedger,
 } from "@ghola/execution-core";
@@ -350,6 +351,46 @@ export async function compileStoredCarryPortfolioCapitalPlan({
       position_plans: unique.map((record) => record.latest_observation.capital_action_plan),
     });
     return { ok: true, plan };
+  } catch (error) {
+    return denied(safeError(error));
+  }
+}
+
+export async function compileStoredCarryPortfolioValueReport({
+  state,
+  owner_commitment: ownerCommitment,
+  owner_capital_budget_micro_usdc: ownerCapitalBudget = 0,
+  max_data_age_ms: maxDataAgeMs = 30_000,
+  now_ms: nowMs = Date.now(),
+}) {
+  if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
+  const records = await state.listCarryPositionRecords({
+    owner_commitment: ownerCommitment,
+    limit: 500,
+  });
+  const capital = await compileStoredCarryPortfolioCapitalPlan({
+    state,
+    owner_commitment: ownerCommitment,
+    owner_capital_budget_micro_usdc: ownerCapitalBudget,
+    max_data_age_ms: maxDataAgeMs,
+    now_ms: nowMs,
+  });
+  if (!capital.ok && capital.error !== "carry_portfolio_capital_evidence_incomplete") return capital;
+  try {
+    const report = compileCarryPortfolioValueReport({
+      version: 1,
+      now_ms: nowMs,
+      position_values: records.map((record) => ({
+        position_id: record.position?.position_id,
+        position_status: record.position?.status,
+        target_notional_micro_usdc: record.position?.target_notional_micro_usdc,
+        value_ledger: record.value_ledger,
+      })),
+      capital_evidence: capital.ok
+        ? { status: "ready", plan: capital.plan }
+        : { status: "incomplete", missing_position_ids: capital.missing_position_ids },
+    });
+    return { ok: true, report };
   } catch (error) {
     return denied(safeError(error));
   }

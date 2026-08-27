@@ -594,6 +594,84 @@ export function compileCarryPortfolioCapitalPlan(value) {
   });
 }
 
+export function compileCarryPortfolioValueReport(value) {
+  const raw = object(value, "carry_portfolio_value_report_required");
+  exactVersion(raw.version, "carry_portfolio_value_report_version");
+  const nowMs = positiveInteger(raw.now_ms, "carry_portfolio_value_report_now");
+  const positions = array(
+    raw.position_values,
+    "carry_portfolio_value_report_positions",
+    0,
+    1_000,
+  ).map(normalizePortfolioValuePosition);
+  if (new Set(positions.map((position) => position.position_id)).size !== positions.length) {
+    fail("carry_portfolio_value_report_duplicate_position");
+  }
+  const capital = normalizePortfolioValueCapitalEvidence(raw.capital_evidence);
+  const open = positions.filter((position) => position.ledger_status === "open");
+  const finalized = positions.filter((position) => position.ledger_status === "finalized");
+  const sum = (items, field, code) => items.reduce(
+    (total, item) => safeAdd(total, item[field], code),
+    0,
+  );
+  const modeled = {
+    gross_funding_micro_usdc: sum(positions, "modeled_gross_funding_micro_usdc", "carry_portfolio_value_modeled_overflow"),
+    trading_cost_micro_usdc: sum(positions, "modeled_trading_cost_micro_usdc", "carry_portfolio_value_modeled_overflow"),
+    capital_cost_micro_usdc: sum(positions, "modeled_capital_cost_micro_usdc", "carry_portfolio_value_modeled_overflow"),
+    risk_buffer_micro_usdc: sum(positions, "modeled_risk_buffer_micro_usdc", "carry_portfolio_value_modeled_overflow"),
+    net_value_micro_usdc: sum(positions, "modeled_net_value_micro_usdc", "carry_portfolio_value_modeled_overflow"),
+  };
+  const observed = portfolioRealizedTotals(positions, "carry_portfolio_value_observed_overflow");
+  const finalizedRealized = portfolioRealizedTotals(finalized, "carry_portfolio_value_finalized_overflow");
+  const finalizedModeledNet = sum(finalized, "modeled_net_value_micro_usdc", "carry_portfolio_value_finalized_overflow");
+  const openModeledNet = sum(open, "modeled_net_value_micro_usdc", "carry_portfolio_value_open_overflow");
+  const openObservedNet = sum(open, "realized_net_value_micro_usdc", "carry_portfolio_value_open_overflow");
+  const finalizedVariance = safeAdd(
+    finalizedRealized.net_value_micro_usdc,
+    -finalizedModeledNet,
+    "carry_portfolio_value_finalized_overflow",
+  );
+  const valueProofStatus = positions.length === 0
+    ? "empty"
+    : finalized.length === positions.length
+      ? "finalized"
+      : finalized.length > 0
+        ? "mixed"
+        : "accruing";
+  return deepFreeze({
+    version: 1,
+    kind: "ghola_carry_portfolio_value_report",
+    value_proof_status: valueProofStatus,
+    position_count: positions.length,
+    open_position_count: open.length,
+    finalized_position_count: finalized.length,
+    modeled,
+    observed_cashflows: {
+      ...observed,
+      complete: positions.length > 0 && open.length === 0,
+    },
+    finalized_after_costs: {
+      ...finalizedRealized,
+      modeled_net_value_micro_usdc: finalizedModeledNet,
+      variance_from_modeled_micro_usdc: finalizedVariance,
+      position_count: finalized.length,
+      complete: finalized.length > 0,
+    },
+    unfinalized: {
+      position_count: open.length,
+      modeled_net_value_micro_usdc: openModeledNet,
+      observed_cashflow_net_micro_usdc: openObservedNet,
+      costs_complete: false,
+    },
+    capital_efficiency: capital,
+    proposal_only: true,
+    transaction_broadcast: false,
+    automatic_transfer_permitted: false,
+    owner_only_operations: ["fund", "transfer", "withdraw"],
+    checked_at_ms: nowMs,
+  });
+}
+
 export function evaluatePerpContractPairBasis(value) {
   const raw = object(value, "carry_contract_pair_required");
   exactVersion(raw.version, "carry_contract_pair_version");
@@ -1531,6 +1609,199 @@ function normalizeValueEntry(value) {
     occurred_at_ms: positiveInteger(raw.occurred_at_ms, "carry_value_entry_occurred_at"),
     evidence_commitment: identifier(raw.evidence_commitment, "carry_value_entry_evidence"),
   };
+}
+
+function normalizePortfolioValuePosition(value) {
+  const raw = object(value, "carry_portfolio_value_position_required");
+  const positionId = identifier(raw.position_id, "carry_portfolio_value_position_id");
+  const positionStatus = enumValue(
+    raw.position_status,
+    POSITION_STATUSES,
+    "carry_portfolio_value_position_status",
+  );
+  const targetNotional = positiveInteger(
+    raw.target_notional_micro_usdc,
+    "carry_portfolio_value_position_notional",
+  );
+  const ledger = object(raw.value_ledger, "carry_portfolio_value_ledger_required");
+  exactVersion(ledger.version, "carry_portfolio_value_ledger_version");
+  if (identifier(ledger.position_id, "carry_portfolio_value_ledger_position_id") !== positionId) {
+    fail("carry_portfolio_value_ledger_position_mismatch");
+  }
+  const ledgerStatus = enumValue(
+    ledger.status,
+    new Set(["open", "finalized"]),
+    "carry_portfolio_value_ledger_status",
+  );
+  if ((ledgerStatus === "finalized") !== (positionStatus === "reconciled")) {
+    fail("carry_portfolio_value_finalization_status_mismatch");
+  }
+  const modeled = object(ledger.modeled, "carry_portfolio_value_modeled_required");
+  const modeledGrossFunding = signedInteger(
+    modeled.gross_funding_micro_usdc,
+    "carry_portfolio_value_modeled_funding",
+  );
+  const modeledTradingCost = nonNegativeInteger(
+    modeled.trading_cost_micro_usdc,
+    "carry_portfolio_value_modeled_trading_cost",
+  );
+  const modeledCapitalCost = nonNegativeInteger(
+    modeled.capital_cost_micro_usdc,
+    "carry_portfolio_value_modeled_capital_cost",
+  );
+  const modeledRiskBuffer = nonNegativeInteger(
+    modeled.risk_buffer_micro_usdc,
+    "carry_portfolio_value_modeled_risk_buffer",
+  );
+  const modeledNet = signedInteger(modeled.net_value_micro_usdc, "carry_portfolio_value_modeled_net");
+  const expectedModeledNet = safeAdd(
+    modeledGrossFunding,
+    -safeAdd(
+      safeAdd(modeledTradingCost, modeledCapitalCost, "carry_portfolio_value_modeled_overflow"),
+      modeledRiskBuffer,
+      "carry_portfolio_value_modeled_overflow",
+    ),
+    "carry_portfolio_value_modeled_overflow",
+  );
+  if (modeledNet !== expectedModeledNet) fail("carry_portfolio_value_modeled_net_mismatch");
+  const realized = object(ledger.realized, "carry_portfolio_value_realized_required");
+  const realizedValues = {
+    funding_credit_micro_usdc: nonNegativeInteger(realized.funding_credit_micro_usdc, "carry_portfolio_value_realized_funding_credit"),
+    funding_debit_micro_usdc: nonNegativeInteger(realized.funding_debit_micro_usdc, "carry_portfolio_value_realized_funding_debit"),
+    trading_fee_micro_usdc: nonNegativeInteger(realized.trading_fee_micro_usdc, "carry_portfolio_value_realized_trading_fee"),
+    slippage_micro_usdc: nonNegativeInteger(realized.slippage_micro_usdc, "carry_portfolio_value_realized_slippage"),
+    gas_micro_usdc: nonNegativeInteger(realized.gas_micro_usdc, "carry_portfolio_value_realized_gas"),
+    capital_cost_micro_usdc: nonNegativeInteger(realized.capital_cost_micro_usdc, "carry_portfolio_value_realized_capital_cost"),
+    transfer_fee_micro_usdc: nonNegativeInteger(realized.transfer_fee_micro_usdc, "carry_portfolio_value_realized_transfer_fee"),
+    rebate_micro_usdc: nonNegativeInteger(realized.rebate_micro_usdc, "carry_portfolio_value_realized_rebate"),
+    settlement_adjustment_micro_usdc: signedInteger(realized.settlement_adjustment_micro_usdc, "carry_portfolio_value_realized_settlement"),
+  };
+  const realizedNet = signedInteger(realized.net_value_micro_usdc, "carry_portfolio_value_realized_net");
+  if (realizedNet !== realizedNetValue(realizedValues)) fail("carry_portfolio_value_realized_net_mismatch");
+  const variance = signedInteger(
+    realized.variance_from_modeled_micro_usdc,
+    "carry_portfolio_value_realized_variance",
+  );
+  if (variance !== safeAdd(realizedNet, -modeledNet, "carry_portfolio_value_realized_overflow")) {
+    fail("carry_portfolio_value_realized_variance_mismatch");
+  }
+  if (ledgerStatus === "finalized") {
+    const evidence = object(
+      ledger.finalization_evidence,
+      "carry_portfolio_value_finalization_evidence_required",
+    );
+    if (nonNegativeInteger(evidence.gross_exposure_micro_usdc, "carry_portfolio_value_final_exposure") !== 0
+      || nonNegativeInteger(evidence.open_order_count, "carry_portfolio_value_final_orders") !== 0
+      || evidence.costs_complete !== true) {
+      fail("carry_portfolio_value_finalization_incomplete");
+    }
+    identifier(evidence.reconciliation_commitment, "carry_portfolio_value_reconciliation_commitment");
+  } else if (ledger.finalization_evidence !== null) {
+    fail("carry_portfolio_value_open_ledger_finalization_evidence");
+  }
+  return Object.freeze({
+    position_id: positionId,
+    position_status: positionStatus,
+    target_notional_micro_usdc: targetNotional,
+    ledger_status: ledgerStatus,
+    modeled_gross_funding_micro_usdc: modeledGrossFunding,
+    modeled_trading_cost_micro_usdc: modeledTradingCost,
+    modeled_capital_cost_micro_usdc: modeledCapitalCost,
+    modeled_risk_buffer_micro_usdc: modeledRiskBuffer,
+    modeled_net_value_micro_usdc: modeledNet,
+    ...realizedValues,
+    realized_net_value_micro_usdc: realizedNet,
+  });
+}
+
+function normalizePortfolioValueCapitalEvidence(value) {
+  const raw = object(value, "carry_portfolio_value_capital_evidence_required");
+  const status = enumValue(
+    raw.status,
+    new Set(["ready", "incomplete"]),
+    "carry_portfolio_value_capital_evidence_status",
+  );
+  if (status === "incomplete") {
+    const missingPositionIds = array(
+      raw.missing_position_ids,
+      "carry_portfolio_value_missing_capital_positions",
+      1,
+      1_000,
+    ).map((item) => identifier(item, "carry_portfolio_value_missing_capital_position"));
+    if (new Set(missingPositionIds).size !== missingPositionIds.length) {
+      fail("carry_portfolio_value_missing_capital_position_duplicate");
+    }
+    return Object.freeze({
+      status,
+      missing_position_ids: Object.freeze(missingPositionIds.sort()),
+      potential_releasable_micro_usdc: null,
+      proposed_reallocation_micro_usdc: null,
+      potential_new_cash_avoided_micro_usdc: null,
+      new_owner_cash_requested_micro_usdc: null,
+      uncovered_shortfall_micro_usdc: null,
+      owner_approval_required: false,
+      proposal_only: true,
+    });
+  }
+  const plan = object(raw.plan, "carry_portfolio_value_capital_plan_required");
+  if (plan.kind !== "ghola_carry_portfolio_capital_plan"
+    || plan.proposal_only !== true
+    || plan.transaction_broadcast !== false
+    || plan.automatic_transfer_permitted !== false) {
+    fail("carry_portfolio_value_capital_authority_boundary");
+  }
+  const ownerOnlyOperations = array(
+    plan.owner_only_operations,
+    "carry_portfolio_value_capital_owner_operations",
+    3,
+    3,
+  );
+  if (!["fund", "transfer", "withdraw"].every((operation) => ownerOnlyOperations.includes(operation))) {
+    fail("carry_portfolio_value_capital_owner_operations");
+  }
+  const requested = nonNegativeInteger(plan.total_requested_micro_usdc, "carry_portfolio_value_capital_requested");
+  const potential = nonNegativeInteger(plan.total_potential_releasable_micro_usdc, "carry_portfolio_value_capital_releasable");
+  const reallocation = nonNegativeInteger(plan.total_proposed_internal_reallocation_micro_usdc, "carry_portfolio_value_capital_reallocation");
+  const newCash = nonNegativeInteger(plan.net_new_owner_capital_requested_micro_usdc, "carry_portfolio_value_capital_new_cash");
+  const ownerAllocation = nonNegativeInteger(plan.total_proposed_allocation_micro_usdc, "carry_portfolio_value_capital_owner_allocation");
+  const uncovered = nonNegativeInteger(plan.total_uncovered_shortfall_micro_usdc, "carry_portfolio_value_capital_uncovered");
+  if (reallocation > potential
+    || requested !== reallocation + newCash
+    || newCash !== ownerAllocation + uncovered
+    || (plan.owner_transfer_approval_required === true) !== (reallocation > 0)
+    || (plan.owner_funding_approval_required === true) !== (ownerAllocation > 0)) {
+    fail("carry_portfolio_value_capital_arithmetic_mismatch");
+  }
+  return Object.freeze({
+    status,
+    missing_position_ids: Object.freeze([]),
+    potential_releasable_micro_usdc: potential,
+    proposed_reallocation_micro_usdc: reallocation,
+    potential_new_cash_avoided_micro_usdc: reallocation,
+    new_owner_cash_requested_micro_usdc: newCash,
+    uncovered_shortfall_micro_usdc: uncovered,
+    owner_approval_required: reallocation > 0 || ownerAllocation > 0,
+    proposal_only: true,
+  });
+}
+
+function portfolioRealizedTotals(positions, code) {
+  const fields = [
+    "funding_credit_micro_usdc",
+    "funding_debit_micro_usdc",
+    "trading_fee_micro_usdc",
+    "slippage_micro_usdc",
+    "gas_micro_usdc",
+    "capital_cost_micro_usdc",
+    "transfer_fee_micro_usdc",
+    "rebate_micro_usdc",
+    "settlement_adjustment_micro_usdc",
+    "realized_net_value_micro_usdc",
+  ];
+  return Object.fromEntries(fields.map((field) => [
+    field === "realized_net_value_micro_usdc" ? "net_value_micro_usdc" : field,
+    positions.reduce((total, position) => safeAdd(total, position[field], code), 0),
+  ]));
 }
 
 function normalizePortfolioCapitalPositionPlan(value) {

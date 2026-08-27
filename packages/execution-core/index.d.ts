@@ -37,6 +37,7 @@ export declare function normalizePerpContractSpec(input: unknown): Readonly<Reco
 export declare function calculateMarginRunway(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryCapitalActionPlan(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryPortfolioCapitalPlan(input: unknown): Readonly<Record<string, unknown>>;
+export declare function compileCarryPortfolioValueReport(input: unknown): Readonly<Record<string, unknown>>;
 export declare function evaluatePerpContractPairBasis(input: unknown): Readonly<Record<string, unknown>>;
 export declare function estimatePerpDepthExecution(input: {
   side: "buy" | "sell";

@@ -234,6 +234,19 @@ test("rejects capital evidence that loses its sealed account scope", () => {
   );
 });
 
+test("rejects a portfolio value report without its no-transfer authority gate", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replaceAll(
+        "carry_portfolio_value_capital_authority_boundary",
+        "portfolio_value_authority_removed",
+      ),
+    }),
+    /carry_portfolio_value_authority_gate_missing/,
+  );
+});
+
 test("rejects a stress-capital proposal that silently changes live leverage", () => {
   assert.throws(
     () => checkCarryExecutionContract({

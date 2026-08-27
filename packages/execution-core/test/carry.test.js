@@ -8,6 +8,7 @@ import {
   carryRiskMandateMessage,
   compileCarryCapitalActionPlan,
   compileCarryPortfolioCapitalPlan,
+  compileCarryPortfolioValueReport,
   compileCarryMigrationProposal,
   createCarryPosition,
   createCarryValueLedger,
@@ -1305,4 +1306,168 @@ test("value ledger finalizes only with flat exposure, zero orders, and complete 
   });
   assert.equal(finalized.ok, true);
   assert.equal(finalized.ledger.status, "finalized");
+});
+
+test("portfolio value report separates finalized after-cost proof from accruing estimates", () => {
+  const openLedger = createCarryValueLedger({
+    version: 1,
+    position_id: "carry:position:value:open",
+    modeled: {
+      gross_funding_micro_usdc: 100,
+      trading_cost_micro_usdc: 20,
+      capital_cost_micro_usdc: 10,
+      risk_buffer_micro_usdc: 5,
+    },
+    now_ms: NOW,
+  });
+  let finalizedLedger = createCarryValueLedger({
+    version: 1,
+    position_id: "carry:position:value:final",
+    modeled: {
+      gross_funding_micro_usdc: 200,
+      trading_cost_micro_usdc: 70,
+      capital_cost_micro_usdc: 10,
+      risk_buffer_micro_usdc: 0,
+    },
+    now_ms: NOW,
+  });
+  const entries = [
+    ["funding", "credit", 200, "value:evidence:portfolio:funding"],
+    ["trading_fee", "debit", 50, "value:evidence:portfolio:fee"],
+    ["slippage", "debit", 20, "value:evidence:portfolio:slippage"],
+    ["capital_cost", "debit", 10, "value:evidence:portfolio:capital"],
+  ];
+  for (const [index, [entryType, direction, amount, evidence]] of entries.entries()) {
+    const appended = appendCarryValueLedgerEntry({
+      ledger: finalizedLedger,
+      entry: {
+        version: 1,
+        entry_id: `value:entry:portfolio:${index + 1}`,
+        sequence: index + 1,
+        entry_type: entryType,
+        direction,
+        amount_micro_usdc: amount,
+        venue_id: index % 2 === 0 ? "hyperliquid" : "lighter",
+        leg_id: index % 2 === 0 ? "carry:leg:long" : "carry:leg:short",
+        occurred_at_ms: NOW + index + 1,
+        evidence_commitment: evidence,
+      },
+      now_ms: NOW + index + 1,
+    });
+    assert.equal(appended.ok, true);
+    finalizedLedger = appended.ledger;
+  }
+  const finalized = finalizeCarryValueLedger({
+    ledger: finalizedLedger,
+    evidence: {
+      gross_exposure_micro_usdc: 0,
+      open_order_count: 0,
+      costs_complete: true,
+      reconciliation_commitment: "reconcile:portfolio:value:0001",
+    },
+    now_ms: NOW + 10,
+  });
+  assert.equal(finalized.ok, true);
+  const report = compileCarryPortfolioValueReport({
+    version: 1,
+    now_ms: NOW + 10,
+    position_values: [
+      {
+        position_id: "carry:position:value:open",
+        position_status: "active",
+        target_notional_micro_usdc: 10_000_000,
+        value_ledger: openLedger,
+      },
+      {
+        position_id: "carry:position:value:final",
+        position_status: "reconciled",
+        target_notional_micro_usdc: 20_000_000,
+        value_ledger: finalized.ledger,
+      },
+    ],
+    capital_evidence: {
+      status: "ready",
+      plan: {
+        kind: "ghola_carry_portfolio_capital_plan",
+        total_requested_micro_usdc: 25,
+        total_potential_releasable_micro_usdc: 15,
+        total_proposed_internal_reallocation_micro_usdc: 15,
+        net_new_owner_capital_requested_micro_usdc: 10,
+        total_proposed_allocation_micro_usdc: 0,
+        total_uncovered_shortfall_micro_usdc: 10,
+        owner_transfer_approval_required: true,
+        owner_funding_approval_required: false,
+        proposal_only: true,
+        transaction_broadcast: false,
+        automatic_transfer_permitted: false,
+        owner_only_operations: ["fund", "transfer", "withdraw"],
+      },
+    },
+  });
+  assert.equal(report.value_proof_status, "mixed");
+  assert.equal(report.modeled.net_value_micro_usdc, 185);
+  assert.equal(report.finalized_after_costs.net_value_micro_usdc, 120);
+  assert.equal(report.finalized_after_costs.variance_from_modeled_micro_usdc, 0);
+  assert.equal(report.unfinalized.modeled_net_value_micro_usdc, 65);
+  assert.equal(report.capital_efficiency.potential_new_cash_avoided_micro_usdc, 15);
+  assert.equal(report.capital_efficiency.new_owner_cash_requested_micro_usdc, 10);
+  assert.equal(report.proposal_only, true);
+  assert.equal(report.transaction_broadcast, false);
+  assert.equal(report.automatic_transfer_permitted, false);
+});
+
+test("portfolio value report rejects duplicate, tampered, or fund-moving evidence", () => {
+  const ledger = createCarryValueLedger({
+    version: 1,
+    position_id: "carry:position:value:guard",
+    modeled: {
+      gross_funding_micro_usdc: 100,
+      trading_cost_micro_usdc: 20,
+      capital_cost_micro_usdc: 10,
+      risk_buffer_micro_usdc: 5,
+    },
+    now_ms: NOW,
+  });
+  const position = {
+    position_id: "carry:position:value:guard",
+    position_status: "active",
+    target_notional_micro_usdc: 10_000_000,
+    value_ledger: ledger,
+  };
+  const incompleteCapital = {
+    status: "incomplete",
+    missing_position_ids: ["carry:position:value:guard"],
+  };
+  assert.throws(() => compileCarryPortfolioValueReport({
+    version: 1,
+    now_ms: NOW + 1,
+    position_values: [position, position],
+    capital_evidence: incompleteCapital,
+  }), /carry_portfolio_value_report_duplicate_position/);
+  assert.throws(() => compileCarryPortfolioValueReport({
+    version: 1,
+    now_ms: NOW + 1,
+    position_values: [{
+      ...position,
+      value_ledger: {
+        ...ledger,
+        realized: { ...ledger.realized, net_value_micro_usdc: 1 },
+      },
+    }],
+    capital_evidence: incompleteCapital,
+  }), /carry_portfolio_value_realized_net_mismatch/);
+  assert.throws(() => compileCarryPortfolioValueReport({
+    version: 1,
+    now_ms: NOW + 1,
+    position_values: [position],
+    capital_evidence: {
+      status: "ready",
+      plan: {
+        kind: "ghola_carry_portfolio_capital_plan",
+        proposal_only: true,
+        transaction_broadcast: true,
+        automatic_transfer_permitted: false,
+      },
+    },
+  }), /carry_portfolio_value_capital_authority_boundary/);
 });

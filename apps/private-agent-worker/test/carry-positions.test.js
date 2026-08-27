@@ -7,6 +7,7 @@ import {
   advanceStoredCarryPosition,
   appendStoredCarryValueEntry,
   compileStoredCarryPortfolioCapitalPlan,
+  compileStoredCarryPortfolioValueReport,
   createStoredCarryPosition,
   finalizeStoredCarryValueLedger,
   observeStoredCarryPosition,
@@ -662,6 +663,22 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
   assert.equal(result.plan.proposal_only, true);
   assert.equal(result.plan.transaction_broadcast, false);
   assert.equal(result.plan.automatic_transfer_permitted, false);
+  const value = await compileStoredCarryPortfolioValueReport({
+    state,
+    owner_commitment: OWNER,
+    owner_capital_budget_micro_usdc: 5_000_000,
+    max_data_age_ms: 30_000,
+    now_ms: NOW + 100,
+  });
+  assert.equal(value.ok, true, JSON.stringify(value));
+  assert.equal(value.report.value_proof_status, "accruing");
+  assert.equal(value.report.position_count, 1);
+  assert.equal(value.report.modeled.net_value_micro_usdc, 20_000);
+  assert.equal(value.report.finalized_after_costs.position_count, 0);
+  assert.equal(value.report.capital_efficiency.status, "ready");
+  assert.equal(value.report.capital_efficiency.potential_new_cash_avoided_micro_usdc, 9_999_997);
+  assert.equal(value.report.capital_efficiency.new_owner_cash_requested_micro_usdc, 6);
+  assert.equal(value.report.transaction_broadcast, false);
 });
 
 test("portfolio capital endpoint fails closed when an active position lacks monitoring evidence", async (t) => {
@@ -679,6 +696,16 @@ test("portfolio capital endpoint fails closed when an active position lacks moni
   assert.equal(result.error, "carry_portfolio_capital_evidence_incomplete");
   assert.deepEqual(result.missing_position_ids, [active.position.position_id]);
   assert.equal(result.transaction_broadcast, false);
+  const value = await compileStoredCarryPortfolioValueReport({
+    state,
+    owner_commitment: OWNER,
+    now_ms: NOW + 100,
+  });
+  assert.equal(value.ok, true, JSON.stringify(value));
+  assert.equal(value.report.value_proof_status, "accruing");
+  assert.equal(value.report.capital_efficiency.status, "incomplete");
+  assert.deepEqual(value.report.capital_efficiency.missing_position_ids, [active.position.position_id]);
+  assert.equal(value.report.capital_efficiency.potential_new_cash_avoided_micro_usdc, null);
 });
 
 async function activePosition(state, suffix = "0001", riskOverrides = {}, context = monitoringContext()) {

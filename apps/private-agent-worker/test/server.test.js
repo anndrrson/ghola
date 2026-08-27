@@ -746,6 +746,33 @@ describe("private agent worker", () => {
     assert.equal(read.status, 200);
     assert.equal((await read.json()).record.position.status, "draft");
 
+    const valueBody = {
+      owner_commitment: ownerCommitment,
+      owner_capital_budget_micro_usdc: 0,
+      max_data_age_ms: 30_000,
+    };
+    const valueToken = capabilityToken({
+      path: "/carry/positions/value-report",
+      scope: "carry:read",
+      body: valueBody,
+      expected: { owner_commitment: ownerCommitment, operation_class: "/value-report" },
+    });
+    const value = await fetch(`${baseUrl}/carry/positions/value-report`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${valueToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(valueBody),
+    });
+    assert.equal(value.status, 200);
+    const valueReport = await value.json();
+    assert.equal(valueReport.ok, true);
+    assert.equal(valueReport.report.value_proof_status, "accruing");
+    assert.equal(valueReport.report.position_count, 1);
+    assert.equal(valueReport.report.transaction_broadcast, false);
+
     const releaseToken = capabilityToken({
       path: "/carry/positions/release-evidence",
       scope: "carry:read",

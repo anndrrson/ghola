@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   executeCarryPositionEntry: vi.fn(),
   getCarryExecutionReadiness: vi.fn(),
   getCarryPortfolioCapitalPlan: vi.fn(),
+  getCarryPortfolioValueReport: vi.fn(),
   getPrivateAgentPassport: vi.fn(),
   listCarryPositions: vi.fn(),
   preflightCarryExecutionMatrix: vi.fn(),
@@ -44,6 +45,7 @@ describe("CarryTerminalBuilder", () => {
     api.executeCarryPositionEntry.mockReset();
     api.getCarryExecutionReadiness.mockReset();
     api.getCarryPortfolioCapitalPlan.mockReset();
+    api.getCarryPortfolioValueReport.mockReset();
     api.getPrivateAgentPassport.mockReset();
     api.listCarryPositions.mockReset();
     api.preflightCarryExecutionMatrix.mockReset();
@@ -66,6 +68,24 @@ describe("CarryTerminalBuilder", () => {
         net_new_owner_capital_requested_micro_usdc: 0,
         total_proposed_allocation_micro_usdc: 0,
         total_uncovered_shortfall_micro_usdc: 0,
+        proposal_only: true,
+        transaction_broadcast: false,
+        automatic_transfer_permitted: false,
+        owner_only_operations: ["fund", "transfer", "withdraw"],
+      },
+    });
+    api.getCarryPortfolioValueReport.mockResolvedValue({
+      ok: true,
+      report: {
+        version: 1,
+        kind: "ghola_carry_portfolio_value_report",
+        value_proof_status: "empty",
+        position_count: 0,
+        open_position_count: 0,
+        finalized_position_count: 0,
+        modeled: { net_value_micro_usdc: 0 },
+        finalized_after_costs: { net_value_micro_usdc: 0, variance_from_modeled_micro_usdc: 0 },
+        unfinalized: { modeled_net_value_micro_usdc: 0 },
         proposal_only: true,
         transaction_broadcast: false,
         automatic_transfer_permitted: false,
@@ -377,6 +397,27 @@ describe("CarryTerminalBuilder", () => {
         owner_only_operations: ["fund", "transfer", "withdraw"],
       },
     });
+    api.getCarryPortfolioValueReport.mockResolvedValue({
+      ok: true,
+      report: {
+        version: 1,
+        kind: "ghola_carry_portfolio_value_report",
+        value_proof_status: "mixed",
+        position_count: 2,
+        open_position_count: 1,
+        finalized_position_count: 1,
+        modeled: { net_value_micro_usdc: 25_000_000 },
+        finalized_after_costs: {
+          net_value_micro_usdc: 19_500_000,
+          variance_from_modeled_micro_usdc: 4_500_000,
+        },
+        unfinalized: { modeled_net_value_micro_usdc: 10_000_000 },
+        proposal_only: true,
+        transaction_broadcast: false,
+        automatic_transfer_permitted: false,
+        owner_only_operations: ["fund", "transfer", "withdraw"],
+      },
+    });
     api.listCarryPositions.mockResolvedValue({
       ok: true,
       records: [{
@@ -425,6 +466,7 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("MONITOR");
     expect(container.textContent).toContain("0S AGO");
     expect(container.textContent).toContain("PORTFOLIO CAPITAL · $15 REALLOCATE · $10 NEW CASH · OWNER ONLY");
+    expect(container.textContent).toContain("PORTFOLIO VALUE · $19.5 REAL · $10 OPEN MODEL · +$4.5 Δ");
   });
 
   async function click(label: string) {

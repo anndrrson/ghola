@@ -7,6 +7,7 @@ import {
   executeCarryPositionEntry,
   getCarryExecutionReadiness,
   getCarryPortfolioCapitalPlan,
+  getCarryPortfolioValueReport,
   getPrivateAgentPassport,
   listCarryPositions,
   preflightCarryExecutionMatrix,
@@ -119,6 +120,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const [readiness, setReadiness] = useState<Record<string, unknown> | null>(null);
   const [records, setRecords] = useState<CarryRecord[]>([]);
   const [portfolioCapitalPlan, setPortfolioCapitalPlan] = useState<Record<string, unknown> | null>(null);
+  const [portfolioValueReport, setPortfolioValueReport] = useState<Record<string, unknown> | null>(null);
   const [recordsLoaded, setRecordsLoaded] = useState(false);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [busy, setBusy] = useState<"check" | "save" | "enter" | "exit" | null>(null);
@@ -132,9 +134,10 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const loadRecords = useCallback(async () => {
     setRecordsLoading(true);
     try {
-      const [recordsResult, capitalResult] = await Promise.allSettled([
+      const [recordsResult, capitalResult, valueResult] = await Promise.allSettled([
         listCarryPositions(),
         getCarryPortfolioCapitalPlan(0),
+        getCarryPortfolioValueReport(0),
       ]);
       if (recordsResult.status !== "fulfilled") throw new Error("carry_position_sync_failed");
       const result = asRecord(recordsResult.value);
@@ -146,6 +149,12 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         setPortfolioCapitalPlan(capital.ok === true ? asRecord(capital.plan) : capital);
       } else {
         setPortfolioCapitalPlan(null);
+      }
+      if (valueResult.status === "fulfilled") {
+        const value = asRecord(valueResult.value);
+        setPortfolioValueReport(value.ok === true ? asRecord(value.report) : null);
+      } else {
+        setPortfolioValueReport(null);
       }
     } catch {
       // Preserve the last authoritative view and fail closed if the initial sync failed.
@@ -227,6 +236,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const openingCapital = carryOpeningCapitalSummary(model, proof);
   const stressCapital = carryStressCapitalSummary(proof);
   const portfolioCapital = carryPortfolioCapitalSummary(portfolioCapitalPlan);
+  const portfolioValue = carryPortfolioValueSummary(portfolioValueReport);
   const displayedCapital = latestObservation?.capital_action_plan ? capital : openingCapital;
   const restoredReadiness = readyStoredReadiness(readiness, candidate.asset, notional, days);
 
@@ -490,6 +500,9 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         {portfolioCapital
           ? <p className={`truncate font-mono text-[9px] ${portfolioCapital.tone === "bad" ? "text-[#ef929e]" : portfolioCapital.tone === "warn" ? "text-[#d9bd74]" : "text-[#72bfa2]"}`} title={portfolioCapital.value}>PORTFOLIO CAPITAL · {portfolioCapital.value}</p>
           : null}
+        {portfolioValue
+          ? <p className={`truncate font-mono text-[9px] ${portfolioValue.tone === "bad" ? "text-[#ef929e]" : portfolioValue.tone === "warn" ? "text-[#d9bd74]" : "text-[#72bfa2]"}`} title={portfolioValue.value}>PORTFOLIO VALUE · {portfolioValue.value}</p>
+          : null}
       </div>
     </div>
   );
@@ -625,6 +638,40 @@ function carryPortfolioCapitalSummary(plan: Record<string, unknown> | null) {
     return { value: `${formatMicroUsd(potentialReleasable)} RELEASABLE · OWNER ONLY`, tone: "good" as const };
   }
   return { value: `${positions} POSITION${positions === 1 ? "" : "S"} · BALANCED`, tone: "good" as const };
+}
+
+function carryPortfolioValueSummary(report: Record<string, unknown> | null) {
+  if (!report) return null;
+  const ownerOnlyOperations = Array.isArray(report.owner_only_operations) ? report.owner_only_operations : [];
+  if (report.kind !== "ghola_carry_portfolio_value_report"
+    || report.proposal_only !== true
+    || report.transaction_broadcast !== false
+    || report.automatic_transfer_permitted !== false
+    || !["fund", "transfer", "withdraw"].every((operation) => ownerOnlyOperations.includes(operation))) return null;
+  const positions = finiteNumber(report.position_count);
+  const open = finiteNumber(report.open_position_count);
+  const finalized = finiteNumber(report.finalized_position_count);
+  const modeled = finiteNumber(asRecord(report.modeled).net_value_micro_usdc);
+  const finalizedValues = asRecord(report.finalized_after_costs);
+  const realized = finiteNumber(finalizedValues.net_value_micro_usdc);
+  const variance = finiteNumber(finalizedValues.variance_from_modeled_micro_usdc);
+  const openModeled = finiteNumber(asRecord(report.unfinalized).modeled_net_value_micro_usdc);
+  if (![positions, open, finalized, modeled, realized, variance, openModeled].every((value) => value != null)
+    || positions == null || open == null || finalized == null || modeled == null || realized == null || variance == null || openModeled == null
+    || ![positions, open, finalized, modeled, realized, variance, openModeled].every(Number.isSafeInteger)
+    || positions < 0 || open < 0 || finalized < 0 || open + finalized !== positions) return null;
+  if (positions === 0) return null;
+  const expectedStatus = finalized === positions ? "finalized" : finalized > 0 ? "mixed" : "accruing";
+  if (report.value_proof_status !== expectedStatus) return null;
+  if (finalized > 0) {
+    return {
+      value: open > 0
+        ? `${formatMicroUsd(realized)} REAL · ${formatMicroUsd(openModeled)} OPEN MODEL · ${formatSignedMicroUsd(variance)} Δ`
+        : `${formatMicroUsd(realized)} REAL · ${formatSignedMicroUsd(variance)} Δ · ALL COSTS`,
+      tone: realized >= 0 ? "good" as const : "bad" as const,
+    };
+  }
+  return { value: `${formatMicroUsd(modeled)} MODEL · ACCRUING`, tone: "warn" as const };
 }
 
 function proofDepth(opportunity: Record<string, unknown>): {

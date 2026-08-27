@@ -34,6 +34,7 @@ import {
   advanceStoredCarryPosition,
   appendStoredCarryValueEntry,
   compileStoredCarryPortfolioCapitalPlan,
+  compileStoredCarryPortfolioValueReport,
   createStoredCarryPosition,
   finalizeStoredCarryValueLedger,
   getStoredCarryPosition,
@@ -2850,6 +2851,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
             ? getStoredCarryPosition({ state, position_id: body.position_id, owner_commitment: body.owner_commitment })
             : listStoredCarryPositions({ state, owner_commitment: body.owner_commitment, status: body.status, limit: body.limit })],
           "/carry/positions/capital-plan": ["carry:read", (body) => compileStoredCarryPortfolioCapitalPlan({
+            state,
+            owner_commitment: body.owner_commitment,
+            owner_capital_budget_micro_usdc: body.owner_capital_budget_micro_usdc,
+            max_data_age_ms: body.max_data_age_ms,
+          })],
+          "/carry/positions/value-report": ["carry:read", (body) => compileStoredCarryPortfolioValueReport({
             state,
             owner_commitment: body.owner_commitment,
             owner_capital_budget_micro_usdc: body.owner_capital_budget_micro_usdc,
