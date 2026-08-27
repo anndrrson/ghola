@@ -46,20 +46,20 @@ export async function preflightCarryPair({
   const runtimeMaxContractDataSkewMs = carryMarketDataSkewMs(env);
   const runtimeMaxIndexPriceDivergenceBps = carryBasisBudgetBps(env, "PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS", 25);
   const runtimeMaxMarkPriceDivergenceBps = carryBasisBudgetBps(env, "PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS", 50);
-  const monitoringMandate = phase !== "opening" && body.risk_mandate
+  const executionMandate = body.risk_mandate
     ? normalizeCarryRiskMandate(body.risk_mandate)
     : null;
   const maxContractDataSkewMs = Math.min(
     runtimeMaxContractDataSkewMs,
-    monitoringMandate?.max_contract_data_skew_ms ?? runtimeMaxContractDataSkewMs,
+    executionMandate?.max_contract_data_skew_ms ?? runtimeMaxContractDataSkewMs,
   );
   const maxIndexPriceDivergenceBps = Math.min(
     runtimeMaxIndexPriceDivergenceBps,
-    monitoringMandate?.max_index_price_divergence_bps ?? runtimeMaxIndexPriceDivergenceBps,
+    executionMandate?.max_index_price_divergence_bps ?? runtimeMaxIndexPriceDivergenceBps,
   );
   const maxMarkPriceDivergenceBps = Math.min(
     runtimeMaxMarkPriceDivergenceBps,
-    monitoringMandate?.max_mark_price_divergence_bps ?? runtimeMaxMarkPriceDivergenceBps,
+    executionMandate?.max_mark_price_divergence_bps ?? runtimeMaxMarkPriceDivergenceBps,
   );
   const [longSnapshots, shortSnapshots] = await Promise.all([
     fetchVenue({ venue_id: longVenue, assets: [asset], now_ms: observedAt, max_age_ms: 60_000 }),
@@ -128,6 +128,7 @@ export async function preflightCarryPair({
     max_contract_data_skew_ms: maxContractDataSkewMs,
     max_index_price_divergence_bps: maxIndexPriceDivergenceBps,
     max_mark_price_divergence_bps: maxMarkPriceDivergenceBps,
+    min_margin_runway_ms: executionMandate?.min_margin_runway_ms ?? 6 * HOUR_MS,
   });
   const qualifications = await Promise.all(evidence.map((leg) => readCarryVenueQualification({
     state,
@@ -339,11 +340,12 @@ export function modelCarryPairPreflight({
   max_contract_data_skew_ms: maxContractDataSkewMs = 2_000,
   max_index_price_divergence_bps: maxIndexPriceDivergenceBps = 25,
   max_mark_price_divergence_bps: maxMarkPriceDivergenceBps = 50,
+  min_margin_runway_ms: minMarginRunwayMs = 6 * HOUR_MS,
 }) {
   const notionalMicro = usdMicro(notionalUsd);
   const monitoring = phase === "monitoring";
   const accounts = evidence.map((leg) => accountReadiness(leg, notionalMicro));
-  const openingCapitalPlan = compileOpeningCapitalPlan(accounts);
+  const openingCapitalPlan = compileOpeningCapitalPlan(evidence, accounts, notionalMicro, minMarginRunwayMs);
   const marginRunways = evidence.map((leg, index) => projectedMarginRunway(leg, accounts[index], notionalMicro, nowMs));
   const contracts = evidence.map((leg) => contractSpec(leg, notionalMicro));
   const costs = evidence.map((leg) => legCosts(leg, notionalMicro));
@@ -369,7 +371,7 @@ export function modelCarryPairPreflight({
     risk_buffer_bps: 10,
     collateral_basis_risk_bps: collateralBasis.risk_bps,
     min_expected_net_benefit_bps: 5,
-    min_margin_runway_ms: 6 * HOUR_MS,
+    min_margin_runway_ms: minMarginRunwayMs,
     margin_runways: marginRunways.map((runway, index) => ({
       venue_id: runway.venue_id,
       status: (monitoring ? accounts[index].monitoring_ready : accounts[index].capital_ready) ? runway.status : "breached",
@@ -412,20 +414,27 @@ export function modelCarryPairPreflight({
   };
 }
 
-function compileOpeningCapitalPlan(accounts) {
-  const legs = accounts.map((account) => Object.freeze({
-    venue_id: account.venue_id,
-    available_balance_micro_usdc: account.available_balance_micro_usdc,
-    required_opening_collateral_micro_usdc: account.required_opening_collateral_micro_usdc,
-    opening_collateral_shortfall_micro_usdc: account.opening_collateral_shortfall_micro_usdc,
-    excess_collateral_micro_usdc: Math.max(
-      0,
-      account.available_balance_micro_usdc - account.required_opening_collateral_micro_usdc,
-    ),
-    recommended_action: account.opening_collateral_shortfall_micro_usdc > 0
-      ? "owner_fund_venue"
-      : "none",
-  }));
+function compileOpeningCapitalPlan(evidence, accounts, notionalMicro, minMarginRunwayMs) {
+  const legs = accounts.map((account, index) => {
+    const stress = stressAdjustedCapitalTarget(evidence[index], notionalMicro, minMarginRunwayMs);
+    return Object.freeze({
+      venue_id: account.venue_id,
+      available_balance_micro_usdc: account.available_balance_micro_usdc,
+      required_opening_collateral_micro_usdc: account.required_opening_collateral_micro_usdc,
+      opening_collateral_shortfall_micro_usdc: account.opening_collateral_shortfall_micro_usdc,
+      excess_collateral_micro_usdc: Math.max(
+        0,
+        account.available_balance_micro_usdc - account.required_opening_collateral_micro_usdc,
+      ),
+      recommended_action: account.opening_collateral_shortfall_micro_usdc > 0
+        ? "owner_fund_venue"
+        : "none",
+      stress_adjusted_target_collateral_micro_usdc: stress.target_collateral_micro_usdc,
+      potential_releasable_collateral_micro_usdc: stress.potential_releasable_collateral_micro_usdc,
+      owner_maximum_stress_adjusted_leverage: stress.maximum_safe_leverage,
+      owner_leverage_configuration_required: stress.maximum_safe_leverage > account.execution_leverage,
+    });
+  });
   const total = (field) => legs.reduce((sum, leg) => sum + leg[field], 0);
   const totalShortfall = total("opening_collateral_shortfall_micro_usdc");
   return Object.freeze({
@@ -435,10 +444,36 @@ function compileOpeningCapitalPlan(accounts) {
     total_required_opening_collateral_micro_usdc: total("required_opening_collateral_micro_usdc"),
     total_opening_collateral_shortfall_micro_usdc: totalShortfall,
     total_excess_collateral_micro_usdc: total("excess_collateral_micro_usdc"),
+    total_stress_adjusted_target_collateral_micro_usdc: total("stress_adjusted_target_collateral_micro_usdc"),
+    total_potential_releasable_collateral_micro_usdc: total("potential_releasable_collateral_micro_usdc"),
+    proposal_only: true,
+    live_execution_leverage_unchanged: true,
     owner_only_funding: true,
     automatic_transfer_permitted: false,
     transaction_broadcast: false,
     legs: Object.freeze(legs),
+  });
+}
+
+function stressAdjustedCapitalTarget(leg, notionalMicro, minMarginRunwayMs) {
+  const maintenance = microFromBps(notionalMicro, leg.snapshot.maintenance_margin_bps || 500);
+  const safetyBuffer = Math.max(10_000_000, microFromBps(notionalMicro, 1_000));
+  const stressLossPerHour = microFromBps(notionalMicro, 100);
+  const fundingDebitBps = leg.side === "buy"
+    ? Math.max(0, Math.ceil(leg.snapshot.funding_rate_e12_per_interval / 100_000_000))
+    : Math.max(0, Math.ceil(-leg.snapshot.funding_rate_e12_per_interval / 100_000_000));
+  const fundingDebitPerHour = Math.ceil(
+    microFromBps(notionalMicro, fundingDebitBps) * HOUR_MS / leg.snapshot.funding_interval_ms,
+  );
+  const runwayReserve = Math.ceil(
+    (stressLossPerHour + fundingDebitPerHour) * minMarginRunwayMs / HOUR_MS,
+  );
+  const venueMinimum = microFromBps(notionalMicro, leg.snapshot.initial_margin_bps ?? 10_000);
+  const target = Math.min(notionalMicro, Math.max(venueMinimum, maintenance + safetyBuffer + runwayReserve));
+  return Object.freeze({
+    target_collateral_micro_usdc: target,
+    potential_releasable_collateral_micro_usdc: Math.max(0, notionalMicro - target),
+    maximum_safe_leverage: Math.max(1, Math.floor(notionalMicro / target)),
   });
 }
 

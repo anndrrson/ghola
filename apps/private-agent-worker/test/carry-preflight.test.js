@@ -137,6 +137,10 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
     total_required_opening_collateral_micro_usdc: 200_000_000,
     total_opening_collateral_shortfall_micro_usdc: 0,
     total_excess_collateral_micro_usdc: 800_000_000,
+    total_stress_adjusted_target_collateral_micro_usdc: 42_060_000,
+    total_potential_releasable_collateral_micro_usdc: 157_940_000,
+    proposal_only: true,
+    live_execution_leverage_unchanged: true,
     owner_only_funding: true,
     automatic_transfer_permitted: false,
     transaction_broadcast: false,
@@ -148,6 +152,10 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
         opening_collateral_shortfall_micro_usdc: 0,
         excess_collateral_micro_usdc: 400_000_000,
         recommended_action: "none",
+        stress_adjusted_target_collateral_micro_usdc: 21_060_000,
+        potential_releasable_collateral_micro_usdc: 78_940_000,
+        owner_maximum_stress_adjusted_leverage: 4,
+        owner_leverage_configuration_required: true,
       },
       {
         venue_id: "aster",
@@ -156,6 +164,10 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
         opening_collateral_shortfall_micro_usdc: 0,
         excess_collateral_micro_usdc: 400_000_000,
         recommended_action: "none",
+        stress_adjusted_target_collateral_micro_usdc: 21_000_000,
+        potential_releasable_collateral_micro_usdc: 79_000_000,
+        owner_maximum_stress_adjusted_leverage: 4,
+        owner_leverage_configuration_required: true,
       },
     ],
   });
@@ -211,6 +223,10 @@ test("reports exact owner-funded opening shortfalls without granting transfer au
     total_required_opening_collateral_micro_usdc: 200_000_000,
     total_opening_collateral_shortfall_micro_usdc: 150_000_000,
     total_excess_collateral_micro_usdc: 0,
+    total_stress_adjusted_target_collateral_micro_usdc: 42_060_000,
+    total_potential_releasable_collateral_micro_usdc: 157_940_000,
+    proposal_only: true,
+    live_execution_leverage_unchanged: true,
     owner_only_funding: true,
     automatic_transfer_permitted: false,
     transaction_broadcast: false,
@@ -222,6 +238,10 @@ test("reports exact owner-funded opening shortfalls without granting transfer au
         opening_collateral_shortfall_micro_usdc: 75_000_000,
         excess_collateral_micro_usdc: 0,
         recommended_action: "owner_fund_venue",
+        stress_adjusted_target_collateral_micro_usdc: 21_060_000,
+        potential_releasable_collateral_micro_usdc: 78_940_000,
+        owner_maximum_stress_adjusted_leverage: 4,
+        owner_leverage_configuration_required: true,
       },
       {
         venue_id: "aster",
@@ -230,9 +250,25 @@ test("reports exact owner-funded opening shortfalls without granting transfer au
         opening_collateral_shortfall_micro_usdc: 75_000_000,
         excess_collateral_micro_usdc: 0,
         recommended_action: "owner_fund_venue",
+        stress_adjusted_target_collateral_micro_usdc: 21_000_000,
+        potential_releasable_collateral_micro_usdc: 79_000_000,
+        owner_maximum_stress_adjusted_leverage: 4,
+        owner_leverage_configuration_required: true,
       },
     ],
   });
+  const tighterRunway = modelCarryPairPreflight({
+    evidence,
+    notional_usd: 100,
+    horizon_days: 30,
+    now_ms: NOW,
+    min_margin_runway_ms: 12 * 3_600_000,
+  });
+  assert.equal(tighterRunway.opening_capital_plan.total_stress_adjusted_target_collateral_micro_usdc, 54_120_000);
+  assert.deepEqual(
+    tighterRunway.opening_capital_plan.legs.map((leg) => leg.owner_maximum_stress_adjusted_leverage),
+    [3, 3],
+  );
 });
 
 test("prices entry and exit from notional-weighted depth without whole-bp rounding", async () => {

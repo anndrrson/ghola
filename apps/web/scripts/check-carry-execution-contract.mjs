@@ -190,6 +190,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("preflight", "compileOpeningCapitalPlan", "carry_opening_capital_plan_missing");
   requireText("preflight", "total_opening_collateral_shortfall_micro_usdc", "carry_opening_shortfall_total_missing");
   requireText("preflight", "automatic_transfer_permitted: false", "carry_opening_transfer_boundary_missing");
+  requireText("preflight", "total_stress_adjusted_target_collateral_micro_usdc", "carry_stress_capital_target_missing");
+  requireText("preflight", "proposal_only: true", "carry_stress_capital_proposal_boundary_missing");
+  requireText("preflight", "live_execution_leverage_unchanged: true", "carry_stress_leverage_boundary_missing");
+  requireText("preflight", "owner_leverage_configuration_required", "carry_owner_leverage_action_missing");
+  requireText("preflight", "executionMandate?.min_margin_runway_ms", "carry_signed_runway_capital_binding_missing");
   requireText("preflightTest", "reports exact owner-funded opening shortfalls without granting transfer authority", "carry_opening_capital_plan_test_missing");
   requireText("preflight", "carry_account_owner_mismatch", "carry_preflight_owner_binding_missing");
   requireText("preflightTest", "rejects cross-owner sealed venue access before order verification", "carry_preflight_owner_binding_test_missing");

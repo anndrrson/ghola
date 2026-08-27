@@ -195,6 +195,16 @@ test("rejects an opening capital packet that could move funds", () => {
   );
 });
 
+test("rejects a stress-capital proposal that silently changes live leverage", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll("live_execution_leverage_unchanged: true", "live_execution_leverage_unchanged: false"),
+    }),
+    /carry_stress_leverage_boundary_missing/,
+  );
+});
+
 test("rejects Carry preflight without exact owner binding", () => {
   assert.throws(
     () => checkCarryExecutionContract({
