@@ -35,6 +35,7 @@ function request(overrides = {}) {
 function matrix(workOrderCommitment = request().work_order_commitment) {
   const venues = CARRY_EXECUTION_VENUES.map((venueId) => ({
     venue_id: venueId,
+    account_commitment: access(venueId).account_commitment,
     transaction_broadcast: false,
     work_order_commitments: [],
     verification_commitments: [],
@@ -56,6 +57,7 @@ function matrix(workOrderCommitment = request().work_order_commitment) {
         venue.verification_commitments.push(verificationCommitment);
         return {
           venue_id: venueId,
+          account_commitment: access(venueId).account_commitment,
           work_order_commitment: workOrderCommitment,
           verification_commitment: verificationCommitment,
           transaction_broadcast: false,

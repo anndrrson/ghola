@@ -98,6 +98,7 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
       return {
         status: "verified_ready",
         work_order_commitment,
+        account_commitment: access().account_commitment,
         verification_commitment: `verification_${venue_id}`,
         checks: { order_request_built: true, transaction_broadcast: false },
         order_shape: venue_id === "hyperliquid"
@@ -325,6 +326,7 @@ test("prices entry and exit from notional-weighted depth without whole-bp roundi
     verifyOrder: async ({ venue_id, work_order_commitment }) => ({
       status: "verified_ready",
       work_order_commitment,
+      account_commitment: access().account_commitment,
       verification_commitment: `verification_${venue_id}`,
       checks: { order_request_checked: true, transaction_broadcast: false },
       order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
@@ -384,6 +386,7 @@ test("fails carry economics closed when displayed depth cannot fill the target n
     verifyOrder: async ({ venue_id, work_order_commitment }) => ({
       status: "verified_ready",
       work_order_commitment,
+      account_commitment: access().account_commitment,
       verification_commitment: `verification_${venue_id}`,
       checks: { order_request_checked: true, transaction_broadcast: false },
       order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
@@ -468,6 +471,54 @@ test("rejects same-ticker contract basis divergence before account or order veri
   assert.equal(verified, false);
 });
 
+test("rejects no-submit evidence returned for a different sealed account", async () => {
+  const account = {
+    can_trade: true,
+    available_balance: 500,
+    margin_balance: 500,
+    initial_margin: 0,
+    maintenance_margin: 0,
+    maker_fee_bps: 1,
+    taker_fee_bps: 2,
+    position_count: 0,
+    open_order_count: 0,
+  };
+  await assert.rejects(
+    preflightCarryPair({
+      body: {
+        version: 1,
+        owner_commitment: "owner_commitment_binding_0001",
+        work_order_commitment: "carry_pair_binding_0001",
+        asset: "BTC",
+        long_venue_id: "hyperliquid",
+        short_venue_id: "aster",
+        notional_usd: 100,
+        horizon_days: 30,
+        venue_access: {
+          hyperliquid: access("owner_commitment_binding_0001"),
+          aster: access("owner_commitment_binding_0001"),
+        },
+      },
+      recipient: {},
+      state: {},
+      now: () => NOW,
+      fetchVenue: async ({ venue_id }) => [snapshot(venue_id)],
+      verifyOrder: async ({ venue_id, work_order_commitment }) => ({
+        status: "verified_ready",
+        work_order_commitment,
+        account_commitment: venue_id === "aster" ? "account_commitment_wrong_0001" : access().account_commitment,
+        verification_commitment: `verification_${venue_id}`,
+        checks: { order_request_checked: true, transaction_broadcast: false },
+        order_shape: { notional_micro_usdc: 100_000_000 },
+        account,
+      }),
+      readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
+      readHyperliquidCarryMetrics: async () => account,
+    }),
+    (error) => error?.code === "carry_account_verification_mismatch:aster",
+  );
+});
+
 test("monitoring measures a signed basis breach without submitting or hiding it as unavailable", async () => {
   let verified = 0;
   const account = {
@@ -510,6 +561,7 @@ test("monitoring measures a signed basis breach without submitting or hiding it 
       return {
         status: "verified_ready",
         work_order_commitment,
+        account_commitment: access().account_commitment,
         verification_commitment: `verification_${venue_id}`,
         checks: { order_request_checked: true, transaction_broadcast: false },
         order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
@@ -564,6 +616,7 @@ test("migration preflight applies signed opening limits and never broadcasts", a
     verifyOrder: async ({ venue_id, work_order_commitment }) => ({
       status: "verified_ready",
       work_order_commitment,
+      account_commitment: access().account_commitment,
       verification_commitment: `verification_${venue_id}`,
       checks: { order_request_checked: true, transaction_broadcast: false },
       order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
@@ -637,6 +690,7 @@ test("accepts Lighter's owner-destination custody boundary and conservative fee 
     verifyOrder: async ({ venue_id, instruction, work_order_commitment }) => ({
       status: "verified_ready",
       work_order_commitment,
+      account_commitment: access().account_commitment,
       verification_commitment: `verification_${venue_id}`,
       checks: { order_request_checked: true, transaction_broadcast: false },
       order_shape: { notional_micro_usdc: 99_900_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
@@ -710,6 +764,7 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
       return {
         status: "verified_ready",
         work_order_commitment,
+        account_commitment: access().account_commitment,
         verification_commitment: `verification_matrix_${venue_id}_${calls.length}`,
         checks: { order_request_checked: true, transaction_broadcast: false },
         order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
@@ -817,6 +872,7 @@ test("enables an economically eligible Aster pair only after deployment-bound qu
     verifyOrder: async ({ venue_id, work_order_commitment }) => ({
       status: "verified_ready",
       work_order_commitment,
+      account_commitment: access().account_commitment,
       verification_commitment: `verification_${venue_id}`,
       checks: { order_request_checked: true, transaction_broadcast: false, account_state_checked: true },
       order_shape: { market: "BTC-USD", base_size: "0.001", limit_price: "100000", notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },

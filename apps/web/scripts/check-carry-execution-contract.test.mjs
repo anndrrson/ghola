@@ -158,6 +158,19 @@ test("rejects a three-venue matrix that does not verify every unique pair", () =
   );
 });
 
+test("rejects a no-submit receipt that is not bound to the verified account", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll(
+        "carry_account_verification_mismatch",
+        "carry_account_match_not_checked",
+      ),
+    }),
+    /carry_no_submit_account_match_gate_missing/,
+  );
+});
+
 test("rejects a three-venue check that can claim readiness without durable deployment-bound evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({

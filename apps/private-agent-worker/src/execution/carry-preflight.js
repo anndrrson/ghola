@@ -108,6 +108,9 @@ export async function preflightCarryPair({
       recipient,
       state,
     });
+    if (receipt?.account_commitment !== access.account_commitment) {
+      throw carryError(`carry_account_verification_mismatch:${leg.venue_id}`, 403);
+    }
     let account = receipt.account || null;
     let accountSnapshot = null;
     if (leg.venue_id === "hyperliquid") {
@@ -253,6 +256,7 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
       if (item.checks?.order_request_built !== true && item.checks?.order_request_checked !== true) failures.push(`venue_order_shape_unverified:${venueId}`);
       if (!validCommitment(item.work_order_commitment)) failures.push(`venue_work_order_unbound:${venueId}`);
       if (!validCommitment(item.verification_commitment)) failures.push(`venue_verification_unbound:${venueId}`);
+      if (item.account_commitment !== body.venue_access?.[venueId]?.account_commitment) failures.push(`venue_account_binding_mismatch:${venueId}`);
     }
     const first = items[0] || { venue_id: venueId };
     return {
@@ -293,6 +297,7 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
       account_readiness: result.account_readiness,
       leg_evidence: (result.evidence || []).map((item) => ({
         venue_id: item.venue_id,
+        account_commitment: item.account_commitment,
         work_order_commitment: item.work_order_commitment,
         verification_commitment: item.verification_commitment,
         transaction_broadcast: item.transaction_broadcast === false && item.checks?.transaction_broadcast === false ? false : null,
@@ -722,6 +727,7 @@ function publicEvidence(leg, qualification) {
     status: leg.receipt.status,
     work_order_commitment: leg.receipt.work_order_commitment,
     verification_commitment: leg.receipt.verification_commitment,
+    account_commitment: leg.receipt.account_commitment,
     order_shape: leg.receipt.order_shape,
     reference_mark_price_e8: leg.snapshot.mark_price_e8,
     reference_price_source: "verified_pre_submit_mark",

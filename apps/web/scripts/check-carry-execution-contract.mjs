@@ -202,6 +202,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("preflight", "export async function preflightCarryExecutionMatrix", "carry_three_venue_no_submit_matrix_missing");
   requireText("preflight", "allVenuePairs(orderedVenues)", "carry_all_pair_no_submit_matrix_missing");
   requireText("preflight", "leg_evidence: (result.evidence || [])", "carry_pair_leg_evidence_missing");
+  requireText("privateExecution", "account_commitment: body.account_commitment || null", "carry_no_submit_receipt_account_binding_missing");
+  requireText("privateExecution", "account_commitment: allocation?.account_commitment || body.account_commitment || null", "carry_hyperliquid_no_submit_account_binding_missing");
+  requireText("preflight", "carry_account_verification_mismatch", "carry_no_submit_account_match_gate_missing");
+  requireText("readiness", "leg.account_commitment !== venue?.account_commitment", "carry_readiness_leg_account_binding_missing");
   requireText("preflightTest", "verifies all three execution venues through one no-broadcast matrix", "carry_three_venue_no_submit_matrix_test_missing");
   requireText("preflight", "storeCarryExecutionReadiness", "carry_three_venue_readiness_persistence_missing");
   requireText("readiness", "runtimeCarryQualificationImageDigest", "carry_readiness_image_binding_missing");

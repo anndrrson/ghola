@@ -146,16 +146,17 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
     }
     for (const venueId of [left, right]) {
       const leg = legs.find((item) => item?.venue_id === venueId);
+      const venue = venues.find((item) => item?.venue_id === venueId);
       if (leg.work_order_commitment !== `${expectedPairWorkOrder}_${venueId}`) {
         reasons.push(`carry_readiness_leg_work_order_mismatch:${left}:${right}:${venueId}`);
       }
       if (!commitment(leg.verification_commitment)
+        || leg.account_commitment !== venue?.account_commitment
         || leg.transaction_broadcast !== false
         || leg.account_state_checked !== true
         || leg.order_request_checked !== true) {
         reasons.push(`carry_readiness_leg_unproven:${left}:${right}:${venueId}`);
       }
-      const venue = venues.find((item) => item?.venue_id === venueId);
       if (!venue?.verification_commitments?.includes(leg.verification_commitment)
         || !venue?.work_order_commitments?.includes(leg.work_order_commitment)) {
         reasons.push(`carry_readiness_leg_venue_binding_mismatch:${left}:${right}:${venueId}`);
@@ -247,7 +248,7 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
         order_request_checked: item.checks?.order_request_checked === true || item.checks?.order_request_built === true,
         verification_commitments: (Array.isArray(item.verification_commitments) ? item.verification_commitments : []).map(String),
         work_order_commitments: (Array.isArray(item.work_order_commitments) ? item.work_order_commitments : []).map(String),
-        account_commitment: String(access.account_commitment || ""),
+        account_commitment: String(item.account_commitment || ""),
         vault_commitment: String(access.vault_commitment || ""),
         policy_commitment: String(access.policy_commitment || ""),
       };
@@ -262,6 +263,7 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
       account_readiness: (Array.isArray(pair?.account_readiness) ? pair.account_readiness : []).map(capitalRecord),
       leg_evidence: (Array.isArray(pair?.leg_evidence) ? pair.leg_evidence : []).map((leg) => ({
         venue_id: String(leg?.venue_id || ""),
+        account_commitment: String(leg?.account_commitment || ""),
         work_order_commitment: String(leg?.work_order_commitment || ""),
         verification_commitment: String(leg?.verification_commitment || ""),
         transaction_broadcast: leg?.transaction_broadcast === false ? false : null,
