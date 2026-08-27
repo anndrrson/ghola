@@ -2,6 +2,7 @@ import {
   CARRY_EXECUTION_VENUES,
   calculateMarginRunway,
   evaluateCarryOpportunity,
+  evaluatePerpContractPairBasis,
   exactQuantityRecoveryAdapter,
   isCarryExecutionVenue,
   venueAdapterCapability,
@@ -34,6 +35,8 @@ export async function preflightCarryPair({
 
   const observedAt = now();
   const maxContractDataSkewMs = carryMarketDataSkewMs(env);
+  const maxIndexPriceDivergenceBps = carryBasisBudgetBps(env, "PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS", 25);
+  const maxMarkPriceDivergenceBps = carryBasisBudgetBps(env, "PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS", 50);
   const [longSnapshots, shortSnapshots] = await Promise.all([
     fetchVenue({ venue_id: longVenue, assets: [asset], now_ms: observedAt, max_age_ms: 60_000 }),
     fetchVenue({ venue_id: shortVenue, assets: [asset], now_ms: observedAt, max_age_ms: 60_000 }),
@@ -43,6 +46,16 @@ export async function preflightCarryPair({
   const contractDataSkewMs = Math.abs(longSnapshot.as_of_ms - shortSnapshot.as_of_ms);
   if (!Number.isSafeInteger(contractDataSkewMs) || contractDataSkewMs > maxContractDataSkewMs) {
     throw carryError("carry_market_data_skew_exceeded", 409);
+  }
+  const contractPairBasis = evaluatePerpContractPairBasis({
+    version: 1,
+    long_contract: longSnapshot,
+    short_contract: shortSnapshot,
+    max_index_price_divergence_bps: maxIndexPriceDivergenceBps,
+    max_mark_price_divergence_bps: maxMarkPriceDivergenceBps,
+  });
+  if (!contractPairBasis.eligible) {
+    throw carryError(`carry_contract_equivalence_failed:${contractPairBasis.reasons[0]}`, 409);
   }
   const legs = [
     { venue_id: longVenue, side: "buy", snapshot: longSnapshot },
@@ -89,6 +102,8 @@ export async function preflightCarryPair({
     now_ms: now(),
     phase,
     max_contract_data_skew_ms: maxContractDataSkewMs,
+    max_index_price_divergence_bps: maxIndexPriceDivergenceBps,
+    max_mark_price_divergence_bps: maxMarkPriceDivergenceBps,
   });
   const qualifications = await Promise.all(evidence.map((leg) => readCarryVenueQualification({
     state,
@@ -151,6 +166,7 @@ export async function preflightCarryPair({
     economic_opportunity: modeled.opportunity,
     creation_opportunity: creationOpportunity,
     collateral_basis: modeled.collateral_basis,
+    contract_pair_basis: modeled.opportunity.contract_pair_basis,
     margin_runways: modeled.margin_runways,
     account_readiness: modeled.account_readiness,
     evidence: evidence.map((leg) => publicEvidence(leg, qualificationByVenue.get(leg.venue_id))),
@@ -227,6 +243,8 @@ export function modelCarryPairPreflight({
   now_ms: nowMs,
   phase = "opening",
   max_contract_data_skew_ms: maxContractDataSkewMs = 2_000,
+  max_index_price_divergence_bps: maxIndexPriceDivergenceBps = 25,
+  max_mark_price_divergence_bps: maxMarkPriceDivergenceBps = 50,
 }) {
   const notionalMicro = usdMicro(notionalUsd);
   const monitoring = phase === "monitoring";
@@ -263,6 +281,8 @@ export function modelCarryPairPreflight({
     now_ms: nowMs,
     max_data_age_ms: 60_000,
     max_contract_data_skew_ms: maxContractDataSkewMs,
+    max_index_price_divergence_bps: maxIndexPriceDivergenceBps,
+    max_mark_price_divergence_bps: maxMarkPriceDivergenceBps,
   });
   const depthReasons = costs.flatMap((cost) => cost.depth_impact.flatMap((impact) =>
     impact.status === "sufficient" ? [] : [`depth_${impact.status}:${cost.venue_id}:${impact.phase}`]
@@ -626,6 +646,11 @@ function microFromBps(amount, bps) {
 function carryMarketDataSkewMs(env) {
   const parsed = Number.parseInt(String(env.PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS || ""), 10);
   return Number.isSafeInteger(parsed) ? Math.max(50, Math.min(60_000, parsed)) : 2_000;
+}
+
+function carryBasisBudgetBps(env, name, fallback) {
+  const parsed = Number.parseInt(String(env[name] || ""), 10);
+  return Number.isSafeInteger(parsed) ? Math.max(0, Math.min(10_000, parsed)) : fallback;
 }
 
 function carryError(code, status) {

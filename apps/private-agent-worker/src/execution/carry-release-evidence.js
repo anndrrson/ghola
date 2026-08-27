@@ -22,6 +22,8 @@ export async function buildCompletedCarryReleaseMaterial({
   if (record.value_ledger?.status !== "finalized" || record.value_evidence?.costs_complete !== true) {
     return denied("carry_release_value_ledger_incomplete");
   }
+  const contractEquivalence = releaseContractEquivalence(record.opportunity);
+  if (!contractEquivalence.ok) return contractEquivalence;
   const finalState = record.final_reconciliation_evidence;
   if (finalState?.account_state_checked !== true || finalState.gross_exposure_micro_usdc !== 0 || finalState.open_order_count !== 0) {
     return denied("carry_release_final_state_unproven");
@@ -84,6 +86,7 @@ export async function buildCompletedCarryReleaseMaterial({
       short_venue_id: record.position.short_venue_id,
       created_at: iso(record.position.created_at_ms),
     },
+    contract_equivalence: contractEquivalence.evidence,
     mandate: {
       policy_commitment: mandate.authorization.mandate_commitment,
       signed_mandate: mandate.authorization.signed_mandate,
@@ -206,6 +209,47 @@ function releaseValueLedger(record) {
       net_value_micro_usdc: realized.net_value_micro_usdc,
     },
     evidence_commitment: record.final_reconciliation_evidence.reconciliation_commitment,
+  };
+}
+
+function releaseContractEquivalence(opportunity) {
+  const values = [
+    opportunity?.contract_data_skew_ms,
+    opportunity?.max_contract_data_skew_ms,
+    opportunity?.index_price_divergence_bps,
+    opportunity?.mark_price_divergence_bps,
+    opportunity?.max_index_price_divergence_bps,
+    opportunity?.max_mark_price_divergence_bps,
+  ];
+  if (!values.every((value) => Number.isSafeInteger(value) && value >= 0)
+    || !positiveInteger(opportunity?.checked_at_ms)
+    || !/^[A-Za-z0-9:_-]{8,180}$/.test(String(opportunity?.economic_equivalence_id || ""))
+    || opportunity?.contract_type !== "linear_perp"
+    || !["USD", "USDC", "USDT"].includes(opportunity?.long_quote_asset)
+    || !["USD", "USDC", "USDT"].includes(opportunity?.short_quote_asset)) {
+    return denied("carry_release_contract_equivalence_evidence_missing");
+  }
+  if (opportunity.contract_data_skew_ms > opportunity.max_contract_data_skew_ms
+    || opportunity.index_price_divergence_bps > opportunity.max_index_price_divergence_bps
+    || opportunity.mark_price_divergence_bps > opportunity.max_mark_price_divergence_bps) {
+    return denied("carry_release_contract_equivalence_exceeded");
+  }
+  return {
+    ok: true,
+    evidence: {
+      verified: true,
+      checked_at: iso(opportunity.checked_at_ms),
+      economic_equivalence_id: opportunity.economic_equivalence_id,
+      contract_type: opportunity.contract_type,
+      long_quote_asset: opportunity.long_quote_asset,
+      short_quote_asset: opportunity.short_quote_asset,
+      contract_data_skew_ms: opportunity.contract_data_skew_ms,
+      max_contract_data_skew_ms: opportunity.max_contract_data_skew_ms,
+      index_price_divergence_bps: opportunity.index_price_divergence_bps,
+      mark_price_divergence_bps: opportunity.mark_price_divergence_bps,
+      max_index_price_divergence_bps: opportunity.max_index_price_divergence_bps,
+      max_mark_price_divergence_bps: opportunity.max_mark_price_divergence_bps,
+    },
   };
 }
 

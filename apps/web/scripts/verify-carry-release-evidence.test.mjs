@@ -58,6 +58,20 @@ async function fixture() {
       short_venue_id: "aster",
       created_at: "2026-08-24T00:00:00.000Z",
     },
+    contract_equivalence: {
+      verified: true,
+      checked_at: "2026-08-23T23:59:59.000Z",
+      economic_equivalence_id: "carry:HYPE-usd-linear",
+      contract_type: "linear_perp",
+      long_quote_asset: "USD",
+      short_quote_asset: "USDT",
+      contract_data_skew_ms: 400,
+      max_contract_data_skew_ms: 2_000,
+      index_price_divergence_bps: 3,
+      mark_price_divergence_bps: 7,
+      max_index_price_divergence_bps: 25,
+      max_mark_price_divergence_bps: 50,
+    },
     mandate: {
       policy_commitment: hashMessage(mandateMessage),
       signed_mandate: signedMandate,
@@ -208,6 +222,14 @@ test("rejects margin-runway proof without verified status", async () => {
   delete evidence.monitoring.margin_runways[0].status;
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
   await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /margin_runway_status_missing:hyperliquid/);
+});
+
+test("rejects same-ticker proof whose contract basis exceeds the verified budget", async () => {
+  const evidence = await fixture();
+  evidence.contract_equivalence.index_price_divergence_bps = 26;
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /contract_index_basis_exceeded/);
 });
 
 test("accepts a healthy null runway only as verified zero modeled burn", async () => {

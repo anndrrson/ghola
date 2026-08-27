@@ -308,6 +308,37 @@ test("rejects a false carry spread built from cross-venue observations outside t
   assert.ok(result.reasons.includes("contract_data_skew_exceeded"));
 });
 
+test("rejects same-ticker contracts whose index or mark basis exceeds equivalence budgets", () => {
+  const result = evaluateCarryOpportunity({
+    version: 1,
+    long_contract: contract("hyperliquid", 1),
+    short_contract: contract("lighter", 4, {
+      index_price_e8: 6_030_000_000_000,
+      mark_price_e8: 6_060_000_000_000,
+    }),
+    notional_micro_usdc: 10_000_000_000,
+    capital_committed_micro_usdc: 4_000_000_000,
+    horizon_ms: 7 * DAY,
+    long_costs: costs(),
+    short_costs: costs(),
+    capital_cost_bps_per_day: 1,
+    risk_buffer_bps: 3,
+    min_expected_net_benefit_bps: 5,
+    min_margin_runway_ms: 6 * HOUR,
+    margin_runways: [runway("hyperliquid"), runway("lighter")],
+    now_ms: NOW,
+    max_data_age_ms: 30_000,
+    max_contract_data_skew_ms: 2_000,
+    max_index_price_divergence_bps: 25,
+    max_mark_price_divergence_bps: 50,
+  });
+  assert.equal(result.index_price_divergence_bps, 50);
+  assert.equal(result.mark_price_divergence_bps, 100);
+  assert.equal(result.eligible, false);
+  assert.ok(result.reasons.includes("index_price_divergence_exceeded"));
+  assert.ok(result.reasons.includes("mark_price_divergence_exceeded"));
+});
+
 test("margin runway exposes owner response risk without granting transfer authority", () => {
   const healthy = runway("hyperliquid");
   assert.equal(healthy.status, "healthy");

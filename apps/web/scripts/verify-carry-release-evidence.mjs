@@ -48,6 +48,24 @@ export async function verifyCarryReleaseEvidence(evidence) {
 
   const createdAt = timestamp(position.created_at);
   fail(createdAt > 0, "position_timestamp_invalid");
+  const contractEquivalence = evidence?.contract_equivalence || {};
+  const equivalenceCheckedAt = timestamp(contractEquivalence.checked_at);
+  const dataSkewMs = nonNegativeInteger(contractEquivalence.contract_data_skew_ms);
+  const maxDataSkewMs = nonNegativeInteger(contractEquivalence.max_contract_data_skew_ms);
+  const indexDivergenceBps = nonNegativeInteger(contractEquivalence.index_price_divergence_bps);
+  const markDivergenceBps = nonNegativeInteger(contractEquivalence.mark_price_divergence_bps);
+  const maxIndexDivergenceBps = nonNegativeInteger(contractEquivalence.max_index_price_divergence_bps);
+  const maxMarkDivergenceBps = nonNegativeInteger(contractEquivalence.max_mark_price_divergence_bps);
+  fail(contractEquivalence.verified === true, "contract_equivalence_unverified");
+  fail(contractEquivalence.economic_equivalence_id === `carry:${position.asset}-usd-linear`, "economic_equivalence_id_invalid");
+  fail(contractEquivalence.contract_type === "linear_perp", "contract_type_not_equivalent");
+  fail([contractEquivalence.long_quote_asset, contractEquivalence.short_quote_asset]
+    .every((asset) => ["USD", "USDC", "USDT"].includes(asset)), "contract_quote_basis_unmodeled");
+  fail(dataSkewMs !== null && maxDataSkewMs !== null && dataSkewMs <= maxDataSkewMs, "contract_data_skew_exceeded");
+  fail(indexDivergenceBps !== null && maxIndexDivergenceBps !== null
+    && maxIndexDivergenceBps <= 10_000 && indexDivergenceBps <= maxIndexDivergenceBps, "contract_index_basis_exceeded");
+  fail(markDivergenceBps !== null && maxMarkDivergenceBps !== null
+    && maxMarkDivergenceBps <= 10_000 && markDivergenceBps <= maxMarkDivergenceBps, "contract_mark_basis_exceeded");
   fail(evidence?.mandate?.ai_execution_authority === false, "ai_must_be_proposal_only");
   fail(evidence?.mandate?.funding_owner_only === true, "funding_owner_only_required");
   fail(evidence?.mandate?.transfers_owner_only === true, "transfers_owner_only_required");
@@ -81,6 +99,10 @@ export async function verifyCarryReleaseEvidence(evidence) {
   fail(Array.isArray(signedMandate?.risk_mandate?.owner_only_operations)
     && ["fund", "withdraw", "transfer"].every((item) => signedMandate.risk_mandate.owner_only_operations.includes(item)),
   "signed_mandate_owner_only_operations_missing");
+  const maxDataAgeMs = positiveInteger(signedMandate?.risk_mandate?.max_data_age_ms);
+  fail(equivalenceCheckedAt > 0 && equivalenceCheckedAt <= createdAt
+    && createdAt - equivalenceCheckedAt <= maxDataAgeMs, "contract_equivalence_timestamp_invalid");
+  fail(maxDataSkewMs !== null && maxDataSkewMs <= maxDataAgeMs, "contract_data_skew_budget_invalid");
 
   const qualifications = array(evidence?.qualification?.venues);
   fail(sameVenueSet(qualifications, pair), "qualification_venues_mismatch");

@@ -66,6 +66,8 @@ const TEST_ENV_KEYS = [
   "GHOLA_CARRY_QUALIFICATION_PILOT_MAX_NOTIONAL_MICRO_USDC",
   "GHOLA_CARRY_MAX_UNHEDGED_MS",
   "GHOLA_CARRY_MAX_MARKET_DATA_SKEW_MS",
+  "GHOLA_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS",
+  "GHOLA_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS",
   "GHOLA_CARRY_AUTO_EXIT_ENABLED",
   "GHOLA_CARRY_EXECUTION_SWEEP_MS",
   "GHOLA_CARRY_EXIT_VERIFY_RETRY_MS",
@@ -91,6 +93,8 @@ const TEST_ENV_KEYS = [
   "PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_MAX_NOTIONAL_MICRO_USDC",
   "PRIVATE_AGENT_CARRY_MAX_UNHEDGED_MS",
   "PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS",
+  "PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS",
+  "PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS",
   "PRIVATE_AGENT_CARRY_AUTO_EXIT_ENABLED",
   "PRIVATE_AGENT_CARRY_EXECUTION_SWEEP_MS",
   "PRIVATE_AGENT_CARRY_EXIT_VERIFY_RETRY_MS",
@@ -165,6 +169,8 @@ describe("private-agent Phala provisioning", () => {
     expect(compose).toContain('PRIVATE_AGENT_CARRY_AUTO_EXIT_ENABLED: "true"');
     expect(compose).toContain('PRIVATE_AGENT_CARRY_MONITOR_ENABLED: "true"');
     expect(compose).toContain('PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS: "2000"');
+    expect(compose).toContain('PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS: "25"');
+    expect(compose).toContain('PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS: "50"');
     expect(compose).not.toMatch(/PHALA_CLOUD_API_KEY|PHALA_API_KEY/);
     expect(compose).not.toMatch(/prompt|strategy_text|messages|policy:/i);
   });
@@ -219,6 +225,8 @@ describe("private-agent Phala provisioning", () => {
       GHOLA_CARRY_QUALIFICATION_PILOT_MAX_NOTIONAL_MICRO_USDC: "11000000",
       GHOLA_CARRY_MAX_UNHEDGED_MS: "1500",
       GHOLA_CARRY_MAX_MARKET_DATA_SKEW_MS: "750",
+      GHOLA_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS: "12",
+      GHOLA_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS: "24",
     });
     const compose = buildPhalaWorkerCompose();
     const info = { compose_file: { docker_compose_file: compose } };
@@ -227,6 +235,8 @@ describe("private-agent Phala provisioning", () => {
     expect(compose).toContain('PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED: "true"');
     expect(compose).toContain('PRIVATE_AGENT_CARRY_MAX_UNHEDGED_MS: "1500"');
     expect(compose).toContain('PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS: "750"');
+    expect(compose).toContain('PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS: "12"');
+    expect(compose).toContain('PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS: "24"');
     expect(compose).toContain('PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: "5000"');
     expect(compose).toContain('PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY: "8"');
     expect(phalaWorkerRuntimeConfigDrift(info)).toEqual([]);

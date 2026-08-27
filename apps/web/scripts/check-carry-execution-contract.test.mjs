@@ -119,6 +119,16 @@ test("rejects Carry preflight without a cross-venue market-data skew veto", () =
   );
 });
 
+test("rejects Carry preflight that assumes same ticker means equivalent contracts", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll("carry_contract_equivalence_failed", "carry_contracts_assumed_equivalent"),
+    }),
+    /carry_contract_equivalence_gate_missing/,
+  );
+});
+
 test("rejects a terminal that hides cross-venue source synchronization", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -126,6 +136,16 @@ test("rejects a terminal that hides cross-venue source synchronization", () => {
       webCarryBuilder: sources.webCarryBuilder.replaceAll('label="SOURCE SYNC"', 'label="DATA"'),
     }),
     /carry_terminal_source_sync_missing/,
+  );
+});
+
+test("rejects a terminal that hides index-basis evidence", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll('label="INDEX BASIS"', 'label="PAIR"'),
+    }),
+    /carry_terminal_index_basis_missing/,
   );
 });
 

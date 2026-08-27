@@ -8,6 +8,7 @@ const MARKET = /^[A-Z0-9][A-Z0-9._/-]{0,63}$/;
 const ETH_ADDRESS = /^0x[0-9a-f]{40}$/;
 const ETH_SIGNATURE = /^0x[0-9a-f]{130}$/;
 const ETH_COMMITMENT = /^0x[0-9a-f]{64}$/;
+const USD_STABLE_QUOTES = new Set(["USD", "USDC", "USDT"]);
 const POSITION_STATUSES = new Set([
   "draft", "opening", "active", "rebalancing", "exiting", "reconciled", "frozen", "manual_intervention",
 ]);
@@ -116,6 +117,53 @@ export function calculateMarginRunway(value) {
   });
 }
 
+export function evaluatePerpContractPairBasis(value) {
+  const raw = object(value, "carry_contract_pair_required");
+  exactVersion(raw.version, "carry_contract_pair_version");
+  const longContract = normalizePairContract(raw.long_contract, "long");
+  const shortContract = normalizePairContract(raw.short_contract, "short");
+  const maxIndexPriceDivergenceBps = boundedInteger(
+    raw.max_index_price_divergence_bps ?? 25,
+    0,
+    10_000,
+    "carry_max_index_price_divergence",
+  );
+  const maxMarkPriceDivergenceBps = boundedInteger(
+    raw.max_mark_price_divergence_bps ?? 50,
+    0,
+    10_000,
+    "carry_max_mark_price_divergence",
+  );
+  const reasons = [];
+  if (longContract.venue_id === shortContract.venue_id) reasons.push("distinct_venues_required");
+  if (longContract.economic_equivalence_id !== shortContract.economic_equivalence_id) reasons.push("contracts_not_economically_equivalent");
+  if (longContract.asset !== shortContract.asset) reasons.push("asset_mismatch");
+  if (longContract.contract_type !== shortContract.contract_type) reasons.push("contract_type_mismatch");
+  for (const contract of [longContract, shortContract]) {
+    if (!USD_STABLE_QUOTES.has(contract.quote_asset)) reasons.push(`unsupported_quote_asset:${contract.venue_id}`);
+  }
+  const indexPriceDivergenceBps = priceDivergenceBpsCeil(longContract.index_price_e8, shortContract.index_price_e8);
+  const markPriceDivergenceBps = priceDivergenceBpsCeil(longContract.mark_price_e8, shortContract.mark_price_e8);
+  if (indexPriceDivergenceBps > maxIndexPriceDivergenceBps) reasons.push("index_price_divergence_exceeded");
+  if (markPriceDivergenceBps > maxMarkPriceDivergenceBps) reasons.push("mark_price_divergence_exceeded");
+  return deepFreeze({
+    version: 1,
+    eligible: [...new Set(reasons)].length === 0,
+    reasons: [...new Set(reasons)],
+    economic_equivalence_id: longContract.economic_equivalence_id === shortContract.economic_equivalence_id
+      ? longContract.economic_equivalence_id
+      : null,
+    asset: longContract.asset === shortContract.asset ? longContract.asset : null,
+    contract_type: longContract.contract_type === shortContract.contract_type ? longContract.contract_type : null,
+    long_quote_asset: longContract.quote_asset,
+    short_quote_asset: shortContract.quote_asset,
+    index_price_divergence_bps: indexPriceDivergenceBps,
+    mark_price_divergence_bps: markPriceDivergenceBps,
+    max_index_price_divergence_bps: maxIndexPriceDivergenceBps,
+    max_mark_price_divergence_bps: maxMarkPriceDivergenceBps,
+  });
+}
+
 export function evaluateCarryOpportunity(value) {
   const raw = object(value, "carry_opportunity_required");
   exactVersion(raw.version, "carry_opportunity_version");
@@ -129,6 +177,13 @@ export function evaluateCarryOpportunity(value) {
     maxAgeMs,
     "carry_max_contract_data_skew",
   );
+  const contractPairBasis = evaluatePerpContractPairBasis({
+    version: 1,
+    long_contract: longContract,
+    short_contract: shortContract,
+    max_index_price_divergence_bps: raw.max_index_price_divergence_bps,
+    max_mark_price_divergence_bps: raw.max_mark_price_divergence_bps,
+  });
   const notional = positiveInteger(raw.notional_micro_usdc, "carry_notional");
   const capitalCommitted = positiveInteger(raw.capital_committed_micro_usdc, "carry_capital_committed");
   const horizonMs = boundedInteger(raw.horizon_ms, 60_000, 366 * DAY_MS, "carry_horizon");
@@ -141,10 +196,7 @@ export function evaluateCarryOpportunity(value) {
   const minimumRunwayMs = boundedInteger(raw.min_margin_runway_ms, 0, 366 * DAY_MS, "carry_minimum_runway");
   const marginRunways = array(raw.margin_runways, "carry_margin_runways", 2, 2).map(normalizeMarginRunwayResult);
   const reasons = [];
-  if (longContract.venue_id === shortContract.venue_id) reasons.push("distinct_venues_required");
-  if (longContract.economic_equivalence_id !== shortContract.economic_equivalence_id) reasons.push("contracts_not_economically_equivalent");
-  if (longContract.asset !== shortContract.asset) reasons.push("asset_mismatch");
-  if (longContract.contract_type !== shortContract.contract_type) reasons.push("contract_type_mismatch");
+  reasons.push(...contractPairBasis.reasons);
   if (notional < longContract.minimum_notional_micro_usdc || notional < shortContract.minimum_notional_micro_usdc) {
     reasons.push("notional_below_venue_minimum");
   }
@@ -222,6 +274,15 @@ export function evaluateCarryOpportunity(value) {
     break_even_ms: breakEvenMs,
     contract_data_skew_ms: contractDataSkewMs,
     max_contract_data_skew_ms: maxContractDataSkewMs,
+    contract_pair_basis: contractPairBasis,
+    economic_equivalence_id: contractPairBasis.economic_equivalence_id,
+    contract_type: contractPairBasis.contract_type,
+    long_quote_asset: contractPairBasis.long_quote_asset,
+    short_quote_asset: contractPairBasis.short_quote_asset,
+    index_price_divergence_bps: contractPairBasis.index_price_divergence_bps,
+    mark_price_divergence_bps: contractPairBasis.mark_price_divergence_bps,
+    max_index_price_divergence_bps: contractPairBasis.max_index_price_divergence_bps,
+    max_mark_price_divergence_bps: contractPairBasis.max_mark_price_divergence_bps,
     margin_runways: marginRunways,
     checked_at_ms: nowMs,
   });
@@ -826,6 +887,25 @@ function microFromE6BpsCeil(amount, e6Bps) {
 
 function ratioBpsFloor(amount, denominator) {
   return safeNumber(floorDiv(BigInt(amount) * 10_000n, BigInt(denominator)));
+}
+
+function priceDivergenceBpsCeil(left, right) {
+  const lower = Math.min(left, right);
+  const difference = Math.abs(left - right);
+  return safeNumber(ceilDiv(BigInt(difference) * 10_000n, BigInt(lower)));
+}
+
+function normalizePairContract(value, leg) {
+  const raw = object(value, `carry_${leg}_pair_contract_required`);
+  return deepFreeze({
+    venue_id: venue(raw.venue_id, `carry_${leg}_pair_contract_venue`),
+    economic_equivalence_id: identifier(raw.economic_equivalence_id, `carry_${leg}_pair_economic_equivalence_id`),
+    asset: normalized(raw.asset, ASSET, `carry_${leg}_pair_asset`),
+    quote_asset: normalized(raw.quote_asset, ASSET, `carry_${leg}_pair_quote_asset`),
+    contract_type: enumValue(raw.contract_type, new Set(["linear_perp", "inverse_perp"]), `carry_${leg}_pair_contract_type`),
+    mark_price_e8: positiveInteger(raw.mark_price_e8, `carry_${leg}_pair_mark_price`),
+    index_price_e8: positiveInteger(raw.index_price_e8, `carry_${leg}_pair_index_price`),
+  });
 }
 
 function requireStatus(position, allowed) {

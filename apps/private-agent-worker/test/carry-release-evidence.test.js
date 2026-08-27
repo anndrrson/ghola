@@ -28,6 +28,7 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.equal(result.material.exit.legs.every((leg) => leg.reduce_only), true);
   assert.equal(result.material.monitoring.observation_count, 1);
   assert.equal(result.material.monitoring.margin_runways[0].status, "healthy");
+  assert.equal(result.material.contract_equivalence.index_price_divergence_bps, 3);
   assert.equal(result.material.final_state.open_order_count, 0);
   assert.equal(result.material.value_ledger.realized.net_value_micro_usdc, 34);
   assert.match(result.material.worker_material_commitment, /^carry:release:material:[0-9a-f]{64}$/);
@@ -57,6 +58,19 @@ test("refuses release evidence without verified margin-runway status", async () 
     now_ms: NOW,
   });
   assert.equal(result.error, "carry_release_margin_runway_evidence_missing");
+});
+
+test("refuses release evidence without bounded contract equivalence", async () => {
+  const fixture = await stateFixture();
+  fixture.record.opportunity.index_price_divergence_bps = 26;
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_contract_equivalence_exceeded");
 });
 
 test("refuses to claim one-submit proof without a durable attempt counter", async () => {
@@ -95,6 +109,19 @@ async function stateFixture() {
       risk_mandate: riskMandate(),
       created_at_ms: 1_800_000_000_000,
       status: "reconciled",
+    },
+    opportunity: {
+      checked_at_ms: 1_800_000_000_000,
+      economic_equivalence_id: "carry:HYPE-usd-linear",
+      contract_type: "linear_perp",
+      long_quote_asset: "USD",
+      short_quote_asset: "USDT",
+      contract_data_skew_ms: 400,
+      max_contract_data_skew_ms: 2_000,
+      index_price_divergence_bps: 3,
+      mark_price_divergence_bps: 7,
+      max_index_price_divergence_bps: 25,
+      max_mark_price_divergence_bps: 50,
     },
     lifecycle_events: [
       {

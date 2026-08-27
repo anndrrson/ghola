@@ -110,7 +110,7 @@ test("rejects stale concurrent Carry Position writers", async (t) => {
   assert.equal(stale.error, "carry_record_version_conflict");
 });
 
-test("refuses storage until venue accounts, synchronized data, and margin runways pass", async (t) => {
+test("refuses storage until venue accounts, synchronized equivalent contracts, and margin runways pass", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-readiness-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
@@ -141,6 +141,15 @@ test("refuses storage until venue accounts, synchronized data, and margin runway
     now_ms: NOW,
   });
   assert.deepEqual(skewed, { ok: false, error: "carry_market_data_skew_exceeded" });
+  const divergent = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: await positionInput(),
+    opportunity: { ...opportunity(), index_price_divergence_bps: 26 },
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  assert.deepEqual(divergent, { ok: false, error: "carry_contract_basis_exceeded" });
 });
 
 test("creates only a capped, explicitly enabled qualification pilot", async (t) => {
@@ -399,6 +408,14 @@ function opportunity() {
     break_even_ms: 3_600_000,
     contract_data_skew_ms: 0,
     max_contract_data_skew_ms: 2_000,
+    index_price_divergence_bps: 0,
+    mark_price_divergence_bps: 0,
+    max_index_price_divergence_bps: 25,
+    max_mark_price_divergence_bps: 50,
+    economic_equivalence_id: "carry:BTC-usd-linear",
+    contract_type: "linear_perp",
+    long_quote_asset: "USD",
+    short_quote_asset: "USD",
     checked_at_ms: NOW,
     all_venues_ready: true,
     live_creation_ready: true,

@@ -107,6 +107,26 @@ function validateCreationOpportunity(positionInput, opportunity, nowMs, qualific
   if (opportunity.contract_data_skew_ms > opportunity.max_contract_data_skew_ms) {
     return "carry_market_data_skew_exceeded";
   }
+  const contractBasisValues = [
+    opportunity.index_price_divergence_bps,
+    opportunity.mark_price_divergence_bps,
+    opportunity.max_index_price_divergence_bps,
+    opportunity.max_mark_price_divergence_bps,
+  ];
+  if (!contractBasisValues.every((value) => Number.isInteger(value) && value >= 0 && value <= 10_000)) {
+    return "carry_contract_basis_invalid";
+  }
+  if (opportunity.index_price_divergence_bps > opportunity.max_index_price_divergence_bps
+    || opportunity.mark_price_divergence_bps > opportunity.max_mark_price_divergence_bps) {
+    return "carry_contract_basis_exceeded";
+  }
+  if (typeof opportunity.economic_equivalence_id !== "string"
+    || opportunity.economic_equivalence_id.length < 8
+    || opportunity.contract_type !== "linear_perp"
+    || !["USD", "USDC", "USDT"].includes(opportunity.long_quote_asset)
+    || !["USD", "USDC", "USDT"].includes(opportunity.short_quote_asset)) {
+    return "carry_contract_equivalence_evidence_invalid";
+  }
   const modeledAmounts = [
     opportunity.notional_micro_usdc,
     opportunity.capital_committed_micro_usdc,
@@ -595,6 +615,14 @@ function publicOpportunity(value) {
     break_even_ms: value.break_even_ms,
     contract_data_skew_ms: value.contract_data_skew_ms,
     max_contract_data_skew_ms: value.max_contract_data_skew_ms,
+    index_price_divergence_bps: value.index_price_divergence_bps,
+    mark_price_divergence_bps: value.mark_price_divergence_bps,
+    max_index_price_divergence_bps: value.max_index_price_divergence_bps,
+    max_mark_price_divergence_bps: value.max_mark_price_divergence_bps,
+    economic_equivalence_id: String(value.economic_equivalence_id || ""),
+    contract_type: String(value.contract_type || ""),
+    long_quote_asset: String(value.long_quote_asset || ""),
+    short_quote_asset: String(value.short_quote_asset || ""),
     checked_at_ms: value.checked_at_ms,
     all_venues_ready: value.all_venues_ready === true,
     live_creation_ready: value.live_creation_ready === true,

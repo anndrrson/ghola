@@ -116,6 +116,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreIndex", 'from "./venues.js"', "registry_export_missing");
   requireText("coreIndex", "venueAdapterCapability", "adapter_capability_export_missing");
   requireText("coreIndex", 'from "./carry.js"', "carry_domain_export_missing");
+  requireText("coreIndex", "evaluatePerpContractPairBasis", "carry_contract_basis_export_missing");
   requireText("webRegistry", 'from "@ghola/execution-core"', "web_registry_bridge_missing");
   requireText("webRegistry", "EXECUTION_CORE_CARRY_VENUES", "web_execution_registry_missing");
   requireText("webRegistry", "EXECUTION_CORE_PERP_VENUES", "web_shadow_registry_missing");
@@ -145,6 +146,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("preflight", "carry_shadow_unavailable", "stale_shadow_quarantine_missing");
   requireText("preflight", "carry_market_data_skew_exceeded", "carry_market_data_skew_gate_missing");
   requireText("preflightTest", "rejects cross-venue market data skew before account or order verification", "carry_market_data_skew_test_missing");
+  requireText("preflight", "carry_contract_equivalence_failed", "carry_contract_equivalence_gate_missing");
+  requireText("preflightTest", "rejects same-ticker contract basis divergence before account or order verification", "carry_contract_equivalence_test_missing");
   requireText("preflight", "collateral_basis", "collateral_basis_model_missing");
   requireText("preflight", "export async function preflightCarryExecutionMatrix", "carry_three_venue_no_submit_matrix_missing");
   requireText("preflightTest", "verifies all three execution venues through one no-broadcast matrix", "carry_three_venue_no_submit_matrix_test_missing");
@@ -153,6 +156,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarry", "collateral_basis_risk_bps", "collateral_basis_stress_missing");
   requireText("coreCarry", "contract_data_skew_exceeded", "carry_contract_skew_model_missing");
   requireText("coreCarryTest", "rejects a false carry spread built from cross-venue observations outside the skew budget", "carry_contract_skew_model_test_missing");
+  requireText("coreCarry", "evaluatePerpContractPairBasis", "carry_contract_basis_model_missing");
+  requireText("coreCarry", "index_price_divergence_exceeded", "carry_index_basis_veto_missing");
+  requireText("coreCarryTest", "rejects same-ticker contracts whose index or mark basis exceeds equivalence budgets", "carry_contract_basis_model_test_missing");
   requireText("coreCarry", "calculateMarginRunway", "margin_runway_model_missing");
   requireText("coreCarry", "margin_runway_unverifiable", "margin_runway_unverifiable_exit_missing");
   requireText("coreCarry", "carryRiskMandateMessage", "carry_signed_mandate_message_missing");
@@ -167,6 +173,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webPerpsTurnkey", "signCarryRiskMandate", "carry_turnkey_owner_signing_missing");
   requireText("webCarryBuilder", "signCarryRiskMandate", "carry_terminal_owner_approval_missing");
   requireText("webCarryBuilder", 'label="SOURCE SYNC"', "carry_terminal_source_sync_missing");
+  requireText("webCarryBuilder", 'label="INDEX BASIS"', "carry_terminal_index_basis_missing");
   requireText("webMandate", "recoverMessageAddress", "carry_web_signature_recovery_missing");
   requireText("webMandateTest", "rejects wrong-owner, expired, and cross-position replay", "carry_signed_mandate_replay_test_missing");
   requireText("workerMandateTest", "worker rejects mandate mutation, owner replay, and expiry", "carry_worker_mandate_tamper_test_missing");
@@ -183,6 +190,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterial", "buildCompletedCarryReleaseMaterial", "carry_release_material_builder_missing");
   requireText("releaseMaterial", "carry_release_monitoring_evidence_missing", "carry_release_monitoring_gate_missing");
   requireText("releaseMaterial", "carry_release_margin_runway_evidence_missing", "carry_release_runway_gate_missing");
+  requireText("releaseMaterial", "carry_release_contract_equivalence_exceeded", "carry_release_contract_basis_gate_missing");
+  requireText("releaseMaterial", "contract_equivalence: contractEquivalence.evidence", "carry_release_contract_basis_evidence_missing");
   requireText("releaseMaterial", "carry_release_signed_mandate_unproven", "carry_release_signed_mandate_gate_missing");
   requireText("releaseMaterial", "owner_signature", "carry_release_owner_signature_missing");
   requireText("releaseMaterial", "status: runwayStatuses[venueId]", "carry_release_runway_status_missing");
@@ -211,11 +220,15 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_MAX_NOTIONAL_MICRO_USDC", "pilot_notional_cap_missing");
   requireText("positions", "margin_runway_status_by_venue", "carry_monitor_runway_status_missing");
   requireText("positions", 'return "carry_market_data_skew_exceeded"', "carry_storage_skew_gate_missing");
-  requireText("positionsTest", "refuses storage until venue accounts, synchronized data, and margin runways pass", "carry_storage_skew_test_missing");
+  requireText("positions", 'return "carry_contract_basis_exceeded"', "carry_storage_contract_basis_gate_missing");
+  requireText("positionsTest", "refuses storage until venue accounts, synchronized equivalent contracts, and margin runways pass", "carry_storage_skew_test_missing");
   requireText("positionsTest", "margin_runway_status_by_venue.hyperliquid", "carry_monitor_runway_status_test_missing");
   requireText("releaseMaterialTest", "refuses release evidence without verified margin-runway status", "carry_release_runway_test_missing");
+  requireText("releaseMaterialTest", "refuses release evidence without bounded contract equivalence", "carry_release_contract_basis_test_missing");
   requireText("evidenceVerifier", "margin_runway_status_missing", "carry_evidence_runway_status_gate_missing");
   requireText("evidenceVerifierTest", "rejects margin-runway proof without verified status", "carry_evidence_runway_status_test_missing");
+  requireText("evidenceVerifier", "contract_index_basis_exceeded", "carry_evidence_contract_basis_gate_missing");
+  requireText("evidenceVerifierTest", "rejects same-ticker proof whose contract basis exceeds the verified budget", "carry_evidence_contract_basis_test_missing");
   requireText("executor", "carry_qualification_pilot_confirmation_required", "pilot_confirmation_gate_missing");
   requireText("executor", "submission_ambiguous", "carry_ambiguity_freeze_missing");
   requireText("executor", "carry_exit_not_flat_or_open_orders_nonzero", "carry_final_flat_gate_missing");
@@ -225,12 +238,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED', "carry_pilot_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_MAX_NOTIONAL_MICRO_USDC', "carry_pilot_cap_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS', "carry_market_data_skew_compose_missing");
+  requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS', "carry_index_basis_compose_missing");
+  requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS', "carry_mark_basis_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MONITOR_ENABLED', "carry_monitor_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS', "carry_monitor_interval_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY', "carry_monitor_concurrency_compose_missing");
   requireText("positions", "mapConcurrentOrdered(records, concurrency", "carry_monitor_bounded_concurrency_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: "5000"', "carry_monitor_five_second_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS: "750"', "carry_market_data_skew_runtime_test_missing");
+  requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS: "12"', "carry_index_basis_runtime_test_missing");
+  requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS: "24"', "carry_mark_basis_runtime_test_missing");
   requireText("phalaConfig", "...expectedCarryWorkerConfig()", "carry_runtime_drift_gate_missing");
   requireText("phalaConfigTest", "pins an explicitly enabled capped Carry qualification runtime", "carry_runtime_drift_test_missing");
   requireText("server", 'req.headers["x-ghola-carry-qualification-confirmed"] === "true"', "worker_confirmation_header_missing");
@@ -282,6 +299,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilderTest", "fails closed when the initial position sync is unavailable", "carry_terminal_position_sync_test_missing");
   requireText("webCarryBuilderTest", "shows compact live margin-runway evidence inside the terminal", "carry_terminal_runway_display_test_missing");
   requireText("webCarryBuilderTest", 'toContain("400MS")', "carry_terminal_source_sync_test_missing");
+  requireText("webCarryBuilderTest", 'toContain("3BP")', "carry_terminal_index_basis_test_missing");
   const quoteEvaluationCount = String(sources.webCarryChart || "")
     .match(/quoteCarryCandidate\s*\(/g)?.length || 0;
   if (quoteEvaluationCount > 0) failures.push("carry_redundant_quote_rendering");

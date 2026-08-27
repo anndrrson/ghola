@@ -73,6 +73,10 @@ describe("CarryTerminalBuilder", () => {
         eligible: true,
         contract_data_skew_ms: 400,
         max_contract_data_skew_ms: 2_000,
+        index_price_divergence_bps: 3,
+        mark_price_divergence_bps: 7,
+        max_index_price_divergence_bps: 25,
+        max_mark_price_divergence_bps: 50,
       },
     });
     api.createCarryPosition.mockResolvedValue({ ok: true, record });
@@ -87,6 +91,8 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("PAIR PAIR-TEST-12");
     expect(container.textContent).toContain("SOURCE SYNC");
     expect(container.textContent).toContain("400MS");
+    expect(container.textContent).toContain("INDEX BASIS");
+    expect(container.textContent).toContain("3BP");
     expect(api.createCarryPosition).not.toHaveBeenCalled();
     expect(api.executeCarryPositionEntry).not.toHaveBeenCalled();
 

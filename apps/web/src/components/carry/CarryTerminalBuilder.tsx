@@ -286,6 +286,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="COLLATERAL" value={formatUsd(model.minimumCollateralUsd)} />
         <Metric label="MIN RUNWAY" value={runway.value} tone={runway.tone} />
         <Metric label="SOURCE SYNC" value={proofOpportunity ? formatSkew(proofOpportunity.contract_data_skew_ms) : "PENDING"} />
+        <Metric label="INDEX BASIS" value={proofOpportunity ? formatBasis(proofOpportunity.index_price_divergence_bps) : "PENDING"} />
         <Metric label="MONITOR" value={monitorAge(latestObservation?.recorded_at_ms)} />
       </div>
 
@@ -381,6 +382,12 @@ function monitorAge(recordedAtMs: number | undefined) {
 function formatSkew(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? value < 1_000 ? `${Math.round(value)}MS` : `${(value / 1_000).toFixed(1)}S`
+    : "UNVERIFIED";
+}
+
+function formatBasis(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? `${Math.round(value)}BP`
     : "UNVERIFIED";
 }
 

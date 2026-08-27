@@ -262,6 +262,42 @@ test("rejects cross-venue market data skew before account or order verification"
   assert.equal(verified, false);
 });
 
+test("rejects same-ticker contract basis divergence before account or order verification", async () => {
+  let verified = false;
+  await assert.rejects(
+    preflightCarryPair({
+      body: {
+        version: 1,
+        owner_commitment: "owner_commitment_basis_0001",
+        work_order_commitment: "carry_pair_basis_0001",
+        asset: "BTC",
+        long_venue_id: "hyperliquid",
+        short_venue_id: "aster",
+        notional_usd: 100,
+        horizon_days: 30,
+        venue_access: {
+          hyperliquid: access("owner_commitment_basis_0001"),
+          aster: access("owner_commitment_basis_0001"),
+        },
+      },
+      recipient: {},
+      state: {},
+      env: {
+        PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS: "25",
+        PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS: "50",
+      },
+      now: () => NOW,
+      fetchVenue: async ({ venue_id }) => [{
+        ...snapshot(venue_id),
+        index_price_e8: venue_id === "aster" ? 10_050_000_000_000 : 10_000_000_000_000,
+      }],
+      verifyOrder: async () => { verified = true; },
+    }),
+    (error) => error?.code === "carry_contract_equivalence_failed:index_price_divergence_exceeded",
+  );
+  assert.equal(verified, false);
+});
+
 test("rejects cross-owner sealed venue access before order verification", async () => {
   let verified = false;
   await assert.rejects(

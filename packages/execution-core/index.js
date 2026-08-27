@@ -24,6 +24,7 @@ export {
   createCarryPosition,
   createCarryValueLedger,
   evaluateCarryOpportunity,
+  evaluatePerpContractPairBasis,
   finalizeCarryValueLedger,
   normalizeCarryRiskMandate,
   normalizeCarryRiskMandateAuthorization,
