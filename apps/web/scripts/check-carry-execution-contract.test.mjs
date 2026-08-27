@@ -36,6 +36,16 @@ test("rejects background Carry failures that are no longer supervised", () => {
   );
 });
 
+test("rejects live Carry entry that ignores degraded supervision", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replaceAll("carry_supervision_not_ready", "carry_entry_allowed_anyway"),
+    }),
+    /carry_entry_supervision_gate_missing/,
+  );
+});
+
 test("rejects carry entry without durable adverse funding evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({

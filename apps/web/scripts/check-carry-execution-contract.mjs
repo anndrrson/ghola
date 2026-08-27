@@ -670,6 +670,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "supervisor.runOnce", "carry_monitor_supervision_missing");
   requireText("executor", "supervisor.runOnce", "carry_execution_supervision_missing");
   requireText("server", "carry_supervision: carrySupervision", "carry_supervision_health_missing");
+  requireText("server", "carry_supervision_not_ready", "carry_entry_supervision_gate_missing");
+  requireText("serverTest", "reports degraded Carry supervision without pretending the worker stopped", "carry_supervision_http_test_missing");
+  requireText("webCarryBuilder", "carrySupervisionSummary", "carry_terminal_supervision_missing");
+  requireText("webCarryBuilder", "RISK ENGINE NOT READY", "carry_terminal_supervision_gate_missing");
+  requireText("webCarryBuilderTest", "blocks a draft entry when monitoring or automatic exit is degraded", "carry_terminal_supervision_test_missing");
   requireText("loopSupervisorTest", "without leaking exception text", "carry_loop_error_redaction_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: "5000"', "carry_monitor_five_second_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS: "750"', "carry_market_data_skew_runtime_test_missing");

@@ -501,6 +501,19 @@ describe("private agent worker", () => {
     const readyResponse = await fetch(`${baseUrl}/ready`);
     const ready = await readyResponse.json();
     assert.equal(ready.carry_supervision.status, "degraded");
+
+    const entryResponse = await fetch(`${baseUrl}/carry/positions/execute-entry`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-live-order-confirmed": "true",
+      },
+      body: "{}",
+    });
+    const entry = await entryResponse.json();
+    assert.equal(entryResponse.status, 503);
+    assert.equal(entry.error, "carry_supervision_not_ready");
   });
 
   it("publishes redacted proposal-model status with readiness", async () => {
@@ -669,6 +682,7 @@ describe("private agent worker", () => {
     assert.equal(matrix.no_submit_ready, true, JSON.stringify(matrix));
     assert.equal(matrix.transaction_broadcast, false);
     assert.equal(matrix.pairs.length, 3);
+    assert.equal(matrix.carry_supervision.status, "disabled");
     assert.equal(matrix.pairs.every((pair) => pair.leg_evidence.every((leg) =>
       leg.account_state.position_count === 0
       && leg.account_state.open_order_count === 0
@@ -692,6 +706,7 @@ describe("private agent worker", () => {
     const readiness = await readinessResponse.json();
     assert.equal(readinessResponse.status, 200, JSON.stringify(readiness));
     assert.equal(readiness.ready, true);
+    assert.equal(readiness.carry_supervision.status, "disabled");
     assert.equal(readiness.capital_plan.every((item) =>
       item.position_count === 0
       && item.open_order_count === 0

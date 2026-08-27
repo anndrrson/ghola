@@ -234,12 +234,14 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
       return;
     }
     let cancelled = false;
-    void getCarryExecutionReadiness({
-      asset: candidate.asset,
-      notional_usd: notional,
-      horizon_days: days,
-    })
-      .then((value) => {
+    let timer: number | null = null;
+    const refresh = async () => {
+      try {
+        const value = await getCarryExecutionReadiness({
+          asset: candidate.asset,
+          notional_usd: notional,
+          horizon_days: days,
+        });
         if (cancelled) return;
         const next = asRecord(value);
         setReadiness(next);
@@ -249,11 +251,17 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
             ? diagnostic
             : current);
         }
-      })
-      .catch(() => {
+      } catch {
         if (!cancelled) setReadiness(null);
-      });
-    return () => { cancelled = true; };
+      } finally {
+        if (!cancelled) timer = window.setTimeout(refresh, document.hidden ? 30_000 : 5_000);
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
   }, [candidate.asset, days, notional, privateSessionReady, routeKey]);
 
   const routeRecords = records.filter((record) => record.position.asset === candidate.asset
@@ -307,6 +315,9 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const displayedCapital = latestObservation?.capital_action_plan ? capital : openingCapital;
   const restoredReadiness = readyStoredReadiness(readiness, candidate.asset, notional, days);
   const fleetGuard = carryFleetGuardSummary(executionMatrix, restoredReadiness);
+  const supervision = carrySupervisionSummary(asRecord(
+    readiness?.carry_supervision || executionMatrix?.carry_supervision,
+  ));
 
   const invalidateProof = (setter: (value: string) => void) => (value: string) => {
     setter(value);
@@ -552,7 +563,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${candidate.asset}-PERP&carry=open&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}`;
   const setupHref = `/account?setup=carry&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}&return_to=${encodeURIComponent(terminalReturn)}`;
   const canSave = proof?.live_creation_ready === true || proof?.qualification_pilot_ready === true;
-  const canEnter = current?.position.status === "draft";
+  const canEnter = current?.position.status === "draft" && supervision.ready;
   const canExit = current ? ["active", "rebalancing", "frozen"].includes(current.position.status) : false;
   return (
     <div className="mt-2 grid gap-2 border-t border-[#1d2733] pt-2 lg:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]" aria-label="Carry position builder">
@@ -575,6 +586,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="INDEX BASIS" value={proofOpportunity ? formatBasis(proofOpportunity.index_price_divergence_bps) : "PENDING"} />
         <Metric label="EDGE CONF" value={fundingPersistence.value} tone={fundingPersistence.tone} />
         <Metric label="FLEET GUARD" value={fleetGuard.value} tone={fleetGuard.tone} />
+        <Metric label="RISK ENGINE" value={supervision.value} tone={supervision.tone} />
         <Metric label="MONITOR" value={monitorAge(latestObservation?.recorded_at_ms)} />
       </div>
 
@@ -605,6 +617,10 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
           ) : !current && canSave ? (
             <button type="button" disabled={busy !== null} onClick={() => void savePosition()} className="rounded border border-[#31577a] bg-[#10243a] px-2 py-2 font-mono text-[10px] font-semibold text-[#b7ddff] disabled:opacity-40">
               {busy === "save" ? "SAVING…" : migrationSource ? "SIGN MIGRATION" : proof?.qualification_pilot_ready === true ? "ARM CAPPED PROOF" : "SAVE POSITION"}
+            </button>
+          ) : current?.position.status === "draft" && !supervision.ready ? (
+            <button type="button" disabled className="rounded border border-[#63333b] bg-[#231014] px-2 py-2 font-mono text-[10px] font-semibold text-[#ef929e] opacity-70">
+              RISK ENGINE NOT READY
             </button>
           ) : canEnter && current ? (
             <button type="button" disabled={busy !== null} onClick={() => void enterPosition(current)} className="rounded border border-[#6b4d25] bg-[#24190b] px-2 py-2 font-mono text-[10px] font-semibold text-[#f0c879] disabled:opacity-40">
@@ -1307,6 +1323,26 @@ export function carryFleetGuardSummary(
     receipt: `${readyPairs}/${pairs.length} · ${detail}${age ? ` · ${age}` : ""}`,
     tone: readyPairs > 0 ? "warn" : "bad",
   };
+}
+
+export function carrySupervisionSummary(value: Record<string, unknown>): {
+  ready: boolean;
+  value: string;
+  tone?: "good" | "warn" | "bad";
+} {
+  if (value.ready === true && value.status === "healthy") {
+    return { ready: true, value: "MONITOR + EXIT LIVE", tone: "good" };
+  }
+  const monitoring = asRecord(value.monitoring);
+  const execution = asRecord(value.execution);
+  const degraded = [
+    monitoring.status === "degraded" || monitoring.status === "failed" ? "MONITOR" : null,
+    execution.status === "degraded" || execution.status === "failed" ? "EXIT" : null,
+  ].filter(Boolean);
+  if (degraded.length) return { ready: false, value: `${degraded.join(" + ")} DEGRADED`, tone: "bad" };
+  if (value.status === "starting") return { ready: false, value: "STARTING", tone: "warn" };
+  if (value.status === "disabled" || value.status === "stopped") return { ready: false, value: "OFFLINE", tone: "bad" };
+  return { ready: false, value: "UNVERIFIED", tone: "warn" };
 }
 
 function readyStoredDiagnostic(value: Record<string, unknown>, asset: string, notional: string, days: string) {

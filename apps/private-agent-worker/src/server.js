@@ -2898,7 +2898,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
         }
-        return json(res, 200, await preflightCarryExecutionMatrix({
+        const matrix = await preflightCarryExecutionMatrix({
           body,
           recipient,
           state,
@@ -2906,7 +2906,8 @@ export function createPrivateAgentWorkerServer(options = {}) {
           readHyperliquidSnapshot: options.carryReadHyperliquidSnapshot || readHyperliquidSnapshot,
           readHyperliquidCarryMetrics: options.carryReadHyperliquidMetrics || readHyperliquidCarryMetrics,
           ...(options.carryFetchVenue ? { fetchVenue: options.carryFetchVenue } : {}),
-        }));
+        });
+        return json(res, 200, { ...matrix, carry_supervision: carrySupervision });
       }
 
       if (req.method === "POST" && url.pathname === "/carry/readiness") {
@@ -2953,7 +2954,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
             now_ms: nowMs,
           }),
         ]);
-        return json(res, 200, { ...readiness, diagnostic });
+        return json(res, 200, { ...readiness, diagnostic, carry_supervision: carrySupervision });
       }
 
       if (req.method === "POST" && url.pathname.startsWith("/carry/positions")) {
@@ -2966,6 +2967,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
         }
         if (url.pathname === "/carry/positions/execute-entry" && req.headers["x-ghola-live-order-confirmed"] !== "true") {
           return json(res, 400, { error: "live order confirmation header is required" });
+        }
+        if (url.pathname === "/carry/positions/execute-entry" && carrySupervision.ready !== true) {
+          return json(res, 503, {
+            error: "carry_supervision_not_ready",
+            carry_supervision: carrySupervision,
+          });
         }
         const carryRoutes = {
           "/carry/positions": ["carry:write", (body) => createStoredCarryPosition({

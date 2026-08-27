@@ -7,6 +7,7 @@ import {
   carryFundingPersistenceSummary,
   carryOpeningCapitalSummary,
   carryPortfolioRunwaySummary,
+  carrySupervisionSummary,
   carryTerminalEconomics,
   carryTerminalGrossFunding,
   carryVenueMinimumMarginSummary,
@@ -79,7 +80,11 @@ describe("CarryTerminalBuilder", () => {
     perps.signCarryRiskMandate.mockReset();
     perps.signCarryCollateralReview.mockReset();
     api.getPrivateAgentPassport.mockResolvedValue({ owner_commitment: "owner:carry:web:test:0001" });
-    api.getCarryExecutionReadiness.mockResolvedValue({ ready: false, reasons: ["carry_readiness_evidence_missing"] });
+    api.getCarryExecutionReadiness.mockResolvedValue({
+      ready: false,
+      reasons: ["carry_readiness_evidence_missing"],
+      carry_supervision: healthySupervision(),
+    });
     api.getCarryPortfolioCapitalPlan.mockResolvedValue({
       ok: true,
       plan: {
@@ -594,6 +599,23 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).not.toContain("CONFIRM LIVE PAIRED ENTRY");
   });
 
+  it("blocks a draft entry when monitoring or automatic exit is degraded", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [carryRecord()] });
+    api.getCarryExecutionReadiness.mockResolvedValue({
+      ...readyReadiness(),
+      carry_supervision: {
+        ...healthySupervision(),
+        ready: false,
+        status: "degraded",
+        execution: { status: "failed", last_error_code: "carry_execution_threw" },
+      },
+    });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    expect(container.textContent).toContain("EXIT DEGRADED");
+    expect(container.textContent).toContain("RISK ENGINE NOT READY");
+    expect(container.textContent).not.toContain("CONFIRM LIVE PAIRED ENTRY");
+  });
+
   it("shows owner-only releasable collateral without implying an automatic transfer", async () => {
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
     api.getCarryPortfolioCapitalPlan.mockResolvedValue({
@@ -907,6 +929,23 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("SAFE RUNWAY VERIFIED · NO FUNDS MOVED");
   });
 
+  it("summarizes monitoring and automatic-exit supervision independently", () => {
+    expect(carrySupervisionSummary(healthySupervision())).toEqual({
+      ready: true,
+      value: "MONITOR + EXIT LIVE",
+      tone: "good",
+    });
+    expect(carrySupervisionSummary({
+      status: "degraded",
+      monitoring: { status: "failed" },
+      execution: { status: "degraded" },
+    })).toEqual({
+      ready: false,
+      value: "MONITOR + EXIT DEGRADED",
+      tone: "bad",
+    });
+  });
+
   async function click(label: string) {
     const button = [...container.querySelectorAll("button")].find((item) => item.textContent?.includes(label));
     expect(button, `missing button: ${label}`).toBeTruthy();
@@ -985,6 +1024,16 @@ function readyMatrix() {
       transaction_broadcast: false,
     })),
     readiness: readyReadiness(),
+    carry_supervision: healthySupervision(),
+  };
+}
+
+function healthySupervision() {
+  return {
+    ready: true,
+    status: "healthy",
+    monitoring: { status: "healthy", run_count: 2, consecutive_failures: 0 },
+    execution: { status: "healthy", run_count: 2, consecutive_failures: 0 },
   };
 }
 
