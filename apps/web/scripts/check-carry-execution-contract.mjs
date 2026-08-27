@@ -46,6 +46,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webCollateralReview: "apps/web/src/lib/carry-collateral-review.ts",
   webPerpsTurnkey: "apps/web/src/lib/perps-turnkey-provider.tsx",
   webRegistry: "apps/web/src/lib/carry-venues.ts",
+  webCredentialOnboarding: "apps/web/src/lib/venue-credential-onboarding.ts",
+  webCredentialOnboardingTest: "apps/web/src/lib/venue-credential-onboarding.test.ts",
   webPage: "apps/web/src/app/carry/page.tsx",
   webTradeWorkspace: "apps/web/src/components/trade/PublicCoinbaseLiveTrade.tsx",
   webCarryChart: "apps/web/src/components/carry/CarryChartStrip.tsx",
@@ -178,6 +180,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webRegistry", "EXECUTION_CORE_PERP_VENUES", "web_shadow_registry_missing");
   requireText("webRegistry", "EXECUTION_CORE_BROWSER_STREAM_VENUES", "web_stream_registry_missing");
   forbidText("webRegistry", '["hyperliquid", "lighter", "aster"]', "web_execution_registry_duplicated");
+  requireText("webCredentialOnboarding", "export type CredentialOnboardingVenue = CarryExecutionVenue", "carry_onboarding_registry_type_missing");
+  requireText("webCredentialOnboardingTest", "derives onboarding coverage from the execution capability registry", "carry_onboarding_registry_test_missing");
+  requireText("webCredentialOnboardingTest", "for (const venue of CARRY_EXECUTION_VENUES)", "carry_onboarding_registry_iteration_missing");
+  requireText("webClient", "venue_id: CarryExecutionVenue;", "carry_platform_link_registry_type_missing");
   requireText("webPrivateAccount", "...CARRY_EXECUTION_VENUES", "private_account_manifest_registry_missing");
   requireText("webPrivateAccount", "type CarryExecutionVenueId", "private_account_venue_type_registry_missing");
   if (String(sources.webPrivateAccount || "").split("if (isCarryExecutionVenue(venueId))").length - 1 < 3) {

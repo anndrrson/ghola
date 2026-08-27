@@ -4,7 +4,9 @@ import {
   getVenueCredentialOnboardingCapability,
   getVenueCredentialOnboardingPath,
   VENUE_CREDENTIAL_ONBOARDING_MODES,
+  VENUE_CREDENTIAL_ONBOARDING,
 } from "./venue-credential-onboarding";
+import { CARRY_EXECUTION_VENUES } from "./carry-venues";
 
 describe("venue credential onboarding capabilities", () => {
   it("models the three credential-provisioning boundaries", () => {
@@ -14,6 +16,10 @@ describe("venue credential onboarding capabilities", () => {
       "venue_controlled_owner_association",
       "manual_only",
     ]);
+  });
+
+  it("derives onboarding coverage from the execution capability registry", () => {
+    expect(Object.keys(VENUE_CREDENTIAL_ONBOARDING)).toEqual(CARRY_EXECUTION_VENUES);
   });
 
   it("advertises Hyperliquid automation without claiming silent authorization or trading", () => {
@@ -101,7 +107,7 @@ describe("venue credential onboarding capabilities", () => {
   });
 
   it("never allows setup metadata to imply a trade", () => {
-    for (const venue of ["hyperliquid", "lighter", "aster"] as const) {
+    for (const venue of CARRY_EXECUTION_VENUES) {
       for (const path of getVenueCredentialOnboardingCapability(venue).paths) {
         expect(path.may_place_trade_during_setup).toBe(false);
       }

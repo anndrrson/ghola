@@ -683,7 +683,7 @@ export async function getPrivateAgentPassport() {
 }
 
 export async function linkPrivateAgentPlatform(input: {
-  venue_id: "hyperliquid" | "lighter" | "aster";
+  venue_id: CarryExecutionVenue;
   encrypted_execution_vault: AsterEncryptedExecutionVaultBundle | LighterEncryptedExecutionVaultBundle;
 }) {
   return privateAccountFetch("/v1/private-account/platforms/link", {

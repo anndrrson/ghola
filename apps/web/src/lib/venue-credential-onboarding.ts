@@ -6,7 +6,7 @@ export const VENUE_CREDENTIAL_ONBOARDING_MODES = [
 ] as const;
 
 export type VenueCredentialOnboardingMode = typeof VENUE_CREDENTIAL_ONBOARDING_MODES[number];
-export type CredentialOnboardingVenue = "hyperliquid" | "lighter" | "aster";
+export type CredentialOnboardingVenue = CarryExecutionVenue;
 export type CredentialPathAvailability = "available" | "feature_gated" | "documented_not_implemented";
 
 export interface VenueCredentialOnboardingPath {
@@ -238,3 +238,4 @@ export function getVenueCredentialOnboardingPath(
 ) {
   return getVenueCredentialOnboardingCapability(venue).paths.find((path) => path.mode === mode) ?? null;
 }
+import type { CarryExecutionVenue } from "./carry-venues";

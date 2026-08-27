@@ -52,6 +52,19 @@ test("rejects private-account policy that drifts from the Carry registry", () =>
   );
 });
 
+test("rejects credential onboarding that duplicates the Carry venue union", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCredentialOnboarding: sources.webCredentialOnboarding.replace(
+        "export type CredentialOnboardingVenue = CarryExecutionVenue",
+        'export type CredentialOnboardingVenue = "hyperliquid" | "lighter" | "aster"',
+      ),
+    }),
+    /carry_onboarding_registry_type_missing/,
+  );
+});
+
 test("rejects qualification evidence not bound to the deployed image", () => {
   assert.throws(
     () => checkCarryExecutionContract({
