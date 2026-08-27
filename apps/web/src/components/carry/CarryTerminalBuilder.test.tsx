@@ -5,6 +5,8 @@ import {
   CarryTerminalBuilder,
   carryOpeningCapitalSummary,
   carryTerminalEconomics,
+  carryTerminalGrossFunding,
+  carryVenueMinimumMarginSummary,
 } from "./CarryTerminalBuilder";
 import { builderModel, type CarryCandidate } from "@/lib/carry-market";
 
@@ -139,6 +141,8 @@ describe("CarryTerminalBuilder", () => {
     const publicEconomics = carryTerminalEconomics(model, null);
     expect(publicEconomics.fees).not.toBe("UNVERIFIED");
     expect(carryOpeningCapitalSummary(model, null).value).toBe("$22 TOTAL · 1×");
+    expect(carryTerminalGrossFunding(candidate(), null).value).not.toBe("UNVERIFIED");
+    expect(carryVenueMinimumMarginSummary(model, null).value).not.toBe("UNVERIFIED");
 
     const workerEconomics = carryTerminalEconomics(model, {
       depth_impact: ["hyperliquid", "lighter"].map((venue_id) => ({
@@ -155,6 +159,19 @@ describe("CarryTerminalBuilder", () => {
     expect(workerEconomics.net).toBe("UNVERIFIED");
     expect(workerEconomics.breakEven).toBe("UNVERIFIED");
     expect(carryOpeningCapitalSummary(model, {}).value).toBe("UNVERIFIED");
+    expect(carryTerminalGrossFunding(candidate(), {}).value).toBe("UNVERIFIED");
+    expect(carryVenueMinimumMarginSummary(model, {}).value).toBe("UNVERIFIED");
+    expect(carryTerminalGrossFunding(candidate(), {
+      projected_gross_funding_micro_usdc: 22_000,
+      notional_micro_usdc: 11_000_000,
+      horizon_ms: 10 * 86_400_000,
+    }).value).toBe("+2.00 BP/D");
+    expect(carryVenueMinimumMarginSummary(model, {
+      account_readiness: [
+        { venue_minimum_margin_micro_usdc: 2_000_000 },
+        { venue_minimum_margin_micro_usdc: 3_000_000 },
+      ],
+    }).value).toBe("$5");
   });
 
   it("keeps checking and arming no-submit until a separate live-entry click", async () => {

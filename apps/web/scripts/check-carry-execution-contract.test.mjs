@@ -1000,6 +1000,32 @@ test("rejects a terminal that masks incomplete worker proof with browser estimat
   );
 });
 
+test("rejects terminal gross funding that ignores worker proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll(
+        "carryTerminalGrossFunding(candidate, proof ? proofOpportunity || {} : null)",
+        "carryTerminalGrossFunding(candidate, null)",
+      ),
+    }),
+    /carry_terminal_proof_gross_fallback_missing/,
+  );
+});
+
+test("rejects terminal minimum margin that ignores worker proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll(
+        "carryVenueMinimumMarginSummary(model, proof)",
+        "carryVenueMinimumMarginSummary(model, null)",
+      ),
+    }),
+    /carry_terminal_proof_margin_fallback_missing/,
+  );
+});
+
 test("reports required sources absent from git", () => {
   const tracked = new Set(Object.values(CARRY_RELEASE_FILES).slice(0, -1));
   const untracked = findUntrackedCarryReleaseFiles({

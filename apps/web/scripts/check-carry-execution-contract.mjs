@@ -396,7 +396,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilderTest", "FEE +$0.5 · SLIP −$0.25", "carry_terminal_execution_attribution_test_missing");
   requireText("webCarryBuilder", "const netUsd = opportunity ? proofNet : model.netUsd", "carry_terminal_proof_economics_fallback_missing");
   requireText("webCarryBuilder", 'if (proof) return { value: "UNVERIFIED"', "carry_terminal_proof_capital_fallback_missing");
+  requireText("webCarryBuilder", "carryTerminalGrossFunding(candidate, proof ? proofOpportunity || {} : null)", "carry_terminal_proof_gross_fallback_missing");
+  requireText("webCarryBuilder", "carryVenueMinimumMarginSummary(model, proof)", "carry_terminal_proof_margin_fallback_missing");
   requireText("webCarryBuilderTest", "never replaces incomplete worker proof with browser estimates", "carry_terminal_proof_fallback_test_missing");
+  requireText("webCarryBuilderTest", "carryTerminalGrossFunding(candidate(), {}).value", "carry_terminal_proof_gross_fallback_test_missing");
+  requireText("webCarryBuilderTest", "carryVenueMinimumMarginSummary(model, {}).value", "carry_terminal_proof_margin_fallback_test_missing");
   requireText("webMandate", "defaultCarryRiskMandate", "carry_default_migration_mandate_missing");
   requireText("webMandate", "allow_migration: true", "carry_default_migration_disabled");
   requireText("webCarryBuilder", "SIGN MIGRATION", "carry_terminal_migration_signing_missing");

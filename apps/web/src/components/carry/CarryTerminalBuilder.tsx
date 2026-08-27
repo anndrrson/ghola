@@ -250,6 +250,8 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const ledger = carryLedgerSummary(current?.value_ledger);
   const proofOpportunity = proof ? asRecord(proof.creation_opportunity) : null;
   const economics = carryTerminalEconomics(model, proofOpportunity);
+  const grossFunding = carryTerminalGrossFunding(candidate, proof ? proofOpportunity || {} : null);
+  const venueMinimumMargin = carryVenueMinimumMarginSummary(model, proof);
   const openingCapital = carryOpeningCapitalSummary(model, proof);
   const stressCapital = carryStressCapitalSummary(proof);
   const portfolioCapital = carryPortfolioCapitalSummary(portfolioCapitalPlan);
@@ -471,13 +473,13 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     <div className="mt-2 grid gap-2 border-t border-[#1d2733] pt-2 lg:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]" aria-label="Carry position builder">
       <div className="grid gap-1.5 sm:grid-cols-4">
         <Metric label="ROUTE" value={`L ${venueName(candidate.long.venue_id)} / S ${venueName(candidate.short.venue_id)}`} />
-        <Metric label="GROSS" value={`${formatSigned(candidate.grossAnnualBps / 365)} BP/D`} tone="good" />
+        <Metric label={proof ? "GROSS" : "GROSS EST"} value={grossFunding.value} tone={grossFunding.tone} />
         <Metric label="FEES" value={economics.fees} />
         <Metric label="SLIPPAGE" value={economics.slippage} tone={economics.depthTone} />
         <Metric label="USABLE DEPTH" value={economics.depth} tone={economics.depthTone} />
         <Metric label={`NET / ${days}D`} value={economics.net} tone={economics.netTone} />
         <Metric label="BREAK-EVEN" value={economics.breakEven} />
-        <Metric label="VENUE MIN MARGIN" value={formatUsd(model.minimumCollateralUsd)} />
+        <Metric label={proof ? "VENUE MIN MARGIN" : "VENUE MIN MARGIN EST"} value={venueMinimumMargin.value} tone={venueMinimumMargin.tone} />
         <Metric label="MIN RUNWAY" value={runway.value} tone={runway.tone} />
         <Metric label="OWNER CAPITAL" value={displayedCapital.value} tone={displayedCapital.tone} />
         <Metric label="LEDGER" value={ledger.value} tone={ledger.tone} />
@@ -591,6 +593,59 @@ export function carryTerminalEconomics(model: ReturnType<typeof builderModel>, o
       ? proofBreakEvenMs == null ? "UNVERIFIED" : `${(proofBreakEvenMs / 86_400_000).toFixed(1)}D`
       : model.breakEvenDays == null ? "—" : `${model.breakEvenDays.toFixed(1)}D`,
   };
+}
+
+export function carryTerminalGrossFunding(
+  candidate: CarryCandidate,
+  opportunity: Record<string, unknown> | null,
+) {
+  if (!opportunity) {
+    const grossBpsPerDay = candidate.grossAnnualBps / 365;
+    return {
+      value: `${formatSigned(grossBpsPerDay)} BP/D`,
+      tone: grossBpsPerDay > 0 ? "good" as const : undefined,
+    };
+  }
+  const grossFundingMicro = finiteNumber(opportunity.projected_gross_funding_micro_usdc);
+  const notionalMicro = finiteNumber(opportunity.notional_micro_usdc);
+  const horizonMs = finiteNumber(opportunity.horizon_ms);
+  if (!Number.isSafeInteger(grossFundingMicro)
+    || !Number.isSafeInteger(notionalMicro)
+    || !Number.isSafeInteger(horizonMs)
+    || Number(notionalMicro) <= 0
+    || Number(horizonMs) <= 0) return { value: "UNVERIFIED", tone: "bad" as const };
+  const grossBpsPerDay = Number(grossFundingMicro)
+    / Number(notionalMicro)
+    * 10_000
+    * 86_400_000
+    / Number(horizonMs);
+  if (!Number.isFinite(grossBpsPerDay)) return { value: "UNVERIFIED", tone: "bad" as const };
+  return {
+    value: `${formatSigned(grossBpsPerDay)} BP/D`,
+    tone: grossBpsPerDay > 0 ? "good" as const : undefined,
+  };
+}
+
+export function carryVenueMinimumMarginSummary(
+  model: ReturnType<typeof builderModel>,
+  proof: Record<string, unknown> | null,
+) {
+  const accounts = Array.isArray(proof?.account_readiness)
+    ? proof.account_readiness.map(asRecord)
+    : [];
+  if (accounts.length === 2) {
+    const margins = accounts.map((item) => finiteNumber(item.venue_minimum_margin_micro_usdc));
+    if (margins.some((value) => !Number.isSafeInteger(value) || Number(value) < 0)) {
+      return { value: "UNVERIFIED", tone: "bad" as const };
+    }
+    const exactMargins = margins.filter((value): value is number => value != null);
+    return {
+      value: formatMicroUsd(exactMargins.reduce((sum, value) => sum + value, 0)),
+      tone: undefined,
+    };
+  }
+  if (proof) return { value: "UNVERIFIED", tone: "bad" as const };
+  return { value: formatUsd(model.minimumCollateralUsd), tone: undefined };
 }
 
 export function carryOpeningCapitalSummary(
