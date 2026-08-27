@@ -166,6 +166,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarry", "calculateMarginRunway", "margin_runway_model_missing");
   requireText("coreCarry", "margin_runway_unverifiable", "margin_runway_unverifiable_exit_missing");
   requireText("coreCarry", "carryRiskMandateMessage", "carry_signed_mandate_message_missing");
+  requireText("coreCarry", "export function compileCarryMigrationProposal", "carry_migration_compiler_missing");
+  requireText("coreCarry", "migration_venue_allowlist", "carry_migration_signed_allowlist_missing");
+  requireText("coreCarry", "proposal_only: true", "carry_migration_proposal_boundary_missing");
+  requireText("coreCarry", "request_owner_signed_migration", "carry_migration_owner_signature_boundary_missing");
+  forbidText("coreCarry", "preflight_protected_migration", "carry_migration_unimplemented_execution_claimed");
+  requireText("coreCarryTest", "selects only the best fresh route inside the signed venue allowlist", "carry_migration_selection_test_missing");
+  requireText("coreCarryTest", "fails closed for unsigned, stale, or unqualified destinations", "carry_migration_failure_test_missing");
+  requireText("coreCarryTest", "closes the old route first and persists an owner-signature request", "carry_migration_flat_transition_test_missing");
   requireText("coreCarry", "carry_mandate_position_mismatch", "carry_signed_mandate_position_binding_missing");
   requireText("coreCarry", "risk_mandate_expired", "carry_signed_mandate_expiry_exit_missing");
   requireText("coreCarry", "contract_basis_outside_mandate", "carry_signed_basis_exit_missing");

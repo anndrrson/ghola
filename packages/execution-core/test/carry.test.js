@@ -5,6 +5,7 @@ import {
   advanceCarryPosition,
   calculateMarginRunway,
   carryRiskMandateMessage,
+  compileCarryMigrationProposal,
   createCarryPosition,
   createCarryValueLedger,
   evaluateCarryOpportunity,
@@ -127,6 +128,55 @@ function mandateAuthorization(input, overrides = {}) {
     signature: `0x${"22".repeat(65)}`,
     mandate_commitment: `0x${"33".repeat(32)}`,
   });
+}
+
+function migrationPosition(riskOverrides = {}) {
+  const input = {
+    version: 1,
+    position_id: "carry:position:migration:0001",
+    mandate_id: "carry:mandate:migration:0001",
+    asset: "BTC",
+    long_venue_id: "hyperliquid",
+    short_venue_id: "lighter",
+    target_notional_micro_usdc: 10_000_000_000,
+    risk_mandate: {
+      min_expected_net_benefit_bps: 5,
+      exit_net_value_bps: 0,
+      exit_after_consecutive_observations: 2,
+      min_margin_runway_ms: 6 * HOUR,
+      max_hedge_error_micro_usdc: 1_000,
+      max_data_age_ms: 30_000,
+      max_contract_data_skew_ms: 2_000,
+      max_index_price_divergence_bps: 25,
+      max_mark_price_divergence_bps: 50,
+      min_migration_improvement_bps: 10,
+      migration_venue_allowlist: ["hyperliquid", "lighter", "aster"],
+      allow_migration: true,
+      ...riskOverrides,
+    },
+  };
+  const authorization = mandateAuthorization(input);
+  return {
+    current: createCarryPosition({ ...input, mandate_authorization: authorization, now_ms: NOW }),
+    authorization,
+  };
+}
+
+function migrationCandidate(candidateId, longVenue, shortVenue, expectedNetBps, transitionCostBps) {
+  return {
+    candidate_id: candidateId,
+    asset: "BTC",
+    economic_equivalence_id: "carry:btc-usd-linear",
+    long_venue_id: longVenue,
+    short_venue_id: shortVenue,
+    expected_net_value_bps: expectedNetBps,
+    transition_cost_bps: transitionCostBps,
+    eligible: true,
+    no_submit_ready: true,
+    transaction_broadcast: false,
+    qualification_reasons: [],
+    checked_at_ms: NOW,
+  };
 }
 
 function event(sequence, type, overrides = {}) {
@@ -443,6 +493,107 @@ test("two confirmed carry flips trigger a deterministic reduce-only exit", () =>
   }).position;
   assert.equal(current.status, "exiting");
   assert.deepEqual(current.next_actions, ["reduce_only_close_both_legs"]);
+});
+
+test("migration compiler selects only the best fresh route inside the signed venue allowlist", () => {
+  const { current, authorization } = migrationPosition();
+  const result = compileCarryMigrationProposal({
+    version: 1,
+    position: current,
+    mandate_authorization: authorization,
+    economic_equivalence_id: "carry:btc-usd-linear",
+    current_expected_net_value_bps: -2,
+    candidates: [
+      migrationCandidate("carry:migration:aster:0001", "hyperliquid", "aster", 20, 4),
+      migrationCandidate("carry:migration:aster:0002", "lighter", "aster", 30, 3),
+      migrationCandidate("carry:migration:same:0001", "hyperliquid", "lighter", 100, 0),
+    ],
+    now_ms: NOW,
+  });
+  assert.equal(result.eligible, true);
+  assert.equal(result.proposal_only, true);
+  assert.equal(result.transaction_broadcast, false);
+  assert.equal(result.requires_reconciled_flat_transition, true);
+  assert.equal(result.selected_candidate.candidate_id, "carry:migration:aster:0002");
+  assert.equal(result.selected_candidate.projected_improvement_bps, 29);
+  assert.ok(result.candidates.find((candidate) => candidate.candidate_id === "carry:migration:same:0001").reasons.includes("route_unchanged"));
+});
+
+test("migration compiler fails closed for unsigned, stale, or unqualified destinations", () => {
+  const { current, authorization } = migrationPosition({
+    migration_venue_allowlist: ["hyperliquid", "lighter"],
+  });
+  const result = compileCarryMigrationProposal({
+    version: 1,
+    position: current,
+    mandate_authorization: authorization,
+    economic_equivalence_id: "carry:btc-usd-linear",
+    current_expected_net_value_bps: -2,
+    candidates: [{
+      ...migrationCandidate("carry:migration:blocked:0001", "hyperliquid", "aster", 50, 1),
+      checked_at_ms: NOW - 30_001,
+      no_submit_ready: false,
+    }],
+    now_ms: NOW,
+  });
+  assert.equal(result.eligible, false);
+  assert.equal(result.selected_candidate, null);
+  const candidate = result.candidates[0];
+  assert.ok(candidate.reasons.includes("venue_outside_signed_allowlist"));
+  assert.ok(candidate.reasons.includes("candidate_not_execution_qualified"));
+  assert.ok(candidate.reasons.includes("candidate_stale"));
+});
+
+test("a qualified migration closes the old route first and persists an owner-signature request", () => {
+  let { current } = migrationPosition();
+  current = advanceCarryPosition({
+    position: current,
+    event: event(1, "preflight_passed", { opportunity_eligible: true, all_venues_ready: true }),
+    now_ms: NOW + 1,
+  }).position;
+  current = advanceCarryPosition({
+    position: current,
+    event: event(2, "entry_reconciled", {
+      long_filled_micro_usdc: 10_000_000_000,
+      short_filled_micro_usdc: 10_000_000_000,
+      hedge_error_micro_usdc: 0,
+    }),
+    now_ms: NOW + 2,
+  }).position;
+  for (const sequence of [3, 4]) {
+    current = advanceCarryPosition({
+      position: current,
+      event: event(sequence, "observation", {
+        ...contractObservation(),
+        as_of_ms: NOW + sequence,
+        expected_net_value_bps: -2,
+        economic_equivalence_id: "carry:btc-usd-linear",
+        migration_candidates: [migrationCandidate(
+          "carry:migration:durable:0001",
+          "lighter",
+          "aster",
+          20,
+          4,
+        )],
+        margin_runway_ms_by_venue: { hyperliquid: 30 * HOUR, lighter: 30 * HOUR },
+      }),
+      now_ms: NOW + sequence,
+    }).position;
+  }
+  assert.equal(current.status, "exiting");
+  assert.deepEqual(current.next_actions, ["reduce_only_close_both_legs"]);
+  assert.equal(current.pending_migration.status, "awaiting_flat_exit");
+  assert.equal(current.pending_migration.selected_candidate.short_venue_id, "aster");
+  assert.equal(current.pending_migration.transaction_broadcast, false);
+  current = advanceCarryPosition({
+    position: current,
+    event: event(5, "exit_reconciled", { gross_exposure_micro_usdc: 0, open_order_count: 0 }),
+    now_ms: NOW + 5,
+  }).position;
+  assert.equal(current.status, "reconciled");
+  assert.equal(current.terminal_reason, "reconciled_flat_migration_ready");
+  assert.deepEqual(current.next_actions, ["request_owner_signed_migration"]);
+  assert.equal(current.pending_migration.status, "owner_signature_required");
 });
 
 test("one margin runway breach triggers an immediate reduce-only exit", () => {

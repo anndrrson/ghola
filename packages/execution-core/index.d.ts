@@ -37,6 +37,7 @@ export declare function normalizePerpContractSpec(input: unknown): Readonly<Reco
 export declare function calculateMarginRunway(input: unknown): Readonly<Record<string, unknown>>;
 export declare function evaluatePerpContractPairBasis(input: unknown): Readonly<Record<string, unknown>>;
 export declare function evaluateCarryOpportunity(input: unknown): Readonly<Record<string, unknown>>;
+export declare function compileCarryMigrationProposal(input: unknown): Readonly<Record<string, unknown>>;
 export declare function normalizeCarryRiskMandate(input: unknown): Readonly<Record<string, unknown>>;
 export declare function normalizeCarryRiskMandatePayload(input: unknown): Readonly<Record<string, unknown>>;
 export declare function normalizeCarryRiskMandateAuthorization(input: unknown): Readonly<Record<string, unknown>>;

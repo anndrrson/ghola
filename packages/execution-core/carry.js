@@ -1,4 +1,4 @@
-import { isExecutionVenue, venueSupportsProduct } from "./venues.js";
+import { isCarryExecutionVenue, isExecutionVenue, venueSupportsProduct } from "./venues.js";
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
@@ -284,6 +284,123 @@ export function evaluateCarryOpportunity(value) {
     max_index_price_divergence_bps: contractPairBasis.max_index_price_divergence_bps,
     max_mark_price_divergence_bps: contractPairBasis.max_mark_price_divergence_bps,
     margin_runways: marginRunways,
+    checked_at_ms: nowMs,
+  });
+}
+
+export function compileCarryMigrationProposal(value) {
+  const raw = object(value, "carry_migration_required");
+  exactVersion(raw.version, "carry_migration_version");
+  const nowMs = positiveInteger(raw.now_ms, "carry_migration_now");
+  const authorization = normalizeCarryRiskMandateAuthorization(raw.mandate_authorization);
+  const signed = authorization.signed_mandate;
+  const position = object(raw.position, "carry_migration_position_required");
+  const positionId = identifier(position.position_id, "carry_migration_position_id");
+  const asset = normalized(position.asset, ASSET, "carry_migration_asset");
+  const longVenue = carryExecutionVenue(position.long_venue_id, "carry_migration_long_venue");
+  const shortVenue = carryExecutionVenue(position.short_venue_id, "carry_migration_short_venue");
+  if (longVenue === shortVenue) fail("carry_migration_distinct_current_venues");
+  if (signed.position_id !== positionId || signed.asset !== asset
+    || signed.long_venue_id !== longVenue || signed.short_venue_id !== shortVenue) {
+    fail("carry_migration_mandate_position_mismatch");
+  }
+  if (signed.expires_at_ms <= nowMs) fail("carry_migration_mandate_expired");
+  const mandate = signed.risk_mandate;
+  const allowlist = new Set(Array.isArray(mandate.migration_venue_allowlist)
+    ? mandate.migration_venue_allowlist
+    : []);
+  const minimumImprovement = mandate.min_migration_improvement_bps
+    ?? mandate.min_expected_net_benefit_bps;
+  const currentNet = boundedInteger(
+    raw.current_expected_net_value_bps,
+    -100_000,
+    100_000,
+    "carry_migration_current_net",
+  );
+  const economicEquivalenceId = identifier(
+    raw.economic_equivalence_id,
+    "carry_migration_economic_equivalence_id",
+  );
+  const assessments = [];
+  const reasons = [];
+  if (mandate.allow_migration !== true) reasons.push("migration_not_authorized");
+  if (allowlist.size < 2) reasons.push("migration_venue_allowlist_missing");
+
+  for (const [index, candidateInput] of array(raw.candidates, "carry_migration_candidates", 0, 32).entries()) {
+    try {
+      const candidate = object(candidateInput, "carry_migration_candidate_required");
+      const candidateId = identifier(candidate.candidate_id, "carry_migration_candidate_id");
+      const candidateLong = carryExecutionVenue(candidate.long_venue_id, "carry_migration_candidate_long_venue");
+      const candidateShort = carryExecutionVenue(candidate.short_venue_id, "carry_migration_candidate_short_venue");
+      const candidateReasons = [];
+      if (candidateLong === candidateShort) candidateReasons.push("distinct_venues_required");
+      if (candidateLong === longVenue && candidateShort === shortVenue) candidateReasons.push("route_unchanged");
+      if (!allowlist.has(candidateLong) || !allowlist.has(candidateShort)) candidateReasons.push("venue_outside_signed_allowlist");
+      if (normalized(candidate.asset, ASSET, "carry_migration_candidate_asset") !== asset) candidateReasons.push("asset_mismatch");
+      if (identifier(candidate.economic_equivalence_id, "carry_migration_candidate_equivalence") !== economicEquivalenceId) {
+        candidateReasons.push("contracts_not_economically_equivalent");
+      }
+      if (candidate.eligible !== true || candidate.no_submit_ready !== true
+        || candidate.transaction_broadcast !== false
+        || !Array.isArray(candidate.qualification_reasons)
+        || candidate.qualification_reasons.length !== 0) {
+        candidateReasons.push("candidate_not_execution_qualified");
+      }
+      const checkedAt = positiveInteger(candidate.checked_at_ms, "carry_migration_candidate_checked_at");
+      if (checkedAt > nowMs || nowMs - checkedAt > mandate.max_data_age_ms) candidateReasons.push("candidate_stale");
+      const expectedNet = boundedInteger(
+        candidate.expected_net_value_bps,
+        -100_000,
+        100_000,
+        "carry_migration_candidate_net",
+      );
+      const transitionCost = boundedInteger(
+        candidate.transition_cost_bps,
+        0,
+        10_000,
+        "carry_migration_transition_cost",
+      );
+      const improvement = safeAdd(
+        safeAdd(expectedNet, -currentNet, "carry_migration_improvement_overflow"),
+        -transitionCost,
+        "carry_migration_improvement_overflow",
+      );
+      if (expectedNet < mandate.min_expected_net_benefit_bps) candidateReasons.push("candidate_net_below_signed_floor");
+      if (improvement < minimumImprovement) candidateReasons.push("migration_improvement_below_signed_floor");
+      assessments.push({
+        candidate_id: candidateId,
+        long_venue_id: candidateLong,
+        short_venue_id: candidateShort,
+        expected_net_value_bps: expectedNet,
+        transition_cost_bps: transitionCost,
+        projected_improvement_bps: improvement,
+        eligible: candidateReasons.length === 0,
+        reasons: [...new Set(candidateReasons)],
+        checked_at_ms: checkedAt,
+      });
+    } catch (error) {
+      assessments.push({
+        candidate_id: `invalid:${index}`,
+        eligible: false,
+        reasons: [error instanceof CarryModelError ? error.code : "candidate_invalid"],
+      });
+    }
+  }
+  const eligible = assessments.filter((candidate) => candidate.eligible).sort((left, right) =>
+    right.projected_improvement_bps - left.projected_improvement_bps
+    || right.expected_net_value_bps - left.expected_net_value_bps
+    || left.candidate_id.localeCompare(right.candidate_id));
+  if (eligible.length === 0) reasons.push("no_qualified_migration_candidate");
+  return deepFreeze({
+    version: 1,
+    position_id: positionId,
+    proposal_only: true,
+    transaction_broadcast: false,
+    requires_reconciled_flat_transition: true,
+    eligible: reasons.length === 0,
+    reasons: [...new Set(reasons)],
+    selected_candidate: reasons.length === 0 ? eligible[0] : null,
+    candidates: assessments,
     checked_at_ms: nowMs,
   });
 }
@@ -600,8 +717,20 @@ function applyEvent(position, event, nowMs) {
       : 0;
     if (position.consecutive_exit_observations >= position.risk_mandate.exit_after_consecutive_observations) {
       position.status = "exiting";
-      position.next_actions = migrationActions(position, event);
-      position.terminal_reason = "carry_below_exit_threshold";
+      position.next_actions = ["reduce_only_close_both_legs"];
+      const migration = migrationProposalFromObservation(position, event, nowMs);
+      if (migration?.eligible === true) {
+        position.pending_migration = {
+          status: "awaiting_flat_exit",
+          proposal_only: true,
+          transaction_broadcast: false,
+          selected_candidate: migration.selected_candidate,
+          checked_at_ms: migration.checked_at_ms,
+        };
+        position.terminal_reason = "carry_below_exit_threshold_migration_proposed";
+      } else {
+        position.terminal_reason = "carry_below_exit_threshold";
+      }
     } else {
       position.status = "active";
       position.next_actions = ["monitor_carry_and_margin"];
@@ -639,23 +768,37 @@ function applyEvent(position, event, nowMs) {
       position.short_filled_micro_usdc = 0;
       position.hedge_error_micro_usdc = 0;
       position.status = "reconciled";
-      position.next_actions = [];
-      position.terminal_reason = "reconciled_flat";
+      if (position.pending_migration?.status === "awaiting_flat_exit") {
+        position.pending_migration.status = "owner_signature_required";
+        position.next_actions = ["request_owner_signed_migration"];
+        position.terminal_reason = "reconciled_flat_migration_ready";
+      } else {
+        position.next_actions = [];
+        position.terminal_reason = "reconciled_flat";
+      }
     } else {
       position.next_actions = ["cancel_open_orders", "reduce_only_close_observed_exposure"];
     }
   }
 }
 
-function migrationActions(position, event) {
-  const candidateBenefit = Number(event.migration_expected_net_value_bps);
-  if (
-    position.risk_mandate.allow_migration &&
-    typeof event.migration_candidate_id === "string" && ID.test(event.migration_candidate_id) &&
-    Number.isInteger(candidateBenefit) &&
-    candidateBenefit >= position.risk_mandate.min_expected_net_benefit_bps
-  ) return ["preflight_protected_migration"];
-  return ["reduce_only_close_both_legs"];
+function migrationProposalFromObservation(position, event, nowMs) {
+  if (position.risk_mandate.allow_migration !== true
+    || !Array.isArray(event.migration_candidates)
+    || typeof event.economic_equivalence_id !== "string") return null;
+  try {
+    return compileCarryMigrationProposal({
+      version: 1,
+      position,
+      mandate_authorization: position.mandate_authorization,
+      economic_equivalence_id: event.economic_equivalence_id,
+      current_expected_net_value_bps: event.expected_net_value_bps,
+      candidates: event.migration_candidates,
+      now_ms: nowMs,
+    });
+  } catch {
+    return null;
+  }
 }
 
 export function normalizeCarryRiskMandate(value) {
@@ -676,6 +819,17 @@ export function normalizeCarryRiskMandate(value) {
     }),
     ...(raw.max_mark_price_divergence_bps === undefined ? {} : {
       max_mark_price_divergence_bps: boundedInteger(raw.max_mark_price_divergence_bps, 0, 10_000, "carry_mandate_mark_price_divergence"),
+    }),
+    ...(raw.min_migration_improvement_bps === undefined ? {} : {
+      min_migration_improvement_bps: boundedInteger(raw.min_migration_improvement_bps, 0, 10_000, "carry_mandate_migration_improvement"),
+    }),
+    ...(raw.migration_venue_allowlist === undefined ? {} : {
+      migration_venue_allowlist: Object.freeze([...new Set(array(
+        raw.migration_venue_allowlist,
+        "carry_mandate_migration_venues",
+        0,
+        16,
+      ).map((venueId) => carryExecutionVenue(venueId, "carry_mandate_migration_venue")))]),
     }),
     allow_migration: raw.allow_migration === true,
     owner_only_operations: Object.freeze(["fund", "withdraw", "transfer"]),
@@ -964,6 +1118,11 @@ function requireStatus(position, allowed) {
 
 function venue(value, code) {
   if (typeof value !== "string" || !isExecutionVenue(value)) fail(code);
+  return value;
+}
+
+function carryExecutionVenue(value, code) {
+  if (typeof value !== "string" || !isCarryExecutionVenue(value)) fail(code);
   return value;
 }
 
