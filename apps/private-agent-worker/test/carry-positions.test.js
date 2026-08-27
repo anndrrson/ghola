@@ -564,6 +564,7 @@ test("worker monitoring survives without an open browser", async (t) => {
   const stored = await state.getCarryPositionRecord(active.position.position_id);
   assert.equal(stored.position.last_event_sequence, 3);
   assert.equal(stored.position.status, "active");
+  assert.equal(stored.lifecycle_events.at(-1).observation_source, "supervised_loop");
 });
 
 test("monitoring checks independent Carry Positions with bounded concurrency", async (t) => {

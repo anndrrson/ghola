@@ -118,6 +118,13 @@ async function fixture() {
       ended_at: "2026-08-24T00:00:05.000Z",
       observation_count: 1,
       funding_flip_checks: 1,
+      supervision: {
+        mode: "attested_worker_loop",
+        automatic_observation_count: 1,
+        first_automatic_observed_at: "2026-08-24T00:00:04.000Z",
+        last_automatic_observed_at: "2026-08-24T00:00:05.000Z",
+        transaction_broadcast: false,
+      },
       margin_runways: [
         { venue_id: "hyperliquid", status: "healthy", runway_ms: 86_400_000, stale: false },
         { venue_id: "aster", status: "healthy", runway_ms: 86_400_000, stale: false },
@@ -244,6 +251,14 @@ test("rejects margin-runway proof without verified status", async () => {
   delete evidence.monitoring.margin_runways[0].status;
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
   await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /margin_runway_status_missing:hyperliquid/);
+});
+
+test("rejects monitoring that was not produced by the unattended worker loop", async () => {
+  const evidence = await fixture();
+  evidence.monitoring.supervision.mode = "manual";
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /supervised_monitoring_required/);
 });
 
 test("rejects same-ticker proof whose contract basis exceeds the verified budget", async () => {

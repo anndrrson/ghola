@@ -46,6 +46,19 @@ test("rejects supervision that cannot detect a silently stalled loop", () => {
   );
 });
 
+test("rejects release proof that accepts manual-only monitoring", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replace(
+        'event?.observation_source === "supervised_loop"',
+        'event?.observation_source === "manual"',
+      ),
+    }),
+    /carry_release_supervised_monitoring_missing/,
+  );
+});
+
 test("rejects live Carry entry that ignores degraded supervision", () => {
   assert.throws(
     () => checkCarryExecutionContract({

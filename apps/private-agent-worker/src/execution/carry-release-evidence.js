@@ -62,7 +62,9 @@ export async function buildCompletedCarryReleaseMaterial({
   }
   const observations = events.filter((event) => event?.type === "observation" && positiveInteger(event.recorded_at_ms));
   if (observations.length === 0) return denied("carry_release_monitoring_evidence_missing");
-  const latestObservation = observations.at(-1);
+  const supervisedObservations = observations.filter((event) => event?.observation_source === "supervised_loop");
+  if (supervisedObservations.length === 0) return denied("carry_release_supervised_monitoring_missing");
+  const latestObservation = supervisedObservations.at(-1);
   const runwayStatuses = latestObservation.margin_runway_status_by_venue || {};
   const runwayValues = latestObservation.margin_runway_ms_by_venue || {};
   const validRunwayStatuses = new Set(["healthy", "warning", "critical", "breached"]);
@@ -151,8 +153,15 @@ export async function buildCompletedCarryReleaseMaterial({
     monitoring: {
       started_at: iso(entryReconciledAt),
       ended_at: iso(monitoringEndedAt),
-      observation_count: observations.length,
-      funding_flip_checks: observations.length,
+      observation_count: supervisedObservations.length,
+      funding_flip_checks: supervisedObservations.length,
+      supervision: {
+        mode: "attested_worker_loop",
+        automatic_observation_count: supervisedObservations.length,
+        first_automatic_observed_at: iso(supervisedObservations[0].recorded_at_ms),
+        last_automatic_observed_at: iso(monitoringEndedAt),
+        transaction_broadcast: false,
+      },
       margin_runways: pair.map((venueId) => ({
         venue_id: venueId,
         status: runwayStatuses[venueId],

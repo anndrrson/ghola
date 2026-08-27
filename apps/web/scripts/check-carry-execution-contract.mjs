@@ -671,6 +671,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "maxSilenceMs: stallAfterMs", "carry_monitor_stall_deadline_missing");
   requireText("executor", "maxSilenceMs: stallAfterMs", "carry_execution_stall_deadline_missing");
   requireText("positions", "supervisor.runOnce", "carry_monitor_supervision_missing");
+  requireText("positions", 'observation_source: "supervised_loop"', "carry_supervised_observation_missing");
+  requireText("positionsTest", 'observation_source, "supervised_loop"', "carry_supervised_observation_test_missing");
   requireText("executor", "supervisor.runOnce", "carry_execution_supervision_missing");
   requireText("executor", "const audit = await ensureRestartAudit()", "carry_restart_audit_retry_missing");
   requireText("lifecycleTest", "automatic exit retries a failed restart audit before any execution sweep", "carry_restart_audit_retry_test_missing");
@@ -684,6 +686,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MONITOR_STALL_MS', "carry_monitor_stall_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_EXECUTION_STALL_MS', "carry_execution_stall_compose_missing");
   requireText("loopSupervisorTest", "without leaking exception text", "carry_loop_error_redaction_test_missing");
+  requireText("releaseMaterial", 'event?.observation_source === "supervised_loop"', "carry_release_supervised_monitoring_missing");
+  requireText("releaseMaterialTest", "refuses release evidence assembled from manual-only monitoring", "carry_release_supervised_monitoring_test_missing");
+  requireText("evidenceVerifier", 'supervision.mode === "attested_worker_loop"', "carry_release_supervision_verifier_missing");
+  requireText("evidenceVerifierTest", "rejects monitoring that was not produced by the unattended worker loop", "carry_release_supervision_verifier_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: "5000"', "carry_monitor_five_second_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS: "750"', "carry_market_data_skew_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS: "12"', "carry_index_basis_runtime_test_missing");

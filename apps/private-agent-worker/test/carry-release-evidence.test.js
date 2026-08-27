@@ -30,6 +30,8 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.equal(result.material.entry.legs.length, 2);
   assert.equal(result.material.exit.legs.every((leg) => leg.reduce_only), true);
   assert.equal(result.material.monitoring.observation_count, 1);
+  assert.equal(result.material.monitoring.supervision.mode, "attested_worker_loop");
+  assert.equal(result.material.monitoring.supervision.automatic_observation_count, 1);
   assert.equal(result.material.monitoring.margin_runways[0].status, "healthy");
   assert.equal(result.material.contract_equivalence.index_price_divergence_bps, 3);
   assert.equal(result.material.shadow_qualification.proven, true);
@@ -85,6 +87,19 @@ test("refuses release evidence without verified margin-runway status", async () 
     now_ms: NOW,
   });
   assert.equal(result.error, "carry_release_margin_runway_evidence_missing");
+});
+
+test("refuses release evidence assembled from manual-only monitoring", async () => {
+  const fixture = await stateFixture();
+  fixture.record.lifecycle_events[0].observation_source = "manual";
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_supervised_monitoring_missing");
 });
 
 test("refuses release evidence without bounded contract equivalence", async () => {
@@ -222,6 +237,7 @@ async function stateFixture() {
     lifecycle_events: [
       {
         type: "observation",
+        observation_source: "supervised_loop",
         recorded_at_ms: 1_800_000_002_000,
         margin_runway_ms_by_venue: { hyperliquid: 86_400_000, aster: 86_400_000 },
         margin_runway_status_by_venue: { hyperliquid: "healthy", aster: "healthy" },

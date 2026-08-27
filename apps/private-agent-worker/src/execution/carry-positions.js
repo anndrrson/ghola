@@ -693,6 +693,7 @@ export async function runCarryMonitoringTick({
         readHyperliquidCarryMetrics,
         readFundingSettlements,
         preflight,
+        observation_source: "supervised_loop",
         now_ms: nowMs,
       });
       return { position_id: record.position.position_id, ...result };
@@ -775,6 +776,7 @@ export async function observeStoredCarryPosition({
   readHyperliquidCarryMetrics,
   readFundingSettlements,
   preflight = preflightCarryPair,
+  observation_source: observationSource = "manual",
   now_ms: nowMs = Date.now(),
 }) {
   const owned = await ownedRecord(state, positionId, ownerCommitment);
@@ -899,6 +901,7 @@ export async function observeStoredCarryPosition({
       event_id: `${eventBase}:verified`,
       sequence,
       type: "observation",
+      observation_source: observationSource === "supervised_loop" ? "supervised_loop" : "manual",
       as_of_ms: opportunity.checked_at_ms,
       expected_net_value_bps: opportunity.projected_net_value_bps,
       economic_equivalence_id: opportunity.economic_equivalence_id,
@@ -1296,6 +1299,7 @@ function modeledValueBreakdown(value) {
 
 function publicObservation(event) {
   return Object.freeze({
+    observation_source: event.observation_source === "supervised_loop" ? "supervised_loop" : "manual",
     as_of_ms: event.as_of_ms,
     expected_net_value_bps: event.expected_net_value_bps,
     contract_data_skew_ms: event.contract_data_skew_ms,
