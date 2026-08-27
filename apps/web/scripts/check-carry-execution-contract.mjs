@@ -23,6 +23,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   privateExecution: "apps/private-agent-worker/src/execution/private-execution.js",
   adapterRegistryTest: "apps/private-agent-worker/test/carry-adapter-registry.test.js",
   qualification: "apps/private-agent-worker/src/execution/carry-qualification.js",
+  readiness: "apps/private-agent-worker/src/execution/carry-readiness.js",
   releaseMaterial: "apps/private-agent-worker/src/execution/carry-release-evidence.js",
   shadow: "apps/private-agent-worker/src/execution/perp-shadow-adapters.js",
   shadowVerifier: "apps/private-agent-worker/src/execution/perp-shadow-readiness.js",
@@ -67,6 +68,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   positionsTest: "apps/private-agent-worker/test/carry-positions.test.js",
   preflightTest: "apps/private-agent-worker/test/carry-preflight.test.js",
   qualificationTest: "apps/private-agent-worker/test/carry-qualification.test.js",
+  readinessTest: "apps/private-agent-worker/test/carry-readiness.test.js",
   releaseMaterialTest: "apps/private-agent-worker/test/carry-release-evidence.test.js",
   shadowTest: "apps/private-agent-worker/test/perp-shadow-adapters.test.js",
   asterTest: "apps/private-agent-worker/test/aster.test.js",
@@ -155,6 +157,13 @@ export function checkCarryExecutionContract(sources) {
   requireText("preflight", "collateral_basis", "collateral_basis_model_missing");
   requireText("preflight", "export async function preflightCarryExecutionMatrix", "carry_three_venue_no_submit_matrix_missing");
   requireText("preflightTest", "verifies all three execution venues through one no-broadcast matrix", "carry_three_venue_no_submit_matrix_test_missing");
+  requireText("preflight", "storeCarryExecutionReadiness", "carry_three_venue_readiness_persistence_missing");
+  requireText("readiness", "runtimeCarryQualificationImageDigest", "carry_readiness_image_binding_missing");
+  requireText("readiness", "account_commitment", "carry_readiness_account_binding_missing");
+  requireText("readiness", "carry_readiness_stale", "carry_readiness_freshness_gate_missing");
+  requireText("readiness", "carry_readiness_commitment_invalid", "carry_readiness_integrity_gate_missing");
+  requireText("readinessTest", "persists deployment-, owner-, account-, and registry-bound three-venue readiness", "carry_readiness_binding_test_missing");
+  requireText("readinessTest", "rejects stale or tampered readiness instead of reusing transient UI state", "carry_readiness_stale_test_missing");
   requireText("preflight", "carry_account_owner_mismatch", "carry_preflight_owner_binding_missing");
   requireText("preflightTest", "rejects cross-owner sealed venue access before order verification", "carry_preflight_owner_binding_test_missing");
   requireText("coreCarry", "collateral_basis_risk_bps", "collateral_basis_stress_missing");

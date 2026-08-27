@@ -10,6 +10,7 @@ import {
 } from "@ghola/execution-core";
 import { fetchPerpShadowVenue } from "./perp-shadow-adapters.js";
 import { readCarryVenueQualification } from "./carry-qualification.js";
+import { storeCarryExecutionReadiness } from "./carry-readiness.js";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -234,7 +235,7 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
     else if (item.transaction_broadcast !== false || item.checks?.transaction_broadcast !== false) failures.push(`venue_broadcast_unsafe:${venueId}`);
     else if (item.checks?.order_request_built !== true && item.checks?.order_request_checked !== true) failures.push(`venue_order_shape_unverified:${venueId}`);
   }
-  return {
+  const matrix = {
     version: 1,
     mode: "carry_execution_no_submit_matrix",
     transaction_broadcast: false,
@@ -249,6 +250,20 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
     failures,
     checked_at: new Date(observedAt).toISOString(),
   };
+  if (!matrix.no_submit_ready) return matrix;
+  const stored = await storeCarryExecutionReadiness({
+    state: dependencies.state,
+    request: body,
+    matrix,
+    now_ms: observedAt,
+    env: dependencies.env || process.env,
+  });
+  if (!stored.ok) {
+    matrix.no_submit_ready = false;
+    matrix.failures.push(stored.error || "carry_readiness_not_persisted");
+  }
+  matrix.readiness = stored.readiness;
+  return matrix;
 }
 
 function acceptableAuthorityBoundary(boundary) {
@@ -626,7 +641,10 @@ function publicEvidence(leg, qualification) {
     order_shape: leg.receipt.order_shape,
     reference_mark_price_e8: leg.snapshot.mark_price_e8,
     reference_price_source: "verified_pre_submit_mark",
-    checks: leg.receipt.checks,
+    checks: {
+      ...leg.receipt.checks,
+      account_state_checked: leg.receipt?.checks?.account_state_checked === true || Boolean(leg.account),
+    },
     authority_boundary: leg.receipt.authority_boundary || null,
     qualification: qualification ? {
       proven: qualification.proven === true,

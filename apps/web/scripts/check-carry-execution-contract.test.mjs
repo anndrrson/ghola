@@ -99,6 +99,26 @@ test("rejects release without a joined three-venue no-submit matrix", () => {
   );
 });
 
+test("rejects a three-venue check that can claim readiness without durable deployment-bound evidence", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll("storeCarryExecutionReadiness", "returnTransientReadiness"),
+    }),
+    /carry_three_venue_readiness_persistence_missing/,
+  );
+});
+
+test("rejects durable readiness that can outlive its freshness window", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      readiness: sources.readiness.replaceAll("carry_readiness_stale", "carry_readiness_accepted"),
+    }),
+    /carry_readiness_freshness_gate_missing/,
+  );
+});
+
 test("rejects Carry preflight without exact owner binding", () => {
   assert.throws(
     () => checkCarryExecutionContract({

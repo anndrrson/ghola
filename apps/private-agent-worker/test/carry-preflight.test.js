@@ -513,6 +513,7 @@ test("accepts Lighter's owner-destination custody boundary and conservative fee 
 
 test("verifies all three execution venues through one no-broadcast matrix", async () => {
   const calls = [];
+  const rows = new Map();
   let nowCalls = 0;
   const account = {
     can_trade: true,
@@ -541,7 +542,10 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
       },
     },
     recipient: {},
-    state: {},
+    state: {
+      putIdempotency: async (key, receipt) => { rows.set(key, { receipt }); return receipt; },
+    },
+    env: { PHALA_CVM_IMAGE_DIGEST: "sha256:abcdef123456" },
     now: () => {
       nowCalls += 1;
       return NOW;
@@ -577,6 +581,10 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
   assert.equal(result.venues.every((item) => item.checks.transaction_broadcast === false), true);
   assert.equal(result.pairs.length, 2);
   assert.equal(result.failures.length, 0);
+  assert.equal(result.readiness.ready, true);
+  assert.equal(result.readiness.owner_commitment, "owner_commitment_matrix_0001");
+  assert.equal(result.readiness.image_digest, "sha256:abcdef123456");
+  assert.equal(rows.size, 1);
   assert.equal(new Set(calls.map((call) => call.venue_id)).size, 3);
   assert.equal(result.checked_at, new Date(NOW).toISOString());
   assert.equal(nowCalls, 1);
