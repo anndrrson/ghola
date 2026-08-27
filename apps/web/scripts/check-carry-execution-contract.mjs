@@ -474,6 +474,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("stablecoinConversionTest", "fails closed for stale books, stale policy, and unsupported pairs", "carry_conversion_failure_test_missing");
   requireText("depositQuote", "createCarryDepositQuoteReader", "carry_deposit_live_reader_missing");
   requireText("depositQuote", "eth_getCode", "carry_deposit_hyperliquid_bridge_probe_missing");
+  requireText("depositQuote", "eth_gasPrice", "carry_deposit_live_gas_probe_missing");
+  requireText("depositQuote", "ETHUSDT", "carry_deposit_live_gas_valuation_missing");
   requireText("depositQuote", "api/v1/deposit/networks", "carry_deposit_lighter_network_probe_missing");
   requireText("depositQuote", "deposit/assets?chainIds=42161", "carry_deposit_aster_assets_probe_missing");
   requireText("depositQuoteTest", "verifies Hyperliquid and Lighter Arbitrum deposit routes without submitting", "carry_deposit_live_test_missing");

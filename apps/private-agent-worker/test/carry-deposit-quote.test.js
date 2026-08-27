@@ -24,12 +24,11 @@ test("binds Aster's live Arbitrum asset contract and minimum deposit", async () 
   assert.equal(quote.destination, "0x9e36cb86a159d479ced94fa05036f235ac40e1d5");
   assert.equal(quote.asset_contract_address, "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9");
   assert.equal(quote.minimum_transfer_micro_usdc, 3_500_001);
-  assert.equal(quote.fee_upper_bound_micro_usdc, 300_000);
+  assert.equal(quote.fee_upper_bound_micro_usdc, 450_000);
 });
 
 test("fails closed for missing live support, stale policy, or target drift", async () => {
-  const noBridge = dependencies();
-  noBridge.fetchImpl = async () => ({ ok: true, json: async () => ({ result: "0x" }) });
+  const noBridge = dependencies({ bridgeCode: "0x" });
   await assert.rejects(
     () => createCarryDepositQuoteReader(noBridge)(request("hyperliquid", "USDC")),
     /carry_deposit_hyperliquid_bridge_unavailable/,
@@ -48,9 +47,19 @@ test("fails closed for missing live support, stale policy, or target drift", asy
     () => createCarryDepositQuoteReader(drift)(request("aster", "USDT")),
     /carry_deposit_policy_binding_invalid/,
   );
+
+  const expensiveGas = dependencies({ gasPrice: "0x77359400" });
+  await assert.rejects(
+    () => createCarryDepositQuoteReader(expensiveGas)(request("lighter", "USDC")),
+    /carry_deposit_fee_above_policy/,
+  );
 });
 
-function dependencies({ asterMinimum = "0" } = {}) {
+function dependencies({
+  asterMinimum = "0",
+  bridgeCode = "0x60016001",
+  gasPrice = "0x3b9aca00",
+} = {}) {
   return {
     now: () => NOW,
     deposit_policies: {
@@ -66,13 +75,26 @@ function dependencies({ asterMinimum = "0" } = {}) {
       if (String(url).includes("arbitrum.io")) {
         assert.equal(options.method, "POST");
         const body = JSON.parse(options.body);
-        assert.equal(body.method, "eth_getCode");
-        return { ok: true, json: async () => ({ jsonrpc: "2.0", id: 1, result: "0x60016001" }) };
+        assert.ok(["eth_getCode", "eth_gasPrice"].includes(body.method));
+        return {
+          ok: true,
+          json: async () => ({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: body.method === "eth_getCode" ? bridgeCode : gasPrice,
+          }),
+        };
       }
       if (String(url).includes("zklighter")) {
         return {
           ok: true,
           json: async () => ({ code: 200, networks: [{ name: "Arbitrum One", chain_id: "42161" }] }),
+        };
+      }
+      if (String(url).includes("ticker/price")) {
+        return {
+          ok: true,
+          json: async () => ({ symbol: "ETHUSDT", price: "2500", time: NOW }),
         };
       }
       if (String(url).includes("asterdex")) {
@@ -113,7 +135,9 @@ function policy(venueId, asset, destination) {
     expires_at_ms: NOW + 60_000,
     minimum_transfer_micro_usdc: 1_000_000,
     maximum_transfer_micro_usdc: 250_000_000,
-    fee_ceiling_micro_usdc: 300_000,
+    fee_ceiling_micro_usdc: 500_000,
+    gas_units_ceiling: 150_000,
+    gas_price_buffer_bps: 2_000,
     latency_ceiling_ms: 360_000,
   };
 }

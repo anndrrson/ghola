@@ -2,6 +2,7 @@ const ARBITRUM_RPC_URL = "https://arb1.arbitrum.io/rpc";
 const HYPERLIQUID_BRIDGE = "0x2df1c51e09aecf9cacb7bc98cb1742757f163df7";
 const LIGHTER_NETWORKS_URL = "https://mainnet.zklighter.elliot.ai/api/v1/deposit/networks";
 const ASTER_DEPOSIT_ASSETS_URL = "https://www.asterdex.com/bapi/futures/v1/public/future/aster/deposit/assets?chainIds=42161&networks=EVM&accountType=perp";
+const ASTER_ETH_PRICE_URL = "https://fapi.asterdex.com/fapi/v3/ticker/price?symbol=ETHUSDT";
 const ASTER_ARBITRUM_VAULT = "0x9e36cb86a159d479ced94fa05036f235ac40e1d5";
 
 export function createCarryDepositQuoteReader({
@@ -15,19 +16,24 @@ export function createCarryDepositQuoteReader({
     const observedAtMs = positiveInteger(now(), "carry_deposit_now_invalid");
     if (Math.abs(observedAtMs - checkedAtMs) > 5_000) fail("carry_deposit_checked_at_stale");
     const policy = depositPolicy(depositPolicies?.[venueId], venueId, checkedAtMs);
-    const support = venueId === "hyperliquid"
-      ? await hyperliquidSupport({ request, fetchImpl, checkedAtMs })
+    const supportRead = venueId === "hyperliquid"
+      ? hyperliquidSupport({ request, fetchImpl, checkedAtMs })
       : venueId === "lighter"
-        ? await lighterSupport({ request, fetchImpl, checkedAtMs })
+        ? lighterSupport({ request, fetchImpl, checkedAtMs })
         : venueId === "aster"
-          ? await asterSupport({ request, fetchImpl, checkedAtMs })
+          ? asterSupport({ request, fetchImpl, checkedAtMs })
           : fail("carry_deposit_venue_unsupported");
+    const [support, liveGasFee] = await Promise.all([
+      supportRead,
+      arbitrumGasFeeUpperBound({ fetchImpl, checkedAtMs, policy }),
+    ]);
     if (policy.collateral_asset !== support.collateral_asset
       || policy.destination !== support.destination) {
       fail("carry_deposit_policy_binding_invalid");
     }
     const minimum = Math.max(policy.minimum_transfer_micro_usdc, support.minimum_transfer_micro_usdc);
     if (policy.maximum_transfer_micro_usdc < minimum) fail("carry_deposit_capacity_unavailable");
+    if (liveGasFee > policy.fee_ceiling_micro_usdc) fail("carry_deposit_fee_above_policy");
     return Object.freeze({
       kind: "deposit",
       status: "available",
@@ -48,11 +54,46 @@ export function createCarryDepositQuoteReader({
       transaction_broadcast: false,
       minimum_transfer_micro_usdc: minimum,
       maximum_transfer_micro_usdc: policy.maximum_transfer_micro_usdc,
-      fee_upper_bound_micro_usdc: policy.fee_ceiling_micro_usdc,
+      fee_upper_bound_micro_usdc: liveGasFee,
       latency_upper_bound_ms: policy.latency_ceiling_ms,
       as_of_ms: support.as_of_ms,
     });
   };
+}
+
+async function arbitrumGasFeeUpperBound({ fetchImpl, checkedAtMs, policy }) {
+  const [gasResponse, priceResponse] = await Promise.all([
+    fetchImpl(ARBITRUM_RPC_URL, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "eth_gasPrice", params: [] }),
+      signal: AbortSignal.timeout(5_000),
+    }),
+    fetchImpl(ASTER_ETH_PRICE_URL, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(5_000),
+    }),
+  ]);
+  if (!gasResponse?.ok || !priceResponse?.ok) fail("carry_deposit_gas_quote_unavailable");
+  const [gasBody, priceBody] = await Promise.all([gasResponse.json(), priceResponse.json()]);
+  const gasPriceText = String(gasBody?.result || "");
+  if (!/^0x[0-9a-f]+$/i.test(gasPriceText)) fail("carry_deposit_gas_price_invalid");
+  const gasPriceWei = BigInt(gasPriceText);
+  const ethPriceE8 = decimalToScaled(priceBody?.price, 8, "carry_deposit_eth_price_invalid");
+  const priceTimeMs = positiveInteger(priceBody?.time, "carry_deposit_eth_price_time_invalid");
+  if (priceTimeMs > checkedAtMs + 5_000 || checkedAtMs - priceTimeMs > 5_000) {
+    fail("carry_deposit_eth_price_stale");
+  }
+  const numerator = BigInt(policy.gas_units_ceiling)
+    * gasPriceWei
+    * ethPriceE8
+    * 1_000_000n
+    * BigInt(10_000 + policy.gas_price_buffer_bps);
+  const denominator = 1_000_000_000_000_000_000n * 100_000_000n * 10_000n;
+  const fee = (numerator + denominator - 1n) / denominator;
+  if (fee > BigInt(Number.MAX_SAFE_INTEGER)) fail("carry_deposit_gas_fee_invalid");
+  return Number(fee);
 }
 
 async function hyperliquidSupport({ request, fetchImpl, checkedAtMs }) {
@@ -160,8 +201,19 @@ function depositPolicy(value, venueId, checkedAtMs) {
     minimum_transfer_micro_usdc: minimum,
     maximum_transfer_micro_usdc: maximum,
     fee_ceiling_micro_usdc: nonnegativeInteger(value.fee_ceiling_micro_usdc, "carry_deposit_policy_fee_invalid"),
+    gas_units_ceiling: boundedInteger(value.gas_units_ceiling, 21_000, 1_000_000, "carry_deposit_policy_gas_units_invalid"),
+    gas_price_buffer_bps: boundedInteger(value.gas_price_buffer_bps, 0, 10_000, "carry_deposit_policy_gas_buffer_invalid"),
     latency_ceiling_ms: boundedInteger(value.latency_ceiling_ms, 0, 7 * 86_400_000, "carry_deposit_policy_latency_invalid"),
   });
+}
+
+function decimalToScaled(value, decimals, code) {
+  const text = String(value ?? "");
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(text)) fail(code);
+  const [whole, fraction = ""] = text.split(".");
+  const scale = 10n ** BigInt(decimals);
+  const padded = `${fraction}${"0".repeat(decimals)}`.slice(0, decimals);
+  return BigInt(whole) * scale + BigInt(padded || "0");
 }
 
 function decimalToMicroCeiling(value) {
