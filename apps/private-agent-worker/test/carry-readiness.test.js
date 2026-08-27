@@ -44,12 +44,13 @@ function matrix() {
         order_request_checked: true,
       },
     })),
-    pairs: CARRY_EXECUTION_VENUES.slice(1).map((venueId) => ({
-      long_venue_id: CARRY_EXECUTION_VENUES[0],
-      short_venue_id: venueId,
-      no_submit_ready: true,
-      transaction_broadcast: false,
-    })),
+    pairs: CARRY_EXECUTION_VENUES.flatMap((left, leftIndex) =>
+      CARRY_EXECUTION_VENUES.slice(leftIndex + 1).map((right) => ({
+        long_venue_id: left,
+        short_venue_id: right,
+        no_submit_ready: true,
+        transaction_broadcast: false,
+      }))),
   };
 }
 
@@ -111,4 +112,21 @@ test("rejects readiness after any sealed venue binding rotates", async () => {
   const read = await readCarryExecutionReadiness({ state, owner_commitment: OWNER, venue_access: rotated, now_ms: NOW + 1_000, env: ENV });
   assert.equal(read.ready, false);
   assert.ok(read.reasons.includes("carry_readiness_access_rotated:lighter"));
+});
+
+test("requires every unique venue pair before three-venue readiness passes", async () => {
+  const incomplete = matrix();
+  incomplete.pairs = incomplete.pairs.filter((pair) =>
+    ![pair.long_venue_id, pair.short_venue_id].includes("hyperliquid")
+    || ![pair.long_venue_id, pair.short_venue_id].includes("aster"));
+  const stored = await storeCarryExecutionReadiness({
+    state: memoryState(),
+    request: request(),
+    matrix: incomplete,
+    now_ms: NOW,
+    env: ENV,
+  });
+  assert.equal(stored.ok, false);
+  assert.ok(stored.readiness.reasons.includes("carry_readiness_pair_count_invalid"));
+  assert.ok(stored.readiness.reasons.includes("carry_readiness_pair_unproven:hyperliquid:aster"));
 });

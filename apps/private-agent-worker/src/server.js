@@ -1639,12 +1639,13 @@ function validateCarryPairPreflightRequest(body, recipient) {
 }
 
 function validateCarryExecutionMatrixRequest(body, recipient) {
-  const [anchor, ...candidates] = CARRY_EXECUTION_VENUES;
-  if (!anchor || candidates.length < 2) return ["carry execution matrix requires at least three venues"];
-  return [...new Set(candidates.flatMap((venueId) => validateCarryPairPreflightRequest({
+  if (CARRY_EXECUTION_VENUES.length < 3) return ["carry execution matrix requires at least three venues"];
+  const pairs = CARRY_EXECUTION_VENUES.flatMap((left, leftIndex) =>
+    CARRY_EXECUTION_VENUES.slice(leftIndex + 1).map((right) => [left, right]));
+  return [...new Set(pairs.flatMap(([longVenueId, shortVenueId]) => validateCarryPairPreflightRequest({
     ...body,
-    long_venue_id: anchor,
-    short_venue_id: venueId,
+    long_venue_id: longVenueId,
+    short_venue_id: shortVenueId,
   }, recipient)))];
 }
 

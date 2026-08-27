@@ -99,6 +99,16 @@ test("rejects release without a joined three-venue no-submit matrix", () => {
   );
 });
 
+test("rejects a three-venue matrix that does not verify every unique pair", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll("allVenuePairs(orderedVenues)", "anchorPairs(orderedVenues)"),
+    }),
+    /carry_all_pair_no_submit_matrix_missing/,
+  );
+});
+
 test("rejects a three-venue check that can claim readiness without durable deployment-bound evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({

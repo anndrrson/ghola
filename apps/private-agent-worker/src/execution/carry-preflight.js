@@ -210,9 +210,10 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
   const observedAt = dependencies.now ? dependencies.now() : Date.now();
   const matrixDependencies = { ...dependencies, now: () => observedAt };
   const anchor = venues.find((venueId) => venueAdapterCapability(venueId, "carry_execution")?.status === "proven") || venues[0];
-  const pairs = venues.filter((venueId) => venueId !== anchor).map((venueId, index) => ({
-    long_venue_id: index % 2 === 0 ? anchor : venueId,
-    short_venue_id: index % 2 === 0 ? venueId : anchor,
+  const orderedVenues = [anchor, ...venues.filter((venueId) => venueId !== anchor)];
+  const pairs = allVenuePairs(orderedVenues).map(([left, right], index) => ({
+    long_venue_id: index % 2 === 0 ? left : right,
+    short_venue_id: index % 2 === 0 ? right : left,
   }));
   const results = await Promise.all(pairs.map((pair, index) => preflightCarryPair({
     ...matrixDependencies,
@@ -264,6 +265,10 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
   }
   matrix.readiness = stored.readiness;
   return matrix;
+}
+
+function allVenuePairs(venues) {
+  return venues.flatMap((left, leftIndex) => venues.slice(leftIndex + 1).map((right) => [left, right]));
 }
 
 function acceptableAuthorityBoundary(boundary) {

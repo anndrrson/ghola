@@ -579,7 +579,12 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
   assert.equal(result.transaction_broadcast, false);
   assert.deepEqual(result.venues.map((item) => item.venue_id).sort(), ["aster", "hyperliquid", "lighter"]);
   assert.equal(result.venues.every((item) => item.checks.transaction_broadcast === false), true);
-  assert.equal(result.pairs.length, 2);
+  assert.equal(result.pairs.length, 3);
+  assert.deepEqual(result.pairs.map((pair) => [pair.long_venue_id, pair.short_venue_id].sort().join(":")).sort(), [
+    "aster:hyperliquid",
+    "aster:lighter",
+    "hyperliquid:lighter",
+  ]);
   assert.equal(result.failures.length, 0);
   assert.equal(result.readiness.ready, true);
   assert.equal(result.readiness.owner_commitment, "owner_commitment_matrix_0001");

@@ -91,14 +91,14 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
     }
   }
   const pairs = Array.isArray(evidence.pairs) ? evidence.pairs : [];
-  const [anchor, ...candidates] = expectedVenues;
-  if (pairs.length !== candidates.length) reasons.push("carry_readiness_pair_count_invalid");
-  for (const candidate of candidates) {
+  const expectedPairs = allVenuePairs(expectedVenues);
+  if (pairs.length !== expectedPairs.length) reasons.push("carry_readiness_pair_count_invalid");
+  for (const [left, right] of expectedPairs) {
     const pair = pairs.find((item) => new Set([item?.long_venue_id, item?.short_venue_id]).size === 2
-      && [item?.long_venue_id, item?.short_venue_id].includes(anchor)
-      && [item?.long_venue_id, item?.short_venue_id].includes(candidate));
+      && [item?.long_venue_id, item?.short_venue_id].includes(left)
+      && [item?.long_venue_id, item?.short_venue_id].includes(right));
     if (!pair || pair.no_submit_ready !== true || pair.transaction_broadcast !== false) {
-      reasons.push(`carry_readiness_pair_unproven:${anchor}:${candidate}`);
+      reasons.push(`carry_readiness_pair_unproven:${left}:${right}`);
     }
   }
   if (!commitment(evidence.evidence_commitment) || evidence.evidence_commitment !== evidenceCommitment(evidence)) {
@@ -197,4 +197,8 @@ function positiveDecimal(value) {
 
 function sameStrings(left, right) {
   return Array.isArray(left) && left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function allVenuePairs(venues) {
+  return venues.flatMap((left, leftIndex) => venues.slice(leftIndex + 1).map((right) => [left, right]));
 }
