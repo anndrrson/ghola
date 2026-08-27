@@ -27,6 +27,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   positions: "apps/private-agent-worker/src/execution/carry-positions.js",
   transferProbe: "apps/private-agent-worker/src/execution/carry-transfer-probe.js",
   transferVenueReaders: "apps/private-agent-worker/src/execution/carry-transfer-venue-readers.js",
+  stablecoinConversion: "apps/private-agent-worker/src/execution/carry-stablecoin-conversion.js",
   transferRoutes: "apps/private-agent-worker/src/execution/carry-transfer-routes.js",
   recordScan: "apps/private-agent-worker/src/execution/carry-record-scan.js",
   loopSupervisor: "apps/private-agent-worker/src/execution/carry-loop-supervisor.js",
@@ -97,6 +98,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   positionsTest: "apps/private-agent-worker/test/carry-positions.test.js",
   transferProbeTest: "apps/private-agent-worker/test/carry-transfer-probe.test.js",
   transferVenueReadersTest: "apps/private-agent-worker/test/carry-transfer-venue-readers.test.js",
+  stablecoinConversionTest: "apps/private-agent-worker/test/carry-stablecoin-conversion.test.js",
   transferRoutesTest: "apps/private-agent-worker/test/carry-transfer-routes.test.js",
   recordScanTest: "apps/private-agent-worker/test/carry-record-scan.test.js",
   loopSupervisorTest: "apps/private-agent-worker/test/carry-loop-supervisor.test.js",
@@ -463,6 +465,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("transferProbe", "Promise.all(reads)", "carry_transfer_component_parallelism_missing");
   requireText("transferProbeTest", "prices USDC-USDT conversion as a bounded component of the route", "carry_transfer_component_conversion_test_missing");
   requireText("transferProbeTest", "rejects components detached from the exact account state", "carry_transfer_component_binding_test_missing");
+  requireText("stablecoinConversion", "createAsterStablecoinConversionQuoteReader", "carry_conversion_live_reader_missing");
+  requireText("stablecoinConversion", "USDCUSDT&limit=100", "carry_conversion_live_depth_missing");
+  requireText("stablecoinConversion", "fund_movement_authorized: false", "carry_conversion_authority_boundary_missing");
+  requireText("stablecoinConversionTest", "bounds USDC to USDT conversion from fresh Aster depth without submitting", "carry_conversion_live_test_missing");
+  requireText("stablecoinConversionTest", "fails closed for stale books, stale policy, and unsupported pairs", "carry_conversion_failure_test_missing");
   requireText("transferVenueReaders", "createCarryTransferVenueReaders", "carry_transfer_venue_readers_missing");
   requireText("transferVenueReaders", "estimateFee?chainId=42161&asset=USDT", "carry_transfer_aster_live_fee_missing");
   requireText("transferVenueReaders", "carry_transfer_aster_fee_above_policy", "carry_transfer_aster_fee_ceiling_missing");

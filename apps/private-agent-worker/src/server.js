@@ -45,6 +45,7 @@ import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-ev
 import { carrySupervisionHealth } from "./execution/carry-loop-supervisor.js";
 import { createCarryTransferRouteProbe } from "./execution/carry-transfer-probe.js";
 import { createCarryTransferVenueReaders } from "./execution/carry-transfer-venue-readers.js";
+import { createAsterStablecoinConversionQuoteReader } from "./execution/carry-stablecoin-conversion.js";
 import {
   approveStoredCarryCollateralReview,
   compileStoredCarryCollateralReview,
@@ -2685,7 +2686,13 @@ export function createPrivateAgentWorkerServer(options = {}) {
     || (carryTransferRouteReaders
       ? createCarryTransferRouteProbe({
           venue_route_readers: carryTransferRouteReaders,
-          read_conversion_quote: options.readCarryConversionQuote,
+          read_conversion_quote: options.readCarryConversionQuote
+            || (options.carryConversionPolicy
+              ? createAsterStablecoinConversionQuoteReader({
+                  policy: options.carryConversionPolicy,
+                  fetchImpl: options.fetchImpl || fetch,
+                })
+              : undefined),
         })
       : undefined);
   const carryFundingObservationLoop = options.startCarryFundingObservationLoop === false
