@@ -86,6 +86,7 @@ describe("CarryTerminalBuilder", () => {
     api.executeCarryPositionEntry.mockResolvedValue({ ok: true });
 
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    expect(container.textContent).toContain("$22 TOTAL · 1×");
     await click("NO-SUBMIT CHECK");
     expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
     expect(api.preflightCarryPair).toHaveBeenCalledOnce();

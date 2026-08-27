@@ -390,7 +390,8 @@ export function CarryWorkspace() {
               <div className="mt-5 space-y-3 border-y border-[#17243a] py-4 text-sm">
                 <Metric label="Projected gross funding" value={model ? formatUsd(model.grossFundingUsd) : "—"} tone="good" />
                 <Metric label="Round-trip fees + slippage" value={model?.costUsd == null ? "Needs exact fee tiers" : formatUsd(model.costUsd)} />
-                <Metric label="Minimum opening collateral" value={model ? formatUsd(model.minimumCollateralUsd) : "—"} />
+                <Metric label="Ghola trading capital (1×)" value={model ? formatUsd(model.requiredOpeningCapitalUsd) : "—"} />
+                <Metric label="Venue minimum margin" value={model ? formatUsd(model.minimumCollateralUsd) : "—"} />
                 <Metric label="Break-even" value={model?.breakEvenDays == null ? "Pending exact costs" : `${model.breakEvenDays.toFixed(1)} days`} />
                 <Metric label="Expected net value" value={model?.netUsd == null ? "Pending exact costs" : formatUsd(model.netUsd)} tone={model?.netUsd != null && model.netUsd > 0 ? "good" : undefined} />
               </div>
@@ -526,6 +527,9 @@ function PairProofSummary({ proof }: { proof: Record<string, unknown> }) {
     ? proof.creation_opportunity as Record<string, unknown>
     : {};
   const reasons = Array.isArray(proof.qualification_reasons) ? proof.qualification_reasons.map(String) : [];
+  const accounts = Array.isArray(proof.account_readiness)
+    ? proof.account_readiness.map(recordValue).filter((account): account is Record<string, unknown> => account !== null)
+    : [];
   return (
     <div className="mt-3 rounded-md border border-[#253851] bg-[#080f19] p-3 text-xs text-[#8f9aae]">
       <div className="flex justify-between gap-3"><span>Authenticated projected net</span><span className="font-mono text-[#dbe6f5]">{microUsd(opportunity.projected_net_value_micro_usdc)}</span></div>
@@ -533,6 +537,17 @@ function PairProofSummary({ proof }: { proof: Record<string, unknown> }) {
       <div className="mt-1 flex justify-between gap-3"><span>Collateral basis stress</span><span className="font-mono text-[#dbe6f5]">{microUsd(opportunity.collateral_basis_risk_micro_usdc)}</span></div>
       <div className="mt-1 flex justify-between gap-3"><span>Collateral assets</span><span className="font-mono text-[#dbe6f5]">{textValue(opportunity.long_collateral_asset)} / {textValue(opportunity.short_collateral_asset)}</span></div>
       <div className="mt-1 flex justify-between gap-3"><span>Margin runway</span><span className="font-mono text-[#dbe6f5]">{durationCompact(creation.long_margin_runway_ms)} / {durationCompact(creation.short_margin_runway_ms)}</span></div>
+      {accounts.map((account) => (
+        <div key={textValue(account.venue_id)} className="mt-1 flex justify-between gap-3">
+          <span>{textValue(account.venue_id)} opening capital</span>
+          <span className="font-mono text-[#dbe6f5]">
+            {microUsd(account.available_balance_micro_usdc)} / {microUsd(account.required_opening_collateral_micro_usdc)}
+            {Number(account.opening_collateral_shortfall_micro_usdc) > 0
+              ? ` · ${microUsd(account.opening_collateral_shortfall_micro_usdc)} owner shortfall`
+              : " · ready"}
+          </span>
+        </div>
+      ))}
       {proof.qualification_pilot_ready === true && <p className="mt-2 text-[#d5ae65]">Eligible for one separately confirmed qualification lifecycle; normal trading remains locked.</p>}
       {reasons.length > 0 && <p className="mt-2 text-[#d5ae65]">Locked: {reasons.join(", ")}</p>}
     </div>

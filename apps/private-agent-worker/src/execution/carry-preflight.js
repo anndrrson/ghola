@@ -481,6 +481,9 @@ function accountReadiness(leg, notionalMicro) {
   const account = leg.account || {};
   const available = usdMicro(account.available_balance);
   const balance = usdMicro(account.margin_balance);
+  const venueMinimumMargin = microFromBps(notionalMicro, leg.snapshot.initial_margin_bps ?? 10_000);
+  const requiredOpeningCollateral = notionalMicro;
+  const openingCollateralShortfall = Math.max(0, requiredOpeningCollateral - available);
   const accountSnapshotReady = leg.venue_id !== "hyperliquid" || (
     leg.account_snapshot?.status === "ready_to_trade" && leg.account_snapshot?.trading_enabled === true
   );
@@ -506,11 +509,14 @@ function accountReadiness(leg, notionalMicro) {
     flat_zero_orders: flat,
     position_count: countsKnown ? positionCount : null,
     open_order_count: countsKnown ? openOrderCount : null,
-    capital_ready: authorized && flat && available >= notionalMicro,
+    capital_ready: authorized && flat && openingCollateralShortfall === 0,
     monitoring_ready: authorized && balance > 0,
     available_balance_micro_usdc: available,
     margin_balance_micro_usdc: balance,
-    required_opening_collateral_micro_usdc: notionalMicro,
+    venue_minimum_margin_micro_usdc: venueMinimumMargin,
+    required_opening_collateral_micro_usdc: requiredOpeningCollateral,
+    opening_collateral_shortfall_micro_usdc: openingCollateralShortfall,
+    execution_leverage: 1,
     owner_only_funding: true,
   };
 }

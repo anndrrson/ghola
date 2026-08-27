@@ -379,7 +379,15 @@ export function builderModel(candidate: CarryCandidate, notionalText: string, da
   const netUsd = costUsd == null ? null : grossFundingUsd - costUsd;
   const dailyGross = grossFundingUsd / holdingDays;
   const breakEvenDays = costUsd == null || dailyGross <= 0 ? null : costUsd / dailyGross;
-  const minimumCollateralUsd = legs.reduce((sum, leg) => sum + notionalUsd * (leg.initial_margin_bps || 10_000) / 10_000, 0);
+  const capitalPlan = legs.map((leg) => ({
+    venueId: leg.venue_id,
+    collateralAsset: leg.collateral_asset || "USD",
+    requiredOpeningCapitalUsd: notionalUsd,
+    venueMinimumMarginUsd: notionalUsd * (leg.initial_margin_bps ?? 10_000) / 10_000,
+    executionLeverage: 1,
+  }));
+  const minimumCollateralUsd = capitalPlan.reduce((sum, leg) => sum + leg.venueMinimumMarginUsd, 0);
+  const requiredOpeningCapitalUsd = capitalPlan.reduce((sum, leg) => sum + leg.requiredOpeningCapitalUsd, 0);
   const marginReady = legs.every((leg) => leg.initial_margin_bps != null && leg.maintenance_margin_bps != null);
   return {
     grossFundingUsd,
@@ -387,6 +395,8 @@ export function builderModel(candidate: CarryCandidate, notionalText: string, da
     netUsd,
     breakEvenDays,
     minimumCollateralUsd,
+    requiredOpeningCapitalUsd,
+    capitalPlan,
     tradingFeeUsd: quote.tradingFeeUsd,
     slippageUsd: quote.slippageUsd,
     depthStatus: quote.depthStatus,

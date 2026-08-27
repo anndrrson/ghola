@@ -211,6 +211,8 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const ledger = carryLedgerSummary(current?.value_ledger);
   const proofOpportunity = proof ? asRecord(proof.creation_opportunity) : null;
   const economics = carryTerminalEconomics(model, proofOpportunity);
+  const openingCapital = carryOpeningCapitalSummary(model, proof);
+  const displayedCapital = latestObservation?.capital_action_plan ? capital : openingCapital;
   const restoredReadiness = readyStoredReadiness(readiness, candidate.asset, notional, days);
 
   const invalidateProof = (setter: (value: string) => void) => (value: string) => {
@@ -407,9 +409,9 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="USABLE DEPTH" value={economics.depth} tone={economics.depthTone} />
         <Metric label={`NET / ${days}D`} value={economics.net} tone={economics.netTone} />
         <Metric label="BREAK-EVEN" value={economics.breakEven} />
-        <Metric label="COLLATERAL" value={formatUsd(model.minimumCollateralUsd)} />
+        <Metric label="VENUE MIN MARGIN" value={formatUsd(model.minimumCollateralUsd)} />
         <Metric label="MIN RUNWAY" value={runway.value} tone={runway.tone} />
-        <Metric label="CAPITAL" value={capital.value} tone={capital.tone} />
+        <Metric label="CAPITAL" value={displayedCapital.value} tone={displayedCapital.tone} />
         <Metric label="LEDGER" value={ledger.value} tone={ledger.tone} />
         <Metric label="EXEC Δ" value={ledger.execution} tone={ledger.executionTone} />
         <Metric label="SOURCE SYNC" value={proofOpportunity ? formatSkew(proofOpportunity.contract_data_skew_ms) : "PENDING"} />
@@ -499,6 +501,31 @@ function carryTerminalEconomics(model: ReturnType<typeof builderModel>, opportun
     breakEven: proofBreakEvenMs != null
       ? `${(proofBreakEvenMs / 86_400_000).toFixed(1)}D`
       : model.breakEvenDays == null ? "—" : `${model.breakEvenDays.toFixed(1)}D`,
+  };
+}
+
+function carryOpeningCapitalSummary(
+  model: ReturnType<typeof builderModel>,
+  proof: Record<string, unknown> | null,
+) {
+  const accounts = Array.isArray(proof?.account_readiness)
+    ? proof.account_readiness.map(asRecord)
+    : [];
+  if (accounts.length === 2) {
+    const shortfalls = accounts.map((item) => finiteNumber(item.opening_collateral_shortfall_micro_usdc));
+    if (shortfalls.some((value) => value == null)) return { value: "UNVERIFIED", tone: "bad" as const };
+    const totalShortfallUsd = shortfalls
+      .filter((value): value is number => value != null)
+      .reduce((sum, value) => sum + value, 0) / 1_000_000;
+    if (totalShortfallUsd > 0) return {
+      value: `${formatUsd(totalShortfallUsd)} SHORT · OWNER`,
+      tone: "warn" as const,
+    };
+    return { value: "READY · 1×", tone: "good" as const };
+  }
+  return {
+    value: `${formatUsd(model.requiredOpeningCapitalUsd)} TOTAL · 1×`,
+    tone: undefined,
   };
 }
 

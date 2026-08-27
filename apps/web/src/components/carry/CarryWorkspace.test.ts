@@ -68,6 +68,11 @@ describe("CarryWorkspace model", () => {
     const result = builderModel(candidate, "10000", "30");
     expect(result.costUsd).not.toBeNull();
     expect(result.minimumCollateralUsd).toBe(750);
+    expect(result.requiredOpeningCapitalUsd).toBe(20_000);
+    expect(result.capitalPlan).toEqual([
+      expect.objectContaining({ venueId: "hyperliquid", requiredOpeningCapitalUsd: 10_000, executionLeverage: 1 }),
+      expect.objectContaining({ venueId: "lighter", requiredOpeningCapitalUsd: 10_000, executionLeverage: 1 }),
+    ]);
     expect(result.breakEvenDays).toBeGreaterThan(0);
     expect(result.netUsd).toBeTypeOf("number");
     expect(result.publicInputsComplete).toBe(true);

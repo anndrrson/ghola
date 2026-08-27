@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { executionVenueSpec } from "@ghola/execution-core";
-import { preflightCarryExecutionMatrix, preflightCarryPair } from "../src/execution/carry-preflight.js";
+import {
+  modelCarryPairPreflight,
+  preflightCarryExecutionMatrix,
+  preflightCarryPair,
+} from "../src/execution/carry-preflight.js";
 import { storeCarryVenueQualification } from "../src/execution/carry-qualification.js";
 
 const NOW = 1_800_000_000_000;
@@ -27,6 +31,7 @@ function snapshot(venueId) {
     funding_interval_ms: venueId === "aster" ? 28_800_000 : 3_600_000,
     quantity_step_e8: 1_000,
     price_tick_e8: 1_000_000,
+    initial_margin_bps: 500,
     maintenance_margin_bps: 500,
     as_of_ms: NOW,
     stale: false,
@@ -115,7 +120,60 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
   assert.ok(result.qualification_reasons.includes("venue_not_proven:aster"));
   assert.ok(result.qualification_reasons.includes("exact_quantity_recovery_unproven:aster"));
   assert.equal(result.account_readiness.every((item) => item.capital_ready), true);
+  assert.deepEqual(result.account_readiness.map((item) => ({
+    venue_id: item.venue_id,
+    required: item.required_opening_collateral_micro_usdc,
+    venue_minimum: item.venue_minimum_margin_micro_usdc,
+    shortfall: item.opening_collateral_shortfall_micro_usdc,
+    leverage: item.execution_leverage,
+  })), [
+    { venue_id: "hyperliquid", required: 100_000_000, venue_minimum: 5_000_000, shortfall: 0, leverage: 1 },
+    { venue_id: "aster", required: 100_000_000, venue_minimum: 5_000_000, shortfall: 0, leverage: 1 },
+  ]);
   assert.equal(result.economic_opportunity.projected_trading_cost_micro_usdc > 0, true);
+});
+
+test("reports exact owner-funded opening shortfalls without granting transfer authority", () => {
+  const account = {
+    can_trade: true,
+    available_balance: 25,
+    margin_balance: 25,
+    initial_margin: 0,
+    maintenance_margin: 0,
+    maker_fee_bps: 1,
+    taker_fee_bps: 2,
+    position_count: 0,
+    open_order_count: 0,
+  };
+  const evidence = [
+    { venue_id: "hyperliquid", side: "buy", snapshot: snapshot("hyperliquid") },
+    { venue_id: "aster", side: "sell", snapshot: snapshot("aster") },
+  ].map((leg) => ({
+    ...leg,
+    account,
+    account_snapshot: leg.venue_id === "hyperliquid"
+      ? { status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }
+      : null,
+    receipt: {
+      checks: { transaction_broadcast: false, order_request_checked: true },
+      order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
+    },
+  }));
+  const result = modelCarryPairPreflight({
+    evidence,
+    notional_usd: 100,
+    horizon_days: 30,
+    now_ms: NOW,
+  });
+  assert.equal(result.no_submit_ready, false);
+  assert.deepEqual(result.account_readiness.map((item) => ({
+    shortfall: item.opening_collateral_shortfall_micro_usdc,
+    owner_only: item.owner_only_funding,
+    leverage: item.execution_leverage,
+  })), [
+    { shortfall: 75_000_000, owner_only: true, leverage: 1 },
+    { shortfall: 75_000_000, owner_only: true, leverage: 1 },
+  ]);
 });
 
 test("prices entry and exit from notional-weighted depth without whole-bp rounding", async () => {
