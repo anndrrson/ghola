@@ -182,7 +182,7 @@ describe("CarryTerminalBuilder", () => {
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     await click("NO-SUBMIT CHECK");
     expect(container.textContent).toContain("CONNECTED · exact owner funding shortfall shown; no order submitted");
-    expect(container.textContent).toContain("$22 SHORT · OWNER");
+    expect(container.textContent).toContain("HYPERLIQUID $11 · LIGHTER $11 · OWNER");
     expect(api.createCarryPosition).not.toHaveBeenCalled();
     expect(api.executeCarryPositionEntry).not.toHaveBeenCalled();
   });

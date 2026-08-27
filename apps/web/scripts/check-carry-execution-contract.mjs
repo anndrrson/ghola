@@ -187,6 +187,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("readiness", "owner_only_funding", "carry_readiness_owner_funding_boundary_missing");
   requireText("readinessTest", "persists capital-free technical readiness while binding exact owner shortfalls", "carry_capital_free_readiness_test_missing");
   requireText("webCarryBuilder", "exact owner funding shortfall shown; no order submitted", "carry_terminal_capital_free_status_missing");
+  requireText("preflight", "compileOpeningCapitalPlan", "carry_opening_capital_plan_missing");
+  requireText("preflight", "total_opening_collateral_shortfall_micro_usdc", "carry_opening_shortfall_total_missing");
+  requireText("preflight", "automatic_transfer_permitted: false", "carry_opening_transfer_boundary_missing");
+  requireText("preflightTest", "reports exact owner-funded opening shortfalls without granting transfer authority", "carry_opening_capital_plan_test_missing");
   requireText("preflight", "carry_account_owner_mismatch", "carry_preflight_owner_binding_missing");
   requireText("preflightTest", "rejects cross-owner sealed venue access before order verification", "carry_preflight_owner_binding_test_missing");
   requireText("coreCarry", "collateral_basis_risk_bps", "collateral_basis_stress_missing");
@@ -247,7 +251,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "signCarryRiskMandate", "carry_terminal_owner_approval_missing");
   requireText("webCarryBuilder", 'label="SOURCE SYNC"', "carry_terminal_source_sync_missing");
   requireText("webCarryBuilder", 'label="INDEX BASIS"', "carry_terminal_index_basis_missing");
-  requireText("webCarryBuilder", 'label="CAPITAL"', "carry_terminal_capital_action_missing");
+  requireText("webCarryBuilder", 'label="OWNER CAPITAL"', "carry_terminal_capital_action_missing");
   requireText("webCarryBuilder", "automatic_transfer_permitted !== false", "carry_terminal_capital_authority_gate_missing");
   requireText("webCarryBuilderTest", '$10 → LIGHTER · OWNER', "carry_terminal_capital_action_test_missing");
   requireText("webCarryBuilder", 'label="LEDGER"', "carry_terminal_value_ledger_missing");

@@ -202,6 +202,7 @@ export async function preflightCarryPair({
     contract_pair_basis: modeled.opportunity.contract_pair_basis,
     margin_runways: modeled.margin_runways,
     account_readiness: modeled.account_readiness,
+    opening_capital_plan: modeled.opening_capital_plan,
     evidence: evidence.map((leg) => publicEvidence(leg, qualificationByVenue.get(leg.venue_id))),
     live_creation_ready: liveCreationReady,
     qualification_pilot_ready: qualificationPilotReady,
@@ -342,6 +343,7 @@ export function modelCarryPairPreflight({
   const notionalMicro = usdMicro(notionalUsd);
   const monitoring = phase === "monitoring";
   const accounts = evidence.map((leg) => accountReadiness(leg, notionalMicro));
+  const openingCapitalPlan = compileOpeningCapitalPlan(accounts);
   const marginRunways = evidence.map((leg, index) => projectedMarginRunway(leg, accounts[index], notionalMicro, nowMs));
   const contracts = evidence.map((leg) => contractSpec(leg, notionalMicro));
   const costs = evidence.map((leg) => legCosts(leg, notionalMicro));
@@ -359,7 +361,7 @@ export function modelCarryPairPreflight({
     long_contract: contracts[0],
     short_contract: contracts[1],
     notional_micro_usdc: notionalMicro,
-    capital_committed_micro_usdc: notionalMicro * 2,
+    capital_committed_micro_usdc: openingCapitalPlan.total_required_opening_collateral_micro_usdc,
     horizon_ms: Math.round(horizonDays * DAY_MS),
     long_costs: costs[0],
     short_costs: costs[1],
@@ -397,6 +399,7 @@ export function modelCarryPairPreflight({
     no_submit_ready: noSubmitReady,
     capital_ready: capitalReady,
     monitoring_ready: monitoringReady,
+    opening_capital_plan: openingCapitalPlan,
     opportunity: Object.freeze({
       ...opportunity,
       collateral_basis_mode: collateralBasis.mode,
@@ -407,6 +410,36 @@ export function modelCarryPairPreflight({
     margin_runways: marginRunways,
     account_readiness: accounts,
   };
+}
+
+function compileOpeningCapitalPlan(accounts) {
+  const legs = accounts.map((account) => Object.freeze({
+    venue_id: account.venue_id,
+    available_balance_micro_usdc: account.available_balance_micro_usdc,
+    required_opening_collateral_micro_usdc: account.required_opening_collateral_micro_usdc,
+    opening_collateral_shortfall_micro_usdc: account.opening_collateral_shortfall_micro_usdc,
+    excess_collateral_micro_usdc: Math.max(
+      0,
+      account.available_balance_micro_usdc - account.required_opening_collateral_micro_usdc,
+    ),
+    recommended_action: account.opening_collateral_shortfall_micro_usdc > 0
+      ? "owner_fund_venue"
+      : "none",
+  }));
+  const total = (field) => legs.reduce((sum, leg) => sum + leg[field], 0);
+  const totalShortfall = total("opening_collateral_shortfall_micro_usdc");
+  return Object.freeze({
+    version: 1,
+    status: totalShortfall > 0 ? "owner_funding_required" : "ready",
+    total_available_balance_micro_usdc: total("available_balance_micro_usdc"),
+    total_required_opening_collateral_micro_usdc: total("required_opening_collateral_micro_usdc"),
+    total_opening_collateral_shortfall_micro_usdc: totalShortfall,
+    total_excess_collateral_micro_usdc: total("excess_collateral_micro_usdc"),
+    owner_only_funding: true,
+    automatic_transfer_permitted: false,
+    transaction_broadcast: false,
+    legs: Object.freeze(legs),
+  });
 }
 
 function collateralBasisModel(longAsset, shortAsset) {

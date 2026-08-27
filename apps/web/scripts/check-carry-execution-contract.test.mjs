@@ -185,6 +185,16 @@ test("rejects a terminal that hides a safe unfunded connection result", () => {
   );
 });
 
+test("rejects an opening capital packet that could move funds", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll("automatic_transfer_permitted: false", "automatic_transfer_permitted: true"),
+    }),
+    /carry_opening_transfer_boundary_missing/,
+  );
+});
+
 test("rejects Carry preflight without exact owner binding", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -282,7 +292,7 @@ test("rejects a terminal that hides the owner-only capital action", () => {
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      webCarryBuilder: sources.webCarryBuilder.replaceAll('label="CAPITAL"', 'label="STATUS"'),
+      webCarryBuilder: sources.webCarryBuilder.replaceAll('label="OWNER CAPITAL"', 'label="STATUS"'),
     }),
     /carry_terminal_capital_action_missing/,
   );

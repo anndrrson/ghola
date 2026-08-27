@@ -130,6 +130,35 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
     { venue_id: "hyperliquid", required: 100_000_000, venue_minimum: 5_000_000, shortfall: 0, leverage: 1 },
     { venue_id: "aster", required: 100_000_000, venue_minimum: 5_000_000, shortfall: 0, leverage: 1 },
   ]);
+  assert.deepEqual(result.opening_capital_plan, {
+    version: 1,
+    status: "ready",
+    total_available_balance_micro_usdc: 1_000_000_000,
+    total_required_opening_collateral_micro_usdc: 200_000_000,
+    total_opening_collateral_shortfall_micro_usdc: 0,
+    total_excess_collateral_micro_usdc: 800_000_000,
+    owner_only_funding: true,
+    automatic_transfer_permitted: false,
+    transaction_broadcast: false,
+    legs: [
+      {
+        venue_id: "hyperliquid",
+        available_balance_micro_usdc: 500_000_000,
+        required_opening_collateral_micro_usdc: 100_000_000,
+        opening_collateral_shortfall_micro_usdc: 0,
+        excess_collateral_micro_usdc: 400_000_000,
+        recommended_action: "none",
+      },
+      {
+        venue_id: "aster",
+        available_balance_micro_usdc: 500_000_000,
+        required_opening_collateral_micro_usdc: 100_000_000,
+        opening_collateral_shortfall_micro_usdc: 0,
+        excess_collateral_micro_usdc: 400_000_000,
+        recommended_action: "none",
+      },
+    ],
+  });
   assert.equal(result.economic_opportunity.projected_trading_cost_micro_usdc > 0, true);
 });
 
@@ -175,6 +204,35 @@ test("reports exact owner-funded opening shortfalls without granting transfer au
     { shortfall: 75_000_000, owner_only: true, leverage: 1 },
     { shortfall: 75_000_000, owner_only: true, leverage: 1 },
   ]);
+  assert.deepEqual(result.opening_capital_plan, {
+    version: 1,
+    status: "owner_funding_required",
+    total_available_balance_micro_usdc: 50_000_000,
+    total_required_opening_collateral_micro_usdc: 200_000_000,
+    total_opening_collateral_shortfall_micro_usdc: 150_000_000,
+    total_excess_collateral_micro_usdc: 0,
+    owner_only_funding: true,
+    automatic_transfer_permitted: false,
+    transaction_broadcast: false,
+    legs: [
+      {
+        venue_id: "hyperliquid",
+        available_balance_micro_usdc: 25_000_000,
+        required_opening_collateral_micro_usdc: 100_000_000,
+        opening_collateral_shortfall_micro_usdc: 75_000_000,
+        excess_collateral_micro_usdc: 0,
+        recommended_action: "owner_fund_venue",
+      },
+      {
+        venue_id: "aster",
+        available_balance_micro_usdc: 25_000_000,
+        required_opening_collateral_micro_usdc: 100_000_000,
+        opening_collateral_shortfall_micro_usdc: 75_000_000,
+        excess_collateral_micro_usdc: 0,
+        recommended_action: "owner_fund_venue",
+      },
+    ],
+  });
 });
 
 test("prices entry and exit from notional-weighted depth without whole-bp rounding", async () => {

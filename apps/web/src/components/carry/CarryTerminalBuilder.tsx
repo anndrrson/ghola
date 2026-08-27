@@ -413,7 +413,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="BREAK-EVEN" value={economics.breakEven} />
         <Metric label="VENUE MIN MARGIN" value={formatUsd(model.minimumCollateralUsd)} />
         <Metric label="MIN RUNWAY" value={runway.value} tone={runway.tone} />
-        <Metric label="CAPITAL" value={displayedCapital.value} tone={displayedCapital.tone} />
+        <Metric label="OWNER CAPITAL" value={displayedCapital.value} tone={displayedCapital.tone} />
         <Metric label="LEDGER" value={ledger.value} tone={ledger.tone} />
         <Metric label="EXEC Δ" value={ledger.execution} tone={ledger.executionTone} />
         <Metric label="SOURCE SYNC" value={proofOpportunity ? formatSkew(proofOpportunity.contract_data_skew_ms) : "PENDING"} />
@@ -519,10 +519,19 @@ function carryOpeningCapitalSummary(
     const totalShortfallUsd = shortfalls
       .filter((value): value is number => value != null)
       .reduce((sum, value) => sum + value, 0) / 1_000_000;
-    if (totalShortfallUsd > 0) return {
-      value: `${formatUsd(totalShortfallUsd)} SHORT · OWNER`,
-      tone: "warn" as const,
-    };
+    if (totalShortfallUsd > 0) {
+      const actions = accounts.flatMap((item, index) => {
+        const shortfall = shortfalls[index];
+        const venueId = stringValue(item.venue_id);
+        return shortfall != null && shortfall > 0 && venueId
+          ? [`${venueName(venueId)} ${formatUsd(shortfall / 1_000_000)}`]
+          : [];
+      });
+      return {
+        value: `${actions.join(" · ")} · OWNER`,
+        tone: "warn" as const,
+      };
+    }
     return { value: "READY · 1×", tone: "good" as const };
   }
   return {
