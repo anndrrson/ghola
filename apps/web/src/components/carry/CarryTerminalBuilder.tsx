@@ -510,7 +510,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label={`NET / ${days}D`} value={economics.net} tone={economics.netTone} />
         <Metric label="BREAK-EVEN" value={economics.breakEven} />
         <Metric label={proof ? "VENUE MIN MARGIN" : "VENUE MIN MARGIN EST"} value={venueMinimumMargin.value} tone={venueMinimumMargin.tone} />
-        <Metric label="MIN RUNWAY" value={runway.value} tone={runway.tone} />
+        <Metric label="LEG RUNWAY" value={runway.value} tone={runway.tone} />
         <Metric label="OWNER CAPITAL" value={displayedCapital.value} tone={displayedCapital.tone} />
         <Metric label="LEDGER" value={ledger.value} tone={ledger.tone} />
         <Metric label="EXEC Δ" value={ledger.execution} tone={ledger.executionTone} />
@@ -599,7 +599,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: "good" | "warn" | "bad" }) {
   const color = tone === "good" ? "text-[#72dfb2]" : tone === "warn" ? "text-[#d9bd74]" : tone === "bad" ? "text-[#ef929e]" : "text-[#c8d0dc]";
-  return <div className="rounded border border-[#1d2733] bg-[#070a0f] px-2 py-1"><p className="font-mono text-[9px] text-[#5f6c7e]">{label}</p><p className={`mt-0.5 truncate font-mono text-[10px] ${color}`}>{value}</p></div>;
+  return <div className="rounded border border-[#1d2733] bg-[#070a0f] px-2 py-1"><p className="font-mono text-[9px] text-[#5f6c7e]">{label}</p><p title={value} className={`mt-0.5 truncate font-mono text-[10px] ${color}`}>{value}</p></div>;
 }
 
 export function carryTerminalEconomics(model: ReturnType<typeof builderModel>, opportunity: Record<string, unknown> | null) {
@@ -1000,19 +1000,32 @@ function carryRunwaySummary(observation: CarryRecord["latest_observation"] | nul
   if (!observation) return { value: "PENDING", tone: undefined } as const;
   const venues = [candidate.long.venue_id, candidate.short.venue_id];
   const statuses = venues.map((venue) => observation.margin_runway_status_by_venue?.[venue]);
-  if (statuses.some((status) => !status)) return { value: "UNVERIFIED", tone: "bad" } as const;
+  const allowedStatuses = new Set(["healthy", "warning", "critical", "breached"]);
+  if (statuses.some((status) => !status || !allowedStatuses.has(status))) {
+    return { value: "UNVERIFIED", tone: "bad" } as const;
+  }
   const values = venues.map((venue) => observation.margin_runway_ms_by_venue?.[venue]);
-  if (values.some((value) => value === undefined)) return { value: "UNVERIFIED", tone: "bad" } as const;
-  const finite = values.filter((value): value is number => typeof value === "number");
-  const minimum = finite.length > 0 ? Math.min(...finite) : Number.POSITIVE_INFINITY;
+  if (values.some((value, index) => value === undefined
+    || (value === null && statuses[index] !== "healthy")
+    || (value !== null && (!Number.isFinite(value) || Number(value) < 0)))) {
+    return { value: "UNVERIFIED", tone: "bad" } as const;
+  }
   const worst = statuses.includes("breached") ? "breached"
     : statuses.includes("critical") ? "critical"
       : statuses.includes("warning") ? "warning"
         : "healthy";
+  const legs = venues.map((venue, index) => `${runwayVenueCode(venue)} ${values[index] === null ? "∞" : formatRunway(Number(values[index]))}`);
   return {
-    value: `${formatRunway(minimum)} · ${worst.toUpperCase()}`,
+    value: `${legs.join(" · ")} · ${worst.toUpperCase()}`,
     tone: worst === "healthy" ? "good" : worst === "warning" ? "warn" : "bad",
   } as const;
+}
+
+function runwayVenueCode(venueId: string) {
+  if (venueId === "hyperliquid") return "HYP";
+  if (venueId === "lighter") return "LTR";
+  if (venueId === "aster") return "AST";
+  return venueName(venueId).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
 }
 
 function carryCapitalSummary(plan: NonNullable<CarryRecord["latest_observation"]>["capital_action_plan"]) {

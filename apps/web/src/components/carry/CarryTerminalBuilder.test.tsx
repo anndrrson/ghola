@@ -629,8 +629,8 @@ describe("CarryTerminalBuilder", () => {
       }],
     });
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
-    expect(container.textContent).toContain("MIN RUNWAY");
-    expect(container.textContent).toContain("1.0H · WARNING");
+    expect(container.textContent).toContain("LEG RUNWAY");
+    expect(container.textContent).toContain("HYP 2.0H · LTR 1.0H · WARNING");
     expect(container.textContent).toContain("CAPITAL");
     expect(container.textContent).toContain("$10 → LIGHTER · OWNER");
     expect(container.textContent).toContain("LEDGER");
@@ -644,6 +644,24 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("SIGN CAPITAL REVIEW");
     expect(container.textContent).toContain("PORTFOLIO VALUE · $19.5 REAL · $10 OPEN MODEL · +$4.5 Δ");
     expect(container.textContent).toContain("CAPITAL OFFSET · $15 NEW CASH AVOIDED · OWNER MOVE");
+  });
+
+  it("fails closed when a venue claims risk alongside an infinite runway", async () => {
+    api.listCarryPositions.mockResolvedValue({
+      ok: true,
+      records: [{
+        ...carryRecord(),
+        position: { ...carryRecord().position, status: "active" },
+        latest_observation: {
+          margin_runway_ms_by_venue: { hyperliquid: null, lighter: 3_600_000 },
+          margin_runway_status_by_venue: { hyperliquid: "warning", lighter: "healthy" },
+          recorded_at_ms: Date.now(),
+        },
+      }],
+    });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    const label = [...container.querySelectorAll("p")].find((item) => item.textContent === "LEG RUNWAY");
+    expect(label?.parentElement?.textContent).toContain("UNVERIFIED");
   });
 
   it("fails closed when capital-efficiency evidence is incomplete or inconsistent", () => {

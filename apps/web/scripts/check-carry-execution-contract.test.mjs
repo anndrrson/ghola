@@ -1032,7 +1032,7 @@ test("rejects a terminal that hides monitored margin runway", () => {
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      webCarryBuilder: sources.webCarryBuilder.replaceAll("MIN RUNWAY", "MARGIN"),
+      webCarryBuilder: sources.webCarryBuilder.replaceAll("LEG RUNWAY", "MARGIN"),
     }),
     /carry_terminal_runway_display_missing/,
   );

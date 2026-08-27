@@ -681,7 +681,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "CONFIRM LIVE PAIRED ENTRY", "carry_terminal_separate_confirmation_missing");
   requireText("webCarryBuilder", "FLAT · 0 ORDERS", "carry_terminal_flat_state_missing");
   requireText("webCarryBuilder", "RETRY POSITION SYNC", "carry_terminal_position_sync_gate_missing");
-  requireText("webCarryBuilder", "MIN RUNWAY", "carry_terminal_runway_display_missing");
+  requireText("webCarryBuilder", "LEG RUNWAY", "carry_terminal_runway_display_missing");
+  requireText("webCarryBuilderTest", "HYP 2.0H · LTR 1.0H · WARNING", "carry_terminal_each_leg_runway_test_missing");
+  requireText("webCarryBuilderTest", "fails closed when a venue claims risk alongside an infinite runway", "carry_terminal_runway_integrity_test_missing");
   requireText("webCarryBuilder", 'label="EDGE CONF"', "carry_terminal_funding_persistence_missing");
   requireText("webCarryBuilderTest", "shows only commitment-backed persistent funding as durable", "carry_terminal_funding_persistence_test_missing");
   requireText("webCarryBuilder", "window.setTimeout(refresh", "carry_terminal_monitor_refresh_missing");
