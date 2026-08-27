@@ -1017,6 +1017,19 @@ test("rejects an executor proven only for one hard-coded venue pair", () => {
   );
 });
 
+test("rejects full lifecycle recovery proven for only one venue pair", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      lifecycleTest: sources.lifecycleTest.replaceAll(
+        "completes a supervised restart-to-flat lifecycle for every qualified venue pair",
+        "completes one preferred lifecycle",
+      ),
+    }),
+    /carry_three_venue_full_lifecycle_matrix_missing/,
+  );
+});
+
 test("rejects Carry vault verification outside its exact account binding", () => {
   assert.throws(
     () => checkCarryExecutionContract({

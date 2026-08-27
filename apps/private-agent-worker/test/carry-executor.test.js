@@ -807,24 +807,7 @@ test("background monitoring triggers an automatic reduce-only exit and finalizes
   });
   assert.equal(entry.ok, true);
 
-  const monitoringProof = async () => ({
-    ...preflightProof(),
-    economic_opportunity: {
-      checked_at_ms: NOW + 100,
-      projected_net_value_bps: -1,
-      contract_data_skew_ms: 0,
-      max_contract_data_skew_ms: 2_000,
-      index_price_divergence_bps: 0,
-      mark_price_divergence_bps: 0,
-      max_index_price_divergence_bps: 25,
-      max_mark_price_divergence_bps: 50,
-    },
-    margin_runways: [
-      monitoringRunway("aster"),
-      monitoringRunway("lighter"),
-    ],
-    qualification_reasons: [],
-  });
+  const monitoringProof = async () => automaticMonitoringProof();
   const firstMonitor = await runCarryMonitoringTick({
     state: fixture.state,
     preflight: monitoringProof,
@@ -872,6 +855,72 @@ test("background monitoring triggers an automatic reduce-only exit and finalizes
   assert.equal(result.value_finalized, true);
   assert.equal(result.record.value_ledger.status, "finalized");
   assert.equal(result.record.value_ledger.realized.net_value_micro_usdc, 19_000);
+});
+
+test("completes a supervised restart-to-flat lifecycle for every qualified venue pair", async (t) => {
+  const pairs = [
+    { long: "hyperliquid", short: "lighter" },
+    { long: "hyperliquid", short: "aster" },
+    { long: "lighter", short: "aster" },
+  ];
+  for (const pair of pairs) {
+    const label = `${pair.long}-${pair.short}`;
+    const fixture = await setup(t, `automatic-matrix-${label}`, pair);
+    const entry = await executeStoredCarryEntry({
+      ...fixture,
+      executeOrder: async (args) => {
+        const receipt = exactValueReceipt(args);
+        await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+        return receipt;
+      },
+    });
+    assert.equal(entry.ok, true, `${label}: entry ${entry.error || "failed"}`);
+
+    const monitoringProof = async () => automaticMonitoringProof(pair);
+    const firstMonitor = await runCarryMonitoringTick({
+      state: fixture.state,
+      preflight: monitoringProof,
+      now_ms: NOW + 100,
+    });
+    assert.equal(firstMonitor.results[0].record.position.status, "active", `${label}: first observation`);
+    const secondMonitor = await runCarryMonitoringTick({
+      state: fixture.state,
+      preflight: monitoringProof,
+      now_ms: NOW + 200,
+    });
+    assert.equal(secondMonitor.results[0].record.position.status, "exiting", `${label}: signed exit trigger`);
+
+    const restartedState = createWorkerState(fixture.state_dir);
+    const calls = [];
+    const exit = await runCarryExecutionTick({
+      ...fixture,
+      state: restartedState,
+      preflight: monitoringProof,
+      now: (() => { let value = NOW + 1_000; return () => ++value; })(),
+      readFundingSettlements: async ({ body }) => [{
+        settlement_id: `${body.venue_id}:automatic-matrix:1`,
+        occurred_at_ms: Math.min(body.end_time_ms, body.start_time_ms + 1),
+        amount_quote: body.venue_id === pair.long ? "0.020" : "-0.005",
+        quote_asset: "USDC",
+      }],
+      executeOrder: async (args) => {
+        calls.push(args);
+        const receipt = exactValueReceipt(args);
+        await restartedState.putIdempotency(args.work_order_commitment, receipt);
+        return receipt;
+      },
+    });
+    assert.equal(exit.ok, true, `${label}: exit tick`);
+    assert.deepEqual(calls.map((call) => call.venue_id), [pair.long, pair.short]);
+    assert.equal(calls.every((call) => call.instruction.order.reduce_only === true), true);
+    const result = exit.results[0];
+    assert.equal(result.record.position.status, "reconciled", `${label}: reconciled`);
+    assert.equal(result.record.final_reconciliation_evidence.gross_exposure_micro_usdc, 0);
+    assert.equal(result.record.final_reconciliation_evidence.open_order_count, 0);
+    assert.equal(result.record.final_reconciliation_evidence.venues.every((venue) =>
+      venue.position_count === 0 && venue.open_order_count === 0), true);
+    assert.equal(result.record.value_ledger.status, "finalized", `${label}: finalized value`);
+  }
 });
 
 async function setup(t, suffix, pair = { long: "aster", short: "lighter" }) {
@@ -1003,6 +1052,27 @@ function preflightProof(pair = { long: "aster", short: "lighter" }) {
       { venue_id: pair.long, account_commitment: `account:${pair.long}:0001`, side: "buy", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.long), base_size: "0.001", limit_price: "10000" } },
       { venue_id: pair.short, account_commitment: `account:${pair.short}:0001`, side: "sell", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.short), base_size: "0.001", limit_price: "10000" } },
     ],
+  };
+}
+
+function automaticMonitoringProof(pair = { long: "aster", short: "lighter" }) {
+  return {
+    ...preflightProof(pair),
+    economic_opportunity: {
+      checked_at_ms: NOW + 100,
+      projected_net_value_bps: -1,
+      contract_data_skew_ms: 0,
+      max_contract_data_skew_ms: 2_000,
+      index_price_divergence_bps: 0,
+      mark_price_divergence_bps: 0,
+      max_index_price_divergence_bps: 25,
+      max_mark_price_divergence_bps: 50,
+    },
+    margin_runways: [
+      monitoringRunway(pair.long),
+      monitoringRunway(pair.short),
+    ],
+    qualification_reasons: [],
   };
 }
 
