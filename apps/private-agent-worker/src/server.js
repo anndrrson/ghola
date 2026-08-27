@@ -44,6 +44,7 @@ import { executeStoredCarryEntry, startCarryExecutionLoop } from "./execution/ca
 import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-evidence.js";
 import { carrySupervisionHealth } from "./execution/carry-loop-supervisor.js";
 import { createCarryTransferRouteProbe } from "./execution/carry-transfer-probe.js";
+import { createCarryTransferVenueReaders } from "./execution/carry-transfer-venue-readers.js";
 import {
   approveStoredCarryCollateralReview,
   compileStoredCarryCollateralReview,
@@ -2658,10 +2659,20 @@ export function createPrivateAgentWorkerServer(options = {}) {
     receiptSigner: options.krakenV2ReceiptSigner,
   });
   const fetchPerpShadowSet = options.fetchPerpShadowSet || fetchCorePerpShadowSet;
+  const carryTransferRouteReaders = options.carryTransferRouteReaders
+    || (options.readCarryAccountCapacity && options.readCarryDepositQuote
+      ? createCarryTransferVenueReaders({
+          read_account_capacity: options.readCarryAccountCapacity,
+          read_deposit_quote: options.readCarryDepositQuote,
+          read_lighter_withdrawal_quote: options.readLighterWithdrawalQuote,
+          withdrawal_policies: options.carryWithdrawalPolicies,
+          fetchImpl: options.fetchImpl || fetch,
+        })
+      : undefined);
   const probeCarryTransferRoute = options.probeCarryTransferRoute
-    || (options.carryTransferRouteReaders
+    || (carryTransferRouteReaders
       ? createCarryTransferRouteProbe({
-          venue_route_readers: options.carryTransferRouteReaders,
+          venue_route_readers: carryTransferRouteReaders,
           read_conversion_quote: options.readCarryConversionQuote,
         })
       : undefined);
