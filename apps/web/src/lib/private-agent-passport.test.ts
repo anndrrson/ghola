@@ -343,6 +343,7 @@ describe("agent passport venue linking", () => {
         headers: {
           authorization: "Bearer investor-test-token",
           "content-type": "application/json",
+          "x-ghola-correlation-id": "ghola-carry-pair-test-0001",
           origin: "https://ghola.test",
         },
         body: JSON.stringify({
@@ -356,6 +357,7 @@ describe("agent passport venue linking", () => {
       }));
       const result = await response.json();
       expect(response.status, JSON.stringify(result)).toBe(200);
+      expect(response.headers.get("x-ghola-correlation-id")).toBe("ghola-carry-pair-test-0001");
       expect(result.no_submit_ready).toBe(true);
 
       const preflight = workerBodies.find((body) => body.operation_class === "paired_no_submit");

@@ -30,16 +30,24 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  if (!sameOrigin(req)) return response({ error: "cross_site_request_rejected" }, 403);
+  const startedAt = Date.now();
+  const correlationId = requestCorrelationId(req);
+  if (!sameOrigin(req)) return response({ error: "cross_site_request_rejected" }, 403, correlationId);
   const owner = await privateAccountOwnerFromRequest(req);
   if (!owner) return unauthorized();
   const worker = workerConfig();
-  if (!worker.url) return response({ error: "carry_worker_unavailable" }, 503);
+  if (!worker.url) return response({ error: "carry_worker_unavailable" }, 503, correlationId);
   const input = await req.json().catch(() => null);
-  if (!input || typeof input !== "object" || Array.isArray(input)) return response({ error: "carry_request_invalid" }, 400);
+  if (!input || typeof input !== "object" || Array.isArray(input)) return response({ error: "carry_request_invalid" }, 400, correlationId);
   const action = typeof input.action === "string" ? input.action : "";
   const route = carryRoute(action);
-  if (!route) return response({ error: "carry_action_invalid" }, 400);
+  if (!route) return response({ error: "carry_action_invalid" }, 400, correlationId);
+  console.info("[carry] request started", {
+    correlation_id: correlationId,
+    action,
+    operation_class: route.operationClass,
+    no_submit: action.startsWith("preflight_"),
+  });
   let body: Record<string, unknown> = {
     ...input,
     action: undefined,
@@ -47,7 +55,7 @@ export async function POST(req: NextRequest) {
   };
   if (action === "preflight_aster") {
     const access = record((await agentPassportVenueAccessForWorker(owner)).aster);
-    if (access.status !== "ready") return response({ error: "aster_account_not_ready" }, 409);
+    if (access.status !== "ready") return response({ error: "aster_account_not_ready" }, 409, correlationId);
     body = {
       version: 1,
       owner_commitment: owner.owner_commitment,
@@ -70,7 +78,7 @@ export async function POST(req: NextRequest) {
   }
   if (action === "preflight_hyperliquid") {
     const access = record((await agentPassportVenueAccessForWorker(owner)).hyperliquid);
-    if (access.status !== "ready") return response({ error: "hyperliquid_account_not_ready" }, 409);
+    if (access.status !== "ready") return response({ error: "hyperliquid_account_not_ready" }, 409, correlationId);
     body = {
       version: 1,
       owner_commitment: owner.owner_commitment,
@@ -93,7 +101,7 @@ export async function POST(req: NextRequest) {
   }
   if (action === "preflight_lighter") {
     const access = record((await agentPassportVenueAccessForWorker(owner)).lighter);
-    if (access.status !== "ready") return response({ error: "lighter_account_not_ready" }, 409);
+    if (access.status !== "ready") return response({ error: "lighter_account_not_ready" }, 409, correlationId);
     body = {
       version: 1,
       owner_commitment: owner.owner_commitment,
@@ -119,12 +127,12 @@ export async function POST(req: NextRequest) {
     const longVenue = stringValue(input.long_venue_id);
     const shortVenue = stringValue(input.short_venue_id);
     if (!isCarryExecutionVenue(longVenue) || !isCarryExecutionVenue(shortVenue)) {
-      return response({ error: "carry_venue_pair_invalid" }, 400);
+      return response({ error: "carry_venue_pair_invalid" }, 400, correlationId);
     }
     const selected = [longVenue, shortVenue];
     const accesses = Object.fromEntries(selected.map((venueId) => [venueId, record(venueAccess[venueId as keyof typeof venueAccess])]));
     for (const venueId of selected) {
-      if (accesses[venueId].status !== "ready") return response({ error: `${venueId}_account_not_ready` }, 409);
+      if (accesses[venueId].status !== "ready") return response({ error: `${venueId}_account_not_ready` }, 409, correlationId);
     }
     body = {
       version: 1,
@@ -145,7 +153,7 @@ export async function POST(req: NextRequest) {
     const venueAccess = await agentPassportVenueAccessForWorker(owner);
     const accesses = Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [venueId, record(venueAccess[venueId])]));
     for (const venueId of CARRY_EXECUTION_VENUES) {
-      if (accesses[venueId].status !== "ready") return response({ error: `${venueId}_account_not_ready` }, 409);
+      if (accesses[venueId].status !== "ready") return response({ error: `${venueId}_account_not_ready` }, 409, correlationId);
     }
     body = {
       version: 1,
@@ -166,20 +174,20 @@ export async function POST(req: NextRequest) {
     const longVenue = stringValue(positionInput.long_venue_id);
     const shortVenue = stringValue(positionInput.short_venue_id);
     if (!isCarryExecutionVenue(longVenue) || !isCarryExecutionVenue(shortVenue) || longVenue === shortVenue) {
-      return response({ error: "carry_venue_pair_invalid" }, 400);
+      return response({ error: "carry_venue_pair_invalid" }, 400, correlationId);
     }
     const venueAccess = await agentPassportVenueAccessForWorker(owner);
     const selected = [longVenue, shortVenue];
     const accesses = Object.fromEntries(selected.map((venueId) => [venueId, record(venueAccess[venueId as keyof typeof venueAccess])]));
     for (const venueId of selected) {
-      if (accesses[venueId].status !== "ready") return response({ error: `${venueId}_account_not_ready` }, 409);
+      if (accesses[venueId].status !== "ready") return response({ error: `${venueId}_account_not_ready` }, 409, correlationId);
     }
     const mandate = await verifyCarryRiskMandateAuthorization({
       owner_commitment: owner.owner_commitment,
       position_input: positionInput,
       mandate_authorization: positionInput.mandate_authorization,
     });
-    if (!mandate.ok) return response({ error: mandate.error }, 403);
+    if (!mandate.ok) return response({ error: mandate.error }, 403, correlationId);
     body = {
       version: 1,
       owner_commitment: owner.owner_commitment,
@@ -200,13 +208,13 @@ export async function POST(req: NextRequest) {
     const longVenue = stringValue(input.long_venue_id);
     const shortVenue = stringValue(input.short_venue_id);
     if (!isCarryExecutionVenue(longVenue) || !isCarryExecutionVenue(shortVenue) || longVenue === shortVenue) {
-      return response({ error: "carry_venue_pair_invalid" }, 400);
+      return response({ error: "carry_venue_pair_invalid" }, 400, correlationId);
     }
     const venueAccess = await agentPassportVenueAccessForWorker(owner);
     const selected = [longVenue, shortVenue];
     const accesses = Object.fromEntries(selected.map((venueId) => [venueId, record(venueAccess[venueId as keyof typeof venueAccess])]));
     for (const venueId of selected) {
-      if (accesses[venueId].status !== "ready") return response({ error: `${venueId}_account_not_ready` }, 409);
+      if (accesses[venueId].status !== "ready") return response({ error: `${venueId}_account_not_ready` }, 409, correlationId);
     }
     body = {
       version: 1,
@@ -248,9 +256,24 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify(body),
     });
-    return response(await upstream.json().catch(() => ({ error: "carry_worker_invalid" })), upstream.status);
-  } catch {
-    return response({ error: "carry_worker_unavailable" }, 503);
+    const result = await upstream.json().catch(() => ({ error: "carry_worker_invalid" }));
+    console.info("[carry] request completed", {
+      correlation_id: correlationId,
+      action,
+      operation_class: route.operationClass,
+      status: upstream.status,
+      duration_ms: Date.now() - startedAt,
+    });
+    return response(result, upstream.status, correlationId);
+  } catch (error) {
+    console.error("[carry] request failed", {
+      correlation_id: correlationId,
+      action,
+      operation_class: route.operationClass,
+      duration_ms: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return response({ error: "carry_worker_unavailable" }, 503, correlationId);
   }
 }
 
@@ -313,6 +336,19 @@ function workerConfig() {
   };
 }
 
-function response(body: unknown, status = 200) {
-  return NextResponse.json(body, { status, headers: NO_STORE });
+function requestCorrelationId(req: NextRequest) {
+  const supplied = req.headers.get("x-ghola-correlation-id")?.trim();
+  return supplied && /^ghola-[a-zA-Z0-9-]{8,96}$/.test(supplied)
+    ? supplied
+    : `ghola-${randomUUID()}`;
+}
+
+function response(body: unknown, status = 200, correlationId?: string) {
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      ...NO_STORE,
+      ...(correlationId ? { "x-ghola-correlation-id": correlationId } : {}),
+    },
+  });
 }

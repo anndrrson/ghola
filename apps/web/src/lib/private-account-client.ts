@@ -1659,6 +1659,10 @@ async function privateAccountFetch(path: string, options: RequestInit) {
     cache: "no-store",
   });
   const body = await res.json().catch(() => ({}));
+  const responseCorrelationId = res.headers.get("x-ghola-correlation-id") ||
+    (body && typeof body === "object" && !Array.isArray(body) && typeof body.correlation_id === "string"
+      ? body.correlation_id
+      : correlationId);
   if (!res.ok) {
     const err = new Error(body.error || `API error ${res.status}`) as Error & {
       status?: number;
@@ -1667,10 +1671,12 @@ async function privateAccountFetch(path: string, options: RequestInit) {
     };
     err.status = res.status;
     err.body = body;
-    err.correlationId = res.headers.get("x-ghola-correlation-id") || body.correlation_id || correlationId;
+    err.correlationId = responseCorrelationId;
     throw err;
   }
-  return body;
+  return body && typeof body === "object" && !Array.isArray(body)
+    ? { ...body, correlation_id: responseCorrelationId }
+    : body;
 }
 
 function requestBodyObject(body: BodyInit | null | undefined) {

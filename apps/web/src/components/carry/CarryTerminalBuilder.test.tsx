@@ -64,6 +64,7 @@ describe("CarryTerminalBuilder", () => {
       .mockResolvedValueOnce({ ok: true, records: [] })
       .mockResolvedValue({ ok: true, records: [record] });
     api.preflightCarryPair.mockResolvedValue({
+      correlation_id: "ghola-pair-test-1234",
       no_submit_ready: true,
       live_creation_ready: false,
       qualification_pilot_ready: true,
@@ -77,6 +78,9 @@ describe("CarryTerminalBuilder", () => {
     await click("NO-SUBMIT CHECK");
     expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
     expect(api.preflightCarryPair).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain("NO-SUBMIT RECEIPT");
+    expect(container.textContent).toContain("MATRIX MATRIX-TEST-");
+    expect(container.textContent).toContain("PAIR PAIR-TEST-12");
     expect(api.createCarryPosition).not.toHaveBeenCalled();
     expect(api.executeCarryPositionEntry).not.toHaveBeenCalled();
 
@@ -107,6 +111,19 @@ describe("CarryTerminalBuilder", () => {
     expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
     expect(api.preflightCarryPair).not.toHaveBeenCalled();
     expect(container.textContent).toContain("THREE-VENUE NOT READY");
+  });
+
+  it("surfaces the exact failed venue and correlation receipt", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.preflightCarryExecutionMatrix.mockRejectedValue(Object.assign(
+      new Error("lighter_account_not_ready"),
+      { correlationId: "ghola-lighter-ref-1234" },
+    ));
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    await click("NO-SUBMIT CHECK");
+    expect(container.textContent).toContain("NO-SUBMIT RECEIPT");
+    expect(container.textContent).toContain("LIGHTER NOT READY");
+    expect(container.textContent).toContain("REF LIGHTER-REF-");
   });
 
   it("returns unified setup to the same terminal route", async () => {
@@ -207,6 +224,7 @@ function snapshot(venueId: string, funding: number) {
 
 function readyMatrix() {
   return {
+    correlation_id: "ghola-matrix-test-1234",
     mode: "carry_execution_no_submit_matrix",
     no_submit_ready: true,
     transaction_broadcast: false,

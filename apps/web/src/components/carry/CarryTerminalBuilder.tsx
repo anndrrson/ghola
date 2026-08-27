@@ -56,6 +56,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [busy, setBusy] = useState<"check" | "save" | "enter" | "exit" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [lastCheckReceipt, setLastCheckReceipt] = useState<string | null>(null);
   const routeKey = `${candidate.asset}:${candidate.long.venue_id}:${candidate.short.venue_id}`;
   const model = useMemo(() => builderModel(candidate, notional, days), [candidate, days, notional]);
   const executionPair = isCarryExecutionVenue(candidate.long.venue_id)
@@ -112,9 +113,12 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
 
   async function runCheck() {
     if (!executionPair) return;
+    const localReference = shortReference(`ghola-${crypto.randomUUID()}`);
+    const checkedRoute = `${candidate.asset} · L ${venueName(candidate.long.venue_id)} / S ${venueName(candidate.short.venue_id)}`;
     setBusy("check");
     setMessage(null);
     setProof(null);
+    setLastCheckReceipt(`${checkedRoute} · CHECKING · REF ${localReference}`);
     try {
       const matrix = asRecord(await preflightCarryExecutionMatrix({
         asset: candidate.asset,
@@ -122,7 +126,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         horizon_days: days,
       }));
       if (!readyNoSubmitMatrix(matrix)) {
-        setMessage("THREE-VENUE NOT READY · connect Hyperliquid, Lighter and Aster");
+        setLastCheckReceipt(`${checkedRoute} · THREE-VENUE NOT READY · REF ${shortReference(stringValue(matrix.correlation_id) || localReference)}`);
         return;
       }
       const result = asRecord(await preflightCarryPair({
@@ -133,15 +137,19 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         horizon_days: days,
       }));
       setProof({ ...result, execution_matrix: matrix });
-      setMessage(result.live_creation_ready === true
+      const outcome = result.live_creation_ready === true
         ? "READY · exact account costs, margin runway and both order shapes verified"
         : result.qualification_pilot_ready === true
           ? "PROOF READY · one capped qualification lifecycle can be armed"
           : result.no_submit_ready === true
             ? "CHECKED · execution remains locked pending venue qualification"
-            : "NOT READY · connect and fund both trade-only accounts");
-    } catch {
-      setMessage("CONNECT REQUIRED · sign in and connect both trade-only accounts");
+            : "NOT READY · connect and fund both trade-only accounts";
+      const matrixReference = shortReference(stringValue(matrix.correlation_id) || localReference);
+      const pairReference = shortReference(stringValue(result.correlation_id) || localReference);
+      setLastCheckReceipt(`${checkedRoute} · ${outcome} · MATRIX ${matrixReference} · PAIR ${pairReference}`);
+    } catch (error) {
+      const failure = carryCheckFailure(error, localReference);
+      setLastCheckReceipt(`${checkedRoute} · ${failure.label} · REF ${failure.reference}`);
     } finally {
       setBusy(null);
     }
@@ -321,6 +329,8 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         </div>
         {message
           ? <p role="status" className="truncate font-mono text-[9px] text-[#8996a8]">{message}</p>
+          : lastCheckReceipt
+            ? <p role="status" className="truncate font-mono text-[9px] text-[#8996a8]">NO-SUBMIT RECEIPT · {lastCheckReceipt}</p>
           : lastFlat
             ? <p role="status" className="truncate font-mono text-[9px] text-[#72bfa2]">LAST FLAT · 0 ORDERS</p>
             : null}
@@ -384,6 +394,21 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown) {
   return typeof value === "string" && value ? value : null;
+}
+
+function shortReference(value: string) {
+  return value.replace(/^ghola-/, "").slice(0, 12).toUpperCase();
+}
+
+function carryCheckFailure(error: unknown, fallback: string) {
+  const candidate = error && typeof error === "object" ? error as { message?: unknown; correlationId?: unknown } : {};
+  const code = typeof candidate.message === "string" ? candidate.message : "carry_check_failed";
+  const reference = shortReference(typeof candidate.correlationId === "string" ? candidate.correlationId : fallback);
+  const venue = code.match(/^(hyperliquid|lighter|aster)_account_not_ready$/)?.[1];
+  return {
+    label: venue ? `${venueName(venue)} NOT READY` : code === "carry_worker_unavailable" ? "WORKER UNAVAILABLE" : "CHECK FAILED",
+    reference,
+  };
 }
 
 function readyNoSubmitMatrix(value: Record<string, unknown>) {
