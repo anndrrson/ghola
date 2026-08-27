@@ -61,6 +61,25 @@ describe("CarryWorkspace model", () => {
       .toBe("gross_only");
   });
 
+  it("excludes same-ticker contracts when equivalence, basis, or synchronization evidence fails", () => {
+    const base = snapshot("hyperliquid", "BTC", 10_000_000, "ready");
+    const differentContract = snapshot("lighter", "BTC", 40_000_000, "ready", {
+      economic_equivalence_id: "carry:BTC-other-index",
+    });
+    const divergentIndex = snapshot("lighter", "BTC", 40_000_000, "ready", {
+      index_price_e8: 6_015_600_000_000,
+    });
+    const unsynchronized = snapshot("lighter", "BTC", 40_000_000, "ready", {
+      as_of_ms: 1_800_000_003_000,
+    });
+    expect(buildPairCandidates([venue("hyperliquid", base), venue("lighter", differentContract)]))
+      .toHaveLength(0);
+    expect(buildPairCandidates([venue("hyperliquid", base), venue("lighter", divergentIndex)]))
+      .toHaveLength(0);
+    expect(buildPairCandidates([venue("hyperliquid", base), venue("lighter", unsynchronized)]))
+      .toHaveLength(0);
+  });
+
   it("prices fees, spread, collateral, and break-even without counting the risk buffer as realized cost", () => {
     const long = snapshot("hyperliquid", "BTC", 10_000_000, "ready");
     const short = snapshot("lighter", "BTC", 40_000_000, "ready");
@@ -201,7 +220,12 @@ function snapshot(
   return {
     venue_id,
     contract_id: `${venue_id}:${asset}`,
+    economic_equivalence_id: `carry:${asset}-usd-linear`,
     asset,
+    market: `${asset}-USD`,
+    quote_asset: "USDC",
+    collateral_asset: "USDC",
+    contract_type: "linear_perp" as const,
     status,
     stale: false,
     funding_rate_e12_per_interval: funding,

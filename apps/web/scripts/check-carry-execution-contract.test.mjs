@@ -792,6 +792,16 @@ test("rejects a partial live patch that can revive a stale component", () => {
   );
 });
 
+test("rejects terminal routing that skips exact contract equivalence", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryMarket: sources.webCarryMarket.replaceAll("carryContractsAreComparable", "sameTickerIsEnough"),
+    }),
+    /carry_terminal_contract_equivalence_gate_missing/,
+  );
+});
+
 test("rejects replacing the terminal rail with marketing status copy", () => {
   assert.throws(
     () => checkCarryExecutionContract({

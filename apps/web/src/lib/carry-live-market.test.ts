@@ -278,7 +278,12 @@ function venue(
     snapshots: [{
       venue_id: venueId,
       contract_id: contractId,
+      economic_equivalence_id: `carry:${asset}-usd-linear`,
       asset,
+      market: `${asset}-USD`,
+      quote_asset: "USDC",
+      collateral_asset: "USDC",
+      contract_type: "linear_perp",
       status: "ready",
       stale: false,
       funding_rate_e12_per_interval: funding,

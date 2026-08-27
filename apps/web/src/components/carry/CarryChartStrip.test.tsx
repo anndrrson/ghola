@@ -113,7 +113,12 @@ function snapshot(
   return {
     venue_id: venueId,
     contract_id: `${venueId}:BTC`,
+    economic_equivalence_id: "carry:BTC-usd-linear",
     asset: "BTC",
+    market: "BTC-USD",
+    quote_asset: "USDC",
+    collateral_asset: "USDC",
+    contract_type: "linear_perp",
     status: "ready",
     stale: false,
     funding_rate_e12_per_interval: fundingRate,

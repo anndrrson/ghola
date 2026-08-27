@@ -1,6 +1,7 @@
 import {
   adverseExecutionSlippageE6Bps,
   estimatePerpDepthExecution,
+  evaluatePerpContractPairBasis,
 } from "@ghola/execution-core";
 
 export type CarryShadowStatus = "ready" | "degraded" | "quarantined";
@@ -13,8 +14,12 @@ export interface CarryDepthLevel {
 export interface CarryShadowSnapshot {
   venue_id: string;
   contract_id: string;
+  economic_equivalence_id: string;
   asset: string;
+  market: string;
+  quote_asset: string;
   collateral_asset?: string | null;
+  contract_type: "linear_perp" | "inverse_perp";
   status: CarryShadowStatus;
   stale: boolean;
   funding_rate_e12_per_interval: number | null;
@@ -113,7 +118,11 @@ export interface PricedCarryCandidate {
 
 export const CARRY_LIVE_PATCH_MAX_AGE_MS = 5_000;
 export const CARRY_DEPTH_MAX_AGE_MS = 30_000;
+export const CARRY_MAX_CONTRACT_DATA_SKEW_MS = 2_000;
+export const CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS = 25;
+export const CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS = 50;
 const depthExecutionCache = new WeakMap<CarryShadowSnapshot, Map<string, ReturnType<typeof estimatePerpDepthExecution>>>();
+const pairCompatibilityCache = new WeakMap<CarryShadowSnapshot, WeakMap<CarryShadowSnapshot, boolean>>();
 
 export const CARRY_VENUE_LABELS: Record<string, string> = {
   hyperliquid: "Hyperliquid",
@@ -153,7 +162,8 @@ export function buildPairCandidates(venues: CarryVenueShadow[], allowedVenueIds?
       for (let shortIndex = longIndex + 1; shortIndex < ranked.length; shortIndex += 1) {
         const long = ranked[longIndex];
         const short = ranked[shortIndex];
-        if (long.snapshot.venue_id === short.snapshot.venue_id || short.annualBps <= long.annualBps) continue;
+        if (long.snapshot.venue_id === short.snapshot.venue_id || short.annualBps <= long.annualBps ||
+            !carryContractsAreComparable(long.snapshot, short.snapshot)) continue;
         result.push({
           asset,
           long: long.snapshot,
@@ -165,6 +175,38 @@ export function buildPairCandidates(venues: CarryVenueShadow[], allowedVenueIds?
     }
   }
   return result.sort((left, right) => right.grossAnnualBps - left.grossAnnualBps);
+}
+
+export function carryContractsAreComparable(
+  long: CarryShadowSnapshot,
+  short: CarryShadowSnapshot,
+) {
+  const cached = pairCompatibilityCache.get(long)?.get(short);
+  if (cached !== undefined) return cached;
+  let comparable = false;
+  const longAsOf = long.as_of_ms;
+  const shortAsOf = short.as_of_ms;
+  if (Number.isSafeInteger(longAsOf) && Number.isSafeInteger(shortAsOf) &&
+      Math.abs(Number(longAsOf) - Number(shortAsOf)) <= CARRY_MAX_CONTRACT_DATA_SKEW_MS) {
+    try {
+      comparable = evaluatePerpContractPairBasis({
+        version: 1,
+        long_contract: long,
+        short_contract: short,
+        max_index_price_divergence_bps: CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS,
+        max_mark_price_divergence_bps: CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS,
+      }).eligible === true;
+    } catch {
+      comparable = false;
+    }
+  }
+  let byShort = pairCompatibilityCache.get(long);
+  if (!byShort) {
+    byShort = new WeakMap<CarryShadowSnapshot, boolean>();
+    pairCompatibilityCache.set(long, byShort);
+  }
+  byShort.set(short, comparable);
+  return comparable;
 }
 
 export function rankCarryCandidatesByNet(
