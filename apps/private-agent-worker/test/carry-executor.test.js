@@ -40,6 +40,27 @@ test("executes and reconciles a qualified protected perp pair", async (t) => {
   assert.equal(calls.every((call) => call.execution.carry_position_id === fixture.position_id), true);
 });
 
+test("executes every qualified Hyperliquid, Lighter, and Aster pair through one contract", async (t) => {
+  const pairs = [
+    { long: "hyperliquid", short: "lighter" },
+    { long: "hyperliquid", short: "aster" },
+    { long: "lighter", short: "aster" },
+  ];
+  for (const pair of pairs) {
+    const fixture = await setup(t, `pair-${pair.long}-${pair.short}`, pair);
+    const calls = [];
+    const result = await executeStoredCarryEntry({
+      ...fixture,
+      executeOrder: async (args) => { calls.push(args); return filledReceipt(args); },
+    });
+    assert.equal(result.ok, true, `${pair.long}/${pair.short}: ${result.error || "unknown"}`);
+    assert.equal(result.saga.status, "reconciled");
+    assert.deepEqual(calls.map((call) => call.venue_id), [pair.long, pair.short]);
+    assert.equal(calls.every((call) => call.execution.owner_commitment === OWNER), true);
+    assert.equal(calls.every((call) => call.execution.encrypted_execution_vault?.ciphertext === `sealed:${call.venue_id}`), true);
+  }
+});
+
 test("bootstraps one capped candidate only after separate qualification confirmation", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-executor-qualification-pilot-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -746,7 +767,7 @@ test("background monitoring triggers an automatic reduce-only exit and finalizes
   assert.equal(result.record.value_ledger.realized.net_value_micro_usdc, 19_000);
 });
 
-async function setup(t, suffix) {
+async function setup(t, suffix, pair = { long: "aster", short: "lighter" }) {
   const dir = mkdtempSync(join(tmpdir(), `ghola-carry-executor-${suffix}-`));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
@@ -754,12 +775,12 @@ async function setup(t, suffix) {
   const created = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
-    position_input: await signedCarryPositionInput(positionInput(positionId), {
+    position_input: await signedCarryPositionInput(positionInput(positionId, pair), {
       ownerCommitment: OWNER,
       nowMs: NOW,
     }),
-    opportunity: opportunity(),
-    monitoring_context: monitoringContext(),
+    opportunity: opportunity(pair),
+    monitoring_context: monitoringContext(pair),
     now_ms: NOW,
   });
   assert.equal(created.ok, true);
@@ -770,20 +791,20 @@ async function setup(t, suffix) {
     position_id: positionId,
     recipient: { recipient_id: "did:key:carry-executor" },
     verifyOrder: async () => ({ status: "verified_no_funds" }),
-    preflight: async () => preflightProof(),
+    preflight: async () => preflightProof(pair),
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
     now: (() => { let value = NOW + 1; return () => value += 1; })(),
   };
 }
 
-function positionInput(positionId) {
+function positionInput(positionId, pair = { long: "aster", short: "lighter" }) {
   return {
     version: 1,
     position_id: positionId,
     mandate_id: `carry:mandate:executor:${positionId.split(":").at(-1)}`,
     asset: "BTC",
-    long_venue_id: "aster",
-    short_venue_id: "lighter",
+    long_venue_id: pair.long,
+    short_venue_id: pair.short,
     target_notional_micro_usdc: 10_000_000,
     risk_mandate: {
       min_expected_net_benefit_bps: 1,
@@ -800,14 +821,14 @@ function positionInput(positionId) {
   };
 }
 
-function opportunity() {
+function opportunity(pair = { long: "aster", short: "lighter" }) {
   return {
     version: 1,
     eligible: true,
     reasons: [],
     asset: "BTC",
-    long_venue_id: "aster",
-    short_venue_id: "lighter",
+    long_venue_id: pair.long,
+    short_venue_id: pair.short,
     notional_micro_usdc: 10_000_000,
     capital_committed_micro_usdc: 4_000_000,
     horizon_ms: 86_400_000,
@@ -832,8 +853,8 @@ function opportunity() {
     max_mark_price_divergence_bps: 50,
     economic_equivalence_id: "carry:BTC-usd-linear",
     contract_type: "linear_perp",
-    long_quote_asset: "USDT",
-    short_quote_asset: "USD",
+    long_quote_asset: carryQuoteAsset(pair.long),
+    short_quote_asset: carryQuoteAsset(pair.short),
     checked_at_ms: NOW,
     all_venues_ready: true,
     live_creation_ready: true,
@@ -842,7 +863,7 @@ function opportunity() {
   };
 }
 
-function monitoringContext() {
+function monitoringContext(pair = { long: "aster", short: "lighter" }) {
   const access = (venue) => ({
     status: "ready",
     owner_commitment: OWNER,
@@ -852,24 +873,38 @@ function monitoringContext() {
     policy_commitment: `policy:${venue}:0001`,
     encrypted_execution_vault: { ciphertext: `sealed:${venue}` },
   });
-  return { version: 1, venue_access: { aster: access("aster"), lighter: access("lighter") } };
+  return {
+    version: 1,
+    venue_access: {
+      [pair.long]: access(pair.long),
+      [pair.short]: access(pair.short),
+    },
+  };
 }
 
-function preflightProof() {
+function preflightProof(pair = { long: "aster", short: "lighter" }) {
   return {
     version: 1,
     transaction_broadcast: false,
     no_submit_ready: true,
     live_creation_ready: true,
     account_readiness: [
-      { venue_id: "aster", authorized: true, flat_zero_orders: true },
-      { venue_id: "lighter", authorized: true, flat_zero_orders: true },
+      { venue_id: pair.long, authorized: true, flat_zero_orders: true },
+      { venue_id: pair.short, authorized: true, flat_zero_orders: true },
     ],
     evidence: [
-      { venue_id: "aster", side: "buy", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: "BTCUSDT", base_size: "0.001", limit_price: "10000" } },
-      { venue_id: "lighter", side: "sell", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: "BTC", base_size: "0.001", limit_price: "10000" } },
+      { venue_id: pair.long, side: "buy", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.long), base_size: "0.001", limit_price: "10000" } },
+      { venue_id: pair.short, side: "sell", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.short), base_size: "0.001", limit_price: "10000" } },
     ],
   };
+}
+
+function carryMarket(venueId) {
+  return venueId === "aster" ? "BTCUSDT" : "BTC";
+}
+
+function carryQuoteAsset(venueId) {
+  return venueId === "lighter" ? "USD" : "USDT";
 }
 
 function monitoringRunway(venueId) {

@@ -255,6 +255,19 @@ test("rejects release without an unattended monitor-to-flat lifecycle proof", ()
   );
 });
 
+test("rejects an executor proven only for one hard-coded venue pair", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      lifecycleTest: sources.lifecycleTest.replaceAll(
+        "executes every qualified Hyperliquid, Lighter, and Aster pair through one contract",
+        "executes one preferred pair",
+      ),
+    }),
+    /carry_three_venue_pair_contract_test_missing/,
+  );
+});
+
 test("rejects restart recovery that cannot distinguish pre-submit from ambiguity", () => {
   assert.throws(
     () => checkCarryExecutionContract({

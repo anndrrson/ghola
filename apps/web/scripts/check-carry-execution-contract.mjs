@@ -438,6 +438,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webWorkspaceTest", "ranks every equivalent pair by net value instead of gross funding alone", "carry_net_route_ranking_test_missing");
 
   requireText("lifecycleTest", "bootstraps one capped candidate only after separate qualification confirmation", "qualification_lifecycle_test_missing");
+  requireText("lifecycleTest", "executes every qualified Hyperliquid, Lighter, and Aster pair through one contract", "carry_three_venue_pair_contract_test_missing");
   requireText("lifecycleTest", "carry_qualification_pilot_confirmation_required", "qualification_denial_test_missing");
   requireText("lifecycleTest", "const restarted = createWorkerState(dir)", "qualification_restart_test_missing");
   requireText("lifecycleTest", "restored.proven", "qualification_restore_assertion_missing");
