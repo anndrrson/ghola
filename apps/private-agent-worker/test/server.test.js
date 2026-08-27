@@ -582,7 +582,7 @@ describe("private agent worker", () => {
 
   it("proves the three-venue no-submit matrix and durable exact account state over HTTP", async () => {
     await close(server);
-    process.env.PHALA_CVM_IMAGE_DIGEST = "sha256:abcdef123456";
+    process.env.PHALA_CVM_IMAGE_DIGEST = `sha256:${"a".repeat(64)}`;
     const account = {
       can_trade: true,
       available_balance: 500,
@@ -631,6 +631,31 @@ describe("private agent worker", () => {
         open_order_count: 0,
       }),
       carryReadHyperliquidMetrics: async () => account,
+      probeCarryTransferRoute: async (request) => ({
+        valuation_asset: "USD",
+        source_collateral_asset: request.source_collateral_asset,
+        destination_collateral_asset: request.destination_collateral_asset,
+        conversion_required: request.conversion_required,
+        status: "available",
+        quote_verified: true,
+        all_in_fee_verified: true,
+        valuation_basis_verified: true,
+        conversion_quote_verified: true,
+        conversion_rate_e8: request.conversion_required ? 99_950_000 : 100_000_000,
+        minimum_transfer_micro_usdc: 3_000_000,
+        maximum_transfer_micro_usdc: 100_000_000,
+        withdrawal_fee_micro_usdc: 10_000,
+        deposit_fee_micro_usdc: 0,
+        conversion_fee_micro_usdc: request.conversion_required ? 2_000 : 0,
+        conversion_slippage_micro_usdc: request.conversion_required ? 3_000 : 0,
+        fee_micro_usdc: request.conversion_required ? 15_000 : 10_000,
+        estimated_latency_ms: 60_000,
+        as_of_ms: request.checked_at_ms,
+        owner_approval_required: true,
+        fund_movement_authorized: false,
+        transaction_broadcast: false,
+        automatic_transfer_permitted: false,
+      }),
       startAutopilotDueLoop: false,
       startMultiLegRecoveryLoop: false,
       startCarryMonitoringLoop: false,
@@ -683,10 +708,16 @@ describe("private agent worker", () => {
     assert.equal(matrix.transaction_broadcast, false);
     assert.equal(matrix.pairs.length, 3);
     assert.equal(matrix.carry_supervision.status, "disabled");
+    assert.equal(matrix.collateral_route_observation.ok, true, JSON.stringify(matrix));
+    assert.equal(matrix.collateral_route_observation.observed_route_count, 6);
+    assert.equal(matrix.collateral_route_observation.available_route_count, 6);
+    assert.equal(matrix.collateral_route_observation.fund_movement_authorized, false);
+    assert.equal(matrix.collateral_route_observation.transaction_broadcast, false);
     assert.equal(matrix.private_prime_readiness.ready, false);
     assert.equal(matrix.private_prime_readiness.collateral_route_observation.configured, true);
-    assert.equal(matrix.private_prime_readiness.collateral_route_observation.verified, false);
-    assert.ok(matrix.private_prime_readiness.reasons.includes("collateral_route_evidence_unverified"));
+    assert.equal(matrix.private_prime_readiness.collateral_route_observation.verified, true);
+    assert.equal(matrix.private_prime_readiness.collateral_route_observation.available_route_count, 6);
+    assert.equal(matrix.private_prime_readiness.reasons.includes("collateral_route_evidence_unverified"), false);
     assert.equal(matrix.pairs.every((pair) => pair.leg_evidence.every((leg) =>
       leg.account_state.position_count === 0
       && leg.account_state.open_order_count === 0
@@ -712,8 +743,8 @@ describe("private agent worker", () => {
     assert.equal(readiness.ready, true);
     assert.equal(readiness.carry_supervision.status, "disabled");
     assert.equal(readiness.private_prime_readiness.ready, false);
-    assert.equal(readiness.private_prime_readiness.collateral_route_observation.verified, false);
-    assert.ok(readiness.private_prime_readiness.reasons.includes("collateral_route_evidence_unverified"));
+    assert.equal(readiness.private_prime_readiness.collateral_route_observation.verified, true);
+    assert.equal(readiness.private_prime_readiness.reasons.includes("collateral_route_evidence_unverified"), false);
     assert.equal(readiness.capital_plan.every((item) =>
       item.position_count === 0
       && item.open_order_count === 0

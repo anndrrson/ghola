@@ -15,6 +15,7 @@ test("combines five-venue shadow and three-venue no-submit evidence without over
       expires_at_ms: NOW + 120_000,
       registry_venue_ids: ["hyperliquid", "lighter", "aster"],
       capital_ready: true,
+      capital_plan: capitalPlan(),
       evidence_commitment: "carry:readiness:evidence:0001",
     },
     diagnostic: { diagnostic_commitment: "carry:diagnostic:evidence:0001" },
@@ -60,6 +61,7 @@ test("keeps technically connected but unfunded accounts pre-broadcast blocked", 
       capital_ready: false,
       owner_commitment: "owner_commitment_0001",
       image_digest: "sha256:abcdef123456",
+      capital_plan: capitalPlan(),
     },
     shadow_qualification: { ready: true, venues: 5 },
     carry_supervision: { ready: true, status: "healthy" },
@@ -94,6 +96,27 @@ test("rejects a configured route probe without fresh owner-bound route evidence"
   assert.equal(result.collateral_route_observation.available_route_count, 0);
 });
 
+test("rejects route evidence bound to an older account-state snapshot", () => {
+  const routeEvidence = verifiedRouteEvidence();
+  routeEvidence.routes[0].source_account_state_commitment = "carry:account-state:hyperliquid:old";
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: {
+      ready: true,
+      capital_ready: true,
+      owner_commitment: "owner_commitment_0001",
+      image_digest: "sha256:abcdef123456",
+      capital_plan: capitalPlan(),
+    },
+    shadow_qualification: { ready: true, venues: 5 },
+    carry_supervision: { ready: true, status: "healthy" },
+    route_observation_configured: true,
+    route_evidence: routeEvidence,
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.reasons, ["collateral_route_evidence_unverified"]);
+});
+
 function verifiedRouteEvidence() {
   return {
     ok: true,
@@ -105,6 +128,8 @@ function verifiedRouteEvidence() {
       evidence_commitment: "carry:transfer-routes:evidence:abcdef123456",
     },
     routes: [{
+      source_account_state_commitment: "carry:account-state:hyperliquid:0001",
+      destination_account_state_commitment: "carry:account-state:lighter:0001",
       status: "available",
       quote_verified: true,
       all_in_fee_verified: true,
@@ -115,4 +140,11 @@ function verifiedRouteEvidence() {
       automatic_transfer_permitted: false,
     }],
   };
+}
+
+function capitalPlan() {
+  return ["hyperliquid", "lighter", "aster"].map((venueId) => ({
+    venue_id: venueId,
+    account_state_commitment: `carry:account-state:${venueId}:0001`,
+  }));
 }

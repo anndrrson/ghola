@@ -832,7 +832,13 @@ export function checkCarryExecutionContract(sources) {
   requireText("server", "createReadOnlyCarryRuntimePolicies", "carry_runtime_route_policy_default_missing");
   requireText("server", "route_observation_configured: typeof probeCarryTransferRoute", "carry_runtime_route_observation_status_missing");
   requireText("server", "loadCarryTransferRouteEvidence", "carry_runtime_route_evidence_read_missing");
+  requireText("server", "observePreopenCarryTransferRoutes", "carry_preopen_route_observation_missing");
+  requireText("server", "collateral_route_observation: routeObservation", "carry_preopen_route_response_missing");
   requireText("server", "route_evidence: routeEvidence", "carry_private_prime_route_evidence_binding_missing");
+  requireText("transferRoutes", "export async function observePreopenCarryTransferRoutes", "carry_preopen_route_compiler_missing");
+  requireText("transferRoutes", "automatic_transfer_permitted: false", "carry_preopen_route_transfer_boundary_missing");
+  requireText("transferRoutesTest", "before any position is opened", "carry_preopen_route_observation_test_missing");
+  requireText("serverTest", "collateral_route_observation.observed_route_count, 6", "carry_preopen_route_http_test_missing");
   requireText("runtimeRiskPolicies", "owner_approval_required: true", "carry_runtime_route_owner_gate_missing");
   requireText("runtimeRiskPolicies", "fund_movement_authorized: false", "carry_runtime_route_movement_gate_missing");
   requireText("runtimeRiskPolicies", "transaction_broadcast: false", "carry_runtime_route_broadcast_gate_missing");
@@ -842,6 +848,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadiness", "collateral_route_evidence_unverified", "carry_private_prime_route_evidence_gate_missing");
   requireText("privatePrimeReadiness", "evidence?.owner_commitment === readiness?.owner_commitment", "carry_private_prime_route_owner_binding_missing");
   requireText("privatePrimeReadiness", "nowMs - checkedAtMs <= 30_000", "carry_private_prime_route_freshness_gate_missing");
+  requireText("privatePrimeReadiness", "routesBoundToCurrentAccounts", "carry_private_prime_route_account_state_binding_missing");
   requireText("privatePrimeReadinessTest", "without overstating live proof", "carry_private_prime_proof_boundary_test_missing");
   requireText("privatePrimeReadinessTest", "without fresh owner-bound route evidence", "carry_private_prime_route_evidence_test_missing");
   requireText("webPrivatePrimeReadiness", 'proof_level === "pre_broadcast_readiness"', "carry_private_prime_ui_proof_level_gate_missing");

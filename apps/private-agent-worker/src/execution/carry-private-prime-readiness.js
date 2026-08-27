@@ -78,6 +78,13 @@ function verifiedRouteObservation({ readiness, routeEvidence, routeObservationCo
   const evidenceCommitment = typeof evidence?.evidence_commitment === "string"
     ? evidence.evidence_commitment
     : null;
+  const currentAccountStates = new Set((Array.isArray(readiness?.capital_plan) ? readiness.capital_plan : [])
+    .map((item) => item?.account_state_commitment)
+    .filter((item) => typeof item === "string"));
+  const routesBoundToCurrentAccounts = currentAccountStates.size > 1
+    && routes.length > 0
+    && routes.every((route) => currentAccountStates.has(route?.source_account_state_commitment)
+      && currentAccountStates.has(route?.destination_account_state_commitment));
   const verified = routeObservationConfigured === true
     && routeEvidence?.ok === true
     && evidence?.owner_commitment === readiness?.owner_commitment
@@ -87,6 +94,7 @@ function verifiedRouteObservation({ readiness, routeEvidence, routeObservationCo
     && nowMs - checkedAtMs <= 30_000
     && effectiveExpiresAtMs !== null
     && effectiveExpiresAtMs > nowMs
+    && routesBoundToCurrentAccounts
     && evidenceCommitment?.startsWith("carry:transfer-routes:evidence:") === true;
   const availableRouteCount = verified
     ? routes.filter((route) => route?.status === "available"

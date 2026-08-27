@@ -1,11 +1,93 @@
 import { createHash } from "node:crypto";
-import { venueAdapterCapability } from "@ghola/execution-core";
+import { CARRY_EXECUTION_VENUES, venueAdapterCapability } from "@ghola/execution-core";
 
 const OWNER = /^[A-Za-z0-9_.:-]{8,240}$/;
 const COMMITMENT = /^[A-Za-z0-9_.:-]{8,240}$/;
 const IMAGE_DIGEST = /^sha256:[a-f0-9]{64}$/;
 const STATUSES = new Set(["available", "degraded", "unavailable"]);
 const COLLATERAL_ASSETS = new Set(["USDC", "USDT"]);
+
+export async function observePreopenCarryTransferRoutes({
+  state,
+  owner_commitment: ownerCommitment,
+  venue_access: venueAccess,
+  readiness,
+  probe_route: probeRoute,
+  env = process.env,
+  now_ms: nowMs = Date.now(),
+}) {
+  try {
+    const owner = requiredCommitment(ownerCommitment, "carry_preopen_route_owner_invalid");
+    if (readiness?.ready !== true || readiness.owner_commitment !== owner) {
+      fail("carry_preopen_route_readiness_unproven");
+    }
+    const workerImageDigest = String(readiness.image_digest || "");
+    if (!IMAGE_DIGEST.test(workerImageDigest)
+      || workerImageDigest !== String(env.PHALA_CVM_IMAGE_DIGEST || env.PRIVATE_AGENT_IMAGE_DIGEST || "").toLowerCase()) {
+      fail("carry_preopen_route_image_mismatch");
+    }
+    if (!sameVenueSet(readiness.registry_venue_ids, CARRY_EXECUTION_VENUES)) {
+      fail("carry_preopen_route_registry_mismatch");
+    }
+    if (!venueAccess || typeof venueAccess !== "object" || Array.isArray(venueAccess)) {
+      fail("carry_preopen_route_access_missing");
+    }
+    if (typeof probeRoute !== "function") fail("carry_preopen_route_probe_unavailable");
+    const plans = Array.isArray(readiness.capital_plan) ? readiness.capital_plan : [];
+    const accounts = [];
+    const accessByAccount = new Map();
+    for (const venueId of CARRY_EXECUTION_VENUES) {
+      const matchingPlans = plans.filter((item) => item?.venue_id === venueId);
+      const access = venueAccess[venueId];
+      if (matchingPlans.length !== 1 || !access || access.owner_commitment !== owner) {
+        fail(`carry_preopen_route_binding_invalid:${venueId}`);
+      }
+      const accountCommitment = requiredCommitment(
+        access.account_commitment,
+        `carry_preopen_route_account_invalid:${venueId}`,
+      );
+      const existingAccess = accessByAccount.get(accountCommitment);
+      if (existingAccess && existingAccess.venue_id !== venueId) {
+        fail("carry_preopen_route_access_ambiguous");
+      }
+      const plan = matchingPlans[0];
+      if (plan.account_state_checked_at_ms !== readiness.checked_at_ms) {
+        fail(`carry_preopen_route_state_time_invalid:${venueId}`);
+      }
+      accounts.push({
+        venue_id: venueId,
+        account_commitment: accountCommitment,
+        account_state_commitment: requiredCommitment(
+          plan.account_state_commitment,
+          `carry_preopen_route_state_invalid:${venueId}`,
+        ),
+        account_state_checked_at_ms: plan.account_state_checked_at_ms,
+      });
+      accessByAccount.set(accountCommitment, Object.freeze({ ...access, venue_id: venueId }));
+    }
+    const observation = await observeCarryTransferRoutes({
+      state,
+      owner_commitment: owner,
+      worker_image_digest: workerImageDigest,
+      accounts,
+      probe_route: probeRoute,
+      probe_context: Object.freeze({
+        owner_commitment: owner,
+        venue_access_by_account: Object.freeze(Object.fromEntries(accessByAccount)),
+      }),
+      checked_at_ms: nowMs,
+      max_account_state_age_ms: 30_000,
+      now_ms: nowMs,
+    });
+    return Object.freeze({ ok: true, ...observation });
+  } catch (error) {
+    return Object.freeze({
+      ...unavailable(safeError(error)),
+      owner_approval_required: true,
+      automatic_transfer_permitted: false,
+    });
+  }
+}
 
 export async function observeCarryTransferRoutes({
   state,
@@ -488,6 +570,12 @@ function evidenceCommitment(value) {
 
 function evidenceKey(ownerCommitment) {
   return `carry:transfer-routes:latest:${ownerCommitment}`;
+}
+
+function sameVenueSet(value, expected) {
+  return Array.isArray(value)
+    && value.length === expected.length
+    && [...value].sort().every((item, index) => item === [...expected].sort()[index]);
 }
 
 function requiredCommitment(value, code) {

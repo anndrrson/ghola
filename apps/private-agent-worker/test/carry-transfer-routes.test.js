@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   loadCarryTransferRouteEvidence,
   observeCarryTransferRoutes,
+  observePreopenCarryTransferRoutes,
   storeCarryTransferRouteEvidence,
   verifyCarryTransferRouteEvidence,
 } from "../src/execution/carry-transfer-routes.js";
@@ -13,6 +14,58 @@ import { createWorkerState } from "../src/state/private-state.js";
 
 const NOW = 1_800_000_000_000;
 const OWNER = "owner:commitment:0001";
+
+test("observes owner-bound capital routes before any position is opened", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-preopen-transfer-routes-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const contexts = [];
+  const result = await observePreopenCarryTransferRoutes({
+    state: createWorkerState(dir),
+    owner_commitment: OWNER,
+    venue_access: preopenAccess(),
+    readiness: preopenReadiness(),
+    env: { PRIVATE_AGENT_IMAGE_DIGEST: `sha256:${"9".repeat(64)}` },
+    probe_route: async (request, context) => {
+      contexts.push(context);
+      return observedQuote({
+        source_collateral_asset: request.source_collateral_asset,
+        destination_collateral_asset: request.destination_collateral_asset,
+        conversion_required: request.conversion_required,
+        conversion_quote_verified: true,
+        conversion_rate_e8: request.conversion_required ? 99_950_000 : 100_000_000,
+      });
+    },
+    now_ms: NOW,
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.observed_route_count, 6);
+  assert.equal(result.available_route_count, 6);
+  assert.equal(result.transaction_broadcast, false);
+  assert.equal(result.fund_movement_authorized, false);
+  assert.equal(result.automatic_transfer_permitted, false);
+  assert.equal(contexts.every((context) => context.owner_commitment === OWNER), true);
+  assert.equal(contexts.every((context) => Object.keys(context.venue_access_by_account).length === 2), true);
+});
+
+test("fails closed when pre-open venue access is ambiguous", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-preopen-transfer-routes-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const venueAccess = preopenAccess();
+  venueAccess.aster.account_commitment = venueAccess.lighter.account_commitment;
+  const result = await observePreopenCarryTransferRoutes({
+    state: createWorkerState(dir),
+    owner_commitment: OWNER,
+    venue_access: venueAccess,
+    readiness: preopenReadiness(),
+    env: { PRIVATE_AGENT_IMAGE_DIGEST: `sha256:${"9".repeat(64)}` },
+    probe_route: async () => observedQuote(),
+    now_ms: NOW,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "carry_preopen_route_access_ambiguous");
+  assert.equal(result.transaction_broadcast, false);
+  assert.equal(result.fund_movement_authorized, false);
+});
 
 test("observes all-in collateral routes internally without authorizing movement", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-transfer-routes-"));
@@ -311,5 +364,29 @@ function observedQuote(overrides = {}) {
     transaction_broadcast: false,
     automatic_transfer_permitted: false,
     ...overrides,
+  };
+}
+
+function preopenAccess() {
+  return Object.fromEntries(["hyperliquid", "lighter", "aster"].map((venueId) => [venueId, {
+    owner_commitment: OWNER,
+    account_commitment: `account:${venueId}:preopen`,
+    vault_commitment: `vault:${venueId}:preopen`,
+    policy_commitment: `policy:${venueId}:preopen`,
+  }]));
+}
+
+function preopenReadiness() {
+  return {
+    ready: true,
+    owner_commitment: OWNER,
+    image_digest: `sha256:${"9".repeat(64)}`,
+    registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+    checked_at_ms: NOW,
+    capital_plan: ["hyperliquid", "lighter", "aster"].map((venueId) => ({
+      venue_id: venueId,
+      account_state_commitment: `carry:account-state:${venueId}:preopen`,
+      account_state_checked_at_ms: NOW,
+    })),
   };
 }

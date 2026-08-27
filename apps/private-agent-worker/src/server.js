@@ -52,7 +52,10 @@ import { createAsterStablecoinConversionQuoteReader } from "./execution/carry-st
 import { createCarryDepositQuoteReader } from "./execution/carry-deposit-quote.js";
 import { createReadOnlyCarryRuntimePolicies } from "./execution/carry-runtime-risk-policies.js";
 import { buildCarryPrivatePrimeReadiness } from "./execution/carry-private-prime-readiness.js";
-import { loadCarryTransferRouteEvidence } from "./execution/carry-transfer-routes.js";
+import {
+  loadCarryTransferRouteEvidence,
+  observePreopenCarryTransferRoutes,
+} from "./execution/carry-transfer-routes.js";
 import {
   approveStoredCarryCollateralReview,
   compileStoredCarryCollateralReview,
@@ -2970,16 +2973,24 @@ export function createPrivateAgentWorkerServer(options = {}) {
           ...(options.carryFetchVenue ? { fetchVenue: options.carryFetchVenue } : {}),
         });
         const nowMs = Date.now();
-        const [shadowQualification, routeEvidence] = await Promise.all([
+        const [shadowQualification, routeObservation] = await Promise.all([
           readCarryShadowQualification({ state, now_ms: nowMs }),
-          loadCarryTransferRouteEvidence({
+          observePreopenCarryTransferRoutes({
             state,
             owner_commitment: body.owner_commitment,
+            venue_access: body.venue_access,
+            readiness: matrix.readiness,
+            probe_route: probeCarryTransferRoute,
             now_ms: nowMs,
-            max_data_age_ms: 30_000,
-            expected_worker_image_digest: matrix.readiness?.image_digest || "",
-          }).catch(() => ({ ok: false, error: "carry_transfer_route_evidence_unavailable" })),
+          }),
         ]);
+        const routeEvidence = await loadCarryTransferRouteEvidence({
+          state,
+          owner_commitment: body.owner_commitment,
+          now_ms: nowMs,
+          max_data_age_ms: 30_000,
+          expected_worker_image_digest: matrix.readiness?.image_digest || "",
+        }).catch(() => ({ ok: false, error: "carry_transfer_route_evidence_unavailable" }));
         const privatePrimeReadiness = buildCarryPrivatePrimeReadiness({
           readiness: matrix.readiness,
           diagnostic: matrix.diagnostic,
@@ -2992,6 +3003,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return json(res, 200, {
           ...matrix,
           shadow_qualification: shadowQualification,
+          collateral_route_observation: routeObservation,
           private_prime_readiness: privatePrimeReadiness,
           carry_supervision: carrySupervision,
         });

@@ -154,6 +154,29 @@ test("rejects a worker that silently disables default collateral-route observati
   );
 });
 
+test("rejects removing pre-open collateral-route observation", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replaceAll("observePreopenCarryTransferRoutes", "skipPreopenCarryTransferRoutes"),
+    }),
+    /carry_preopen_route_observation_missing/,
+  );
+});
+
+test("rejects collateral routes detached from the current no-submit account state", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replaceAll(
+        "routesBoundToCurrentAccounts",
+        "routesAcceptedWithoutCurrentAccounts",
+      ),
+    }),
+    /carry_private_prime_route_account_state_binding_missing/,
+  );
+});
+
 test("rejects private-prime readiness backed only by a configured route probe", () => {
   assert.throws(
     () => checkCarryExecutionContract({
