@@ -1,8 +1,12 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CarryTerminalBuilder } from "./CarryTerminalBuilder";
-import type { CarryCandidate } from "@/lib/carry-market";
+import {
+  CarryTerminalBuilder,
+  carryOpeningCapitalSummary,
+  carryTerminalEconomics,
+} from "./CarryTerminalBuilder";
+import { builderModel, type CarryCandidate } from "@/lib/carry-market";
 
 const api = vi.hoisted(() => ({
   createCarryPosition: vi.fn(),
@@ -128,6 +132,29 @@ describe("CarryTerminalBuilder", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it("never replaces incomplete worker proof with browser estimates", () => {
+    const model = builderModel(candidate(), "11", "30");
+    const publicEconomics = carryTerminalEconomics(model, null);
+    expect(publicEconomics.fees).not.toBe("UNVERIFIED");
+    expect(carryOpeningCapitalSummary(model, null).value).toBe("$22 TOTAL · 1×");
+
+    const workerEconomics = carryTerminalEconomics(model, {
+      depth_impact: ["hyperliquid", "lighter"].map((venue_id) => ({
+        venue_id,
+        observations: ["entry", "exit"].map((phase) => ({
+          phase,
+          status: "sufficient",
+          displayed_notional_micro_usdc: 11_000_000,
+        })),
+      })),
+    });
+    expect(workerEconomics.fees).toBe("UNVERIFIED");
+    expect(workerEconomics.slippage).toBe("UNVERIFIED");
+    expect(workerEconomics.net).toBe("UNVERIFIED");
+    expect(workerEconomics.breakEven).toBe("UNVERIFIED");
+    expect(carryOpeningCapitalSummary(model, {}).value).toBe("UNVERIFIED");
   });
 
   it("keeps checking and arming no-submit until a separate live-entry click", async () => {

@@ -974,6 +974,19 @@ test("rejects a terminal that hides realized execution attribution", () => {
   );
 });
 
+test("rejects a terminal that masks incomplete worker proof with browser estimates", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll(
+        "const netUsd = opportunity ? proofNet : model.netUsd",
+        "const netUsd = proofNet ?? model.netUsd",
+      ),
+    }),
+    /carry_terminal_proof_economics_fallback_missing/,
+  );
+});
+
 test("reports required sources absent from git", () => {
   const tracked = new Set(Object.values(CARRY_RELEASE_FILES).slice(0, -1));
   const untracked = findUntrackedCarryReleaseFiles({

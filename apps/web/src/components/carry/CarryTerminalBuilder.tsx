@@ -566,7 +566,7 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: "
   return <div className="rounded border border-[#1d2733] bg-[#070a0f] px-2 py-1"><p className="font-mono text-[9px] text-[#5f6c7e]">{label}</p><p className={`mt-0.5 truncate font-mono text-[10px] ${color}`}>{value}</p></div>;
 }
 
-function carryTerminalEconomics(model: ReturnType<typeof builderModel>, opportunity: Record<string, unknown> | null) {
+export function carryTerminalEconomics(model: ReturnType<typeof builderModel>, opportunity: Record<string, unknown> | null) {
   const proofFee = microUsdValue(opportunity?.projected_trading_fee_micro_usdc);
   const proofSlippage = microUsdValue(opportunity?.projected_slippage_micro_usdc);
   const proofNet = microUsdValue(opportunity?.projected_net_value_micro_usdc);
@@ -575,25 +575,25 @@ function carryTerminalEconomics(model: ReturnType<typeof builderModel>, opportun
     status: model.depthStatus,
     minimumUsd: model.minimumDisplayedDepthUsd,
   };
-  const netUsd = proofNet ?? model.netUsd;
+  const netUsd = opportunity ? proofNet : model.netUsd;
   return {
-    fees: formatEconomicUsd(proofFee ?? model.tradingFeeUsd),
+    fees: opportunity ? formatVerifiedEconomicUsd(proofFee) : formatEconomicUsd(model.tradingFeeUsd),
     slippage: depth.status === "sufficient"
-      ? formatEconomicUsd(proofSlippage ?? model.slippageUsd)
+      ? opportunity ? formatVerifiedEconomicUsd(proofSlippage) : formatEconomicUsd(model.slippageUsd)
       : depth.status === "insufficient" ? "DEPTH LIMITED" : "UNVERIFIED",
     depth: depth.status === "sufficient" && depth.minimumUsd != null
       ? `${formatUsd(depth.minimumUsd)} MIN`
       : depth.status.toUpperCase(),
     depthTone: depth.status === "sufficient" ? "good" as const : depth.status === "insufficient" ? "bad" as const : "warn" as const,
-    net: formatEconomicUsd(netUsd),
+    net: opportunity ? formatVerifiedEconomicUsd(netUsd) : formatEconomicUsd(netUsd),
     netTone: netUsd != null && netUsd > 0 ? "good" as const : undefined,
-    breakEven: proofBreakEvenMs != null
-      ? `${(proofBreakEvenMs / 86_400_000).toFixed(1)}D`
+    breakEven: opportunity
+      ? proofBreakEvenMs == null ? "UNVERIFIED" : `${(proofBreakEvenMs / 86_400_000).toFixed(1)}D`
       : model.breakEvenDays == null ? "—" : `${model.breakEvenDays.toFixed(1)}D`,
   };
 }
 
-function carryOpeningCapitalSummary(
+export function carryOpeningCapitalSummary(
   model: ReturnType<typeof builderModel>,
   proof: Record<string, unknown> | null,
 ) {
@@ -621,6 +621,7 @@ function carryOpeningCapitalSummary(
     }
     return { value: "READY · 1×", tone: "good" as const };
   }
+  if (proof) return { value: "UNVERIFIED", tone: "bad" as const };
   return {
     value: `${formatUsd(model.requiredOpeningCapitalUsd)} TOTAL · 1×`,
     tone: undefined,
@@ -796,6 +797,10 @@ function microUsdValue(value: unknown) {
 
 function formatEconomicUsd(value: number | null) {
   return value == null ? "ACCOUNT DATA" : formatUsd(value);
+}
+
+function formatVerifiedEconomicUsd(value: number | null) {
+  return value == null ? "UNVERIFIED" : formatUsd(value);
 }
 
 function carryRunwaySummary(observation: CarryRecord["latest_observation"] | null, candidate: CarryCandidate) {
