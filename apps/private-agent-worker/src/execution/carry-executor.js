@@ -423,13 +423,16 @@ export async function runCarryExecutionTick({
     state.listCarryPositionRecords({ status: "frozen", limit: 500 }),
     state.listCarryPositionRecords({ status: "reconciled", limit: 500 }),
   ]);
-  const results = [];
-  for (const record of records) {
-    if (!record.exit_saga_id) {
-      results.push(await executeStoredCarryExit({
+  const pendingAbortedFinalization = reconciledRecords.filter((record) =>
+    record.value_ledger?.status === "open"
+    && record.value_evidence?.aborted_entry_recovery?.status === "complete"
+  );
+  const tasks = [
+    ...records.map((record) => ({
+      position_id: record.position?.position_id,
+      run: () => processExitingCarryRecord({
         state,
-        owner_commitment: record.owner_commitment,
-        position_id: record.position.position_id,
+        record,
         recipient,
         verifyOrder,
         executeOrder,
@@ -437,107 +440,137 @@ export async function runCarryExecutionTick({
         preflight,
         env,
         now,
-      }));
-      continue;
-    }
-    const saga = await state.getMultiLegSaga(record.exit_saga_id);
-    if (saga?.status === "reconciled") {
-      const current = await state.getCarryPositionRecord(record.position.position_id);
-      if (Number(current.exit_verification?.next_check_at_ms || 0) > now()) {
-        results.push({ ok: true, pending: true, error: current.exit_verification?.error || "carry_exit_final_account_proof_pending" });
-        continue;
-      }
-      const flatProof = await verifyFlatExitProof({
+      }),
+    })),
+    ...frozenRecords.map((record) => ({
+      position_id: record.position?.position_id,
+      run: () => synchronizeFrozenCarryRecovery({
         state,
-        record: current,
-        saga,
+        record,
         recipient,
         verifyOrder,
+        readFundingSettlements,
         preflight,
         env,
-        nowMs: now(),
-      });
-      if (!flatProof.ok) {
-        const pending = await storeExitVerificationPending({ state, record: current, error: flatProof.error, env, nowMs: now() });
-        results.push({ ok: false, error: flatProof.error, record: publicCarryRecord(pending || current) });
-        continue;
-      }
-      const advanced = await advanceStoredCarryPosition({
+        now,
+      }),
+    })),
+    ...pendingAbortedFinalization.map((record) => ({
+      position_id: record.position?.position_id,
+      run: () => finalizeAbortedCarryValueEvidenceIfComplete({
         state,
-        owner_commitment: record.owner_commitment,
-        position_id: record.position.position_id,
-        event: carryEvent(current.position, "exit_reconciled", flatProof.evidence),
-        now_ms: now(),
-      });
-      if (!advanced.ok) {
-        results.push(advanced);
-        continue;
-      }
-      const accounting = await recordRecoveredExitValueEvidence({
-        state,
-        ownerCommitment: record.owner_commitment,
-        positionId: record.position.position_id,
-        saga,
-        env,
-        nowMs: now(),
-      });
-      const finalized = await finalizeCarryValueEvidenceIfComplete({
-        state,
-        ownerCommitment: record.owner_commitment,
-        positionId: record.position.position_id,
-        venueAccess: current.monitoring_context.venue_access,
+        record,
         recipient,
         readFundingSettlements,
         nowMs: now(),
-      });
-      const qualification = await recordCompletedCarryVenueQualifications({
-        state,
-        position_id: record.position.position_id,
-        now_ms: now(),
-        env,
-      });
-      results.push({ ...advanced, record: finalized.record || accounting.record || advanced.record, accounting: accounting.summary, value_finalized: finalized.finalized, qualification });
-    } else if (saga?.status === "manual_intervention") {
-      const current = await state.getCarryPositionRecord(record.position.position_id);
-      results.push(await advanceStoredCarryPosition({
-        state,
-        owner_commitment: record.owner_commitment,
-        position_id: record.position.position_id,
-        event: carryEvent(current.position, "recovery_failed"),
-        now_ms: now(),
-      }));
+      }),
+    })),
+  ];
+  const concurrency = boundedMs(env.PRIVATE_AGENT_CARRY_EXECUTION_CONCURRENCY, 1, 32, 8);
+  const results = await mapConcurrentOrdered(tasks, concurrency, async (task) => {
+    const positionId = String(task.position_id || "unknown");
+    try {
+      const result = await task.run();
+      return { position_id: positionId, ...result };
+    } catch (error) {
+      return { position_id: positionId, ok: false, error: errorCode(error, "carry_execution_task_failed") };
     }
-  }
-  for (const record of frozenRecords) {
-    results.push(await synchronizeFrozenCarryRecovery({
+  });
+  return {
+    ok: results.every((result) => result.ok),
+    checked: tasks.length,
+    results,
+  };
+}
+
+async function processExitingCarryRecord({
+  state,
+  record,
+  recipient,
+  verifyOrder,
+  executeOrder,
+  readFundingSettlements,
+  preflight,
+  env,
+  now,
+}) {
+  if (!record.exit_saga_id) {
+    return executeStoredCarryExit({
       state,
-      record,
+      owner_commitment: record.owner_commitment,
+      position_id: record.position.position_id,
       recipient,
       verifyOrder,
+      executeOrder,
       readFundingSettlements,
       preflight,
       env,
       now,
-    }));
+    });
   }
-  const pendingAbortedFinalization = reconciledRecords.filter((record) =>
-    record.value_ledger?.status === "open"
-    && record.value_evidence?.aborted_entry_recovery?.status === "complete"
-  );
-  for (const record of pendingAbortedFinalization) {
-    results.push(await finalizeAbortedCarryValueEvidenceIfComplete({
+  const saga = await state.getMultiLegSaga(record.exit_saga_id);
+  if (saga?.status !== "reconciled" && saga?.status !== "manual_intervention") {
+    return { ok: true, pending: true, error: "carry_exit_recovery_in_progress", saga_status: saga?.status || "missing" };
+  }
+  const current = await state.getCarryPositionRecord(record.position.position_id);
+  if (saga.status === "manual_intervention") {
+    return advanceStoredCarryPosition({
       state,
-      record,
-      recipient,
-      readFundingSettlements,
-      nowMs: now(),
-    }));
+      owner_commitment: record.owner_commitment,
+      position_id: record.position.position_id,
+      event: carryEvent(current.position, "recovery_failed"),
+      now_ms: now(),
+    });
   }
-  return {
-    ok: results.every((result) => result.ok),
-    checked: records.length + frozenRecords.length + pendingAbortedFinalization.length,
-    results,
-  };
+  if (Number(current.exit_verification?.next_check_at_ms || 0) > now()) {
+    return { ok: true, pending: true, error: current.exit_verification?.error || "carry_exit_final_account_proof_pending" };
+  }
+  const flatProof = await verifyFlatExitProof({
+    state,
+    record: current,
+    saga,
+    recipient,
+    verifyOrder,
+    preflight,
+    env,
+    nowMs: now(),
+  });
+  if (!flatProof.ok) {
+    const pending = await storeExitVerificationPending({ state, record: current, error: flatProof.error, env, nowMs: now() });
+    return { ok: false, error: flatProof.error, record: publicCarryRecord(pending || current) };
+  }
+  const advanced = await advanceStoredCarryPosition({
+    state,
+    owner_commitment: record.owner_commitment,
+    position_id: record.position.position_id,
+    event: carryEvent(current.position, "exit_reconciled", flatProof.evidence),
+    now_ms: now(),
+  });
+  if (!advanced.ok) return advanced;
+  const accounting = await recordRecoveredExitValueEvidence({
+    state,
+    ownerCommitment: record.owner_commitment,
+    positionId: record.position.position_id,
+    saga,
+    env,
+    nowMs: now(),
+  });
+  const finalized = await finalizeCarryValueEvidenceIfComplete({
+    state,
+    ownerCommitment: record.owner_commitment,
+    positionId: record.position.position_id,
+    venueAccess: current.monitoring_context.venue_access,
+    recipient,
+    readFundingSettlements,
+    nowMs: now(),
+  });
+  const qualification = await recordCompletedCarryVenueQualifications({
+    state,
+    position_id: record.position.position_id,
+    now_ms: now(),
+    env,
+  });
+  return { ...advanced, record: finalized.record || accounting.record || advanced.record, accounting: accounting.summary, value_finalized: finalized.finalized, qualification };
 }
 
 export async function auditCarryPositionsAfterRestart({ state, now_ms: nowMs = Date.now() }) {
@@ -1794,6 +1827,20 @@ function notionalBucket(value) {
 function boundedMs(value, minimum, maximum, fallback) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
+}
+
+async function mapConcurrentOrdered(items, concurrency, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 function digest(value) {

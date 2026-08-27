@@ -61,6 +61,47 @@ test("executes every qualified Hyperliquid, Lighter, and Aster pair through one 
   }
 });
 
+test("recovery work is bounded-concurrent and failure-isolated", async () => {
+  const exiting = ["alpha", "bravo", "charlie"].map((name) => ({
+    owner_commitment: OWNER,
+    exit_saga_id: `saga:carry:exit:${name}`,
+    position: { position_id: `carry:position:${name}`, status: "exiting" },
+  }));
+  let active = 0;
+  let maximumActive = 0;
+  const state = {
+    listCarryPositionRecords: async ({ status }) => status === "exiting" ? exiting : [],
+    getMultiLegSaga: async (sagaId) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        if (sagaId.endsWith(":bravo")) throw Object.assign(new Error("venue_timeout"), { code: "venue_timeout" });
+        return { status: "recovering" };
+      } finally {
+        active -= 1;
+      }
+    },
+  };
+
+  const result = await runCarryExecutionTick({
+    state,
+    env: { PRIVATE_AGENT_CARRY_EXECUTION_CONCURRENCY: "2" },
+  });
+
+  assert.equal(result.checked, 3);
+  assert.equal(result.ok, false);
+  assert.equal(maximumActive, 2);
+  assert.deepEqual(result.results.map((item) => item.position_id), [
+    "carry:position:alpha",
+    "carry:position:bravo",
+    "carry:position:charlie",
+  ]);
+  assert.equal(result.results[0].pending, true);
+  assert.equal(result.results[1].error, "venue_timeout");
+  assert.equal(result.results[2].pending, true);
+});
+
 test("bootstraps one capped candidate only after separate qualification confirmation", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-executor-qualification-pilot-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

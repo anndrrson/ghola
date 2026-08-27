@@ -652,6 +652,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_MAX_AGE_MS', "carry_shadow_qualification_freshness_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY', "carry_monitor_concurrency_compose_missing");
   requireText("positions", "mapConcurrentOrdered(records, concurrency", "carry_monitor_bounded_concurrency_missing");
+  requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_EXECUTION_CONCURRENCY', "carry_execution_concurrency_compose_missing");
+  requireText("executor", "mapConcurrentOrdered(tasks, concurrency", "carry_execution_bounded_concurrency_missing");
+  requireText("lifecycleTest", "recovery work is bounded-concurrent and failure-isolated", "carry_execution_concurrency_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: "5000"', "carry_monitor_five_second_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS: "750"', "carry_market_data_skew_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS: "12"', "carry_index_basis_runtime_test_missing");

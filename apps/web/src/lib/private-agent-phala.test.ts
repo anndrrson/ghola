@@ -256,6 +256,7 @@ describe("private-agent Phala provisioning", () => {
     expect(compose).toContain('PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS: "24"');
     expect(compose).toContain('PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: "5000"');
     expect(compose).toContain('PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY: "8"');
+    expect(compose).toContain('PRIVATE_AGENT_CARRY_EXECUTION_CONCURRENCY: "8"');
     expect(phalaWorkerRuntimeConfigDrift(info)).toEqual([]);
 
     const stale = {

@@ -300,6 +300,10 @@ function expectedCarryWorkerConfig(): Record<string, string> {
       "PRIVATE_AGENT_CARRY_EXECUTION_SWEEP_MS",
       "2000",
     ),
+    PRIVATE_AGENT_CARRY_EXECUTION_CONCURRENCY: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_EXECUTION_CONCURRENCY",
+      "8",
+    ),
     PRIVATE_AGENT_CARRY_EXIT_VERIFY_RETRY_MS: workerLiveEnv(
       "PRIVATE_AGENT_CARRY_EXIT_VERIFY_RETRY_MS",
       "30000",
