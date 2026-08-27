@@ -1323,6 +1323,76 @@ test("value ledger rejects a reused evidence claim under a new entry id", () => 
   assert.equal(replayedClaim.ledger.realized.net_value_micro_usdc, -2);
 });
 
+test("value ledger rejects a conflicting replay under the same entry id", () => {
+  let ledger = createCarryValueLedger({
+    version: 1,
+    position_id: "carry:position:0001",
+    modeled: {
+      gross_funding_micro_usdc: 10,
+      trading_cost_micro_usdc: 2,
+      capital_cost_micro_usdc: 1,
+      risk_buffer_micro_usdc: 1,
+    },
+    now_ms: NOW,
+  });
+  const first = appendCarryValueLedgerEntry({
+    ledger,
+    entry: {
+      version: 1,
+      entry_id: "value:entry:stable:1",
+      sequence: 1,
+      entry_type: "funding",
+      direction: "credit",
+      amount_micro_usdc: 10,
+      venue_id: "hyperliquid",
+      leg_id: "carry:leg:long",
+      occurred_at_ms: NOW + 1,
+      evidence_commitment: "value:evidence:stable:1",
+    },
+    now_ms: NOW + 1,
+  });
+  assert.equal(first.ok, true);
+  ledger = first.ledger;
+  const exactReplay = appendCarryValueLedgerEntry({
+    ledger,
+    entry: {
+      version: 1,
+      entry_id: "value:entry:stable:1",
+      sequence: 2,
+      entry_type: "funding",
+      direction: "credit",
+      amount_micro_usdc: 10,
+      venue_id: "hyperliquid",
+      leg_id: "carry:leg:long",
+      occurred_at_ms: NOW + 1,
+      evidence_commitment: "value:evidence:stable:1",
+    },
+    now_ms: NOW + 2,
+  });
+  assert.equal(exactReplay.ok, true);
+  assert.equal(exactReplay.duplicate, true);
+  assert.equal(exactReplay.ledger.last_sequence, 1);
+  const conflicting = appendCarryValueLedgerEntry({
+    ledger,
+    entry: {
+      version: 1,
+      entry_id: "value:entry:stable:1",
+      sequence: 2,
+      entry_type: "funding",
+      direction: "credit",
+      amount_micro_usdc: 11,
+      venue_id: "hyperliquid",
+      leg_id: "carry:leg:long",
+      occurred_at_ms: NOW + 1,
+      evidence_commitment: "value:evidence:stable:changed",
+    },
+    now_ms: NOW + 2,
+  });
+  assert.equal(conflicting.ok, false);
+  assert.equal(conflicting.error, "carry_value_entry_replay_mismatch");
+  assert.equal(conflicting.ledger.realized.funding_credit_micro_usdc, 10);
+});
+
 test("rebates can only credit realized value", () => {
   const ledger = createCarryValueLedger({
     version: 1,

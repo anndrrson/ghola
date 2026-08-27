@@ -986,15 +986,18 @@ async function readVenueFundingSettlements({ venueId, asset, access, startMs, en
         const amountMicro = signedQuoteMicro(row.amount_quote);
         const quoteAsset = String(row.quote_asset || "").toUpperCase();
         const occurredAt = Number(row.occurred_at_ms);
+        const settlementId = String(row.settlement_id || "").trim();
         if (amountMicro === null
+          || settlementId.length === 0
           || !new Set(["USD", "USDC", "USDT"]).has(quoteAsset)
           || !Number.isSafeInteger(occurredAt)
           || occurredAt < cursor
           || occurredAt > pageEnd) throw new Error("funding_settlement_evidence_invalid");
-        entries.push({ row, amount_micro_usdc: amountMicro });
+        entries.push({ row, settlement_id: settlementId, amount_micro_usdc: amountMicro });
       }
       cursor = pageEnd;
     }
+    entries.sort(compareFundingEntries);
     return {
       ok: true,
       venue_id: venueId,
@@ -1015,7 +1018,9 @@ async function appendFundingEntryWithRetry({ state, ownerCommitment, positionId,
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const current = await state.getCarryPositionRecord(positionId);
     if (!current) return false;
-    const settlementId = digest(`${venueId}:${row.settlement_id}:${row.occurred_at_ms}:${row.amount_quote}`);
+    const settlementKey = String(row.settlement_id || "").trim();
+    const settlementId = digest(`${venueId}:${settlementKey}`);
+    const evidenceId = digest(`${venueId}:${settlementKey}:${row.occurred_at_ms}:${amountMicro}:${String(row.quote_asset || "").toUpperCase()}`);
     const result = await appendStoredCarryValueEntry({
       state,
       position_id: positionId,
@@ -1030,7 +1035,7 @@ async function appendFundingEntryWithRetry({ state, ownerCommitment, positionId,
         venue_id: venueId,
         leg_id: null,
         occurred_at_ms: Number(row.occurred_at_ms),
-        evidence_commitment: `carry:value:funding:evidence:${settlementId.slice(0, 32)}`,
+        evidence_commitment: `carry:value:funding:evidence:${evidenceId.slice(0, 32)}`,
       },
       now_ms: nowMs,
     });
@@ -1038,6 +1043,14 @@ async function appendFundingEntryWithRetry({ state, ownerCommitment, positionId,
     if (result.error !== "carry_record_version_conflict") return false;
   }
   return false;
+}
+
+function compareFundingEntries(left, right) {
+  const occurred = Number(left.row.occurred_at_ms) - Number(right.row.occurred_at_ms);
+  if (occurred !== 0) return occurred;
+  if (left.settlement_id < right.settlement_id) return -1;
+  if (left.settlement_id > right.settlement_id) return 1;
+  return left.amount_micro_usdc - right.amount_micro_usdc;
 }
 
 async function ownedRecord(state, positionId, ownerCommitment) {

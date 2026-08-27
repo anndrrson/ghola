@@ -663,6 +663,55 @@ test("monitoring reads both venue funding ledgers concurrently and commits them 
   assert.deepEqual(result.record.value_ledger.entries.map((entry) => entry.sequence), [1, 2]);
 });
 
+test("monitoring canonicalizes settlement order and rejects a changed replay", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-funding-replay-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const first = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => ({
+      economic_opportunity: monitoringOpportunity(NOW + 100, 9),
+      margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
+      qualification_reasons: [],
+    }),
+    readFundingSettlements: async ({ body }) => body.venue_id === "hyperliquid" ? [
+      { settlement_id: "hl:later", occurred_at_ms: NOW + 20, amount_quote: "0.002", quote_asset: "USDC" },
+      { settlement_id: "hl:earlier", occurred_at_ms: NOW + 10, amount_quote: "0.001", quote_asset: "USDC" },
+    ] : [],
+    now_ms: NOW + 100,
+  });
+  assert.equal(first.ok, true);
+  assert.deepEqual(first.record.value_ledger.entries.map((entry) => entry.amount_micro_usdc), [1_000, 2_000]);
+
+  const replay = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => ({
+      economic_opportunity: monitoringOpportunity(NOW + 200, 9),
+      margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
+      qualification_reasons: [],
+    }),
+    readFundingSettlements: async ({ body }) => body.venue_id === "hyperliquid" ? [{
+      settlement_id: "hl:later",
+      occurred_at_ms: NOW + 150,
+      amount_quote: "9.999",
+      quote_asset: "USDC",
+    }] : [],
+    now_ms: NOW + 200,
+  });
+  assert.equal(replay.ok, true);
+  assert.equal(replay.funding.status, "pending");
+  assert.equal(replay.funding.venue_status.hyperliquid, "funding_settlement_persistence_failed");
+  assert.equal(replay.record.value_ledger.entries.length, 2);
+  assert.equal(replay.record.value_ledger.realized.funding_credit_micro_usdc, 3_000);
+});
+
 test("compiles an owner-only portfolio capital plan from stored monitoring evidence", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-portfolio-capital-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

@@ -280,7 +280,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarry", "projected_trading_fee_micro_usdc", "carry_modeled_fee_attribution_missing");
   requireText("coreCarry", "carry_value_modeled_trading_breakdown_mismatch", "carry_modeled_cost_reconciliation_missing");
   requireText("coreCarry", "summarizeValueAttribution", "carry_value_attribution_missing");
+  requireText("coreCarry", "carry_value_entry_replay_mismatch", "carry_value_conflicting_replay_gate_missing");
   requireText("coreCarryTest", "rejects modeled component totals that do not reconcile", "carry_modeled_cost_reconciliation_test_missing");
+  requireText("coreCarryTest", "rejects a conflicting replay under the same entry id", "carry_value_conflicting_replay_test_missing");
   requireText("coreCarry", "carryRiskMandateMessage", "carry_signed_mandate_message_missing");
   requireText("coreCarry", "export function compileCarryMigrationProposal", "carry_migration_compiler_missing");
   requireText("coreCarry", "migration_venue_allowlist", "carry_migration_signed_allowlist_missing");
@@ -459,12 +461,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_MAX_NOTIONAL_MICRO_USDC", "pilot_notional_cap_missing");
   requireText("positions", "margin_runway_status_by_venue", "carry_monitor_runway_status_missing");
   requireText("positions", "const venueReads = await Promise.all", "carry_funding_parallel_read_missing");
+  requireText("positions", "entries.sort(compareFundingEntries)", "carry_funding_canonical_order_missing");
   requireText("positions", 'return "carry_market_data_skew_exceeded"', "carry_storage_skew_gate_missing");
   requireText("positions", 'return "carry_contract_basis_exceeded"', "carry_storage_contract_basis_gate_missing");
   requireText("positions", 'return "carry_unsigned_contract_basis_limit"', "carry_storage_signed_basis_gate_missing");
   requireText("positionsTest", "refuses storage until venue accounts, synchronized equivalent contracts, and margin runways pass", "carry_storage_skew_test_missing");
   requireText("positionsTest", "margin_runway_status_by_venue.hyperliquid", "carry_monitor_runway_status_test_missing");
   requireText("positionsTest", "monitoring reads both venue funding ledgers concurrently and commits them deterministically", "carry_funding_parallel_read_test_missing");
+  requireText("positionsTest", "monitoring canonicalizes settlement order and rejects a changed replay", "carry_funding_replay_test_missing");
   requireText("releaseMaterialTest", "refuses release evidence without verified margin-runway status", "carry_release_runway_test_missing");
   requireText("releaseMaterialTest", "refuses release evidence without bounded contract equivalence", "carry_release_contract_basis_test_missing");
   requireText("evidenceVerifier", "margin_runway_status_missing", "carry_evidence_runway_status_gate_missing");

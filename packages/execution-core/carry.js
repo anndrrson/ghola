@@ -1436,6 +1436,8 @@ export function appendCarryValueLedgerEntry({ ledger: ledgerInput, entry: entryI
     const entry = normalizeValueEntry(entryInput);
     const nowMs = positiveInteger(now_ms, "carry_value_entry_now");
     if (ledger.processed_entry_ids.includes(entry.entry_id)) {
+      const existing = ledger.entries.find((item) => item.entry_id === entry.entry_id);
+      if (!existing || !sameValueEntryClaim(existing, entry)) fail("carry_value_entry_replay_mismatch");
       return deepFreeze({ ok: true, duplicate: true, ledger: deepFreeze(ledgerInput) });
     }
     const claimId = valueClaimId(entry);
@@ -2450,6 +2452,17 @@ function valueClaimId(entry) {
     entry.venue_id || "portfolio",
     entry.leg_id || "none",
   ].join("|");
+}
+
+function sameValueEntryClaim(left, right) {
+  return left.entry_id === right.entry_id
+    && left.entry_type === right.entry_type
+    && left.direction === right.direction
+    && left.amount_micro_usdc === right.amount_micro_usdc
+    && left.venue_id === right.venue_id
+    && left.leg_id === right.leg_id
+    && left.occurred_at_ms === right.occurred_at_ms
+    && left.evidence_commitment === right.evidence_commitment;
 }
 
 function fundingCashMicro(side, notional, contract, horizonMs) {

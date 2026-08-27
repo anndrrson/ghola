@@ -856,6 +856,26 @@ test("rejects removal of component-level carry value attribution", () => {
   );
 });
 
+test("rejects a Carry ledger that accepts conflicting evidence replays", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replaceAll("carry_value_entry_replay_mismatch", "carry_value_replay_accepted"),
+    }),
+    /carry_value_conflicting_replay_gate_missing/,
+  );
+});
+
+test("rejects non-canonical venue settlement ordering", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll("entries.sort(compareFundingEntries)", "entries.reverse()"),
+    }),
+    /carry_funding_canonical_order_missing/,
+  );
+});
+
 test("rejects a terminal that hides realized execution attribution", () => {
   assert.throws(
     () => checkCarryExecutionContract({
