@@ -4,6 +4,7 @@ import { CORE_PERP_VENUES, venueAdapterCapability } from "@ghola/execution-core"
 import {
   DEFAULT_CARRY_SHADOW_ASSETS,
   verifyCarryShadowSet,
+  verifyCarryShadowSoak,
 } from "../scripts/verify-carry-shadow.mjs";
 
 const NOW = 1_800_000_000_000;
@@ -84,6 +85,42 @@ test("rejects malformed snapshot identity, prices, and evidence arrays", () => {
   assert.ok(result.failures.includes("reference_price_invalid:hyperliquid:BTC"));
   assert.ok(result.failures.includes("quality_flags_invalid:hyperliquid:BTC"));
   assert.ok(result.failures.includes("missing_fields_invalid:hyperliquid:BTC"));
+});
+
+test("qualifies only consecutive complete five-venue shadow samples", () => {
+  const samples = [0, 1, 2].map((offset) => verifyCarryShadowSet(fixture(), {
+    now_ms: NOW + offset * 1_000,
+  }));
+  assert.deepEqual(verifyCarryShadowSoak(samples), {
+    ok: true,
+    required_samples: 3,
+    completed_samples: 3,
+    duration_ms: 2_000,
+    venues: 5,
+    assets: 3,
+    expected_snapshots_per_sample: 15,
+    failures: [],
+  });
+});
+
+test("rejects intermittent failure, coverage drift, and non-monotonic shadow samples", () => {
+  const samples = [0, 1, 2].map((offset) => verifyCarryShadowSet(fixture(), {
+    now_ms: NOW + offset * 1_000,
+  }));
+  samples[1] = { ...samples[1], ok: false, failures: ["venue_fetch_failed:lighter:timeout"] };
+  samples[2] = { ...samples[2], checked_at_ms: NOW + 500, assets: 2, expected_snapshots: 10 };
+  const result = verifyCarryShadowSoak(samples);
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.includes("shadow_soak_sample_failed:1"));
+  assert.ok(result.failures.includes("shadow_soak_timeline_invalid:2"));
+  assert.ok(result.failures.includes("shadow_soak_coverage_drift:2"));
+});
+
+test("rejects a one-shot snapshot as durable shadow qualification", () => {
+  const sample = verifyCarryShadowSet(fixture(), { now_ms: NOW });
+  const result = verifyCarryShadowSoak([sample]);
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.includes("shadow_soak_samples_insufficient:1:3"));
 });
 
 function fixture() {

@@ -99,6 +99,19 @@ test("rejects a missing exact-reconciliation adapter", () => {
   );
 });
 
+test("rejects five-venue shadow qualification based on one lucky snapshot", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowVerifierCli: sources.shadowVerifierCli.replaceAll(
+        "verifyCarryShadowSoak(sampleResults",
+        "acceptOneShadowSample(sampleResults",
+      ),
+    }),
+    /carry_shadow_soak_cli_missing/,
+  );
+});
+
 test("rejects release without a joined three-venue no-submit matrix", () => {
   assert.throws(
     () => checkCarryExecutionContract({

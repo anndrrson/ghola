@@ -76,6 +76,55 @@ export function verifyCarryShadowSet(rows, {
   });
 }
 
+export function verifyCarryShadowSoak(sampleResults, {
+  required_samples: requiredSamples = 3,
+} = {}) {
+  const failures = [];
+  const samples = Array.isArray(sampleResults) ? sampleResults : [];
+  if (!Array.isArray(sampleResults)) failures.push("shadow_soak_samples_invalid");
+  if (!Number.isSafeInteger(requiredSamples) || requiredSamples < 2) {
+    failures.push("shadow_soak_required_samples_invalid");
+  }
+  if (samples.length < requiredSamples) {
+    failures.push(`shadow_soak_samples_insufficient:${samples.length}:${requiredSamples}`);
+  }
+  let previousCheckedAt = 0;
+  let expectedVenues = null;
+  let expectedAssets = null;
+  let expectedSnapshots = null;
+  samples.forEach((sample, index) => {
+    if (sample?.ok !== true || (Array.isArray(sample?.failures) && sample.failures.length > 0)) {
+      failures.push(`shadow_soak_sample_failed:${index}`);
+    }
+    if (!Number.isSafeInteger(sample?.checked_at_ms) || sample.checked_at_ms <= previousCheckedAt) {
+      failures.push(`shadow_soak_timeline_invalid:${index}`);
+    }
+    previousCheckedAt = Number.isSafeInteger(sample?.checked_at_ms) ? sample.checked_at_ms : previousCheckedAt;
+    expectedVenues ??= sample?.venues;
+    expectedAssets ??= sample?.assets;
+    expectedSnapshots ??= sample?.expected_snapshots;
+    if (
+      sample?.venues !== expectedVenues ||
+      sample?.assets !== expectedAssets ||
+      sample?.expected_snapshots !== expectedSnapshots
+    ) failures.push(`shadow_soak_coverage_drift:${index}`);
+  });
+  const firstCheckedAt = samples[0]?.checked_at_ms;
+  const lastCheckedAt = samples.at(-1)?.checked_at_ms;
+  return Object.freeze({
+    ok: failures.length === 0,
+    required_samples: requiredSamples,
+    completed_samples: samples.length,
+    duration_ms: Number.isSafeInteger(firstCheckedAt) && Number.isSafeInteger(lastCheckedAt)
+      ? Math.max(0, lastCheckedAt - firstCheckedAt)
+      : 0,
+    venues: expectedVenues,
+    assets: expectedAssets,
+    expected_snapshots_per_sample: expectedSnapshots,
+    failures: Object.freeze(failures),
+  });
+}
+
 function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures }) {
   const prefix = `${venueId}:${asset}`;
   const declared = venueAdapterCapability(venueId, "perp_shadow");
