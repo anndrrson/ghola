@@ -314,7 +314,10 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
     failures.push(`funding_interval_invalid:${prefix}`);
   }
   if (!(snapshot.quantity_step_e8 > 0)) failures.push(`quantity_precision_invalid:${prefix}`);
-  if (!(snapshot.initial_margin_bps > snapshot.maintenance_margin_bps) || snapshot.initial_margin_bps > 10_000) {
+  verifyOptionalEconomicFields(snapshot, { prefix, failures });
+  if (!(snapshot.initial_margin_bps > snapshot.maintenance_margin_bps)
+    || snapshot.maintenance_margin_bps < 0
+    || snapshot.initial_margin_bps > 10_000) {
     failures.push(`margin_evidence_invalid:${prefix}`);
   }
   if (!snapshot.liquidation_model || snapshot.liquidation_model === "unavailable") {
@@ -333,6 +336,27 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
   for (const field of actualMissingFields) {
     const requiredFlag = MISSING_FIELD_EVIDENCE[field];
     if (!requiredFlag || !flags.has(requiredFlag)) failures.push(`missing_field_unjustified:${prefix}:${field}`);
+  }
+}
+
+function verifyOptionalEconomicFields(snapshot, { prefix, failures }) {
+  const bounded = [
+    ["maker_fee_bps", -1_000, 10_000],
+    ["taker_fee_bps", 0, 10_000],
+    ["liquidation_fee_bps", 0, 10_000],
+  ];
+  for (const [field, minimum, maximum] of bounded) {
+    const value = snapshot[field];
+    if (value !== null && value !== undefined
+      && (!Number.isSafeInteger(value) || value < minimum || value > maximum)) {
+      failures.push(`normalized_field_invalid:${prefix}:${field}`);
+    }
+  }
+  for (const field of ["minimum_notional_micro_usdc", "price_tick_e8"]) {
+    const value = snapshot[field];
+    if (value !== null && value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
+      failures.push(`normalized_field_invalid:${prefix}:${field}`);
+    }
   }
 }
 

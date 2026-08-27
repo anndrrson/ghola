@@ -203,6 +203,29 @@ test("rejects five-venue shadow evidence with an unaudited missing-field manifes
   );
 });
 
+test("rejects five-venue shadow evidence without economic bounds validation", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowVerifier: sources.shadowVerifier.replaceAll(
+        "normalized_field_invalid",
+        "normalized_field_trusted",
+      ),
+    }),
+    /carry_shadow_economic_bounds_gate_missing/,
+  );
+});
+
+test("rejects Hyperliquid shadow data that invents liquidation-fee evidence", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadow: sources.shadow.replaceAll("liquidation_fee_unverified", "liquidation_fee_assumed"),
+    }),
+    /hyperliquid_liquidation_fee_evidence_gate_missing/,
+  );
+});
+
 test("rejects release without a joined three-venue no-submit matrix", () => {
   assert.throws(
     () => checkCarryExecutionContract({

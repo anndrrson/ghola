@@ -39,9 +39,11 @@ test("normalizes Hyperliquid public perp context without claiming missing fee da
   assert.equal(snapshot.funding_rate_e12_per_interval, 12_500_000);
   assert.equal(snapshot.funding_interval_ms, 3_600_000);
   assert.equal(snapshot.quantity_step_e8, 1_000);
+  assert.equal(snapshot.liquidation_fee_bps, null);
   assert.equal(snapshot.status, "degraded");
   assert.equal(snapshot.executable, false);
   assert.ok(snapshot.quality_flags.includes("minimum_notional_unverified"));
+  assert.ok(snapshot.quality_flags.includes("liquidation_fee_unverified"));
   assert.ok(snapshot.quality_flags.includes("contract_specs_usdt_denominated_usdc_margined"));
 });
 

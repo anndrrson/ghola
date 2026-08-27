@@ -85,6 +85,23 @@ test("rejects crossed books, registry drift, and invalid margin evidence", () =>
   assert.ok(result.failures.includes("margin_evidence_invalid:hyperliquid:BTC"));
 });
 
+test("rejects unsafe normalized economic fields instead of pricing with them", () => {
+  const rows = fixture();
+  rows[0].snapshots[0].maker_fee_bps = -1_001;
+  rows[1].snapshots[0].taker_fee_bps = -1;
+  rows[2].snapshots[0].minimum_notional_micro_usdc = 0;
+  rows[3].snapshots[0].price_tick_e8 = 0;
+  rows[4].snapshots[0].liquidation_fee_bps = 10_001;
+  rows[4].snapshots[0].maintenance_margin_bps = -1;
+  const result = verifyCarryShadowSet(rows, { now_ms: NOW });
+  assert.ok(result.failures.includes("normalized_field_invalid:hyperliquid:BTC:maker_fee_bps"));
+  assert.ok(result.failures.includes("normalized_field_invalid:lighter:BTC:taker_fee_bps"));
+  assert.ok(result.failures.includes("normalized_field_invalid:aster:BTC:minimum_notional_micro_usdc"));
+  assert.ok(result.failures.includes("normalized_field_invalid:edgex:BTC:price_tick_e8"));
+  assert.ok(result.failures.includes("normalized_field_invalid:dydx:BTC:liquidation_fee_bps"));
+  assert.ok(result.failures.includes("margin_evidence_invalid:dydx:BTC"));
+});
+
 test("rejects normalized shadow proof without valid two-sided liquidity depth", () => {
   const rows = fixture();
   rows[0].snapshots[0].depth_bids = [];

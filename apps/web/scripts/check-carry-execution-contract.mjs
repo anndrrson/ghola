@@ -175,6 +175,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadow", "observedAtMs", "edgex_response_freshness_missing");
   requireText("shadow", "funding_source_stale", "edgex_funding_source_staleness_gate_missing");
   requireText("shadowTest", "keeps fresh edgeX responses live without trusting a stale funding source", "edgex_split_freshness_test_missing");
+  requireText("shadow", "liquidation_fee_unverified", "hyperliquid_liquidation_fee_evidence_gate_missing");
+  requireText("shadowTest", "without claiming missing fee data", "hyperliquid_missing_economics_test_missing");
   requireText("workerPackage", '"verify:carry-shadow"', "carry_shadow_verifier_script_missing");
   requireText("shadowVerifierCli", "verifyCarryShadowSet", "carry_shadow_verifier_cli_runtime_missing");
   requireText("shadowVerifierCli", "verifyCarryShadowSoak(sampleResults", "carry_shadow_soak_cli_missing");
@@ -193,6 +195,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifier", "liquidity_depth_missing", "carry_shadow_liquidity_depth_gate_missing");
   requireText("shadowVerifier", "source_observation_stale", "carry_shadow_component_freshness_gate_missing");
   requireText("shadowVerifier", "missing_field_manifest_mismatch", "carry_shadow_missing_manifest_gate_missing");
+  requireText("shadowVerifier", "normalized_field_invalid", "carry_shadow_economic_bounds_gate_missing");
+  requireText("shadowVerifierTest", "rejects unsafe normalized economic fields", "carry_shadow_economic_bounds_test_missing");
   requireText("shadowVerifier", "snapshot_status_inconsistent", "carry_shadow_status_integrity_gate_missing");
   requireText("shadowVerifierTest", "accepts one fresh normalized shadow for every venue and core asset", "carry_shadow_complete_set_test_missing");
   requireText("shadowVerifierTest", "qualifies only consecutive complete five-venue shadow samples", "carry_shadow_soak_test_missing");
