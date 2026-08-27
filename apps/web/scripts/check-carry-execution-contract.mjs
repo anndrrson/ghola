@@ -119,13 +119,26 @@ export function checkCarryExecutionContract(sources) {
     requireText("registry", `adapter("${adapterId}", "enabled"`, `shadow_adapter_missing:${venue}`);
   }
   requireText("registry", "export const CARRY_EXECUTION_VENUES", "capability_registry_missing");
-  requireText("registry", "adapter_capabilities.carry_execution", "execution_capability_filter_missing");
-  requireText("registry", "adapter_capabilities.exact_quantity_recovery", "recovery_capability_filter_missing");
+  requireText(
+    "registry",
+    '"carry_execution",\n  "no_submit_reconciliation",\n  "exact_quantity_recovery",',
+    "carry_required_adapter_contract_missing",
+  );
+  requireText("registry", "carryExecutionQualificationForSpec(spec).eligible", "carry_qualification_filter_missing");
+  requireText(
+    "registry",
+    "for (const capability of CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES)",
+    "carry_required_adapter_iteration_missing",
+  );
+  requireText("registry", "export function carryExecutionQualification", "carry_qualification_report_missing");
+  requireText("registryTest", "candidate venues cannot enter Carry until the identical execution contract is complete", "carry_candidate_fail_closed_test_missing");
   requireText("registry", "export const CARRY_BROWSER_STREAM_VENUES", "browser_stream_capability_registry_missing");
   requireText("registry", "export function venueAdapterCapability", "adapter_capability_lookup_missing");
   requireText("registry", "export function venuesWithAdapterCapability", "adapter_capability_query_missing");
   requireText("coreIndex", 'from "./venues.js"', "registry_export_missing");
   requireText("coreIndex", "venueAdapterCapability", "adapter_capability_export_missing");
+  requireText("coreIndex", "CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES", "carry_required_adapter_contract_export_missing");
+  requireText("coreIndex", "carryExecutionQualification", "carry_qualification_report_export_missing");
   requireText("coreIndex", 'from "./carry.js"', "carry_domain_export_missing");
   requireText("coreIndex", "evaluatePerpContractPairBasis", "carry_contract_basis_export_missing");
   requireText("webRegistry", 'from "@ghola/execution-core"', "web_registry_bridge_missing");
@@ -386,6 +399,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("privateExecution", 'registeredCarryAdapter(venue_id, "no_submit_reconciliation")', "worker_carry_no_submit_registry_dispatch_missing");
   requireText("privateExecution", 'registeredCarryAdapterId(venueId, "carry_execution")', "worker_carry_funding_registry_dispatch_missing");
   requireText("adapterRegistryTest", "shadow-only candidates cannot enter worker Carry dispatch", "worker_carry_registry_fail_closed_test_missing");
+  requireText("adapterRegistryTest", "adapter_missing:no_submit_reconciliation", "worker_carry_no_submit_registry_gate_missing");
   requireText("adapterRegistryTest", "Carry funding history dispatches through the registered Aster adapter", "worker_carry_funding_registry_test_missing");
 
   requireText("hyperliquid", "target_client_order_matched", "hyperliquid_target_match_proof_missing");

@@ -38,6 +38,14 @@ const SWAP_ROUTE_CAPABILITIES = Object.freeze([
   "delegated_signing",
 ]);
 
+export const CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES = Object.freeze([
+  "carry_execution",
+  "no_submit_reconciliation",
+  "exact_quantity_recovery",
+]);
+
+const CARRY_IMPLEMENTATION_STATUSES = Object.freeze(["proven", "implemented_unproven"]);
+
 const specs = [
   venue("hyperliquid", "Hyperliquid", "core_perp", "proven", "enabled", ["perp"], {
     perp_shadow: adapter("hyperliquid_shadow_v1", "enabled", {
@@ -117,12 +125,7 @@ export const CORE_PERP_VENUES = Object.freeze(
 
 export const CARRY_EXECUTION_VENUES = Object.freeze(
   specs
-    .filter((spec) =>
-      spec.cohort === "core_perp" &&
-      spec.products.includes("perp") &&
-      ["proven", "implemented_unproven"].includes(spec.adapter_capabilities.carry_execution?.status) &&
-      ["proven", "implemented_unproven"].includes(spec.adapter_capabilities.exact_quantity_recovery?.status)
-    )
+    .filter((spec) => carryExecutionQualificationForSpec(spec).eligible)
     .map((spec) => spec.venue_id),
 );
 
@@ -134,6 +137,12 @@ export const CARRY_BROWSER_STREAM_VENUES = Object.freeze(
 
 export function executionVenueSpec(venueId) {
   return EXECUTION_VENUE_SPECS[venueId] || null;
+}
+
+export function carryExecutionQualification(venueId) {
+  const spec = executionVenueSpec(venueId);
+  if (!spec) return Object.freeze({ venue_id: venueId, eligible: false, gaps: Object.freeze(["venue_unregistered"]) });
+  return carryExecutionQualificationForSpec(spec);
 }
 
 export function isExecutionVenue(venueId) {
@@ -215,6 +224,22 @@ function venue(venueId, label, cohort, qualificationStatus, workerRoutingStatus,
 
 function adapter(adapterId, status, metadata = {}) {
   return Object.freeze({ adapter_id: adapterId, status, ...metadata });
+}
+
+function carryExecutionQualificationForSpec(spec) {
+  const gaps = [];
+  if (spec.cohort !== "core_perp") gaps.push("core_perp_cohort_required");
+  if (!spec.products.includes("perp")) gaps.push("perp_product_required");
+  for (const capability of CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES) {
+    const declared = spec.adapter_capabilities[capability];
+    if (!declared) gaps.push(`adapter_missing:${capability}`);
+    else if (!CARRY_IMPLEMENTATION_STATUSES.includes(declared.status)) gaps.push(`adapter_unqualified:${capability}:${declared.status}`);
+  }
+  return Object.freeze({
+    venue_id: spec.venue_id,
+    eligible: gaps.length === 0,
+    gaps: Object.freeze(gaps),
+  });
 }
 
 function deepFreeze(value) {

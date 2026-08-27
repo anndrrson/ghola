@@ -6,6 +6,7 @@ export declare const EXECUTION_CORE_VERSION: 1;
 export declare const SUPPORTED_EXECUTION_VENUES: readonly VenueId[];
 export declare const CORE_PERP_VENUES: readonly CorePerpVenueId[];
 export declare const CARRY_EXECUTION_VENUES: readonly CarryExecutionVenueId[];
+export declare const CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES: readonly ["carry_execution", "no_submit_reconciliation", "exact_quantity_recovery"];
 export declare const CARRY_BROWSER_STREAM_VENUES: readonly CorePerpVenueId[];
 export declare const EXECUTION_VENUE_SPECS: Readonly<Record<VenueId, Readonly<Record<string, unknown>>>>;
 export declare const SUPPORTED_STRATEGIES: readonly StrategyId[];
@@ -13,6 +14,7 @@ export declare const PORTFOLIO_SIGNING_BOUNDARY: Readonly<Record<string, readonl
 export declare class ExecutionCoreError extends Error { code: string; }
 export declare class CarryModelError extends Error { code: string; }
 export declare function executionVenueSpec(venueId: string): Readonly<Record<string, unknown>> | null;
+export declare function carryExecutionQualification(venueId: string): Readonly<{ venue_id: string; eligible: boolean; gaps: readonly string[] }>;
 export declare function exactQuantityRecoveryAdapter(venueId: string): string | null;
 export declare function isExecutionVenue(venueId: string): boolean;
 export declare function isCarryExecutionVenue(venueId: string): boolean;

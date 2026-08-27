@@ -44,10 +44,12 @@ export {
 export {
   CARRY_BROWSER_STREAM_VENUES,
   CARRY_EXECUTION_VENUES,
+  CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES,
   CORE_PERP_VENUES,
   EXECUTION_VENUE_SPECS,
   SUPPORTED_EXECUTION_VENUES,
   exactQuantityRecoveryAdapter,
+  carryExecutionQualification,
   executionVenueSpec,
   isCarryExecutionVenue,
   isExecutionVenue,

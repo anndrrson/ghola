@@ -3,9 +3,11 @@ import test from "node:test";
 import {
   CARRY_BROWSER_STREAM_VENUES,
   CARRY_EXECUTION_VENUES,
+  CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES,
   CORE_PERP_VENUES,
   EXECUTION_VENUE_SPECS,
   assessVenueReadiness,
+  carryExecutionQualification,
   requiredVenueCapabilities,
   supportsExactQuantityRecovery,
   venueAdapterCapability,
@@ -23,6 +25,11 @@ test("registry centralizes five core perp candidates without claiming qualificat
     "dydx",
   ]);
   assert.deepEqual(CARRY_EXECUTION_VENUES, ["hyperliquid", "lighter", "aster"]);
+  assert.deepEqual(CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES, [
+    "carry_execution",
+    "no_submit_reconciliation",
+    "exact_quantity_recovery",
+  ]);
   assert.deepEqual(CARRY_BROWSER_STREAM_VENUES, ["lighter", "aster", "edgex", "dydx"]);
   assert.equal(EXECUTION_VENUE_SPECS.hyperliquid.qualification_status, "proven");
   assert.equal(EXECUTION_VENUE_SPECS.lighter.qualification_status, "integration");
@@ -44,6 +51,23 @@ test("registry centralizes five core perp candidates without claiming qualificat
     product: "perp",
     statuses: ["enabled"],
   }), CORE_PERP_VENUES);
+});
+
+test("candidate venues cannot enter Carry until the identical execution contract is complete", () => {
+  for (const venueId of CARRY_EXECUTION_VENUES) {
+    assert.deepEqual(carryExecutionQualification(venueId), { venue_id: venueId, eligible: true, gaps: [] });
+  }
+  for (const venueId of ["edgex", "dydx"]) {
+    assert.deepEqual(carryExecutionQualification(venueId), {
+      venue_id: venueId,
+      eligible: false,
+      gaps: [
+        "adapter_missing:carry_execution",
+        "adapter_missing:no_submit_reconciliation",
+        "adapter_missing:exact_quantity_recovery",
+      ],
+    });
+  }
 });
 
 test("carry requires contract, history, margin, liquidation, cancel, and reduce-only evidence", () => {

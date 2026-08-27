@@ -13,6 +13,19 @@ test("accepts the complete cross-venue Carry execution contract", () => {
   assert.equal(checkCarryExecutionContract(sources).ok, true);
 });
 
+test("rejects a Carry venue contract that omits no-submit reconciliation", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      registry: sources.registry.replace(
+        '"carry_execution",\n  "no_submit_reconciliation",\n  "exact_quantity_recovery",',
+        '"carry_execution",\n  "exact_quantity_recovery",',
+      ),
+    }),
+    /carry_required_adapter_contract_missing/,
+  );
+});
+
 test("rejects qualification evidence not bound to the deployed image", () => {
   assert.throws(
     () => checkCarryExecutionContract({

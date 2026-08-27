@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CARRY_EXECUTION_VENUES,
+  carryExecutionQualification,
   venueAdapterCapability,
 } from "@ghola/execution-core";
 import {
@@ -24,6 +25,8 @@ test("worker Carry dispatch follows the execution-core capability registry", () 
 
 test("shadow-only candidates cannot enter worker Carry dispatch", () => {
   for (const venueId of ["edgex", "dydx"]) {
+    assert.equal(carryExecutionQualification(venueId).eligible, false);
+    assert.ok(carryExecutionQualification(venueId).gaps.includes("adapter_missing:no_submit_reconciliation"));
     assert.equal(registeredCarryAdapterId(venueId, "carry_execution"), null);
     assert.equal(registeredCarryAdapterId(venueId, "no_submit_reconciliation"), null);
   }
