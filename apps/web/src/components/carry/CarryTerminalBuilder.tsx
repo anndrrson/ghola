@@ -212,6 +212,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const proofOpportunity = proof ? asRecord(proof.creation_opportunity) : null;
   const economics = carryTerminalEconomics(model, proofOpportunity);
   const openingCapital = carryOpeningCapitalSummary(model, proof);
+  const stressCapital = carryStressCapitalSummary(proof);
   const displayedCapital = latestObservation?.capital_action_plan ? capital : openingCapital;
   const restoredReadiness = readyStoredReadiness(readiness, candidate.asset, notional, days);
 
@@ -469,6 +470,9 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
           : lastFlat
             ? <p role="status" className="truncate font-mono text-[9px] text-[#72bfa2]">LAST FLAT · 0 ORDERS</p>
             : null}
+        {stressCapital
+          ? <p className="truncate font-mono text-[9px] text-[#72bfa2]" title={stressCapital}>STRESS CAPITAL · {stressCapital}</p>
+          : null}
       </div>
     </div>
   );
@@ -538,6 +542,26 @@ function carryOpeningCapitalSummary(
     value: `${formatUsd(model.requiredOpeningCapitalUsd)} TOTAL · 1×`,
     tone: undefined,
   };
+}
+
+function carryStressCapitalSummary(proof: Record<string, unknown> | null) {
+  const plan = asRecord(proof?.opening_capital_plan);
+  if (plan.proposal_only !== true
+    || plan.live_execution_leverage_unchanged !== true
+    || plan.owner_only_funding !== true
+    || plan.automatic_transfer_permitted !== false
+    || plan.transaction_broadcast !== false) return null;
+  const required = finiteNumber(plan.total_required_opening_collateral_micro_usdc);
+  const target = finiteNumber(plan.total_stress_adjusted_target_collateral_micro_usdc);
+  const potential = finiteNumber(plan.total_potential_releasable_collateral_micro_usdc);
+  const legs = Array.isArray(plan.legs) ? plan.legs.map(asRecord) : [];
+  const leverage = legs.map((leg) => finiteNumber(leg.owner_maximum_stress_adjusted_leverage));
+  if (required == null || target == null || potential == null
+    || required <= 0 || target <= 0 || target > required
+    || potential !== required - target
+    || legs.length !== 2 || leverage.some((value) => value == null || value < 1)) return null;
+  const ownerMaximum = Math.min(...leverage.filter((value): value is number => value != null));
+  return `${formatMicroUsd(target)} TARGET / ${formatMicroUsd(required)} 1× · UP TO ${ownerMaximum}× OWNER CONFIG · ${formatMicroUsd(potential)} POTENTIAL`;
 }
 
 function proofDepth(opportunity: Record<string, unknown>): {

@@ -308,6 +308,16 @@ test("rejects a terminal that hides the owner-only capital action", () => {
   );
 });
 
+test("rejects a terminal that hides the stress-adjusted owner capital plan", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll("STRESS CAPITAL ·", "CAPITAL ·"),
+    }),
+    /carry_terminal_stress_capital_missing/,
+  );
+});
+
 test("rejects serial Carry monitoring that lets one venue stall every position", () => {
   assert.throws(
     () => checkCarryExecutionContract({

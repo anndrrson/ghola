@@ -177,12 +177,27 @@ describe("CarryTerminalBuilder", () => {
         venue_id,
         opening_collateral_shortfall_micro_usdc: 11_000_000,
       })),
+      opening_capital_plan: {
+        proposal_only: true,
+        live_execution_leverage_unchanged: true,
+        owner_only_funding: true,
+        automatic_transfer_permitted: false,
+        transaction_broadcast: false,
+        total_required_opening_collateral_micro_usdc: 22_000_000,
+        total_stress_adjusted_target_collateral_micro_usdc: 20_000_000,
+        total_potential_releasable_collateral_micro_usdc: 2_000_000,
+        legs: ["hyperliquid", "lighter"].map((venue_id) => ({
+          venue_id,
+          owner_maximum_stress_adjusted_leverage: 1,
+        })),
+      },
       creation_opportunity: { eligible: false },
     });
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     await click("NO-SUBMIT CHECK");
     expect(container.textContent).toContain("CONNECTED · exact owner funding shortfall shown; no order submitted");
     expect(container.textContent).toContain("HYPERLIQUID $11 · LIGHTER $11 · OWNER");
+    expect(container.textContent).toContain("STRESS CAPITAL · $20 TARGET / $22 1× · UP TO 1× OWNER CONFIG · $2 POTENTIAL");
     expect(api.createCarryPosition).not.toHaveBeenCalled();
     expect(api.executeCarryPositionEntry).not.toHaveBeenCalled();
   });
