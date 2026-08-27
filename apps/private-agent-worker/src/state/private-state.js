@@ -1121,27 +1121,61 @@ export function createPostgresWorkerState(databaseUrl) {
       const limit = Math.max(1, Math.min(positiveInt(input.limit, 100), 500));
       const owner = stringValue(input.owner_commitment);
       const status = stringValue(input.status);
-      const rows = owner && status
+      const beforeUpdatedAt = stringValue(input.before_updated_at);
+      const beforePositionId = stringValue(input.before_position_id);
+      const cursor = Boolean(beforeUpdatedAt && beforePositionId);
+      const rows = cursor && owner && status
         ? await sql`
           SELECT record_json FROM worker_carry_positions
           WHERE owner_commitment = ${owner} AND status = ${status}
-          ORDER BY updated_at DESC LIMIT ${limit}
+            AND ((record_json->>'updated_at') < ${beforeUpdatedAt}
+              OR ((record_json->>'updated_at') = ${beforeUpdatedAt} AND position_id < ${beforePositionId}))
+          ORDER BY record_json->>'updated_at' DESC, position_id DESC LIMIT ${limit}
+        `
+        : cursor && owner
+          ? await sql`
+            SELECT record_json FROM worker_carry_positions
+            WHERE owner_commitment = ${owner}
+              AND ((record_json->>'updated_at') < ${beforeUpdatedAt}
+                OR ((record_json->>'updated_at') = ${beforeUpdatedAt} AND position_id < ${beforePositionId}))
+            ORDER BY record_json->>'updated_at' DESC, position_id DESC LIMIT ${limit}
+          `
+          : cursor && status
+            ? await sql`
+              SELECT record_json FROM worker_carry_positions
+              WHERE status = ${status}
+                AND ((record_json->>'updated_at') < ${beforeUpdatedAt}
+                  OR ((record_json->>'updated_at') = ${beforeUpdatedAt} AND position_id < ${beforePositionId}))
+              ORDER BY record_json->>'updated_at' DESC, position_id DESC LIMIT ${limit}
+            `
+            : cursor
+              ? await sql`
+                SELECT record_json FROM worker_carry_positions
+                WHERE ((record_json->>'updated_at') < ${beforeUpdatedAt}
+                  OR ((record_json->>'updated_at') = ${beforeUpdatedAt} AND position_id < ${beforePositionId}))
+                ORDER BY record_json->>'updated_at' DESC, position_id DESC LIMIT ${limit}
+              `
+              : owner && status
+        ? await sql`
+          SELECT record_json FROM worker_carry_positions
+          WHERE owner_commitment = ${owner} AND status = ${status}
+          ORDER BY record_json->>'updated_at' DESC, position_id DESC LIMIT ${limit}
         `
         : owner
           ? await sql`
             SELECT record_json FROM worker_carry_positions
             WHERE owner_commitment = ${owner}
-            ORDER BY updated_at DESC LIMIT ${limit}
+            ORDER BY record_json->>'updated_at' DESC, position_id DESC LIMIT ${limit}
           `
           : status
             ? await sql`
               SELECT record_json FROM worker_carry_positions
               WHERE status = ${status}
-              ORDER BY updated_at DESC LIMIT ${limit}
+              ORDER BY record_json->>'updated_at' DESC, position_id DESC LIMIT ${limit}
             `
             : await sql`
               SELECT record_json FROM worker_carry_positions
-              ORDER BY updated_at DESC LIMIT ${limit}
+              ORDER BY record_json->>'updated_at' DESC, position_id DESC LIMIT ${limit}
             `;
       return rows.map((row) => decodeJson(row.record_json)).filter(Boolean);
     },
@@ -2215,10 +2249,18 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
       const limit = Math.max(1, Math.min(positiveInt(input.limit, 100), 500));
       const owner = stringValue(input.owner_commitment);
       const status = stringValue(input.status);
+      const beforeUpdatedAt = stringValue(input.before_updated_at);
+      const beforePositionId = stringValue(input.before_position_id);
       return Object.values((await loadState()).carry_positions)
         .filter((record) => !owner || record.owner_commitment === owner)
         .filter((record) => !status || record.position?.status === status)
-        .sort((left, right) => String(right.updated_at || "").localeCompare(String(left.updated_at || "")))
+        .filter((record) => !beforeUpdatedAt || !beforePositionId ||
+          String(record.updated_at || "") < beforeUpdatedAt ||
+          (String(record.updated_at || "") === beforeUpdatedAt
+            && String(record.position?.position_id || "") < beforePositionId))
+        .sort((left, right) =>
+          String(right.updated_at || "").localeCompare(String(left.updated_at || "")) ||
+          String(right.position?.position_id || "").localeCompare(String(left.position?.position_id || "")))
         .slice(0, limit);
     },
 

@@ -9,6 +9,7 @@ import {
 import { preflightCarryPair } from "./carry-preflight.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 import { hasExactCarryFlatReconciliation } from "./carry-reconciliation.js";
+import { listAllCarryPositionRecords } from "./carry-record-scan.js";
 import {
   readCarryVenueQualification,
   recordCompletedCarryVenueQualifications,
@@ -419,9 +420,9 @@ export async function runCarryExecutionTick({
   now = () => Date.now(),
 }) {
   const [records, frozenRecords, reconciledRecords] = await Promise.all([
-    state.listCarryPositionRecords({ status: "exiting", limit: 500 }),
-    state.listCarryPositionRecords({ status: "frozen", limit: 500 }),
-    state.listCarryPositionRecords({ status: "reconciled", limit: 500 }),
+    listAllCarryPositionRecords({ state, status: "exiting" }),
+    listAllCarryPositionRecords({ state, status: "frozen" }),
+    listAllCarryPositionRecords({ state, status: "reconciled" }),
   ]);
   const pendingAbortedFinalization = reconciledRecords.filter((record) =>
     record.value_ledger?.status === "open"
@@ -575,9 +576,9 @@ async function processExitingCarryRecord({
 
 export async function auditCarryPositionsAfterRestart({ state, now_ms: nowMs = Date.now() }) {
   const [draftRecords, openingRecords, exitingRecords] = await Promise.all([
-    state.listCarryPositionRecords({ status: "draft", limit: 500 }),
-    state.listCarryPositionRecords({ status: "opening", limit: 500 }),
-    state.listCarryPositionRecords({ status: "exiting", limit: 500 }),
+    listAllCarryPositionRecords({ state, status: "draft" }),
+    listAllCarryPositionRecords({ state, status: "opening" }),
+    listAllCarryPositionRecords({ state, status: "exiting" }),
   ]);
   const records = [...draftRecords, ...openingRecords, ...exitingRecords];
   const cutoff = new Date(nowMs).getTime();

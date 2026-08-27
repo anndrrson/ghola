@@ -24,6 +24,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   shadowSnapshot: "apps/private-agent-worker/src/execution/carry-shadow-snapshot.js",
   workerMandate: "apps/private-agent-worker/src/execution/carry-mandate.js",
   positions: "apps/private-agent-worker/src/execution/carry-positions.js",
+  recordScan: "apps/private-agent-worker/src/execution/carry-record-scan.js",
   executor: "apps/private-agent-worker/src/execution/carry-executor.js",
   privateExecution: "apps/private-agent-worker/src/execution/private-execution.js",
   adapterRegistryTest: "apps/private-agent-worker/test/carry-adapter-registry.test.js",
@@ -89,6 +90,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   lifecycleTest: "apps/private-agent-worker/test/carry-executor.test.js",
   workerMandateTest: "apps/private-agent-worker/test/carry-mandate.test.js",
   positionsTest: "apps/private-agent-worker/test/carry-positions.test.js",
+  recordScanTest: "apps/private-agent-worker/test/carry-record-scan.test.js",
   preflightTest: "apps/private-agent-worker/test/carry-preflight.test.js",
   fundingPersistenceTest: "apps/private-agent-worker/test/carry-funding-persistence.test.js",
   shadowQualificationTest: "apps/private-agent-worker/test/carry-shadow-qualification.test.js",
@@ -655,6 +657,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_EXECUTION_CONCURRENCY', "carry_execution_concurrency_compose_missing");
   requireText("executor", "mapConcurrentOrdered(tasks, concurrency", "carry_execution_bounded_concurrency_missing");
   requireText("lifecycleTest", "recovery work is bounded-concurrent and failure-isolated", "carry_execution_concurrency_test_missing");
+  requireText("recordScan", "before_updated_at", "carry_record_scan_cursor_missing");
+  requireText("positions", "listAllCarryPositionRecords", "carry_monitor_full_scan_missing");
+  requireText("executor", "listAllCarryPositionRecords", "carry_recovery_full_scan_missing");
+  requireText("recordScanTest", "beyond the 500-record storage page", "carry_record_scan_scale_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: "5000"', "carry_monitor_five_second_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS: "750"', "carry_market_data_skew_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS: "12"', "carry_index_basis_runtime_test_missing");

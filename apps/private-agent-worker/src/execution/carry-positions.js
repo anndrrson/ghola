@@ -16,6 +16,7 @@ import { hashMessage, recoverMessageAddress } from "viem";
 import { preflightCarryPair } from "./carry-preflight.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 import { hasExactCarryFlatReconciliation } from "./carry-reconciliation.js";
+import { listAllCarryPositionRecords } from "./carry-record-scan.js";
 
 const OWNER = /^[A-Za-z0-9:_-]{8,180}$/;
 
@@ -218,7 +219,7 @@ async function validateMigrationLineage({ state, ownerCommitment, position, oppo
     || parent.opportunity?.economic_equivalence_id !== opportunity?.economic_equivalence_id) {
     return denied("carry_migration_candidate_mismatch");
   }
-  const existing = await state.listCarryPositionRecords({ owner_commitment: ownerCommitment, limit: 500 });
+  const existing = await listAllCarryPositionRecords({ state, owner_commitment: ownerCommitment });
   if (existing.some((record) => record.position?.migration_parent_position_id === parentId
     && record.position?.position_id !== position.position_id)) {
     return denied("carry_migration_replacement_exists");
@@ -351,7 +352,7 @@ export async function compileStoredCarryPortfolioCapitalPlan({
   }
   const maxAge = boundedInteger(maxDataAgeMs, 250, 300_000, 30_000);
   const records = (await Promise.all(["active", "rebalancing", "exiting", "frozen"].map((status) =>
-    state.listCarryPositionRecords({ owner_commitment: ownerCommitment, status, limit: 500 })
+    listAllCarryPositionRecords({ state, owner_commitment: ownerCommitment, status })
   ))).flat();
   const unique = [...new Map(records.map((record) => [record.position?.position_id, record])).values()];
   const missingPositionIds = unique
@@ -395,7 +396,7 @@ export async function compileStoredCarryCollateralReview({
   }
   const maxAge = boundedInteger(maxDataAgeMs, 250, 300_000, 30_000);
   const records = (await Promise.all(["active", "rebalancing", "exiting", "frozen"].map((status) =>
-    state.listCarryPositionRecords({ owner_commitment: ownerCommitment, status, limit: 500 })
+    listAllCarryPositionRecords({ state, owner_commitment: ownerCommitment, status })
   ))).flat();
   const unique = [...new Map(records.map((record) => [record.position?.position_id, record])).values()];
   const positionPlans = unique
@@ -631,10 +632,7 @@ export async function compileStoredCarryPortfolioValueReport({
   now_ms: nowMs = Date.now(),
 }) {
   if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
-  const records = await state.listCarryPositionRecords({
-    owner_commitment: ownerCommitment,
-    limit: 500,
-  });
+  const records = await listAllCarryPositionRecords({ state, owner_commitment: ownerCommitment });
   const capital = await compileStoredCarryPortfolioCapitalPlan({
     state,
     owner_commitment: ownerCommitment,
@@ -675,7 +673,7 @@ export async function runCarryMonitoringTick({
   now_ms: nowMs = Date.now(),
 }) {
   const records = (await Promise.all(["active", "rebalancing"].map((status) =>
-    state.listCarryPositionRecords({ status, limit: 500 })
+    listAllCarryPositionRecords({ state, status })
   ))).flat();
   const concurrency = boundedInteger(env.PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY, 1, 32, 8);
   const results = await mapConcurrentOrdered(records, concurrency, async (record) => {
