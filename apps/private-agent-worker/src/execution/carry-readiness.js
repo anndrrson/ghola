@@ -100,6 +100,7 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
     if (venue.order_request_checked !== true) reasons.push(`carry_readiness_order_unchecked:${venueId}`);
     const verificationCommitments = Array.isArray(venue.verification_commitments) ? venue.verification_commitments : [];
     const workOrderCommitments = Array.isArray(venue.work_order_commitments) ? venue.work_order_commitments : [];
+    const accountStateCommitments = Array.isArray(venue.account_state_commitments) ? venue.account_state_commitments : [];
     if (verificationCommitments.length !== expectedVenues.length - 1
       || new Set(verificationCommitments).size !== verificationCommitments.length
       || !verificationCommitments.every(commitment)) {
@@ -109,6 +110,11 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
       || new Set(workOrderCommitments).size !== workOrderCommitments.length
       || !workOrderCommitments.every(commitment)) {
       reasons.push(`carry_readiness_work_order_missing:${venueId}`);
+    }
+    if (accountStateCommitments.length !== expectedVenues.length - 1
+      || new Set(accountStateCommitments).size !== accountStateCommitments.length
+      || !accountStateCommitments.every(commitment)) {
+      reasons.push(`carry_readiness_account_state_commitment_missing:${venueId}`);
     }
     if (!commitment(venue.account_commitment) || !commitment(venue.vault_commitment) || !commitment(venue.policy_commitment)) {
       reasons.push(`carry_readiness_access_unbound:${venueId}`);
@@ -157,8 +163,17 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
         || leg.order_request_checked !== true) {
         reasons.push(`carry_readiness_leg_unproven:${left}:${right}:${venueId}`);
       }
+      if (!validAccountStateEvidence(leg.account_state, {
+        venue_id: venueId,
+        account_commitment: leg.account_commitment,
+        verification_commitment: leg.verification_commitment,
+        checked_at_ms: checkedAt,
+      })) {
+        reasons.push(`carry_readiness_leg_account_state_invalid:${left}:${right}:${venueId}`);
+      }
       if (!venue?.verification_commitments?.includes(leg.verification_commitment)
-        || !venue?.work_order_commitments?.includes(leg.work_order_commitment)) {
+        || !venue?.work_order_commitments?.includes(leg.work_order_commitment)
+        || !venue?.account_state_commitments?.includes(leg.account_state?.account_state_commitment)) {
         reasons.push(`carry_readiness_leg_venue_binding_mismatch:${left}:${right}:${venueId}`);
       }
     }
@@ -175,6 +190,9 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
       const venueMinimum = nonnegativeInteger(account?.venue_minimum_margin_micro_usdc);
       const required = positiveInteger(account?.required_opening_collateral_micro_usdc);
       const shortfall = nonnegativeInteger(account?.opening_collateral_shortfall_micro_usdc);
+      const positionCount = nonnegativeInteger(account?.position_count);
+      const openOrderCount = nonnegativeInteger(account?.open_order_count);
+      const leg = legs.find((item) => item?.venue_id === venueId);
       const valid = typeof account?.authorized === "boolean"
         && typeof account?.flat_zero_orders === "boolean"
         && typeof account?.capital_ready === "boolean"
@@ -184,6 +202,12 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
         && venueMinimum !== null
         && required > 0
         && shortfall !== null
+        && positionCount !== null
+        && openOrderCount !== null
+        && account.flat_zero_orders === (positionCount === 0 && openOrderCount === 0)
+        && account.account_state_checked_at_ms === checkedAt
+        && commitment(account.account_state_commitment)
+        && account.account_state_commitment === leg?.account_state?.account_state_commitment
         && venueMinimum <= required
         && shortfall === Math.max(0, required - available)
         && account.capital_ready === (account.authorized && account.flat_zero_orders && shortfall === 0);
@@ -198,7 +222,7 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
   for (const venueId of expectedVenues) {
     const records = capitalByVenue.get(venueId) || [];
     if (records.length !== expectedVenues.length - 1
-      || records.some((record) => JSON.stringify(record) !== JSON.stringify(records[0]))) {
+      || records.some((record) => JSON.stringify(capitalConsistencyRecord(record)) !== JSON.stringify(capitalConsistencyRecord(records[0])))) {
       reasons.push(`carry_readiness_capital_inconsistent:${venueId}`);
     }
   }
@@ -248,6 +272,7 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
         order_request_checked: item.checks?.order_request_checked === true || item.checks?.order_request_built === true,
         verification_commitments: (Array.isArray(item.verification_commitments) ? item.verification_commitments : []).map(String),
         work_order_commitments: (Array.isArray(item.work_order_commitments) ? item.work_order_commitments : []).map(String),
+        account_state_commitments: (Array.isArray(item.account_state_commitments) ? item.account_state_commitments : []).map(String),
         account_commitment: String(item.account_commitment || ""),
         vault_commitment: String(access.vault_commitment || ""),
         policy_commitment: String(access.policy_commitment || ""),
@@ -266,6 +291,7 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
         account_commitment: String(leg?.account_commitment || ""),
         work_order_commitment: String(leg?.work_order_commitment || ""),
         verification_commitment: String(leg?.verification_commitment || ""),
+        account_state: accountStateRecord(leg?.account_state),
         transaction_broadcast: leg?.transaction_broadcast === false ? false : null,
         account_state_checked: leg?.account_state_checked === true,
         order_request_checked: leg?.order_request_checked === true,
@@ -283,6 +309,38 @@ function readinessKey({ owner_commitment: ownerCommitment, image_digest: imageDi
 function evidenceCommitment(evidence) {
   const { evidence_commitment: _ignored, ...material } = evidence || {};
   return `carry:readiness:evidence:${createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 40)}`;
+}
+
+export function carryAccountStateCommitment(value) {
+  const { account_state_commitment: _ignored, ...material } = accountStateRecord(value);
+  return `carry:account-state:${createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 40)}`;
+}
+
+function validAccountStateEvidence(value, expected) {
+  const positionCount = nonnegativeInteger(value?.position_count);
+  const openOrderCount = nonnegativeInteger(value?.open_order_count);
+  return value?.venue_id === expected.venue_id
+    && value?.account_commitment === expected.account_commitment
+    && value?.verification_commitment === expected.verification_commitment
+    && value?.checked_at_ms === expected.checked_at_ms
+    && positionCount !== null
+    && openOrderCount !== null
+    && value?.flat_zero_orders === (positionCount === 0 && openOrderCount === 0)
+    && commitment(value?.account_state_commitment)
+    && value.account_state_commitment === carryAccountStateCommitment(value);
+}
+
+function accountStateRecord(value) {
+  return {
+    venue_id: String(value?.venue_id || ""),
+    account_commitment: String(value?.account_commitment || ""),
+    verification_commitment: String(value?.verification_commitment || ""),
+    checked_at_ms: value?.checked_at_ms,
+    position_count: value?.position_count,
+    open_order_count: value?.open_order_count,
+    flat_zero_orders: value?.flat_zero_orders === true,
+    account_state_commitment: String(value?.account_state_commitment || ""),
+  };
 }
 
 function readinessResult(ready, reasons, extra = {}) {
@@ -316,6 +374,10 @@ function capitalRecord(value) {
     venue_id: String(value?.venue_id || ""),
     authorized: value?.authorized === true,
     flat_zero_orders: value?.flat_zero_orders === true,
+    position_count: value?.position_count,
+    open_order_count: value?.open_order_count,
+    account_state_checked_at_ms: value?.account_state_checked_at_ms,
+    account_state_commitment: String(value?.account_state_commitment || ""),
     capital_ready: value?.capital_ready === true,
     available_balance_micro_usdc: value?.available_balance_micro_usdc,
     venue_minimum_margin_micro_usdc: value?.venue_minimum_margin_micro_usdc,
@@ -324,6 +386,11 @@ function capitalRecord(value) {
     execution_leverage: value?.execution_leverage,
     owner_only_funding: value?.owner_only_funding === true,
   };
+}
+
+function capitalConsistencyRecord(value) {
+  const { account_state_commitment: _ignored, ...material } = value || {};
+  return material;
 }
 
 function positiveDecimal(value) {

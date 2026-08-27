@@ -3,6 +3,7 @@ import test from "node:test";
 import { CARRY_EXECUTION_VENUES, venueAdapterCapability } from "@ghola/execution-core";
 import {
   assessCarryExecutionReadiness,
+  carryAccountStateCommitment,
   readCarryExecutionReadiness,
   storeCarryExecutionReadiness,
 } from "../src/execution/carry-readiness.js";
@@ -39,6 +40,7 @@ function matrix(workOrderCommitment = request().work_order_commitment) {
     transaction_broadcast: false,
     work_order_commitments: [],
     verification_commitments: [],
+    account_state_commitments: [],
     checks: {
       transaction_broadcast: false,
       account_state_checked: true,
@@ -53,13 +55,25 @@ function matrix(workOrderCommitment = request().work_order_commitment) {
         const workOrderCommitment = `${pairWorkOrder}_${venueId}`;
         const verificationCommitment = `verification_commitment_${venueId}_${index + 1}`;
         const venue = venues.find((item) => item.venue_id === venueId);
+        const accountState = {
+          venue_id: venueId,
+          account_commitment: access(venueId).account_commitment,
+          verification_commitment: verificationCommitment,
+          checked_at_ms: NOW,
+          position_count: 0,
+          open_order_count: 0,
+          flat_zero_orders: true,
+        };
+        accountState.account_state_commitment = carryAccountStateCommitment(accountState);
         venue.work_order_commitments.push(workOrderCommitment);
         venue.verification_commitments.push(verificationCommitment);
+        venue.account_state_commitments.push(accountState.account_state_commitment);
         return {
           venue_id: venueId,
           account_commitment: access(venueId).account_commitment,
           work_order_commitment: workOrderCommitment,
           verification_commitment: verificationCommitment,
+          account_state: accountState,
           transaction_broadcast: false,
           account_state_checked: true,
           order_request_checked: true,
@@ -72,18 +86,25 @@ function matrix(workOrderCommitment = request().work_order_commitment) {
         no_submit_ready: true,
         capital_ready: true,
         transaction_broadcast: false,
-        account_readiness: [left, right].map((venueId) => ({
-          venue_id: venueId,
-          authorized: true,
-          flat_zero_orders: true,
-          capital_ready: true,
-          available_balance_micro_usdc: 11_000_000,
-          venue_minimum_margin_micro_usdc: 550_000,
-          required_opening_collateral_micro_usdc: 11_000_000,
-          opening_collateral_shortfall_micro_usdc: 0,
-          execution_leverage: 1,
-          owner_only_funding: true,
-        })),
+        account_readiness: [left, right].map((venueId) => {
+          const state = legEvidence.find((item) => item.venue_id === venueId).account_state;
+          return {
+            venue_id: venueId,
+            authorized: true,
+            flat_zero_orders: true,
+            position_count: 0,
+            open_order_count: 0,
+            account_state_checked_at_ms: NOW,
+            account_state_commitment: state.account_state_commitment,
+            capital_ready: true,
+            available_balance_micro_usdc: 11_000_000,
+            venue_minimum_margin_micro_usdc: 550_000,
+            required_opening_collateral_micro_usdc: 11_000_000,
+            opening_collateral_shortfall_micro_usdc: 0,
+            execution_leverage: 1,
+            owner_only_funding: true,
+          };
+        }),
         leg_evidence: legEvidence,
       };
     });
@@ -117,6 +138,12 @@ test("persists deployment-, owner-, account-, and registry-bound three-venue rea
   assert.ok(read.evidence_commitment.startsWith("carry:readiness:evidence:"));
   assert.equal(read.capital_ready, true);
   assert.equal(read.capital_plan.length, CARRY_EXECUTION_VENUES.length);
+  assert.equal(read.capital_plan.every((item) =>
+    item.position_count === 0
+    && item.open_order_count === 0
+    && item.account_state_checked_at_ms === NOW
+    && item.account_state_commitment.startsWith("carry:account-state:")
+  ), true);
 });
 
 test("preserves independent route readiness across assets and parameters", async () => {
@@ -231,7 +258,10 @@ test("binds every pair to both exact no-submit leg receipts", async () => {
     (value) => { value.pairs[0].leg_evidence.pop(); },
     (value) => { value.pairs[0].leg_evidence[0].work_order_commitment = "wrong_work_order_0001"; },
     (value) => { value.pairs[0].leg_evidence[0].verification_commitment = "wrong_verification_0001"; },
+    (value) => { value.pairs[0].leg_evidence[0].account_state.open_order_count = 1; },
+    (value) => { value.pairs[0].account_readiness[0].position_count = 1; },
     (value) => { value.venues[0].verification_commitments[1] = value.venues[0].verification_commitments[0]; },
+    (value) => { value.venues[0].account_state_commitments.pop(); },
   ]) {
     const candidate = matrix();
     mutate(candidate);

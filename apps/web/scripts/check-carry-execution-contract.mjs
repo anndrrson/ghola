@@ -222,6 +222,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("readinessTest", "requires every unique venue pair before three-venue readiness passes", "carry_all_pair_readiness_test_missing");
   requireText("readiness", "carry_readiness_leg_venue_binding_mismatch", "carry_pair_leg_receipt_binding_missing");
   requireText("readinessTest", "binds every pair to both exact no-submit leg receipts", "carry_pair_leg_receipt_binding_test_missing");
+  requireText("readiness", "carryAccountStateCommitment", "carry_no_submit_account_state_commitment_missing");
+  requireText("readiness", "carry_readiness_leg_account_state_invalid", "carry_no_submit_account_state_validation_missing");
+  requireText("preflight", "account_state_commitments", "carry_no_submit_account_state_propagation_missing");
+  requireText("readinessTest", "item.position_count === 0", "carry_no_submit_exact_flat_counts_test_missing");
   requireText("readiness", "notionalUsd, horizonDays", "carry_readiness_route_key_missing");
   requireText("readinessTest", "preserves independent route readiness across assets and parameters", "carry_readiness_route_isolation_test_missing");
   requireText("preflight", "const noSubmitReady = connectionReady && (!monitoring || monitoringReady);", "carry_capital_free_no_submit_missing");

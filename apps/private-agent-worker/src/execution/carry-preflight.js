@@ -12,7 +12,10 @@ import {
 } from "@ghola/execution-core";
 import { fetchPerpShadowVenue } from "./perp-shadow-adapters.js";
 import { readCarryVenueQualification } from "./carry-qualification.js";
-import { storeCarryExecutionReadiness } from "./carry-readiness.js";
+import {
+  carryAccountStateCommitment,
+  storeCarryExecutionReadiness,
+} from "./carry-readiness.js";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -124,6 +127,7 @@ export async function preflightCarryPair({
       receipt,
       account,
       account_snapshot: accountSnapshot,
+      account_checked_at_ms: observedAt,
       account_commitment: access.account_commitment,
     };
   }));
@@ -195,6 +199,8 @@ export async function preflightCarryPair({
     long_margin_runway_ms: modeled.margin_runways[0]?.runway_ms ?? 0,
     short_margin_runway_ms: modeled.margin_runways[1]?.runway_ms ?? 0,
   };
+  const accountReadiness = modeled.account_readiness.map((account, index) =>
+    bindAccountStateEvidence(account, evidence[index]));
   return {
     version: 1,
     mode: phase === "monitoring"
@@ -211,9 +217,13 @@ export async function preflightCarryPair({
     collateral_basis: modeled.collateral_basis,
     contract_pair_basis: modeled.opportunity.contract_pair_basis,
     margin_runways: modeled.margin_runways,
-    account_readiness: modeled.account_readiness,
+    account_readiness: accountReadiness,
     opening_capital_plan: modeled.opening_capital_plan,
-    evidence: evidence.map((leg) => publicEvidence(leg, qualificationByVenue.get(leg.venue_id))),
+    evidence: evidence.map((leg, index) => publicEvidence(
+      leg,
+      qualificationByVenue.get(leg.venue_id),
+      accountReadiness[index],
+    )),
     live_creation_ready: liveCreationReady,
     qualification_pilot_ready: qualificationPilotReady,
     qualification_pilot_candidate_venue_id: pilotCandidate,
@@ -257,6 +267,7 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
       if (!validCommitment(item.work_order_commitment)) failures.push(`venue_work_order_unbound:${venueId}`);
       if (!validCommitment(item.verification_commitment)) failures.push(`venue_verification_unbound:${venueId}`);
       if (item.account_commitment !== body.venue_access?.[venueId]?.account_commitment) failures.push(`venue_account_binding_mismatch:${venueId}`);
+      if (!validAccountStateEvidence(item.account_state, item)) failures.push(`venue_account_state_unbound:${venueId}`);
     }
     const first = items[0] || { venue_id: venueId };
     return {
@@ -264,6 +275,7 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
       venue_id: venueId,
       work_order_commitments: items.map((item) => item.work_order_commitment),
       verification_commitments: items.map((item) => item.verification_commitment),
+      account_state_commitments: items.map((item) => item.account_state?.account_state_commitment),
       transaction_broadcast: items.length === venues.length - 1
         && items.every((item) => item.transaction_broadcast === false && item.checks?.transaction_broadcast === false)
         ? false
@@ -300,6 +312,7 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
         account_commitment: item.account_commitment,
         work_order_commitment: item.work_order_commitment,
         verification_commitment: item.verification_commitment,
+        account_state: item.account_state,
         transaction_broadcast: item.transaction_broadcast === false && item.checks?.transaction_broadcast === false ? false : null,
         account_state_checked: item.checks?.account_state_checked === true,
         order_request_checked: item.checks?.order_request_built === true || item.checks?.order_request_checked === true,
@@ -330,6 +343,21 @@ function allVenuePairs(venues) {
 
 function validCommitment(value) {
   return typeof value === "string" && /^[A-Za-z0-9:_-]{8,180}$/.test(value);
+}
+
+function validAccountStateEvidence(value, receipt) {
+  return value?.venue_id === receipt?.venue_id
+    && value?.account_commitment === receipt?.account_commitment
+    && value?.verification_commitment === receipt?.verification_commitment
+    && Number.isSafeInteger(value?.checked_at_ms)
+    && value.checked_at_ms > 0
+    && Number.isSafeInteger(value?.position_count)
+    && value.position_count >= 0
+    && Number.isSafeInteger(value?.open_order_count)
+    && value.open_order_count >= 0
+    && value.flat_zero_orders === (value.position_count === 0 && value.open_order_count === 0)
+    && validCommitment(value?.account_state_commitment)
+    && value.account_state_commitment === carryAccountStateCommitment(value);
 }
 
 function acceptableAuthorityBoundary(boundary) {
@@ -720,7 +748,34 @@ function executionFromAccess(access) {
   };
 }
 
-function publicEvidence(leg, qualification) {
+function bindAccountStateEvidence(account, leg) {
+  const evidence = {
+    venue_id: leg.venue_id,
+    account_commitment: leg.account_commitment,
+    verification_commitment: leg.receipt.verification_commitment,
+    checked_at_ms: leg.account_checked_at_ms,
+    position_count: account.position_count,
+    open_order_count: account.open_order_count,
+    flat_zero_orders: account.flat_zero_orders,
+  };
+  return {
+    ...account,
+    account_state_checked_at_ms: evidence.checked_at_ms,
+    account_state_commitment: carryAccountStateCommitment(evidence),
+  };
+}
+
+function publicEvidence(leg, qualification, accountReadiness) {
+  const accountState = {
+    venue_id: leg.venue_id,
+    account_commitment: leg.account_commitment,
+    verification_commitment: leg.receipt.verification_commitment,
+    checked_at_ms: accountReadiness.account_state_checked_at_ms,
+    position_count: accountReadiness.position_count,
+    open_order_count: accountReadiness.open_order_count,
+    flat_zero_orders: accountReadiness.flat_zero_orders,
+    account_state_commitment: accountReadiness.account_state_commitment,
+  };
   return {
     venue_id: leg.venue_id,
     side: leg.side,
@@ -728,6 +783,7 @@ function publicEvidence(leg, qualification) {
     work_order_commitment: leg.receipt.work_order_commitment,
     verification_commitment: leg.receipt.verification_commitment,
     account_commitment: leg.receipt.account_commitment,
+    account_state: accountState,
     order_shape: leg.receipt.order_shape,
     reference_mark_price_e8: leg.snapshot.mark_price_e8,
     reference_price_source: "verified_pre_submit_mark",

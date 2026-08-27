@@ -197,6 +197,19 @@ test("rejects a no-submit receipt that is not bound to the verified account", ()
   );
 });
 
+test("rejects three-venue readiness without receipt-bound exact account state", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      readiness: sources.readiness.replaceAll(
+        "carry_readiness_leg_account_state_invalid",
+        "carry_readiness_leg_account_state_ignored",
+      ),
+    }),
+    /carry_no_submit_account_state_validation_missing/,
+  );
+});
+
 test("rejects a three-venue check that can claim readiness without durable deployment-bound evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({
