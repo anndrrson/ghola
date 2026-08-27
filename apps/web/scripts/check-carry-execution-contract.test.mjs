@@ -164,6 +164,19 @@ test("rejects five-venue shadow evidence without exact sample commitments", () =
   );
 });
 
+test("rejects five-venue shadow qualification without liquidity-depth validation", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowVerifier: sources.shadowVerifier.replaceAll(
+        "liquidity_depth_missing",
+        "liquidity_depth_ignored",
+      ),
+    }),
+    /carry_shadow_liquidity_depth_gate_missing/,
+  );
+});
+
 test("rejects release without a joined three-venue no-submit matrix", () => {
   assert.throws(
     () => checkCarryExecutionContract({

@@ -255,6 +255,13 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
   if (!(snapshot.best_bid_e8 > 0) || !(snapshot.best_ask_e8 > snapshot.best_bid_e8)) {
     failures.push(`orderbook_bbo_invalid:${prefix}`);
   }
+  verifyDepthLadder(snapshot.depth_bids, { prefix, side: "bid", failures });
+  verifyDepthLadder(snapshot.depth_asks, { prefix, side: "ask", failures });
+  if (Array.isArray(snapshot.depth_bids) && snapshot.depth_bids.length > 0
+    && Array.isArray(snapshot.depth_asks) && snapshot.depth_asks.length > 0
+    && snapshot.depth_bids[0]?.price_e8 >= snapshot.depth_asks[0]?.price_e8) {
+    failures.push(`liquidity_depth_crossed:${prefix}`);
+  }
   if (!(snapshot.funding_interval_ms > 0) || snapshot.funding_interval_ms > 24 * 60 * 60 * 1_000) {
     failures.push(`funding_interval_invalid:${prefix}`);
   }
@@ -271,5 +278,26 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
   for (const field of Array.isArray(snapshot.missing_fields) ? snapshot.missing_fields : []) {
     const requiredFlag = MISSING_FIELD_EVIDENCE[field];
     if (!requiredFlag || !flags.has(requiredFlag)) failures.push(`missing_field_unjustified:${prefix}:${field}`);
+  }
+}
+
+function verifyDepthLadder(levels, { prefix, side, failures }) {
+  if (!Array.isArray(levels) || levels.length === 0) {
+    failures.push(`liquidity_depth_missing:${prefix}:${side}`);
+    return;
+  }
+  let previousPrice = null;
+  for (const level of levels) {
+    const price = level?.price_e8;
+    const size = level?.size_e8;
+    if (!Number.isSafeInteger(price) || price <= 0 || !Number.isSafeInteger(size) || size <= 0) {
+      failures.push(`liquidity_depth_invalid:${prefix}:${side}`);
+      return;
+    }
+    if (previousPrice !== null && (side === "bid" ? price > previousPrice : price < previousPrice)) {
+      failures.push(`liquidity_depth_unsorted:${prefix}:${side}`);
+      return;
+    }
+    previousPrice = price;
   }
 }

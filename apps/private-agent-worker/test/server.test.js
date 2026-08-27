@@ -76,6 +76,8 @@ function shadowSnapshot(venueId, asset, observedAt) {
     index_price_e8: 10_000_000_000,
     best_bid_e8: 9_999_000_000,
     best_ask_e8: 10_001_000_000,
+    depth_bids: [{ price_e8: 9_999_000_000, size_e8: 100_000_000 }],
+    depth_asks: [{ price_e8: 10_001_000_000, size_e8: 100_000_000 }],
     funding_rate_e12_per_interval: 10_000,
     funding_interval_ms: 3_600_000,
     quantity_step_e8: 1_000,

@@ -190,12 +190,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifier", "snapshot_stale", "carry_shadow_freshness_gate_missing");
   requireText("shadowVerifier", "venue_duplicate", "carry_shadow_duplicate_venue_gate_missing");
   requireText("shadowVerifier", "reference_price_invalid", "carry_shadow_reference_price_gate_missing");
+  requireText("shadowVerifier", "liquidity_depth_missing", "carry_shadow_liquidity_depth_gate_missing");
   requireText("shadowVerifierTest", "accepts one fresh normalized shadow for every venue and core asset", "carry_shadow_complete_set_test_missing");
   requireText("shadowVerifierTest", "qualifies only consecutive complete five-venue shadow samples", "carry_shadow_soak_test_missing");
   requireText("shadowVerifierTest", "rejects tampered or reused shadow sample commitments", "carry_shadow_commitment_test_missing");
   requireText("shadowVerifierTest", "rejects a one-shot snapshot as durable shadow qualification", "carry_shadow_one_shot_rejection_test_missing");
   requireText("shadowVerifierTest", "rejects normalized gaps without explicit quality evidence", "carry_shadow_quality_evidence_test_missing");
   requireText("shadowVerifierTest", "rejects duplicate or unregistered venue rows", "carry_shadow_duplicate_venue_test_missing");
+  requireText("shadowVerifierTest", "rejects normalized shadow proof without valid two-sided liquidity depth", "carry_shadow_liquidity_depth_test_missing");
   requireText("preflight", "carry_shadow_unavailable", "stale_shadow_quarantine_missing");
   requireText("preflight", "carry_market_data_skew_exceeded", "carry_market_data_skew_gate_missing");
   requireText("preflightTest", "rejects cross-venue market data skew before account or order verification", "carry_market_data_skew_test_missing");

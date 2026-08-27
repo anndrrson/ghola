@@ -75,6 +75,22 @@ test("rejects crossed books, registry drift, and invalid margin evidence", () =>
   assert.ok(result.failures.includes("margin_evidence_invalid:hyperliquid:BTC"));
 });
 
+test("rejects normalized shadow proof without valid two-sided liquidity depth", () => {
+  const rows = fixture();
+  rows[0].snapshots[0].depth_bids = [];
+  rows[1].snapshots[0].depth_asks[0].size_e8 = 0;
+  rows[2].snapshots[0].depth_bids = [
+    { price_e8: 9_998_000_000, size_e8: 100_000_000 },
+    { price_e8: 9_999_000_000, size_e8: 100_000_000 },
+  ];
+  rows[3].snapshots[0].depth_bids[0].price_e8 = 10_002_000_000;
+  const result = verifyCarryShadowSet(rows, { now_ms: NOW });
+  assert.ok(result.failures.includes("liquidity_depth_missing:hyperliquid:BTC:bid"));
+  assert.ok(result.failures.includes("liquidity_depth_invalid:lighter:BTC:ask"));
+  assert.ok(result.failures.includes("liquidity_depth_unsorted:aster:BTC:bid"));
+  assert.ok(result.failures.includes("liquidity_depth_crossed:edgex:BTC"));
+});
+
 test("rejects duplicate or unregistered venue rows instead of silently overwriting them", () => {
   const rows = fixture();
   rows.push(structuredClone(rows[0]));
@@ -184,6 +200,8 @@ function snapshot(venueId, asset) {
     index_price_e8: 10_000_000_000,
     best_bid_e8: 9_999_000_000,
     best_ask_e8: 10_001_000_000,
+    depth_bids: [{ price_e8: 9_999_000_000, size_e8: 100_000_000 }],
+    depth_asks: [{ price_e8: 10_001_000_000, size_e8: 100_000_000 }],
     funding_rate_e12_per_interval: 10_000,
     funding_interval_ms: 3_600_000,
     quantity_step_e8: 1_000,
