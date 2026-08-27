@@ -1549,13 +1549,28 @@ export function startCarryExecutionLoop({ state, recipient, verifyOrder, execute
   let timer = null;
   let stopped = false;
   const startupAt = now();
-  const ready = auditCarryPositionsAfterRestart({ state, now_ms: startupAt })
-    .catch(() => ({ ok: false, error: "carry_restart_audit_threw" }));
+  let restartAuditComplete = false;
+  let activeRestartAudit = null;
+  const ensureRestartAudit = () => {
+    if (restartAuditComplete) return Promise.resolve({ ok: true, already_complete: true });
+    if (activeRestartAudit) return activeRestartAudit;
+    activeRestartAudit = auditCarryPositionsAfterRestart({ state, now_ms: startupAt })
+      .catch(() => ({ ok: false, error: "carry_restart_audit_threw" }))
+      .then((result) => {
+        if (result?.ok === true) restartAuditComplete = true;
+        return result;
+      })
+      .finally(() => {
+        activeRestartAudit = null;
+      });
+    return activeRestartAudit;
+  };
+  const ready = ensureRestartAudit();
   const supervisor = createCarryLoopSupervisor({
     name: "carry_execution",
     now,
     run: async () => {
-      const audit = await ready;
+      const audit = await ensureRestartAudit();
       if (audit?.ok !== true) return { ok: false, error: audit?.error || "carry_restart_audit_failed" };
       return runCarryExecutionTick({ state, recipient, verifyOrder, executeOrder, readFundingSettlements, preflight, env, now });
     },

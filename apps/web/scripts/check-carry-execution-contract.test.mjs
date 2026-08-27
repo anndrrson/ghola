@@ -46,6 +46,19 @@ test("rejects live Carry entry that ignores degraded supervision", () => {
   );
 });
 
+test("rejects an automatic-exit loop that never retries its failed restart audit", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      executor: sources.executor.replace(
+        "const audit = await ensureRestartAudit()",
+        "const audit = await ready",
+      ),
+    }),
+    /carry_restart_audit_retry_missing/,
+  );
+});
+
 test("rejects carry entry without durable adverse funding evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({

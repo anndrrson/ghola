@@ -669,6 +669,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("loopSupervisor", "consecutive_failures", "carry_loop_health_state_missing");
   requireText("positions", "supervisor.runOnce", "carry_monitor_supervision_missing");
   requireText("executor", "supervisor.runOnce", "carry_execution_supervision_missing");
+  requireText("executor", "const audit = await ensureRestartAudit()", "carry_restart_audit_retry_missing");
+  requireText("lifecycleTest", "automatic exit retries a failed restart audit before any execution sweep", "carry_restart_audit_retry_test_missing");
   requireText("server", "carry_supervision: carrySupervision", "carry_supervision_health_missing");
   requireText("server", "carry_supervision_not_ready", "carry_entry_supervision_gate_missing");
   requireText("serverTest", "reports degraded Carry supervision without pretending the worker stopped", "carry_supervision_http_test_missing");

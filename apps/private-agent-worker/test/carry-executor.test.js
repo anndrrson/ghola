@@ -8,6 +8,7 @@ import {
   executeStoredCarryEntry,
   executeStoredCarryExit,
   runCarryExecutionTick,
+  startCarryExecutionLoop,
 } from "../src/execution/carry-executor.js";
 import { advanceStoredCarryPosition, createStoredCarryPosition, runCarryMonitoringTick } from "../src/execution/carry-positions.js";
 import { readCarryVenueQualification } from "../src/execution/carry-qualification.js";
@@ -17,6 +18,36 @@ import { signedCarryPositionInput } from "./carry-mandate-fixture.js";
 
 const NOW = 1_800_000_000_000;
 const OWNER = "owner:carry:executor:0001";
+
+test("automatic exit retries a failed restart audit before any execution sweep", async (t) => {
+  let storageReady = false;
+  let listCalls = 0;
+  const state = {
+    listCarryPositionRecords: async () => {
+      listCalls += 1;
+      if (!storageReady) throw new Error("transient storage outage");
+      return [];
+    },
+  };
+  const loop = startCarryExecutionLoop({
+    state,
+    env: {
+      PRIVATE_AGENT_CARRY_EXECUTION_SWEEP_MS: "60000",
+      PRIVATE_AGENT_CARRY_AUTO_EXIT_ENABLED: "true",
+    },
+    now: () => NOW,
+  });
+  t.after(() => loop.stop());
+
+  const firstAudit = await loop.ready;
+  assert.equal(firstAudit.ok, false);
+  storageReady = true;
+  const recovered = await loop.runNow();
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.checked, 0);
+  assert.equal(loop.health().status, "healthy");
+  assert.ok(listCalls >= 9);
+});
 
 test("executes and reconciles a qualified protected perp pair", async (t) => {
   const fixture = await setup(t, "success");
