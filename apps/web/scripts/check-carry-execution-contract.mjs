@@ -174,11 +174,17 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarryTest", "selects only the best fresh route inside the signed venue allowlist", "carry_migration_selection_test_missing");
   requireText("coreCarryTest", "fails closed for unsigned, stale, or unqualified destinations", "carry_migration_failure_test_missing");
   requireText("coreCarryTest", "closes the old route first and persists an owner-signature request", "carry_migration_flat_transition_test_missing");
+  requireText("coreCarry", "migration_parent_position_id", "carry_migration_signed_lineage_missing");
+  requireText("coreCarryTest", "cryptographically bound to its migration parent and candidate", "carry_migration_signed_lineage_test_missing");
   requireText("preflight", "paired_migration_no_submit", "carry_migration_no_submit_mode_missing");
   requireText("preflightTest", "migration preflight applies signed opening limits and never broadcasts", "carry_migration_preflight_test_missing");
   requireText("positions", "migration_candidates: migrationCandidates", "carry_monitor_migration_candidates_missing");
   requireText("positions", "Promise.allSettled", "carry_monitor_migration_single_attempt_missing");
   requireText("positionsTest", "proposes the best no-submit route only after the exit threshold", "carry_monitor_migration_test_missing");
+  requireText("positions", "carry_migration_parent_not_flat", "carry_migration_flat_parent_gate_missing");
+  requireText("positions", "carry_migration_candidate_mismatch", "carry_migration_selected_route_gate_missing");
+  requireText("positions", "carry_migration_replacement_exists", "carry_migration_duplicate_replacement_gate_missing");
+  requireText("positionsTest", "creates an owner-signed migration replacement only from the selected flat parent", "carry_migration_replacement_test_missing");
   requireText("server", "outside the signed migration allowlist", "carry_monitor_migration_allowlist_gate_missing");
   requireText("webRoute", "migration_venue_allowlist", "carry_web_migration_access_missing");
   requireText("coreCarry", "carry_mandate_position_mismatch", "carry_signed_mandate_position_binding_missing");
@@ -195,6 +201,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "signCarryRiskMandate", "carry_terminal_owner_approval_missing");
   requireText("webCarryBuilder", 'label="SOURCE SYNC"', "carry_terminal_source_sync_missing");
   requireText("webCarryBuilder", 'label="INDEX BASIS"', "carry_terminal_index_basis_missing");
+  requireText("webMandate", "defaultCarryRiskMandate", "carry_default_migration_mandate_missing");
+  requireText("webMandate", "allow_migration: true", "carry_default_migration_disabled");
+  requireText("webCarryBuilder", "SIGN MIGRATION", "carry_terminal_migration_signing_missing");
+  requireText("webCarryBuilderTest", "binds a replacement signature to the selected flat migration parent", "carry_terminal_migration_lineage_test_missing");
   requireText("webMandate", "recoverMessageAddress", "carry_web_signature_recovery_missing");
   requireText("webMandateTest", "rejects wrong-owner, expired, and cross-position replay", "carry_signed_mandate_replay_test_missing");
   requireText("workerMandateTest", "worker rejects mandate mutation, owner replay, and expiry", "carry_worker_mandate_tamper_test_missing");

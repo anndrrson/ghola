@@ -28,6 +28,13 @@ export async function createStoredCarryPosition({
     now_ms: nowMs,
   });
   if (!mandate.ok) return mandate;
+  const lineage = await validateMigrationLineage({
+    state,
+    ownerCommitment,
+    position: mandate.position,
+    opportunity,
+  });
+  if (!lineage.ok) return lineage;
   const normalizedPilot = normalizeQualificationPilot({ qualificationPilot, positionInput, opportunity, env });
   if (!normalizedPilot.ok) return denied(normalizedPilot.error);
   const opportunityError = validateCreationOpportunity(positionInput, opportunity, nowMs, normalizedPilot.value);
@@ -154,6 +161,41 @@ function validateCreationOpportunity(positionInput, opportunity, nowMs, qualific
     || opportunity.projected_net_value_bps < positionInput?.risk_mandate?.min_expected_net_benefit_bps
     || opportunity.break_even_ms > opportunity.horizon_ms) return "carry_expected_value_insufficient";
   return null;
+}
+
+async function validateMigrationLineage({ state, ownerCommitment, position, opportunity }) {
+  const parentId = position?.migration_parent_position_id;
+  const candidateId = position?.migration_candidate_id;
+  if (!parentId && !candidateId) return { ok: true };
+  if (!parentId || !candidateId || parentId === position.position_id) {
+    return denied("carry_migration_lineage_invalid");
+  }
+  const parent = await state.getCarryPositionRecord(parentId);
+  if (!parent || parent.owner_commitment !== ownerCommitment) return denied("carry_migration_parent_not_found");
+  const pending = parent.position?.pending_migration;
+  const selected = pending?.selected_candidate;
+  const finalState = parent.final_reconciliation_evidence;
+  if (parent.position?.status !== "reconciled"
+    || pending?.status !== "owner_signature_required"
+    || finalState?.gross_exposure_micro_usdc !== 0
+    || finalState?.open_order_count !== 0
+    || finalState?.account_state_checked !== true) {
+    return denied("carry_migration_parent_not_flat");
+  }
+  if (selected?.candidate_id !== candidateId
+    || selected?.long_venue_id !== position.long_venue_id
+    || selected?.short_venue_id !== position.short_venue_id
+    || parent.position.asset !== position.asset
+    || parent.position.target_notional_micro_usdc !== position.target_notional_micro_usdc
+    || parent.opportunity?.economic_equivalence_id !== opportunity?.economic_equivalence_id) {
+    return denied("carry_migration_candidate_mismatch");
+  }
+  const existing = await state.listCarryPositionRecords({ owner_commitment: ownerCommitment, limit: 500 });
+  if (existing.some((record) => record.position?.migration_parent_position_id === parentId
+    && record.position?.position_id !== position.position_id)) {
+    return denied("carry_migration_replacement_exists");
+  }
+  return { ok: true };
 }
 
 function normalizeQualificationPilot({ qualificationPilot, positionInput, opportunity, env }) {

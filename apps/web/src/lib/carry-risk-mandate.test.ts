@@ -4,6 +4,7 @@ import { carryRiskMandateMessage } from "@ghola/execution-core";
 import {
   buildCarryRiskMandatePayload,
   carryRiskMandateAuthorization,
+  defaultCarryRiskMandate,
   verifyCarryRiskMandateAuthorization,
 } from "./carry-risk-mandate";
 
@@ -12,6 +13,14 @@ const OWNER_COMMITMENT = "owner:carry:test:0001";
 const NOW = 1_800_000_000_000;
 
 describe("Carry signed risk mandate", () => {
+  it("enables guarded migration across every execution-qualified venue", () => {
+    expect(defaultCarryRiskMandate()).toMatchObject({
+      min_migration_improvement_bps: 5,
+      migration_venue_allowlist: ["hyperliquid", "lighter", "aster"],
+      allow_migration: true,
+    });
+  });
+
   it("binds the authenticated owner, exact position, limits, and expiry", async () => {
     const position = positionInput("carry:position:signed:0001");
     const authorization = await signedAuthorization(position);
@@ -63,9 +72,36 @@ describe("Carry signed risk mandate", () => {
       now_ms: NOW,
     })).resolves.toMatchObject({ ok: false, error: "carry_mandate_position_mismatch" });
   });
+
+  it("cryptographically binds a migration replacement to its parent and selected route", async () => {
+    const position = {
+      ...positionInput("carry:position:signed:migration"),
+      migration_parent_position_id: "carry:position:signed:parent",
+      migration_candidate_id: "carry:migration:candidate:0001",
+    };
+    const authorization = await signedAuthorization(position);
+    await expect(verifyCarryRiskMandateAuthorization({
+      owner_commitment: OWNER_COMMITMENT,
+      position_input: position,
+      mandate_authorization: authorization,
+      now_ms: NOW,
+    })).resolves.toMatchObject({ ok: true });
+    await expect(verifyCarryRiskMandateAuthorization({
+      owner_commitment: OWNER_COMMITMENT,
+      position_input: {
+        ...position,
+        migration_candidate_id: "carry:migration:candidate:tampered",
+      },
+      mandate_authorization: authorization,
+      now_ms: NOW,
+    })).resolves.toMatchObject({ ok: false, error: "carry_mandate_position_mismatch" });
+  });
 });
 
-async function signedAuthorization(position: ReturnType<typeof positionInput>) {
+async function signedAuthorization(position: ReturnType<typeof positionInput> & {
+  migration_parent_position_id?: string;
+  migration_candidate_id?: string;
+}) {
   const payload = buildCarryRiskMandatePayload({
     network: "mainnet",
     owner_commitment: OWNER_COMMITMENT,
@@ -77,6 +113,10 @@ async function signedAuthorization(position: ReturnType<typeof positionInput>) {
     short_venue_id: position.short_venue_id,
     target_notional_micro_usdc: position.target_notional_micro_usdc,
     risk_mandate: position.risk_mandate,
+    ...(position.migration_parent_position_id ? {
+      migration_parent_position_id: position.migration_parent_position_id,
+      migration_candidate_id: position.migration_candidate_id,
+    } : {}),
     issued_at_ms: NOW - 1_000,
     expires_at_ms: NOW + 30 * 86_400_000,
   });

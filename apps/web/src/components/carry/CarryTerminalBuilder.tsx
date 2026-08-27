@@ -14,6 +14,7 @@ import {
 import {
   buildCarryRiskMandatePayload,
   carryRiskMandateAuthorization,
+  defaultCarryRiskMandate,
 } from "@/lib/carry-risk-mandate";
 import { builderModel, CARRY_VENUE_LABELS, type CarryCandidate } from "@/lib/carry-market";
 import {
@@ -30,13 +31,25 @@ type CarryRecord = {
     asset: string;
     long_venue_id: string;
     short_venue_id: string;
+    target_notional_micro_usdc: number;
     status: string;
     next_actions: string[];
     last_event_sequence: number;
+    migration_parent_position_id?: string;
+    migration_candidate_id?: string;
+    pending_migration?: {
+      status?: string;
+      selected_candidate?: {
+        candidate_id?: string;
+        long_venue_id?: string;
+        short_venue_id?: string;
+      };
+    };
   };
   final_reconciliation_evidence?: {
     gross_exposure_micro_usdc?: number;
     open_order_count?: number;
+    account_state_checked?: boolean;
   };
   latest_observation?: {
     expected_net_value_bps?: number;
@@ -111,7 +124,28 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     !["reconciled", "manual_intervention"].includes(record.position.status)) || null;
   const lastFlat = routeRecords.some((record) => record.position.status === "reconciled"
     && record.final_reconciliation_evidence?.gross_exposure_micro_usdc === 0
-    && record.final_reconciliation_evidence?.open_order_count === 0);
+    && record.final_reconciliation_evidence?.open_order_count === 0
+    && record.final_reconciliation_evidence?.account_state_checked === true);
+  const migrationSource = records.find((record) => {
+    const selected = record.position.pending_migration?.selected_candidate;
+    return record.position.status === "reconciled"
+      && record.final_reconciliation_evidence?.gross_exposure_micro_usdc === 0
+      && record.final_reconciliation_evidence?.open_order_count === 0
+      && record.final_reconciliation_evidence?.account_state_checked === true
+      && record.position.pending_migration?.status === "owner_signature_required"
+      && selected?.long_venue_id === candidate.long.venue_id
+      && selected?.short_venue_id === candidate.short.venue_id
+      && record.position.asset === candidate.asset;
+  }) || null;
+  const migrationNotional = migrationSource?.position.target_notional_micro_usdc;
+  useEffect(() => {
+    if (!Number.isSafeInteger(migrationNotional) || Number(migrationNotional) <= 0) return;
+    const exact = String(Number(migrationNotional) / 1_000_000);
+    if (notional !== exact) {
+      setNotional(exact);
+      setProof(null);
+    }
+  }, [migrationNotional, notional]);
   const latestObservation = current?.latest_observation || null;
   const runway = carryRunwaySummary(latestObservation, candidate);
   const proofOpportunity = proof ? asRecord(proof.creation_opportunity) : null;
@@ -182,18 +216,12 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     const id = crypto.randomUUID();
     const positionId = `carry:position:${id}`;
     const mandateId = `carry:mandate:${id}`;
-    const riskMandate = {
-      min_expected_net_benefit_bps: 5,
-      exit_net_value_bps: 0,
-      exit_after_consecutive_observations: 2,
-      min_margin_runway_ms: 6 * 3_600_000,
-      max_hedge_error_micro_usdc: 10_000,
-      max_data_age_ms: 60_000,
-      max_contract_data_skew_ms: 2_000,
-      max_index_price_divergence_bps: 25,
-      max_mark_price_divergence_bps: 50,
-      allow_migration: false,
-    };
+    const riskMandate = defaultCarryRiskMandate();
+    const migrationCandidateId = migrationSource?.position.pending_migration?.selected_candidate?.candidate_id;
+    const migrationLineage = migrationSource && migrationCandidateId ? {
+      migration_parent_position_id: migrationSource.position.position_id,
+      migration_candidate_id: migrationCandidateId,
+    } : {};
     setBusy("save");
     setMessage(null);
     try {
@@ -218,6 +246,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         short_venue_id: candidate.short.venue_id,
         target_notional_micro_usdc: notionalMicro,
         risk_mandate: riskMandate,
+        ...migrationLineage,
         issued_at_ms: issuedAtMs,
         expires_at_ms: issuedAtMs + horizonDays * 86_400_000 + 3_600_000,
       });
@@ -232,13 +261,16 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
           short_venue_id: candidate.short.venue_id,
           target_notional_micro_usdc: notionalMicro,
           risk_mandate: riskMandate,
+          ...migrationLineage,
           mandate_authorization: carryRiskMandateAuthorization({ signed_mandate: signedMandate, signature }),
         },
         opportunity,
         ...(pilot ? { qualification_pilot: { enabled: true as const, candidate_venue_id: pilot } } : {}),
       }));
       if (result.ok !== true) throw new Error("carry_position_not_saved");
-      setMessage("OWNER-SIGNED · no order submitted; live paired entry requires the button below");
+      setMessage(migrationSource
+        ? "MIGRATION SIGNED · parent is flat; replacement entry still requires the button below"
+        : "OWNER-SIGNED · no order submitted; live paired entry requires the button below");
       await loadRecords();
     } catch {
       setMessage("NOT SAVED · refresh the route and rerun the no-submit check");
@@ -300,6 +332,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="MIN RUNWAY" value={runway.value} tone={runway.tone} />
         <Metric label="SOURCE SYNC" value={proofOpportunity ? formatSkew(proofOpportunity.contract_data_skew_ms) : "PENDING"} />
         <Metric label="INDEX BASIS" value={proofOpportunity ? formatBasis(proofOpportunity.index_price_divergence_bps) : "PENDING"} />
+        <Metric label="ROUTE GUARD" value={`${CARRY_EXECUTION_VENUES.length} VENUES · +5BP`} />
         <Metric label="MONITOR" value={monitorAge(latestObservation?.recorded_at_ms)} />
       </div>
 
@@ -307,7 +340,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <div className="grid grid-cols-2 gap-1.5">
           <label className="rounded border border-[#202a37] bg-[#070a0f] px-2 py-1 font-mono text-[9px] text-[#687589]">
             NOTIONAL / LEG
-            <span className="mt-0.5 flex items-center text-[11px] text-[#d7dde6]">$<input aria-label="Carry notional per leg" value={notional} onChange={(event) => invalidateProof(setNotional)(event.target.value)} inputMode="decimal" className="min-w-0 flex-1 bg-transparent pl-1 outline-none" /></span>
+            <span className="mt-0.5 flex items-center text-[11px] text-[#d7dde6]">$<input aria-label="Carry notional per leg" value={notional} readOnly={Boolean(migrationSource)} onChange={(event) => invalidateProof(setNotional)(event.target.value)} inputMode="decimal" className="min-w-0 flex-1 bg-transparent pl-1 outline-none" /></span>
           </label>
           <label className="rounded border border-[#202a37] bg-[#070a0f] px-2 py-1 font-mono text-[9px] text-[#687589]">
             HORIZON
@@ -327,7 +360,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
             </button>
           ) : !current && canSave ? (
             <button type="button" disabled={busy !== null} onClick={() => void savePosition()} className="rounded border border-[#31577a] bg-[#10243a] px-2 py-2 font-mono text-[10px] font-semibold text-[#b7ddff] disabled:opacity-40">
-              {busy === "save" ? "SAVING…" : proof?.qualification_pilot_ready === true ? "ARM CAPPED PROOF" : "SAVE POSITION"}
+              {busy === "save" ? "SAVING…" : migrationSource ? "SIGN MIGRATION" : proof?.qualification_pilot_ready === true ? "ARM CAPPED PROOF" : "SAVE POSITION"}
             </button>
           ) : canEnter && current ? (
             <button type="button" disabled={busy !== null} onClick={() => void enterPosition(current)} className="rounded border border-[#6b4d25] bg-[#24190b] px-2 py-2 font-mono text-[10px] font-semibold text-[#f0c879] disabled:opacity-40">
@@ -454,5 +487,10 @@ function isCarryRecord(value: Record<string, unknown>): value is Record<string, 
   const position = asRecord(value.position);
   return typeof position.position_id === "string"
     && typeof position.asset === "string"
+    && typeof position.long_venue_id === "string"
+    && typeof position.short_venue_id === "string"
+    && Number.isSafeInteger(position.target_notional_micro_usdc)
+    && typeof position.status === "string"
+    && Number.isSafeInteger(position.last_event_sequence)
     && Array.isArray(position.next_actions);
 }

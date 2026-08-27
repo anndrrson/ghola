@@ -14,6 +14,7 @@ import {
 import {
   buildCarryRiskMandatePayload,
   carryRiskMandateAuthorization,
+  defaultCarryRiskMandate,
 } from "@/lib/carry-risk-mandate";
 import { usePerpsTurnkey } from "@/lib/perps-turnkey-provider";
 import { CORE_PERP_VENUES, isCarryExecutionVenue, type CarryExecutionVenue } from "@/lib/carry-venues";
@@ -199,18 +200,7 @@ export function CarryWorkspace() {
     const positionId = `carry:position:${id}`;
     const mandateId = `carry:mandate:${id}`;
     const notionalMicro = Math.round(Math.max(0, Number(notional) || 0) * 1_000_000);
-    const riskMandate = {
-      min_expected_net_benefit_bps: 5,
-      exit_net_value_bps: 0,
-      exit_after_consecutive_observations: 2,
-      min_margin_runway_ms: 6 * 3_600_000,
-      max_hedge_error_micro_usdc: 10_000,
-      max_data_age_ms: 60_000,
-      max_contract_data_skew_ms: 2_000,
-      max_index_price_divergence_bps: 25,
-      max_mark_price_divergence_bps: 50,
-      allow_migration: false,
-    };
+    const riskMandate = defaultCarryRiskMandate();
     setPositionAction("Saving qualified Carry Position…");
     try {
       if (!perpsTurnkey.authenticated) throw new Error("carry_owner_auth_required");

@@ -106,6 +106,9 @@ describe("CarryTerminalBuilder", () => {
           max_contract_data_skew_ms: 2_000,
           max_index_price_divergence_bps: 25,
           max_mark_price_divergence_bps: 50,
+          min_migration_improvement_bps: 5,
+          migration_venue_allowlist: ["hyperliquid", "lighter", "aster"],
+          allow_migration: true,
         }),
         mandate_authorization: expect.objectContaining({ mandate_commitment: expect.stringMatching(/^0x[0-9a-f]{64}$/) }),
       }),
@@ -157,13 +160,68 @@ describe("CarryTerminalBuilder", () => {
       records: [{
         ...carryRecord(),
         position: { ...carryRecord().position, status: "reconciled" },
-        final_reconciliation_evidence: { gross_exposure_micro_usdc: 0, open_order_count: 0 },
+        final_reconciliation_evidence: {
+          gross_exposure_micro_usdc: 0,
+          open_order_count: 0,
+          account_state_checked: true,
+        },
       }],
     });
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     expect(container.textContent).toContain("LAST FLAT · 0 ORDERS");
     expect([...container.querySelectorAll("button")].some((button) =>
       button.textContent?.includes("NO-SUBMIT CHECK"))).toBe(true);
+  });
+
+  it("binds a replacement signature to the selected flat migration parent", async () => {
+    const parent = {
+      ...carryRecord(),
+      position: {
+        ...carryRecord().position,
+        position_id: "carry:position:parent",
+        long_venue_id: "aster",
+        short_venue_id: "hyperliquid",
+        status: "reconciled",
+        pending_migration: {
+          status: "owner_signature_required",
+          selected_candidate: {
+            candidate_id: "carry:migration:selected:0001",
+            long_venue_id: "hyperliquid",
+            short_venue_id: "lighter",
+          },
+        },
+      },
+      final_reconciliation_evidence: {
+        gross_exposure_micro_usdc: 0,
+        open_order_count: 0,
+        account_state_checked: true,
+      },
+    };
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [parent] });
+    api.preflightCarryPair.mockResolvedValue({
+      no_submit_ready: true,
+      live_creation_ready: true,
+      creation_opportunity: {
+        eligible: true,
+        contract_data_skew_ms: 100,
+        index_price_divergence_bps: 1,
+      },
+    });
+    api.createCarryPosition.mockResolvedValue({ ok: true, record: carryRecord() });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    await click("NO-SUBMIT CHECK");
+    expect(container.textContent).toContain("SIGN MIGRATION");
+    await click("SIGN MIGRATION");
+    expect(perps.signCarryRiskMandate).toHaveBeenCalledWith(expect.objectContaining({
+      migration_parent_position_id: "carry:position:parent",
+      migration_candidate_id: "carry:migration:selected:0001",
+    }));
+    expect(api.createCarryPosition).toHaveBeenCalledWith(expect.objectContaining({
+      position_input: expect.objectContaining({
+        migration_parent_position_id: "carry:position:parent",
+        migration_candidate_id: "carry:migration:selected:0001",
+      }),
+    }));
   });
 
   it("fails closed when the initial position sync is unavailable", async () => {
@@ -261,6 +319,7 @@ function carryRecord() {
       asset: "BTC",
       long_venue_id: "hyperliquid",
       short_venue_id: "lighter",
+      target_notional_micro_usdc: 11_000_000,
       status: "draft",
       next_actions: ["run_preflight"],
       last_event_sequence: 0,

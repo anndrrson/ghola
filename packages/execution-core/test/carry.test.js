@@ -118,6 +118,10 @@ function mandateAuthorization(input, overrides = {}) {
     short_venue_id: input.short_venue_id,
     target_notional_micro_usdc: input.target_notional_micro_usdc,
     risk_mandate: input.risk_mandate,
+    ...(input.migration_parent_position_id ? {
+      migration_parent_position_id: input.migration_parent_position_id,
+      migration_candidate_id: input.migration_candidate_id,
+    } : {}),
     issued_at_ms: NOW - 1_000,
     expires_at_ms: NOW + 30 * DAY,
     ...overrides,
@@ -449,6 +453,34 @@ test("legacy signed mandates remain verifiable without newly added contract-limi
   const normalized = normalizeCarryRiskMandatePayload(input);
   assert.equal(Object.hasOwn(normalized.risk_mandate, "max_contract_data_skew_ms"), false);
   assert.equal(carryRiskMandateMessage(input).includes("max_contract_data_skew_ms"), false);
+});
+
+test("a replacement Carry Position is cryptographically bound to its migration parent and candidate", () => {
+  const input = {
+    version: 1,
+    position_id: "carry:position:migration:replacement:0001",
+    mandate_id: "carry:mandate:migration:replacement:0001",
+    migration_parent_position_id: "carry:position:migration:0001",
+    migration_candidate_id: "carry:migration:aster:0001",
+    asset: "BTC",
+    long_venue_id: "aster",
+    short_venue_id: "lighter",
+    target_notional_micro_usdc: 10_000_000_000,
+    risk_mandate: migrationPosition().current.risk_mandate,
+  };
+  const authorization = mandateAuthorization(input);
+  const replacement = createCarryPosition({ ...input, mandate_authorization: authorization, now_ms: NOW });
+  assert.equal(replacement.migration_parent_position_id, input.migration_parent_position_id);
+  assert.equal(replacement.migration_candidate_id, input.migration_candidate_id);
+  assert.throws(
+    () => createCarryPosition({
+      ...input,
+      migration_candidate_id: "carry:migration:tampered:0001",
+      mandate_authorization: authorization,
+      now_ms: NOW,
+    }),
+    (error) => error?.code === "carry_mandate_position_mismatch",
+  );
 });
 
 test("two confirmed carry flips trigger a deterministic reduce-only exit", () => {

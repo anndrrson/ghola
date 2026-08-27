@@ -202,6 +202,36 @@ test("rejects monitoring that cannot compile signed no-submit migration candidat
   );
 });
 
+test("rejects a migration replacement without signed parent lineage", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replaceAll("migration_parent_position_id", "parent_position_reference"),
+    }),
+    /carry_migration_signed_lineage_missing/,
+  );
+});
+
+test("rejects migration replacement creation before the parent is flat", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll("carry_migration_parent_not_flat", "carry_migration_parent_ready"),
+    }),
+    /carry_migration_flat_parent_gate_missing/,
+  );
+});
+
+test("rejects a terminal that silently disables signed route migration", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webMandate: sources.webMandate.replaceAll("allow_migration: true", "allow_migration: false"),
+    }),
+    /carry_default_migration_disabled/,
+  );
+});
+
 test("rejects Carry creation without a recovered owner signature", () => {
   assert.throws(
     () => checkCarryExecutionContract({

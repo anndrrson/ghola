@@ -27,6 +27,10 @@ export async function signedCarryPositionInput(input, {
     short_venue_id: input.short_venue_id,
     target_notional_micro_usdc: input.target_notional_micro_usdc,
     risk_mandate: input.risk_mandate,
+    ...(input.migration_parent_position_id ? {
+      migration_parent_position_id: input.migration_parent_position_id,
+      migration_candidate_id: input.migration_candidate_id,
+    } : {}),
     issued_at_ms: nowMs - 1_000,
     expires_at_ms: expiresAtMs,
   });

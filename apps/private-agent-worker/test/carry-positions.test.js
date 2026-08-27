@@ -41,7 +41,7 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
       event,
       now_ms: NOW + event.sequence,
     });
-    assert.equal(advanced.ok, true);
+    assert.equal(advanced.ok, true, advanced.error);
     record = advanced.record;
   }
   assert.equal(record.position.status, "reconciled");
@@ -306,6 +306,111 @@ test("monitoring preserves signed migration venues and proposes the best no-subm
   assert.equal(phases.filter((phase) => phase === "migration").length, 5);
 });
 
+test("creates an owner-signed migration replacement only from the selected flat parent", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-migration-replacement-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const risk = {
+    allow_migration: true,
+    min_migration_improvement_bps: 1,
+    migration_venue_allowlist: ["hyperliquid", "lighter", "aster"],
+  };
+  let parent = await activePosition(state, "migration-parent", risk, monitoringContext(["hyperliquid", "lighter", "aster"]));
+  const candidate = {
+    candidate_id: "carry:migration:replacement:0001",
+    asset: "BTC",
+    economic_equivalence_id: "carry:BTC-usd-linear",
+    long_venue_id: "aster",
+    short_venue_id: "lighter",
+    expected_net_value_bps: 30,
+    transition_cost_bps: 3,
+    eligible: true,
+    no_submit_ready: true,
+    transaction_broadcast: false,
+    qualification_reasons: [],
+    checked_at_ms: NOW + 4,
+  };
+  for (const [sequence, candidates] of [[3, []], [4, [candidate]]]) {
+    const advanced = await advanceStoredCarryPosition({
+      state,
+      position_id: parent.position.position_id,
+      owner_commitment: OWNER,
+      event: event(sequence, "observation", {
+        ...monitoringOpportunity(NOW + sequence, -1),
+        as_of_ms: NOW + sequence,
+        expected_net_value_bps: -1,
+        migration_candidates: candidates,
+        margin_runway_ms_by_venue: { hyperliquid: 7_200_000, lighter: 7_200_000 },
+        margin_runway_status_by_venue: { hyperliquid: "healthy", lighter: "healthy" },
+        qualification_reasons: [],
+        transaction_broadcast: false,
+      }),
+      now_ms: NOW + sequence,
+    });
+    assert.equal(advanced.ok, true, advanced.error);
+    parent = advanced.record;
+  }
+  const reconciled = await advanceStoredCarryPosition({
+    state,
+    position_id: parent.position.position_id,
+    owner_commitment: OWNER,
+    event: event(5, "exit_reconciled", { gross_exposure_micro_usdc: 0, open_order_count: 0 }),
+    now_ms: NOW + 5,
+  });
+  assert.equal(reconciled.record.position.pending_migration.status, "owner_signature_required");
+  const finalizedParent = await state.putCarryPositionRecord({
+    ...reconciled.record,
+    final_reconciliation_evidence: {
+      account_state_checked: true,
+      gross_exposure_micro_usdc: 0,
+      open_order_count: 0,
+      checked_at_ms: NOW + 5,
+    },
+  }, { expected_version: reconciled.record.record_version });
+  assert.equal(finalizedParent.ok, true);
+
+  const replacementBase = {
+    version: 1,
+    position_id: "carry:position:migration-replacement:0001",
+    mandate_id: "carry:mandate:migration-replacement:0001",
+    migration_parent_position_id: parent.position.position_id,
+    migration_candidate_id: candidate.candidate_id,
+    asset: "BTC",
+    long_venue_id: "aster",
+    short_venue_id: "lighter",
+    target_notional_micro_usdc: 10_000_000,
+    risk_mandate: { ...parent.position.risk_mandate },
+  };
+  const replacement = await signedCarryPositionInput(replacementBase, { ownerCommitment: OWNER, nowMs: NOW + 6 });
+  const created = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: replacement,
+    opportunity: opportunity({ long_venue_id: "aster", short_venue_id: "lighter" }),
+    monitoring_context: monitoringContext(["aster", "lighter"]),
+    now_ms: NOW + 6,
+  });
+  assert.equal(created.ok, true);
+  assert.equal(created.record.position.migration_parent_position_id, parent.position.position_id);
+  assert.equal(created.record.position.migration_candidate_id, candidate.candidate_id);
+
+  const tamperedBase = {
+    ...replacementBase,
+    position_id: "carry:position:migration-replacement:tampered",
+    mandate_id: "carry:mandate:migration-replacement:tampered",
+    migration_candidate_id: "carry:migration:wrong:0001",
+  };
+  const tampered = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: await signedCarryPositionInput(tamperedBase, { ownerCommitment: OWNER, nowMs: NOW + 7 }),
+    opportunity: opportunity({ long_venue_id: "aster", short_venue_id: "lighter" }),
+    monitoring_context: monitoringContext(["aster", "lighter"]),
+    now_ms: NOW + 7,
+  });
+  assert.equal(tampered.error, "carry_migration_candidate_mismatch");
+});
+
 test("monitoring records a basis breach and immediately requests a reduce-only exit", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-basis-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -491,7 +596,7 @@ async function positionInput(suffix = "0001", riskOverrides = {}) {
   }, { ownerCommitment: OWNER, nowMs: NOW });
 }
 
-function opportunity() {
+function opportunity(overrides = {}) {
   return {
     version: 1,
     eligible: true,
@@ -524,6 +629,7 @@ function opportunity() {
     live_creation_ready: true,
     long_margin_runway_ms: 7_200_000,
     short_margin_runway_ms: 7_200_000,
+    ...overrides,
   };
 }
 

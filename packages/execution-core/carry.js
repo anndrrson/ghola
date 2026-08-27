@@ -416,13 +416,24 @@ export function createCarryPosition(value) {
   const mandate = normalizeCarryRiskMandate(raw.risk_mandate);
   const authorization = normalizeCarryRiskMandateAuthorization(raw.mandate_authorization);
   const signed = authorization.signed_mandate;
+  const migrationParentPositionId = raw.migration_parent_position_id === undefined
+    ? null
+    : identifier(raw.migration_parent_position_id, "carry_migration_parent_position_id");
+  const migrationCandidateId = raw.migration_candidate_id === undefined
+    ? null
+    : identifier(raw.migration_candidate_id, "carry_migration_candidate_id");
+  if ((migrationParentPositionId === null) !== (migrationCandidateId === null)) {
+    fail("carry_migration_lineage_incomplete");
+  }
   if (signed.position_id !== raw.position_id
     || signed.mandate_id !== raw.mandate_id
     || signed.asset !== normalized(raw.asset, ASSET, "carry_position_asset")
     || signed.long_venue_id !== longVenue
     || signed.short_venue_id !== shortVenue
     || signed.target_notional_micro_usdc !== raw.target_notional_micro_usdc
-    || JSON.stringify(signed.risk_mandate) !== JSON.stringify(mandate)) {
+    || JSON.stringify(signed.risk_mandate) !== JSON.stringify(mandate)
+    || (signed.migration_parent_position_id ?? null) !== migrationParentPositionId
+    || (signed.migration_candidate_id ?? null) !== migrationCandidateId) {
     fail("carry_mandate_position_mismatch");
   }
   if (signed.issued_at_ms > nowMs + 300_000) fail("carry_mandate_issued_in_future");
@@ -441,6 +452,10 @@ export function createCarryPosition(value) {
     status: "draft",
     risk_mandate: mandate,
     mandate_authorization: authorization,
+    ...(migrationParentPositionId ? {
+      migration_parent_position_id: migrationParentPositionId,
+      migration_candidate_id: migrationCandidateId,
+    } : {}),
     consecutive_exit_observations: 0,
     last_event_sequence: 0,
     processed_event_ids: [],
@@ -851,6 +866,15 @@ export function normalizeCarryRiskMandatePayload(value) {
   const longVenue = venue(raw.long_venue_id, "carry_signed_mandate_long_venue");
   const shortVenue = venue(raw.short_venue_id, "carry_signed_mandate_short_venue");
   if (longVenue === shortVenue) fail("carry_signed_mandate_distinct_venues");
+  const migrationParentPositionId = raw.migration_parent_position_id === undefined
+    ? null
+    : identifier(raw.migration_parent_position_id, "carry_signed_mandate_migration_parent");
+  const migrationCandidateId = raw.migration_candidate_id === undefined
+    ? null
+    : identifier(raw.migration_candidate_id, "carry_signed_mandate_migration_candidate");
+  if ((migrationParentPositionId === null) !== (migrationCandidateId === null)) {
+    fail("carry_signed_mandate_migration_lineage_incomplete");
+  }
   return deepFreeze({
     version: 1,
     kind: "ghola_carry_risk_mandate",
@@ -865,6 +889,10 @@ export function normalizeCarryRiskMandatePayload(value) {
     short_venue_id: shortVenue,
     target_notional_micro_usdc: positiveInteger(raw.target_notional_micro_usdc, "carry_signed_mandate_notional"),
     risk_mandate: normalizeCarryRiskMandate(raw.risk_mandate),
+    ...(migrationParentPositionId ? {
+      migration_parent_position_id: migrationParentPositionId,
+      migration_candidate_id: migrationCandidateId,
+    } : {}),
     issued_at_ms: issuedAtMs,
     expires_at_ms: expiresAtMs,
   });
