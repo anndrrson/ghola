@@ -25,6 +25,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   shadowSnapshot: "apps/private-agent-worker/src/execution/carry-shadow-snapshot.js",
   workerMandate: "apps/private-agent-worker/src/execution/carry-mandate.js",
   positions: "apps/private-agent-worker/src/execution/carry-positions.js",
+  transferProbe: "apps/private-agent-worker/src/execution/carry-transfer-probe.js",
   transferRoutes: "apps/private-agent-worker/src/execution/carry-transfer-routes.js",
   recordScan: "apps/private-agent-worker/src/execution/carry-record-scan.js",
   loopSupervisor: "apps/private-agent-worker/src/execution/carry-loop-supervisor.js",
@@ -93,6 +94,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   lifecycleTest: "apps/private-agent-worker/test/carry-executor.test.js",
   workerMandateTest: "apps/private-agent-worker/test/carry-mandate.test.js",
   positionsTest: "apps/private-agent-worker/test/carry-positions.test.js",
+  transferProbeTest: "apps/private-agent-worker/test/carry-transfer-probe.test.js",
   transferRoutesTest: "apps/private-agent-worker/test/carry-transfer-routes.test.js",
   recordScanTest: "apps/private-agent-worker/test/carry-record-scan.test.js",
   loopSupervisorTest: "apps/private-agent-worker/test/carry-loop-supervisor.test.js",
@@ -452,10 +454,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("transferRoutesTest", "rejects tampered, stale, and registry-mismatched transfer routes", "carry_transfer_route_failure_test_missing");
   requireText("transferRoutesTest", "keeps incomplete or missing route probes unavailable", "carry_transfer_route_probe_fail_closed_test_missing");
   requireText("transferRoutesTest", "requires explicit USDC-USDT conversion economics for Aster routes", "carry_transfer_route_conversion_test_missing");
+  requireText("transferProbe", "export function createCarryTransferRouteProbe", "carry_transfer_component_probe_missing");
+  requireText("transferProbe", "fee_upper_bound_verified", "carry_transfer_fee_bound_missing");
+  requireText("transferProbe", "Promise.all(reads)", "carry_transfer_component_parallelism_missing");
+  requireText("transferProbeTest", "prices USDC-USDT conversion as a bounded component of the route", "carry_transfer_component_conversion_test_missing");
+  requireText("transferProbeTest", "rejects components detached from the exact account state", "carry_transfer_component_binding_test_missing");
   requireText("positions", "loadCarryTransferRouteEvidence", "carry_transfer_routes_worker_binding_missing");
   requireText("positions", "export async function refreshStoredCarryTransferRoutes", "carry_transfer_route_supervised_refresh_missing");
   requireText("positions", "probe_transfer_route: probeTransferRoute", "carry_transfer_route_internal_probe_missing");
-  requireText("server", "probeTransferRoute: options.probeCarryTransferRoute", "carry_transfer_route_server_injection_missing");
+  requireText("server", "createCarryTransferRouteProbe", "carry_transfer_route_compiler_wiring_missing");
+  requireText("server", "probeTransferRoute: probeCarryTransferRoute", "carry_transfer_route_server_injection_missing");
   requireText("positions", 'transfer_route_evidence_status: routeEvidence.ok ? "verified" : "unavailable"', "carry_transfer_route_status_missing");
   requireText("positions", "carry_portfolio_capital_evidence_incomplete", "carry_portfolio_capital_incomplete_gate_missing");
   requireText("positionsTest", "compiles an owner-only portfolio capital plan from stored monitoring evidence", "carry_portfolio_capital_worker_test_missing");

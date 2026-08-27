@@ -43,6 +43,7 @@ import {
 import { executeStoredCarryEntry, startCarryExecutionLoop } from "./execution/carry-executor.js";
 import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-evidence.js";
 import { carrySupervisionHealth } from "./execution/carry-loop-supervisor.js";
+import { createCarryTransferRouteProbe } from "./execution/carry-transfer-probe.js";
 import {
   approveStoredCarryCollateralReview,
   compileStoredCarryCollateralReview,
@@ -2657,6 +2658,13 @@ export function createPrivateAgentWorkerServer(options = {}) {
     receiptSigner: options.krakenV2ReceiptSigner,
   });
   const fetchPerpShadowSet = options.fetchPerpShadowSet || fetchCorePerpShadowSet;
+  const probeCarryTransferRoute = options.probeCarryTransferRoute
+    || (options.carryTransferRouteReaders
+      ? createCarryTransferRouteProbe({
+          venue_route_readers: options.carryTransferRouteReaders,
+          read_conversion_quote: options.readCarryConversionQuote,
+        })
+      : undefined);
   const carryFundingObservationLoop = options.startCarryFundingObservationLoop === false
     ? null
     : startCarryFundingObservationLoop({ state, fetchPerpShadowSet });
@@ -2682,7 +2690,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         readHyperliquidSnapshot,
         readHyperliquidCarryMetrics,
         readFundingSettlements: readCarryFundingSettlements,
-        probeTransferRoute: options.probeCarryTransferRoute,
+        probeTransferRoute: probeCarryTransferRoute,
       });
   const carryExecutionLoop = options.carryExecutionLoop !== undefined
     ? options.carryExecutionLoop
