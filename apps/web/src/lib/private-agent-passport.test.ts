@@ -454,12 +454,13 @@ describe("agent passport venue linking", () => {
           "content-type": "application/json",
           origin: "https://ghola.test",
         },
-        body: JSON.stringify({ action: "readiness" }),
+        body: JSON.stringify({ action: "readiness", asset: "BTC", notional_usd: "11", horizon_days: "1" }),
       }));
       const readinessResult = await readinessResponse.json();
       expect(readinessResponse.status, JSON.stringify(readinessResult)).toBe(200);
       expect(readinessResult.ready).toBe(true);
       expect(readinessBodies).toHaveLength(1);
+      expect(readinessBodies[0]).toMatchObject({ asset: "BTC", notional_usd: "11", horizon_days: "1" });
       const readinessAccess = readinessBodies[0].venue_access as Record<string, Record<string, unknown>>;
       expect(Object.keys(readinessAccess).sort()).toEqual(["aster", "hyperliquid", "lighter"]);
       for (const venue of Object.keys(readinessAccess)) {

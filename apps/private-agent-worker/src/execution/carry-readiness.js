@@ -10,6 +10,9 @@ export async function storeCarryExecutionReadiness({ state, request, matrix, now
     evidence,
     owner_commitment: request?.owner_commitment,
     venue_access: request?.venue_access,
+    asset: request?.asset,
+    notional_usd: request?.notional_usd,
+    horizon_days: request?.horizon_days,
     now_ms: nowMs,
     env,
   });
@@ -21,13 +24,18 @@ export async function storeCarryExecutionReadiness({ state, request, matrix, now
     owner_commitment: evidence.owner_commitment,
     image_digest: evidence.image_digest,
     venue_ids: evidence.registry_venue_ids,
+    asset: evidence.asset,
+    notional_usd: evidence.notional_usd,
+    horizon_days: evidence.horizon_days,
   }), evidence);
   return { ok: true, readiness: assessed };
 }
 
-export async function readCarryExecutionReadiness({ state, owner_commitment: ownerCommitment, venue_access: venueAccess, now_ms: nowMs = Date.now(), env = process.env }) {
+export async function readCarryExecutionReadiness({ state, owner_commitment: ownerCommitment, venue_access: venueAccess, asset, notional_usd: notionalUsd, horizon_days: horizonDays, now_ms: nowMs = Date.now(), env = process.env }) {
   const imageDigest = runtimeCarryQualificationImageDigest(env);
   if (!imageDigest) return readinessResult(false, ["runtime_image_digest_missing"]);
+  const route = readinessRoute({ asset, notional_usd: notionalUsd, horizon_days: horizonDays });
+  if (!route) return readinessResult(false, ["carry_readiness_route_invalid"]);
   if (!venueAccess || typeof venueAccess !== "object" || Array.isArray(venueAccess)) {
     return readinessResult(false, ["carry_readiness_access_missing"]);
   }
@@ -36,17 +44,19 @@ export async function readCarryExecutionReadiness({ state, owner_commitment: own
     owner_commitment: ownerCommitment,
     image_digest: imageDigest,
     venue_ids: CARRY_EXECUTION_VENUES,
+    ...route,
   }));
   return assessCarryExecutionReadiness({
     evidence: stored?.receipt,
     owner_commitment: ownerCommitment,
     venue_access: venueAccess,
+    ...route,
     now_ms: nowMs,
     env,
   });
 }
 
-export function assessCarryExecutionReadiness({ evidence, owner_commitment: ownerCommitment, venue_access: venueAccess, now_ms: nowMs = Date.now(), env = process.env }) {
+export function assessCarryExecutionReadiness({ evidence, owner_commitment: ownerCommitment, venue_access: venueAccess, asset, notional_usd: notionalUsd, horizon_days: horizonDays, now_ms: nowMs = Date.now(), env = process.env }) {
   const reasons = [];
   const expectedImage = runtimeCarryQualificationImageDigest(env);
   const expectedVenues = [...CARRY_EXECUTION_VENUES];
@@ -57,8 +67,17 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
   if (!ownerCommitment || evidence.owner_commitment !== ownerCommitment) reasons.push("carry_readiness_owner_mismatch");
   if (evidence.operation_class !== "matrix_no_submit" || !commitment(evidence.work_order_commitment)) reasons.push("carry_readiness_request_unbound");
   if (evidence.network !== "mainnet") reasons.push("carry_readiness_network_invalid");
+  const expectedRoute = readinessRoute({
+    asset: asset ?? evidence.asset,
+    notional_usd: notionalUsd ?? evidence.notional_usd,
+    horizon_days: horizonDays ?? evidence.horizon_days,
+  });
+  if (!expectedRoute) reasons.push("carry_readiness_route_invalid");
   if (!/^[A-Z0-9]{2,16}$/.test(String(evidence.asset || ""))) reasons.push("carry_readiness_asset_invalid");
   if (!positiveDecimal(evidence.notional_usd) || !positiveDecimal(evidence.horizon_days)) reasons.push("carry_readiness_parameters_invalid");
+  if (expectedRoute && (evidence.asset !== expectedRoute.asset
+    || evidence.notional_usd !== expectedRoute.notional_usd
+    || evidence.horizon_days !== expectedRoute.horizon_days)) reasons.push("carry_readiness_route_mismatch");
   if (!expectedImage || evidence.image_digest !== expectedImage) reasons.push("carry_readiness_image_mismatch");
   if (!sameStrings(evidence.registry_venue_ids, expectedVenues)) reasons.push("carry_readiness_registry_mismatch");
   const checkedAt = positiveInteger(evidence.checked_at_ms);
@@ -169,8 +188,8 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
     operation_class: String(request?.operation_class || ""),
     work_order_commitment: String(request?.work_order_commitment || ""),
     asset: String(request?.asset || "").toUpperCase(),
-    notional_usd: String(request?.notional_usd || ""),
-    horizon_days: String(request?.horizon_days || ""),
+    notional_usd: canonicalDecimal(request?.notional_usd),
+    horizon_days: canonicalDecimal(request?.horizon_days),
     image_digest: runtimeCarryQualificationImageDigest(env),
     registry_venue_ids: registryVenueIds,
     checked_at_ms: nowMs,
@@ -211,8 +230,8 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
   return evidence;
 }
 
-function readinessKey({ owner_commitment: ownerCommitment, image_digest: imageDigest, venue_ids: venueIds }) {
-  return `carry:readiness:${createHash("sha256").update(JSON.stringify({ ownerCommitment, imageDigest, venueIds })).digest("hex").slice(0, 40)}`;
+function readinessKey({ owner_commitment: ownerCommitment, image_digest: imageDigest, venue_ids: venueIds, asset, notional_usd: notionalUsd, horizon_days: horizonDays }) {
+  return `carry:readiness:${createHash("sha256").update(JSON.stringify({ ownerCommitment, imageDigest, venueIds, asset, notionalUsd, horizonDays })).digest("hex").slice(0, 40)}`;
 }
 
 function evidenceCommitment(evidence) {
@@ -244,6 +263,22 @@ function positiveInteger(value) {
 
 function positiveDecimal(value) {
   return /^\d+(?:\.\d+)?$/.test(String(value || "")) && Number(value) > 0;
+}
+
+function canonicalDecimal(value) {
+  return positiveDecimal(value) ? String(Number(value)) : "";
+}
+
+function readinessRoute({ asset, notional_usd: notionalUsd, horizon_days: horizonDays }) {
+  const normalizedAsset = String(asset || "").toUpperCase();
+  const normalizedNotional = canonicalDecimal(notionalUsd);
+  const normalizedHorizon = canonicalDecimal(horizonDays);
+  if (!/^[A-Z0-9]{2,16}$/.test(normalizedAsset) || !normalizedNotional || !normalizedHorizon) return null;
+  return Object.freeze({
+    asset: normalizedAsset,
+    notional_usd: normalizedNotional,
+    horizon_days: normalizedHorizon,
+  });
 }
 
 function sameStrings(left, right) {

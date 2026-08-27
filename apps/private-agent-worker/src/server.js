@@ -1655,6 +1655,9 @@ function validateCarryReadinessRequest(body, recipient) {
   if (body?.operation_class !== "readiness_read") errors.push("carry readiness operation class is invalid");
   if (!isNonEmptyString(body?.owner_commitment)) errors.push("carry readiness owner commitment is required");
   if (!isNonEmptyString(body?.work_order_commitment)) errors.push("carry readiness work order commitment is required");
+  if (!/^[A-Z0-9._-]{1,16}$/.test(String(body?.asset || ""))) errors.push("carry readiness asset is invalid");
+  if (!(Number(body?.notional_usd) > 0) || Number(body?.notional_usd) > 1_000) errors.push("carry readiness notional is invalid");
+  if (!(Number(body?.horizon_days) >= 1) || Number(body?.horizon_days) > 365) errors.push("carry readiness horizon is invalid");
   for (const venueId of CARRY_EXECUTION_VENUES) {
     const access = body?.venue_access?.[venueId];
     if (!isObject(access) || access.status !== "ready") {
@@ -2817,6 +2820,9 @@ export function createPrivateAgentWorkerServer(options = {}) {
           state,
           owner_commitment: body.owner_commitment,
           venue_access: body.venue_access,
+          asset: body.asset,
+          notional_usd: body.notional_usd,
+          horizon_days: body.horizon_days,
         }));
       }
 

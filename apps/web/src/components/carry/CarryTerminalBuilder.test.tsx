@@ -147,6 +147,11 @@ describe("CarryTerminalBuilder", () => {
       creation_opportunity: { eligible: false, contract_data_skew_ms: 200, index_price_divergence_bps: 2 },
     });
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    expect(api.getCarryExecutionReadiness).toHaveBeenCalledWith({
+      asset: "BTC",
+      notional_usd: "11",
+      horizon_days: "30",
+    });
     expect(container.textContent).toContain("CHECK ROUTE · MATRIX READY");
     await click("CHECK ROUTE · MATRIX READY");
     expect(api.preflightCarryExecutionMatrix).not.toHaveBeenCalled();

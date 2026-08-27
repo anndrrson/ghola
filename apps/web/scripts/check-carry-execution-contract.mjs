@@ -178,6 +178,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("readinessTest", "requires every unique venue pair before three-venue readiness passes", "carry_all_pair_readiness_test_missing");
   requireText("readiness", "carry_readiness_leg_venue_binding_mismatch", "carry_pair_leg_receipt_binding_missing");
   requireText("readinessTest", "binds every pair to both exact no-submit leg receipts", "carry_pair_leg_receipt_binding_test_missing");
+  requireText("readiness", "notionalUsd, horizonDays", "carry_readiness_route_key_missing");
+  requireText("readinessTest", "preserves independent route readiness across assets and parameters", "carry_readiness_route_isolation_test_missing");
   requireText("preflight", "carry_account_owner_mismatch", "carry_preflight_owner_binding_missing");
   requireText("preflightTest", "rejects cross-owner sealed venue access before order verification", "carry_preflight_owner_binding_test_missing");
   requireText("coreCarry", "collateral_basis_risk_bps", "collateral_basis_stress_missing");
@@ -351,8 +353,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webClient", "qualification_pilot_confirmed", "web_confirmation_input_missing");
   requireText("webClient", "preflightCarryExecutionMatrix", "carry_three_venue_no_submit_client_missing");
   requireText("webClient", "getCarryExecutionReadiness", "carry_readiness_resume_client_missing");
+  requireText("webCarryBuilder", "asset: candidate.asset", "carry_readiness_route_client_binding_missing");
   requireText("webRoute", 'action === "preflight_matrix"', "carry_three_venue_no_submit_web_route_missing");
   requireText("webRoute", 'action === "readiness"', "carry_readiness_resume_web_route_missing");
+  requireText("webRoute", "horizon_days: input.horizon_days", "carry_readiness_route_web_binding_missing");
   requireText("webPage", "carry=open", "carry_chart_redirect_missing");
   requireText("webTradeWorkspace", "CarryChartStrip", "carry_chart_strip_missing");
   requireText("webTradeWorkspace", 'label="Funding / 1h"', "hyperliquid_funding_interval_label_incorrect");

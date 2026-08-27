@@ -19,7 +19,7 @@ function access(venueId) {
   };
 }
 
-function request() {
+function request(overrides = {}) {
   return {
     owner_commitment: OWNER,
     operation_class: "matrix_no_submit",
@@ -28,10 +28,11 @@ function request() {
     notional_usd: "11",
     horizon_days: "30",
     venue_access: Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [venueId, access(venueId)])),
+    ...overrides,
   };
 }
 
-function matrix() {
+function matrix(workOrderCommitment = request().work_order_commitment) {
   const venues = CARRY_EXECUTION_VENUES.map((venueId) => ({
     venue_id: venueId,
     transaction_broadcast: false,
@@ -46,7 +47,7 @@ function matrix() {
   const pairs = CARRY_EXECUTION_VENUES.flatMap((left, leftIndex) =>
     CARRY_EXECUTION_VENUES.slice(leftIndex + 1).map((right) => [left, right]))
     .map(([left, right], index) => {
-      const pairWorkOrder = `${request().work_order_commitment}_pair_${index + 1}`;
+      const pairWorkOrder = `${workOrderCommitment}_pair_${index + 1}`;
       const legEvidence = [left, right].map((venueId) => {
         const workOrderCommitment = `${pairWorkOrder}_${venueId}`;
         const verificationCommitment = `verification_commitment_${venueId}_${index + 1}`;
@@ -95,16 +96,57 @@ test("persists deployment-, owner-, account-, and registry-bound three-venue rea
   assert.deepEqual(stored.readiness.registry_venue_ids, [...CARRY_EXECUTION_VENUES]);
   assert.equal(state.rows.size, 1);
 
-  const read = await readCarryExecutionReadiness({ state, owner_commitment: OWNER, venue_access: request().venue_access, now_ms: NOW + 1_000, env: ENV });
+  const read = await readCarryExecutionReadiness({ state, owner_commitment: OWNER, venue_access: request().venue_access, asset: "BTC", notional_usd: "11", horizon_days: "30", now_ms: NOW + 1_000, env: ENV });
   assert.equal(read.ready, true);
   assert.equal(read.image_digest, ENV.PHALA_CVM_IMAGE_DIGEST);
   assert.ok(read.evidence_commitment.startsWith("carry:readiness:evidence:"));
 });
 
+test("preserves independent route readiness across assets and parameters", async () => {
+  const state = memoryState();
+  const btc = request();
+  const eth = request({
+    work_order_commitment: "carry_matrix_readiness_eth_0001",
+    asset: "ETH",
+    notional_usd: "25",
+    horizon_days: "7",
+  });
+  assert.equal((await storeCarryExecutionReadiness({ state, request: btc, matrix: matrix(btc.work_order_commitment), now_ms: NOW, env: ENV })).ok, true);
+  assert.equal((await storeCarryExecutionReadiness({ state, request: eth, matrix: matrix(eth.work_order_commitment), now_ms: NOW, env: ENV })).ok, true);
+  assert.equal(state.rows.size, 2);
+
+  const btcRead = await readCarryExecutionReadiness({
+    state,
+    owner_commitment: OWNER,
+    venue_access: btc.venue_access,
+    asset: btc.asset,
+    notional_usd: btc.notional_usd,
+    horizon_days: btc.horizon_days,
+    now_ms: NOW + 1_000,
+    env: ENV,
+  });
+  const ethRead = await readCarryExecutionReadiness({
+    state,
+    owner_commitment: OWNER,
+    venue_access: eth.venue_access,
+    asset: eth.asset,
+    notional_usd: eth.notional_usd,
+    horizon_days: eth.horizon_days,
+    now_ms: NOW + 1_000,
+    env: ENV,
+  });
+  assert.equal(btcRead.ready, true);
+  assert.equal(btcRead.asset, "BTC");
+  assert.equal(ethRead.ready, true);
+  assert.equal(ethRead.asset, "ETH");
+  assert.equal(ethRead.notional_usd, "25");
+  assert.equal(ethRead.horizon_days, "7");
+});
+
 test("rejects stale or tampered readiness instead of reusing transient UI state", async () => {
   const state = memoryState();
   await storeCarryExecutionReadiness({ state, request: request(), matrix: matrix(), now_ms: NOW, env: ENV });
-  const stale = await readCarryExecutionReadiness({ state, owner_commitment: OWNER, venue_access: request().venue_access, now_ms: NOW + 16 * 60_000, env: ENV });
+  const stale = await readCarryExecutionReadiness({ state, owner_commitment: OWNER, venue_access: request().venue_access, asset: "BTC", notional_usd: "11", horizon_days: "30", now_ms: NOW + 16 * 60_000, env: ENV });
   assert.equal(stale.ready, false);
   assert.ok(stale.reasons.includes("carry_readiness_stale"));
 
@@ -115,6 +157,18 @@ test("rejects stale or tampered readiness instead of reusing transient UI state"
   assert.equal(tampered.ready, false);
   assert.ok(tampered.reasons.includes("carry_readiness_adapter_mismatch:aster"));
   assert.ok(tampered.reasons.includes("carry_readiness_commitment_invalid"));
+
+  const wrongRoute = assessCarryExecutionReadiness({
+    evidence: [...state.rows.values()][0].receipt,
+    owner_commitment: OWNER,
+    asset: "ETH",
+    notional_usd: "11",
+    horizon_days: "30",
+    now_ms: NOW,
+    env: ENV,
+  });
+  assert.equal(wrongRoute.ready, false);
+  assert.ok(wrongRoute.reasons.includes("carry_readiness_route_mismatch"));
 });
 
 test("fails closed when durable state or a deployment digest is unavailable", async () => {
@@ -133,7 +187,7 @@ test("rejects readiness after any sealed venue binding rotates", async () => {
   await storeCarryExecutionReadiness({ state, request: original, matrix: matrix(), now_ms: NOW, env: ENV });
   const rotated = structuredClone(original.venue_access);
   rotated.lighter.vault_commitment = "vault_commitment_lighter_rotated";
-  const read = await readCarryExecutionReadiness({ state, owner_commitment: OWNER, venue_access: rotated, now_ms: NOW + 1_000, env: ENV });
+  const read = await readCarryExecutionReadiness({ state, owner_commitment: OWNER, venue_access: rotated, asset: "BTC", notional_usd: "11", horizon_days: "30", now_ms: NOW + 1_000, env: ENV });
   assert.equal(read.ready, false);
   assert.ok(read.reasons.includes("carry_readiness_access_rotated:lighter"));
 });

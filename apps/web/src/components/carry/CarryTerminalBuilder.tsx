@@ -155,7 +155,11 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   }, [routeKey]);
   useEffect(() => {
     let cancelled = false;
-    void getCarryExecutionReadiness()
+    void getCarryExecutionReadiness({
+      asset: candidate.asset,
+      notional_usd: notional,
+      horizon_days: days,
+    })
       .then((value) => {
         if (!cancelled) setReadiness(asRecord(value));
       })
@@ -163,7 +167,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         if (!cancelled) setReadiness(null);
       });
     return () => { cancelled = true; };
-  }, [routeKey]);
+  }, [candidate.asset, days, notional, routeKey]);
 
   const routeRecords = records.filter((record) => record.position.asset === candidate.asset
     && record.position.long_venue_id === candidate.long.venue_id

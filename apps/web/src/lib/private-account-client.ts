@@ -911,10 +911,14 @@ export async function preflightCarryExecutionMatrix(input: {
   });
 }
 
-export async function getCarryExecutionReadiness() {
+export async function getCarryExecutionReadiness(input: {
+  asset: string;
+  notional_usd: string;
+  horizon_days: string;
+}) {
   return privateAccountFetch("/v1/private-account/carry", {
     method: "POST",
-    body: JSON.stringify({ action: "readiness" }),
+    body: JSON.stringify({ action: "readiness", ...input }),
   });
 }
 

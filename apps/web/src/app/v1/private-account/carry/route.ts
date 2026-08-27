@@ -180,6 +180,9 @@ export async function POST(req: NextRequest) {
       owner_commitment: owner.owner_commitment,
       operation_class: "readiness_read",
       work_order_commitment: `carry_readiness_${randomUUID()}`,
+      asset: input.asset,
+      notional_usd: input.notional_usd,
+      horizon_days: input.horizon_days,
       venue_access: Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [
         venueId,
         workerVenueAccess(accesses[venueId], owner.owner_commitment),
