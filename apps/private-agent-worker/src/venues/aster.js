@@ -145,6 +145,9 @@ export async function readAsterAccountState({
     open_order_count: Array.isArray(openOrders) ? openOrders.length : 0,
     maker_fee_bps: rateToBps(commission?.makerCommissionRate),
     taker_fee_bps: rateToBps(commission?.takerCommissionRate),
+    fee_source: "aster_account_commission_rate",
+    fees_exact_for_account: true,
+    fees_conservative_upper_bound: false,
   };
 }
 

@@ -93,6 +93,9 @@ test("performs authenticated account and order-shape checks without submitting",
   assert.equal(result.status, "verified_ready");
   assert.equal(result.checks.transaction_broadcast, false);
   assert.equal(result.account.taker_fee_bps, 3.5);
+  assert.equal(result.account.fee_source, "aster_account_commission_rate");
+  assert.equal(result.account.fees_exact_for_account, true);
+  assert.equal(result.account.fees_conservative_upper_bound, false);
   assert.equal(result.authority_boundary.venue_native_trade_only, true);
   assert.equal(result.authority_boundary.withdrawal_request_permitted, false);
   assert.equal(calls.length, 6);

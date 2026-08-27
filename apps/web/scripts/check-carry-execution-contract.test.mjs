@@ -213,6 +213,19 @@ test("rejects executable Carry preflight that bypasses the shared shadow contrac
   );
 });
 
+test("rejects Carry qualification that accepts numeric fees without provenance", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll(
+        "trustedAccountFeeEvidence",
+        "trustNumericAccountFee",
+      ),
+    }),
+    /carry_account_fee_provenance_gate_missing/,
+  );
+});
+
 test("rejects release without a positive three-venue no-submit HTTP proof", () => {
   assert.throws(
     () => checkCarryExecutionContract({

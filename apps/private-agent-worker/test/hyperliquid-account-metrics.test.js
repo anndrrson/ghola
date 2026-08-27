@@ -34,6 +34,9 @@ test("loads exact Hyperliquid margin and account fee inputs for Carry", async ()
     maintenance_margin: 9.75,
     maker_fee_bps: 1.05,
     taker_fee_bps: 3.15,
+    fee_source: "hyperliquid_user_fees",
+    fees_exact_for_account: true,
+    fees_conservative_upper_bound: false,
   });
 });
 

@@ -202,9 +202,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifierTest", "rejects stale component feeds hidden behind a fresh aggregate timestamp", "carry_shadow_component_freshness_test_missing");
   requireText("preflight", "carry_shadow_unavailable", "stale_shadow_quarantine_missing");
   requireText("preflight", "verifyCarryShadowSnapshot", "carry_preflight_shared_shadow_contract_missing");
+  requireText("preflight", "trustedAccountFeeEvidence", "carry_account_fee_provenance_gate_missing");
   requireText("preflight", "carry_market_data_skew_exceeded", "carry_market_data_skew_gate_missing");
   requireText("preflightTest", "rejects cross-venue market data skew before account or order verification", "carry_market_data_skew_test_missing");
   requireText("preflightTest", "rejects missing margin evidence through the shared shadow contract before account verification", "carry_preflight_shared_shadow_contract_test_missing");
+  requireText("preflightTest", "rejects unlabeled numeric account fees from positive-net qualification", "carry_account_fee_provenance_test_missing");
   requireText("preflight", "carry_contract_equivalence_failed", "carry_contract_equivalence_gate_missing");
   requireText("preflightTest", "rejects same-ticker contract basis divergence before account or order verification", "carry_contract_equivalence_test_missing");
   requireText("preflightTest", "monitoring measures a signed basis breach without submitting or hiding it as unavailable", "carry_monitor_contract_basis_test_missing");

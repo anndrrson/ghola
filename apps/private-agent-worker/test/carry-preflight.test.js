@@ -108,6 +108,14 @@ function riskMandate() {
   };
 }
 
+function exactFeeEvidence() {
+  return {
+    fee_source: "test_account_fee_schedule",
+    fees_exact_for_account: true,
+    fees_conservative_upper_bound: false,
+  };
+}
+
 test("pairs authenticated no-submit evidence but blocks live creation until Aster recovery is proven", async () => {
   const verified = [];
   const account = {
@@ -118,6 +126,7 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
     maintenance_margin: 0,
     maker_fee_bps: 1.05,
     taker_fee_bps: 3.15,
+    ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
   };
@@ -219,6 +228,65 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
   assert.equal(result.economic_opportunity.projected_trading_cost_micro_usdc > 0, true);
 });
 
+test("rejects unlabeled numeric account fees from positive-net qualification", async () => {
+  const account = {
+    can_trade: true,
+    available_balance: 500,
+    margin_balance: 500,
+    initial_margin: 0,
+    maintenance_margin: 0,
+    maker_fee_bps: 1,
+    taker_fee_bps: 2,
+    position_count: 0,
+    open_order_count: 0,
+  };
+  const result = await preflightCarryPair({
+    body: {
+      version: 1,
+      owner_commitment: "owner_commitment_fee_provenance_0001",
+      work_order_commitment: "carry_pair_fee_provenance_0001",
+      asset: "BTC",
+      long_venue_id: "hyperliquid",
+      short_venue_id: "aster",
+      notional_usd: 100,
+      horizon_days: 30,
+      venue_access: {
+        hyperliquid: access("owner_commitment_fee_provenance_0001"),
+        aster: access("owner_commitment_fee_provenance_0001"),
+      },
+    },
+    recipient: {},
+    state: {},
+    now: () => NOW,
+    fetchVenue: async ({ venue_id }) => [snapshot(venue_id)],
+    verifyOrder: async ({ venue_id, work_order_commitment }) => ({
+      status: "verified_ready",
+      work_order_commitment,
+      account_commitment: access().account_commitment,
+      verification_commitment: `verification_${venue_id}`,
+      checks: { order_request_checked: true, transaction_broadcast: false },
+      order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
+      account,
+      authority_boundary: { venue_native_trade_only: true },
+    }),
+    readHyperliquidSnapshot: async () => ({
+      status: "ready_to_trade",
+      trading_enabled: true,
+      position_count: 0,
+      open_order_count: 0,
+    }),
+    readHyperliquidCarryMetrics: async () => account,
+  });
+
+  assert.equal(result.live_creation_ready, false);
+  assert.ok(result.qualification_reasons.includes("account_fee_tier_unverified:hyperliquid"));
+  assert.ok(result.qualification_reasons.includes("account_fee_tier_unverified:aster"));
+  assert.deepEqual(result.evidence.map((leg) => leg.fee_evidence), [
+    { source: null, exact_for_account: false, conservative_upper_bound: false },
+    { source: null, exact_for_account: false, conservative_upper_bound: false },
+  ]);
+});
+
 test("reports exact owner-funded opening shortfalls without granting transfer authority", () => {
   const account = {
     can_trade: true,
@@ -228,6 +296,7 @@ test("reports exact owner-funded opening shortfalls without granting transfer au
     maintenance_margin: 0,
     maker_fee_bps: 1,
     taker_fee_bps: 2,
+    ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
   };
@@ -325,6 +394,7 @@ test("prices entry and exit from notional-weighted depth without whole-bp roundi
     maintenance_margin: 0,
     maker_fee_bps: 0,
     taker_fee_bps: 0,
+    ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
   };
@@ -400,6 +470,7 @@ test("fails carry economics closed when displayed depth cannot fill the target n
     maintenance_margin: 0,
     maker_fee_bps: 0,
     taker_fee_bps: 0,
+    ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
   };
@@ -524,6 +595,7 @@ test("rejects no-submit evidence returned for a different sealed account", async
     maintenance_margin: 0,
     maker_fee_bps: 1,
     taker_fee_bps: 2,
+    ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
   };
@@ -573,6 +645,7 @@ test("monitoring measures a signed basis breach without submitting or hiding it 
     maintenance_margin: 0,
     maker_fee_bps: 1,
     taker_fee_bps: 2,
+    ...exactFeeEvidence(),
     position_count: 1,
     open_order_count: 0,
   };
@@ -633,6 +706,7 @@ test("migration preflight applies signed opening limits and never broadcasts", a
     maintenance_margin: 0,
     maker_fee_bps: 1,
     taker_fee_bps: 3,
+    ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
   };
@@ -712,6 +786,7 @@ test("accepts Lighter's owner-destination custody boundary and conservative fee 
     maintenance_margin: 0,
     maker_fee_bps: 0,
     taker_fee_bps: 0,
+    ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
   };
@@ -775,6 +850,7 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
     maintenance_margin: 0,
     maker_fee_bps: 0,
     taker_fee_bps: 1,
+    ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
   };
@@ -902,6 +978,7 @@ test("enables an economically eligible Aster pair only after deployment-bound qu
     maintenance_margin: 0,
     maker_fee_bps: 0,
     taker_fee_bps: 0,
+    ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
   };

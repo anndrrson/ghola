@@ -163,7 +163,7 @@ export async function preflightCarryPair({
       ...(!acceptableAuthorityBoundary(leg.receipt?.authority_boundary)
         ? [`credential_authority_boundary_unacceptable:${leg.venue_id}`]
         : []),
-      ...(leg.account?.fees_exact_for_account === false && leg.account?.fees_conservative_upper_bound !== true
+      ...(!trustedAccountFeeEvidence(leg.account)
         ? [`account_fee_tier_unverified:${leg.venue_id}`]
         : []),
     ];
@@ -369,6 +369,11 @@ function acceptableAuthorityBoundary(boundary) {
     boundary.secure_withdrawal_destination === "owner_l1_only" &&
     boundary.owner_wallet_key_present === false &&
     boundary.non_owner_fund_movement_possible === false;
+}
+
+function trustedAccountFeeEvidence(account) {
+  return typeof account?.fee_source === "string" && account.fee_source.length > 0
+    && (account.fees_exact_for_account === true || account.fees_conservative_upper_bound === true);
 }
 
 export function modelCarryPairPreflight({
@@ -798,6 +803,11 @@ function publicEvidence(leg, qualification, accountReadiness) {
       account_state_checked: leg.receipt?.checks?.account_state_checked === true || Boolean(leg.account),
     },
     authority_boundary: leg.receipt.authority_boundary || null,
+    fee_evidence: {
+      source: leg.account?.fee_source || null,
+      exact_for_account: leg.account?.fees_exact_for_account === true,
+      conservative_upper_bound: leg.account?.fees_conservative_upper_bound === true,
+    },
     qualification: qualification ? {
       proven: qualification.proven === true,
       source: qualification.source || null,

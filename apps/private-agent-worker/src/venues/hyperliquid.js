@@ -715,6 +715,9 @@ export async function readHyperliquidCarryAccountMetrics({
       maintenance_margin: 0,
       maker_fee_bps: 1.5,
       taker_fee_bps: 4.5,
+      fee_source: "dry_run_conservative_ceiling",
+      fees_exact_for_account: false,
+      fees_conservative_upper_bound: true,
     };
   }
   const [state, fees] = await Promise.all([
@@ -738,6 +741,9 @@ export async function readHyperliquidCarryAccountMetrics({
     maintenance_margin: decimalNumber(state?.crossMaintenanceMarginUsed),
     maker_fee_bps: decimalNumber(fees?.userAddRate) * 10_000,
     taker_fee_bps: decimalNumber(fees?.userCrossRate) * 10_000,
+    fee_source: "hyperliquid_user_fees",
+    fees_exact_for_account: true,
+    fees_conservative_upper_bound: false,
   };
 }
 

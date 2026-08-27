@@ -506,6 +506,9 @@ describe("private agent worker", () => {
       maintenance_margin: 0,
       maker_fee_bps: 0,
       taker_fee_bps: 1,
+      fee_source: "test_account_fee_schedule",
+      fees_exact_for_account: true,
+      fees_conservative_upper_bound: false,
       position_count: 0,
       open_order_count: 0,
     };
