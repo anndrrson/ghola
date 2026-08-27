@@ -1,4 +1,5 @@
 import {
+  carryCollateralReviewMessage,
   carryRiskMandateMessage,
   normalizeCarryRiskMandateAuthorization,
   normalizeCarryRiskMandatePayload,
@@ -7,6 +8,18 @@ import { hashMessage } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 const OWNER = privateKeyToAccount(`0x${"44".repeat(32)}`);
+
+export const TEST_CARRY_OWNER_WALLET_ADDRESS = OWNER.address.toLowerCase();
+
+export async function signedCarryCollateralReviewAuthorization(review) {
+  const message = carryCollateralReviewMessage(review);
+  return {
+    version: 1,
+    signed_review: review,
+    signature: await OWNER.signMessage({ message }),
+    review_commitment: hashMessage(message),
+  };
+}
 
 export async function signedCarryPositionInput(input, {
   ownerCommitment,

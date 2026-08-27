@@ -32,6 +32,7 @@ import { executeStoredCarryEntry, startCarryExecutionLoop } from "./execution/ca
 import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-evidence.js";
 import {
   advanceStoredCarryPosition,
+  approveStoredCarryCollateralReview,
   appendStoredCarryValueEntry,
   compileStoredCarryCollateralReview,
   compileStoredCarryPortfolioCapitalPlan,
@@ -2833,7 +2834,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        if (["/carry/positions/observe", "/carry/positions/collateral-review"].includes(url.pathname)
+        if (["/carry/positions/observe", "/carry/positions/collateral-review", "/carry/positions/collateral-review/approve"].includes(url.pathname)
           && req.headers["x-ghola-no-submit-verify"] !== "true") {
           return json(res, 400, { error: "no-submit verification header is required" });
         }
@@ -2863,6 +2864,11 @@ export function createPrivateAgentWorkerServer(options = {}) {
             owner_commitment: body.owner_commitment,
             owner_capital_budget_micro_usdc: body.owner_capital_budget_micro_usdc,
             max_data_age_ms: body.max_data_age_ms,
+          })],
+          "/carry/positions/collateral-review/approve": ["carry:write", (body) => approveStoredCarryCollateralReview({
+            state,
+            owner_commitment: body.owner_commitment,
+            authorization: body.authorization,
           })],
           "/carry/positions/value-report": ["carry:read", (body) => compileStoredCarryPortfolioValueReport({
             state,
@@ -2945,7 +2951,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         const result = await handler(authorized.body);
         const status = result.ok ? 200
           : result.error === "carry_position_not_found" ? 404
-            : result.error === "carry_record_version_conflict" ? 409
+            : ["carry_record_version_conflict", "carry_collateral_review_replayed"].includes(result.error) ? 409
               : 400;
         return json(res, status, result);
       }

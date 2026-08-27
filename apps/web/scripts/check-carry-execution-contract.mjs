@@ -40,6 +40,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webClient: "apps/web/src/lib/private-account-client.ts",
   webMandate: "apps/web/src/lib/carry-risk-mandate.ts",
   webMandateTest: "apps/web/src/lib/carry-risk-mandate.test.ts",
+  webCollateralReview: "apps/web/src/lib/carry-collateral-review.ts",
   webPerpsTurnkey: "apps/web/src/lib/perps-turnkey-provider.tsx",
   webRegistry: "apps/web/src/lib/carry-venues.ts",
   webPage: "apps/web/src/app/carry/page.tsx",
@@ -275,6 +276,15 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "export async function compileStoredCarryCollateralReview", "carry_collateral_review_worker_missing");
   requireText("positionsTest", 'review.review.status, "signature_required"', "carry_collateral_review_worker_test_missing");
   requireText("server", '"/carry/positions/collateral-review"', "carry_collateral_review_route_missing");
+  requireText("coreCarry", "export function normalizeCarryCollateralReviewAuthorization", "carry_collateral_review_authorization_missing");
+  requireText("positions", "export async function approveStoredCarryCollateralReview", "carry_collateral_review_approval_missing");
+  requireText("positions", "recoverMessageAddress", "carry_collateral_review_signature_recovery_missing");
+  requireText("positions", "state.consumeCapabilityJti", "carry_collateral_review_replay_gate_missing");
+  requireText("positions", "carry-collateral-plan:", "carry_collateral_review_durable_approval_missing");
+  requireText("positions", "carry_collateral_review_stale", "carry_collateral_review_stale_gate_missing");
+  requireText("positionsTest", 'approval.receipt.status, "owner_signature_verified"', "carry_collateral_review_approval_test_missing");
+  requireText("positionsTest", "carry_collateral_review_replayed", "carry_collateral_review_replay_test_missing");
+  requireText("server", '"/carry/positions/collateral-review/approve"', "carry_collateral_review_approval_route_missing");
   requireText("positions", "export async function compileStoredCarryPortfolioValueReport", "carry_portfolio_value_worker_missing");
   requireText("positionsTest", 'value.report.value_proof_status, "accruing"', "carry_portfolio_value_worker_test_missing");
   requireText("server", '"/carry/positions/value-report"', "carry_portfolio_value_route_missing");
@@ -291,10 +301,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "STRESS CAPITAL ·", "carry_terminal_stress_capital_missing");
   requireText("webClient", "getCarryPortfolioCapitalPlan", "carry_portfolio_capital_client_missing");
   requireText("webClient", "getCarryCollateralReview", "carry_collateral_review_client_missing");
+  requireText("webClient", "approveCarryCollateralReview", "carry_collateral_review_approval_client_missing");
+  requireText("webCollateralReview", "buildCarryCollateralReviewAuthorization", "carry_collateral_review_web_authorization_missing");
   requireText("webRoute", 'action === "capital_plan"', "carry_portfolio_capital_proxy_missing");
   requireText("webRoute", 'action === "collateral_review"', "carry_collateral_review_proxy_missing");
+  requireText("webRoute", 'action === "approve_collateral_review"', "carry_collateral_review_approval_proxy_missing");
   requireText("webCarryBuilder", "PORTFOLIO CAPITAL ·", "carry_terminal_portfolio_capital_missing");
   requireText("webCarryBuilder", "COLLATERAL REVIEW ·", "carry_terminal_collateral_review_missing");
+  requireText("webCarryBuilder", "SIGN CAPITAL REVIEW", "carry_terminal_collateral_review_approval_missing");
+  requireText("webCarryBuilder", "OWNER VERIFIED · NO FUNDS MOVED", "carry_terminal_collateral_review_receipt_missing");
+  requireText("webPerpsTurnkey", "signCarryCollateralReview", "carry_collateral_review_turnkey_signing_missing");
   requireText("webCarryBuilderTest", "COLLATERAL REVIEW · 1 MOVE · 0 FUND · $15 · REVIEW ONLY", "carry_terminal_collateral_review_test_missing");
   requireText("webClient", "getCarryPortfolioValueReport", "carry_portfolio_value_client_missing");
   requireText("webRoute", 'action === "value_report"', "carry_portfolio_value_proxy_missing");

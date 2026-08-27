@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
     correlation_id: correlationId,
     action,
     operation_class: route.operationClass,
-    no_submit: action.startsWith("preflight_") || ["readiness", "observe", "capital_plan", "collateral_review", "value_report"].includes(action),
+    no_submit: action.startsWith("preflight_") || ["readiness", "observe", "capital_plan", "collateral_review", "approve_collateral_review", "value_report"].includes(action),
   });
   let body: Record<string, unknown> = {
     ...input,
@@ -276,7 +276,7 @@ export async function POST(req: NextRequest) {
       headers: {
         "content-type": "application/json",
         "x-ghola-sealed-execution-required": "true",
-        ...(action.startsWith("preflight_") || action === "readiness" || action === "observe" || action === "capital_plan" || action === "collateral_review" || action === "value_report" ? { "x-ghola-no-submit-verify": "true" } : {}),
+        ...(action.startsWith("preflight_") || action === "readiness" || action === "observe" || action === "capital_plan" || action === "collateral_review" || action === "approve_collateral_review" || action === "value_report" ? { "x-ghola-no-submit-verify": "true" } : {}),
         ...(action === "execute_entry" ? { "x-ghola-live-order-confirmed": "true" } : {}),
         ...(action === "create" && record(input.qualification_pilot).enabled === true ? { "x-ghola-carry-qualification-planned": "true" } : {}),
         ...(action === "execute_entry" && input.qualification_pilot_confirmed === true ? { "x-ghola-carry-qualification-confirmed": "true" } : {}),
@@ -316,6 +316,7 @@ function carryRoute(action: string) {
   if (action === "read") return { path: "/carry/positions/read", scope: "carry:read" as const, operationClass: "/read" };
   if (action === "capital_plan") return { path: "/carry/positions/capital-plan", scope: "carry:read" as const, operationClass: "/capital-plan" };
   if (action === "collateral_review") return { path: "/carry/positions/collateral-review", scope: "carry:read" as const, operationClass: "/collateral-review" };
+  if (action === "approve_collateral_review") return { path: "/carry/positions/collateral-review/approve", scope: "carry:write" as const, operationClass: "/collateral-review/approve" };
   if (action === "value_report") return { path: "/carry/positions/value-report", scope: "carry:read" as const, operationClass: "/value-report" };
   if (action === "release_evidence") return { path: "/carry/positions/release-evidence", scope: "carry:read" as const, operationClass: "/release-evidence" };
   if (action === "event") return { path: "/carry/positions/events", scope: "carry:write" as const, operationClass: "/events" };

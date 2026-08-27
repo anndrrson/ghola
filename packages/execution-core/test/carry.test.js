@@ -20,6 +20,7 @@ import {
   normalizeCarryRiskMandateAuthorization,
   normalizeCarryRiskMandatePayload,
   normalizeCarryCollateralReviewPayload,
+  normalizeCarryCollateralReviewAuthorization,
 } from "../index.js";
 
 const NOW = 1_800_000_000_000;
@@ -652,6 +653,7 @@ test("collateral review binds exact owner-only moves without authorizing fund mo
   const review = compileCarryCollateralReview({
     version: 1,
     owner_commitment: "owner:commitment:0001",
+    owner_wallet_address: "0x1111111111111111111111111111111111111111",
     review_id: "carry:review:0001",
     now_ms: NOW,
     expires_at_ms: NOW + 10 * 60_000,
@@ -660,6 +662,7 @@ test("collateral review binds exact owner-only moves without authorizing fund mo
     position_plans: [positionPlan],
   });
   assert.equal(review.status, "signature_required");
+  assert.equal(review.max_data_age_ms, 30_000);
   assert.equal(review.owner_signature_required, true);
   assert.equal(review.transfer_instructions.length, 1);
   assert.equal(review.transfer_instructions[0].from_venue_id, "lighter");
@@ -668,6 +671,14 @@ test("collateral review binds exact owner-only moves without authorizing fund mo
   assert.equal(review.fund_movement_authorized, false);
   assert.equal(review.transaction_broadcast, false);
   assert.match(carryCollateralReviewMessage(review), /^Ghola Carry collateral review v1\n/);
+  const message = carryCollateralReviewMessage(review);
+  const authorization = normalizeCarryCollateralReviewAuthorization({
+    version: 1,
+    signed_review: review,
+    signature: `0x${"11".repeat(65)}`,
+    review_commitment: `0x${"22".repeat(32)}`,
+  });
+  assert.equal(authorization.signed_review.review_id, review.review_id);
   assert.throws(() => normalizeCarryCollateralReviewPayload({
     ...review,
     execution_authorized: true,

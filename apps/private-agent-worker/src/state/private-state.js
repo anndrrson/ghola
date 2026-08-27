@@ -1950,24 +1950,21 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
     },
 
     async consumeCapabilityJti(jti, expiresAtUnix) {
-      const state = await loadState();
-      const now = Math.floor(Date.now() / 1000);
-      for (const [key, record] of Object.entries(state.capability_jtis || {})) {
-        if (Number(record?.expires_at_unix || 0) <= now) {
-          delete state.capability_jtis[key];
+      return updateState((state) => {
+        const now = Math.floor(Date.now() / 1000);
+        for (const [key, record] of Object.entries(state.capability_jtis || {})) {
+          if (Number(record?.expires_at_unix || 0) <= now) {
+            delete state.capability_jtis[key];
+          }
         }
-      }
-      if (state.capability_jtis[jti]) {
-        await save(state);
-        return { ok: false, replayed: true };
-      }
-      state.capability_jtis[jti] = {
-        jti,
-        expires_at_unix: Number.isInteger(expiresAtUnix) ? expiresAtUnix : now + 300,
-        consumed_at: new Date().toISOString(),
-      };
-      await save(state);
-      return { ok: true };
+        if (state.capability_jtis[jti]) return { ok: false, replayed: true };
+        state.capability_jtis[jti] = {
+          jti,
+          expires_at_unix: Number.isInteger(expiresAtUnix) ? expiresAtUnix : now + 300,
+          consumed_at: new Date().toISOString(),
+        };
+        return { ok: true };
+      });
     },
 
     async putAutopilotSession(session) {

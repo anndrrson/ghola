@@ -797,6 +797,25 @@ describe("private agent worker", () => {
     assert.equal(reviewBody.review.execution_authorized, false);
     assert.equal(reviewBody.review.transaction_broadcast, false);
 
+    const approvalBody = { owner_commitment: ownerCommitment, authorization: {} };
+    const approvalToken = capabilityToken({
+      path: "/carry/positions/collateral-review/approve",
+      scope: "carry:write",
+      body: approvalBody,
+      expected: { owner_commitment: ownerCommitment, operation_class: "/collateral-review/approve" },
+    });
+    const approvalWithoutNoSubmit = await fetch(`${baseUrl}/carry/positions/collateral-review/approve`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${approvalToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(approvalBody),
+    });
+    assert.equal(approvalWithoutNoSubmit.status, 400);
+    assert.equal((await approvalWithoutNoSubmit.json()).error, "no-submit verification header is required");
+
     const releaseToken = capabilityToken({
       path: "/carry/positions/release-evidence",
       scope: "carry:read",

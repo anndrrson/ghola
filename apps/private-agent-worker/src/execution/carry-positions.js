@@ -3,13 +3,16 @@ import {
   CARRY_EXECUTION_VENUES,
   advanceCarryPosition,
   appendCarryValueLedgerEntry,
+  carryCollateralReviewMessage,
   compileCarryCapitalActionPlan,
   compileCarryCollateralReview,
   compileCarryPortfolioCapitalPlan,
   compileCarryPortfolioValueReport,
   createCarryValueLedger,
   finalizeCarryValueLedger,
+  normalizeCarryCollateralReviewAuthorization,
 } from "@ghola/execution-core";
+import { hashMessage, recoverMessageAddress } from "viem";
 import { preflightCarryPair } from "./carry-preflight.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 import { hasExactCarryFlatReconciliation } from "./carry-reconciliation.js";
@@ -392,10 +395,17 @@ export async function compileStoredCarryCollateralReview({
     };
   }
   try {
+    const ownerWallets = [...new Set(unique.map((record) =>
+      record.position?.mandate_authorization?.signed_mandate?.owner_wallet_address
+    ).filter(Boolean).map((address) => String(address).toLowerCase()))];
+    if (unique.length > 0 && ownerWallets.length !== 1) {
+      return denied("carry_collateral_review_owner_wallet_inconsistent");
+    }
     const lineage = unique.map((record) => record.position.position_id).sort().join(":");
     const review = compileCarryCollateralReview({
       version: 1,
       owner_commitment: ownerCommitment,
+      owner_wallet_address: ownerWallets[0] ?? null,
       review_id: `carry:collateral-review:${digest(`${ownerCommitment}:${nowMs}:${lineage}`).slice(0, 24)}`,
       now_ms: nowMs,
       expires_at_ms: nowMs + 10 * 60_000,
@@ -403,7 +413,84 @@ export async function compileStoredCarryCollateralReview({
       owner_capital_budget_micro_usdc: ownerCapitalBudget,
       position_plans: positionPlans,
     });
-    return { ok: true, review };
+    const planCommitment = collateralReviewPlanCommitment(review);
+    const storedApproval = await state.getIdempotency(`carry-collateral-plan:${planCommitment}`);
+    const approvalReceipt = storedApproval?.receipt;
+    const activeApproval = approvalReceipt?.kind === "ghola_carry_collateral_review_approval_receipt"
+      && approvalReceipt.plan_commitment === planCommitment
+      && approvalReceipt.owner_commitment === ownerCommitment
+      && approvalReceipt.owner_wallet_address === review.owner_wallet_address
+      && Number.isSafeInteger(approvalReceipt.expires_at_ms)
+      && approvalReceipt.expires_at_ms > nowMs
+      ? approvalReceipt
+      : null;
+    return { ok: true, review, plan_commitment: planCommitment, approval_receipt: activeApproval };
+  } catch (error) {
+    return denied(safeError(error));
+  }
+}
+
+export async function approveStoredCarryCollateralReview({
+  state,
+  owner_commitment: ownerCommitment,
+  authorization: authorizationInput,
+  now_ms: nowMs = Date.now(),
+}) {
+  if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
+  try {
+    const authorization = normalizeCarryCollateralReviewAuthorization(authorizationInput);
+    const signed = authorization.signed_review;
+    if (signed.owner_commitment !== ownerCommitment) {
+      return denied("carry_collateral_review_owner_mismatch");
+    }
+    if (signed.issued_at_ms > nowMs + 5_000 || signed.expires_at_ms <= nowMs) {
+      return denied("carry_collateral_review_expired");
+    }
+    const message = carryCollateralReviewMessage(signed);
+    if (authorization.review_commitment !== hashMessage(message)) {
+      return denied("carry_collateral_review_commitment_mismatch");
+    }
+    const recovered = await recoverMessageAddress({ message, signature: authorization.signature });
+    if (recovered.toLowerCase() !== signed.owner_wallet_address) {
+      return denied("carry_collateral_review_signature_mismatch");
+    }
+    const current = await compileStoredCarryCollateralReview({
+      state,
+      owner_commitment: ownerCommitment,
+      owner_capital_budget_micro_usdc: signed.capital_plan.owner_capital_budget_micro_usdc,
+      max_data_age_ms: signed.max_data_age_ms,
+      now_ms: signed.issued_at_ms,
+    });
+    if (!current.ok || carryCollateralReviewMessage(current.review) !== message) {
+      return denied("carry_collateral_review_stale");
+    }
+    const consumed = await state.consumeCapabilityJti(
+      `carry-collateral-review:${signed.review_id}`,
+      Math.ceil(signed.expires_at_ms / 1_000),
+    );
+    if (!consumed.ok) return denied("carry_collateral_review_replayed");
+    const planCommitment = collateralReviewPlanCommitment(signed);
+    const receipt = {
+      version: 1,
+      kind: "ghola_carry_collateral_review_approval_receipt",
+      review_id: signed.review_id,
+      plan_commitment: planCommitment,
+      owner_commitment: ownerCommitment,
+      owner_wallet_address: signed.owner_wallet_address,
+      review_commitment: authorization.review_commitment,
+      status: "owner_signature_verified",
+      instruction_count: signed.transfer_instructions.length + signed.funding_instructions.length,
+      execution_authorized: false,
+      fund_movement_authorized: false,
+      transaction_broadcast: false,
+      automatic_transfer_permitted: false,
+      withdrawal_permitted: false,
+      trade_permitted: false,
+      verified_at_ms: nowMs,
+      expires_at_ms: signed.expires_at_ms,
+    };
+    await state.putIdempotency(`carry-collateral-plan:${planCommitment}`, receipt);
+    return { ok: true, receipt };
   } catch (error) {
     return denied(safeError(error));
   }
@@ -1048,6 +1135,20 @@ function denied(error) {
 
 function digest(value) {
   return createHash("sha256").update(String(value)).digest("hex");
+}
+
+function collateralReviewPlanCommitment(review) {
+  const capitalPlan = { ...review.capital_plan };
+  delete capitalPlan.checked_at_ms;
+  const instructions = (items) => items.map(({ instruction_id: _instructionId, ...instruction }) => instruction);
+  return `0x${digest(JSON.stringify({
+    owner_commitment: review.owner_commitment,
+    owner_wallet_address: review.owner_wallet_address,
+    max_data_age_ms: review.max_data_age_ms,
+    capital_plan: capitalPlan,
+    transfer_instructions: instructions(review.transfer_instructions),
+    funding_instructions: instructions(review.funding_instructions),
+  }))}`;
 }
 
 function safeError(error) {

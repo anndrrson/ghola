@@ -558,6 +558,7 @@ export function compileCarryPortfolioCapitalPlan(value) {
   return deepFreeze({
     version: 1,
     kind: "ghola_carry_portfolio_capital_plan",
+    max_data_age_ms: maxDataAgeMs,
     status,
     recommended_action: recommendedAction,
     position_count: positionPlans.length,
@@ -642,6 +643,13 @@ export function compileCarryCollateralReview(value) {
       transaction_broadcast: false,
     }));
   const ownerSignatureRequired = transfers.length > 0 || allocations.length > 0;
+  const ownerWalletAddress = raw.owner_wallet_address == null
+    ? null
+    : String(raw.owner_wallet_address).trim().toLowerCase();
+  if ((ownerWalletAddress !== null && !ETH_ADDRESS.test(ownerWalletAddress))
+    || (ownerSignatureRequired && ownerWalletAddress === null)) {
+    fail("carry_collateral_review_owner_wallet");
+  }
   const status = blocked ? "blocked"
     : ownerSignatureRequired ? "signature_required"
       : "no_action";
@@ -650,6 +658,8 @@ export function compileCarryCollateralReview(value) {
     kind: "ghola_carry_collateral_review",
     strategy_id: "delta_neutral_carry_v1",
     owner_commitment: ownerCommitment,
+    owner_wallet_address: ownerWalletAddress,
+    max_data_age_ms: capitalPlan.max_data_age_ms,
     review_id: reviewId,
     status,
     capital_plan: capitalPlan,
@@ -677,7 +687,19 @@ export function normalizeCarryCollateralReviewPayload(value) {
   if (raw.kind !== "ghola_carry_collateral_review") fail("carry_collateral_review_kind");
   if (raw.strategy_id !== "delta_neutral_carry_v1") fail("carry_collateral_review_strategy");
   const ownerCommitment = identifier(raw.owner_commitment, "carry_collateral_review_owner");
+  const ownerWalletAddress = raw.owner_wallet_address == null
+    ? null
+    : String(raw.owner_wallet_address).trim().toLowerCase();
+  if (ownerWalletAddress !== null && !ETH_ADDRESS.test(ownerWalletAddress)) {
+    fail("carry_collateral_review_owner_wallet");
+  }
   const reviewId = identifier(raw.review_id, "carry_collateral_review_id");
+  const maxDataAgeMs = boundedInteger(
+    raw.max_data_age_ms,
+    250,
+    300_000,
+    "carry_collateral_review_max_data_age",
+  );
   const issuedAtMs = positiveInteger(raw.issued_at_ms, "carry_collateral_review_issued_at");
   const expiresAtMs = positiveInteger(raw.expires_at_ms, "carry_collateral_review_expires_at");
   if (expiresAtMs <= issuedAtMs || expiresAtMs - issuedAtMs > 15 * 60_000) {
@@ -707,6 +729,7 @@ export function normalizeCarryCollateralReviewPayload(value) {
     3,
   );
   if (capitalPlan.kind !== "ghola_carry_portfolio_capital_plan"
+    || capitalPlan.max_data_age_ms !== maxDataAgeMs
     || capitalPlan.proposal_only !== true || capitalPlan.transaction_broadcast !== false
     || capitalPlan.automatic_transfer_permitted !== false
     || !["fund", "transfer", "withdraw"].every((operation) => capitalPlanOwnerOperations.includes(operation))) {
@@ -800,11 +823,14 @@ export function normalizeCarryCollateralReviewPayload(value) {
     || raw.owner_signature_status !== (ownerSignatureRequired ? "required" : blocked ? "blocked" : "not_required")) {
     fail("carry_collateral_review_status_inconsistent");
   }
+  if (ownerSignatureRequired && ownerWalletAddress === null) fail("carry_collateral_review_owner_wallet");
   return deepFreeze({
     version: 1,
     kind: "ghola_carry_collateral_review",
     strategy_id: "delta_neutral_carry_v1",
     owner_commitment: ownerCommitment,
+    owner_wallet_address: ownerWalletAddress,
+    max_data_age_ms: maxDataAgeMs,
     review_id: reviewId,
     status,
     capital_plan: JSON.parse(JSON.stringify(capitalPlan)),
@@ -828,6 +854,25 @@ export function normalizeCarryCollateralReviewPayload(value) {
 
 export function carryCollateralReviewMessage(value) {
   return `Ghola Carry collateral review v1\n${JSON.stringify(normalizeCarryCollateralReviewPayload(value))}`;
+}
+
+export function normalizeCarryCollateralReviewAuthorization(value) {
+  const raw = object(value, "carry_collateral_review_authorization_required");
+  exactVersion(raw.version, "carry_collateral_review_authorization_version");
+  const signature = String(raw.signature || "").trim().toLowerCase();
+  const reviewCommitment = String(raw.review_commitment || "").trim().toLowerCase();
+  if (!ETH_SIGNATURE.test(signature)) fail("carry_collateral_review_signature_invalid");
+  if (!ETH_COMMITMENT.test(reviewCommitment)) fail("carry_collateral_review_commitment_invalid");
+  const review = normalizeCarryCollateralReviewPayload(raw.signed_review);
+  if (review.status !== "signature_required" || review.owner_signature_required !== true) {
+    fail("carry_collateral_review_signature_not_required");
+  }
+  return deepFreeze({
+    version: 1,
+    signed_review: review,
+    signature,
+    review_commitment: reviewCommitment,
+  });
 }
 
 function normalizeCollateralReviewInstruction(value, reviewId, type) {

@@ -962,6 +962,13 @@ export async function getCarryCollateralReview(owner_capital_budget_micro_usdc =
   });
 }
 
+export async function approveCarryCollateralReview(authorization: Record<string, unknown>) {
+  return privateAccountFetch("/v1/private-account/carry", {
+    method: "POST",
+    body: JSON.stringify({ action: "approve_collateral_review", authorization }),
+  });
+}
+
 export async function getCarryPortfolioValueReport(owner_capital_budget_micro_usdc = 0) {
   return privateAccountFetch("/v1/private-account/carry", {
     method: "POST",

@@ -6,6 +6,7 @@ import type { CarryCandidate } from "@/lib/carry-market";
 
 const api = vi.hoisted(() => ({
   createCarryPosition: vi.fn(),
+  approveCarryCollateralReview: vi.fn(),
   executeCarryPositionEntry: vi.fn(),
   getCarryCollateralReview: vi.fn(),
   getCarryExecutionReadiness: vi.fn(),
@@ -20,6 +21,7 @@ const api = vi.hoisted(() => ({
 const perps = vi.hoisted(() => ({
   ensureWalletPair: vi.fn(),
   signCarryRiskMandate: vi.fn(),
+  signCarryCollateralReview: vi.fn(),
 }));
 
 vi.mock("@/lib/private-account-client", () => api);
@@ -28,6 +30,7 @@ vi.mock("@/lib/perps-turnkey-provider", () => ({
     authenticated: true,
     ensureWalletPair: perps.ensureWalletPair,
     signCarryRiskMandate: perps.signCarryRiskMandate,
+    signCarryCollateralReview: perps.signCarryCollateralReview,
   }),
 }));
 vi.mock("next/link", () => ({ default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => <a href={href} {...props}>{children}</a> }));
@@ -43,6 +46,7 @@ describe("CarryTerminalBuilder", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     api.createCarryPosition.mockReset();
+    api.approveCarryCollateralReview.mockReset();
     api.executeCarryPositionEntry.mockReset();
     api.getCarryCollateralReview.mockReset();
     api.getCarryExecutionReadiness.mockReset();
@@ -55,6 +59,7 @@ describe("CarryTerminalBuilder", () => {
     api.requestCarryPositionExit.mockReset();
     perps.ensureWalletPair.mockReset();
     perps.signCarryRiskMandate.mockReset();
+    perps.signCarryCollateralReview.mockReset();
     api.getPrivateAgentPassport.mockResolvedValue({ owner_commitment: "owner:carry:web:test:0001" });
     api.getCarryExecutionReadiness.mockResolvedValue({ ready: false, reasons: ["carry_readiness_evidence_missing"] });
     api.getCarryPortfolioCapitalPlan.mockResolvedValue({
@@ -116,6 +121,8 @@ describe("CarryTerminalBuilder", () => {
     api.preflightCarryExecutionMatrix.mockResolvedValue(readyMatrix());
     perps.ensureWalletPair.mockResolvedValue({ owner: { address: `0x${"11".repeat(20)}` } });
     perps.signCarryRiskMandate.mockResolvedValue(`0x${"22".repeat(65)}`);
+    perps.signCarryCollateralReview.mockResolvedValue(`0x${"22".repeat(65)}`);
+    api.approveCarryCollateralReview.mockResolvedValue({ ok: true });
   });
 
   afterEach(async () => {
@@ -512,6 +519,7 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("0S AGO");
     expect(container.textContent).toContain("PORTFOLIO CAPITAL · $15 REALLOCATE · $10 NEW CASH · OWNER ONLY");
     expect(container.textContent).toContain("COLLATERAL REVIEW · 1 MOVE · 0 FUND · $15 · REVIEW ONLY");
+    expect(container.textContent).toContain("SIGN CAPITAL REVIEW");
     expect(container.textContent).toContain("PORTFOLIO VALUE · $19.5 REAL · $10 OPEN MODEL · +$4.5 Δ");
   });
 

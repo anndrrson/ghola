@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
+  approveCarryCollateralReview,
   createCarryPosition,
   executeCarryPositionEntry,
   getCarryCollateralReview,
@@ -20,6 +21,7 @@ import {
   carryRiskMandateAuthorization,
   defaultCarryRiskMandate,
 } from "@/lib/carry-risk-mandate";
+import { buildCarryCollateralReviewAuthorization } from "@/lib/carry-collateral-review";
 import {
   builderModel,
   CARRY_VENUE_LABELS,
@@ -122,10 +124,11 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const [records, setRecords] = useState<CarryRecord[]>([]);
   const [portfolioCapitalPlan, setPortfolioCapitalPlan] = useState<Record<string, unknown> | null>(null);
   const [collateralReview, setCollateralReview] = useState<Record<string, unknown> | null>(null);
+  const [collateralApproval, setCollateralApproval] = useState<Record<string, unknown> | null>(null);
   const [portfolioValueReport, setPortfolioValueReport] = useState<Record<string, unknown> | null>(null);
   const [recordsLoaded, setRecordsLoaded] = useState(false);
   const [recordsLoading, setRecordsLoading] = useState(false);
-  const [busy, setBusy] = useState<"check" | "save" | "enter" | "exit" | null>(null);
+  const [busy, setBusy] = useState<"check" | "save" | "enter" | "exit" | "approve" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [lastCheckReceipt, setLastCheckReceipt] = useState<string | null>(null);
   const routeKey = `${candidate.asset}:${candidate.long.venue_id}:${candidate.short.venue_id}`;
@@ -156,8 +159,10 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
       if (reviewResult.status === "fulfilled") {
         const result = asRecord(reviewResult.value);
         setCollateralReview(result.ok === true ? asRecord(result.review) : result);
+        setCollateralApproval(result.ok === true && result.approval_receipt ? asRecord(result.approval_receipt) : null);
       } else {
         setCollateralReview(null);
+        setCollateralApproval(null);
       }
       if (valueResult.status === "fulfilled") {
         const value = asRecord(valueResult.value);
@@ -431,6 +436,29 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     }
   }
 
+  async function approveCollateralReview() {
+    if (collateralReview?.status !== "signature_required" || collateralApproval?.status === "owner_signature_verified") return;
+    setBusy("approve");
+    setMessage(null);
+    try {
+      const signature = await perpsTurnkey.signCarryCollateralReview(collateralReview);
+      const result = asRecord(await approveCarryCollateralReview(
+        buildCarryCollateralReviewAuthorization({
+          signed_review: collateralReview,
+          signature,
+        }) as Record<string, unknown>,
+      ));
+      if (result.ok !== true) throw new Error(stringValue(result.error) || "carry_collateral_review_not_approved");
+      setCollateralApproval(asRecord(result.receipt));
+      setMessage("OWNER REVIEW RECORDED · NO FUNDS MOVED");
+      await loadRecords();
+    } catch {
+      setMessage("REVIEW NOT RECORDED · REFRESH CAPITAL EVIDENCE");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${candidate.asset}-PERP&carry=open`;
   const setupHref = `/account?setup=carry&return_to=${encodeURIComponent(terminalReturn)}`;
   const canSave = proof?.live_creation_ready === true || proof?.qualification_pilot_ready === true;
@@ -511,7 +539,14 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
           ? <p className={`truncate font-mono text-[9px] ${portfolioCapital.tone === "bad" ? "text-[#ef929e]" : portfolioCapital.tone === "warn" ? "text-[#d9bd74]" : "text-[#72bfa2]"}`} title={portfolioCapital.value}>PORTFOLIO CAPITAL · {portfolioCapital.value}</p>
           : null}
         {collateral
-          ? <p className={`truncate font-mono text-[9px] ${collateral.tone === "bad" ? "text-[#ef929e]" : collateral.tone === "warn" ? "text-[#d9bd74]" : "text-[#72bfa2]"}`} title={collateral.value}>COLLATERAL REVIEW · {collateral.value}</p>
+          ? <div className="flex min-w-0 items-center gap-2">
+              <p className={`min-w-0 flex-1 truncate font-mono text-[9px] ${collateral.tone === "bad" ? "text-[#ef929e]" : collateral.tone === "warn" ? "text-[#d9bd74]" : "text-[#72bfa2]"}`} title={collateral.value}>COLLATERAL REVIEW · {collateral.value}</p>
+              {collateralApproval?.status === "owner_signature_verified"
+                ? <span className="shrink-0 font-mono text-[8px] font-semibold text-[#72bfa2]">OWNER VERIFIED · NO FUNDS MOVED</span>
+                : collateralReview?.status === "signature_required"
+                ? <button type="button" disabled={busy !== null || !perpsTurnkey.authenticated} onClick={() => void approveCollateralReview()} className="shrink-0 rounded border border-[#594b2b] px-1.5 py-0.5 font-mono text-[8px] font-semibold text-[#d9bd74] disabled:opacity-40">{busy === "approve" ? "SIGNING…" : "SIGN CAPITAL REVIEW"}</button>
+                : null}
+            </div>
           : null}
         {portfolioValue
           ? <p className={`truncate font-mono text-[9px] ${portfolioValue.tone === "bad" ? "text-[#ef929e]" : portfolioValue.tone === "warn" ? "text-[#d9bd74]" : "text-[#72bfa2]"}`} title={portfolioValue.value}>PORTFOLIO VALUE · {portfolioValue.value}</p>

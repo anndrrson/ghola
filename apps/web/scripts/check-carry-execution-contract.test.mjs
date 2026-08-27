@@ -208,6 +208,16 @@ test("rejects portfolio capital allocation without its owner-only authority gate
   );
 });
 
+test("rejects collateral review approval without durable replay protection", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll("state.consumeCapabilityJti", "acceptReusableReview"),
+    }),
+    /carry_collateral_review_replay_gate_missing/,
+  );
+});
+
 test("rejects portfolio capital planning that stops aggregating shared venue accounts", () => {
   assert.throws(
     () => checkCarryExecutionContract({

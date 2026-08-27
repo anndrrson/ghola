@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   advanceStoredCarryPosition,
   appendStoredCarryValueEntry,
+  approveStoredCarryCollateralReview,
   compileStoredCarryCollateralReview,
   compileStoredCarryPortfolioCapitalPlan,
   compileStoredCarryPortfolioValueReport,
@@ -15,7 +16,11 @@ import {
   runCarryMonitoringTick,
 } from "../src/execution/carry-positions.js";
 import { createWorkerState } from "../src/state/private-state.js";
-import { signedCarryPositionInput } from "./carry-mandate-fixture.js";
+import {
+  signedCarryCollateralReviewAuthorization,
+  signedCarryPositionInput,
+  TEST_CARRY_OWNER_WALLET_ADDRESS,
+} from "./carry-mandate-fixture.js";
 
 const NOW = 1_800_000_000_000;
 const OWNER = "owner:commitment:0001";
@@ -674,11 +679,46 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
   assert.equal(review.ok, true, JSON.stringify(review));
   assert.equal(review.review.status, "signature_required");
   assert.equal(review.review.owner_commitment, OWNER);
+  assert.equal(review.review.owner_wallet_address, TEST_CARRY_OWNER_WALLET_ADDRESS);
   assert.equal(review.review.transfer_instructions.length, 1);
   assert.equal(review.review.funding_instructions.length, 1);
   assert.equal(review.review.execution_authorized, false);
   assert.equal(review.review.fund_movement_authorized, false);
   assert.equal(review.review.transaction_broadcast, false);
+  const reviewAuthorization = await signedCarryCollateralReviewAuthorization(review.review);
+  const concurrentApprovals = await Promise.all([1, 2].map(() => approveStoredCarryCollateralReview({
+    state,
+    owner_commitment: OWNER,
+    authorization: reviewAuthorization,
+    now_ms: NOW + 101,
+  })));
+  const approval = concurrentApprovals.find((result) => result.ok === true);
+  const concurrentReplay = concurrentApprovals.find((result) => result.ok === false);
+  assert.deepEqual(concurrentReplay, { ok: false, error: "carry_collateral_review_replayed" });
+  assert.equal(approval.ok, true, JSON.stringify(approval));
+  assert.equal(approval.receipt.status, "owner_signature_verified");
+  assert.equal(approval.receipt.instruction_count, 2);
+  assert.equal(approval.receipt.execution_authorized, false);
+  assert.equal(approval.receipt.fund_movement_authorized, false);
+  assert.equal(approval.receipt.transaction_broadcast, false);
+  const persistedApproval = await compileStoredCarryCollateralReview({
+    state: createWorkerState(dir),
+    owner_commitment: OWNER,
+    owner_capital_budget_micro_usdc: 5_000_000,
+    max_data_age_ms: 30_000,
+    now_ms: NOW + 103,
+  });
+  assert.equal(persistedApproval.ok, true, JSON.stringify(persistedApproval));
+  assert.equal(persistedApproval.approval_receipt.status, "owner_signature_verified");
+  assert.equal(persistedApproval.approval_receipt.plan_commitment, persistedApproval.plan_commitment);
+  assert.equal(persistedApproval.approval_receipt.transaction_broadcast, false);
+  const replay = await approveStoredCarryCollateralReview({
+    state: createWorkerState(dir),
+    owner_commitment: OWNER,
+    authorization: reviewAuthorization,
+    now_ms: NOW + 102,
+  });
+  assert.deepEqual(replay, { ok: false, error: "carry_collateral_review_replayed" });
   const value = await compileStoredCarryPortfolioValueReport({
     state,
     owner_commitment: OWNER,
