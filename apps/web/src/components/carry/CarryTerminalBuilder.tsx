@@ -36,6 +36,12 @@ type CarryRecord = {
   };
   latest_observation?: {
     expected_net_value_bps?: number;
+    contract_data_skew_ms?: number;
+    max_contract_data_skew_ms?: number;
+    index_price_divergence_bps?: number;
+    mark_price_divergence_bps?: number;
+    max_index_price_divergence_bps?: number;
+    max_mark_price_divergence_bps?: number;
     margin_runway_ms_by_venue?: Record<string, number | null>;
     margin_runway_status_by_venue?: Record<string, "healthy" | "warning" | "critical" | "breached">;
     recorded_at_ms?: number;
@@ -179,6 +185,9 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
       min_margin_runway_ms: 6 * 3_600_000,
       max_hedge_error_micro_usdc: 10_000,
       max_data_age_ms: 60_000,
+      max_contract_data_skew_ms: 2_000,
+      max_index_price_divergence_bps: 25,
+      max_mark_price_divergence_bps: 50,
       allow_migration: false,
     };
     setBusy("save");

@@ -44,6 +44,21 @@ function access(ownerCommitment = "owner_commitment_0001") {
   };
 }
 
+function riskMandate() {
+  return {
+    min_expected_net_benefit_bps: 1,
+    exit_net_value_bps: 0,
+    exit_after_consecutive_observations: 2,
+    min_margin_runway_ms: 3_600_000,
+    max_hedge_error_micro_usdc: 0,
+    max_data_age_ms: 30_000,
+    max_contract_data_skew_ms: 2_000,
+    max_index_price_divergence_bps: 25,
+    max_mark_price_divergence_bps: 50,
+    allow_migration: false,
+  };
+}
+
 test("pairs authenticated no-submit evidence but blocks live creation until Aster recovery is proven", async () => {
   const verified = [];
   const account = {
@@ -296,6 +311,66 @@ test("rejects same-ticker contract basis divergence before account or order veri
     (error) => error?.code === "carry_contract_equivalence_failed:index_price_divergence_exceeded",
   );
   assert.equal(verified, false);
+});
+
+test("monitoring measures a signed basis breach without submitting or hiding it as unavailable", async () => {
+  let verified = 0;
+  const account = {
+    can_trade: true,
+    available_balance: 500,
+    margin_balance: 500,
+    initial_margin: 0,
+    maintenance_margin: 0,
+    maker_fee_bps: 1,
+    taker_fee_bps: 2,
+    position_count: 1,
+    open_order_count: 0,
+  };
+  const result = await preflightCarryPair({
+    body: {
+      version: 1,
+      phase: "monitoring",
+      owner_commitment: "owner_commitment_monitor_basis_0001",
+      work_order_commitment: "carry_pair_monitor_basis_0001",
+      asset: "BTC",
+      long_venue_id: "hyperliquid",
+      short_venue_id: "aster",
+      notional_usd: 100,
+      horizon_days: 30,
+      risk_mandate: riskMandate(),
+      venue_access: {
+        hyperliquid: access("owner_commitment_monitor_basis_0001"),
+        aster: access("owner_commitment_monitor_basis_0001"),
+      },
+    },
+    recipient: {},
+    state: {},
+    now: () => NOW,
+    fetchVenue: async ({ venue_id }) => [{
+      ...snapshot(venue_id),
+      index_price_e8: venue_id === "aster" ? 10_050_000_000_000 : 10_000_000_000_000,
+    }],
+    verifyOrder: async ({ venue_id, work_order_commitment }) => {
+      verified += 1;
+      return {
+        status: "verified_ready",
+        work_order_commitment,
+        verification_commitment: `verification_${venue_id}`,
+        checks: { order_request_checked: true, transaction_broadcast: false },
+        order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
+        account,
+        authority_boundary: { venue_native_trade_only: true },
+      };
+    },
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 1, open_order_count: 0 }),
+    readHyperliquidCarryMetrics: async () => account,
+  });
+  assert.equal(verified, 2);
+  assert.equal(result.transaction_broadcast, false);
+  assert.equal(result.economic_opportunity.index_price_divergence_bps, 50);
+  assert.equal(result.economic_opportunity.max_index_price_divergence_bps, 25);
+  assert.equal(result.economic_opportunity.eligible, false);
+  assert.ok(result.economic_opportunity.reasons.includes("index_price_divergence_exceeded"));
 });
 
 test("rejects cross-owner sealed venue access before order verification", async () => {

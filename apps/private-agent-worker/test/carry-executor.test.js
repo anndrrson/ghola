@@ -399,6 +399,12 @@ test("background monitoring triggers an automatic reduce-only exit and finalizes
     economic_opportunity: {
       checked_at_ms: NOW + 100,
       projected_net_value_bps: -1,
+      contract_data_skew_ms: 0,
+      max_contract_data_skew_ms: 2_000,
+      index_price_divergence_bps: 0,
+      mark_price_divergence_bps: 0,
+      max_index_price_divergence_bps: 25,
+      max_mark_price_divergence_bps: 50,
     },
     margin_runways: [
       { venue_id: "aster", status: "healthy", runway_ms: 7_200_000 },
@@ -501,6 +507,9 @@ function positionInput(positionId) {
       min_margin_runway_ms: 3_600_000,
       max_hedge_error_micro_usdc: 0,
       max_data_age_ms: 30_000,
+      max_contract_data_skew_ms: 2_000,
+      max_index_price_divergence_bps: 25,
+      max_mark_price_divergence_bps: 50,
       allow_migration: false,
     },
   };

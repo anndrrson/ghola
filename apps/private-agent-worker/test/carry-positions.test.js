@@ -150,6 +150,15 @@ test("refuses storage until venue accounts, synchronized equivalent contracts, a
     now_ms: NOW,
   });
   assert.deepEqual(divergent, { ok: false, error: "carry_contract_basis_exceeded" });
+  const mismatchedSignedLimit = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: await positionInput("signed-limit", { max_index_price_divergence_bps: 26 }),
+    opportunity: opportunity(),
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  assert.deepEqual(mismatchedSignedLimit, { ok: false, error: "carry_unsigned_contract_basis_limit" });
 });
 
 test("creates only a capped, explicitly enabled qualification pilot", async (t) => {
@@ -198,21 +207,21 @@ test("monitoring records funding flips and deterministically requests exit", asy
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
   const active = await activePosition(state);
-  const preflight = async ({ body }) => ({
-    version: 1,
-    mode: "paired_monitoring_no_submit",
-    no_submit_ready: true,
-    transaction_broadcast: false,
-    economic_opportunity: {
-      checked_at_ms: NOW + body.work_order_commitment.length,
-      projected_net_value_bps: -1,
-    },
-    margin_runways: [
-      { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
-      { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
-    ],
-    qualification_reasons: [],
-  });
+  const preflight = async ({ body }) => {
+    assert.equal(body.risk_mandate.max_contract_data_skew_ms, 2_000);
+    return {
+      version: 1,
+      mode: "paired_monitoring_no_submit",
+      no_submit_ready: true,
+      transaction_broadcast: false,
+      economic_opportunity: monitoringOpportunity(NOW + body.work_order_commitment.length, -1),
+      margin_runways: [
+        { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
+        { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
+      ],
+      qualification_reasons: [],
+    };
+  };
   const dependencies = {
     state,
     owner_commitment: OWNER,
@@ -232,6 +241,33 @@ test("monitoring records funding flips and deterministically requests exit", asy
   assert.equal(second.ok, true);
   assert.equal(second.record.position.status, "exiting");
   assert.deepEqual(second.record.position.next_actions, ["reduce_only_close_both_legs"]);
+});
+
+test("monitoring records a basis breach and immediately requests a reduce-only exit", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-basis-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const result = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => ({
+      economic_opportunity: monitoringOpportunity(NOW + 100, 9, { index_price_divergence_bps: 26 }),
+      margin_runways: [
+        { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
+        { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
+      ],
+      qualification_reasons: ["index_price_divergence_exceeded"],
+    }),
+    now_ms: NOW + 100,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.record.position.status, "exiting");
+  assert.equal(result.record.position.terminal_reason, "contract_basis_outside_mandate");
+  assert.equal(result.record.latest_observation.index_price_divergence_bps, 26);
+  assert.deepEqual(result.record.position.next_actions, ["reduce_only_close_both_legs"]);
 });
 
 test("monitor failure freezes an active position without retry", async (t) => {
@@ -261,7 +297,7 @@ test("worker monitoring survives without an open browser", async (t) => {
   const tick = await runCarryMonitoringTick({
     state,
     preflight: async () => ({
-      economic_opportunity: { checked_at_ms: NOW + 100, projected_net_value_bps: 9 },
+      economic_opportunity: monitoringOpportunity(NOW + 100, 9),
       margin_runways: [
         { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
         { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
@@ -295,7 +331,7 @@ test("monitoring checks independent Carry Positions with bounded concurrency", a
       if (started === 2) release();
       await bothStarted;
       return {
-        economic_opportunity: { checked_at_ms: NOW + 100, projected_net_value_bps: 9 },
+        economic_opportunity: monitoringOpportunity(NOW + 100, 9),
         margin_runways: [
           { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
           { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
@@ -321,7 +357,7 @@ test("monitoring appends only authoritative venue funding settlements", async (t
     position_id: active.position.position_id,
     venue_access: monitoringContext().venue_access,
     preflight: async () => ({
-      economic_opportunity: { checked_at_ms: NOW + 100, projected_net_value_bps: 9 },
+      economic_opportunity: monitoringOpportunity(NOW + 100, 9),
       margin_runways: [
         { venue_id: "hyperliquid", status: "healthy", runway_ms: 7_200_000 },
         { venue_id: "lighter", status: "healthy", runway_ms: 7_200_000 },
@@ -367,7 +403,7 @@ async function activePosition(state, suffix = "0001") {
   return record;
 }
 
-async function positionInput(suffix = "0001") {
+async function positionInput(suffix = "0001", riskOverrides = {}) {
   return signedCarryPositionInput({
     version: 1,
     position_id: `carry:position:stored:${suffix}`,
@@ -383,7 +419,11 @@ async function positionInput(suffix = "0001") {
       min_margin_runway_ms: 3_600_000,
       max_hedge_error_micro_usdc: 0,
       max_data_age_ms: 30_000,
+      max_contract_data_skew_ms: 2_000,
+      max_index_price_divergence_bps: 25,
+      max_mark_price_divergence_bps: 50,
       allow_migration: false,
+      ...riskOverrides,
     },
   }, { ownerCommitment: OWNER, nowMs: NOW });
 }
@@ -421,6 +461,20 @@ function opportunity() {
     live_creation_ready: true,
     long_margin_runway_ms: 7_200_000,
     short_margin_runway_ms: 7_200_000,
+  };
+}
+
+function monitoringOpportunity(checkedAtMs, projectedNetValueBps, overrides = {}) {
+  return {
+    checked_at_ms: checkedAtMs,
+    projected_net_value_bps: projectedNetValueBps,
+    contract_data_skew_ms: 0,
+    max_contract_data_skew_ms: 2_000,
+    index_price_divergence_bps: 0,
+    mark_price_divergence_bps: 0,
+    max_index_price_divergence_bps: 25,
+    max_mark_price_divergence_bps: 50,
+    ...overrides,
   };
 }
 

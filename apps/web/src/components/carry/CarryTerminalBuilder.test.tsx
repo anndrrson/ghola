@@ -102,6 +102,11 @@ describe("CarryTerminalBuilder", () => {
     }));
     expect(api.createCarryPosition).toHaveBeenCalledWith(expect.objectContaining({
       position_input: expect.objectContaining({
+        risk_mandate: expect.objectContaining({
+          max_contract_data_skew_ms: 2_000,
+          max_index_price_divergence_bps: 25,
+          max_mark_price_divergence_bps: 50,
+        }),
         mandate_authorization: expect.objectContaining({ mandate_commitment: expect.stringMatching(/^0x[0-9a-f]{64}$/) }),
       }),
     }));

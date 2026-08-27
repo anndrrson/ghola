@@ -520,6 +520,46 @@ function applyEvent(position, event, nowMs) {
       position.terminal_reason = "observation_stale";
       return;
     }
+    const contractDataSkewMs = event.contract_data_skew_ms;
+    const indexPriceDivergenceBps = event.index_price_divergence_bps;
+    const markPriceDivergenceBps = event.mark_price_divergence_bps;
+    const observedMaxContractDataSkewMs = event.max_contract_data_skew_ms;
+    const observedMaxIndexPriceDivergenceBps = event.max_index_price_divergence_bps;
+    const observedMaxMarkPriceDivergenceBps = event.max_mark_price_divergence_bps;
+    if (![contractDataSkewMs, indexPriceDivergenceBps, markPriceDivergenceBps,
+      observedMaxContractDataSkewMs, observedMaxIndexPriceDivergenceBps, observedMaxMarkPriceDivergenceBps]
+      .every((value) => Number.isSafeInteger(value) && value >= 0)) {
+      position.status = "frozen";
+      position.next_actions = ["reconcile_only"];
+      position.retry_permitted = false;
+      position.terminal_reason = "contract_equivalence_unverifiable";
+      return;
+    }
+    const maxContractDataSkewMs = Math.min(
+      position.risk_mandate.max_contract_data_skew_ms ?? 2_000,
+      observedMaxContractDataSkewMs,
+    );
+    const maxIndexPriceDivergenceBps = Math.min(
+      position.risk_mandate.max_index_price_divergence_bps ?? 25,
+      observedMaxIndexPriceDivergenceBps,
+    );
+    const maxMarkPriceDivergenceBps = Math.min(
+      position.risk_mandate.max_mark_price_divergence_bps ?? 50,
+      observedMaxMarkPriceDivergenceBps,
+    );
+    if (contractDataSkewMs > maxContractDataSkewMs) {
+      position.status = "exiting";
+      position.next_actions = ["reduce_only_close_both_legs"];
+      position.terminal_reason = "contract_data_skew_outside_mandate";
+      return;
+    }
+    if (indexPriceDivergenceBps > maxIndexPriceDivergenceBps
+      || markPriceDivergenceBps > maxMarkPriceDivergenceBps) {
+      position.status = "exiting";
+      position.next_actions = ["reduce_only_close_both_legs"];
+      position.terminal_reason = "contract_basis_outside_mandate";
+      return;
+    }
     const runways = object(event.margin_runway_ms_by_venue, "carry_observation_runways");
     const statuses = event.margin_runway_status_by_venue === undefined
       ? null
@@ -620,13 +660,23 @@ function migrationActions(position, event) {
 
 export function normalizeCarryRiskMandate(value) {
   const raw = object(value, "carry_risk_mandate_required");
+  const maxDataAgeMs = boundedInteger(raw.max_data_age_ms, 250, 300_000, "carry_mandate_data_age");
   return deepFreeze({
     min_expected_net_benefit_bps: boundedInteger(raw.min_expected_net_benefit_bps, 0, 10_000, "carry_mandate_minimum_net"),
     exit_net_value_bps: boundedInteger(raw.exit_net_value_bps, -10_000, 10_000, "carry_mandate_exit_net"),
     exit_after_consecutive_observations: boundedInteger(raw.exit_after_consecutive_observations, 1, 100, "carry_mandate_exit_observations"),
     min_margin_runway_ms: boundedInteger(raw.min_margin_runway_ms, 0, 366 * DAY_MS, "carry_mandate_margin_runway"),
     max_hedge_error_micro_usdc: nonNegativeInteger(raw.max_hedge_error_micro_usdc, "carry_mandate_hedge_error"),
-    max_data_age_ms: boundedInteger(raw.max_data_age_ms, 250, 300_000, "carry_mandate_data_age"),
+    max_data_age_ms: maxDataAgeMs,
+    ...(raw.max_contract_data_skew_ms === undefined ? {} : {
+      max_contract_data_skew_ms: boundedInteger(raw.max_contract_data_skew_ms, 0, maxDataAgeMs, "carry_mandate_contract_data_skew"),
+    }),
+    ...(raw.max_index_price_divergence_bps === undefined ? {} : {
+      max_index_price_divergence_bps: boundedInteger(raw.max_index_price_divergence_bps, 0, 10_000, "carry_mandate_index_price_divergence"),
+    }),
+    ...(raw.max_mark_price_divergence_bps === undefined ? {} : {
+      max_mark_price_divergence_bps: boundedInteger(raw.max_mark_price_divergence_bps, 0, 10_000, "carry_mandate_mark_price_divergence"),
+    }),
     allow_migration: raw.allow_migration === true,
     owner_only_operations: Object.freeze(["fund", "withdraw", "transfer"]),
   });

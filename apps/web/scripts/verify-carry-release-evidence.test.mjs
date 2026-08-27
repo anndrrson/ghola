@@ -33,6 +33,9 @@ async function fixture() {
       min_margin_runway_ms: 21_600_000,
       max_hedge_error_micro_usdc: 10_000,
       max_data_age_ms: 60_000,
+      max_contract_data_skew_ms: 2_000,
+      max_index_price_divergence_bps: 25,
+      max_mark_price_divergence_bps: 50,
       allow_migration: false,
       owner_only_operations: ["fund", "withdraw", "transfer"],
     },
@@ -230,6 +233,14 @@ test("rejects same-ticker proof whose contract basis exceeds the verified budget
   evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
   await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /contract_index_basis_exceeded/);
+});
+
+test("rejects contract limits that differ from the signed risk mandate", async () => {
+  const evidence = await fixture();
+  evidence.contract_equivalence.max_index_price_divergence_bps = 26;
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /signed_index_basis_limit_mismatch/);
 });
 
 test("accepts a healthy null runway only as verified zero modeled burn", async () => {

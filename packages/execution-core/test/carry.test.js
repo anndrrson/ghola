@@ -4,6 +4,7 @@ import {
   appendCarryValueLedgerEntry,
   advanceCarryPosition,
   calculateMarginRunway,
+  carryRiskMandateMessage,
   createCarryPosition,
   createCarryValueLedger,
   evaluateCarryOpportunity,
@@ -88,6 +89,9 @@ function position() {
       min_margin_runway_ms: 6 * HOUR,
       max_hedge_error_micro_usdc: 1_000,
       max_data_age_ms: 30_000,
+      max_contract_data_skew_ms: 2_000,
+      max_index_price_divergence_bps: 25,
+      max_mark_price_divergence_bps: 50,
       allow_migration: true,
     },
   };
@@ -127,6 +131,18 @@ function mandateAuthorization(input, overrides = {}) {
 
 function event(sequence, type, overrides = {}) {
   return { version: 1, event_id: `event:${String(sequence).padStart(4, "0")}`, sequence, type, ...overrides };
+}
+
+function contractObservation(overrides = {}) {
+  return {
+    contract_data_skew_ms: 0,
+    max_contract_data_skew_ms: 2_000,
+    index_price_divergence_bps: 0,
+    mark_price_divergence_bps: 0,
+    max_index_price_divergence_bps: 25,
+    max_mark_price_divergence_bps: 50,
+    ...overrides,
+  };
 }
 
 function activePositionForObservation() {
@@ -354,6 +370,37 @@ test("margin runway exposes owner response risk without granting transfer author
   assert.equal(critical.owner_action_required, true);
 });
 
+test("legacy signed mandates remain verifiable without newly added contract-limit fields", () => {
+  const input = {
+    version: 1,
+    kind: "ghola_carry_risk_mandate",
+    strategy_id: "delta_neutral_carry_v1",
+    network: "mainnet",
+    owner_commitment: "owner:carry:legacy:0001",
+    owner_wallet_address: `0x${"11".repeat(20)}`,
+    position_id: "carry:position:legacy:0001",
+    mandate_id: "carry:mandate:legacy:0001",
+    asset: "BTC",
+    long_venue_id: "hyperliquid",
+    short_venue_id: "lighter",
+    target_notional_micro_usdc: 10_000_000,
+    risk_mandate: {
+      min_expected_net_benefit_bps: 5,
+      exit_net_value_bps: 0,
+      exit_after_consecutive_observations: 2,
+      min_margin_runway_ms: 6 * HOUR,
+      max_hedge_error_micro_usdc: 1_000,
+      max_data_age_ms: 30_000,
+      allow_migration: false,
+    },
+    issued_at_ms: NOW - 1_000,
+    expires_at_ms: NOW + 30 * DAY,
+  };
+  const normalized = normalizeCarryRiskMandatePayload(input);
+  assert.equal(Object.hasOwn(normalized.risk_mandate, "max_contract_data_skew_ms"), false);
+  assert.equal(carryRiskMandateMessage(input).includes("max_contract_data_skew_ms"), false);
+});
+
 test("two confirmed carry flips trigger a deterministic reduce-only exit", () => {
   let current = position();
   current = advanceCarryPosition({
@@ -376,6 +423,7 @@ test("two confirmed carry flips trigger a deterministic reduce-only exit", () =>
   current = advanceCarryPosition({
     position: current,
     event: event(3, "observation", {
+      ...contractObservation(),
       as_of_ms: NOW + 3,
       expected_net_value_bps: -1,
       margin_runway_ms_by_venue: { hyperliquid: 30 * HOUR, lighter: 30 * HOUR },
@@ -386,6 +434,7 @@ test("two confirmed carry flips trigger a deterministic reduce-only exit", () =>
   current = advanceCarryPosition({
     position: current,
     event: event(4, "observation", {
+      ...contractObservation(),
       as_of_ms: NOW + 4,
       expected_net_value_bps: -1,
       margin_runway_ms_by_venue: { hyperliquid: 30 * HOUR, lighter: 30 * HOUR },
@@ -415,6 +464,7 @@ test("one margin runway breach triggers an immediate reduce-only exit", () => {
   current = advanceCarryPosition({
     position: current,
     event: event(3, "observation", {
+      ...contractObservation(),
       as_of_ms: NOW + 3,
       expected_net_value_bps: 100,
       margin_runway_ms_by_venue: { hyperliquid: HOUR, lighter: 30 * HOUR },
@@ -426,10 +476,47 @@ test("one margin runway breach triggers an immediate reduce-only exit", () => {
   assert.deepEqual(current.next_actions, ["reduce_only_close_both_legs"]);
 });
 
+test("signed contract skew and basis limits trigger immediate reduce-only exits", () => {
+  for (const [metrics, reason] of [
+    [contractObservation({ contract_data_skew_ms: 2_001 }), "contract_data_skew_outside_mandate"],
+    [contractObservation({ index_price_divergence_bps: 26 }), "contract_basis_outside_mandate"],
+  ]) {
+    const result = advanceCarryPosition({
+      position: activePositionForObservation(),
+      event: event(3, "observation", {
+        ...metrics,
+        as_of_ms: NOW + 3,
+        expected_net_value_bps: 100,
+        margin_runway_ms_by_venue: { hyperliquid: 30 * HOUR, lighter: 30 * HOUR },
+      }),
+      now_ms: NOW + 3,
+    });
+    assert.equal(result.position.status, "exiting");
+    assert.equal(result.position.terminal_reason, reason);
+    assert.deepEqual(result.position.next_actions, ["reduce_only_close_both_legs"]);
+  }
+});
+
+test("missing contract-equivalence evidence freezes without retry", () => {
+  const result = advanceCarryPosition({
+    position: activePositionForObservation(),
+    event: event(3, "observation", {
+      as_of_ms: NOW + 3,
+      expected_net_value_bps: 100,
+      margin_runway_ms_by_venue: { hyperliquid: 30 * HOUR, lighter: 30 * HOUR },
+    }),
+    now_ms: NOW + 3,
+  });
+  assert.equal(result.position.status, "frozen");
+  assert.equal(result.position.terminal_reason, "contract_equivalence_unverifiable");
+  assert.equal(result.position.retry_permitted, false);
+});
+
 test("an unverifiable null margin runway triggers an immediate reduce-only exit", () => {
   const result = advanceCarryPosition({
     position: activePositionForObservation(),
     event: event(3, "observation", {
+      ...contractObservation(),
       as_of_ms: NOW + 3,
       expected_net_value_bps: 100,
       margin_runway_ms_by_venue: { hyperliquid: null, lighter: 30 * HOUR },
@@ -445,6 +532,7 @@ test("a verified healthy null runway represents zero modeled burn, not missing e
   const result = advanceCarryPosition({
     position: activePositionForObservation(),
     event: event(3, "observation", {
+      ...contractObservation(),
       as_of_ms: NOW + 3,
       expected_net_value_bps: 100,
       margin_runway_ms_by_venue: { hyperliquid: null, lighter: 30 * HOUR },
@@ -461,6 +549,7 @@ test("an expired signed mandate permits only a reduce-only exit", () => {
   const result = advanceCarryPosition({
     position: active,
     event: event(3, "observation", {
+      ...contractObservation(),
       as_of_ms: NOW + 31 * DAY,
       expected_net_value_bps: 100,
       margin_runway_ms_by_venue: { hyperliquid: 30 * HOUR, lighter: 30 * HOUR },

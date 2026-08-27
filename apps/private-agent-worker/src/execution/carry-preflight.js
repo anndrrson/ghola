@@ -5,6 +5,7 @@ import {
   evaluatePerpContractPairBasis,
   exactQuantityRecoveryAdapter,
   isCarryExecutionVenue,
+  normalizeCarryRiskMandate,
   venueAdapterCapability,
 } from "@ghola/execution-core";
 import { fetchPerpShadowVenue } from "./perp-shadow-adapters.js";
@@ -33,10 +34,26 @@ export async function preflightCarryPair({
     throw carryError("carry_pair_not_execution_qualified", 422);
   }
 
+  const phase = body.phase === "monitoring" ? "monitoring" : "opening";
   const observedAt = now();
-  const maxContractDataSkewMs = carryMarketDataSkewMs(env);
-  const maxIndexPriceDivergenceBps = carryBasisBudgetBps(env, "PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS", 25);
-  const maxMarkPriceDivergenceBps = carryBasisBudgetBps(env, "PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS", 50);
+  const runtimeMaxContractDataSkewMs = carryMarketDataSkewMs(env);
+  const runtimeMaxIndexPriceDivergenceBps = carryBasisBudgetBps(env, "PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS", 25);
+  const runtimeMaxMarkPriceDivergenceBps = carryBasisBudgetBps(env, "PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS", 50);
+  const monitoringMandate = phase === "monitoring" && body.risk_mandate
+    ? normalizeCarryRiskMandate(body.risk_mandate)
+    : null;
+  const maxContractDataSkewMs = Math.min(
+    runtimeMaxContractDataSkewMs,
+    monitoringMandate?.max_contract_data_skew_ms ?? runtimeMaxContractDataSkewMs,
+  );
+  const maxIndexPriceDivergenceBps = Math.min(
+    runtimeMaxIndexPriceDivergenceBps,
+    monitoringMandate?.max_index_price_divergence_bps ?? runtimeMaxIndexPriceDivergenceBps,
+  );
+  const maxMarkPriceDivergenceBps = Math.min(
+    runtimeMaxMarkPriceDivergenceBps,
+    monitoringMandate?.max_mark_price_divergence_bps ?? runtimeMaxMarkPriceDivergenceBps,
+  );
   const [longSnapshots, shortSnapshots] = await Promise.all([
     fetchVenue({ venue_id: longVenue, assets: [asset], now_ms: observedAt, max_age_ms: 60_000 }),
     fetchVenue({ venue_id: shortVenue, assets: [asset], now_ms: observedAt, max_age_ms: 60_000 }),
@@ -44,7 +61,8 @@ export async function preflightCarryPair({
   const longSnapshot = selectSnapshot(longSnapshots, asset, longVenue);
   const shortSnapshot = selectSnapshot(shortSnapshots, asset, shortVenue);
   const contractDataSkewMs = Math.abs(longSnapshot.as_of_ms - shortSnapshot.as_of_ms);
-  if (!Number.isSafeInteger(contractDataSkewMs) || contractDataSkewMs > maxContractDataSkewMs) {
+  if (!Number.isSafeInteger(contractDataSkewMs)
+    || (phase === "opening" && contractDataSkewMs > maxContractDataSkewMs)) {
     throw carryError("carry_market_data_skew_exceeded", 409);
   }
   const contractPairBasis = evaluatePerpContractPairBasis({
@@ -54,7 +72,7 @@ export async function preflightCarryPair({
     max_index_price_divergence_bps: maxIndexPriceDivergenceBps,
     max_mark_price_divergence_bps: maxMarkPriceDivergenceBps,
   });
-  if (!contractPairBasis.eligible) {
+  if (phase === "opening" && !contractPairBasis.eligible) {
     throw carryError(`carry_contract_equivalence_failed:${contractPairBasis.reasons[0]}`, 409);
   }
   const legs = [
@@ -94,7 +112,6 @@ export async function preflightCarryPair({
     return { ...leg, receipt, account, account_snapshot: accountSnapshot };
   }));
 
-  const phase = body.phase === "monitoring" ? "monitoring" : "opening";
   const modeled = modelCarryPairPreflight({
     evidence,
     notional_usd: notionalUsd,

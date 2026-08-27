@@ -148,6 +148,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("preflightTest", "rejects cross-venue market data skew before account or order verification", "carry_market_data_skew_test_missing");
   requireText("preflight", "carry_contract_equivalence_failed", "carry_contract_equivalence_gate_missing");
   requireText("preflightTest", "rejects same-ticker contract basis divergence before account or order verification", "carry_contract_equivalence_test_missing");
+  requireText("preflightTest", "monitoring measures a signed basis breach without submitting or hiding it as unavailable", "carry_monitor_contract_basis_test_missing");
   requireText("preflight", "collateral_basis", "collateral_basis_model_missing");
   requireText("preflight", "export async function preflightCarryExecutionMatrix", "carry_three_venue_no_submit_matrix_missing");
   requireText("preflightTest", "verifies all three execution venues through one no-broadcast matrix", "carry_three_venue_no_submit_matrix_test_missing");
@@ -164,6 +165,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarry", "carryRiskMandateMessage", "carry_signed_mandate_message_missing");
   requireText("coreCarry", "carry_mandate_position_mismatch", "carry_signed_mandate_position_binding_missing");
   requireText("coreCarry", "risk_mandate_expired", "carry_signed_mandate_expiry_exit_missing");
+  requireText("coreCarry", "contract_basis_outside_mandate", "carry_signed_basis_exit_missing");
+  requireText("coreCarryTest", "signed contract skew and basis limits trigger immediate reduce-only exits", "carry_signed_basis_exit_test_missing");
   requireText("workerMandate", "recoverMessageAddress", "carry_worker_signature_recovery_missing");
   requireText("workerMandate", "carry_mandate_owner_mismatch", "carry_worker_owner_binding_missing");
   requireText("workerMandate", "carry_mandate_commitment_mismatch", "carry_worker_commitment_binding_missing");
@@ -221,6 +224,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "margin_runway_status_by_venue", "carry_monitor_runway_status_missing");
   requireText("positions", 'return "carry_market_data_skew_exceeded"', "carry_storage_skew_gate_missing");
   requireText("positions", 'return "carry_contract_basis_exceeded"', "carry_storage_contract_basis_gate_missing");
+  requireText("positions", 'return "carry_unsigned_contract_basis_limit"', "carry_storage_signed_basis_gate_missing");
   requireText("positionsTest", "refuses storage until venue accounts, synchronized equivalent contracts, and margin runways pass", "carry_storage_skew_test_missing");
   requireText("positionsTest", "margin_runway_status_by_venue.hyperliquid", "carry_monitor_runway_status_test_missing");
   requireText("releaseMaterialTest", "refuses release evidence without verified margin-runway status", "carry_release_runway_test_missing");
@@ -229,6 +233,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifierTest", "rejects margin-runway proof without verified status", "carry_evidence_runway_status_test_missing");
   requireText("evidenceVerifier", "contract_index_basis_exceeded", "carry_evidence_contract_basis_gate_missing");
   requireText("evidenceVerifierTest", "rejects same-ticker proof whose contract basis exceeds the verified budget", "carry_evidence_contract_basis_test_missing");
+  requireText("evidenceVerifierTest", "rejects contract limits that differ from the signed risk mandate", "carry_evidence_signed_basis_test_missing");
   requireText("executor", "carry_qualification_pilot_confirmation_required", "pilot_confirmation_gate_missing");
   requireText("executor", "submission_ambiguous", "carry_ambiguity_freeze_missing");
   requireText("executor", "carry_exit_not_flat_or_open_orders_nonzero", "carry_final_flat_gate_missing");

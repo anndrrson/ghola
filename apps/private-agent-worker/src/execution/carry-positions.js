@@ -107,6 +107,9 @@ function validateCreationOpportunity(positionInput, opportunity, nowMs, qualific
   if (opportunity.contract_data_skew_ms > opportunity.max_contract_data_skew_ms) {
     return "carry_market_data_skew_exceeded";
   }
+  if (positionInput?.risk_mandate?.max_contract_data_skew_ms !== opportunity.max_contract_data_skew_ms) {
+    return "carry_unsigned_contract_data_skew_limit";
+  }
   const contractBasisValues = [
     opportunity.index_price_divergence_bps,
     opportunity.mark_price_divergence_bps,
@@ -119,6 +122,10 @@ function validateCreationOpportunity(positionInput, opportunity, nowMs, qualific
   if (opportunity.index_price_divergence_bps > opportunity.max_index_price_divergence_bps
     || opportunity.mark_price_divergence_bps > opportunity.max_mark_price_divergence_bps) {
     return "carry_contract_basis_exceeded";
+  }
+  if (positionInput?.risk_mandate?.max_index_price_divergence_bps !== opportunity.max_index_price_divergence_bps
+    || positionInput?.risk_mandate?.max_mark_price_divergence_bps !== opportunity.max_mark_price_divergence_bps) {
+    return "carry_unsigned_contract_basis_limit";
   }
   if (typeof opportunity.economic_equivalence_id !== "string"
     || opportunity.economic_equivalence_id.length < 8
@@ -375,6 +382,7 @@ export async function observeStoredCarryPosition({
         short_venue_id: position.short_venue_id,
         notional_usd: String(position.target_notional_micro_usdc / 1_000_000),
         horizon_days: String(Math.max(1, Math.ceil(Number(owned.record.opportunity?.horizon_ms || 86_400_000) / 86_400_000))),
+        risk_mandate: position.risk_mandate,
         venue_access: venueAccess,
       },
       recipient,
@@ -414,6 +422,12 @@ export async function observeStoredCarryPosition({
       type: "observation",
       as_of_ms: opportunity.checked_at_ms,
       expected_net_value_bps: opportunity.projected_net_value_bps,
+      contract_data_skew_ms: opportunity.contract_data_skew_ms,
+      max_contract_data_skew_ms: opportunity.max_contract_data_skew_ms,
+      index_price_divergence_bps: opportunity.index_price_divergence_bps,
+      mark_price_divergence_bps: opportunity.mark_price_divergence_bps,
+      max_index_price_divergence_bps: opportunity.max_index_price_divergence_bps,
+      max_mark_price_divergence_bps: opportunity.max_mark_price_divergence_bps,
       margin_runway_ms_by_venue: runways,
       margin_runway_status_by_venue: runwayStatuses,
       qualification_reasons: observation.qualification_reasons,
@@ -635,6 +649,12 @@ function publicObservation(event) {
   return Object.freeze({
     as_of_ms: event.as_of_ms,
     expected_net_value_bps: event.expected_net_value_bps,
+    contract_data_skew_ms: event.contract_data_skew_ms,
+    max_contract_data_skew_ms: event.max_contract_data_skew_ms,
+    index_price_divergence_bps: event.index_price_divergence_bps,
+    mark_price_divergence_bps: event.mark_price_divergence_bps,
+    max_index_price_divergence_bps: event.max_index_price_divergence_bps,
+    max_mark_price_divergence_bps: event.max_mark_price_divergence_bps,
     margin_runway_ms_by_venue: { ...(event.margin_runway_ms_by_venue || {}) },
     margin_runway_status_by_venue: { ...(event.margin_runway_status_by_venue || {}) },
     qualification_reasons: Array.isArray(event.qualification_reasons) ? [...event.qualification_reasons] : [],

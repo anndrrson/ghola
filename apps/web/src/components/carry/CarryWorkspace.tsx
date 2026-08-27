@@ -206,6 +206,9 @@ export function CarryWorkspace() {
       min_margin_runway_ms: 6 * 3_600_000,
       max_hedge_error_micro_usdc: 10_000,
       max_data_age_ms: 60_000,
+      max_contract_data_skew_ms: 2_000,
+      max_index_price_divergence_bps: 25,
+      max_mark_price_divergence_bps: 50,
       allow_migration: false,
     };
     setPositionAction("Saving qualified Carry Position…");

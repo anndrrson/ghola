@@ -100,6 +100,12 @@ export async function verifyCarryReleaseEvidence(evidence) {
     && ["fund", "withdraw", "transfer"].every((item) => signedMandate.risk_mandate.owner_only_operations.includes(item)),
   "signed_mandate_owner_only_operations_missing");
   const maxDataAgeMs = positiveInteger(signedMandate?.risk_mandate?.max_data_age_ms);
+  fail(signedMandate?.risk_mandate?.max_contract_data_skew_ms === maxDataSkewMs,
+    "signed_contract_data_skew_limit_mismatch");
+  fail(signedMandate?.risk_mandate?.max_index_price_divergence_bps === maxIndexDivergenceBps,
+    "signed_index_basis_limit_mismatch");
+  fail(signedMandate?.risk_mandate?.max_mark_price_divergence_bps === maxMarkDivergenceBps,
+    "signed_mark_basis_limit_mismatch");
   fail(equivalenceCheckedAt > 0 && equivalenceCheckedAt <= createdAt
     && createdAt - equivalenceCheckedAt <= maxDataAgeMs, "contract_equivalence_timestamp_invalid");
   fail(maxDataSkewMs !== null && maxDataSkewMs <= maxDataAgeMs, "contract_data_skew_budget_invalid");
