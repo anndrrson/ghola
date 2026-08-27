@@ -105,7 +105,9 @@ export function buildPairCandidates(venues: CarryVenueShadow[], allowedVenueIds?
     if (allowed && !allowed.has(venue.venue_id)) continue;
     for (const snapshot of venue.snapshots || []) {
       if (!venue.ok || snapshot.stale || snapshot.status === "quarantined" || snapshot.funding_rate_e12_per_interval == null || !snapshot.funding_interval_ms) continue;
-      byAsset.set(snapshot.asset, [...(byAsset.get(snapshot.asset) || []), snapshot]);
+      const snapshots = byAsset.get(snapshot.asset);
+      if (snapshots) snapshots.push(snapshot);
+      else byAsset.set(snapshot.asset, [snapshot]);
     }
   }
   const result: CarryCandidate[] = [];
@@ -166,9 +168,12 @@ export function applyCarryLivePatches(
   nowMs = Date.now(),
 ): CarryVenueShadow[] {
   if (patches.length === 0) return venues;
-  const byMarket = new Map(patches
-    .filter((patch) => nowMs - patch.received_at_ms <= CARRY_LIVE_PATCH_MAX_AGE_MS)
-    .map((patch) => [`${patch.venue_id}:${patch.asset}`, patch]));
+  const byMarket = new Map<string, CarryLiveMarketPatch>();
+  for (const patch of patches) {
+    if (nowMs - patch.received_at_ms <= CARRY_LIVE_PATCH_MAX_AGE_MS) {
+      byMarket.set(`${patch.venue_id}:${patch.asset}`, patch);
+    }
+  }
   if (byMarket.size === 0) return venues;
   return venues.map((venue) => {
     let changed = false;
@@ -219,10 +224,13 @@ export function quoteCarryCandidate(
   const safeHours = Number.isFinite(horizonHours) ? Math.max(1 / 60, horizonHours) : 24;
   const grossDailyUsd = safeNotional * (candidate.grossAnnualBps / 10_000) / 365;
   const grossFundingUsd = grossDailyUsd * safeHours / 24;
-  const legs = [candidate.long, candidate.short];
-  const exactCosts = legs.every((leg) => leg.taker_fee_bps != null && spreadBps(leg) != null);
+  const longSpreadBps = spreadBps(candidate.long);
+  const shortSpreadBps = spreadBps(candidate.short);
+  const exactCosts = candidate.long.taker_fee_bps != null && longSpreadBps != null
+    && candidate.short.taker_fee_bps != null && shortSpreadBps != null;
   const roundTripCostBps = exactCosts
-    ? legs.reduce((sum, leg) => sum + 2 * leg.taker_fee_bps! + spreadBps(leg)!, 0)
+    ? 2 * candidate.long.taker_fee_bps! + longSpreadBps!
+      + 2 * candidate.short.taker_fee_bps! + shortSpreadBps!
     : null;
   const roundTripCostUsd = roundTripCostBps == null ? null : safeNotional * roundTripCostBps / 10_000;
   const expectedNetUsd = roundTripCostUsd == null ? null : grossFundingUsd - roundTripCostUsd;
