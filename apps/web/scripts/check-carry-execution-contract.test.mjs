@@ -942,6 +942,19 @@ test("rejects client-reachable Carry lifecycle or realized-value mutation", () =
   );
 });
 
+test("rejects funding history that cannot resume a bounded backfill", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replace(
+        "if (read.cursor_ms > priorCursor) cursors[read.venue_id] = read.cursor_ms",
+        "if (read.caught_up) cursors[read.venue_id] = nowMs",
+      ),
+    }),
+    /carry_funding_backfill_cursor_resume_missing/,
+  );
+});
+
 test("rejects release proof without exact venue-leg funding reconciliation", () => {
   assert.throws(
     () => checkCarryExecutionContract({

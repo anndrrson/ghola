@@ -957,7 +957,8 @@ export async function collectStoredCarryFundingEvidence({ state, ownerCommitment
       venueStatus[read.venue_id] = "funding_settlement_persistence_failed";
       continue;
     }
-    if (read.caught_up) cursors[read.venue_id] = nowMs;
+    const priorCursor = Number(cursors[read.venue_id] || initial.position.created_at_ms || nowMs);
+    if (read.cursor_ms > priorCursor) cursors[read.venue_id] = read.cursor_ms;
     venueStatus[read.venue_id] = read.caught_up ? "current" : "history_backfill_pending";
   }
   let storedRecord = null;
@@ -1024,6 +1025,7 @@ async function readVenueFundingSettlements({ venueId, asset, access, startMs, en
     return {
       ok: true,
       venue_id: venueId,
+      cursor_ms: cursor,
       caught_up: cursor >= endMs,
       entries,
     };

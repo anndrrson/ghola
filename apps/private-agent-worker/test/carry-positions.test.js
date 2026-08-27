@@ -673,6 +673,62 @@ test("monitoring reads both venue funding ledgers concurrently and commits them 
   assert.deepEqual(result.record.value_ledger.entries.map((entry) => entry.sequence), [1, 2]);
 });
 
+test("authoritative funding backfill resumes across ticks for a year-long Carry Position", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-funding-backfill-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(
+    state,
+    "0001",
+    {},
+    monitoringContext(),
+    NOW + (366 * 86_400_000),
+  );
+  const day = 86_400_000;
+  const firstNow = NOW + (200 * day);
+  const reads = [];
+  const observe = (nowMs) => observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => ({
+      economic_opportunity: monitoringOpportunity(nowMs, 9),
+      margin_runways: [
+        monitoringRunway("hyperliquid", { as_of_ms: nowMs }),
+        monitoringRunway("lighter", { as_of_ms: nowMs }),
+      ],
+      qualification_reasons: [],
+    }),
+    readFundingSettlements: async ({ body }) => {
+      reads.push({ venue_id: body.venue_id, start_time_ms: body.start_time_ms, end_time_ms: body.end_time_ms });
+      return [];
+    },
+    now_ms: nowMs,
+  });
+
+  const first = await observe(firstNow);
+  assert.equal(first.ok, true);
+  assert.equal(first.funding.status, "pending");
+  assert.deepEqual(first.funding.venue_status, {
+    hyperliquid: "history_backfill_pending",
+    lighter: "history_backfill_pending",
+  });
+  assert.equal(first.record.value_evidence.funding.cursor_ms_by_venue.hyperliquid, NOW + (112 * day));
+  assert.equal(first.record.value_evidence.funding.cursor_ms_by_venue.lighter, NOW + (112 * day));
+  assert.equal(reads.filter((item) => item.venue_id === "hyperliquid").length, 16);
+  assert.equal(reads.filter((item) => item.venue_id === "lighter").length, 16);
+
+  reads.length = 0;
+  const second = await observe(firstNow + 1);
+  assert.equal(second.ok, true);
+  assert.equal(second.funding.status, "current");
+  assert.equal(second.record.value_evidence.funding.cursor_ms_by_venue.hyperliquid, firstNow + 1);
+  assert.equal(second.record.value_evidence.funding.cursor_ms_by_venue.lighter, firstNow + 1);
+  assert.equal(reads.find((item) => item.venue_id === "hyperliquid")?.start_time_ms, NOW + (112 * day));
+  assert.equal(reads.find((item) => item.venue_id === "lighter")?.start_time_ms, NOW + (112 * day));
+});
+
 test("monitoring canonicalizes settlement order and rejects a changed replay", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-funding-replay-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -922,11 +978,17 @@ test("portfolio capital endpoint fails closed when an active position lacks moni
   assert.equal(value.report.capital_efficiency.potential_new_cash_avoided_micro_usdc, null);
 });
 
-async function activePosition(state, suffix = "0001", riskOverrides = {}, context = monitoringContext()) {
+async function activePosition(
+  state,
+  suffix = "0001",
+  riskOverrides = {},
+  context = monitoringContext(),
+  expiresAtMs = NOW + (30 * 86_400_000),
+) {
   const created = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
-    position_input: await positionInput(suffix, riskOverrides),
+    position_input: await positionInput(suffix, riskOverrides, expiresAtMs),
     opportunity: opportunity(),
     monitoring_context: context,
     now_ms: NOW,
@@ -945,7 +1007,7 @@ async function activePosition(state, suffix = "0001", riskOverrides = {}, contex
   return record;
 }
 
-async function positionInput(suffix = "0001", riskOverrides = {}) {
+async function positionInput(suffix = "0001", riskOverrides = {}, expiresAtMs = NOW + (30 * 86_400_000)) {
   return signedCarryPositionInput({
     version: 1,
     position_id: `carry:position:stored:${suffix}`,
@@ -967,7 +1029,7 @@ async function positionInput(suffix = "0001", riskOverrides = {}) {
       allow_migration: false,
       ...riskOverrides,
     },
-  }, { ownerCommitment: OWNER, nowMs: NOW });
+  }, { ownerCommitment: OWNER, nowMs: NOW, expiresAtMs });
 }
 
 function opportunity(overrides = {}) {

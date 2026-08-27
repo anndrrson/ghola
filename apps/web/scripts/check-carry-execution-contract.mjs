@@ -534,6 +534,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("server", '"/carry/positions/exit-request"', "carry_owner_exit_route_missing");
   requireText("server", "requestStoredCarryPositionExit", "carry_owner_exit_boundary_missing");
   requireText("positions", "type: \"manual_exit_requested\"", "carry_owner_exit_event_missing");
+  requireText("positions", "if (read.cursor_ms > priorCursor) cursors[read.venue_id] = read.cursor_ms", "carry_funding_backfill_cursor_resume_missing");
+  requireText("positionsTest", "authoritative funding backfill resumes across ticks for a year-long Carry Position", "carry_funding_backfill_resume_test_missing");
   requireText("positionsTest", "requestStoredCarryPositionExit", "carry_owner_exit_boundary_test_missing");
   forbidText("server", '"/carry/positions/events"', "carry_client_lifecycle_mutation_exposed");
   forbidText("server", '"/carry/positions/value-entries"', "carry_client_value_entry_mutation_exposed");
