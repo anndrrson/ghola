@@ -1136,6 +1136,16 @@ test("rejects a terminal whose no-submit matrix drifts from the capability regis
   );
 });
 
+test("rejects a terminal that hides successful pair evidence behind one venue failure", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll("carryFleetGuardSummary", "pendingFleetGuard"),
+    }),
+    /carry_terminal_partial_fleet_evidence_missing/,
+  );
+});
+
 test("rejects a terminal that hides monitored margin runway", () => {
   assert.throws(
     () => checkCarryExecutionContract({

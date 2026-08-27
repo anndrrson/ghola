@@ -265,7 +265,16 @@ describe("CarryTerminalBuilder", () => {
     api.preflightCarryExecutionMatrix.mockResolvedValue({
       ...readyMatrix(),
       no_submit_ready: false,
-      failures: ["pair_not_ready:2"],
+      readiness: undefined,
+      failures: [
+        "pair_check_failed:1:carry_account_not_ready:aster",
+        "pair_check_failed:3:carry_account_not_ready:aster",
+      ],
+      pairs: [
+        { long_venue_id: "hyperliquid", short_venue_id: "aster", no_submit_ready: false, error_code: "carry_account_not_ready:aster" },
+        { long_venue_id: "lighter", short_venue_id: "hyperliquid", no_submit_ready: true, error_code: null },
+        { long_venue_id: "aster", short_venue_id: "lighter", no_submit_ready: false, error_code: "carry_account_not_ready:aster" },
+      ],
     });
     api.preflightCarryPair.mockResolvedValue({
       correlation_id: "ghola-pair-isolated-1234",
@@ -280,7 +289,8 @@ describe("CarryTerminalBuilder", () => {
     expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
     expect(api.preflightCarryPair).toHaveBeenCalledOnce();
     expect(container.textContent).toContain("PAIR PAIR-ISOLATE");
-    expect(container.textContent).toContain("FLEET PENDING");
+    expect(container.textContent).toContain("FLEET 1/3 · ASTER BLOCKED");
+    expect(container.textContent).toContain("1/3 PAIRS · ASTER BLOCKED");
   });
 
   it("consumes the setup handoff once and runs only the no-submit proof", async () => {

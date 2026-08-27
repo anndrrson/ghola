@@ -694,6 +694,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "getCarryExecutionReadiness", "carry_terminal_readiness_restore_missing");
   requireText("webCarryBuilder", "readyStoredReadiness", "carry_terminal_readiness_freshness_missing");
   requireText("webCarryBuilder", "CARRY_EXECUTION_VENUES.every", "carry_terminal_matrix_registry_missing");
+  requireText("webCarryBuilder", "carryFleetGuardSummary", "carry_terminal_partial_fleet_evidence_missing");
+  requireText("webCarryBuilderTest", "FLEET 1/3 · ASTER BLOCKED", "carry_terminal_partial_fleet_evidence_test_missing");
   forbidText("webCarryBuilder", '["hyperliquid", "lighter", "aster"]', "carry_terminal_matrix_registry_duplicated");
   requireText("webCarryBuilder", "preflightCarryPair", "carry_terminal_pair_no_submit_missing");
   requireText("webCarryBuilder", "long_venue=${encodeURIComponent(candidate.long.venue_id)}", "carry_terminal_pair_setup_binding_missing");

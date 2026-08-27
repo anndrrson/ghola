@@ -129,6 +129,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const [notional, setNotional] = useState("11");
   const [days, setDays] = useState("30");
   const [proof, setProof] = useState<Record<string, unknown> | null>(null);
+  const [executionMatrix, setExecutionMatrix] = useState<Record<string, unknown> | null>(null);
   const [readiness, setReadiness] = useState<Record<string, unknown> | null>(null);
   const [records, setRecords] = useState<CarryRecord[]>([]);
   const [portfolioCapitalPlan, setPortfolioCapitalPlan] = useState<Record<string, unknown> | null>(null);
@@ -205,6 +206,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   }, [loadRecords]);
   useEffect(() => {
     setProof(null);
+    setExecutionMatrix(null);
     setMessage(null);
   }, [routeKey]);
   useEffect(() => {
@@ -273,10 +275,12 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const capitalEfficiency = carryCapitalEfficiencySummary(portfolioValueReport);
   const displayedCapital = latestObservation?.capital_action_plan ? capital : openingCapital;
   const restoredReadiness = readyStoredReadiness(readiness, candidate.asset, notional, days);
+  const fleetGuard = carryFleetGuardSummary(executionMatrix, restoredReadiness);
 
   const invalidateProof = (setter: (value: string) => void) => (value: string) => {
     setter(value);
     setProof(null);
+    setExecutionMatrix(null);
     setMessage(null);
   };
 
@@ -287,9 +291,11 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     setBusy("check");
     setMessage(null);
     setProof(null);
+    setExecutionMatrix(null);
     setLastCheckReceipt(`${checkedRoute} · CHECKING · REF ${localReference}`);
+    let activeReadiness = restoredReadiness ? readiness : null;
+    let matrix: Record<string, unknown> | null = null;
     try {
-      let activeReadiness = restoredReadiness ? readiness : null;
       const [pairAttempt, matrixAttempt] = await Promise.allSettled([
         preflightCarryPair({
           asset: candidate.asset,
@@ -306,9 +312,9 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
             horizon_days: days,
           }),
       ]);
-      let matrix: Record<string, unknown> | null = null;
       if (matrixAttempt.status === "fulfilled" && matrixAttempt.value) {
         matrix = asRecord(matrixAttempt.value);
+        setExecutionMatrix(matrix);
       }
       if (matrix && readyNoSubmitMatrix(matrix, candidate.asset, notional, days)) {
         activeReadiness = asRecord(matrix.readiness);
@@ -341,12 +347,13 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
           || stringValue(activeReadiness.evidence_commitment)
           || "ready",
         )
-        : "PENDING";
+        : carryFleetGuardSummary(matrix, false).receipt;
       const pairReference = shortReference(stringValue(result.correlation_id) || localReference);
       setLastCheckReceipt(`${checkedRoute} · ${outcome} · PAIR ${pairReference} · FLEET ${matrixReference}`);
     } catch (error) {
       const failure = carryCheckFailure(error, localReference);
-      setLastCheckReceipt(`${checkedRoute} · ${failure.label} · REF ${failure.reference}`);
+      const matrixReference = carryFleetGuardSummary(matrix, Boolean(activeReadiness)).receipt;
+      setLastCheckReceipt(`${checkedRoute} · ${failure.label} · REF ${failure.reference} · FLEET ${matrixReference}`);
     } finally {
       setBusy(null);
     }
@@ -535,7 +542,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="SOURCE SYNC" value={proofOpportunity ? formatSkew(proofOpportunity.contract_data_skew_ms) : "PENDING"} />
         <Metric label="INDEX BASIS" value={proofOpportunity ? formatBasis(proofOpportunity.index_price_divergence_bps) : "PENDING"} />
         <Metric label="EDGE CONF" value={fundingPersistence.value} tone={fundingPersistence.tone} />
-        <Metric label="FLEET GUARD" value={`${CARRY_EXECUTION_VENUES.length} VENUES · ${restoredReadiness ? "READY" : "PENDING"}`} tone={restoredReadiness ? "good" : undefined} />
+        <Metric label="FLEET GUARD" value={fleetGuard.value} tone={fleetGuard.tone} />
         <Metric label="MONITOR" value={monitorAge(latestObservation?.recorded_at_ms)} />
       </div>
 
@@ -1229,6 +1236,41 @@ function carryCheckFailure(error: unknown, fallback: string) {
   return {
     label: venue ? `${venueName(venue)} NOT READY` : code === "carry_worker_unavailable" ? "WORKER UNAVAILABLE" : "CHECK FAILED",
     reference,
+  };
+}
+
+export function carryFleetGuardSummary(
+  matrix: Record<string, unknown> | null,
+  durableReady: boolean,
+): { value: string; receipt: string; tone?: "good" | "warn" | "bad" } {
+  if (durableReady) {
+    return {
+      value: `${CARRY_EXECUTION_VENUES.length} VENUES · READY`,
+      receipt: "READY",
+      tone: "good",
+    };
+  }
+  const pairs = Array.isArray(matrix?.pairs) ? matrix.pairs.map(asRecord) : [];
+  if (!pairs.length) {
+    return {
+      value: `${CARRY_EXECUTION_VENUES.length} VENUES · PENDING`,
+      receipt: "PENDING",
+    };
+  }
+  const readyPairs = pairs.filter((pair) => pair.no_submit_ready === true).length;
+  const blockedVenues = CARRY_EXECUTION_VENUES.filter((venueId) => pairs.some((pair) => {
+    const errorCode = stringValue(pair.error_code);
+    return errorCode?.split(":").includes(venueId) === true;
+  }));
+  const detail = blockedVenues.length
+    ? `${blockedVenues.map(venueName).join("/")} BLOCKED`
+    : readyPairs === pairs.length
+      ? "EVIDENCE BLOCKED"
+      : "DEGRADED";
+  return {
+    value: `${readyPairs}/${pairs.length} PAIRS · ${detail}`,
+    receipt: `${readyPairs}/${pairs.length} · ${detail}`,
+    tone: readyPairs > 0 ? "warn" : "bad",
   };
 }
 
