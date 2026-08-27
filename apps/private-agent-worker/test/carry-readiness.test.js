@@ -32,25 +32,49 @@ function request() {
 }
 
 function matrix() {
-  return {
+  const venues = CARRY_EXECUTION_VENUES.map((venueId) => ({
+    venue_id: venueId,
     transaction_broadcast: false,
-    venues: CARRY_EXECUTION_VENUES.map((venueId) => ({
-      venue_id: venueId,
+    work_order_commitments: [],
+    verification_commitments: [],
+    checks: {
       transaction_broadcast: false,
-      verification_commitment: `verification_commitment_${venueId}`,
-      checks: {
-        transaction_broadcast: false,
-        account_state_checked: true,
-        order_request_checked: true,
-      },
-    })),
-    pairs: CARRY_EXECUTION_VENUES.flatMap((left, leftIndex) =>
-      CARRY_EXECUTION_VENUES.slice(leftIndex + 1).map((right) => ({
+      account_state_checked: true,
+      order_request_checked: true,
+    },
+  }));
+  const pairs = CARRY_EXECUTION_VENUES.flatMap((left, leftIndex) =>
+    CARRY_EXECUTION_VENUES.slice(leftIndex + 1).map((right) => [left, right]))
+    .map(([left, right], index) => {
+      const pairWorkOrder = `${request().work_order_commitment}_pair_${index + 1}`;
+      const legEvidence = [left, right].map((venueId) => {
+        const workOrderCommitment = `${pairWorkOrder}_${venueId}`;
+        const verificationCommitment = `verification_commitment_${venueId}_${index + 1}`;
+        const venue = venues.find((item) => item.venue_id === venueId);
+        venue.work_order_commitments.push(workOrderCommitment);
+        venue.verification_commitments.push(verificationCommitment);
+        return {
+          venue_id: venueId,
+          work_order_commitment: workOrderCommitment,
+          verification_commitment: verificationCommitment,
+          transaction_broadcast: false,
+          account_state_checked: true,
+          order_request_checked: true,
+        };
+      });
+      return {
         long_venue_id: left,
         short_venue_id: right,
+        work_order_commitment: pairWorkOrder,
         no_submit_ready: true,
         transaction_broadcast: false,
-      }))),
+        leg_evidence: legEvidence,
+      };
+    });
+  return {
+    transaction_broadcast: false,
+    venues,
+    pairs,
   };
 }
 
@@ -129,4 +153,24 @@ test("requires every unique venue pair before three-venue readiness passes", asy
   assert.equal(stored.ok, false);
   assert.ok(stored.readiness.reasons.includes("carry_readiness_pair_count_invalid"));
   assert.ok(stored.readiness.reasons.includes("carry_readiness_pair_unproven:hyperliquid:aster"));
+});
+
+test("binds every pair to both exact no-submit leg receipts", async () => {
+  for (const mutate of [
+    (value) => { value.pairs[0].leg_evidence.pop(); },
+    (value) => { value.pairs[0].leg_evidence[0].work_order_commitment = "wrong_work_order_0001"; },
+    (value) => { value.pairs[0].leg_evidence[0].verification_commitment = "wrong_verification_0001"; },
+    (value) => { value.venues[0].verification_commitments[1] = value.venues[0].verification_commitments[0]; },
+  ]) {
+    const candidate = matrix();
+    mutate(candidate);
+    const stored = await storeCarryExecutionReadiness({
+      state: memoryState(),
+      request: request(),
+      matrix: candidate,
+      now_ms: NOW,
+      env: ENV,
+    });
+    assert.equal(stored.ok, false);
+  }
 });

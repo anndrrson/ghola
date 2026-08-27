@@ -585,6 +585,12 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
     "aster:lighter",
     "hyperliquid:lighter",
   ]);
+  assert.equal(result.pairs.every((pair) => pair.leg_evidence.length === 2), true);
+  assert.equal(result.pairs.every((pair, index) =>
+    pair.work_order_commitment === `carry_matrix_preflight_0001_pair_${index + 1}`
+    && pair.leg_evidence.every((leg) => leg.work_order_commitment === `${pair.work_order_commitment}_${leg.venue_id}`)
+  ), true);
+  assert.equal(result.venues.every((venue) => venue.verification_commitments.length === 2), true);
   assert.equal(result.failures.length, 0);
   assert.equal(result.readiness.ready, true);
   assert.equal(result.readiness.owner_commitment, "owner_commitment_matrix_0001");

@@ -225,17 +225,42 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
     },
   })));
   const evidence = results.flatMap((result) => result.evidence || []);
-  const venueEvidence = venues.map((venueId) => evidence.find((item) => item.venue_id === venueId)).filter(Boolean);
   const failures = [];
   for (const [index, result] of results.entries()) {
     if (result.transaction_broadcast !== false || result.no_submit_ready !== true) failures.push(`pair_not_ready:${index + 1}`);
   }
-  for (const venueId of venues) {
-    const item = venueEvidence.find((entry) => entry.venue_id === venueId);
-    if (!item) failures.push(`venue_evidence_missing:${venueId}`);
-    else if (item.transaction_broadcast !== false || item.checks?.transaction_broadcast !== false) failures.push(`venue_broadcast_unsafe:${venueId}`);
-    else if (item.checks?.order_request_built !== true && item.checks?.order_request_checked !== true) failures.push(`venue_order_shape_unverified:${venueId}`);
-  }
+  const venueEvidence = venues.map((venueId) => {
+    const items = evidence.filter((item) => item.venue_id === venueId);
+    if (items.length !== venues.length - 1) failures.push(`venue_evidence_count_invalid:${venueId}`);
+    for (const item of items) {
+      if (item.transaction_broadcast !== false || item.checks?.transaction_broadcast !== false) failures.push(`venue_broadcast_unsafe:${venueId}`);
+      if (item.checks?.account_state_checked !== true) failures.push(`venue_account_unverified:${venueId}`);
+      if (item.checks?.order_request_built !== true && item.checks?.order_request_checked !== true) failures.push(`venue_order_shape_unverified:${venueId}`);
+      if (!validCommitment(item.work_order_commitment)) failures.push(`venue_work_order_unbound:${venueId}`);
+      if (!validCommitment(item.verification_commitment)) failures.push(`venue_verification_unbound:${venueId}`);
+    }
+    const first = items[0] || { venue_id: venueId };
+    return {
+      ...first,
+      venue_id: venueId,
+      work_order_commitments: items.map((item) => item.work_order_commitment),
+      verification_commitments: items.map((item) => item.verification_commitment),
+      transaction_broadcast: items.length === venues.length - 1
+        && items.every((item) => item.transaction_broadcast === false && item.checks?.transaction_broadcast === false)
+        ? false
+        : null,
+      checks: {
+        transaction_broadcast: items.length === venues.length - 1
+          && items.every((item) => item.checks?.transaction_broadcast === false)
+          ? false
+          : null,
+        account_state_checked: items.length === venues.length - 1
+          && items.every((item) => item.checks?.account_state_checked === true),
+        order_request_checked: items.length === venues.length - 1
+          && items.every((item) => item.checks?.order_request_built === true || item.checks?.order_request_checked === true),
+      },
+    };
+  });
   const matrix = {
     version: 1,
     mode: "carry_execution_no_submit_matrix",
@@ -244,9 +269,18 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
     venues: venueEvidence,
     pairs: results.map((result, index) => ({
       ...pairs[index],
+      work_order_commitment: `${body.work_order_commitment}_pair_${index + 1}`,
       no_submit_ready: result.no_submit_ready === true,
       transaction_broadcast: false,
       qualification_reasons: result.qualification_reasons,
+      leg_evidence: (result.evidence || []).map((item) => ({
+        venue_id: item.venue_id,
+        work_order_commitment: item.work_order_commitment,
+        verification_commitment: item.verification_commitment,
+        transaction_broadcast: item.transaction_broadcast === false && item.checks?.transaction_broadcast === false ? false : null,
+        account_state_checked: item.checks?.account_state_checked === true,
+        order_request_checked: item.checks?.order_request_built === true || item.checks?.order_request_checked === true,
+      })),
     })),
     failures,
     checked_at: new Date(observedAt).toISOString(),
@@ -269,6 +303,10 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
 
 function allVenuePairs(venues) {
   return venues.flatMap((left, leftIndex) => venues.slice(leftIndex + 1).map((right) => [left, right]));
+}
+
+function validCommitment(value) {
+  return typeof value === "string" && /^[A-Za-z0-9:_-]{8,180}$/.test(value);
 }
 
 function acceptableAuthorityBoundary(boundary) {

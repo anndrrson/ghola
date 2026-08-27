@@ -161,6 +161,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("preflight", "collateral_basis", "collateral_basis_model_missing");
   requireText("preflight", "export async function preflightCarryExecutionMatrix", "carry_three_venue_no_submit_matrix_missing");
   requireText("preflight", "allVenuePairs(orderedVenues)", "carry_all_pair_no_submit_matrix_missing");
+  requireText("preflight", "leg_evidence: (result.evidence || [])", "carry_pair_leg_evidence_missing");
   requireText("preflightTest", "verifies all three execution venues through one no-broadcast matrix", "carry_three_venue_no_submit_matrix_test_missing");
   requireText("preflight", "storeCarryExecutionReadiness", "carry_three_venue_readiness_persistence_missing");
   requireText("readiness", "runtimeCarryQualificationImageDigest", "carry_readiness_image_binding_missing");
@@ -171,6 +172,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("readinessTest", "rejects stale or tampered readiness instead of reusing transient UI state", "carry_readiness_stale_test_missing");
   requireText("readinessTest", "rejects readiness after any sealed venue binding rotates", "carry_readiness_rotation_test_missing");
   requireText("readinessTest", "requires every unique venue pair before three-venue readiness passes", "carry_all_pair_readiness_test_missing");
+  requireText("readiness", "carry_readiness_leg_venue_binding_mismatch", "carry_pair_leg_receipt_binding_missing");
+  requireText("readinessTest", "binds every pair to both exact no-submit leg receipts", "carry_pair_leg_receipt_binding_test_missing");
   requireText("preflight", "carry_account_owner_mismatch", "carry_preflight_owner_binding_missing");
   requireText("preflightTest", "rejects cross-owner sealed venue access before order verification", "carry_preflight_owner_binding_test_missing");
   requireText("coreCarry", "collateral_basis_risk_bps", "collateral_basis_stress_missing");

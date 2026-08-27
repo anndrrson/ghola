@@ -69,8 +69,9 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
   if (venues.length !== expectedVenues.length) reasons.push("carry_readiness_venue_count_invalid");
   for (const venueId of expectedVenues) {
     const expectedAdapter = venueAdapterCapability(venueId, "carry_execution")?.adapter_id;
-    const venue = venues.find((item) => item?.venue_id === venueId);
-    if (!venue) {
+    const matchingVenues = venues.filter((item) => item?.venue_id === venueId);
+    const venue = matchingVenues[0];
+    if (matchingVenues.length !== 1) {
       reasons.push(`carry_readiness_venue_missing:${venueId}`);
       continue;
     }
@@ -78,7 +79,18 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
     if (venue.transaction_broadcast !== false) reasons.push(`carry_readiness_broadcast_unsafe:${venueId}`);
     if (venue.account_state_checked !== true) reasons.push(`carry_readiness_account_unchecked:${venueId}`);
     if (venue.order_request_checked !== true) reasons.push(`carry_readiness_order_unchecked:${venueId}`);
-    if (!commitment(venue.verification_commitment)) reasons.push(`carry_readiness_commitment_missing:${venueId}`);
+    const verificationCommitments = Array.isArray(venue.verification_commitments) ? venue.verification_commitments : [];
+    const workOrderCommitments = Array.isArray(venue.work_order_commitments) ? venue.work_order_commitments : [];
+    if (verificationCommitments.length !== expectedVenues.length - 1
+      || new Set(verificationCommitments).size !== verificationCommitments.length
+      || !verificationCommitments.every(commitment)) {
+      reasons.push(`carry_readiness_commitment_missing:${venueId}`);
+    }
+    if (workOrderCommitments.length !== expectedVenues.length - 1
+      || new Set(workOrderCommitments).size !== workOrderCommitments.length
+      || !workOrderCommitments.every(commitment)) {
+      reasons.push(`carry_readiness_work_order_missing:${venueId}`);
+    }
     if (!commitment(venue.account_commitment) || !commitment(venue.vault_commitment) || !commitment(venue.policy_commitment)) {
       reasons.push(`carry_readiness_access_unbound:${venueId}`);
     }
@@ -93,12 +105,41 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
   const pairs = Array.isArray(evidence.pairs) ? evidence.pairs : [];
   const expectedPairs = allVenuePairs(expectedVenues);
   if (pairs.length !== expectedPairs.length) reasons.push("carry_readiness_pair_count_invalid");
-  for (const [left, right] of expectedPairs) {
-    const pair = pairs.find((item) => new Set([item?.long_venue_id, item?.short_venue_id]).size === 2
+  for (const [pairIndex, [left, right]] of expectedPairs.entries()) {
+    const matchingPairs = pairs.filter((item) => new Set([item?.long_venue_id, item?.short_venue_id]).size === 2
       && [item?.long_venue_id, item?.short_venue_id].includes(left)
       && [item?.long_venue_id, item?.short_venue_id].includes(right));
-    if (!pair || pair.no_submit_ready !== true || pair.transaction_broadcast !== false) {
+    const pair = matchingPairs[0];
+    if (matchingPairs.length !== 1 || pair.no_submit_ready !== true || pair.transaction_broadcast !== false) {
       reasons.push(`carry_readiness_pair_unproven:${left}:${right}`);
+      continue;
+    }
+    const expectedPairWorkOrder = `${evidence.work_order_commitment}_pair_${pairIndex + 1}`;
+    if (pair.work_order_commitment !== expectedPairWorkOrder) {
+      reasons.push(`carry_readiness_pair_work_order_mismatch:${left}:${right}`);
+    }
+    const legs = Array.isArray(pair.leg_evidence) ? pair.leg_evidence : [];
+    if (legs.length !== 2 || new Set(legs.map((item) => item?.venue_id)).size !== 2
+      || ![left, right].every((venueId) => legs.some((item) => item?.venue_id === venueId))) {
+      reasons.push(`carry_readiness_pair_legs_invalid:${left}:${right}`);
+      continue;
+    }
+    for (const venueId of [left, right]) {
+      const leg = legs.find((item) => item?.venue_id === venueId);
+      if (leg.work_order_commitment !== `${expectedPairWorkOrder}_${venueId}`) {
+        reasons.push(`carry_readiness_leg_work_order_mismatch:${left}:${right}:${venueId}`);
+      }
+      if (!commitment(leg.verification_commitment)
+        || leg.transaction_broadcast !== false
+        || leg.account_state_checked !== true
+        || leg.order_request_checked !== true) {
+        reasons.push(`carry_readiness_leg_unproven:${left}:${right}:${venueId}`);
+      }
+      const venue = venues.find((item) => item?.venue_id === venueId);
+      if (!venue?.verification_commitments?.includes(leg.verification_commitment)
+        || !venue?.work_order_commitments?.includes(leg.work_order_commitment)) {
+        reasons.push(`carry_readiness_leg_venue_binding_mismatch:${left}:${right}:${venueId}`);
+      }
     }
   }
   if (!commitment(evidence.evidence_commitment) || evidence.evidence_commitment !== evidenceCommitment(evidence)) {
@@ -143,7 +184,8 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
         transaction_broadcast: item.transaction_broadcast === false && item.checks?.transaction_broadcast === false ? false : null,
         account_state_checked: item.checks?.account_state_checked === true,
         order_request_checked: item.checks?.order_request_checked === true || item.checks?.order_request_built === true,
-        verification_commitment: String(item.verification_commitment || ""),
+        verification_commitments: (Array.isArray(item.verification_commitments) ? item.verification_commitments : []).map(String),
+        work_order_commitments: (Array.isArray(item.work_order_commitments) ? item.work_order_commitments : []).map(String),
         account_commitment: String(access.account_commitment || ""),
         vault_commitment: String(access.vault_commitment || ""),
         policy_commitment: String(access.policy_commitment || ""),
@@ -154,6 +196,15 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
       short_venue_id: String(pair?.short_venue_id || ""),
       no_submit_ready: pair?.no_submit_ready === true,
       transaction_broadcast: pair?.transaction_broadcast === false ? false : null,
+      work_order_commitment: String(pair?.work_order_commitment || ""),
+      leg_evidence: (Array.isArray(pair?.leg_evidence) ? pair.leg_evidence : []).map((leg) => ({
+        venue_id: String(leg?.venue_id || ""),
+        work_order_commitment: String(leg?.work_order_commitment || ""),
+        verification_commitment: String(leg?.verification_commitment || ""),
+        transaction_broadcast: leg?.transaction_broadcast === false ? false : null,
+        account_state_checked: leg?.account_state_checked === true,
+        order_request_checked: leg?.order_request_checked === true,
+      })),
     })),
   };
   evidence.evidence_commitment = evidenceCommitment(evidence);
