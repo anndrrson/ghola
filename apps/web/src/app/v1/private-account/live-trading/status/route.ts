@@ -31,6 +31,10 @@ const VENUES = [
   { id: "coinbase", label: "Coinbase" },
 ] as const;
 
+const DEFAULT_EVIDENCE_READ_TIMEOUT_MS = 1_500;
+const MIN_EVIDENCE_READ_TIMEOUT_MS = 100;
+const MAX_EVIDENCE_READ_TIMEOUT_MS = 5_000;
+
 type LaunchMode =
   | "disabled"
   | "public_byo_mainnet"
@@ -51,6 +55,7 @@ export async function liveTradingStatusResponse(input: {
   getCanaryReport?: LiveTradingCanaryReader;
   workerReadiness?: PooledWorkerReadiness;
   host?: string | null;
+  evidenceReadTimeoutMs?: number;
 } = {}) {
   const env = input.env ?? process.env;
   const releaseIdentity = hyperliquidReleaseIdentity(env);
@@ -61,9 +66,20 @@ export async function liveTradingStatusResponse(input: {
   });
   const isTestnet = productEnvironment.environment === "testnet";
   const getCanaryReport = input.getCanaryReport ?? getLatestLiveTradingCanaryReport;
+  const evidenceReadTimeoutMs = resolveEvidenceReadTimeoutMs(
+    input.evidenceReadTimeoutMs ?? env.GHOLA_LIVE_TRADING_STATUS_EVIDENCE_TIMEOUT_MS,
+  );
   const [reports, capitalFreeProofs, workerReadiness] = await Promise.all([
-    Promise.all(VENUES.map((venue) => getCanaryReport(venue.id))),
-    Promise.all(VENUES.map((venue) => getCanaryReport(venue.id, "capital_free_no_submit"))),
+    Promise.all(VENUES.map((venue) => boundedCanaryRead(
+      () => getCanaryReport(venue.id),
+      evidenceReadTimeoutMs,
+      `${venue.id}:full_ticket_broadcast`,
+    ))),
+    Promise.all(VENUES.map((venue) => boundedCanaryRead(
+      () => getCanaryReport(venue.id, "capital_free_no_submit"),
+      evidenceReadTimeoutMs,
+      `${venue.id}:capital_free_no_submit`,
+    ))),
     input.workerReadiness ?? getPooledWorkerReadiness(env),
   ]);
   const venues = VENUES.map((venue, index) =>
@@ -351,6 +367,37 @@ export async function liveTradingStatusResponse(input: {
     ...response,
     execution_display: deriveLiveTradingExecutionDisplay(response),
   });
+}
+
+async function boundedCanaryRead(
+  load: () => Promise<PrivateLiveTradingCanaryReportRecordV1 | null>,
+  timeoutMs: number,
+  label: string,
+): Promise<PrivateLiveTradingCanaryReportRecordV1 | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[live-trading-status] evidence read timed out: ${label}`);
+      resolve(null);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      load().catch((error) => {
+        console.warn(`[live-trading-status] evidence read failed: ${label}`, error);
+        return null;
+      }),
+      timeout,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function resolveEvidenceReadTimeoutMs(value: string | number | undefined): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_EVIDENCE_READ_TIMEOUT_MS;
+  return Math.min(MAX_EVIDENCE_READ_TIMEOUT_MS, Math.max(MIN_EVIDENCE_READ_TIMEOUT_MS, Math.floor(parsed)));
 }
 
 function freshUserLaunchGateFailures(env: Record<string, string | undefined>) {

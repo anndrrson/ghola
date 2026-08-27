@@ -44,6 +44,7 @@ const ENV_KEYS = [
   "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET",
   "GHOLA_WORKER_CAPABILITY_SECRET",
   "GHOLA_POOLED_WORKER_READINESS_TIMEOUT_MS",
+  "GHOLA_LIVE_TRADING_STATUS_EVIDENCE_TIMEOUT_MS",
   "GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN",
   "GHOLA_HYPERLIQUID_POOLED_ACCOUNT_POOL_READY",
   "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON",
@@ -187,6 +188,23 @@ describe("private account live trading launch gate", () => {
     ].join(" ")).not.toMatch(/dry_run|live_submit|PRIVATE_AGENT|tiny_fill|gate/i);
     expect(body.required_venues).toHaveLength(5);
     expect(body.required_venues.every((venue: { status: string }) => venue.status === "red")).toBe(true);
+  });
+
+  it("fails closed quickly when remote canary evidence stalls", async () => {
+    const getCanaryReport = vi.fn(async () => new Promise<PrivateLiveTradingCanaryReportRecordV1 | null>(() => {}));
+    const startedAt = Date.now();
+
+    const res = await liveTradingStatusResponse({
+      getCanaryReport,
+      evidenceReadTimeoutMs: 25,
+    });
+    const elapsedMs = Date.now() - startedAt;
+    const body = await res.json();
+
+    expect(elapsedMs).toBeLessThan(500);
+    expect(getCanaryReport).toHaveBeenCalledTimes(10);
+    expect(body.status).toBe("red");
+    expect(body.required_venues.every((venue: { canary_status: string }) => venue.canary_status === "missing")).toBe(true);
   });
 
   it("uses bounded testnet policy without requiring mainnet execution", async () => {
