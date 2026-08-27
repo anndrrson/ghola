@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   advanceStoredCarryPosition,
   appendStoredCarryValueEntry,
+  compileStoredCarryPortfolioCapitalPlan,
   createStoredCarryPosition,
   finalizeStoredCarryValueLedger,
   observeStoredCarryPosition,
@@ -609,6 +610,69 @@ test("monitoring appends only authoritative venue funding settlements", async (t
   assert.equal(result.record.value_ledger.realized.funding_credit_micro_usdc, 20_000);
   assert.equal(result.record.value_ledger.realized.funding_debit_micro_usdc, 5_000);
   assert.equal(result.record.value_evidence.funding.status, "current");
+});
+
+test("compiles an owner-only portfolio capital plan from stored monitoring evidence", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-portfolio-capital-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const observed = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => ({
+      economic_opportunity: monitoringOpportunity(NOW + 100, 9),
+      margin_runways: [
+        monitoringRunway("hyperliquid", {
+          status: "warning",
+          margin_headroom_micro_usdc: 70_000_000,
+          runway_ms: 7 * 3_600_000,
+          required_owner_response_ms: 4 * 3_600_000,
+        }),
+        monitoringRunway("lighter"),
+      ],
+      qualification_reasons: [],
+    }),
+    now_ms: NOW + 100,
+  });
+  assert.equal(observed.ok, true, JSON.stringify(observed));
+  assert.equal(observed.observation_ok, true, JSON.stringify(observed));
+  const result = await compileStoredCarryPortfolioCapitalPlan({
+    state,
+    owner_commitment: OWNER,
+    owner_capital_budget_micro_usdc: 5_000_000,
+    max_data_age_ms: 30_000,
+    now_ms: NOW + 100,
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.plan.status, "owner_action_required");
+  assert.equal(result.plan.total_requested_micro_usdc, 10_000_003);
+  assert.equal(result.plan.total_proposed_allocation_micro_usdc, 5_000_000);
+  assert.equal(result.plan.total_uncovered_shortfall_micro_usdc, 5_000_003);
+  assert.equal(result.plan.allocations[0].venue_id, "hyperliquid");
+  assert.equal(result.plan.owner_approval_required, true);
+  assert.equal(result.plan.proposal_only, true);
+  assert.equal(result.plan.transaction_broadcast, false);
+  assert.equal(result.plan.automatic_transfer_permitted, false);
+});
+
+test("portfolio capital endpoint fails closed when an active position lacks monitoring evidence", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-portfolio-capital-missing-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const result = await compileStoredCarryPortfolioCapitalPlan({
+    state,
+    owner_commitment: OWNER,
+    owner_capital_budget_micro_usdc: 0,
+    now_ms: NOW + 100,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "carry_portfolio_capital_evidence_incomplete");
+  assert.deepEqual(result.missing_position_ids, [active.position.position_id]);
+  assert.equal(result.transaction_broadcast, false);
 });
 
 async function activePosition(state, suffix = "0001", riskOverrides = {}, context = monitoringContext()) {

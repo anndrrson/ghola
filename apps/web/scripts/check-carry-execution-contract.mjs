@@ -211,6 +211,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarry", "carry_capital_automatic_transfer_forbidden", "carry_capital_transfer_boundary_missing");
   requireText("coreCarryTest", "quantifies the minimum owner top-up without transfer authority", "carry_capital_owner_plan_test_missing");
   requireText("coreCarryTest", "quarantines stale evidence and permits reconciliation only", "carry_capital_stale_quarantine_test_missing");
+  requireText("coreCarry", "export function compileCarryPortfolioCapitalPlan", "carry_portfolio_capital_compiler_missing");
+  requireText("coreIndex", "compileCarryPortfolioCapitalPlan", "carry_portfolio_capital_export_missing");
+  requireText("coreCarry", "carry_portfolio_capital_position_authority_boundary", "carry_portfolio_capital_authority_gate_missing");
+  requireText("coreCarryTest", "prioritizes shortest runway within an owner-approved budget", "carry_portfolio_capital_priority_test_missing");
+  requireText("coreCarryTest", "quarantines stale evidence and allocates nothing", "carry_portfolio_capital_stale_test_missing");
   requireText("coreCarry", "projected_trading_fee_micro_usdc", "carry_modeled_fee_attribution_missing");
   requireText("coreCarry", "carry_value_modeled_trading_breakdown_mismatch", "carry_modeled_cost_reconciliation_missing");
   requireText("coreCarry", "summarizeValueAttribution", "carry_value_attribution_missing");
@@ -248,6 +253,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "compileCarryCapitalActionPlan", "carry_monitor_capital_plan_missing");
   requireText("positions", "capital_action_plan: capitalActionPlan", "carry_monitor_capital_evidence_missing");
   requireText("positionsTest", "stores an exact owner-only collateral recommendation without transferring", "carry_monitor_capital_plan_test_missing");
+  requireText("positions", "export async function compileStoredCarryPortfolioCapitalPlan", "carry_portfolio_capital_worker_missing");
+  requireText("positions", "carry_portfolio_capital_evidence_incomplete", "carry_portfolio_capital_incomplete_gate_missing");
+  requireText("positionsTest", "compiles an owner-only portfolio capital plan from stored monitoring evidence", "carry_portfolio_capital_worker_test_missing");
+  requireText("server", '"/carry/positions/capital-plan"', "carry_portfolio_capital_route_missing");
   requireText("positions", "modeledValueBreakdown", "carry_worker_value_breakdown_missing");
   requireText("positionsTest", "value_ledger.modeled.breakdown_complete", "carry_worker_value_breakdown_test_missing");
   requireText("executor", "verifyCarryRiskMandateAuthorization", "carry_entry_signature_gate_missing");
@@ -259,6 +268,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", 'label="OWNER CAPITAL"', "carry_terminal_capital_action_missing");
   requireText("webCarryBuilder", "automatic_transfer_permitted !== false", "carry_terminal_capital_authority_gate_missing");
   requireText("webCarryBuilder", "STRESS CAPITAL ·", "carry_terminal_stress_capital_missing");
+  requireText("webClient", "getCarryPortfolioCapitalPlan", "carry_portfolio_capital_client_missing");
+  requireText("webRoute", 'action === "capital_plan"', "carry_portfolio_capital_proxy_missing");
+  requireText("webCarryBuilder", "PORTFOLIO CAPITAL ·", "carry_terminal_portfolio_capital_missing");
+  requireText("webCarryBuilder", "STALE EVIDENCE · RECONCILE ONLY", "carry_terminal_portfolio_stale_gate_missing");
+  requireText("webCarryBuilderTest", "PORTFOLIO CAPITAL · $25 REQUESTED · $25 UNFUNDED · OWNER ONLY", "carry_terminal_portfolio_capital_test_missing");
   requireText("webCarryBuilder", "live_execution_leverage_unchanged !== true", "carry_terminal_stress_leverage_boundary_missing");
   requireText("webCarryBuilderTest", "UP TO 1× OWNER CONFIG", "carry_terminal_stress_capital_test_missing");
   requireText("webCarryBuilderTest", '$10 → LIGHTER · OWNER', "carry_terminal_capital_action_test_missing");

@@ -276,7 +276,7 @@ export async function POST(req: NextRequest) {
       headers: {
         "content-type": "application/json",
         "x-ghola-sealed-execution-required": "true",
-        ...(action.startsWith("preflight_") || action === "readiness" || action === "observe" ? { "x-ghola-no-submit-verify": "true" } : {}),
+        ...(action.startsWith("preflight_") || action === "readiness" || action === "observe" || action === "capital_plan" ? { "x-ghola-no-submit-verify": "true" } : {}),
         ...(action === "execute_entry" ? { "x-ghola-live-order-confirmed": "true" } : {}),
         ...(action === "create" && record(input.qualification_pilot).enabled === true ? { "x-ghola-carry-qualification-planned": "true" } : {}),
         ...(action === "execute_entry" && input.qualification_pilot_confirmed === true ? { "x-ghola-carry-qualification-confirmed": "true" } : {}),
@@ -314,6 +314,7 @@ function carryRoute(action: string) {
   if (action === "preflight_lighter") return { path: "/venues/lighter/preflight", scope: "order:verify" as const, operationClass: "limit_order" };
   if (action === "create") return { path: "/carry/positions", scope: "carry:write" as const, operationClass: "create" };
   if (action === "read") return { path: "/carry/positions/read", scope: "carry:read" as const, operationClass: "/read" };
+  if (action === "capital_plan") return { path: "/carry/positions/capital-plan", scope: "carry:read" as const, operationClass: "/capital-plan" };
   if (action === "release_evidence") return { path: "/carry/positions/release-evidence", scope: "carry:read" as const, operationClass: "/release-evidence" };
   if (action === "event") return { path: "/carry/positions/events", scope: "carry:write" as const, operationClass: "/events" };
   if (action === "observe") return { path: "/carry/positions/observe", scope: "carry:write" as const, operationClass: "/observe" };

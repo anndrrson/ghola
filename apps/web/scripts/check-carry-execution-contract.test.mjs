@@ -195,6 +195,19 @@ test("rejects an opening capital packet that could move funds", () => {
   );
 });
 
+test("rejects portfolio capital allocation without its owner-only authority gate", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replaceAll(
+        "carry_portfolio_capital_position_authority_boundary",
+        "portfolio_capital_boundary_removed",
+      ),
+    }),
+    /carry_portfolio_capital_authority_gate_missing/,
+  );
+});
+
 test("rejects a stress-capital proposal that silently changes live leverage", () => {
   assert.throws(
     () => checkCarryExecutionContract({

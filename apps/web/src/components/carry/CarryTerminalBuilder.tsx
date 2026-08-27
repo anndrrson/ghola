@@ -6,6 +6,7 @@ import {
   createCarryPosition,
   executeCarryPositionEntry,
   getCarryExecutionReadiness,
+  getCarryPortfolioCapitalPlan,
   getPrivateAgentPassport,
   listCarryPositions,
   preflightCarryExecutionMatrix,
@@ -117,6 +118,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const [proof, setProof] = useState<Record<string, unknown> | null>(null);
   const [readiness, setReadiness] = useState<Record<string, unknown> | null>(null);
   const [records, setRecords] = useState<CarryRecord[]>([]);
+  const [portfolioCapitalPlan, setPortfolioCapitalPlan] = useState<Record<string, unknown> | null>(null);
   const [recordsLoaded, setRecordsLoaded] = useState(false);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [busy, setBusy] = useState<"check" | "save" | "enter" | "exit" | null>(null);
@@ -130,10 +132,21 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const loadRecords = useCallback(async () => {
     setRecordsLoading(true);
     try {
-      const result = asRecord(await listCarryPositions());
+      const [recordsResult, capitalResult] = await Promise.allSettled([
+        listCarryPositions(),
+        getCarryPortfolioCapitalPlan(0),
+      ]);
+      if (recordsResult.status !== "fulfilled") throw new Error("carry_position_sync_failed");
+      const result = asRecord(recordsResult.value);
       const next = Array.isArray(result.records) ? result.records.map(asRecord).filter(isCarryRecord) : [];
       setRecords(next);
       setRecordsLoaded(true);
+      if (capitalResult.status === "fulfilled") {
+        const capital = asRecord(capitalResult.value);
+        setPortfolioCapitalPlan(capital.ok === true ? asRecord(capital.plan) : capital);
+      } else {
+        setPortfolioCapitalPlan(null);
+      }
     } catch {
       // Preserve the last authoritative view and fail closed if the initial sync failed.
     } finally {
@@ -213,6 +226,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const economics = carryTerminalEconomics(model, proofOpportunity);
   const openingCapital = carryOpeningCapitalSummary(model, proof);
   const stressCapital = carryStressCapitalSummary(proof);
+  const portfolioCapital = carryPortfolioCapitalSummary(portfolioCapitalPlan);
   const displayedCapital = latestObservation?.capital_action_plan ? capital : openingCapital;
   const restoredReadiness = readyStoredReadiness(readiness, candidate.asset, notional, days);
 
@@ -473,6 +487,9 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         {stressCapital
           ? <p className="truncate font-mono text-[9px] text-[#72bfa2]" title={stressCapital}>STRESS CAPITAL · {stressCapital}</p>
           : null}
+        {portfolioCapital
+          ? <p className={`truncate font-mono text-[9px] ${portfolioCapital.tone === "bad" ? "text-[#ef929e]" : portfolioCapital.tone === "warn" ? "text-[#d9bd74]" : "text-[#72bfa2]"}`} title={portfolioCapital.value}>PORTFOLIO CAPITAL · {portfolioCapital.value}</p>
+          : null}
       </div>
     </div>
   );
@@ -562,6 +579,37 @@ function carryStressCapitalSummary(proof: Record<string, unknown> | null) {
     || legs.length !== 2 || leverage.some((value) => value == null || value < 1)) return null;
   const ownerMaximum = Math.min(...leverage.filter((value): value is number => value != null));
   return `${formatMicroUsd(target)} TARGET / ${formatMicroUsd(required)} 1× · UP TO ${ownerMaximum}× OWNER CONFIG · ${formatMicroUsd(potential)} POTENTIAL`;
+}
+
+function carryPortfolioCapitalSummary(plan: Record<string, unknown> | null) {
+  if (!plan) return null;
+  const ownerOnlyOperations = Array.isArray(plan.owner_only_operations) ? plan.owner_only_operations : [];
+  if (plan.error === "carry_portfolio_capital_evidence_incomplete"
+    && plan.proposal_only === true
+    && plan.transaction_broadcast === false
+    && plan.automatic_transfer_permitted === false) {
+    const missing = Array.isArray(plan.missing_position_ids) ? plan.missing_position_ids.length : 0;
+    return missing > 0 ? { value: `${missing} POSITION${missing === 1 ? "" : "S"} NEED FRESH MONITORING`, tone: "bad" as const } : null;
+  }
+  if (plan.kind !== "ghola_carry_portfolio_capital_plan"
+    || plan.proposal_only !== true
+    || plan.transaction_broadcast !== false
+    || plan.automatic_transfer_permitted !== false
+    || !["fund", "transfer", "withdraw"].every((operation) => ownerOnlyOperations.includes(operation))) return null;
+  const positions = finiteNumber(plan.position_count);
+  const requested = finiteNumber(plan.total_requested_micro_usdc);
+  const uncovered = finiteNumber(plan.total_uncovered_shortfall_micro_usdc);
+  if (positions == null || requested == null || uncovered == null || positions < 0 || requested < 0 || uncovered < 0) return null;
+  if (positions === 0) return null;
+  if (plan.status === "quarantined") return { value: "STALE EVIDENCE · RECONCILE ONLY", tone: "bad" as const };
+  if (plan.status === "exit_required") return { value: "EXIT PRIORITY · REDUCE ONLY", tone: "bad" as const };
+  if (plan.status === "owner_action_required") {
+    return {
+      value: `${formatMicroUsd(requested)} REQUESTED · ${formatMicroUsd(uncovered)} UNFUNDED · OWNER ONLY`,
+      tone: "warn" as const,
+    };
+  }
+  return { value: `${positions} POSITION${positions === 1 ? "" : "S"} · BALANCED`, tone: "good" as const };
 }
 
 function proofDepth(opportunity: Record<string, unknown>): {

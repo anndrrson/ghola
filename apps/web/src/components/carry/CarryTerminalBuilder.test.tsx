@@ -8,6 +8,7 @@ const api = vi.hoisted(() => ({
   createCarryPosition: vi.fn(),
   executeCarryPositionEntry: vi.fn(),
   getCarryExecutionReadiness: vi.fn(),
+  getCarryPortfolioCapitalPlan: vi.fn(),
   getPrivateAgentPassport: vi.fn(),
   listCarryPositions: vi.fn(),
   preflightCarryExecutionMatrix: vi.fn(),
@@ -42,6 +43,7 @@ describe("CarryTerminalBuilder", () => {
     api.createCarryPosition.mockReset();
     api.executeCarryPositionEntry.mockReset();
     api.getCarryExecutionReadiness.mockReset();
+    api.getCarryPortfolioCapitalPlan.mockReset();
     api.getPrivateAgentPassport.mockReset();
     api.listCarryPositions.mockReset();
     api.preflightCarryExecutionMatrix.mockReset();
@@ -51,6 +53,21 @@ describe("CarryTerminalBuilder", () => {
     perps.signCarryRiskMandate.mockReset();
     api.getPrivateAgentPassport.mockResolvedValue({ owner_commitment: "owner:carry:web:test:0001" });
     api.getCarryExecutionReadiness.mockResolvedValue({ ready: false, reasons: ["carry_readiness_evidence_missing"] });
+    api.getCarryPortfolioCapitalPlan.mockResolvedValue({
+      ok: true,
+      plan: {
+        version: 1,
+        kind: "ghola_carry_portfolio_capital_plan",
+        status: "balanced",
+        position_count: 0,
+        total_requested_micro_usdc: 0,
+        total_uncovered_shortfall_micro_usdc: 0,
+        proposal_only: true,
+        transaction_broadcast: false,
+        automatic_transfer_permitted: false,
+        owner_only_operations: ["fund", "transfer", "withdraw"],
+      },
+    });
     api.preflightCarryExecutionMatrix.mockResolvedValue(readyMatrix());
     perps.ensureWalletPair.mockResolvedValue({ owner: { address: `0x${"11".repeat(20)}` } });
     perps.signCarryRiskMandate.mockResolvedValue(`0x${"22".repeat(65)}`);
@@ -311,6 +328,21 @@ describe("CarryTerminalBuilder", () => {
   });
 
   it("shows compact live margin-runway evidence inside the terminal", async () => {
+    api.getCarryPortfolioCapitalPlan.mockResolvedValue({
+      ok: true,
+      plan: {
+        version: 1,
+        kind: "ghola_carry_portfolio_capital_plan",
+        status: "owner_action_required",
+        position_count: 2,
+        total_requested_micro_usdc: 25_000_000,
+        total_uncovered_shortfall_micro_usdc: 25_000_000,
+        proposal_only: true,
+        transaction_broadcast: false,
+        automatic_transfer_permitted: false,
+        owner_only_operations: ["fund", "transfer", "withdraw"],
+      },
+    });
     api.listCarryPositions.mockResolvedValue({
       ok: true,
       records: [{
@@ -358,6 +390,7 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("FEE +$0.5 · SLIP −$0.25");
     expect(container.textContent).toContain("MONITOR");
     expect(container.textContent).toContain("0S AGO");
+    expect(container.textContent).toContain("PORTFOLIO CAPITAL · $25 REQUESTED · $25 UNFUNDED · OWNER ONLY");
   });
 
   async function click(label: string) {

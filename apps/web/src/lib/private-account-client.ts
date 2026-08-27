@@ -940,6 +940,17 @@ export async function listCarryPositions() {
   });
 }
 
+export async function getCarryPortfolioCapitalPlan(owner_capital_budget_micro_usdc = 0) {
+  return privateAccountFetch("/v1/private-account/carry", {
+    method: "POST",
+    body: JSON.stringify({
+      action: "capital_plan",
+      owner_capital_budget_micro_usdc,
+      max_data_age_ms: 30_000,
+    }),
+  });
+}
+
 export async function getCarryReleaseEvidenceMaterial(position_id: string) {
   return privateAccountFetch("/v1/private-account/carry", {
     method: "POST",

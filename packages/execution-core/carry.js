@@ -333,6 +333,148 @@ export function compileCarryCapitalActionPlan(value) {
   });
 }
 
+export function compileCarryPortfolioCapitalPlan(value) {
+  const raw = object(value, "carry_portfolio_capital_plan_required");
+  exactVersion(raw.version, "carry_portfolio_capital_plan_version");
+  const nowMs = positiveInteger(raw.now_ms, "carry_portfolio_capital_plan_now");
+  const maxDataAgeMs = boundedInteger(
+    raw.max_data_age_ms,
+    250,
+    300_000,
+    "carry_portfolio_capital_plan_max_data_age",
+  );
+  const ownerCapitalBudget = nonNegativeInteger(
+    raw.owner_capital_budget_micro_usdc,
+    "carry_portfolio_capital_plan_owner_budget",
+  );
+  const positionPlans = array(
+    raw.position_plans,
+    "carry_portfolio_capital_plan_positions",
+    0,
+    1_000,
+  ).map(normalizePortfolioCapitalPositionPlan);
+  if (new Set(positionPlans.map((plan) => plan.position_id)).size !== positionPlans.length) {
+    fail("carry_portfolio_capital_plan_duplicate_position");
+  }
+
+  const stalePositionIds = positionPlans
+    .filter((plan) => plan.checked_at_ms > nowMs + 5_000 || nowMs - plan.checked_at_ms > maxDataAgeMs)
+    .map((plan) => plan.position_id);
+  const allocationPermitted = stalePositionIds.length === 0;
+  const requests = positionPlans.flatMap((plan) => plan.legs
+    .filter((leg) => leg.recommended_action === "owner_fund_venue" && leg.minimum_additional_collateral_micro_usdc > 0)
+    .map((leg) => ({
+      position_id: plan.position_id,
+      venue_id: leg.venue_id,
+      runway_ms: leg.runway_ms,
+      requested_micro_usdc: leg.minimum_additional_collateral_micro_usdc,
+    })))
+    .sort((left, right) => {
+      const leftRunway = left.runway_ms === null ? Number.MAX_SAFE_INTEGER : left.runway_ms;
+      const rightRunway = right.runway_ms === null ? Number.MAX_SAFE_INTEGER : right.runway_ms;
+      return leftRunway - rightRunway
+        || left.position_id.localeCompare(right.position_id)
+        || left.venue_id.localeCompare(right.venue_id);
+    });
+  let remainingBudget = allocationPermitted ? ownerCapitalBudget : 0;
+  const allocations = requests.map((request, index) => {
+    const proposed = Math.min(remainingBudget, request.requested_micro_usdc);
+    remainingBudget -= proposed;
+    return Object.freeze({
+      priority_rank: index + 1,
+      ...request,
+      proposed_allocation_micro_usdc: proposed,
+      uncovered_shortfall_micro_usdc: request.requested_micro_usdc - proposed,
+      owner_approval_required: proposed > 0,
+      transaction_broadcast: false,
+    });
+  });
+  const totalRequested = requests.reduce(
+    (sum, request) => safeAdd(sum, request.requested_micro_usdc, "carry_portfolio_capital_requested_overflow"),
+    0,
+  );
+  const totalProposed = allocations.reduce(
+    (sum, allocation) => safeAdd(sum, allocation.proposed_allocation_micro_usdc, "carry_portfolio_capital_proposed_overflow"),
+    0,
+  );
+  const uncovered = totalRequested - totalProposed;
+  const venueIds = [...new Set(positionPlans.flatMap((plan) => plan.legs.map((leg) => leg.venue_id)))].sort();
+  const venues = venueIds.map((venueId) => {
+    const venueRequests = allocations.filter((allocation) => allocation.venue_id === venueId);
+    const requested = venueRequests.reduce(
+      (sum, item) => safeAdd(sum, item.requested_micro_usdc, "carry_portfolio_capital_venue_requested_overflow"),
+      0,
+    );
+    const proposed = venueRequests.reduce(
+      (sum, item) => safeAdd(sum, item.proposed_allocation_micro_usdc, "carry_portfolio_capital_venue_proposed_overflow"),
+      0,
+    );
+    return Object.freeze({
+      venue_id: venueId,
+      requested_micro_usdc: requested,
+      proposed_allocation_micro_usdc: proposed,
+      uncovered_shortfall_micro_usdc: requested - proposed,
+      affected_position_count: new Set(venueRequests.map((item) => item.position_id)).size,
+    });
+  });
+  const riskActions = positionPlans
+    .filter((plan) => plan.reconciliation_required || plan.reduce_only_exit_required)
+    .map((plan) => Object.freeze({
+      position_id: plan.position_id,
+      status: plan.status,
+      recommended_action: plan.recommended_action,
+      reasons: plan.reasons,
+    }));
+  const reviewOnlyCount = positionPlans.reduce(
+    (count, plan) => count + plan.legs.filter((leg) => leg.recommended_action === "owner_review_required").length,
+    0,
+  );
+  const reconciliationRequired = positionPlans.some((plan) => plan.reconciliation_required);
+  const reduceOnlyExitRequired = positionPlans.some((plan) => plan.reduce_only_exit_required);
+  const ownerActionRequired = totalRequested > 0 || reviewOnlyCount > 0;
+  const status = stalePositionIds.length > 0 || reconciliationRequired
+    ? "quarantined"
+    : reduceOnlyExitRequired
+      ? "exit_required"
+      : ownerActionRequired
+        ? "owner_action_required"
+        : "balanced";
+  const recommendedAction = status === "quarantined"
+    ? "reconcile_only"
+    : status === "exit_required"
+      ? "reduce_only_exit"
+      : status === "owner_action_required"
+        ? "owner_collateral_review"
+        : "none";
+  return deepFreeze({
+    version: 1,
+    kind: "ghola_carry_portfolio_capital_plan",
+    status,
+    recommended_action: recommendedAction,
+    position_count: positionPlans.length,
+    owner_capital_budget_micro_usdc: ownerCapitalBudget,
+    total_requested_micro_usdc: totalRequested,
+    total_proposed_allocation_micro_usdc: totalProposed,
+    total_uncovered_shortfall_micro_usdc: uncovered,
+    unallocated_owner_capital_micro_usdc: allocationPermitted ? remainingBudget : ownerCapitalBudget,
+    budget_sufficient: allocationPermitted && uncovered === 0,
+    stale_position_ids: stalePositionIds,
+    reconciliation_required: reconciliationRequired || stalePositionIds.length > 0,
+    reduce_only_exit_required: reduceOnlyExitRequired,
+    owner_action_required: ownerActionRequired,
+    owner_approval_required: totalProposed > 0,
+    review_only_action_count: reviewOnlyCount,
+    allocations,
+    venues,
+    risk_actions: riskActions,
+    proposal_only: true,
+    transaction_broadcast: false,
+    automatic_transfer_permitted: false,
+    owner_only_operations: ["fund", "transfer", "withdraw"],
+    checked_at_ms: nowMs,
+  });
+}
+
 export function evaluatePerpContractPairBasis(value) {
   const raw = object(value, "carry_contract_pair_required");
   exactVersion(raw.version, "carry_contract_pair_version");
@@ -1269,6 +1411,113 @@ function normalizeValueEntry(value) {
     occurred_at_ms: positiveInteger(raw.occurred_at_ms, "carry_value_entry_occurred_at"),
     evidence_commitment: identifier(raw.evidence_commitment, "carry_value_entry_evidence"),
   };
+}
+
+function normalizePortfolioCapitalPositionPlan(value) {
+  const raw = object(value, "carry_portfolio_capital_position_plan_required");
+  exactVersion(raw.version, "carry_portfolio_capital_position_plan_version");
+  if (raw.kind !== "ghola_carry_capital_action_plan") fail("carry_portfolio_capital_position_plan_kind");
+  const positionId = identifier(raw.position_id, "carry_portfolio_capital_position_id");
+  const status = enumValue(
+    raw.status,
+    new Set(["balanced", "owner_action_required", "exit_required", "quarantined"]),
+    "carry_portfolio_capital_position_status",
+  );
+  const recommendedAction = enumValue(
+    raw.recommended_action,
+    new Set(["none", "owner_collateral_review", "reduce_only_exit", "reconcile_only"]),
+    "carry_portfolio_capital_position_action",
+  );
+  const legs = array(raw.legs, "carry_portfolio_capital_position_legs", 2, 2).map((value) => {
+    const leg = object(value, "carry_portfolio_capital_position_leg_required");
+    const recommendedAction = enumValue(
+      leg.recommended_action,
+      new Set(["none", "owner_fund_venue", "owner_review_required", "reduce_only_exit", "reconcile_only"]),
+      "carry_portfolio_capital_position_leg_action",
+    );
+    const additional = nonNegativeInteger(
+      leg.minimum_additional_collateral_micro_usdc,
+      "carry_portfolio_capital_position_leg_additional",
+    );
+    const ownerFundingPermitted = leg.owner_funding_permitted === true;
+    if (["owner_fund_venue", "owner_review_required"].includes(recommendedAction) !== ownerFundingPermitted
+      || (recommendedAction === "owner_fund_venue" && additional === 0)
+      || (!["owner_fund_venue", "owner_review_required"].includes(recommendedAction) && additional !== 0)) {
+      fail("carry_portfolio_capital_position_leg_authority_semantics");
+    }
+    return Object.freeze({
+      venue_id: carryExecutionVenue(leg.venue_id, "carry_portfolio_capital_position_leg_venue"),
+      runway_ms: leg.runway_ms === null
+        ? null
+        : nonNegativeInteger(leg.runway_ms, "carry_portfolio_capital_position_leg_runway"),
+      minimum_additional_collateral_micro_usdc: additional,
+      recommended_action: recommendedAction,
+      owner_funding_permitted: ownerFundingPermitted,
+    });
+  });
+  if (new Set(legs.map((leg) => leg.venue_id)).size !== 2) {
+    fail("carry_portfolio_capital_position_leg_duplicate_venue");
+  }
+  const minimumAdditional = nonNegativeInteger(
+    raw.minimum_additional_collateral_micro_usdc,
+    "carry_portfolio_capital_position_additional",
+  );
+  const legAdditional = legs.reduce(
+    (sum, leg) => safeAdd(sum, leg.minimum_additional_collateral_micro_usdc, "carry_portfolio_capital_position_additional_overflow"),
+    0,
+  );
+  if (minimumAdditional !== legAdditional) fail("carry_portfolio_capital_position_additional_mismatch");
+  if (raw.proposal_only !== true
+    || raw.transaction_broadcast !== false
+    || raw.automatic_transfer_permitted !== false
+    || !Array.isArray(raw.owner_only_operations)
+    || !["fund", "transfer", "withdraw"].every((operation) => raw.owner_only_operations.includes(operation))) {
+    fail("carry_portfolio_capital_position_authority_boundary");
+  }
+  const reconciliationRequired = raw.reconciliation_required === true;
+  const reduceOnlyExitRequired = raw.reduce_only_exit_required === true;
+  const ownerFundingRequired = raw.owner_funding_required === true;
+  const expectedReduceOnlyExitRequired = legs.some((leg) => leg.recommended_action === "reduce_only_exit");
+  const expectedReconciliationRequired = !expectedReduceOnlyExitRequired
+    && legs.some((leg) => leg.recommended_action === "reconcile_only");
+  const expectedOwnerFundingRequired = !expectedReduceOnlyExitRequired && !expectedReconciliationRequired
+    && legs.some((leg) => ["owner_fund_venue", "owner_review_required"].includes(leg.recommended_action));
+  if (reconciliationRequired !== expectedReconciliationRequired
+    || reduceOnlyExitRequired !== expectedReduceOnlyExitRequired
+    || ownerFundingRequired !== expectedOwnerFundingRequired) {
+    fail("carry_portfolio_capital_position_flag_semantics");
+  }
+  const expectedStatus = reconciliationRequired
+    ? "quarantined"
+    : reduceOnlyExitRequired
+      ? "exit_required"
+      : ownerFundingRequired
+        ? "owner_action_required"
+        : "balanced";
+  const expectedAction = reconciliationRequired
+    ? "reconcile_only"
+    : reduceOnlyExitRequired
+      ? "reduce_only_exit"
+      : ownerFundingRequired
+        ? "owner_collateral_review"
+        : "none";
+  if (status !== expectedStatus || recommendedAction !== expectedAction) {
+    fail("carry_portfolio_capital_position_semantics");
+  }
+  return Object.freeze({
+    version: 1,
+    kind: raw.kind,
+    position_id: positionId,
+    status,
+    recommended_action: recommendedAction,
+    reasons: Array.isArray(raw.reasons) ? [...new Set(raw.reasons.filter((reason) => typeof reason === "string"))] : [],
+    minimum_additional_collateral_micro_usdc: minimumAdditional,
+    owner_funding_required: ownerFundingRequired,
+    reduce_only_exit_required: reduceOnlyExitRequired,
+    reconciliation_required: reconciliationRequired,
+    checked_at_ms: positiveInteger(raw.checked_at_ms, "carry_portfolio_capital_position_checked_at"),
+    legs,
+  });
 }
 
 function normalizeModeledValueBreakdown(modeled, grossFunding, tradingCost) {

@@ -7,6 +7,7 @@ import {
   calculateMarginRunway,
   carryRiskMandateMessage,
   compileCarryCapitalActionPlan,
+  compileCarryPortfolioCapitalPlan,
   compileCarryMigrationProposal,
   createCarryPosition,
   createCarryValueLedger,
@@ -499,6 +500,100 @@ test("capital planner quantifies the minimum owner top-up without transfer autho
   assert.equal(plan.proposal_only, true);
   assert.equal(plan.transaction_broadcast, false);
   assert.equal(plan.automatic_transfer_permitted, false);
+});
+
+test("portfolio capital planner prioritizes shortest runway within an owner-approved budget", () => {
+  const positionPlan = compileCarryCapitalActionPlan({
+    version: 1,
+    position: activePositionForObservation(),
+    margin_runways: [
+      runway("hyperliquid", {
+        equity_micro_usdc: 1_350_000_000,
+        maintenance_margin_micro_usdc: 500_000_000,
+        safety_buffer_micro_usdc: 500_000_000,
+        owner_transfer_latency_ms: 2 * HOUR,
+        owner_response_buffer_ms: 2 * HOUR,
+      }),
+      runway("lighter"),
+    ],
+    now_ms: NOW,
+  });
+  const secondPlan = {
+    ...positionPlan,
+    position_id: "carry:position:0002",
+    minimum_additional_collateral_micro_usdc: 25_000_000,
+    legs: positionPlan.legs.map((leg) => leg.venue_id === "hyperliquid"
+      ? {
+          ...leg,
+          runway_ms: 3 * HOUR,
+          minimum_additional_collateral_micro_usdc: 25_000_000,
+        }
+      : leg),
+  };
+  const plan = compileCarryPortfolioCapitalPlan({
+    version: 1,
+    now_ms: NOW,
+    max_data_age_ms: 30_000,
+    owner_capital_budget_micro_usdc: 40_000_000,
+    position_plans: [positionPlan, secondPlan],
+  });
+  assert.equal(plan.status, "owner_action_required");
+  assert.equal(plan.total_requested_micro_usdc, 75_000_014);
+  assert.equal(plan.total_proposed_allocation_micro_usdc, 40_000_000);
+  assert.equal(plan.total_uncovered_shortfall_micro_usdc, 35_000_014);
+  assert.equal(plan.allocations[0].position_id, "carry:position:0002");
+  assert.equal(plan.allocations[0].proposed_allocation_micro_usdc, 25_000_000);
+  assert.equal(plan.allocations[1].proposed_allocation_micro_usdc, 15_000_000);
+  assert.equal(plan.owner_approval_required, true);
+  assert.equal(plan.proposal_only, true);
+  assert.equal(plan.transaction_broadcast, false);
+  assert.equal(plan.automatic_transfer_permitted, false);
+});
+
+test("portfolio capital planner quarantines stale evidence and allocates nothing", () => {
+  const positionPlan = compileCarryCapitalActionPlan({
+    version: 1,
+    position: activePositionForObservation(),
+    margin_runways: [
+      runway("hyperliquid", {
+        equity_micro_usdc: 1_350_000_000,
+        maintenance_margin_micro_usdc: 500_000_000,
+        safety_buffer_micro_usdc: 500_000_000,
+        owner_transfer_latency_ms: 2 * HOUR,
+        owner_response_buffer_ms: 2 * HOUR,
+      }),
+      runway("lighter"),
+    ],
+    now_ms: NOW,
+  });
+  const plan = compileCarryPortfolioCapitalPlan({
+    version: 1,
+    now_ms: NOW + 30_001,
+    max_data_age_ms: 30_000,
+    owner_capital_budget_micro_usdc: 100_000_000,
+    position_plans: [positionPlan],
+  });
+  assert.equal(plan.status, "quarantined");
+  assert.equal(plan.recommended_action, "reconcile_only");
+  assert.equal(plan.total_proposed_allocation_micro_usdc, 0);
+  assert.equal(plan.unallocated_owner_capital_micro_usdc, 100_000_000);
+  assert.deepEqual(plan.stale_position_ids, ["carry:position:0001"]);
+});
+
+test("portfolio capital planner rejects any plan that weakens owner-only authority", () => {
+  const positionPlan = compileCarryCapitalActionPlan({
+    version: 1,
+    position: activePositionForObservation(),
+    margin_runways: [runway("hyperliquid"), runway("lighter")],
+    now_ms: NOW,
+  });
+  assert.throws(() => compileCarryPortfolioCapitalPlan({
+    version: 1,
+    now_ms: NOW,
+    max_data_age_ms: 30_000,
+    owner_capital_budget_micro_usdc: 0,
+    position_plans: [{ ...positionPlan, automatic_transfer_permitted: true }],
+  }), /carry_portfolio_capital_position_authority_boundary/);
 });
 
 test("capital planner quarantines stale evidence and permits reconciliation only", () => {

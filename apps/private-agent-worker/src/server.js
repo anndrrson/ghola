@@ -33,6 +33,7 @@ import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-ev
 import {
   advanceStoredCarryPosition,
   appendStoredCarryValueEntry,
+  compileStoredCarryPortfolioCapitalPlan,
   createStoredCarryPosition,
   finalizeStoredCarryValueLedger,
   getStoredCarryPosition,
@@ -2848,6 +2849,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
           "/carry/positions/read": ["carry:read", (body) => body.position_id
             ? getStoredCarryPosition({ state, position_id: body.position_id, owner_commitment: body.owner_commitment })
             : listStoredCarryPositions({ state, owner_commitment: body.owner_commitment, status: body.status, limit: body.limit })],
+          "/carry/positions/capital-plan": ["carry:read", (body) => compileStoredCarryPortfolioCapitalPlan({
+            state,
+            owner_commitment: body.owner_commitment,
+            owner_capital_budget_micro_usdc: body.owner_capital_budget_micro_usdc,
+            max_data_age_ms: body.max_data_age_ms,
+          })],
           "/carry/positions/release-evidence": ["carry:read", (body) => buildCompletedCarryReleaseMaterial({
             state,
             position_id: body.position_id,

@@ -4,6 +4,7 @@ import {
   advanceCarryPosition,
   appendCarryValueLedgerEntry,
   compileCarryCapitalActionPlan,
+  compileCarryPortfolioCapitalPlan,
   createCarryValueLedger,
   finalizeCarryValueLedger,
 } from "@ghola/execution-core";
@@ -308,6 +309,50 @@ export async function listStoredCarryPositions({ state, owner_commitment: ownerC
   if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
   const records = await state.listCarryPositionRecords({ owner_commitment: ownerCommitment, status, limit });
   return { ok: true, records: records.map(publicRecord) };
+}
+
+export async function compileStoredCarryPortfolioCapitalPlan({
+  state,
+  owner_commitment: ownerCommitment,
+  owner_capital_budget_micro_usdc: ownerCapitalBudget = 0,
+  max_data_age_ms: maxDataAgeMs = 30_000,
+  now_ms: nowMs = Date.now(),
+}) {
+  if (!OWNER.test(String(ownerCommitment || ""))) return denied("carry_owner_commitment_invalid");
+  if (!Number.isSafeInteger(ownerCapitalBudget) || ownerCapitalBudget < 0) {
+    return denied("carry_portfolio_capital_budget_invalid");
+  }
+  const maxAge = boundedInteger(maxDataAgeMs, 250, 300_000, 30_000);
+  const records = (await Promise.all(["active", "rebalancing", "exiting", "frozen"].map((status) =>
+    state.listCarryPositionRecords({ owner_commitment: ownerCommitment, status, limit: 500 })
+  ))).flat();
+  const unique = [...new Map(records.map((record) => [record.position?.position_id, record])).values()];
+  const missingPositionIds = unique
+    .filter((record) => !record.latest_observation?.capital_action_plan)
+    .map((record) => record.position?.position_id)
+    .filter(Boolean);
+  if (missingPositionIds.length > 0) {
+    return {
+      ok: false,
+      error: "carry_portfolio_capital_evidence_incomplete",
+      missing_position_ids: missingPositionIds,
+      proposal_only: true,
+      transaction_broadcast: false,
+      automatic_transfer_permitted: false,
+    };
+  }
+  try {
+    const plan = compileCarryPortfolioCapitalPlan({
+      version: 1,
+      now_ms: nowMs,
+      max_data_age_ms: maxAge,
+      owner_capital_budget_micro_usdc: ownerCapitalBudget,
+      position_plans: unique.map((record) => record.latest_observation.capital_action_plan),
+    });
+    return { ok: true, plan };
+  } catch (error) {
+    return denied(safeError(error));
+  }
 }
 
 export async function runCarryMonitoringTick({
