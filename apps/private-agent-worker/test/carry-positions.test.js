@@ -582,8 +582,17 @@ test("worker monitoring refreshes owner-scoped collateral routes from exact acco
       margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
       qualification_reasons: [],
     }),
-    probeTransferRoute: async (request) => ({
-      valuation_asset: "USD",
+    probeTransferRoute: async (request, probeContext) => {
+      assert.equal(
+        probeContext.venue_access_by_account[request.from_account_commitment].encrypted_vault_commitment,
+        `encrypted:${request.from_venue_id}:0001`,
+      );
+      assert.deepEqual(
+        Object.keys(probeContext.venue_access_by_account).sort(),
+        [request.from_account_commitment, request.to_account_commitment].sort(),
+      );
+      return {
+        valuation_asset: "USD",
       source_collateral_asset: request.source_collateral_asset,
       destination_collateral_asset: request.destination_collateral_asset,
       conversion_required: request.conversion_required,
@@ -605,8 +614,9 @@ test("worker monitoring refreshes owner-scoped collateral routes from exact acco
       owner_approval_required: true,
       fund_movement_authorized: false,
       transaction_broadcast: false,
-      automatic_transfer_permitted: false,
-    }),
+        automatic_transfer_permitted: false,
+      };
+    },
     now_ms: NOW + 100,
   });
   assert.equal(tick.ok, true, JSON.stringify(tick));

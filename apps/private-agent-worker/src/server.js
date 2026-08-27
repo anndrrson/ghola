@@ -69,6 +69,7 @@ import {
   readCarryFundingSettlements,
   readHyperliquidCarryMetrics,
   readHyperliquidSnapshot,
+  readLighterCarryWithdrawalRoute,
   reconcileHyperliquidOrder,
   reconcileStoredExecution,
   streamHyperliquidAccountState,
@@ -2664,7 +2665,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
       ? createCarryTransferVenueReaders({
           read_account_capacity: options.readCarryAccountCapacity,
           read_deposit_quote: options.readCarryDepositQuote,
-          read_lighter_withdrawal_quote: options.readLighterWithdrawalQuote,
+          read_lighter_withdrawal_quote: options.readLighterWithdrawalQuote
+            || ((request, probeContext) => readLighterCarryWithdrawalRoute({
+              request,
+              probe_context: probeContext,
+              recipient,
+            })),
           withdrawal_policies: options.carryWithdrawalPolicies,
           fetchImpl: options.fetchImpl || fetch,
         })

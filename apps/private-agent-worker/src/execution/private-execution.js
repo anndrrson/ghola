@@ -50,6 +50,7 @@ import {
   lighterClientOrderIndex,
   openLighterExecutionCredential,
   readLighterFundingSettlements,
+  readLighterWithdrawalRouteQuote,
   submitAndReconcileLighterExecution,
   verifyLighterCredential,
   verifyLighterNoSubmit,
@@ -1429,6 +1430,31 @@ export async function verifyLighterOrderNoSubmit({ body, recipient, state }) {
     },
     updated_at: new Date().toISOString(),
   };
+}
+
+export async function readLighterCarryWithdrawalRoute({
+  request,
+  probe_context: probeContext,
+  recipient,
+  openCredential = openLighterExecutionCredential,
+  readWithdrawalQuote = readLighterWithdrawalRouteQuote,
+}) {
+  const access = probeContext?.venue_access_by_account?.[request?.from_account_commitment];
+  if (probeContext?.owner_commitment !== access?.owner_commitment
+    || access?.status !== "ready"
+    || access?.account_commitment !== request?.from_account_commitment
+    || !access?.encrypted_execution_vault) {
+    throw new PrivateExecutionError("lighter carry route access is unavailable", 409);
+  }
+  const credential = await openCredential({
+    bundle: access.encrypted_execution_vault,
+    recipient,
+    accountCommitment: access.account_commitment,
+  });
+  return readWithdrawalQuote({
+    credential,
+    account_state_commitment: request.source_account_state_commitment,
+  });
 }
 
 async function lighterCredentialForBody({ body, recipient }) {

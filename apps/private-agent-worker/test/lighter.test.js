@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   lighterClientOrderIndex,
   lighterCredentialFromVault,
+  readLighterWithdrawalRouteQuote,
   readLighterFundingSettlements,
   reconcileLighterExecution,
   submitAndReconcileLighterExecution,
@@ -29,6 +30,45 @@ function credential() {
     owner_only_operations: ["withdraw", "transfer", "leverage", "margin", "account_config", "api_key_rotation"],
   });
 }
+
+test("reads exact Lighter withdrawal capacity and delay without broadcasting", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "read_only";
+  try {
+    const quote = await readLighterWithdrawalRouteQuote({
+      credential: credential(),
+      account_state_commitment: "carry:account-state:lighter:0001",
+      now: () => 1_800_000_000_000,
+      runner: async (payload) => {
+        assert.equal(payload.action, "route_terms");
+        return {
+          credential_verified: true,
+          account_state_checked: true,
+          withdrawal_terms_checked: true,
+          normal_withdrawal_fee_usdc: "0",
+          fee_source: "lighter_sdk_normal_withdrawal_v1",
+          minimum_withdrawal_usdc: "3.0000001",
+          maximum_withdrawal_usdc: "50.1234569",
+          withdrawal_delay_seconds: 1069,
+          transaction_broadcast: false,
+        };
+      },
+    });
+    assert.equal(quote.minimum_transfer_micro_usdc, 3_000_001);
+    assert.equal(quote.maximum_transfer_micro_usdc, 50_123_456);
+    assert.equal(quote.fee_upper_bound_micro_usdc, 0);
+    assert.equal(quote.latency_upper_bound_ms, 1_069_000);
+    assert.equal(quote.fund_movement_authorized, false);
+    assert.equal(quote.transaction_broadcast, false);
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
 
 function instruction(overrides = {}) {
   return {

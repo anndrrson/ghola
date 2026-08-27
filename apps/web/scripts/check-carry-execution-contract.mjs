@@ -448,6 +448,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("transferRoutes", "all_in_fee_verified", "carry_transfer_route_all_in_fee_missing");
   requireText("transferRoutes", "source_collateral_asset", "carry_transfer_route_collateral_assets_missing");
   requireText("transferRoutes", "carry_transfer_route_probe_authority_boundary", "carry_transfer_route_probe_authority_missing");
+  requireText("transferRoutes", "probeRoute(request, routeScopedProbeContext", "carry_transfer_route_private_context_missing");
+  requireText("transferRoutes", "routeScopedProbeContext", "carry_transfer_route_least_privilege_missing");
   requireText("transferRoutes", "export async function loadCarryTransferRouteEvidence", "carry_transfer_route_loader_missing");
   requireText("transferRoutes", "evidenceCommitment(evidence)", "carry_transfer_route_commitment_missing");
   requireText("transferRoutes", 'evidence_source: "attested_worker"', "carry_transfer_route_attestation_missing");
@@ -465,12 +467,19 @@ export function checkCarryExecutionContract(sources) {
   requireText("transferVenueReaders", "estimateFee?chainId=42161&asset=USDT", "carry_transfer_aster_live_fee_missing");
   requireText("transferVenueReaders", "carry_transfer_aster_fee_above_policy", "carry_transfer_aster_fee_ceiling_missing");
   requireText("transferVenueReadersTest", "fails closed for stale policy or a live Aster fee above its ceiling", "carry_transfer_venue_reader_failure_test_missing");
+  requireText("lighter", "export async function readLighterWithdrawalRouteQuote", "carry_transfer_lighter_route_reader_missing");
+  requireText("lighterRunner", 'action == "route_terms"', "carry_transfer_lighter_route_terms_missing");
+  requireText("lighterRunner", '"transaction_broadcast": False', "carry_transfer_lighter_route_no_broadcast_missing");
+  requireText("lighterTest", "reads exact Lighter withdrawal capacity and delay without broadcasting", "carry_transfer_lighter_route_test_missing");
   requireText("positions", "loadCarryTransferRouteEvidence", "carry_transfer_routes_worker_binding_missing");
   requireText("positions", "export async function refreshStoredCarryTransferRoutes", "carry_transfer_route_supervised_refresh_missing");
   requireText("positions", "probe_transfer_route: probeTransferRoute", "carry_transfer_route_internal_probe_missing");
+  requireText("positions", "venue_access_by_account", "carry_transfer_route_sealed_access_missing");
   requireText("server", "createCarryTransferRouteProbe", "carry_transfer_route_compiler_wiring_missing");
   requireText("server", "createCarryTransferVenueReaders", "carry_transfer_venue_reader_wiring_missing");
   requireText("server", "probeTransferRoute: probeCarryTransferRoute", "carry_transfer_route_server_injection_missing");
+  requireText("privateExecution", "export async function readLighterCarryWithdrawalRoute", "carry_transfer_lighter_private_reader_missing");
+  requireText("adapterRegistryTest", "Lighter route reads open only the exact sealed monitoring account", "carry_transfer_lighter_private_reader_test_missing");
   requireText("positions", 'transfer_route_evidence_status: routeEvidence.ok ? "verified" : "unavailable"', "carry_transfer_route_status_missing");
   requireText("positions", "carry_portfolio_capital_evidence_incomplete", "carry_portfolio_capital_incomplete_gate_missing");
   requireText("positionsTest", "compiles an owner-only portfolio capital plan from stored monitoring evidence", "carry_portfolio_capital_worker_test_missing");

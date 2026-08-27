@@ -9,7 +9,7 @@ export function createCarryTransferRouteProbe({
   if (!venueRouteReaders || typeof venueRouteReaders !== "object" || Array.isArray(venueRouteReaders)) {
     fail("carry_transfer_probe_readers_invalid");
   }
-  return async function probeCarryTransferRoute(request) {
+  return async function probeCarryTransferRoute(request, probeContext) {
     const sourceReader = venueRouteReaders[request?.from_venue_id]?.read_withdrawal_quote;
     const destinationReader = venueRouteReaders[request?.to_venue_id]?.read_deposit_quote;
     if (typeof sourceReader !== "function" || typeof destinationReader !== "function") {
@@ -17,12 +17,12 @@ export function createCarryTransferRouteProbe({
     }
     const checkedAtMs = positiveInteger(request.checked_at_ms, "carry_transfer_probe_checked_at_invalid");
     const reads = [
-      sourceReader(Object.freeze({ ...request, operation: "read_only_withdrawal_quote" })),
-      destinationReader(Object.freeze({ ...request, operation: "read_only_deposit_quote" })),
+      sourceReader(Object.freeze({ ...request, operation: "read_only_withdrawal_quote" }), probeContext),
+      destinationReader(Object.freeze({ ...request, operation: "read_only_deposit_quote" }), probeContext),
     ];
     if (request.conversion_required) {
       if (typeof readConversionQuote !== "function") fail("carry_transfer_probe_conversion_reader_unavailable");
-      reads.push(readConversionQuote(Object.freeze({ ...request, operation: "read_only_conversion_quote" })));
+      reads.push(readConversionQuote(Object.freeze({ ...request, operation: "read_only_conversion_quote" }), probeContext));
     }
     const [rawWithdrawal, rawDeposit, rawConversion] = await Promise.all(reads);
     const withdrawal = component(rawWithdrawal, {

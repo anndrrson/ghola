@@ -147,6 +147,53 @@ export async function verifyLighterCredential({ credential, runner = defaultRunn
   };
 }
 
+export async function readLighterWithdrawalRouteQuote({
+  credential,
+  account_state_commitment: accountStateCommitment,
+  runner = defaultRunner,
+  now = () => Date.now(),
+}) {
+  assertLighterPilotMode(credential, "read");
+  if (!SAFE_COMMITMENT.test(String(accountStateCommitment || ""))) {
+    throw new LighterExecutionError("lighter route account binding is invalid", 400, "venue_access_required");
+  }
+  const result = await runner({ action: "route_terms", credential, timeout_ms: timeoutMs() });
+  if (result?.credential_verified !== true
+    || result?.account_state_checked !== true
+    || result?.withdrawal_terms_checked !== true
+    || result?.transaction_broadcast !== false
+    || result?.fee_source !== "lighter_sdk_normal_withdrawal_v1"
+    || decimal(result?.normal_withdrawal_fee_usdc) !== 0) {
+    throw new LighterExecutionError("lighter withdrawal route verification failed", 502, "venue_access_required");
+  }
+  const minimum = decimalToMicro(result.minimum_withdrawal_usdc, "ceiling");
+  const maximum = decimalToMicro(result.maximum_withdrawal_usdc, "floor");
+  const delaySeconds = integer(result.withdrawal_delay_seconds, "lighter withdrawal delay is invalid");
+  if (maximum < minimum || delaySeconds * 1_000 > 7 * 86_400_000) {
+    throw new LighterExecutionError("lighter withdrawal route is unavailable", 422, "venue_rejected");
+  }
+  return Object.freeze({
+    kind: "withdrawal",
+    status: maximum === 0 ? "degraded" : "available",
+    valuation_asset: "USD",
+    venue_id: "lighter",
+    collateral_asset: "USDC",
+    account_state_commitment: accountStateCommitment,
+    verified: true,
+    capacity_bound_verified: true,
+    fee_upper_bound_verified: true,
+    latency_upper_bound_verified: true,
+    read_only: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+    minimum_transfer_micro_usdc: minimum,
+    maximum_transfer_micro_usdc: maximum,
+    fee_upper_bound_micro_usdc: 0,
+    latency_upper_bound_ms: delaySeconds * 1_000,
+    as_of_ms: now(),
+  });
+}
+
 export async function verifyLighterNoSubmit({ credential, instruction, clientOrderIndex, runner = defaultRunner }) {
   assertLighterPilotMode(credential, "read");
   const order = normalizeOrder(instruction, clientOrderIndex);
@@ -475,6 +522,21 @@ function integer(value, message) {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < 0) throw new LighterExecutionError(message, 422, "venue_rejected");
   return number;
+}
+
+function decimalToMicro(value, rounding) {
+  const text = String(value ?? "");
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(text)) {
+    throw new LighterExecutionError("lighter withdrawal amount is invalid", 422, "venue_rejected");
+  }
+  const [whole, fraction = ""] = text.split(".");
+  const padded = `${fraction}000000`;
+  let micro = BigInt(whole) * 1_000_000n + BigInt(padded.slice(0, 6));
+  if (rounding === "ceiling" && fraction.length > 6 && /[1-9]/.test(fraction.slice(6))) micro += 1n;
+  if (micro > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new LighterExecutionError("lighter withdrawal amount is invalid", 422, "venue_rejected");
+  }
+  return Number(micro);
 }
 
 function positiveDecimal(value, message) {

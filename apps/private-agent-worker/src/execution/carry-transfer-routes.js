@@ -13,6 +13,7 @@ export async function observeCarryTransferRoutes({
   worker_image_digest: workerImageDigest,
   accounts,
   probe_route: probeRoute,
+  probe_context: probeContext,
   checked_at_ms: checkedAtMs = Date.now(),
   expires_at_ms: expiresAtMs = checkedAtMs + 30_000,
   max_account_state_age_ms: maxAccountStateAgeMs = 30_000,
@@ -29,7 +30,11 @@ export async function observeCarryTransferRoutes({
       let quote;
       try {
         if (typeof probeRoute !== "function") fail("carry_transfer_route_probe_unavailable");
-        quote = normalizeObservedQuote(await probeRoute(request), request, checkedAtMs);
+        quote = normalizeObservedQuote(
+          await probeRoute(request, routeScopedProbeContext(probeContext, request)),
+          request,
+          checkedAtMs,
+        );
       } catch (error) {
         const reason = safeError(error);
         failures.push(`${source.venue_id}:${destination.venue_id}:${reason}`);
@@ -345,6 +350,19 @@ function observerRequest(source, destination, checkedAtMs) {
     fund_movement_authorized: false,
     transaction_broadcast: false,
     automatic_transfer_permitted: false,
+  });
+}
+
+function routeScopedProbeContext(value, request) {
+  if (!value) return undefined;
+  const source = value.venue_access_by_account?.[request.from_account_commitment];
+  const destination = value.venue_access_by_account?.[request.to_account_commitment];
+  return Object.freeze({
+    owner_commitment: value.owner_commitment,
+    venue_access_by_account: Object.freeze(Object.fromEntries([
+      ...(source ? [[request.from_account_commitment, source]] : []),
+      ...(destination ? [[request.to_account_commitment, destination]] : []),
+    ])),
   });
 }
 

@@ -11,8 +11,8 @@ export function createCarryTransferVenueReaders({
   if (typeof readAccountCapacity !== "function" || typeof readDepositQuote !== "function") {
     fail("carry_transfer_venue_reader_dependency_missing");
   }
-  const deposit = (venueId) => async (request) => {
-    const quote = await readDepositQuote(Object.freeze({ ...request, venue_id: venueId }));
+  const deposit = (venueId) => async (request, probeContext) => {
+    const quote = await readDepositQuote(Object.freeze({ ...request, venue_id: venueId }), probeContext);
     return quote;
   };
   return Object.freeze({
@@ -27,11 +27,11 @@ export function createCarryTransferVenueReaders({
       read_deposit_quote: deposit("hyperliquid"),
     }),
     lighter: Object.freeze({
-      read_withdrawal_quote: async (request) => {
+      read_withdrawal_quote: async (request, probeContext) => {
         if (typeof readLighterWithdrawalQuote !== "function") {
           fail("carry_transfer_lighter_withdrawal_reader_missing");
         }
-        return readLighterWithdrawalQuote(request);
+        return readLighterWithdrawalQuote(request, probeContext);
       },
       read_deposit_quote: deposit("lighter"),
     }),
@@ -48,14 +48,14 @@ export function createCarryTransferVenueReaders({
 }
 
 function policyWithdrawalReader({ venueId, asset, readAccountCapacity, policy, now }) {
-  return async (request) => {
+  return async (request, probeContext) => {
     const observedAtMs = now();
     const normalizedPolicy = withdrawalPolicy(policy, venueId, asset, observedAtMs);
     const capacity = await accountCapacity(await readAccountCapacity(Object.freeze({
       ...request,
       venue_id: venueId,
       collateral_asset: asset,
-    })), request, venueId, asset, observedAtMs);
+    }), probeContext), request, venueId, asset, observedAtMs);
     return withdrawalComponent({
       venueId,
       asset,
@@ -69,7 +69,7 @@ function policyWithdrawalReader({ venueId, asset, readAccountCapacity, policy, n
 }
 
 function asterWithdrawalReader({ readAccountCapacity, policy, fetchImpl, now }) {
-  return async (request) => {
+  return async (request, probeContext) => {
     const observedAtMs = now();
     const normalizedPolicy = withdrawalPolicy(policy, "aster", "USDT", observedAtMs);
     const [capacityValue, response] = await Promise.all([
@@ -77,7 +77,7 @@ function asterWithdrawalReader({ readAccountCapacity, policy, fetchImpl, now }) 
         ...request,
         venue_id: "aster",
         collateral_asset: "USDT",
-      })),
+      }), probeContext),
       fetchImpl(ASTER_WITHDRAWAL_FEE_URL, {
         method: "GET",
         headers: { accept: "application/json" },

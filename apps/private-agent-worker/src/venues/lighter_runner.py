@@ -139,6 +139,30 @@ async def run(payload):
                 "transaction_broadcast": False,
                 "account": account,
             }
+        if action == "route_terms":
+            account, asset_details, withdrawal_delay = await asyncio.gather(
+                account_for(client, credential["account_index"]),
+                client.order_api.asset_details(asset_id=client.ASSET_ID_USDC),
+                lighter.InfoApi(client.api_client).withdrawal_delay(),
+            )
+            assets = getattr(asset_details, "asset_details", None) or []
+            usdc = next((item for item in assets if str(getattr(item, "symbol", "")).upper() == "USDC"), None)
+            if usdc is None:
+                fail("lighter USDC withdrawal terms are unavailable", "venue_access_required")
+            delay_seconds = int(getattr(withdrawal_delay, "seconds", -1))
+            if delay_seconds < 0:
+                fail("lighter withdrawal delay is unavailable", "venue_access_required")
+            return {
+                "credential_verified": True,
+                "account_state_checked": True,
+                "withdrawal_terms_checked": True,
+                "normal_withdrawal_fee_usdc": "0",
+                "fee_source": "lighter_sdk_normal_withdrawal_v1",
+                "minimum_withdrawal_usdc": str(getattr(usdc, "min_withdrawal_amount", "")),
+                "maximum_withdrawal_usdc": str(account.get("available_balance", "")),
+                "withdrawal_delay_seconds": delay_seconds,
+                "transaction_broadcast": False,
+            }
         if action in ("verify", "submit"):
             order = payload.get("order") or {}
             market = await market_for(client, order.get("market"))

@@ -419,7 +419,19 @@ export async function refreshStoredCarryTransferRoutes({
   const plans = unique.map((record) => record.latest_observation?.capital_action_plan);
   if (plans.some((plan) => !plan)) return denied("carry_portfolio_capital_evidence_incomplete");
   const accounts = new Map();
+  const venueAccessByAccount = new Map();
   try {
+    for (const record of unique) {
+      for (const access of Object.values(record.monitoring_context?.venue_access || {})) {
+        if (!access?.account_commitment) continue;
+        const existing = venueAccessByAccount.get(access.account_commitment);
+        if (existing && (existing.vault_commitment !== access.vault_commitment
+          || existing.encrypted_vault_commitment !== access.encrypted_vault_commitment)) {
+          return denied("carry_transfer_route_access_ambiguous");
+        }
+        venueAccessByAccount.set(access.account_commitment, access);
+      }
+    }
     for (const plan of plans) {
       for (const leg of plan.legs) {
         const current = accounts.get(leg.account_commitment);
@@ -447,6 +459,10 @@ export async function refreshStoredCarryTransferRoutes({
       worker_image_digest: runtimeCarryQualificationImageDigest(env),
       accounts: [...accounts.values()],
       probe_route: probeTransferRoute,
+      probe_context: Object.freeze({
+        owner_commitment: ownerCommitment,
+        venue_access_by_account: Object.freeze(Object.fromEntries(venueAccessByAccount)),
+      }),
       checked_at_ms: nowMs,
       max_account_state_age_ms: maxAccountStateAgeMs,
       now_ms: nowMs,

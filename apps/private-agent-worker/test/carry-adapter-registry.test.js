@@ -7,6 +7,7 @@ import {
 } from "@ghola/execution-core";
 import {
   readCarryFundingSettlements,
+  readLighterCarryWithdrawalRoute,
   registeredCarryAdapterId,
 } from "../src/execution/private-execution.js";
 
@@ -34,6 +35,50 @@ test("shadow-only candidates cannot enter worker Carry dispatch", () => {
     assert.equal(registeredCarryAdapterId(venueId, "carry_execution"), null);
     assert.equal(registeredCarryAdapterId(venueId, "no_submit_reconciliation"), null);
   }
+});
+
+test("Lighter route reads open only the exact sealed monitoring account", async () => {
+  const access = {
+    status: "ready",
+    owner_commitment: "owner:carry:0001",
+    account_commitment: "account:lighter:0001",
+    encrypted_execution_vault: { ciphertext: "sealed" },
+  };
+  let opened = false;
+  const quote = await readLighterCarryWithdrawalRoute({
+    request: {
+      from_account_commitment: access.account_commitment,
+      source_account_state_commitment: "carry:account-state:lighter:0001",
+    },
+    probe_context: {
+      owner_commitment: access.owner_commitment,
+      venue_access_by_account: { [access.account_commitment]: access },
+    },
+    recipient: { recipient_id: "recipient:0001" },
+    openCredential: async ({ bundle, accountCommitment }) => {
+      assert.equal(bundle, access.encrypted_execution_vault);
+      assert.equal(accountCommitment, access.account_commitment);
+      opened = true;
+      return { network: "mainnet" };
+    },
+    readWithdrawalQuote: async ({ credential, account_state_commitment: stateCommitment }) => ({
+      credential,
+      stateCommitment,
+      transaction_broadcast: false,
+    }),
+  });
+  assert.equal(opened, true);
+  assert.equal(quote.stateCommitment, "carry:account-state:lighter:0001");
+  assert.equal(quote.transaction_broadcast, false);
+
+  await assert.rejects(() => readLighterCarryWithdrawalRoute({
+    request: { from_account_commitment: "account:lighter:other" },
+    probe_context: {
+      owner_commitment: access.owner_commitment,
+      venue_access_by_account: { [access.account_commitment]: access },
+    },
+    recipient: {},
+  }), /lighter carry route access is unavailable/);
 });
 
 test("Carry funding history dispatches through the registered Aster adapter", async (t) => {
