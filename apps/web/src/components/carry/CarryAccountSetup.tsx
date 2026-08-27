@@ -690,6 +690,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#5aa7ff]">Carry setup</p>
         <h1 className="mt-2 text-4xl font-semibold tracking-[-0.04em]">Connect once. Trade as one position.</h1>
         <p className="mt-3 text-sm leading-6 text-[#8f9aae]">Ghola&apos;s execution policy permits reads, orders, cancellation, and reconciliation only.</p>
+        <p className="mt-1 text-sm leading-6 text-[#8f9aae]">Verify every connection before depositing. Ghola shows the exact owner-funded requirement before live execution can unlock.</p>
 
         {!auth.authenticated && !auth.loading && (
           <button type="button" onClick={() => setAuthOpen(true)} className="mt-8 h-12 w-full rounded-lg bg-[#4aaef8] font-semibold text-[#06111d]">
