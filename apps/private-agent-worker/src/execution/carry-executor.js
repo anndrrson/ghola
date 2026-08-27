@@ -753,14 +753,35 @@ async function inspectCarryAccountState({ state, record, saga, recipient, verify
   }
   const readiness = Array.isArray(proof.account_readiness) ? proof.account_readiness : [];
   const venues = [record.position.long_venue_id, record.position.short_venue_id];
-  const venueProof = venues.map((venueId) => readiness.find((item) => item?.venue_id === venueId));
-  if (venueProof.some((item) => item?.authorized !== true)) {
+  const venueProof = venues.map((venueId) => {
+    const matches = readiness.filter((item) => item?.venue_id === venueId);
+    if (matches.length !== 1) return null;
+    const item = matches[0];
+    const positionCount = item.position_count;
+    const openOrderCount = item.open_order_count;
+    if (item.authorized !== true
+      || !Number.isSafeInteger(positionCount)
+      || positionCount < 0
+      || !Number.isSafeInteger(openOrderCount)
+      || openOrderCount < 0) {
+      return null;
+    }
+    const flatZeroOrders = positionCount === 0 && openOrderCount === 0;
+    if (item.flat_zero_orders !== flatZeroOrders) return null;
+    return Object.freeze({
+      venue_id: venueId,
+      authorized: true,
+      flat_zero_orders: flatZeroOrders,
+      position_count: positionCount,
+      open_order_count: openOrderCount,
+      account_state_checked: true,
+    });
+  });
+  if (venueProof.some((item) => item === null)) {
     return denied("carry_exit_final_account_proof_unavailable");
   }
   const knownFlat = venueProof.every((item) => item.flat_zero_orders === true);
-  const openOrderCount = knownFlat
-    ? 0
-    : venueProof.reduce((sum, item) => sum + Math.max(0, Number(item.open_order_count || 0)), 0);
+  const openOrderCount = venueProof.reduce((sum, item) => sum + item.open_order_count, 0);
   return {
     ok: true,
     known_flat: knownFlat,
@@ -770,17 +791,12 @@ async function inspectCarryAccountState({ state, record, saga, recipient, verify
       account_state_checked: true,
       transaction_broadcast: false,
       checked_at_ms: nowMs,
+      venues: venueProof,
       reconciliation_commitment: `carry:reconciliation:${digest(JSON.stringify({
         position_id: record.position.position_id,
         saga_id: saga.saga_id,
         checked_at_ms: nowMs,
-        venue_readiness: venueProof.map((item) => ({
-          venue_id: item.venue_id,
-          authorized: true,
-          flat_zero_orders: item.flat_zero_orders === true,
-          position_count: Number(item.position_count || 0),
-          open_order_count: Number(item.open_order_count || 0),
-        })),
+        venue_readiness: venueProof,
       })).slice(0, 40)}`,
     },
   };

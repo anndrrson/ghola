@@ -190,6 +190,8 @@ export async function verifyCarryReleaseEvidence(evidence) {
   fail(sameVenueSet(finalState.venues, pair), "final_state_venues_mismatch");
   for (const venueState of array(finalState.venues)) {
     const venue = String(venueState?.venue_id || "");
+    fail(venueState?.authorized === true, `venue_not_authorized:${venue}`);
+    fail(venueState?.flat_zero_orders === true, `venue_flat_state_unproven:${venue}`);
     fail(venueState?.nonzero_position_count === 0, `venue_position_not_flat:${venue}`);
     fail(venueState?.open_order_count === 0, `venue_open_orders_not_zero:${venue}`);
     fail(venueState?.account_state_checked === true, `venue_account_state_unverified:${venue}`);

@@ -264,6 +264,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterial", "status: runwayStatuses[venueId]", "carry_release_runway_status_missing");
   requireText("releaseMaterial", "attempt?.submit_count !== 1", "carry_release_submit_count_gate_missing");
   requireText("releaseMaterial", "attempt?.ambiguity_retry_count !== 0", "carry_release_retry_count_gate_missing");
+  requireText("executor", "venues: venueProof", "carry_reconciliation_venue_rows_missing");
+  requireText("releaseMaterial", "releaseFinalVenueState(finalState.venues, pair)", "carry_release_venue_final_state_gate_missing");
+  requireText("releaseMaterial", "carry_release_venue_final_state_unproven", "carry_release_venue_final_state_error_missing");
+  requireText("releaseMaterialTest", "refuses aggregate-only final reconciliation evidence", "carry_release_aggregate_only_rejection_test_missing");
+  requireText("releaseMaterialTest", "refuses duplicate, mismatched, or non-flat venue final state", "carry_release_venue_final_state_test_missing");
   requireText("releaseMaterial", "worker_material_commitment", "carry_release_material_commitment_missing");
   requireText("privateExecution", "submit_count: 1", "durable_submit_count_missing");
   requireText("privateExecution", "ambiguity_retry_count: 0", "durable_retry_count_missing");

@@ -122,8 +122,8 @@ async function fixture() {
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,
       venues: [
-        { venue_id: "hyperliquid", nonzero_position_count: 0, open_order_count: 0, account_state_checked: true },
-        { venue_id: "aster", nonzero_position_count: 0, open_order_count: 0, account_state_checked: true },
+        { venue_id: "hyperliquid", authorized: true, flat_zero_orders: true, nonzero_position_count: 0, open_order_count: 0, account_state_checked: true },
+        { venue_id: "aster", authorized: true, flat_zero_orders: true, nonzero_position_count: 0, open_order_count: 0, account_state_checked: true },
       ],
     },
     value_ledger: {
@@ -256,6 +256,17 @@ test("rejects residual exposure or orders", async () => {
   evidence.final_state.venues[0].open_order_count = 1;
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
   await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /venue_open_orders_not_zero:hyperliquid/);
+});
+
+test("rejects final venue rows that are not directly authorized and flat", async () => {
+  const evidence = await fixture();
+  delete evidence.final_state.venues[0].authorized;
+  delete evidence.final_state.venues[0].flat_zero_orders;
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(
+    () => verifyCarryReleaseEvidence(evidence),
+    /venue_not_authorized:hyperliquid|venue_flat_state_unproven:hyperliquid/,
+  );
 });
 
 test("rejects a value ledger that does not reconcile to leg costs", async () => {

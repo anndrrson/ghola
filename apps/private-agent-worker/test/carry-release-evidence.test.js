@@ -30,6 +30,16 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.equal(result.material.monitoring.margin_runways[0].status, "healthy");
   assert.equal(result.material.contract_equivalence.index_price_divergence_bps, 3);
   assert.equal(result.material.final_state.open_order_count, 0);
+  assert.deepEqual(result.material.final_state.venues.map((item) => ({
+    venue_id: item.venue_id,
+    authorized: item.authorized,
+    flat_zero_orders: item.flat_zero_orders,
+    nonzero_position_count: item.nonzero_position_count,
+    open_order_count: item.open_order_count,
+  })), [
+    { venue_id: "hyperliquid", authorized: true, flat_zero_orders: true, nonzero_position_count: 0, open_order_count: 0 },
+    { venue_id: "aster", authorized: true, flat_zero_orders: true, nonzero_position_count: 0, open_order_count: 0 },
+  ]);
   assert.equal(result.material.value_ledger.realized.net_value_micro_usdc, 34);
   assert.match(result.material.worker_material_commitment, /^carry:release:material:[0-9a-f]{64}$/);
 });
@@ -86,6 +96,39 @@ test("refuses to claim one-submit proof without a durable attempt counter", asyn
   assert.equal(result.error, "carry_release_entry_submission_count_unproven:aster");
 });
 
+test("refuses aggregate-only final reconciliation evidence", async () => {
+  const fixture = await stateFixture();
+  delete fixture.record.final_reconciliation_evidence.venues;
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_venue_final_state_unproven");
+});
+
+test("refuses duplicate, mismatched, or non-flat venue final state", async () => {
+  for (const mutate of [
+    (venues) => { venues[1].venue_id = venues[0].venue_id; },
+    (venues) => { venues[1].venue_id = "lighter"; },
+    (venues) => { venues[1].position_count = 1; venues[1].flat_zero_orders = false; },
+    (venues) => { venues[1].open_order_count = 1; venues[1].flat_zero_orders = false; },
+  ]) {
+    const fixture = await stateFixture();
+    mutate(fixture.record.final_reconciliation_evidence.venues);
+    const result = await buildCompletedCarryReleaseMaterial({
+      state: fixture.state,
+      owner_commitment: OWNER,
+      position_id: fixture.record.position.position_id,
+      env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+      now_ms: NOW,
+    });
+    assert.equal(result.error, "carry_release_venue_final_state_unproven");
+  }
+});
+
 async function stateFixture() {
   const positionId = "carry:position:release:0001";
   const entrySaga = saga("entry", 1_800_000_000_500, 1_800_000_001_000, false);
@@ -138,6 +181,10 @@ async function stateFixture() {
       open_order_count: 0,
       checked_at_ms: 1_800_000_005_000,
       reconciliation_commitment: "carry:reconciliation:release:0001",
+      venues: [
+        { venue_id: "hyperliquid", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
+        { venue_id: "aster", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
+      ],
     },
     value_evidence: {
       costs_complete: true,

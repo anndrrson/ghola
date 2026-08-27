@@ -154,14 +154,22 @@ test("bootstraps one capped candidate only after separate qualification confirma
     preflight: async () => ({
       ...proof,
       account_readiness: [
-        { venue_id: "hyperliquid", authorized: true, flat_zero_orders: true },
-        { venue_id: "aster", authorized: true, flat_zero_orders: true },
+        { venue_id: "hyperliquid", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
+        { venue_id: "aster", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
       ],
     }),
   });
   assert.equal(closed.ok, true);
   assert.equal(closed.record.position.status, "reconciled");
   assert.equal(closed.qualification.ok, true);
+  assert.deepEqual(closed.record.final_reconciliation_evidence.venues.map((item) => ({
+    venue_id: item.venue_id,
+    position_count: item.position_count,
+    open_order_count: item.open_order_count,
+  })), [
+    { venue_id: "hyperliquid", position_count: 0, open_order_count: 0 },
+    { venue_id: "aster", position_count: 0, open_order_count: 0 },
+  ]);
   const restarted = createWorkerState(dir);
   const restored = await readCarryVenueQualification({
     state: restarted,
@@ -607,7 +615,7 @@ test("a failed exit leg completes reduce-only after recovery and syncs flat", as
   assert.equal(synced.results[0].record.final_reconciliation_evidence.open_order_count, 0);
 });
 
-test("does not claim a recovered exit is flat until both account reads prove it", async (t) => {
+test("does not claim a recovered exit is flat when a venue omits exact account counts", async (t) => {
   const fixture = await setup(t, "exit-proof-pending");
   await openActive(fixture);
   const active = await fixture.state.getCarryPositionRecord(fixture.position_id);
@@ -621,8 +629,8 @@ test("does not claim a recovered exit is flat until both account reads prove it"
   const preflight = async () => ({
     ...preflightProof(),
     account_readiness: [
-      { venue_id: "aster", authorized: true, flat_zero_orders: true },
-      { venue_id: "lighter", authorized: true, flat_zero_orders: false },
+      { venue_id: "aster", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
+      { venue_id: "lighter", authorized: true, flat_zero_orders: false, position_count: null, open_order_count: 0 },
     ],
   });
   const result = await executeStoredCarryExit({
@@ -635,7 +643,7 @@ test("does not claim a recovered exit is flat until both account reads prove it"
     },
   });
   assert.equal(result.ok, false);
-  assert.equal(result.error, "carry_exit_not_flat_or_open_orders_nonzero");
+  assert.equal(result.error, "carry_exit_final_account_proof_unavailable");
   assert.equal(result.record.position.status, "exiting");
   assert.equal(result.record.exit_verification.status, "pending");
   assert.equal(result.record.final_reconciliation_evidence, undefined);
@@ -889,8 +897,8 @@ function preflightProof(pair = { long: "aster", short: "lighter" }) {
     no_submit_ready: true,
     live_creation_ready: true,
     account_readiness: [
-      { venue_id: pair.long, authorized: true, flat_zero_orders: true },
-      { venue_id: pair.short, authorized: true, flat_zero_orders: true },
+      { venue_id: pair.long, authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
+      { venue_id: pair.short, authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
     ],
     evidence: [
       { venue_id: pair.long, side: "buy", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.long), base_size: "0.001", limit_price: "10000" } },

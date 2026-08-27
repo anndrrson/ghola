@@ -892,6 +892,14 @@ function publicReconciliationEvidence(event, nowMs) {
     transaction_broadcast: false,
     reconciliation_commitment: String(event.reconciliation_commitment || ""),
     checked_at_ms: Number.isSafeInteger(event.checked_at_ms) ? event.checked_at_ms : nowMs,
+    venues: Object.freeze((Array.isArray(event.venues) ? event.venues : []).map((item) => Object.freeze({
+      venue_id: String(item?.venue_id || ""),
+      authorized: item?.authorized === true,
+      flat_zero_orders: item?.flat_zero_orders === true,
+      position_count: item?.position_count,
+      open_order_count: item?.open_order_count,
+      account_state_checked: item?.account_state_checked === true,
+    }))),
   });
 }
 
