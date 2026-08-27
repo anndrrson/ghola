@@ -300,6 +300,10 @@ function expectedCarryWorkerConfig(): Record<string, string> {
       "PRIVATE_AGENT_CARRY_EXECUTION_SWEEP_MS",
       "2000",
     ),
+    PRIVATE_AGENT_CARRY_EXECUTION_STALL_MS: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_EXECUTION_STALL_MS",
+      "6000",
+    ),
     PRIVATE_AGENT_CARRY_EXECUTION_CONCURRENCY: workerLiveEnv(
       "PRIVATE_AGENT_CARRY_EXECUTION_CONCURRENCY",
       "8",
@@ -319,6 +323,10 @@ function expectedCarryWorkerConfig(): Record<string, string> {
     PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: workerLiveEnv(
       "PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS",
       "5000",
+    ),
+    PRIVATE_AGENT_CARRY_MONITOR_STALL_MS: workerLiveEnv(
+      "PRIVATE_AGENT_CARRY_MONITOR_STALL_MS",
+      "15000",
     ),
     PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY: workerLiveEnv(
       "PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY",

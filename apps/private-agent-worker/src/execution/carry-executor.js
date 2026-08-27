@@ -1546,6 +1546,12 @@ export function startCarryExecutionLoop({ state, recipient, verifyOrder, execute
     };
   }
   const intervalMs = boundedMs(env.PRIVATE_AGENT_CARRY_EXECUTION_SWEEP_MS, 1_000, 60_000, 2_000);
+  const stallAfterMs = boundedMs(
+    env.PRIVATE_AGENT_CARRY_EXECUTION_STALL_MS,
+    intervalMs * 2,
+    1_800_000,
+    intervalMs * 3,
+  );
   let timer = null;
   let stopped = false;
   const startupAt = now();
@@ -1569,6 +1575,7 @@ export function startCarryExecutionLoop({ state, recipient, verifyOrder, execute
   const supervisor = createCarryLoopSupervisor({
     name: "carry_execution",
     now,
+    maxSilenceMs: stallAfterMs,
     run: async () => {
       const audit = await ensureRestartAudit();
       if (audit?.ok !== true) return { ok: false, error: audit?.error || "carry_restart_audit_failed" };

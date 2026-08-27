@@ -944,6 +944,15 @@ describe("CarryTerminalBuilder", () => {
       value: "MONITOR + EXIT DEGRADED",
       tone: "bad",
     });
+    expect(carrySupervisionSummary({
+      status: "degraded",
+      monitoring: { status: "stalled" },
+      execution: { status: "healthy" },
+    })).toEqual({
+      ready: false,
+      value: "MONITOR DEGRADED",
+      tone: "bad",
+    });
   });
 
   async function click(label: string) {

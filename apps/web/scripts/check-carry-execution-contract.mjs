@@ -667,6 +667,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("executor", "listAllCarryPositionRecords", "carry_recovery_full_scan_missing");
   requireText("recordScanTest", "beyond the 500-record storage page", "carry_record_scan_scale_test_missing");
   requireText("loopSupervisor", "consecutive_failures", "carry_loop_health_state_missing");
+  requireText("loopSupervisor", 'status: "stalled"', "carry_loop_stall_detection_missing");
+  requireText("positions", "maxSilenceMs: stallAfterMs", "carry_monitor_stall_deadline_missing");
+  requireText("executor", "maxSilenceMs: stallAfterMs", "carry_execution_stall_deadline_missing");
   requireText("positions", "supervisor.runOnce", "carry_monitor_supervision_missing");
   requireText("executor", "supervisor.runOnce", "carry_execution_supervision_missing");
   requireText("executor", "const audit = await ensureRestartAudit()", "carry_restart_audit_retry_missing");
@@ -677,6 +680,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "carrySupervisionSummary", "carry_terminal_supervision_missing");
   requireText("webCarryBuilder", "RISK ENGINE NOT READY", "carry_terminal_supervision_gate_missing");
   requireText("webCarryBuilderTest", "blocks a draft entry when monitoring or automatic exit is degraded", "carry_terminal_supervision_test_missing");
+  requireText("loopSupervisorTest", "fails closed when a successful loop stops making progress", "carry_loop_stall_test_missing");
+  requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MONITOR_STALL_MS', "carry_monitor_stall_compose_missing");
+  requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_EXECUTION_STALL_MS', "carry_execution_stall_compose_missing");
   requireText("loopSupervisorTest", "without leaking exception text", "carry_loop_error_redaction_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: "5000"', "carry_monitor_five_second_runtime_test_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MAX_MARKET_DATA_SKEW_MS: "750"', "carry_market_data_skew_runtime_test_missing");

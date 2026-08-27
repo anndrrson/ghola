@@ -39,6 +39,8 @@ test("coalesces concurrent loop runs and records healthy completion", async () =
     last_completed_at: "2027-01-15T08:00:00.025Z",
     last_success_at: "2027-01-15T08:00:00.025Z",
     last_error_code: null,
+    max_silence_ms: null,
+    heartbeat_deadline_at: null,
   });
   supervisor.stop();
   assert.equal((await supervisor.runOnce()).error, "carry_monitor_stopped");
@@ -79,7 +81,32 @@ test("represents deliberately disabled supervision explicitly", () => {
     last_completed_at: null,
     last_success_at: null,
     last_error_code: null,
+    max_silence_ms: null,
+    heartbeat_deadline_at: null,
   });
+});
+
+test("fails closed when a successful loop stops making progress", async () => {
+  let nowMs = 1_800_000_000_000;
+  const supervisor = createCarryLoopSupervisor({
+    name: "carry_monitor",
+    now: () => nowMs,
+    maxSilenceMs: 100,
+    run: async () => ({ ok: true }),
+  });
+
+  await supervisor.runOnce();
+  assert.equal(supervisor.health().status, "healthy");
+  assert.equal(supervisor.health().heartbeat_deadline_at, "2027-01-15T08:00:00.100Z");
+
+  nowMs += 101;
+  assert.equal(supervisor.health().status, "stalled");
+  assert.equal(supervisor.health().last_error_code, "carry_monitor_stalled");
+  assert.equal(carrySupervisionHealth({ monitoring: supervisor, execution: null }).ready, false);
+
+  await supervisor.runOnce();
+  assert.equal(supervisor.health().status, "healthy");
+  assert.equal(supervisor.health().last_error_code, null);
 });
 
 test("aggregates both critical loops without masking one degraded loop", () => {

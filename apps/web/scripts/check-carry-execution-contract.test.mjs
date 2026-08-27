@@ -36,6 +36,16 @@ test("rejects background Carry failures that are no longer supervised", () => {
   );
 });
 
+test("rejects supervision that cannot detect a silently stalled loop", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      loopSupervisor: sources.loopSupervisor.replace('status: "stalled"', 'status: "healthy"'),
+    }),
+    /carry_loop_stall_detection_missing/,
+  );
+});
+
 test("rejects live Carry entry that ignores degraded supervision", () => {
   assert.throws(
     () => checkCarryExecutionContract({

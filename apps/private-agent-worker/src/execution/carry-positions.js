@@ -720,11 +720,18 @@ export function startCarryMonitoringLoop({
   }
   const intervalMs = boundedMs(env.PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS, 5_000, 300_000, 5_000);
   const initialDelayMs = boundedMs(env.PRIVATE_AGENT_CARRY_MONITOR_INITIAL_DELAY_MS, 0, 60_000, 5_000);
+  const stallAfterMs = boundedMs(
+    env.PRIVATE_AGENT_CARRY_MONITOR_STALL_MS,
+    intervalMs * 2,
+    1_800_000,
+    Math.max(intervalMs * 3, initialDelayMs + intervalMs * 2),
+  );
   let timer = null;
   let stopped = false;
   const supervisor = createCarryLoopSupervisor({
     name: "carry_monitor",
     now,
+    maxSilenceMs: stallAfterMs,
     run: () => runCarryMonitoringTick({
       state,
       recipient,
