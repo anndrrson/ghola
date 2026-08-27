@@ -167,6 +167,19 @@ test("rejects Carry onboarding that drops the selected pair scope", () => {
   );
 });
 
+test("rejects Carry onboarding that does not bind the pair to its terminal return", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webAccountSetup: sources.webAccountSetup.replace(
+        "carryExecutionPairFromReturnTo(safeReturnTo)",
+        "null",
+      ),
+    }),
+    /carry_setup_pair_return_binding_missing/,
+  );
+});
+
 test("rejects a terminal that does not bind setup to its selected pair", () => {
   assert.throws(
     () => checkCarryExecutionContract({

@@ -771,6 +771,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webAccountConnectionsTest", "unlocks route verification only when every execution venue is connected", "carry_setup_all_venues_test_missing");
   requireText("webAccountConnectionsTest", "scopes guided setup to the selected pair without weakening fleet setup", "carry_setup_pair_scope_test_missing");
   requireText("webAccountSetup", "carryAccountConnectionProgressForVenues", "carry_setup_pair_scope_missing");
+  requireText("webAccountSetup", "carryExecutionPairFromReturnTo(safeReturnTo)", "carry_setup_pair_return_binding_missing");
+  requireText("webAccountConnectionsTest", "recovers only an exact distinct execution pair from a terminal return", "carry_setup_pair_return_test_missing");
   requireText("webAccountConnections", "export function carryAccountSetupNextAction", "carry_setup_guided_action_missing");
   requireText("webAccountSetup", "carryAccountSetupNextAction", "carry_setup_guided_action_ui_missing");
   requireText("webAccountConnectionsTest", "keeps one guided next action while skipping a venue blocked on external activation", "carry_setup_blocked_venue_resume_test_missing");

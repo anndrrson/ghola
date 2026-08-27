@@ -1,4 +1,4 @@
-import { CARRY_EXECUTION_VENUES, type CarryExecutionVenue } from "./carry-venues";
+import { CARRY_EXECUTION_VENUES, isCarryExecutionVenue, type CarryExecutionVenue } from "./carry-venues";
 
 export interface CarryAccountConnections {
   accountCommitment: string | null;
@@ -17,6 +17,11 @@ export type CarryAccountSetupNextAction = Readonly<
   | { kind: "connect_venue"; venueId: CarryExecutionVenue }
   | { kind: "verify_routes"; venueId: null }
 >;
+
+export interface CarryExecutionPair {
+  longVenueId: CarryExecutionVenue;
+  shortVenueId: CarryExecutionVenue;
+}
 
 export function carryAccountConnections(input: {
   passport: unknown;
@@ -85,6 +90,22 @@ export function carryNoSubmitVerificationHref(returnTo: string): string {
   url.searchParams.set("carry", "open");
   url.searchParams.set("carry_check", "no-submit");
   return `${url.pathname}?${url.searchParams.toString()}`;
+}
+
+export function carryExecutionPairFromReturnTo(returnTo: string): CarryExecutionPair | null {
+  if (!returnTo.startsWith("/trade?")) return null;
+  try {
+    const target = new URL(returnTo, "https://ghola.local");
+    if (target.origin !== "https://ghola.local" || target.pathname !== "/trade") return null;
+    const longVenueId = target.searchParams.get("long_venue");
+    const shortVenueId = target.searchParams.get("short_venue");
+    if (!isCarryExecutionVenue(longVenueId) || !isCarryExecutionVenue(shortVenueId) || longVenueId === shortVenueId) {
+      return null;
+    }
+    return Object.freeze({ longVenueId, shortVenueId });
+  } catch {
+    return null;
+  }
 }
 
 function record(value: unknown): Record<string, unknown> {

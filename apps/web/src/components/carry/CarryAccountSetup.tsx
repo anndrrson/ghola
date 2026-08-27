@@ -45,6 +45,7 @@ import {
 import {
   carryAccountConnectionProgressForVenues,
   carryAccountConnections,
+  carryExecutionPairFromReturnTo,
   carryNoSubmitVerificationHref,
   carryAccountSetupNextAction,
 } from "@/lib/carry-account-connections";
@@ -114,9 +115,12 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const safeReturnTo = returnTo === "/carry" || returnTo.startsWith("/trade?") ? returnTo : "/carry";
   const requestedLongVenue = searchParams.get("long_venue");
   const requestedShortVenue = searchParams.get("short_venue");
+  const returnPair = carryExecutionPairFromReturnTo(safeReturnTo);
   const pairScoped = isCarryExecutionVenue(requestedLongVenue)
     && isCarryExecutionVenue(requestedShortVenue)
-    && requestedLongVenue !== requestedShortVenue;
+    && requestedLongVenue !== requestedShortVenue
+    && returnPair?.longVenueId === requestedLongVenue
+    && returnPair.shortVenueId === requestedShortVenue;
   const requiredVenueIds = pairScoped
     ? CARRY_EXECUTION_VENUES.filter((venueId) => venueId === requestedLongVenue || venueId === requestedShortVenue)
     : CARRY_EXECUTION_VENUES;

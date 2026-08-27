@@ -3,6 +3,7 @@ import {
   carryAccountConnectionProgress,
   carryAccountConnectionProgressForVenues,
   carryAccountConnections,
+  carryExecutionPairFromReturnTo,
   carryNoSubmitVerificationHref,
   carryAccountSetupNextAction,
 } from "./carry-account-connections";
@@ -79,6 +80,19 @@ describe("Carry account connections", () => {
       ready: false,
       missingVenueIds: ["lighter"],
     });
+  });
+
+  it("recovers only an exact distinct execution pair from a terminal return", () => {
+    expect(carryExecutionPairFromReturnTo(
+      "/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=aster",
+    )).toEqual({ longVenueId: "hyperliquid", shortVenueId: "aster" });
+    expect(carryExecutionPairFromReturnTo(
+      "/trade?market=BTC-PERP&long_venue=hyperliquid&short_venue=hyperliquid",
+    )).toBeNull();
+    expect(carryExecutionPairFromReturnTo(
+      "/trade?market=BTC-PERP&long_venue=hyperliquid&short_venue=edgex",
+    )).toBeNull();
+    expect(carryExecutionPairFromReturnTo("https://example.com/trade?long_venue=hyperliquid&short_venue=aster")).toBeNull();
   });
 
   it("keeps one guided next action while skipping a venue blocked on external activation", () => {
