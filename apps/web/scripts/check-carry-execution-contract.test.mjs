@@ -365,13 +365,33 @@ test("rejects five-venue shadow evidence without economic bounds validation", ()
   );
 });
 
-test("rejects Hyperliquid shadow data that invents liquidation-fee evidence", () => {
+test("rejects Hyperliquid shadow data without no-clearance-fee provenance", () => {
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      shadow: sources.shadow.replaceAll("liquidation_fee_unverified", "liquidation_fee_assumed"),
+      shadow: sources.shadow.replaceAll("liquidation_has_no_clearance_fee", "liquidation_fee_assumed"),
     }),
     /hyperliquid_liquidation_fee_evidence_gate_missing/,
+  );
+});
+
+test("rejects public Aster economics that lose their base-schedule provenance", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadow: sources.shadow.replaceAll("fees_venue_base_schedule", "fees_unproven"),
+    }),
+    /aster_base_fee_provenance_missing/,
+  );
+});
+
+test("rejects dYdX economics that lose their live chain provenance", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadow: sources.shadow.replaceAll("fees_chain_parameter_ceiling", "fees_unproven"),
+    }),
+    /dydx_chain_fee_provenance_missing/,
   );
 });
 

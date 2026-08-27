@@ -13,6 +13,11 @@ const HYPERLIQUID_QUOTE_ASSETS = Object.freeze({
   HYPE: "USDC",
   PURR: "USDC",
 });
+const HYPERLIQUID_BASE_MAKER_FEE_BPS_CEILING = 2;
+const HYPERLIQUID_BASE_TAKER_FEE_BPS_CEILING = 5;
+const HYPERLIQUID_MINIMUM_NOTIONAL_MICRO_USDC = 10_000_000;
+const DYDX_DEFAULT_CHAIN_REST = "https://dydx-dao-api.polkachu.com";
+const DYDX_LIQUIDATION_FEE_BPS = 100;
 
 export const PERP_SHADOW_ADAPTERS = Object.freeze(Object.fromEntries(
   SUPPORTED_EXECUTION_VENUES.flatMap((venueId) => {
@@ -178,9 +183,16 @@ export async function fetchPerpShadowVenue({
     return selectAssets(parseEdgeXShadow({ funding, contracts: selectedContracts, now_ms: nowMs, max_age_ms: maxAgeMs }), assets);
   }
   if (adapterId === "dydx_shadow_v1") {
-    const [markets, serverTime] = await Promise.all([
+    const chainRest = String(marketMetadata.dydx_chain_rest || DYDX_DEFAULT_CHAIN_REST).replace(/\/+$/, "");
+    const [markets, serverTime, feeParams] = await Promise.all([
       jsonRequest(fetchImpl, "https://indexer.dydx.trade/v4/perpetualMarkets", {}, timeoutMs),
       jsonRequest(fetchImpl, "https://indexer.dydx.trade/v4/time", {}, timeoutMs),
+      optionalJsonRequest(
+        fetchImpl,
+        `${chainRest}/dydxprotocol/v4/feetiers/perpetual_fee_params`,
+        {},
+        timeoutMs,
+      ),
     ]);
     const allowed = normalizedAssetSet(assets);
     const selectedMarkets = Object.values(markets?.markets || {})
@@ -194,7 +206,14 @@ export async function fetchPerpShadowVenue({
         timeoutMs,
       ),
     ])));
-    return selectAssets(parseDydxShadow({ markets, books, server_time: serverTime, now_ms: nowMs, max_age_ms: maxAgeMs }), assets);
+    return selectAssets(parseDydxShadow({
+      markets,
+      books,
+      fee_params: feeParams,
+      server_time: serverTime,
+      now_ms: nowMs,
+      max_age_ms: maxAgeMs,
+    }), assets);
   }
   throw new Error("shadow_adapter_unimplemented");
 }
@@ -229,14 +248,14 @@ export function parseHyperliquidShadow({ body, books = {}, now_ms: nowMs, max_ag
       impact_ask_e8: priceE8(impact[1]),
       funding_rate_e12_per_interval: rateE12(context.funding),
       funding_interval_ms: HOUR_MS,
-      maker_fee_bps: null,
-      taker_fee_bps: null,
-      minimum_notional_micro_usdc: null,
+      maker_fee_bps: HYPERLIQUID_BASE_MAKER_FEE_BPS_CEILING,
+      taker_fee_bps: HYPERLIQUID_BASE_TAKER_FEE_BPS_CEILING,
+      minimum_notional_micro_usdc: HYPERLIQUID_MINIMUM_NOTIONAL_MICRO_USDC,
       quantity_step_e8: decimalStepE8(meta?.szDecimals),
-      price_tick_e8: null,
+      price_tick_e8: hyperliquidPriceTickE8(context.markPx, meta?.szDecimals),
       initial_margin_bps: leverageMarginBps(maxLeverage, 10_000),
       maintenance_margin_bps: leverageMarginBps(maxLeverage, 5_000),
-      liquidation_fee_bps: null,
+      liquidation_fee_bps: 0,
       margin_tiers: marginTiers,
       liquidation_model: "account_equity_below_tiered_maintenance_margin",
       as_of_ms: timestamp(book.time) || nowMs,
@@ -248,10 +267,11 @@ export function parseHyperliquidShadow({ body, books = {}, now_ms: nowMs, max_ag
       now_ms: nowMs,
       max_age_ms: maxAgeMs,
       quality_flags: [
-        "fees_account_specific",
-        "minimum_notional_unverified",
-        "price_tick_dynamic",
-        "liquidation_fee_unverified",
+        "fees_venue_base_tier_ceiling",
+        "fee_precision_rounded_up_to_bps",
+        "minimum_notional_protocol_floor",
+        "price_tick_current_market",
+        "liquidation_has_no_clearance_fee",
         hyperliquidQuoteEvidenceFlag(asset),
         ...(levels.length >= 2 ? ["public_l2_bbo"] : ["orderbook_bbo_missing"]),
       ],
@@ -329,6 +349,7 @@ export function parseAsterShadow({ exchange_info: exchangeInfo, premium_index: p
     const lotFilter = filters.get("LOT_SIZE") || {};
     const notionalFilter = filters.get("MIN_NOTIONAL") || {};
     const asset = assetName(row.baseAsset || String(row.symbol).replace(/USDT$|USDC$|USD$/, ""));
+    const publicFees = asterPublicFeeBps(row.quoteAsset);
     return shadowSnapshot({
       venue_id: "aster",
       contract_id: `aster:${row.symbol}`,
@@ -343,8 +364,8 @@ export function parseAsterShadow({ exchange_info: exchangeInfo, premium_index: p
       depth_asks: normalizedDepthLevels(depth.asks, "ask"),
       funding_rate_e12_per_interval: rateE12(premium.lastFundingRate),
       funding_interval_ms: positiveIntegerFrom(fundingConfig.fundingIntervalHours, null, HOUR_MS),
-      maker_fee_bps: null,
-      taker_fee_bps: null,
+      maker_fee_bps: publicFees.maker,
+      taker_fee_bps: publicFees.taker,
       minimum_notional_micro_usdc: moneyMicro(notionalFilter.notional ?? notionalFilter.minNotional),
       quantity_step_e8: decimalE8(lotFilter.stepSize),
       price_tick_e8: decimalE8(priceFilter.tickSize),
@@ -364,7 +385,10 @@ export function parseAsterShadow({ exchange_info: exchangeInfo, premium_index: p
       },
       now_ms: nowMs,
       max_age_ms: maxAgeMs,
-      quality_flags: ["funding_interval_public_config", "fees_account_specific"],
+      quality_flags: [
+        "funding_interval_public_config",
+        ...(publicFees.maker === null ? ["fees_account_specific"] : ["fees_venue_base_schedule"]),
+      ],
       ...PERP_SHADOW_ADAPTERS.aster,
     });
   }));
@@ -442,9 +466,17 @@ export function parseEdgeXShadow({ funding, contracts = [], now_ms: nowMs, max_a
   }));
 }
 
-export function parseDydxShadow({ markets, books = {}, server_time: serverTime, now_ms: nowMs, max_age_ms: maxAgeMs = DEFAULT_MAX_AGE_MS }) {
+export function parseDydxShadow({
+  markets,
+  books = {},
+  fee_params: feeParams,
+  server_time: serverTime,
+  now_ms: nowMs,
+  max_age_ms: maxAgeMs = DEFAULT_MAX_AGE_MS,
+}) {
   const rows = Object.values(markets?.markets || {});
   const asOfMs = timestamp(serverTime?.iso) || positiveIntegerFrom(serverTime?.epoch, 0, 1_000) || nowMs;
+  const publicFees = dydxBaseFeeBps(feeParams);
   return freezeSnapshots(rows.filter((row) => row?.status === "ACTIVE").map((row) => {
     const [base, quote = "USD"] = String(row.ticker || "").split("-");
     const asset = assetName(base);
@@ -465,14 +497,14 @@ export function parseDydxShadow({ markets, books = {}, server_time: serverTime, 
       depth_asks: normalizedDepthLevels(book.asks, "ask"),
       funding_rate_e12_per_interval: rateE12(row.nextFundingRate ?? row.defaultFundingRate1H),
       funding_interval_ms: HOUR_MS,
-      maker_fee_bps: null,
-      taker_fee_bps: null,
-      minimum_notional_micro_usdc: null,
+      maker_fee_bps: publicFees.maker,
+      taker_fee_bps: publicFees.taker,
+      minimum_notional_micro_usdc: decimalProductMicro(row.stepSize, midpoint(bid, ask) || priceE8(row.oraclePrice)),
       quantity_step_e8: decimalE8(row.stepSize),
       price_tick_e8: decimalE8(row.tickSize),
       initial_margin_bps: feeBps(row.initialMarginFraction),
       maintenance_margin_bps: feeBps(row.maintenanceMarginFraction),
-      liquidation_fee_bps: null,
+      liquidation_fee_bps: DYDX_LIQUIDATION_FEE_BPS,
       margin_tiers: Object.freeze([]),
       liquidation_model: "cross_or_isolated_subaccount_margin",
       as_of_ms: asOfMs,
@@ -481,9 +513,11 @@ export function parseDydxShadow({ markets, books = {}, server_time: serverTime, 
       max_age_ms: maxAgeMs,
       quality_flags: [
         "orderbook_mid_used_as_mark_proxy",
-        "fees_account_specific",
-        "minimum_notional_unverified",
-        "liquidation_fee_unverified",
+        ...(publicFees.maker === null
+          ? ["fees_chain_params_unavailable"]
+          : ["fees_chain_parameter_ceiling", "fee_precision_rounded_up_to_bps"]),
+        "minimum_notional_market_step",
+        "liquidation_fee_protocol_default",
       ],
       ...PERP_SHADOW_ADAPTERS.dydx,
     });
@@ -599,6 +633,14 @@ async function jsonRequest(fetchImpl, url, options, timeoutMs) {
   return withTimeout(response.json(), timeoutMs);
 }
 
+async function optionalJsonRequest(fetchImpl, url, options, timeoutMs) {
+  try {
+    return await jsonRequest(fetchImpl, url, options, timeoutMs);
+  } catch {
+    return null;
+  }
+}
+
 function withTimeout(promise, timeoutMs) {
   let timer;
   return Promise.race([
@@ -654,6 +696,42 @@ function decimalStepE8(value) {
   const decimals = Number(value);
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 8) return null;
   return 10 ** (8 - decimals);
+}
+
+function hyperliquidPriceTickE8(price, sizeDecimals) {
+  const numericPrice = positiveNumber(price);
+  const numericSizeDecimals = Number(sizeDecimals);
+  if (!numericPrice || !Number.isInteger(numericSizeDecimals) || numericSizeDecimals < 0 || numericSizeDecimals > 6) return null;
+  const significantFigureDecimals = Math.max(0, 4 - Math.floor(Math.log10(numericPrice)));
+  const decimals = Math.min(6 - numericSizeDecimals, significantFigureDecimals);
+  return 10 ** (8 - decimals);
+}
+
+function asterPublicFeeBps(quoteAsset) {
+  const quote = assetName(quoteAsset || "USDT");
+  if (quote === "USDT") return { maker: 0, taker: 4 };
+  if (quote === "USD1") return { maker: 0, taker: 1 };
+  return { maker: null, taker: null };
+}
+
+function dydxBaseFeeBps(feeParams) {
+  const tiers = Array.isArray(feeParams?.params?.tiers) ? feeParams.params.tiers : [];
+  const makerPpm = tiers.map((tier) => signedInteger(tier?.maker_fee_ppm)).filter(Number.isSafeInteger);
+  const takerPpm = tiers.map((tier) => signedInteger(tier?.taker_fee_ppm)).filter(Number.isSafeInteger);
+  if (makerPpm.length === 0 || takerPpm.length === 0) return { maker: null, taker: null };
+  return {
+    maker: ppmToBpsCeiling(Math.max(...makerPpm)),
+    taker: ppmToBpsCeiling(Math.max(...takerPpm)),
+  };
+}
+
+function signedInteger(value) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function ppmToBpsCeiling(value) {
+  return Number.isSafeInteger(value) ? Math.ceil(value / 100) : null;
 }
 
 function decimalProductMicro(quantity, priceScaledE8) {

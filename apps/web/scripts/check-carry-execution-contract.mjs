@@ -209,8 +209,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadow", "observedAtMs", "edgex_response_freshness_missing");
   requireText("shadow", "funding_source_stale", "edgex_funding_source_staleness_gate_missing");
   requireText("shadowTest", "keeps fresh edgeX responses live without trusting a stale funding source", "edgex_split_freshness_test_missing");
-  requireText("shadow", "liquidation_fee_unverified", "hyperliquid_liquidation_fee_evidence_gate_missing");
-  requireText("shadowTest", "without claiming missing fee data", "hyperliquid_missing_economics_test_missing");
+  requireText("shadow", "liquidation_has_no_clearance_fee", "hyperliquid_liquidation_fee_evidence_gate_missing");
+  requireText("shadow", "fees_venue_base_tier_ceiling", "hyperliquid_base_fee_provenance_missing");
+  requireText("shadow", "minimum_notional_protocol_floor", "hyperliquid_minimum_notional_provenance_missing");
+  requireText("shadowTest", "normalizes Hyperliquid public base economics conservatively", "hyperliquid_public_economics_test_missing");
+  requireText("shadow", "fees_venue_base_schedule", "aster_base_fee_provenance_missing");
+  requireText("shadowTest", "keeps unsupported Aster quote fee schedules degraded", "aster_unknown_fee_schedule_test_missing");
+  requireText("shadow", "fees_chain_parameter_ceiling", "dydx_chain_fee_provenance_missing");
+  requireText("shadow", "minimum_notional_market_step", "dydx_minimum_notional_provenance_missing");
+  requireText("shadow", "liquidation_fee_protocol_default", "dydx_liquidation_fee_provenance_missing");
+  requireText("shadowTest", "keeps dYdX degraded when its live chain fee parameters are unavailable", "dydx_missing_chain_fee_gate_test_missing");
   requireText("workerPackage", '"verify:carry-shadow"', "carry_shadow_verifier_script_missing");
   requireText("shadowVerifierCli", "verifyCarryShadowSet", "carry_shadow_verifier_cli_runtime_missing");
   requireText("shadowVerifierCli", "verifyCarryShadowSoak(sampleResults", "carry_shadow_soak_cli_missing");

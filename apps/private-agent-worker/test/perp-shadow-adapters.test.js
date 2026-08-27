@@ -13,7 +13,7 @@ import {
 
 const NOW = 1_800_000_000_000;
 
-test("normalizes Hyperliquid public perp context without claiming missing fee data", () => {
+test("normalizes Hyperliquid public base economics conservatively", () => {
   const [snapshot] = parseHyperliquidShadow({
     body: [
       { universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] },
@@ -39,11 +39,17 @@ test("normalizes Hyperliquid public perp context without claiming missing fee da
   assert.equal(snapshot.funding_rate_e12_per_interval, 12_500_000);
   assert.equal(snapshot.funding_interval_ms, 3_600_000);
   assert.equal(snapshot.quantity_step_e8, 1_000);
-  assert.equal(snapshot.liquidation_fee_bps, null);
-  assert.equal(snapshot.status, "degraded");
+  assert.equal(snapshot.price_tick_e8, 100_000_000);
+  assert.equal(snapshot.maker_fee_bps, 2);
+  assert.equal(snapshot.taker_fee_bps, 5);
+  assert.equal(snapshot.minimum_notional_micro_usdc, 10_000_000);
+  assert.equal(snapshot.liquidation_fee_bps, 0);
+  assert.equal(snapshot.status, "ready");
   assert.equal(snapshot.executable, false);
-  assert.ok(snapshot.quality_flags.includes("minimum_notional_unverified"));
-  assert.ok(snapshot.quality_flags.includes("liquidation_fee_unverified"));
+  assert.ok(snapshot.quality_flags.includes("fees_venue_base_tier_ceiling"));
+  assert.ok(snapshot.quality_flags.includes("fee_precision_rounded_up_to_bps"));
+  assert.ok(snapshot.quality_flags.includes("minimum_notional_protocol_floor"));
+  assert.ok(snapshot.quality_flags.includes("liquidation_has_no_clearance_fee"));
   assert.ok(snapshot.quality_flags.includes("contract_specs_usdt_denominated_usdc_margined"));
 });
 
@@ -166,7 +172,30 @@ test("normalizes Aster V3 exchange, premium, and book schemas", () => {
   assert.equal(snapshot.quantity_step_e8, 100_000);
   assert.equal(snapshot.funding_interval_ms, 14_400_000);
   assert.equal(snapshot.depth_asks[0].size_e8, 300_000_000);
+  assert.equal(snapshot.maker_fee_bps, 0);
+  assert.equal(snapshot.taker_fee_bps, 4);
+  assert.equal(snapshot.status, "ready");
+  assert.ok(snapshot.quality_flags.includes("fees_venue_base_schedule"));
+});
+
+test("keeps unsupported Aster quote fee schedules degraded", () => {
+  const symbol = asterSymbol("BTCUSDC", "BTC", "USDC");
+  symbol.quoteAsset = "USDC";
+  symbol.marginAsset = "USDC";
+  symbol.requiredMarginPercent = "5.0";
+  symbol.maintMarginPercent = "2.5";
+  symbol.liquidationFee = "0.025";
+  const [snapshot] = parseAsterShadow({
+    exchange_info: { symbols: [symbol] },
+    premium_index: [asterPremium("BTCUSDC", NOW)],
+    book_tickers: [asterBook("BTCUSDC", NOW)],
+    funding_info: [{ symbol: "BTCUSDC", fundingIntervalHours: 8 }],
+    depth_books: { BTCUSDC: { E: NOW, bids: [["59999", "1"]], asks: [["60002", "1"]] } },
+    now_ms: NOW,
+  });
   assert.equal(snapshot.status, "degraded");
+  assert.deepEqual(snapshot.missing_fields, ["maker_fee_bps", "taker_fee_bps"]);
+  assert.ok(snapshot.quality_flags.includes("fees_account_specific"));
 });
 
 test("quarantines Aster when premium funding is stale despite fresh depth", () => {
@@ -374,7 +403,7 @@ test("fetches fresh edgeX V2 metadata, ticker, and funding", async () => {
   assert.equal(snapshot.depth_bids[0].size_e8, 100_000_000);
 });
 
-test("normalizes dYdX v4 markets, funding, and orderbook without inventing fees", () => {
+test("normalizes dYdX v4 markets with conservative live chain economics", () => {
   const [snapshot] = parseDydxShadow({
     markets: { markets: { "BTC-USD": {
       ticker: "BTC-USD",
@@ -387,6 +416,10 @@ test("normalizes dYdX v4 markets, funding, and orderbook without inventing fees"
       stepSize: "0.0001",
     } } },
     books: { "BTC-USD": { bids: [{ price: "59999", size: "0.5" }], asks: [{ price: "60003", size: "0.25" }] } },
+    fee_params: { params: { tiers: [
+      { maker_fee_ppm: 100, taker_fee_ppm: 500 },
+      { maker_fee_ppm: -70, taker_fee_ppm: 250 },
+    ] } },
     server_time: { iso: new Date(NOW).toISOString() },
     now_ms: NOW,
   });
@@ -395,8 +428,35 @@ test("normalizes dYdX v4 markets, funding, and orderbook without inventing fees"
   assert.equal(snapshot.funding_rate_e12_per_interval, 3_153_846);
   assert.equal(snapshot.quantity_step_e8, 10_000);
   assert.equal(snapshot.depth_asks[0].size_e8, 25_000_000);
+  assert.equal(snapshot.maker_fee_bps, 1);
+  assert.equal(snapshot.taker_fee_bps, 5);
+  assert.equal(snapshot.minimum_notional_micro_usdc, 6_000_100);
+  assert.equal(snapshot.liquidation_fee_bps, 100);
+  assert.equal(snapshot.status, "ready");
+  assert.ok(snapshot.quality_flags.includes("fees_chain_parameter_ceiling"));
+  assert.ok(snapshot.quality_flags.includes("minimum_notional_market_step"));
+  assert.ok(snapshot.quality_flags.includes("liquidation_fee_protocol_default"));
+});
+
+test("keeps dYdX degraded when its live chain fee parameters are unavailable", () => {
+  const [snapshot] = parseDydxShadow({
+    markets: { markets: { "BTC-USD": {
+      ticker: "BTC-USD",
+      status: "ACTIVE",
+      oraclePrice: "60001",
+      nextFundingRate: "0.0001",
+      initialMarginFraction: "0.02",
+      maintenanceMarginFraction: "0.012",
+      tickSize: "1",
+      stepSize: "0.0001",
+    } } },
+    books: { "BTC-USD": { bids: [{ price: "59999", size: "0.5" }], asks: [{ price: "60003", size: "0.25" }] } },
+    server_time: { iso: new Date(NOW).toISOString() },
+    now_ms: NOW,
+  });
   assert.equal(snapshot.status, "degraded");
-  assert.deepEqual(snapshot.missing_fields, ["maker_fee_bps", "taker_fee_bps", "minimum_notional_micro_usdc", "liquidation_fee_bps"]);
+  assert.deepEqual(snapshot.missing_fields, ["maker_fee_bps", "taker_fee_bps"]);
+  assert.ok(snapshot.quality_flags.includes("fees_chain_params_unavailable"));
 });
 
 test("keeps Variational read-only and quarantined while its trading API and index data are unavailable", () => {
@@ -430,6 +490,7 @@ test("all five shadow fetchers are read-only and never call private or order end
     else if (String(url).includes("getLatestFundingRate")) body = { data: [] };
     else if (String(url).includes("perpetualMarkets")) body = { markets: {} };
     else if (String(url).endsWith("/v4/time")) body = { iso: new Date(NOW).toISOString() };
+    else if (String(url).includes("perpetual_fee_params")) body = { params: { tiers: [{ maker_fee_ppm: 100, taker_fee_ppm: 500 }] } };
     return { ok: true, json: async () => body };
   };
   const result = await fetchCorePerpShadowSet({ fetchImpl, now_ms: NOW, timeout_ms: 1_000 });
