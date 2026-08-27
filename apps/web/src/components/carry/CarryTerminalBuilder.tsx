@@ -257,6 +257,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const portfolioCapital = carryPortfolioCapitalSummary(portfolioCapitalPlan);
   const collateral = carryCollateralReviewSummary(collateralReview);
   const portfolioValue = carryPortfolioValueSummary(portfolioValueReport);
+  const capitalEfficiency = carryCapitalEfficiencySummary(portfolioValueReport);
   const displayedCapital = latestObservation?.capital_action_plan ? capital : openingCapital;
   const restoredReadiness = readyStoredReadiness(readiness, candidate.asset, notional, days);
 
@@ -558,6 +559,9 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         {portfolioValue
           ? <p className={`truncate font-mono text-[9px] ${portfolioValue.tone === "bad" ? "text-[#ef929e]" : portfolioValue.tone === "warn" ? "text-[#d9bd74]" : "text-[#72bfa2]"}`} title={portfolioValue.value}>PORTFOLIO VALUE · {portfolioValue.value}</p>
           : null}
+        {capitalEfficiency
+          ? <p className={`truncate font-mono text-[9px] ${capitalEfficiency.tone === "bad" ? "text-[#ef929e]" : capitalEfficiency.tone === "warn" ? "text-[#d9bd74]" : "text-[#72bfa2]"}`} title={capitalEfficiency.value}>CAPITAL OFFSET · {capitalEfficiency.value}</p>
+          : null}
       </div>
     </div>
   );
@@ -818,6 +822,60 @@ function carryPortfolioValueSummary(report: Record<string, unknown> | null) {
     };
   }
   return { value: `${formatMicroUsd(modeled)} MODEL · ACCRUING`, tone: "warn" as const };
+}
+
+export function carryCapitalEfficiencySummary(report: Record<string, unknown> | null) {
+  if (!report) return null;
+  const positions = finiteNumber(report.position_count);
+  if (!Number.isSafeInteger(positions) || Number(positions) < 0) {
+    return { value: "UNVERIFIED", tone: "bad" as const };
+  }
+  if (Number(positions) === 0) return null;
+  const ownerOnlyOperations = Array.isArray(report.owner_only_operations) ? report.owner_only_operations : [];
+  if (report.kind !== "ghola_carry_portfolio_value_report"
+    || report.proposal_only !== true
+    || report.transaction_broadcast !== false
+    || report.automatic_transfer_permitted !== false
+    || !["fund", "transfer", "withdraw"].every((operation) => ownerOnlyOperations.includes(operation))) {
+    return { value: "UNVERIFIED", tone: "bad" as const };
+  }
+  const capital = asRecord(report.capital_efficiency);
+  if (capital.proposal_only !== true) return { value: "UNVERIFIED", tone: "bad" as const };
+  if (capital.status === "incomplete") {
+    const missing = Array.isArray(capital.missing_position_ids)
+      ? capital.missing_position_ids.filter((value) => typeof value === "string" && value.length > 0)
+      : [];
+    const emptyValues = [
+      capital.potential_releasable_micro_usdc,
+      capital.proposed_reallocation_micro_usdc,
+      capital.potential_new_cash_avoided_micro_usdc,
+      capital.new_owner_cash_requested_micro_usdc,
+      capital.uncovered_shortfall_micro_usdc,
+    ].every((value) => value === null);
+    return missing.length > 0 && emptyValues && capital.owner_approval_required === false
+      ? { value: `${missing.length} POSITION${missing.length === 1 ? "" : "S"} NEED FRESH MONITORING`, tone: "bad" as const }
+      : { value: "UNVERIFIED", tone: "bad" as const };
+  }
+  if (capital.status !== "ready") return { value: "UNVERIFIED", tone: "bad" as const };
+  const potential = finiteNumber(capital.potential_releasable_micro_usdc);
+  const reallocation = finiteNumber(capital.proposed_reallocation_micro_usdc);
+  const avoided = finiteNumber(capital.potential_new_cash_avoided_micro_usdc);
+  const newCash = finiteNumber(capital.new_owner_cash_requested_micro_usdc);
+  const uncovered = finiteNumber(capital.uncovered_shortfall_micro_usdc);
+  if (![potential, reallocation, avoided, newCash, uncovered].every(Number.isSafeInteger)
+    || potential == null || reallocation == null || avoided == null || newCash == null || uncovered == null
+    || potential < 0 || reallocation < 0 || avoided < 0 || newCash < 0 || uncovered < 0
+    || reallocation > potential || avoided !== reallocation || uncovered > newCash
+    || capital.owner_approval_required !== (reallocation > 0 || newCash > uncovered)) {
+    return { value: "UNVERIFIED", tone: "bad" as const };
+  }
+  if (avoided > 0) {
+    return { value: `${formatMicroUsd(avoided)} NEW CASH AVOIDED · OWNER MOVE`, tone: "good" as const };
+  }
+  if (newCash > 0) {
+    return { value: `${formatMicroUsd(newCash)} NEW CASH NEEDED · OWNER`, tone: "warn" as const };
+  }
+  return { value: "NO NEW CASH NEEDED", tone: "good" as const };
 }
 
 function proofDepth(opportunity: Record<string, unknown>): {

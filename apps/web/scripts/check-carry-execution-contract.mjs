@@ -286,6 +286,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreIndex", "compileCarryPortfolioValueReport", "carry_portfolio_value_export_missing");
   requireText("coreCarry", "carry_portfolio_value_capital_authority_boundary", "carry_portfolio_value_authority_gate_missing");
   requireText("coreCarry", "value_proof_status: valueProofStatus", "carry_portfolio_value_proof_status_missing");
+  requireText("coreCarry", "potential_new_cash_avoided_micro_usdc: reallocation", "carry_portfolio_cash_avoidance_missing");
   requireText("coreCarryTest", "separates finalized after-cost proof from accruing estimates", "carry_portfolio_value_separation_test_missing");
   requireText("coreCarryTest", "rejects duplicate, tampered, or fund-moving evidence", "carry_portfolio_value_failure_test_missing");
   requireText("coreCarry", "projected_trading_fee_micro_usdc", "carry_modeled_fee_attribution_missing");
@@ -384,10 +385,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("webClient", "getCarryPortfolioValueReport", "carry_portfolio_value_client_missing");
   requireText("webRoute", 'action === "value_report"', "carry_portfolio_value_proxy_missing");
   requireText("webCarryBuilder", "PORTFOLIO VALUE ·", "carry_terminal_portfolio_value_missing");
+  requireText("webCarryBuilder", "CAPITAL OFFSET ·", "carry_terminal_capital_efficiency_missing");
   requireText("webCarryBuilder", "STALE EVIDENCE · RECONCILE ONLY", "carry_terminal_portfolio_stale_gate_missing");
   requireText("webCarryBuilderTest", "PORTFOLIO CAPITAL · $15 REALLOCATE · $10 NEW CASH · OWNER ONLY", "carry_terminal_portfolio_capital_test_missing");
   requireText("webCarryBuilderTest", "PORTFOLIO CAPITAL · $12.5 RELEASABLE · OWNER ONLY", "carry_terminal_portfolio_optimization_test_missing");
   requireText("webCarryBuilderTest", "PORTFOLIO VALUE · $19.5 REAL · $10 OPEN MODEL · +$4.5 Δ", "carry_terminal_portfolio_value_test_missing");
+  requireText("webCarryBuilderTest", "CAPITAL OFFSET · $15 NEW CASH AVOIDED · OWNER MOVE", "carry_terminal_capital_efficiency_test_missing");
   requireText("webCarryBuilder", "live_execution_leverage_unchanged !== true", "carry_terminal_stress_leverage_boundary_missing");
   requireText("webCarryBuilderTest", "UP TO 1× OWNER CONFIG", "carry_terminal_stress_capital_test_missing");
   requireText("webCarryBuilderTest", '$10 → LIGHTER · OWNER', "carry_terminal_capital_action_test_missing");

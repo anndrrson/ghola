@@ -987,6 +987,16 @@ test("rejects a terminal that hides realized execution attribution", () => {
   );
 });
 
+test("rejects removal of verified capital-efficiency evidence", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll("CAPITAL OFFSET ·", "CAPITAL ·"),
+    }),
+    /carry_terminal_capital_efficiency_missing/,
+  );
+});
+
 test("rejects a terminal that masks incomplete worker proof with browser estimates", () => {
   assert.throws(
     () => checkCarryExecutionContract({

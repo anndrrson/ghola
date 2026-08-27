@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CarryTerminalBuilder,
+  carryCapitalEfficiencySummary,
   carryOpeningCapitalSummary,
   carryTerminalEconomics,
   carryTerminalGrossFunding,
@@ -484,6 +485,17 @@ describe("CarryTerminalBuilder", () => {
           variance_from_modeled_micro_usdc: 4_500_000,
         },
         unfinalized: { modeled_net_value_micro_usdc: 10_000_000 },
+        capital_efficiency: {
+          status: "ready",
+          missing_position_ids: [],
+          potential_releasable_micro_usdc: 15_000_000,
+          proposed_reallocation_micro_usdc: 15_000_000,
+          potential_new_cash_avoided_micro_usdc: 15_000_000,
+          new_owner_cash_requested_micro_usdc: 10_000_000,
+          uncovered_shortfall_micro_usdc: 10_000_000,
+          owner_approval_required: true,
+          proposal_only: true,
+        },
         proposal_only: true,
         transaction_broadcast: false,
         automatic_transfer_permitted: false,
@@ -565,6 +577,45 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("COLLATERAL REVIEW · 1 MOVE · 0 FUND · $15 · REVIEW ONLY");
     expect(container.textContent).toContain("SIGN CAPITAL REVIEW");
     expect(container.textContent).toContain("PORTFOLIO VALUE · $19.5 REAL · $10 OPEN MODEL · +$4.5 Δ");
+    expect(container.textContent).toContain("CAPITAL OFFSET · $15 NEW CASH AVOIDED · OWNER MOVE");
+  });
+
+  it("fails closed when capital-efficiency evidence is incomplete or inconsistent", () => {
+    const report = {
+      kind: "ghola_carry_portfolio_value_report",
+      position_count: 1,
+      proposal_only: true,
+      transaction_broadcast: false,
+      automatic_transfer_permitted: false,
+      owner_only_operations: ["fund", "transfer", "withdraw"],
+    };
+    expect(carryCapitalEfficiencySummary({
+      ...report,
+      capital_efficiency: {
+        status: "incomplete",
+        missing_position_ids: ["carry:position:missing"],
+        potential_releasable_micro_usdc: null,
+        proposed_reallocation_micro_usdc: null,
+        potential_new_cash_avoided_micro_usdc: null,
+        new_owner_cash_requested_micro_usdc: null,
+        uncovered_shortfall_micro_usdc: null,
+        owner_approval_required: false,
+        proposal_only: true,
+      },
+    })?.value).toBe("1 POSITION NEED FRESH MONITORING");
+    expect(carryCapitalEfficiencySummary({
+      ...report,
+      capital_efficiency: {
+        status: "ready",
+        potential_releasable_micro_usdc: 15_000_000,
+        proposed_reallocation_micro_usdc: 15_000_000,
+        potential_new_cash_avoided_micro_usdc: 14_000_000,
+        new_owner_cash_requested_micro_usdc: 10_000_000,
+        uncovered_shortfall_micro_usdc: 10_000_000,
+        owner_approval_required: true,
+        proposal_only: true,
+      },
+    })?.value).toBe("UNVERIFIED");
   });
 
   it("shows fresh account-state proof after an approved capital plan restores safe runway", async () => {
