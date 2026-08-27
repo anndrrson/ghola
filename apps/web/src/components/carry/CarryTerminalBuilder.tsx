@@ -47,6 +47,11 @@ type CarryRecord = {
     status: string;
     next_actions: string[];
     last_event_sequence: number;
+    consecutive_exit_observations?: number;
+    risk_mandate?: {
+      exit_net_value_bps?: number;
+      exit_after_consecutive_observations?: number;
+    };
     migration_parent_position_id?: string;
     migration_candidate_id?: string;
     pending_migration?: {
@@ -251,6 +256,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   }, [migrationNotional, notional]);
   const latestObservation = current?.latest_observation || null;
   const runway = carryRunwaySummary(latestObservation, candidate);
+  const carrySignal = carryFundingFlipSummary(current?.position, latestObservation);
   const capital = carryCapitalSummary(latestObservation?.capital_action_plan);
   const ledger = carryLedgerSummary(current?.value_ledger);
   const proofOpportunity = proof ? asRecord(proof.creation_opportunity) : null;
@@ -511,6 +517,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="BREAK-EVEN" value={economics.breakEven} />
         <Metric label={proof ? "VENUE MIN MARGIN" : "VENUE MIN MARGIN EST"} value={venueMinimumMargin.value} tone={venueMinimumMargin.tone} />
         <Metric label="LEG RUNWAY" value={runway.value} tone={runway.tone} />
+        <Metric label="CARRY SIGNAL" value={carrySignal.value} tone={carrySignal.tone} />
         <Metric label="OWNER CAPITAL" value={displayedCapital.value} tone={displayedCapital.tone} />
         <Metric label="LEDGER" value={ledger.value} tone={ledger.tone} />
         <Metric label="EXEC Δ" value={ledger.execution} tone={ledger.executionTone} />
@@ -1019,6 +1026,29 @@ function carryRunwaySummary(observation: CarryRecord["latest_observation"] | nul
     value: `${legs.join(" · ")} · ${worst.toUpperCase()}`,
     tone: worst === "healthy" ? "good" : worst === "warning" ? "warn" : "bad",
   } as const;
+}
+
+function carryFundingFlipSummary(
+  position: CarryRecord["position"] | undefined,
+  observation: CarryRecord["latest_observation"] | null,
+) {
+  if (!position || !observation) return { value: "PENDING", tone: undefined } as const;
+  const expectedNetBps = observation.expected_net_value_bps;
+  const exitNetBps = position.risk_mandate?.exit_net_value_bps;
+  const consecutive = position.consecutive_exit_observations;
+  const required = position.risk_mandate?.exit_after_consecutive_observations;
+  if (![expectedNetBps, exitNetBps, consecutive, required].every(Number.isSafeInteger)
+    || Number(consecutive) < 0 || Number(required) <= 0 || Number(consecutive) > Number(required)) {
+    return { value: "UNVERIFIED", tone: "bad" } as const;
+  }
+  const adverse = Number(expectedNetBps) <= Number(exitNetBps);
+  if ((adverse && Number(consecutive) === 0) || (!adverse && Number(consecutive) !== 0)) {
+    return { value: "UNVERIFIED", tone: "bad" } as const;
+  }
+  const net = `${Number(expectedNetBps) >= 0 ? "+" : "−"}${Math.abs(Number(expectedNetBps))}BP`;
+  if (!adverse) return { value: `${net} · CLEAR`, tone: "good" } as const;
+  if (Number(consecutive) >= Number(required)) return { value: `${net} · EXIT`, tone: "bad" } as const;
+  return { value: `${net} · ${consecutive}/${required} FLIPS`, tone: "warn" } as const;
 }
 
 function runwayVenueCode(venueId: string) {

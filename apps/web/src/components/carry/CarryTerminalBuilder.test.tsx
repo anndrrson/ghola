@@ -664,6 +664,30 @@ describe("CarryTerminalBuilder", () => {
     expect(label?.parentElement?.textContent).toContain("UNVERIFIED");
   });
 
+  it("shows the deterministic funding-flip count before reduce-only exit", async () => {
+    api.listCarryPositions.mockResolvedValue({
+      ok: true,
+      records: [{
+        ...carryRecord(),
+        position: {
+          ...carryRecord().position,
+          status: "active",
+          consecutive_exit_observations: 1,
+        },
+        latest_observation: {
+          expected_net_value_bps: -1,
+          margin_runway_ms_by_venue: { hyperliquid: 7_200_000, lighter: 3_600_000 },
+          margin_runway_status_by_venue: { hyperliquid: "healthy", lighter: "healthy" },
+          recorded_at_ms: Date.now(),
+        },
+      }],
+    });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    expect(container.textContent).toContain("CARRY SIGNAL");
+    expect(container.textContent).toContain("−1BP · 1/2 FLIPS");
+    expect(api.requestCarryPositionExit).not.toHaveBeenCalled();
+  });
+
   it("fails closed when capital-efficiency evidence is incomplete or inconsistent", () => {
     const report = {
       kind: "ghola_carry_portfolio_value_report",
@@ -841,6 +865,11 @@ function carryRecord() {
       status: "draft",
       next_actions: ["run_preflight"],
       last_event_sequence: 0,
+      consecutive_exit_observations: 0,
+      risk_mandate: {
+        exit_net_value_bps: 0,
+        exit_after_consecutive_observations: 2,
+      },
     },
   };
 }

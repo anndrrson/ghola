@@ -686,6 +686,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "LEG RUNWAY", "carry_terminal_runway_display_missing");
   requireText("webCarryBuilderTest", "HYP 2.0H · LTR 1.0H · WARNING", "carry_terminal_each_leg_runway_test_missing");
   requireText("webCarryBuilderTest", "fails closed when a venue claims risk alongside an infinite runway", "carry_terminal_runway_integrity_test_missing");
+  requireText("webCarryBuilder", 'label="CARRY SIGNAL"', "carry_terminal_funding_flip_signal_missing");
+  requireText("webCarryBuilder", "carryFundingFlipSummary", "carry_terminal_funding_flip_derivation_missing");
+  requireText("webCarryBuilderTest", "shows the deterministic funding-flip count before reduce-only exit", "carry_terminal_funding_flip_test_missing");
   requireText("webCarryBuilder", 'label="EDGE CONF"', "carry_terminal_funding_persistence_missing");
   requireText("webCarryBuilderTest", "shows only commitment-backed persistent funding as durable", "carry_terminal_funding_persistence_test_missing");
   requireText("webCarryBuilder", "window.setTimeout(refresh", "carry_terminal_monitor_refresh_missing");
