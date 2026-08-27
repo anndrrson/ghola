@@ -486,6 +486,136 @@ describe("private agent worker", () => {
     assert.deepEqual(requested.assets, ["BTC"]);
   });
 
+  it("proves the three-venue no-submit matrix and durable exact account state over HTTP", async () => {
+    await close(server);
+    process.env.PHALA_CVM_IMAGE_DIGEST = "sha256:abcdef123456";
+    const account = {
+      can_trade: true,
+      available_balance: 500,
+      margin_balance: 500,
+      initial_margin: 0,
+      maintenance_margin: 0,
+      maker_fee_bps: 0,
+      taker_fee_bps: 1,
+      position_count: 0,
+      open_order_count: 0,
+    };
+    let verificationCount = 0;
+    server = createPrivateAgentWorkerServer({
+      carryFetchVenue: async ({ venue_id, assets, now_ms }) => assets.map((asset) => ({
+        ...shadowSnapshot(venue_id, asset, now_ms),
+        price_tick_e8: 1_000,
+        depth_bids: [{ price_e8: 9_999_000_000, size_e8: 100_000_000 }],
+        depth_asks: [{ price_e8: 10_001_000_000, size_e8: 100_000_000 }],
+      })),
+      carryVerifyOrder: async ({ venue_id, work_order_commitment, execution }) => {
+        verificationCount += 1;
+        return {
+          status: "verified_ready",
+          work_order_commitment,
+          account_commitment: execution.account_commitment,
+          verification_commitment: `verification_http_${venue_id}_${verificationCount}`,
+          checks: { order_request_checked: true, transaction_broadcast: false },
+          order_shape: { notional_micro_usdc: 11_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000 },
+          account,
+          authority_boundary: venue_id === "lighter" ? {
+            venue_native_trade_only: false,
+            withdrawal_request_permitted: false,
+            secure_withdrawal_destination: "owner_l1_only",
+            owner_wallet_key_present: false,
+            non_owner_fund_movement_possible: false,
+          } : { venue_native_trade_only: true },
+        };
+      },
+      carryReadHyperliquidSnapshot: async () => ({
+        status: "ready_to_trade",
+        trading_enabled: true,
+        position_count: 0,
+        open_order_count: 0,
+      }),
+      carryReadHyperliquidMetrics: async () => account,
+      startAutopilotDueLoop: false,
+      startMultiLegRecoveryLoop: false,
+      startCarryMonitoringLoop: false,
+      startCarryExecutionLoop: false,
+      startKrakenV2Heartbeat: false,
+    });
+    baseUrl = await listen(server);
+
+    const ownerCommitment = "owner_commitment_http_matrix_0001";
+    const venueAccess = {};
+    for (const venueId of ["hyperliquid", "lighter", "aster"]) {
+      venueAccess[venueId] = {
+        status: "ready",
+        owner_commitment: ownerCommitment,
+        account_commitment: `account_commitment_http_${venueId}`,
+        vault_commitment: `vault_commitment_http_${venueId}`,
+        policy_commitment: `policy_commitment_http_${venueId}`,
+        encrypted_execution_vault: await sealedBundle(
+          baseUrl,
+          { version: 1, kind: `test_${venueId}_vault` },
+          `carry-http-matrix:${venueId}`,
+        ),
+      };
+    }
+    const common = {
+      version: 1,
+      owner_commitment: ownerCommitment,
+      asset: "BTC",
+      notional_usd: "11",
+      horizon_days: "1",
+      venue_access: venueAccess,
+    };
+    const matrixResponse = await fetch(`${baseUrl}/carry/preflight-matrix`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify({
+        ...common,
+        operation_class: "matrix_no_submit",
+        work_order_commitment: "carry_matrix_http_0001",
+      }),
+    });
+    const matrix = await matrixResponse.json();
+    assert.equal(matrixResponse.status, 200, JSON.stringify(matrix));
+    assert.equal(matrix.no_submit_ready, true, JSON.stringify(matrix));
+    assert.equal(matrix.transaction_broadcast, false);
+    assert.equal(matrix.pairs.length, 3);
+    assert.equal(matrix.pairs.every((pair) => pair.leg_evidence.every((leg) =>
+      leg.account_state.position_count === 0
+      && leg.account_state.open_order_count === 0
+      && leg.account_state.account_state_commitment.startsWith("carry:account-state:")
+    )), true);
+
+    const readinessResponse = await fetch(`${baseUrl}/carry/readiness`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify({
+        ...common,
+        operation_class: "readiness_read",
+        work_order_commitment: "carry_readiness_http_0001",
+      }),
+    });
+    const readiness = await readinessResponse.json();
+    assert.equal(readinessResponse.status, 200, JSON.stringify(readiness));
+    assert.equal(readiness.ready, true);
+    assert.equal(readiness.capital_plan.every((item) =>
+      item.position_count === 0
+      && item.open_order_count === 0
+      && item.account_state_commitment.startsWith("carry:account-state:")
+    ), true);
+    assert.equal(verificationCount, 6);
+  });
+
   it("can require dstack quote evidence before accepting production sessions", async () => {
     await close(server);
     process.env.PRIVATE_AGENT_ALLOW_UNATTESTED_DEV = "false";

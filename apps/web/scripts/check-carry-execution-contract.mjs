@@ -76,6 +76,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   workerMandateTest: "apps/private-agent-worker/test/carry-mandate.test.js",
   positionsTest: "apps/private-agent-worker/test/carry-positions.test.js",
   preflightTest: "apps/private-agent-worker/test/carry-preflight.test.js",
+  serverTest: "apps/private-agent-worker/test/server.test.js",
   qualificationTest: "apps/private-agent-worker/test/carry-qualification.test.js",
   readinessTest: "apps/private-agent-worker/test/carry-readiness.test.js",
   reconciliationTest: "apps/private-agent-worker/test/carry-reconciliation.test.js",
@@ -497,6 +498,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("server", 'req.headers["x-ghola-carry-qualification-confirmed"] === "true"', "worker_confirmation_header_missing");
   requireText("server", '"/carry/positions/release-evidence"', "worker_release_evidence_route_missing");
   requireText("server", '"/carry/preflight-matrix"', "carry_three_venue_no_submit_worker_route_missing");
+  requireText("serverTest", "proves the three-venue no-submit matrix and durable exact account state over HTTP", "carry_three_venue_no_submit_http_proof_missing");
   requireText("server", '"/carry/readiness"', "carry_readiness_resume_worker_route_missing");
   requireText("server", "readCarryExecutionReadiness", "carry_readiness_resume_worker_missing");
   requireText("webRoute", '"x-ghola-carry-qualification-confirmed": "true"', "web_confirmation_header_missing");

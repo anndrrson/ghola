@@ -2756,9 +2756,10 @@ export function createPrivateAgentWorkerServer(options = {}) {
           body,
           recipient,
           state,
-          verifyOrder: verifyAutopilotOrder,
-          readHyperliquidSnapshot,
-          readHyperliquidCarryMetrics,
+          verifyOrder: options.carryVerifyOrder || verifyAutopilotOrder,
+          readHyperliquidSnapshot: options.carryReadHyperliquidSnapshot || readHyperliquidSnapshot,
+          readHyperliquidCarryMetrics: options.carryReadHyperliquidMetrics || readHyperliquidCarryMetrics,
+          ...(options.carryFetchVenue ? { fetchVenue: options.carryFetchVenue } : {}),
         }));
       }
 
@@ -2790,9 +2791,10 @@ export function createPrivateAgentWorkerServer(options = {}) {
           body,
           recipient,
           state,
-          verifyOrder: verifyAutopilotOrder,
-          readHyperliquidSnapshot,
-          readHyperliquidCarryMetrics,
+          verifyOrder: options.carryVerifyOrder || verifyAutopilotOrder,
+          readHyperliquidSnapshot: options.carryReadHyperliquidSnapshot || readHyperliquidSnapshot,
+          readHyperliquidCarryMetrics: options.carryReadHyperliquidMetrics || readHyperliquidCarryMetrics,
+          ...(options.carryFetchVenue ? { fetchVenue: options.carryFetchVenue } : {}),
         }));
       }
 

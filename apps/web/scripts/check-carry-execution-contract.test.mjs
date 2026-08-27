@@ -174,6 +174,19 @@ test("rejects release without a joined three-venue no-submit matrix", () => {
   );
 });
 
+test("rejects release without a positive three-venue no-submit HTTP proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      serverTest: sources.serverTest.replaceAll(
+        "proves the three-venue no-submit matrix and durable exact account state over HTTP",
+        "skips the three-venue no-submit HTTP boundary",
+      ),
+    }),
+    /carry_three_venue_no_submit_http_proof_missing/,
+  );
+});
+
 test("rejects a three-venue matrix that does not verify every unique pair", () => {
   assert.throws(
     () => checkCarryExecutionContract({
