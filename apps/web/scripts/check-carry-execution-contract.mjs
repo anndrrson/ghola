@@ -47,6 +47,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webPage: "apps/web/src/app/carry/page.tsx",
   webTradeWorkspace: "apps/web/src/components/trade/PublicCoinbaseLiveTrade.tsx",
   webCarryChart: "apps/web/src/components/carry/CarryChartStrip.tsx",
+  webCarryChartTest: "apps/web/src/components/carry/CarryChartStrip.test.tsx",
   webCarryBuilder: "apps/web/src/components/carry/CarryTerminalBuilder.tsx",
   webCarryBuilderTest: "apps/web/src/components/carry/CarryTerminalBuilder.test.tsx",
   webCarryMarket: "apps/web/src/lib/carry-market.ts",
@@ -599,11 +600,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "grossDailyBps", "carry_gross_value_display_missing");
   requireText("webCarryChart", "NET24H", "carry_net_value_display_missing");
   requireText("webCarryChart", "routeHasPositiveNet", "carry_positive_net_qualification_missing");
-  requireText("webCarryChart", 'data-edge-evidence="indicative"', "carry_indicative_edge_label_missing");
-  requireText("webCarryChart", "durability check required", "carry_point_in_time_edge_warning_missing");
+  requireText("webCarryChart", "carryFundingEvidenceForCandidate", "carry_public_funding_evidence_missing");
+  requireText("webCarryChart", "data-edge-evidence={edgeEvidence.status}", "carry_funding_evidence_state_missing");
+  requireText("webCarryChart", "EVID {edgeEvidence.value}", "carry_funding_evidence_display_missing");
+  requireText("webCarryMarket", "durability check required", "carry_point_in_time_edge_warning_missing");
   requireText("webCarryChart", 'data-modeled-net-positive={selectedHasPositiveNet ? "true" : "false"}', "carry_point_in_time_net_state_missing");
   forbidText("webCarryChart", 'data-route-qualified={selectedHasPositiveNet ? "true" : "false"}', "carry_single_tick_route_qualification_forbidden");
   requireText("webCarryChart", "AGE {formatAge", "carry_feed_age_display_missing");
+  requireText("webCarryChartTest", "shows only commitment-backed worker history as durable route evidence", "carry_public_funding_evidence_test_missing");
   requireText("webCarryChart", "% APR", "carry_funding_period_label_missing");
   requireText("webCarryChart", "startTransition(() => setLivePatches(patches))", "carry_nonblocking_ui_publish_missing");
   forbidText("webCarryChart", "DATA {liveVenueCount}", "carry_socket_status_mislabeled_as_live_data");

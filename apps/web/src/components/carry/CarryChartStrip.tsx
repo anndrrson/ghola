@@ -10,6 +10,7 @@ import {
   annualFundingBps,
   buildPairCandidates,
   carryCandidateAgeMs,
+  carryFundingEvidenceForCandidate,
   rankCarryCandidatesByNet,
   type CarryCandidate,
   type CarryLiveMarketPatch,
@@ -149,6 +150,10 @@ export function CarryChartStrip({
     || null;
   const selectedAgeMs = selected ? carryCandidateAgeMs(selected.candidate, clock) : Number.POSITIVE_INFINITY;
   const selectedHasPositiveNet = selected ? routeHasPositiveNet(selected.quote) : false;
+  const edgeEvidence = carryFundingEvidenceForCandidate(
+    data,
+    selected?.candidate || null,
+  );
   const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${asset}-PERP&carry=open`;
   const setupHref = `/account?setup=carry&return_to=${encodeURIComponent(terminalReturn)}`;
 
@@ -157,12 +162,12 @@ export function CarryChartStrip({
       className="mb-2 overflow-hidden rounded-md border border-[#252f3d] bg-[#090d13]"
       aria-label="Cross-venue route intelligence"
       data-modeled-net-positive={selectedHasPositiveNet ? "true" : "false"}
-      data-edge-evidence="indicative"
+      data-edge-evidence={edgeEvidence.status}
       data-cost-basis={selected?.quote.exactCosts ? "net" : "gross-only"}
       data-route-age-ms={Number.isFinite(selectedAgeMs) ? Math.round(selectedAgeMs) : undefined}
     >
       <div className="flex min-h-10 items-center gap-2 px-2.5 sm:px-3">
-        <div className="grid min-w-0 flex-1 grid-cols-[4.75rem_5.5rem_minmax(12rem,1fr)_8.75rem_10rem_6.25rem] items-center gap-x-2 font-mono text-[10px] tabular-nums max-[1023px]:grid-cols-[4.75rem_5.5rem_minmax(0,1fr)] max-[639px]:grid-cols-[4.75rem_minmax(0,1fr)]">
+        <div className="grid min-w-0 flex-1 grid-cols-[4.75rem_5.5rem_minmax(12rem,1fr)_8.75rem_10rem_6.25rem_6.5rem] items-center gap-x-2 font-mono text-[10px] tabular-nums max-[1023px]:grid-cols-[4.75rem_5.5rem_minmax(0,1fr)] max-[639px]:grid-cols-[4.75rem_minmax(0,1fr)]">
           <span className="font-semibold tracking-[0.12em] text-[#78bdff]">XVENUE</span>
           <span className="text-[#aeb9c7] max-[639px]:hidden">{asset}-PERP</span>
 
@@ -194,6 +199,12 @@ export function CarryChartStrip({
                 </span>
               </p>
               <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">AGE {formatAge(selectedAgeMs)}</p>
+              <p
+                className={`whitespace-nowrap max-[1023px]:hidden ${edgeEvidenceTone(edgeEvidence.status)}`}
+                title={edgeEvidence.detail}
+              >
+                EVID {edgeEvidence.value}
+              </p>
             </>
           ) : (
             <>
@@ -207,6 +218,7 @@ export function CarryChartStrip({
               <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">GROSS —</p>
               <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">NET24H* —</p>
               <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">AGE —</p>
+              <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">EVID —</p>
             </>
           )}
         </div>
@@ -262,7 +274,7 @@ export function CarryChartStrip({
                     {!quote.exactCosts
                       ? " · exact costs required"
                       : routeHasPositiveNet(quote)
-                        ? " · indicative net · durability check required"
+                        ? ` · indicative net · ${carryFundingEvidenceForCandidate(data, candidate).detail}`
                         : " · no net edge"}
                   </p>
                 </button>
@@ -359,4 +371,11 @@ function formatAge(value: number) {
   if (!Number.isFinite(value)) return "—";
   if (value < 1_000) return `${Math.round(value)}MS`;
   return `${Math.round(value / 1_000)}S`;
+}
+
+function edgeEvidenceTone(status: ReturnType<typeof carryFundingEvidenceForCandidate>["status"]) {
+  if (status === "durable") return "text-[#72dfb2]";
+  if (status === "rejected") return "text-[#e27d89]";
+  if (status === "observing") return "text-[#d9bd74]";
+  return "text-[#7d899a]";
 }

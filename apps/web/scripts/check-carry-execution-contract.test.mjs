@@ -1067,6 +1067,16 @@ test("rejects carry funding persistence that requires manual preflight checks", 
   );
 });
 
+test("rejects a terminal that hides commitment-backed funding evidence", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: sources.webCarryChart.replaceAll("EVID {edgeEvidence.value}", "EVID —"),
+    }),
+    /carry_funding_evidence_display_missing/,
+  );
+});
+
 test("rejects release proof without exact venue-leg funding reconciliation", () => {
   assert.throws(
     () => checkCarryExecutionContract({

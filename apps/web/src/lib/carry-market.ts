@@ -60,11 +60,40 @@ export interface CarryVenueShadow {
   snapshots: CarryShadowSnapshot[];
 }
 
+export interface CarryFundingPersistenceRoute {
+  asset: string;
+  long_venue_id: string;
+  short_venue_id: string;
+  ready: boolean;
+  reasons: string[];
+  sample_count: number;
+  minimum_samples: number;
+  observed_span_ms: number;
+  minimum_span_ms: number;
+  conservative_hourly_spread_e12: number | null;
+  evidence_commitment: string | null;
+}
+
+export interface CarryFundingPersistenceSummary {
+  version: 1;
+  transaction_broadcast: false;
+  observed_route_count: number;
+  ready_route_count: number;
+  routes: CarryFundingPersistenceRoute[];
+}
+
+export interface CarryFundingEvidence {
+  status: "indicative" | "observing" | "durable" | "rejected";
+  value: string;
+  detail: string;
+}
+
 export interface CarryShadowResponse {
   version: 1;
   mode: "shadow_read_only";
   executable: false;
   observed_at: string;
+  funding_persistence?: CarryFundingPersistenceSummary;
   venues: CarryVenueShadow[];
   error?: string;
 }
@@ -130,6 +159,7 @@ export const CARRY_CAPITAL_COST_BPS_PER_DAY = 1;
 export const CARRY_BASE_RISK_BUFFER_BPS = 10;
 export const CARRY_LATENCY_BUFFER_BPS_PER_LEG = 1;
 export const CARRY_STABLE_COLLATERAL_BASIS_RISK_BPS = 50;
+const CARRY_FUNDING_COMMITMENT = /^carry:funding:[a-f0-9]{64}$/;
 const depthExecutionCache = new WeakMap<CarryShadowSnapshot, Map<string, ReturnType<typeof estimatePerpDepthExecution>>>();
 const pairCompatibilityCache = new WeakMap<CarryShadowSnapshot, WeakMap<CarryShadowSnapshot, boolean>>();
 
@@ -140,6 +170,54 @@ export const CARRY_VENUE_LABELS: Record<string, string> = {
   edgex: "edgeX",
   dydx: "dYdX",
 };
+
+export function carryFundingEvidenceForCandidate(
+  response: CarryShadowResponse | null,
+  candidate: CarryCandidate | null,
+): CarryFundingEvidence {
+  if (!candidate) return { status: "indicative", value: "—", detail: "No fresh route evidence." };
+  const route = response?.funding_persistence?.routes.find((item) =>
+    item.asset === candidate.asset &&
+    item.long_venue_id === candidate.long.venue_id &&
+    item.short_venue_id === candidate.short.venue_id
+  );
+  if (!route) return { status: "indicative", value: "—", detail: "Point-in-time quote; durable funding history unavailable." };
+
+  const sampleCount = safeNonnegativeInteger(route.sample_count);
+  const minimumSamples = safeNonnegativeInteger(route.minimum_samples);
+  const observedSpanMs = safeNonnegativeInteger(route.observed_span_ms);
+  const minimumSpanMs = safeNonnegativeInteger(route.minimum_span_ms);
+  const reasons = Array.isArray(route.reasons) ? route.reasons : [];
+  const committed = typeof route.evidence_commitment === "string" &&
+    CARRY_FUNDING_COMMITMENT.test(route.evidence_commitment);
+  const durable = route.ready === true && committed && reasons.length === 0 &&
+    minimumSamples > 0 && sampleCount >= minimumSamples && observedSpanMs >= minimumSpanMs &&
+    typeof route.conservative_hourly_spread_e12 === "number" && route.conservative_hourly_spread_e12 > 0;
+  if (durable) {
+    return {
+      status: "durable",
+      value: `${sampleCount}/${minimumSamples}`,
+      detail: `Committed funding edge across ${formatEvidenceDuration(observedSpanMs)}.`,
+    };
+  }
+  const rejected = route.ready === true || reasons.some((reason) => [
+    "funding_not_persistent",
+    "funding_persistence_evidence_invalid",
+    "funding_persistence_state_unavailable",
+    "funding_persistence_observation_failed",
+  ].includes(reason));
+  if (rejected) {
+    return { status: "rejected", value: "FAIL", detail: "Durable funding evidence failed closed." };
+  }
+  if (minimumSamples > 0) {
+    return {
+      status: "observing",
+      value: `${sampleCount}/${minimumSamples}`,
+      detail: `Observing ${formatEvidenceDuration(observedSpanMs)} of ${formatEvidenceDuration(minimumSpanMs)}; durability check required.`,
+    };
+  }
+  return { status: "indicative", value: "—", detail: "Point-in-time quote; durable funding history unavailable." };
+}
 
 export function buildCandidates(venues: CarryVenueShadow[], allowedVenueIds?: readonly string[]): CarryCandidate[] {
   const bestByAsset = new Map<string, CarryCandidate>();
@@ -612,4 +690,13 @@ function depthAgeMs(snapshot: CarryShadowSnapshot, nowMs: number) {
 
 function patchedNumber(patch: number | null | undefined, fallback: number | null | undefined) {
   return patch == null ? fallback ?? null : patch;
+}
+
+function safeNonnegativeInteger(value: unknown) {
+  return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0;
+}
+
+function formatEvidenceDuration(value: number) {
+  if (value < 60_000) return `${Math.floor(value / 1_000)}s`;
+  return `${Math.floor(value / 60_000)}m`;
 }

@@ -83,6 +83,67 @@ describe("CarryChartStrip", () => {
     expect(rail?.textContent).toContain("NET24H*−");
   });
 
+  it("shows only commitment-backed worker history as durable route evidence", async () => {
+    const body = shadowResponse([
+      snapshot("hyperliquid", 10_000_000),
+      snapshot("lighter", 150_000_000),
+    ]);
+    body.funding_persistence = fundingPersistence({
+      ready: true,
+      sample_count: 8,
+      minimum_samples: 8,
+      observed_span_ms: 35 * 60_000,
+      minimum_span_ms: 30 * 60_000,
+      conservative_hourly_spread_e12: 100_000_000,
+      evidence_commitment: `carry:funding:${"a".repeat(64)}`,
+    });
+    await renderShadow(body);
+
+    const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
+    expect(rail?.getAttribute("data-edge-evidence")).toBe("durable");
+    expect(rail?.textContent).toContain("EVID 8/8");
+  });
+
+  it("fails closed when a ready funding claim lacks a worker commitment", async () => {
+    const body = shadowResponse([
+      snapshot("hyperliquid", 10_000_000),
+      snapshot("lighter", 150_000_000),
+    ]);
+    body.funding_persistence = fundingPersistence({
+      ready: true,
+      sample_count: 8,
+      minimum_samples: 8,
+      observed_span_ms: 35 * 60_000,
+      minimum_span_ms: 30 * 60_000,
+      conservative_hourly_spread_e12: 100_000_000,
+      evidence_commitment: null,
+    });
+    await renderShadow(body);
+
+    const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
+    expect(rail?.getAttribute("data-edge-evidence")).toBe("rejected");
+    expect(rail?.textContent).toContain("EVID FAIL");
+  });
+
+  it("shows durable funding observation progress without claiming readiness", async () => {
+    const body = shadowResponse([
+      snapshot("hyperliquid", 10_000_000),
+      snapshot("lighter", 150_000_000),
+    ]);
+    body.funding_persistence = fundingPersistence({
+      sample_count: 2,
+      minimum_samples: 8,
+      observed_span_ms: 5 * 60_000,
+      minimum_span_ms: 30 * 60_000,
+      reasons: ["funding_history_insufficient", "funding_observation_span_insufficient"],
+    });
+    await renderShadow(body);
+
+    const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
+    expect(rail?.getAttribute("data-edge-evidence")).toBe("observing");
+    expect(rail?.textContent).toContain("EVID 2/8");
+  });
+
   async function renderShadow(body: CarryShadowResponse) {
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
@@ -103,6 +164,29 @@ function shadowResponse(snapshots: CarryShadowSnapshot[]): CarryShadowResponse {
     executable: false,
     observed_at: new Date().toISOString(),
     venues: snapshots.map((item) => ({ venue_id: item.venue_id, ok: true, snapshots: [item] })),
+  };
+}
+
+function fundingPersistence(route: Partial<NonNullable<CarryShadowResponse["funding_persistence"]>["routes"][number]>) {
+  return {
+    version: 1 as const,
+    transaction_broadcast: false as const,
+    observed_route_count: 1,
+    ready_route_count: route.ready ? 1 : 0,
+    routes: [{
+      asset: "BTC",
+      long_venue_id: "hyperliquid",
+      short_venue_id: "lighter",
+      ready: false,
+      reasons: [],
+      sample_count: 0,
+      minimum_samples: 8,
+      observed_span_ms: 0,
+      minimum_span_ms: 30 * 60_000,
+      conservative_hourly_spread_e12: null,
+      evidence_commitment: null,
+      ...route,
+    }],
   };
 }
 
