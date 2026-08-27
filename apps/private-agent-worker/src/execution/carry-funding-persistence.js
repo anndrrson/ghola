@@ -9,6 +9,90 @@ const DEFAULT_MIN_SAMPLES = 8;
 const DEFAULT_MIN_SPAN_MS = 30 * 60_000;
 const DEFAULT_MAX_AGE_MS = 24 * HOUR_MS;
 const DEFAULT_MAX_DATA_SKEW_MS = 2_000;
+const DEFAULT_OBSERVER_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
+
+export async function runCarryFundingObservationTick({
+  state,
+  fetchPerpShadowSet,
+  assets = DEFAULT_OBSERVER_ASSETS,
+  now_ms: nowMs = Date.now(),
+  env = process.env,
+}) {
+  if (typeof fetchPerpShadowSet !== "function") throw new Error("carry_shadow_fetcher_required");
+  const normalizedAssets = [...new Set(assets.map((asset) => String(asset).trim().toUpperCase())
+    .filter((asset) => /^[A-Z0-9._-]{1,16}$/.test(asset)))].slice(0, 10);
+  if (!normalizedAssets.length) throw new Error("carry_shadow_assets_required");
+  const venues = await fetchPerpShadowSet({
+    assets: normalizedAssets,
+    now_ms: nowMs,
+    timeout_ms: 8_000,
+    max_age_ms: 60_000,
+  });
+  const fundingPersistence = await observeCarryFundingUniverse({
+    state,
+    venues,
+    assets: normalizedAssets,
+    now_ms: nowMs,
+    env,
+  });
+  return Object.freeze({
+    version: 1,
+    ok: fundingPersistence.observed_route_count > 0,
+    transaction_broadcast: false,
+    observed_at_ms: nowMs,
+    assets: Object.freeze(normalizedAssets),
+    funding_persistence: fundingPersistence,
+  });
+}
+
+export function startCarryFundingObservationLoop({
+  state,
+  fetchPerpShadowSet,
+  env = process.env,
+  now = () => Date.now(),
+} = {}) {
+  if (String(env.PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ENABLED ?? "true").toLowerCase() === "false") {
+    return { stop() {} };
+  }
+  const intervalMs = boundedEnvInteger(
+    env.PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_INTERVAL_MS,
+    15_000,
+    15 * 60_000,
+    60_000,
+  );
+  const initialDelayMs = boundedEnvInteger(
+    env.PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_INITIAL_DELAY_MS,
+    0,
+    60_000,
+    5_000,
+  );
+  const assets = String(env.PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ASSETS || DEFAULT_OBSERVER_ASSETS.join(","))
+    .split(",");
+  let timer = null;
+  let stopped = false;
+  const schedule = (delay) => {
+    if (stopped) return;
+    timer = setTimeout(async () => {
+      await runCarryFundingObservationTick({
+        state,
+        fetchPerpShadowSet,
+        assets,
+        now_ms: now(),
+        env,
+      }).catch(() => null);
+      schedule(intervalMs);
+    }, delay);
+    timer.unref?.();
+  };
+  schedule(initialDelayMs);
+  return {
+    stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
+  };
+}
 
 export async function observeCarryFundingUniverse({
   state,

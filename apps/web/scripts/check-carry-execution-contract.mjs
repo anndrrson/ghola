@@ -532,11 +532,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("fundingPersistence", "percentile(longRates, 0.75", "carry_funding_adverse_long_quartile_missing");
   requireText("fundingPersistence", "percentile(shortRates, 0.25", "carry_funding_adverse_short_quartile_missing");
   requireText("fundingPersistence", "observeCarryFundingUniverse", "carry_funding_shadow_observer_missing");
+  requireText("fundingPersistence", "startCarryFundingObservationLoop", "carry_unattended_funding_observer_missing");
   requireText("server", "funding_persistence: fundingPersistence", "carry_funding_shadow_cycle_missing");
+  requireText("server", "carryFundingObservationLoop?.stop?.()", "carry_unattended_funding_observer_lifecycle_missing");
   requireText("fundingPersistenceTest", "does not manufacture persistence from rapid duplicate checks", "carry_funding_duplicate_observation_test_missing");
   requireText("fundingPersistenceTest", "clips a current funding spike to adverse historical quartiles", "carry_funding_spike_test_missing");
   requireText("fundingPersistenceTest", "rejects carry whose historical funding advantage is not persistent", "carry_funding_persistence_test_missing");
   requireText("fundingPersistenceTest", "collects every trusted executable route during the normal shadow cycle", "carry_funding_shadow_observer_test_missing");
+  requireText("fundingPersistenceTest", "collects funding history without an open browser", "carry_unattended_funding_observer_test_missing");
   requireText("phalaConfig", "expectedCarryWorkerConfig", "carry_runtime_config_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_POSITION_LIVE_SUBMIT', "carry_live_submit_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED', "carry_pilot_compose_missing");
@@ -546,6 +549,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS', "carry_mark_basis_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MONITOR_ENABLED', "carry_monitor_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS', "carry_monitor_interval_compose_missing");
+  requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ENABLED', "carry_shadow_observer_compose_missing");
+  requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_INTERVAL_MS', "carry_shadow_observer_interval_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY', "carry_monitor_concurrency_compose_missing");
   requireText("positions", "mapConcurrentOrdered(records, concurrency", "carry_monitor_bounded_concurrency_missing");
   requireText("phalaConfigTest", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS: "5000"', "carry_monitor_five_second_runtime_test_missing");

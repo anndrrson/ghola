@@ -27,7 +27,10 @@ import { startMultiLegRecoveryLoop } from "./execution/multi-leg-orchestrator.js
 import { fetchCorePerpShadowSet } from "./execution/perp-shadow-adapters.js";
 import { verifyCarryShadowSet } from "./execution/perp-shadow-readiness.js";
 import { preflightCarryExecutionMatrix, preflightCarryPair } from "./execution/carry-preflight.js";
-import { observeCarryFundingUniverse } from "./execution/carry-funding-persistence.js";
+import {
+  observeCarryFundingUniverse,
+  startCarryFundingObservationLoop,
+} from "./execution/carry-funding-persistence.js";
 import { readCarryExecutionReadiness } from "./execution/carry-readiness.js";
 import { executeStoredCarryEntry, startCarryExecutionLoop } from "./execution/carry-executor.js";
 import { buildCompletedCarryReleaseMaterial } from "./execution/carry-release-evidence.js";
@@ -2606,6 +2609,9 @@ export function createPrivateAgentWorkerServer(options = {}) {
     receiptSigner: options.krakenV2ReceiptSigner,
   });
   const fetchPerpShadowSet = options.fetchPerpShadowSet || fetchCorePerpShadowSet;
+  const carryFundingObservationLoop = options.startCarryFundingObservationLoop === false
+    ? null
+    : startCarryFundingObservationLoop({ state, fetchPerpShadowSet });
   const dueLoop = options.startAutopilotDueLoop === false
     ? null
     : startAutopilotDueLoop({ state, recipient });
@@ -4894,6 +4900,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
     multiLegRecoveryLoop?.stop?.();
     carryMonitoringLoop?.stop?.();
     carryExecutionLoop?.stop?.();
+    carryFundingObservationLoop?.stop?.();
     krakenHeartbeat?.stop?.();
   });
   return server;

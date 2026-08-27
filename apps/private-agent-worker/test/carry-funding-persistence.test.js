@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   observeCarryFundingPersistence,
   observeCarryFundingUniverse,
+  runCarryFundingObservationTick,
 } from "../src/execution/carry-funding-persistence.js";
 
 const NOW = 1_800_000_000_000;
@@ -34,6 +35,30 @@ function evidence({ longRate = 0, shortRate = 100_000_000 } = {}) {
     },
   });
   return [leg("hyperliquid", "buy", longRate), leg("lighter", "sell", shortRate)];
+}
+
+function shadowSnapshot(venueId, overrides = {}) {
+  const venueRates = { hyperliquid: 10_000, lighter: 30_000, aster: -20_000 };
+  return {
+    version: 1,
+    venue_id: venueId,
+    contract_id: `${venueId}:BTC`,
+    economic_equivalence_id: "carry:BTC-usd-linear",
+    asset: "BTC",
+    contract_type: "linear_perp",
+    quote_asset: "USDC",
+    mark_price_e8: 10_000_000_000,
+    index_price_e8: 10_000_000_000,
+    funding_rate_e12_per_interval: venueRates[venueId] ?? 10_000,
+    funding_interval_ms: 3_600_000,
+    as_of_ms: NOW,
+    source_observed_at_ms: { funding: NOW },
+    source_max_age_ms: { funding: 60_000 },
+    stale_sources: [],
+    status: "ready",
+    stale: false,
+    ...overrides,
+  };
 }
 
 test("requires durable storage for opening funding evidence", async () => {
@@ -116,30 +141,10 @@ test("rejects carry whose historical funding advantage is not persistent", async
 
 test("collects every trusted executable route during the normal shadow cycle", async () => {
   const state = stateStore();
-  const venueRates = { hyperliquid: 10_000, lighter: 30_000, aster: -20_000 };
-  const snapshot = (venueId) => ({
-    version: 1,
-    venue_id: venueId,
-    contract_id: `${venueId}:BTC`,
-    economic_equivalence_id: "carry:BTC-usd-linear",
-    asset: "BTC",
-    contract_type: "linear_perp",
-    quote_asset: "USDC",
-    mark_price_e8: 10_000_000_000,
-    index_price_e8: 10_000_000_000,
-    funding_rate_e12_per_interval: venueRates[venueId],
-    funding_interval_ms: 3_600_000,
-    as_of_ms: NOW,
-    source_observed_at_ms: { funding: NOW },
-    source_max_age_ms: { funding: 60_000 },
-    stale_sources: [],
-    status: "ready",
-    stale: false,
-  });
   const venues = ["hyperliquid", "lighter", "aster", "edgex"].map((venueId) => ({
     venue_id: venueId,
     ok: true,
-    snapshots: [snapshot(venueId)],
+    snapshots: [shadowSnapshot(venueId)],
   }));
   const result = await observeCarryFundingUniverse({
     state,
@@ -161,35 +166,41 @@ test("collects every trusted executable route during the normal shadow cycle", a
 
 test("ignores stale funding during automatic shadow observation", async () => {
   const state = stateStore();
-  const snapshot = (venueId, stale) => ({
-    version: 1,
-    venue_id: venueId,
-    contract_id: `${venueId}:BTC`,
-    economic_equivalence_id: "carry:BTC-usd-linear",
-    asset: "BTC",
-    contract_type: "linear_perp",
-    quote_asset: "USDC",
-    mark_price_e8: 10_000_000_000,
-    index_price_e8: 10_000_000_000,
-    funding_rate_e12_per_interval: 10_000,
-    funding_interval_ms: 3_600_000,
-    as_of_ms: NOW,
-    source_observed_at_ms: { funding: NOW },
-    source_max_age_ms: { funding: 60_000 },
-    stale_sources: stale ? ["funding"] : [],
-    status: "ready",
-    stale: false,
-  });
   const result = await observeCarryFundingUniverse({
     state,
     venues: [
-      { venue_id: "hyperliquid", ok: true, snapshots: [snapshot("hyperliquid", false)] },
-      { venue_id: "lighter", ok: true, snapshots: [snapshot("lighter", true)] },
-      { venue_id: "aster", ok: true, snapshots: [snapshot("aster", false)] },
+      { venue_id: "hyperliquid", ok: true, snapshots: [shadowSnapshot("hyperliquid")] },
+      { venue_id: "lighter", ok: true, snapshots: [shadowSnapshot("lighter", { stale_sources: ["funding"] })] },
+      { venue_id: "aster", ok: true, snapshots: [shadowSnapshot("aster")] },
     ],
     assets: ["BTC"],
     now_ms: NOW,
   });
   assert.equal(result.observed_route_count, 2);
   assert.equal(result.routes.every((route) => ![route.long_venue_id, route.short_venue_id].includes("lighter")), true);
+});
+
+test("collects funding history without an open browser", async () => {
+  const state = stateStore();
+  let request;
+  const result = await runCarryFundingObservationTick({
+    state,
+    fetchPerpShadowSet: async (options) => {
+      request = options;
+      return ["hyperliquid", "lighter", "aster", "edgex", "dydx"].map((venueId) => ({
+        venue_id: venueId,
+        ok: true,
+        snapshots: [shadowSnapshot(venueId)],
+      }));
+    },
+    assets: ["btc", "BTC"],
+    now_ms: NOW,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.transaction_broadcast, false);
+  assert.deepEqual(result.assets, ["BTC"]);
+  assert.deepEqual(request.assets, ["BTC"]);
+  assert.equal(result.funding_persistence.observed_route_count, 6);
+  assert.equal(state.rows.size, 6);
 });
