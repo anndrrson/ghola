@@ -913,6 +913,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "carryPrivatePrimeSummary", "carry_private_prime_terminal_validation_missing");
   requireText("webCarryBuilderTest", "without claiming a live lifecycle", "carry_private_prime_terminal_test_missing");
   requireText("webCarryBuilderTest", "3/3 REC", "carry_private_prime_terminal_recovery_missing");
+  requireText("webCarryBuilder", "carryCreationProofFreshness(proofOpportunity)", "carry_creation_proof_freshness_missing");
+  requireText("webCarryBuilder", "const canSave = actionableProof && creationProofFreshness.fresh", "carry_creation_stale_action_gate_missing");
+  requireText("webCarryBuilder", "CHECK EXPIRED · rerun the no-submit check before signing", "carry_creation_expiry_guidance_missing");
+  requireText("webCarryBuilderTest", "removes an expired creation action instead of failing after owner signing", "carry_creation_expiry_test_missing");
   requireText("webRoute", '"x-ghola-carry-qualification-confirmed": "true"', "web_confirmation_header_missing");
   requireText("webClient", "qualification_pilot_confirmed", "web_confirmation_input_missing");
   requireText("webClient", "preflightCarryExecutionMatrix", "carry_three_venue_no_submit_client_missing");

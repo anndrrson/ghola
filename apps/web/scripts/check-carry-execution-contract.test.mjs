@@ -72,6 +72,19 @@ test("rejects a terminal that hides recovery qualification", () => {
   );
 });
 
+test("rejects a terminal that leaves expired creation proof actionable", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replace(
+        "const canSave = actionableProof && creationProofFreshness.fresh",
+        "const canSave = actionableProof",
+      ),
+    }),
+    /carry_creation_stale_action_gate_missing/,
+  );
+});
+
 test("rejects background Carry failures that are no longer supervised", () => {
   assert.throws(
     () => checkCarryExecutionContract({

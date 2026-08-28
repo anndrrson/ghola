@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  carryCreationProofFreshness,
   CarryTerminalBuilder,
   carryCapitalEfficiencySummary,
   carryFundingPersistenceSummary,
@@ -191,6 +192,21 @@ describe("CarryTerminalBuilder", () => {
     }).value).toBe("$5");
   });
 
+  it("expires actionable creation proof on the same boundary as the worker", () => {
+    expect(carryCreationProofFreshness({ checked_at_ms: 10_000 }, 70_000)).toEqual({
+      fresh: true,
+      expires_at_ms: 70_000,
+    });
+    expect(carryCreationProofFreshness({ checked_at_ms: 10_000 }, 70_001)).toEqual({
+      fresh: false,
+      expires_at_ms: 70_000,
+    });
+    expect(carryCreationProofFreshness({ checked_at_ms: 20_001 }, 15_000)).toEqual({
+      fresh: false,
+      expires_at_ms: null,
+    });
+  });
+
   it("shows only commitment-backed persistent funding as durable", () => {
     expect(carryFundingPersistenceSummary({
       funding_persistence: readyFundingPersistence(),
@@ -235,6 +251,7 @@ describe("CarryTerminalBuilder", () => {
       qualification_pilot_ready: true,
       qualification_pilot_candidate_venue_id: "lighter",
       creation_opportunity: {
+        checked_at_ms: Date.now(),
         eligible: true,
         contract_data_skew_ms: 400,
         max_contract_data_skew_ms: 2_000,
@@ -286,6 +303,27 @@ describe("CarryTerminalBuilder", () => {
 
     await click("CONFIRM LIVE PAIRED ENTRY");
     expect(api.executeCarryPositionEntry).toHaveBeenCalledWith("carry:position:test", true);
+  });
+
+  it("removes an expired creation action instead of failing after owner signing", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.preflightCarryPair.mockResolvedValue({
+      no_submit_ready: true,
+      live_creation_ready: true,
+      qualification_pilot_ready: false,
+      creation_opportunity: {
+        checked_at_ms: Date.now() - 60_001,
+        eligible: true,
+        reasons: [],
+        funding_persistence: readyFundingPersistence(),
+      },
+    });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    await click("NO-SUBMIT CHECK");
+    await act(async () => { await Promise.resolve(); });
+    expect(container.textContent).toContain("CHECK EXPIRED · rerun the no-submit check before signing");
+    expect(container.textContent).not.toContain("SAVE POSITION");
+    expect(perps.signCarryRiskMandate).not.toHaveBeenCalled();
   });
 
   it("keeps the selected pair usable when the three-venue fleet matrix is not ready", async () => {
@@ -583,6 +621,7 @@ describe("CarryTerminalBuilder", () => {
       no_submit_ready: true,
       live_creation_ready: true,
       creation_opportunity: {
+        checked_at_ms: Date.now(),
         eligible: true,
         contract_data_skew_ms: 100,
         index_price_divergence_bps: 1,

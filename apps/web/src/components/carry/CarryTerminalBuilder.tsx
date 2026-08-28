@@ -118,6 +118,9 @@ type CarryRecord = {
   };
 };
 
+const CARRY_CREATION_PROOF_MAX_AGE_MS = defaultCarryRiskMandate().max_data_age_ms;
+const CARRY_CREATION_PROOF_FUTURE_TOLERANCE_MS = 5_000;
+
 export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   candidate,
   autoRunNoSubmit = false,
@@ -302,6 +305,8 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const capital = carryCapitalSummary(latestObservation?.capital_action_plan);
   const ledger = carryLedgerSummary(current?.value_ledger);
   const proofOpportunity = proof ? asRecord(proof.creation_opportunity) : null;
+  const actionableProof = proof?.live_creation_ready === true || proof?.qualification_pilot_ready === true;
+  const creationProofFreshness = carryCreationProofFreshness(proofOpportunity);
   const fundingPersistence = carryFundingPersistenceSummary(proofOpportunity);
   const economics = carryTerminalEconomics(model, proofOpportunity);
   const grossFunding = carryTerminalGrossFunding(candidate, proof ? proofOpportunity || {} : null);
@@ -325,6 +330,21 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const supervision = carrySupervisionSummary(asRecord(
     readiness?.carry_supervision || executionMatrix?.carry_supervision,
   ));
+
+  useEffect(() => {
+    if (!proof || !actionableProof) return;
+    const expiresAtMs = creationProofFreshness.expires_at_ms;
+    if (!creationProofFreshness.fresh || expiresAtMs === null) {
+      setProof((current) => current === proof ? null : current);
+      setMessage("CHECK EXPIRED · rerun the no-submit check before signing");
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setProof((current) => current === proof ? null : current);
+      setMessage("CHECK EXPIRED · rerun the no-submit check before signing");
+    }, Math.max(1, expiresAtMs - Date.now() + 1));
+    return () => window.clearTimeout(timer);
+  }, [actionableProof, creationProofFreshness.expires_at_ms, creationProofFreshness.fresh, proof]);
 
   const invalidateProof = (setter: (value: string) => void) => (value: string) => {
     setter(value);
@@ -574,7 +594,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
 
   const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${candidate.asset}-PERP&carry=open&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}`;
   const setupHref = `/account?setup=carry&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}&return_to=${encodeURIComponent(terminalReturn)}`;
-  const canSave = proof?.live_creation_ready === true || proof?.qualification_pilot_ready === true;
+  const canSave = actionableProof && creationProofFreshness.fresh;
   const canEnter = current?.position.status === "draft" && supervision.ready;
   const canExit = current ? ["active", "rebalancing", "frozen"].includes(current.position.status) : false;
   return (
@@ -716,6 +736,23 @@ export function carryTerminalEconomics(model: ReturnType<typeof builderModel>, o
       ? proofBreakEvenMs == null ? "UNVERIFIED" : `${(proofBreakEvenMs / 86_400_000).toFixed(1)}D`
       : model.breakEvenDays == null ? "—" : `${model.breakEvenDays.toFixed(1)}D`,
   };
+}
+
+export function carryCreationProofFreshness(
+  opportunity: Record<string, unknown> | null,
+  nowMs = Date.now(),
+) {
+  const checkedAtMs = finiteNumber(opportunity?.checked_at_ms);
+  if (!Number.isSafeInteger(checkedAtMs)
+    || Number(checkedAtMs) <= 0
+    || Number(checkedAtMs) > nowMs + CARRY_CREATION_PROOF_FUTURE_TOLERANCE_MS) {
+    return { fresh: false, expires_at_ms: null } as const;
+  }
+  const expiresAtMs = Number(checkedAtMs) + CARRY_CREATION_PROOF_MAX_AGE_MS;
+  return {
+    fresh: nowMs <= expiresAtMs,
+    expires_at_ms: expiresAtMs,
+  } as const;
 }
 
 export function carryTerminalGrossFunding(
