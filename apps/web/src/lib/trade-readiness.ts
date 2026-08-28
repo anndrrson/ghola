@@ -1,7 +1,7 @@
 import type { HyperliquidAccountSnapshot } from "@/lib/private-account-client";
 
 export type TradeReadiness = {
-  label: "checking" | "disconnected" | "credentials required" | "worker unavailable" | "collateral required" | "selected market unavailable" | "venue not enabled" | "ready";
+  label: "checking" | "disconnected" | "credentials required" | "worker unavailable" | "deployment mismatch" | "collateral required" | "selected market unavailable" | "venue not enabled" | "ready";
   ready: boolean;
   detail: string;
 };
@@ -24,6 +24,7 @@ export function hyperliquidPrimaryAction(input: {
   connectionChecked: boolean;
   connectionReady: boolean;
   tradingReady: boolean;
+  readinessLabel?: TradeReadiness["label"];
   network: "mainnet" | "testnet";
 }): HyperliquidPrimaryAction {
   if (input.authenticationLoading) {
@@ -34,6 +35,9 @@ export function hyperliquidPrimaryAction(input: {
   }
   if (!input.connectionChecked) {
     return { action: "wait", disabled: true, label: "Checking connection…" };
+  }
+  if (input.readinessLabel === "deployment mismatch") {
+    return { action: "wait", disabled: true, label: "Preview update required" };
   }
   if (!input.connectionReady) {
     return { action: "connect", disabled: false, label: `Connect Hyperliquid ${input.network}` };
@@ -102,16 +106,31 @@ export function hyperliquidPerpsReadiness(input: {
   account: HyperliquidAccountSnapshot | null;
   marketCatalogState: "loading" | "ready" | "unavailable";
   selectedMarketAvailable: boolean;
+  runtimeIssue?: string | null;
 }): TradeReadiness {
   if (input.authenticationLoading) return { label: "checking", ready: false, detail: "Checking the signed-in Ghola session." };
   if (!input.authenticated) return { label: "disconnected", ready: false, detail: "Sign in before connecting a Hyperliquid trading account." };
+  if (privateRuntimeDeploymentMismatch(input.runtimeIssue)) {
+    return {
+      label: "deployment mismatch",
+      ready: false,
+      detail: "Preview and the private worker identity are out of sync. Wallet setup is not the problem; no order was sent.",
+    };
+  }
   if (input.accountState === "unavailable" || input.marketCatalogState === "unavailable") return { label: "worker unavailable", ready: false, detail: `The Hyperliquid ${input.network} worker is unavailable.` };
   if (input.credentialsReady === null) return { label: "checking", ready: false, detail: "Checking the sealed Hyperliquid connection." };
   if (!input.credentialsReady || input.account?.status === "venue_access_required") return { label: "credentials required", ready: false, detail: "Connect a scoped Hyperliquid API wallet with trading-only permissions." };
   if (input.account?.status === "needs_funds") return { label: "collateral required", ready: false, detail: "Add collateral to the connected Hyperliquid account." };
-  if (input.account?.status === "worker_unavailable" || input.account?.stream_status === "worker_unavailable") return { label: "worker unavailable", ready: false, detail: `The Hyperliquid ${input.network} worker is unavailable.` };
+  if (input.account?.status === "worker_unavailable" || input.account?.stream_status === "worker_unavailable") return { label: "worker unavailable", ready: false, detail: input.account.next_step || `The Hyperliquid ${input.network} worker is unavailable.` };
   if (input.marketCatalogState === "ready" && !input.selectedMarketAvailable) return { label: "selected market unavailable", ready: false, detail: "The selected market is not available on Hyperliquid." };
   if (input.accountState === "loading" || input.marketCatalogState === "loading" || !input.account) return { label: "checking", ready: false, detail: `Checking Hyperliquid ${input.network} worker, collateral, and market access.` };
   if (input.account.status === "ready_to_trade" && input.account.trading_enabled) return { label: "ready", ready: true, detail: `Hyperliquid ${input.network} credentials, worker, collateral, and market are verified.` };
   return { label: "worker unavailable", ready: false, detail: input.account.next_step || `Hyperliquid ${input.network} is not ready.` };
+}
+
+function privateRuntimeDeploymentMismatch(reason: string | null | undefined): boolean {
+  const normalized = reason?.trim().toLowerCase() || "";
+  return normalized.includes("measurement does not match expected") ||
+    normalized.includes("worker authorization does not match") ||
+    normalized.includes("worker authorization mismatch");
 }

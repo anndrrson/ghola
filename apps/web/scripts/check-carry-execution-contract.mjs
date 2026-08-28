@@ -75,6 +75,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webCredentialOnboardingTest: "apps/web/src/lib/venue-credential-onboarding.test.ts",
   webPage: "apps/web/src/app/carry/page.tsx",
   webTradeWorkspace: "apps/web/src/components/trade/PublicCoinbaseLiveTrade.tsx",
+  webTradeReadiness: "apps/web/src/lib/trade-readiness.ts",
+  webTradeReadinessTest: "apps/web/src/lib/trade-readiness.test.ts",
   webCarryChart: "apps/web/src/components/carry/CarryChartStrip.tsx",
   webCarryChartTest: "apps/web/src/components/carry/CarryChartStrip.test.tsx",
   webCarryBuilder: "apps/web/src/components/carry/CarryTerminalBuilder.tsx",
@@ -222,6 +224,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webAccountConnections", "carryNoSubmitVerificationHref", "carry_setup_no_submit_handoff_missing");
   requireText("webAccountSetup", "href={noSubmitReturnTo}", "carry_setup_no_submit_link_missing");
   requireText("webTradeWorkspace", 'carryNoSubmitQuery !== "no-submit"', "carry_terminal_no_submit_intent_missing");
+  requireText("webTradeWorkspace", "Worker update required", "carry_terminal_runtime_mismatch_ui_missing");
+  requireText("webTradeReadinessTest", "keeps deployment faults out of wallet onboarding", "carry_terminal_runtime_mismatch_test_missing");
   requireText("webCarryBuilder", "autoRunNoSubmitConsumedRef", "carry_terminal_no_submit_one_shot_missing");
   requireText("webCarryBuilderTest", "consumes the setup handoff once and runs only the no-submit proof", "carry_terminal_no_submit_handoff_test_missing");
   requireText("webSetupAuthRecovery", "!input.usingTurnkeyOwner || input.authorizationProofCreated", "carry_setup_auth_proof_boundary_missing");

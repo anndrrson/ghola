@@ -49,6 +49,54 @@ describe("trade readiness", () => {
     }).action).toBe("review");
   });
 
+  it("keeps deployment faults out of wallet onboarding", () => {
+    const readiness = hyperliquidPerpsReadiness({
+      authenticated: true,
+      network: "mainnet",
+      credentialsReady: true,
+      accountState: "ready",
+      account: null,
+      marketCatalogState: "ready",
+      selectedMarketAvailable: true,
+      runtimeIssue: "sealed runtime measurement does not match expected value",
+    });
+    expect(readiness).toMatchObject({
+      label: "deployment mismatch",
+      ready: false,
+    });
+    expect(readiness.detail).toContain("Wallet setup is not the problem");
+    expect(hyperliquidPrimaryAction({
+      authenticationLoading: false,
+      authenticated: true,
+      connectionChecked: true,
+      connectionReady: true,
+      tradingReady: false,
+      readinessLabel: readiness.label,
+      network: "mainnet",
+    })).toEqual({
+      action: "wait",
+      disabled: true,
+      label: "Preview update required",
+    });
+  });
+
+  it("preserves an actionable worker failure instead of flattening it", () => {
+    const nextStep = "Preview and worker configuration do not match.";
+    expect(hyperliquidPerpsReadiness({
+      authenticated: true,
+      network: "mainnet",
+      credentialsReady: true,
+      accountState: "ready",
+      account: {
+        status: "worker_unavailable",
+        stream_status: "worker_unavailable",
+        next_step: nextStep,
+      } as HyperliquidAccountSnapshot,
+      marketCatalogState: "ready",
+      selectedMarketAvailable: true,
+    }).detail).toBe(nextStep);
+  });
+
   it("keeps Coinbase spot independent from Phoenix readiness", () => {
     expect(spotVenueReadiness("coinbase", { coinbase_public_live_ready: false, phoenix_public_live_ready: true }).label).toBe("worker unavailable");
     expect(spotVenueReadiness("phoenix", { coinbase_public_live_ready: false, phoenix_public_live_ready: true }).label).toBe("ready");

@@ -84,6 +84,14 @@ import {
 
 type LiveStep = "idle" | "prepared" | "submitted";
 
+type PrivateRuntimeHealthResponse = {
+  status?: "green" | "red";
+  sealed_runtime?: {
+    status?: "green" | "red";
+    reason?: string | null;
+  };
+};
+
 type PublicLivePrepareResult = {
   status: string;
   account_commitment?: string;
@@ -911,6 +919,7 @@ function AlternateProductWorkspace({
   const [hyperliquidConnectionReady, setHyperliquidConnectionReady] = useState(false);
   const [hyperliquidConnectionChecked, setHyperliquidConnectionChecked] = useState(false);
   const [accountState, setAccountState] = useState<"loading" | "ready" | "unavailable">("loading");
+  const [privateRuntimeIssue, setPrivateRuntimeIssue] = useState<string | null>(null);
   const venues = capabilitiesForProduct(product);
   const selectedVenue = venues.find((item) => item.id === venue) ?? venues[0];
   const productLabel = product === "perps" ? "Perpetuals" : product === "swap" ? "Swap" : "Automation";
@@ -1002,13 +1011,15 @@ function AlternateProductWorkspace({
     account: hyperliquidAccount,
     marketCatalogState: perpMarketCatalogState,
     selectedMarketAvailable: Boolean(selectedMarketCapability),
-  }), [accountState, authenticated, authenticationLoading, hyperliquidAccount, hyperliquidConnectionChecked, hyperliquidConnectionReady, hyperliquidNetwork, perpMarketCatalogState, selectedMarketCapability]);
+    runtimeIssue: privateRuntimeIssue,
+  }), [accountState, authenticated, authenticationLoading, hyperliquidAccount, hyperliquidConnectionChecked, hyperliquidConnectionReady, hyperliquidNetwork, perpMarketCatalogState, privateRuntimeIssue, selectedMarketCapability]);
   const hyperliquidAction = hyperliquidPrimaryAction({
     authenticationLoading,
     authenticated,
     connectionChecked: hyperliquidConnectionChecked,
     connectionReady: hyperliquidConnectionReady,
     tradingReady: hyperliquidReadiness.ready,
+    readinessLabel: hyperliquidReadiness.label,
     network: hyperliquidNetwork,
   });
   const maxLeverage = hyperliquidMarket?.max_leverage ?? selectedMarketCapability?.max_leverage ?? null;
@@ -1079,6 +1090,32 @@ function AlternateProductWorkspace({
   useEffect(() => {
     if (useHyperliquidMarket) setPerpMarketCatalogState("loading");
   }, [perpMarket, useHyperliquidMarket]);
+
+  useEffect(() => {
+    if (!authenticated || !useHyperliquidMarket) {
+      setPrivateRuntimeIssue(null);
+      return;
+    }
+    let cancelled = false;
+    void fetch("/v1/private-account/runtime/health", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("runtime health unavailable");
+        return response.json() as Promise<PrivateRuntimeHealthResponse>;
+      })
+      .then((health) => {
+        if (!cancelled) {
+          setPrivateRuntimeIssue(
+            health.sealed_runtime?.status === "red"
+              ? health.sealed_runtime.reason?.trim() || null
+              : null,
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setPrivateRuntimeIssue(null);
+      });
+    return () => { cancelled = true; };
+  }, [authenticated, useHyperliquidMarket]);
 
   useEffect(() => {
     if (!authenticated) {
@@ -1700,10 +1737,14 @@ function AlternateProductWorkspace({
                   </span>
                   <div>
                     <h2 className="text-lg font-semibold text-white">
-                      {authenticated ? "Connect Hyperliquid" : "Start trading in minutes"}
+                      {hyperliquidReadiness.label === "deployment mismatch"
+                        ? "Worker update required"
+                        : authenticated ? "Connect Hyperliquid" : "Start trading in minutes"}
                     </h2>
                     <p className="mx-auto mt-2 max-w-[270px] text-sm leading-6 text-[#8f9cad]">
-                      {authenticated
+                      {hyperliquidReadiness.label === "deployment mismatch"
+                        ? hyperliquidReadiness.detail
+                        : authenticated
                         ? "Authorize one trade-only wallet. Ghola verifies it and brings you straight back here."
                         : "Sign in once, authorize trade-only access, then place and manage orders here."}
                     </p>
