@@ -85,6 +85,26 @@ describe("CarryChartStrip", () => {
     expect(edge?.getAttribute("title")).toContain("not realized P&L");
   });
 
+  it("upgrades modeled edge only when worker evidence matches the selected route", async () => {
+    const body = shadowResponse([
+      snapshot("hyperliquid", 40_000_000),
+      snapshot("lighter", 10_000_000),
+      snapshot("aster", 150_000_000),
+    ]);
+    body.shadow_qualification = marketQualification();
+    body.funding_persistence = routingFundingPersistence();
+    body.routing_advantage = routingAdvantageSummary(Date.parse(body.observed_at));
+    await renderShadow(body, true);
+
+    const edge = [...container.querySelectorAll("span")].find((item) => item.textContent?.includes("EDGE✓"));
+    expect(container.querySelector('[aria-label="Cross-venue route intelligence"]')
+      ?.getAttribute("data-routing-evidence")).toBe("committed");
+    expect(edge?.textContent).toContain("EDGE✓ +");
+    expect(edge?.getAttribute("title")).toContain("worker-committed modeled net");
+    expect(edge?.getAttribute("title")).toContain("excludes the account fee tier");
+    expect(edge?.getAttribute("title")).toContain("not realized P&L");
+  });
+
   it("keeps the primary rail aligned with the executable builder route", async () => {
     await renderShadow(shadowResponse([
       snapshot("hyperliquid", 10_000_000),
@@ -347,6 +367,69 @@ function marketQualification(
     evidence_commitment: `carry:shadow:qualification:${"5".repeat(64)}`,
     failures: [],
     ...overrides,
+  };
+}
+
+function routingAdvantageSummary(observedAtMs: number): NonNullable<CarryShadowResponse["routing_advantage"]> {
+  return {
+    version: 1,
+    kind: "carry_routing_advantage",
+    ready: true,
+    failures: [],
+    anchor_venue_id: "hyperliquid",
+    execution_venue_ids: ["hyperliquid", "lighter", "aster"],
+    requested_assets: ["BTC"],
+    notional_micro_usdc: 10_000_000_000,
+    horizon_ms: 86_400_000,
+    modeled: true,
+    realized: false,
+    account_fee_tier_included: false,
+    execution_ready: false,
+    transaction_broadcast: false,
+    shadow_qualification_commitment: `carry:shadow:qualification:${"5".repeat(64)}`,
+    observer_image_digest: `sha256:${"1".repeat(64)}`,
+    observed_at_ms: observedAtMs,
+    evidence_commitment: `carry:routing:advantage:${"6".repeat(64)}`,
+    routes: [{
+      asset: "BTC",
+      status: "advantaged",
+      selected_route: { long_venue_id: "lighter", short_venue_id: "aster" },
+      baseline_route: { long_venue_id: "hyperliquid", short_venue_id: "aster" },
+      daily_net_advantage_micro_usdc: 1_250_000,
+      daily_net_advantage_e6_bps: 1_250_000,
+      sample_count: 8,
+      minimum_samples: 8,
+      observed_span_ms: 35 * 60_000,
+      minimum_span_ms: 30 * 60_000,
+      funding_evidence_commitments: [
+        `carry:funding:${"a".repeat(64)}`,
+        `carry:funding:${"b".repeat(64)}`,
+      ],
+      ready: true,
+      reasons: [],
+    }],
+  };
+}
+
+function routingFundingPersistence(): NonNullable<CarryShadowResponse["funding_persistence"]> {
+  return {
+    version: 1,
+    transaction_broadcast: false,
+    observed_route_count: 2,
+    ready_route_count: 2,
+    routes: ["a", "b"].map((suffix, index) => ({
+      asset: "BTC",
+      long_venue_id: index === 0 ? "lighter" : "hyperliquid",
+      short_venue_id: "aster",
+      ready: true,
+      reasons: [],
+      sample_count: 8,
+      minimum_samples: 8,
+      observed_span_ms: 35 * 60_000,
+      minimum_span_ms: 30 * 60_000,
+      conservative_hourly_spread_e12: 1,
+      evidence_commitment: `carry:funding:${suffix.repeat(64)}`,
+    })),
   };
 }
 

@@ -35,6 +35,7 @@ import {
   observeCarryShadowQualification,
   readCarryShadowQualification,
 } from "./execution/carry-shadow-qualification.js";
+import { buildCarryRoutingAdvantageEvidence } from "./execution/carry-routing-advantage.js";
 import {
   readCarryShadowSnapshot,
   writeCarryShadowSnapshot,
@@ -2797,12 +2798,20 @@ export function createPrivateAgentWorkerServer(options = {}) {
           now_ms: observedAtMs,
         }),
       ]);
+      const routingAdvantage = buildCarryRoutingAdvantageEvidence({
+        venues,
+        funding_persistence: fundingPersistence,
+        shadow_qualification: shadowQualification,
+        assets,
+        now_ms: observedAtMs,
+      });
       const storedSnapshot = await writeCarryShadowSnapshot({
         state,
         venues,
         assets,
         funding_persistence: fundingPersistence,
         shadow_qualification: shadowQualification,
+        routing_advantage: routingAdvantage,
         observed_at_ms: observedAtMs,
       });
       return {
@@ -2813,6 +2822,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         readiness,
         shadow_qualification: shadowQualification,
         funding_persistence: fundingPersistence,
+        routing_advantage: routingAdvantage,
         venues,
         served_from: "live_fetch",
         cache_age_ms: 0,

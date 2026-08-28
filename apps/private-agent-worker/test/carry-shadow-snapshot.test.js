@@ -26,6 +26,12 @@ function venues(observedAt = NOW) {
   }));
 }
 
+const routingAdvantage = Object.freeze({
+  transaction_broadcast: false,
+  ready: false,
+  evidence_commitment: `carry:routing:advantage:${"a".repeat(64)}`,
+});
+
 function snapshot(venueId, observedAt) {
   const freshness = venueAdapterCapability(venueId, "perp_shadow").source_max_age_ms;
   return {
@@ -82,6 +88,7 @@ test("serves a fresh commitment-backed five-venue snapshot from the durable obse
     assets: ["btc"],
     funding_persistence: { transaction_broadcast: false, observed_route_count: 6 },
     shadow_qualification: { transaction_broadcast: false, ready: true },
+    routing_advantage: routingAdvantage,
     observed_at_ms: NOW,
   });
   const recovered = await readCarryShadowSnapshot({
@@ -118,6 +125,7 @@ test("rejects stale, tampered, or degraded durable snapshots and forces a live r
     assets: ["BTC"],
     funding_persistence: { transaction_broadcast: false },
     shadow_qualification: { transaction_broadcast: false },
+    routing_advantage: routingAdvantage,
     observed_at_ms: NOW,
   });
 
@@ -137,6 +145,7 @@ test("rejects stale, tampered, or degraded durable snapshots and forces a live r
     assets: ["BTC"],
     funding_persistence: { transaction_broadcast: false },
     shadow_qualification: { transaction_broadcast: false },
+    routing_advantage: routingAdvantage,
     observed_at_ms: NOW,
   });
   const degraded = await readCarryShadowSnapshot({ state, assets: ["BTC"], now_ms: NOW });

@@ -14,6 +14,7 @@ export async function writeCarryShadowSnapshot({
   assets = DEFAULT_CARRY_SHADOW_ASSETS,
   funding_persistence: fundingPersistence,
   shadow_qualification: shadowQualification,
+  routing_advantage: routingAdvantage,
   observed_at_ms: observedAtMs = Date.now(),
 }) {
   const requestedAssets = normalizeAssets(assets);
@@ -21,7 +22,8 @@ export async function writeCarryShadowSnapshot({
     return Object.freeze({ stored: false, reason: "shadow_snapshot_state_unavailable" });
   }
   if (fundingPersistence?.transaction_broadcast !== false
-    || shadowQualification?.transaction_broadcast !== false) {
+    || shadowQualification?.transaction_broadcast !== false
+    || routingAdvantage?.transaction_broadcast !== false) {
     return Object.freeze({ stored: false, reason: "shadow_snapshot_proof_incomplete" });
   }
   const readiness = verifyCarryShadowSet(venues, {
@@ -37,6 +39,7 @@ export async function writeCarryShadowSnapshot({
     readiness,
     funding_persistence: fundingPersistence || null,
     shadow_qualification: shadowQualification || null,
+    routing_advantage: routingAdvantage || null,
     venues: Array.isArray(venues) ? structuredClone(venues) : [],
     transaction_broadcast: false,
   };
@@ -93,6 +96,7 @@ export async function readCarryShadowSnapshot({
       readiness,
       shadow_qualification: stored.shadow_qualification,
       funding_persistence: stored.funding_persistence,
+      routing_advantage: stored.routing_advantage,
       venues: Object.freeze(structuredClone(stored.venues)),
       served_from: "durable_observer",
       cache_age_ms: ageMs,
@@ -114,6 +118,7 @@ function validRecord(record) {
     && Array.isArray(record.venues)
     && record.funding_persistence?.transaction_broadcast === false
     && record.shadow_qualification?.transaction_broadcast === false
+    && record.routing_advantage?.transaction_broadcast === false
     && record.evidence_commitment === recordCommitment(record);
 }
 

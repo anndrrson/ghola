@@ -109,9 +109,19 @@ test("rejects modeled routing edge presented as realized performance", () => {
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      webCarryChart: sources.webCarryChart.replace("not realized P&L.", "realized P&L."),
+      webCarryMarket: sources.webCarryMarket.replaceAll("not realized P&L.", "realized P&L."),
     }),
     /carry_routing_advantage_modeled_disclosure_missing/,
+  );
+});
+
+test("rejects routing advantage evidence that can authorize execution", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      routingAdvantage: sources.routingAdvantage.replace("execution_ready: false", "execution_ready: true"),
+    }),
+    /carry_routing_advantage_execution_boundary_missing/,
   );
 });
 

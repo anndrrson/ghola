@@ -160,6 +160,10 @@ test("collects every trusted executable route during the normal shadow cycle", a
   assert.equal(result.transaction_broadcast, false);
   assert.equal(result.observed_route_count, 6);
   assert.equal(result.ready_route_count, 3);
+  assert.equal(result.routes.filter((route) => route.ready).every((route) =>
+    Number.isSafeInteger(route.conservative_funding_rate_e12_by_venue[route.long_venue_id])
+    && Number.isSafeInteger(route.conservative_funding_rate_e12_by_venue[route.short_venue_id])
+  ), true);
   assert.equal(state.rows.size, 6);
   assert.equal(result.routes.some((route) => route.long_venue_id === "edgex"), false);
 });
@@ -203,6 +207,9 @@ test("collects funding history without an open browser", async () => {
   assert.deepEqual(request.assets, ["BTC"]);
   assert.equal(result.funding_persistence.observed_route_count, 6);
   assert.equal(result.shadow_qualification.transaction_broadcast, false);
+  assert.equal(result.routing_advantage.transaction_broadcast, false);
+  assert.equal(result.routing_advantage.realized, false);
+  assert.equal(result.routing_advantage.execution_ready, false);
   assert.equal(result.shadow_snapshot.stored, true);
   assert.equal(result.shadow_snapshot.ready, false);
   assert.equal(state.rows.size, 8);

@@ -71,6 +71,7 @@ export interface CarryFundingPersistenceRoute {
   observed_span_ms: number;
   minimum_span_ms: number;
   conservative_hourly_spread_e12: number | null;
+  conservative_funding_rate_e12_by_venue?: Record<string, number>;
   evidence_commitment: string | null;
 }
 
@@ -121,6 +122,7 @@ export interface CarryShadowResponse {
   observed_at: string;
   funding_persistence?: CarryFundingPersistenceSummary;
   shadow_qualification?: CarryShadowQualificationSummary;
+  routing_advantage?: CarryRoutingAdvantageSummary;
   venues: CarryVenueShadow[];
   error?: string;
 }
@@ -188,6 +190,51 @@ export interface CarryRoutingAdvantage {
   reason: string | null;
 }
 
+export interface CarryRoutingAdvantageRouteEvidence {
+  asset: string;
+  status: CarryRoutingAdvantage["status"];
+  selected_route: { long_venue_id: string; short_venue_id: string } | null;
+  baseline_route: { long_venue_id: string; short_venue_id: string } | null;
+  daily_net_advantage_micro_usdc: number | null;
+  daily_net_advantage_e6_bps: number | null;
+  sample_count: number;
+  minimum_samples: number;
+  observed_span_ms: number;
+  minimum_span_ms: number;
+  funding_evidence_commitments: string[];
+  ready: boolean;
+  reasons: string[];
+}
+
+export interface CarryRoutingAdvantageSummary {
+  version: 1;
+  kind: "carry_routing_advantage";
+  ready: boolean;
+  failures: string[];
+  anchor_venue_id: string;
+  execution_venue_ids: string[];
+  requested_assets: string[];
+  notional_micro_usdc: number;
+  horizon_ms: number;
+  modeled: true;
+  realized: false;
+  account_fee_tier_included: false;
+  execution_ready: false;
+  transaction_broadcast: false;
+  shadow_qualification_commitment: string | null;
+  observer_image_digest: string | null;
+  observed_at_ms: number;
+  routes: CarryRoutingAdvantageRouteEvidence[];
+  evidence_commitment: string;
+}
+
+export interface CarryRoutingAdvantageEvidence {
+  status: "committed" | "indicative" | "rejected";
+  label: "EDGE✓" | "EDGE*" | "EDGE!";
+  advantage: CarryRoutingAdvantage;
+  detail: string;
+}
+
 export const CARRY_LIVE_PATCH_MAX_AGE_MS = 5_000;
 export const CARRY_DEPTH_MAX_AGE_MS = 30_000;
 export const CARRY_MAX_CONTRACT_DATA_SKEW_MS = 2_000;
@@ -200,6 +247,7 @@ export const CARRY_STABLE_COLLATERAL_BASIS_RISK_BPS = 50;
 const CARRY_FUNDING_COMMITMENT = /^carry:funding:[a-f0-9]{64}$/;
 const CARRY_SHADOW_SAMPLE_COMMITMENT = /^carry:shadow:sample:[a-f0-9]{64}$/;
 const CARRY_SHADOW_QUALIFICATION_COMMITMENT = /^carry:shadow:qualification:[a-f0-9]{64}$/;
+const CARRY_ROUTING_ADVANTAGE_COMMITMENT = /^carry:routing:advantage:[a-f0-9]{64}$/;
 const CARRY_IMAGE_DIGEST = /^sha256:[a-f0-9]{12,128}$/;
 const depthExecutionCache = new WeakMap<CarryShadowSnapshot, Map<string, ReturnType<typeof estimatePerpDepthExecution>>>();
 const pairCompatibilityCache = new WeakMap<CarryShadowSnapshot, WeakMap<CarryShadowSnapshot, boolean>>();
@@ -460,6 +508,107 @@ export function carryRoutingAdvantage(
     dailyNetAdvantageUsd,
     dailyNetAdvantageBps,
     reason: null,
+  };
+}
+
+export function carryRoutingAdvantageEvidence(
+  response: CarryShadowResponse | null,
+  selected: PricedCarryCandidate | null,
+  pointInTime: CarryRoutingAdvantage,
+): CarryRoutingAdvantageEvidence {
+  const summary = response?.routing_advantage;
+  if (!summary) return indicativeAdvantage(pointInTime);
+  const summaryValid = summary.version === 1
+    && summary.kind === "carry_routing_advantage"
+    && summary.ready === true
+    && summary.modeled === true
+    && summary.realized === false
+    && summary.account_fee_tier_included === false
+    && summary.execution_ready === false
+    && summary.transaction_broadcast === false
+    && summary.anchor_venue_id === "hyperliquid"
+    && Array.isArray(summary.routes)
+    && Array.isArray(summary.execution_venue_ids)
+    && summary.notional_micro_usdc === 10_000_000_000
+    && summary.horizon_ms === 86_400_000
+    && Number.isSafeInteger(summary.observed_at_ms)
+    && summary.observed_at_ms === Date.parse(response!.observed_at)
+    && Array.isArray(summary.failures) && summary.failures.length === 0
+    && CARRY_ROUTING_ADVANTAGE_COMMITMENT.test(String(summary.evidence_commitment || ""))
+    && CARRY_SHADOW_QUALIFICATION_COMMITMENT.test(String(summary.shadow_qualification_commitment || ""))
+    && summary.shadow_qualification_commitment === response?.shadow_qualification?.evidence_commitment
+    && CARRY_IMAGE_DIGEST.test(String(summary.observer_image_digest || ""))
+    && summary.observer_image_digest === response?.shadow_qualification?.image_digest;
+  if (!summaryValid) {
+    return summary.ready === true
+      ? rejectedAdvantage(pointInTime)
+      : indicativeAdvantage(pointInTime);
+  }
+  if (!selected) return rejectedAdvantage(pointInTime);
+  const route = summary.routes.find((item) => item.asset === selected.candidate.asset);
+  const selectedRoute = route?.selected_route;
+  const baselineRoute = route?.baseline_route;
+  const selectedMatches = selectedRoute?.long_venue_id === selected.candidate.long.venue_id
+    && selectedRoute?.short_venue_id === selected.candidate.short.venue_id
+    && Math.round(selected.quote.notionalUsd * 1_000_000) === summary.notional_micro_usdc
+    && Math.round(selected.quote.horizonHours * 3_600_000) === summary.horizon_ms;
+  const baselineAnchored = baselineRoute?.long_venue_id === "hyperliquid"
+    || baselineRoute?.short_venue_id === "hyperliquid";
+  const commitments = Array.isArray(route?.funding_evidence_commitments)
+    ? route.funding_evidence_commitments
+    : [];
+  const knownFundingCommitments = new Set((response?.funding_persistence?.routes || [])
+    .map((item) => item.evidence_commitment)
+    .filter((value): value is string => typeof value === "string"));
+  const routeValid = route?.ready === true
+    && Array.isArray(route.reasons) && route.reasons.length === 0
+    && ["advantaged", "equal", "disadvantaged"].includes(route.status)
+    && selectedMatches
+    && baselineAnchored
+    && Number.isSafeInteger(route.sample_count) && route.sample_count >= route.minimum_samples
+    && Number.isSafeInteger(route.observed_span_ms) && route.observed_span_ms >= route.minimum_span_ms
+    && Number.isSafeInteger(route.daily_net_advantage_micro_usdc)
+    && Number.isSafeInteger(route.daily_net_advantage_e6_bps)
+    && commitments.length > 0
+    && commitments.every((value) => CARRY_FUNDING_COMMITMENT.test(value) && knownFundingCommitments.has(value));
+  if (!routeValid) return rejectedAdvantage(pointInTime);
+  const dailyNetAdvantageUsd = route.daily_net_advantage_micro_usdc! / 1_000_000;
+  const dailyNetAdvantageBps = route.daily_net_advantage_e6_bps! / 1_000_000;
+  const advantage: CarryRoutingAdvantage = {
+    status: route.status,
+    indicative: true,
+    anchorVenueId: summary.anchor_venue_id,
+    selectedRoute: `${route.asset}:${selectedRoute!.long_venue_id}:${selectedRoute!.short_venue_id}`,
+    baselineRoute: `${route.asset}:${baselineRoute!.long_venue_id}:${baselineRoute!.short_venue_id}`,
+    dailyNetAdvantageUsd,
+    dailyNetAdvantageBps,
+    reason: null,
+  };
+  return {
+    status: "committed",
+    label: "EDGE✓",
+    advantage,
+    detail: `${dailyNetAdvantageUsd >= 0 ? "+" : ""}$${dailyNetAdvantageUsd.toFixed(2)}/day worker-committed modeled net versus the best Hyperliquid-anchored route across ${route.sample_count} funding samples; excludes the account fee tier and is not realized P&L.`,
+  };
+}
+
+function indicativeAdvantage(advantage: CarryRoutingAdvantage): CarryRoutingAdvantageEvidence {
+  return {
+    status: "indicative",
+    label: "EDGE*",
+    advantage,
+    detail: advantage.reason
+      ? "Indicative route edge unavailable until exact costs exist for a comparable Hyperliquid-anchored route."
+      : `${advantage.dailyNetAdvantageUsd! >= 0 ? "+" : ""}$${advantage.dailyNetAdvantageUsd!.toFixed(2)}/day point-in-time modeled net versus the best comparable Hyperliquid-anchored route; not realized P&L.`,
+  };
+}
+
+function rejectedAdvantage(advantage: CarryRoutingAdvantage): CarryRoutingAdvantageEvidence {
+  return {
+    status: "rejected",
+    label: "EDGE!",
+    advantage: unavailableRoutingAdvantage(advantage.anchorVenueId, "routing_advantage_evidence_invalid"),
+    detail: "Worker routing-advantage evidence failed closed; no economic benefit is claimed.",
   };
 }
 

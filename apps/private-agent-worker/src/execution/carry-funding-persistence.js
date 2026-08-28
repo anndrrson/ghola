@@ -4,6 +4,7 @@ import {
   evaluatePerpContractPairBasis,
 } from "@ghola/execution-core";
 import { observeCarryShadowQualification } from "./carry-shadow-qualification.js";
+import { buildCarryRoutingAdvantageEvidence } from "./carry-routing-advantage.js";
 import { writeCarryShadowSnapshot } from "./carry-shadow-snapshot.js";
 
 const HOUR_MS = 3_600_000;
@@ -46,12 +47,21 @@ export async function runCarryFundingObservationTick({
       env,
     }),
   ]);
+  const routingAdvantage = buildCarryRoutingAdvantageEvidence({
+    venues,
+    funding_persistence: fundingPersistence,
+    shadow_qualification: shadowQualification,
+    assets: normalizedAssets,
+    now_ms: nowMs,
+    env,
+  });
   const shadowSnapshot = await writeCarryShadowSnapshot({
     state,
     venues,
     assets: normalizedAssets,
     funding_persistence: fundingPersistence,
     shadow_qualification: shadowQualification,
+    routing_advantage: routingAdvantage,
     observed_at_ms: nowMs,
   });
   return Object.freeze({
@@ -62,6 +72,7 @@ export async function runCarryFundingObservationTick({
     assets: Object.freeze(normalizedAssets),
     funding_persistence: fundingPersistence,
     shadow_qualification: shadowQualification,
+    routing_advantage: routingAdvantage,
     shadow_snapshot: shadowSnapshot,
   });
 }
@@ -200,6 +211,8 @@ export async function observeCarryFundingUniverse({
           observed_span_ms: persistence.observed_span_ms || 0,
           minimum_span_ms: persistence.minimum_span_ms || 0,
           conservative_hourly_spread_e12: persistence.conservative_hourly_spread_e12 ?? null,
+          conservative_funding_rate_e12_by_venue:
+            persistence.conservative_funding_rate_e12_by_venue || Object.freeze({}),
           evidence_commitment: persistence.evidence_commitment || null,
         }));
       }

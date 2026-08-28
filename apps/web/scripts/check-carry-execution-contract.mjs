@@ -21,6 +21,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   workerPackage: "apps/private-agent-worker/package.json",
   preflight: "apps/private-agent-worker/src/execution/carry-preflight.js",
   fundingPersistence: "apps/private-agent-worker/src/execution/carry-funding-persistence.js",
+  routingAdvantage: "apps/private-agent-worker/src/execution/carry-routing-advantage.js",
   shadowQualification: "apps/private-agent-worker/src/execution/carry-shadow-qualification.js",
   shadowSnapshot: "apps/private-agent-worker/src/execution/carry-shadow-snapshot.js",
   workerMandate: "apps/private-agent-worker/src/execution/carry-mandate.js",
@@ -111,6 +112,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   loopSupervisorTest: "apps/private-agent-worker/test/carry-loop-supervisor.test.js",
   preflightTest: "apps/private-agent-worker/test/carry-preflight.test.js",
   fundingPersistenceTest: "apps/private-agent-worker/test/carry-funding-persistence.test.js",
+  routingAdvantageTest: "apps/private-agent-worker/test/carry-routing-advantage.test.js",
   shadowQualificationTest: "apps/private-agent-worker/test/carry-shadow-qualification.test.js",
   shadowSnapshotTest: "apps/private-agent-worker/test/carry-shadow-snapshot.test.js",
   serverTest: "apps/private-agent-worker/test/server.test.js",
@@ -968,9 +970,23 @@ export function checkCarryExecutionContract(sources) {
   forbidText("webCarryChart", 'data-route-qualified={selectedHasPositiveNet ? "true" : "false"}', "carry_single_tick_route_qualification_forbidden");
   requireText("webCarryMarket", "export function carryRoutingAdvantage", "carry_routing_advantage_model_missing");
   requireText("webCarryMarketTest", "refuses a routing-edge claim when exact anchor costs are unavailable", "carry_routing_advantage_fail_closed_test_missing");
-  requireText("webCarryChart", "EDGE* {formatRoutingAdvantage", "carry_routing_advantage_display_missing");
-  requireText("webCarryChart", "not realized P&L.", "carry_routing_advantage_modeled_disclosure_missing");
+  requireText("routingAdvantage", "evaluateCarryOpportunity", "carry_routing_advantage_core_model_missing");
+  requireText("fundingPersistence", "conservative_funding_rate_e12_by_venue", "carry_routing_advantage_conservative_funding_missing");
+  requireText("routingAdvantage", 'kind: "carry_routing_advantage"', "carry_routing_advantage_worker_evidence_missing");
+  requireText("routingAdvantage", "account_fee_tier_included: false", "carry_routing_advantage_fee_boundary_missing");
+  requireText("routingAdvantage", "execution_ready: false", "carry_routing_advantage_execution_boundary_missing");
+  requireText("routingAdvantage", "transaction_broadcast: false", "carry_routing_advantage_broadcast_boundary_missing");
+  requireText("routingAdvantage", "carry:routing:advantage:", "carry_routing_advantage_commitment_missing");
+  requireText("routingAdvantageTest", "fails closed instead of estimating an unpriced route", "carry_routing_advantage_worker_fail_closed_test_missing");
+  requireText("shadowSnapshot", "routing_advantage: routingAdvantage", "carry_routing_advantage_durable_snapshot_missing");
+  requireText("server", "routing_advantage: routingAdvantage", "carry_routing_advantage_api_missing");
+  requireText("webCarryMarket", "carryRoutingAdvantageEvidence", "carry_routing_advantage_evidence_gate_missing");
+  requireText("webCarryMarket", "CARRY_ROUTING_ADVANTAGE_COMMITMENT", "carry_routing_advantage_commitment_gate_missing");
+  requireText("webCarryChart", "{routingEvidence.label} {formatRoutingAdvantage", "carry_routing_advantage_display_missing");
+  requireText("webCarryChart", "data-routing-evidence={routingEvidence.status}", "carry_routing_advantage_state_missing");
+  requireText("webCarryMarket", "not realized P&L.", "carry_routing_advantage_modeled_disclosure_missing");
   requireText("webCarryChartTest", "shows modeled routing edge without presenting it as realized P&L", "carry_routing_advantage_disclosure_test_missing");
+  requireText("webCarryChartTest", "upgrades modeled edge only when worker evidence matches the selected route", "carry_routing_advantage_worker_ui_test_missing");
   requireText("webCarryChart", "AGE {formatAge", "carry_feed_age_display_missing");
   requireText("webCarryChartTest", "shows only commitment-backed worker history as durable route evidence", "carry_public_funding_evidence_test_missing");
   requireText("webCarryChartTest", "shows compact worker-bound five-venue market evidence", "carry_market_qualification_display_test_missing");

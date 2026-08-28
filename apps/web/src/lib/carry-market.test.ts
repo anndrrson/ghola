@@ -6,8 +6,10 @@ import {
   builderModel,
   carryCandidateAgeMs,
   carryRoutingAdvantage,
+  carryRoutingAdvantageEvidence,
   quoteCarryCandidate,
   rankCarryCandidatesByNet,
+  type CarryShadowResponse,
 } from "@/lib/carry-market";
 
 describe("Carry market model", () => {
@@ -83,6 +85,64 @@ describe("Carry market model", () => {
       dailyNetAdvantageUsd: null,
       reason: "anchor_route_unavailable",
     });
+  });
+
+  it("accepts only worker-committed modeled edge for the selected route", () => {
+    const venues = [
+      venue("hyperliquid", snapshot("hyperliquid", "BTC", 40_000_000, "ready")),
+      venue("lighter", snapshot("lighter", "BTC", 10_000_000, "ready")),
+      venue("aster", snapshot("aster", "BTC", 150_000_000, "ready")),
+    ];
+    const ranked = rankCarryCandidatesByNet(buildPairCandidates(venues));
+    const selected = ranked[0];
+    const pointInTime = carryRoutingAdvantage(selected, ranked);
+    const response: CarryShadowResponse = {
+      version: 1,
+      mode: "shadow_read_only",
+      executable: false,
+      observed_at: new Date(1_800_000_000_000).toISOString(),
+      venues,
+      shadow_qualification: qualificationSummary(),
+      funding_persistence: fundingPersistenceSummary(),
+      routing_advantage: routingAdvantageSummary(),
+    };
+    const evidence = carryRoutingAdvantageEvidence(response, selected, pointInTime);
+    expect(evidence.status).toBe("committed");
+    expect(evidence.label).toBe("EDGE✓");
+    expect(evidence.advantage).toMatchObject({
+      status: "advantaged",
+      selectedRoute: "BTC:lighter:aster",
+      baselineRoute: "BTC:hyperliquid:aster",
+      dailyNetAdvantageUsd: 1.25,
+      dailyNetAdvantageBps: 1.25,
+    });
+    expect(evidence.detail).toContain("worker-committed modeled net");
+    expect(evidence.detail).toContain("not realized P&L");
+  });
+
+  it("rejects a forged ready routing advantage", () => {
+    const venues = [
+      venue("hyperliquid", snapshot("hyperliquid", "BTC", 40_000_000, "ready")),
+      venue("lighter", snapshot("lighter", "BTC", 10_000_000, "ready")),
+      venue("aster", snapshot("aster", "BTC", 150_000_000, "ready")),
+    ];
+    const ranked = rankCarryCandidatesByNet(buildPairCandidates(venues));
+    const pointInTime = carryRoutingAdvantage(ranked[0], ranked);
+    const summary = routingAdvantageSummary();
+    summary.evidence_commitment = "forged";
+    const evidence = carryRoutingAdvantageEvidence({
+      version: 1,
+      mode: "shadow_read_only",
+      executable: false,
+      observed_at: new Date(1_800_000_000_000).toISOString(),
+      venues,
+      shadow_qualification: qualificationSummary(),
+      funding_persistence: fundingPersistenceSummary(),
+      routing_advantage: summary,
+    }, ranked[0], pointInTime);
+    expect(evidence.status).toBe("rejected");
+    expect(evidence.label).toBe("EDGE!");
+    expect(evidence.advantage.dailyNetAdvantageBps).toBeNull();
   });
 
   it("ranks a proven positive-net route above a larger unpriced spread", () => {
@@ -299,5 +359,87 @@ function snapshot(
     as_of_ms: 1_800_000_000_000,
     missing_fields: [],
     ...overrides,
+  };
+}
+
+function routingAdvantageSummary(): NonNullable<CarryShadowResponse["routing_advantage"]> {
+  return {
+    version: 1,
+    kind: "carry_routing_advantage",
+    ready: true,
+    failures: [],
+    anchor_venue_id: "hyperliquid",
+    execution_venue_ids: ["hyperliquid", "lighter", "aster"],
+    requested_assets: ["BTC"],
+    notional_micro_usdc: 10_000_000_000,
+    horizon_ms: 86_400_000,
+    modeled: true,
+    realized: false,
+    account_fee_tier_included: false,
+    execution_ready: false,
+    transaction_broadcast: false,
+    shadow_qualification_commitment: `carry:shadow:qualification:${"d".repeat(64)}`,
+    observer_image_digest: `sha256:${"e".repeat(64)}`,
+    observed_at_ms: 1_800_000_000_000,
+    evidence_commitment: `carry:routing:advantage:${"f".repeat(64)}`,
+    routes: [{
+      asset: "BTC",
+      status: "advantaged",
+      selected_route: { long_venue_id: "lighter", short_venue_id: "aster" },
+      baseline_route: { long_venue_id: "hyperliquid", short_venue_id: "aster" },
+      daily_net_advantage_micro_usdc: 1_250_000,
+      daily_net_advantage_e6_bps: 1_250_000,
+      sample_count: 8,
+      minimum_samples: 8,
+      observed_span_ms: 35 * 60_000,
+      minimum_span_ms: 30 * 60_000,
+      funding_evidence_commitments: [
+        `carry:funding:${"a".repeat(64)}`,
+        `carry:funding:${"b".repeat(64)}`,
+      ],
+      ready: true,
+      reasons: [],
+    }],
+  };
+}
+
+function qualificationSummary(): NonNullable<CarryShadowResponse["shadow_qualification"]> {
+  return {
+    version: 1,
+    kind: "carry_shadow_qualification",
+    ready: true,
+    release_bound: true,
+    transaction_broadcast: false,
+    image_digest: `sha256:${"e".repeat(64)}`,
+    checked_at_ms: 1_800_000_000_000,
+    required_samples: 3,
+    completed_samples: 3,
+    venues: 5,
+    assets: 3,
+    requested_assets: ["BTC", "ETH", "SOL"],
+    failures: [],
+    evidence_commitment: `carry:shadow:qualification:${"d".repeat(64)}`,
+  };
+}
+
+function fundingPersistenceSummary(): NonNullable<CarryShadowResponse["funding_persistence"]> {
+  return {
+    version: 1,
+    transaction_broadcast: false,
+    observed_route_count: 2,
+    ready_route_count: 2,
+    routes: ["a", "b"].map((suffix, index) => ({
+      asset: "BTC",
+      long_venue_id: index === 0 ? "lighter" : "hyperliquid",
+      short_venue_id: "aster",
+      ready: true,
+      reasons: [],
+      sample_count: 8,
+      minimum_samples: 8,
+      observed_span_ms: 35 * 60_000,
+      minimum_span_ms: 30 * 60_000,
+      conservative_hourly_spread_e12: 1,
+      evidence_commitment: `carry:funding:${suffix.repeat(64)}`,
+    })),
   };
 }
