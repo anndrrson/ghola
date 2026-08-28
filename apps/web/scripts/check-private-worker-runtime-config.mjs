@@ -54,18 +54,10 @@ export async function verifyPrivateWorkerRuntimeAuthorization(
     "GHOLA_PRIVATE_AGENT_WORKER_URL",
     "PHALA_AGENT_ENDPOINT",
   );
-  const path = "/hyperliquid/sessions";
+  const path = "/.well-known/private-agent-authorization";
   const body = {
     version: 1,
-    account_commitment: "vercel_release_auth_probe",
-    execution_mode: "byo_api_key",
-    policy_commitment: "vercel_release_auth_probe",
-    session_policy: {
-      market_allowlist: [],
-      max_notional_bucket: "25",
-      max_order_count: 0,
-      kill_switch: false,
-    },
+    operation_class: "runtime_authorization_probe",
   };
   const authorization = workerAuthorization(env, path, body);
   const response = await fetchImpl(new URL(path, rawUrl), {
@@ -73,13 +65,16 @@ export async function verifyPrivateWorkerRuntimeAuthorization(
     headers: {
       authorization,
       "content-type": "application/json",
-      "x-ghola-sealed-execution-required": "true",
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),
   });
   const responseBody = await response.json().catch(() => ({}));
-  if (response.status !== 400 || responseBody.error_code !== "venue_access_required") {
+  if (
+    response.status !== 200 ||
+    responseBody.version !== 1 ||
+    responseBody.authorized !== true
+  ) {
     throw new Error(`Vercel release private worker authorization failed (${response.status})`);
   }
   return { ...config, worker_authorization: "verified" };
@@ -120,17 +115,13 @@ function workerAuthorization(env, path, body) {
     issuer: "ghola-web",
     method: "POST",
     path,
-    scope: "session:create",
+    scope: "runtime:read",
     body_hash: createHash("sha256").update(stableJson(body)).digest("hex"),
     jti: randomUUID(),
     iat: now,
     nbf: now - 5,
     exp: now + 300,
-    account_commitment: body.account_commitment,
-    venue_id: "hyperliquid",
-    platform_class: "hyperliquid_style_market",
-    execution_mode: body.execution_mode,
-    policy_commitment: body.policy_commitment,
+    operation_class: body.operation_class,
   };
   const encoded = Buffer.from(stableJson(payload), "utf8").toString("base64url");
   const signature = createHmac("sha256", capabilitySecret).update(encoded).digest("base64url");

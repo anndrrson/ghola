@@ -77,13 +77,17 @@ test("proves Vercel and the worker share authorization before deployment", async
     VERCEL: "1",
     GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL: "https://worker.example",
     PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "shared-secret",
-  }, async (_input, init) => {
+  }, async (input, init) => {
     attempts += 1;
+    assert.equal(
+      String(input),
+      "https://worker.example/.well-known/private-agent-authorization",
+    );
     assert.match(new Headers(init.headers).get("authorization"), /^Bearer ghcap_v1\./);
     return Response.json({
-      error: "invalid hyperliquid private session request",
-      error_code: "venue_access_required",
-    }, { status: 400 });
+      version: 1,
+      authorized: true,
+    }, { status: 200 });
   });
 
   assert.equal(attempts, 1);
