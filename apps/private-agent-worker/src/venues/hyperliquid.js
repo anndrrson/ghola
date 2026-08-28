@@ -297,29 +297,18 @@ async function reconcileHyperliquidExecution({ credential, instruction, fetchImp
   }
   const orderStatusBody = await orderStatusResponse.json();
   if (orderStatusBody?.status !== "order") {
-    return {
-      status: "outcome_unknown",
-      provider_ref_seed: { venue: "hyperliquid", targeted: true, cloid: targetCloid || null },
-      result_seed: { kind: "hyperliquid_order_status_reconcile", status: "unknownOid" },
-      fills: [],
-      final_proof: {
-        version: 1,
-        proof_kind: "hyperliquid_order_status_reconciliation_v1",
-        status: "outcome_unknown",
-        venue_id: "hyperliquid",
-        target_client_order_matched: false,
-        broadcast_performed: false,
-        final_venue_execution_proven: false,
-        final_fill_proven: false,
-        cumulative_filled_micro_usdc: 0,
-        filled_base_size: null,
-        checked_at: new Date().toISOString(),
-      },
-    };
+    return unresolvedHyperliquidReconciliation({ targetCloid, targetOid, reason: "unknownOid" });
   }
   const venueOrder = orderStatusBody.order?.order || {};
   const venueOrderStatus = String(orderStatusBody.order?.status || "unknown");
-  const venueOid = String(venueOrder.oid || targetOid || "");
+  const venueCloid = String(venueOrder.cloid || "").toLowerCase();
+  const venueOid = String(venueOrder.oid || "");
+  const targetMatched = targetCloid
+    ? venueCloid === targetCloid
+    : Boolean(targetOid && venueOid === targetOid);
+  if (!targetMatched) {
+    return unresolvedHyperliquidReconciliation({ targetCloid, targetOid, reason: "targetMismatch" });
+  }
   let rows = [];
   try {
     const fillsResponse = await fetchImpl(`${credential.base_url || MAINNET_API_URL}/info`, {
@@ -354,9 +343,11 @@ async function reconcileHyperliquidExecution({ credential, instruction, fetchImp
   }));
   const filledBase = fills.reduce((sum, fill) => sum + positiveDecimal(fill.sz), 0);
   const filledNotional = fills.reduce((sum, fill) => sum + positiveDecimal(fill.sz) * positiveDecimal(fill.px), 0);
-  const finalFillProven = venueOrderStatus === "filled" && filledBase > 0;
+  const normalizedVenueOrderStatus = venueOrderStatus.trim().toLowerCase();
+  const finalFillProven = normalizedVenueOrderStatus === "filled" && filledBase > 0;
+  const terminal = isTerminalHyperliquidOrderStatus(normalizedVenueOrderStatus);
   return {
-    status: "reconciled",
+    status: terminal ? "reconciled" : "outcome_unknown",
     provider_ref_seed: {
       venue: "hyperliquid",
       targeted: true,
@@ -374,14 +365,41 @@ async function reconcileHyperliquidExecution({ credential, instruction, fetchImp
     final_proof: {
       version: 1,
       proof_kind: "hyperliquid_order_status_reconciliation_v1",
-      status: finalFillProven ? "filled" : venueOrderStatus,
+      status: terminal ? finalFillProven ? "filled" : venueOrderStatus : "outcome_unknown",
       venue_id: "hyperliquid",
-      target_client_order_matched: true,
+      target_client_order_matched: targetMatched,
       broadcast_performed: true,
-      final_venue_execution_proven: true,
+      final_venue_execution_proven: terminal,
       final_fill_proven: finalFillProven,
       cumulative_filled_micro_usdc: Math.max(0, Math.round(filledNotional * 1_000_000)),
       filled_base_size: filledBase > 0 ? trimDecimal(filledBase) : null,
+      checked_at: new Date().toISOString(),
+    },
+  };
+}
+
+function unresolvedHyperliquidReconciliation({ targetCloid, targetOid, reason }) {
+  return {
+    status: "outcome_unknown",
+    provider_ref_seed: {
+      venue: "hyperliquid",
+      targeted: true,
+      cloid: targetCloid || null,
+      oid: targetOid || null,
+    },
+    result_seed: { kind: "hyperliquid_order_status_reconcile", status: reason },
+    fills: [],
+    final_proof: {
+      version: 1,
+      proof_kind: "hyperliquid_order_status_reconciliation_v1",
+      status: "outcome_unknown",
+      venue_id: "hyperliquid",
+      target_client_order_matched: false,
+      broadcast_performed: false,
+      final_venue_execution_proven: false,
+      final_fill_proven: false,
+      cumulative_filled_micro_usdc: 0,
+      filled_base_size: null,
       checked_at: new Date().toISOString(),
     },
   };

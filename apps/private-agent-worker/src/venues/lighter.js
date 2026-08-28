@@ -350,20 +350,26 @@ function reconciledLighterResult(result, submitted, reconciliation) {
 
 export async function reconcileLighterExecution({ credential, clientOrderIndex, market, runner = defaultRunner }) {
   assertLighterPilotMode(credential, "reconcile");
+  const targetClientOrderIndex = integer(clientOrderIndex, "lighter reconcile target is invalid");
   const result = await runner({
     action: "reconcile",
     credential,
-    client_order_index: integer(clientOrderIndex, "lighter reconcile target is invalid"),
+    client_order_index: targetClientOrderIndex,
     market: lighterMarket(market),
     timeout_ms: timeoutMs(),
   });
-  const order = result?.order || null;
+  const candidate = result?.order || null;
+  const returnedClientOrderIndex = Number(candidate?.client_order_index);
+  const targetMatched = candidate !== null &&
+    Number.isSafeInteger(returnedClientOrderIndex) &&
+    returnedClientOrderIndex === targetClientOrderIndex;
+  const order = targetMatched ? candidate : null;
   const status = orderStatus(order);
   return {
     status,
     provider_ref_seed: {
       venue: "lighter",
-      client_order_index: clientOrderIndex,
+      client_order_index: targetClientOrderIndex,
       order_index: order?.order_index ?? null,
       venue_status: order?.status || null,
     },
@@ -380,7 +386,7 @@ export async function reconcileLighterExecution({ credential, clientOrderIndex, 
       proof_kind: "lighter_client_order_index_reconciliation_v1",
       status,
       venue_id: "lighter",
-      target_client_order_matched: order !== null,
+      target_client_order_matched: targetMatched,
       broadcast_performed: order !== null,
       final_venue_execution_proven: ["filled", "cancelled", "rejected"].includes(status),
       final_fill_proven: status === "filled",

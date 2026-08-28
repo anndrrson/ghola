@@ -77,6 +77,52 @@ describe("Hyperliquid targeted reconciliation", () => {
     assert.equal(result.final_proof.cumulative_filled_micro_usdc, 11_000_000);
     assert.equal(result.final_proof.filled_base_size, "0.25");
   });
+
+  it("rejects an orderStatus row that does not match the requested CLOID", async () => {
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    const cloid = `0x${"56".repeat(16)}`;
+    let calls = 0;
+    const result = await submitHyperliquidExecution({
+      credential: credential(),
+      instruction: instruction(cloid),
+      cloid,
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response(JSON.stringify({
+          status: "order",
+          order: {
+            status: "filled",
+            order: { oid: 5151, cloid: `0x${"78".repeat(16)}` },
+          },
+        }), { status: 200 });
+      },
+    });
+
+    assert.equal(calls, 1);
+    assert.equal(result.status, "outcome_unknown");
+    assert.equal(result.final_proof.target_client_order_matched, false);
+    assert.equal(result.final_proof.final_venue_execution_proven, false);
+  });
+
+  it("keeps a matching open order non-terminal", async () => {
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    const cloid = `0x${"9a".repeat(16)}`;
+    const responses = [
+      { status: "order", order: { status: "open", order: { oid: 6161, cloid } } },
+      [],
+    ];
+    const result = await submitHyperliquidExecution({
+      credential: credential(),
+      instruction: instruction(cloid),
+      cloid,
+      fetchImpl: async () => new Response(JSON.stringify(responses.shift()), { status: 200 }),
+    });
+
+    assert.equal(result.status, "outcome_unknown");
+    assert.equal(result.final_proof.target_client_order_matched, true);
+    assert.equal(result.final_proof.broadcast_performed, true);
+    assert.equal(result.final_proof.final_venue_execution_proven, false);
+  });
 });
 
 describe("Hyperliquid open-order stream reconciliation", () => {

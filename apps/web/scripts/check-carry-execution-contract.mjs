@@ -136,6 +136,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   asterTest: "apps/private-agent-worker/test/aster.test.js",
   lighterTest: "apps/private-agent-worker/test/lighter.test.js",
   hyperliquidMetricsTest: "apps/private-agent-worker/test/hyperliquid-account-metrics.test.js",
+  hyperliquidReconcileTest: "apps/private-agent-worker/test/hyperliquid-reconcile.test.js",
   evidenceVerifier: "apps/web/scripts/verify-carry-release-evidence.mjs",
   evidenceVerifierTest: "apps/web/scripts/verify-carry-release-evidence.test.mjs",
   webReconciliation: "apps/web/src/lib/carry-reconciliation.ts",
@@ -766,6 +767,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("adapterRegistryTest", "Carry funding history dispatches through the registered Aster adapter", "worker_carry_funding_registry_test_missing");
 
   requireText("hyperliquid", "target_client_order_matched", "hyperliquid_target_match_proof_missing");
+  requireText("hyperliquid", "venueCloid === targetCloid", "hyperliquid_reconciliation_response_binding_missing");
+  requireText("hyperliquid", "isTerminalHyperliquidOrderStatus(normalizedVenueOrderStatus)", "hyperliquid_reconciliation_terminal_gate_missing");
+  requireText("hyperliquidReconcileTest", "rejects an orderStatus row that does not match the requested CLOID", "hyperliquid_reconciliation_response_binding_test_missing");
+  requireText("hyperliquidReconcileTest", "keeps a matching open order non-terminal", "hyperliquid_reconciliation_terminal_test_missing");
   requireText("aster", "submitAndReconcileAsterExecution", "aster_exact_reconcile_missing");
   requireText("aster", "target_client_order_matched", "aster_target_match_proof_missing");
   requireText("lighter", "submitAndReconcileLighterExecution", "lighter_exact_reconcile_missing");
@@ -786,6 +791,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("lighterTest", "bounds exact-order reconciliation when an ambiguous Lighter submit cannot be found", "lighter_reconciliation_bound_test_missing");
   requireText("asterTest", "keeps explicit Aster reconciliation bound to the original order across read failures", "aster_reconciliation_target_test_missing");
   requireText("lighterTest", "keeps explicit Lighter reconciliation bound to the original order across read failures", "lighter_reconciliation_target_test_missing");
+  requireText("lighterTest", "rejects a mismatched Lighter reconciliation row after an ambiguous submission", "lighter_reconciliation_response_binding_test_missing");
+  requireText("lighter", "returnedClientOrderIndex === targetClientOrderIndex", "lighter_reconciliation_response_binding_missing");
   forbidText("aster", "submitAndReconcileAsterExecution({\n  credential,\n  instruction,\n  clientOrderId,\n  retry", "aster_retry_forbidden");
   forbidText("lighter", "submitAndReconcileLighterExecution({\n  credential,\n  instruction,\n  clientOrderIndex,\n  retry", "lighter_retry_forbidden");
 

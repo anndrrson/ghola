@@ -248,8 +248,8 @@ test("submits once and polls the exact client order until terminal fill", async 
         assert.equal(payload.client_order_index, 77);
         reconcileCalls += 1;
         return reconcileCalls === 1
-          ? { order: { status: "open", market_index: 1, remaining_base_amount: "0.001" } }
-          : { order: { status: "filled", market_index: 1, filled_base_amount: "0.001", filled_quote_amount: "100" } };
+          ? { order: { status: "open", client_order_index: 77, market_index: 1, remaining_base_amount: "0.001" } }
+          : { order: { status: "filled", client_order_index: 77, market_index: 1, filled_base_amount: "0.001", filled_quote_amount: "100" } };
       },
     });
     assert.equal(submitCalls, 1);
@@ -288,7 +288,7 @@ test("recovers an ambiguous Lighter submit response by reading the exact order w
         assert.equal(payload.client_order_index, 78);
         reconcileCalls += 1;
         if (reconcileCalls === 1) throw new Error("read replica lag");
-        return { order: { status: "filled", order_index: 89, filled_base_amount: "0.001", filled_quote_amount: "100" } };
+        return { order: { status: "filled", client_order_index: 78, order_index: 89, filled_base_amount: "0.001", filled_quote_amount: "100" } };
       },
     });
     assert.equal(submitCalls, 1);
@@ -387,12 +387,57 @@ test("reconciles the exact Lighter client order index", async () => {
       runner: async (payload) => {
         assert.equal(payload.client_order_index, 77);
         assert.equal(payload.market, "BTC");
-        return { order: { status: "filled", order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" } };
+        return { order: { status: "filled", client_order_index: 77, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" } };
       },
     });
     assert.equal(result.status, "filled");
     assert.equal(result.final_proof.final_fill_proven, true);
     assert.equal(result.fills[0].price, "100000");
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
+test("rejects a mismatched Lighter reconciliation row after an ambiguous submission", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "full_ticket";
+  let submitCalls = 0;
+  let reconcileCalls = 0;
+  try {
+    await assert.rejects(submitAndReconcileLighterExecution({
+      credential: credential(),
+      instruction: instruction(),
+      clientOrderIndex: 77,
+      now: () => 1_800_000_000_000,
+      sleep: async () => {},
+      env: {
+        PRIVATE_AGENT_LIGHTER_RECONCILE_TIMEOUT_MS: "250",
+        PRIVATE_AGENT_LIGHTER_RECONCILE_INTERVAL_MS: "100",
+      },
+      runner: async (payload) => {
+        if (payload.action === "submit") {
+          submitCalls += 1;
+          throw new Error("response lost after write");
+        }
+        reconcileCalls += 1;
+        return {
+          order: {
+            status: "filled",
+            client_order_index: 999,
+            order_index: 88,
+            filled_base_amount: "0.001",
+            filled_quote_amount: "100",
+          },
+        };
+      },
+    }), (error) => error.code === "submission_ambiguous");
+    assert.equal(submitCalls, 1);
+    assert.equal(reconcileCalls, 4);
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
@@ -426,7 +471,7 @@ test("keeps explicit Lighter reconciliation bound to the original order across r
         targets.push(payload.client_order_index);
         reads += 1;
         if (reads === 1) throw new Error("temporary read failure");
-        return { order: { status: "filled", order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" } };
+        return { order: { status: "filled", client_order_index: 77, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" } };
       },
     });
     assert.deepEqual(targets, [77, 77]);
