@@ -409,7 +409,10 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
     || snapshot.initial_margin_bps > 10_000) {
     failures.push(`margin_evidence_invalid:${prefix}`);
   }
-  if (!snapshot.liquidation_model || snapshot.liquidation_model === "unavailable") {
+  if (snapshot.margin_model !== declared?.margin_model || snapshot.margin_model === "unavailable") {
+    failures.push(`margin_model_evidence_invalid:${prefix}`);
+  }
+  if (snapshot.liquidation_model !== declared?.liquidation_model || snapshot.liquidation_model === "unavailable") {
     failures.push(`liquidation_evidence_invalid:${prefix}`);
   }
   if (!Array.isArray(snapshot.quality_flags)) failures.push(`quality_flags_invalid:${prefix}`);

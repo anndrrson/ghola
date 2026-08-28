@@ -176,6 +176,8 @@ export function checkCarryExecutionContract(sources) {
   for (const [venue, adapterId] of Object.entries(shadowAdapters)) {
     requireText("registry", `venue("${venue}"`, `registry_venue_missing:${venue}`);
     requireText("registry", `adapter("${adapterId}", "enabled"`, `shadow_adapter_missing:${venue}`);
+    requireText("shadow", `PERP_SHADOW_ADAPTERS.${venue}.margin_model`, `shadow_margin_model_registry_binding_missing:${venue}`);
+    requireText("shadow", `PERP_SHADOW_ADAPTERS.${venue}.liquidation_model`, `shadow_liquidation_model_registry_binding_missing:${venue}`);
   }
   requireText("registry", "export const CARRY_EXECUTION_VENUES", "capability_registry_missing");
   requireText("registry", "export const CARRY_SHADOW_ASSETS", "carry_shadow_asset_registry_missing");
@@ -377,6 +379,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifier", "DEFAULT_CARRY_SHADOW_ASSETS = CARRY_SHADOW_ASSETS", "carry_shadow_core_assets_missing");
   forbidText("shadowVerifier", 'Object.freeze(["BTC", "ETH", "SOL"])', "carry_shadow_verifier_asset_policy_duplicated");
   requireText("shadowVerifier", "missing_field_unjustified", "carry_shadow_missing_field_evidence_gate_missing");
+  requireText("shadowVerifier", "snapshot.margin_model !== declared?.margin_model", "carry_shadow_margin_model_registry_gate_missing");
+  requireText("shadowVerifier", "snapshot.liquidation_model !== declared?.liquidation_model", "carry_shadow_liquidation_model_registry_gate_missing");
+  requireText("shadowVerifierTest", "rejects margin or liquidation models detached from the venue registry", "carry_shadow_risk_model_registry_test_missing");
   requireText("shadowVerifier", "export function verifyCarryShadowSoak", "carry_shadow_soak_verifier_missing");
   requireText("shadowVerifier", "shadow_soak_sample_failed", "carry_shadow_soak_intermittent_failure_gate_missing");
   requireText("shadowVerifier", "snapshot_evidence", "carry_shadow_snapshot_evidence_missing");

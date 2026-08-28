@@ -105,6 +105,15 @@ test("rejects crossed books, registry drift, and invalid margin evidence", () =>
   assert.ok(result.failures.includes("margin_evidence_invalid:hyperliquid:BTC"));
 });
 
+test("rejects margin or liquidation models detached from the venue registry", () => {
+  const rows = fixture();
+  rows[0].snapshots[0].margin_model = "plausible_but_unregistered_margin";
+  rows[1].snapshots[0].liquidation_model = "plausible_but_unregistered_liquidation";
+  const result = verifyCarryShadowSet(rows, { now_ms: NOW });
+  assert.ok(result.failures.includes("margin_model_evidence_invalid:hyperliquid:BTC"));
+  assert.ok(result.failures.includes("liquidation_evidence_invalid:lighter:BTC"));
+});
+
 test("rejects unsafe normalized economic fields instead of pricing with them", () => {
   const rows = fixture();
   rows[0].snapshots[0].maker_fee_bps = -1_001;
@@ -290,11 +299,12 @@ function fixture(assets = DEFAULT_CARRY_SHADOW_ASSETS, observedAtMs = NOW) {
 }
 
 function snapshot(venueId, asset, observedAtMs) {
+  const declared = venueAdapterCapability(venueId, "perp_shadow");
   return {
     version: 1,
     venue_id: venueId,
     adapter_mode: "shadow_read_only",
-    source_schema: venueAdapterCapability(venueId, "perp_shadow").source_schema,
+    source_schema: declared.source_schema,
     trading_api_available: true,
     contract_id: `${venueId}:${asset}`,
     economic_equivalence_id: `carry:${asset}-usd-linear`,
@@ -319,7 +329,8 @@ function snapshot(venueId, asset, observedAtMs) {
     initial_margin_bps: 500,
     maintenance_margin_bps: 250,
     liquidation_fee_bps: 0,
-    liquidation_model: "test_margin_liquidation",
+    margin_model: declared.margin_model,
+    liquidation_model: declared.liquidation_model,
     as_of_ms: observedAtMs,
     source_observed_at_ms: { market: observedAtMs, funding: observedAtMs, orderbook: observedAtMs },
     source_max_age_ms: {

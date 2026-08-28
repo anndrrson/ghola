@@ -66,6 +66,13 @@ test("registry centralizes five core perp candidates without claiming qualificat
   assert.equal(executionVenueLabel("edgex"), "edgeX");
   assert.equal(executionVenueLabel("venue_unregistered"), "venue_unregistered");
   assert.equal(venueAdapterCapability("dydx", "perp_shadow")?.adapter_id, "dydx_shadow_v1");
+  for (const venueId of CORE_PERP_VENUES) {
+    const shadow = venueAdapterCapability(venueId, "perp_shadow");
+    assert.match(shadow.margin_model, /^[a-z][a-z0-9_]+$/);
+    assert.match(shadow.liquidation_model, /^[a-z][a-z0-9_]+$/);
+    assert.notEqual(shadow.margin_model, "unavailable");
+    assert.notEqual(shadow.liquidation_model, "unavailable");
+  }
   assert.equal(venueAdapterCapability("dydx", "carry_execution"), null);
   assert.deepEqual(venuesWithAdapterCapability("collateral_route_observer", {
     cohort: "core_perp",

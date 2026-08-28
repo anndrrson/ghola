@@ -34,6 +34,7 @@ export interface CarryShadowSnapshot {
   quantity_step_e8?: number | null;
   initial_margin_bps: number | null;
   maintenance_margin_bps: number | null;
+  margin_model?: string | null;
   liquidation_fee_bps?: number | null;
   liquidation_model?: string | null;
   mark_price_e8?: number | null;

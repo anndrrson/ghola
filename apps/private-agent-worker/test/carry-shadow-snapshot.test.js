@@ -33,12 +33,13 @@ const routingAdvantage = Object.freeze({
 });
 
 function snapshot(venueId, observedAt) {
-  const freshness = venueAdapterCapability(venueId, "perp_shadow").source_max_age_ms;
+  const declared = venueAdapterCapability(venueId, "perp_shadow");
+  const freshness = declared.source_max_age_ms;
   return {
     version: 1,
     venue_id: venueId,
     adapter_mode: "shadow_read_only",
-    source_schema: venueAdapterCapability(venueId, "perp_shadow").source_schema,
+    source_schema: declared.source_schema,
     trading_api_available: true,
     contract_id: `${venueId}:BTC`,
     economic_equivalence_id: "carry:BTC-usd-linear",
@@ -63,7 +64,8 @@ function snapshot(venueId, observedAt) {
     initial_margin_bps: 500,
     maintenance_margin_bps: 250,
     liquidation_fee_bps: 0,
-    liquidation_model: "test_margin_liquidation",
+    margin_model: declared.margin_model,
+    liquidation_model: declared.liquidation_model,
     as_of_ms: observedAt,
     source_observed_at_ms: { market: observedAt, funding: observedAt, orderbook: observedAt },
     source_max_age_ms: {

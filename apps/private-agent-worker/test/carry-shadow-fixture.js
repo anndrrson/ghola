@@ -9,11 +9,12 @@ export function carryShadowFixture(nowMs, assets = CARRY_SHADOW_ASSETS) {
 }
 
 function snapshot(venueId, asset, nowMs) {
+  const declared = venueAdapterCapability(venueId, "perp_shadow");
   return {
     version: 1,
     venue_id: venueId,
     adapter_mode: "shadow_read_only",
-    source_schema: venueAdapterCapability(venueId, "perp_shadow").source_schema,
+    source_schema: declared.source_schema,
     trading_api_available: true,
     contract_id: `${venueId}:${asset}`,
     economic_equivalence_id: `carry:${asset}-usd-linear`,
@@ -38,7 +39,8 @@ function snapshot(venueId, asset, nowMs) {
     initial_margin_bps: 500,
     maintenance_margin_bps: 250,
     liquidation_fee_bps: 0,
-    liquidation_model: "test_margin_liquidation",
+    margin_model: declared.margin_model,
+    liquidation_model: declared.liquidation_model,
     as_of_ms: nowMs,
     source_observed_at_ms: { market: nowMs, funding: nowMs, orderbook: nowMs },
     source_max_age_ms: {

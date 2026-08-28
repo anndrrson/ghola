@@ -11,11 +11,12 @@ import { storeCarryVenueQualification } from "../src/execution/carry-qualificati
 const NOW = 1_800_000_000_000;
 
 function snapshot(venueId) {
+  const shadow = executionVenueSpec(venueId).adapter_capabilities.perp_shadow;
   return {
     version: 1,
     venue_id: venueId,
     adapter_mode: "shadow_read_only",
-    source_schema: executionVenueSpec(venueId).adapter_capabilities.perp_shadow.source_schema,
+    source_schema: shadow.source_schema,
     trading_api_available: true,
     contract_id: `${venueId}:BTC`,
     economic_equivalence_id: "carry:BTC-usd-linear",
@@ -40,7 +41,8 @@ function snapshot(venueId) {
     initial_margin_bps: 1_000,
     maintenance_margin_bps: 500,
     liquidation_fee_bps: 0,
-    liquidation_model: "test_margin_liquidation",
+    margin_model: shadow.margin_model,
+    liquidation_model: shadow.liquidation_model,
     as_of_ms: NOW,
     source_observed_at_ms: { market: NOW, funding: NOW, orderbook: NOW },
     source_max_age_ms: { market: 60_000, funding: 60_000, orderbook: 60_000 },

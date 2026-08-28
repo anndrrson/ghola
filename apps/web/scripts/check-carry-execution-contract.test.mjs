@@ -1134,6 +1134,29 @@ test("rejects carry shadow assets detached from the execution registry", () => {
   );
 });
 
+test("rejects margin and liquidation evidence detached from the venue registry", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowVerifier: sources.shadowVerifier.replace(
+        "snapshot.margin_model !== declared?.margin_model",
+        "!snapshot.margin_model",
+      ),
+    }),
+    /carry_shadow_margin_model_registry_gate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadow: sources.shadow.replace(
+        "PERP_SHADOW_ADAPTERS.aster.liquidation_model",
+        '"cross_or_isolated_account_margin"',
+      ),
+    }),
+    /shadow_liquidation_model_registry_binding_missing:aster/,
+  );
+});
+
 test("rejects release qualification adapters detached from the capability registry", () => {
   assert.throws(
     () => checkCarryExecutionContract({
