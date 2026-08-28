@@ -14,6 +14,7 @@ import {
   carryAccountStateCommitment,
   storeCarryExecutionReadiness,
 } from "../src/execution/carry-readiness.js";
+import { storeCarryTransferRouteEvidence } from "../src/execution/carry-transfer-routes.js";
 import { carryShadowFixture } from "./carry-shadow-fixture.js";
 import {
   CARRY_EXECUTION_VENUES,
@@ -25,7 +26,7 @@ import { hashMessage } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 const NOW = 1_800_000_010_000;
-const IMAGE = "sha256:abcdef1234567890";
+const IMAGE = `sha256:${"ab".repeat(32)}`;
 const OWNER = "owner:carry:release:0001";
 const MANDATE_OWNER = privateKeyToAccount(`0x${"33".repeat(32)}`);
 
@@ -61,6 +62,8 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.deepEqual(result.material.execution_readiness.registry_venue_ids, [...CARRY_EXECUTION_VENUES]);
   assert.equal(result.material.execution_readiness.recovery_ready, true);
   assert.equal(result.material.execution_readiness.venues.length, 3);
+  assert.equal(result.material.collateral_route_readiness.complete_directed_coverage, true);
+  assert.equal(result.material.collateral_route_readiness.available_route_count, 6);
   assert.equal(result.material.final_state.open_order_count, 0);
   assert.equal(result.material.final_state.owner_commitment, OWNER);
   assert.equal(result.material.final_state.carry_position_id, fixture.record.position.position_id);
@@ -117,6 +120,22 @@ test("refuses release material without creation-time three-venue readiness", asy
   assert.equal(result.error, "carry_release_three_venue_readiness_unproven");
 });
 
+test("refuses release material without fresh six-route collateral coverage", async () => {
+  const fixture = await stateFixture();
+  const getIdempotency = fixture.state.getIdempotency;
+  fixture.state.getIdempotency = async (key) => key.startsWith("carry:transfer-routes:latest:")
+    ? null
+    : getIdempotency(key);
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_collateral_routes_unproven");
+});
+
 test("records a durable owner- and image-bound paired lifecycle proof", async () => {
   const fixture = await stateFixture();
   const recorded = await recordCompletedCarryLifecycleProof({
@@ -129,6 +148,8 @@ test("records a durable owner- and image-bound paired lifecycle proof", async ()
   assert.equal(recorded.ok, true, JSON.stringify(recorded));
   assert.equal(recorded.proof.live_entry_exit_proven, true);
   assert.equal(recorded.proof.final_flat_zero_orders, true);
+  assert.equal(recorded.proof.collateral_route_coverage_proven, true);
+  assert.match(recorded.proof.collateral_route_evidence_commitment, /^carry:transfer-routes:evidence:/);
   assert.equal(recorded.proof.ambiguity_retry_count, 0);
   assert.deepEqual(recorded.proof.value_attribution, {
     modeled: {
@@ -699,7 +720,67 @@ async function stateFixture() {
     env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
   });
   assert.equal(readiness.ok, true, JSON.stringify(readiness));
+  await storeCarryTransferRouteEvidence({
+    state,
+    owner_commitment: OWNER,
+    worker_image_digest: IMAGE,
+    routes: releaseTransferRoutes(readiness.readiness),
+    checked_at_ms: NOW,
+    expires_at_ms: NOW + 30_000,
+    now_ms: NOW,
+  });
   return { state, record, attempts, receipts };
+}
+
+function releaseTransferRoutes(readiness) {
+  const adapters = {
+    hyperliquid: "hyperliquid_arbitrum_usdc_v1",
+    lighter: "lighter_arbitrum_usdc_v1",
+    aster: "aster_arbitrum_usdt_v1",
+  };
+  const collateral = { hyperliquid: "USDC", lighter: "USDC", aster: "USDT" };
+  const capitalByVenue = new Map(readiness.capital_plan.map((item) => [item.venue_id, item]));
+  return CARRY_EXECUTION_VENUES.flatMap((fromVenueId) => CARRY_EXECUTION_VENUES
+    .filter((toVenueId) => toVenueId !== fromVenueId)
+    .map((toVenueId) => {
+      const conversionRequired = collateral[fromVenueId] !== collateral[toVenueId];
+      return {
+        version: 1,
+        route_id: `carry:transfer-route:${fromVenueId}-${toVenueId}:release`,
+        from_account_commitment: releaseVenueAccess(fromVenueId).account_commitment,
+        from_venue_id: fromVenueId,
+        to_account_commitment: releaseVenueAccess(toVenueId).account_commitment,
+        to_venue_id: toVenueId,
+        source_adapter_id: adapters[fromVenueId],
+        destination_adapter_id: adapters[toVenueId],
+        source_account_state_commitment: capitalByVenue.get(fromVenueId).account_state_commitment,
+        destination_account_state_commitment: capitalByVenue.get(toVenueId).account_state_commitment,
+        quote_commitment: `carry:transfer-quote:${fromVenueId}-${toVenueId}:release`,
+        valuation_asset: "USD",
+        source_collateral_asset: collateral[fromVenueId],
+        destination_collateral_asset: collateral[toVenueId],
+        conversion_required: conversionRequired,
+        status: "available",
+        quote_verified: true,
+        all_in_fee_verified: true,
+        valuation_basis_verified: true,
+        conversion_quote_verified: true,
+        conversion_rate_e8: conversionRequired ? 99_950_000 : 100_000_000,
+        minimum_transfer_micro_usdc: 0,
+        maximum_transfer_micro_usdc: 100_000_000,
+        withdrawal_fee_micro_usdc: 1_000,
+        deposit_fee_micro_usdc: 0,
+        conversion_fee_micro_usdc: conversionRequired ? 500 : 0,
+        conversion_slippage_micro_usdc: conversionRequired ? 500 : 0,
+        fee_micro_usdc: conversionRequired ? 2_000 : 1_000,
+        estimated_latency_ms: 60_000,
+        as_of_ms: NOW,
+        owner_approval_required: true,
+        fund_movement_authorized: false,
+        transaction_broadcast: false,
+        automatic_transfer_permitted: false,
+      };
+    }));
 }
 
 function releaseVenueAccess(venueId) {

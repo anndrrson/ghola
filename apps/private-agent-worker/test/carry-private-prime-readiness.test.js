@@ -671,6 +671,8 @@ function lifecycleProof(overrides = {}) {
     supervised_monitoring_proven: true,
     final_flat_zero_orders: true,
     value_ledger_finalized: true,
+    collateral_route_coverage_proven: true,
+    collateral_route_evidence_commitment: `carry:transfer-routes:evidence:${"b".repeat(40)}`,
     realized_net_value_micro_usdc: 34,
     value_attribution: lifecycleValueAttribution(),
     ambiguity_retry_count: 0,

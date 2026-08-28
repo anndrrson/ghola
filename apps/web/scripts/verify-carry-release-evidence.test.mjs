@@ -93,6 +93,7 @@ async function fixture() {
       evidence_commitment: `carry:shadow:qualification:${"44".repeat(32)}`,
     },
     execution_readiness: executionReadiness(),
+    collateral_route_readiness: collateralRouteReadiness(),
     mandate: {
       policy_commitment: hashMessage(mandateMessage),
       signed_mandate: signedMandate,
@@ -253,6 +254,31 @@ function executionReadiness() {
   };
 }
 
+function collateralRouteReadiness() {
+  return {
+    proven: true,
+    checked_at: "2026-08-24T00:00:09.000Z",
+    expires_at: "2026-08-24T00:00:39.000Z",
+    required_route_count: 6,
+    available_route_count: 6,
+    complete_directed_coverage: true,
+    route_pairs: CARRY_EXECUTION_VENUES.flatMap((fromVenueId) => CARRY_EXECUTION_VENUES
+      .filter((toVenueId) => toVenueId !== fromVenueId)
+      .map((toVenueId) => `${fromVenueId}:${toVenueId}`)).sort(),
+    venues: CARRY_EXECUTION_VENUES.map((venueId) => ({
+      venue_id: venueId,
+      account_commitment: `account:${venueId}:release:0001`,
+    })),
+    minimum_route_capacity_micro_usdc: 100_000_000,
+    maximum_route_latency_ms: 60_000,
+    owner_approval_required: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+    automatic_transfer_permitted: false,
+    evidence_commitment: `carry:transfer-routes:evidence:${"77".repeat(20)}`,
+  };
+}
+
 function leg(venue_id, side, reduce_only, client_order_commitment, fee_micro_usdc, slippage_micro_usdc, funding_micro_usdc = 0) {
   return {
     venue_id,
@@ -300,6 +326,14 @@ test("rejects release evidence without all three execution venue bindings", asyn
   evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
   await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /three_venue_account_bindings_invalid/);
+});
+
+test("rejects release evidence without complete collateral-route coverage", async () => {
+  const evidence = await fixture();
+  evidence.collateral_route_readiness.available_route_count = 5;
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /collateral_route_coverage_incomplete/);
 });
 
 test("rejects release evidence whose three-venue recovery policy permits ambiguity retries", async () => {

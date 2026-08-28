@@ -216,7 +216,7 @@ export async function POST(req: NextRequest) {
       ? riskMandate.migration_venue_allowlist.filter((venueId): venueId is string =>
           typeof venueId === "string" && isCarryExecutionVenue(venueId))
       : [];
-    const permitted = [...new Set([...selected, ...migrationVenues])];
+    const permitted = [...new Set([...CARRY_EXECUTION_VENUES, ...migrationVenues])];
     const accesses = Object.fromEntries(permitted.map((venueId) => [venueId, record(venueAccess[venueId as keyof typeof venueAccess])]));
     for (const venueId of selected) {
       if (accesses[venueId].status !== "ready") return response({ error: `${venueId}_account_not_ready` }, 409, correlationId);

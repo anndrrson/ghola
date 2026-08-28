@@ -13,6 +13,7 @@ import {
   verifyCarryExecutionReadinessResult,
 } from "./carry-readiness.js";
 import { readCarryShadowQualification } from "./carry-shadow-qualification.js";
+import { loadCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
 
 const DEFAULT_LIFECYCLE_PROOF_MAX_AGE_MS = 90 * 86_400_000;
 
@@ -55,6 +56,8 @@ export async function recordCompletedCarryLifecycleProof({
     supervised_monitoring_proven: true,
     final_flat_zero_orders: true,
     value_ledger_finalized: true,
+    collateral_route_coverage_proven: true,
+    collateral_route_evidence_commitment: material.collateral_route_readiness.evidence_commitment,
     ambiguity_retry_count: 0,
     owner_only_funding: true,
     owner_only_transfers: true,
@@ -133,6 +136,8 @@ export function assessCompletedCarryLifecycleProof({
     && proof.supervised_monitoring_proven === true
     && proof.final_flat_zero_orders === true
     && proof.value_ledger_finalized === true
+    && proof.collateral_route_coverage_proven === true
+    && /^carry:transfer-routes:evidence:[0-9a-f]{40}$/.test(String(proof.collateral_route_evidence_commitment || ""))
     && proof.ambiguity_retry_count === 0
     && proof.owner_only_funding === true
     && proof.owner_only_transfers === true
@@ -202,6 +207,19 @@ export async function buildCompletedCarryReleaseMaterial({
     || !sameRecord(executionReadiness.recovery_policy, CARRY_RECOVERY_POLICY)) {
     return denied("carry_release_three_venue_readiness_unproven");
   }
+  const routeEvidence = await loadCarryTransferRouteEvidence({
+    state,
+    owner_commitment: ownerCommitment,
+    now_ms: nowMs,
+    max_data_age_ms: 30_000,
+    expected_worker_image_digest: runtimeCarryQualificationImageDigest(env),
+  });
+  const collateralRouteReadiness = releaseCollateralRouteReadiness({
+    route_evidence: routeEvidence,
+    monitoring_context: record.monitoring_context,
+    minimum_checked_at_ms: record.final_reconciliation_evidence?.checked_at_ms,
+  });
+  if (!collateralRouteReadiness.ok) return collateralRouteReadiness;
   const finalState = record.final_reconciliation_evidence;
   const pair = [record.position.long_venue_id, record.position.short_venue_id];
   const accountCommitments = Object.fromEntries(pair.map((venueId) => [
@@ -330,6 +348,7 @@ export async function buildCompletedCarryReleaseMaterial({
       readiness: assessedExecutionReadiness.readiness,
       monitoring_context: record.monitoring_context,
     }),
+    collateral_route_readiness: collateralRouteReadiness.evidence,
     mandate: {
       policy_commitment: mandate.authorization.mandate_commitment,
       signed_mandate: mandate.authorization.signed_mandate,
@@ -406,6 +425,80 @@ export async function buildCompletedCarryReleaseMaterial({
   };
   material.worker_material_commitment = workerMaterialCommitment(material);
   return { ok: true, material };
+}
+
+function releaseCollateralRouteReadiness({
+  route_evidence: routeEvidence,
+  monitoring_context: monitoringContext,
+  minimum_checked_at_ms: minimumCheckedAtMs,
+}) {
+  if (routeEvidence?.ok !== true || !Array.isArray(routeEvidence.routes)) {
+    return denied("carry_release_collateral_routes_unproven");
+  }
+  const routes = routeEvidence.routes;
+  const requiredPairs = CARRY_EXECUTION_VENUES.flatMap((fromVenueId) => CARRY_EXECUTION_VENUES
+    .filter((toVenueId) => toVenueId !== fromVenueId)
+    .map((toVenueId) => `${fromVenueId}:${toVenueId}`));
+  const routePairs = routes.map((route) => `${route.from_venue_id}:${route.to_venue_id}`);
+  const accountByVenue = new Map();
+  for (const route of routes) {
+    for (const [venueId, accountCommitment] of [
+      [route.from_venue_id, route.from_account_commitment],
+      [route.to_venue_id, route.to_account_commitment],
+    ]) {
+      const existing = accountByVenue.get(venueId);
+      if (existing && existing !== accountCommitment) {
+        return denied("carry_release_collateral_route_account_ambiguous");
+      }
+      accountByVenue.set(venueId, accountCommitment);
+    }
+  }
+  const monitoringAccounts = new Map(Object.entries(monitoringContext?.venue_access || {})
+    .map(([venueId, access]) => [venueId, access?.account_commitment]));
+  const valid = routes.length === requiredPairs.length
+    && positiveInteger(minimumCheckedAtMs)
+    && routeEvidence.evidence.checked_at_ms >= minimumCheckedAtMs
+    && routeEvidence.evidence.checked_at_ms - minimumCheckedAtMs <= 30_000
+    && new Set(routePairs).size === requiredPairs.length
+    && requiredPairs.every((pair) => routePairs.includes(pair))
+    && routes.every((route) => route.status === "available"
+      && route.quote_verified === true
+      && route.all_in_fee_verified === true
+      && route.valuation_basis_verified === true
+      && Number.isSafeInteger(route.maximum_transfer_micro_usdc)
+      && route.maximum_transfer_micro_usdc > 0
+      && Number.isSafeInteger(route.estimated_latency_ms)
+      && route.owner_approval_required === true
+      && route.fund_movement_authorized === false
+      && route.transaction_broadcast === false
+      && route.automatic_transfer_permitted === false)
+    && CARRY_EXECUTION_VENUES.every((venueId) => accountByVenue.get(venueId)
+      && accountByVenue.get(venueId) === monitoringAccounts.get(venueId));
+  if (!valid) return denied("carry_release_collateral_route_coverage_incomplete");
+  const evidence = routeEvidence.evidence;
+  return {
+    ok: true,
+    evidence: Object.freeze({
+      proven: true,
+      checked_at: iso(evidence.checked_at_ms),
+      expires_at: iso(evidence.expires_at_ms),
+      required_route_count: requiredPairs.length,
+      available_route_count: routes.length,
+      complete_directed_coverage: true,
+      route_pairs: Object.freeze([...requiredPairs].sort()),
+      venues: Object.freeze(CARRY_EXECUTION_VENUES.map((venueId) => Object.freeze({
+        venue_id: venueId,
+        account_commitment: accountByVenue.get(venueId),
+      }))),
+      minimum_route_capacity_micro_usdc: Math.min(...routes.map((route) => route.maximum_transfer_micro_usdc)),
+      maximum_route_latency_ms: Math.max(...routes.map((route) => route.estimated_latency_ms)),
+      owner_approval_required: true,
+      fund_movement_authorized: false,
+      transaction_broadcast: false,
+      automatic_transfer_permitted: false,
+      evidence_commitment: evidence.evidence_commitment,
+    }),
+  };
 }
 
 function releaseFundingObservations({ observations, venue_ids: venueIds, max_age_ms: maxAgeMs }) {

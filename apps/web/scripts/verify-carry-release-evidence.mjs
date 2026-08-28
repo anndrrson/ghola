@@ -107,6 +107,39 @@ export async function verifyCarryReleaseEvidence(evidence) {
     fail(venue?.transaction_broadcast === false, `three_venue_account_broadcast_detected:${String(venue?.venue_id || "")}`);
   }
 
+  const collateralRoutes = evidence?.collateral_route_readiness || {};
+  const collateralCheckedAt = timestamp(collateralRoutes.checked_at);
+  const collateralExpiresAt = timestamp(collateralRoutes.expires_at);
+  const requiredRoutePairs = CARRY_EXECUTION_VENUES.flatMap((fromVenueId) => CARRY_EXECUTION_VENUES
+    .filter((toVenueId) => toVenueId !== fromVenueId)
+    .map((toVenueId) => `${fromVenueId}:${toVenueId}`)).sort();
+  const collateralRoutePairs = array(collateralRoutes.route_pairs).map(String).sort();
+  const collateralVenues = array(collateralRoutes.venues);
+  fail(collateralRoutes.proven === true, "collateral_route_coverage_unproven");
+  fail(collateralRoutes.required_route_count === requiredRoutePairs.length
+    && collateralRoutes.available_route_count === requiredRoutePairs.length
+    && collateralRoutes.complete_directed_coverage === true,
+  "collateral_route_coverage_incomplete");
+  fail(sameStrings(collateralRoutePairs, requiredRoutePairs), "collateral_route_pairs_invalid");
+  fail(sameVenueSet(collateralVenues, CARRY_EXECUTION_VENUES), "collateral_route_venue_bindings_invalid");
+  for (const venue of collateralVenues) {
+    const readinessVenue = readinessVenues.find((item) => item?.venue_id === venue?.venue_id);
+    fail(commitment(venue?.account_commitment)
+      && venue.account_commitment === readinessVenue?.account_commitment,
+    `collateral_route_account_binding_invalid:${String(venue?.venue_id || "")}`);
+  }
+  fail(positiveInteger(collateralRoutes.minimum_route_capacity_micro_usdc) > 0,
+    "collateral_route_capacity_invalid");
+  fail(nonNegativeInteger(collateralRoutes.maximum_route_latency_ms) !== null,
+    "collateral_route_latency_invalid");
+  fail(collateralRoutes.owner_approval_required === true
+    && collateralRoutes.fund_movement_authorized === false
+    && collateralRoutes.transaction_broadcast === false
+    && collateralRoutes.automatic_transfer_permitted === false,
+  "collateral_route_authority_invalid");
+  fail(/^carry:transfer-routes:evidence:[0-9a-f]{40}$/.test(String(collateralRoutes.evidence_commitment || "")),
+    "collateral_route_evidence_commitment_invalid");
+
   const position = evidence?.position || {};
   const notional = positiveInteger(position.target_notional_micro_usdc);
   const pair = [String(position.long_venue_id || ""), String(position.short_venue_id || "")];
@@ -121,6 +154,8 @@ export async function verifyCarryReleaseEvidence(evidence) {
   fail(shadowCheckedAt > 0 && shadowCheckedAt <= createdAt, "shadow_qualification_timestamp_invalid");
   fail(readinessCheckedAt > 0 && readinessCheckedAt <= createdAt && readinessExpiresAt > createdAt,
     "three_venue_readiness_timestamp_invalid");
+  fail(collateralCheckedAt > 0 && collateralExpiresAt > collateralCheckedAt,
+    "collateral_route_timestamp_invalid");
   const contractEquivalence = evidence?.contract_equivalence || {};
   const equivalenceCheckedAt = timestamp(contractEquivalence.checked_at);
   const dataSkewMs = nonNegativeInteger(contractEquivalence.contract_data_skew_ms);
@@ -314,10 +349,13 @@ export async function verifyCarryReleaseEvidence(evidence) {
   fail(clientOrderCommitments.length === 4 && new Set(clientOrderCommitments).size === 4, "client_order_commitments_not_unique");
 
   const finalState = evidence?.final_state || {};
+  const finalCheckedAt = timestamp(finalState.checked_at);
   fail(commitment(finalState.owner_commitment), "final_owner_commitment_invalid");
   fail(finalState.owner_commitment === signedMandate?.owner_commitment, "final_owner_binding_mismatch");
   fail(finalState.carry_position_id === position.position_id, "final_position_binding_mismatch");
-  fail(timestamp(finalState.checked_at) >= exitReconciledAt, "final_state_timestamp_invalid");
+  fail(finalCheckedAt >= exitReconciledAt, "final_state_timestamp_invalid");
+  fail(collateralCheckedAt >= finalCheckedAt && collateralCheckedAt - finalCheckedAt <= 30_000,
+    "collateral_route_final_state_binding_invalid");
   fail(finalState.gross_exposure_micro_usdc === 0, "final_exposure_not_flat");
   fail(finalState.open_order_count === 0, "final_open_orders_not_zero");
   fail(sameVenueSet(finalState.venues, pair), "final_state_venues_mismatch");
