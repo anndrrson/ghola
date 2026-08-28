@@ -525,6 +525,7 @@ function shadowQualification(overrides = {}) {
     expected_snapshots_per_sample: 15,
     degraded_snapshots: 0,
     sample_commitments: ["c", "d", "e"].map((value) => `carry:shadow:sample:${value.repeat(64)}`),
+    source_observation_commitments: ["7", "8", "9"].map((value) => `carry:shadow:sources:${value.repeat(64)}`),
     evidence_commitment: `carry:shadow:qualification:${"f".repeat(64)}`,
     failures: [],
     ...overrides,

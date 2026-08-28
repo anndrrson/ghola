@@ -46,6 +46,7 @@ export async function verifyCarryReleaseEvidence(evidence) {
   const shadowRequiredSamples = positiveInteger(shadowQualification.required_samples);
   const shadowCompletedSamples = positiveInteger(shadowQualification.completed_samples);
   const shadowSampleCommitments = array(shadowQualification.sample_commitments);
+  const shadowSourceObservationCommitments = array(shadowQualification.source_observation_commitments);
   fail(shadowQualification.proven === true, "shadow_qualification_unproven");
   fail(String(shadowQualification.image_digest || "").toLowerCase() === imageDigest,
     "shadow_qualification_image_mismatch");
@@ -63,6 +64,10 @@ export async function verifyCarryReleaseEvidence(evidence) {
     && new Set(shadowSampleCommitments).size === shadowSampleCommitments.length
     && shadowSampleCommitments.every((value) => /^carry:shadow:sample:[0-9a-f]{64}$/.test(String(value || ""))),
   "shadow_qualification_commitments_invalid");
+  fail(shadowSourceObservationCommitments.length === shadowCompletedSamples
+    && new Set(shadowSourceObservationCommitments).size === shadowSourceObservationCommitments.length
+    && shadowSourceObservationCommitments.every((value) => /^carry:shadow:sources:[0-9a-f]{64}$/.test(String(value || ""))),
+  "shadow_qualification_source_observations_invalid");
   fail(shadowQualification.transaction_broadcast === false, "shadow_qualification_broadcast_detected");
   fail(/^carry:shadow:qualification:[0-9a-f]{64}$/.test(String(shadowQualification.evidence_commitment || "")),
     "shadow_qualification_commitment_invalid");

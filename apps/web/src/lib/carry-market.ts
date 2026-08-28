@@ -109,6 +109,7 @@ export interface CarryShadowQualificationSummary {
   duration_ms?: number | null;
   expected_snapshots_per_sample?: number;
   sample_commitments?: string[];
+  source_observation_commitments?: string[];
   evidence_commitment?: string | null;
   failures: string[];
 }
@@ -250,6 +251,7 @@ export const CARRY_LATENCY_BUFFER_BPS_PER_LEG = 1;
 export const CARRY_STABLE_COLLATERAL_BASIS_RISK_BPS = 50;
 const CARRY_FUNDING_COMMITMENT = /^carry:funding:[a-f0-9]{64}$/;
 const CARRY_SHADOW_SAMPLE_COMMITMENT = /^carry:shadow:sample:[a-f0-9]{64}$/;
+const CARRY_SHADOW_SOURCE_COMMITMENT = /^carry:shadow:sources:[a-f0-9]{64}$/;
 const CARRY_SHADOW_QUALIFICATION_COMMITMENT = /^carry:shadow:qualification:[a-f0-9]{64}$/;
 const CARRY_ROUTING_ADVANTAGE_COMMITMENT = /^carry:routing:advantage:[a-f0-9]{64}$/;
 const CARRY_IMAGE_DIGEST = /^sha256:[a-f0-9]{12,128}$/;
@@ -270,6 +272,9 @@ export function carryMarketQualificationEvidence(
   const required = safeNonnegativeInteger(qualification.required_samples);
   const completed = safeNonnegativeInteger(qualification.completed_samples);
   const samples = Array.isArray(qualification.sample_commitments) ? qualification.sample_commitments : [];
+  const sourceObservations = Array.isArray(qualification.source_observation_commitments)
+    ? qualification.source_observation_commitments
+    : [];
   const failures = Array.isArray(qualification.failures) ? qualification.failures : [];
   const bound = qualification.release_bound === true
     && CARRY_IMAGE_DIGEST.test(qualification.image_digest)
@@ -281,6 +286,9 @@ export function carryMarketQualificationEvidence(
   const distinctSamples = samples.length === completed
     && new Set(samples).size === samples.length
     && samples.every((value) => CARRY_SHADOW_SAMPLE_COMMITMENT.test(value));
+  const distinctSourceObservations = sourceObservations.length === completed
+    && new Set(sourceObservations).size === sourceObservations.length
+    && sourceObservations.every((value) => CARRY_SHADOW_SOURCE_COMMITMENT.test(value));
   const ready = qualification.ready === true
     && qualification.transaction_broadcast === false
     && failures.length === 0
@@ -288,7 +296,8 @@ export function carryMarketQualificationEvidence(
     && completed >= required
     && bound
     && coverage
-    && distinctSamples;
+    && distinctSamples
+    && distinctSourceObservations;
   if (ready) {
     return {
       status: "ready",

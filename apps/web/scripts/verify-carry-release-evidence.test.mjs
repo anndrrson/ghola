@@ -87,6 +87,7 @@ async function fixture() {
       duration_ms: 120_000,
       expected_snapshots_per_sample: 15,
       sample_commitments: ["11", "22", "33"].map((value) => `carry:shadow:sample:${value.repeat(32)}`),
+      source_observation_commitments: ["55", "66", "77"].map((value) => `carry:shadow:sources:${value.repeat(32)}`),
       transaction_broadcast: false,
       evidence_commitment: `carry:shadow:qualification:${"44".repeat(32)}`,
     },
@@ -442,6 +443,7 @@ test("rejects missing, incomplete, or image-mismatched five-venue shadow qualifi
     [(evidence) => { evidence.shadow_qualification.proven = false; }, /shadow_qualification_unproven/],
     [(evidence) => { evidence.shadow_qualification.completed_samples = 2; }, /shadow_qualification_samples_incomplete|shadow_qualification_commitments_invalid/],
     [(evidence) => { evidence.shadow_qualification.image_digest = "sha256:fedcba9876543210"; }, /shadow_qualification_image_mismatch/],
+    [(evidence) => { evidence.shadow_qualification.source_observation_commitments[1] = evidence.shadow_qualification.source_observation_commitments[0]; }, /shadow_qualification_source_observations_invalid/],
   ]) {
     const evidence = await fixture();
     mutate(evidence);

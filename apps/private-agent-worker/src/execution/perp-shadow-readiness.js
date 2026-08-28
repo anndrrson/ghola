@@ -102,6 +102,7 @@ export function verifyCarryShadowSet(rows, {
     requested_assets: Object.freeze(normalizedAssets),
     expected_snapshots: CORE_PERP_VENUES.length * normalizedAssets.length,
     snapshot_evidence: frozenEvidence,
+    source_observation_commitment: shadowSourceObservationCommitment(frozenEvidence),
     sample_commitment: shadowSampleCommitment(nowMs, frozenEvidence),
     failures: Object.freeze(failures),
   });
@@ -146,6 +147,8 @@ export function verifyCarryShadowSoak(sampleResults, {
   let expectedRequestedAssets = null;
   let expectedSnapshots = null;
   const sampleCommitments = [];
+  const sourceObservationCommitments = [];
+  let previousSourceObservations = null;
   let degradedSnapshots = 0;
   samples.forEach((sample, index) => {
     if (sample?.ok !== true || (Array.isArray(sample?.failures) && sample.failures.length > 0)) {
@@ -180,9 +183,22 @@ export function verifyCarryShadowSoak(sampleResults, {
       failures.push(`shadow_soak_sample_commitment_invalid:${index}`);
     }
     sampleCommitments.push(sampleCommitment);
+    const sourceObservationCommitment = String(sample?.source_observation_commitment || "");
+    if (sourceObservationCommitment !== shadowSourceObservationCommitment(evidence)) {
+      failures.push(`shadow_soak_source_observation_commitment_invalid:${index}`);
+    }
+    sourceObservationCommitments.push(sourceObservationCommitment);
+    const currentSourceObservations = sourceObservationRows(evidence);
+    if (previousSourceObservations) {
+      verifySourceObservationProgress(previousSourceObservations, currentSourceObservations, index, failures);
+    }
+    previousSourceObservations = currentSourceObservations;
   });
   if (new Set(sampleCommitments).size !== sampleCommitments.length) {
     failures.push("shadow_soak_sample_commitments_reused");
+  }
+  if (new Set(sourceObservationCommitments).size !== sourceObservationCommitments.length) {
+    failures.push("shadow_soak_source_observation_commitments_reused");
   }
   const firstCheckedAt = samples[0]?.checked_at_ms;
   const lastCheckedAt = samples.at(-1)?.checked_at_ms;
@@ -199,6 +215,7 @@ export function verifyCarryShadowSoak(sampleResults, {
     expected_snapshots_per_sample: expectedSnapshots,
     degraded_snapshots: degradedSnapshots,
     sample_commitments: Object.freeze(sampleCommitments),
+    source_observation_commitments: Object.freeze(sourceObservationCommitments),
     failures: Object.freeze(failures),
   });
 }
@@ -255,6 +272,54 @@ function shadowSampleCommitment(checkedAtMs, snapshotEvidence) {
     checked_at_ms: checkedAtMs,
     snapshot_evidence: snapshotEvidence,
   }))}`;
+}
+
+function shadowSourceObservationCommitment(snapshotEvidence) {
+  return `carry:shadow:sources:${digest(stableJson(sourceObservationRows(snapshotEvidence)))}`;
+}
+
+function sourceObservationRows(snapshotEvidence) {
+  return (Array.isArray(snapshotEvidence) ? snapshotEvidence : [])
+    .map((row) => ({
+      venue_id: String(row?.venue_id || ""),
+      asset: String(row?.asset || ""),
+      contract_id: String(row?.contract_id || ""),
+      source_observed_at_ms: Object.fromEntries(REQUIRED_SOURCES.map((source) => [
+        source,
+        Number.isSafeInteger(row?.source_observed_at_ms?.[source])
+          ? row.source_observed_at_ms[source]
+          : null,
+      ])),
+    }))
+    .sort((left, right) => `${left.venue_id}:${left.asset}:${left.contract_id}`
+      .localeCompare(`${right.venue_id}:${right.asset}:${right.contract_id}`));
+}
+
+function verifySourceObservationProgress(previousRows, currentRows, sampleIndex, failures) {
+  const previousByIdentity = new Map(previousRows.map((row) => [sourceObservationIdentity(row), row]));
+  const currentByIdentity = new Map(currentRows.map((row) => [sourceObservationIdentity(row), row]));
+  for (const [identity, previous] of previousByIdentity) {
+    const current = currentByIdentity.get(identity);
+    if (!current) {
+      failures.push(`shadow_soak_source_observation_missing:${sampleIndex}:${identity}`);
+      continue;
+    }
+    let advanced = false;
+    for (const source of REQUIRED_SOURCES) {
+      const previousTimestamp = previous.source_observed_at_ms[source];
+      const currentTimestamp = current.source_observed_at_ms[source];
+      if (!Number.isSafeInteger(previousTimestamp) || !Number.isSafeInteger(currentTimestamp)) continue;
+      if (currentTimestamp < previousTimestamp) {
+        failures.push(`shadow_soak_source_observation_regressed:${sampleIndex}:${identity}:${source}`);
+      }
+      if (currentTimestamp > previousTimestamp) advanced = true;
+    }
+    if (!advanced) failures.push(`shadow_soak_source_observation_reused:${sampleIndex}:${identity}`);
+  }
+}
+
+function sourceObservationIdentity(row) {
+  return `${row.venue_id}:${row.asset}:${row.contract_id}`;
 }
 
 function stableJson(value) {

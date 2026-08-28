@@ -158,6 +158,9 @@ export function verifyCarryShadowQualification(value, {
   const checkedAtMs = value?.checked_at_ms;
   const requiredSamples = value?.required_samples;
   const sampleCommitments = Array.isArray(value?.sample_commitments) ? value.sample_commitments : [];
+  const sourceObservationCommitments = Array.isArray(value?.source_observation_commitments)
+    ? value.source_observation_commitments
+    : [];
   const valid = value?.version === 1
     && value?.kind === KIND
     && value?.ready === true
@@ -187,6 +190,9 @@ export function verifyCarryShadowQualification(value, {
     && sampleCommitments.length === requiredSamples
     && new Set(sampleCommitments).size === sampleCommitments.length
     && sampleCommitments.every((commitment) => /^carry:shadow:sample:[0-9a-f]{64}$/.test(String(commitment)))
+    && sourceObservationCommitments.length === requiredSamples
+    && new Set(sourceObservationCommitments).size === sourceObservationCommitments.length
+    && sourceObservationCommitments.every((commitment) => /^carry:shadow:sources:[0-9a-f]{64}$/.test(String(commitment)))
     && /^carry:shadow:qualification:[0-9a-f]{64}$/.test(String(value?.evidence_commitment || ""))
     && value?.qualification_commitment === qualificationResultCommitment(value);
   return valid
@@ -229,6 +235,7 @@ function qualificationResult({
     expected_snapshots_per_sample: soak.expected_snapshots_per_sample || 0,
     degraded_snapshots: soak.degraded_snapshots || 0,
     sample_commitments: Object.freeze([...(soak.sample_commitments || [])]),
+    source_observation_commitments: Object.freeze([...(soak.source_observation_commitments || [])]),
     evidence_commitment: evidenceCommitment,
     failures: Object.freeze(uniqueFailures),
   };
@@ -256,7 +263,8 @@ function validRecord(record) {
 }
 
 function appendDistinctSample(samples, sample) {
-  if (samples.some((item) => item.sample_commitment === sample.sample_commitment)) return samples;
+  if (samples.some((item) => item.sample_commitment === sample.sample_commitment
+    || item.source_observation_commitment === sample.source_observation_commitment)) return samples;
   return [...samples, sample];
 }
 

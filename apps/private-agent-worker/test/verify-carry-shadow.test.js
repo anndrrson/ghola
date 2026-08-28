@@ -20,6 +20,7 @@ test("accepts one fresh normalized shadow for every venue and core asset", () =>
   assert.equal(result.snapshot_evidence.length, 15);
   assert.equal(new Set(result.snapshot_evidence.map((row) => `${row.venue_id}:${row.asset}`)).size, 15);
   assert.equal(result.snapshot_evidence.every((row) => /^carry:shadow:snapshot:[0-9a-f]{64}$/.test(row.snapshot_commitment)), true);
+  assert.match(result.source_observation_commitment, /^carry:shadow:sources:[0-9a-f]{64}$/);
   assert.match(result.sample_commitment, /^carry:shadow:sample:[0-9a-f]{64}$/);
   assert.deepEqual(result.failures, []);
 });
@@ -49,8 +50,8 @@ test("binds custom requested assets without narrowing evidence to the default se
   assert.equal(result.snapshot_evidence.length, 5);
   assert.equal(verifyCarryShadowSoak([
     result,
-    verifyCarryShadowSet(fixture(["HYPE"]), { assets: ["HYPE"], now_ms: NOW + 1_000 }),
-    verifyCarryShadowSet(fixture(["HYPE"]), { assets: ["HYPE"], now_ms: NOW + 2_000 }),
+    verifyCarryShadowSet(fixture(["HYPE"], NOW + 1_000), { assets: ["HYPE"], now_ms: NOW + 1_000 }),
+    verifyCarryShadowSet(fixture(["HYPE"], NOW + 2_000), { assets: ["HYPE"], now_ms: NOW + 2_000 }),
   ]).ok, true);
 });
 
@@ -188,7 +189,7 @@ test("rejects malformed snapshot identity, prices, and evidence arrays", () => {
 });
 
 test("qualifies only consecutive complete five-venue shadow samples", () => {
-  const samples = [0, 1, 2].map((offset) => verifyCarryShadowSet(fixture(), {
+  const samples = [0, 1, 2].map((offset) => verifyCarryShadowSet(fixture(DEFAULT_CARRY_SHADOW_ASSETS, NOW + offset * 1_000), {
     now_ms: NOW + offset * 1_000,
   }));
   const result = verifyCarryShadowSoak(samples);
@@ -202,11 +203,36 @@ test("qualifies only consecutive complete five-venue shadow samples", () => {
   assert.equal(result.expected_snapshots_per_sample, 15);
   assert.equal(result.degraded_snapshots, 0);
   assert.deepEqual(result.sample_commitments, samples.map((sample) => sample.sample_commitment));
+  assert.deepEqual(result.source_observation_commitments,
+    samples.map((sample) => sample.source_observation_commitment));
   assert.deepEqual(result.failures, []);
 });
 
-test("rejects tampered or reused shadow sample commitments", () => {
+test("rejects wrapper-time progress that reuses every venue source observation", () => {
   const samples = [0, 1, 2].map((offset) => verifyCarryShadowSet(fixture(), {
+    now_ms: NOW + offset * 1_000,
+  }));
+  const result = verifyCarryShadowSoak(samples);
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.includes("shadow_soak_source_observation_commitments_reused"));
+  assert.ok(result.failures.includes("shadow_soak_source_observation_reused:1:hyperliquid:BTC:hyperliquid:BTC"));
+});
+
+test("rejects a venue source timestamp that regresses between samples", () => {
+  const samples = [0, 1, 2].map((offset) => verifyCarryShadowSet(
+    fixture(DEFAULT_CARRY_SHADOW_ASSETS, NOW + offset * 1_000),
+    { now_ms: NOW + offset * 1_000 },
+  ));
+  const regressedRows = fixture(DEFAULT_CARRY_SHADOW_ASSETS, NOW + 2_000);
+  regressedRows[0].snapshots[0].source_observed_at_ms.funding = NOW - 1;
+  samples[2] = verifyCarryShadowSet(regressedRows, { now_ms: NOW + 2_000 });
+  const result = verifyCarryShadowSoak(samples);
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.includes("shadow_soak_source_observation_regressed:2:hyperliquid:BTC:hyperliquid:BTC:funding"));
+});
+
+test("rejects tampered or reused shadow sample commitments", () => {
+  const samples = [0, 1, 2].map((offset) => verifyCarryShadowSet(fixture(DEFAULT_CARRY_SHADOW_ASSETS, NOW + offset * 1_000), {
     now_ms: NOW + offset * 1_000,
   }));
   samples[1] = {
@@ -225,7 +251,7 @@ test("rejects tampered or reused shadow sample commitments", () => {
 });
 
 test("rejects intermittent failure, coverage drift, and non-monotonic shadow samples", () => {
-  const samples = [0, 1, 2].map((offset) => verifyCarryShadowSet(fixture(), {
+  const samples = [0, 1, 2].map((offset) => verifyCarryShadowSet(fixture(DEFAULT_CARRY_SHADOW_ASSETS, NOW + offset * 1_000), {
     now_ms: NOW + offset * 1_000,
   }));
   samples[1] = { ...samples[1], ok: false, failures: ["venue_fetch_failed:lighter:timeout"] };
@@ -244,15 +270,15 @@ test("rejects a one-shot snapshot as durable shadow qualification", () => {
   assert.ok(result.failures.includes("shadow_soak_samples_insufficient:1:3"));
 });
 
-function fixture(assets = DEFAULT_CARRY_SHADOW_ASSETS) {
+function fixture(assets = DEFAULT_CARRY_SHADOW_ASSETS, observedAtMs = NOW) {
   return CORE_PERP_VENUES.map((venueId) => ({
     venue_id: venueId,
     ok: true,
-    snapshots: assets.map((asset) => snapshot(venueId, asset)),
+    snapshots: assets.map((asset) => snapshot(venueId, asset, observedAtMs)),
   }));
 }
 
-function snapshot(venueId, asset) {
+function snapshot(venueId, asset, observedAtMs) {
   return {
     version: 1,
     venue_id: venueId,
@@ -283,8 +309,8 @@ function snapshot(venueId, asset) {
     maintenance_margin_bps: 250,
     liquidation_fee_bps: 0,
     liquidation_model: "test_margin_liquidation",
-    as_of_ms: NOW,
-    source_observed_at_ms: { market: NOW, funding: NOW, orderbook: NOW },
+    as_of_ms: observedAtMs,
+    source_observed_at_ms: { market: observedAtMs, funding: observedAtMs, orderbook: observedAtMs },
     source_max_age_ms: {
       market: 30_000,
       funding: venueId === "edgex" ? 120_000 : 30_000,

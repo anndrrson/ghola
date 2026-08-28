@@ -364,6 +364,7 @@ function marketQualification(
     duration_ms: 120_000,
     expected_snapshots_per_sample: 15,
     sample_commitments: ["2", "3", "4"].map((value) => `carry:shadow:sample:${value.repeat(64)}`),
+    source_observation_commitments: ["6", "7", "8"].map((value) => `carry:shadow:sources:${value.repeat(64)}`),
     evidence_commitment: `carry:shadow:qualification:${"5".repeat(64)}`,
     failures: [],
     ...overrides,

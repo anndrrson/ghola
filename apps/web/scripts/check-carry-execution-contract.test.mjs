@@ -1155,6 +1155,18 @@ test("rejects five-venue shadow qualification based on one lucky snapshot", () =
   );
 });
 
+test("rejects five-venue shadow qualification based on wrapper-time-only progress", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowVerifier: sources.shadowVerifier
+        .replaceAll("source_observation_commitment", "wrapper_only_commitment")
+        .replaceAll("shadow_soak_source_observation_commitments_reused", "wrapper_reuse_accepted"),
+    }),
+    /carry_shadow_source_observation_commitment_missing|carry_shadow_source_observation_reuse_gate_missing/,
+  );
+});
+
 test("rejects release qualification that is not persistent and image-bound", () => {
   assert.throws(
     () => checkCarryExecutionContract({

@@ -35,6 +35,7 @@ test("persists three consecutive complete five-venue samples without broadcastin
   assert.equal(result.assets, 3);
   assert.equal(result.completed_samples, 3);
   assert.equal(new Set(result.sample_commitments).size, 3);
+  assert.equal(new Set(result.source_observation_commitments).size, 3);
   assert.match(result.evidence_commitment, /^carry:shadow:qualification:[0-9a-f]{64}$/);
   assert.equal(state.rows.size, 1);
 
@@ -45,11 +46,29 @@ test("persists three consecutive complete five-venue samples without broadcastin
   });
   assert.equal(recovered.ready, true);
   assert.deepEqual(recovered.sample_commitments, result.sample_commitments);
+  assert.deepEqual(recovered.source_observation_commitments, result.source_observation_commitments);
   assert.equal(verifyCarryShadowQualification(recovered, {
     image_digest: IMAGE,
     now_ms: NOW + 2 * 60_000,
     max_age_ms: 600_000,
   }).ok, true);
+});
+
+test("does not persist wrapper-only samples when venue source observations are unchanged", async () => {
+  const state = stateStore();
+  const venues = carryShadowFixture(NOW);
+  let result;
+  for (let index = 0; index < 3; index += 1) {
+    result = await observeCarryShadowQualification({
+      state,
+      venues,
+      now_ms: NOW + index * 1_000,
+      env: ENV,
+    });
+  }
+  assert.equal(result.ready, false);
+  assert.equal(result.completed_samples, 1);
+  assert.ok(result.failures.includes("shadow_soak_samples_insufficient:1:3"));
 });
 
 test("rejects tampered qualification summaries", async () => {
