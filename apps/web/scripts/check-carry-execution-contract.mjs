@@ -1019,7 +1019,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadiness", "nowMs - checkedAtMs <= 30_000", "carry_private_prime_route_freshness_gate_missing");
   requireText("privatePrimeReadiness", "routesBoundToCurrentAccounts", "carry_private_prime_route_account_state_binding_missing");
   requireText("privatePrimeReadiness", "failure_recovery: failureRecovery", "carry_private_prime_recovery_output_missing");
-  requireText("privatePrimeReadiness", 'reasons.push("three_venue_recovery_unproven")', "carry_private_prime_recovery_gate_missing");
+  requireText("privatePrimeReadiness", 'technicalReasons.push("three_venue_recovery_unproven")', "carry_private_prime_recovery_gate_missing");
+  requireText("privatePrimeReadiness", "const noSubmitReady = technicalReasons.length === 0", "carry_private_prime_capital_free_no_submit_gate_missing");
+  requireText("privatePrimeReadiness", "noSubmitReady && capitalReady && pairedLifecycle.verified", "carry_private_prime_live_capital_gate_missing");
   requireText("privatePrimeReadinessTest", "refuses private-prime readiness without exact three-venue recovery policy", "carry_private_prime_recovery_test_missing");
   requireText("privatePrimeReadinessTest", "without overstating live proof", "carry_private_prime_proof_boundary_test_missing");
   requireText("privatePrimeReadinessTest", "durable paired lifecycle evidence", "carry_private_prime_live_proof_test_missing");
@@ -1051,7 +1053,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webPrivatePrimeReadiness", "CARRY_RECOVERY_POLICY", "carry_private_prime_ui_recovery_policy_missing");
   requireText("webPrivatePrimeReadiness", "REC ·", "carry_private_prime_ui_recovery_display_missing");
   requireText("webPrivatePrimeReadinessTest", "rejects recovery coverage that permits ambiguous retries", "carry_private_prime_ui_recovery_test_missing");
-  requireText("webPrivatePrimeReadinessTest", "without claiming tradable readiness", "carry_private_prime_ui_capital_test_missing");
+  requireText("webPrivatePrimeReadiness", 'reason !== "opening_capital_shortfall"', "carry_private_prime_ui_capital_free_no_submit_gate_missing");
+  requireText("webPrivatePrimeReadiness", "expectedReady && capitalReady && lifecycleReady", "carry_private_prime_ui_live_capital_gate_missing");
+  requireText("webPrivatePrimeReadinessTest", "capital-free no-submit readiness without claiming live-entry readiness", "carry_private_prime_ui_capital_test_missing");
   requireText("webPrivatePrimeAuthentication", "carryPrivatePrimeWorkerAuthenticationMessage", "carry_private_prime_gateway_authentication_payload_missing");
   requireText("webPrivatePrimeAuthentication", 'createHmac("sha256", secret)', "carry_private_prime_gateway_authentication_mac_missing");
   requireText("webPrivatePrimeAuthentication", "timingSafeEqual(leftBytes, rightBytes)", "carry_private_prime_gateway_authentication_timing_safe_missing");

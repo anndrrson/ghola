@@ -273,7 +273,7 @@ test("rejects tampered supervision health wrappers", () => {
   assert.equal(result.supervision.evidence_commitment, null);
 });
 
-test("keeps technically connected but unfunded accounts pre-broadcast blocked", () => {
+test("keeps capital-free technical readiness separate from live-entry funding", () => {
   const result = buildCarryPrivatePrimeReadiness({
     readiness: readinessProof({
       capital_ready: false,
@@ -284,8 +284,14 @@ test("keeps technically connected but unfunded accounts pre-broadcast blocked", 
     route_evidence: verifiedRouteEvidence(),
     now_ms: NOW,
   });
-  assert.equal(result.ready, false);
+  assert.equal(result.ready, true);
+  assert.equal(result.no_submit_ready, true);
+  assert.equal(result.ready_for_live_users, false);
   assert.deepEqual(result.reasons, ["opening_capital_shortfall"]);
+  assert.deepEqual(result.live_launch_blockers, [
+    "opening_capital_shortfall",
+    "live_paired_lifecycle_unproven",
+  ]);
   assert.equal(result.three_venue_execution.ready, true);
   assert.equal(result.three_venue_execution.capital_ready, false);
 });

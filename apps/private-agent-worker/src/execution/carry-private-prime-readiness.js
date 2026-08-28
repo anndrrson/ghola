@@ -39,17 +39,21 @@ export function buildCarryPrivatePrimeReadiness({
   });
   const pairedLifecycle = verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs });
   const failureRecovery = verifiedFailureRecovery(readiness);
-  const reasons = [];
-  if (!executionReadinessVerified) reasons.push("three_venue_no_submit_unproven");
-  if (executionReadinessVerified && failureRecovery.ready !== true) reasons.push("three_venue_recovery_unproven");
-  if (executionReadinessVerified && readiness?.capital_ready !== true) reasons.push("opening_capital_shortfall");
-  if (!shadowQualificationVerified) reasons.push("five_venue_shadow_unproven");
-  if (!supervisionVerified) reasons.push("carry_supervision_unready");
-  if (routeObservationConfigured !== true) reasons.push("collateral_route_observation_unavailable");
-  else if (routeObservation.verified !== true) reasons.push("collateral_route_evidence_unverified");
-  else if (routeObservation.available_route_count < 1) reasons.push("collateral_route_unavailable");
-  const noSubmitReady = reasons.length === 0;
-  const readyForLiveUsers = noSubmitReady && pairedLifecycle.verified;
+  const technicalReasons = [];
+  if (!executionReadinessVerified) technicalReasons.push("three_venue_no_submit_unproven");
+  if (executionReadinessVerified && failureRecovery.ready !== true) technicalReasons.push("three_venue_recovery_unproven");
+  if (!shadowQualificationVerified) technicalReasons.push("five_venue_shadow_unproven");
+  if (!supervisionVerified) technicalReasons.push("carry_supervision_unready");
+  if (routeObservationConfigured !== true) technicalReasons.push("collateral_route_observation_unavailable");
+  else if (routeObservation.verified !== true) technicalReasons.push("collateral_route_evidence_unverified");
+  else if (routeObservation.available_route_count < 1) technicalReasons.push("collateral_route_unavailable");
+  const noSubmitReady = technicalReasons.length === 0;
+  const capitalReady = executionReadinessVerified && readiness?.capital_ready === true;
+  const reasons = [
+    ...technicalReasons,
+    ...(executionReadinessVerified && !capitalReady ? ["opening_capital_shortfall"] : []),
+  ];
+  const readyForLiveUsers = noSubmitReady && capitalReady && pairedLifecycle.verified;
   const liveLaunchBlockers = [
     ...reasons,
     ...(pairedLifecycle.verified ? [] : ["live_paired_lifecycle_unproven"]),
@@ -84,7 +88,7 @@ export function buildCarryPrivatePrimeReadiness({
     three_venue_execution: {
       ready: executionReadinessVerified,
       venue_ids: executionReadinessVerified ? assessedReadiness.readiness.registry_venue_ids : [],
-      capital_ready: executionReadinessVerified && assessedReadiness.readiness.capital_ready === true,
+      capital_ready: capitalReady,
       evidence_commitment: executionReadinessVerified ? assessedReadiness.readiness.evidence_commitment : null,
       readiness_commitment: executionReadinessVerified ? assessedReadiness.readiness.readiness_commitment : null,
       diagnostic_commitment: diagnostic?.diagnostic_commitment || null,

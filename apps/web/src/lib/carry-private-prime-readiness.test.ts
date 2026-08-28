@@ -16,15 +16,14 @@ describe("private-prime readiness", () => {
     });
   });
 
-  it("shows a connected but unfunded fleet without claiming tradable readiness", () => {
+  it("shows capital-free no-submit readiness without claiming live-entry readiness", () => {
     expect(carryPrivatePrimeSummary(proof({
-      ready: false,
       reasons: ["opening_capital_shortfall"],
       three_venue_execution: { ...proof().three_venue_execution, capital_ready: false },
     }), NOW)).toEqual({
-      status: "blocked",
+      status: "pending",
       value: "5/5 DATA · 3/3 EXEC · 3/3 REC · ROUTES",
-      detail: "OWNER CAPITAL REQUIRED",
+      detail: "QUALIFIED · NO-SUBMIT · OWNER CAPITAL REQUIRED FOR LIVE ENTRY",
       tone: "warn",
     });
   });
@@ -78,6 +77,10 @@ describe("private-prime readiness", () => {
 
   it("rejects a no-submit aggregate relabeled as ready for live users", () => {
     expect(carryPrivatePrimeSummary(proof({ ready_for_live_users: true }), NOW).status).toBe("invalid");
+  });
+
+  it("rejects capital blockers that contradict the committed execution state", () => {
+    expect(carryPrivatePrimeSummary(proof({ reasons: ["opening_capital_shortfall"] }), NOW).status).toBe("invalid");
   });
 
   it("rejects private-prime readiness after supervision becomes stale", () => {
@@ -184,7 +187,12 @@ function proof(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
   const noSubmitReady = material.ready === true;
+  const capitalReady = material.three_venue_execution
+    && typeof material.three_venue_execution === "object"
+    && !Array.isArray(material.three_venue_execution)
+    && material.three_venue_execution.capital_ready === true;
   const liveReady = noSubmitReady
+    && capitalReady
     && material.proof_level === "live_paired_lifecycle"
     && material.live_paired_lifecycle_proven === true;
   material.no_submit_ready = noSubmitReady;

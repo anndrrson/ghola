@@ -70,6 +70,20 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && supervisionCheckedAt <= nowMs + 5_000
     && nowMs - supervisionCheckedAt <= 5_000
     && /^carry:supervision:evidence:[0-9a-f]{64}$/.test(String(supervision.evidence_commitment || ""));
+  const derivedReasons = [
+    ...(!executionReady ? ["three_venue_no_submit_unproven"] : []),
+    ...(executionReady && !recoveryReady ? ["three_venue_recovery_unproven"] : []),
+    ...(!shadowReady ? ["five_venue_shadow_unproven"] : []),
+    ...(!supervisionReady ? ["carry_supervision_unready"] : []),
+    ...(route.configured !== true
+      ? ["collateral_route_observation_unavailable"]
+      : route.verified !== true
+        ? ["collateral_route_evidence_unverified"]
+        : Number(route.available_route_count) < 1
+          ? ["collateral_route_unavailable"]
+          : []),
+    ...(executionReady && !capitalReady ? ["opening_capital_shortfall"] : []),
+  ];
   const lifecycleVenues = strings(pairedLifecycle.venue_ids);
   const lifecycleVerifiedAt = integer(pairedLifecycle.verified_at_ms);
   const lifecycleExpiresAt = integer(pairedLifecycle.expires_at_ms);
@@ -104,8 +118,9 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     || (value.proof_level === "live_paired_lifecycle"
       && value.live_paired_lifecycle_proven === true
       && lifecycleReady);
-  const expectedReady = shadowReady && executionReady && recoveryReady && capitalReady && routesReady && supervisionReady && reasons.length === 0;
-  const expectedLiveReady = expectedReady && lifecycleReady;
+  const technicalReasons = derivedReasons.filter((reason) => reason !== "opening_capital_shortfall");
+  const expectedReady = shadowReady && executionReady && recoveryReady && routesReady && supervisionReady && technicalReasons.length === 0;
+  const expectedLiveReady = expectedReady && capitalReady && lifecycleReady;
   const expectedLiveLaunchBlockers = [
     ...reasons,
     ...(lifecycleReady ? [] : ["live_paired_lifecycle_unproven"]),
@@ -119,6 +134,7 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && value.transaction_broadcast === false
     && checkedAt !== null && expiresAt !== null && checkedAt <= nowMs && expiresAt > nowMs
     && value.evidence_commitment === carryPrivatePrimeEvidenceCommitment(value)
+    && sameStrings(reasons, derivedReasons)
     && (!supervisionReady || (supervisionCheckedAt !== null && expiresAt <= supervisionCheckedAt + 5_000))
     && (!lifecycleReady || (lifecycleExpiresAt !== null && expiresAt <= lifecycleExpiresAt))
     && value.ready === expectedReady
@@ -140,7 +156,9 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     return {
       status: "pending",
       value: statusValue,
-      detail: "QUALIFIED · NO-SUBMIT ONLY · LIVE PAIRED PROOF REQUIRED",
+      detail: capitalReady
+        ? "QUALIFIED · NO-SUBMIT ONLY · LIVE PAIRED PROOF REQUIRED"
+        : "QUALIFIED · NO-SUBMIT · OWNER CAPITAL REQUIRED FOR LIVE ENTRY",
       tone: "warn",
     };
   }
