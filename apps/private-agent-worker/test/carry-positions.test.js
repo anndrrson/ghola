@@ -97,6 +97,11 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
     now_ms: NOW + 10,
   });
   assert.equal(valued.ok, true);
+  const completedEvidence = await state.putCarryPositionRecord({
+    ...(await state.getCarryPositionRecord(record.position.position_id)),
+    value_evidence: completeValueEvidence(),
+  }, { expected_version: valued.record.record_version });
+  assert.equal(completedEvidence.ok, true);
   const finalized = await finalizeStoredCarryValueLedger({
     state,
     position_id: record.position.position_id,
@@ -118,6 +123,83 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
   assert.equal(reloaded.value_ledger.realized.net_value_micro_usdc, 21_000);
   assert.equal(reloaded.value_ledger.realized.attribution.status, "finalized");
   assert.equal(reloaded.value_ledger.finalization_evidence.open_order_count, 0);
+});
+
+test("refuses caller-claimed final value before durable cost evidence is complete", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-value-finalization-proof-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const created = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: await positionInput("value-proof"),
+    opportunity: opportunity(),
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  let record = created.record;
+  for (const item of lifecycle()) {
+    const advanced = await advanceStoredCarryPosition({
+      state,
+      position_id: record.position.position_id,
+      owner_commitment: OWNER,
+      event: item,
+      now_ms: NOW + item.sequence,
+    });
+    record = advanced.record;
+  }
+
+  const rejected = await finalizeStoredCarryValueLedger({
+    state,
+    position_id: record.position.position_id,
+    owner_commitment: OWNER,
+    evidence: finalizationEvidence(),
+    now_ms: NOW + 10,
+  });
+
+  assert.deepEqual(rejected, { ok: false, error: "carry_value_evidence_incomplete" });
+  assert.equal((await state.getCarryPositionRecord(record.position.position_id)).value_ledger.status, "open");
+});
+
+test("refuses final value claims that do not match durable flat reconciliation", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-value-finalization-match-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const created = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: await positionInput("value-match"),
+    opportunity: opportunity(),
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  let record = created.record;
+  for (const item of lifecycle()) {
+    const advanced = await advanceStoredCarryPosition({
+      state,
+      position_id: record.position.position_id,
+      owner_commitment: OWNER,
+      event: item,
+      now_ms: NOW + item.sequence,
+    });
+    record = advanced.record;
+  }
+  const completed = await state.putCarryPositionRecord({
+    ...(await state.getCarryPositionRecord(record.position.position_id)),
+    value_evidence: completeValueEvidence(),
+  }, { expected_version: record.record_version });
+  assert.equal(completed.ok, true);
+
+  const rejected = await finalizeStoredCarryValueLedger({
+    state,
+    position_id: record.position.position_id,
+    owner_commitment: OWNER,
+    evidence: { ...finalizationEvidence(), reconciliation_commitment: "carry:reconciliation:wrong" },
+    now_ms: NOW + 10,
+  });
+
+  assert.deepEqual(rejected, { ok: false, error: "carry_value_finalization_evidence_mismatch" });
+  assert.equal((await state.getCarryPositionRecord(record.position.position_id)).value_ledger.status, "open");
 });
 
 test("rejects stale concurrent Carry Position writers", async (t) => {
@@ -1387,8 +1469,32 @@ function lifecycle() {
       hedge_error_micro_usdc: 0,
     }),
     event(3, "manual_exit_requested"),
-    event(4, "exit_reconciled", { gross_exposure_micro_usdc: 0, open_order_count: 0 }),
+    event(4, "exit_reconciled", {
+      gross_exposure_micro_usdc: 0,
+      open_order_count: 0,
+      account_state_checked: true,
+      reconciliation_commitment: "carry:reconciliation:0001",
+    }),
   ];
+}
+
+function completeValueEvidence() {
+  return {
+    entry: { status: "complete" },
+    exit: { status: "complete" },
+    funding: { status: "complete_through_exit" },
+    realized_economics: { status: "complete" },
+    costs_complete: true,
+  };
+}
+
+function finalizationEvidence() {
+  return {
+    gross_exposure_micro_usdc: 0,
+    open_order_count: 0,
+    costs_complete: true,
+    reconciliation_commitment: "carry:reconciliation:0001",
+  };
 }
 
 function event(sequence, type, overrides = {}) {

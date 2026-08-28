@@ -358,13 +358,56 @@ export async function finalizeStoredCarryValueLedger({ state, position_id: posit
   const record = await ownedRecord(state, positionId, ownerCommitment);
   if (!record.ok) return record;
   if (record.record.position.status !== "reconciled") return denied("carry_position_not_reconciled");
-  const finalized = finalizeCarryValueLedger({ ledger: record.record.value_ledger, evidence, now_ms: nowMs });
+  const durableEvidence = durableFinalizationEvidence(record.record);
+  if (!durableEvidence.ok) return durableEvidence;
+  if (!finalizationEvidenceMatches(evidence, durableEvidence.evidence)) {
+    return denied("carry_value_finalization_evidence_mismatch");
+  }
+  const finalized = finalizeCarryValueLedger({
+    ledger: record.record.value_ledger,
+    evidence: durableEvidence.evidence,
+    now_ms: nowMs,
+  });
   if (!finalized.ok) return finalized;
   return storeUpdate(state, {
     ...record.record,
     value_ledger: finalized.ledger,
     updated_at: new Date(nowMs).toISOString(),
   }, record.record.record_version);
+}
+
+function durableFinalizationEvidence(record) {
+  const valueEvidence = record.value_evidence;
+  if (valueEvidence?.entry?.status !== "complete"
+    || valueEvidence?.exit?.status !== "complete"
+    || valueEvidence?.funding?.status !== "complete_through_exit"
+    || valueEvidence?.realized_economics?.status !== "complete"
+    || valueEvidence?.costs_complete !== true) {
+    return denied("carry_value_evidence_incomplete");
+  }
+  const reconciliation = record.final_reconciliation_evidence;
+  if (reconciliation?.account_state_checked !== true
+    || reconciliation.gross_exposure_micro_usdc !== 0
+    || reconciliation.open_order_count !== 0
+    || !OWNER.test(String(reconciliation.reconciliation_commitment || ""))) {
+    return denied("carry_value_reconciliation_incomplete");
+  }
+  return {
+    ok: true,
+    evidence: Object.freeze({
+      gross_exposure_micro_usdc: 0,
+      open_order_count: 0,
+      costs_complete: true,
+      reconciliation_commitment: reconciliation.reconciliation_commitment,
+    }),
+  };
+}
+
+function finalizationEvidenceMatches(claimed, durable) {
+  return claimed?.gross_exposure_micro_usdc === durable.gross_exposure_micro_usdc
+    && claimed?.open_order_count === durable.open_order_count
+    && claimed?.costs_complete === durable.costs_complete
+    && claimed?.reconciliation_commitment === durable.reconciliation_commitment;
 }
 
 export async function getStoredCarryPosition({ state, position_id: positionId, owner_commitment: ownerCommitment }) {
