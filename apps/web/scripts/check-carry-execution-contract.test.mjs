@@ -1368,6 +1368,26 @@ test("rejects source freshness measured against the pre-fetch clock", () => {
   );
 });
 
+test("rejects dYdX shadow freshness detached from each served payload", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadow: sources.shadow.replaceAll("jsonObservedRequest(", "jsonRequest("),
+    }),
+    /dydx_observed_response_read_missing|dydx_response_timestamp_binding_missing/,
+  );
+});
+
+test("rejects dYdX freshness manufactured from its server clock", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadow: `${sources.shadow}\nconst legacyDydxTimePath = "/v4/time";`,
+    }),
+    /dydx_server_clock_freshness_forbidden/,
+  );
+});
+
 test("rejects durable five-venue qualification that can promote degraded economics", () => {
   assert.throws(
     () => checkCarryExecutionContract({

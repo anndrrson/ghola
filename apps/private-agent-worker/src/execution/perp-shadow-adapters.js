@@ -204,28 +204,35 @@ export async function fetchPerpShadowVenue({
   }
   if (adapterId === "dydx_shadow_v1") {
     const chainRests = dydxChainRestUrls(marketMetadata);
-    const [markets, serverTime, feeParams] = await Promise.all([
-      jsonRequest(fetchImpl, "https://indexer.dydx.trade/v4/perpetualMarkets", {}, timeoutMs),
-      jsonRequest(fetchImpl, "https://indexer.dydx.trade/v4/time", {}, timeoutMs),
+    const [marketObservation, feeParams] = await Promise.all([
+      jsonObservedRequest(fetchImpl, "https://indexer.dydx.trade/v4/perpetualMarkets", {}, timeoutMs),
       fetchDydxConsensusFeeParams(fetchImpl, chainRests, timeoutMs),
     ]);
+    const markets = marketObservation.body;
     const allowed = normalizedAssetSet(assets);
     const selectedMarkets = Object.values(markets?.markets || {})
       .filter((row) => row?.status === "ACTIVE" && allowed.has(assetName(String(row.ticker || "").split("-")[0])));
-    const books = Object.fromEntries(await Promise.all(selectedMarkets.map(async (row) => [
+    const bookObservations = await Promise.all(selectedMarkets.map(async (row) => [
       row.ticker,
-      await jsonRequest(
+      await jsonObservedRequest(
         fetchImpl,
         `https://indexer.dydx.trade/v4/orderbooks/perpetualMarket/${encodeURIComponent(row.ticker)}`,
         {},
         timeoutMs,
       ),
-    ])));
+    ]));
+    const books = Object.fromEntries(bookObservations.map(([ticker, observation]) => [ticker, observation.body]));
+    const orderbookObservedAtMsByMarket = Object.fromEntries(bookObservations
+      .map(([ticker, observation]) => [ticker, observation.observed_at_ms]));
     return selectAssets(parseDydxShadow({
       markets,
       books,
       fee_params: feeParams,
-      server_time: serverTime,
+      source_observed_at_ms: {
+        market: marketObservation.observed_at_ms,
+        funding: marketObservation.observed_at_ms,
+      },
+      orderbook_observed_at_ms_by_market: orderbookObservedAtMsByMarket,
       now_ms: completedObservationTime(nowMs, clock),
       max_age_ms: maxAgeMs,
     }), assets);
@@ -515,12 +522,14 @@ export function parseDydxShadow({
   markets,
   books = {},
   fee_params: feeParams,
-  server_time: serverTime,
+  source_observed_at_ms: sourceObservedAtMs = {},
+  orderbook_observed_at_ms_by_market: orderbookObservedAtMsByMarket = {},
   now_ms: nowMs,
   max_age_ms: maxAgeMs = DEFAULT_MAX_AGE_MS,
 }) {
   const rows = Object.values(markets?.markets || {});
-  const asOfMs = timestamp(serverTime?.iso) || positiveIntegerFrom(serverTime?.epoch, 0, 1_000) || null;
+  const marketObservedAtMs = timestamp(sourceObservedAtMs.market) || null;
+  const fundingObservedAtMs = timestamp(sourceObservedAtMs.funding) || null;
   const publicFees = dydxBaseFeeBps(feeParams);
   return freezeSnapshots(rows.filter((row) => row?.status === "ACTIVE").map((row) => {
     const [base, quote = "USD"] = String(row.ticker || "").split("-");
@@ -528,6 +537,7 @@ export function parseDydxShadow({
     const book = books[row.ticker] || {};
     const bid = bestBookPrice(book.bids, "bid");
     const ask = bestBookPrice(book.asks, "ask");
+    const orderbookObservedAtMs = timestamp(orderbookObservedAtMsByMarket[row.ticker]) || null;
     return shadowSnapshot({
       venue_id: "dydx",
       contract_id: `dydx:${row.ticker}`,
@@ -552,8 +562,16 @@ export function parseDydxShadow({
       liquidation_fee_bps: DYDX_LIQUIDATION_FEE_BPS,
       margin_tiers: Object.freeze([]),
       liquidation_model: "cross_or_isolated_subaccount_margin",
-      as_of_ms: asOfMs,
-      source_observed_at_ms: { market: asOfMs, funding: asOfMs, orderbook: asOfMs },
+      as_of_ms: completeSourceTimestamp([
+        marketObservedAtMs,
+        fundingObservedAtMs,
+        orderbookObservedAtMs,
+      ]),
+      source_observed_at_ms: {
+        market: marketObservedAtMs,
+        funding: fundingObservedAtMs,
+        orderbook: orderbookObservedAtMs,
+      },
       now_ms: nowMs,
       max_age_ms: maxAgeMs,
       quality_flags: [
@@ -567,6 +585,8 @@ export function parseDydxShadow({
           ]),
         "minimum_notional_market_step",
         "liquidation_fee_protocol_default",
+        ...(marketObservedAtMs && fundingObservedAtMs ? ["market_funding_bound_to_indexer_response_time"] : []),
+        ...(orderbookObservedAtMs ? ["orderbook_bound_to_indexer_response_time"] : []),
       ],
       ...PERP_SHADOW_ADAPTERS.dydx,
     });
@@ -781,6 +801,24 @@ async function jsonRequest(fetchImpl, url, options, timeoutMs) {
   const response = await withTimeout(fetchImpl(url, { cache: "no-store", ...options }), timeoutMs);
   if (!response?.ok) throw new Error(`shadow_http_${response?.status || "failed"}`);
   return withTimeout(response.json(), timeoutMs);
+}
+
+async function jsonObservedRequest(fetchImpl, url, options, timeoutMs) {
+  const response = await withTimeout(fetchImpl(url, { cache: "no-store", ...options }), timeoutMs);
+  if (!response?.ok) throw new Error(`shadow_http_${response?.status || "failed"}`);
+  const body = await withTimeout(response.json(), timeoutMs);
+  return {
+    body,
+    observed_at_ms: httpObservationTime(response),
+  };
+}
+
+function httpObservationTime(response) {
+  const servedAtMs = timestamp(response?.headers?.get?.("date"));
+  const ageSeconds = Number.parseInt(String(response?.headers?.get?.("age") ?? "0"), 10);
+  if (!servedAtMs || !Number.isSafeInteger(ageSeconds) || ageSeconds < 0) return null;
+  const observedAtMs = servedAtMs - ageSeconds * 1_000;
+  return Number.isSafeInteger(observedAtMs) && observedAtMs > 0 ? observedAtMs : null;
 }
 
 async function optionalJsonRequest(fetchImpl, url, options, timeoutMs) {

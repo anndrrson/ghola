@@ -319,8 +319,15 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadow", "fees_chain_source_consensus", "dydx_chain_fee_consensus_missing");
   requireText("shadow", "minimum_notional_market_step", "dydx_minimum_notional_provenance_missing");
   requireText("shadow", "liquidation_fee_protocol_default", "dydx_liquidation_fee_provenance_missing");
+  requireText("shadow", "jsonObservedRequest(", "dydx_observed_response_read_missing");
+  requireText("shadow", "httpObservationTime(response)", "dydx_response_timestamp_binding_missing");
+  requireText("shadow", "orderbook_observed_at_ms_by_market", "dydx_orderbook_timestamp_binding_missing");
+  requireText("shadow", "market_funding_bound_to_indexer_response_time", "dydx_market_funding_timestamp_evidence_missing");
+  requireText("shadow", "orderbook_bound_to_indexer_response_time", "dydx_orderbook_timestamp_evidence_missing");
+  forbidText("shadow", '"/v4/time"', "dydx_server_clock_freshness_forbidden");
   requireText("shadowTest", "keeps dYdX degraded when its live chain fee parameters are unavailable", "dydx_missing_chain_fee_gate_test_missing");
   requireText("shadowTest", "degrades dYdX instead of choosing between conflicting chain fee sources", "dydx_chain_fee_conflict_gate_test_missing");
+  requireText("shadowTest", "a fresh dYdX server clock cannot refresh detached payloads", "dydx_detached_server_clock_test_missing");
   requireText("workerPackage", '"verify:carry-shadow"', "carry_shadow_verifier_script_missing");
   requireText("shadowVerifierCli", "verifyCarryShadowSet", "carry_shadow_verifier_cli_runtime_missing");
   requireText("shadowVerifierCli", "verifyCarryShadowSoak(sampleResults", "carry_shadow_soak_cli_missing");

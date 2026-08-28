@@ -578,7 +578,8 @@ test("normalizes dYdX v4 markets with conservative live chain economics", () => 
       ghola_source_consensus: true,
       ghola_source_count: 2,
     },
-    server_time: { iso: new Date(NOW).toISOString() },
+    source_observed_at_ms: { market: NOW, funding: NOW },
+    orderbook_observed_at_ms_by_market: { "BTC-USD": NOW },
     now_ms: NOW,
   });
   assert.equal(snapshot.contract_id, "dydx:BTC-USD");
@@ -595,6 +596,8 @@ test("normalizes dYdX v4 markets with conservative live chain economics", () => 
   assert.ok(snapshot.quality_flags.includes("fees_chain_source_consensus"));
   assert.ok(snapshot.quality_flags.includes("minimum_notional_market_step"));
   assert.ok(snapshot.quality_flags.includes("liquidation_fee_protocol_default"));
+  assert.ok(snapshot.quality_flags.includes("market_funding_bound_to_indexer_response_time"));
+  assert.ok(snapshot.quality_flags.includes("orderbook_bound_to_indexer_response_time"));
 });
 
 test("keeps dYdX degraded when its live chain fee parameters are unavailable", () => {
@@ -610,7 +613,8 @@ test("keeps dYdX degraded when its live chain fee parameters are unavailable", (
       stepSize: "0.0001",
     } } },
     books: { "BTC-USD": { bids: [{ price: "59999", size: "0.5" }], asks: [{ price: "60003", size: "0.25" }] } },
-    server_time: { iso: new Date(NOW).toISOString() },
+    source_observed_at_ms: { market: NOW, funding: NOW },
+    orderbook_observed_at_ms_by_market: { "BTC-USD": NOW },
     now_ms: NOW,
   });
   assert.equal(snapshot.status, "degraded");
@@ -662,7 +666,7 @@ test("quarantines every core venue when provider timing evidence is missing", ()
   const [dydx] = parseDydxShadow({
     markets: { markets: { "BTC-USD": { ticker: "BTC-USD", status: "ACTIVE" } } },
     books: { "BTC-USD": { bids: [{ price: "59999", size: "1" }], asks: [{ price: "60002", size: "1" }] } },
-    server_time: {},
+    server_time: { iso: new Date(NOW).toISOString() },
     now_ms: NOW,
   });
 
@@ -671,6 +675,7 @@ test("quarantines every core venue when provider timing evidence is missing", ()
   assert.deepEqual(aster.stale_sources, ["market", "funding", "orderbook"]);
   assert.deepEqual(edgex.stale_sources, ["market", "orderbook"]);
   assert.deepEqual(dydx.stale_sources, ["market", "funding", "orderbook"]);
+  assert.equal(dydx.status, "quarantined", "a fresh dYdX server clock cannot refresh detached payloads");
   assert.ok([hyperliquid, lighter, aster, edgex, dydx].every((snapshot) =>
     snapshot.status === "quarantined" && snapshot.as_of_ms === null));
 });
@@ -779,7 +784,11 @@ test("all five shadow fetchers are read-only and never call private or order end
 });
 
 function response(body) {
-  return { ok: true, json: async () => body };
+  return {
+    ok: true,
+    headers: { get: (name) => String(name).toLowerCase() === "date" ? new Date(NOW).toUTCString() : null },
+    json: async () => body,
+  };
 }
 
 function asterSymbol(symbol, baseAsset, quoteAsset) {
