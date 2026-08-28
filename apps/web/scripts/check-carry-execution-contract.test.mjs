@@ -1024,6 +1024,39 @@ test("rejects shadow qualification coverage hard-coded outside the venue registr
     }),
     /carry_market_qualification_registry_coverage_missing|carry_market_qualification_venue_count_hardcoded/,
   );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier.replace(
+        "shadowQualification.venues === CORE_PERP_VENUES.length",
+        "shadowQualification.venues === 5",
+      ),
+    }),
+    /carry_release_shadow_registry_coverage_missing|carry_release_shadow_venue_count_hardcoded/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier.replace(
+        "shadowQualification.expected_snapshots_per_sample === CORE_PERP_VENUES.length * CARRY_RELEASE_SHADOW_ASSETS.length",
+        "shadowQualification.expected_snapshots_per_sample === 15",
+      ),
+    }),
+    /carry_release_shadow_snapshot_count_hardcoded/,
+  );
+});
+
+test("rejects release qualification adapters detached from the capability registry", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier.replace(
+        "venueAdapterCapability(venueId, \"carry_execution\")?.adapter_id",
+        'venueId === "hyperliquid" ? "hyperliquid_v1" : "legacy_adapter"',
+      ),
+    }),
+    /carry_release_adapter_registry_binding_missing/,
+  );
 });
 
 test("rejects coupling public Carry intelligence back to private execution", () => {

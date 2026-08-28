@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 import {
   CARRY_EXECUTION_VENUES,
   CARRY_RECOVERY_POLICY,
+  CORE_PERP_VENUES,
   carryRiskMandateMessage,
+  venueAdapterCapability,
 } from "@ghola/execution-core";
 import { hashMessage, recoverMessageAddress } from "viem";
 
@@ -16,11 +18,11 @@ export const DEFAULT_CARRY_EVIDENCE_PATH = resolve(
   "../../../deploy/evidence/carry-mainnet-proof.json",
 );
 
-const ADAPTERS = Object.freeze({
-  hyperliquid: "hyperliquid_v1",
-  lighter: "lighter_v1",
-  aster: "aster_v1",
-});
+const CARRY_RELEASE_SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
+const CARRY_ADAPTERS = Object.freeze(Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [
+  venueId,
+  venueAdapterCapability(venueId, "carry_execution")?.adapter_id,
+])));
 
 export async function verifyCarryReleaseEvidence(evidence) {
   const failures = [];
@@ -50,9 +52,9 @@ export async function verifyCarryReleaseEvidence(evidence) {
   fail(shadowQualification.proven === true, "shadow_qualification_unproven");
   fail(String(shadowQualification.image_digest || "").toLowerCase() === imageDigest,
     "shadow_qualification_image_mismatch");
-  fail(shadowQualification.venues === 5, "shadow_qualification_venue_coverage_invalid");
-  fail(shadowQualification.assets === 3, "shadow_qualification_asset_coverage_invalid");
-  fail(sameStrings(shadowQualification.requested_assets, ["BTC", "ETH", "SOL"]),
+  fail(shadowQualification.venues === CORE_PERP_VENUES.length, "shadow_qualification_venue_coverage_invalid");
+  fail(shadowQualification.assets === CARRY_RELEASE_SHADOW_ASSETS.length, "shadow_qualification_asset_coverage_invalid");
+  fail(sameStrings(shadowQualification.requested_assets, CARRY_RELEASE_SHADOW_ASSETS),
     "shadow_qualification_assets_invalid");
   fail(shadowRequiredSamples >= 3, "shadow_qualification_sample_floor_invalid");
   fail(shadowCompletedSamples >= shadowRequiredSamples, "shadow_qualification_samples_incomplete");
@@ -60,7 +62,7 @@ export async function verifyCarryReleaseEvidence(evidence) {
   const shadowDurationMs = nonNegativeInteger(shadowQualification.duration_ms);
   fail(shadowMinimumSpanMs >= 120_000 && shadowDurationMs >= shadowMinimumSpanMs,
     "shadow_qualification_duration_invalid");
-  fail(shadowQualification.expected_snapshots_per_sample === 15,
+  fail(shadowQualification.expected_snapshots_per_sample === CORE_PERP_VENUES.length * CARRY_RELEASE_SHADOW_ASSETS.length,
     "shadow_qualification_snapshot_coverage_invalid");
   fail(shadowSampleCommitments.length === shadowCompletedSamples
     && new Set(shadowSampleCommitments).size === shadowSampleCommitments.length
@@ -146,7 +148,7 @@ export async function verifyCarryReleaseEvidence(evidence) {
   fail(identifier(position.position_id), "position_id_invalid");
   fail(/^[A-Z0-9][A-Z0-9._-]{0,31}$/.test(String(position.asset || "")), "asset_invalid");
   fail(notional > 0 && notional <= 25_000_000, "proof_notional_cap_exceeded");
-  fail(pair[0] !== pair[1] && pair.every((venue) => venue in ADAPTERS), "venue_pair_invalid");
+  fail(pair[0] !== pair[1] && pair.every((venue) => venue in CARRY_ADAPTERS), "venue_pair_invalid");
   fail(pair.includes("hyperliquid") && pair.some((venue) => venue === "lighter" || venue === "aster"), "qualification_pair_required");
 
   const createdAt = timestamp(position.created_at);
@@ -223,7 +225,7 @@ export async function verifyCarryReleaseEvidence(evidence) {
   for (const qualification of qualifications) {
     const venue = String(qualification?.venue_id || "");
     fail(qualification?.proven === true, `qualification_not_proven:${venue}`);
-    fail(qualification?.adapter_id === ADAPTERS[venue], `qualification_adapter_mismatch:${venue}`);
+    fail(qualification?.adapter_id === CARRY_ADAPTERS[venue], `qualification_adapter_mismatch:${venue}`);
     fail(String(qualification?.image_digest || "").toLowerCase() === imageDigest, `qualification_image_mismatch:${venue}`);
     fail(qualification?.no_submit_ready === true, `no_submit_not_ready:${venue}`);
     fail(qualification?.transaction_broadcast === false, `no_submit_broadcast_detected:${venue}`);

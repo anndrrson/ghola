@@ -812,6 +812,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifier", "shadow_qualification_samples_incomplete", "carry_release_shadow_soak_verifier_missing");
   requireText("evidenceVerifier", "shadow_qualification_source_observations_invalid", "carry_release_shadow_source_observation_verifier_missing");
   requireText("evidenceVerifier", "shadowMinimumSpanMs >= 120_000", "carry_release_shadow_duration_verifier_missing");
+  requireText("evidenceVerifier", "shadowQualification.venues === CORE_PERP_VENUES.length", "carry_release_shadow_registry_coverage_missing");
+  requireText("evidenceVerifier", "venueAdapterCapability(venueId, \"carry_execution\")?.adapter_id", "carry_release_adapter_registry_binding_missing");
+  forbidText("evidenceVerifier", "shadowQualification.venues === 5", "carry_release_shadow_venue_count_hardcoded");
+  forbidText("evidenceVerifier", "shadowQualification.expected_snapshots_per_sample === 15", "carry_release_shadow_snapshot_count_hardcoded");
   requireText("evidenceVerifierTest", "rejects funding not reconciled to exact venue legs", "carry_release_funding_reconciliation_test_missing");
   requireText("evidenceVerifierTest", "rejects missing, incomplete, or image-mismatched five-venue shadow qualification", "carry_release_shadow_qualification_test_missing");
   requireCount("privateExecution", "submit_count: readOnlyReconcile ? 0 : 1", 3, "durable_submit_count_missing");

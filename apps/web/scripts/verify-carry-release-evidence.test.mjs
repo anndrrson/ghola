@@ -6,11 +6,18 @@ import {
   carryWorkerMaterialCommitment,
   verifyCarryReleaseEvidence,
 } from "./verify-carry-release-evidence.mjs";
-import { CARRY_EXECUTION_VENUES, CARRY_RECOVERY_POLICY, carryRiskMandateMessage } from "@ghola/execution-core";
+import {
+  CARRY_EXECUTION_VENUES,
+  CARRY_RECOVERY_POLICY,
+  CORE_PERP_VENUES,
+  carryRiskMandateMessage,
+  venueAdapterCapability,
+} from "@ghola/execution-core";
 import { hashMessage } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 const MANDATE_OWNER = privateKeyToAccount(`0x${"22".repeat(32)}`);
+const SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
 
 async function fixture() {
   const signedMandate = {
@@ -79,14 +86,14 @@ async function fixture() {
       proven: true,
       image_digest: "sha256:abcdef1234567890",
       checked_at: "2026-08-23T23:59:58.000Z",
-      venues: 5,
-      assets: 3,
-      requested_assets: ["BTC", "ETH", "SOL"],
+      venues: CORE_PERP_VENUES.length,
+      assets: SHADOW_ASSETS.length,
+      requested_assets: [...SHADOW_ASSETS],
       required_samples: 3,
       completed_samples: 3,
       minimum_span_ms: 120_000,
       duration_ms: 120_000,
-      expected_snapshots_per_sample: 15,
+      expected_snapshots_per_sample: CORE_PERP_VENUES.length * SHADOW_ASSETS.length,
       sample_commitments: ["11", "22", "33"].map((value) => `carry:shadow:sample:${value.repeat(32)}`),
       source_observation_commitments: ["55", "66", "77"].map((value) => `carry:shadow:sources:${value.repeat(32)}`),
       transaction_broadcast: false,
@@ -105,8 +112,8 @@ async function fixture() {
     },
     qualification: {
       venues: [
-        qualification("hyperliquid", "hyperliquid_v1", "registry_baseline"),
-        qualification("aster", "aster_v1", "deployment_bound_lifecycle"),
+        qualification("hyperliquid", carryAdapterId("hyperliquid"), "registry_baseline"),
+        qualification("aster", carryAdapterId("aster"), "deployment_bound_lifecycle"),
       ],
     },
     entry: {
@@ -227,6 +234,10 @@ function qualification(venue_id, adapter_id, source) {
   };
 }
 
+function carryAdapterId(venueId) {
+  return venueAdapterCapability(venueId, "carry_execution")?.adapter_id;
+}
+
 function executionReadiness() {
   return {
     ready: true,
@@ -255,12 +266,13 @@ function executionReadiness() {
 }
 
 function collateralRouteReadiness() {
+  const requiredRouteCount = CARRY_EXECUTION_VENUES.length * (CARRY_EXECUTION_VENUES.length - 1);
   return {
     proven: true,
     checked_at: "2026-08-24T00:00:09.000Z",
     expires_at: "2026-08-24T00:00:39.000Z",
-    required_route_count: 6,
-    available_route_count: 6,
+    required_route_count: requiredRouteCount,
+    available_route_count: requiredRouteCount,
     complete_directed_coverage: true,
     route_pairs: CARRY_EXECUTION_VENUES.flatMap((fromVenueId) => CARRY_EXECUTION_VENUES
       .filter((toVenueId) => toVenueId !== fromVenueId)
