@@ -17,6 +17,8 @@ import {
 import { builderModel, type CarryCandidate } from "@/lib/carry-market";
 import { carryPrivatePrimeEvidenceCommitment } from "@/lib/carry-private-prime-readiness";
 
+const OPPORTUNITY_EVIDENCE = `carry:creation-opportunity:evidence:${"a".repeat(64)}`;
+
 const api = vi.hoisted(() => ({
   createCarryPosition: vi.fn(),
   approveCarryCollateralReview: vi.fn(),
@@ -282,6 +284,7 @@ describe("CarryTerminalBuilder", () => {
         max_index_price_divergence_bps: 25,
         max_mark_price_divergence_bps: 50,
         funding_persistence: readyFundingPersistence(),
+        worker_authentication: { evidence_commitment: OPPORTUNITY_EVIDENCE },
       },
     });
     api.createCarryPosition.mockResolvedValue({ ok: true, record });
@@ -310,6 +313,7 @@ describe("CarryTerminalBuilder", () => {
     }));
     expect(api.createCarryPosition).toHaveBeenCalledWith(expect.objectContaining({
       position_input: expect.objectContaining({
+        opportunity_evidence_commitment: OPPORTUNITY_EVIDENCE,
         risk_mandate: expect.objectContaining({
           max_contract_data_skew_ms: 2_000,
           max_index_price_divergence_bps: 25,
@@ -346,6 +350,28 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("CHECK EXPIRED · rerun the no-submit check before signing");
     expect(container.textContent).not.toContain("SAVE POSITION");
     expect(perps.signCarryRiskMandate).not.toHaveBeenCalled();
+  });
+
+  it("does not spend owner authentication on an unbound creation opportunity", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.preflightCarryPair.mockResolvedValue({
+      no_submit_ready: true,
+      live_creation_ready: true,
+      qualification_pilot_ready: false,
+      creation_opportunity: {
+        checked_at_ms: Date.now(),
+        eligible: true,
+        reasons: [],
+        funding_persistence: readyFundingPersistence(),
+      },
+    });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    await click("NO-SUBMIT CHECK");
+    await click("SAVE POSITION");
+    expect(container.textContent).toContain("CHECK INVALID · rerun the no-submit check before signing");
+    expect(perps.ensureWalletPair).not.toHaveBeenCalled();
+    expect(perps.signCarryRiskMandate).not.toHaveBeenCalled();
+    expect(api.createCarryPosition).not.toHaveBeenCalled();
   });
 
   it("keeps the selected pair usable when the three-venue fleet matrix is not ready", async () => {
@@ -647,6 +673,7 @@ describe("CarryTerminalBuilder", () => {
         eligible: true,
         contract_data_skew_ms: 100,
         index_price_divergence_bps: 1,
+        worker_authentication: { evidence_commitment: OPPORTUNITY_EVIDENCE },
       },
     });
     api.createCarryPosition.mockResolvedValue({ ok: true, record: carryRecord() });
@@ -655,6 +682,7 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("SIGN MIGRATION");
     await click("SIGN MIGRATION");
     expect(perps.signCarryRiskMandate).toHaveBeenCalledWith(expect.objectContaining({
+      opportunity_evidence_commitment: OPPORTUNITY_EVIDENCE,
       migration_parent_position_id: "carry:position:parent",
       migration_candidate_id: "carry:migration:selected:0001",
     }));

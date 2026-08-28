@@ -655,6 +655,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilderTest", "binds a replacement signature to the selected flat migration parent", "carry_terminal_migration_lineage_test_missing");
   requireText("webMandate", "recoverMessageAddress", "carry_web_signature_recovery_missing");
   requireText("webMandateTest", "rejects wrong-owner, expired, and cross-position replay", "carry_signed_mandate_replay_test_missing");
+  requireText("coreCarry", "opportunity_evidence_commitment", "carry_owner_opportunity_binding_missing");
+  requireText("positions", "carry_opportunity_mandate_mismatch", "carry_worker_opportunity_binding_missing");
+  requireText("webCarryBuilder", "opportunityEvidenceCommitment", "carry_terminal_opportunity_binding_missing");
+  requireText("webMandateTest", "rejects a changed worker-signed opportunity after owner approval", "carry_opportunity_substitution_test_missing");
+  requireText("webCarryBuilderTest", "does not spend owner authentication on an unbound creation opportunity", "carry_unbound_opportunity_auth_spend_test_missing");
   requireText("workerMandateTest", "worker rejects mandate mutation, owner replay, and expiry", "carry_worker_mandate_tamper_test_missing");
   requireText("coreCarryTest", "an unverifiable null margin runway triggers an immediate reduce-only exit", "margin_runway_unverifiable_test_missing");
   requireText("coreCarryTest", "a verified healthy null runway represents zero modeled burn", "margin_runway_infinite_test_missing");

@@ -206,6 +206,14 @@ test("bootstraps one capped candidate only after separate qualification confirma
     policy_commitment: `policy:${venueId}:pilot`,
     encrypted_execution_vault: { ciphertext: `sealed:${venueId}:pilot` },
   });
+  const pilotOpportunity = authenticatedOpportunity({
+    ...opportunity(),
+    long_venue_id: "hyperliquid",
+    short_venue_id: "aster",
+    live_creation_ready: false,
+    qualification_pilot_ready: true,
+    qualification_pilot_candidate_venue_id: "aster",
+  });
   const created = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
@@ -213,15 +221,9 @@ test("bootstraps one capped candidate only after separate qualification confirma
       ...positionInput(positionId),
       long_venue_id: "hyperliquid",
       short_venue_id: "aster",
+      opportunity_evidence_commitment: pilotOpportunity.worker_authentication.evidence_commitment,
     }, { ownerCommitment: OWNER, nowMs: NOW }),
-    opportunity: authenticatedOpportunity({
-      ...opportunity(),
-      long_venue_id: "hyperliquid",
-      short_venue_id: "aster",
-      live_creation_ready: false,
-      qualification_pilot_ready: true,
-      qualification_pilot_candidate_venue_id: "aster",
-    }),
+    opportunity: pilotOpportunity,
     monitoring_context: { version: 1, venue_access: { hyperliquid: access("hyperliquid"), aster: access("aster") } },
     qualification_pilot: { enabled: true, candidate_venue_id: "aster" },
     env,
@@ -981,14 +983,19 @@ async function setup(t, suffix, pair = { long: "aster", short: "lighter" }) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
   const positionId = `carry:position:executor:${suffix}`;
+  const creationOpportunity = opportunity(pair);
   const created = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
-    position_input: await signedCarryPositionInput(positionInput(positionId, pair), {
+    position_input: await signedCarryPositionInput(positionInput(
+      positionId,
+      pair,
+      creationOpportunity.worker_authentication.evidence_commitment,
+    ), {
       ownerCommitment: OWNER,
       nowMs: NOW,
     }),
-    opportunity: opportunity(pair),
+    opportunity: creationOpportunity,
     monitoring_context: monitoringContext(pair),
     now_ms: NOW,
   });
@@ -1006,7 +1013,11 @@ async function setup(t, suffix, pair = { long: "aster", short: "lighter" }) {
   };
 }
 
-function positionInput(positionId, pair = { long: "aster", short: "lighter" }) {
+function positionInput(
+  positionId,
+  pair = { long: "aster", short: "lighter" },
+  opportunityEvidenceCommitment = null,
+) {
   return {
     version: 1,
     position_id: positionId,
@@ -1015,6 +1026,9 @@ function positionInput(positionId, pair = { long: "aster", short: "lighter" }) {
     long_venue_id: pair.long,
     short_venue_id: pair.short,
     target_notional_micro_usdc: 10_000_000,
+    ...(opportunityEvidenceCommitment ? {
+      opportunity_evidence_commitment: opportunityEvidenceCommitment,
+    } : {}),
     risk_mandate: {
       min_expected_net_benefit_bps: 1,
       exit_net_value_bps: 0,

@@ -11,6 +11,7 @@ import {
 const OWNER = privateKeyToAccount(`0x${"11".repeat(32)}`);
 const OWNER_COMMITMENT = "owner:carry:test:0001";
 const NOW = 1_800_000_000_000;
+const OPPORTUNITY_EVIDENCE = `carry:creation-opportunity:evidence:${"a".repeat(64)}`;
 
 describe("Carry signed risk mandate", () => {
   it("enables guarded migration across every execution-qualified venue", () => {
@@ -40,6 +41,20 @@ describe("Carry signed risk mandate", () => {
       position_input: {
         ...position,
         risk_mandate: { ...position.risk_mandate as object, min_margin_runway_ms: 0 },
+      },
+      mandate_authorization: authorization,
+      now_ms: NOW,
+    })).resolves.toMatchObject({ ok: false, error: "carry_mandate_position_mismatch" });
+  });
+
+  it("rejects a changed worker-signed opportunity after owner approval", async () => {
+    const position = positionInput("carry:position:signed:opportunity");
+    const authorization = await signedAuthorization(position);
+    await expect(verifyCarryRiskMandateAuthorization({
+      owner_commitment: OWNER_COMMITMENT,
+      position_input: {
+        ...position,
+        opportunity_evidence_commitment: `carry:creation-opportunity:evidence:${"b".repeat(64)}`,
       },
       mandate_authorization: authorization,
       now_ms: NOW,
@@ -112,6 +127,7 @@ async function signedAuthorization(position: ReturnType<typeof positionInput> & 
     long_venue_id: position.long_venue_id,
     short_venue_id: position.short_venue_id,
     target_notional_micro_usdc: position.target_notional_micro_usdc,
+    opportunity_evidence_commitment: position.opportunity_evidence_commitment,
     risk_mandate: position.risk_mandate,
     ...(position.migration_parent_position_id ? {
       migration_parent_position_id: position.migration_parent_position_id,
@@ -135,6 +151,7 @@ function positionInput(positionId: string) {
     long_venue_id: "hyperliquid",
     short_venue_id: "lighter",
     target_notional_micro_usdc: 11_000_000,
+    opportunity_evidence_commitment: OPPORTUNITY_EVIDENCE,
     risk_mandate: {
       min_expected_net_benefit_bps: 5,
       exit_net_value_bps: 0,

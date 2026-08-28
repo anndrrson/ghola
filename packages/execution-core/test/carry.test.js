@@ -30,6 +30,7 @@ import {
 const NOW = 1_800_000_000_000;
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
+const OPPORTUNITY_EVIDENCE = `carry:creation-opportunity:evidence:${"a".repeat(64)}`;
 
 test("canonicalizes Carry proof material identically across runtimes", () => {
   assert.equal(
@@ -216,6 +217,7 @@ function position() {
     long_venue_id: "hyperliquid",
     short_venue_id: "lighter",
     target_notional_micro_usdc: 10_000_000_000,
+    opportunity_evidence_commitment: OPPORTUNITY_EVIDENCE,
     risk_mandate: {
       min_expected_net_benefit_bps: 5,
       exit_net_value_bps: 0,
@@ -250,6 +252,9 @@ function mandateAuthorization(input, overrides = {}) {
     long_venue_id: input.long_venue_id,
     short_venue_id: input.short_venue_id,
     target_notional_micro_usdc: input.target_notional_micro_usdc,
+    ...(input.opportunity_evidence_commitment ? {
+      opportunity_evidence_commitment: input.opportunity_evidence_commitment,
+    } : {}),
     risk_mandate: input.risk_mandate,
     ...(input.migration_parent_position_id ? {
       migration_parent_position_id: input.migration_parent_position_id,
@@ -975,7 +980,32 @@ test("legacy signed mandates remain verifiable without newly added contract-limi
   };
   const normalized = normalizeCarryRiskMandatePayload(input);
   assert.equal(Object.hasOwn(normalized.risk_mandate, "max_contract_data_skew_ms"), false);
+  assert.equal(Object.hasOwn(normalized, "opportunity_evidence_commitment"), false);
   assert.equal(carryRiskMandateMessage(input).includes("max_contract_data_skew_ms"), false);
+});
+
+test("an owner mandate is bound to the exact worker-signed Carry opportunity", () => {
+  const input = {
+    version: 1,
+    position_id: "carry:position:opportunity-bound:0001",
+    mandate_id: "carry:mandate:opportunity-bound:0001",
+    asset: "BTC",
+    long_venue_id: "hyperliquid",
+    short_venue_id: "lighter",
+    target_notional_micro_usdc: 10_000_000,
+    opportunity_evidence_commitment: OPPORTUNITY_EVIDENCE,
+    risk_mandate: position().risk_mandate,
+  };
+  const authorization = mandateAuthorization(input);
+  assert.throws(
+    () => createCarryPosition({
+      ...input,
+      opportunity_evidence_commitment: `carry:creation-opportunity:evidence:${"b".repeat(64)}`,
+      mandate_authorization: authorization,
+      now_ms: NOW,
+    }),
+    (error) => error?.code === "carry_mandate_position_mismatch",
+  );
 });
 
 test("a replacement Carry Position is cryptographically bound to its migration parent and candidate", () => {

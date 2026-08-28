@@ -1095,13 +1095,16 @@ describe("private agent worker", () => {
         short_margin_runway_ms: 7_200_000,
       },
     };
-    body.position_input = await signedCarryPositionInput(body.position_input, {
-      ownerCommitment,
-      nowMs: checkedAt,
-    });
     body.opportunity.worker_authentication = authenticateCarryCreationOpportunity({
       owner_commitment: ownerCommitment,
       opportunity: body.opportunity,
+    });
+    body.position_input = await signedCarryPositionInput({
+      ...body.position_input,
+      opportunity_evidence_commitment: body.opportunity.worker_authentication.evidence_commitment,
+    }, {
+      ownerCommitment,
+      nowMs: checkedAt,
     });
     const notReadyToken = capabilityToken({
       path: "/carry/positions",
@@ -1126,7 +1129,15 @@ describe("private agent worker", () => {
       owner_commitment: ownerCommitment,
       opportunity: readyOpportunity,
     });
-    const readyBody = { ...body, opportunity: readyOpportunity };
+    const { mandate_authorization: _authorization, ...readyPositionInput } = body.position_input;
+    const readyBody = {
+      ...body,
+      position_input: await signedCarryPositionInput({
+        ...readyPositionInput,
+        opportunity_evidence_commitment: readyOpportunity.worker_authentication.evidence_commitment,
+      }, { ownerCommitment, nowMs: checkedAt }),
+      opportunity: readyOpportunity,
+    };
     const readyToken = capabilityToken({
       path: "/carry/positions",
       scope: "carry:write",

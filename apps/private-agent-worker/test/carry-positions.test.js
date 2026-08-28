@@ -228,6 +228,22 @@ test("refuses unsigned or client-modified Carry creation economics", async (t) =
     now_ms: NOW,
   });
   assert.equal(tampered.error, "carry_opportunity_worker_authentication_invalid");
+
+  const rebound = await positionInput("rebound-opportunity");
+  const reboundInput = await signedCarryPositionInput({
+    ...rebound,
+    mandate_authorization: undefined,
+    opportunity_evidence_commitment: `carry:creation-opportunity:evidence:${"b".repeat(64)}`,
+  }, { ownerCommitment: OWNER, nowMs: NOW });
+  const substituted = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: reboundInput,
+    opportunity: signed,
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  assert.equal(substituted.error, "carry_opportunity_mandate_mismatch");
 });
 
 test("creates only a capped, explicitly enabled qualification pilot", async (t) => {
@@ -254,7 +270,9 @@ test("creates only a capped, explicitly enabled qualification pilot", async (t) 
   const created = await createStoredCarryPosition({
     state,
     owner_commitment: OWNER,
-    position_input: await positionInput(),
+    position_input: await positionInput("pilot", {}, NOW + (30 * 86_400_000), {
+      opportunity_evidence_commitment: pilotOpportunity.worker_authentication.evidence_commitment,
+    }),
     opportunity: pilotOpportunity,
     monitoring_context: monitoringContext(),
     qualification_pilot: pilot,
@@ -456,6 +474,10 @@ test("creates an owner-signed migration replacement only from the selected flat 
     long_venue_id: "aster",
     short_venue_id: "lighter",
     target_notional_micro_usdc: 10_000_000,
+    opportunity_evidence_commitment: opportunity({
+      long_venue_id: "aster",
+      short_venue_id: "lighter",
+    }).worker_authentication.evidence_commitment,
     risk_mandate: { ...parent.position.risk_mandate },
   };
   const replacement = await signedCarryPositionInput(replacementBase, { ownerCommitment: OWNER, nowMs: NOW + 6 });
@@ -1133,7 +1155,12 @@ async function activePosition(
   return record;
 }
 
-async function positionInput(suffix = "0001", riskOverrides = {}, expiresAtMs = NOW + (30 * 86_400_000)) {
+async function positionInput(
+  suffix = "0001",
+  riskOverrides = {},
+  expiresAtMs = NOW + (30 * 86_400_000),
+  positionOverrides = {},
+) {
   return signedCarryPositionInput({
     version: 1,
     position_id: `carry:position:stored:${suffix}`,
@@ -1142,6 +1169,7 @@ async function positionInput(suffix = "0001", riskOverrides = {}, expiresAtMs = 
     long_venue_id: "hyperliquid",
     short_venue_id: "lighter",
     target_notional_micro_usdc: 10_000_000,
+    opportunity_evidence_commitment: opportunity().worker_authentication.evidence_commitment,
     risk_mandate: {
       min_expected_net_benefit_bps: 1,
       exit_net_value_bps: 0,
@@ -1155,6 +1183,7 @@ async function positionInput(suffix = "0001", riskOverrides = {}, expiresAtMs = 
       allow_migration: false,
       ...riskOverrides,
     },
+    ...positionOverrides,
   }, { ownerCommitment: OWNER, nowMs: NOW, expiresAtMs });
 }
 

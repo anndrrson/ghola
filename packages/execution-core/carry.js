@@ -8,6 +8,7 @@ const MARKET = /^[A-Z0-9][A-Z0-9._/-]{0,63}$/;
 const ETH_ADDRESS = /^0x[0-9a-f]{40}$/;
 const ETH_SIGNATURE = /^0x[0-9a-f]{130}$/;
 const ETH_COMMITMENT = /^0x[0-9a-f]{64}$/;
+const CARRY_OPPORTUNITY_EVIDENCE = /^carry:creation-opportunity:evidence:[0-9a-f]{64}$/;
 const USD_STABLE_QUOTES = new Set(["USD", "USDC", "USDT"]);
 const POSITION_STATUSES = new Set([
   "draft", "opening", "active", "rebalancing", "exiting", "reconciled", "frozen", "manual_intervention",
@@ -1685,6 +1686,9 @@ export function createCarryPosition(value) {
   const migrationCandidateId = raw.migration_candidate_id === undefined
     ? null
     : identifier(raw.migration_candidate_id, "carry_migration_candidate_id");
+  const opportunityEvidenceCommitment = raw.opportunity_evidence_commitment === undefined
+    ? null
+    : carryOpportunityEvidenceCommitment(raw.opportunity_evidence_commitment);
   if ((migrationParentPositionId === null) !== (migrationCandidateId === null)) {
     fail("carry_migration_lineage_incomplete");
   }
@@ -1694,6 +1698,7 @@ export function createCarryPosition(value) {
     || signed.long_venue_id !== longVenue
     || signed.short_venue_id !== shortVenue
     || signed.target_notional_micro_usdc !== raw.target_notional_micro_usdc
+    || (signed.opportunity_evidence_commitment ?? null) !== opportunityEvidenceCommitment
     || JSON.stringify(signed.risk_mandate) !== JSON.stringify(mandate)
     || (signed.migration_parent_position_id ?? null) !== migrationParentPositionId
     || (signed.migration_candidate_id ?? null) !== migrationCandidateId) {
@@ -1709,6 +1714,9 @@ export function createCarryPosition(value) {
     long_venue_id: longVenue,
     short_venue_id: shortVenue,
     target_notional_micro_usdc: positiveInteger(raw.target_notional_micro_usdc, "carry_target_notional"),
+    ...(opportunityEvidenceCommitment ? {
+      opportunity_evidence_commitment: opportunityEvidenceCommitment,
+    } : {}),
     long_filled_micro_usdc: 0,
     short_filled_micro_usdc: 0,
     hedge_error_micro_usdc: 0,
@@ -2247,6 +2255,9 @@ export function normalizeCarryRiskMandatePayload(value) {
   const migrationCandidateId = raw.migration_candidate_id === undefined
     ? null
     : identifier(raw.migration_candidate_id, "carry_signed_mandate_migration_candidate");
+  const opportunityEvidenceCommitment = raw.opportunity_evidence_commitment === undefined
+    ? null
+    : carryOpportunityEvidenceCommitment(raw.opportunity_evidence_commitment);
   if ((migrationParentPositionId === null) !== (migrationCandidateId === null)) {
     fail("carry_signed_mandate_migration_lineage_incomplete");
   }
@@ -2263,6 +2274,9 @@ export function normalizeCarryRiskMandatePayload(value) {
     long_venue_id: longVenue,
     short_venue_id: shortVenue,
     target_notional_micro_usdc: positiveInteger(raw.target_notional_micro_usdc, "carry_signed_mandate_notional"),
+    ...(opportunityEvidenceCommitment ? {
+      opportunity_evidence_commitment: opportunityEvidenceCommitment,
+    } : {}),
     risk_mandate: normalizeCarryRiskMandate(raw.risk_mandate),
     ...(migrationParentPositionId ? {
       migration_parent_position_id: migrationParentPositionId,
@@ -3155,6 +3169,12 @@ function normalized(value, pattern, code) {
   const result = value.trim().toUpperCase();
   if (!pattern.test(result)) fail(code);
   return result;
+}
+
+function carryOpportunityEvidenceCommitment(value) {
+  const commitment = typeof value === "string" ? value.trim() : "";
+  if (!CARRY_OPPORTUNITY_EVIDENCE.test(commitment)) fail("carry_opportunity_evidence_commitment_invalid");
+  return commitment;
 }
 
 function enumValue(value, allowed, code) {

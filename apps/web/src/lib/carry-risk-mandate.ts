@@ -20,6 +20,7 @@ export interface CarryRiskMandatePayload {
   long_venue_id: string;
   short_venue_id: string;
   target_notional_micro_usdc: number;
+  opportunity_evidence_commitment?: string;
   risk_mandate: Record<string, unknown>;
   migration_parent_position_id?: string;
   migration_candidate_id?: string;

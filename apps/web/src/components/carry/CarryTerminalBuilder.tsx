@@ -458,11 +458,18 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   async function savePosition() {
     if (!proof) return;
     const opportunity = asRecord(proof.creation_opportunity);
+    const opportunityEvidenceCommitment = stringValue(
+      asRecord(opportunity.worker_authentication).evidence_commitment,
+    ) ?? "";
     const pilotVenue = stringValue(proof.qualification_pilot_candidate_venue_id);
     const pilot = proof.qualification_pilot_ready === true && isCarryExecutionVenue(pilotVenue)
       ? pilotVenue
       : null;
     if (proof.live_creation_ready !== true && !pilot) return;
+    if (!/^carry:creation-opportunity:evidence:[0-9a-f]{64}$/.test(opportunityEvidenceCommitment)) {
+      setMessage("CHECK INVALID · rerun the no-submit check before signing");
+      return;
+    }
     const notionalMicro = Math.round(Number(notional) * 1_000_000);
     if (!Number.isSafeInteger(notionalMicro) || notionalMicro <= 0) {
       setMessage("Enter a valid notional.");
@@ -500,6 +507,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         long_venue_id: candidate.long.venue_id,
         short_venue_id: candidate.short.venue_id,
         target_notional_micro_usdc: notionalMicro,
+        opportunity_evidence_commitment: opportunityEvidenceCommitment,
         risk_mandate: riskMandate,
         ...migrationLineage,
         issued_at_ms: issuedAtMs,
@@ -515,6 +523,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
           long_venue_id: candidate.long.venue_id,
           short_venue_id: candidate.short.venue_id,
           target_notional_micro_usdc: notionalMicro,
+          opportunity_evidence_commitment: opportunityEvidenceCommitment,
           risk_mandate: riskMandate,
           ...migrationLineage,
           mandate_authorization: carryRiskMandateAuthorization({ signed_mandate: signedMandate, signature }),

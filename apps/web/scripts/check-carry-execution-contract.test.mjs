@@ -121,6 +121,19 @@ test("rejects a worker that emits unsigned private-prime evidence", () => {
   );
 });
 
+test("rejects Carry creation detached from the exact owner-approved opportunity", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll(
+        "carry_opportunity_mandate_mismatch",
+        "carry_opportunity_mandate_unchecked",
+      ),
+    }),
+    /carry_worker_opportunity_binding_missing/,
+  );
+});
+
 test("rejects client-authored Carry creation economics", () => {
   assert.throws(
     () => checkCarryExecutionContract({

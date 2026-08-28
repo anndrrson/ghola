@@ -58,6 +58,9 @@ export async function createStoredCarryPosition({
   if (!normalizedPilot.ok) return denied(normalizedPilot.error);
   const opportunityError = validateCreationOpportunity(positionInput, opportunity, nowMs, normalizedPilot.value);
   if (opportunityError) return denied(opportunityError);
+  if (mandate.position.opportunity_evidence_commitment !== workerOpportunity.authentication.evidence_commitment) {
+    return denied("carry_opportunity_mandate_mismatch");
+  }
   const normalizedMonitoring = normalizeMonitoringContext(monitoringContext, mandate.position, ownerCommitment);
   if (!normalizedMonitoring.ok) return normalizedMonitoring;
   try {

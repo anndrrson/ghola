@@ -39,6 +39,9 @@ export async function signedCarryPositionInput(input, {
     long_venue_id: input.long_venue_id,
     short_venue_id: input.short_venue_id,
     target_notional_micro_usdc: input.target_notional_micro_usdc,
+    ...(input.opportunity_evidence_commitment ? {
+      opportunity_evidence_commitment: input.opportunity_evidence_commitment,
+    } : {}),
     risk_mandate: input.risk_mandate,
     ...(input.migration_parent_position_id ? {
       migration_parent_position_id: input.migration_parent_position_id,
