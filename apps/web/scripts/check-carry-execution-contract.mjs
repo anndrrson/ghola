@@ -443,6 +443,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarry", "margin_runway_unverifiable", "margin_runway_unverifiable_exit_missing");
   requireText("coreCarry", 'if (status !== "healthy") unverifiableMargin = true', "margin_runway_null_status_gate_missing");
   requireText("coreCarryTest", "a warning cannot relabel a null margin runway as verified infinity", "margin_runway_null_warning_test_missing");
+  requireText("coreCarry", "if (status === null)", "margin_runway_status_required_missing");
+  requireText("coreCarryTest", "a numeric margin runway without verified status triggers an immediate reduce-only exit", "margin_runway_status_required_test_missing");
   requireText("coreCarry", "export function compileCarryCapitalActionPlan", "carry_capital_action_compiler_missing");
   requireText("coreIndex", "compileCarryCapitalActionPlan", "carry_capital_action_export_missing");
   requireText("coreCarry", "carry_capital_automatic_transfer_forbidden", "carry_capital_transfer_boundary_missing");

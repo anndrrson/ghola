@@ -333,6 +333,7 @@ function contractObservation(overrides = {}) {
     mark_price_divergence_bps: 0,
     max_index_price_divergence_bps: 25,
     max_mark_price_divergence_bps: 50,
+    margin_runway_status_by_venue: { hyperliquid: "healthy", lighter: "healthy" },
     ...overrides,
   };
 }
@@ -1252,10 +1253,26 @@ test("an unverifiable null margin runway triggers an immediate reduce-only exit"
   const result = advanceCarryPosition({
     position: activePositionForObservation(),
     event: event(3, "observation", {
-      ...contractObservation(),
+      ...contractObservation({ margin_runway_status_by_venue: undefined }),
       as_of_ms: NOW + 3,
       expected_net_value_bps: 100,
       margin_runway_ms_by_venue: { hyperliquid: null, lighter: 30 * HOUR },
+    }),
+    now_ms: NOW + 3,
+  });
+  assert.equal(result.position.status, "exiting");
+  assert.equal(result.position.terminal_reason, "margin_runway_unverifiable");
+  assert.deepEqual(result.position.next_actions, ["reduce_only_close_both_legs"]);
+});
+
+test("a numeric margin runway without verified status triggers an immediate reduce-only exit", () => {
+  const result = advanceCarryPosition({
+    position: activePositionForObservation(),
+    event: event(3, "observation", {
+      ...contractObservation({ margin_runway_status_by_venue: undefined }),
+      as_of_ms: NOW + 3,
+      expected_net_value_bps: 100,
+      margin_runway_ms_by_venue: { hyperliquid: 30 * HOUR, lighter: 30 * HOUR },
     }),
     now_ms: NOW + 3,
   });

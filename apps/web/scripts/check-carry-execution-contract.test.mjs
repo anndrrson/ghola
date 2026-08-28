@@ -1912,6 +1912,16 @@ test("rejects a monitor that treats unverifiable margin runway as safe", () => {
   );
 });
 
+test("rejects a monitor that trusts runway numbers without verified status", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replaceAll("if (status === null)", "if (false)"),
+    }),
+    /margin_runway_status_required_missing/,
+  );
+});
+
 test("rejects a capital planner that could grant automatic transfer authority", () => {
   assert.throws(
     () => checkCarryExecutionContract({

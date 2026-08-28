@@ -2090,6 +2090,10 @@ function applyEvent(position, event, nowMs) {
       const status = rawStatus === undefined
         ? null
         : enumValue(rawStatus, new Set(["healthy", "warning", "critical", "breached"]), "carry_observation_runway_status");
+      if (status === null) {
+        unverifiableMargin = true;
+        return false;
+      }
       if (runway === null) {
         if (status !== "healthy") unverifiableMargin = true;
         return false;
