@@ -15,6 +15,7 @@ import {
   carryVenueMinimumMarginSummary,
 } from "./CarryTerminalBuilder";
 import { builderModel, type CarryCandidate } from "@/lib/carry-market";
+import { carryPrivatePrimeEvidenceCommitment } from "@/lib/carry-private-prime-readiness";
 
 const api = vi.hoisted(() => ({
   createCarryPosition: vi.fn(),
@@ -1152,13 +1153,15 @@ function readyReadiness() {
 }
 
 function privatePrimeReadiness() {
-  return {
+  const now = Date.now();
+  const readiness = {
     version: 1,
     kind: "ghola_private_prime_no_submit_readiness",
     ready: true,
     proof_level: "pre_broadcast_readiness",
-    checked_at_ms: Date.now(),
-    expires_at_ms: Date.now() + 60_000,
+    checked_at_ms: now,
+    expires_at_ms: now + 5_000,
+    asset: "BTC",
     five_venue_shadow: { ready: true, venue_count: 5 },
     three_venue_execution: {
       ready: true,
@@ -1179,8 +1182,8 @@ function privatePrimeReadiness() {
       verified: true,
       route_count: 2,
       available_route_count: 2,
-      checked_at_ms: Date.now(),
-      expires_at_ms: Date.now() + 30_000,
+      checked_at_ms: now,
+      expires_at_ms: now + 30_000,
       evidence_commitment: "carry:transfer-routes:evidence:abcdef123456",
       read_only: true,
       owner_approval_required: true,
@@ -1188,14 +1191,22 @@ function privatePrimeReadiness() {
       transaction_broadcast: false,
       automatic_transfer_permitted: false,
     },
-    supervision: { ready: true, status: "healthy" },
+    supervision: {
+      ready: true,
+      status: "healthy",
+      checked_at_ms: now,
+      evidence_commitment: `carry:supervision:evidence:${"a".repeat(64)}`,
+    },
     live_paired_lifecycle_proven: false,
     owner_only_funding: true,
     owner_only_transfers: true,
     owner_only_withdrawals: true,
     transaction_broadcast: false,
     reasons: [],
-    evidence_commitment: "carry:private-prime:abcdef123456",
+  };
+  return {
+    ...readiness,
+    evidence_commitment: carryPrivatePrimeEvidenceCommitment(readiness),
   };
 }
 

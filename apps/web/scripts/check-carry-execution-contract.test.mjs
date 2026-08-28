@@ -134,6 +134,19 @@ test("rejects client-authored Carry creation economics", () => {
   );
 });
 
+test("rejects a gateway that displays unauthenticated Carry creation economics", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webRoute: sources.webRoute.replaceAll(
+        "verifyCarryCreationOpportunityWorkerAuthentication({",
+        "trustCarryCreationOpportunityWorkerAuthentication({",
+      ),
+    }),
+    /carry_creation_opportunity_gateway_authentication_missing/,
+  );
+});
+
 test("rejects AI inference inside deterministic Carry execution modules", () => {
   assert.throws(
     () => checkCarryExecutionContract({

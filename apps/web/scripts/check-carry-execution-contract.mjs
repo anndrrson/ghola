@@ -67,6 +67,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webPrivatePrimeReadinessTest: "apps/web/src/lib/carry-private-prime-readiness.test.ts",
   webPrivatePrimeAuthentication: "apps/web/src/lib/carry-private-prime-worker-authentication.ts",
   webPrivatePrimeAuthenticationTest: "apps/web/src/lib/carry-private-prime-worker-authentication.test.ts",
+  webCreationOpportunityAuthentication: "apps/web/src/lib/carry-creation-opportunity-authentication.ts",
+  webCreationOpportunityAuthenticationTest: "apps/web/src/lib/carry-creation-opportunity-authentication.test.ts",
   webPerpsTurnkey: "apps/web/src/lib/perps-turnkey-provider.tsx",
   webRegistry: "apps/web/src/lib/carry-venues.ts",
   webCredentialOnboarding: "apps/web/src/lib/venue-credential-onboarding.ts",
@@ -1039,6 +1041,13 @@ export function checkCarryExecutionContract(sources) {
   requireText("webRoute", "verifyCarryPrivatePrimeWorkerAuthentication({", "carry_private_prime_gateway_authentication_missing");
   requireText("webRoute", "workerCapabilitySecret(process.env) || worker.token", "carry_private_prime_gateway_authentication_secret_missing");
   requireText("webRoute", "return response({ error: authenticated.error }, 502", "carry_private_prime_gateway_authentication_fail_closed_missing");
+  requireText("webCreationOpportunityAuthentication", "carryCreationOpportunityAuthenticationMessage", "carry_creation_opportunity_gateway_payload_missing");
+  requireText("webCreationOpportunityAuthentication", "GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64", "carry_creation_opportunity_gateway_signer_pin_missing");
+  requireText("webCreationOpportunityAuthentication", "ed25519.verify(", "carry_creation_opportunity_gateway_signature_missing");
+  requireText("webCreationOpportunityAuthentication", "expiresAtMs <= nowMs", "carry_creation_opportunity_gateway_expiry_missing");
+  requireText("webCreationOpportunityAuthenticationTest", "changed economics, another owner, expiry, missing proof, and a wrong signer pin", "carry_creation_opportunity_gateway_tamper_test_missing");
+  requireText("webRoute", "verifyCarryCreationOpportunityWorkerAuthentication({", "carry_creation_opportunity_gateway_authentication_missing");
+  requireText("webRoute", 'action === "preflight_pair"', "carry_creation_opportunity_gateway_pair_gate_missing");
   requireText("webCarryBuilder", 'label="PRIVATE PRIME"', "carry_private_prime_terminal_metric_missing");
   requireText("webCarryBuilder", "carryPrivatePrimeSummary", "carry_private_prime_terminal_validation_missing");
   requireText("webCarryBuilderTest", "without claiming a live lifecycle", "carry_private_prime_terminal_test_missing");

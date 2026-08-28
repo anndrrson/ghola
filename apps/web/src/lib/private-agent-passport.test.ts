@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
+import { createHash, createHmac, generateKeyPairSync, sign as signEd25519 } from "node:crypto";
+import {
+  carryCreationOpportunityAuthenticationMessage,
+  carryPrivatePrimeWorkerAuthenticationMessage,
+} from "@ghola/execution-core";
 import { POST as postArbCanaryReport } from "@/app/v1/private-account/agent-passport/arb-canary-report/route";
 import { POST as armArbRoute } from "@/app/v1/private-account/agent-passport/arm-arb/route";
 import { POST as linkPlatformRoute } from "@/app/v1/private-account/platforms/link/route";
@@ -26,6 +31,8 @@ const owner: PrivateAccountRequestOwner = {
     email: "owner_passport_test@example.com",
   },
 };
+const carrySigner = generateKeyPairSync("ed25519");
+const carrySignerPublicKeyB64 = carrySigner.publicKey.export({ format: "der", type: "spki" }).toString("base64");
 
 describe("agent passport venue linking", () => {
   afterEach(async () => {
@@ -50,6 +57,7 @@ describe("agent passport venue linking", () => {
     delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN;
     delete process.env.GHOLA_ARB_CANARY_MAX_STALE_MS;
+    delete process.env.GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64;
   });
 
   it("records sealed trade-only venue capabilities and blocks withdrawal scopes", async () => {
@@ -299,7 +307,9 @@ describe("agent passport venue linking", () => {
     process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "report_only";
     process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL = "https://worker.example";
     process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN = "worker-token";
+    process.env.GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64 = carrySignerPublicKeyB64;
     const workerBodies: Record<string, unknown>[] = [];
+    let tamperCarryOpportunity = false;
     const oldFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -314,10 +324,13 @@ describe("agent passport venue linking", () => {
         }), { status: 200 });
       }
       if (url === "https://worker.example/carry/preflight") {
+        const creationOpportunity = authenticatedCarryOpportunity(String(body.owner_commitment || ""));
+        if (tamperCarryOpportunity) creationOpportunity.projected_net_value_micro_usdc = 999;
         return new Response(JSON.stringify({
           no_submit_ready: true,
           transaction_broadcast: false,
           live_creation_ready: true,
+          creation_opportunity: creationOpportunity,
         }), { status: 200 });
       }
       return oldFetch(input, init);
@@ -366,6 +379,28 @@ describe("agent passport venue linking", () => {
       expect(access.lighter.encrypted_execution_vault).toMatchObject({ ciphertext: "sealed-lighter-vault" });
       expect(preflight).not.toHaveProperty("api_private_key");
       expect(preflight).not.toHaveProperty("api_wallet_private_key");
+
+      tamperCarryOpportunity = true;
+      const tampered = await carryRoute(new NextRequest("https://ghola.test/v1/private-account/carry", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer investor-test-token",
+          "content-type": "application/json",
+          origin: "https://ghola.test",
+        },
+        body: JSON.stringify({
+          action: "preflight_pair",
+          asset: "BTC",
+          long_venue_id: "aster",
+          short_venue_id: "lighter",
+          notional_usd: "11",
+          horizon_days: "1",
+        }),
+      }));
+      expect(tampered.status).toBe(502);
+      expect(await tampered.json()).toMatchObject({
+        error: "carry_creation_opportunity_worker_authentication_invalid",
+      });
     } finally {
       globalThis.fetch = oldFetch;
     }
@@ -387,17 +422,17 @@ describe("agent passport venue linking", () => {
       }
       if (url === "https://worker.example/carry/preflight-matrix") {
         matrixBodies.push(body);
-        return new Response(JSON.stringify({
+        return new Response(JSON.stringify(authenticatedPrivatePrimeResult(body, "/carry/preflight-matrix", {
           mode: "carry_execution_no_submit_matrix",
           no_submit_ready: true,
           transaction_broadcast: false,
           venues: ["hyperliquid", "lighter", "aster"].map((venue_id) => ({ venue_id, transaction_broadcast: false })),
           failures: [],
-        }), { status: 200 });
+        })), { status: 200 });
       }
       if (url === "https://worker.example/carry/readiness") {
         readinessBodies.push(body);
-        return new Response(JSON.stringify({
+        return new Response(JSON.stringify(authenticatedPrivatePrimeResult(body, "/carry/readiness", {
           ready: true,
           network: "mainnet",
           asset: "BTC",
@@ -406,7 +441,7 @@ describe("agent passport venue linking", () => {
           registry_venue_ids: ["hyperliquid", "lighter", "aster"],
           expires_at_ms: Date.now() + 60_000,
           evidence_commitment: "carry:readiness:evidence:test",
-        }), { status: 200 });
+        })), { status: 200 });
       }
       return oldFetch(input, init);
     }) as typeof fetch;
@@ -488,7 +523,7 @@ describe("agent passport venue linking", () => {
       }
       if (url === "https://worker.example/carry/preflight-matrix") {
         matrixBodies.push(body);
-        return new Response(JSON.stringify({
+        return new Response(JSON.stringify(authenticatedPrivatePrimeResult(body, "/carry/preflight-matrix", {
           mode: "carry_execution_no_submit_matrix",
           no_submit_ready: false,
           transaction_broadcast: false,
@@ -498,15 +533,15 @@ describe("agent passport venue linking", () => {
             { long_venue_id: "lighter", short_venue_id: "aster", no_submit_ready: false, transaction_broadcast: false, error_code: "carry_account_not_ready:aster" },
           ],
           failures: ["pair_check_failed:2:carry_account_not_ready:aster", "pair_check_failed:3:carry_account_not_ready:aster"],
-        }), { status: 200 });
+        })), { status: 200 });
       }
       if (url === "https://worker.example/carry/readiness") {
         readinessBodies.push(body);
-        return new Response(JSON.stringify({
+        return new Response(JSON.stringify(authenticatedPrivatePrimeResult(body, "/carry/readiness", {
           ready: false,
           reasons: ["carry_readiness_evidence_missing"],
           diagnostic: { available: true, diagnostic_only: true, reusable_for_readiness: false },
-        }), { status: 200 });
+        })), { status: 200 });
       }
       return oldFetch(input, init);
     }) as typeof fetch;
@@ -877,4 +912,75 @@ function internalPost(path: string, body: unknown) {
     },
     body: JSON.stringify(body),
   });
+}
+
+function authenticatedCarryOpportunity(ownerCommitment: string) {
+  const checkedAtMs = Date.now();
+  const expiresAtMs = checkedAtMs + 60_000;
+  const unsigned = {
+    version: 1,
+    asset: "BTC",
+    checked_at_ms: checkedAtMs,
+    projected_net_value_micro_usdc: 123,
+  };
+  const message = carryCreationOpportunityAuthenticationMessage({
+    owner_commitment: ownerCommitment,
+    opportunity: unsigned,
+    checked_at_ms: checkedAtMs,
+    expires_at_ms: expiresAtMs,
+  });
+  return {
+    ...unsigned,
+    worker_authentication: {
+      version: 1,
+      algorithm: "ed25519",
+      attestation_bound: true,
+      deterministic_only: true,
+      checked_at_ms: checkedAtMs,
+      expires_at_ms: expiresAtMs,
+      evidence_commitment: `carry:creation-opportunity:evidence:${createHash("sha256").update(message).digest("hex")}`,
+      signature_b64: signEd25519(null, Buffer.from(message, "utf8"), carrySigner.privateKey).toString("base64"),
+      signer_public_key_b64: carrySignerPublicKeyB64,
+    },
+  };
+}
+
+function authenticatedPrivatePrimeResult(
+  body: Record<string, unknown>,
+  routePath: string,
+  result: Record<string, unknown>,
+) {
+  const checkedAtMs = Date.now();
+  const expiresAtMs = checkedAtMs + 5_000;
+  const readiness = {
+    owner_commitment: body.owner_commitment,
+    asset: body.asset,
+    evidence_commitment: `carry:private-prime:${"a".repeat(40)}`,
+    checked_at_ms: checkedAtMs,
+    expires_at_ms: expiresAtMs,
+  };
+  const message = carryPrivatePrimeWorkerAuthenticationMessage({
+    route_path: routePath,
+    owner_commitment: body.owner_commitment,
+    asset: body.asset,
+    operation_class: body.operation_class,
+    work_order_commitment: body.work_order_commitment,
+    evidence_commitment: readiness.evidence_commitment,
+    checked_at_ms: checkedAtMs,
+    expires_at_ms: expiresAtMs,
+  });
+  return {
+    ...result,
+    private_prime_readiness: readiness,
+    private_prime_authentication: {
+      version: 1,
+      algorithm: "hmac-sha256",
+      request_bound: true,
+      mac_hex: createHmac("sha256", "worker-token").update(message).digest("hex"),
+      signature_algorithm: "ed25519",
+      attestation_bound: true,
+      signature_b64: signEd25519(null, Buffer.from(message, "utf8"), carrySigner.privateKey).toString("base64"),
+      signer_public_key_b64: carrySignerPublicKeyB64,
+    },
+  };
 }

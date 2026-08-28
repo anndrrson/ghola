@@ -53,6 +53,12 @@ export declare function carryPrivatePrimeWorkerAuthenticationMessage(input: {
   checked_at_ms?: unknown;
   expires_at_ms?: unknown;
 }): string;
+export declare function carryCreationOpportunityAuthenticationMessage(input: {
+  owner_commitment?: unknown;
+  opportunity?: unknown;
+  checked_at_ms?: unknown;
+  expires_at_ms?: unknown;
+}): string;
 export declare function calculateMarginRunway(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryCapitalActionPlan(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryCollateralReview(input: unknown): Readonly<Record<string, unknown>>;

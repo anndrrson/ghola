@@ -10,6 +10,7 @@ import {
 } from "@/lib/private-agent-capability";
 import { agentPassportVenueAccessForWorker } from "@/lib/private-agent-passport";
 import { verifyCarryPrivatePrimeWorkerAuthentication } from "@/lib/carry-private-prime-worker-authentication";
+import { verifyCarryCreationOpportunityWorkerAuthentication } from "@/lib/carry-creation-opportunity-authentication";
 import { randomUUID } from "node:crypto";
 import { CARRY_EXECUTION_VENUES, isCarryExecutionVenue } from "@/lib/carry-venues";
 import { verifyCarryRiskMandateAuthorization } from "@/lib/carry-risk-mandate";
@@ -313,6 +314,21 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify(body),
     });
     const result = await upstream.json().catch(() => ({ error: "carry_worker_invalid" }));
+    if (upstream.ok && action === "preflight_pair") {
+      const authenticated = verifyCarryCreationOpportunityWorkerAuthentication({
+        owner_commitment: owner.owner_commitment,
+        opportunity: record(record(result).creation_opportunity),
+      });
+      if (!authenticated.ok) {
+        console.error("[carry] creation-opportunity worker authentication failed", {
+          correlation_id: correlationId,
+          action,
+          operation_class: route.operationClass,
+          duration_ms: Date.now() - startedAt,
+        });
+        return response({ error: authenticated.error }, 502, correlationId);
+      }
+    }
     if (upstream.ok && (action === "preflight_matrix" || action === "readiness")) {
       const authenticated = verifyCarryPrivatePrimeWorkerAuthentication({
         route_path: route.path,
