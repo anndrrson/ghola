@@ -715,6 +715,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", 'label="EXEC Δ"', "carry_terminal_execution_attribution_missing");
   requireText("webCarryBuilderTest", "FEE +$0.5 · SLIP −$0.25", "carry_terminal_execution_attribution_test_missing");
   requireText("webCarryBuilder", "const netUsd = opportunity ? proofNet : model.netUsd", "carry_terminal_proof_economics_fallback_missing");
+  requireText("webCarryBuilder", '"CONNECT TO VERIFY · NO EDGE YET"', "carry_terminal_nonpositive_edge_cta_missing");
+  requireText("webCarryBuilderTest", "does not invite trading when the public route has no modeled net edge", "carry_terminal_nonpositive_edge_cta_test_missing");
   requireText("webCarryBuilder", 'if (proof) return { value: "UNVERIFIED"', "carry_terminal_proof_capital_fallback_missing");
   requireText("webCarryBuilder", "carryTerminalGrossFunding(candidate, proof ? proofOpportunity || {} : null)", "carry_terminal_proof_gross_fallback_missing");
   requireText("webCarryBuilder", "carryVenueMinimumMarginSummary(model, proof)", "carry_terminal_proof_margin_fallback_missing");

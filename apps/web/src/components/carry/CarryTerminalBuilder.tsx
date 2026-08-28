@@ -609,6 +609,15 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const canSave = actionableProof && creationProofFreshness.fresh;
   const canEnter = current?.position.status === "draft" && supervision.ready;
   const canExit = current ? ["active", "rebalancing", "frozen"].includes(current.position.status) : false;
+  const connectionAction = auth.loading
+    ? "CHECKING SIGN-IN…"
+    : privateSessionReady
+      ? "CONNECT FLEET"
+      : model.netUsd == null
+        ? "CONNECT TO VERIFY COSTS"
+        : model.netUsd > 0
+          ? "CONNECT TO VERIFY & TRADE"
+          : "CONNECT TO VERIFY · NO EDGE YET";
   return (
     <div className="mt-2 grid gap-2 border-t border-[#1d2733] pt-2 lg:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]" aria-label="Carry position builder">
       {!proof && !current ? (
@@ -669,7 +678,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
 
         <div className="grid grid-cols-2 gap-1.5">
           <Link href={setupHref} className={`rounded border border-[#293a50] px-2 py-2 text-center font-mono text-[10px] font-semibold text-[#8fbbe2] hover:bg-[#0d1622] ${privateSessionReady ? "" : "col-span-2"}`}>
-            {auth.loading ? "CHECKING SIGN-IN…" : privateSessionReady ? "CONNECT FLEET" : "CONNECT TO VERIFY & TRADE"}
+            {connectionAction}
           </Link>
           {!privateSessionReady ? null : !recordsLoaded ? (
             <button type="button" disabled={recordsLoading} onClick={() => void loadRecords()} className="rounded border border-[#594b2b] bg-[#1e190c] px-2 py-2 font-mono text-[10px] font-semibold text-[#d9bd74] disabled:opacity-40">

@@ -336,6 +336,19 @@ test("rejects a terminal that leaves expired creation proof actionable", () => {
   );
 });
 
+test("rejects a terminal that invites trading without positive modeled edge", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replace(
+        '"CONNECT TO VERIFY · NO EDGE YET"',
+        '"CONNECT TO VERIFY & TRADE"',
+      ),
+    }),
+    /carry_terminal_nonpositive_edge_cta_missing/,
+  );
+});
+
 test("rejects restoring the retired standalone Carry workspace", () => {
   assert.throws(
     () => checkCarryExecutionContract({

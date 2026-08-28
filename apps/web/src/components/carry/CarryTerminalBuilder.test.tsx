@@ -454,6 +454,17 @@ describe("CarryTerminalBuilder", () => {
     expect(api.preflightCarryExecutionMatrix).not.toHaveBeenCalled();
   });
 
+  it("does not invite trading when the public route has no modeled net edge", async () => {
+    auth.authenticated = false;
+    await act(async () => {
+      root.render(<CarryTerminalBuilder candidate={{ ...candidate(), grossAnnualBps: 0 }} />);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("CONNECT TO VERIFY · NO EDGE YET");
+    expect(container.textContent).not.toContain("CONNECT TO VERIFY & TRADE");
+  });
+
   it("fails closed when the visible risk mandate is malformed", () => {
     expect(carryRiskMandateSummary({
       ...defaultCarryRiskMandate(),
