@@ -227,10 +227,14 @@ scope: runtime:read
 operation_class: runtime_authorization_probe
 ```
 
-Only `200 { "version": 1, "authorized": true }` is accepted. A `401` or `403`
-means the web and worker secrets differ. A `404` means the worker image predates
-the heartbeat. None of these checks opens a session, submits an order, or
-requires venue collateral.
+The `200` response must also bind `authorization_protocol`,
+`worker_image_digest`, `funding_signer_public_key_b64`, and the ordered
+`carry_execution_venue_ids` registry. Vercel compares those values with its
+own release pins and refuses the artifact on any mismatch. A `401` or `403`
+means the web and worker secrets differ. A `404` or a successful response
+without compatibility evidence means the worker image predates this contract.
+None of these checks opens a session, submits an order, or requires venue
+collateral.
 
 For a capability-secret rotation, roll out in this order:
 

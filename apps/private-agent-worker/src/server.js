@@ -2928,6 +2928,10 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return json(res, 200, {
           version: 1,
           authorized: true,
+          authorization_protocol: "ghcap_v1",
+          worker_image_digest: env("PHALA_CVM_IMAGE_DIGEST", env("PRIVATE_AGENT_IMAGE_DIGEST", null)),
+          funding_signer_public_key_b64: fundingSigningIdentity().public_key_b64 || null,
+          carry_execution_venue_ids: [...CARRY_EXECUTION_VENUES],
           checked_at: new Date().toISOString(),
         });
       }

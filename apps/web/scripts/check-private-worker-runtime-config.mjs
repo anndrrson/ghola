@@ -1,5 +1,6 @@
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, createPrivateKey, createPublicKey, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { CARRY_EXECUTION_VENUES } from "@ghola/execution-core";
 
 export function verifyPrivateWorkerRuntimeConfig(env = process.env) {
   if (env.VERCEL !== "1") return { skipped: true };
@@ -29,6 +30,7 @@ export function verifyPrivateWorkerRuntimeConfig(env = process.env) {
 
   const workerAuth = capabilitySecret(env) || executionToken(env);
   if (!workerAuth) throw new Error("Vercel release is missing private worker authentication");
+  expectedWorkerCompatibility(env);
 
   return {
     skipped: false,
@@ -71,6 +73,15 @@ export async function verifyPrivateWorkerRuntimeAuthorization(
     responseBody.authorized !== true
   ) {
     throw new Error(`Vercel release private worker authorization failed (${response.status})`);
+  }
+  const expected = expectedWorkerCompatibility(env);
+  if (
+    responseBody.authorization_protocol !== "ghcap_v1" ||
+    responseBody.worker_image_digest !== expected.worker_image_digest ||
+    responseBody.funding_signer_public_key_b64 !== expected.funding_signer_public_key_b64 ||
+    !sameStrings(responseBody.carry_execution_venue_ids, CARRY_EXECUTION_VENUES)
+  ) {
+    throw new Error("Vercel release private worker compatibility evidence does not match this deployment");
   }
   return { ...config, worker_authorization: "verified" };
 }
@@ -143,6 +154,50 @@ function consistentAlias(env, primaryKey, legacyKey, label) {
     throw new Error(`Vercel release ${label} aliases disagree`);
   }
   return primary || legacy;
+}
+
+function expectedWorkerCompatibility(env) {
+  const imageDigest = first(env,
+    "GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST",
+    "GHOLA_PRIVATE_AGENT_IMAGE_DIGEST",
+    "PHALA_CVM_IMAGE_DIGEST",
+  ).toLowerCase();
+  if (!/^sha256:[0-9a-f]{64}$/.test(imageDigest)) {
+    throw new Error("Vercel release is missing a valid private worker image digest pin");
+  }
+  const fundingSigningKey = consistentAlias(env,
+    "GHOLA_PRIVATE_AGENT_FUNDING_SIGNING_KEY",
+    "PRIVATE_AGENT_FUNDING_SIGNING_KEY",
+    "private worker funding signer",
+  );
+  if (!fundingSigningKey) {
+    throw new Error("Vercel release is missing the private worker funding signer pin");
+  }
+  let fundingSignerPublicKey;
+  try {
+    const privateKey = createPrivateKey({
+      key: Buffer.from(fundingSigningKey, "base64"),
+      format: "der",
+      type: "pkcs8",
+    });
+    if (privateKey.asymmetricKeyType !== "ed25519") throw new Error("wrong key type");
+    fundingSignerPublicKey = createPublicKey(privateKey).export({
+      format: "der",
+      type: "spki",
+    }).toString("base64");
+  } catch {
+    throw new Error("Vercel release has an invalid private worker funding signer pin");
+  }
+  return {
+    worker_image_digest: imageDigest,
+    funding_signer_public_key_b64: fundingSignerPublicKey,
+  };
+}
+
+function sameStrings(value, expected) {
+  return Array.isArray(value) &&
+    value.length === expected.length &&
+    expected.every((item, index) => value[index] === item);
 }
 
 function stableJson(value) {

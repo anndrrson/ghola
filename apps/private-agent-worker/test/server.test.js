@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { ed25519 } from "@noble/curves/ed25519";
 import { Keypair } from "@solana/web3.js";
 import { privateKeyToAccount } from "viem/accounts";
-import { CORE_PERP_VENUES, venueAdapterCapability } from "@ghola/execution-core";
+import { CARRY_EXECUTION_VENUES, CORE_PERP_VENUES, venueAdapterCapability } from "@ghola/execution-core";
 import {
   createPrivateAgentWorkerServer,
   loadRecipient,
@@ -463,6 +463,7 @@ describe("private agent worker", () => {
   it("proves web-to-worker authorization without submitting an order", async () => {
     process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
     process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    process.env.PHALA_CVM_IMAGE_DIGEST = `sha256:${"a".repeat(64)}`;
     const path = "/.well-known/private-agent-authorization";
     const body = {
       version: 1,
@@ -484,10 +485,13 @@ describe("private agent worker", () => {
     });
 
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json().then(({ version, authorized }) => ({ version, authorized })), {
-      version: 1,
-      authorized: true,
-    });
+    const proof = await response.json();
+    assert.equal(proof.version, 1);
+    assert.equal(proof.authorized, true);
+    assert.equal(proof.authorization_protocol, "ghcap_v1");
+    assert.equal(proof.worker_image_digest, process.env.PHALA_CVM_IMAGE_DIGEST);
+    assert.match(proof.funding_signer_public_key_b64, /^[A-Za-z0-9+/]+={0,2}$/);
+    assert.deepEqual(proof.carry_execution_venue_ids, CARRY_EXECUTION_VENUES);
 
     const replay = await fetch(`${baseUrl}${path}`, {
       method: "POST",
