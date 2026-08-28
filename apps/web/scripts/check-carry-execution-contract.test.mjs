@@ -121,6 +121,19 @@ test("rejects recovery that ignores its exact reduce-only no-submit proof", () =
   );
 });
 
+test("rejects partial exit recovery proven for only one venue pair", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestratorTest: sources.multiLegOrchestratorTest.replaceAll(
+        "reconciles a partial reduce-only completion for every ordered execution pair",
+        "reconciles a partial reduce-only completion for one pair",
+      ),
+    }),
+    /carry_partial_completion_pair_matrix_missing/,
+  );
+});
+
 test("rejects recovery no-submit proof detached from the sealed account", () => {
   assert.throws(
     () => checkCarryExecutionContract({

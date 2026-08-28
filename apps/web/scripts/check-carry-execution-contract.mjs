@@ -240,7 +240,7 @@ export function checkCarryExecutionContract(sources) {
   );
   requireText("multiLegOrchestrator", "proof?.broadcast_performed === true", "carry_recovery_live_broadcast_gate_missing");
   requireText("multiLegOrchestratorTest", "rejects a mismatched target", "carry_recovery_exact_target_test_missing");
-  requireText("multiLegOrchestratorTest", "reconciles a partial reduce-only completion without reopening the filled leg", "carry_partial_completion_child_test_missing");
+  requireText("multiLegOrchestratorTest", "reconciles a partial reduce-only completion for every ordered execution pair", "carry_partial_completion_pair_matrix_missing");
   requireCount("multiLegOrchestrator", "await verifyRecoveryOrderNoSubmit({", 2, "carry_recovery_exact_no_submit_gate_missing");
   requireText("multiLegOrchestrator", "receipt?.checks?.transaction_broadcast !== false", "carry_recovery_no_broadcast_proof_missing");
   requireText("multiLegOrchestrator", "shape.reduce_only !== true", "carry_recovery_reduce_only_proof_missing");

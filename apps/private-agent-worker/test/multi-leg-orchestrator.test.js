@@ -820,117 +820,129 @@ test("recovers a Carry Position saga directly from its sealed venue context", as
   assert.equal(unwind.execution.encrypted_execution_vault.ciphertext, "aster-sealed");
 });
 
-test("reconciles a partial reduce-only completion without reopening the filled leg", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-exit-completion-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const state = createWorkerState(dir);
-  const sagaId = "saga:carry:exit:0001";
-  const asterLeg = `${sagaId}:aster`;
-  const lighterLeg = `${sagaId}:lighter`;
-  const instruction = (venue, side) => ({
-    version: 1,
-    kind: "ghola_private_execution_instruction",
-    venue_id: venue,
-    operation_class: "limit_order",
-    order: { market: venue === "lighter" ? "BTC" : "BTC-PERP", side, base_size: "0.001", limit_price: "10000", reduce_only: true, tif: "Ioc" },
-  });
-  const created = await createDurableMultiLegSaga({
-    state,
-    definition: {
+for (const [filledVenue, completionVenue] of CARRY_EXECUTION_VENUES.flatMap((filledVenue) =>
+  CARRY_EXECUTION_VENUES
+    .filter((completionVenue) => completionVenue !== filledVenue)
+    .map((completionVenue) => [filledVenue, completionVenue]),
+)) {
+  test(`reconciles a partial reduce-only completion for every ordered execution pair: ${filledVenue} then ${completionVenue}`, async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), `ghola-carry-exit-${filledVenue}-${completionVenue}-`));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const state = createWorkerState(dir);
+    const suffix = `${filledVenue}:${completionVenue}`;
+    const sagaId = `saga:carry:exit:${suffix}`;
+    const filledLeg = `${sagaId}:${filledVenue}`;
+    const completionLeg = `${sagaId}:${completionVenue}`;
+    const policyCommitment = `policy:carry:exit:${suffix}`;
+    const instruction = (venue, side) => ({
       version: 1,
-      saga_id: sagaId,
-      idempotency_key: "idem:carry:exit:0001",
-      plan_commitment: "plan:carry:exit:0001",
-      strategy_id: "exposure_rebalance",
-      recovery_mode: "complete_reduce_only",
-      max_unhedged_ms: 1_000,
-      max_hedge_error_micro_usdc: 0,
-      now_ms: NOW,
-      legs: [
-        { leg_id: asterLeg, venue_id: "aster", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "sell", notional_micro_usdc: 10_000_000 },
-        { leg_id: lighterLeg, venue_id: "lighter", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "buy", notional_micro_usdc: 10_000_000 },
-      ],
-    },
-    execution_context: {
-      version: 1,
-      carry_position_id: "carry:position:exit:0001",
-      owner_commitment: "owner:carry:exit:0001",
-      policy_commitment: "policy:carry:exit:0001",
-      session_policy: { policy_commitment: "policy:carry:exit:0001", market_allowlist: ["BTC", "BTC-PERP"], max_notional_bucket: "25", max_order_count: 4, max_slippage_bps: 10 },
-      venue_access: { aster: { status: "ready" }, lighter: { status: "ready" } },
-      legs: [
-        { leg_id: asterLeg, work_order_commitment: "work:carry:exit:aster", instruction: instruction("aster", "sell") },
-        { leg_id: lighterLeg, work_order_commitment: "work:carry:exit:lighter", instruction: instruction("lighter", "buy") },
-      ],
-    },
+      kind: "ghola_private_execution_instruction",
+      venue_id: venue,
+      operation_class: "limit_order",
+      order: { market: venue === "lighter" ? "BTC" : "BTC-PERP", side, base_size: "0.001", limit_price: "10000", reduce_only: true, tif: "Ioc" },
+    });
+    const created = await createDurableMultiLegSaga({
+      state,
+      definition: {
+        version: 1,
+        saga_id: sagaId,
+        idempotency_key: `idem:carry:exit:${suffix}`,
+        plan_commitment: `plan:carry:exit:${suffix}`,
+        strategy_id: "exposure_rebalance",
+        recovery_mode: "complete_reduce_only",
+        max_unhedged_ms: 1_000,
+        max_hedge_error_micro_usdc: 0,
+        now_ms: NOW,
+        legs: [
+          { leg_id: filledLeg, venue_id: filledVenue, asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "sell", notional_micro_usdc: 10_000_000 },
+          { leg_id: completionLeg, venue_id: completionVenue, asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "buy", notional_micro_usdc: 10_000_000 },
+        ],
+      },
+      execution_context: {
+        version: 1,
+        carry_position_id: `carry:position:exit:${suffix}`,
+        owner_commitment: `owner:carry:exit:${suffix}`,
+        policy_commitment: policyCommitment,
+        session_policy: { policy_commitment: policyCommitment, market_allowlist: ["BTC", "BTC-PERP"], max_notional_bucket: "25", max_order_count: 4, max_slippage_bps: 10 },
+        venue_access: { [filledVenue]: { status: "ready" }, [completionVenue]: { status: "ready" } },
+        legs: [
+          { leg_id: filledLeg, work_order_commitment: `work:carry:exit:${filledVenue}`, instruction: instruction(filledVenue, "sell") },
+          { leg_id: completionLeg, work_order_commitment: `work:carry:exit:${completionVenue}`, instruction: instruction(completionVenue, "buy") },
+        ],
+      },
+    });
+    assert.equal(created.ok, true);
+    await apply(state, sagaId, 1, "preflight_passed", { leg_id: filledLeg });
+    await apply(state, sagaId, 2, "preflight_passed", { leg_id: completionLeg });
+    await apply(state, sagaId, 3, "submission_started");
+    await apply(state, sagaId, 4, "leg_fill", { leg_id: filledLeg, cumulative_filled_micro_usdc: 10_000_000 });
+    await apply(state, sagaId, 5, "leg_failed", { leg_id: completionLeg, failure_code: "venue_rejected" });
+    const active = await state.getMultiLegSaga(sagaId);
+    const calls = [];
+    let submissions = 0;
+    const executeOrder = async (args) => {
+      calls.push(args);
+      if (args.operation_class === "reconcile") {
+        return { status: "filled", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.001" } };
+      }
+      submissions += 1;
+      return { status: "open", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: false, final_fill_proven: false, filled_base_size: "0.0004" } };
+    };
+    const fetchImpl = async () => ({
+      ok: true,
+      json: async () => ({
+        BTC: "10000",
+        markPrice: "10000",
+        order_book_details: [{ symbol: "BTC", mark_price: "10000" }],
+      }),
+    });
+    const rejected = await recoverDueMultiLegSagas({
+      state,
+      now_ms: active.unhedged_deadline_ms - 2,
+      recipient: { recipient_id: "did:key:carry-exit" },
+      executeOrder,
+      verifyOrder: async (args) => recoveryVerification(args, {
+        order_shape: { ...recoveryVerification(args).order_shape, reduce_only: false },
+      }),
+      fetchImpl,
+      env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+    });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.recovered[0].error, "saga_recovery_no_submit_mismatch");
+    assert.equal(submissions, 0);
+    const first = await recoverDueMultiLegSagas({
+      state,
+      now_ms: active.unhedged_deadline_ms - 1,
+      recipient: { recipient_id: "did:key:carry-exit" },
+      executeOrder,
+      verifyOrder: async (args) => recoveryVerification(args),
+      fetchImpl,
+      env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+    });
+    assert.equal(first.ok, false);
+    assert.equal(submissions, 1);
+    const recovered = await recoverDueMultiLegSagas({
+      state,
+      now_ms: active.unhedged_deadline_ms,
+      recipient: { recipient_id: "did:key:carry-exit" },
+      executeOrder,
+      verifyOrder: async (args) => recoveryVerification(args),
+      fetchImpl,
+      env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+    });
+    assert.equal(recovered.ok, true);
+    assert.equal(recovered.recovered[0].saga.status, "reconciled");
+    assert.equal(submissions, 1);
+    const completionOrders = calls.filter((call) => call.instruction?.order?.reduce_only === true);
+    assert.equal(completionOrders.length, 1);
+    assert.equal(completionOrders[0].venue_id, completionVenue);
+    assert.equal(completionOrders[0].instruction.order.side, "buy");
+    const childReconcile = calls.find((call) => call.instruction?.reconcile?.target_work_order_commitment === completionOrders[0].work_order_commitment);
+    assert.equal(Boolean(childReconcile), true);
+    const accounting = await readDurableRecoveryAccounting({ state, saga_id: sagaId, leg_id: completionLeg, action: "completion" });
+    assert.equal(accounting.executions[0].applied_filled_micro_usdc, 10_000_000);
   });
-  assert.equal(created.ok, true);
-  await apply(state, sagaId, 1, "preflight_passed", { leg_id: asterLeg });
-  await apply(state, sagaId, 2, "preflight_passed", { leg_id: lighterLeg });
-  await apply(state, sagaId, 3, "submission_started");
-  await apply(state, sagaId, 4, "leg_fill", { leg_id: asterLeg, cumulative_filled_micro_usdc: 10_000_000 });
-  await apply(state, sagaId, 5, "leg_failed", { leg_id: lighterLeg, failure_code: "venue_rejected" });
-  const active = await state.getMultiLegSaga(sagaId);
-  const calls = [];
-  let submissions = 0;
-  const executeOrder = async (args) => {
-    calls.push(args);
-    if (args.operation_class === "reconcile") {
-      return { status: "filled", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.001" } };
-    }
-    submissions += 1;
-    return { status: "open", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: false, final_fill_proven: false, filled_base_size: "0.0004" } };
-  };
-  const fetchImpl = async () => ({
-    ok: true,
-    json: async () => ({ order_book_details: [{ symbol: "BTC", mark_price: "10000" }] }),
-  });
-  const rejected = await recoverDueMultiLegSagas({
-    state,
-    now_ms: active.unhedged_deadline_ms - 2,
-    recipient: { recipient_id: "did:key:carry-exit" },
-    executeOrder,
-    verifyOrder: async (args) => recoveryVerification(args, {
-      order_shape: { ...recoveryVerification(args).order_shape, reduce_only: false },
-    }),
-    fetchImpl,
-    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
-  });
-  assert.equal(rejected.ok, false);
-  assert.equal(rejected.recovered[0].error, "saga_recovery_no_submit_mismatch");
-  assert.equal(submissions, 0);
-  const first = await recoverDueMultiLegSagas({
-    state,
-    now_ms: active.unhedged_deadline_ms - 1,
-    recipient: { recipient_id: "did:key:carry-exit" },
-    executeOrder,
-    verifyOrder: async (args) => recoveryVerification(args),
-    fetchImpl,
-    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
-  });
-  assert.equal(first.ok, false);
-  assert.equal(submissions, 1);
-  const recovered = await recoverDueMultiLegSagas({
-    state,
-    now_ms: active.unhedged_deadline_ms,
-    recipient: { recipient_id: "did:key:carry-exit" },
-    executeOrder,
-    verifyOrder: async (args) => recoveryVerification(args),
-    fetchImpl,
-    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
-  });
-  assert.equal(recovered.ok, true);
-  assert.equal(recovered.recovered[0].saga.status, "reconciled");
-  assert.equal(submissions, 1);
-  const completionOrders = calls.filter((call) => call.instruction?.order?.reduce_only === true);
-  assert.equal(completionOrders.length, 1);
-  assert.equal(completionOrders[0].venue_id, "lighter");
-  assert.equal(completionOrders[0].instruction.order.side, "buy");
-  const childReconcile = calls.find((call) => call.instruction?.reconcile?.target_work_order_commitment === completionOrders[0].work_order_commitment);
-  assert.equal(Boolean(childReconcile), true);
-  const accounting = await readDurableRecoveryAccounting({ state, saga_id: sagaId, leg_id: lighterLeg, action: "completion" });
-  assert.equal(accounting.executions[0].applied_filled_micro_usdc, 10_000_000);
-});
+}
 
 function recoveryVerification(args, overrides = {}) {
   const order = args.instruction?.order || {};
