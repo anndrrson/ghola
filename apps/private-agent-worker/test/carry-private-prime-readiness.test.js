@@ -94,8 +94,24 @@ test("upgrades only matching durable paired lifecycle evidence to live-proven", 
   assert.equal(result.live_paired_lifecycle_proven, true);
   assert.equal(result.paired_lifecycle.final_flat_zero_orders, true);
   assert.equal(result.paired_lifecycle.realized_net_value_micro_usdc, 34);
+  assert.match(result.paired_lifecycle.creation_input_evidence_commitment, /^carry:creation-inputs:[0-9a-f]{64}$/);
   assert.equal(result.paired_lifecycle.value_attribution.variance_from_modeled_micro_usdc, -166);
   assert.deepEqual(result.paired_lifecycle.venue_ids, ["hyperliquid", "aster"]);
+});
+
+test("keeps live proof blocked without exact creation-input lineage", () => {
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: readinessProof({ capital_ready: true }),
+    shadow_qualification: shadowQualification(),
+    carry_supervision: healthySupervision(),
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    lifecycle_proof: lifecycleProof({ creation_input_evidence_commitment: null }),
+    now_ms: NOW,
+  });
+  assert.equal(result.proof_level, "pre_broadcast_readiness");
+  assert.equal(result.live_paired_lifecycle_proven, false);
+  assert.equal(result.paired_lifecycle.creation_input_evidence_commitment, null);
 });
 
 test("never lets aggregate readiness outlive its paired lifecycle proof", () => {
@@ -673,6 +689,7 @@ function lifecycleProof(overrides = {}) {
     value_ledger_finalized: true,
     collateral_route_coverage_proven: true,
     collateral_route_evidence_commitment: `carry:transfer-routes:evidence:${"b".repeat(40)}`,
+    creation_input_evidence_commitment: `carry:creation-inputs:${"c".repeat(64)}`,
     realized_net_value_micro_usdc: 34,
     value_attribution: lifecycleValueAttribution(),
     ambiguity_retry_count: 0,

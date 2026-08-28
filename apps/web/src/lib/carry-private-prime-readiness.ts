@@ -116,6 +116,7 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && pairedLifecycle.owner_only_transfers === true
     && pairedLifecycle.owner_only_withdrawals === true
     && pairedLifecycle.transaction_broadcast === false
+    && /^carry:creation-inputs:[0-9a-f]{64}$/.test(String(pairedLifecycle.creation_input_evidence_commitment || ""))
     && /^carry:release:material:[0-9a-f]{64}$/.test(String(pairedLifecycle.worker_material_commitment || ""))
     && /^carry:lifecycle-proof:evidence:[0-9a-f]{64}$/.test(String(pairedLifecycle.evidence_commitment || ""));
   const proofBoundaryValid = (value.proof_level === "pre_broadcast_readiness"

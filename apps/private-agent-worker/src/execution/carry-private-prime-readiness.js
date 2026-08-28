@@ -169,6 +169,7 @@ function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {
     && Number.isSafeInteger(proof?.realized_net_value_micro_usdc)
     && valueAttribution?.realized.net_value_micro_usdc === proof.realized_net_value_micro_usdc
     && valueAttribution?.realized_total_cost_micro_usdc === proof?.value_attribution?.realized_total_cost_micro_usdc
+    && /^carry:creation-inputs:[0-9a-f]{64}$/.test(String(proof?.creation_input_evidence_commitment || ""))
     && /^carry:release:material:[0-9a-f]{64}$/.test(String(proof?.worker_material_commitment || ""))
     && /^carry:lifecycle-proof:evidence:[0-9a-f]{64}$/.test(String(proof?.evidence_commitment || ""));
   return Object.freeze({
@@ -190,6 +191,7 @@ function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {
     owner_only_transfers: true,
     owner_only_withdrawals: true,
     transaction_broadcast: false,
+    creation_input_evidence_commitment: verified ? proof.creation_input_evidence_commitment : null,
     worker_material_commitment: verified ? proof.worker_material_commitment : null,
     evidence_commitment: verified ? proof.evidence_commitment : null,
   });

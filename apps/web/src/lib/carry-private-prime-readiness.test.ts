@@ -57,6 +57,11 @@ describe("private-prime readiness", () => {
     expect(carryPrivatePrimeSummary(proof({
       proof_level: "live_paired_lifecycle",
       live_paired_lifecycle_proven: true,
+      paired_lifecycle: pairedLifecycle({ creation_input_evidence_commitment: null }),
+    }), NOW).status).toBe("invalid");
+    expect(carryPrivatePrimeSummary(proof({
+      proof_level: "live_paired_lifecycle",
+      live_paired_lifecycle_proven: true,
       paired_lifecycle: pairedLifecycle({
         value_attribution: lifecycleValueAttribution({ fees_micro_usdc: 19 }),
       }),
@@ -249,6 +254,7 @@ function pairedLifecycle(overrides: Record<string, unknown> = {}) {
     owner_only_transfers: true,
     owner_only_withdrawals: true,
     transaction_broadcast: false,
+    creation_input_evidence_commitment: `carry:creation-inputs:${"c".repeat(64)}`,
     worker_material_commitment: `carry:release:material:${"a".repeat(64)}`,
     evidence_commitment: `carry:lifecycle-proof:evidence:${"b".repeat(64)}`,
     ...overrides,

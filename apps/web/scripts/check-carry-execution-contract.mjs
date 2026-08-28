@@ -521,6 +521,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifier", "carryCreationInputEvidenceCommitment(creationInputs)", "carry_release_creation_commitment_gate_missing");
   requireText("evidenceVerifier", "leg.account_commitment === readinessVenue?.account_commitment", "carry_release_creation_account_binding_missing");
   requireText("evidenceVerifierTest", "rejects creation evidence detached from its exact venue risk and account inputs", "carry_release_creation_input_verifier_test_missing");
+  requireText("releaseMaterial", "creation_input_evidence_commitment: material.creation_input_evidence.evidence_commitment", "carry_lifecycle_creation_input_commitment_missing");
+  requireText("releaseMaterial", "/^carry:creation-inputs:[0-9a-f]{64}$/", "carry_lifecycle_creation_input_gate_missing");
+  requireText("privatePrimeReadiness", "proof?.creation_input_evidence_commitment", "carry_private_prime_creation_input_gate_missing");
+  requireText("privatePrimeReadiness", "creation_input_evidence_commitment: verified ? proof.creation_input_evidence_commitment : null", "carry_private_prime_creation_input_output_missing");
+  requireText("privatePrimeReadinessTest", "without exact creation-input lineage", "carry_private_prime_creation_input_test_missing");
+  requireText("webPrivatePrimeReadiness", "pairedLifecycle.creation_input_evidence_commitment", "carry_private_prime_ui_creation_input_gate_missing");
   requireText("preflightTest", "rejects cross-owner sealed venue access before order verification", "carry_preflight_owner_binding_test_missing");
   requireText("coreCarry", "collateral_basis_risk_bps", "collateral_basis_stress_missing");
   requireText("coreCarry", "contract_data_skew_exceeded", "carry_contract_skew_model_missing");

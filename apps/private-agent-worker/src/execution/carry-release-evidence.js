@@ -62,6 +62,7 @@ export async function recordCompletedCarryLifecycleProof({
     value_ledger_finalized: true,
     collateral_route_coverage_proven: true,
     collateral_route_evidence_commitment: material.collateral_route_readiness.evidence_commitment,
+    creation_input_evidence_commitment: material.creation_input_evidence.evidence_commitment,
     ambiguity_retry_count: 0,
     owner_only_funding: true,
     owner_only_transfers: true,
@@ -142,6 +143,7 @@ export function assessCompletedCarryLifecycleProof({
     && proof.value_ledger_finalized === true
     && proof.collateral_route_coverage_proven === true
     && /^carry:transfer-routes:evidence:[0-9a-f]{40}$/.test(String(proof.collateral_route_evidence_commitment || ""))
+    && /^carry:creation-inputs:[0-9a-f]{64}$/.test(String(proof.creation_input_evidence_commitment || ""))
     && proof.ambiguity_retry_count === 0
     && proof.owner_only_funding === true
     && proof.owner_only_transfers === true

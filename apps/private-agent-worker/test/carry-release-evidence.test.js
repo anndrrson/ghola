@@ -161,6 +161,7 @@ test("records a durable owner- and image-bound paired lifecycle proof", async ()
   assert.equal(recorded.proof.final_flat_zero_orders, true);
   assert.equal(recorded.proof.collateral_route_coverage_proven, true);
   assert.match(recorded.proof.collateral_route_evidence_commitment, /^carry:transfer-routes:evidence:/);
+  assert.match(recorded.proof.creation_input_evidence_commitment, /^carry:creation-inputs:[0-9a-f]{64}$/);
   assert.equal(recorded.proof.ambiguity_retry_count, 0);
   assert.deepEqual(recorded.proof.value_attribution, {
     modeled: {

@@ -1198,6 +1198,26 @@ test("rejects Carry creation detached from exact shadow and account inputs", () 
     }),
     /carry_release_creation_account_binding_missing/,
   );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replace(
+        "creation_input_evidence_commitment: material.creation_input_evidence.evidence_commitment",
+        "creation_input_evidence_commitment: null",
+      ),
+    }),
+    /carry_lifecycle_creation_input_commitment_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivatePrimeReadiness: sources.webPrivatePrimeReadiness.replace(
+        "pairedLifecycle.creation_input_evidence_commitment",
+        "null",
+      ),
+    }),
+    /carry_private_prime_ui_creation_input_gate_missing/,
+  );
 });
 
 test("rejects release qualification adapters detached from the capability registry", () => {
