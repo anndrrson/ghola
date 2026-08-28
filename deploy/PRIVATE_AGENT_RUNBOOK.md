@@ -258,6 +258,19 @@ runtime policy caps, and any already-live pooled credentials. Phala sealed env
 updates replace the worker env set for this CVM, so the installer refuses
 non-dry updates without this full env file.
 
+Audit the complete worker env and Preview authorization before any replacement:
+
+```bash
+node scripts/audit-phala-worker-env.mjs \
+  --worker-env .dev/phala-worker.env \
+  --web-env .dev/vercel-preview.env
+```
+
+The audit is read-only. It validates durable state and explicit risk caps,
+requires matching image pins, and compares authorization with short SHA-256
+fingerprints without printing secret values. A failing audit must block the
+Phala update; partial sealed-env updates can erase otherwise working settings.
+
 The script validates credential shape, merges the selected pooled credentials
 into the full worker env, writes JSON credentials as raw compact JSON for Phala
 dotenv parsing, deletes its temp env file, then checks:

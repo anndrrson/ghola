@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { auditPhalaWorkerEnv } from "./lib/phala-worker-env.mjs";
 
 const REQUIRED_SECRET_KEYS = [
   "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON",
@@ -163,6 +164,7 @@ const cvmName =
 const pooledSealedEnv = Object.fromEntries(selectedSecretKeys.map((key) => [key, pooledEnv[key]]));
 const workerSealedEnv = args.workerEnv ? readEnvFile(args.workerEnv) : {};
 const sealedEnv = { ...workerSealedEnv, ...pooledSealedEnv };
+const workerEnvAudit = args.workerEnv ? auditPhalaWorkerEnv(sealedEnv) : null;
 
 console.log(JSON.stringify({
   installing_to_cvm: cvmName,
@@ -177,6 +179,7 @@ console.log(JSON.stringify({
   validated: validation,
   pooled_sealed_env_keys: Object.keys(pooledSealedEnv),
   sealed_env_key_count: Object.keys(sealedEnv).length,
+  worker_env_audit: workerEnvAudit,
 }, null, 2));
 
 if (args.dryRun) process.exit(0);
@@ -186,6 +189,14 @@ if (!args.workerEnv) {
     "Phala sealed env updates replace the worker env set for this CVM.",
     "Pass --worker-env <full-phala-worker.env> so runtime config, image pins, funding signer, and pooled credentials are sealed together.",
   ].join("\n"));
+}
+if (!workerEnvAudit.complete) {
+  fail([
+    "Refusing to replace the Phala sealed env with an incomplete worker env.",
+    workerEnvAudit.missing.length ? `Missing: ${workerEnvAudit.missing.join(", ")}` : "",
+    workerEnvAudit.invalid.length ? `Invalid: ${workerEnvAudit.invalid.join("; ")}` : "",
+    "Run scripts/audit-phala-worker-env.mjs before retrying.",
+  ].filter(Boolean).join("\n"));
 }
 
 const prodEnv = args.vercel === false ? new Map() : pullVercelProductionEnv();
