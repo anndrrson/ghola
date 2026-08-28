@@ -4,6 +4,7 @@ import {
   CARRY_RECOVERY_POLICY,
   normalizeCarryLifecycleValueAttribution,
 } from "@ghola/execution-core";
+import { assessCompletedCarryLifecycleProof } from "./carry-release-evidence.js";
 import { verifyCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
 
 export function buildCarryPrivatePrimeReadiness({
@@ -147,11 +148,19 @@ function verifiedFailureRecovery(readiness) {
 }
 
 function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {
-  const proof = lifecycleProof?.proof;
+  const assessedLifecycle = assessCompletedCarryLifecycleProof({
+    proof: lifecycleProof?.proof,
+    owner_commitment: readiness?.owner_commitment,
+    image_digest: readiness?.image_digest,
+    asset: readiness?.asset,
+    now_ms: nowMs,
+  });
+  const proof = assessedLifecycle.ok ? assessedLifecycle.proof : null;
   const venueIds = Array.isArray(proof?.venue_ids) ? proof.venue_ids : [];
   const registryVenueIds = new Set(Array.isArray(readiness?.registry_venue_ids) ? readiness.registry_venue_ids : []);
   const valueAttribution = safeLifecycleValueAttribution(proof?.value_attribution);
   const verified = lifecycleProof?.ok === true
+    && assessedLifecycle.ok === true
     && proof?.version === 1
     && proof?.kind === "ghola_carry_live_paired_lifecycle_proof"
     && proof?.network === "mainnet"

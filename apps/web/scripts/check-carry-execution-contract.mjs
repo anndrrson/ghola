@@ -925,6 +925,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("executor", "recordLifecycleProofAfterExit", "carry_lifecycle_proof_exit_hook_missing");
   requireText("privatePrimeReadiness", 'proof_level: pairedLifecycle.verified ? "live_paired_lifecycle" : "pre_broadcast_readiness"', "carry_private_prime_proof_level_missing");
   requireText("privatePrimeReadiness", "live_paired_lifecycle_proven: pairedLifecycle.verified", "carry_private_prime_live_proof_boundary_missing");
+  requireText("privatePrimeReadiness", "assessCompletedCarryLifecycleProof({", "carry_private_prime_lifecycle_commitment_verification_missing");
   requireText("privatePrimeReadiness", "Number.isSafeInteger(proof?.realized_net_value_micro_usdc)", "carry_private_prime_realized_net_gate_missing");
   requireText("privatePrimeReadiness", "realized_net_value_micro_usdc: verified ? proof.realized_net_value_micro_usdc : null", "carry_private_prime_realized_net_output_missing");
   requireText("privatePrimeReadiness", "safeLifecycleValueAttribution(proof?.value_attribution)", "carry_private_prime_value_attribution_gate_missing");
@@ -948,6 +949,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadinessTest", "refuses private-prime readiness without exact three-venue recovery policy", "carry_private_prime_recovery_test_missing");
   requireText("privatePrimeReadinessTest", "without overstating live proof", "carry_private_prime_proof_boundary_test_missing");
   requireText("privatePrimeReadinessTest", "durable paired lifecycle evidence", "carry_private_prime_live_proof_test_missing");
+  requireText("privatePrimeReadinessTest", "lifecycle proof with a valid-looking but mismatched commitment", "carry_private_prime_lifecycle_commitment_test_missing");
   requireText("privatePrimeReadinessTest", "without fresh owner-bound route evidence", "carry_private_prime_route_evidence_test_missing");
   requireText("privatePrimeReadinessTest", "valid-looking but mismatched commitment", "carry_private_prime_route_commitment_test_missing");
   requireText("privatePrimeReadinessTest", "stale or image-unbound five-venue qualification wrappers", "carry_private_prime_shadow_wrapper_test_missing");

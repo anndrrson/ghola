@@ -191,6 +191,29 @@ test("does not promote mathematically inconsistent value attribution", () => {
   assert.equal(result.paired_lifecycle.value_attribution, null);
 });
 
+test("rejects lifecycle proof with a valid-looking but mismatched commitment", () => {
+  const lifecycle = lifecycleProof();
+  lifecycle.proof.position_id = "carry:position:live:tampered";
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: {
+      ...readinessProof(),
+      ...recoveryReadiness(),
+      capital_ready: true,
+      capital_plan: capitalPlan(),
+    },
+    shadow_qualification: shadowQualification(),
+    carry_supervision: { ready: true, status: "healthy" },
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    lifecycle_proof: lifecycle,
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, true);
+  assert.equal(result.proof_level, "pre_broadcast_readiness");
+  assert.equal(result.live_paired_lifecycle_proven, false);
+  assert.equal(result.paired_lifecycle.evidence_commitment, null);
+});
+
 test("fails closed when shadow, supervision, or route evidence is missing", () => {
   const result = buildCarryPrivatePrimeReadiness({
     readiness: { ...readinessProof(), ready: false },
@@ -465,35 +488,55 @@ function refreshRouteEvidenceCommitment(evidence) {
 }
 
 function lifecycleProof(overrides = {}) {
+  const proof = {
+    version: 1,
+    kind: "ghola_carry_live_paired_lifecycle_proof",
+    network: "mainnet",
+    owner_commitment: "owner_commitment_0001",
+    worker_image_digest: IMAGE,
+    position_id: "carry:position:live:0001",
+    asset: "BTC",
+    venue_ids: ["hyperliquid", "aster"],
+    account_commitments: {
+      hyperliquid: "account:hyperliquid:0001",
+      aster: "account:aster:0001",
+    },
+    verified_at_ms: NOW - 1_000,
+    expires_at_ms: NOW + 86_400_000,
+    live_entry_exit_proven: true,
+    supervised_monitoring_proven: true,
+    final_flat_zero_orders: true,
+    value_ledger_finalized: true,
+    realized_net_value_micro_usdc: 34,
+    value_attribution: lifecycleValueAttribution(),
+    ambiguity_retry_count: 0,
+    owner_only_funding: true,
+    owner_only_transfers: true,
+    owner_only_withdrawals: true,
+    recording_transaction_broadcast: false,
+    worker_material_commitment: `carry:release:material:${"a".repeat(64)}`,
+    ...overrides,
+  };
+  proof.evidence_commitment = lifecycleProofCommitment(proof);
   return {
     ok: true,
-    proof: {
-      version: 1,
-      kind: "ghola_carry_live_paired_lifecycle_proof",
-      network: "mainnet",
-      owner_commitment: "owner_commitment_0001",
-      worker_image_digest: IMAGE,
-      position_id: "carry:position:live:0001",
-      asset: "BTC",
-      venue_ids: ["hyperliquid", "aster"],
-      verified_at_ms: NOW - 1_000,
-      expires_at_ms: NOW + 86_400_000,
-      live_entry_exit_proven: true,
-      supervised_monitoring_proven: true,
-      final_flat_zero_orders: true,
-      value_ledger_finalized: true,
-      realized_net_value_micro_usdc: 34,
-      value_attribution: lifecycleValueAttribution(),
-      ambiguity_retry_count: 0,
-      owner_only_funding: true,
-      owner_only_transfers: true,
-      owner_only_withdrawals: true,
-      recording_transaction_broadcast: false,
-      worker_material_commitment: `carry:release:material:${"a".repeat(64)}`,
-      evidence_commitment: `carry:lifecycle-proof:evidence:${"b".repeat(64)}`,
-      ...overrides,
-    },
+    proof,
   };
+}
+
+function lifecycleProofCommitment(proof) {
+  const { evidence_commitment: _ignored, ...material } = proof;
+  return `carry:lifecycle-proof:evidence:${createHash("sha256").update(stableJson(material)).digest("hex")}`;
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, child]) => child !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+    .join(",")}}`;
 }
 
 function lifecycleValueAttribution() {

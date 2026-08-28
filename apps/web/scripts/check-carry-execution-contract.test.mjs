@@ -548,6 +548,19 @@ test("rejects private-prime readiness that hard-codes live proof", () => {
   );
 });
 
+test("rejects private-prime readiness that skips lifecycle commitment verification", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replaceAll(
+        "assessCompletedCarryLifecycleProof({",
+        "trustCompletedCarryLifecycleProof({",
+      ),
+    }),
+    /carry_private_prime_lifecycle_commitment_verification_missing/,
+  );
+});
+
 test("rejects a terminal that presents private-prime status without validating worker proof", () => {
   assert.throws(
     () => checkCarryExecutionContract({
