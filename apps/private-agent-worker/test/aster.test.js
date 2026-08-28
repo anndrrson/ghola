@@ -252,6 +252,43 @@ test("reconciles by the exact client order id", async () => {
   assert.equal(result.final_proof.final_venue_execution_proven, true);
 });
 
+test("keeps explicit Aster reconciliation bound to the original order across read failures", async () => {
+  const targets = [];
+  let reads = 0;
+  const result = await submitAndReconcileAsterExecution({
+    credential: credential(),
+    instruction: {
+      version: 1,
+      kind: "ghola_private_execution_instruction",
+      venue_id: "aster",
+      operation_class: "reconcile",
+      reconcile: { market: "BTC-PERP", target_client_order_id: "ghola-original-0007" },
+    },
+    clientOrderId: "ghola-reconcile-0007",
+    env: ENV,
+    now: () => 1_800_000_000_000,
+    sleep: async () => {},
+    fetchImpl: async (url, init) => {
+      assert.equal(init.method, "GET");
+      targets.push(new URL(url).searchParams.get("origClientOrderId"));
+      reads += 1;
+      if (reads === 1) throw new Error("temporary read failure");
+      return jsonResponse({
+        symbol: "BTCUSDT",
+        clientOrderId: "ghola-original-0007",
+        orderId: 47,
+        status: "FILLED",
+        executedQty: "0.01",
+        avgPrice: "60000",
+      });
+    },
+  });
+  assert.deepEqual(targets, ["ghola-original-0007", "ghola-original-0007"]);
+  assert.equal(result.status, "filled");
+  assert.equal(result.reconciliation.reconcileOnly, true);
+  assert.equal(result.reconciliation.submission_retry_count, 0);
+});
+
 test("routes Aster through durable policy and idempotency state in dry-run", async (t) => {
   const old = { ...process.env };
   const dir = mkdtempSync(join(tmpdir(), "ghola-aster-route-"));

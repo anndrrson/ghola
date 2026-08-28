@@ -400,3 +400,43 @@ test("reconciles the exact Lighter client order index", async () => {
     else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
   }
 });
+
+test("keeps explicit Lighter reconciliation bound to the original order across read failures", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "read_only";
+  const targets = [];
+  let reads = 0;
+  try {
+    const result = await submitAndReconcileLighterExecution({
+      credential: credential(),
+      instruction: {
+        version: 1,
+        kind: "ghola_private_execution_instruction",
+        venue_id: "lighter",
+        operation_class: "reconcile",
+        reconcile: { market: "BTC", target_client_order_index: 77 },
+      },
+      clientOrderIndex: 91,
+      now: () => 1_800_000_000_000,
+      sleep: async () => {},
+      runner: async (payload) => {
+        assert.equal(payload.action, "reconcile");
+        targets.push(payload.client_order_index);
+        reads += 1;
+        if (reads === 1) throw new Error("temporary read failure");
+        return { order: { status: "filled", order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" } };
+      },
+    });
+    assert.deepEqual(targets, [77, 77]);
+    assert.equal(result.status, "filled");
+    assert.equal(result.reconciliation.reconcileOnly, true);
+    assert.equal(result.reconciliation.submission_retry_count, 0);
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});

@@ -212,7 +212,7 @@ export async function submitLighterExecution({ credential, instruction, clientOr
     return reconcileLighterExecution({
       credential,
       clientOrderIndex: integer(target, "lighter reconcile target is invalid"),
-      market: instruction.reconcile?.target_market,
+      market: instruction.reconcile?.target_market || instruction.reconcile?.market || instruction.reconcile?.product_id,
       runner,
     });
   }
@@ -250,20 +250,35 @@ export async function submitAndReconcileLighterExecution({
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   env = process.env,
 }) {
-  let submitted;
+  const reconcileOnly = instruction?.operation_class === "reconcile";
+  const reconciliationClientOrderIndex = reconcileOnly
+    ? integer(instruction?.reconcile?.target_client_order_index, "lighter reconcile target is invalid")
+    : integer(clientOrderIndex, "lighter client order index is invalid");
+  const reconciliationMarket = reconcileOnly
+    ? instruction?.reconcile?.target_market || instruction?.reconcile?.market || instruction?.reconcile?.product_id
+    : instruction?.order?.market;
+  let submitted = reconcileOnly ? {
+    status: "outcome_unknown",
+    provider_ref_seed: { venue: "lighter", client_order_index: reconciliationClientOrderIndex, tx_hash: null },
+    result_seed: { kind: "lighter_reconcile_started" },
+    fills: [],
+    final_proof: null,
+  } : null;
   let submissionResponseAmbiguous = false;
-  try {
-    submitted = await submitLighterExecution({ credential, instruction, clientOrderIndex, runner });
-  } catch (error) {
-    if (error?.code !== "submission_ambiguous") throw error;
-    submissionResponseAmbiguous = true;
-    submitted = {
-      status: "outcome_unknown",
-      provider_ref_seed: { venue: "lighter", client_order_index: clientOrderIndex, tx_hash: null },
-      result_seed: { kind: "lighter_submission_response_ambiguous" },
-      fills: [],
-      final_proof: null,
-    };
+  if (!reconcileOnly) {
+    try {
+      submitted = await submitLighterExecution({ credential, instruction, clientOrderIndex, runner });
+    } catch (error) {
+      if (error?.code !== "submission_ambiguous") throw error;
+      submissionResponseAmbiguous = true;
+      submitted = {
+        status: "outcome_unknown",
+        provider_ref_seed: { venue: "lighter", client_order_index: reconciliationClientOrderIndex, tx_hash: null },
+        result_seed: { kind: "lighter_submission_response_ambiguous" },
+        fills: [],
+        final_proof: null,
+      };
+    }
   }
   if (submitted.final_proof?.final_venue_execution_proven === true) return submitted;
   const timeout = boundedMs(env.PRIVATE_AGENT_LIGHTER_RECONCILE_TIMEOUT_MS, 250, 5_000, 1_200);
@@ -279,8 +294,8 @@ export async function submitAndReconcileLighterExecution({
     try {
       const reconciled = await reconcileLighterExecution({
         credential,
-        clientOrderIndex,
-        market: instruction?.order?.market,
+        clientOrderIndex: reconciliationClientOrderIndex,
+        market: reconciliationMarket,
         runner,
       });
       if (reconciled.final_proof?.target_client_order_matched === true) {
@@ -292,6 +307,7 @@ export async function submitAndReconcileLighterExecution({
     }
     if (last.final_proof?.final_venue_execution_proven === true) {
       return reconciledLighterResult(last, submitted, {
+        reconcileOnly,
         submissionResponseAmbiguous,
         readFailures,
         attempts: attempt,
@@ -303,6 +319,7 @@ export async function submitAndReconcileLighterExecution({
   }
   if (exactOrderObserved) {
     return reconciledLighterResult(last, submitted, {
+      reconcileOnly,
       submissionResponseAmbiguous,
       readFailures,
       attempts,

@@ -246,20 +246,35 @@ export async function submitAndReconcileAsterExecution({
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   env = process.env,
 }) {
-  let submitted;
+  const reconcileOnly = instruction?.operation_class === "reconcile";
+  const reconciliationClientOrderId = reconcileOnly
+    ? exactAsterClientOrderId(instruction?.reconcile?.target_client_order_id)
+    : exactAsterClientOrderId(clientOrderId);
+  const reconciliationMarket = reconcileOnly
+    ? instruction?.reconcile?.market || instruction?.reconcile?.product_id
+    : instruction?.order?.market;
+  let submitted = reconcileOnly ? {
+    status: "unknown",
+    provider_ref_seed: { venue: "aster", client_order_id: reconciliationClientOrderId, order_id: null },
+    result_seed: { kind: "aster_reconcile_started" },
+    fills: [],
+    final_proof: null,
+  } : null;
   let submissionResponseAmbiguous = false;
-  try {
-    submitted = await submitAsterExecution({ credential, instruction, clientOrderId, fetchImpl, now, env });
-  } catch (error) {
-    if (error?.code !== "submission_outcome_ambiguous") throw error;
-    submissionResponseAmbiguous = true;
-    submitted = {
-      status: "unknown",
-      provider_ref_seed: { venue: "aster", client_order_id: clientOrderId, order_id: null },
-      result_seed: { kind: "aster_submission_response_ambiguous" },
-      fills: [],
-      final_proof: null,
-    };
+  if (!reconcileOnly) {
+    try {
+      submitted = await submitAsterExecution({ credential, instruction, clientOrderId, fetchImpl, now, env });
+    } catch (error) {
+      if (error?.code !== "submission_outcome_ambiguous") throw error;
+      submissionResponseAmbiguous = true;
+      submitted = {
+        status: "unknown",
+        provider_ref_seed: { venue: "aster", client_order_id: reconciliationClientOrderId, order_id: null },
+        result_seed: { kind: "aster_submission_response_ambiguous" },
+        fills: [],
+        final_proof: null,
+      };
+    }
   }
   if (submitted.final_proof?.final_venue_execution_proven === true) return submitted;
   const timeout = boundedMs(env.PRIVATE_AGENT_ASTER_RECONCILE_TIMEOUT_MS, 250, 5_000, 1_200);
@@ -281,11 +296,11 @@ export async function submitAndReconcileAsterExecution({
           venue_id: "aster",
           operation_class: "reconcile",
           reconcile: {
-            market: instruction?.order?.market,
-            target_client_order_id: clientOrderId,
+            market: reconciliationMarket,
+            target_client_order_id: reconciliationClientOrderId,
           },
         },
-        clientOrderId,
+        clientOrderId: reconciliationClientOrderId,
         fetchImpl,
         now,
         env,
@@ -299,6 +314,7 @@ export async function submitAndReconcileAsterExecution({
     }
     if (last.final_proof?.final_venue_execution_proven === true) {
       return reconciledAsterResult(last, submitted, {
+        reconcileOnly,
         submissionResponseAmbiguous,
         readFailures,
         attempts: attempt,
@@ -310,6 +326,7 @@ export async function submitAndReconcileAsterExecution({
   }
   if (exactOrderObserved) {
     return reconciledAsterResult(last, submitted, {
+      reconcileOnly,
       submissionResponseAmbiguous,
       readFailures,
       attempts,
@@ -321,6 +338,14 @@ export async function submitAndReconcileAsterExecution({
     503,
     "submission_outcome_ambiguous",
   );
+}
+
+function exactAsterClientOrderId(value) {
+  const result = String(value || "");
+  if (!CLIENT_ORDER_ID.test(result)) {
+    throw new AsterExecutionError("aster reconciliation client order id is invalid", 422, "venue_rejected");
+  }
+  return result;
 }
 
 function reconciledAsterResult(result, submitted, reconciliation) {

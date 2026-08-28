@@ -689,6 +689,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("privateExecution", 'registeredCarryAdapter(venue_id, "no_submit_reconciliation")', "worker_carry_no_submit_registry_dispatch_missing");
   requireText("privateExecution", 'registeredCarryAdapterId(venueId, "carry_execution")', "worker_carry_funding_registry_dispatch_missing");
   requireText("privateExecution", "openAccountBoundExecutionVault", "carry_execution_vault_account_binding_missing");
+  requireCount("privateExecution", 'deriveClientOrderId("gh",', 4, "aster_client_order_length_guard_missing");
   requireText("privateExecution", "opened.associatedDataText !== expectedAad", "carry_execution_vault_exact_aad_missing");
   requireText("privateExecution", '`account:${accountCommitment}`', "carry_execution_vault_account_commitment_missing");
   forbidText("privateExecution", 'aadPrefix: "ghola/hyperliquid-execution-vault-v1"', "hyperliquid_prefix_only_vault_open_forbidden");
@@ -708,10 +709,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("lighter", "submission_retry_count: 0", "lighter_ambiguous_submit_retry_guard_missing");
   requireText("aster", "const maxAttempts = Math.max", "aster_reconciliation_bound_missing");
   requireText("lighter", "const maxAttempts = Math.max", "lighter_reconciliation_bound_missing");
+  requireText("aster", "clientOrderId: reconciliationClientOrderId", "aster_reconciliation_target_drift_guard_missing");
+  requireText("lighter", "clientOrderIndex: reconciliationClientOrderIndex", "lighter_reconciliation_target_drift_guard_missing");
+  requireText("aster", "market: reconciliationMarket", "aster_reconciliation_market_drift_guard_missing");
+  requireText("lighter", "market: reconciliationMarket", "lighter_reconciliation_market_drift_guard_missing");
   requireText("asterTest", "recovers an ambiguous Aster submit response by reading the exact order without resubmitting", "aster_ambiguous_reconciliation_test_missing");
   requireText("lighterTest", "recovers an ambiguous Lighter submit response by reading the exact order without resubmitting", "lighter_ambiguous_reconciliation_test_missing");
   requireText("asterTest", "bounds exact-order reconciliation when an ambiguous Aster submit cannot be found", "aster_reconciliation_bound_test_missing");
   requireText("lighterTest", "bounds exact-order reconciliation when an ambiguous Lighter submit cannot be found", "lighter_reconciliation_bound_test_missing");
+  requireText("asterTest", "keeps explicit Aster reconciliation bound to the original order across read failures", "aster_reconciliation_target_test_missing");
+  requireText("lighterTest", "keeps explicit Lighter reconciliation bound to the original order across read failures", "lighter_reconciliation_target_test_missing");
   forbidText("aster", "submitAndReconcileAsterExecution({\n  credential,\n  instruction,\n  clientOrderId,\n  retry", "aster_retry_forbidden");
   forbidText("lighter", "submitAndReconcileLighterExecution({\n  credential,\n  instruction,\n  clientOrderIndex,\n  retry", "lighter_retry_forbidden");
 

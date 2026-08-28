@@ -1243,7 +1243,7 @@ export async function verifyAsterOrderNoSubmit({ body, recipient, state }) {
     trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
     account_usage: false,
   });
-  const clientOrderId = await state.deriveClientOrderId("ghola", body.work_order_commitment);
+  const clientOrderId = await state.deriveClientOrderId("gh", body.work_order_commitment);
   const result = await verifyAsterNoSubmit({ credential, instruction, clientOrderId });
   const providerSeed = { venue: "aster", client_order_id: clientOrderId, checks: result.checks };
   const providerRefCommitment = commitment("aster_provider_ref", providerSeed);
@@ -1933,7 +1933,9 @@ async function resolvePrivateOrderTarget(instruction, { state, venue_id, body })
     ? await state.deriveHyperliquidCloid(target)
     : venue_id === "lighter"
       ? lighterClientOrderIndex(target)
-      : await state.deriveClientOrderId("ghola", target);
+      : venue_id === "aster"
+        ? await state.deriveClientOrderId("gh", target)
+        : await state.deriveClientOrderId("ghola", target);
   if (instruction.operation_class === "reconcile") {
     const attempt = await state.getExecutionAttempt(target);
     return {

@@ -757,6 +757,30 @@ test("rejects venue recovery that can resubmit or reconcile forever after an amb
   );
 });
 
+test("rejects venue reconciliation that drifts from the exact original order", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      aster: sources.aster.replace("clientOrderId: reconciliationClientOrderId", "clientOrderId"),
+      lighter: sources.lighter.replace("clientOrderIndex: reconciliationClientOrderIndex", "clientOrderIndex"),
+    }),
+    /aster_reconciliation_target_drift_guard_missing|lighter_reconciliation_target_drift_guard_missing/,
+  );
+});
+
+test("rejects Aster client order ids that exceed the venue limit", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privateExecution: sources.privateExecution.replace(
+        'const clientOrderId = await state.deriveClientOrderId("gh", body.work_order_commitment);\n  const result = await verifyAsterNoSubmit',
+        'const clientOrderId = await state.deriveClientOrderId("ghola", body.work_order_commitment);\n  const result = await verifyAsterNoSubmit',
+      ),
+    }),
+    /aster_client_order_length_guard_missing/,
+  );
+});
+
 test("rejects five-venue shadow qualification based on one lucky snapshot", () => {
   assert.throws(
     () => checkCarryExecutionContract({
