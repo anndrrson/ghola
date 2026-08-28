@@ -42,6 +42,30 @@ export function canonicalCarryCommitmentJson(value) {
     .join(",")}}`;
 }
 
+export function carryPrivatePrimeWorkerAuthenticationMessage({
+  route_path,
+  owner_commitment,
+  asset,
+  operation_class,
+  work_order_commitment,
+  evidence_commitment,
+  checked_at_ms,
+  expires_at_ms,
+} = {}) {
+  return canonicalCarryCommitmentJson({
+    version: 1,
+    domain: "ghola-carry-private-prime-worker-authentication-v1",
+    route_path,
+    owner_commitment,
+    asset,
+    operation_class,
+    work_order_commitment,
+    evidence_commitment,
+    checked_at_ms,
+    expires_at_ms,
+  });
+}
+
 export function estimatePerpDepthExecution({
   side,
   depth_levels: depthLevels,

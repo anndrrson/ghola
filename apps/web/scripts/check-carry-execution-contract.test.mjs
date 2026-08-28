@@ -95,6 +95,32 @@ test("rejects private-prime readiness that fabricates recovery coverage", () => 
   );
 });
 
+test("rejects a gateway that forwards unauthenticated private-prime evidence", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webRoute: sources.webRoute.replaceAll(
+        "verifyCarryPrivatePrimeWorkerAuthentication({",
+        "trustCarryPrivatePrimeWorkerAuthentication({",
+      ),
+    }),
+    /carry_private_prime_gateway_authentication_missing/,
+  );
+});
+
+test("rejects a worker that emits unsigned private-prime evidence", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replaceAll(
+        "private_prime_authentication: authenticateCarryPrivatePrimeReadiness({",
+        "private_prime_authentication: { request_bound: true, mac_hex: \"trusted\" }, //",
+      ),
+    }),
+    /carry_private_prime_worker_authentication_missing/,
+  );
+});
+
 test("rejects a terminal that hides recovery qualification", () => {
   assert.throws(
     () => checkCarryExecutionContract({

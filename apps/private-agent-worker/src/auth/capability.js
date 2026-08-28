@@ -18,9 +18,9 @@ export function capabilityRequired() {
       process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY !== "false");
 }
 
-export function workerCapabilitySecret() {
-  return process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET ||
-    process.env.GHOLA_WORKER_CAPABILITY_SECRET ||
+export function workerCapabilitySecret(env = process.env) {
+  return env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET ||
+    env.GHOLA_WORKER_CAPABILITY_SECRET ||
     "";
 }
 

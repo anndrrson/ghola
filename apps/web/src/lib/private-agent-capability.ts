@@ -84,7 +84,7 @@ export function workerCapabilityExpectedFromBody(
   };
 }
 
-function workerCapabilitySecret(env: Record<string, string | undefined>): string {
+export function workerCapabilitySecret(env: Record<string, string | undefined>): string {
   const primary = env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET?.trim() ?? "";
   const legacy = env.GHOLA_WORKER_CAPABILITY_SECRET?.trim() ?? "";
   if (primary && legacy && primary !== legacy) {

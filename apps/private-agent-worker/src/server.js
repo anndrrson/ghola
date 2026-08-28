@@ -56,6 +56,7 @@ import { createAsterStablecoinConversionQuoteReader } from "./execution/carry-st
 import { createCarryDepositQuoteReader } from "./execution/carry-deposit-quote.js";
 import { createReadOnlyCarryRuntimePolicies } from "./execution/carry-runtime-risk-policies.js";
 import { buildCarryPrivatePrimeReadiness } from "./execution/carry-private-prime-readiness.js";
+import { authenticateCarryPrivatePrimeReadiness } from "./execution/carry-private-prime-authentication.js";
 import {
   loadCarryTransferRouteEvidence,
   observePreopenCarryTransferRoutes,
@@ -3028,6 +3029,11 @@ export function createPrivateAgentWorkerServer(options = {}) {
           shadow_qualification: shadowQualification,
           collateral_route_observation: routeObservation,
           private_prime_readiness: privatePrimeReadiness,
+          private_prime_authentication: authenticateCarryPrivatePrimeReadiness({
+            route_path: url.pathname,
+            body,
+            private_prime_readiness: privatePrimeReadiness,
+          }),
           carry_supervision: carrySupervision,
         });
       }
@@ -3105,6 +3111,11 @@ export function createPrivateAgentWorkerServer(options = {}) {
           diagnostic,
           shadow_qualification: shadowQualification,
           private_prime_readiness: privatePrimeReadiness,
+          private_prime_authentication: authenticateCarryPrivatePrimeReadiness({
+            route_path: url.pathname,
+            body,
+            private_prime_readiness: privatePrimeReadiness,
+          }),
           carry_supervision: carrySupervision,
         });
       }

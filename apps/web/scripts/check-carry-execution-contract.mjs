@@ -32,6 +32,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   depositQuote: "apps/private-agent-worker/src/execution/carry-deposit-quote.js",
   runtimeRiskPolicies: "apps/private-agent-worker/src/execution/carry-runtime-risk-policies.js",
   privatePrimeReadiness: "apps/private-agent-worker/src/execution/carry-private-prime-readiness.js",
+  privatePrimeAuthentication: "apps/private-agent-worker/src/execution/carry-private-prime-authentication.js",
   transferRoutes: "apps/private-agent-worker/src/execution/carry-transfer-routes.js",
   recordScan: "apps/private-agent-worker/src/execution/carry-record-scan.js",
   loopSupervisor: "apps/private-agent-worker/src/execution/carry-loop-supervisor.js",
@@ -62,6 +63,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webCollateralReview: "apps/web/src/lib/carry-collateral-review.ts",
   webPrivatePrimeReadiness: "apps/web/src/lib/carry-private-prime-readiness.ts",
   webPrivatePrimeReadinessTest: "apps/web/src/lib/carry-private-prime-readiness.test.ts",
+  webPrivatePrimeAuthentication: "apps/web/src/lib/carry-private-prime-worker-authentication.ts",
+  webPrivatePrimeAuthenticationTest: "apps/web/src/lib/carry-private-prime-worker-authentication.test.ts",
   webPerpsTurnkey: "apps/web/src/lib/perps-turnkey-provider.tsx",
   webRegistry: "apps/web/src/lib/carry-venues.ts",
   webCredentialOnboarding: "apps/web/src/lib/venue-credential-onboarding.ts",
@@ -108,6 +111,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   depositQuoteTest: "apps/private-agent-worker/test/carry-deposit-quote.test.js",
   runtimeRiskPoliciesTest: "apps/private-agent-worker/test/carry-runtime-risk-policies.test.js",
   privatePrimeReadinessTest: "apps/private-agent-worker/test/carry-private-prime-readiness.test.js",
+  privatePrimeAuthenticationTest: "apps/private-agent-worker/test/carry-private-prime-authentication.test.js",
   transferRoutesTest: "apps/private-agent-worker/test/carry-transfer-routes.test.js",
   recordScanTest: "apps/private-agent-worker/test/carry-record-scan.test.js",
   loopSupervisorTest: "apps/private-agent-worker/test/carry-loop-supervisor.test.js",
@@ -912,6 +916,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("server", "route_evidence: routeEvidence", "carry_private_prime_route_evidence_binding_missing");
   requireText("server", "readCompletedCarryLifecycleProof", "carry_private_prime_lifecycle_read_missing");
   requireText("server", "lifecycle_proof: lifecycleProof", "carry_private_prime_lifecycle_binding_missing");
+  requireCount("server", "private_prime_authentication: authenticateCarryPrivatePrimeReadiness({", 2, "carry_private_prime_worker_authentication_missing");
+  requireText("privatePrimeAuthentication", "carryPrivatePrimeWorkerAuthenticationMessage", "carry_private_prime_worker_authentication_payload_missing");
+  requireText("privatePrimeAuthentication", 'createHmac("sha256", secret)', "carry_private_prime_worker_authentication_mac_missing");
+  requireText("privatePrimeAuthentication", "workerCapabilitySecret(env)", "carry_private_prime_worker_authentication_secret_missing");
+  requireText("privatePrimeAuthenticationTest", "exact no-submit request", "carry_private_prime_worker_authentication_test_missing");
+  requireText("serverTest", "matrix.private_prime_authentication.mac_hex", "carry_private_prime_worker_authentication_http_test_missing");
   requireText("transferRoutes", "export async function observePreopenCarryTransferRoutes", "carry_preopen_route_compiler_missing");
   requireText("transferRoutes", "automatic_transfer_permitted: false", "carry_preopen_route_transfer_boundary_missing");
   requireText("transferRoutesTest", "before any position is opened", "carry_preopen_route_observation_test_missing");
@@ -955,6 +965,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadiness", "image_digest: readiness?.image_digest", "carry_private_prime_shadow_image_binding_missing");
   requireText("privatePrimeReadiness", "verifyCarryTransferRouteEvidence(routeEvidence?.evidence)", "carry_private_prime_route_commitment_verification_missing");
   requireText("coreCarry", "export function canonicalCarryCommitmentJson", "carry_private_prime_shared_canonicalizer_missing");
+  requireText("coreCarry", "export function carryPrivatePrimeWorkerAuthenticationMessage", "carry_private_prime_authentication_contract_missing");
+  requireText("coreIndex", "carryPrivatePrimeWorkerAuthenticationMessage", "carry_private_prime_authentication_contract_export_missing");
   requireText("privatePrimeReadiness", "canonicalCarryCommitmentJson(material)", "carry_private_prime_worker_canonicalizer_missing");
   requireText("webPrivatePrimeReadiness", "canonicalCarryCommitmentJson(material)", "carry_private_prime_web_canonicalizer_missing");
   requireText("webPrivatePrimeReadiness", "value.evidence_commitment === carryPrivatePrimeEvidenceCommitment(value)", "carry_private_prime_ui_commitment_verification_missing");
@@ -991,6 +1003,15 @@ export function checkCarryExecutionContract(sources) {
   requireText("webPrivatePrimeReadiness", "REC ·", "carry_private_prime_ui_recovery_display_missing");
   requireText("webPrivatePrimeReadinessTest", "rejects recovery coverage that permits ambiguous retries", "carry_private_prime_ui_recovery_test_missing");
   requireText("webPrivatePrimeReadinessTest", "without claiming tradable readiness", "carry_private_prime_ui_capital_test_missing");
+  requireText("webPrivatePrimeAuthentication", "carryPrivatePrimeWorkerAuthenticationMessage", "carry_private_prime_gateway_authentication_payload_missing");
+  requireText("webPrivatePrimeAuthentication", 'createHmac("sha256", secret)', "carry_private_prime_gateway_authentication_mac_missing");
+  requireText("webPrivatePrimeAuthentication", "timingSafeEqual(leftBytes, rightBytes)", "carry_private_prime_gateway_authentication_timing_safe_missing");
+  requireText("webPrivatePrimeAuthentication", "readiness.owner_commitment === ownerCommitment", "carry_private_prime_gateway_owner_binding_missing");
+  requireText("webPrivatePrimeAuthentication", "expiresAtMs > now_ms", "carry_private_prime_gateway_expiry_missing");
+  requireText("webPrivatePrimeAuthenticationTest", "replay under another work order", "carry_private_prime_gateway_authentication_test_missing");
+  requireText("webRoute", "verifyCarryPrivatePrimeWorkerAuthentication({", "carry_private_prime_gateway_authentication_missing");
+  requireText("webRoute", "workerCapabilitySecret(process.env) || worker.token", "carry_private_prime_gateway_authentication_secret_missing");
+  requireText("webRoute", "return response({ error: authenticated.error }, 502", "carry_private_prime_gateway_authentication_fail_closed_missing");
   requireText("webCarryBuilder", 'label="PRIVATE PRIME"', "carry_private_prime_terminal_metric_missing");
   requireText("webCarryBuilder", "carryPrivatePrimeSummary", "carry_private_prime_terminal_validation_missing");
   requireText("webCarryBuilderTest", "without claiming a live lifecycle", "carry_private_prime_terminal_test_missing");

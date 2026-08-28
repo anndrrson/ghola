@@ -42,6 +42,16 @@ export declare function buildExecutionQualityReceipt(input: unknown): Readonly<R
 export declare function aggregateExecutionQuality(input: unknown[]): Readonly<Record<string, unknown>>;
 export declare function normalizePerpContractSpec(input: unknown): Readonly<Record<string, unknown>>;
 export declare function canonicalCarryCommitmentJson(input: unknown): string;
+export declare function carryPrivatePrimeWorkerAuthenticationMessage(input: {
+  route_path?: unknown;
+  owner_commitment?: unknown;
+  asset?: unknown;
+  operation_class?: unknown;
+  work_order_commitment?: unknown;
+  evidence_commitment?: unknown;
+  checked_at_ms?: unknown;
+  expires_at_ms?: unknown;
+}): string;
 export declare function calculateMarginRunway(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryCapitalActionPlan(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryCollateralReview(input: unknown): Readonly<Record<string, unknown>>;

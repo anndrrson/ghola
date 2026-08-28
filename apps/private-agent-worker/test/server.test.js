@@ -723,6 +723,11 @@ describe("private agent worker", () => {
     assert.equal(matrix.private_prime_readiness.collateral_route_observation.verified, true);
     assert.equal(matrix.private_prime_readiness.collateral_route_observation.available_route_count, 6);
     assert.equal(matrix.private_prime_readiness.reasons.includes("collateral_route_evidence_unverified"), false);
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(matrix.private_prime_authentication).filter(([key]) => key !== "mac_hex")),
+      { version: 1, algorithm: "hmac-sha256", request_bound: true },
+    );
+    assert.match(matrix.private_prime_authentication.mac_hex, /^[0-9a-f]{64}$/);
     assert.equal(matrix.pairs.every((pair) => pair.leg_evidence.every((leg) =>
       leg.account_state.position_count === 0
       && leg.account_state.open_order_count === 0
@@ -750,6 +755,8 @@ describe("private agent worker", () => {
     assert.equal(readiness.private_prime_readiness.ready, false);
     assert.equal(readiness.private_prime_readiness.collateral_route_observation.verified, true);
     assert.equal(readiness.private_prime_readiness.reasons.includes("collateral_route_evidence_unverified"), false);
+    assert.equal(readiness.private_prime_authentication.request_bound, true);
+    assert.match(readiness.private_prime_authentication.mac_hex, /^[0-9a-f]{64}$/);
     assert.equal(readiness.capital_plan.every((item) =>
       item.position_count === 0
       && item.open_order_count === 0

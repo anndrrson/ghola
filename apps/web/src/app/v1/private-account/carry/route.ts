@@ -4,8 +4,12 @@ import {
   privateAccountOwnerFromRequest,
   unauthorized,
 } from "../_lib";
-import { workerAuthorizationHeader } from "@/lib/private-agent-capability";
+import {
+  workerAuthorizationHeader,
+  workerCapabilitySecret,
+} from "@/lib/private-agent-capability";
 import { agentPassportVenueAccessForWorker } from "@/lib/private-agent-passport";
+import { verifyCarryPrivatePrimeWorkerAuthentication } from "@/lib/carry-private-prime-worker-authentication";
 import { randomUUID } from "node:crypto";
 import { CARRY_EXECUTION_VENUES, isCarryExecutionVenue } from "@/lib/carry-venues";
 import { verifyCarryRiskMandateAuthorization } from "@/lib/carry-risk-mandate";
@@ -309,6 +313,23 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify(body),
     });
     const result = await upstream.json().catch(() => ({ error: "carry_worker_invalid" }));
+    if (upstream.ok && (action === "preflight_matrix" || action === "readiness")) {
+      const authenticated = verifyCarryPrivatePrimeWorkerAuthentication({
+        route_path: route.path,
+        body,
+        response: result,
+        secret: workerCapabilitySecret(process.env) || worker.token,
+      });
+      if (!authenticated.ok) {
+        console.error("[carry] private-prime worker authentication failed", {
+          correlation_id: correlationId,
+          action,
+          operation_class: route.operationClass,
+          duration_ms: Date.now() - startedAt,
+        });
+        return response({ error: authenticated.error }, 502, correlationId);
+      }
+    }
     console.info("[carry] request completed", {
       correlation_id: correlationId,
       action,

@@ -6,6 +6,7 @@ import {
   advanceCarryPosition,
   calculateMarginRunway,
   canonicalCarryCommitmentJson,
+  carryPrivatePrimeWorkerAuthenticationMessage,
   carryCollateralReviewMessage,
   carryRiskMandateMessage,
   compileCarryCapitalActionPlan,
@@ -33,6 +34,22 @@ test("canonicalizes Carry proof material identically across runtimes", () => {
   assert.equal(
     canonicalCarryCommitmentJson({ z: 3, a: { y: 2, x: 1 }, omitted: undefined, rows: [{ b: 2, a: 1 }] }),
     '{"a":{"x":1,"y":2},"rows":[{"a":1,"b":2}],"z":3}',
+  );
+});
+
+test("binds private-prime worker authentication to the exact request and expiring proof", () => {
+  assert.equal(
+    carryPrivatePrimeWorkerAuthenticationMessage({
+      route_path: "/carry/readiness",
+      owner_commitment: "owner_commitment_0001",
+      asset: "BTC",
+      operation_class: "readiness_read",
+      work_order_commitment: "carry_readiness_0001",
+      evidence_commitment: `carry:private-prime:${"a".repeat(40)}`,
+      checked_at_ms: NOW,
+      expires_at_ms: NOW + 5_000,
+    }),
+    `{"asset":"BTC","checked_at_ms":${NOW},"domain":"ghola-carry-private-prime-worker-authentication-v1","evidence_commitment":"carry:private-prime:${"a".repeat(40)}","expires_at_ms":${NOW + 5_000},"operation_class":"readiness_read","owner_commitment":"owner_commitment_0001","route_path":"/carry/readiness","version":1,"work_order_commitment":"carry_readiness_0001"}`,
   );
 });
 
