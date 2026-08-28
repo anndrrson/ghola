@@ -634,6 +634,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterial", "attempt?.submit_count !== 1", "carry_release_submit_count_gate_missing");
   requireText("releaseMaterial", "attempt?.ambiguity_retry_count !== 0", "carry_release_retry_count_gate_missing");
   requireText("executor", "venues: venueProof", "carry_reconciliation_venue_rows_missing");
+  requireText("executor", "assessCarryTerminalExecutionReceipt", "carry_live_terminal_receipt_gate_missing");
+  requireText("executor", "carry_execution_receipt_work_order_mismatch", "carry_live_receipt_work_order_binding_missing");
+  requireText("executor", "carry_execution_receipt_account_mismatch", "carry_live_receipt_account_binding_missing");
+  requireText("executor", "carry_execution_receipt_venue_mismatch", "carry_live_receipt_venue_binding_missing");
+  requireText("executor", "carry_execution_receipt_terminal_proof_unverified", "carry_live_receipt_terminal_proof_missing");
+  requireText("executor", "carry_exact_entry_receipt_unverified", "carry_exit_entry_receipt_revalidation_missing");
+  requireText("executor", 'proof.broadcast_performed !== true', "carry_live_receipt_broadcast_proof_missing");
+  requireText("lifecycleTest", "live Carry receipts are bound to the exact venue, account, work order, and terminal venue proof", "carry_live_terminal_receipt_test_missing");
   requireText("executor", "item.account_commitment !== expectedAccountCommitment", "carry_exit_account_lineage_gate_missing");
   requireText("reconciliation", "assessCarryFlatReconciliation", "carry_exact_flat_reconciliation_gate_missing");
   requireText("reconciliation", "carry_reconciliation_account_binding_mismatch", "carry_reconciliation_account_lineage_gate_missing");

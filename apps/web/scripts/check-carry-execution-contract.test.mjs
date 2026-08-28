@@ -950,6 +950,32 @@ test("rejects a no-submit receipt that is not bound to the verified account", ()
   );
 });
 
+test("rejects live Carry execution that trusts an unbound terminal receipt", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      executor: sources.executor.replaceAll(
+        "carry_execution_receipt_work_order_mismatch",
+        "carry_execution_receipt_work_order_ignored",
+      ),
+    }),
+    /carry_live_receipt_work_order_binding_missing/,
+  );
+});
+
+test("rejects Carry exit that skips revalidating its stored entry receipt", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      executor: sources.executor.replaceAll(
+        "carry_exact_entry_receipt_unverified",
+        "carry_exact_entry_receipt_trusted",
+      ),
+    }),
+    /carry_exit_entry_receipt_revalidation_missing/,
+  );
+});
+
 test("rejects three-venue readiness without receipt-bound exact account state", () => {
   assert.throws(
     () => checkCarryExecutionContract({

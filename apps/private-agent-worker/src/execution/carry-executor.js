@@ -174,6 +174,17 @@ export async function executeStoredCarryEntry({
       continue;
     }
     const receipt = outcome.value;
+    const receiptAssessment = assessCarryTerminalExecutionReceipt({
+      receipt,
+      venue_id: leg.venue_id,
+      work_order_commitment: leg.work_order_commitment,
+      account_commitment: record.monitoring_context.venue_access[leg.venue_id]?.account_commitment,
+      dry_run: env.PRIVATE_AGENT_VENUE_DRY_RUN === "true",
+    });
+    if (!receiptAssessment.verified) {
+      ambiguous = true;
+      continue;
+    }
     receiptByLeg[leg.leg_id] = receipt;
     await sagaEvent(state, sagaId, "leg_acknowledged", {
       leg_id: leg.leg_id,
@@ -262,7 +273,7 @@ export async function executeStoredCarryExit({
   }
   const entrySaga = record.entry_saga_id ? await state.getMultiLegSaga(record.entry_saga_id) : null;
   if (!entrySaga || entrySaga.status !== "reconciled") return denied("carry_entry_reconciliation_missing");
-  const exactBases = await exactEntryBases(state, entrySaga);
+  const exactBases = await exactEntryBases(state, entrySaga, env);
   if (!exactBases.ok) return exactBases;
 
   const startedAt = now();
@@ -348,6 +359,17 @@ export async function executeStoredCarryExit({
       continue;
     }
     const receipt = outcome.value;
+    const receiptAssessment = assessCarryTerminalExecutionReceipt({
+      receipt,
+      venue_id: leg.venue_id,
+      work_order_commitment: leg.work_order_commitment,
+      account_commitment: record.monitoring_context.venue_access[leg.venue_id]?.account_commitment,
+      dry_run: env.PRIVATE_AGENT_VENUE_DRY_RUN === "true",
+    });
+    if (!receiptAssessment.verified) {
+      ambiguous = true;
+      continue;
+    }
     receipts.push(receipt);
     receiptByLeg[leg.leg_id] = receipt;
     await sagaEvent(state, sagaId, "leg_acknowledged", { leg_id: leg.leg_id, provider_ref_commitment: receipt?.provider_ref_commitment || null }, now());
@@ -1636,13 +1658,21 @@ export function startCarryExecutionLoop({ state, recipient, verifyOrder, execute
   };
 }
 
-async function exactEntryBases(state, saga) {
+async function exactEntryBases(state, saga, env) {
   const byVenue = {};
   for (const leg of saga.legs) {
     const context = saga.execution_context?.legs?.find((item) => item.leg_id === leg.leg_id);
     const cached = context ? await state.getIdempotency?.(context.work_order_commitment) : null;
-    const attempt = context ? await state.getExecutionAttempt?.(context.work_order_commitment) : null;
-    const proof = cached?.receipt?.final_proof || attempt?.final_proof;
+    const receipt = cached?.receipt;
+    const assessment = assessCarryTerminalExecutionReceipt({
+      receipt,
+      venue_id: leg.venue_id,
+      work_order_commitment: context?.work_order_commitment,
+      account_commitment: saga.execution_context?.venue_access?.[leg.venue_id]?.account_commitment,
+      dry_run: env.PRIVATE_AGENT_VENUE_DRY_RUN === "true",
+    });
+    if (!assessment.verified) return denied(`carry_exact_entry_receipt_unverified:${leg.venue_id}`);
+    const proof = receipt.final_proof;
     const base = Number(proof?.filled_base_size);
     if (!(base > 0) || proof?.final_venue_execution_proven !== true) return denied(`carry_exact_entry_quantity_missing:${leg.venue_id}`);
     byVenue[leg.venue_id] = base;
@@ -1888,6 +1918,44 @@ function fillProgress(receipt, leg, expectedMicro, env) {
       ? Math.min(expectedMicro, reported)
       : proof?.final_fill_proven === true ? proportional : 0,
   };
+}
+
+export function assessCarryTerminalExecutionReceipt({
+  receipt,
+  venue_id: venueId,
+  work_order_commitment: workOrderCommitment,
+  account_commitment: accountCommitment,
+  dry_run: dryRun = false,
+}) {
+  const reasons = [];
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+    return Object.freeze({ verified: false, reasons: Object.freeze(["carry_execution_receipt_missing"]) });
+  }
+  if (dryRun === true) return Object.freeze({ verified: true, reasons: Object.freeze([]) });
+  const proof = receipt.final_proof;
+  if (!commitmentValue(workOrderCommitment) || receipt.work_order_commitment !== workOrderCommitment) {
+    reasons.push("carry_execution_receipt_work_order_mismatch");
+  }
+  if (!commitmentValue(accountCommitment) || receipt.account_commitment !== accountCommitment) {
+    reasons.push("carry_execution_receipt_account_mismatch");
+  }
+  if (!commitmentValue(receipt.provider_ref_commitment) || !commitmentValue(receipt.result_commitment)) {
+    reasons.push("carry_execution_receipt_commitment_missing");
+  }
+  const venueBound = receipt.venue_id === venueId
+    || (venueId === "hyperliquid" && receipt.execution_protocol === "ghola-hyperliquid-proof-v2");
+  if (!venueBound) reasons.push("carry_execution_receipt_venue_mismatch");
+  if (!proof || typeof proof !== "object" || Array.isArray(proof)
+    || proof.target_client_order_matched !== true
+    || proof.broadcast_performed !== true
+    || proof.final_venue_execution_proven !== true) {
+    reasons.push("carry_execution_receipt_terminal_proof_unverified");
+  }
+  return Object.freeze({ verified: reasons.length === 0, reasons: Object.freeze(reasons) });
+}
+
+function commitmentValue(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_.:-]{8,240}$/.test(value);
 }
 
 function isAmbiguous(error) {

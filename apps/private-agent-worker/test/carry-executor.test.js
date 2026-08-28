@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  assessCarryTerminalExecutionReceipt,
   auditCarryPositionsAfterRestart,
   executeStoredCarryEntry,
   executeStoredCarryExit,
@@ -18,6 +19,57 @@ import { signedCarryPositionInput } from "./carry-mandate-fixture.js";
 
 const NOW = 1_800_000_000_000;
 const OWNER = "owner:carry:executor:0001";
+
+test("live Carry receipts are bound to the exact venue, account, work order, and terminal venue proof", () => {
+  const args = {
+    venue_id: "aster",
+    work_order_commitment: "work:carry:receipt:aster:0001",
+    execution: { account_commitment: "account:aster:receipt:0001" },
+  };
+  const receipt = qualificationReceipt(args);
+  assert.deepEqual(assessCarryTerminalExecutionReceipt({
+    receipt,
+    venue_id: args.venue_id,
+    work_order_commitment: args.work_order_commitment,
+    account_commitment: args.execution.account_commitment,
+  }), { verified: true, reasons: [] });
+
+  for (const [reason, mutate] of [
+    ["carry_execution_receipt_work_order_mismatch", (value) => { value.work_order_commitment = "work:carry:receipt:wrong:0001"; }],
+    ["carry_execution_receipt_account_mismatch", (value) => { value.account_commitment = "account:aster:wrong:0001"; }],
+    ["carry_execution_receipt_venue_mismatch", (value) => { value.venue_id = "lighter"; }],
+    ["carry_execution_receipt_commitment_missing", (value) => { value.result_commitment = null; }],
+    ["carry_execution_receipt_terminal_proof_unverified", (value) => { value.final_proof.broadcast_performed = false; }],
+  ]) {
+    const forged = structuredClone(receipt);
+    mutate(forged);
+    const assessed = assessCarryTerminalExecutionReceipt({
+      receipt: forged,
+      venue_id: args.venue_id,
+      work_order_commitment: args.work_order_commitment,
+      account_commitment: args.execution.account_commitment,
+    });
+    assert.equal(assessed.verified, false);
+    assert.ok(assessed.reasons.includes(reason));
+  }
+});
+
+test("Hyperliquid protocol binding substitutes for its intentionally omitted venue field", () => {
+  const args = {
+    venue_id: "hyperliquid",
+    work_order_commitment: "work:carry:receipt:hyperliquid:0001",
+    execution: { account_commitment: "account:hyperliquid:receipt:0001" },
+  };
+  const receipt = qualificationReceipt(args);
+  delete receipt.venue_id;
+  receipt.execution_protocol = "ghola-hyperliquid-proof-v2";
+  assert.equal(assessCarryTerminalExecutionReceipt({
+    receipt,
+    venue_id: args.venue_id,
+    work_order_commitment: args.work_order_commitment,
+    account_commitment: args.execution.account_commitment,
+  }).verified, true);
+});
 
 test("automatic exit retries a failed restart audit before any execution sweep", async (t) => {
   let storageReady = false;
@@ -1115,7 +1167,10 @@ async function openActive(fixture) {
 
 function filledReceipt(args) {
   return {
+    version: 1,
+    venue_id: args.venue_id,
     status: "filled",
+    work_order_commitment: args.work_order_commitment,
     account_commitment: args.execution?.account_commitment,
     provider_ref_commitment: `provider:${args.venue_id}:filled`,
     final_proof: {
