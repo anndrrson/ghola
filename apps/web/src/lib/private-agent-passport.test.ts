@@ -422,11 +422,23 @@ describe("agent passport venue linking", () => {
       }
       if (url === "https://worker.example/carry/preflight-matrix") {
         matrixBodies.push(body);
+        const selectedResult = {
+          no_submit_ready: true,
+          transaction_broadcast: false,
+          creation_opportunity: authenticatedCarryOpportunity(String(body.owner_commitment || "")),
+        };
         return new Response(JSON.stringify(authenticatedPrivatePrimeResult(body, "/carry/preflight-matrix", {
           mode: "carry_execution_no_submit_matrix",
           no_submit_ready: true,
           transaction_broadcast: false,
           venues: ["hyperliquid", "lighter", "aster"].map((venue_id) => ({ venue_id, transaction_broadcast: false })),
+          selected_pair: {
+            long_venue_id: body.selected_long_venue_id,
+            short_venue_id: body.selected_short_venue_id,
+            transaction_broadcast: false,
+            error_code: null,
+            result: selectedResult,
+          },
           failures: [],
         })), { status: 200 });
       }
@@ -464,7 +476,14 @@ describe("agent passport venue linking", () => {
           "content-type": "application/json",
           origin: "https://ghola.test",
         },
-        body: JSON.stringify({ action: "preflight_matrix", asset: "BTC", notional_usd: "11", horizon_days: "1" }),
+        body: JSON.stringify({
+          action: "preflight_matrix",
+          asset: "BTC",
+          notional_usd: "11",
+          horizon_days: "1",
+          selected_long_venue_id: "hyperliquid",
+          selected_short_venue_id: "lighter",
+        }),
       }));
       const result = await response.json();
       expect(response.status, JSON.stringify(result)).toBe(200);
@@ -473,6 +492,10 @@ describe("agent passport venue linking", () => {
 
       expect(matrixBodies).toHaveLength(1);
       const matrixBody = matrixBodies[0];
+      expect(matrixBody).toMatchObject({
+        selected_long_venue_id: "hyperliquid",
+        selected_short_venue_id: "lighter",
+      });
       const access = matrixBody.venue_access as Record<string, Record<string, unknown>>;
       expect(Object.keys(access).sort()).toEqual(["aster", "hyperliquid", "lighter"]);
       for (const venue of Object.keys(access)) {

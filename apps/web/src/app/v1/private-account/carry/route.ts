@@ -171,6 +171,14 @@ export async function POST(req: NextRequest) {
   if (action === "preflight_matrix") {
     const venueAccess = await agentPassportVenueAccessForWorker(owner);
     const accesses = Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [venueId, record(venueAccess[venueId])]));
+    const selectedLongVenue = stringValue(input.selected_long_venue_id) || "";
+    const selectedShortVenue = stringValue(input.selected_short_venue_id) || "";
+    const selectedPairProvided = selectedLongVenue.length > 0 || selectedShortVenue.length > 0;
+    if (selectedPairProvided && (!isCarryExecutionVenue(selectedLongVenue)
+      || !isCarryExecutionVenue(selectedShortVenue)
+      || selectedLongVenue === selectedShortVenue)) {
+      return response({ error: "carry_selected_venue_pair_invalid" }, 400, correlationId);
+    }
     body = {
       version: 1,
       owner_commitment: owner.owner_commitment,
@@ -179,6 +187,10 @@ export async function POST(req: NextRequest) {
       asset: input.asset,
       notional_usd: input.notional_usd,
       horizon_days: input.horizon_days,
+      ...(selectedPairProvided ? {
+        selected_long_venue_id: selectedLongVenue,
+        selected_short_venue_id: selectedShortVenue,
+      } : {}),
       venue_access: Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [
         venueId,
         workerMatrixVenueAccess(accesses[venueId], owner.owner_commitment),
@@ -350,6 +362,26 @@ export async function POST(req: NextRequest) {
           duration_ms: Date.now() - startedAt,
         });
         return response({ error: authenticated.error }, 502, correlationId);
+      }
+      if (action === "preflight_matrix" && body.selected_long_venue_id && body.selected_short_venue_id) {
+        const selectedPair = record(record(result).selected_pair);
+        if (selectedPair.long_venue_id !== body.selected_long_venue_id
+          || selectedPair.short_venue_id !== body.selected_short_venue_id
+          || selectedPair.transaction_broadcast !== false) {
+          return response({ error: "carry_selected_pair_worker_binding_invalid" }, 502, correlationId);
+        }
+        const selectedResult = record(selectedPair.result);
+        if (Object.keys(selectedResult).length > 0) {
+          const selectedAuthenticated = verifyCarryCreationOpportunityWorkerAuthentication({
+            owner_commitment: owner.owner_commitment,
+            opportunity: record(selectedResult.creation_opportunity),
+          });
+          if (!selectedAuthenticated.ok) {
+            return response({ error: selectedAuthenticated.error }, 502, correlationId);
+          }
+        } else if (!stringValue(selectedPair.error_code)) {
+          return response({ error: "carry_selected_pair_worker_binding_invalid" }, 502, correlationId);
+        }
       }
     }
     console.info("[carry] request completed", {

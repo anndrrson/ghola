@@ -402,6 +402,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("preflightTest", "monitoring measures a signed basis breach without submitting or hiding it as unavailable", "carry_monitor_contract_basis_test_missing");
   requireText("preflight", "collateral_basis", "collateral_basis_model_missing");
   requireText("preflight", "export async function preflightCarryExecutionMatrix", "carry_three_venue_no_submit_matrix_missing");
+  requireText("preflight", "selected_pair:", "carry_matrix_selected_pair_proof_missing");
   requireText("preflight", "allVenuePairs(orderedVenues)", "carry_all_pair_no_submit_matrix_missing");
   requireText("preflight", "Promise.allSettled(pairs.map", "carry_no_submit_pair_fault_isolation_missing");
   requireText("server", 'access.status === "not_ready"', "carry_matrix_not_ready_marker_validation_missing");
@@ -1295,6 +1296,9 @@ export function checkCarryExecutionContract(sources) {
   forbidText("webCarryChart", "QUAL {qualifiedCandidates.length}", "carry_route_count_without_net_proof");
   forbidText("webCarryChart", "Scanning equivalent perps", "carry_marketing_status_copy_forbidden");
   requireText("webCarryBuilder", "preflightCarryExecutionMatrix", "carry_terminal_three_venue_matrix_missing");
+  requireText("webCarryBuilder", "selected_long_venue_id", "carry_terminal_selected_pair_matrix_binding_missing");
+  requireText("webCarryBuilder", "const selectedResult = asRecord(selectedPair.result)", "carry_terminal_selected_pair_matrix_reuse_missing");
+  requireText("webRoute", "carry_selected_pair_worker_binding_invalid", "carry_selected_pair_proxy_binding_missing");
   requireText("webCarryBuilder", "getCarryExecutionReadiness", "carry_terminal_readiness_restore_missing");
   requireText("webCarryBuilder", "readyStoredReadiness", "carry_terminal_readiness_freshness_missing");
   requireText("webCarryBuilder", "CARRY_EXECUTION_VENUES.every", "carry_terminal_matrix_registry_missing");

@@ -371,25 +371,39 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     let activeReadiness = restoredReadiness ? readiness : null;
     let matrix: Record<string, unknown> | null = null;
     try {
-      const [pairAttempt, matrixAttempt] = await Promise.allSettled([
-        preflightCarryPair({
+      let result: Record<string, unknown>;
+      if (activeReadiness) {
+        result = asRecord(await preflightCarryPair({
           asset: candidate.asset,
           long_venue_id: candidate.long.venue_id as CarryExecutionVenue,
           short_venue_id: candidate.short.venue_id as CarryExecutionVenue,
           notional_usd: notional,
           horizon_days: days,
-        }),
-        activeReadiness
-          ? Promise.resolve(null)
-          : preflightCarryExecutionMatrix({
+        }));
+      } else {
+        matrix = asRecord(await preflightCarryExecutionMatrix({
+          asset: candidate.asset,
+          notional_usd: notional,
+          horizon_days: days,
+          selected_long_venue_id: candidate.long.venue_id as CarryExecutionVenue,
+          selected_short_venue_id: candidate.short.venue_id as CarryExecutionVenue,
+        }));
+        setExecutionMatrix(matrix);
+        const selectedPair = asRecord(matrix.selected_pair);
+        const selectedResult = asRecord(selectedPair.result);
+        if (Object.keys(selectedResult).length > 0) {
+          result = selectedResult;
+        } else if (Object.keys(selectedPair).length > 0) {
+          throw new Error(stringValue(selectedPair.error_code) || "carry_selected_pair_not_ready");
+        } else {
+          result = asRecord(await preflightCarryPair({
             asset: candidate.asset,
+            long_venue_id: candidate.long.venue_id as CarryExecutionVenue,
+            short_venue_id: candidate.short.venue_id as CarryExecutionVenue,
             notional_usd: notional,
             horizon_days: days,
-          }),
-      ]);
-      if (matrixAttempt.status === "fulfilled" && matrixAttempt.value) {
-        matrix = asRecord(matrixAttempt.value);
-        setExecutionMatrix(matrix);
+          }));
+        }
       }
       if (matrix && readyNoSubmitMatrix(matrix, candidate.asset, notional, days)) {
         activeReadiness = {
@@ -402,8 +416,6 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
       } else if (!activeReadiness) {
         setReadiness(null);
       }
-      if (pairAttempt.status === "rejected") throw pairAttempt.reason;
-      const result = asRecord(pairAttempt.value);
       setProof({
         ...result,
         ...(matrix ? { execution_matrix: matrix } : {}),

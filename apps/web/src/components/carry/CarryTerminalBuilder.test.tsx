@@ -284,7 +284,7 @@ describe("CarryTerminalBuilder", () => {
     api.listCarryPositions
       .mockResolvedValueOnce({ ok: true, records: [] })
       .mockResolvedValue({ ok: true, records: [record] });
-    api.preflightCarryPair.mockResolvedValue({
+    const selectedPairResult = {
       correlation_id: "ghola-pair-test-1234",
       no_submit_ready: true,
       live_creation_ready: false,
@@ -302,6 +302,16 @@ describe("CarryTerminalBuilder", () => {
         funding_persistence: readyFundingPersistence(),
         worker_authentication: { evidence_commitment: OPPORTUNITY_EVIDENCE },
       },
+    };
+    api.preflightCarryExecutionMatrix.mockResolvedValue({
+      ...readyMatrix(),
+      selected_pair: {
+        long_venue_id: "hyperliquid",
+        short_venue_id: "lighter",
+        transaction_broadcast: false,
+        error_code: null,
+        result: selectedPairResult,
+      },
     });
     api.createCarryPosition.mockResolvedValue({ ok: true, record });
     api.executeCarryPositionEntry.mockResolvedValue({ ok: true });
@@ -311,8 +321,11 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toMatch(/SOURCE SYNC\d+MS · EST/);
     expect(container.textContent).toContain("INDEX BASIS0BP · EST");
     await click("NO-SUBMIT CHECK");
-    expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
-    expect(api.preflightCarryPair).toHaveBeenCalledOnce();
+    expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledWith(expect.objectContaining({
+      selected_long_venue_id: "hyperliquid",
+      selected_short_venue_id: "lighter",
+    }));
+    expect(api.preflightCarryPair).not.toHaveBeenCalled();
     expect(container.textContent).toContain("NO-SUBMIT RECEIPT");
     expect(container.textContent).toContain("PAIR PAIR-TEST-12");
     expect(container.textContent).toContain("FLEET MATRIX-TEST-");

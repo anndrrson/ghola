@@ -288,10 +288,22 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
   const matrixDependencies = { ...dependencies, now: () => observedAt };
   const anchor = venues.find((venueId) => venueAdapterCapability(venueId, "carry_execution")?.status === "proven") || venues[0];
   const orderedVenues = [anchor, ...venues.filter((venueId) => venueId !== anchor)];
-  const pairs = allVenuePairs(orderedVenues).map(([left, right], index) => ({
-    long_venue_id: index % 2 === 0 ? left : right,
-    short_venue_id: index % 2 === 0 ? right : left,
-  }));
+  const selectedLongVenue = String(body.selected_long_venue_id || "");
+  const selectedShortVenue = String(body.selected_short_venue_id || "");
+  const selectedPairRequested = isCarryExecutionVenue(selectedLongVenue)
+    && isCarryExecutionVenue(selectedShortVenue)
+    && selectedLongVenue !== selectedShortVenue;
+  const pairs = allVenuePairs(orderedVenues).map(([left, right], index) => {
+    const selectedPair = selectedPairRequested
+      && new Set([left, right]).has(selectedLongVenue)
+      && new Set([left, right]).has(selectedShortVenue);
+    return selectedPair
+      ? { long_venue_id: selectedLongVenue, short_venue_id: selectedShortVenue }
+      : {
+        long_venue_id: index % 2 === 0 ? left : right,
+        short_venue_id: index % 2 === 0 ? right : left,
+      };
+  });
   const settledResults = await Promise.allSettled(pairs.map((pair, index) => preflightCarryPair({
     ...matrixDependencies,
     body: {
@@ -382,6 +394,20 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
         })),
       };
     }),
+    ...(selectedPairRequested ? {
+      selected_pair: (() => {
+        const index = pairs.findIndex((pair) => pair.long_venue_id === selectedLongVenue
+          && pair.short_venue_id === selectedShortVenue);
+        return {
+          long_venue_id: selectedLongVenue,
+          short_venue_id: selectedShortVenue,
+          work_order_commitment: index >= 0 ? `${body.work_order_commitment}_pair_${index + 1}` : null,
+          result: index >= 0 ? results[index] : null,
+          error_code: index >= 0 ? pairErrorCodes[index] : "carry_selected_pair_missing",
+          transaction_broadcast: false,
+        };
+      })(),
+    } : {}),
     failures,
     checked_at: new Date(observedAt).toISOString(),
   };

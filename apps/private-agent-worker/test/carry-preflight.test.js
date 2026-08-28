@@ -994,6 +994,8 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
       asset: "BTC",
       notional_usd: 100,
       horizon_days: 30,
+      selected_long_venue_id: "lighter",
+      selected_short_venue_id: "hyperliquid",
       venue_access: {
         hyperliquid: access("owner_commitment_matrix_0001"),
         aster: access("owner_commitment_matrix_0001"),
@@ -1041,6 +1043,13 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
   assert.deepEqual(result.venues.map((item) => item.venue_id).sort(), ["aster", "hyperliquid", "lighter"]);
   assert.equal(result.venues.every((item) => item.checks.transaction_broadcast === false), true);
   assert.equal(result.pairs.length, 3);
+  assert.equal(result.selected_pair.long_venue_id, "lighter");
+  assert.equal(result.selected_pair.short_venue_id, "hyperliquid");
+  assert.equal(result.selected_pair.transaction_broadcast, false);
+  assert.equal(result.selected_pair.error_code, null);
+  assert.equal(result.selected_pair.result.no_submit_ready, true);
+  assert.equal(result.selected_pair.result.creation_opportunity.worker_authentication.attestation_bound, true);
+  assert.equal(result.pairs.some((pair) => pair.long_venue_id === "lighter" && pair.short_venue_id === "hyperliquid"), true);
   assert.deepEqual(result.pairs.map((pair) => [pair.long_venue_id, pair.short_venue_id].sort().join(":")).sort(), [
     "aster:hyperliquid",
     "aster:lighter",

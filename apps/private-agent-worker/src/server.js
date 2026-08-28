@@ -1689,6 +1689,14 @@ function validateCarryExecutionMatrixRequest(body, recipient) {
   if (!/^[A-Z0-9._-]{1,16}$/.test(String(body.asset || ""))) errors.push("asset is invalid");
   if (!(Number(body.notional_usd) > 0) || Number(body.notional_usd) > 1_000) errors.push("notional_usd is outside the pilot limit");
   if (!(Number(body.horizon_days) >= 1) || Number(body.horizon_days) > 365) errors.push("horizon_days is invalid");
+  const selectedLongVenue = String(body.selected_long_venue_id || "");
+  const selectedShortVenue = String(body.selected_short_venue_id || "");
+  const selectedPairProvided = selectedLongVenue.length > 0 || selectedShortVenue.length > 0;
+  if (selectedPairProvided) {
+    if (!CARRY_EXECUTION_VENUES.includes(selectedLongVenue)) errors.push("selected_long_venue_id is unsupported");
+    if (!CARRY_EXECUTION_VENUES.includes(selectedShortVenue)) errors.push("selected_short_venue_id is unsupported");
+    if (selectedLongVenue === selectedShortVenue) errors.push("selected venues must be distinct");
+  }
   for (const venueId of CARRY_EXECUTION_VENUES) {
     const access = body.venue_access?.[venueId];
     if (!isObject(access)) {

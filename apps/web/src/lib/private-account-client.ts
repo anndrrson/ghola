@@ -904,6 +904,8 @@ export async function preflightCarryExecutionMatrix(input: {
   asset: string;
   notional_usd: string;
   horizon_days: string;
+  selected_long_venue_id: CarryExecutionVenue;
+  selected_short_venue_id: CarryExecutionVenue;
 }) {
   return privateAccountFetch("/v1/private-account/carry", {
     method: "POST",
