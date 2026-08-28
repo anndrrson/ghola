@@ -1038,11 +1038,44 @@ test("rejects shadow qualification coverage hard-coded outside the venue registr
     () => checkCarryExecutionContract({
       ...sources,
       evidenceVerifier: sources.evidenceVerifier.replace(
-        "shadowQualification.expected_snapshots_per_sample === CORE_PERP_VENUES.length * CARRY_RELEASE_SHADOW_ASSETS.length",
+        "shadowQualification.expected_snapshots_per_sample === CORE_PERP_VENUES.length * CARRY_SHADOW_ASSETS.length",
         "shadowQualification.expected_snapshots_per_sample === 15",
       ),
     }),
     /carry_release_shadow_snapshot_count_hardcoded/,
+  );
+});
+
+test("rejects carry shadow assets detached from the execution registry", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowVerifier: sources.shadowVerifier.replace(
+        "DEFAULT_CARRY_SHADOW_ASSETS = CARRY_SHADOW_ASSETS",
+        'DEFAULT_CARRY_SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"])',
+      ),
+    }),
+    /carry_shadow_core_assets_missing|carry_shadow_verifier_asset_policy_duplicated/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryMarket: sources.webCarryMarket.replace(
+        "qualification.assets === CARRY_SHADOW_ASSETS.length",
+        "qualification.assets === 3",
+      ),
+    }),
+    /carry_market_qualification_asset_registry_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier.replace(
+        "shadowQualification.assets === CARRY_SHADOW_ASSETS.length",
+        "shadowQualification.assets === 3",
+      ),
+    }),
+    /carry_release_shadow_asset_registry_missing/,
   );
 });
 

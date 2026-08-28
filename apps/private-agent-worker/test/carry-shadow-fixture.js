@@ -1,6 +1,6 @@
-import { CORE_PERP_VENUES, venueAdapterCapability } from "@ghola/execution-core";
+import { CARRY_SHADOW_ASSETS, CORE_PERP_VENUES, venueAdapterCapability } from "@ghola/execution-core";
 
-export function carryShadowFixture(nowMs, assets = ["BTC", "ETH", "SOL"]) {
+export function carryShadowFixture(nowMs, assets = CARRY_SHADOW_ASSETS) {
   return CORE_PERP_VENUES.map((venueId) => ({
     venue_id: venueId,
     ok: true,

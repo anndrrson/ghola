@@ -50,6 +50,8 @@ export const CARRY_RECOVERY_POLICY = Object.freeze({
   worker_restart: "reconcile_before_action",
 });
 
+export const CARRY_SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
+
 const CARRY_IMPLEMENTATION_STATUSES = Object.freeze(["proven", "implemented_unproven"]);
 
 const specs = [

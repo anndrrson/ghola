@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { CORE_PERP_VENUES, venueAdapterCapability } from "@ghola/execution-core";
+import { CARRY_SHADOW_ASSETS, CORE_PERP_VENUES, venueAdapterCapability } from "@ghola/execution-core";
 
-export const DEFAULT_CARRY_SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
+export const DEFAULT_CARRY_SHADOW_ASSETS = CARRY_SHADOW_ASSETS;
 const REQUIRED_SOURCES = Object.freeze(["market", "funding", "orderbook"]);
 
 const NORMALIZED_FIELDS = Object.freeze([

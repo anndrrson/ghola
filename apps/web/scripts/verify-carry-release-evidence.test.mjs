@@ -9,6 +9,7 @@ import {
 import {
   CARRY_EXECUTION_VENUES,
   CARRY_RECOVERY_POLICY,
+  CARRY_SHADOW_ASSETS,
   CORE_PERP_VENUES,
   carryRiskMandateMessage,
   venueAdapterCapability,
@@ -17,8 +18,6 @@ import { hashMessage } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 const MANDATE_OWNER = privateKeyToAccount(`0x${"22".repeat(32)}`);
-const SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
-
 async function fixture({ longVenue = "hyperliquid", shortVenue = "aster" } = {}) {
   const signedMandate = {
     version: 1,
@@ -87,13 +86,13 @@ async function fixture({ longVenue = "hyperliquid", shortVenue = "aster" } = {})
       image_digest: "sha256:abcdef1234567890",
       checked_at: "2026-08-23T23:59:58.000Z",
       venues: CORE_PERP_VENUES.length,
-      assets: SHADOW_ASSETS.length,
-      requested_assets: [...SHADOW_ASSETS],
+      assets: CARRY_SHADOW_ASSETS.length,
+      requested_assets: [...CARRY_SHADOW_ASSETS],
       required_samples: 3,
       completed_samples: 3,
       minimum_span_ms: 120_000,
       duration_ms: 120_000,
-      expected_snapshots_per_sample: CORE_PERP_VENUES.length * SHADOW_ASSETS.length,
+      expected_snapshots_per_sample: CORE_PERP_VENUES.length * CARRY_SHADOW_ASSETS.length,
       sample_commitments: ["11", "22", "33"].map((value) => `carry:shadow:sample:${value.repeat(32)}`),
       source_observation_commitments: ["55", "66", "77"].map((value) => `carry:shadow:sources:${value.repeat(32)}`),
       transaction_broadcast: false,

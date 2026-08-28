@@ -1,4 +1,5 @@
 import {
+  CARRY_SHADOW_ASSETS,
   CORE_PERP_VENUES,
   adverseExecutionSlippageE6Bps,
   estimatePerpDepthExecution,
@@ -256,7 +257,6 @@ const CARRY_SHADOW_SOURCE_COMMITMENT = /^carry:shadow:sources:[a-f0-9]{64}$/;
 const CARRY_SHADOW_QUALIFICATION_COMMITMENT = /^carry:shadow:qualification:[a-f0-9]{64}$/;
 const CARRY_ROUTING_ADVANTAGE_COMMITMENT = /^carry:routing:advantage:[a-f0-9]{64}$/;
 const CARRY_IMAGE_DIGEST = /^sha256:[a-f0-9]{12,128}$/;
-const CARRY_DEFAULT_SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
 const depthExecutionCache = new WeakMap<CarryShadowSnapshot, Map<string, ReturnType<typeof estimatePerpDepthExecution>>>();
 const pairCompatibilityCache = new WeakMap<CarryShadowSnapshot, WeakMap<CarryShadowSnapshot, boolean>>();
 
@@ -282,9 +282,9 @@ export function carryMarketQualificationEvidence(
     && CARRY_IMAGE_DIGEST.test(qualification.image_digest)
     && CARRY_SHADOW_QUALIFICATION_COMMITMENT.test(String(qualification.evidence_commitment || ""));
   const coverage = qualification.venues === CORE_PERP_VENUES.length
-    && qualification.assets === CARRY_DEFAULT_SHADOW_ASSETS.length
-    && qualification.expected_snapshots_per_sample === CORE_PERP_VENUES.length * CARRY_DEFAULT_SHADOW_ASSETS.length
-    && sameStrings(qualification.requested_assets, CARRY_DEFAULT_SHADOW_ASSETS);
+    && qualification.assets === CARRY_SHADOW_ASSETS.length
+    && qualification.expected_snapshots_per_sample === CORE_PERP_VENUES.length * CARRY_SHADOW_ASSETS.length
+    && sameStrings(qualification.requested_assets, CARRY_SHADOW_ASSETS);
   const durableSpan = safeNonnegativeInteger(qualification.minimum_span_ms) >= 120_000
     && safeNonnegativeInteger(qualification.duration_ms) >= safeNonnegativeInteger(qualification.minimum_span_ms);
   const distinctSamples = samples.length === completed
@@ -307,7 +307,7 @@ export function carryMarketQualificationEvidence(
     return {
       status: "ready",
       value: `${CORE_PERP_VENUES.length}V ${completed}/${required}`,
-      detail: `${CORE_PERP_VENUES.length} venues and ${CARRY_DEFAULT_SHADOW_ASSETS.join("/")} passed consecutive, worker-bound market checks.`,
+      detail: `${CORE_PERP_VENUES.length} venues and ${CARRY_SHADOW_ASSETS.join("/")} passed consecutive, worker-bound market checks.`,
     };
   }
   if (qualification.ready === true || failures.some((reason) => [

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   CARRY_EXECUTION_VENUES,
   CARRY_RECOVERY_POLICY,
+  CARRY_SHADOW_ASSETS,
   CORE_PERP_VENUES,
   carryRiskMandateMessage,
   venueAdapterCapability,
@@ -18,7 +19,6 @@ export const DEFAULT_CARRY_EVIDENCE_PATH = resolve(
   "../../../deploy/evidence/carry-mainnet-proof.json",
 );
 
-const CARRY_RELEASE_SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
 const CARRY_ADAPTERS = Object.freeze(Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [
   venueId,
   venueAdapterCapability(venueId, "carry_execution")?.adapter_id,
@@ -53,8 +53,8 @@ export async function verifyCarryReleaseEvidence(evidence) {
   fail(String(shadowQualification.image_digest || "").toLowerCase() === imageDigest,
     "shadow_qualification_image_mismatch");
   fail(shadowQualification.venues === CORE_PERP_VENUES.length, "shadow_qualification_venue_coverage_invalid");
-  fail(shadowQualification.assets === CARRY_RELEASE_SHADOW_ASSETS.length, "shadow_qualification_asset_coverage_invalid");
-  fail(sameStrings(shadowQualification.requested_assets, CARRY_RELEASE_SHADOW_ASSETS),
+  fail(shadowQualification.assets === CARRY_SHADOW_ASSETS.length, "shadow_qualification_asset_coverage_invalid");
+  fail(sameStrings(shadowQualification.requested_assets, CARRY_SHADOW_ASSETS),
     "shadow_qualification_assets_invalid");
   fail(shadowRequiredSamples >= 3, "shadow_qualification_sample_floor_invalid");
   fail(shadowCompletedSamples >= shadowRequiredSamples, "shadow_qualification_samples_incomplete");
@@ -62,7 +62,7 @@ export async function verifyCarryReleaseEvidence(evidence) {
   const shadowDurationMs = nonNegativeInteger(shadowQualification.duration_ms);
   fail(shadowMinimumSpanMs >= 120_000 && shadowDurationMs >= shadowMinimumSpanMs,
     "shadow_qualification_duration_invalid");
-  fail(shadowQualification.expected_snapshots_per_sample === CORE_PERP_VENUES.length * CARRY_RELEASE_SHADOW_ASSETS.length,
+  fail(shadowQualification.expected_snapshots_per_sample === CORE_PERP_VENUES.length * CARRY_SHADOW_ASSETS.length,
     "shadow_qualification_snapshot_coverage_invalid");
   fail(shadowSampleCommitments.length === shadowCompletedSamples
     && new Set(shadowSampleCommitments).size === shadowSampleCommitments.length

@@ -1,4 +1,5 @@
 import {
+  CARRY_SHADOW_ASSETS,
   CORE_PERP_VENUES,
   SUPPORTED_EXECUTION_VENUES,
   venueAdapterCapability,
@@ -63,7 +64,7 @@ export async function fetchPerpShadowVenue({
   max_age_ms: maxAgeMs = DEFAULT_MAX_AGE_MS,
   timeout_ms: timeoutMs = 5_000,
   market_metadata: marketMetadata = {},
-  assets = ["BTC", "ETH", "SOL"],
+  assets = CARRY_SHADOW_ASSETS,
 } = {}) {
   const declared = venueAdapterCapability(venueId, "perp_shadow");
   if (!CORE_PERP_VENUES.includes(venueId) || declared?.status !== "enabled") throw new Error("shadow_venue_unsupported");

@@ -178,6 +178,7 @@ export function checkCarryExecutionContract(sources) {
     requireText("registry", `adapter("${adapterId}", "enabled"`, `shadow_adapter_missing:${venue}`);
   }
   requireText("registry", "export const CARRY_EXECUTION_VENUES", "capability_registry_missing");
+  requireText("registry", "export const CARRY_SHADOW_ASSETS", "carry_shadow_asset_registry_missing");
   for (const adapterId of [
     "hyperliquid_arbitrum_usdc_v1",
     "lighter_arbitrum_usdc_v1",
@@ -306,6 +307,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webTradeWorkspace", "[canPollPrivateLiveTradingStatus]", "trade_private_status_poll_auth_refresh_missing");
 
   requireText("shadow", "CORE_PERP_VENUES.map", "shadow_registry_iteration_missing");
+  requireText("shadow", "assets = CARRY_SHADOW_ASSETS", "shadow_asset_registry_binding_missing");
+  forbidText("shadow", 'assets = ["BTC", "ETH", "SOL"]', "shadow_asset_policy_duplicated");
   requireText("shadow", "SUPPORTED_EXECUTION_VENUES.flatMap", "shadow_capability_registry_missing");
   requireText("shadow", 'venueAdapterCapability(venueId, "perp_shadow")', "shadow_capability_lookup_missing");
   requireText("shadow", "shadow_adapter_unimplemented", "shadow_unknown_adapter_fail_closed_missing");
@@ -314,6 +317,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadow", "export function carryShadowFetchTimeoutMs", "carry_shadow_timeout_policy_missing");
   requireText("server", "timeout_ms: carryShadowFetchTimeoutMs(process.env)", "carry_shadow_http_timeout_policy_missing");
   requireText("fundingPersistence", "timeout_ms: carryShadowFetchTimeoutMs(env)", "carry_shadow_observer_timeout_policy_missing");
+  requireText("fundingPersistence", "assets = CARRY_SHADOW_ASSETS", "carry_shadow_observer_asset_registry_missing");
+  requireText("fundingPersistence", 'CARRY_SHADOW_ASSETS.join(",")', "carry_shadow_observer_env_default_registry_missing");
+  forbidText("fundingPersistence", 'Object.freeze(["BTC", "ETH", "SOL"])', "carry_shadow_observer_asset_policy_duplicated");
   requireText("shadowTest", "caps each five-venue shadow adapter by one end-to-end deadline", "carry_shadow_end_to_end_venue_deadline_test_missing");
   requireText("shadow", "max_age_ms", "shadow_staleness_gate_missing");
   requireText("shadow", "observedAtMs", "edgex_response_freshness_missing");
@@ -355,7 +361,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifierCli", "sampleCount > 1 ?", "carry_shadow_single_sample_delay_guard_missing");
   requireText("shadowVerifierCli", "minimum_span_ms: minimumSpanMs", "carry_shadow_soak_duration_gate_missing");
   requireText("shadowVerifier", "CORE_PERP_VENUES", "carry_shadow_verifier_registry_missing");
-  requireText("shadowVerifier", 'Object.freeze(["BTC", "ETH", "SOL"])', "carry_shadow_core_assets_missing");
+  requireText("shadowVerifier", "DEFAULT_CARRY_SHADOW_ASSETS = CARRY_SHADOW_ASSETS", "carry_shadow_core_assets_missing");
+  forbidText("shadowVerifier", 'Object.freeze(["BTC", "ETH", "SOL"])', "carry_shadow_verifier_asset_policy_duplicated");
   requireText("shadowVerifier", "missing_field_unjustified", "carry_shadow_missing_field_evidence_gate_missing");
   requireText("shadowVerifier", "export function verifyCarryShadowSoak", "carry_shadow_soak_verifier_missing");
   requireText("shadowVerifier", "shadow_soak_sample_failed", "carry_shadow_soak_intermittent_failure_gate_missing");
@@ -813,6 +820,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifier", "shadow_qualification_source_observations_invalid", "carry_release_shadow_source_observation_verifier_missing");
   requireText("evidenceVerifier", "shadowMinimumSpanMs >= 120_000", "carry_release_shadow_duration_verifier_missing");
   requireText("evidenceVerifier", "shadowQualification.venues === CORE_PERP_VENUES.length", "carry_release_shadow_registry_coverage_missing");
+  requireText("evidenceVerifier", "shadowQualification.assets === CARRY_SHADOW_ASSETS.length", "carry_release_shadow_asset_registry_missing");
+  requireText("evidenceVerifier", "CORE_PERP_VENUES.length * CARRY_SHADOW_ASSETS.length", "carry_release_shadow_matrix_registry_missing");
+  forbidText("evidenceVerifier", 'Object.freeze(["BTC", "ETH", "SOL"])', "carry_release_shadow_asset_policy_duplicated");
   requireText("evidenceVerifier", "venueAdapterCapability(venueId, \"carry_execution\")?.adapter_id", "carry_release_adapter_registry_binding_missing");
   requireText("evidenceVerifier", "CARRY_EXECUTION_VENUES.includes(venue)", "carry_release_pair_registry_binding_missing");
   forbidText("evidenceVerifier", "pair.includes(\"hyperliquid\")", "carry_release_hyperliquid_anchor_hardcoded");
@@ -1266,6 +1276,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "EVID {edgeEvidence.value}", "carry_funding_evidence_display_missing");
   requireText("webCarryMarket", "carryMarketQualificationEvidence", "carry_market_qualification_model_missing");
   requireText("webCarryMarket", "qualification.venues === CORE_PERP_VENUES.length", "carry_market_qualification_registry_coverage_missing");
+  requireText("webCarryMarket", "qualification.assets === CARRY_SHADOW_ASSETS.length", "carry_market_qualification_asset_registry_missing");
+  requireText("webCarryMarket", "CORE_PERP_VENUES.length * CARRY_SHADOW_ASSETS.length", "carry_market_qualification_matrix_registry_missing");
+  forbidText("webCarryMarket", 'Object.freeze(["BTC", "ETH", "SOL"])', "carry_market_shadow_asset_policy_duplicated");
   forbidText("webCarryMarket", "qualification.venues === 5", "carry_market_qualification_venue_count_hardcoded");
   requireText("webCarryMarket", "CORE_PERP_VENUES.map((venueId) => [venueId, executionVenueLabel(venueId)])", "carry_market_venue_label_registry_missing");
   requireText("webAccountSetup", "return executionVenueLabel(venueId);", "carry_setup_venue_label_registry_missing");

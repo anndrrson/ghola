@@ -6,6 +6,7 @@ import {
   CARRY_EXECUTION_VENUES,
   CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES,
   CARRY_RECOVERY_POLICY,
+  CARRY_SHADOW_ASSETS,
   CORE_PERP_VENUES,
   EXECUTION_VENUE_SPECS,
   SUPPORTED_EXECUTION_VENUES,
@@ -35,6 +36,7 @@ test("registry centralizes five core perp candidates without claiming qualificat
     "dydx",
   ]);
   assert.deepEqual(CARRY_EXECUTION_VENUES, ["hyperliquid", "lighter", "aster"]);
+  assert.deepEqual(CARRY_SHADOW_ASSETS, ["BTC", "ETH", "SOL"]);
   assert.deepEqual(CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES, [
     "carry_execution",
     "no_submit_reconciliation",

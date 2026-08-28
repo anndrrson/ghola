@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   CARRY_EXECUTION_VENUES,
+  CARRY_SHADOW_ASSETS,
   CORE_PERP_VENUES,
   evaluatePerpContractPairBasis,
 } from "@ghola/execution-core";
@@ -15,12 +16,10 @@ const DEFAULT_MIN_SAMPLES = 8;
 const DEFAULT_MIN_SPAN_MS = 30 * 60_000;
 const DEFAULT_MAX_AGE_MS = 24 * HOUR_MS;
 const DEFAULT_MAX_DATA_SKEW_MS = 2_000;
-const DEFAULT_OBSERVER_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
-
 export async function runCarryFundingObservationTick({
   state,
   fetchPerpShadowSet,
-  assets = DEFAULT_OBSERVER_ASSETS,
+  assets = CARRY_SHADOW_ASSETS,
   now_ms: nowMs = Date.now(),
   env = process.env,
 }) {
@@ -128,7 +127,7 @@ export function startCarryFundingObservationLoop({
     60 * 60_000,
     intervalMs * 3,
   );
-  const assets = String(env.PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ASSETS || DEFAULT_OBSERVER_ASSETS.join(","))
+  const assets = String(env.PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ASSETS || CARRY_SHADOW_ASSETS.join(","))
     .split(",");
   const supervisor = createCarryLoopSupervisor({
     name: "carry_shadow_observer",

@@ -4,6 +4,7 @@ import {
   type PerpsMarginMode,
   type PerpsNetwork,
 } from "@ghola/perps-core";
+import { CARRY_SHADOW_ASSETS } from "@ghola/execution-core";
 
 export interface GholaPerpsRiskInputs {
   markets: string[];
@@ -23,7 +24,7 @@ export interface GholaPerpsRiskInputs {
 }
 
 export const DEFAULT_GHOLA_PERPS_RISK: GholaPerpsRiskInputs = Object.freeze({
-  markets: ["BTC", "ETH", "SOL"],
+  markets: [...CARRY_SHADOW_ASSETS],
   marginMode: "isolated",
   leverage: 2,
   maxOrderUsd: 25,
