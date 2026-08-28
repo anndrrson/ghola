@@ -195,6 +195,31 @@ describe("Carry market model", () => {
     expect(result.netUsd).toBeTypeOf("number");
     expect(result.publicInputsComplete).toBe(true);
     expect(result.creatable).toBe(false);
+    expect(result.contractsComparable).toBe(true);
+    expect(result.contractDataSkewMs).toBe(0);
+    expect(result.indexPriceDivergenceBps).toBe(0);
+    expect(result.markPriceDivergenceBps).toBe(0);
+  });
+
+  it("surfaces capital-free public contract synchronization and basis evidence", () => {
+    const long = snapshot("hyperliquid", "BTC", 10_000_000, "ready", {
+      as_of_ms: 1_800_000_000_000,
+      index_price_e8: 6_000_000_000_000,
+      mark_price_e8: 6_000_000_000_000,
+    });
+    const short = snapshot("lighter", "BTC", 40_000_000, "ready", {
+      as_of_ms: 1_800_000_000_400,
+      index_price_e8: 6_001_200_000_000,
+      mark_price_e8: 6_001_800_000_000,
+    });
+    const [candidate] = buildCandidates([venue("hyperliquid", long), venue("lighter", short)]);
+    const result = builderModel(candidate, "10000", "30");
+    expect(result).toMatchObject({
+      contractsComparable: true,
+      contractDataSkewMs: 400,
+      indexPriceDivergenceBps: 2,
+      markPriceDivergenceBps: 3,
+    });
   });
 
   it("charges capital, latency, and cross-collateral basis buffers before ranking net value", () => {

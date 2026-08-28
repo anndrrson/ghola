@@ -1781,6 +1781,16 @@ test("rejects a terminal that hides cross-venue source synchronization", () => {
   );
 });
 
+test("rejects a terminal that hides capital-free public source synchronization", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll("model.contractDataSkewMs", "null"),
+    }),
+    /carry_terminal_public_source_sync_missing/,
+  );
+});
+
 test("rejects a terminal that hides index-basis evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -1788,6 +1798,16 @@ test("rejects a terminal that hides index-basis evidence", () => {
       webCarryBuilder: sources.webCarryBuilder.replaceAll('label="INDEX BASIS"', 'label="PAIR"'),
     }),
     /carry_terminal_index_basis_missing/,
+  );
+});
+
+test("rejects a terminal that hides capital-free public index-basis evidence", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll("model.indexPriceDivergenceBps", "null"),
+    }),
+    /carry_terminal_public_index_basis_missing/,
   );
 });
 

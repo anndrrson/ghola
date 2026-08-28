@@ -882,6 +882,7 @@ export function builderModel(candidate: CarryCandidate, notionalText: string, da
   const notionalUsd = Math.max(0, Number(notionalText) || 0);
   const holdingDays = Math.max(1, Number(daysText) || 1);
   const quote = quoteCarryCandidate(candidate, notionalUsd, holdingDays * 24);
+  const contractPair = publicContractPairMetrics(candidate);
   const grossFundingUsd = quote.grossFundingUsd;
   const legs = [candidate.long, candidate.short];
   const costUsd = quote.modeledTotalCostUsd;
@@ -910,9 +911,49 @@ export function builderModel(candidate: CarryCandidate, notionalText: string, da
     slippageUsd: quote.slippageUsd,
     depthStatus: quote.depthStatus,
     minimumDisplayedDepthUsd: quote.minimumDisplayedDepthUsd,
+    contractDataSkewMs: contractPair.contractDataSkewMs,
+    indexPriceDivergenceBps: contractPair.indexPriceDivergenceBps,
+    markPriceDivergenceBps: contractPair.markPriceDivergenceBps,
+    contractsComparable: contractPair.comparable,
     publicInputsComplete: candidate.exact && marginReady && quote.exactCosts && netUsd != null && netUsd > 0,
     creatable: false,
   };
+}
+
+function publicContractPairMetrics(candidate: CarryCandidate) {
+  const longObservedAt = candidate.long.as_of_ms ?? candidate.long.observed_at_ms;
+  const shortObservedAt = candidate.short.as_of_ms ?? candidate.short.observed_at_ms;
+  const contractDataSkewMs = Number.isSafeInteger(longObservedAt) && Number.isSafeInteger(shortObservedAt)
+    ? Math.abs(Number(longObservedAt) - Number(shortObservedAt))
+    : null;
+  try {
+    const basis = evaluatePerpContractPairBasis({
+      version: 1,
+      long_contract: candidate.long,
+      short_contract: candidate.short,
+      max_index_price_divergence_bps: CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS,
+      max_mark_price_divergence_bps: CARRY_MAX_MARK_PRICE_DIVERGENCE_BPS,
+    });
+    return {
+      contractDataSkewMs,
+      indexPriceDivergenceBps: safeBasisMetric(basis.index_price_divergence_bps),
+      markPriceDivergenceBps: safeBasisMetric(basis.mark_price_divergence_bps),
+      comparable: basis.eligible === true
+        && contractDataSkewMs !== null
+        && contractDataSkewMs <= CARRY_MAX_CONTRACT_DATA_SKEW_MS,
+    };
+  } catch {
+    return {
+      contractDataSkewMs,
+      indexPriceDivergenceBps: null,
+      markPriceDivergenceBps: null,
+      comparable: false,
+    };
+  }
+}
+
+function safeBasisMetric(value: unknown) {
+  return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : null;
 }
 
 function carryCollateralBasisRiskBps(candidate: CarryCandidate) {

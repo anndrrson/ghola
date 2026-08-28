@@ -625,8 +625,16 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="COLLATERAL" value={collateralBasis.value} tone={collateralBasis.tone} />
         <Metric label="LEDGER" value={ledger.value} tone={ledger.tone} />
         <Metric label="EXEC Δ" value={ledger.execution} tone={ledger.executionTone} />
-        <Metric label="SOURCE SYNC" value={proofOpportunity ? formatSkew(proofOpportunity.contract_data_skew_ms) : "PENDING"} />
-        <Metric label="INDEX BASIS" value={proofOpportunity ? formatBasis(proofOpportunity.index_price_divergence_bps) : "PENDING"} />
+        <Metric
+          label="SOURCE SYNC"
+          value={`${formatSkew(proofOpportunity?.contract_data_skew_ms ?? model.contractDataSkewMs)}${proofOpportunity ? "" : " · EST"}`}
+          tone={model.contractsComparable ? "good" : "bad"}
+        />
+        <Metric
+          label="INDEX BASIS"
+          value={`${formatBasis(proofOpportunity?.index_price_divergence_bps ?? model.indexPriceDivergenceBps)}${proofOpportunity ? "" : " · EST"}`}
+          tone={model.contractsComparable ? "good" : "bad"}
+        />
         <Metric label="EDGE CONF" value={fundingPersistence.value} tone={fundingPersistence.tone} />
         <Metric label="PRIVATE PRIME" value={privatePrime.value} tone={privatePrime.tone} />
         <Metric label="RISK ENGINE" value={supervision.value} tone={supervision.tone} />

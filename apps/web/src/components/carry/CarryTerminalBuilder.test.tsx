@@ -303,6 +303,8 @@ describe("CarryTerminalBuilder", () => {
 
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     expect(container.textContent).toContain("$22 TOTAL · 1×");
+    expect(container.textContent).toMatch(/SOURCE SYNC\d+MS · EST/);
+    expect(container.textContent).toContain("INDEX BASIS0BP · EST");
     await click("NO-SUBMIT CHECK");
     expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
     expect(api.preflightCarryPair).toHaveBeenCalledOnce();
