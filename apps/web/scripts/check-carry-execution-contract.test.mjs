@@ -87,7 +87,7 @@ test("rejects recovery coverage duplicated outside the capability registry", () 
     () => checkCarryExecutionContract({
       ...sources,
       multiLegOrchestrator: sources.multiLegOrchestrator.replace(
-        "exactQuantityRecoveryAdapter(venueId) === null",
+        "exactQuantityRecoveryAdapter(venueId) !== null",
         'new Set(["hyperliquid", "lighter", "aster"]).has(venueId) === false',
       ),
     }),

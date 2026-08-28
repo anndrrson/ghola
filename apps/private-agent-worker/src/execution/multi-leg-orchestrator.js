@@ -922,9 +922,9 @@ function unwindProgress({ receipt, requestedBase, remainingMicro, venueId, env }
 }
 
 function recoveryProofTargetsLeg(venueId, proof) {
-  return exactQuantityRecoveryAdapter(venueId) === null
-    || (proof?.target_client_order_matched === true
-      && proof?.broadcast_performed === true);
+  return exactQuantityRecoveryAdapter(venueId) !== null
+    && proof?.target_client_order_matched === true
+    && proof?.broadcast_performed === true;
 }
 
 function cancelInstruction({ leg, context, nowMs }) {

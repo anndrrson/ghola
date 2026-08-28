@@ -220,7 +220,7 @@ export function checkCarryExecutionContract(sources) {
   requireCount("multiLegOrchestrator", "recoveryProofTargetsLeg(", 3, "carry_recovery_exact_target_gate_missing");
   requireText(
     "multiLegOrchestrator",
-    "exactQuantityRecoveryAdapter(venueId) === null",
+    "exactQuantityRecoveryAdapter(venueId) !== null",
     "carry_recovery_exact_target_registry_binding_missing",
   );
   forbidText(
