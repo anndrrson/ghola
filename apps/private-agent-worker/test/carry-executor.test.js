@@ -15,6 +15,7 @@ import { advanceStoredCarryPosition, createStoredCarryPosition, runCarryMonitori
 import { readCarryVenueQualification } from "../src/execution/carry-qualification.js";
 import { applyDurableMultiLegEvent, recoverDueMultiLegSagas } from "../src/execution/multi-leg-orchestrator.js";
 import { createWorkerState } from "../src/state/private-state.js";
+import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
 import { signedCarryPositionInput } from "./carry-mandate-fixture.js";
 
 const NOW = 1_800_000_000_000;
@@ -213,14 +214,14 @@ test("bootstraps one capped candidate only after separate qualification confirma
       long_venue_id: "hyperliquid",
       short_venue_id: "aster",
     }, { ownerCommitment: OWNER, nowMs: NOW }),
-    opportunity: {
+    opportunity: authenticatedOpportunity({
       ...opportunity(),
       long_venue_id: "hyperliquid",
       short_venue_id: "aster",
       live_creation_ready: false,
       qualification_pilot_ready: true,
       qualification_pilot_candidate_venue_id: "aster",
-    },
+    }),
     monitoring_context: { version: 1, venue_access: { hyperliquid: access("hyperliquid"), aster: access("aster") } },
     qualification_pilot: { enabled: true, candidate_venue_id: "aster" },
     env,
@@ -1030,7 +1031,7 @@ function positionInput(positionId, pair = { long: "aster", short: "lighter" }) {
 }
 
 function opportunity(pair = { long: "aster", short: "lighter" }) {
-  return {
+  return authenticatedOpportunity({
     version: 1,
     eligible: true,
     reasons: [],
@@ -1068,6 +1069,17 @@ function opportunity(pair = { long: "aster", short: "lighter" }) {
     live_creation_ready: true,
     long_margin_runway_ms: 7_200_000,
     short_margin_runway_ms: 7_200_000,
+  });
+}
+
+function authenticatedOpportunity(value) {
+  const { worker_authentication: _authentication, ...unsigned } = value;
+  return {
+    ...unsigned,
+    worker_authentication: authenticateCarryCreationOpportunity({
+      owner_commitment: OWNER,
+      opportunity: unsigned,
+    }),
   };
 }
 

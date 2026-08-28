@@ -33,6 +33,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   runtimeRiskPolicies: "apps/private-agent-worker/src/execution/carry-runtime-risk-policies.js",
   privatePrimeReadiness: "apps/private-agent-worker/src/execution/carry-private-prime-readiness.js",
   privatePrimeAuthentication: "apps/private-agent-worker/src/execution/carry-private-prime-authentication.js",
+  opportunityAuthentication: "apps/private-agent-worker/src/execution/carry-opportunity-authentication.js",
   transferRoutes: "apps/private-agent-worker/src/execution/carry-transfer-routes.js",
   recordScan: "apps/private-agent-worker/src/execution/carry-record-scan.js",
   loopSupervisor: "apps/private-agent-worker/src/execution/carry-loop-supervisor.js",
@@ -113,6 +114,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   runtimeRiskPoliciesTest: "apps/private-agent-worker/test/carry-runtime-risk-policies.test.js",
   privatePrimeReadinessTest: "apps/private-agent-worker/test/carry-private-prime-readiness.test.js",
   privatePrimeAuthenticationTest: "apps/private-agent-worker/test/carry-private-prime-authentication.test.js",
+  opportunityAuthenticationTest: "apps/private-agent-worker/test/carry-opportunity-authentication.test.js",
   transferRoutesTest: "apps/private-agent-worker/test/carry-transfer-routes.test.js",
   recordScanTest: "apps/private-agent-worker/test/carry-record-scan.test.js",
   loopSupervisorTest: "apps/private-agent-worker/test/carry-loop-supervisor.test.js",
@@ -353,6 +355,21 @@ export function checkCarryExecutionContract(sources) {
   requireText("privateExecution", "account_commitment: allocation?.account_commitment || body.account_commitment || null", "carry_hyperliquid_no_submit_account_binding_missing");
   requireText("privateExecution", "account_commitment: input.account_commitment || input.body.account_commitment || null", "carry_live_receipt_account_binding_missing");
   requireText("preflight", "carry_account_verification_mismatch", "carry_no_submit_account_match_gate_missing");
+  requireText("coreCarry", "carryCreationOpportunityAuthenticationMessage", "carry_creation_opportunity_message_missing");
+  requireText("coreIndex", "carryCreationOpportunityAuthenticationMessage", "carry_creation_opportunity_message_export_missing");
+  requireText("opportunityAuthentication", "signAttestedWorkerMessage", "carry_creation_opportunity_attested_signing_missing");
+  requireText("opportunityAuthentication", "verifyCarryCreationOpportunityAuthentication", "carry_creation_opportunity_verifier_missing");
+  requireText("preflight", "authenticateCarryCreationOpportunity", "carry_creation_opportunity_authentication_missing");
+  requireText("positions", "verifyCarryCreationOpportunityAuthentication", "carry_creation_opportunity_storage_gate_missing");
+  requireText("positions", "opportunity_provenance: workerOpportunity.authentication", "carry_creation_opportunity_provenance_missing");
+  requireText("positionsTest", "refuses unsigned or client-modified Carry creation economics", "carry_creation_opportunity_tamper_test_missing");
+  requireText("opportunityAuthenticationTest", "rejects changed economics, wrong owners, signers, and expired evidence", "carry_creation_opportunity_authentication_test_missing");
+  for (const source of ["coreCarry", "preflight", "positions", "executor", "multiLegOrchestrator"]) {
+    forbidText(source, "@ai-sdk/", `carry_deterministic_boundary_ai_sdk_present:${source}`);
+    forbidText(source, "generateText(", `carry_deterministic_boundary_generate_text_present:${source}`);
+    forbidText(source, "streamText(", `carry_deterministic_boundary_stream_text_present:${source}`);
+    forbidText(source, "generateObject(", `carry_deterministic_boundary_generate_object_present:${source}`);
+  }
   requireText("readiness", "leg.account_commitment !== venue?.account_commitment", "carry_readiness_leg_account_binding_missing");
   requireText("preflightTest", "verifies all three execution venues through one no-broadcast matrix", "carry_three_venue_no_submit_matrix_test_missing");
   requireText("preflight", "storeCarryExecutionReadiness", "carry_three_venue_readiness_persistence_missing");

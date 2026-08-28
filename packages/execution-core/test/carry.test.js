@@ -6,6 +6,7 @@ import {
   advanceCarryPosition,
   calculateMarginRunway,
   canonicalCarryCommitmentJson,
+  carryCreationOpportunityAuthenticationMessage,
   carryPrivatePrimeWorkerAuthenticationMessage,
   carryCollateralReviewMessage,
   carryRiskMandateMessage,
@@ -50,6 +51,18 @@ test("binds private-prime worker authentication to the exact request and expirin
       expires_at_ms: NOW + 5_000,
     }),
     `{"asset":"BTC","checked_at_ms":${NOW},"domain":"ghola-carry-private-prime-worker-authentication-v1","evidence_commitment":"carry:private-prime:${"a".repeat(40)}","expires_at_ms":${NOW + 5_000},"operation_class":"readiness_read","owner_commitment":"owner_commitment_0001","route_path":"/carry/readiness","version":1,"work_order_commitment":"carry_readiness_0001"}`,
+  );
+});
+
+test("binds Carry creation economics to the owner and exact deterministic opportunity", () => {
+  assert.equal(
+    carryCreationOpportunityAuthenticationMessage({
+      owner_commitment: "owner_commitment_0001",
+      opportunity: { asset: "BTC", projected_net_value_micro_usdc: 123 },
+      checked_at_ms: NOW,
+      expires_at_ms: NOW + 30_000,
+    }),
+    `{"checked_at_ms":${NOW},"domain":"ghola-carry-creation-opportunity-authentication-v1","expires_at_ms":${NOW + 30_000},"opportunity":{"asset":"BTC","projected_net_value_micro_usdc":123},"owner_commitment":"owner_commitment_0001","version":1}`,
   );
 });
 

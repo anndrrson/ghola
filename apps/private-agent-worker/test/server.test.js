@@ -21,6 +21,7 @@ import {
 } from "../src/crypto/envelope.js";
 import { bodyHash } from "../src/auth/capability.js";
 import { createWorkerState } from "../src/state/private-state.js";
+import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
 import {
   asterPreparationId,
   asterRegistrationParameters,
@@ -1098,6 +1099,10 @@ describe("private agent worker", () => {
       ownerCommitment,
       nowMs: checkedAt,
     });
+    body.opportunity.worker_authentication = authenticateCarryCreationOpportunity({
+      owner_commitment: ownerCommitment,
+      opportunity: body.opportunity,
+    });
     const notReadyToken = capabilityToken({
       path: "/carry/positions",
       scope: "carry:write",
@@ -1116,7 +1121,12 @@ describe("private agent worker", () => {
     assert.equal(notReady.status, 400);
     assert.equal((await notReady.json()).error, "carry_venue_accounts_not_ready");
 
-    const readyBody = { ...body, opportunity: { ...body.opportunity, all_venues_ready: true } };
+    const readyOpportunity = { ...body.opportunity, all_venues_ready: true };
+    readyOpportunity.worker_authentication = authenticateCarryCreationOpportunity({
+      owner_commitment: ownerCommitment,
+      opportunity: readyOpportunity,
+    });
+    const readyBody = { ...body, opportunity: readyOpportunity };
     const readyToken = capabilityToken({
       path: "/carry/positions",
       scope: "carry:write",

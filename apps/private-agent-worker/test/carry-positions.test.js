@@ -17,6 +17,7 @@ import {
   runCarryMonitoringTick,
 } from "../src/execution/carry-positions.js";
 import { storeCarryTransferRouteEvidence } from "../src/execution/carry-transfer-routes.js";
+import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
 import { createWorkerState } from "../src/state/private-state.js";
 import {
   signedCarryCollateralReviewAuthorization,
@@ -42,6 +43,7 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
   });
   assert.equal(created.ok, true);
   assert.equal(created.record.record_version, 1);
+  assert.match(created.record.opportunity_provenance.evidence_commitment, /^carry:creation-opportunity:evidence:[0-9a-f]{64}$/);
   assert.equal(created.record.value_ledger.modeled.breakdown_complete, true);
   assert.equal(created.record.value_ledger.modeled.trading_fee_micro_usdc, 2_000);
 
@@ -141,7 +143,7 @@ test("refuses storage until venue accounts, synchronized equivalent contracts, a
     state,
     owner_commitment: OWNER,
     position_input: await positionInput(),
-    opportunity: { ...opportunity(), all_venues_ready: false },
+    opportunity: opportunity({ all_venues_ready: false }),
     monitoring_context: monitoringContext(),
     now_ms: NOW,
   });
@@ -150,7 +152,7 @@ test("refuses storage until venue accounts, synchronized equivalent contracts, a
     state,
     owner_commitment: OWNER,
     position_input: await positionInput(),
-    opportunity: { ...opportunity(), long_margin_runway_ms: 1 },
+    opportunity: opportunity({ long_margin_runway_ms: 1 }),
     monitoring_context: monitoringContext(),
     now_ms: NOW,
   });
@@ -159,7 +161,7 @@ test("refuses storage until venue accounts, synchronized equivalent contracts, a
     state,
     owner_commitment: OWNER,
     position_input: await positionInput(),
-    opportunity: { ...opportunity(), contract_data_skew_ms: 2_001 },
+    opportunity: opportunity({ contract_data_skew_ms: 2_001 }),
     monitoring_context: monitoringContext(),
     now_ms: NOW,
   });
@@ -168,7 +170,7 @@ test("refuses storage until venue accounts, synchronized equivalent contracts, a
     state,
     owner_commitment: OWNER,
     position_input: await positionInput(),
-    opportunity: { ...opportunity(), index_price_divergence_bps: 26 },
+    opportunity: opportunity({ index_price_divergence_bps: 26 }),
     monitoring_context: monitoringContext(),
     now_ms: NOW,
   });
@@ -186,7 +188,7 @@ test("refuses storage until venue accounts, synchronized equivalent contracts, a
     state,
     owner_commitment: OWNER,
     position_input: await positionInput("incomplete-value"),
-    opportunity: { ...opportunity(), projected_slippage_micro_usdc: undefined },
+    opportunity: opportunity({ projected_slippage_micro_usdc: undefined }),
     monitoring_context: monitoringContext(),
     now_ms: NOW,
   });
@@ -195,23 +197,48 @@ test("refuses storage until venue accounts, synchronized equivalent contracts, a
     state,
     owner_commitment: OWNER,
     position_input: await positionInput("mismatched-value"),
-    opportunity: { ...opportunity(), projected_trading_fee_micro_usdc: 1 },
+    opportunity: opportunity({ projected_trading_fee_micro_usdc: 1 }),
     monitoring_context: monitoringContext(),
     now_ms: NOW,
   });
   assert.deepEqual(mismatchedValueBreakdown, { ok: false, error: "carry_value_breakdown_invalid" });
 });
 
+test("refuses unsigned or client-modified Carry creation economics", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-worker-opportunity-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const signed = opportunity();
+  const { worker_authentication: _authentication, ...unsigned } = signed;
+  const missing = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: await positionInput("unsigned-opportunity"),
+    opportunity: unsigned,
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  assert.equal(missing.error, "carry_opportunity_worker_authentication_missing");
+  const tampered = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: await positionInput("tampered-opportunity"),
+    opportunity: { ...signed, projected_net_value_micro_usdc: signed.projected_net_value_micro_usdc + 1 },
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  assert.equal(tampered.error, "carry_opportunity_worker_authentication_invalid");
+});
+
 test("creates only a capped, explicitly enabled qualification pilot", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-qualification-pilot-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
-  const pilotOpportunity = {
-    ...opportunity(),
+  const pilotOpportunity = opportunity({
     live_creation_ready: false,
     qualification_pilot_ready: true,
     qualification_pilot_candidate_venue_id: "lighter",
-  };
+  });
   const pilot = { enabled: true, candidate_venue_id: "lighter" };
   const disabled = await createStoredCarryPosition({
     state,
@@ -1132,7 +1159,7 @@ async function positionInput(suffix = "0001", riskOverrides = {}, expiresAtMs = 
 }
 
 function opportunity(overrides = {}) {
-  return {
+  const value = {
     version: 1,
     eligible: true,
     reasons: [],
@@ -1171,6 +1198,13 @@ function opportunity(overrides = {}) {
     long_margin_runway_ms: 7_200_000,
     short_margin_runway_ms: 7_200_000,
     ...overrides,
+  };
+  return {
+    ...value,
+    worker_authentication: authenticateCarryCreationOpportunity({
+      owner_commitment: OWNER,
+      opportunity: value,
+    }),
   };
 }
 

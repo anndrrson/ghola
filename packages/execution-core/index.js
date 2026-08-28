@@ -22,6 +22,7 @@ export {
   advanceCarryPosition,
   calculateMarginRunway,
   canonicalCarryCommitmentJson,
+  carryCreationOpportunityAuthenticationMessage,
   carryPrivatePrimeWorkerAuthenticationMessage,
   carryCollateralReviewMessage,
   carryRiskMandateMessage,

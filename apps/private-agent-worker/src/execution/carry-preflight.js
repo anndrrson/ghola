@@ -19,6 +19,7 @@ import {
   storeCarryExecutionReadiness,
 } from "./carry-readiness.js";
 import { observeCarryFundingPersistence } from "./carry-funding-persistence.js";
+import { authenticateCarryCreationOpportunity } from "./carry-opportunity-authentication.js";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -214,7 +215,7 @@ export async function preflightCarryPair({
     && modeled.capital_ready
     && economicOpportunity.eligible
     && qualificationReasons.length === 0;
-  const creationOpportunity = {
+  const unsignedCreationOpportunity = {
     ...economicOpportunity,
     all_venues_ready: modeled.no_submit_ready,
     live_creation_ready: liveCreationReady,
@@ -223,6 +224,13 @@ export async function preflightCarryPair({
     long_margin_runway_ms: modeled.margin_runways[0]?.runway_ms ?? 0,
     short_margin_runway_ms: modeled.margin_runways[1]?.runway_ms ?? 0,
   };
+  const creationOpportunity = Object.freeze({
+    ...unsignedCreationOpportunity,
+    worker_authentication: authenticateCarryCreationOpportunity({
+      owner_commitment: body.owner_commitment,
+      opportunity: unsignedCreationOpportunity,
+    }),
+  });
   const accountReadiness = modeled.account_readiness.map((account, index) =>
     bindAccountStateEvidence(account, evidence[index]));
   const marginRunways = modeled.margin_runways.map((runway, index) => Object.freeze({

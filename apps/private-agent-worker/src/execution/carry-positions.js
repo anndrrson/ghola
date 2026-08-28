@@ -20,6 +20,7 @@ import { listAllCarryPositionRecords } from "./carry-record-scan.js";
 import { createCarryLoopSupervisor, disabledCarryLoopHealth } from "./carry-loop-supervisor.js";
 import { loadCarryTransferRouteEvidence, observeCarryTransferRoutes } from "./carry-transfer-routes.js";
 import { runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
+import { verifyCarryCreationOpportunityAuthentication } from "./carry-opportunity-authentication.js";
 
 const OWNER = /^[A-Za-z0-9:_-]{8,180}$/;
 
@@ -40,6 +41,12 @@ export async function createStoredCarryPosition({
     now_ms: nowMs,
   });
   if (!mandate.ok) return mandate;
+  const workerOpportunity = verifyCarryCreationOpportunityAuthentication({
+    owner_commitment: ownerCommitment,
+    opportunity,
+    now_ms: nowMs,
+  });
+  if (!workerOpportunity.ok) return workerOpportunity;
   const lineage = await validateMigrationLineage({
     state,
     ownerCommitment,
@@ -73,6 +80,7 @@ export async function createStoredCarryPosition({
       owner_commitment: ownerCommitment,
       position,
       opportunity: publicOpportunity(opportunity),
+      opportunity_provenance: workerOpportunity.authentication,
       monitoring_context: normalizedMonitoring.context,
       value_ledger: ledger,
       value_evidence: {

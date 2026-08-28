@@ -121,6 +121,29 @@ test("rejects a worker that emits unsigned private-prime evidence", () => {
   );
 });
 
+test("rejects client-authored Carry creation economics", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll(
+        "verifyCarryCreationOpportunityAuthentication",
+        "trustClientCarryCreationOpportunity",
+      ),
+    }),
+    /carry_creation_opportunity_storage_gate_missing/,
+  );
+});
+
+test("rejects AI inference inside deterministic Carry execution modules", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      executor: `${sources.executor}\nconst route = generateText({ model: \"trade\" });`,
+    }),
+    /carry_deterministic_boundary_generate_text_present:executor/,
+  );
+});
+
 test("rejects private-prime evidence detached from the attested worker signer", () => {
   assert.throws(
     () => checkCarryExecutionContract({

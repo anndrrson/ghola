@@ -66,6 +66,22 @@ export function carryPrivatePrimeWorkerAuthenticationMessage({
   });
 }
 
+export function carryCreationOpportunityAuthenticationMessage({
+  owner_commitment,
+  opportunity,
+  checked_at_ms,
+  expires_at_ms,
+} = {}) {
+  return canonicalCarryCommitmentJson({
+    version: 1,
+    domain: "ghola-carry-creation-opportunity-authentication-v1",
+    owner_commitment,
+    opportunity,
+    checked_at_ms,
+    expires_at_ms,
+  });
+}
+
 export function estimatePerpDepthExecution({
   side,
   depth_levels: depthLevels,
