@@ -714,6 +714,19 @@ test("rejects credential onboarding that duplicates the Carry venue union", () =
   );
 });
 
+test("rejects market labels detached from the execution venue registry", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryMarket: sources.webCarryMarket.replace(
+        "CORE_PERP_VENUES.map((venueId) => [venueId, executionVenueLabel(venueId)])",
+        "CORE_PERP_VENUES.map((venueId) => [venueId, venueId])",
+      ),
+    }),
+    /carry_market_venue_label_registry_missing/,
+  );
+});
+
 test("rejects coupling public Carry intelligence back to private execution", () => {
   assert.throws(
     () => checkCarryExecutionContract({

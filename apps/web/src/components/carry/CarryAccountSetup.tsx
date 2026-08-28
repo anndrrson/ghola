@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Check, Copy, KeyRound, LoaderCircle, LockKeyhole, RefreshCw, X } from "lucide-react";
+import { executionVenueLabel } from "@ghola/execution-core";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { opaqueTurnkeyWalletScope, useTurnkeyWallet } from "@/lib/turnkey-provider";
@@ -923,7 +924,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
 }
 
 function venueLabel(venueId: string) {
-  return venueId === "hyperliquid" ? "Hyperliquid" : venueId === "lighter" ? "Lighter" : venueId === "aster" ? "Aster" : venueId;
+  return executionVenueLabel(venueId);
 }
 
 function LighterReadinessPanel({

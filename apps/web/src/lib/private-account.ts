@@ -2,7 +2,7 @@ import { hmac } from "@noble/hashes/hmac";
 import { sha256 } from "@noble/hashes/sha256";
 import {
   CARRY_EXECUTION_VENUES,
-  executionVenueSpec,
+  executionVenueLabel,
   isCarryExecutionVenue,
   type CarryExecutionVenueId,
 } from "@ghola/execution-core";
@@ -2759,16 +2759,7 @@ function supportedVenueAccountModes(venueId: GholaVenueId): GholaVenueAccountMod
 }
 
 function venueLabel(venueId: GholaVenueId): string {
-  if (isCarryExecutionVenue(venueId)) {
-    const label = executionVenueSpec(venueId)?.label;
-    if (typeof label === "string" && label) return label;
-  }
-  if (venueId === "phoenix") return "Phoenix";
-  if (venueId === "drift") return "Drift";
-  if (venueId === "jupiter") return "Jupiter";
-  if (venueId === "backpack") return "Backpack";
-  if (venueId === "coinbase_advanced") return "Coinbase Advanced";
-  return "RFQ network";
+  return venueId === "rfq_network" ? "RFQ network" : executionVenueLabel(venueId);
 }
 
 function defaultVenueVisibility(

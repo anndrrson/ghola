@@ -9,6 +9,7 @@ import {
   EXECUTION_VENUE_SPECS,
   assessVenueReadiness,
   carryExecutionQualification,
+  executionVenueLabel,
   requiredVenueCapabilities,
   supportsExactQuantityRecovery,
   venueAdapterCapability,
@@ -50,6 +51,9 @@ test("registry centralizes five core perp candidates without claiming qualificat
   assert.equal(EXECUTION_VENUE_SPECS.coinbase_advanced.exact_quantity_recovery_adapter, "coinbase_advanced_v1");
   assert.equal(EXECUTION_VENUE_SPECS.dydx.qualification_status, "candidate");
   assert.equal(EXECUTION_VENUE_SPECS.variational_omni.qualification_status, "research_only");
+  assert.equal(executionVenueLabel("hyperliquid"), "Hyperliquid");
+  assert.equal(executionVenueLabel("edgex"), "edgeX");
+  assert.equal(executionVenueLabel("venue_unregistered"), "venue_unregistered");
   assert.equal(venueAdapterCapability("dydx", "perp_shadow")?.adapter_id, "dydx_shadow_v1");
   assert.equal(venueAdapterCapability("dydx", "carry_execution"), null);
   assert.deepEqual(venuesWithAdapterCapability("collateral_route_observer", {

@@ -54,6 +54,7 @@ export {
   SUPPORTED_EXECUTION_VENUES,
   exactQuantityRecoveryAdapter,
   carryExecutionQualification,
+  executionVenueLabel,
   executionVenueSpec,
   isCarryExecutionVenue,
   isExecutionVenue,

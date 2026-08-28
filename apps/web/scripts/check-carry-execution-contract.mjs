@@ -230,6 +230,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("registry", "export const CARRY_BROWSER_STREAM_VENUES", "browser_stream_capability_registry_missing");
   requireText("registry", "export function venueAdapterCapability", "adapter_capability_lookup_missing");
   requireText("registry", "export function venuesWithAdapterCapability", "adapter_capability_query_missing");
+  requireText("registry", "export function executionVenueLabel", "venue_label_registry_missing");
+  requireText("registryTest", 'executionVenueLabel("edgex")', "venue_label_registry_test_missing");
   requireText("coreIndex", 'from "./venues.js"', "registry_export_missing");
   requireText("coreIndex", "venueAdapterCapability", "adapter_capability_export_missing");
   requireText("coreIndex", "CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES", "carry_required_adapter_contract_export_missing");
@@ -248,6 +250,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webClient", "venue_id: CarryExecutionVenue;", "carry_platform_link_registry_type_missing");
   requireText("webPrivateAccount", "...CARRY_EXECUTION_VENUES", "private_account_manifest_registry_missing");
   requireText("webPrivateAccount", "type CarryExecutionVenueId", "private_account_venue_type_registry_missing");
+  requireText("webPrivateAccount", 'executionVenueLabel(venueId)', "private_account_venue_label_registry_missing");
   if (String(sources.webPrivateAccount || "").split("if (isCarryExecutionVenue(venueId))").length - 1 < 3) {
     failures.push("private_account_policy_registry_missing");
   }
@@ -1074,6 +1077,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "data-edge-evidence={edgeEvidence.status}", "carry_funding_evidence_state_missing");
   requireText("webCarryChart", "EVID {edgeEvidence.value}", "carry_funding_evidence_display_missing");
   requireText("webCarryMarket", "carryMarketQualificationEvidence", "carry_market_qualification_model_missing");
+  requireText("webCarryMarket", "CORE_PERP_VENUES.map((venueId) => [venueId, executionVenueLabel(venueId)])", "carry_market_venue_label_registry_missing");
+  requireText("webAccountSetup", "return executionVenueLabel(venueId);", "carry_setup_venue_label_registry_missing");
   requireText("webCarryMarket", "CARRY_SHADOW_QUALIFICATION_COMMITMENT", "carry_market_qualification_commitment_gate_missing");
   requireText("webCarryChart", "data-market-evidence={marketEvidence.status}", "carry_market_qualification_state_missing");
   requireText("webCarryChart", "{marketEvidence.value}", "carry_market_qualification_display_missing");

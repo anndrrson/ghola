@@ -18,6 +18,7 @@ export declare const SUPPORTED_STRATEGIES: readonly StrategyId[];
 export declare const PORTFOLIO_SIGNING_BOUNDARY: Readonly<Record<string, readonly string[]>>;
 export declare class ExecutionCoreError extends Error { code: string; }
 export declare class CarryModelError extends Error { code: string; }
+export declare function executionVenueLabel(venueId: string): string;
 export declare function executionVenueSpec(venueId: string): Readonly<Record<string, unknown>> | null;
 export declare function carryExecutionQualification(venueId: string): Readonly<{ venue_id: string; eligible: boolean; gaps: readonly string[] }>;
 export declare function exactQuantityRecoveryAdapter(venueId: string): string | null;

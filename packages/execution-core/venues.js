@@ -164,6 +164,10 @@ export function executionVenueSpec(venueId) {
   return EXECUTION_VENUE_SPECS[venueId] || null;
 }
 
+export function executionVenueLabel(venueId) {
+  return executionVenueSpec(venueId)?.label || String(venueId || "");
+}
+
 export function carryExecutionQualification(venueId) {
   const spec = executionVenueSpec(venueId);
   if (!spec) return Object.freeze({ venue_id: venueId, eligible: false, gaps: Object.freeze(["venue_unregistered"]) });

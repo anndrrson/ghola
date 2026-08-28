@@ -1,4 +1,5 @@
 import { gholaCommitment } from "./private-account";
+import { executionVenueLabel } from "@ghola/execution-core";
 import {
   BACKPACK_SOL_PERP_SYMBOL,
   backpackPooledReadiness,
@@ -126,11 +127,9 @@ export interface TriVenueStatus {
 }
 
 const TRI_VENUES: TriVenueId[] = ["phoenix", "hyperliquid", "backpack"];
-const VENUE_LABEL: Record<TriVenueId, string> = {
-  phoenix: "Phoenix",
-  hyperliquid: "Hyperliquid",
-  backpack: "Backpack",
-};
+const VENUE_LABEL = Object.fromEntries(
+  TRI_VENUES.map((venueId) => [venueId, executionVenueLabel(venueId)]),
+) as Record<TriVenueId, string>;
 const VENUE_SYMBOL: Record<TriVenueId, TriVenueQuote["venue_symbol"]> = {
   phoenix: "SOL-PERP",
   hyperliquid: "SOL",

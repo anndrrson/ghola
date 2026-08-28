@@ -1,7 +1,9 @@
 import {
+  CORE_PERP_VENUES,
   adverseExecutionSlippageE6Bps,
   estimatePerpDepthExecution,
   evaluatePerpContractPairBasis,
+  executionVenueLabel,
 } from "@ghola/execution-core";
 
 export type CarryShadowStatus = "ready" | "degraded" | "quarantined";
@@ -252,13 +254,9 @@ const CARRY_IMAGE_DIGEST = /^sha256:[a-f0-9]{12,128}$/;
 const depthExecutionCache = new WeakMap<CarryShadowSnapshot, Map<string, ReturnType<typeof estimatePerpDepthExecution>>>();
 const pairCompatibilityCache = new WeakMap<CarryShadowSnapshot, WeakMap<CarryShadowSnapshot, boolean>>();
 
-export const CARRY_VENUE_LABELS: Record<string, string> = {
-  hyperliquid: "Hyperliquid",
-  lighter: "Lighter",
-  aster: "Aster",
-  edgex: "edgeX",
-  dydx: "dYdX",
-};
+export const CARRY_VENUE_LABELS: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(
+  CORE_PERP_VENUES.map((venueId) => [venueId, executionVenueLabel(venueId)]),
+));
 
 export function carryMarketQualificationEvidence(
   response: CarryShadowResponse | null,
