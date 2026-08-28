@@ -672,6 +672,21 @@ test("rejects a missing exact-reconciliation adapter", () => {
   );
 });
 
+test("rejects venue recovery that can resubmit or reconcile forever after an ambiguous response", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      aster: sources.aster
+        .replaceAll("submission_retry_count: 0", "submission_retry_count: 1")
+        .replaceAll("const maxAttempts = Math.max", "const maxAttempts = Math.min"),
+      lighter: sources.lighter
+        .replaceAll("submission_retry_count: 0", "submission_retry_count: 1")
+        .replaceAll("const maxAttempts = Math.max", "const maxAttempts = Math.min"),
+    }),
+    /aster_ambiguous_submit_retry_guard_missing|lighter_ambiguous_submit_retry_guard_missing|aster_reconciliation_bound_missing|lighter_reconciliation_bound_missing/,
+  );
+});
+
 test("rejects five-venue shadow qualification based on one lucky snapshot", () => {
   assert.throws(
     () => checkCarryExecutionContract({

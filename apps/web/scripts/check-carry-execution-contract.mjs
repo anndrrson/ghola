@@ -695,6 +695,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("lighter", "target_client_order_matched", "lighter_target_match_proof_missing");
   requireText("aster", "submission_outcome_ambiguous", "aster_ambiguity_freeze_missing");
   requireText("lighter", "submission_ambiguous", "lighter_ambiguity_freeze_missing");
+  requireText("aster", "submission_retry_count: 0", "aster_ambiguous_submit_retry_guard_missing");
+  requireText("lighter", "submission_retry_count: 0", "lighter_ambiguous_submit_retry_guard_missing");
+  requireText("aster", "const maxAttempts = Math.max", "aster_reconciliation_bound_missing");
+  requireText("lighter", "const maxAttempts = Math.max", "lighter_reconciliation_bound_missing");
+  requireText("asterTest", "recovers an ambiguous Aster submit response by reading the exact order without resubmitting", "aster_ambiguous_reconciliation_test_missing");
+  requireText("lighterTest", "recovers an ambiguous Lighter submit response by reading the exact order without resubmitting", "lighter_ambiguous_reconciliation_test_missing");
+  requireText("asterTest", "bounds exact-order reconciliation when an ambiguous Aster submit cannot be found", "aster_reconciliation_bound_test_missing");
+  requireText("lighterTest", "bounds exact-order reconciliation when an ambiguous Lighter submit cannot be found", "lighter_reconciliation_bound_test_missing");
   forbidText("aster", "submitAndReconcileAsterExecution({\n  credential,\n  instruction,\n  clientOrderId,\n  retry", "aster_retry_forbidden");
   forbidText("lighter", "submitAndReconcileLighterExecution({\n  credential,\n  instruction,\n  clientOrderIndex,\n  retry", "lighter_retry_forbidden");
 

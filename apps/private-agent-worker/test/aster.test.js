@@ -150,6 +150,65 @@ test("submits Aster once and reconciles only the exact client order until termin
   assert.equal(result.provider_ref_seed.submission_order_id, 44);
 });
 
+test("recovers an ambiguous Aster submit response by reading the exact order without resubmitting", async () => {
+  let submitCalls = 0;
+  let reconcileCalls = 0;
+  const result = await submitAndReconcileAsterExecution({
+    credential: credential(),
+    instruction: orderInstruction(),
+    clientOrderId: "ghola-carry-0005",
+    env: ENV,
+    now: () => 1_800_000_000_000,
+    sleep: async () => {},
+    fetchImpl: async (url, init) => {
+      const parsed = new URL(url);
+      if (init.method === "POST") {
+        submitCalls += 1;
+        return jsonResponse({ msg: "upstream response lost after write" }, 503);
+      }
+      assert.equal(parsed.searchParams.get("origClientOrderId"), "ghola-carry-0005");
+      reconcileCalls += 1;
+      return reconcileCalls === 1
+        ? jsonResponse({ code: -2013, msg: "Order does not exist." }, 400)
+        : jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-0005", orderId: 45, status: "FILLED", executedQty: "0.01", avgPrice: "60000" });
+    },
+  });
+  assert.equal(submitCalls, 1);
+  assert.equal(reconcileCalls, 2);
+  assert.equal(result.status, "filled");
+  assert.equal(result.reconciliation.submissionResponseAmbiguous, true);
+  assert.equal(result.reconciliation.submission_retry_count, 0);
+  assert.equal(result.reconciliation.target_client_order_only, true);
+  assert.equal(result.reconciliation.readFailures, 1);
+});
+
+test("bounds exact-order reconciliation when an ambiguous Aster submit cannot be found", async () => {
+  let submitCalls = 0;
+  let reconcileCalls = 0;
+  await assert.rejects(submitAndReconcileAsterExecution({
+    credential: credential(),
+    instruction: orderInstruction(),
+    clientOrderId: "ghola-carry-0006",
+    env: {
+      ...ENV,
+      PRIVATE_AGENT_ASTER_RECONCILE_TIMEOUT_MS: "250",
+      PRIVATE_AGENT_ASTER_RECONCILE_INTERVAL_MS: "100",
+    },
+    now: () => 1_800_000_000_000,
+    sleep: async () => {},
+    fetchImpl: async (_url, init) => {
+      if (init.method === "POST") {
+        submitCalls += 1;
+        throw new Error("response lost after write");
+      }
+      reconcileCalls += 1;
+      return jsonResponse({ code: -2013, msg: "Order does not exist." }, 400);
+    },
+  }), (error) => error.code === "submission_outcome_ambiguous");
+  assert.equal(submitCalls, 1);
+  assert.equal(reconcileCalls, 4);
+});
+
 test("reads signed Aster funding settlements without submitting", async () => {
   let observed;
   const rows = await readAsterFundingSettlements({

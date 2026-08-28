@@ -250,40 +250,85 @@ export async function submitAndReconcileLighterExecution({
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   env = process.env,
 }) {
-  const submitted = await submitLighterExecution({ credential, instruction, clientOrderIndex, runner });
+  let submitted;
+  let submissionResponseAmbiguous = false;
+  try {
+    submitted = await submitLighterExecution({ credential, instruction, clientOrderIndex, runner });
+  } catch (error) {
+    if (error?.code !== "submission_ambiguous") throw error;
+    submissionResponseAmbiguous = true;
+    submitted = {
+      status: "outcome_unknown",
+      provider_ref_seed: { venue: "lighter", client_order_index: clientOrderIndex, tx_hash: null },
+      result_seed: { kind: "lighter_submission_response_ambiguous" },
+      fills: [],
+      final_proof: null,
+    };
+  }
   if (submitted.final_proof?.final_venue_execution_proven === true) return submitted;
   const timeout = boundedMs(env.PRIVATE_AGENT_LIGHTER_RECONCILE_TIMEOUT_MS, 250, 5_000, 1_200);
   const interval = boundedMs(env.PRIVATE_AGENT_LIGHTER_RECONCILE_INTERVAL_MS, 25, 1_000, 100);
   const deadline = now() + timeout;
+  const maxAttempts = Math.max(1, Math.ceil(timeout / interval) + 1);
   let last = submitted;
-  do {
+  let exactOrderObserved = false;
+  let readFailures = 0;
+  let attempts = 0;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    attempts = attempt;
     try {
-      last = await reconcileLighterExecution({
+      const reconciled = await reconcileLighterExecution({
         credential,
         clientOrderIndex,
         market: instruction?.order?.market,
         runner,
       });
+      if (reconciled.final_proof?.target_client_order_matched === true) {
+        exactOrderObserved = true;
+        last = reconciled;
+      }
     } catch {
-      throw new LighterExecutionError(
-        "lighter submission accepted but exact reconciliation is unavailable",
-        503,
-        "submission_ambiguous",
-      );
+      readFailures += 1;
     }
     if (last.final_proof?.final_venue_execution_proven === true) {
-      return {
-        ...last,
-        provider_ref_seed: {
-          ...last.provider_ref_seed,
-          submission_tx_hash: submitted.provider_ref_seed?.tx_hash || null,
-        },
-      };
+      return reconciledLighterResult(last, submitted, {
+        submissionResponseAmbiguous,
+        readFailures,
+        attempts: attempt,
+        exhausted: false,
+      });
     }
-    if (now() >= deadline) break;
+    if (attempt >= maxAttempts || now() >= deadline) break;
     await sleep(interval);
-  } while (now() <= deadline);
-  return last;
+  }
+  if (exactOrderObserved) {
+    return reconciledLighterResult(last, submitted, {
+      submissionResponseAmbiguous,
+      readFailures,
+      attempts,
+      exhausted: true,
+    });
+  }
+  throw new LighterExecutionError(
+    "lighter submission outcome remains ambiguous after bounded exact-order reconciliation",
+    503,
+    "submission_ambiguous",
+  );
+}
+
+function reconciledLighterResult(result, submitted, reconciliation) {
+  return {
+    ...result,
+    provider_ref_seed: {
+      ...result.provider_ref_seed,
+      submission_tx_hash: submitted.provider_ref_seed?.tx_hash || null,
+    },
+    reconciliation: {
+      ...reconciliation,
+      target_client_order_only: true,
+      submission_retry_count: 0,
+    },
+  };
 }
 
 export async function reconcileLighterExecution({ credential, clientOrderIndex, market, runner = defaultRunner }) {

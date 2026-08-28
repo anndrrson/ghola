@@ -246,15 +246,34 @@ export async function submitAndReconcileAsterExecution({
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   env = process.env,
 }) {
-  const submitted = await submitAsterExecution({ credential, instruction, clientOrderId, fetchImpl, now, env });
+  let submitted;
+  let submissionResponseAmbiguous = false;
+  try {
+    submitted = await submitAsterExecution({ credential, instruction, clientOrderId, fetchImpl, now, env });
+  } catch (error) {
+    if (error?.code !== "submission_outcome_ambiguous") throw error;
+    submissionResponseAmbiguous = true;
+    submitted = {
+      status: "unknown",
+      provider_ref_seed: { venue: "aster", client_order_id: clientOrderId, order_id: null },
+      result_seed: { kind: "aster_submission_response_ambiguous" },
+      fills: [],
+      final_proof: null,
+    };
+  }
   if (submitted.final_proof?.final_venue_execution_proven === true) return submitted;
   const timeout = boundedMs(env.PRIVATE_AGENT_ASTER_RECONCILE_TIMEOUT_MS, 250, 5_000, 1_200);
   const interval = boundedMs(env.PRIVATE_AGENT_ASTER_RECONCILE_INTERVAL_MS, 25, 1_000, 100);
   const deadline = now() + timeout;
+  const maxAttempts = Math.max(1, Math.ceil(timeout / interval) + 1);
   let last = submitted;
-  do {
+  let exactOrderObserved = false;
+  let readFailures = 0;
+  let attempts = 0;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    attempts = attempt;
     try {
-      last = await submitAsterExecution({
+      const reconciled = await submitAsterExecution({
         credential,
         instruction: {
           version: 1,
@@ -271,26 +290,52 @@ export async function submitAndReconcileAsterExecution({
         now,
         env,
       });
-    } catch (error) {
-      throw new AsterExecutionError(
-        "aster submission accepted but exact reconciliation is unavailable",
-        error?.status || 503,
-        "submission_outcome_ambiguous",
-      );
+      if (reconciled.final_proof?.target_client_order_matched === true) {
+        exactOrderObserved = true;
+        last = reconciled;
+      }
+    } catch {
+      readFailures += 1;
     }
     if (last.final_proof?.final_venue_execution_proven === true) {
-      return {
-        ...last,
-        provider_ref_seed: {
-          ...last.provider_ref_seed,
-          submission_order_id: submitted.provider_ref_seed?.order_id ?? null,
-        },
-      };
+      return reconciledAsterResult(last, submitted, {
+        submissionResponseAmbiguous,
+        readFailures,
+        attempts: attempt,
+        exhausted: false,
+      });
     }
-    if (now() >= deadline) break;
+    if (attempt >= maxAttempts || now() >= deadline) break;
     await sleep(interval);
-  } while (now() <= deadline);
-  return last;
+  }
+  if (exactOrderObserved) {
+    return reconciledAsterResult(last, submitted, {
+      submissionResponseAmbiguous,
+      readFailures,
+      attempts,
+      exhausted: true,
+    });
+  }
+  throw new AsterExecutionError(
+    "aster submission outcome remains ambiguous after bounded exact-order reconciliation",
+    503,
+    "submission_outcome_ambiguous",
+  );
+}
+
+function reconciledAsterResult(result, submitted, reconciliation) {
+  return {
+    ...result,
+    provider_ref_seed: {
+      ...result.provider_ref_seed,
+      submission_order_id: submitted.provider_ref_seed?.order_id ?? null,
+    },
+    reconciliation: {
+      ...reconciliation,
+      target_client_order_only: true,
+      submission_retry_count: 0,
+    },
+  };
 }
 
 export async function signedRequest({
@@ -330,6 +375,9 @@ export async function signedRequest({
   }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload?.code < 0) {
+    if (ambiguousOnTransportFailure && (response.status === 408 || response.status >= 500)) {
+      throw new AsterExecutionError("aster submission outcome is ambiguous", 503, "submission_outcome_ambiguous");
+    }
     throw new AsterExecutionError("aster rejected the request", response.status || 422, "venue_rejected", {
       venue_code: payload?.code ?? null,
       venue_message: String(payload?.msg || "").slice(0, 200),

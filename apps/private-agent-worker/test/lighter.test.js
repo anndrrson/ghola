@@ -265,6 +265,84 @@ test("submits once and polls the exact client order until terminal fill", async 
   }
 });
 
+test("recovers an ambiguous Lighter submit response by reading the exact order without resubmitting", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "full_ticket";
+  let submitCalls = 0;
+  let reconcileCalls = 0;
+  try {
+    const result = await submitAndReconcileLighterExecution({
+      credential: credential(),
+      instruction: instruction(),
+      clientOrderIndex: 78,
+      now: () => 1_800_000_000_000,
+      sleep: async () => {},
+      runner: async (payload) => {
+        if (payload.action === "submit") {
+          submitCalls += 1;
+          throw new Error("response lost after write");
+        }
+        assert.equal(payload.action, "reconcile");
+        assert.equal(payload.client_order_index, 78);
+        reconcileCalls += 1;
+        if (reconcileCalls === 1) throw new Error("read replica lag");
+        return { order: { status: "filled", order_index: 89, filled_base_amount: "0.001", filled_quote_amount: "100" } };
+      },
+    });
+    assert.equal(submitCalls, 1);
+    assert.equal(reconcileCalls, 2);
+    assert.equal(result.status, "filled");
+    assert.equal(result.reconciliation.submissionResponseAmbiguous, true);
+    assert.equal(result.reconciliation.submission_retry_count, 0);
+    assert.equal(result.reconciliation.target_client_order_only, true);
+    assert.equal(result.reconciliation.readFailures, 1);
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
+test("bounds exact-order reconciliation when an ambiguous Lighter submit cannot be found", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "full_ticket";
+  let submitCalls = 0;
+  let reconcileCalls = 0;
+  try {
+    await assert.rejects(submitAndReconcileLighterExecution({
+      credential: credential(),
+      instruction: instruction(),
+      clientOrderIndex: 79,
+      now: () => 1_800_000_000_000,
+      sleep: async () => {},
+      env: {
+        PRIVATE_AGENT_LIGHTER_RECONCILE_TIMEOUT_MS: "250",
+        PRIVATE_AGENT_LIGHTER_RECONCILE_INTERVAL_MS: "100",
+      },
+      runner: async (payload) => {
+        if (payload.action === "submit") {
+          submitCalls += 1;
+          throw new Error("response lost after write");
+        }
+        reconcileCalls += 1;
+        throw new Error("not visible yet");
+      },
+    }), (error) => error.code === "submission_ambiguous");
+    assert.equal(submitCalls, 1);
+    assert.equal(reconcileCalls, 4);
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
 test("normalizes only user funding payments from the authenticated Lighter export", async () => {
   const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
   const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
