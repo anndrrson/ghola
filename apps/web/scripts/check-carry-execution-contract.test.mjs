@@ -1269,6 +1269,32 @@ test("rejects release without a joined three-venue no-submit matrix", () => {
   );
 });
 
+test("rejects worker release material detached from stored three-venue readiness", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replace(
+        "readCarryExecutionReadiness({",
+        "readPairOnlyReadiness({",
+      ),
+    }),
+    /carry_release_three_venue_readiness_missing/,
+  );
+});
+
+test("rejects release verification that accepts a partial execution registry", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier.replace(
+        "sameStrings(executionReadiness.registry_venue_ids, CARRY_EXECUTION_VENUES)",
+        "executionReadiness.registry_venue_ids.includes(\"hyperliquid\")",
+      ),
+    }),
+    /carry_release_three_venue_verifier_missing/,
+  );
+});
+
 test("rejects executable Carry preflight that bypasses the shared shadow contract", () => {
   assert.throws(
     () => checkCarryExecutionContract({

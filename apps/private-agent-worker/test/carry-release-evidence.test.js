@@ -10,8 +10,13 @@ import {
 import { carryPositionLegId } from "../src/execution/carry-positions.js";
 import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
 import { observeCarryShadowQualification } from "../src/execution/carry-shadow-qualification.js";
+import {
+  carryAccountStateCommitment,
+  storeCarryExecutionReadiness,
+} from "../src/execution/carry-readiness.js";
 import { carryShadowFixture } from "./carry-shadow-fixture.js";
 import {
+  CARRY_EXECUTION_VENUES,
   carryRiskMandateMessage,
   normalizeCarryRiskMandateAuthorization,
   normalizeCarryRiskMandatePayload,
@@ -48,6 +53,10 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.equal(result.material.contract_equivalence.index_price_divergence_bps, 3);
   assert.equal(result.material.shadow_qualification.proven, true);
   assert.equal(result.material.shadow_qualification.completed_samples, 3);
+  assert.equal(result.material.execution_readiness.ready, true);
+  assert.deepEqual(result.material.execution_readiness.registry_venue_ids, [...CARRY_EXECUTION_VENUES]);
+  assert.equal(result.material.execution_readiness.recovery_ready, true);
+  assert.equal(result.material.execution_readiness.venues.length, 3);
   assert.equal(result.material.final_state.open_order_count, 0);
   assert.equal(result.material.final_state.owner_commitment, OWNER);
   assert.equal(result.material.final_state.carry_position_id, fixture.record.position.position_id);
@@ -86,6 +95,22 @@ test("refuses release material when durable opportunity evidence was altered", a
     now_ms: NOW,
   });
   assert.equal(result.error, "carry_release_opportunity_provenance_unproven");
+});
+
+test("refuses release material without creation-time three-venue readiness", async () => {
+  const fixture = await stateFixture();
+  const getIdempotency = fixture.state.getIdempotency;
+  fixture.state.getIdempotency = async (key) => key.startsWith("carry:readiness:")
+    ? null
+    : getIdempotency(key);
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_three_venue_readiness_unproven");
 });
 
 test("records a durable owner- and image-bound paired lifecycle proof", async () => {
@@ -485,8 +510,9 @@ async function stateFixture() {
     exit_saga_id: exitSaga.saga_id,
     monitoring_context: {
       venue_access: {
-        hyperliquid: { account_commitment: "account:hyperliquid:release:0001" },
-        aster: { account_commitment: "account:aster:release:0001" },
+        hyperliquid: releaseVenueAccess("hyperliquid"),
+        lighter: releaseVenueAccess("lighter"),
+        aster: releaseVenueAccess("aster"),
       },
     },
     position: {
@@ -625,7 +651,107 @@ async function stateFixture() {
       return receipt;
     },
   };
+  const readinessRequest = {
+    owner_commitment: OWNER,
+    operation_class: "matrix_no_submit",
+    work_order_commitment: "carry_matrix_release_0001",
+    asset: record.position.asset,
+    notional_usd: String(record.position.target_notional_micro_usdc / 1_000_000),
+    horizon_days: "1",
+    venue_access: record.monitoring_context.venue_access,
+  };
+  const readiness = await storeCarryExecutionReadiness({
+    state,
+    request: readinessRequest,
+    matrix: releaseReadinessMatrix(readinessRequest, record.position.created_at_ms),
+    now_ms: record.position.created_at_ms,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+  });
+  assert.equal(readiness.ok, true, JSON.stringify(readiness));
   return { state, record, attempts, receipts };
+}
+
+function releaseVenueAccess(venueId) {
+  return {
+    account_commitment: `account:${venueId}:release:0001`,
+    vault_commitment: `vault:${venueId}:release:0001`,
+    policy_commitment: `policy:${venueId}:release:0001`,
+  };
+}
+
+function releaseReadinessMatrix(request, checkedAtMs) {
+  const venues = CARRY_EXECUTION_VENUES.map((venueId) => ({
+    venue_id: venueId,
+    account_commitment: releaseVenueAccess(venueId).account_commitment,
+    transaction_broadcast: false,
+    work_order_commitments: [],
+    verification_commitments: [],
+    account_state_commitments: [],
+    checks: {
+      transaction_broadcast: false,
+      account_state_checked: true,
+      order_request_checked: true,
+    },
+  }));
+  const pairs = CARRY_EXECUTION_VENUES.flatMap((left, leftIndex) =>
+    CARRY_EXECUTION_VENUES.slice(leftIndex + 1).map((right) => [left, right]))
+    .map(([left, right], index) => {
+      const pairWorkOrder = `${request.work_order_commitment}_pair_${index + 1}`;
+      const legEvidence = [left, right].map((venueId) => {
+        const workOrderCommitment = `${pairWorkOrder}_${venueId}`;
+        const verificationCommitment = `verification:carry:release:${venueId}:${index + 1}`;
+        const accountState = {
+          venue_id: venueId,
+          account_commitment: releaseVenueAccess(venueId).account_commitment,
+          verification_commitment: verificationCommitment,
+          checked_at_ms: checkedAtMs,
+          position_count: 0,
+          open_order_count: 0,
+          flat_zero_orders: true,
+        };
+        accountState.account_state_commitment = carryAccountStateCommitment(accountState);
+        const venue = venues.find((item) => item.venue_id === venueId);
+        venue.work_order_commitments.push(workOrderCommitment);
+        venue.verification_commitments.push(verificationCommitment);
+        venue.account_state_commitments.push(accountState.account_state_commitment);
+        return {
+          venue_id: venueId,
+          account_commitment: releaseVenueAccess(venueId).account_commitment,
+          work_order_commitment: workOrderCommitment,
+          verification_commitment: verificationCommitment,
+          account_state: accountState,
+          transaction_broadcast: false,
+          account_state_checked: true,
+          order_request_checked: true,
+        };
+      });
+      return {
+        long_venue_id: left,
+        short_venue_id: right,
+        work_order_commitment: pairWorkOrder,
+        no_submit_ready: true,
+        capital_ready: true,
+        transaction_broadcast: false,
+        account_readiness: [left, right].map((venueId) => ({
+          venue_id: venueId,
+          authorized: true,
+          flat_zero_orders: true,
+          position_count: 0,
+          open_order_count: 0,
+          account_state_checked_at_ms: checkedAtMs,
+          account_state_commitment: legEvidence.find((item) => item.venue_id === venueId).account_state.account_state_commitment,
+          capital_ready: true,
+          available_balance_micro_usdc: 11_000_000,
+          venue_minimum_margin_micro_usdc: 550_000,
+          required_opening_collateral_micro_usdc: 11_000_000,
+          opening_collateral_shortfall_micro_usdc: 0,
+          execution_leverage: 1,
+          owner_only_funding: true,
+        })),
+        leg_evidence: legEvidence,
+      };
+    });
+  return { transaction_broadcast: false, venues, pairs };
 }
 
 async function signedMandateAuthorization(position) {

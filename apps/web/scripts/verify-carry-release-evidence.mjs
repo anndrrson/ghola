@@ -3,7 +3,11 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { carryRiskMandateMessage } from "@ghola/execution-core";
+import {
+  CARRY_EXECUTION_VENUES,
+  CARRY_RECOVERY_POLICY,
+  carryRiskMandateMessage,
+} from "@ghola/execution-core";
 import { hashMessage, recoverMessageAddress } from "viem";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -63,6 +67,39 @@ export async function verifyCarryReleaseEvidence(evidence) {
   fail(/^carry:shadow:qualification:[0-9a-f]{64}$/.test(String(shadowQualification.evidence_commitment || "")),
     "shadow_qualification_commitment_invalid");
 
+  const executionReadiness = evidence?.execution_readiness || {};
+  const readinessCheckedAt = timestamp(executionReadiness.checked_at);
+  const readinessExpiresAt = timestamp(executionReadiness.expires_at);
+  const readinessVenues = array(executionReadiness.venues);
+  fail(executionReadiness.ready === true, "three_venue_readiness_unproven");
+  fail(executionReadiness.owner_commitment === evidence?.final_state?.owner_commitment,
+    "three_venue_owner_binding_mismatch");
+  fail(executionReadiness.asset === evidence?.position?.asset, "three_venue_asset_mismatch");
+  fail(scaledDecimal(executionReadiness.notional_usd, 6) === BigInt(positiveInteger(evidence?.position?.target_notional_micro_usdc)),
+    "three_venue_notional_mismatch");
+  fail(positiveDecimal(executionReadiness.horizon_days), "three_venue_horizon_invalid");
+  fail(String(executionReadiness.image_digest || "").toLowerCase() === imageDigest,
+    "three_venue_image_mismatch");
+  fail(sameStrings(executionReadiness.registry_venue_ids, CARRY_EXECUTION_VENUES),
+    "three_venue_registry_invalid");
+  fail(executionReadiness.recovery_ready === true
+    && sameStrings(executionReadiness.recovery_venue_ids, CARRY_EXECUTION_VENUES)
+    && sameRecord(executionReadiness.recovery_policy, CARRY_RECOVERY_POLICY),
+  "three_venue_recovery_unproven");
+  fail(executionReadiness.transaction_broadcast === false, "three_venue_broadcast_detected");
+  fail(/^carry:readiness:evidence:[0-9a-f]{40}$/.test(String(executionReadiness.evidence_commitment || "")),
+    "three_venue_evidence_commitment_invalid");
+  fail(/^carry:readiness:result:[0-9a-f]{64}$/.test(String(executionReadiness.readiness_commitment || "")),
+    "three_venue_result_commitment_invalid");
+  fail(sameVenueSet(readinessVenues, CARRY_EXECUTION_VENUES), "three_venue_account_bindings_invalid");
+  for (const venue of readinessVenues) {
+    fail(commitment(venue?.account_commitment), `three_venue_account_commitment_invalid:${String(venue?.venue_id || "")}`);
+    fail(/^carry:account-state:[0-9a-f]{64}$/.test(String(venue?.account_state_commitment || "")),
+      `three_venue_account_state_commitment_invalid:${String(venue?.venue_id || "")}`);
+    fail(venue?.account_state_checked === true, `three_venue_account_state_unchecked:${String(venue?.venue_id || "")}`);
+    fail(venue?.transaction_broadcast === false, `three_venue_account_broadcast_detected:${String(venue?.venue_id || "")}`);
+  }
+
   const position = evidence?.position || {};
   const notional = positiveInteger(position.target_notional_micro_usdc);
   const pair = [String(position.long_venue_id || ""), String(position.short_venue_id || "")];
@@ -75,6 +112,8 @@ export async function verifyCarryReleaseEvidence(evidence) {
   const createdAt = timestamp(position.created_at);
   fail(createdAt > 0, "position_timestamp_invalid");
   fail(shadowCheckedAt > 0 && shadowCheckedAt <= createdAt, "shadow_qualification_timestamp_invalid");
+  fail(readinessCheckedAt > 0 && readinessCheckedAt <= createdAt && readinessExpiresAt > createdAt,
+    "three_venue_readiness_timestamp_invalid");
   const contractEquivalence = evidence?.contract_equivalence || {};
   const equivalenceCheckedAt = timestamp(contractEquivalence.checked_at);
   const dataSkewMs = nonNegativeInteger(contractEquivalence.contract_data_skew_ms);
@@ -258,6 +297,9 @@ export async function verifyCarryReleaseEvidence(evidence) {
     fail(venueState?.nonzero_position_count === 0, `venue_position_not_flat:${venue}`);
     fail(venueState?.open_order_count === 0, `venue_open_orders_not_zero:${venue}`);
     fail(venueState?.account_state_checked === true, `venue_account_state_unverified:${venue}`);
+    const readinessVenue = readinessVenues.find((item) => item?.venue_id === venue);
+    fail(readinessVenue?.account_commitment === venueState?.account_commitment,
+      `three_venue_final_account_binding_mismatch:${venue}`);
   }
 
   verifyValueLedger({ ledger: evidence?.value_ledger, entryLegs, exitLegs, failures });
@@ -443,6 +485,13 @@ function sameStrings(left, right) {
     && Array.isArray(right)
     && left.length === right.length
     && left.every((value, index) => value === right[index]);
+}
+
+function sameRecord(left, right) {
+  if (!left || typeof left !== "object" || Array.isArray(left)) return false;
+  const entries = Object.entries(right || {});
+  return Object.keys(left).length === entries.length
+    && entries.every(([key, value]) => left[key] === value);
 }
 
 function stableJson(value) {

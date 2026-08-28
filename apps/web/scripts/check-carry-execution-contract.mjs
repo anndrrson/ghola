@@ -904,6 +904,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterialTest", "refuses a single unattended observation as a monitoring period", "carry_release_monitoring_cadence_test_missing");
   requireText("releaseMaterialTest", "refuses a lifecycle with a monitoring outage", "carry_release_monitoring_outage_test_missing");
   requireText("releaseMaterialTest", "refuses monitoring gaps beyond the signed freshness budget", "carry_release_monitoring_gap_test_missing");
+  requireText("releaseMaterial", "readCarryExecutionReadiness({", "carry_release_three_venue_readiness_missing");
+  requireText("releaseMaterial", "carry_release_three_venue_readiness_unproven", "carry_release_three_venue_fail_closed_missing");
+  requireText("releaseMaterial", "execution_readiness: releaseExecutionReadiness({", "carry_release_three_venue_material_missing");
+  requireText("releaseMaterialTest", "without creation-time three-venue readiness", "carry_release_three_venue_worker_test_missing");
+  requireText("evidenceVerifier", "sameStrings(executionReadiness.registry_venue_ids, CARRY_EXECUTION_VENUES)", "carry_release_three_venue_verifier_missing");
+  requireText("evidenceVerifier", "sameRecord(executionReadiness.recovery_policy, CARRY_RECOVERY_POLICY)", "carry_release_three_venue_recovery_verifier_missing");
+  requireText("evidenceVerifierTest", "without all three execution venue bindings", "carry_release_three_venue_verifier_test_missing");
+  requireText("evidenceVerifierTest", "permits ambiguity retries", "carry_release_three_venue_recovery_test_missing");
   requireText("releaseMaterial", "releaseExitTrigger", "carry_release_exit_trigger_missing");
   requireText("releaseMaterialTest", "refuses a release without an owner request or measured mandate breach", "carry_release_exit_trigger_test_missing");
   requireText("releaseMaterialTest", "binds an automatic exit to the signed net-carry threshold", "carry_release_signed_exit_trigger_test_missing");

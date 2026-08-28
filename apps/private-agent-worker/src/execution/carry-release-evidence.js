@@ -1,9 +1,17 @@
 import { createHash } from "node:crypto";
-import { normalizeCarryLifecycleValueAttribution } from "@ghola/execution-core";
+import {
+  CARRY_EXECUTION_VENUES,
+  CARRY_RECOVERY_POLICY,
+  normalizeCarryLifecycleValueAttribution,
+} from "@ghola/execution-core";
 import { readCarryVenueQualification, runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 import { carryPositionLegId, verifyStoredCarryOpportunityBinding } from "./carry-positions.js";
 import { assessCarryFlatReconciliation } from "./carry-reconciliation.js";
+import {
+  readCarryExecutionReadiness,
+  verifyCarryExecutionReadinessResult,
+} from "./carry-readiness.js";
 import { readCarryShadowQualification } from "./carry-shadow-qualification.js";
 
 const DEFAULT_LIFECYCLE_PROOF_MAX_AGE_MS = 90 * 86_400_000;
@@ -175,6 +183,25 @@ export async function buildCompletedCarryReleaseMaterial({
   if (!shadowQualification.ready || !shadowQualification.release_bound) {
     return denied("carry_release_shadow_qualification_unproven");
   }
+  const executionReadiness = await readCarryExecutionReadiness({
+    state,
+    owner_commitment: ownerCommitment,
+    venue_access: record.monitoring_context?.venue_access,
+    asset: record.position.asset,
+    notional_usd: String(record.position.target_notional_micro_usdc / 1_000_000),
+    horizon_days: String(Math.max(1, Math.ceil(Number(record.opportunity?.horizon_ms || 86_400_000) / 86_400_000))),
+    now_ms: record.position.created_at_ms,
+    env,
+  });
+  const assessedExecutionReadiness = verifyCarryExecutionReadinessResult(executionReadiness, {
+    now_ms: record.position.created_at_ms,
+  });
+  if (!assessedExecutionReadiness.ok
+    || executionReadiness.recovery_ready !== true
+    || !sameStrings(executionReadiness.recovery_venue_ids, CARRY_EXECUTION_VENUES)
+    || !sameRecord(executionReadiness.recovery_policy, CARRY_RECOVERY_POLICY)) {
+    return denied("carry_release_three_venue_readiness_unproven");
+  }
   const finalState = record.final_reconciliation_evidence;
   const pair = [record.position.long_venue_id, record.position.short_venue_id];
   const accountCommitments = Object.fromEntries(pair.map((venueId) => [
@@ -291,6 +318,10 @@ export async function buildCompletedCarryReleaseMaterial({
       transaction_broadcast: false,
       evidence_commitment: shadowQualification.evidence_commitment,
     },
+    execution_readiness: releaseExecutionReadiness({
+      readiness: assessedExecutionReadiness.readiness,
+      monitoring_context: record.monitoring_context,
+    }),
     mandate: {
       policy_commitment: mandate.authorization.mandate_commitment,
       signed_mandate: mandate.authorization.signed_mandate,
@@ -366,6 +397,35 @@ export async function buildCompletedCarryReleaseMaterial({
   };
   material.worker_material_commitment = workerMaterialCommitment(material);
   return { ok: true, material };
+}
+
+function releaseExecutionReadiness({ readiness, monitoring_context: monitoringContext }) {
+  const capitalByVenue = new Map((Array.isArray(readiness?.capital_plan) ? readiness.capital_plan : [])
+    .map((item) => [item?.venue_id, item]));
+  return {
+    ready: true,
+    owner_commitment: readiness.owner_commitment,
+    asset: readiness.asset,
+    notional_usd: readiness.notional_usd,
+    horizon_days: readiness.horizon_days,
+    image_digest: readiness.image_digest,
+    checked_at: iso(readiness.checked_at_ms),
+    expires_at: iso(readiness.expires_at_ms),
+    registry_venue_ids: [...readiness.registry_venue_ids],
+    recovery_ready: true,
+    recovery_venue_ids: [...readiness.recovery_venue_ids],
+    recovery_policy: { ...readiness.recovery_policy },
+    transaction_broadcast: false,
+    evidence_commitment: readiness.evidence_commitment,
+    readiness_commitment: readiness.readiness_commitment,
+    venues: CARRY_EXECUTION_VENUES.map((venueId) => ({
+      venue_id: venueId,
+      account_commitment: monitoringContext?.venue_access?.[venueId]?.account_commitment || null,
+      account_state_commitment: capitalByVenue.get(venueId)?.account_state_commitment || null,
+      account_state_checked: true,
+      transaction_broadcast: false,
+    })),
+  };
 }
 
 function releaseExitTrigger({ exit_request: exitRequest, exit_requested_at_ms: exitRequestedAt, observations, position }) {
@@ -698,6 +758,20 @@ function positiveInteger(value) {
 
 function positiveDecimal(value) {
   return /^\d+(?:\.\d+)?$/.test(String(value || "")) && Number(value) > 0;
+}
+
+function sameStrings(left, right) {
+  return Array.isArray(left)
+    && Array.isArray(right)
+    && left.length === right.length
+    && left.every((value, index) => value === right[index]);
+}
+
+function sameRecord(left, right) {
+  if (!left || typeof left !== "object" || Array.isArray(left)) return false;
+  const entries = Object.entries(right || {});
+  return Object.keys(left).length === entries.length
+    && entries.every(([key, value]) => left[key] === value);
 }
 
 function digest(value) {

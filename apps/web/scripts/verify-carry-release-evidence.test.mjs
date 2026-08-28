@@ -6,7 +6,7 @@ import {
   carryWorkerMaterialCommitment,
   verifyCarryReleaseEvidence,
 } from "./verify-carry-release-evidence.mjs";
-import { carryRiskMandateMessage } from "@ghola/execution-core";
+import { CARRY_EXECUTION_VENUES, CARRY_RECOVERY_POLICY, carryRiskMandateMessage } from "@ghola/execution-core";
 import { hashMessage } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -90,6 +90,7 @@ async function fixture() {
       transaction_broadcast: false,
       evidence_commitment: `carry:shadow:qualification:${"44".repeat(32)}`,
     },
+    execution_readiness: executionReadiness(),
     mandate: {
       policy_commitment: hashMessage(mandateMessage),
       signed_mandate: signedMandate,
@@ -205,6 +206,33 @@ function qualification(venue_id, adapter_id, source) {
   };
 }
 
+function executionReadiness() {
+  return {
+    ready: true,
+    owner_commitment: "owner:carry:mainnet:proof:0001",
+    asset: "HYPE",
+    notional_usd: "11",
+    horizon_days: "30",
+    image_digest: "sha256:abcdef1234567890",
+    checked_at: "2026-08-23T23:59:57.000Z",
+    expires_at: "2026-08-24T00:14:57.000Z",
+    registry_venue_ids: [...CARRY_EXECUTION_VENUES],
+    recovery_ready: true,
+    recovery_venue_ids: [...CARRY_EXECUTION_VENUES],
+    recovery_policy: { ...CARRY_RECOVERY_POLICY },
+    transaction_broadcast: false,
+    evidence_commitment: `carry:readiness:evidence:${"55".repeat(20)}`,
+    readiness_commitment: `carry:readiness:result:${"66".repeat(32)}`,
+    venues: CARRY_EXECUTION_VENUES.map((venueId) => ({
+      venue_id: venueId,
+      account_commitment: `account:${venueId}:release:0001`,
+      account_state_commitment: `carry:account-state:${venueId === "hyperliquid" ? "11".repeat(32) : venueId === "lighter" ? "22".repeat(32) : "33".repeat(32)}`,
+      account_state_checked: true,
+      transaction_broadcast: false,
+    })),
+  };
+}
+
 function leg(venue_id, side, reduce_only, client_order_commitment, fee_micro_usdc, slippage_micro_usdc, funding_micro_usdc = 0) {
   return {
     venue_id,
@@ -244,6 +272,22 @@ test("rejects an ambiguous resubmission", async () => {
   evidence.entry.legs[1].ambiguity_retry_count = 1;
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
   await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /entry_ambiguity_retry_forbidden:aster/);
+});
+
+test("rejects release evidence without all three execution venue bindings", async () => {
+  const evidence = await fixture();
+  evidence.execution_readiness.venues = evidence.execution_readiness.venues.filter((venue) => venue.venue_id !== "lighter");
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /three_venue_account_bindings_invalid/);
+});
+
+test("rejects release evidence whose three-venue recovery policy permits ambiguity retries", async () => {
+  const evidence = await fixture();
+  evidence.execution_readiness.recovery_policy.ambiguous_submission = "retry";
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /three_venue_recovery_unproven/);
 });
 
 test("rejects a paired lifecycle without live broadcast proof on every leg", async () => {
