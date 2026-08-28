@@ -12,6 +12,7 @@ import { agentPassportVenueAccessForWorker } from "@/lib/private-agent-passport"
 import { verifyCarryPrivatePrimeWorkerAuthentication } from "@/lib/carry-private-prime-worker-authentication";
 import { verifyCarryCreationOpportunityWorkerAuthentication } from "@/lib/carry-creation-opportunity-authentication";
 import { randomUUID } from "node:crypto";
+import { normalizeCarryShadowAssets } from "@ghola/execution-core";
 import { CARRY_EXECUTION_VENUES, isCarryExecutionVenue } from "@/lib/carry-venues";
 import { verifyCarryRiskMandateAuthorization } from "@/lib/carry-risk-mandate";
 import {
@@ -26,9 +27,10 @@ const NO_STORE = { "cache-control": "no-store, max-age=0" };
 export async function GET(req: NextRequest) {
   const worker = carryShadowWorkerConfig();
   if (!worker.url) return response({ error: "carry_worker_unavailable" }, 503);
-  const assets = req.nextUrl.searchParams.get("assets") || "BTC,ETH,SOL";
+  const assets = normalizeCarryShadowAssets(req.nextUrl.searchParams.get("assets"), { default_to_all: true });
+  if (!assets) return response({ error: "carry_shadow_assets_invalid" }, 400);
   const target = new URL("/carry/shadow", worker.url);
-  target.searchParams.set("assets", assets);
+  target.searchParams.set("assets", assets.join(","));
   try {
     const upstream = await fetch(target, { cache: "no-store", signal: AbortSignal.timeout(12_000) });
     return response(await upstream.json().catch(() => ({ error: "carry_shadow_invalid" })), upstream.status);

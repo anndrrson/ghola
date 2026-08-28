@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { CARRY_SHADOW_ASSETS } from "@ghola/execution-core";
 import type { ConfidentialComputeProviderStatus } from "./private-agent-runtime";
 import {
   getPrivateAgentRuntimeLease,
@@ -350,7 +351,7 @@ function expectedCarryWorkerConfig(): Record<string, string> {
     ),
     PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ASSETS: workerLiveEnv(
       "PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ASSETS",
-      "BTC,ETH,SOL",
+      CARRY_SHADOW_ASSETS.join(","),
     ),
     PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_SAMPLES: workerLiveEnv(
       "PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_SAMPLES",

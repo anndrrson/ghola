@@ -26,7 +26,7 @@ import {
   createCarryPatchPublisher,
   createCarryLiveMarketStream,
 } from "@/lib/carry-live-market";
-import { isCarryExecutionVenue } from "@/lib/carry-venues";
+import { CARRY_SHADOW_ASSETS, isCarryExecutionVenue } from "@/lib/carry-venues";
 
 const CarryTerminalBuilder = dynamic(
   () => import("./CarryTerminalBuilder").then((module) => module.CarryTerminalBuilder),
@@ -66,7 +66,7 @@ export function CarryChartStrip({
   const load = useCallback(async () => {
     if (!loadedOnceRef.current) setLoading(true);
     try {
-      const response = await fetch("/v1/private-account/carry?assets=BTC,ETH,SOL", { cache: "no-store" });
+      const response = await fetch(`/v1/private-account/carry?assets=${CARRY_SHADOW_ASSETS.join(",")}`, { cache: "no-store" });
       const body = await response.json() as CarryShadowResponse;
       if (!response.ok || body.error) throw new Error(body.error || "carry_shadow_unavailable");
       setData(body);

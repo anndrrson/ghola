@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { CORE_PERP_VENUES } from "@ghola/execution-core";
+import { CORE_PERP_VENUES, normalizeCarryShadowAssets } from "@ghola/execution-core";
 import {
   DEFAULT_CARRY_SHADOW_ASSETS,
   verifyCarryShadowSet,
@@ -282,9 +282,7 @@ function recordCommitment(record) {
 }
 
 function normalizeAssets(assets) {
-  return Object.freeze([...new Set((Array.isArray(assets) ? assets : [])
-    .map((asset) => String(asset).trim().toUpperCase())
-    .filter((asset) => /^[A-Z0-9._-]{1,16}$/.test(asset)))].slice(0, 10));
+  return normalizeCarryShadowAssets(assets) || Object.freeze([]);
 }
 
 function normalizeImageDigest(value) {

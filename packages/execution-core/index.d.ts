@@ -7,6 +7,10 @@ export declare const SUPPORTED_EXECUTION_VENUES: readonly VenueId[];
 export declare const CORE_PERP_VENUES: readonly CorePerpVenueId[];
 export declare const CARRY_EXECUTION_VENUES: readonly CarryExecutionVenueId[];
 export declare const CARRY_SHADOW_ASSETS: readonly ["BTC", "ETH", "SOL"];
+export declare function normalizeCarryShadowAssets(
+  value: unknown,
+  options?: { default_to_all?: boolean },
+): readonly (typeof CARRY_SHADOW_ASSETS[number])[] | null;
 export declare const CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES: readonly ["carry_execution", "no_submit_reconciliation", "exact_quantity_recovery"];
 export declare const CARRY_RECOVERY_POLICY: Readonly<{
   ambiguous_submission: "freeze_reconcile_never_retry";

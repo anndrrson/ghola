@@ -4,6 +4,7 @@ import {
   CARRY_SHADOW_ASSETS,
   CORE_PERP_VENUES,
   evaluatePerpContractPairBasis,
+  normalizeCarryShadowAssets,
 } from "@ghola/execution-core";
 import { observeCarryShadowQualification } from "./carry-shadow-qualification.js";
 import { buildCarryRoutingAdvantageEvidence } from "./carry-routing-advantage.js";
@@ -24,9 +25,8 @@ export async function runCarryFundingObservationTick({
   env = process.env,
 }) {
   if (typeof fetchPerpShadowSet !== "function") throw new Error("carry_shadow_fetcher_required");
-  const normalizedAssets = [...new Set(assets.map((asset) => String(asset).trim().toUpperCase())
-    .filter((asset) => /^[A-Z0-9._-]{1,16}$/.test(asset)))].slice(0, 10);
-  if (!normalizedAssets.length) throw new Error("carry_shadow_assets_required");
+  const normalizedAssets = normalizeCarryShadowAssets(assets);
+  if (!normalizedAssets) throw new Error("carry_shadow_assets_required");
   const venues = await fetchPerpShadowSet({
     assets: normalizedAssets,
     now_ms: nowMs,
@@ -127,8 +127,10 @@ export function startCarryFundingObservationLoop({
     60 * 60_000,
     intervalMs * 3,
   );
-  const assets = String(env.PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ASSETS || CARRY_SHADOW_ASSETS.join(","))
-    .split(",");
+  const assets = normalizeCarryShadowAssets(
+    env.PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ASSETS || CARRY_SHADOW_ASSETS.join(","),
+  );
+  if (!assets) throw new Error("carry_shadow_assets_required");
   const supervisor = createCarryLoopSupervisor({
     name: "carry_shadow_observer",
     now,
@@ -171,7 +173,9 @@ export async function observeCarryFundingUniverse({
   now_ms: nowMs = Date.now(),
   env = process.env,
 }) {
-  const requestedAssets = new Set(assets.map((asset) => String(asset).trim().toUpperCase()).filter(Boolean));
+  const normalizedAssets = normalizeCarryShadowAssets(assets);
+  if (!normalizedAssets) throw new Error("carry_shadow_assets_required");
+  const requestedAssets = new Set(normalizedAssets);
   const executionVenues = new Map((Array.isArray(venues) ? venues : [])
     .filter((venue) => CARRY_EXECUTION_VENUES.includes(venue?.venue_id))
     .map((venue) => [venue.venue_id, venue]));

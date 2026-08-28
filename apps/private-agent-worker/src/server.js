@@ -2,7 +2,10 @@ import { createHash, generateKeyPairSync, randomUUID, timingSafeEqual } from "no
 import { createServer, request as httpRequest } from "node:http";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CARRY_EXECUTION_VENUES } from "@ghola/execution-core";
+import {
+  CARRY_EXECUTION_VENUES,
+  normalizeCarryShadowAssets,
+} from "@ghola/execution-core";
 import { assertRecipientSecretMatches } from "./crypto/envelope.js";
 import { createKrakenV2Service } from "./kraken-v2/service.js";
 import {
@@ -2948,11 +2951,8 @@ export function createPrivateAgentWorkerServer(options = {}) {
       }
 
       if (req.method === "GET" && url.pathname === "/carry/shadow") {
-        const assets = String(url.searchParams.get("assets") || "BTC,ETH,SOL")
-          .split(",")
-          .map((asset) => asset.trim().toUpperCase())
-          .filter((asset) => /^[A-Z0-9._-]{1,16}$/.test(asset))
-          .slice(0, 10);
+        const assets = normalizeCarryShadowAssets(url.searchParams.get("assets"), { default_to_all: true });
+        if (!assets) return json(res, 400, { error: "carry_shadow_assets_invalid" });
         const observedAtMs = Date.now();
         const cached = await readCarryShadowSnapshot({
           state,

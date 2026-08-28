@@ -13,6 +13,7 @@ import {
   assessVenueReadiness,
   carryExecutionQualification,
   executionVenueLabel,
+  normalizeCarryShadowAssets,
   requiredVenueCapabilities,
   supportsExactQuantityRecovery,
   venueAdapterCapability,
@@ -79,6 +80,13 @@ test("registry centralizes five core perp candidates without claiming qualificat
     product: "perp",
     statuses: ["enabled"],
   }), CORE_PERP_VENUES);
+});
+
+test("Carry shadow asset selections are canonical and registry-bound", () => {
+  assert.deepEqual(normalizeCarryShadowAssets(undefined, { default_to_all: true }), CARRY_SHADOW_ASSETS);
+  assert.deepEqual(normalizeCarryShadowAssets("sol,btc,BTC"), ["BTC", "SOL"]);
+  assert.equal(normalizeCarryShadowAssets("BTC,DOGE"), null);
+  assert.equal(normalizeCarryShadowAssets([]), null);
 });
 
 test("registry type unions stay synchronized with runtime capability registry", () => {

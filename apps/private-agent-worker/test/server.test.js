@@ -645,6 +645,11 @@ describe("private agent worker", () => {
     assert.equal(cachedBody.served_from, "durable_observer");
     assert.equal(cachedBody.readiness.ok, true);
     assert.equal(fetchCount, 1);
+
+    const invalidAssetResponse = await fetch(`${baseUrl}/carry/shadow?assets=BTC,DOGE`);
+    assert.equal(invalidAssetResponse.status, 400);
+    assert.deepEqual(await invalidAssetResponse.json(), { error: "carry_shadow_assets_invalid" });
+    assert.equal(fetchCount, 1);
   });
 
   it("proves the three-venue no-submit matrix and durable exact account state over HTTP", async () => {

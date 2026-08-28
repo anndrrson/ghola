@@ -2,6 +2,7 @@ import { hmac } from "@noble/hashes/hmac";
 import { sha256 } from "@noble/hashes/sha256";
 import {
   CARRY_EXECUTION_VENUES,
+  CARRY_SHADOW_ASSETS,
   executionVenueLabel,
   isCarryExecutionVenue,
   type CarryExecutionVenueId,
@@ -1439,7 +1440,7 @@ export function createVenueSessionPolicy(input: {
       ? ["BTC-USD", "ETH-USD", "SOL-USD"]
       : input.venue_id === "hyperliquid"
         ? defaultHyperliquidMarketAllowlist()
-        : ["BTC", "ETH", "SOL"]).map((item) => item.trim().toUpperCase()).filter(Boolean);
+        : [...CARRY_SHADOW_ASSETS]).map((item) => item.trim().toUpperCase()).filter(Boolean);
   const maxOrderCount = Math.max(0, Math.min(100, Math.floor(input.max_order_count ?? 10)));
   const maxNotionalBucket = input.max_notional_bucket ?? "25";
   const expiresAt = new Date(now.getTime() + Math.max(60_000, input.ttl_ms ?? 30 * 60 * 1000)).toISOString();

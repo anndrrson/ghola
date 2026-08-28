@@ -4,6 +4,7 @@ import {
   adverseExecutionSlippageE6Bps,
   estimatePerpDepthExecution,
   evaluateCarryOpportunity,
+  normalizeCarryShadowAssets,
 } from "@ghola/execution-core";
 
 const DAY_MS = 86_400_000;
@@ -311,9 +312,7 @@ function ratioE6Bps(value, notional) {
 }
 
 function normalizeAssets(assets) {
-  return Object.freeze([...new Set((Array.isArray(assets) ? assets : [])
-    .map((asset) => String(asset).trim().toUpperCase())
-    .filter((asset) => /^[A-Z0-9._-]{1,16}$/.test(asset)))].slice(0, 10));
+  return normalizeCarryShadowAssets(assets) || Object.freeze([]);
 }
 
 function boundedInteger(value, minimum, maximum, fallback) {

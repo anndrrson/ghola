@@ -3,6 +3,7 @@ import {
   DEFAULT_CARRY_SHADOW_ASSETS,
   verifyCarryShadowSet,
 } from "./perp-shadow-readiness.js";
+import { normalizeCarryShadowAssets } from "@ghola/execution-core";
 
 const KIND = "carry_shadow_snapshot";
 const SOURCE_MAX_AGE_MS = 60_000;
@@ -129,9 +130,7 @@ function recordCommitment(record) {
 }
 
 function normalizeAssets(assets) {
-  return Object.freeze([...new Set((Array.isArray(assets) ? assets : [])
-    .map((asset) => String(asset).trim().toUpperCase())
-    .filter((asset) => /^[A-Z0-9._-]{1,16}$/.test(asset)))].slice(0, 10));
+  return normalizeCarryShadowAssets(assets) || Object.freeze([]);
 }
 
 function sameStrings(left, right) {

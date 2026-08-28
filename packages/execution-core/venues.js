@@ -52,6 +52,18 @@ export const CARRY_RECOVERY_POLICY = Object.freeze({
 
 export const CARRY_SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
 
+export function normalizeCarryShadowAssets(value, { default_to_all: defaultToAll = false } = {}) {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
+  if (raw.length === 0) return defaultToAll ? CARRY_SHADOW_ASSETS : null;
+  const requested = new Set(raw.map((asset) => String(asset).trim().toUpperCase()).filter(Boolean));
+  if (requested.size === 0 || [...requested].some((asset) => !CARRY_SHADOW_ASSETS.includes(asset))) return null;
+  return Object.freeze(CARRY_SHADOW_ASSETS.filter((asset) => requested.has(asset)));
+}
+
 const CARRY_IMPLEMENTATION_STATUSES = Object.freeze(["proven", "implemented_unproven"]);
 
 const specs = [

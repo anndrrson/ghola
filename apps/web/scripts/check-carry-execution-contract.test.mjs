@@ -1065,6 +1065,46 @@ test("rejects carry shadow assets detached from the execution registry", () => {
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
+      registry: sources.registry.replace(
+        "export function normalizeCarryShadowAssets",
+        "function normalizeCarryShadowAssets",
+      ),
+    }),
+    /carry_shadow_asset_normalizer_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replace(
+        'normalizeCarryShadowAssets(url.searchParams.get("assets"), { default_to_all: true })',
+        'String(url.searchParams.get("assets") || "BTC,ETH,SOL").split(",")',
+      ),
+    }),
+    /carry_shadow_worker_asset_policy_missing|carry_shadow_worker_asset_policy_duplicated/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webRoute: sources.webRoute.replace(
+        'normalizeCarryShadowAssets(req.nextUrl.searchParams.get("assets"), { default_to_all: true })',
+        'String(req.nextUrl.searchParams.get("assets") || "BTC,ETH,SOL").split(",")',
+      ),
+    }),
+    /carry_shadow_gateway_asset_policy_missing|carry_shadow_gateway_asset_policy_duplicated/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: sources.webCarryChart.replace(
+        'CARRY_SHADOW_ASSETS.join(",")',
+        '"BTC,ETH,SOL"',
+      ),
+    }),
+    /carry_shadow_ui_asset_policy_missing|carry_shadow_ui_asset_policy_duplicated/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
       shadowVerifier: sources.shadowVerifier.replace(
         "DEFAULT_CARRY_SHADOW_ASSETS = CARRY_SHADOW_ASSETS",
         'DEFAULT_CARRY_SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"])',

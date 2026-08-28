@@ -60,6 +60,7 @@ export {
   executionVenueSpec,
   isCarryExecutionVenue,
   isExecutionVenue,
+  normalizeCarryShadowAssets,
   requiredVenueCapabilities,
   supportsExactQuantityRecovery,
   venueAdapterCapability,
