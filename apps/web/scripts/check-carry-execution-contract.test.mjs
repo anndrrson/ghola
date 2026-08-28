@@ -121,6 +121,19 @@ test("rejects a worker that emits unsigned private-prime evidence", () => {
   );
 });
 
+test("rejects private-prime evidence detached from the attested worker signer", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivatePrimeAuthentication: sources.webPrivatePrimeAuthentication.replace(
+        "ed25519.verify(",
+        "trustSelfDescribedSignature(",
+      ),
+    }),
+    /carry_private_prime_gateway_attested_signature_missing/,
+  );
+});
+
 test("rejects a terminal that hides recovery qualification", () => {
   assert.throws(
     () => checkCarryExecutionContract({

@@ -723,11 +723,14 @@ describe("private agent worker", () => {
     assert.equal(matrix.private_prime_readiness.collateral_route_observation.verified, true);
     assert.equal(matrix.private_prime_readiness.collateral_route_observation.available_route_count, 6);
     assert.equal(matrix.private_prime_readiness.reasons.includes("collateral_route_evidence_unverified"), false);
-    assert.deepEqual(
-      Object.fromEntries(Object.entries(matrix.private_prime_authentication).filter(([key]) => key !== "mac_hex")),
-      { version: 1, algorithm: "hmac-sha256", request_bound: true },
-    );
+    assert.equal(matrix.private_prime_authentication.version, 1);
+    assert.equal(matrix.private_prime_authentication.algorithm, "hmac-sha256");
+    assert.equal(matrix.private_prime_authentication.request_bound, true);
     assert.match(matrix.private_prime_authentication.mac_hex, /^[0-9a-f]{64}$/);
+    assert.equal(matrix.private_prime_authentication.signature_algorithm, "ed25519");
+    assert.equal(matrix.private_prime_authentication.attestation_bound, true);
+    assert.ok(matrix.private_prime_authentication.signature_b64.length > 0);
+    assert.ok(matrix.private_prime_authentication.signer_public_key_b64.length > 0);
     assert.equal(matrix.pairs.every((pair) => pair.leg_evidence.every((leg) =>
       leg.account_state.position_count === 0
       && leg.account_state.open_order_count === 0

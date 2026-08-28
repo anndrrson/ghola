@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { carryPrivatePrimeWorkerAuthenticationMessage } from "@ghola/execution-core";
+import { ed25519 } from "@noble/curves/ed25519";
 
 type VerificationInput = {
   route_path: string;
@@ -7,6 +8,7 @@ type VerificationInput = {
   response: unknown;
   secret: string;
   now_ms?: number;
+  env?: Record<string, string | undefined>;
 };
 
 export type CarryPrivatePrimeWorkerAuthenticationResult =
@@ -19,6 +21,7 @@ export function verifyCarryPrivatePrimeWorkerAuthentication({
   response,
   secret,
   now_ms = Date.now(),
+  env = process.env,
 }: VerificationInput): CarryPrivatePrimeWorkerAuthenticationResult {
   const result = record(response);
   const readiness = record(result.private_prime_readiness);
@@ -31,6 +34,8 @@ export function verifyCarryPrivatePrimeWorkerAuthentication({
   const expiresAtMs = integer(readiness.expires_at_ms);
   const evidenceCommitment = string(readiness.evidence_commitment);
   const macHex = string(authentication.mac_hex);
+  const signatureB64 = string(authentication.signature_b64);
+  const signerPublicKeyB64 = string(authentication.signer_public_key_b64);
   const validShape = Boolean(
     secret &&
     ownerCommitment &&
@@ -47,22 +52,28 @@ export function verifyCarryPrivatePrimeWorkerAuthentication({
     authentication.version === 1 &&
     authentication.algorithm === "hmac-sha256" &&
     authentication.request_bound === true &&
-    /^[0-9a-f]{64}$/.test(macHex)
+    /^[0-9a-f]{64}$/.test(macHex) &&
+    authentication.signature_algorithm === "ed25519" &&
+    authentication.attestation_bound === true &&
+    signatureB64.length > 0 &&
+    signerPublicKeyB64.length > 0 &&
+    signerAllowed(signerPublicKeyB64, env)
   );
   if (!validShape) return invalid();
-  const expected = createHmac("sha256", secret).update(
-    carryPrivatePrimeWorkerAuthenticationMessage({
-      route_path,
-      owner_commitment: ownerCommitment,
-      asset,
-      operation_class: operationClass,
-      work_order_commitment: workOrderCommitment,
-      evidence_commitment: evidenceCommitment,
-      checked_at_ms: checkedAtMs,
-      expires_at_ms: expiresAtMs,
-    }),
-  ).digest("hex");
-  return safeHexEqual(macHex, expected) ? { ok: true } : invalid();
+  const message = carryPrivatePrimeWorkerAuthenticationMessage({
+    route_path,
+    owner_commitment: ownerCommitment,
+    asset,
+    operation_class: operationClass,
+    work_order_commitment: workOrderCommitment,
+    evidence_commitment: evidenceCommitment,
+    checked_at_ms: checkedAtMs,
+    expires_at_ms: expiresAtMs,
+  });
+  const expected = createHmac("sha256", secret).update(message).digest("hex");
+  return safeHexEqual(macHex, expected) && attestedSignatureValid(signatureB64, signerPublicKeyB64, message)
+    ? { ok: true }
+    : invalid();
 }
 
 function invalid(): CarryPrivatePrimeWorkerAuthenticationResult {
@@ -73,6 +84,32 @@ function safeHexEqual(left: string, right: string) {
   const leftBytes = Buffer.from(left, "hex");
   const rightBytes = Buffer.from(right, "hex");
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+function signerAllowed(signerPublicKeyB64: string, env: Record<string, string | undefined>) {
+  const pins = new Set((env.GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64 || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean));
+  if (pins.size > 0) return pins.has(signerPublicKeyB64);
+  return env.NODE_ENV === "test" ||
+    env.GHOLA_CONNECTOR_MODE === "local_test" ||
+    env.GHOLA_SHIELDED_POOL_MODE === "local_test";
+}
+
+function attestedSignatureValid(signatureB64: string, signerPublicKeyB64: string, message: string) {
+  try {
+    const signature = Uint8Array.from(Buffer.from(signatureB64, "base64"));
+    const spki = Uint8Array.from(Buffer.from(signerPublicKeyB64, "base64"));
+    if (signature.length !== 64 || spki.length < 32) return false;
+    return ed25519.verify(
+      signature,
+      new TextEncoder().encode(message),
+      spki.subarray(spki.length - 32),
+    );
+  } catch {
+    return false;
+  }
 }
 
 function record(value: unknown): Record<string, unknown> {

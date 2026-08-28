@@ -1,10 +1,12 @@
-import { createHmac } from "node:crypto";
+import { createHmac, generateKeyPairSync, sign as signEd25519 } from "node:crypto";
 import { carryPrivatePrimeWorkerAuthenticationMessage } from "@ghola/execution-core";
 import { describe, expect, it } from "vitest";
 import { verifyCarryPrivatePrimeWorkerAuthentication } from "./carry-private-prime-worker-authentication";
 
 const NOW = 1_800_000_000_000;
 const SECRET = "shared-worker-secret";
+const SIGNER = generateKeyPairSync("ed25519");
+const SIGNER_PUBLIC_KEY_B64 = SIGNER.publicKey.export({ format: "der", type: "spki" }).toString("base64");
 
 describe("private-prime worker authentication", () => {
   it("accepts only fresh evidence bound to the exact owner request", () => {
@@ -14,6 +16,7 @@ describe("private-prime worker authentication", () => {
       response: response(),
       secret: SECRET,
       now_ms: NOW,
+      env: { NODE_ENV: "production", GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64: SIGNER_PUBLIC_KEY_B64 },
     })).toEqual({ ok: true });
   });
 
@@ -24,6 +27,14 @@ describe("private-prime worker authentication", () => {
     expect(verify(response(), { work_order_commitment: "carry_readiness_other" }).ok).toBe(false);
     expect(verify(response(), {}, NOW + 5_001).ok).toBe(false);
     expect(verify({ private_prime_readiness: response().private_prime_readiness }).ok).toBe(false);
+    expect(verifyCarryPrivatePrimeWorkerAuthentication({
+      route_path: "/carry/readiness",
+      body: body(),
+      response: response(),
+      secret: SECRET,
+      now_ms: NOW,
+      env: { NODE_ENV: "production", GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64: "wrong-pin" },
+    }).ok).toBe(false);
   });
 });
 
@@ -38,6 +49,7 @@ function verify(
     response: value,
     secret: SECRET,
     now_ms: nowMs,
+    env: { NODE_ENV: "test" },
   });
 }
 
@@ -71,6 +83,10 @@ function response() {
       algorithm: "hmac-sha256",
       request_bound: true,
       mac_hex: createHmac("sha256", SECRET).update(message).digest("hex"),
+      signature_algorithm: "ed25519",
+      attestation_bound: true,
+      signature_b64: signEd25519(null, Buffer.from(message, "utf8"), SIGNER.privateKey).toString("base64"),
+      signer_public_key_b64: SIGNER_PUBLIC_KEY_B64,
     },
   };
 }

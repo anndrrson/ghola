@@ -72,6 +72,19 @@ export function fundingSigningIdentity() {
   return cachedKey;
 }
 
+export function signAttestedWorkerMessage(message) {
+  const identity = fundingSigningIdentity();
+  const signature = edSign(
+    null,
+    Buffer.isBuffer(message) ? message : Buffer.from(message),
+    identity.privateKey,
+  );
+  return Object.freeze({
+    signature_b64: signature.toString("base64"),
+    signer_public_key_b64: identity.public_key_b64,
+  });
+}
+
 /** Canonical bytes signed for a funding attestation. Stable key order. */
 export function fundingAttestationMessage(claim) {
   return Buffer.from(
@@ -159,11 +172,9 @@ export async function attestFreshCredentialFunded({
       .digest("hex"),
   };
 
-  const identity = fundingSigningIdentity();
-  const signature = edSign(null, fundingAttestationMessage(attestation), identity.privateKey);
+  const signed = signAttestedWorkerMessage(fundingAttestationMessage(attestation));
   return {
     attestation,
-    signature_b64: signature.toString("base64"),
-    signer_public_key_b64: identity.public_key_b64,
+    ...signed,
   };
 }

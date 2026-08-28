@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { carryPrivatePrimeWorkerAuthenticationMessage } from "@ghola/execution-core";
 import { workerCapabilitySecret } from "../auth/capability.js";
+import { signAttestedWorkerMessage } from "../venues/shielded_funding_attestation.js";
 
 export class CarryPrivatePrimeAuthenticationError extends Error {
   constructor(message = "private-prime worker authentication is not configured") {
@@ -23,6 +24,7 @@ export function authenticateCarryPrivatePrimeReadiness({
   body,
   private_prime_readiness,
   secret = carryPrivatePrimeAuthenticationSecret(),
+  sign_attested_message = signAttestedWorkerMessage,
 }) {
   if (!secret) throw new CarryPrivatePrimeAuthenticationError();
   const message = carryPrivatePrimeWorkerAuthenticationMessage({
@@ -35,10 +37,15 @@ export function authenticateCarryPrivatePrimeReadiness({
     checked_at_ms: private_prime_readiness?.checked_at_ms,
     expires_at_ms: private_prime_readiness?.expires_at_ms,
   });
+  const attestedSignature = sign_attested_message(Buffer.from(message, "utf8"));
   return Object.freeze({
     version: 1,
     algorithm: "hmac-sha256",
     request_bound: true,
     mac_hex: createHmac("sha256", secret).update(message).digest("hex"),
+    signature_algorithm: "ed25519",
+    attestation_bound: true,
+    signature_b64: attestedSignature.signature_b64,
+    signer_public_key_b64: attestedSignature.signer_public_key_b64,
   });
 }

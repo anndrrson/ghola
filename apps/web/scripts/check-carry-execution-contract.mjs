@@ -52,6 +52,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   hyperliquid: "apps/private-agent-worker/src/venues/hyperliquid.js",
   aster: "apps/private-agent-worker/src/venues/aster.js",
   lighter: "apps/private-agent-worker/src/venues/lighter.js",
+  workerAttestedSigner: "apps/private-agent-worker/src/venues/shielded_funding_attestation.js",
   lighterRunner: "apps/private-agent-worker/src/venues/lighter_runner.py",
   webRoute: "apps/web/src/app/v1/private-account/carry/route.ts",
   webWorkerRouting: "apps/web/src/lib/private-account-worker-routing.ts",
@@ -920,8 +921,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeAuthentication", "carryPrivatePrimeWorkerAuthenticationMessage", "carry_private_prime_worker_authentication_payload_missing");
   requireText("privatePrimeAuthentication", 'createHmac("sha256", secret)', "carry_private_prime_worker_authentication_mac_missing");
   requireText("privatePrimeAuthentication", "workerCapabilitySecret(env)", "carry_private_prime_worker_authentication_secret_missing");
+  requireText("privatePrimeAuthentication", "signAttestedWorkerMessage", "carry_private_prime_worker_attested_signature_missing");
+  requireText("workerAttestedSigner", "export function signAttestedWorkerMessage", "carry_attested_worker_signer_missing");
   requireText("privatePrimeAuthenticationTest", "exact no-submit request", "carry_private_prime_worker_authentication_test_missing");
   requireText("serverTest", "matrix.private_prime_authentication.mac_hex", "carry_private_prime_worker_authentication_http_test_missing");
+  requireText("serverTest", "matrix.private_prime_authentication.attestation_bound", "carry_private_prime_worker_attested_signature_http_test_missing");
   requireText("transferRoutes", "export async function observePreopenCarryTransferRoutes", "carry_preopen_route_compiler_missing");
   requireText("transferRoutes", "automatic_transfer_permitted: false", "carry_preopen_route_transfer_boundary_missing");
   requireText("transferRoutesTest", "before any position is opened", "carry_preopen_route_observation_test_missing");
@@ -1006,9 +1010,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("webPrivatePrimeAuthentication", "carryPrivatePrimeWorkerAuthenticationMessage", "carry_private_prime_gateway_authentication_payload_missing");
   requireText("webPrivatePrimeAuthentication", 'createHmac("sha256", secret)', "carry_private_prime_gateway_authentication_mac_missing");
   requireText("webPrivatePrimeAuthentication", "timingSafeEqual(leftBytes, rightBytes)", "carry_private_prime_gateway_authentication_timing_safe_missing");
+  requireText("webPrivatePrimeAuthentication", "ed25519.verify(", "carry_private_prime_gateway_attested_signature_missing");
+  requireText("webPrivatePrimeAuthentication", "GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64", "carry_private_prime_gateway_signer_pin_missing");
   requireText("webPrivatePrimeAuthentication", "readiness.owner_commitment === ownerCommitment", "carry_private_prime_gateway_owner_binding_missing");
   requireText("webPrivatePrimeAuthentication", "expiresAtMs > now_ms", "carry_private_prime_gateway_expiry_missing");
   requireText("webPrivatePrimeAuthenticationTest", "replay under another work order", "carry_private_prime_gateway_authentication_test_missing");
+  requireText("webPrivatePrimeAuthenticationTest", 'GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64: "wrong-pin"', "carry_private_prime_gateway_signer_pin_test_missing");
   requireText("webRoute", "verifyCarryPrivatePrimeWorkerAuthentication({", "carry_private_prime_gateway_authentication_missing");
   requireText("webRoute", "workerCapabilitySecret(process.env) || worker.token", "carry_private_prime_gateway_authentication_secret_missing");
   requireText("webRoute", "return response({ error: authenticated.error }, 502", "carry_private_prime_gateway_authentication_fail_closed_missing");
