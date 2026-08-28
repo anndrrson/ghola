@@ -219,6 +219,31 @@ If this fails with `401` or `worker_capability_*`, align the Vercel
 or 404 response, update the web-side worker URL to the live Phala CVM endpoint
 or redeploy the CVM before proceeding.
 
+Every Vercel release also performs an authenticated, no-submit heartbeat:
+
+```text
+POST /.well-known/private-agent-authorization
+scope: runtime:read
+operation_class: runtime_authorization_probe
+```
+
+Only `200 { "version": 1, "authorized": true }` is accepted. A `401` or `403`
+means the web and worker secrets differ. A `404` means the worker image predates
+the heartbeat. None of these checks opens a session, submits an order, or
+requires venue collateral.
+
+For a capability-secret rotation, roll out in this order:
+
+1. Build the worker image containing the heartbeat.
+2. Put the same fresh capability secret in the complete Phala sealed env and
+   the target Vercel environment.
+3. Restart Phala and confirm the heartbeat directly.
+4. Deploy the Vercel Preview; its pre-build gate must confirm the heartbeat.
+5. Run the separately authorized three-venue no-submit check.
+
+Never deploy the web first: it will correctly reject an older worker that does
+not expose the authenticated heartbeat.
+
 Install into the Phala CVM:
 
 ```bash
