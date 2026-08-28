@@ -378,8 +378,11 @@ export async function finalizeStoredCarryValueLedger({ state, position_id: posit
 
 function durableFinalizationEvidence(record) {
   const valueEvidence = record.value_evidence;
-  if (valueEvidence?.entry?.status !== "complete"
-    || valueEvidence?.exit?.status !== "complete"
+  const terminalExecutionComplete = (
+    valueEvidence?.entry?.status === "complete"
+    && valueEvidence?.exit?.status === "complete"
+  ) || valueEvidence?.aborted_entry_recovery?.status === "complete";
+  if (!terminalExecutionComplete
     || valueEvidence?.funding?.status !== "complete_through_exit"
     || valueEvidence?.realized_economics?.status !== "complete"
     || valueEvidence?.costs_complete !== true) {

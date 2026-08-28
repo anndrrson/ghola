@@ -202,6 +202,52 @@ test("refuses final value claims that do not match durable flat reconciliation",
   assert.equal((await state.getCarryPositionRecord(record.position.position_id)).value_ledger.status, "open");
 });
 
+test("finalizes an aborted entry only from complete recovery and flat evidence", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-value-aborted-entry-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const created = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: await positionInput("value-aborted-entry"),
+    opportunity: opportunity(),
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  let record = created.record;
+  for (const item of lifecycle()) {
+    const advanced = await advanceStoredCarryPosition({
+      state,
+      position_id: record.position.position_id,
+      owner_commitment: OWNER,
+      event: item,
+      now_ms: NOW + item.sequence,
+    });
+    record = advanced.record;
+  }
+  const completed = await state.putCarryPositionRecord({
+    ...(await state.getCarryPositionRecord(record.position.position_id)),
+    value_evidence: {
+      aborted_entry_recovery: { status: "complete" },
+      funding: { status: "complete_through_exit" },
+      realized_economics: { status: "complete" },
+      costs_complete: true,
+    },
+  }, { expected_version: record.record_version });
+  assert.equal(completed.ok, true);
+
+  const finalized = await finalizeStoredCarryValueLedger({
+    state,
+    position_id: record.position.position_id,
+    owner_commitment: OWNER,
+    evidence: finalizationEvidence(),
+    now_ms: NOW + 10,
+  });
+
+  assert.equal(finalized.ok, true);
+  assert.equal(finalized.record.value_ledger.status, "finalized");
+});
+
 test("rejects stale concurrent Carry Position writers", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-cas-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
