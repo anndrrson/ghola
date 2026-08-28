@@ -966,6 +966,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryMarket", "durability check required", "carry_point_in_time_edge_warning_missing");
   requireText("webCarryChart", 'data-modeled-net-positive={selectedHasPositiveNet ? "true" : "false"}', "carry_point_in_time_net_state_missing");
   forbidText("webCarryChart", 'data-route-qualified={selectedHasPositiveNet ? "true" : "false"}', "carry_single_tick_route_qualification_forbidden");
+  requireText("webCarryMarket", "export function carryRoutingAdvantage", "carry_routing_advantage_model_missing");
+  requireText("webCarryMarketTest", "refuses a routing-edge claim when exact anchor costs are unavailable", "carry_routing_advantage_fail_closed_test_missing");
+  requireText("webCarryChart", "EDGE* {formatRoutingAdvantage", "carry_routing_advantage_display_missing");
+  requireText("webCarryChart", "not realized P&L.", "carry_routing_advantage_modeled_disclosure_missing");
+  requireText("webCarryChartTest", "shows modeled routing edge without presenting it as realized P&L", "carry_routing_advantage_disclosure_test_missing");
   requireText("webCarryChart", "AGE {formatAge", "carry_feed_age_display_missing");
   requireText("webCarryChartTest", "shows only commitment-backed worker history as durable route evidence", "carry_public_funding_evidence_test_missing");
   requireText("webCarryChartTest", "shows compact worker-bound five-venue market evidence", "carry_market_qualification_display_test_missing");

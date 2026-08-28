@@ -177,6 +177,17 @@ export interface PricedCarryCandidate {
   economics_quality: "positive_net" | "exact_nonpositive" | "gross_only";
 }
 
+export interface CarryRoutingAdvantage {
+  status: "advantaged" | "equal" | "disadvantaged" | "unavailable";
+  indicative: true;
+  anchorVenueId: string;
+  selectedRoute: string | null;
+  baselineRoute: string | null;
+  dailyNetAdvantageUsd: number | null;
+  dailyNetAdvantageBps: number | null;
+  reason: string | null;
+}
+
 export const CARRY_LIVE_PATCH_MAX_AGE_MS = 5_000;
 export const CARRY_DEPTH_MAX_AGE_MS = 30_000;
 export const CARRY_MAX_CONTRACT_DATA_SKEW_MS = 2_000;
@@ -405,6 +416,51 @@ export function rankCarryCandidatesByNet(
     right.daily_value_bps - left.daily_value_bps ||
     right.candidate.grossAnnualBps - left.candidate.grossAnnualBps
   );
+}
+
+export function carryRoutingAdvantage(
+  selected: PricedCarryCandidate | null,
+  candidates: PricedCarryCandidate[],
+  anchorVenueId = "hyperliquid",
+): CarryRoutingAdvantage {
+  if (!exactComparableQuote(selected)) {
+    return unavailableRoutingAdvantage(anchorVenueId, "selected_route_unpriced");
+  }
+  const selectedAsset = selected.candidate.asset;
+  const selectedNotional = selected.quote.notionalUsd;
+  const selectedHorizon = selected.quote.horizonHours;
+  const comparable = candidates.filter((item) =>
+    exactComparableQuote(item)
+    && item.candidate.asset === selectedAsset
+    && item.quote.notionalUsd === selectedNotional
+    && item.quote.horizonHours === selectedHorizon
+  );
+  const anchored = comparable.filter(({ candidate }) =>
+    candidate.long.venue_id === anchorVenueId || candidate.short.venue_id === anchorVenueId
+  );
+  if (anchored.length === 0) {
+    return unavailableRoutingAdvantage(anchorVenueId, "anchor_route_unavailable", carryRouteId(selected.candidate));
+  }
+  const baseline = anchored.reduce((best, item) =>
+    item.quote.expectedNetDailyUsd! > best.quote.expectedNetDailyUsd! ? item : best
+  );
+  const dailyNetAdvantageUsd = selected.quote.expectedNetDailyUsd! - baseline.quote.expectedNetDailyUsd!;
+  const dailyNetAdvantageBps = dailyNetAdvantageUsd / selectedNotional * 10_000;
+  const epsilon = 1e-9;
+  return {
+    status: dailyNetAdvantageUsd > epsilon
+      ? "advantaged"
+      : dailyNetAdvantageUsd < -epsilon
+        ? "disadvantaged"
+        : "equal",
+    indicative: true,
+    anchorVenueId,
+    selectedRoute: carryRouteId(selected.candidate),
+    baselineRoute: carryRouteId(baseline.candidate),
+    dailyNetAdvantageUsd,
+    dailyNetAdvantageBps,
+    reason: null,
+  };
 }
 
 export function applyCarryLivePatches(
@@ -642,6 +698,37 @@ function economicsQualityRank(value: PricedCarryCandidate["economics_quality"]) 
   if (value === "positive_net") return 2;
   if (value === "gross_only") return 1;
   return 0;
+}
+
+function exactComparableQuote(value: PricedCarryCandidate | null): value is PricedCarryCandidate {
+  return value !== null
+    && value.quote.exactCosts === true
+    && Number.isFinite(value.quote.expectedNetDailyUsd)
+    && Number.isFinite(value.quote.notionalUsd)
+    && value.quote.notionalUsd > 0
+    && Number.isFinite(value.quote.horizonHours)
+    && value.quote.horizonHours > 0;
+}
+
+function unavailableRoutingAdvantage(
+  anchorVenueId: string,
+  reason: string,
+  selectedRoute: string | null = null,
+): CarryRoutingAdvantage {
+  return {
+    status: "unavailable",
+    indicative: true,
+    anchorVenueId,
+    selectedRoute,
+    baselineRoute: null,
+    dailyNetAdvantageUsd: null,
+    dailyNetAdvantageBps: null,
+    reason,
+  };
+}
+
+function carryRouteId(candidate: CarryCandidate) {
+  return `${candidate.asset}:${candidate.long.venue_id}:${candidate.short.venue_id}`;
 }
 
 export function builderModel(candidate: CarryCandidate, notionalText: string, daysText: string) {

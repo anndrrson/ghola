@@ -105,6 +105,16 @@ test("rejects an integrated terminal that hides collateral-basis risk", () => {
   );
 });
 
+test("rejects modeled routing edge presented as realized performance", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: sources.webCarryChart.replace("not realized P&L.", "realized P&L."),
+    }),
+    /carry_routing_advantage_modeled_disclosure_missing/,
+  );
+});
+
 test("rejects background Carry failures that are no longer supervised", () => {
   assert.throws(
     () => checkCarryExecutionContract({

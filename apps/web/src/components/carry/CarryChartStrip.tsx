@@ -12,6 +12,7 @@ import {
   carryCandidateAgeMs,
   carryFundingEvidenceForCandidate,
   carryMarketQualificationEvidence,
+  carryRoutingAdvantage,
   rankCarryCandidatesByNet,
   type CarryCandidate,
   type CarryLiveMarketPatch,
@@ -169,6 +170,7 @@ export function CarryChartStrip({
     ? selectedExecution
     : selectedExecution || selectedObserved;
   const routeMode = selectedExecution ? "execution" : selected ? "shadow" : "none";
+  const routingAdvantage = carryRoutingAdvantage(selectedExecution, assetExecutionCandidates);
   const selectedAgeMs = selected ? carryCandidateAgeMs(selected.candidate, clock) : Number.POSITIVE_INFINITY;
   const selectedHasPositiveNet = selected ? routeHasPositiveNet(selected.quote) : false;
   const edgeEvidence = carryFundingEvidenceForCandidate(
@@ -287,6 +289,12 @@ export function CarryChartStrip({
               {marketEvidence.value}
             </span>
             <span className="truncate text-[#657286]">{marketEvidence.detail}</span>
+            <span
+              className={`ml-auto shrink-0 font-semibold ${routingAdvantageTone(routingAdvantage.status)}`}
+              title={routingAdvantageDetail(routingAdvantage)}
+            >
+              EDGE* {formatRoutingAdvantage(routingAdvantage.dailyNetAdvantageBps)}
+            </span>
           </div>
           {observedCandidates.length > 0 ? (
             <div className="grid gap-1.5 lg:grid-cols-3">
@@ -427,6 +435,26 @@ function formatAge(value: number) {
   if (!Number.isFinite(value)) return "—";
   if (value < 1_000) return `${Math.round(value)}MS`;
   return `${Math.round(value / 1_000)}S`;
+}
+
+function formatRoutingAdvantage(value: number | null) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return formatBps(value);
+}
+
+function routingAdvantageDetail(value: ReturnType<typeof carryRoutingAdvantage>) {
+  if (value.status === "unavailable") {
+    return "Indicative route edge unavailable until exact costs exist for a comparable Hyperliquid-anchored route.";
+  }
+  const dailyUsd = value.dailyNetAdvantageUsd ?? 0;
+  const sign = dailyUsd >= 0 ? "+" : "−";
+  return `${sign}$${Math.abs(dailyUsd).toFixed(2)}/day modeled net versus the best comparable Hyperliquid-anchored route; not realized P&L.`;
+}
+
+function routingAdvantageTone(status: ReturnType<typeof carryRoutingAdvantage>["status"]) {
+  if (status === "advantaged") return "text-[#72dfb2]";
+  if (status === "disadvantaged") return "text-[#e27d89]";
+  return status === "equal" ? "text-[#aeb9c7]" : "text-[#657286]";
 }
 
 function edgeEvidenceTone(status: ReturnType<typeof carryFundingEvidenceForCandidate>["status"]) {

@@ -72,6 +72,19 @@ describe("CarryChartStrip", () => {
     expect(rail?.textContent).toContain("NET24H*+");
   });
 
+  it("shows modeled routing edge without presenting it as realized P&L", async () => {
+    await renderShadow(shadowResponse([
+      snapshot("hyperliquid", 40_000_000),
+      snapshot("lighter", 10_000_000),
+      snapshot("aster", 150_000_000),
+    ]), true);
+
+    const edge = [...container.querySelectorAll("span")].find((item) => item.textContent?.includes("EDGE*"));
+    expect(edge?.textContent).toContain("EDGE* +");
+    expect(edge?.getAttribute("title")).toContain("modeled net versus");
+    expect(edge?.getAttribute("title")).toContain("not realized P&L");
+  });
+
   it("keeps the primary rail aligned with the executable builder route", async () => {
     await renderShadow(shadowResponse([
       snapshot("hyperliquid", 10_000_000),

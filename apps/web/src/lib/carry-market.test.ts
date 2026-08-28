@@ -5,6 +5,7 @@ import {
   buildPairCandidates,
   builderModel,
   carryCandidateAgeMs,
+  carryRoutingAdvantage,
   quoteCarryCandidate,
   rankCarryCandidatesByNet,
 } from "@/lib/carry-market";
@@ -46,6 +47,42 @@ describe("Carry market model", () => {
     expect(ranked[0].quote.expectedNetDailyUsd).toBeGreaterThan(0);
     expect(ranked.find((item) => item.candidate.short.venue_id === "lighter")?.quote.expectedNetDailyUsd)
       .toBeLessThan(0);
+  });
+
+  it("quantifies only exact-cost route edge against a comparable Hyperliquid anchor", () => {
+    const venues = [
+      venue("hyperliquid", snapshot("hyperliquid", "BTC", 40_000_000, "ready")),
+      venue("lighter", snapshot("lighter", "BTC", 10_000_000, "ready")),
+      venue("aster", snapshot("aster", "BTC", 150_000_000, "ready")),
+    ];
+    const ranked = rankCarryCandidatesByNet(buildPairCandidates(venues));
+    const advantage = carryRoutingAdvantage(ranked[0], ranked);
+    expect(advantage).toMatchObject({
+      status: "advantaged",
+      indicative: true,
+      anchorVenueId: "hyperliquid",
+      selectedRoute: "BTC:lighter:aster",
+      baselineRoute: "BTC:hyperliquid:aster",
+      reason: null,
+    });
+    expect(advantage.dailyNetAdvantageUsd).toBeGreaterThan(0);
+    expect(advantage.dailyNetAdvantageBps).toBeGreaterThan(0);
+  });
+
+  it("refuses a routing-edge claim when exact anchor costs are unavailable", () => {
+    const ranked = rankCarryCandidatesByNet(buildPairCandidates([
+      venue("hyperliquid", snapshot("hyperliquid", "BTC", 10_000_000, "degraded", { taker_fee_bps: null })),
+      venue("lighter", snapshot("lighter", "BTC", 40_000_000, "ready")),
+      venue("aster", snapshot("aster", "BTC", 80_000_000, "ready")),
+    ]));
+    const selected = ranked.find((item) => item.candidate.long.venue_id === "lighter") || null;
+    expect(carryRoutingAdvantage(selected, ranked)).toMatchObject({
+      status: "unavailable",
+      indicative: true,
+      baselineRoute: null,
+      dailyNetAdvantageUsd: null,
+      reason: "anchor_route_unavailable",
+    });
   });
 
   it("ranks a proven positive-net route above a larger unpriced spread", () => {
