@@ -1363,13 +1363,19 @@ function shortReference(value: string) {
   return value.replace(/^ghola-/, "").slice(0, 12).toUpperCase();
 }
 
-function carryCheckFailure(error: unknown, fallback: string) {
+export function carryCheckFailure(error: unknown, fallback: string) {
   const candidate = error && typeof error === "object" ? error as { message?: unknown; correlationId?: unknown } : {};
   const code = typeof candidate.message === "string" ? candidate.message : "carry_check_failed";
   const reference = shortReference(typeof candidate.correlationId === "string" ? candidate.correlationId : fallback);
   const venue = CARRY_EXECUTION_VENUES.find((venueId) => code === `${venueId}_account_not_ready`);
   return {
-    label: venue ? `${venueName(venue)} NOT READY` : code === "carry_worker_unavailable" ? "WORKER UNAVAILABLE" : "CHECK FAILED",
+    label: venue
+      ? `${venueName(venue)} NOT READY`
+      : code === "carry_worker_authorization_misconfigured"
+        ? "AUTH MISMATCH"
+        : code === "carry_worker_unavailable"
+          ? "WORKER UNAVAILABLE"
+          : "CHECK FAILED",
     reference,
   };
 }

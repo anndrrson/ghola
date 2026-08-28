@@ -6,6 +6,7 @@ import {
   carryCollateralBasisSummary,
   CarryTerminalBuilder,
   carryCapitalEfficiencySummary,
+  carryCheckFailure,
   carryFundingPersistenceSummary,
   carryOpeningCapitalSummary,
   carryPortfolioRunwaySummary,
@@ -151,6 +152,16 @@ describe("CarryTerminalBuilder", () => {
     perps.signCarryRiskMandate.mockResolvedValue(`0x${"22".repeat(65)}`);
     perps.signCarryCollateralReview.mockResolvedValue(`0x${"22".repeat(65)}`);
     api.approveCarryCollateralReview.mockResolvedValue({ ok: true });
+  });
+
+  it("labels worker authorization drift without blaming venue wallets", () => {
+    expect(carryCheckFailure(
+      new Error("carry_worker_authorization_misconfigured"),
+      "ghola-auth-test",
+    )).toMatchObject({
+      label: "AUTH MISMATCH",
+      reference: "AUTH-TEST",
+    });
   });
 
   afterEach(async () => {

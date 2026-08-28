@@ -295,8 +295,11 @@ export async function POST(req: NextRequest) {
         work_order_commitment: body.work_order_commitment,
         policy_commitment: body.policy_commitment,
         vault_commitment: body.vault_commitment,
-    },
+      },
   });
+  if (!authorization) {
+    return response({ error: "carry_worker_authorization_misconfigured" }, 503, correlationId);
+  }
   try {
     const upstream = await fetch(new URL(route.path, worker.url), {
       method: "POST",
@@ -314,6 +317,9 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify(body),
     });
     const result = await upstream.json().catch(() => ({ error: "carry_worker_invalid" }));
+    if (!upstream.ok && workerAuthorizationRejected(upstream.status, result)) {
+      return response({ error: "carry_worker_authorization_misconfigured" }, 503, correlationId);
+    }
     if (upstream.ok && action === "preflight_pair") {
       const authenticated = verifyCarryCreationOpportunityWorkerAuthentication({
         owner_commitment: owner.owner_commitment,
@@ -412,6 +418,12 @@ function record(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function workerAuthorizationRejected(status: number, value: unknown) {
+  if (status !== 401 && status !== 403 && status !== 503) return false;
+  const code = stringValue(record(value).error_code) || stringValue(record(value).error) || "";
+  return code === "unauthorized" || code.startsWith("worker_capability_");
 }
 
 function workerConfig() {

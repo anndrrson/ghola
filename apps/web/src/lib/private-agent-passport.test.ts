@@ -603,6 +603,50 @@ describe("agent passport venue linking", () => {
     }
   });
 
+  it("surfaces Carry worker authorization drift without blaming venue wallets", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "stale-preview-secret";
+    const oldFetch = globalThis.fetch;
+    let attempts = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input) === "https://worker.example/carry/preflight-matrix") {
+        attempts += 1;
+        return Response.json({
+          error: "worker capability signature is invalid",
+          error_code: "worker_capability_invalid",
+        }, { status: 403 });
+      }
+      return oldFetch(input);
+    }) as typeof fetch;
+
+    try {
+      const result = await carryRoute(new NextRequest("https://ghola.test/v1/private-account/carry", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer investor-test-token",
+          "content-type": "application/json",
+          origin: "https://ghola.test",
+        },
+        body: JSON.stringify({
+          action: "preflight_matrix",
+          asset: "BTC",
+          notional_usd: "11",
+          horizon_days: "1",
+        }),
+      }));
+
+      expect(result.status).toBe(503);
+      await expect(result.json()).resolves.toMatchObject({
+        error: "carry_worker_authorization_misconfigured",
+      });
+      expect(attempts).toBe(1);
+    } finally {
+      globalThis.fetch = oldFetch;
+      delete process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET;
+    }
+  });
+
   it("keeps guarded SOL arbitrage blocked while Backpack credential verification is unsupported", async () => {
     await linkAgentPlatformFromBody({
       venue_id: "hyperliquid",
