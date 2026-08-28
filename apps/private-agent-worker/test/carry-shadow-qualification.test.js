@@ -4,6 +4,7 @@ import {
   carryShadowQualificationKey,
   observeCarryShadowQualification,
   readCarryShadowQualification,
+  verifyCarryShadowQualification,
 } from "../src/execution/carry-shadow-qualification.js";
 import { carryShadowFixture } from "./carry-shadow-fixture.js";
 
@@ -44,6 +45,32 @@ test("persists three consecutive complete five-venue samples without broadcastin
   });
   assert.equal(recovered.ready, true);
   assert.deepEqual(recovered.sample_commitments, result.sample_commitments);
+  assert.equal(verifyCarryShadowQualification(recovered, {
+    image_digest: IMAGE,
+    now_ms: NOW + 2 * 60_000,
+    max_age_ms: 600_000,
+  }).ok, true);
+});
+
+test("rejects tampered qualification summaries", async () => {
+  const state = stateStore();
+  let result;
+  for (let index = 0; index < 3; index += 1) {
+    const nowMs = NOW + index * 60_000;
+    result = await observeCarryShadowQualification({
+      state,
+      venues: carryShadowFixture(nowMs),
+      now_ms: nowMs,
+      env: ENV,
+    });
+  }
+  const tampered = structuredClone(result);
+  tampered.duration_ms += 1;
+  assert.equal(verifyCarryShadowQualification(tampered, {
+    image_digest: IMAGE,
+    now_ms: NOW + 2 * 60_000,
+    max_age_ms: 600_000,
+  }).ok, false);
 });
 
 test("resets consecutive qualification after one failed venue sample", async () => {

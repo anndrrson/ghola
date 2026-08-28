@@ -9,6 +9,7 @@ import {
   readCarryExecutionReadiness,
   storeCarryExecutionDiagnostic,
   storeCarryExecutionReadiness,
+  verifyCarryExecutionReadinessResult,
 } from "../src/execution/carry-readiness.js";
 
 const NOW = 1_800_000_000_000;
@@ -154,6 +155,25 @@ test("persists deployment-, owner-, account-, and registry-bound three-venue rea
     && item.account_state_checked_at_ms === NOW
     && item.account_state_commitment.startsWith("carry:account-state:")
   ), true);
+  assert.equal(verifyCarryExecutionReadinessResult(read, { now_ms: NOW + 1_000 }).ok, true);
+});
+
+test("rejects tampered readiness summaries", async () => {
+  const state = memoryState();
+  await storeCarryExecutionReadiness({ state, request: request(), matrix: matrix(), now_ms: NOW, env: ENV });
+  const read = await readCarryExecutionReadiness({
+    state,
+    owner_commitment: OWNER,
+    venue_access: request().venue_access,
+    asset: "BTC",
+    notional_usd: "11",
+    horizon_days: "30",
+    now_ms: NOW + 1_000,
+    env: ENV,
+  });
+  const tampered = structuredClone(read);
+  tampered.notional_usd = "12";
+  assert.equal(verifyCarryExecutionReadinessResult(tampered, { now_ms: NOW + 1_000 }).ok, false);
 });
 
 test("persists partial matrix diagnostics without creating reusable readiness", async () => {

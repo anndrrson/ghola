@@ -150,6 +150,50 @@ export function carryShadowQualificationKey(assets = DEFAULT_CARRY_SHADOW_ASSETS
   return `carry:shadow:qualification:${normalizeAssets(assets).join(",")}`;
 }
 
+export function verifyCarryShadowQualification(value, {
+  image_digest: imageDigest,
+  now_ms: nowMs = Date.now(),
+  max_age_ms: maxAgeMs = 60_000,
+} = {}) {
+  const checkedAtMs = value?.checked_at_ms;
+  const requiredSamples = value?.required_samples;
+  const sampleCommitments = Array.isArray(value?.sample_commitments) ? value.sample_commitments : [];
+  const valid = value?.version === 1
+    && value?.kind === KIND
+    && value?.ready === true
+    && value?.release_bound === true
+    && value?.transaction_broadcast === false
+    && value?.image_digest === imageDigest
+    && Number.isSafeInteger(nowMs)
+    && Number.isSafeInteger(maxAgeMs)
+    && maxAgeMs > 0
+    && Number.isSafeInteger(checkedAtMs)
+    && checkedAtMs <= nowMs + 5_000
+    && nowMs - checkedAtMs <= maxAgeMs
+    && Number.isSafeInteger(requiredSamples)
+    && requiredSamples >= 3
+    && value?.completed_samples === requiredSamples
+    && Number.isSafeInteger(value?.duration_ms)
+    && value.duration_ms >= 0
+    && value?.venues === 5
+    && value?.assets >= 3
+    && Array.isArray(value?.requested_assets)
+    && value.requested_assets.length === value.assets
+    && new Set(value.requested_assets).size === value.assets
+    && value?.expected_snapshots_per_sample === value.venues * value.assets
+    && value?.degraded_snapshots === 0
+    && Array.isArray(value?.failures)
+    && value.failures.length === 0
+    && sampleCommitments.length === requiredSamples
+    && new Set(sampleCommitments).size === sampleCommitments.length
+    && sampleCommitments.every((commitment) => /^carry:shadow:sample:[0-9a-f]{64}$/.test(String(commitment)))
+    && /^carry:shadow:qualification:[0-9a-f]{64}$/.test(String(value?.evidence_commitment || ""))
+    && value?.qualification_commitment === qualificationResultCommitment(value);
+  return valid
+    ? Object.freeze({ ok: true, qualification: Object.freeze(structuredClone(value)) })
+    : Object.freeze({ ok: false, error: "shadow_qualification_result_invalid" });
+}
+
 function qualificationResult({
   sampleResults,
   requiredSamples,
@@ -168,7 +212,7 @@ function qualificationResult({
     ...(stale && sampleResults.length >= requiredSamples ? ["shadow_qualification_stale"] : []),
   ];
   const uniqueFailures = [...new Set(combinedFailures)];
-  return Object.freeze({
+  const material = {
     version: 1,
     kind: KIND,
     ready: soak.ok && !stale && uniqueFailures.length === 0,
@@ -187,7 +231,16 @@ function qualificationResult({
     sample_commitments: Object.freeze([...(soak.sample_commitments || [])]),
     evidence_commitment: evidenceCommitment,
     failures: Object.freeze(uniqueFailures),
+  };
+  return Object.freeze({
+    ...material,
+    qualification_commitment: qualificationResultCommitment(material),
   });
+}
+
+function qualificationResultCommitment(value) {
+  const { qualification_commitment: _ignored, ...material } = value || {};
+  return `carry:shadow:result:${createHash("sha256").update(stableJson(material)).digest("hex")}`;
 }
 
 function validRecord(record) {

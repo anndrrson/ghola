@@ -40,15 +40,7 @@ test("combines five-venue shadow and three-venue no-submit evidence without over
 
 test("refuses private-prime readiness without exact three-venue recovery policy", () => {
   const result = buildCarryPrivatePrimeReadiness({
-    readiness: {
-      ...readinessProof(),
-      ready: true,
-      owner_commitment: "owner_commitment_0001",
-      image_digest: IMAGE,
-      asset: "BTC",
-      registry_venue_ids: ["hyperliquid", "lighter", "aster"],
-      capital_ready: true,
-      capital_plan: capitalPlan(),
+    readiness: readinessProof({
       ...recoveryReadiness({
         recovery_policy: {
           ambiguous_submission: "retry",
@@ -56,7 +48,7 @@ test("refuses private-prime readiness without exact three-venue recovery policy"
           worker_restart: "reconcile_before_action",
         },
       }),
-    },
+    }),
     shadow_qualification: shadowQualification(),
     carry_supervision: healthySupervision(),
     route_observation_configured: true,
@@ -256,15 +248,9 @@ test("rejects tampered supervision health wrappers", () => {
 
 test("keeps technically connected but unfunded accounts pre-broadcast blocked", () => {
   const result = buildCarryPrivatePrimeReadiness({
-    readiness: {
-      ...readinessProof(),
-      ready: true,
+    readiness: readinessProof({
       capital_ready: false,
-      owner_commitment: "owner_commitment_0001",
-      image_digest: IMAGE,
-      ...recoveryReadiness(),
-      capital_plan: capitalPlan(),
-    },
+    }),
     shadow_qualification: shadowQualification(),
     carry_supervision: healthySupervision(),
     route_observation_configured: true,
@@ -395,20 +381,62 @@ test("rejects malformed three-venue readiness wrappers", () => {
   assert.equal(result.three_venue_execution.evidence_commitment, null);
 });
 
+test("rejects tampered three-venue readiness summaries", () => {
+  const readiness = readinessProof();
+  readiness.notional_usd = "101";
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness,
+    shadow_qualification: shadowQualification(),
+    carry_supervision: healthySupervision(),
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.reasons, ["three_venue_no_submit_unproven"]);
+  assert.equal(result.three_venue_execution.readiness_commitment, null);
+});
+
+test("rejects tampered five-venue qualification summaries", () => {
+  const qualification = shadowQualification();
+  qualification.duration_ms += 1;
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: readinessProof(),
+    shadow_qualification: qualification,
+    carry_supervision: healthySupervision(),
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.reasons, ["five_venue_shadow_unproven"]);
+  assert.equal(result.five_venue_shadow.qualification_commitment, null);
+});
+
 function readinessProof(overrides = {}) {
-  return {
+  const material = {
     version: 1,
     ready: true,
+    reasons: [],
     owner_commitment: "owner_commitment_0001",
     image_digest: IMAGE,
     network: "mainnet",
     asset: "BTC",
+    notional_usd: "100",
+    horizon_days: "30",
     checked_at_ms: NOW,
     expires_at_ms: NOW + 120_000,
     registry_venue_ids: ["hyperliquid", "lighter", "aster"],
     evidence_commitment: `carry:readiness:evidence:${"b".repeat(40)}`,
+    ...recoveryReadiness(),
+    capital_ready: true,
+    capital_plan: capitalPlan(),
     ...overrides,
   };
+  material.readiness_commitment = `carry:readiness:result:${createHash("sha256")
+    .update(stableJson(material))
+    .digest("hex")}`;
+  return material;
 }
 
 function healthySupervision() {
@@ -447,7 +475,7 @@ function unreadySupervision() {
 }
 
 function shadowQualification(overrides = {}) {
-  return {
+  const material = {
     version: 1,
     kind: "carry_shadow_qualification",
     ready: true,
@@ -457,14 +485,21 @@ function shadowQualification(overrides = {}) {
     checked_at_ms: NOW,
     required_samples: 3,
     completed_samples: 3,
+    duration_ms: 120_000,
     venues: 5,
     assets: 3,
+    requested_assets: ["BTC", "ETH", "SOL"],
     expected_snapshots_per_sample: 15,
     degraded_snapshots: 0,
     sample_commitments: ["c", "d", "e"].map((value) => `carry:shadow:sample:${value.repeat(64)}`),
     evidence_commitment: `carry:shadow:qualification:${"f".repeat(64)}`,
+    failures: [],
     ...overrides,
   };
+  material.qualification_commitment = `carry:shadow:result:${createHash("sha256")
+    .update(stableJson(material))
+    .digest("hex")}`;
+  return material;
 }
 
 function verifiedRouteEvidence() {

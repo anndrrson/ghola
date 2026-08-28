@@ -373,6 +373,38 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
   });
 }
 
+export function verifyCarryExecutionReadinessResult(value, { now_ms: nowMs = Date.now() } = {}) {
+  const checkedAtMs = Number.isSafeInteger(value?.checked_at_ms) && value.checked_at_ms > 0
+    ? value.checked_at_ms
+    : null;
+  const expiresAtMs = Number.isSafeInteger(value?.expires_at_ms) && value.expires_at_ms > 0
+    ? value.expires_at_ms
+    : null;
+  const valid = value?.version === 1
+    && value?.ready === true
+    && Array.isArray(value?.reasons)
+    && value.reasons.length === 0
+    && value?.network === "mainnet"
+    && /^[A-Za-z0-9_.:-]{8,240}$/.test(String(value?.owner_commitment || ""))
+    && /^sha256:[a-f0-9]{12,128}$/.test(String(value?.image_digest || ""))
+    && /^[A-Z0-9]{2,16}$/.test(String(value?.asset || ""))
+    && positiveDecimal(value?.notional_usd)
+    && positiveDecimal(value?.horizon_days)
+    && sameStrings(value?.registry_venue_ids, CARRY_EXECUTION_VENUES)
+    && Number.isSafeInteger(nowMs)
+    && checkedAtMs !== null
+    && checkedAtMs <= nowMs + 5_000
+    && expiresAtMs !== null
+    && expiresAtMs > nowMs
+    && expiresAtMs >= checkedAtMs
+    && expiresAtMs - checkedAtMs <= 86_400_000
+    && /^carry:readiness:evidence:[0-9a-f]{40}$/.test(String(value?.evidence_commitment || ""))
+    && value?.readiness_commitment === readinessResultCommitment(value);
+  return valid
+    ? Object.freeze({ ok: true, readiness: Object.freeze(structuredClone(value)) })
+    : Object.freeze({ ok: false, error: "carry_readiness_result_invalid" });
+}
+
 function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
   const registryVenueIds = [...CARRY_EXECUTION_VENUES];
   const evidence = {
@@ -515,12 +547,21 @@ function accountStateRecord(value) {
 }
 
 function readinessResult(ready, reasons, extra = {}) {
-  return Object.freeze({
+  const material = {
     version: 1,
     ready,
     reasons: Object.freeze([...new Set(reasons)]),
     ...extra,
+  };
+  return Object.freeze({
+    ...material,
+    readiness_commitment: readinessResultCommitment(material),
   });
+}
+
+function readinessResultCommitment(value) {
+  const { readiness_commitment: _ignored, ...material } = value || {};
+  return `carry:readiness:result:${createHash("sha256").update(stableJson(material)).digest("hex")}`;
 }
 
 function diagnosticResult(available, reasons, extra = {}) {
@@ -541,6 +582,16 @@ function readinessMaxAge(env) {
 
 function commitment(value) {
   return typeof value === "string" && /^[A-Za-z0-9:_-]{8,180}$/.test(value);
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, child]) => child !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+    .join(",")}}`;
 }
 
 function diagnosticErrorCode(value) {

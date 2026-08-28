@@ -530,8 +530,8 @@ test("rejects private-prime readiness that trusts an unverified readiness wrappe
     () => checkCarryExecutionContract({
       ...sources,
       privatePrimeReadiness: sources.privatePrimeReadiness.replaceAll(
-        "verifiedExecutionReadiness(readiness, nowMs)",
-        "readiness?.ready === true",
+        "verifyCarryExecutionReadinessResult(readiness",
+        "trustCarryExecutionReadinessResult(readiness",
       ),
     }),
     /carry_private_prime_readiness_wrapper_verification_missing/,
@@ -543,11 +543,37 @@ test("rejects private-prime readiness that trusts an unbound shadow wrapper", ()
     () => checkCarryExecutionContract({
       ...sources,
       privatePrimeReadiness: sources.privatePrimeReadiness.replaceAll(
-        "verifiedShadowQualification({",
-        "trustShadowQualification({",
+        "verifyCarryShadowQualification(shadowQualification",
+        "trustCarryShadowQualification(shadowQualification",
       ),
     }),
     /carry_private_prime_shadow_wrapper_verification_missing/,
+  );
+});
+
+test("rejects unsigned three-venue readiness summaries", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      readiness: sources.readiness.replaceAll(
+        "export function verifyCarryExecutionReadinessResult",
+        "function trustCarryExecutionReadinessResult",
+      ),
+    }),
+    /carry_readiness_result_verifier_missing/,
+  );
+});
+
+test("rejects unsigned five-venue qualification summaries", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowQualification: sources.shadowQualification.replaceAll(
+        "export function verifyCarryShadowQualification",
+        "function trustCarryShadowQualification",
+      ),
+    }),
+    /carry_shadow_result_verifier_missing/,
   );
 });
 

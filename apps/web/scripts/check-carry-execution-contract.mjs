@@ -352,6 +352,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("readiness", "account_commitment", "carry_readiness_account_binding_missing");
   requireText("readiness", "carry_readiness_stale", "carry_readiness_freshness_gate_missing");
   requireText("readiness", "carry_readiness_commitment_invalid", "carry_readiness_integrity_gate_missing");
+  requireText("readiness", "export function verifyCarryExecutionReadinessResult", "carry_readiness_result_verifier_missing");
+  requireText("readiness", "readiness_commitment: readinessResultCommitment(material)", "carry_readiness_result_commitment_missing");
+  requireText("readinessTest", "rejects tampered readiness summaries", "carry_readiness_result_tamper_test_missing");
   requireText("readiness", 'venueAdapterCapability(venueId, "no_submit_reconciliation")', "carry_readiness_no_submit_adapter_binding_missing");
   requireText("readiness", 'venueAdapterCapability(venueId, "exact_quantity_recovery")', "carry_readiness_recovery_adapter_binding_missing");
   requireText("readiness", "sameRecoveryPolicy(evidence.recovery_policy)", "carry_readiness_recovery_policy_gate_missing");
@@ -770,6 +773,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowQualification", "PHALA_CVM_IMAGE_DIGEST", "carry_shadow_qualification_image_binding_missing");
   requireText("shadowQualification", "sample_results: sampleResults", "carry_shadow_qualification_persistence_missing");
   requireText("shadowQualification", "transaction_broadcast: false", "carry_shadow_qualification_no_broadcast_missing");
+  requireText("shadowQualification", "export function verifyCarryShadowQualification", "carry_shadow_result_verifier_missing");
+  requireText("shadowQualification", "qualification_commitment: qualificationResultCommitment(material)", "carry_shadow_result_commitment_missing");
+  requireText("shadowQualificationTest", "rejects tampered qualification summaries", "carry_shadow_result_tamper_test_missing");
   requireText("shadowQualificationTest", "persists three consecutive complete five-venue samples without broadcasting", "carry_shadow_qualification_test_missing");
   requireText("shadowQualificationTest", "resets consecutive qualification after one failed venue sample", "carry_shadow_qualification_reset_test_missing");
   requireText("shadowQualificationTest", "does not qualify complete-looking samples with degraded venue economics", "carry_shadow_qualification_degraded_test_missing");
@@ -942,9 +948,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadiness", "proof?.owner_commitment === readiness?.owner_commitment", "carry_private_prime_lifecycle_owner_binding_missing");
   requireText("privatePrimeReadiness", "proof?.worker_image_digest === readiness?.image_digest", "carry_private_prime_lifecycle_image_binding_missing");
   requireText("privatePrimeReadiness", "collateral_route_evidence_unverified", "carry_private_prime_route_evidence_gate_missing");
-  requireText("privatePrimeReadiness", "verifiedExecutionReadiness(readiness, nowMs)", "carry_private_prime_readiness_wrapper_verification_missing");
-  requireText("privatePrimeReadiness", "verifiedShadowQualification({", "carry_private_prime_shadow_wrapper_verification_missing");
-  requireText("privatePrimeReadiness", "shadowQualification?.image_digest === readiness?.image_digest", "carry_private_prime_shadow_image_binding_missing");
+  requireText("privatePrimeReadiness", "verifyCarryExecutionReadinessResult(readiness", "carry_private_prime_readiness_wrapper_verification_missing");
+  requireText("privatePrimeReadiness", "verifyCarryShadowQualification(shadowQualification", "carry_private_prime_shadow_wrapper_verification_missing");
+  requireText("privatePrimeReadiness", "image_digest: readiness?.image_digest", "carry_private_prime_shadow_image_binding_missing");
   requireText("privatePrimeReadiness", "verifyCarryTransferRouteEvidence(routeEvidence?.evidence)", "carry_private_prime_route_commitment_verification_missing");
   requireText("privatePrimeReadiness", "evidence?.owner_commitment === readiness?.owner_commitment", "carry_private_prime_route_owner_binding_missing");
   requireText("privatePrimeReadiness", "nowMs - checkedAtMs <= 30_000", "carry_private_prime_route_freshness_gate_missing");
@@ -959,6 +965,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadinessTest", "valid-looking but mismatched commitment", "carry_private_prime_route_commitment_test_missing");
   requireText("privatePrimeReadinessTest", "stale or image-unbound five-venue qualification wrappers", "carry_private_prime_shadow_wrapper_test_missing");
   requireText("privatePrimeReadinessTest", "malformed three-venue readiness wrappers", "carry_private_prime_readiness_wrapper_test_missing");
+  requireText("privatePrimeReadinessTest", "tampered three-venue readiness summaries", "carry_private_prime_readiness_summary_tamper_test_missing");
+  requireText("privatePrimeReadinessTest", "tampered five-venue qualification summaries", "carry_private_prime_shadow_summary_tamper_test_missing");
   requireText("privatePrimeReadinessTest", "tampered supervision health wrappers", "carry_private_prime_supervision_tamper_test_missing");
   requireText("webPrivatePrimeReadiness", 'value.proof_level === "live_paired_lifecycle"', "carry_private_prime_ui_proof_level_gate_missing");
   requireText("webPrivatePrimeReadiness", "value.live_paired_lifecycle_proven === true", "carry_private_prime_ui_live_proof_gate_missing");
