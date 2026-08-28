@@ -285,7 +285,7 @@ test("rejects private-prime evidence that can outlive its paired lifecycle", () 
     () => checkCarryExecutionContract({
       ...sources,
       privatePrimeReadiness: sources.privatePrimeReadiness.replaceAll(
-        "function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, lifecycleExpiry)",
+        "function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, supervisionExpiry, lifecycleExpiry)",
         "function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry)",
       ),
     }),
@@ -522,6 +522,32 @@ test("rejects private-prime readiness that skips exact route commitment verifica
       ),
     }),
     /carry_private_prime_route_commitment_verification_missing/,
+  );
+});
+
+test("rejects a terminal that trusts an aggregate private-prime hash prefix", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivatePrimeReadiness: sources.webPrivatePrimeReadiness.replaceAll(
+        "value.evidence_commitment === carryPrivatePrimeEvidenceCommitment(value)",
+        'String(value.evidence_commitment || "").startsWith("carry:private-prime:")',
+      ),
+    }),
+    /carry_private_prime_ui_commitment_verification_missing/,
+  );
+});
+
+test("rejects private-prime readiness that outlives supervision health", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replaceAll(
+        "assessedSupervision.health.checked_at_ms + 5_000",
+        "null",
+      ),
+    }),
+    /carry_private_prime_supervision_expiry_binding_missing/,
   );
 });
 

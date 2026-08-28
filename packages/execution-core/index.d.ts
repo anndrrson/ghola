@@ -41,6 +41,7 @@ export declare function reconcilePortfolioAccounting(input: Record<string, unkno
 export declare function buildExecutionQualityReceipt(input: unknown): Readonly<Record<string, unknown>>;
 export declare function aggregateExecutionQuality(input: unknown[]): Readonly<Record<string, unknown>>;
 export declare function normalizePerpContractSpec(input: unknown): Readonly<Record<string, unknown>>;
+export declare function canonicalCarryCommitmentJson(input: unknown): string;
 export declare function calculateMarginRunway(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryCapitalActionPlan(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryCollateralReview(input: unknown): Readonly<Record<string, unknown>>;

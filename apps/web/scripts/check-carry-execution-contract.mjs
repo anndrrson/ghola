@@ -942,9 +942,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadiness", "safeLifecycleValueAttribution(proof?.value_attribution)", "carry_private_prime_value_attribution_gate_missing");
   requireText("privatePrimeReadiness", "normalizeCarryLifecycleValueAttribution", "carry_private_prime_shared_value_attribution_missing");
   requireText("privatePrimeReadiness", "value_attribution: verified ? valueAttribution : null", "carry_private_prime_value_attribution_output_missing");
-  requireText("privatePrimeReadiness", "function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, lifecycleExpiry)", "carry_private_prime_lifecycle_expiry_binding_missing");
+  requireText("privatePrimeReadiness", "function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, supervisionExpiry, lifecycleExpiry)", "carry_private_prime_lifecycle_expiry_binding_missing");
+  requireText("privatePrimeReadiness", "assessedSupervision.health.checked_at_ms + 5_000", "carry_private_prime_supervision_expiry_binding_missing");
   requireText("privatePrimeReadiness", "pairedLifecycle.verified ? pairedLifecycle.expires_at_ms : null", "carry_private_prime_lifecycle_expiry_input_missing");
   requireText("privatePrimeReadinessTest", "never lets aggregate readiness outlive its paired lifecycle proof", "carry_private_prime_lifecycle_expiry_test_missing");
+  requireText("privatePrimeReadinessTest", "never lets aggregate readiness outlive its supervision heartbeat", "carry_private_prime_supervision_expiry_test_missing");
   requireText("privatePrimeReadiness", "proof?.owner_commitment === readiness?.owner_commitment", "carry_private_prime_lifecycle_owner_binding_missing");
   requireText("privatePrimeReadiness", "proof?.worker_image_digest === readiness?.image_digest", "carry_private_prime_lifecycle_image_binding_missing");
   requireText("privatePrimeReadiness", "collateral_route_evidence_unverified", "carry_private_prime_route_evidence_gate_missing");
@@ -952,6 +954,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadiness", "verifyCarryShadowQualification(shadowQualification", "carry_private_prime_shadow_wrapper_verification_missing");
   requireText("privatePrimeReadiness", "image_digest: readiness?.image_digest", "carry_private_prime_shadow_image_binding_missing");
   requireText("privatePrimeReadiness", "verifyCarryTransferRouteEvidence(routeEvidence?.evidence)", "carry_private_prime_route_commitment_verification_missing");
+  requireText("coreCarry", "export function canonicalCarryCommitmentJson", "carry_private_prime_shared_canonicalizer_missing");
+  requireText("privatePrimeReadiness", "canonicalCarryCommitmentJson(material)", "carry_private_prime_worker_canonicalizer_missing");
+  requireText("webPrivatePrimeReadiness", "canonicalCarryCommitmentJson(material)", "carry_private_prime_web_canonicalizer_missing");
+  requireText("webPrivatePrimeReadiness", "value.evidence_commitment === carryPrivatePrimeEvidenceCommitment(value)", "carry_private_prime_ui_commitment_verification_missing");
   requireText("privatePrimeReadiness", "evidence?.owner_commitment === readiness?.owner_commitment", "carry_private_prime_route_owner_binding_missing");
   requireText("privatePrimeReadiness", "nowMs - checkedAtMs <= 30_000", "carry_private_prime_route_freshness_gate_missing");
   requireText("privatePrimeReadiness", "routesBoundToCurrentAccounts", "carry_private_prime_route_account_state_binding_missing");
@@ -968,6 +974,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadinessTest", "tampered three-venue readiness summaries", "carry_private_prime_readiness_summary_tamper_test_missing");
   requireText("privatePrimeReadinessTest", "tampered five-venue qualification summaries", "carry_private_prime_shadow_summary_tamper_test_missing");
   requireText("privatePrimeReadinessTest", "tampered supervision health wrappers", "carry_private_prime_supervision_tamper_test_missing");
+  requireText("webPrivatePrimeReadinessTest", "aggregate with a recomputable-looking but mismatched commitment", "carry_private_prime_ui_commitment_test_missing");
+  requireText("webPrivatePrimeReadiness", "expiresAt <= supervisionCheckedAt + 5_000", "carry_private_prime_ui_supervision_expiry_missing");
+  requireText("webPrivatePrimeReadinessTest", "after supervision becomes stale", "carry_private_prime_ui_supervision_expiry_test_missing");
   requireText("webPrivatePrimeReadiness", 'value.proof_level === "live_paired_lifecycle"', "carry_private_prime_ui_proof_level_gate_missing");
   requireText("webPrivatePrimeReadiness", "value.live_paired_lifecycle_proven === true", "carry_private_prime_ui_live_proof_gate_missing");
   requireText("webPrivatePrimeReadiness", "integer(pairedLifecycle.realized_net_value_micro_usdc)", "carry_private_prime_ui_realized_net_gate_missing");

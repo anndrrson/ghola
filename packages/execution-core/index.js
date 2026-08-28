@@ -21,6 +21,7 @@ export {
   appendCarryValueLedgerEntry,
   advanceCarryPosition,
   calculateMarginRunway,
+  canonicalCarryCommitmentJson,
   carryCollateralReviewMessage,
   carryRiskMandateMessage,
   compileCarryCapitalActionPlan,

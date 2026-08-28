@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { carryPrivatePrimeSummary } from "./carry-private-prime-readiness";
+import {
+  carryPrivatePrimeEvidenceCommitment,
+  carryPrivatePrimeSummary,
+} from "./carry-private-prime-readiness";
 
 const NOW = 1_800_000_000_000;
 
@@ -67,6 +70,17 @@ describe("private-prime readiness", () => {
     }), NOW).status).toBe("invalid");
   });
 
+  it("rejects an aggregate with a recomputable-looking but mismatched commitment", () => {
+    const tampered = proof();
+    tampered.asset = "ETH";
+    expect(carryPrivatePrimeSummary(tampered, NOW).status).toBe("invalid");
+  });
+
+  it("rejects private-prime readiness after supervision becomes stale", () => {
+    expect(carryPrivatePrimeSummary(proof({ expires_at_ms: NOW + 5_001 }), NOW).status).toBe("invalid");
+    expect(carryPrivatePrimeSummary(proof(), NOW + 5_001).status).toBe("invalid");
+  });
+
   it("does not treat a configured probe as verified collateral routing", () => {
     expect(carryPrivatePrimeSummary(proof({
       ready: false,
@@ -110,7 +124,7 @@ describe("private-prime readiness", () => {
 });
 
 function proof(overrides: Record<string, unknown> = {}) {
-  return {
+  const material = {
     version: 1,
     kind: "ghola_private_prime_no_submit_readiness",
     ready: true,
@@ -118,7 +132,7 @@ function proof(overrides: Record<string, unknown> = {}) {
     owner_commitment: "owner_commitment_0001",
     asset: "BTC",
     checked_at_ms: NOW,
-    expires_at_ms: NOW + 60_000,
+    expires_at_ms: NOW + 5_000,
     five_venue_shadow: { ready: true, venue_count: 5 },
     three_venue_execution: {
       ready: true,
@@ -148,15 +162,23 @@ function proof(overrides: Record<string, unknown> = {}) {
       transaction_broadcast: false,
       automatic_transfer_permitted: false,
     },
-    supervision: { ready: true, status: "healthy" },
+    supervision: {
+      ready: true,
+      status: "healthy",
+      checked_at_ms: NOW,
+      evidence_commitment: `carry:supervision:evidence:${"c".repeat(64)}`,
+    },
     live_paired_lifecycle_proven: false,
     owner_only_funding: true,
     owner_only_transfers: true,
     owner_only_withdrawals: true,
     transaction_broadcast: false,
     reasons: [],
-    evidence_commitment: "carry:private-prime:abcdef123456",
     ...overrides,
+  };
+  return {
+    ...material,
+    evidence_commitment: carryPrivatePrimeEvidenceCommitment(material),
   };
 }
 

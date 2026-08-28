@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   CARRY_EXECUTION_VENUES,
   CARRY_RECOVERY_POLICY,
+  canonicalCarryCommitmentJson,
   normalizeCarryLifecycleValueAttribution,
 } from "@ghola/execution-core";
 import { assessCompletedCarryLifecycleProof } from "./carry-release-evidence.js";
@@ -60,6 +61,7 @@ export function buildCarryPrivatePrimeReadiness({
       readiness?.expires_at_ms,
       shadowQualification?.checked_at_ms,
       routeObservation.expires_at_ms,
+      supervisionVerified ? assessedSupervision.health.checked_at_ms + 5_000 : null,
       pairedLifecycle.verified ? pairedLifecycle.expires_at_ms : null,
     ),
     five_venue_shadow: {
@@ -244,11 +246,12 @@ function verifiedRouteObservation({ readiness, routeEvidence, routeObservationCo
   });
 }
 
-function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, lifecycleExpiry) {
+function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, supervisionExpiry, lifecycleExpiry) {
   const values = [
     readinessExpiry,
     Number.isSafeInteger(shadowCheckedAt) ? shadowCheckedAt + 60_000 : null,
     routeExpiry,
+    supervisionExpiry,
     lifecycleExpiry,
   ]
     .filter((value) => Number.isSafeInteger(value) && value > 0);
@@ -257,15 +260,8 @@ function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, lifecycleE
 
 function evidenceCommitment(value) {
   const { evidence_commitment: _ignored, ...material } = value;
-  return `carry:private-prime:${createHash("sha256").update(stableJson(material)).digest("hex").slice(0, 40)}`;
-}
-
-function stableJson(value) {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  return `{${Object.entries(value)
-    .filter(([, child]) => child !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
-    .join(",")}}`;
+  return `carry:private-prime:${createHash("sha256")
+    .update(canonicalCarryCommitmentJson(material))
+    .digest("hex")
+    .slice(0, 40)}`;
 }

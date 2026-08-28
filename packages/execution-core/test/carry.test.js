@@ -5,6 +5,7 @@ import {
   appendCarryValueLedgerEntry,
   advanceCarryPosition,
   calculateMarginRunway,
+  canonicalCarryCommitmentJson,
   carryCollateralReviewMessage,
   carryRiskMandateMessage,
   compileCarryCapitalActionPlan,
@@ -27,6 +28,13 @@ import {
 const NOW = 1_800_000_000_000;
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
+
+test("canonicalizes Carry proof material identically across runtimes", () => {
+  assert.equal(
+    canonicalCarryCommitmentJson({ z: 3, a: { y: 2, x: 1 }, omitted: undefined, rows: [{ b: 2, a: 1 }] }),
+    '{"a":{"x":1,"y":2},"rows":[{"a":1,"b":2}],"z":3}',
+  );
+});
 
 test("estimates executable price from full depth and fails closed on insufficient liquidity", () => {
   const sufficient = estimatePerpDepthExecution({

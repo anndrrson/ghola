@@ -32,6 +32,16 @@ export class CarryModelError extends Error {
   }
 }
 
+export function canonicalCarryCommitmentJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalCarryCommitmentJson).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, child]) => child !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, child]) => `${JSON.stringify(key)}:${canonicalCarryCommitmentJson(child)}`)
+    .join(",")}}`;
+}
+
 export function estimatePerpDepthExecution({
   side,
   depth_levels: depthLevels,

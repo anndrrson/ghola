@@ -1,8 +1,11 @@
 import {
   CARRY_RECOVERY_POLICY,
+  canonicalCarryCommitmentJson,
   normalizeCarryLifecycleValueAttribution,
   type CarryLifecycleValueAttribution,
 } from "@ghola/execution-core";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 import { CARRY_EXECUTION_VENUES, CORE_PERP_VENUES } from "./carry-venues";
 
 type Tone = "good" | "warn" | "bad";
@@ -59,7 +62,13 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && route.fund_movement_authorized === false
     && route.transaction_broadcast === false
     && route.automatic_transfer_permitted === false;
-  const supervisionReady = supervision.ready === true && supervision.status === "healthy";
+  const supervisionCheckedAt = integer(supervision.checked_at_ms);
+  const supervisionReady = supervision.ready === true
+    && supervision.status === "healthy"
+    && supervisionCheckedAt !== null
+    && supervisionCheckedAt <= nowMs + 5_000
+    && nowMs - supervisionCheckedAt <= 5_000
+    && /^carry:supervision:evidence:[0-9a-f]{64}$/.test(String(supervision.evidence_commitment || ""));
   const lifecycleVenues = strings(pairedLifecycle.venue_ids);
   const lifecycleVerifiedAt = integer(pairedLifecycle.verified_at_ms);
   const lifecycleExpiresAt = integer(pairedLifecycle.expires_at_ms);
@@ -103,8 +112,8 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && value.owner_only_withdrawals === true
     && value.transaction_broadcast === false
     && checkedAt !== null && expiresAt !== null && checkedAt <= nowMs && expiresAt > nowMs
-    && typeof value.evidence_commitment === "string"
-    && value.evidence_commitment.startsWith("carry:private-prime:")
+    && value.evidence_commitment === carryPrivatePrimeEvidenceCommitment(value)
+    && (!supervisionReady || (supervisionCheckedAt !== null && expiresAt <= supervisionCheckedAt + 5_000))
     && (!lifecycleReady || (lifecycleExpiresAt !== null && expiresAt <= lifecycleExpiresAt))
     && value.ready === expectedReady;
   if (!valid) return { status: "invalid", value: "UNVERIFIED", detail: "WORKER PROOF INVALID", tone: "bad" };
@@ -127,6 +136,18 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     detail: labels.length ? labels.join(" · ") : "READINESS BLOCKED",
     tone: reasons.includes("opening_capital_shortfall") ? "warn" : "bad",
   };
+}
+
+export function carryPrivatePrimeEvidenceCommitment(input: unknown): string | null {
+  const value = record(input);
+  if (!Object.keys(value).length) return null;
+  const { evidence_commitment: _ignored, ...material } = value;
+  try {
+    const digest = sha256(new TextEncoder().encode(canonicalCarryCommitmentJson(material)));
+    return `carry:private-prime:${bytesToHex(digest).slice(0, 40)}`;
+  } catch {
+    return null;
+  }
 }
 
 function reasonLabel(reason: string) {

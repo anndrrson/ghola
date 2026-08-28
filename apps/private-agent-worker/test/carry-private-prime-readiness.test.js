@@ -93,7 +93,7 @@ test("upgrades only matching durable paired lifecycle evidence to live-proven", 
 });
 
 test("never lets aggregate readiness outlive its paired lifecycle proof", () => {
-  const lifecycleExpiresAt = NOW + 10_000;
+  const lifecycleExpiresAt = NOW + 4_000;
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
       ...readinessProof(),
@@ -117,6 +117,19 @@ test("never lets aggregate readiness outlive its paired lifecycle proof", () => 
   });
   assert.equal(result.proof_level, "live_paired_lifecycle");
   assert.equal(result.expires_at_ms, lifecycleExpiresAt);
+});
+
+test("never lets aggregate readiness outlive its supervision heartbeat", () => {
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: readinessProof(),
+    shadow_qualification: shadowQualification(),
+    carry_supervision: healthySupervision(),
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, true);
+  assert.equal(result.expires_at_ms, NOW + 5_000);
 });
 
 test("keeps mismatched lifecycle evidence pre-broadcast", () => {
