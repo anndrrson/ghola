@@ -1228,6 +1228,16 @@ test("rejects core venue freshness manufactured from the worker clock", () => {
   );
 });
 
+test("rejects Lighter shadow data without provider-timestamped read-only streams", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadow: sources.shadow.replace("stream?readonly=true", "stream"),
+    }),
+    /lighter_read_only_websocket_missing/,
+  );
+});
+
 test("rejects durable five-venue qualification that can promote degraded economics", () => {
   assert.throws(
     () => checkCarryExecutionContract({

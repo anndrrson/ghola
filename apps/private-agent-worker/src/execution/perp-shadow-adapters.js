@@ -45,6 +45,7 @@ export async function fetchCorePerpShadowSet(options = {}) {
 export async function fetchPerpShadowVenue({
   venue_id: venueId,
   fetchImpl = fetch,
+  web_socket_ctor: WebSocketCtor = globalThis.WebSocket,
   now_ms: nowMs = Date.now(),
   max_age_ms: maxAgeMs = DEFAULT_MAX_AGE_MS,
   timeout_ms: timeoutMs = 5_000,
@@ -76,22 +77,26 @@ export async function fetchPerpShadowVenue({
     return selectAssets(parseHyperliquidShadow({ body, books, now_ms: nowMs, max_age_ms: maxAgeMs }), assets);
   }
   if (adapterId === "lighter_shadow_v1") {
-    const [details, funding] = await Promise.all([
-      jsonRequest(fetchImpl, "https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails", {}, timeoutMs),
-      jsonRequest(fetchImpl, "https://mainnet.zklighter.elliot.ai/api/v1/funding-rates", {}, timeoutMs),
-    ]);
+    const details = await jsonRequest(
+      fetchImpl,
+      "https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails",
+      {},
+      timeoutMs,
+    );
     const selectedDetails = rowsFrom(details, ["order_book_details", "order_books", "markets"])
       .filter((row) => normalizedAssetSet(assets).has(assetName(row.symbol || row.market_symbol)));
-    const orderBooks = await Promise.all(selectedDetails.map(async (row) => ({
-      market_id: row.market_id ?? row.market_index,
-      ...(await jsonRequest(
-        fetchImpl,
-        `https://mainnet.zklighter.elliot.ai/api/v1/orderBookOrders?market_id=${encodeURIComponent(row.market_id ?? row.market_index)}&limit=20`,
-        {},
-        timeoutMs,
-      )),
-    })));
-    return selectAssets(parseLighterShadow({ details, funding, order_books: orderBooks, now_ms: nowMs, max_age_ms: maxAgeMs }), assets);
+    const observation = await lighterPublicWebSocketSnapshot({
+      market_ids: selectedDetails.map((row) => row.market_id ?? row.market_index),
+      web_socket_ctor: WebSocketCtor,
+      timeout_ms: timeoutMs,
+    });
+    return selectAssets(parseLighterShadow({
+      details,
+      market_stats: observation.market_stats,
+      order_books: observation.order_books,
+      now_ms: nowMs,
+      max_age_ms: maxAgeMs,
+    }), assets);
   }
   if (adapterId === "aster_shadow_v1") {
     const [exchangeInfo, premiums, books, fundingInfo] = await Promise.all([
@@ -281,34 +286,45 @@ export function parseHyperliquidShadow({ body, books = {}, now_ms: nowMs, max_ag
   }));
 }
 
-export function parseLighterShadow({ details, funding, order_books: orderBooks = [], now_ms: nowMs, max_age_ms: maxAgeMs = DEFAULT_MAX_AGE_MS }) {
+export function parseLighterShadow({ details, funding, market_stats: marketStats, order_books: orderBooks = [], now_ms: nowMs, max_age_ms: maxAgeMs = DEFAULT_MAX_AGE_MS }) {
   const rows = rowsFrom(details, ["order_book_details", "order_books", "markets"]);
   const fundingRows = rowsFrom(funding, ["funding_rates", "rates"]);
   const fundingByMarket = new Map(fundingRows
     .filter((row) => !row.exchange || String(row.exchange).toLowerCase() === "lighter")
+    .map((row) => [String(row.market_id ?? row.market_index), row]));
+  const marketStatsObservedAtMs = timestamp(marketStats?.timestamp) || null;
+  const marketStatsRows = marketStats?.market_stats && !Array.isArray(marketStats.market_stats)
+    ? Object.values(marketStats.market_stats)
+    : rowsFrom(marketStats, ["market_stats", "markets"]);
+  const statsByMarket = new Map(marketStatsRows
     .map((row) => [String(row.market_id ?? row.market_index), row]));
   const booksByMarket = new Map((Array.isArray(orderBooks) ? orderBooks : [])
     .map((row) => [String(row.market_id ?? row.market_index), row]));
   return freezeSnapshots(rows.map((row) => {
     const asset = assetName(row.symbol || row.market_symbol);
     const fundingRow = fundingByMarket.get(String(row.market_id ?? row.market_index)) || {};
+    const stats = statsByMarket.get(String(row.market_id ?? row.market_index)) || {};
     const book = booksByMarket.get(String(row.market_id ?? row.market_index)) || {};
     const orderbookObservedAtMs = timestamp(book.timestamp) || null;
-    const marketObservedAtMs = timestamp(row.timestamp ?? details?.timestamp) || orderbookObservedAtMs;
-    const fundingObservedAtMs = timestamp(fundingRow.timestamp ?? funding?.timestamp) || null;
+    const marketObservedAtMs = statsByMarket.size > 0
+      ? marketStatsObservedAtMs
+      : timestamp(row.timestamp ?? details?.timestamp) || orderbookObservedAtMs;
+    const fundingObservedAtMs = statsByMarket.size > 0
+      ? marketStatsObservedAtMs
+      : timestamp(fundingRow.timestamp ?? funding?.timestamp) || null;
     return shadowSnapshot({
       venue_id: "lighter",
       contract_id: `lighter:${row.market_id ?? row.market_index ?? asset}`,
       asset,
       quote_asset: "USD",
       collateral_asset: "USDC",
-      mark_price_e8: priceE8(row.mark_price ?? row.last_trade_price ?? row.market_price),
-      index_price_e8: priceE8(row.index_price),
-      best_bid_e8: priceE8(row.best_bid ?? row.bid_price ?? book.bids?.[0]?.price),
-      best_ask_e8: priceE8(row.best_ask ?? row.ask_price ?? book.asks?.[0]?.price),
+      mark_price_e8: priceE8(stats.mark_price ?? row.mark_price ?? row.last_trade_price ?? row.market_price),
+      index_price_e8: priceE8(stats.index_price ?? row.index_price),
+      best_bid_e8: priceE8(stats.best_bid_price ?? row.best_bid ?? row.bid_price ?? book.bids?.[0]?.price),
+      best_ask_e8: priceE8(stats.best_ask_price ?? row.best_ask ?? row.ask_price ?? book.asks?.[0]?.price),
       depth_bids: normalizedDepthLevels(book.bids, "bid"),
       depth_asks: normalizedDepthLevels(book.asks, "ask"),
-      funding_rate_e12_per_interval: rateE12(fundingRow.rate ?? row.funding_rate),
+      funding_rate_e12_per_interval: rateE12(stats.current_funding_rate ?? fundingRow.rate ?? row.funding_rate),
       funding_interval_ms: HOUR_MS,
       maker_fee_bps: feeBps(row.maker_fee ?? row.maker_fee_rate),
       taker_fee_bps: feeBps(row.taker_fee ?? row.taker_fee_rate),
@@ -332,7 +348,12 @@ export function parseLighterShadow({ details, funding, order_books: orderBooks =
       },
       now_ms: nowMs,
       max_age_ms: maxAgeMs,
-      quality_flags: ["funding_settles_hourly", "initial_margin_is_market_minimum"],
+      quality_flags: [
+        "funding_settles_hourly",
+        "initial_margin_is_market_minimum",
+        ...(statsByMarket.size > 0 ? ["market_funding_bound_to_public_websocket_time"] : []),
+        ...(orderbookObservedAtMs ? ["orderbook_bound_to_public_websocket_time"] : []),
+      ],
       ...PERP_SHADOW_ADAPTERS.lighter,
     });
   }));
@@ -649,6 +670,90 @@ function shadowSnapshot(value) {
       ...staleSourceNames.map((source) => `source_stale:${source}`),
     ])]),
     executable: false,
+  });
+}
+
+async function lighterPublicWebSocketSnapshot({
+  market_ids: marketIds,
+  web_socket_ctor: WebSocketCtor,
+  timeout_ms: timeoutMs,
+}) {
+  const expectedMarketIds = [...new Set((Array.isArray(marketIds) ? marketIds : [])
+    .map((value) => Number(value))
+    .filter(Number.isSafeInteger))];
+  if (expectedMarketIds.length === 0) {
+    return Object.freeze({ market_stats: null, order_books: Object.freeze([]) });
+  }
+  if (typeof WebSocketCtor !== "function") throw new Error("shadow_lighter_websocket_unavailable");
+
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocketCtor("wss://mainnet.zklighter.elliot.ai/stream?readonly=true");
+    const expected = new Set(expectedMarketIds.map(String));
+    const orderBooks = new Map();
+    let marketStats = null;
+    let settled = false;
+    const timer = setTimeout(() => finish(new Error("shadow_lighter_websocket_timeout")), timeoutMs);
+
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { socket.close(); } catch {}
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(Object.freeze({
+        market_stats: Object.freeze(marketStats),
+        order_books: Object.freeze(expectedMarketIds.map((marketId) => Object.freeze({
+          market_id: marketId,
+          ...orderBooks.get(String(marketId)),
+        }))),
+      }));
+    };
+
+    const maybeFinish = () => {
+      const stats = marketStats?.market_stats;
+      const hasStats = stats && expectedMarketIds.every((marketId) => stats[String(marketId)]);
+      const hasBooks = expectedMarketIds.every((marketId) => orderBooks.has(String(marketId)));
+      if (hasStats && hasBooks) finish();
+    };
+
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify({ type: "subscribe", channel: "market_stats/all" }));
+      for (const marketId of expectedMarketIds) {
+        socket.send(JSON.stringify({ type: "subscribe", channel: `order_book/${marketId}` }));
+      }
+    }, { once: true });
+    socket.addEventListener("message", (event) => {
+      let message;
+      try {
+        message = JSON.parse(typeof event.data === "string" ? event.data : String(event.data));
+      } catch {
+        return;
+      }
+      if (message?.channel === "market_stats:all" && message.market_stats) {
+        marketStats = {
+          timestamp: message.timestamp,
+          market_stats: Object.freeze(Object.fromEntries(
+            Object.entries(message.market_stats).filter(([marketId]) => expected.has(String(marketId))),
+          )),
+        };
+      }
+      const orderBookMatch = /^order_book:(\d+)$/.exec(String(message?.channel || ""));
+      if (orderBookMatch && expected.has(orderBookMatch[1]) && message.order_book) {
+        orderBooks.set(orderBookMatch[1], {
+          timestamp: message.timestamp,
+          bids: message.order_book.bids,
+          asks: message.order_book.asks,
+        });
+      }
+      maybeFinish();
+    });
+    socket.addEventListener("error", () => finish(new Error("shadow_lighter_websocket_failed")), { once: true });
+    socket.addEventListener("close", () => {
+      if (!settled) finish(new Error("shadow_lighter_websocket_closed"));
+    }, { once: true });
   });
 }
 

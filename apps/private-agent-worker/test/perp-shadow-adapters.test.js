@@ -136,6 +136,101 @@ test("quarantines Lighter when funding age is stale despite a fresh market and b
   assert.deepEqual(snapshot.stale_sources, ["funding"]);
 });
 
+test("fetches Lighter market, funding, and book timing from its public read-only WebSocket", async () => {
+  const sockets = [];
+  const sent = [];
+  class PublicLighterSocket {
+    constructor(url) {
+      this.url = url;
+      this.listeners = new Map();
+      sockets.push(this);
+      queueMicrotask(() => this.emit("open", {}));
+    }
+
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) || [];
+      listeners.push(listener);
+      this.listeners.set(type, listeners);
+    }
+
+    send(payload) {
+      const message = JSON.parse(payload);
+      sent.push(message);
+      if (message.channel === "market_stats/all") {
+        this.emit("message", { data: JSON.stringify({
+          channel: "market_stats:all",
+          timestamp: NOW,
+          type: "subscribed/market_stats",
+          market_stats: {
+            1: {
+              market_id: 1,
+              symbol: "BTC",
+              mark_price: "60000",
+              index_price: "60001",
+              best_bid_price: "59999",
+              best_ask_price: "60002",
+              current_funding_rate: "0.0002",
+              funding_rate: "0.0001",
+              funding_timestamp: NOW - 1_000,
+            },
+          },
+        }) });
+      }
+      if (message.channel === "order_book/1") {
+        this.emit("message", { data: JSON.stringify({
+          channel: "order_book:1",
+          timestamp: NOW,
+          type: "subscribed/order_book",
+          order_book: {
+            bids: [{ price: "59999", size: "1.25" }],
+            asks: [{ price: "60002", size: "0.75" }],
+          },
+        }) });
+      }
+    }
+
+    close() {}
+
+    emit(type, event) {
+      for (const listener of this.listeners.get(type) || []) listener(event);
+    }
+  }
+  const fetchImpl = async (url) => {
+    assert.match(String(url), /orderBookDetails$/);
+    return response({ order_book_details: [{
+      market_id: 1,
+      symbol: "BTC",
+      taker_fee: "0.0002",
+      maker_fee: "0.0001",
+      liquidation_fee: "0.01",
+      min_quote_amount: "10",
+      supported_size_decimals: 5,
+      supported_price_decimals: 1,
+      min_initial_margin_fraction: 200,
+      maintenance_margin_fraction: 120,
+    }] });
+  };
+
+  const [snapshot] = await fetchPerpShadowVenue({
+    venue_id: "lighter",
+    fetchImpl,
+    web_socket_ctor: PublicLighterSocket,
+    now_ms: NOW,
+    assets: ["BTC"],
+  });
+
+  assert.equal(sockets[0].url, "wss://mainnet.zklighter.elliot.ai/stream?readonly=true");
+  assert.deepEqual(sent, [
+    { type: "subscribe", channel: "market_stats/all" },
+    { type: "subscribe", channel: "order_book/1" },
+  ]);
+  assert.equal(snapshot.status, "ready");
+  assert.equal(snapshot.funding_rate_e12_per_interval, 200_000_000);
+  assert.deepEqual(snapshot.source_observed_at_ms, { market: NOW, funding: NOW, orderbook: NOW });
+  assert.ok(snapshot.quality_flags.includes("market_funding_bound_to_public_websocket_time"));
+  assert.ok(snapshot.quality_flags.includes("orderbook_bound_to_public_websocket_time"));
+});
+
 test("normalizes Aster V3 exchange, premium, and book schemas", () => {
   const [snapshot] = parseAsterShadow({
     exchange_info: {
