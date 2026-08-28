@@ -1728,6 +1728,7 @@ export function createCarryPosition(value) {
       migration_candidate_id: migrationCandidateId,
     } : {}),
     consecutive_exit_observations: 0,
+    last_observation_as_of_ms: null,
     last_event_sequence: 0,
     processed_event_ids: [],
     next_actions: ["run_preflight"],
@@ -2035,6 +2036,16 @@ function applyEvent(position, event, nowMs) {
       position.terminal_reason = "observation_stale";
       return;
     }
+    const previousObservationAsOf = Number.isSafeInteger(position.last_observation_as_of_ms)
+      ? position.last_observation_as_of_ms
+      : null;
+    if (previousObservationAsOf !== null && asOf < previousObservationAsOf) {
+      position.status = "frozen";
+      position.next_actions = ["reconcile_only"];
+      position.retry_permitted = false;
+      position.terminal_reason = "observation_time_regressed";
+      return;
+    }
     const contractDataSkewMs = event.contract_data_skew_ms;
     const indexPriceDivergenceBps = event.index_price_divergence_bps;
     const markPriceDivergenceBps = event.mark_price_divergence_bps;
@@ -2114,6 +2125,12 @@ function applyEvent(position, event, nowMs) {
       return;
     }
     const netCarryBps = boundedInteger(event.expected_net_value_bps, -100_000, 100_000, "carry_observation_net_value");
+    if (previousObservationAsOf === asOf) {
+      position.status = "active";
+      position.next_actions = ["monitor_carry_and_margin"];
+      return;
+    }
+    position.last_observation_as_of_ms = asOf;
     position.consecutive_exit_observations = netCarryBps <= position.risk_mandate.exit_net_value_bps
       ? position.consecutive_exit_observations + 1
       : 0;

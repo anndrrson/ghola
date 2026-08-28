@@ -1081,6 +1081,24 @@ test("two confirmed carry flips trigger a deterministic reduce-only exit", () =>
   assert.deepEqual(current.next_actions, ["reduce_only_close_both_legs"]);
 });
 
+test("replayed funding data cannot manufacture consecutive flip confirmations", () => {
+  let current = activePositionForObservation();
+  const observation = (sequence, asOfMs) => event(sequence, "observation", {
+    ...contractObservation(),
+    as_of_ms: asOfMs,
+    expected_net_value_bps: -1,
+    margin_runway_ms_by_venue: { hyperliquid: 30 * HOUR, lighter: 30 * HOUR },
+  });
+  current = advanceCarryPosition({ position: current, event: observation(3, NOW + 3), now_ms: NOW + 3 }).position;
+  assert.equal(current.consecutive_exit_observations, 1);
+  current = advanceCarryPosition({ position: current, event: observation(4, NOW + 3), now_ms: NOW + 4 }).position;
+  assert.equal(current.status, "active");
+  assert.equal(current.consecutive_exit_observations, 1);
+  current = advanceCarryPosition({ position: current, event: observation(5, NOW + 5), now_ms: NOW + 5 }).position;
+  assert.equal(current.status, "exiting");
+  assert.equal(current.consecutive_exit_observations, 2);
+});
+
 test("migration compiler selects only the best fresh route inside the signed venue allowlist", () => {
   const { current, authorization } = migrationPosition();
   const result = compileCarryMigrationProposal({

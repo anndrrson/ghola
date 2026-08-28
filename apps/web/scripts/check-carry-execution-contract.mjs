@@ -445,6 +445,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarryTest", "a warning cannot relabel a null margin runway as verified infinity", "margin_runway_null_warning_test_missing");
   requireText("coreCarry", "if (status === null)", "margin_runway_status_required_missing");
   requireText("coreCarryTest", "a numeric margin runway without verified status triggers an immediate reduce-only exit", "margin_runway_status_required_test_missing");
+  requireText("coreCarry", "previousObservationAsOf === asOf", "carry_funding_flip_distinct_observation_gate_missing");
+  requireText("coreCarryTest", "replayed funding data cannot manufacture consecutive flip confirmations", "carry_funding_flip_replay_test_missing");
   requireText("coreCarry", "export function compileCarryCapitalActionPlan", "carry_capital_action_compiler_missing");
   requireText("coreIndex", "compileCarryCapitalActionPlan", "carry_capital_action_export_missing");
   requireText("coreCarry", "carry_capital_automatic_transfer_forbidden", "carry_capital_transfer_boundary_missing");

@@ -893,7 +893,7 @@ test("background monitoring triggers an automatic reduce-only exit and finalizes
   });
   assert.equal(entry.ok, true);
 
-  const monitoringProof = async () => automaticMonitoringProof();
+  const monitoringProof = async ({ now }) => automaticMonitoringProof(undefined, now());
   const firstMonitor = await runCarryMonitoringTick({
     state: fixture.state,
     preflight: monitoringProof,
@@ -962,7 +962,7 @@ test("completes a supervised restart-to-flat lifecycle for every qualified venue
     });
     assert.equal(entry.ok, true, `${label}: entry ${entry.error || "failed"}`);
 
-    const monitoringProof = async () => automaticMonitoringProof(pair);
+    const monitoringProof = async ({ now }) => automaticMonitoringProof(pair, now());
     const firstMonitor = await runCarryMonitoringTick({
       state: fixture.state,
       preflight: monitoringProof,
@@ -1164,11 +1164,11 @@ function preflightProof(pair = { long: "aster", short: "lighter" }) {
   };
 }
 
-function automaticMonitoringProof(pair = { long: "aster", short: "lighter" }) {
+function automaticMonitoringProof(pair = { long: "aster", short: "lighter" }, checkedAtMs = NOW + 100) {
   return {
     ...preflightProof(pair),
     economic_opportunity: {
-      checked_at_ms: NOW + 100,
+      checked_at_ms: checkedAtMs,
       projected_net_value_bps: -1,
       contract_data_skew_ms: 0,
       max_contract_data_skew_ms: 2_000,

@@ -297,14 +297,14 @@ test("monitoring records funding flips and deterministically requests exit", asy
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
   const active = await activePosition(state);
-  const preflight = async ({ body }) => {
+  const preflight = async ({ body, now }) => {
     assert.equal(body.risk_mandate.max_contract_data_skew_ms, 2_000);
     return {
       version: 1,
       mode: "paired_monitoring_no_submit",
       no_submit_ready: true,
       transaction_broadcast: false,
-      economic_opportunity: monitoringOpportunity(NOW + body.work_order_commitment.length, -1),
+      economic_opportunity: monitoringOpportunity(now(), -1),
       margin_runways: [
         monitoringRunway("hyperliquid"),
         monitoringRunway("lighter"),

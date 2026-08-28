@@ -1922,6 +1922,16 @@ test("rejects a monitor that trusts runway numbers without verified status", () 
   );
 });
 
+test("rejects funding-flip confirmation that can reuse one observation", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replaceAll("previousObservationAsOf === asOf", "false"),
+    }),
+    /carry_funding_flip_distinct_observation_gate_missing/,
+  );
+});
+
 test("rejects a capital planner that could grant automatic transfer authority", () => {
   assert.throws(
     () => checkCarryExecutionContract({
