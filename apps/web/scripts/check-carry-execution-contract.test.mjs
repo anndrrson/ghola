@@ -36,6 +36,26 @@ test("rejects a recovery contract that permits ambiguous retries", () => {
   );
 });
 
+test("rejects recovery that cancels before reading the exact original order", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replaceAll("reconcile_before_cancel", "reconcile_after_cancel"),
+    }),
+    /carry_reconcile_before_cancel_missing/,
+  );
+});
+
+test("rejects recovery that can reuse a stale reconciliation read", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privateExecution: sources.privateExecution.replaceAll("cached?.receipt && !readOnlyReconcile", "cached?.receipt"),
+    }),
+    /carry_fresh_reconciliation_read_missing/,
+  );
+});
+
 test("rejects readiness detached from the registered recovery adapter", () => {
   assert.throws(
     () => checkCarryExecutionContract({

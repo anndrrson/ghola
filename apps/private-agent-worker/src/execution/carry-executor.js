@@ -198,7 +198,7 @@ export async function executeStoredCarryEntry({
       }, now());
     }
     if (progress.terminal && progress.filled_micro_usdc < record.position.target_notional_micro_usdc) {
-      await sagaEvent(state, sagaId, "cancel_confirmed", {
+      await sagaEvent(state, sagaId, "leg_finalized", {
         leg_id: leg.leg_id,
         cumulative_filled_micro_usdc: progress.filled_micro_usdc,
       }, now());
@@ -376,7 +376,7 @@ export async function executeStoredCarryExit({
     const progress = fillProgress(receipt, leg, record.position.target_notional_micro_usdc, env);
     if (progress.filled_micro_usdc > 0) await sagaEvent(state, sagaId, "leg_fill", { leg_id: leg.leg_id, cumulative_filled_micro_usdc: progress.filled_micro_usdc }, now());
     if (progress.terminal && progress.filled_micro_usdc < record.position.target_notional_micro_usdc) {
-      await sagaEvent(state, sagaId, "cancel_confirmed", { leg_id: leg.leg_id, cumulative_filled_micro_usdc: progress.filled_micro_usdc }, now());
+      await sagaEvent(state, sagaId, "leg_finalized", { leg_id: leg.leg_id, cumulative_filled_micro_usdc: progress.filled_micro_usdc }, now());
     } else if (!progress.terminal) ambiguous = true;
   }
   if (ambiguous) return freezeAmbiguous({ state, record, positionId, ownerCommitment, sagaId, nowMs: now() });

@@ -238,21 +238,7 @@ async function executeCompensatingRecovery({
     const leg = current.legs.find((item) => item.leg_id === action.leg_id);
     const context = executionLegContext(current, leg.leg_id);
     try {
-      const cancelReceipt = await executeOrder(recoveryOrderArgs({
-        state,
-        session,
-        saga: current,
-        leg,
-        context,
-        recipient,
-        operationClass: "cancel",
-        workOrderCommitment: recoveryWorkOrder(current, leg, "cancel", leg.filled_micro_usdc),
-        instruction: cancelInstruction({ leg, context, nowMs }),
-      }));
-      if (cancelReceipt?.status !== "cancelled") {
-        return { ok: false, error: "saga_cancel_not_confirmed", saga: current };
-      }
-      const reconcileReceipt = await executeOrder(recoveryOrderArgs({
+      const beforeCancelReceipt = await executeOrder(recoveryOrderArgs({
         state,
         session,
         saga: current,
@@ -260,22 +246,72 @@ async function executeCompensatingRecovery({
         context,
         recipient,
         operationClass: "reconcile",
-        workOrderCommitment: recoveryWorkOrder(current, leg, "reconcile", leg.filled_micro_usdc),
+        workOrderCommitment: recoveryWorkOrder(current, leg, "reconcile_before_cancel", leg.filled_micro_usdc),
         instruction: reconcileInstruction({ leg, context, nowMs }),
       }));
-      const evidence = await recoveryEvidence({
+      let evidence = await recoveryEvidence({
         state,
         saga: current,
         leg,
-        extraReceipts: [reconcileReceipt],
+        extraReceipts: [beforeCancelReceipt],
         env,
       });
       evidenceByLeg.set(leg.leg_id, evidence);
       current = await applyRecoveryFillIfNew({ state, saga: current, leg, evidence, nowMs });
+
+      if (!evidence.terminal) {
+        const currentLeg = current.legs.find((item) => item.leg_id === leg.leg_id);
+        const cancelReceipt = await executeOrder(recoveryOrderArgs({
+          state,
+          session,
+          saga: current,
+          leg: currentLeg,
+          context,
+          recipient,
+          operationClass: "cancel",
+          workOrderCommitment: recoveryWorkOrder(current, currentLeg, "cancel", currentLeg.filled_micro_usdc),
+          instruction: cancelInstruction({ leg: currentLeg, context, nowMs }),
+        }));
+        if (cancelReceipt?.status !== "cancelled") {
+          return { ok: false, error: "saga_cancel_not_confirmed", saga: current };
+        }
+        const afterCancelReceipt = await executeOrder(recoveryOrderArgs({
+          state,
+          session,
+          saga: current,
+          leg: currentLeg,
+          context,
+          recipient,
+          operationClass: "reconcile",
+          workOrderCommitment: recoveryWorkOrder(current, currentLeg, "reconcile_after_cancel", currentLeg.filled_micro_usdc),
+          instruction: reconcileInstruction({ leg: currentLeg, context, nowMs }),
+        }));
+        evidence = await recoveryEvidence({
+          state,
+          saga: current,
+          leg: currentLeg,
+          extraReceipts: [beforeCancelReceipt, afterCancelReceipt],
+          env,
+        });
+        evidenceByLeg.set(leg.leg_id, evidence);
+        current = await applyRecoveryFillIfNew({ state, saga: current, leg: currentLeg, evidence, nowMs });
+        current = await recoveryEvent({
+          state,
+          saga: current,
+          type: "cancel_confirmed",
+          values: {
+            leg_id: leg.leg_id,
+            cumulative_filled_micro_usdc: evidence.filledMicro,
+          },
+          nowMs,
+        });
+        continue;
+      }
+
       current = await recoveryEvent({
         state,
         saga: current,
-        type: "cancel_confirmed",
+        type: "leg_finalized",
         values: {
           leg_id: leg.leg_id,
           cumulative_filled_micro_usdc: evidence.filledMicro,

@@ -294,6 +294,55 @@ test("routes Aster through durable policy and idempotency state in dry-run", asy
   assert.equal((await state.getExecutionAttempt(args.work_order_commitment)).status, "open");
 });
 
+test("refreshes read-only Aster reconciliation instead of replaying a stale cache", async (t) => {
+  const old = { ...process.env };
+  const dir = mkdtempSync(join(tmpdir(), "ghola-aster-reconcile-refresh-"));
+  t.after(() => {
+    process.env = old;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "true";
+  process.env.PRIVATE_AGENT_ASTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_ASTER_LIVE_MODE = "full_ticket";
+  const state = createWorkerState(dir);
+  const targetWork = "work:aster:original:0001";
+  await state.putIdempotency(targetWork, { status: "submitted" });
+  const originalPutAttempt = state.putExecutionAttempt.bind(state);
+  let attemptWrites = 0;
+  state.putExecutionAttempt = async (...args) => {
+    attemptWrites += 1;
+    return originalPutAttempt(...args);
+  };
+  const args = {
+    venue_id: "aster",
+    operation_class: "reconcile",
+    work_order_commitment: "work:aster:reconcile:0001",
+    policy_commitment: "policy:aster:reconcile:0001",
+    session_policy: {
+      policy_commitment: "policy:aster:reconcile:0001",
+      market_allowlist: ["BTC-PERP"],
+      max_notional_bucket: "25",
+      max_order_count: 2,
+      max_daily_notional_bucket: "100",
+      kill_switch: false,
+    },
+    instruction: {
+      version: 1,
+      kind: "ghola_private_execution_instruction",
+      venue_id: "aster",
+      operation_class: "reconcile",
+      reconcile: { market: "BTC-PERP", target_work_order_commitment: targetWork },
+    },
+    execution: { execution_mode: "byo_api_key" },
+    recipient: null,
+    state,
+  };
+  await executeAutopilotOrder(args);
+  await executeAutopilotOrder(args);
+  assert.equal(attemptWrites, 4);
+  assert.equal((await state.getExecutionAttempt(args.work_order_commitment)).submit_count, 0);
+});
+
 function credential() {
   return asterCredentialFromVault({
     kind: "ghola_aster_execution_vault",

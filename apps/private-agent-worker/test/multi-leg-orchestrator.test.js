@@ -145,7 +145,7 @@ test("rejects a stale saga writer instead of losing an event", async (t) => {
   assert.equal(conflict.saga.last_event_sequence, 1);
 });
 
-test("cancels, reconciles, and exactly unwinds a one-leg fill", async (t) => {
+test("reconciles before cancel, confirms cancel, and exactly unwinds a one-leg fill", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-saga-recovery-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
@@ -273,7 +273,11 @@ test("cancels, reconciles, and exactly unwinds a one-leg fill", async (t) => {
   assert.equal(recovered.recovered[0].saga.status, "unwound");
   assert.equal(recovered.recovered[0].saga.terminal, true);
   assert.equal(calls.filter((call) => call.operation_class === "cancel").length, 1);
-  assert.equal(calls.filter((call) => call.operation_class === "reconcile").length, 1);
+  assert.equal(calls.filter((call) => call.operation_class === "reconcile").length, 2);
+  assert.deepEqual(
+    calls.filter((call) => call.venue_id === "hyperliquid").slice(0, 3).map((call) => call.operation_class),
+    ["reconcile", "cancel", "reconcile"],
+  );
   const unwind = calls.find((call) => call.instruction?.order?.reduce_only === true);
   assert.equal(unwind.venue_id, "coinbase_advanced");
   assert.equal(unwind.instruction.order.side, "sell");
@@ -292,6 +296,104 @@ test("cancels, reconciles, and exactly unwinds a one-leg fill", async (t) => {
   assert.equal(positions[0].signed_notional_micro_usdc, 0);
   assert.equal(positions[0].signed_base_size, 0);
   assert.equal((await state.getAutopilotSession(context.autopilot_session_id)).status, "paused");
+});
+
+test("reconciles a terminal late fill before cancel and never cancels or resubmits it", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-saga-late-fill-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const sagaId = "saga:recovery:late-fill:0001";
+  const asterLeg = `${sagaId}:aster`;
+  const lighterLeg = `${sagaId}:lighter`;
+  const asterWork = "work:recovery:late-fill:aster";
+  const lighterWork = "work:recovery:late-fill:lighter";
+  const instruction = (venue, side) => ({
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: venue,
+    operation_class: "limit_order",
+    order: {
+      market: venue === "lighter" ? "BTC" : "BTC-PERP",
+      side,
+      base_size: "0.001",
+      limit_price: "10000",
+      reduce_only: false,
+      tif: "Ioc",
+    },
+  });
+  const created = await createDurableMultiLegSaga({
+    state,
+    definition: {
+      version: 1,
+      saga_id: sagaId,
+      idempotency_key: "idem:recovery:late-fill:0001",
+      plan_commitment: "plan:recovery:late-fill:0001",
+      strategy_id: "delta_neutral_carry",
+      max_unhedged_ms: 1_000,
+      max_hedge_error_micro_usdc: 0,
+      now_ms: NOW,
+      legs: [
+        { leg_id: asterLeg, venue_id: "aster", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "buy", notional_micro_usdc: 10_000_000 },
+        { leg_id: lighterLeg, venue_id: "lighter", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "sell", notional_micro_usdc: 10_000_000 },
+      ],
+    },
+    execution_context: {
+      version: 1,
+      carry_position_id: "carry:position:late-fill:0001",
+      owner_commitment: "owner:recovery:late-fill:0001",
+      policy_commitment: "policy:recovery:late-fill:0001",
+      session_policy: { policy_commitment: "policy:recovery:late-fill:0001", market_allowlist: ["BTC", "BTC-PERP"], max_notional_bucket: "25", max_order_count: 4, max_slippage_bps: 10 },
+      venue_access: { aster: { status: "ready" }, lighter: { status: "ready" } },
+      legs: [
+        { leg_id: asterLeg, work_order_commitment: asterWork, instruction: instruction("aster", "buy") },
+        { leg_id: lighterLeg, work_order_commitment: lighterWork, instruction: instruction("lighter", "sell") },
+      ],
+    },
+  });
+  await apply(state, sagaId, 1, "preflight_passed", { leg_id: asterLeg });
+  await apply(state, sagaId, 2, "preflight_passed", { leg_id: lighterLeg });
+  await apply(state, sagaId, 3, "submission_started");
+  await apply(state, sagaId, 4, "leg_fill", { leg_id: asterLeg, cumulative_filled_micro_usdc: 10_000_000 });
+  await state.putIdempotency(asterWork, {
+    status: "filled",
+    final_proof: { final_venue_execution_proven: true, final_fill_proven: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: "0.001" },
+  });
+  await state.putIdempotency(lighterWork, { status: "submitted" });
+
+  const calls = [];
+  const active = await state.getMultiLegSaga(created.saga.saga_id);
+  const recovered = await recoverDueMultiLegSagas({
+    state,
+    now_ms: active.unhedged_deadline_ms,
+    recipient: { recipient_id: "did:key:late-fill" },
+    executeOrder: async (args) => {
+      calls.push(args);
+      if (args.operation_class === "reconcile") {
+        return {
+          status: "filled",
+          fills: [{ size: "0.001", price: "10000" }],
+          final_proof: {
+            final_venue_execution_proven: true,
+            final_fill_proven: true,
+            cumulative_filled_micro_usdc: 10_000_000,
+            filled_base_size: "0.001",
+          },
+        };
+      }
+      return {
+        status: "filled",
+        final_proof: { final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.001" },
+      };
+    },
+    verifyOrder: async () => ({ status: "verified_no_funds" }),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
+  });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.recovered[0].saga.status, "unwound");
+  assert.equal(calls.filter((call) => call.operation_class === "cancel").length, 0);
+  assert.equal(calls.filter((call) => call.operation_class === "reconcile").length, 1);
+  assert.equal(calls.filter((call) => call.instruction?.order?.reduce_only === true).length, 2);
+  assert.equal(calls[0].instruction.reconcile.target_work_order_commitment, lighterWork);
 });
 
 for (const [filledVenue, hedgeVenue] of CARRY_EXECUTION_VENUES.flatMap((filledVenue) =>

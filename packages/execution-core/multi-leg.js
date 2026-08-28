@@ -6,7 +6,7 @@ const VENUES = new Set(SUPPORTED_EXECUTION_VENUES);
 const STRATEGIES = new Set(["spot_perp_hedge", "delta_neutral_carry", "exposure_rebalance", "hedged_spread_arbitrage"]);
 const EVENT_TYPES = new Set([
   "preflight_passed", "preflight_failed", "cancel_before_submit", "submission_started", "leg_acknowledged",
-  "leg_fill", "leg_failed", "leg_reconciled", "reconciliation_failed",
+  "leg_fill", "leg_failed", "leg_finalized", "leg_reconciled", "reconciliation_failed",
   "cancel_confirmed", "unwind_fill", "unwind_failed", "completion_fill", "completion_failed", "timeout",
 ]);
 const RECOVERY_MODES = new Set(["unwind", "complete_reduce_only"]);
@@ -129,6 +129,14 @@ function applyEvent(saga, event, nowMs) {
     else terminal(saga, "failed_no_fill", "all_legs_rejected_before_fill");
     return;
   }
+  if (event.type === "leg_finalized") {
+    const leg = sagaLeg(saga, event.leg_id);
+    applyFill(leg, event.cumulative_filled_micro_usdc, "filled_micro_usdc");
+    leg.submission_status = "finalized";
+    if (saga.status === "compensating") settleCompensation(saga);
+    else settleFinalizedFillState(saga, nowMs);
+    return;
+  }
   if (event.type === "leg_reconciled") {
     sagaLeg(saga, event.leg_id).reconciled = true;
     if (saga.legs.every((leg) => leg.reconciled)) terminal(saga, "reconciled", "all_legs_reconciled");
@@ -239,6 +247,7 @@ function settleCompensation(saga) {
 function submissionsFinal(saga) {
   return saga.legs.every((leg) =>
     leg.submission_status === "failed" ||
+    leg.submission_status === "finalized" ||
     leg.cancel_confirmed ||
     leg.filled_micro_usdc === leg.notional_micro_usdc
   );
@@ -305,6 +314,7 @@ function nextActions(saga) {
         ...saga.legs.filter((leg) =>
           leg.filled_micro_usdc < leg.notional_micro_usdc &&
           leg.submission_status !== "failed" &&
+          leg.submission_status !== "finalized" &&
           !leg.cancel_confirmed
         ).map((leg) => ({ type: "cancel_leg", leg_id: leg.leg_id })),
         ...saga.legs.filter((leg) => leg.filled_micro_usdc < leg.notional_micro_usdc).map((leg) => ({
@@ -319,6 +329,7 @@ function nextActions(saga) {
       ...saga.legs.filter((leg) =>
         leg.filled_micro_usdc < leg.notional_micro_usdc &&
         leg.submission_status !== "failed" &&
+        leg.submission_status !== "finalized" &&
         !leg.cancel_confirmed
       )
         .map((leg) => ({ type: "cancel_leg", leg_id: leg.leg_id })),
@@ -374,10 +385,10 @@ function allowedEvents(status) {
   if (status === "preflighting") return new Set(["preflight_passed", "preflight_failed", "cancel_before_submit"]);
   if (status === "ready") return new Set(["submission_started", "cancel_before_submit"]);
   if (status === "submitting" || status === "partially_hedged") {
-    return new Set(["leg_acknowledged", "leg_fill", "leg_failed", "cancel_confirmed", "timeout"]);
+    return new Set(["leg_acknowledged", "leg_fill", "leg_failed", "leg_finalized", "cancel_confirmed", "timeout"]);
   }
   if (status === "reconciling") return new Set(["leg_reconciled", "reconciliation_failed"]);
-  if (status === "compensating") return new Set(["leg_fill", "leg_failed", "cancel_confirmed", "unwind_fill", "unwind_failed", "completion_fill", "completion_failed", "timeout"]);
+  if (status === "compensating") return new Set(["leg_fill", "leg_failed", "leg_finalized", "cancel_confirmed", "unwind_fill", "unwind_failed", "completion_fill", "completion_failed", "timeout"]);
   return new Set();
 }
 

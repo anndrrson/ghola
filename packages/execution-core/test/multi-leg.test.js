@@ -118,6 +118,18 @@ test("reconciles equally partial IOC fills after both remainders are final", () 
   assert.equal(saga.hedge_error_micro_usdc, 0);
 });
 
+test("records a venue-terminal leg without claiming that Ghola cancelled it", () => {
+  let saga = readySaga();
+  saga = advance(saga, 3, "submission_started");
+  saga = advance(saga, 4, "leg_finalized", {
+    leg_id: "leg:spot:0001",
+    cumulative_filled_micro_usdc: 0,
+  });
+  assert.equal(saga.legs[0].submission_status, "finalized");
+  assert.equal(saga.legs[0].cancel_confirmed, false);
+  assert.equal(saga.next_actions.some((action) => action.type === "cancel_leg" && action.leg_id === "leg:spot:0001"), false);
+});
+
 test("preflight failure is terminal and never creates an unwind or submit", () => {
   let saga = create();
   saga = advance(saga, 1, "preflight_failed", {

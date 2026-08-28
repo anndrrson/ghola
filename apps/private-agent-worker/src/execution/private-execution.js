@@ -334,10 +334,11 @@ export async function storeCoinbaseSession({ body, recipient, state, provider })
 }
 
 export async function executeHyperliquidOrder({ body, recipient, state }) {
+  const readOnlyReconcile = body.operation_class === "reconcile";
   const cached = await state.getIdempotency(body.work_order_commitment);
-  if (cached?.receipt) return cached.receipt;
+  if (cached?.receipt && !readOnlyReconcile) return cached.receipt;
   const priorAttempt = await state.getExecutionAttempt(body.work_order_commitment);
-  if (["pending", "ambiguous", "submitted", "filled", "cancelled", "reconciled"].includes(priorAttempt?.status)) {
+  if (!readOnlyReconcile && ["pending", "ambiguous", "submitted", "filled", "cancelled", "reconciled"].includes(priorAttempt?.status)) {
     throw new PrivateExecutionError(
       "hyperliquid work order already has a durable submission attempt; reconcile it instead of retrying",
       409,
@@ -371,7 +372,7 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     account_commitment: allocation?.account_commitment || body.account_commitment || null,
     platform_class: "hyperliquid_style_market",
     execution_mode: executionMode,
-    submit_count: 1,
+    submit_count: readOnlyReconcile ? 0 : 1,
     ambiguity_retry_count: 0,
     provider_ref_seed: { venue: "hyperliquid", cloid, pending: true },
     result_seed: { kind: "hyperliquid_submission_pending" },
@@ -1133,10 +1134,11 @@ export async function verifyAutopilotOrder({
 }
 
 export async function executeAsterOrder({ body, recipient, state }) {
+  const readOnlyReconcile = body.operation_class === "reconcile";
   const cached = await state.getIdempotency(body.work_order_commitment);
-  if (cached?.receipt) return cached.receipt;
+  if (cached?.receipt && !readOnlyReconcile) return cached.receipt;
   const priorAttempt = await state.getExecutionAttempt(body.work_order_commitment);
-  if (["pending", "ambiguous", "open", "filled", "cancelled", "rejected"].includes(priorAttempt?.status)) {
+  if (!readOnlyReconcile && ["pending", "ambiguous", "open", "filled", "cancelled", "rejected"].includes(priorAttempt?.status)) {
     throw new PrivateExecutionError("aster work order already has an attempt; reconcile it instead of retrying", 409);
   }
   const credential = await asterCredentialForBody({ body, recipient });
@@ -1164,7 +1166,7 @@ export async function executeAsterOrder({ body, recipient, state }) {
     account_commitment: body.account_commitment || null,
     platform_class: "hyperliquid_style_market",
     execution_mode: "byo_api_key",
-    submit_count: 1,
+    submit_count: readOnlyReconcile ? 0 : 1,
     ambiguity_retry_count: 0,
     provider_ref_seed: { venue: "aster", client_order_id: clientOrderId, pending: true },
     result_seed: { kind: "aster_submission_pending" },
@@ -1291,10 +1293,11 @@ async function asterCredentialForBody({ body, recipient }) {
 }
 
 export async function executeLighterOrder({ body, recipient, state }) {
+  const readOnlyReconcile = body.operation_class === "reconcile";
   const cached = await state.getIdempotency(body.work_order_commitment);
-  if (cached?.receipt) return cached.receipt;
+  if (cached?.receipt && !readOnlyReconcile) return cached.receipt;
   const priorAttempt = await state.getExecutionAttempt(body.work_order_commitment);
-  if (["pending", "ambiguous", "open", "filled", "cancelled", "rejected"].includes(priorAttempt?.status)) {
+  if (!readOnlyReconcile && ["pending", "ambiguous", "open", "filled", "cancelled", "rejected"].includes(priorAttempt?.status)) {
     throw new PrivateExecutionError("lighter work order already has an attempt; reconcile it instead of retrying", 409);
   }
   const credential = await lighterCredentialForBody({ body, recipient });
@@ -1322,7 +1325,7 @@ export async function executeLighterOrder({ body, recipient, state }) {
     account_commitment: body.account_commitment || null,
     platform_class: "hyperliquid_style_market",
     execution_mode: "byo_api_key",
-    submit_count: 1,
+    submit_count: readOnlyReconcile ? 0 : 1,
     ambiguity_retry_count: 0,
     provider_ref_seed: { venue: "lighter", client_order_index: clientOrderIndex, pending: true },
     result_seed: { kind: "lighter_submission_pending" },
