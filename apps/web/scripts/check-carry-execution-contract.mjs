@@ -1178,6 +1178,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "readyStoredReadiness", "carry_terminal_readiness_freshness_missing");
   requireText("webCarryBuilder", "CARRY_EXECUTION_VENUES.every", "carry_terminal_matrix_registry_missing");
   requireText("webCarryBuilder", "carryFleetGuardSummary", "carry_terminal_partial_fleet_evidence_missing");
+  requireText("webCarryBuilder", "CONNECT FLEET", "carry_terminal_fleet_remediation_missing");
+  requireText("webCarryBuilder", "/account?setup=carry&return_to=", "carry_terminal_fleet_setup_scope_missing");
+  requireText("webCarryBuilderTest", 'item.textContent === "CONNECT FLEET"', "carry_terminal_fleet_remediation_test_missing");
   requireText("webCarryBuilderTest", "FLEET 1/3 · ASTER BLOCKED", "carry_terminal_partial_fleet_evidence_test_missing");
   requireText("webCarryBuilder", "readyStoredDiagnostic", "carry_terminal_diagnostic_restore_missing");
   requireText("webCarryBuilderTest", "restores fresh diagnostic-only fleet evidence after refresh without treating it as readiness", "carry_terminal_diagnostic_restore_test_missing");

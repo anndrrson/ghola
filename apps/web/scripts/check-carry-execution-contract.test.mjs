@@ -2289,6 +2289,29 @@ test("rejects a terminal that hides successful pair evidence behind one venue fa
   );
 });
 
+test("rejects a terminal that sends a blocked third venue back through the same pair setup", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll("CONNECT FLEET", "CONNECT PAIR"),
+    }),
+    /carry_terminal_fleet_remediation_missing/,
+  );
+});
+
+test("rejects a fleet setup link scoped back down to one pair", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll(
+        "/account?setup=carry&return_to=",
+        "/account?setup=carry&long_venue=hyperliquid&return_to=",
+      ),
+    }),
+    /carry_terminal_fleet_setup_scope_missing/,
+  );
+});
+
 test("rejects a terminal that hides monitored margin runway", () => {
   assert.throws(
     () => checkCarryExecutionContract({

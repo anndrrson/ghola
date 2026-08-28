@@ -488,6 +488,10 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("1/3 PAIRS · ASTER BLOCKED · 2M");
     expect(container.textContent).toContain("NO-SUBMIT CHECK");
     expect(container.textContent).not.toContain("FLEET READY");
+    const remediation = [...container.querySelectorAll("a")].find((item) => item.textContent === "CONNECT FLEET");
+    expect(remediation?.getAttribute("href")).toContain("setup=carry");
+    expect(remediation?.getAttribute("href")).not.toContain("long_venue=");
+    expect(remediation?.getAttribute("href")).not.toContain("short_venue=");
     expect(api.preflightCarryExecutionMatrix).not.toHaveBeenCalled();
   });
 
@@ -616,10 +620,10 @@ describe("CarryTerminalBuilder", () => {
   it("returns unified setup to the same terminal route", async () => {
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
-    const link = [...container.querySelectorAll("a")].find((item) => item.textContent === "CONNECT");
+    const link = [...container.querySelectorAll("a")].find((item) => item.textContent === "CONNECT FLEET");
     expect(link?.getAttribute("href")).toContain("setup=carry");
-    expect(link?.getAttribute("href")).toContain("long_venue=hyperliquid");
-    expect(link?.getAttribute("href")).toContain("short_venue=lighter");
+    expect(link?.getAttribute("href")).not.toContain("&long_venue=");
+    expect(link?.getAttribute("href")).not.toContain("&short_venue=");
     const decoded = decodeURIComponent(link?.getAttribute("href") || "");
     expect(decoded).toContain("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open");
     expect(decoded).toContain("long_venue=hyperliquid&short_venue=lighter");

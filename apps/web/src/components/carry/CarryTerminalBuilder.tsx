@@ -603,7 +603,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   }
 
   const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${candidate.asset}-PERP&carry=open&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}`;
-  const setupHref = `/account?setup=carry&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}&return_to=${encodeURIComponent(terminalReturn)}`;
+  const setupHref = `/account?setup=carry&return_to=${encodeURIComponent(terminalReturn)}`;
   const canSave = actionableProof && creationProofFreshness.fresh;
   const canEnter = current?.position.status === "draft" && supervision.ready;
   const canExit = current ? ["active", "rebalancing", "frozen"].includes(current.position.status) : false;
@@ -655,7 +655,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
 
         <div className="grid grid-cols-2 gap-1.5">
           <Link href={setupHref} className={`rounded border border-[#293a50] px-2 py-2 text-center font-mono text-[10px] font-semibold text-[#8fbbe2] hover:bg-[#0d1622] ${privateSessionReady ? "" : "col-span-2"}`}>
-            {auth.loading ? "CHECKING SIGN-IN…" : privateSessionReady ? "CONNECT" : "CONNECT TO VERIFY & TRADE"}
+            {auth.loading ? "CHECKING SIGN-IN…" : privateSessionReady ? "CONNECT FLEET" : "CONNECT TO VERIFY & TRADE"}
           </Link>
           {!privateSessionReady ? null : !recordsLoaded ? (
             <button type="button" disabled={recordsLoading} onClick={() => void loadRecords()} className="rounded border border-[#594b2b] bg-[#1e190c] px-2 py-2 font-mono text-[10px] font-semibold text-[#d9bd74] disabled:opacity-40">
