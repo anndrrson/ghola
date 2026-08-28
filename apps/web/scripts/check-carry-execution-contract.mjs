@@ -836,6 +836,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("fundingPersistenceTest", "rejects carry whose historical funding advantage is not persistent", "carry_funding_persistence_test_missing");
   requireText("fundingPersistenceTest", "collects every trusted executable route during the normal shadow cycle", "carry_funding_shadow_observer_test_missing");
   requireText("fundingPersistenceTest", "collects funding history without an open browser", "carry_unattended_funding_observer_test_missing");
+  requireText("fundingPersistenceTest", "resumes durable funding history after a worker restart", "carry_funding_restart_persistence_test_missing");
   requireText("fundingPersistence", 'name: "carry_shadow_observer"', "carry_shadow_observer_supervisor_missing");
   requireText("fundingPersistence", "supervisor.runOnce", "carry_shadow_observer_supervision_missing");
   requireText("fundingPersistenceTest", "supervises five-venue observation failures and stalls", "carry_shadow_observer_supervision_test_missing");

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   observeCarryFundingPersistence,
@@ -6,6 +9,7 @@ import {
   runCarryFundingObservationTick,
   startCarryFundingObservationLoop,
 } from "../src/execution/carry-funding-persistence.js";
+import { createWorkerState } from "../src/state/private-state.js";
 
 const NOW = 1_800_000_000_000;
 const FIVE_MINUTES = 5 * 60_000;
@@ -144,6 +148,37 @@ test("does not manufacture persistence from rapid duplicate checks", async () =>
   assert.equal(duplicate.sample_count, 1);
   assert.equal(state.writes, 1);
   assert.ok(duplicate.reasons.includes("funding_history_insufficient"));
+});
+
+test("resumes durable funding history after a worker restart", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-funding-restart-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const env = {
+    PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SAMPLES: "3",
+    PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SPAN_MS: "60000",
+  };
+  let state = createWorkerState(dir);
+  await observeCarryFundingPersistence({ state, evidence: evidence(), now_ms: NOW, env });
+  const beforeRestart = await observeCarryFundingPersistence({
+    state,
+    evidence: evidence(),
+    now_ms: NOW + 30_000,
+    env,
+  });
+  assert.equal(beforeRestart.sample_count, 2);
+  assert.equal(beforeRestart.ready, false);
+
+  state = createWorkerState(dir);
+  const afterRestart = await observeCarryFundingPersistence({
+    state,
+    evidence: evidence(),
+    now_ms: NOW + 60_000,
+    env,
+  });
+  assert.equal(afterRestart.ready, true);
+  assert.equal(afterRestart.sample_count, 3);
+  assert.equal(afterRestart.observed_span_ms, 60_000);
+  assert.match(afterRestart.evidence_commitment, /^carry:funding:[a-f0-9]{64}$/);
 });
 
 test("clips a current funding spike to adverse historical quartiles", async () => {
