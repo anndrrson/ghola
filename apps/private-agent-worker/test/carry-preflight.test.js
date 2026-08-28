@@ -1070,6 +1070,80 @@ test("isolates failed pairs without discarding successful no-submit evidence or 
   assert.equal(new Set(calls).size, 6);
 });
 
+test("persists the exact venue when a completed pair reports authorization unavailable", async () => {
+  const calls = [];
+  const rows = new Map();
+  const readyAccount = {
+    can_trade: true,
+    available_balance: 0,
+    margin_balance: 0,
+    initial_margin: 0,
+    maintenance_margin: 0,
+    maker_fee_bps: 0,
+    taker_fee_bps: 1,
+    ...exactFeeEvidence(),
+    position_count: 0,
+    open_order_count: 0,
+  };
+  const result = await preflightCarryExecutionMatrix({
+    body: {
+      version: 1,
+      owner_commitment: "owner_commitment_matrix_unready_0001",
+      operation_class: "matrix_no_submit",
+      work_order_commitment: "carry_matrix_unready_0001",
+      asset: "BTC",
+      notional_usd: 100,
+      horizon_days: 30,
+      venue_access: {
+        hyperliquid: access("owner_commitment_matrix_unready_0001"),
+        aster: access("owner_commitment_matrix_unready_0001"),
+        lighter: access("owner_commitment_matrix_unready_0001"),
+      },
+    },
+    recipient: {},
+    state: {
+      putIdempotency: async (key, receipt) => { rows.set(key, { receipt }); return receipt; },
+    },
+    env: { PHALA_CVM_IMAGE_DIGEST: "sha256:abcdef123456" },
+    now: () => NOW,
+    fetchVenue: async ({ venue_id }) => [snapshot(venue_id)],
+    verifyOrder: async ({ venue_id, work_order_commitment }) => {
+      calls.push(work_order_commitment);
+      const account = venue_id === "aster" ? { ...readyAccount, can_trade: false } : readyAccount;
+      return {
+        status: "verified_ready",
+        work_order_commitment,
+        account_commitment: access().account_commitment,
+        verification_commitment: `verification_unready_${work_order_commitment}`,
+        checks: { order_request_checked: true, transaction_broadcast: false },
+        order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
+        account,
+        ...(venue_id === "lighter" ? {
+          authority_boundary: {
+            venue_native_trade_only: false,
+            withdrawal_request_permitted: false,
+            secure_withdrawal_destination: "owner_l1_only",
+            owner_wallet_key_present: false,
+            non_owner_fund_movement_possible: false,
+          },
+        } : { authority_boundary: { venue_native_trade_only: true } }),
+      };
+    },
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
+    readHyperliquidCarryMetrics: async () => readyAccount,
+  });
+
+  assert.equal(result.no_submit_ready, false);
+  assert.equal(result.capital_ready, false);
+  assert.equal(result.diagnostic_persisted, true);
+  assert.equal(result.pairs.filter((pair) => pair.error_code === "carry_account_not_ready:aster").length, 2);
+  assert.equal(result.diagnostic.pairs.filter((pair) => pair.error_code === "carry_account_not_ready:aster").length, 2);
+  assert.equal(result.failures.filter((failure) => failure.endsWith(":carry_account_not_ready:aster")).length, 2);
+  assert.equal(calls.length, 6);
+  assert.equal(new Set(calls).size, 6);
+  assert.equal(rows.size, 1);
+});
+
 test("enables an economically eligible Aster pair only after deployment-bound qualification", async () => {
   const image = "sha256:abcdef123456";
   const rows = new Map();

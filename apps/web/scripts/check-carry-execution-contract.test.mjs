@@ -1354,6 +1354,16 @@ test("rejects a three-venue matrix that discards successful evidence when one pa
   );
 });
 
+test("rejects a three-venue matrix that loses the exact normally-returned unready venue", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll("carryPairUnreadyCode(result.value)", '"carry_pair_not_ready"'),
+    }),
+    /carry_no_submit_exact_unready_venue_missing/,
+  );
+});
+
 test("rejects a matrix gateway that discards partial venue readiness", () => {
   assert.throws(
     () => checkCarryExecutionContract({

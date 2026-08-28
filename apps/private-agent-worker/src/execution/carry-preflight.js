@@ -290,13 +290,18 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
     },
   })));
   const results = settledResults.map((result) => result.status === "fulfilled" ? result.value : null);
+  const pairErrorCodes = settledResults.map((result) => result.status === "rejected"
+    ? carryPairFailureCode(result.reason)
+    : result.value.no_submit_ready === true && result.value.transaction_broadcast === false
+      ? null
+      : carryPairUnreadyCode(result.value));
   const evidence = results.flatMap((result) => result?.evidence || []);
   const failures = [];
   for (const [index, result] of settledResults.entries()) {
     if (result.status === "rejected") {
-      failures.push(`pair_check_failed:${index + 1}:${carryPairFailureCode(result.reason)}`);
+      failures.push(`pair_check_failed:${index + 1}:${pairErrorCodes[index]}`);
     } else if (result.value.transaction_broadcast !== false || result.value.no_submit_ready !== true) {
-      failures.push(`pair_not_ready:${index + 1}`);
+      failures.push(`pair_not_ready:${index + 1}:${pairErrorCodes[index]}`);
     }
   }
   const venueEvidence = venues.map((venueId) => {
@@ -344,16 +349,13 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
     venues: venueEvidence,
     pairs: pairs.map((pair, index) => {
       const result = results[index];
-      const errorCode = settledResults[index].status === "rejected"
-        ? carryPairFailureCode(settledResults[index].reason)
-        : null;
       return {
         ...pair,
         work_order_commitment: `${body.work_order_commitment}_pair_${index + 1}`,
         no_submit_ready: result?.no_submit_ready === true,
         capital_ready: result?.capital_ready === true,
         transaction_broadcast: false,
-        error_code: errorCode,
+        error_code: pairErrorCodes[index],
         qualification_reasons: result?.qualification_reasons || [],
         account_readiness: result?.account_readiness || [],
         leg_evidence: (result?.evidence || []).map((item) => ({
@@ -405,6 +407,16 @@ function carryPairFailureCode(reason) {
   return /^[a-z][a-z0-9:_-]{2,180}$/.test(candidate)
     ? candidate
     : "carry_pair_check_failed";
+}
+
+function carryPairUnreadyCode(result) {
+  if (result?.transaction_broadcast !== false) return "carry_pair_broadcast_unsafe";
+  const account = (Array.isArray(result?.account_readiness) ? result.account_readiness : [])
+    .find((item) => item?.authorized !== true);
+  const venueId = String(account?.venue_id || "");
+  return isCarryExecutionVenue(venueId)
+    ? `carry_account_not_ready:${venueId}`
+    : "carry_pair_not_ready";
 }
 
 function allVenuePairs(venues) {

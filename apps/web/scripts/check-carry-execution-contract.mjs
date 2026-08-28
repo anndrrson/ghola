@@ -352,6 +352,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("readiness", "reusable_for_readiness: false", "carry_partial_matrix_diagnostic_authority_boundary_missing");
   requireText("readinessTest", "persists partial matrix diagnostics without creating reusable readiness", "carry_partial_matrix_diagnostic_test_missing");
   requireText("preflightTest", "isolates failed pairs without discarding successful no-submit evidence or retrying", "carry_no_submit_pair_fault_isolation_test_missing");
+  requireText("preflight", "carryPairUnreadyCode(result.value)", "carry_no_submit_exact_unready_venue_missing");
+  requireText("preflightTest", "persists the exact venue when a completed pair reports authorization unavailable", "carry_no_submit_exact_unready_venue_test_missing");
   requireText("preflight", "leg_evidence: (result?.evidence || [])", "carry_pair_leg_evidence_missing");
   requireText("privateExecution", "account_commitment: body.account_commitment || null", "carry_no_submit_receipt_account_binding_missing");
   requireText("privateExecution", "account_commitment: allocation?.account_commitment || body.account_commitment || null", "carry_hyperliquid_no_submit_account_binding_missing");
