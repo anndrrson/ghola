@@ -57,7 +57,7 @@ describe("Aster onboarding recovery", () => {
     expect(classifyAsterOnboardingFailure(apiError({
       error: "nonce_outside_aster_window",
       reprepare_allowed: true,
-    }), PREPARATION).action).toBe("reprepare");
+    }), PREPARATION)).toMatchObject({ action: "reprepare", reason: "stale" });
   });
 
   it("never retries a rejected registration and offers a fresh preparation", () => {
@@ -68,6 +68,7 @@ describe("Aster onboarding recovery", () => {
       provider_message: "Invalid Aster account.",
     }), PREPARATION)).toMatchObject({
       action: "reprepare",
+      reason: "venue_activation",
       message: expect.stringContaining("code -2015: Invalid Aster account."),
     });
   });

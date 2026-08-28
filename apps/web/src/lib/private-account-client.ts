@@ -720,7 +720,9 @@ export interface AsterProgrammaticPreparation {
     may_place_trade: false;
     transaction_broadcast: false;
     credential_registered: false;
+    signer_reused?: boolean;
   };
+  refreshed_from_preparation_id?: string;
 }
 
 export interface AsterPublicRegistrationReceipt {
@@ -741,10 +743,24 @@ export async function prepareAsterProgrammaticCredential(input: {
   owner_address: string;
   agent_name?: string;
   ip_whitelist?: string[];
+  reuse_preparation?: AsterProgrammaticPreparation;
 }): Promise<AsterProgrammaticPreparation> {
+  const prior = input.reuse_preparation;
   return privateAccountFetch("/v1/private-account/platforms/aster/prepare", {
     method: "POST",
-    body: JSON.stringify(input),
+    body: JSON.stringify({
+      owner_address: input.owner_address,
+      ...(input.agent_name ? { agent_name: input.agent_name } : {}),
+      ...(input.ip_whitelist ? { ip_whitelist: input.ip_whitelist } : {}),
+      ...(prior ? {
+        reuse_preparation: {
+          preparation_id: prior.preparation_id,
+          signer_address: prior.contract.attestedSigner.publicAddress,
+          nonce: prior.contract.approval.parametersWithoutSignature.nonce,
+          encrypted_execution_vault: prior.encrypted_execution_vault,
+        },
+      } : {}),
+    }),
   }) as Promise<AsterProgrammaticPreparation>;
 }
 

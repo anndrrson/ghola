@@ -37,15 +37,20 @@ describe("Aster programmatic credential preparation", () => {
       if (url === "https://fapi.asterdex.com/fapi/v3/time") {
         return Response.json({ serverTime: 1_800_000_000_000 });
       }
-      if (url === "https://worker.example/venues/aster/credentials/prepare") {
+      if (
+        url === "https://worker.example/venues/aster/credentials/prepare" ||
+        url === "https://worker.example/venues/aster/credentials/refresh"
+      ) {
         const payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
         const recipient = "phala:cvm:aster-test";
+        const refreshed = payload.operation_class === "credential_refresh";
+        const signerAddress = refreshed ? String(payload.signer_address) : SIGNER;
         return Response.json({
           version: 1,
           venue_id: "aster",
           network: "mainnet",
           owner_address: payload.owner_address,
-          signer_address: SIGNER,
+          signer_address: signerAddress,
           encrypted_execution_vault: {
             alg: "sealed-provider-v1",
             ciphertext: "sealed-ciphertext",
@@ -58,7 +63,7 @@ describe("Aster programmatic credential preparation", () => {
             ].join("|"),
           },
           attested_signer: {
-            public_address: SIGNER,
+            public_address: signerAddress,
             provider: "phala",
             worker_id: recipient,
             attestation_sha256: `sha256:${"ab".repeat(32)}`,
@@ -77,6 +82,7 @@ describe("Aster programmatic credential preparation", () => {
           },
           owner_authorization: { required: true, status: "signature_required" },
           setup: { may_place_trade: false, transaction_broadcast: false },
+          ...(refreshed ? { refreshed_from_preparation_id: payload.prior_preparation_id } : {}),
         }, { status: 201 });
       }
       return Response.json({ error: "unexpected_request" }, { status: 500 });
@@ -134,6 +140,43 @@ describe("Aster programmatic credential preparation", () => {
     });
     const authorization = (workerCall?.[1]?.headers as Record<string, string>).authorization;
     expect(authorization).toMatch(/^Bearer ghcap_v1\./);
+  });
+
+  it("refreshes authorization around the exact same sealed signer", async () => {
+    const firstResponse = await POST(request({ owner_address: OWNER, agent_name: "ghola-perps" }));
+    const first = await firstResponse.json();
+    const response = await POST(request({
+      owner_address: OWNER,
+      agent_name: "ghola-perps",
+      reuse_preparation: {
+        preparation_id: first.preparation_id,
+        signer_address: first.contract.attestedSigner.publicAddress,
+        nonce: first.contract.approval.parametersWithoutSignature.nonce,
+        encrypted_execution_vault: first.encrypted_execution_vault,
+      },
+    }));
+    expect(response.status).toBe(201);
+    const refreshed = await response.json();
+    expect(refreshed.contract.attestedSigner.publicAddress).toBe(
+      first.contract.attestedSigner.publicAddress,
+    );
+    expect(refreshed.preparation_id).not.toBe(first.preparation_id);
+    expect(refreshed.refreshed_from_preparation_id).toBe(first.preparation_id);
+    expect(refreshed.setup).toMatchObject({
+      signer_reused: true,
+      may_place_trade: false,
+      transaction_broadcast: false,
+      credential_registered: false,
+    });
+    const workerCall = vi.mocked(globalThis.fetch).mock.calls.find(([url]) =>
+      String(url).endsWith("/venues/aster/credentials/refresh"),
+    );
+    const payload = JSON.parse(String(workerCall?.[1]?.body)) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      operation_class: "credential_refresh",
+      signer_address: SIGNER,
+      prior_preparation_id: first.preparation_id,
+    });
   });
 
   it("rejects an invalid owner before generating a signer", async () => {

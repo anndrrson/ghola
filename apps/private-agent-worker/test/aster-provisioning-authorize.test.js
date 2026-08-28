@@ -14,6 +14,7 @@ import {
   asterRegistrationTypedData,
   authorizeAsterCredential,
   prepareAsterCredential,
+  refreshAsterCredential,
   recoverAsterCredentialRegistration,
 } from "../src/venues/aster-provisioning.js";
 
@@ -228,6 +229,26 @@ test("preserves a deterministic Aster rejection without retrying it", async () =
       rejected_at: attempt.rejected_at,
     });
     assert.match(attempt.rejected_at, /^\d{4}-\d{2}-\d{2}T/);
+    const refreshed = await refreshAsterCredential({
+      body: {
+        account_commitment: fixture.body.account_commitment,
+        owner_address: fixture.body.owner_address,
+        signer_address: fixture.body.signer_address,
+        agent_name: fixture.body.agent_name,
+        prior_preparation_id: fixture.body.preparation_id,
+        prior_nonce: fixture.body.nonce,
+        encrypted_execution_vault: fixture.body.encrypted_execution_vault,
+      },
+      recipient: fixture.recipient,
+      state,
+      sealingIdentity: fixture.sealingIdentity,
+    });
+    assert.equal(refreshed.signer_address, fixture.body.signer_address.toLowerCase());
+    assert.deepEqual(refreshed.encrypted_execution_vault, fixture.body.encrypted_execution_vault);
+    assert.equal(refreshed.refreshed_from_preparation_id, fixture.body.preparation_id);
+    assert.equal(refreshed.setup.transaction_broadcast, false);
+    assert.equal(JSON.stringify(refreshed).includes(SIGNER_KEY), false);
+    assert.equal(calls, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -337,6 +358,20 @@ test("freezes an ambiguous registration and never retries it", async () => {
       state,
       fetchImpl,
       nowMs: NOW,
+    }), (error) => error.code === "aster_registration_ambiguous");
+    await assert.rejects(refreshAsterCredential({
+      body: {
+        account_commitment: fixture.body.account_commitment,
+        owner_address: fixture.body.owner_address,
+        signer_address: fixture.body.signer_address,
+        agent_name: fixture.body.agent_name,
+        prior_preparation_id: fixture.body.preparation_id,
+        prior_nonce: fixture.body.nonce,
+        encrypted_execution_vault: fixture.body.encrypted_execution_vault,
+      },
+      recipient: fixture.recipient,
+      state,
+      sealingIdentity: fixture.sealingIdentity,
     }), (error) => error.code === "aster_registration_ambiguous");
     assert.equal(calls, 1);
     assert.equal((await state.getExecutionAttempt(fixture.body.preparation_id)).status, "ambiguous");

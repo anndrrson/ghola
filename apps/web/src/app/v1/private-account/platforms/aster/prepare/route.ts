@@ -16,9 +16,11 @@ import { resolvePrivateAgentWorkerUrl } from "@/lib/private-account-worker-routi
 
 export const dynamic = "force-dynamic";
 
-const WORKER_PATH = "/venues/aster/credentials/prepare";
+const WORKER_PREPARE_PATH = "/venues/aster/credentials/prepare";
+const WORKER_REFRESH_PATH = "/venues/aster/credentials/refresh";
 const ASTER_TIME_URL = "https://fapi.asterdex.com/fapi/v3/time";
 const EVM_ADDRESS = /^0x[0-9a-f]{40}$/i;
+const PREPARATION_ID = /^aster_prepare_[0-9a-f]{64}$/;
 const SAFE_AGENT_NAME = /^[A-Za-z0-9._:-]{1,32}$/;
 
 export async function POST(req: Request) {
@@ -28,28 +30,43 @@ export async function POST(req: Request) {
   const ownerAddress = string(input.owner_address).toLowerCase();
   const agentName = string(input.agent_name) || "ghola-perps";
   const ipWhitelist = strings(input.ip_whitelist);
+  const reuse = record(input.reuse_preparation);
+  const reuseRequested = Object.keys(reuse).length > 0;
   if (!EVM_ADDRESS.test(ownerAddress)) return json({ error: "aster_owner_address_invalid" }, 400);
   if (!SAFE_AGENT_NAME.test(agentName)) return json({ error: "aster_agent_name_invalid" }, 400);
   if (!ipWhitelist) return json({ error: "aster_ip_whitelist_invalid" }, 400);
+  if (reuseRequested && (
+    !PREPARATION_ID.test(string(reuse.preparation_id)) ||
+    !EVM_ADDRESS.test(string(reuse.signer_address)) ||
+    !positiveSafeInteger(reuse.nonce) ||
+    Object.keys(record(reuse.encrypted_execution_vault)).length === 0
+  )) return json({ error: "aster_reuse_preparation_invalid" }, 400);
 
   const worker = workerConfig(process.env);
   if (!worker.url) return json({ error: "private_worker_unavailable" }, 503);
   const account = await createOrGetStoredPrivateAccount(guarded.owner);
-  const payload = {
+  const workerPath = reuseRequested ? WORKER_REFRESH_PATH : WORKER_PREPARE_PATH;
+  const payload: Record<string, unknown> = {
     version: 1,
     venue_id: "aster",
     platform_class: "hyperliquid_style_market",
     execution_mode: "worker_generated_agent",
-    operation_class: "credential_provision",
+    operation_class: reuseRequested ? "credential_refresh" : "credential_provision",
     owner_commitment: guarded.owner.owner_commitment,
     account_commitment: account.account_commitment,
     owner_address: ownerAddress,
     agent_name: agentName,
-  } as const;
+    ...(reuseRequested ? {
+      signer_address: string(reuse.signer_address).toLowerCase(),
+      prior_preparation_id: string(reuse.preparation_id),
+      prior_nonce: positiveSafeInteger(reuse.nonce),
+      encrypted_execution_vault: record(reuse.encrypted_execution_vault),
+    } : {}),
+  };
   const authorization = workerAuthorizationHeader({
     fallbackToken: worker.token,
     method: "POST",
-    path: WORKER_PATH,
+    path: workerPath,
     scope: "credential:provision",
     body: payload,
     expected: workerCapabilityExpectedFromBody(payload),
@@ -61,7 +78,7 @@ export async function POST(req: Request) {
       cache: "no-store",
       signal: AbortSignal.timeout(8_000),
     }).catch(() => null),
-    fetch(new URL(WORKER_PATH, worker.url), {
+    fetch(new URL(workerPath, worker.url), {
       method: "POST",
       cache: "no-store",
       headers: {
@@ -86,6 +103,13 @@ export async function POST(req: Request) {
   const prepared = validatePreparedCredential(workerBody, ownerAddress, account.account_commitment);
   if (!serverTimeMs) return json({ error: "aster_clock_invalid" }, 503);
   if (!prepared) return json({ error: "aster_worker_response_invalid" }, 502);
+  if (reuseRequested && (
+    prepared.signerAddress !== string(reuse.signer_address).toLowerCase() ||
+    string(workerBody.refreshed_from_preparation_id) !== string(reuse.preparation_id)
+  )) return json({ error: "aster_worker_refresh_binding_invalid" }, 502);
+  const serverNonceMicros = serverTimeMs * 1_000;
+  const priorNonce = reuseRequested ? positiveSafeInteger(reuse.nonce) : null;
+  const nonceMicros = priorNonce === serverNonceMicros ? serverNonceMicros + 1 : serverNonceMicros;
 
   const contract = buildAsterV3AgentOnboardingContract({
     ownerAddress,
@@ -96,7 +120,7 @@ export async function POST(req: Request) {
       workerId: prepared.workerId,
       attestationSha256: prepared.attestationSha256,
     },
-    nonceMicros: serverTimeMs * 1_000,
+    nonceMicros,
     nowMs: serverTimeMs,
     expiresAtMs: serverTimeMs + ASTER_V3_AGENT_MAX_LIFETIME_MS,
     ipWhitelist,
@@ -125,7 +149,9 @@ export async function POST(req: Request) {
       may_place_trade: false,
       transaction_broadcast: false,
       credential_registered: false,
+      signer_reused: reuseRequested,
     },
+    ...(reuseRequested ? { refreshed_from_preparation_id: string(reuse.preparation_id) } : {}),
   }, 201);
 }
 

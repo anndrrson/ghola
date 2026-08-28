@@ -5,7 +5,7 @@ import type {
 
 export type AsterOnboardingFailureDisposition =
   | { action: "finish_link"; receipt: AsterPublicRegistrationReceipt; message: string }
-  | { action: "reprepare"; message: string }
+  | { action: "reprepare"; reason: "venue_activation" | "stale"; message: string }
   | { action: "hold_ambiguous"; message: string }
   | { action: "none"; message: string };
 
@@ -50,6 +50,7 @@ export function classifyAsterOnboardingFailure(
     ].filter(Boolean).join(": ");
     return {
       action: "reprepare",
+      reason: "venue_activation",
       message: providerDetail
         ? `Aster rejected this registration (${providerDetail}). Confirm the exact Ghola owner is active on Aster before preparing one fresh request. The rejected request was not retried.`
         : "Aster rejected this registration. Confirm the exact Ghola owner is active on Aster before preparing one fresh request. The rejected request was not retried.",
@@ -66,6 +67,7 @@ export function classifyAsterOnboardingFailure(
   if (body.credential_registered !== true && (body.reprepare_allowed === true || STALE_CODES.has(errorCode))) {
     return {
       action: "reprepare",
+      reason: "stale",
       message: "The Aster approval expired before registration. Re-prepare once, then approve the fresh request.",
     };
   }

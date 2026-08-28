@@ -168,6 +168,111 @@ export async function prepareAsterCredential({
 }
 
 /**
+ * Reissues the owner-authorization envelope around an existing sealed signer.
+ * This never generates a second signer and never contacts Aster. A prior
+ * ambiguous, pending, or successful registration permanently blocks refresh.
+ */
+export async function refreshAsterCredential({
+  body,
+  recipient,
+  state,
+  provider = "phala",
+  attestationEvidence = {},
+  sealingIdentity = fundingSigningIdentity,
+}) {
+  const owner = String(body.owner_address || "").trim().toLowerCase();
+  const signer = String(body.signer_address || "").trim().toLowerCase();
+  const accountCommitment = String(body.account_commitment || "").trim();
+  const agentName = String(body.agent_name || "").trim();
+  const priorPreparationId = String(body.prior_preparation_id || "").trim();
+  const priorNonce = Number(body.prior_nonce);
+  if (!ADDRESS.test(owner) || !ADDRESS.test(signer) || owner === signer) {
+    throw new AsterProvisioningError("Aster refresh binding is invalid.", "aster_refresh_binding_invalid");
+  }
+  if (!SAFE_COMMITMENT.test(accountCommitment) || !SAFE_AGENT_NAME.test(agentName) ||
+      !PREPARATION_ID.test(priorPreparationId) || !Number.isSafeInteger(priorNonce)) {
+    throw new AsterProvisioningError("Aster refresh proof is invalid.", "aster_refresh_proof_invalid");
+  }
+  if (priorPreparationId !== asterPreparationId({
+    accountCommitment,
+    ownerAddress: owner,
+    signerAddress: signer,
+    nonce: priorNonce,
+  })) {
+    throw new AsterProvisioningError("Aster refresh preparation binding is invalid.", "aster_refresh_binding_invalid", 409);
+  }
+  if ((await state.getIdempotency(priorPreparationId))?.receipt) {
+    throw new AsterProvisioningError("Aster signer is already registered.", "aster_refresh_registered", 409);
+  }
+  const prior = await state.getExecutionAttempt(priorPreparationId);
+  if (prior && prior.status !== "rejected") {
+    throw new AsterProvisioningError(
+      "Aster registration is not safely refreshable; reconcile the existing attempt.",
+      prior.status === "ambiguous" ? "aster_registration_ambiguous" : "aster_refresh_not_allowed",
+      409,
+    );
+  }
+  if (prior && (
+    prior.owner_address !== owner ||
+    prior.signer_address !== signer ||
+    prior.operation_class !== "credential_authorize"
+  )) {
+    throw new AsterProvisioningError("Aster rejected-attempt binding is invalid.", "aster_refresh_binding_invalid", 409);
+  }
+  const opened = await validateSealedAsterCredential({
+    encryptedExecutionVault: body.encrypted_execution_vault,
+    recipient,
+    accountCommitment,
+    owner,
+    signer,
+    agentName,
+    sealingIdentity,
+  });
+  const attestationSha256 = `sha256:${createHash("sha256").update(JSON.stringify({
+    recipient_id: recipient.recipient_id,
+    signer_address: signer,
+    evidence: attestationEvidence,
+  })).digest("hex")}`;
+  return {
+    version: 1,
+    venue_id: "aster",
+    network: "mainnet",
+    owner_address: owner,
+    agent_name: agentName,
+    signer_address: signer,
+    encrypted_execution_vault: body.encrypted_execution_vault,
+    attested_signer: {
+      public_address: signer,
+      provider: String(provider || "phala").toLowerCase(),
+      worker_id: recipient.recipient_id,
+      attestation_sha256: attestationSha256,
+      private_key_exposed: false,
+    },
+    permissions: {
+      can_read: true,
+      can_trade: true,
+      can_spot_trade: false,
+      can_perp_trade: true,
+      can_withdraw: false,
+      can_transfer: false,
+      can_manage_credentials: false,
+      can_export_secret: false,
+      unknown_scopes: [],
+    },
+    owner_authorization: {
+      required: true,
+      status: "signature_required",
+    },
+    setup: {
+      may_place_trade: false,
+      transaction_broadcast: false,
+    },
+    refreshed_from_preparation_id: priorPreparationId,
+    created_at: String(opened.json.created_at || ""),
+  };
+}
+
+/**
  * Verifies the exact owner signature, persists a pending attempt, then makes
  * at most one Aster registration request. Any ambiguous outcome is frozen for
  * reconciliation and is never retried with the same preparation.
@@ -261,40 +366,15 @@ export async function authorizeAsterCredential({
     throw new AsterProvisioningError("Aster authorization timestamps are stale.", "aster_authorization_stale", 409);
   }
 
-  const expectedAad = [
-    "ghola/aster-execution-vault-v1",
-    `account:${accountCommitment}`,
-    `recipient:${recipient.recipient_id}`,
-    "network:mainnet",
-  ].join("|");
-  const opened = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-    expectedKind: "ghola_aster_execution_vault",
-    expectedAad,
+  await validateSealedAsterCredential({
+    encryptedExecutionVault: body.encrypted_execution_vault,
+    recipient,
+    accountCommitment,
+    owner,
+    signer,
+    agentName,
+    sealingIdentity,
   });
-  const identity = sealingIdentity();
-  const publicDer = identity?.publicKey?.export?.({ format: "der", type: "spki" });
-  const publicBytes = publicDer ? new Uint8Array(Buffer.from(publicDer).subarray(-32)) : new Uint8Array();
-  if (publicBytes.length !== 32) {
-    throw new AsterProvisioningError("Worker sealing identity is unavailable.", "sealing_identity_unavailable", 503);
-  }
-  let sealedSignerAddress;
-  try {
-    sealedSignerAddress = privateKeyToAccount(String(opened.json.api_wallet_private_key || "")).address.toLowerCase();
-  } catch {
-    throw new AsterProvisioningError("Aster sealed signer key is invalid.", "aster_sealed_binding_invalid");
-  }
-  if (
-    opened.senderDid !== didKeyFromVerifying(publicBytes) ||
-    String(opened.json.user_address || "").toLowerCase() !== owner ||
-    String(opened.json.signer_address || "").toLowerCase() !== signer ||
-    sealedSignerAddress !== signer ||
-    opened.json.label !== agentName ||
-    opened.json.network !== "mainnet" ||
-    !sameStringSet(opened.json.allowed_operations, ["read", "limit_order", "cancel", "reconcile"]) ||
-    !sameStringSet(opened.json.blocked_operations, ["withdraw", "vault_transfer", "leverage_escalation"])
-  ) {
-    throw new AsterProvisioningError("Aster sealed signer binding is invalid.", "aster_sealed_binding_invalid");
-  }
 
   const claim = await state.claimExecutionAttempt(preparationId, {
     status: "pending",
@@ -547,6 +627,52 @@ function sanitizedProviderMessage(value) {
   if (typeof value !== "string") return null;
   const text = value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
   return text ? text.slice(0, 240) : null;
+}
+
+async function validateSealedAsterCredential({
+  encryptedExecutionVault,
+  recipient,
+  accountCommitment,
+  owner,
+  signer,
+  agentName,
+  sealingIdentity,
+}) {
+  const expectedAad = [
+    "ghola/aster-execution-vault-v1",
+    `account:${accountCommitment}`,
+    `recipient:${recipient.recipient_id}`,
+    "network:mainnet",
+  ].join("|");
+  const opened = await openSealedBundle(encryptedExecutionVault, recipient, {
+    expectedKind: "ghola_aster_execution_vault",
+    expectedAad,
+  });
+  const identity = sealingIdentity();
+  const publicDer = identity?.publicKey?.export?.({ format: "der", type: "spki" });
+  const publicBytes = publicDer ? new Uint8Array(Buffer.from(publicDer).subarray(-32)) : new Uint8Array();
+  if (publicBytes.length !== 32) {
+    throw new AsterProvisioningError("Worker sealing identity is unavailable.", "sealing_identity_unavailable", 503);
+  }
+  let sealedSignerAddress;
+  try {
+    sealedSignerAddress = privateKeyToAccount(String(opened.json.api_wallet_private_key || "")).address.toLowerCase();
+  } catch {
+    throw new AsterProvisioningError("Aster sealed signer key is invalid.", "aster_sealed_binding_invalid");
+  }
+  if (
+    opened.senderDid !== didKeyFromVerifying(publicBytes) ||
+    String(opened.json.user_address || "").toLowerCase() !== owner ||
+    String(opened.json.signer_address || "").toLowerCase() !== signer ||
+    sealedSignerAddress !== signer ||
+    opened.json.label !== agentName ||
+    opened.json.network !== "mainnet" ||
+    !sameStringSet(opened.json.allowed_operations, ["read", "limit_order", "cancel", "reconcile"]) ||
+    !sameStringSet(opened.json.blocked_operations, ["withdraw", "vault_transfer", "leverage_escalation"])
+  ) {
+    throw new AsterProvisioningError("Aster sealed signer binding is invalid.", "aster_sealed_binding_invalid");
+  }
+  return opened;
 }
 
 function sameStringSet(value, expected) {

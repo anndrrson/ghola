@@ -128,6 +128,7 @@ import { loadPartnerCoinbaseCredential } from "./venues/coinbase.js";
 import {
   authorizeAsterCredential,
   prepareAsterCredential,
+  refreshAsterCredential,
   recoverAsterCredentialRegistration,
 } from "./venues/aster-provisioning.js";
 import {
@@ -2395,6 +2396,44 @@ function validateAsterCredentialProvisionRequest(body) {
   return errors;
 }
 
+function validateAsterCredentialRefreshRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext credentials, strategy, prompt, policy text, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.venue_id !== "aster") errors.push("venue_id must be aster");
+  if (body.platform_class !== "hyperliquid_style_market") {
+    errors.push("platform_class must be hyperliquid_style_market");
+  }
+  if (body.execution_mode !== "worker_generated_agent") {
+    errors.push("execution_mode must be worker_generated_agent");
+  }
+  if (body.operation_class !== "credential_refresh") {
+    errors.push("operation_class must be credential_refresh");
+  }
+  if (!isNonEmptyString(body.owner_commitment)) errors.push("owner_commitment is required");
+  if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
+  if (!/^0x[0-9a-f]{40}$/i.test(String(body.owner_address || ""))) {
+    errors.push("owner_address must be an EVM address");
+  }
+  if (!/^0x[0-9a-f]{40}$/i.test(String(body.signer_address || ""))) {
+    errors.push("signer_address must be an EVM address");
+  }
+  if (!/^aster_prepare_[0-9a-f]{64}$/.test(String(body.prior_preparation_id || ""))) {
+    errors.push("prior_preparation_id is invalid");
+  }
+  if (!Number.isSafeInteger(body.prior_nonce) || body.prior_nonce <= 0) {
+    errors.push("prior_nonce must be a positive safe integer");
+  }
+  if (!/^[A-Za-z0-9._:-]{1,32}$/.test(String(body.agent_name || ""))) {
+    errors.push("agent_name is invalid");
+  }
+  errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  return errors;
+}
+
 function validateLighterCredentialProvisionRequest(body) {
   const errors = [];
   if (!isObject(body)) return ["request body must be an object"];
@@ -4074,6 +4113,48 @@ export function createPrivateAgentWorkerServer(options = {}) {
           attestationEvidence: attestation,
         });
         return json(res, 201, prepared);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/aster/credentials/refresh") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "credential:provision",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "aster",
+            platform_class: "hyperliquid_style_market",
+            execution_mode: "worker_generated_agent",
+            operation_class: "credential_refresh",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateAsterCredentialRefreshRequest(body, recipient);
+        if (errors.length) {
+          return json(res, 400, {
+            error: "invalid Aster credential refresh request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const fundingSigner = fundingSigningIdentity();
+        const attestation = await attestationMetadata(recipient, fundingSigner.public_key_b64);
+        const refreshed = await refreshAsterCredential({
+          body,
+          recipient,
+          state,
+          provider: env("PRIVATE_AGENT_PROVIDER_ID", "phala"),
+          attestationEvidence: attestation,
+        });
+        return json(res, 201, refreshed);
       }
 
       if (req.method === "POST" && url.pathname === "/venues/aster/credentials/authorize") {

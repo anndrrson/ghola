@@ -177,6 +177,22 @@ test("rejects Aster provisioning without durable ambiguity or owner-signature gu
   );
 });
 
+test("rejects Aster refresh that can replace a signer or follow an ambiguous attempt", () => {
+  assert.throws(
+    () => checkAsterCredentialProvisioningBoundary(
+      asterPrepare
+        .replaceAll("prepared.signerAddress !== string(reuse.signer_address).toLowerCase()", "false")
+        .replaceAll("signer_reused: reuseRequested", "signer_reused: false"),
+      asterComplete,
+      asterWorker
+        .replaceAll("prior && prior.status !== \"rejected\"", "false")
+        .replaceAll("never generates a second signer and never contacts Aster", "may generate or submit"),
+      asterContract,
+    ),
+    /aster_refresh_signer_binding_required|aster_refresh_disclosure_required|aster_refresh_rejected_only_required|aster_refresh_non_submit_boundary_required/,
+  );
+});
+
 test("rejects Aster's retired approval endpoint or signing schema", () => {
   assert.throws(
     () => checkAsterCredentialProvisioningBoundary(
@@ -269,7 +285,7 @@ test("rejects hiding the bounded Aster expiry or deliberate stale re-prepare", (
   );
   assert.throws(
     () => checkAsterOnboardingUiBoundary(asterUi
-      .replaceAll("Re-prepare Aster approval", "Authorizing…")
+      .replaceAll("Refresh same Aster signer", "Authorizing…")
       .replaceAll("30 days of perpetual trading", "perpetual trading")),
     /aster_deliberate_reprepare_action_required|aster_expiry_disclosure_required/,
   );

@@ -232,14 +232,12 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     };
   }, [activationNeeded, refreshLighterReadiness]);
 
-  const connectAsterProgrammatic = useCallback(async (forceReprepare = false) => {
+  const connectAsterProgrammatic = useCallback(async (refreshExistingSigner = false) => {
     setWorking(true);
     setError(null);
     setActivationNeeded(null);
     let ownerAddress = "";
-    let prepared: AsterProgrammaticPreparation | null = forceReprepare || pendingAsterLinkRecovery?.signature
-      ? null
-      : pendingAsterLinkRecovery?.preparation || null;
+    let prepared: AsterProgrammaticPreparation | null = pendingAsterLinkRecovery?.preparation || null;
     let signature: `0x${string}` | null = null;
     let completionAttempted = false;
     let usingTurnkeyOwner = false;
@@ -259,15 +257,28 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         setPendingAsterLinkRecovery(null);
         persistRecovery(accountCommitment, recoveryUserScope, { aster: null });
       }
-      if (!prepared) {
+      if (refreshExistingSigner && prepared) {
+        const prior = prepared;
+        prepared = await prepareAsterProgrammaticCredential({
+          owner_address: ownerAddress,
+          agent_name: "ghola-perps",
+          reuse_preparation: prior,
+        });
+        if (
+          prepared.setup.signer_reused !== true ||
+          prepared.refreshed_from_preparation_id !== prior.preparation_id ||
+          prepared.contract.attestedSigner.publicAddress.toLowerCase() !==
+            prior.contract.attestedSigner.publicAddress.toLowerCase()
+        ) throw new Error("Aster signer refresh did not preserve the sealed signer.");
+      } else if (!prepared) {
         prepared = await prepareAsterProgrammaticCredential({
           owner_address: ownerAddress,
           agent_name: "ghola-perps",
         });
-        const unsignedPending = { preparation: prepared };
-        setPendingAsterLinkRecovery(unsignedPending);
-        persistRecovery(accountCommitment, recoveryUserScope, { aster: unsignedPending });
       }
+      const unsignedPending = { preparation: prepared };
+      setPendingAsterLinkRecovery(unsignedPending);
+      persistRecovery(accountCommitment, recoveryUserScope, { aster: unsignedPending });
       signature = provider
         ? await signAsterAgentApprovalWithInjectedOwner({
           provider,
@@ -313,12 +324,14 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
           persistRecovery(accountCommitment, recoveryUserScope, { aster: pending });
         } else if (disposition.action === "reprepare") {
           setAsterReprepareRequired(true);
-          setActivationNeeded({ venue: "aster", ownerAddress });
-          setPendingAsterLinkRecovery(null);
-          persistRecovery(accountCommitment, recoveryUserScope, {
-            aster: null,
-            asterActivation: activationRequirement(ownerAddress),
-          });
+          const unsignedPending = { preparation: prepared };
+          setPendingAsterLinkRecovery(unsignedPending);
+          setActivationNeeded(disposition.reason === "venue_activation"
+            ? { venue: "aster", ownerAddress }
+            : null);
+          persistRecovery(accountCommitment, recoveryUserScope, disposition.reason === "venue_activation"
+            ? { aster: unsignedPending, asterActivation: activationRequirement(ownerAddress) }
+            : { aster: unsignedPending, asterActivation: null });
         } else if (disposition.action === "hold_ambiguous") {
           setAsterRegistrationAmbiguous(true);
         }
@@ -387,8 +400,22 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       const disposition = classifyAsterOnboardingFailure(caught, pendingAsterLinkRecovery.preparation);
       if (disposition.action === "reprepare") {
         setAsterReprepareRequired(true);
-        setPendingAsterLinkRecovery(null);
-        persistRecovery(accountCommitment, recoveryUserScope, { aster: null });
+        const unsignedPending = { preparation: pendingAsterLinkRecovery.preparation };
+        setPendingAsterLinkRecovery(unsignedPending);
+        setActivationNeeded(disposition.reason === "venue_activation"
+          ? {
+              venue: "aster",
+              ownerAddress: pendingAsterLinkRecovery.preparation.contract.ownerAuthorization.ownerAddress,
+            }
+          : null);
+        persistRecovery(accountCommitment, recoveryUserScope, disposition.reason === "venue_activation"
+          ? {
+              aster: unsignedPending,
+              asterActivation: activationRequirement(
+                pendingAsterLinkRecovery.preparation.contract.ownerAuthorization.ownerAddress,
+              ),
+            }
+          : { aster: unsignedPending, asterActivation: null });
       } else if (disposition.action === "hold_ambiguous") {
         setAsterRegistrationAmbiguous(true);
       }
@@ -404,8 +431,8 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     setPendingAsterAuthorization(false);
     setPendingAsterWalletRepair(false);
     if (repairRequested) void repairAsterWallet();
-    else void connectAsterProgrammatic();
-  }, [connectAsterProgrammatic, pendingAsterAuthorization, pendingAsterWalletRepair, perpsTurnkey.authenticated, repairAsterWallet]);
+    else void connectAsterProgrammatic(asterReprepareRequired);
+  }, [asterReprepareRequired, connectAsterProgrammatic, pendingAsterAuthorization, pendingAsterWalletRepair, perpsTurnkey.authenticated, repairAsterWallet]);
 
   async function beginAsterProgrammatic() {
     if (!auth.authenticated) {
@@ -445,8 +472,9 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       await repairAsterWallet();
       return;
     }
+    const refreshExistingSigner = asterReprepareRequired;
     setAsterReprepareRequired(false);
-    await connectAsterProgrammatic();
+    await connectAsterProgrammatic(refreshExistingSigner);
   }
 
   async function connectAsterManual() {
@@ -771,12 +799,12 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         : working ? "Authorizing…"
         : asterWalletRepairRequested ? "Repair secure wallet"
         : asterRegistrationAmbiguous ? "Aster reconciliation required"
+        : activationNeeded?.venue === "aster" ? "Check Aster activation"
+        : asterReprepareRequired ? "Refresh same Aster signer"
         : pendingAsterLinkRecovery
           ? pendingAsterLinkRecovery.signature
             ? pendingAsterLinkRecovery.receipt ? "Finish Aster linking" : "Resume Aster verification"
             : "Resume Aster signing"
-        : activationNeeded?.venue === "aster" ? "Check Aster activation"
-        : asterReprepareRequired ? "Re-prepare Aster approval"
         : "Continue"
       : pendingLighterAuthorization
         ? working ? "Authenticating…" : "Continue secure authentication"
@@ -957,14 +985,19 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                 onRefresh={() => void refreshLighterReadiness()}
               />
             ) : (
-              <p className="mt-2 text-xs leading-5 text-[#8f9aae]">The venue must recognize this exact address before Ghola can create its sealed trading key. No order, key, deposit, or transfer was submitted.</p>
+              <p className="mt-2 text-xs leading-5 text-[#8f9aae]">Aster must recognize this exact owner first. Ghola will preserve the same sealed signer, then request one fresh owner approval—never create another signer or retry an ambiguous submission.</p>
             )}
             <a href={activationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : "https://app.lighter.xyz/"} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff]">
               {activationNeeded.venue === "aster" ? "Open Aster" : "Open Lighter deposit"}
             </a>
             <button type="button" disabled={working || (activationNeeded.venue === "lighter" && !lighterReadiness?.ready)} onClick={() => void retryAfterVenueActivation()} className="ml-2 mt-3 inline-flex rounded-md bg-[#4aaef8] px-3 py-2 text-xs font-semibold text-[#06111d] disabled:opacity-50">
-              I activated it — recheck once
+              {activationNeeded.venue === "aster"
+                ? "I activated it — approve once"
+                : "I activated it — recheck once"}
             </button>
+            <Link href={safeReturnTo} className="ml-3 mt-3 inline-flex text-xs font-semibold text-[#8fcaff] hover:text-white">
+              Continue modeling without funds
+            </Link>
           </div>
         )}
         <div className="mt-8 flex items-center justify-center gap-2 text-xs text-[#657188]"><LockKeyhole className="h-4 w-4" /> Secrets are sealed to the attested worker.</div>

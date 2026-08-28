@@ -2494,6 +2494,43 @@ describe("private agent worker", () => {
     assert.match(body.signer_address, /^0x[0-9a-f]{40}$/);
     assert.equal(JSON.stringify(body).includes("api_wallet_private_key"), false);
     assert.equal(body.encrypted_execution_vault.recipient, (await recipient(baseUrl)).recipient_id);
+
+    const priorNonce = Date.now() * 1_000;
+    const priorPreparationId = asterPreparationId({
+      accountCommitment: "acct_commitment_aster_provision_123",
+      ownerAddress: "0x2222222222222222222222222222222222222222",
+      signerAddress: body.signer_address,
+      nonce: priorNonce,
+    });
+    const refreshedResponse = await fetch(`${baseUrl}/venues/aster/credentials/refresh`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        venue_id: "aster",
+        platform_class: "hyperliquid_style_market",
+        execution_mode: "worker_generated_agent",
+        operation_class: "credential_refresh",
+        owner_commitment: "owner_commitment_aster_provision_123",
+        account_commitment: "acct_commitment_aster_provision_123",
+        owner_address: "0x2222222222222222222222222222222222222222",
+        signer_address: body.signer_address,
+        agent_name: "ghola-perps",
+        prior_preparation_id: priorPreparationId,
+        prior_nonce: priorNonce,
+        encrypted_execution_vault: body.encrypted_execution_vault,
+      }),
+    });
+    assert.equal(refreshedResponse.status, 201);
+    const refreshed = await refreshedResponse.json();
+    assert.equal(refreshed.signer_address, body.signer_address);
+    assert.deepEqual(refreshed.encrypted_execution_vault, body.encrypted_execution_vault);
+    assert.equal(refreshed.refreshed_from_preparation_id, priorPreparationId);
+    assert.equal(refreshed.setup.transaction_broadcast, false);
   });
 
   it("prepares a canonical Lighter key inside the worker without owner signing or broadcasting", async () => {
