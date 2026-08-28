@@ -1172,11 +1172,31 @@ test("rejects Carry creation detached from exact shadow and account inputs", () 
     () => checkCarryExecutionContract({
       ...sources,
       positions: sources.positions.replace(
-        "validateCreationInputEvidence(positionInput, opportunity.input_evidence)",
+        "validateCarryCreationInputEvidence(positionInput, opportunity.input_evidence)",
         "null",
       ),
     }),
     /carry_creation_input_evidence_gate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replace(
+        "creation_input_evidence: creationInputEvidence.evidence",
+        "creation_input_evidence: null",
+      ),
+    }),
+    /carry_release_creation_input_evidence_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier.replace(
+        "leg.account_commitment === readinessVenue?.account_commitment",
+        "commitment(leg.account_commitment)",
+      ),
+    }),
+    /carry_release_creation_account_binding_missing/,
   );
 });
 

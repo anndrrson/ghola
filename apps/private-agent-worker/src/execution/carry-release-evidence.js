@@ -6,7 +6,11 @@ import {
 } from "@ghola/execution-core";
 import { readCarryVenueQualification, runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
-import { carryPositionLegId, verifyStoredCarryOpportunityBinding } from "./carry-positions.js";
+import {
+  carryPositionLegId,
+  validateCarryCreationInputEvidence,
+  verifyStoredCarryOpportunityBinding,
+} from "./carry-positions.js";
 import { assessCarryFlatReconciliation } from "./carry-reconciliation.js";
 import {
   readCarryExecutionReadiness,
@@ -180,6 +184,8 @@ export async function buildCompletedCarryReleaseMaterial({
   }
   const contractEquivalence = releaseContractEquivalence(record.opportunity);
   if (!contractEquivalence.ok) return contractEquivalence;
+  const creationInputEvidence = releaseCreationInputEvidence(record.position, record.opportunity?.input_evidence);
+  if (!creationInputEvidence.ok) return creationInputEvidence;
   const shadowQualification = await readCarryShadowQualification({
     state,
     now_ms: nowMs,
@@ -327,6 +333,7 @@ export async function buildCompletedCarryReleaseMaterial({
       created_at: iso(record.position.created_at_ms),
     },
     contract_equivalence: contractEquivalence.evidence,
+    creation_input_evidence: creationInputEvidence.evidence,
     shadow_qualification: {
       proven: true,
       image_digest: shadowQualification.image_digest,
@@ -806,6 +813,19 @@ function releaseContractEquivalence(opportunity) {
       max_mark_price_divergence_bps: opportunity.max_mark_price_divergence_bps,
     },
   };
+}
+
+function releaseCreationInputEvidence(position, inputEvidence) {
+  if (validateCarryCreationInputEvidence(position, inputEvidence)) {
+    return denied("carry_release_creation_input_evidence_unproven");
+  }
+  const evidence = {
+    verified: true,
+    opportunity_evidence_commitment: position.opportunity_evidence_commitment,
+    legs: structuredClone(inputEvidence.legs),
+  };
+  evidence.evidence_commitment = `carry:creation-inputs:${digest(stableJson(evidence))}`;
+  return { ok: true, evidence };
 }
 
 function workerMaterialCommitment(material) {

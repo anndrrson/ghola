@@ -153,6 +153,34 @@ export async function verifyCarryReleaseEvidence(evidence) {
 
   const createdAt = timestamp(position.created_at);
   fail(createdAt > 0, "position_timestamp_invalid");
+  const creationInputs = evidence?.creation_input_evidence || {};
+  const creationLegs = array(creationInputs.legs);
+  fail(creationInputs.verified === true, "creation_input_evidence_unverified");
+  fail(commitment(creationInputs.opportunity_evidence_commitment), "creation_opportunity_commitment_invalid");
+  fail(creationLegs.length === 2, "creation_input_leg_count_invalid");
+  for (const [index, expected] of [
+    { venue_id: pair[0], side: "buy" },
+    { venue_id: pair[1], side: "sell" },
+  ].entries()) {
+    const leg = creationLegs[index] || {};
+    const shadow = venueAdapterCapability(expected.venue_id, "perp_shadow");
+    const readinessVenue = readinessVenues.find((item) => item?.venue_id === expected.venue_id);
+    fail(leg.venue_id === expected.venue_id && leg.side === expected.side,
+      `creation_input_leg_binding_invalid:${expected.venue_id}`);
+    fail(/^carry:shadow:snapshot:[0-9a-f]{64}$/.test(String(leg.shadow_snapshot_commitment || "")),
+      `creation_shadow_commitment_invalid:${expected.venue_id}`);
+    fail(/^carry:account-state:[0-9a-f]{40}$/.test(String(leg.account_state_commitment || "")),
+      `creation_account_state_commitment_invalid:${expected.venue_id}`);
+    fail(commitment(leg.work_order_commitment)
+      && commitment(leg.verification_commitment)
+      && commitment(leg.account_commitment)
+      && leg.account_commitment === readinessVenue?.account_commitment,
+    `creation_execution_commitment_invalid:${expected.venue_id}`);
+    fail(leg.margin_model === shadow?.margin_model && leg.liquidation_model === shadow?.liquidation_model,
+      `creation_risk_model_binding_invalid:${expected.venue_id}`);
+  }
+  fail(creationInputs.evidence_commitment === carryCreationInputEvidenceCommitment(creationInputs),
+    "creation_input_evidence_commitment_mismatch");
   fail(shadowCheckedAt > 0 && shadowCheckedAt <= createdAt, "shadow_qualification_timestamp_invalid");
   fail(readinessCheckedAt > 0 && readinessCheckedAt <= createdAt && readinessExpiresAt > createdAt,
     "three_venue_readiness_timestamp_invalid");
@@ -413,6 +441,12 @@ export function carryWorkerMaterialCommitment(evidence) {
   delete payload.evidence_commitment;
   delete payload.worker_material_commitment;
   return `carry:release:material:${createHash("sha256").update(stableJson(payload)).digest("hex")}`;
+}
+
+export function carryCreationInputEvidenceCommitment(evidence) {
+  const payload = { ...evidence };
+  delete payload.evidence_commitment;
+  return `carry:creation-inputs:${createHash("sha256").update(stableJson(payload)).digest("hex")}`;
 }
 
 function verifyExitTrigger({ trigger: rawTrigger, reason, exitRequestedAt, monitoringEndedAt, pair, signedMandate, fail }) {

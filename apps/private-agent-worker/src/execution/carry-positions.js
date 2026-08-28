@@ -145,7 +145,7 @@ function validateCreationOpportunity(positionInput, opportunity, nowMs, qualific
     || opportunity.short_venue_id !== positionInput?.short_venue_id
     || opportunity.long_venue_id === opportunity.short_venue_id) return "carry_opportunity_position_mismatch";
   if (opportunity.notional_micro_usdc !== positionInput?.target_notional_micro_usdc) return "carry_opportunity_notional_mismatch";
-  const inputEvidenceError = validateCreationInputEvidence(positionInput, opportunity.input_evidence);
+  const inputEvidenceError = validateCarryCreationInputEvidence(positionInput, opportunity.input_evidence);
   if (inputEvidenceError) return inputEvidenceError;
   const maxAgeMs = positionInput?.risk_mandate?.max_data_age_ms;
   if (!Number.isInteger(opportunity.checked_at_ms)
@@ -235,7 +235,7 @@ function validateCreationOpportunity(positionInput, opportunity, nowMs, qualific
   return null;
 }
 
-function validateCreationInputEvidence(positionInput, inputEvidence) {
+export function validateCarryCreationInputEvidence(positionInput, inputEvidence) {
   if (inputEvidence?.version !== 1 || !Array.isArray(inputEvidence.legs) || inputEvidence.legs.length !== 2) {
     return "carry_opportunity_input_evidence_missing";
   }

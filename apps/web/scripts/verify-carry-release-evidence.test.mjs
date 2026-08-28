@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   assembleCarryReleaseEvidence,
+  carryCreationInputEvidenceCommitment,
   carryEvidenceCommitment,
   carryWorkerMaterialCommitment,
   verifyCarryReleaseEvidence,
@@ -81,6 +82,7 @@ async function fixture({ longVenue = "hyperliquid", shortVenue = "aster" } = {})
       max_index_price_divergence_bps: 25,
       max_mark_price_divergence_bps: 50,
     },
+    creation_input_evidence: creationInputEvidence(longVenue, shortVenue),
     shadow_qualification: {
       proven: true,
       image_digest: "sha256:abcdef1234567890",
@@ -220,6 +222,34 @@ async function fixture({ longVenue = "hyperliquid", shortVenue = "aster" } = {})
   return evidence;
 }
 
+function creationInputEvidence(longVenue, shortVenue) {
+  const evidence = {
+    verified: true,
+    opportunity_evidence_commitment: `0x${"12".repeat(32)}`,
+    legs: [
+      creationInputLeg(longVenue, "buy", "34"),
+      creationInputLeg(shortVenue, "sell", "56"),
+    ],
+  };
+  evidence.evidence_commitment = carryCreationInputEvidenceCommitment(evidence);
+  return evidence;
+}
+
+function creationInputLeg(venueId, side, seed) {
+  const shadow = venueAdapterCapability(venueId, "perp_shadow");
+  return {
+    venue_id: venueId,
+    side,
+    shadow_snapshot_commitment: `carry:shadow:snapshot:${seed.repeat(32)}`,
+    margin_model: shadow.margin_model,
+    liquidation_model: shadow.liquidation_model,
+    work_order_commitment: `carry:work-order:${venueId}:proof:0001`,
+    verification_commitment: `carry:verification:${venueId}:proof:0001`,
+    account_commitment: `account:${venueId}:release:0001`,
+    account_state_commitment: `carry:account-state:${seed.repeat(20)}`,
+  };
+}
+
 function qualification(venue_id, adapter_id, source) {
   return {
     venue_id,
@@ -325,6 +355,32 @@ test("accepts a registry-qualified lifecycle without a hard-coded Hyperliquid an
     longVenue: "lighter",
     shortVenue: "aster",
   }))).ok, true);
+});
+
+test("rejects creation evidence detached from its exact venue risk and account inputs", async () => {
+  const evidence = await fixture();
+  evidence.creation_input_evidence.legs[0].margin_model = "detached_margin_model";
+  evidence.creation_input_evidence.evidence_commitment = carryCreationInputEvidenceCommitment(
+    evidence.creation_input_evidence,
+  );
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(
+    () => verifyCarryReleaseEvidence(evidence),
+    /creation_risk_model_binding_invalid:hyperliquid/,
+  );
+
+  const accountDetached = await fixture();
+  accountDetached.creation_input_evidence.legs[1].account_commitment = "account:aster:other:0001";
+  accountDetached.creation_input_evidence.evidence_commitment = carryCreationInputEvidenceCommitment(
+    accountDetached.creation_input_evidence,
+  );
+  accountDetached.worker_material_commitment = carryWorkerMaterialCommitment(accountDetached);
+  accountDetached.evidence_commitment = carryEvidenceCommitment(accountDetached);
+  await assert.rejects(
+    () => verifyCarryReleaseEvidence(accountDetached),
+    /creation_execution_commitment_invalid:aster/,
+  );
 });
 
 test("assembles candidate metadata without changing worker-derived material", async () => {

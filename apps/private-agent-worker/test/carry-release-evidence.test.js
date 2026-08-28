@@ -57,6 +57,16 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.equal(result.material.exit.trigger.observed_at, "2027-01-15T08:00:03.000Z");
   assert.equal(result.material.monitoring.margin_runways[0].status, "healthy");
   assert.equal(result.material.contract_equivalence.index_price_divergence_bps, 3);
+  assert.equal(result.material.creation_input_evidence.verified, true);
+  assert.equal(
+    result.material.creation_input_evidence.opportunity_evidence_commitment,
+    fixture.record.position.opportunity_evidence_commitment,
+  );
+  assert.deepEqual(
+    result.material.creation_input_evidence.legs.map((leg) => [leg.venue_id, leg.side]),
+    [["hyperliquid", "buy"], ["aster", "sell"]],
+  );
+  assert.match(result.material.creation_input_evidence.evidence_commitment, /^carry:creation-inputs:[0-9a-f]{64}$/);
   assert.equal(result.material.shadow_qualification.proven, true);
   assert.equal(result.material.shadow_qualification.completed_samples, 3);
   assert.equal(result.material.execution_readiness.ready, true);
