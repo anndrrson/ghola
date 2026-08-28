@@ -82,6 +82,19 @@ test("rejects recovery that trusts a receipt detached from the exact venue order
   );
 });
 
+test("rejects recovery coverage duplicated outside the capability registry", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replace(
+        "exactQuantityRecoveryAdapter(venueId) === null",
+        'new Set(["hyperliquid", "lighter", "aster"]).has(venueId) === false',
+      ),
+    }),
+    /carry_recovery_exact_target_registry_binding_missing|carry_recovery_venue_registry_duplicated/,
+  );
+});
+
 test("rejects recovery that treats no-submit evidence as a live fill", () => {
   assert.throws(
     () => checkCarryExecutionContract({

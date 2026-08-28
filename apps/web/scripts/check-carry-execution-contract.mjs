@@ -218,6 +218,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("multiLegOrchestrator", "applied_filled_micro_usdc", "carry_recovery_incremental_fill_accounting_missing");
   requireText("multiLegOrchestratorTest", "reconciles a partial recovery child before submitting the residual unwind", "carry_partial_recovery_child_test_missing");
   requireCount("multiLegOrchestrator", "recoveryProofTargetsLeg(", 3, "carry_recovery_exact_target_gate_missing");
+  requireText(
+    "multiLegOrchestrator",
+    "exactQuantityRecoveryAdapter(venueId) === null",
+    "carry_recovery_exact_target_registry_binding_missing",
+  );
+  forbidText(
+    "multiLegOrchestrator",
+    'new Set(["hyperliquid", "lighter", "aster"])',
+    "carry_recovery_venue_registry_duplicated",
+  );
   requireText("multiLegOrchestrator", "proof?.broadcast_performed === true", "carry_recovery_live_broadcast_gate_missing");
   requireText("multiLegOrchestratorTest", "rejects a mismatched target", "carry_recovery_exact_target_test_missing");
   requireText("multiLegOrchestratorTest", "reconciles a partial reduce-only completion without reopening the filled leg", "carry_partial_completion_child_test_missing");

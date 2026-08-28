@@ -9,8 +9,6 @@ import {
   disabledCarryLoopHealth,
 } from "./carry-loop-supervisor.js";
 
-const EXACT_TARGET_RECOVERY_VENUES = new Set(["hyperliquid", "lighter", "aster"]);
-
 export async function createDurableMultiLegSaga({ state, definition, execution_context = null }) {
   assertState(state);
   let saga;
@@ -924,7 +922,7 @@ function unwindProgress({ receipt, requestedBase, remainingMicro, venueId, env }
 }
 
 function recoveryProofTargetsLeg(venueId, proof) {
-  return !EXACT_TARGET_RECOVERY_VENUES.has(venueId)
+  return exactQuantityRecoveryAdapter(venueId) === null
     || (proof?.target_client_order_matched === true
       && proof?.broadcast_performed === true);
 }
