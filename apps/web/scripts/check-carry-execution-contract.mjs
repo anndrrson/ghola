@@ -200,6 +200,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("registry", 'worker_restart: "reconcile_before_action"', "carry_recovery_restart_policy_missing");
   requireText("registry", "export function carryExecutionQualification", "carry_qualification_report_missing");
   requireText("registryTest", "candidate venues cannot enter Carry until the identical execution contract is complete", "carry_candidate_fail_closed_test_missing");
+  requireText("registryTest", "registry type unions stay synchronized with runtime capability registry", "carry_registry_type_union_guard_missing");
   requireText("adapterRegistryTest", 'registeredCarryAdapterId(venueId, "exact_quantity_recovery")', "carry_worker_recovery_registry_test_missing");
   requireText("multiLegOrchestratorTest", "CARRY_EXECUTION_VENUES.flatMap", "carry_three_venue_recovery_matrix_missing");
   requireText("multiLegOrchestratorTest", "hedgeVenue !== filledVenue", "carry_ordered_pair_recovery_matrix_missing");

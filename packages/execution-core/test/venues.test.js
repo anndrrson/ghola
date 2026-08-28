@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   CARRY_BROWSER_STREAM_VENUES,
@@ -7,6 +8,7 @@ import {
   CARRY_RECOVERY_POLICY,
   CORE_PERP_VENUES,
   EXECUTION_VENUE_SPECS,
+  SUPPORTED_EXECUTION_VENUES,
   assessVenueReadiness,
   carryExecutionQualification,
   executionVenueLabel,
@@ -17,6 +19,12 @@ import {
 } from "../index.js";
 
 const NOW = 1_800_000_000_000;
+
+function declaredStringUnion(source, typeName) {
+  const match = source.match(new RegExp(`export type ${typeName} = ([^;]+);`));
+  assert.ok(match, `${typeName} declaration is missing`);
+  return [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
+}
 
 test("registry centralizes five core perp candidates without claiming qualification", () => {
   assert.deepEqual(CORE_PERP_VENUES, [
@@ -69,6 +77,13 @@ test("registry centralizes five core perp candidates without claiming qualificat
     product: "perp",
     statuses: ["enabled"],
   }), CORE_PERP_VENUES);
+});
+
+test("registry type unions stay synchronized with runtime capability registry", () => {
+  const declarations = readFileSync(new URL("../index.d.ts", import.meta.url), "utf8");
+  assert.deepEqual(declaredStringUnion(declarations, "VenueId"), SUPPORTED_EXECUTION_VENUES);
+  assert.deepEqual(declaredStringUnion(declarations, "CorePerpVenueId"), CORE_PERP_VENUES);
+  assert.deepEqual(declaredStringUnion(declarations, "CarryExecutionVenueId"), CARRY_EXECUTION_VENUES);
 });
 
 test("candidate venues cannot enter Carry until the identical execution contract is complete", () => {
