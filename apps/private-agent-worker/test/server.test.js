@@ -497,6 +497,7 @@ describe("private agent worker", () => {
     assert.equal(body.carry_supervision.ready, false);
     assert.equal(body.carry_supervision.monitoring.status, "healthy");
     assert.equal(body.carry_supervision.execution.last_error_code, "carry_exit_preflight_not_ready");
+    assert.equal(body.carry_supervision.recovery.status, "disabled");
 
     const readyResponse = await fetch(`${baseUrl}/ready`);
     const ready = await readyResponse.json();

@@ -4,6 +4,10 @@ import {
   createMultiLegSaga,
   exactQuantityRecoveryAdapter,
 } from "@ghola/execution-core";
+import {
+  createCarryLoopSupervisor,
+  disabledCarryLoopHealth,
+} from "./carry-loop-supervisor.js";
 
 export async function createDurableMultiLegSaga({ state, definition, execution_context = null }) {
   assertState(state);
@@ -164,34 +168,54 @@ export function startMultiLegRecoveryLoop({
 } = {}) {
   assertState(state);
   if (String(env.PRIVATE_AGENT_MULTI_LEG_RECOVERY_ENABLED ?? "true").toLowerCase() === "false") {
-    return { stop() {} };
+    const health = disabledCarryLoopHealth("multi_leg_recovery");
+    return {
+      runNow: async () => ({ ok: false, error: "multi_leg_recovery_disabled" }),
+      health: () => health,
+      stop() {},
+    };
   }
   const intervalMs = boundedMs(env.PRIVATE_AGENT_MULTI_LEG_RECOVERY_SWEEP_MS, 250, 60_000, 2_000);
   const initialDelayMs = boundedMs(env.PRIVATE_AGENT_MULTI_LEG_RECOVERY_INITIAL_DELAY_MS, 0, 60_000, 1_000);
+  const stallAfterMs = boundedMs(
+    env.PRIVATE_AGENT_MULTI_LEG_RECOVERY_STALL_MS,
+    intervalMs,
+    1_800_000,
+    intervalMs * 3,
+  );
+  const supervisor = createCarryLoopSupervisor({
+    name: "multi_leg_recovery",
+    now,
+    maxSilenceMs: stallAfterMs,
+    run: () => recoverDueMultiLegSagas({
+      state,
+      recipient,
+      executeOrder,
+      verifyOrder,
+      fetchImpl,
+      env,
+      now_ms: now(),
+    }),
+  });
   let timer = null;
   let stopped = false;
   const schedule = (delay) => {
     if (stopped) return;
     timer = setTimeout(async () => {
-      await recoverDueMultiLegSagas({
-        state,
-        recipient,
-        executeOrder,
-        verifyOrder,
-        fetchImpl,
-        env,
-        now_ms: now(),
-      }).catch(() => null);
+      await supervisor.runOnce();
       schedule(intervalMs);
     }, delay);
     timer.unref?.();
   };
   schedule(initialDelayMs);
   return {
+    runNow: supervisor.runOnce,
+    health: supervisor.health,
     stop() {
       stopped = true;
       if (timer) clearTimeout(timer);
       timer = null;
+      supervisor.stop();
     },
   };
 }

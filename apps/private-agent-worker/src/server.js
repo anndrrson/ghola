@@ -2866,6 +2866,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
       const carrySupervision = carrySupervisionHealth({
         monitoring: carryMonitoringLoop,
         execution: carryExecutionLoop,
+        recovery: multiLegRecoveryLoop,
       });
 
       if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/healthz")) {

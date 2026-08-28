@@ -165,6 +165,26 @@ test("rejects supervision that cannot detect a silently stalled loop", () => {
   );
 });
 
+test("rejects multi-leg recovery detached from worker supervision", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replace("recovery: multiLegRecoveryLoop", "recovery: null"),
+    }),
+    /carry_recovery_server_health_missing/,
+  );
+});
+
+test("rejects supervision that masks a degraded recovery loop", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      loopSupervisor: sources.loopSupervisor.replace("recovery: recoveryHealth", "recovery: disabledCarryLoopHealth(\"multi_leg_recovery\")"),
+    }),
+    /carry_recovery_aggregate_missing/,
+  );
+});
+
 test("rejects release proof that accepts manual-only monitoring", () => {
   assert.throws(
     () => checkCarryExecutionContract({

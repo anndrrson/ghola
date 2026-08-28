@@ -109,7 +109,7 @@ test("fails closed when a successful loop stops making progress", async () => {
   assert.equal(supervisor.health().last_error_code, null);
 });
 
-test("aggregates both critical loops without masking one degraded loop", () => {
+test("aggregates every critical loop without masking one degraded loop", () => {
   const healthy = (name) => ({ health: () => ({ ...disabledCarryLoopHealth(name), status: "healthy" }) });
   const degraded = {
     health: () => ({
@@ -122,11 +122,32 @@ test("aggregates both critical loops without masking one degraded loop", () => {
   assert.deepEqual(carrySupervisionHealth({
     monitoring: healthy("carry_monitor"),
     execution: degraded,
+    recovery: healthy("multi_leg_recovery"),
   }), {
     status: "degraded",
     ready: false,
     monitoring: { ...disabledCarryLoopHealth("carry_monitor"), status: "healthy" },
     execution: degraded.health(),
+    recovery: { ...disabledCarryLoopHealth("multi_leg_recovery"), status: "healthy" },
   });
   assert.equal(carrySupervisionHealth({ monitoring: null, execution: null }).status, "disabled");
+});
+
+test("does not mask a degraded recovery loop", () => {
+  const healthy = (name) => ({ health: () => ({ ...disabledCarryLoopHealth(name), status: "healthy" }) });
+  const recovery = {
+    health: () => ({
+      ...disabledCarryLoopHealth("multi_leg_recovery"),
+      status: "stalled",
+      last_error_code: "multi_leg_recovery_stalled",
+    }),
+  };
+  const supervision = carrySupervisionHealth({
+    monitoring: healthy("carry_monitor"),
+    execution: healthy("carry_execution"),
+    recovery,
+  });
+  assert.equal(supervision.status, "degraded");
+  assert.equal(supervision.ready, false);
+  assert.equal(supervision.recovery.last_error_code, "multi_leg_recovery_stalled");
 });

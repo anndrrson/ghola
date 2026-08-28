@@ -814,6 +814,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", 'observation_source: "supervised_loop"', "carry_supervised_observation_missing");
   requireText("positionsTest", 'observation_source, "supervised_loop"', "carry_supervised_observation_test_missing");
   requireText("executor", "supervisor.runOnce", "carry_execution_supervision_missing");
+  requireText("multiLegOrchestrator", 'name: "multi_leg_recovery"', "carry_recovery_supervisor_missing");
+  requireText("multiLegOrchestrator", "supervisor.runOnce", "carry_recovery_supervision_missing");
+  requireText("multiLegOrchestratorTest", "supervises multi-leg recovery failures and stalls", "carry_recovery_supervision_test_missing");
+  requireText("loopSupervisor", "recovery: recoveryHealth", "carry_recovery_aggregate_missing");
+  requireText("loopSupervisorTest", "does not mask a degraded recovery loop", "carry_recovery_aggregate_test_missing");
+  requireText("server", "recovery: multiLegRecoveryLoop", "carry_recovery_server_health_missing");
   requireText("executor", "const audit = await ensureRestartAudit()", "carry_restart_audit_retry_missing");
   requireText("lifecycleTest", "automatic exit retries a failed restart audit before any execution sweep", "carry_restart_audit_retry_test_missing");
   requireText("server", "carry_supervision: carrySupervision", "carry_supervision_health_missing");

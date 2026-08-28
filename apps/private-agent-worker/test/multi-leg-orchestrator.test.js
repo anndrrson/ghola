@@ -9,10 +9,50 @@ import {
   createDurableMultiLegSaga,
   readDurableRecoveryAccounting,
   recoverDueMultiLegSagas,
+  startMultiLegRecoveryLoop,
 } from "../src/execution/multi-leg-orchestrator.js";
 import { createWorkerState } from "../src/state/private-state.js";
 
 const NOW = 1_800_000_000_000;
+
+test("supervises multi-leg recovery failures and stalls", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-saga-loop-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  let nowMs = NOW;
+  const loop = startMultiLegRecoveryLoop({
+    state,
+    now: () => nowMs,
+    env: {
+      PRIVATE_AGENT_MULTI_LEG_RECOVERY_ENABLED: "true",
+      PRIVATE_AGENT_MULTI_LEG_RECOVERY_SWEEP_MS: "1000",
+      PRIVATE_AGENT_MULTI_LEG_RECOVERY_INITIAL_DELAY_MS: "60000",
+      PRIVATE_AGENT_MULTI_LEG_RECOVERY_STALL_MS: "2000",
+    },
+  });
+  t.after(() => loop.stop());
+
+  assert.equal(loop.health().status, "starting");
+  assert.equal((await loop.runNow()).ok, true);
+  assert.equal(loop.health().status, "healthy");
+  nowMs += 2_001;
+  assert.equal(loop.health().status, "stalled");
+  assert.equal(loop.health().last_error_code, "multi_leg_recovery_stalled");
+});
+
+test("reports deliberately disabled multi-leg recovery", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-saga-loop-disabled-"));
+  try {
+    const loop = startMultiLegRecoveryLoop({
+      state: createWorkerState(dir),
+      env: { PRIVATE_AGENT_MULTI_LEG_RECOVERY_ENABLED: "false" },
+    });
+    assert.equal(loop.health().status, "disabled");
+    assert.equal((await loop.runNow()).error, "multi_leg_recovery_disabled");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function definition() {
   return {

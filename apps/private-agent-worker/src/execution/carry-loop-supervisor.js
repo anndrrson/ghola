@@ -99,10 +99,11 @@ export function disabledCarryLoopHealth(name) {
   });
 }
 
-export function carrySupervisionHealth({ monitoring, execution }) {
+export function carrySupervisionHealth({ monitoring, execution, recovery }) {
   const monitorHealth = monitoring?.health?.() || disabledCarryLoopHealth("carry_monitor");
   const executionHealth = execution?.health?.() || disabledCarryLoopHealth("carry_execution");
-  const statuses = [monitorHealth.status, executionHealth.status];
+  const recoveryHealth = recovery?.health?.() || disabledCarryLoopHealth("multi_leg_recovery");
+  const statuses = [monitorHealth.status, executionHealth.status, recoveryHealth.status];
   const status = statuses.some((value) => value === "failed" || value === "degraded" || value === "stalled")
     ? "degraded"
     : statuses.some((value) => value === "disabled")
@@ -117,6 +118,7 @@ export function carrySupervisionHealth({ monitoring, execution }) {
     ready: status === "healthy",
     monitoring: monitorHealth,
     execution: executionHealth,
+    recovery: recoveryHealth,
   });
 }
 
