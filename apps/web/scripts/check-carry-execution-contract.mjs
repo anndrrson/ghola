@@ -270,6 +270,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("lighterActivationReadinessServer", "/api/v1/accountsByL1Address?l1_address=", "lighter_activation_owner_account_lookup_missing");
   requireText("lighterActivationReadinessServer", "selectLighterOwnerAccount", "lighter_activation_owner_account_binding_missing");
   requireText("lighterActivationReadinessServerTest", "fails closed when gas is funded but Lighter has no owner account", "lighter_activation_owner_account_server_test_missing");
+  requireText("webAccountSetup", 'window.addEventListener("focus", refreshOnReturn)', "lighter_activation_return_refresh_missing");
+  requireText("webAccountSetup", "lighterReadinessRequestRef.current", "lighter_activation_refresh_dedupe_missing");
   requireText("registry", "export const CARRY_BROWSER_STREAM_VENUES", "browser_stream_capability_registry_missing");
   requireText("registry", "export function venueAdapterCapability", "adapter_capability_lookup_missing");
   requireText("registry", "export function venuesWithAdapterCapability", "adapter_capability_query_missing");

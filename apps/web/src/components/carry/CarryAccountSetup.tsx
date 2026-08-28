@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, Copy, KeyRound, LoaderCircle, LockKeyhole, RefreshCw, X } from "lucide-react";
 import { executionVenueLabel } from "@ghola/execution-core";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
@@ -115,6 +115,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const [lighterReadiness, setLighterReadiness] = useState<LighterActivationReadiness | null>(null);
   const [lighterReadinessError, setLighterReadinessError] = useState<string | null>(null);
   const [checkingLighterReadiness, setCheckingLighterReadiness] = useState(false);
+  const lighterReadinessRequestRef = useRef<Promise<void> | null>(null);
   const [injectedOwnerAvailable, setInjectedOwnerAvailable] = useState(false);
   const [workerPlatform, setWorkerPlatform] = useState<CarryWorkerPlatformGate | null>(null);
   const safeReturnTo = returnTo === "/carry" || returnTo.startsWith("/trade?") ? returnTo : "/carry";
@@ -190,16 +191,22 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const refreshLighterReadiness = useCallback(async (ownerAddress?: string) => {
     const owner = ownerAddress || (activationNeeded?.venue === "lighter" ? activationNeeded.ownerAddress : "");
     if (!owner) return;
-    setCheckingLighterReadiness(true);
-    setLighterReadinessError(null);
-    try {
-      setLighterReadiness(await fetchLighterActivationReadiness(owner));
-    } catch (caught) {
-      setLighterReadiness(null);
-      setLighterReadinessError(caught instanceof Error ? caught.message : "Readiness check unavailable.");
-    } finally {
-      setCheckingLighterReadiness(false);
-    }
+    if (lighterReadinessRequestRef.current) return lighterReadinessRequestRef.current;
+    const request = (async () => {
+      setCheckingLighterReadiness(true);
+      setLighterReadinessError(null);
+      try {
+        setLighterReadiness(await fetchLighterActivationReadiness(owner));
+      } catch (caught) {
+        setLighterReadiness(null);
+        setLighterReadinessError(caught instanceof Error ? caught.message : "Readiness check unavailable.");
+      } finally {
+        setCheckingLighterReadiness(false);
+        lighterReadinessRequestRef.current = null;
+      }
+    })();
+    lighterReadinessRequestRef.current = request;
+    return request;
   }, [activationNeeded]);
 
   useEffect(() => {
@@ -209,6 +216,20 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       setLighterReadiness(null);
       setLighterReadinessError(null);
     }
+  }, [activationNeeded, refreshLighterReadiness]);
+
+  useEffect(() => {
+    if (activationNeeded?.venue !== "lighter") return;
+    const ownerAddress = activationNeeded.ownerAddress;
+    const refreshOnReturn = () => {
+      if (document.visibilityState === "visible") void refreshLighterReadiness(ownerAddress);
+    };
+    window.addEventListener("focus", refreshOnReturn);
+    document.addEventListener("visibilitychange", refreshOnReturn);
+    return () => {
+      window.removeEventListener("focus", refreshOnReturn);
+      document.removeEventListener("visibilitychange", refreshOnReturn);
+    };
   }, [activationNeeded, refreshLighterReadiness]);
 
   const connectAsterProgrammatic = useCallback(async (forceReprepare = false) => {

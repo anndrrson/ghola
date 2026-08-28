@@ -20,4 +20,11 @@ describe("Lighter activation readiness UI", () => {
   it("states that the check is read-only", () => {
     expect(source).toContain("No payment, transfer, key, or order is submitted by this check.");
   });
+
+  it("rechecks once when the user returns from Lighter without polling or submitting", () => {
+    expect(source).toContain('window.addEventListener("focus", refreshOnReturn)');
+    expect(source).toContain('document.addEventListener("visibilitychange", refreshOnReturn)');
+    expect(source).toContain("lighterReadinessRequestRef.current");
+    expect(source).not.toContain("setInterval(() => void refreshLighterReadiness");
+  });
 });
