@@ -178,6 +178,32 @@ test("rejects supervision that cannot detect a silently stalled loop", () => {
   );
 });
 
+test("rejects unsigned aggregate supervision health", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      loopSupervisor: sources.loopSupervisor.replaceAll(
+        "export function verifyCarrySupervisionHealth",
+        "function trustCarrySupervisionHealth",
+      ),
+    }),
+    /carry_supervision_evidence_verifier_missing/,
+  );
+});
+
+test("rejects private-prime readiness that trusts aggregate supervision booleans", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replaceAll(
+        "verifyCarrySupervisionHealth(carrySupervision",
+        "trustCarrySupervisionHealth(carrySupervision",
+      ),
+    }),
+    /carry_private_prime_supervision_verification_missing/,
+  );
+});
+
 test("rejects multi-leg recovery detached from worker supervision", () => {
   assert.throws(
     () => checkCarryExecutionContract({

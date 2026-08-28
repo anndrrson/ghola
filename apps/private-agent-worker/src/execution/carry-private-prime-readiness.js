@@ -5,6 +5,7 @@ import {
   normalizeCarryLifecycleValueAttribution,
 } from "@ghola/execution-core";
 import { assessCompletedCarryLifecycleProof } from "./carry-release-evidence.js";
+import { verifyCarrySupervisionHealth } from "./carry-loop-supervisor.js";
 import { verifyCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
 
 export function buildCarryPrivatePrimeReadiness({
@@ -23,6 +24,8 @@ export function buildCarryPrivatePrimeReadiness({
     shadowQualification,
     nowMs,
   });
+  const assessedSupervision = verifyCarrySupervisionHealth(carrySupervision, { now_ms: nowMs });
+  const supervisionVerified = assessedSupervision.ok === true && assessedSupervision.health.ready === true;
   const routeObservation = verifiedRouteObservation({
     readiness,
     routeEvidence,
@@ -36,7 +39,7 @@ export function buildCarryPrivatePrimeReadiness({
   if (executionReadinessVerified && failureRecovery.ready !== true) reasons.push("three_venue_recovery_unproven");
   if (executionReadinessVerified && readiness?.capital_ready !== true) reasons.push("opening_capital_shortfall");
   if (!shadowQualificationVerified) reasons.push("five_venue_shadow_unproven");
-  if (carrySupervision?.ready !== true) reasons.push("carry_supervision_unready");
+  if (!supervisionVerified) reasons.push("carry_supervision_unready");
   if (routeObservationConfigured !== true) reasons.push("collateral_route_observation_unavailable");
   else if (routeObservation.verified !== true) reasons.push("collateral_route_evidence_unverified");
   else if (routeObservation.available_route_count < 1) reasons.push("collateral_route_unavailable");
@@ -70,8 +73,10 @@ export function buildCarryPrivatePrimeReadiness({
     failure_recovery: failureRecovery,
     collateral_route_observation: routeObservation,
     supervision: {
-      ready: carrySupervision?.ready === true,
-      status: carrySupervision?.status || "unavailable",
+      ready: supervisionVerified,
+      status: assessedSupervision.ok ? assessedSupervision.health.status : "unavailable",
+      checked_at_ms: assessedSupervision.ok ? assessedSupervision.health.checked_at_ms : null,
+      evidence_commitment: assessedSupervision.ok ? assessedSupervision.health.evidence_commitment : null,
     },
     paired_lifecycle: pairedLifecycle,
     live_paired_lifecycle_proven: pairedLifecycle.verified,

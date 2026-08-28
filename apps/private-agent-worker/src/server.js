@@ -2868,6 +2868,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         execution: carryExecutionLoop,
         recovery: multiLegRecoveryLoop,
         observation: carryFundingObservationLoop,
+        checked_at_ms: requestStartedAt,
       });
 
       if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/healthz")) {

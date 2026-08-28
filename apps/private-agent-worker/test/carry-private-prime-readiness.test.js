@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { carrySupervisionHealth } from "../src/execution/carry-loop-supervisor.js";
 import { buildCarryPrivatePrimeReadiness } from "../src/execution/carry-private-prime-readiness.js";
 
 const NOW = 1_800_000_000_000;
@@ -23,7 +24,7 @@ test("combines five-venue shadow and three-venue no-submit evidence without over
     },
     diagnostic: { diagnostic_commitment: "carry:diagnostic:evidence:0001" },
     shadow_qualification: shadowQualification(),
-    carry_supervision: { ready: true, status: "healthy" },
+    carry_supervision: healthySupervision(),
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
     now_ms: NOW,
@@ -57,7 +58,7 @@ test("refuses private-prime readiness without exact three-venue recovery policy"
       }),
     },
     shadow_qualification: shadowQualification(),
-    carry_supervision: { ready: true, status: "healthy" },
+    carry_supervision: healthySupervision(),
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
     now_ms: NOW,
@@ -84,7 +85,7 @@ test("upgrades only matching durable paired lifecycle evidence to live-proven", 
     },
     diagnostic: { diagnostic_commitment: "carry:diagnostic:evidence:0001" },
     shadow_qualification: shadowQualification(),
-    carry_supervision: { ready: true, status: "healthy" },
+    carry_supervision: healthySupervision(),
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
     lifecycle_proof: lifecycleProof(),
@@ -116,7 +117,7 @@ test("never lets aggregate readiness outlive its paired lifecycle proof", () => 
       capital_plan: capitalPlan(),
     },
     shadow_qualification: shadowQualification(),
-    carry_supervision: { ready: true, status: "healthy" },
+    carry_supervision: healthySupervision(),
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
     lifecycle_proof: lifecycleProof({ expires_at_ms: lifecycleExpiresAt }),
@@ -142,7 +143,7 @@ test("keeps mismatched lifecycle evidence pre-broadcast", () => {
       capital_plan: capitalPlan(),
     },
     shadow_qualification: shadowQualification(),
-    carry_supervision: { ready: true, status: "healthy" },
+    carry_supervision: healthySupervision(),
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
     lifecycle_proof: lifecycleProof({ owner_commitment: "owner_commitment_other" }),
@@ -202,7 +203,7 @@ test("rejects lifecycle proof with a valid-looking but mismatched commitment", (
       capital_plan: capitalPlan(),
     },
     shadow_qualification: shadowQualification(),
-    carry_supervision: { ready: true, status: "healthy" },
+    carry_supervision: healthySupervision(),
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
     lifecycle_proof: lifecycle,
@@ -218,7 +219,7 @@ test("fails closed when shadow, supervision, or route evidence is missing", () =
   const result = buildCarryPrivatePrimeReadiness({
     readiness: { ...readinessProof(), ready: false },
     shadow_qualification: shadowQualification({ venues: 4 }),
-    carry_supervision: { ready: false, status: "starting" },
+    carry_supervision: unreadySupervision(),
     route_observation_configured: false,
     now_ms: NOW,
   });
@@ -229,6 +230,28 @@ test("fails closed when shadow, supervision, or route evidence is missing", () =
     "carry_supervision_unready",
     "collateral_route_observation_unavailable",
   ]);
+});
+
+test("rejects tampered supervision health wrappers", () => {
+  const supervision = structuredClone(healthySupervision());
+  supervision.monitoring.run_count += 1;
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: {
+      ...readinessProof(),
+      ...recoveryReadiness(),
+      capital_ready: true,
+      capital_plan: capitalPlan(),
+    },
+    shadow_qualification: shadowQualification(),
+    carry_supervision: supervision,
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.reasons, ["carry_supervision_unready"]);
+  assert.equal(result.supervision.ready, false);
+  assert.equal(result.supervision.evidence_commitment, null);
 });
 
 test("keeps technically connected but unfunded accounts pre-broadcast blocked", () => {
@@ -243,7 +266,7 @@ test("keeps technically connected but unfunded accounts pre-broadcast blocked", 
       capital_plan: capitalPlan(),
     },
     shadow_qualification: shadowQualification(),
-    carry_supervision: { ready: true, status: "healthy" },
+    carry_supervision: healthySupervision(),
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
     now_ms: NOW,
@@ -265,7 +288,7 @@ test("rejects a configured route probe without fresh owner-bound route evidence"
       ...recoveryReadiness(),
     },
     shadow_qualification: shadowQualification(),
-    carry_supervision: { ready: true, status: "healthy" },
+    carry_supervision: healthySupervision(),
     route_observation_configured: true,
     route_evidence: { ok: false, error: "carry_transfer_route_evidence_missing" },
     now_ms: NOW,
@@ -292,7 +315,7 @@ test("rejects route evidence bound to an older account-state snapshot", () => {
       capital_plan: capitalPlan(),
     },
     shadow_qualification: shadowQualification(),
-    carry_supervision: { ready: true, status: "healthy" },
+    carry_supervision: healthySupervision(),
     route_observation_configured: true,
     route_evidence: routeEvidence,
     now_ms: NOW,
@@ -315,7 +338,7 @@ test("rejects collateral-route evidence with a valid-looking but mismatched comm
       capital_plan: capitalPlan(),
     },
     shadow_qualification: shadowQualification(),
-    carry_supervision: { ready: true, status: "healthy" },
+    carry_supervision: healthySupervision(),
     route_observation_configured: true,
     route_evidence: routeEvidence,
     now_ms: NOW,
@@ -339,7 +362,7 @@ test("rejects stale or image-unbound five-venue qualification wrappers", () => {
         capital_plan: capitalPlan(),
       },
       shadow_qualification: shadowQualificationValue,
-      carry_supervision: { ready: true, status: "healthy" },
+      carry_supervision: healthySupervision(),
       route_observation_configured: true,
       route_evidence: verifiedRouteEvidence(),
       now_ms: NOW,
@@ -361,7 +384,7 @@ test("rejects malformed three-venue readiness wrappers", () => {
       evidence_commitment: "carry:readiness:evidence:valid-looking",
     },
     shadow_qualification: shadowQualification(),
-    carry_supervision: { ready: true, status: "healthy" },
+    carry_supervision: healthySupervision(),
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
     now_ms: NOW,
@@ -386,6 +409,41 @@ function readinessProof(overrides = {}) {
     evidence_commitment: `carry:readiness:evidence:${"b".repeat(40)}`,
     ...overrides,
   };
+}
+
+function healthySupervision() {
+  const loop = (name) => ({
+    health: () => ({
+      name,
+      status: "healthy",
+      running: false,
+      run_count: 1,
+      consecutive_failures: 0,
+      last_started_at: new Date(NOW - 1_000).toISOString(),
+      last_completed_at: new Date(NOW).toISOString(),
+      last_success_at: new Date(NOW).toISOString(),
+      last_error_code: null,
+      max_silence_ms: 60_000,
+      heartbeat_deadline_at: new Date(NOW + 60_000).toISOString(),
+    }),
+  });
+  return carrySupervisionHealth({
+    monitoring: loop("carry_monitor"),
+    execution: loop("carry_execution"),
+    recovery: loop("multi_leg_recovery"),
+    observation: loop("carry_shadow_observer"),
+    checked_at_ms: NOW,
+  });
+}
+
+function unreadySupervision() {
+  return carrySupervisionHealth({
+    monitoring: null,
+    execution: null,
+    recovery: null,
+    observation: null,
+    checked_at_ms: NOW,
+  });
 }
 
 function shadowQualification(overrides = {}) {

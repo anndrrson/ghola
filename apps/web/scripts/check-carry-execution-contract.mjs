@@ -824,6 +824,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("recordScanTest", "beyond the 500-record storage page", "carry_record_scan_scale_test_missing");
   requireText("loopSupervisor", "consecutive_failures", "carry_loop_health_state_missing");
   requireText("loopSupervisor", 'status: "stalled"', "carry_loop_stall_detection_missing");
+  requireText("loopSupervisor", "export function verifyCarrySupervisionHealth", "carry_supervision_evidence_verifier_missing");
+  requireText("loopSupervisor", "evidence_commitment: supervisionCommitment(material)", "carry_supervision_commitment_missing");
+  requireText("loopSupervisorTest", "attests fresh healthy supervision across every critical loop", "carry_supervision_attestation_test_missing");
+  requireText("server", "checked_at_ms: requestStartedAt", "carry_supervision_request_time_binding_missing");
   requireText("positions", "maxSilenceMs: stallAfterMs", "carry_monitor_stall_deadline_missing");
   requireText("executor", "maxSilenceMs: stallAfterMs", "carry_execution_stall_deadline_missing");
   requireText("positions", "supervisor.runOnce", "carry_monitor_supervision_missing");
@@ -926,6 +930,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadiness", 'proof_level: pairedLifecycle.verified ? "live_paired_lifecycle" : "pre_broadcast_readiness"', "carry_private_prime_proof_level_missing");
   requireText("privatePrimeReadiness", "live_paired_lifecycle_proven: pairedLifecycle.verified", "carry_private_prime_live_proof_boundary_missing");
   requireText("privatePrimeReadiness", "assessCompletedCarryLifecycleProof({", "carry_private_prime_lifecycle_commitment_verification_missing");
+  requireText("privatePrimeReadiness", "verifyCarrySupervisionHealth(carrySupervision", "carry_private_prime_supervision_verification_missing");
   requireText("privatePrimeReadiness", "Number.isSafeInteger(proof?.realized_net_value_micro_usdc)", "carry_private_prime_realized_net_gate_missing");
   requireText("privatePrimeReadiness", "realized_net_value_micro_usdc: verified ? proof.realized_net_value_micro_usdc : null", "carry_private_prime_realized_net_output_missing");
   requireText("privatePrimeReadiness", "safeLifecycleValueAttribution(proof?.value_attribution)", "carry_private_prime_value_attribution_gate_missing");
@@ -954,6 +959,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadinessTest", "valid-looking but mismatched commitment", "carry_private_prime_route_commitment_test_missing");
   requireText("privatePrimeReadinessTest", "stale or image-unbound five-venue qualification wrappers", "carry_private_prime_shadow_wrapper_test_missing");
   requireText("privatePrimeReadinessTest", "malformed three-venue readiness wrappers", "carry_private_prime_readiness_wrapper_test_missing");
+  requireText("privatePrimeReadinessTest", "tampered supervision health wrappers", "carry_private_prime_supervision_tamper_test_missing");
   requireText("webPrivatePrimeReadiness", 'value.proof_level === "live_paired_lifecycle"', "carry_private_prime_ui_proof_level_gate_missing");
   requireText("webPrivatePrimeReadiness", "value.live_paired_lifecycle_proven === true", "carry_private_prime_ui_live_proof_gate_missing");
   requireText("webPrivatePrimeReadiness", "integer(pairedLifecycle.realized_net_value_micro_usdc)", "carry_private_prime_ui_realized_net_gate_missing");

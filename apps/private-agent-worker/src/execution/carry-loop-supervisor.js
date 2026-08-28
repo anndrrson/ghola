@@ -1,3 +1,12 @@
+import { createHash } from "node:crypto";
+
+const SUPERVISED_LOOPS = Object.freeze({
+  monitoring: "carry_monitor",
+  execution: "carry_execution",
+  recovery: "multi_leg_recovery",
+  observation: "carry_shadow_observer",
+});
+
 export function createCarryLoopSupervisor({ name, run, now = () => Date.now(), maxSilenceMs = null }) {
   if (!/^[a-z][a-z0-9_]{2,63}$/.test(String(name || ""))) throw new Error("carry_loop_name_invalid");
   if (typeof run !== "function") throw new Error("carry_loop_runner_required");
@@ -99,13 +108,84 @@ export function disabledCarryLoopHealth(name) {
   });
 }
 
-export function carrySupervisionHealth({ monitoring, execution, recovery, observation }) {
+export function carrySupervisionHealth({ monitoring, execution, recovery, observation, checked_at_ms: checkedAtMs = Date.now() }) {
+  if (!Number.isSafeInteger(checkedAtMs) || checkedAtMs <= 0) throw new Error("carry_supervision_time_invalid");
   const monitorHealth = monitoring?.health?.() || disabledCarryLoopHealth("carry_monitor");
   const executionHealth = execution?.health?.() || disabledCarryLoopHealth("carry_execution");
   const recoveryHealth = recovery?.health?.() || disabledCarryLoopHealth("multi_leg_recovery");
   const observationHealth = observation?.health?.() || disabledCarryLoopHealth("carry_shadow_observer");
   const statuses = [monitorHealth.status, executionHealth.status, recoveryHealth.status, observationHealth.status];
-  const status = statuses.some((value) => value === "failed" || value === "degraded" || value === "stalled")
+  const status = aggregateStatus(statuses);
+  const material = {
+    version: 1,
+    kind: "carry_supervision_health",
+    status,
+    ready: status === "healthy",
+    checked_at_ms: checkedAtMs,
+    transaction_broadcast: false,
+    monitoring: monitorHealth,
+    execution: executionHealth,
+    recovery: recoveryHealth,
+    observation: observationHealth,
+  };
+  return Object.freeze({
+    ...material,
+    evidence_commitment: supervisionCommitment(material),
+  });
+}
+
+export function verifyCarrySupervisionHealth(value, { now_ms: nowMs = Date.now(), max_age_ms: maxAgeMs = 5_000 } = {}) {
+  const checkedAtMs = value?.checked_at_ms;
+  const loops = Object.entries(SUPERVISED_LOOPS).map(([key, name]) => [key, value?.[key], name]);
+  const valid = value?.version === 1
+    && value?.kind === "carry_supervision_health"
+    && Number.isSafeInteger(nowMs)
+    && Number.isSafeInteger(maxAgeMs)
+    && maxAgeMs > 0
+    && Number.isSafeInteger(checkedAtMs)
+    && checkedAtMs <= nowMs + 5_000
+    && nowMs - checkedAtMs <= maxAgeMs
+    && value?.transaction_broadcast === false
+    && loops.every(([, loop, name]) => validLoopHealth(loop, name, checkedAtMs))
+    && value?.status === aggregateStatus(loops.map(([, loop]) => loop.status))
+    && value?.ready === (value.status === "healthy")
+    && value?.evidence_commitment === supervisionCommitment(value);
+  return valid
+    ? Object.freeze({ ok: true, health: Object.freeze(structuredClone(value)) })
+    : Object.freeze({ ok: false, error: "carry_supervision_evidence_invalid" });
+}
+
+function validLoopHealth(value, expectedName, checkedAtMs) {
+  const statuses = new Set(["starting", "running", "healthy", "degraded", "failed", "stalled", "disabled", "stopped"]);
+  const lastCompletedAtMs = value?.last_completed_at === null ? null : Date.parse(value?.last_completed_at);
+  const lastSuccessAtMs = value?.last_success_at === null ? null : Date.parse(value?.last_success_at);
+  const heartbeatDeadlineAtMs = value?.heartbeat_deadline_at === null ? null : Date.parse(value?.heartbeat_deadline_at);
+  const healthy = value?.status === "healthy";
+  return value?.name === expectedName
+    && statuses.has(value?.status)
+    && typeof value?.running === "boolean"
+    && Number.isSafeInteger(value?.run_count)
+    && value.run_count >= 0
+    && Number.isSafeInteger(value?.consecutive_failures)
+    && value.consecutive_failures >= 0
+    && (value?.last_started_at === null || Number.isFinite(Date.parse(value.last_started_at)))
+    && (lastCompletedAtMs === null || Number.isFinite(lastCompletedAtMs))
+    && (lastSuccessAtMs === null || Number.isFinite(lastSuccessAtMs))
+    && (value?.last_error_code === null || /^[a-z0-9][a-z0-9_:.-]{2,159}$/i.test(String(value.last_error_code)))
+    && (value?.max_silence_ms === null || (Number.isSafeInteger(value.max_silence_ms) && value.max_silence_ms > 0))
+    && (heartbeatDeadlineAtMs === null || Number.isFinite(heartbeatDeadlineAtMs))
+    && (!healthy || (value.running === false
+      && value.run_count > 0
+      && value.consecutive_failures === 0
+      && lastCompletedAtMs !== null
+      && lastSuccessAtMs === lastCompletedAtMs
+      && value.last_error_code === null
+      && Number.isSafeInteger(value.max_silence_ms)
+      && heartbeatDeadlineAtMs >= checkedAtMs));
+}
+
+function aggregateStatus(statuses) {
+  return statuses.some((value) => value === "failed" || value === "degraded" || value === "stalled")
     ? "degraded"
     : statuses.some((value) => value === "disabled")
       ? "disabled"
@@ -114,14 +194,21 @@ export function carrySupervisionHealth({ monitoring, execution, recovery, observ
         : statuses.some((value) => value === "stopped")
           ? "stopped"
           : "healthy";
-  return Object.freeze({
-    status,
-    ready: status === "healthy",
-    monitoring: monitorHealth,
-    execution: executionHealth,
-    recovery: recoveryHealth,
-    observation: observationHealth,
-  });
+}
+
+function supervisionCommitment(value) {
+  const { evidence_commitment: _ignored, ...material } = value || {};
+  return `carry:supervision:evidence:${createHash("sha256").update(stableJson(material)).digest("hex")}`;
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, child]) => child !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+    .join(",")}}`;
 }
 
 function stalledHealth(snapshot, stopped, name, now) {

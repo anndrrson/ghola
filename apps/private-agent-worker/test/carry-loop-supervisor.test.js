@@ -4,6 +4,7 @@ import {
   carrySupervisionHealth,
   createCarryLoopSupervisor,
   disabledCarryLoopHealth,
+  verifyCarrySupervisionHealth,
 } from "../src/execution/carry-loop-supervisor.js";
 
 test("coalesces concurrent loop runs and records healthy completion", async () => {
@@ -119,20 +120,59 @@ test("aggregates every critical loop without masking one degraded loop", () => {
       last_error_code: "carry_exit_preflight_not_ready",
     }),
   };
-  assert.deepEqual(carrySupervisionHealth({
+  const supervision = carrySupervisionHealth({
     monitoring: healthy("carry_monitor"),
     execution: degraded,
     recovery: healthy("multi_leg_recovery"),
     observation: healthy("carry_shadow_observer"),
-  }), {
-    status: "degraded",
-    ready: false,
-    monitoring: { ...disabledCarryLoopHealth("carry_monitor"), status: "healthy" },
-    execution: degraded.health(),
-    recovery: { ...disabledCarryLoopHealth("multi_leg_recovery"), status: "healthy" },
-    observation: { ...disabledCarryLoopHealth("carry_shadow_observer"), status: "healthy" },
+    checked_at_ms: 1_800_000_000_000,
   });
+  assert.equal(supervision.status, "degraded");
+  assert.equal(supervision.ready, false);
+  assert.deepEqual(supervision.monitoring, { ...disabledCarryLoopHealth("carry_monitor"), status: "healthy" });
+  assert.deepEqual(supervision.execution, degraded.health());
+  assert.match(supervision.evidence_commitment, /^carry:supervision:evidence:[0-9a-f]{64}$/);
   assert.equal(carrySupervisionHealth({ monitoring: null, execution: null }).status, "disabled");
+});
+
+test("attests fresh healthy supervision across every critical loop", async () => {
+  let nowMs = 1_800_000_000_000;
+  const supervisor = (name) => createCarryLoopSupervisor({
+    name,
+    now: () => nowMs,
+    maxSilenceMs: 60_000,
+    run: async () => ({ ok: true }),
+  });
+  const monitoring = supervisor("carry_monitor");
+  const execution = supervisor("carry_execution");
+  const recovery = supervisor("multi_leg_recovery");
+  const observation = supervisor("carry_shadow_observer");
+  await Promise.all([monitoring.runOnce(), execution.runOnce(), recovery.runOnce(), observation.runOnce()]);
+  nowMs += 1;
+  const supervision = carrySupervisionHealth({
+    monitoring,
+    execution,
+    recovery,
+    observation,
+    checked_at_ms: nowMs,
+  });
+  const assessed = verifyCarrySupervisionHealth(supervision, { now_ms: nowMs });
+  assert.equal(assessed.ok, true);
+  assert.equal(assessed.health.ready, true);
+  assert.equal(assessed.health.status, "healthy");
+});
+
+test("rejects tampered supervision evidence", () => {
+  const supervision = carrySupervisionHealth({
+    monitoring: null,
+    execution: null,
+    recovery: null,
+    observation: null,
+    checked_at_ms: 1_800_000_000_000,
+  });
+  const tampered = structuredClone(supervision);
+  tampered.monitoring.run_count = 1;
+  assert.equal(verifyCarrySupervisionHealth(tampered, { now_ms: 1_800_000_000_000 }).ok, false);
 });
 
 test("does not mask a degraded recovery loop", () => {
