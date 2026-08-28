@@ -217,6 +217,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("multiLegOrchestrator", "settlePriorRecoveryExecutions", "carry_recovery_child_reconciliation_missing");
   requireText("multiLegOrchestrator", "applied_filled_micro_usdc", "carry_recovery_incremental_fill_accounting_missing");
   requireText("multiLegOrchestratorTest", "reconciles a partial recovery child before submitting the residual unwind", "carry_partial_recovery_child_test_missing");
+  requireCount("multiLegOrchestrator", "recoveryProofTargetsLeg(", 3, "carry_recovery_exact_target_gate_missing");
+  requireText("multiLegOrchestrator", "proof?.broadcast_performed === true", "carry_recovery_live_broadcast_gate_missing");
+  requireText("multiLegOrchestratorTest", "rejects a mismatched target", "carry_recovery_exact_target_test_missing");
   requireText("multiLegOrchestratorTest", "reconciles a partial reduce-only completion without reopening the filled leg", "carry_partial_completion_child_test_missing");
   requireText("asterTest", "allows exact reconciliation of a durably recorded recovery child", "aster_recovery_child_authorization_test_missing");
   requireCount("privateExecution", "cached?.receipt && !readOnlyReconcile", 3, "carry_fresh_reconciliation_read_missing");

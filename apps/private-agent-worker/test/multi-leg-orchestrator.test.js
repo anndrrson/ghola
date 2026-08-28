@@ -584,7 +584,7 @@ for (const [filledVenue, hedgeVenue] of CARRY_EXECUTION_VENUES.flatMap((filledVe
   });
 }
 
-test("reconciles a partial recovery child before submitting the residual unwind", async (t) => {
+test("reconciles a partial recovery child before submitting the residual unwind and rejects a mismatched target", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-partial-recovery-child-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
@@ -653,25 +653,36 @@ test("reconciles a partial recovery child before submitting the residual unwind"
   await apply(state, sagaId, 4, "leg_fill", { leg_id: filledLeg, cumulative_filled_micro_usdc: 10_000_000 });
   await state.putIdempotency(filledWork, {
     status: "filled",
-    final_proof: { final_venue_execution_proven: true, final_fill_proven: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: "0.001" },
+    final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: "0.001" },
   });
   await state.putIdempotency(hedgeWork, { status: "submitted" });
 
   const calls = [];
   let recoverySubmissions = 0;
+  let childReconcileAttempts = 0;
   const executeOrder = async (args) => {
     calls.push(args);
     if (args.operation_class === "reconcile") {
       if (args.instruction.reconcile.target_work_order_commitment === hedgeWork) {
-        return { status: "reconciled", final_proof: { final_venue_execution_proven: true, final_fill_proven: true, cumulative_filled_micro_usdc: 0 } };
+        return { status: "reconciled", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, cumulative_filled_micro_usdc: 0 } };
       }
-      return { status: "filled", final_proof: { final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.0006" } };
+      childReconcileAttempts += 1;
+      return {
+        status: "filled",
+        final_proof: {
+          target_client_order_matched: childReconcileAttempts > 1,
+          broadcast_performed: true,
+          final_venue_execution_proven: true,
+          final_fill_proven: true,
+          filled_base_size: "0.0006",
+        },
+      };
     }
     if (args.operation_class === "cancel") return { status: "cancelled" };
     recoverySubmissions += 1;
     return recoverySubmissions === 1
-      ? { status: "open", final_proof: { final_venue_execution_proven: false, final_fill_proven: false, filled_base_size: "0.0004" } }
-      : { status: "filled", final_proof: { final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.0004" } };
+      ? { status: "open", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: false, final_fill_proven: false, filled_base_size: "0.0004" } }
+      : { status: "filled", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.0004" } };
   };
   const fetchImpl = async () => ({ ok: true, json: async () => ({ markPrice: "10000" }) });
   const active = await state.getMultiLegSaga(created.saga.saga_id);
@@ -698,8 +709,25 @@ test("reconciles a partial recovery child before submitting the residual unwind"
     fetchImpl,
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
   });
-  assert.equal(second.ok, true);
-  assert.equal(second.recovered[0].saga.status, "unwound");
+  assert.equal(second.ok, false);
+  assert.equal(second.recovered[0].saga.status, "compensating");
+  assert.equal(childReconcileAttempts, 1);
+  assert.equal(recoverySubmissions, 1);
+  accounting = await readDurableRecoveryAccounting({ state, saga_id: sagaId, leg_id: filledLeg, action: "unwind" });
+  assert.equal(accounting.executions[0].applied_filled_micro_usdc, 4_000_000);
+
+  const third = await recoverDueMultiLegSagas({
+    state,
+    now_ms: active.unhedged_deadline_ms + 2,
+    recipient: { recipient_id: "did:key:partial-recovery-child" },
+    executeOrder,
+    verifyOrder: async () => ({ status: "verified_no_funds" }),
+    fetchImpl,
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(third.ok, true);
+  assert.equal(third.recovered[0].saga.status, "unwound");
+  assert.equal(childReconcileAttempts, 2);
   assert.equal(recoverySubmissions, 2);
   const childReconcile = calls.find((call) => call.operation_class === "reconcile" && call.instruction.reconcile.target_work_order_commitment !== hedgeWork);
   assert.equal(childReconcile.instruction.reconcile.target_work_order_commitment, accounting.executions[0].work_order_commitment);
@@ -845,10 +873,10 @@ test("reconciles a partial reduce-only completion without reopening the filled l
   const executeOrder = async (args) => {
     calls.push(args);
     if (args.operation_class === "reconcile") {
-      return { status: "filled", final_proof: { final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.001" } };
+      return { status: "filled", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.001" } };
     }
     submissions += 1;
-    return { status: "open", final_proof: { final_venue_execution_proven: false, final_fill_proven: false, filled_base_size: "0.0004" } };
+    return { status: "open", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: false, final_fill_proven: false, filled_base_size: "0.0004" } };
   };
   const fetchImpl = async () => ({
     ok: true,

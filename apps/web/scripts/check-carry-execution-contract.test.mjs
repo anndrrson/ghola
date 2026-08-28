@@ -69,6 +69,32 @@ test("rejects residual recovery submission before exact child reconciliation", (
   );
 });
 
+test("rejects recovery that trusts a receipt detached from the exact venue order", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replaceAll(
+        "recoveryProofTargetsLeg(",
+        "trustRecoveryProof(",
+      ),
+    }),
+    /carry_recovery_exact_target_gate_missing/,
+  );
+});
+
+test("rejects recovery that treats no-submit evidence as a live fill", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replaceAll(
+        "proof?.broadcast_performed === true",
+        "proof?.broadcast_performed !== null",
+      ),
+    }),
+    /carry_recovery_live_broadcast_gate_missing/,
+  );
+});
+
 test("rejects readiness detached from the registered recovery adapter", () => {
   assert.throws(
     () => checkCarryExecutionContract({

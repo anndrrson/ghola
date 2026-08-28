@@ -9,6 +9,8 @@ import {
   disabledCarryLoopHealth,
 } from "./carry-loop-supervisor.js";
 
+const EXACT_TARGET_RECOVERY_VENUES = new Set(["hyperliquid", "lighter", "aster"]);
+
 export async function createDurableMultiLegSaga({ state, definition, execution_context = null }) {
   assertState(state);
   let saga;
@@ -703,6 +705,7 @@ async function settlePriorRecoveryExecutions({
         receipt: execution.receipt,
         requestedBase,
         remainingMicro: requestedMicro,
+        venueId: leg.venue_id,
         env,
       });
       if (!progress.terminal) {
@@ -736,7 +739,13 @@ async function settlePriorRecoveryExecutions({
           nowMs,
         });
         execution = { ...execution, receipt: accountingReceipt(reconcileReceipt) };
-        progress = unwindProgress({ receipt: reconcileReceipt, requestedBase, remainingMicro: requestedMicro, env });
+        progress = unwindProgress({
+          receipt: reconcileReceipt,
+          requestedBase,
+          remainingMicro: requestedMicro,
+          venueId: leg.venue_id,
+          env,
+        });
       }
       const progressed = await applyRecoveryExecutionProgress({
         state,
@@ -778,6 +787,7 @@ async function applyRecoveryExecutionProgress({ state, saga, leg, action, execut
     receipt: execution.receipt,
     requestedBase,
     remainingMicro: requestedMicro,
+    venueId: leg.venue_id,
     env,
   });
   if (progress.filledMicro < appliedMicro) {
@@ -865,6 +875,7 @@ async function recoveryEvidence({ state, saga, leg, extraReceipts = [], env }) {
   let terminal = false;
   for (const record of records) {
     const proof = record.final_proof;
+    if (env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true" && !recoveryProofTargetsLeg(leg.venue_id, proof)) continue;
     const proofMicro = Number(proof?.cumulative_filled_micro_usdc);
     const fillTotals = fillTotalsForRecord(record);
     const candidateMicro = Number.isSafeInteger(proofMicro) ? proofMicro : fillTotals.micro;
@@ -896,17 +907,24 @@ function fillTotalsForRecord(record) {
   return { base, micro: Math.max(0, Math.round(notional * 1_000_000)) };
 }
 
-function unwindProgress({ receipt, requestedBase, remainingMicro, env }) {
+function unwindProgress({ receipt, requestedBase, remainingMicro, venueId, env }) {
   if (env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
     return { terminal: Boolean(receipt), filledMicro: receipt ? remainingMicro : 0 };
   }
   const proof = receipt?.final_proof;
+  if (!recoveryProofTargetsLeg(venueId, proof)) return { terminal: false, filledMicro: 0 };
   const filledBase = positiveNumber(proof?.filled_base_size) || fillTotalsForRecord(receipt).base;
   const ratio = requestedBase > 0 ? Math.max(0, Math.min(1, filledBase / requestedBase)) : 0;
   return {
     terminal: proof?.final_venue_execution_proven === true,
     filledMicro: Math.round(remainingMicro * ratio),
   };
+}
+
+function recoveryProofTargetsLeg(venueId, proof) {
+  return !EXACT_TARGET_RECOVERY_VENUES.has(venueId)
+    || (proof?.target_client_order_matched === true
+      && proof?.broadcast_performed === true);
 }
 
 function cancelInstruction({ leg, context, nowMs }) {
