@@ -95,6 +95,32 @@ test("rejects recovery that treats no-submit evidence as a live fill", () => {
   );
 });
 
+test("rejects recovery that ignores its exact reduce-only no-submit proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replaceAll(
+        "await verifyRecoveryOrderNoSubmit({",
+        "await trustRecoveryOrder({",
+      ),
+    }),
+    /carry_recovery_exact_no_submit_gate_missing/,
+  );
+});
+
+test("rejects recovery no-submit proof detached from the sealed account", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replaceAll(
+        "account_commitment: access.account_commitment || undefined",
+        "account_commitment: undefined",
+      ),
+    }),
+    /carry_recovery_account_binding_missing/,
+  );
+});
+
 test("rejects readiness detached from the registered recovery adapter", () => {
   assert.throws(
     () => checkCarryExecutionContract({

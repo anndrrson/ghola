@@ -318,7 +318,7 @@ test("recovers a crash after exact cancel without cancelling twice", async (t) =
     executeOrder,
     verifyOrder: async (args) => {
       verified.push(args);
-      return { status: "verified_no_funds" };
+      return recoveryVerification(args);
     },
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
   });
@@ -331,7 +331,7 @@ test("recovers a crash after exact cancel without cancelling twice", async (t) =
     executeOrder,
     verifyOrder: async (args) => {
       verified.push(args);
-      return { status: "verified_no_funds" };
+      return recoveryVerification(args);
     },
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
   });
@@ -409,7 +409,10 @@ test("reconciles a terminal late fill before cancel and never cancels or resubmi
       owner_commitment: "owner:recovery:late-fill:0001",
       policy_commitment: "policy:recovery:late-fill:0001",
       session_policy: { policy_commitment: "policy:recovery:late-fill:0001", market_allowlist: ["BTC", "BTC-PERP"], max_notional_bucket: "25", max_order_count: 4, max_slippage_bps: 10 },
-      venue_access: { aster: { status: "ready" }, lighter: { status: "ready" } },
+      venue_access: {
+        aster: { status: "ready", account_commitment: "account:carry:exit:aster" },
+        lighter: { status: "ready", account_commitment: "account:carry:exit:lighter" },
+      },
       legs: [
         { leg_id: asterLeg, work_order_commitment: asterWork, instruction: instruction("aster", "buy") },
         { leg_id: lighterLeg, work_order_commitment: lighterWork, instruction: instruction("lighter", "sell") },
@@ -451,7 +454,7 @@ test("reconciles a terminal late fill before cancel and never cancels or resubmi
         final_proof: { final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.001" },
       };
     },
-    verifyOrder: async () => ({ status: "verified_no_funds" }),
+    verifyOrder: async (args) => recoveryVerification(args),
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
   });
   assert.equal(recovered.ok, true);
@@ -570,7 +573,7 @@ for (const [filledVenue, hedgeVenue] of CARRY_EXECUTION_VENUES.flatMap((filledVe
       now_ms: active.unhedged_deadline_ms,
       recipient: { recipient_id: "did:key:perp-recovery-test" },
       executeOrder,
-      verifyOrder: async () => ({ status: "verified_no_funds" }),
+      verifyOrder: async (args) => recoveryVerification(args),
       env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
     });
     assert.equal(recovered.ok, true);
@@ -691,7 +694,7 @@ test("reconciles a partial recovery child before submitting the residual unwind 
     now_ms: active.unhedged_deadline_ms,
     recipient: { recipient_id: "did:key:partial-recovery-child" },
     executeOrder,
-    verifyOrder: async () => ({ status: "verified_no_funds" }),
+    verifyOrder: async (args) => recoveryVerification(args),
     fetchImpl,
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
   });
@@ -705,7 +708,7 @@ test("reconciles a partial recovery child before submitting the residual unwind 
     now_ms: active.unhedged_deadline_ms + 1,
     recipient: { recipient_id: "did:key:partial-recovery-child" },
     executeOrder,
-    verifyOrder: async () => ({ status: "verified_no_funds" }),
+    verifyOrder: async (args) => recoveryVerification(args),
     fetchImpl,
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
   });
@@ -721,7 +724,7 @@ test("reconciles a partial recovery child before submitting the residual unwind 
     now_ms: active.unhedged_deadline_ms + 2,
     recipient: { recipient_id: "did:key:partial-recovery-child" },
     executeOrder,
-    verifyOrder: async () => ({ status: "verified_no_funds" }),
+    verifyOrder: async (args) => recoveryVerification(args),
     fetchImpl,
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
   });
@@ -807,7 +810,7 @@ test("recovers a Carry Position saga directly from its sealed venue context", as
       if (args.operation_class === "reconcile") return { status: "reconciled", fills: [] };
       return { status: "filled", final_proof: { final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.001" } };
     },
-    verifyOrder: async () => ({ status: "verified_no_funds" }),
+    verifyOrder: async (args) => recoveryVerification(args),
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
   });
   assert.equal(recovered.ok, true);
@@ -882,12 +885,26 @@ test("reconciles a partial reduce-only completion without reopening the filled l
     ok: true,
     json: async () => ({ order_book_details: [{ symbol: "BTC", mark_price: "10000" }] }),
   });
+  const rejected = await recoverDueMultiLegSagas({
+    state,
+    now_ms: active.unhedged_deadline_ms - 2,
+    recipient: { recipient_id: "did:key:carry-exit" },
+    executeOrder,
+    verifyOrder: async (args) => recoveryVerification(args, {
+      order_shape: { ...recoveryVerification(args).order_shape, reduce_only: false },
+    }),
+    fetchImpl,
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.recovered[0].error, "saga_recovery_no_submit_mismatch");
+  assert.equal(submissions, 0);
   const first = await recoverDueMultiLegSagas({
     state,
     now_ms: active.unhedged_deadline_ms - 1,
     recipient: { recipient_id: "did:key:carry-exit" },
     executeOrder,
-    verifyOrder: async () => ({ status: "verified_no_funds" }),
+    verifyOrder: async (args) => recoveryVerification(args),
     fetchImpl,
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
   });
@@ -898,7 +915,7 @@ test("reconciles a partial reduce-only completion without reopening the filled l
     now_ms: active.unhedged_deadline_ms,
     recipient: { recipient_id: "did:key:carry-exit" },
     executeOrder,
-    verifyOrder: async () => ({ status: "verified_no_funds" }),
+    verifyOrder: async (args) => recoveryVerification(args),
     fetchImpl,
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
   });
@@ -914,3 +931,23 @@ test("reconciles a partial reduce-only completion without reopening the filled l
   const accounting = await readDurableRecoveryAccounting({ state, saga_id: sagaId, leg_id: lighterLeg, action: "completion" });
   assert.equal(accounting.executions[0].applied_filled_micro_usdc, 10_000_000);
 });
+
+function recoveryVerification(args, overrides = {}) {
+  const order = args.instruction?.order || {};
+  return {
+    status: "verified_no_funds",
+    account_commitment: args.account_commitment || null,
+    checks: {
+      order_request_checked: true,
+      transaction_broadcast: false,
+    },
+    order_shape: {
+      market: order.market,
+      side: order.side,
+      base_size: order.base_size,
+      limit_price: order.limit_price,
+      reduce_only: order.reduce_only === true,
+    },
+    ...overrides,
+  };
+}

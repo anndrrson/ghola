@@ -420,8 +420,9 @@ async function executeCompensatingRecovery({
       if (await untrackedRecoveryAttemptExists(state, workOrderCommitment)) {
         return { ok: false, error: "unwind_outcome_requires_reconciliation", saga: current };
       }
-      if (typeof verifyOrder === "function") {
-        await verifyOrder(recoveryOrderArgs({
+      await verifyRecoveryOrderNoSubmit({
+        verifyOrder,
+        args: recoveryOrderArgs({
           state,
           session,
           saga: current,
@@ -431,8 +432,8 @@ async function executeCompensatingRecovery({
           operationClass: unwindInstruction.operation_class,
           workOrderCommitment: `${workOrderCommitment}:preflight`,
           instruction: unwindInstruction,
-        }));
-      }
+        }),
+      });
       await storeRecoveryAccounting({
         state,
         saga: current,
@@ -583,8 +584,9 @@ async function executeRiskReducingCompletion({
       nowMs,
     });
     try {
-      if (typeof verifyOrder === "function") {
-        await verifyOrder(recoveryOrderArgs({
+      await verifyRecoveryOrderNoSubmit({
+        verifyOrder,
+        args: recoveryOrderArgs({
           state,
           session,
           saga: current,
@@ -594,8 +596,8 @@ async function executeRiskReducingCompletion({
           operationClass: instruction.operation_class,
           workOrderCommitment: `${workOrderCommitment}:preflight`,
           instruction,
-        }));
-      }
+        }),
+      });
       await storeRecoveryAccounting({
         state,
         saga: current,
@@ -1044,6 +1046,7 @@ function recoveryOrderArgs({
 }) {
   return {
     venue_id: leg.venue_id,
+    account_commitment: session.venue_access?.[leg.venue_id]?.account_commitment || undefined,
     operation_class: operationClass,
     work_order_commitment: workOrderCommitment,
     policy_commitment: saga.execution_context.policy_commitment,
@@ -1065,10 +1068,42 @@ function recoveryOrderArgs({
   };
 }
 
+async function verifyRecoveryOrderNoSubmit({ verifyOrder, args }) {
+  if (typeof verifyOrder !== "function") throw new Error("saga_recovery_no_submit_verifier_unavailable");
+  const receipt = await verifyOrder(args);
+  const order = args.instruction?.order;
+  const shape = receipt?.order_shape;
+  const expectedAccount = args.account_commitment;
+  const statusAccepted = receipt?.status === "verified_ready" || receipt?.status === "verified_no_funds";
+  const orderChecked = receipt?.checks?.order_request_checked === true || receipt?.checks?.order_request_built === true;
+  if (!statusAccepted || receipt?.checks?.transaction_broadcast !== false || !orderChecked
+    || !shape || String(shape.market) !== String(order?.market) || shape.side !== order?.side
+    || shape.reduce_only !== true || !samePositiveDecimal(shape.base_size, order?.base_size)
+    || !samePositiveDecimal(shape.limit_price, order?.limit_price)
+    || (expectedAccount && receipt?.account_commitment !== expectedAccount)) {
+    throw new Error("saga_recovery_no_submit_mismatch");
+  }
+  return receipt;
+}
+
+function samePositiveDecimal(left, right) {
+  const canonical = (value) => {
+    const match = /^(\d+)(?:\.(\d+))?$/.exec(String(value ?? ""));
+    if (!match) return null;
+    const integer = match[1].replace(/^0+(?=\d)/, "");
+    const fraction = String(match[2] || "").replace(/0+$/, "");
+    const normalized = fraction ? `${integer}.${fraction}` : integer;
+    return /^0(?:\.0*)?$/.test(normalized) ? null : normalized;
+  };
+  const normalizedLeft = canonical(left);
+  return normalizedLeft !== null && normalizedLeft === canonical(right);
+}
+
 function executionForRecovery(session, venue) {
   const access = session.venue_access?.[venue] || {};
   return {
     execution_mode: access.execution_mode || "byo_api_key",
+    account_commitment: access.account_commitment || undefined,
     vault_commitment: access.vault_commitment || undefined,
     encrypted_vault_commitment: access.encrypted_vault_commitment || undefined,
     encrypted_execution_vault: access.encrypted_execution_vault || undefined,

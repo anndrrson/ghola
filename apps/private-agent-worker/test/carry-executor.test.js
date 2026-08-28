@@ -1073,7 +1073,7 @@ async function setup(t, suffix, pair = { long: "aster", short: "lighter" }) {
     owner_commitment: OWNER,
     position_id: positionId,
     recipient: { recipient_id: "did:key:carry-executor" },
-    verifyOrder: async () => ({ status: "verified_no_funds" }),
+    verifyOrder: async (args) => recoveryVerification(args),
     preflight: async ({ body }) => preflightProof(pair, { phase: body?.phase }),
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
     now: (() => { let value = NOW + 1; return () => value += 1; })(),
@@ -1321,6 +1321,22 @@ function exactValueReceipt(args) {
       average_fill_price: price,
       fee_quote_amount: fee,
       fee_asset: "USDC",
+    },
+  };
+}
+
+function recoveryVerification(args) {
+  const order = args.instruction?.order || {};
+  return {
+    status: "verified_no_funds",
+    account_commitment: args.account_commitment || null,
+    checks: { order_request_checked: true, transaction_broadcast: false },
+    order_shape: {
+      market: order.market,
+      side: order.side,
+      base_size: order.base_size,
+      limit_price: order.limit_price,
+      reduce_only: order.reduce_only === true,
     },
   };
 }

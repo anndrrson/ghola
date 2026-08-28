@@ -221,6 +221,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("multiLegOrchestrator", "proof?.broadcast_performed === true", "carry_recovery_live_broadcast_gate_missing");
   requireText("multiLegOrchestratorTest", "rejects a mismatched target", "carry_recovery_exact_target_test_missing");
   requireText("multiLegOrchestratorTest", "reconciles a partial reduce-only completion without reopening the filled leg", "carry_partial_completion_child_test_missing");
+  requireCount("multiLegOrchestrator", "await verifyRecoveryOrderNoSubmit({", 2, "carry_recovery_exact_no_submit_gate_missing");
+  requireText("multiLegOrchestrator", "receipt?.checks?.transaction_broadcast !== false", "carry_recovery_no_broadcast_proof_missing");
+  requireText("multiLegOrchestrator", "shape.reduce_only !== true", "carry_recovery_reduce_only_proof_missing");
+  requireText("multiLegOrchestrator", "receipt?.account_commitment !== expectedAccount", "carry_recovery_account_proof_missing");
+  requireText("multiLegOrchestrator", "account_commitment: access.account_commitment || undefined", "carry_recovery_account_binding_missing");
+  requireText("multiLegOrchestratorTest", "saga_recovery_no_submit_mismatch", "carry_recovery_no_submit_mismatch_test_missing");
   requireText("asterTest", "allows exact reconciliation of a durably recorded recovery child", "aster_recovery_child_authorization_test_missing");
   requireCount("privateExecution", "cached?.receipt && !readOnlyReconcile", 3, "carry_fresh_reconciliation_read_missing");
   requireText("asterTest", "refreshes read-only Aster reconciliation instead of replaying a stale cache", "carry_fresh_reconciliation_read_test_missing");
