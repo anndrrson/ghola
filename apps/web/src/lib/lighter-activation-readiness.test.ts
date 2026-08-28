@@ -9,11 +9,13 @@ describe("Lighter activation readiness evidence", () => {
     expect(validateLighterActivationReadiness(readiness(), OWNER, NOW)).toMatchObject({
       owner_address: OWNER,
       base_deposit_ready: false,
-      ethereum_association_ready: false,
+      ethereum_association_gas_ready: false,
+      lighter_owner_account_ready: false,
       ready: false,
       blockers: [
         "lighter_base_usdc_below_minimum",
         "lighter_base_gas_required",
+        "lighter_owner_account_required",
         "lighter_ethereum_association_gas_required",
       ],
     });
@@ -38,23 +40,40 @@ describe("Lighter activation readiness evidence", () => {
       blockers: [],
     }, OWNER, NOW)).toThrow("inconsistent");
   });
+
+  it("never equates enough Ethereum gas with a verified Lighter owner account", () => {
+    expect(() => validateLighterActivationReadiness({
+      ...readiness(),
+      ethereum_eth_wei: "1500000",
+      ethereum_association_gas_ready: true,
+      ready: true,
+      blockers: [
+        "lighter_base_usdc_below_minimum",
+        "lighter_base_gas_required",
+        "lighter_owner_account_required",
+      ],
+    }, OWNER, NOW)).toThrow("inconsistent");
+  });
 });
 
 function readiness() {
   return {
-    version: 1,
+    version: 2,
     owner_address: OWNER,
+    lighter_account_index: null,
     base_usdc_microunits: "0",
     base_eth_wei: "0",
     ethereum_eth_wei: "0",
     estimated_base_gas_wei: "500000",
     estimated_ethereum_association_gas_wei: "1500000",
     base_deposit_ready: false,
-    ethereum_association_ready: false,
+    ethereum_association_gas_ready: false,
+    lighter_owner_account_ready: false,
     ready: false,
     blockers: [
       "lighter_base_usdc_below_minimum",
       "lighter_base_gas_required",
+      "lighter_owner_account_required",
       "lighter_ethereum_association_gas_required",
     ],
     checked_at: "2026-08-27T18:00:00.000Z",

@@ -1,4 +1,8 @@
 import { getAddress, isAddress } from "viem";
+import {
+  LIGHTER_MAINNET_API_URL,
+  selectLighterOwnerAccount,
+} from "./lighter-agent-association";
 import type {
   LighterActivationBlocker,
   LighterActivationReadiness,
@@ -25,35 +29,68 @@ export async function readLighterActivationReadiness({
   if (!isAddress(ownerAddress, { strict: true })) throw readinessError("lighter_owner_address_invalid", 400);
   const owner = getAddress(ownerAddress);
   const balanceOfData = `0x70a08231${owner.slice(2).toLowerCase().padStart(64, "0")}`;
-  const [baseEth, baseUsdc, baseGasPrice, ethereumEth, ethereumGasPrice] = await Promise.all([
+  const [baseEth, baseUsdc, baseGasPrice, ethereumEth, ethereumGasPrice, lighterAccountIndex] = await Promise.all([
     rpcHex(baseRpcUrl, "eth_getBalance", [owner, "latest"], fetchImpl),
     rpcHex(baseRpcUrl, "eth_call", [{ to: BASE_USDC, data: balanceOfData }, "latest"], fetchImpl),
     rpcHex(baseRpcUrl, "eth_gasPrice", [], fetchImpl),
     rpcHex(ethereumRpcUrl, "eth_getBalance", [owner, "latest"], fetchImpl),
     rpcHex(ethereumRpcUrl, "eth_gasPrice", [], fetchImpl),
+    readLighterOwnerAccountIndex(owner, fetchImpl),
   ]);
   const estimatedBaseGas = baseGasPrice * BASE_ACTIVATION_GAS_UNITS_WITH_BUFFER;
   const estimatedEthereumGas = ethereumGasPrice * ETHEREUM_ASSOCIATION_GAS_UNITS_WITH_BUFFER;
   const baseDepositReady = baseUsdc >= LIGHTER_MINIMUM_USDC && baseEth >= estimatedBaseGas;
-  const ethereumAssociationReady = ethereumEth >= estimatedEthereumGas;
+  const ethereumAssociationGasReady = ethereumEth >= estimatedEthereumGas;
+  const lighterOwnerAccountReady = lighterAccountIndex !== null;
   const blockers: LighterActivationBlocker[] = [];
-  if (baseUsdc < LIGHTER_MINIMUM_USDC) blockers.push("lighter_base_usdc_below_minimum");
-  if (baseEth < estimatedBaseGas) blockers.push("lighter_base_gas_required");
-  if (!ethereumAssociationReady) blockers.push("lighter_ethereum_association_gas_required");
+  if (!lighterOwnerAccountReady) {
+    if (baseUsdc < LIGHTER_MINIMUM_USDC) blockers.push("lighter_base_usdc_below_minimum");
+    if (baseEth < estimatedBaseGas) blockers.push("lighter_base_gas_required");
+    blockers.push("lighter_owner_account_required");
+  }
+  if (!ethereumAssociationGasReady) blockers.push("lighter_ethereum_association_gas_required");
   return Object.freeze({
-    version: 1,
+    version: 2,
     owner_address: owner,
+    lighter_account_index: lighterAccountIndex,
     base_usdc_microunits: baseUsdc.toString(),
     base_eth_wei: baseEth.toString(),
     ethereum_eth_wei: ethereumEth.toString(),
     estimated_base_gas_wei: estimatedBaseGas.toString(),
     estimated_ethereum_association_gas_wei: estimatedEthereumGas.toString(),
     base_deposit_ready: baseDepositReady,
-    ethereum_association_ready: ethereumAssociationReady,
-    ready: baseDepositReady && ethereumAssociationReady,
+    ethereum_association_gas_ready: ethereumAssociationGasReady,
+    lighter_owner_account_ready: lighterOwnerAccountReady,
+    ready: lighterOwnerAccountReady && ethereumAssociationGasReady,
     blockers: Object.freeze(blockers),
     checked_at: now().toISOString(),
   });
+}
+
+async function readLighterOwnerAccountIndex(owner: `0x${string}`, fetchImpl: typeof fetch): Promise<number | null> {
+  let response: Response;
+  try {
+    response = await fetchImpl(
+      `${LIGHTER_MAINNET_API_URL}/api/v1/accountsByL1Address?l1_address=${encodeURIComponent(owner)}`,
+      { cache: "no-store", signal: AbortSignal.timeout(5_000) },
+    );
+  } catch {
+    throw readinessError("lighter_account_lookup_unavailable", 503);
+  }
+  const body = await response.json().catch(() => null);
+  const lighterError = body && typeof body === "object" && !Array.isArray(body)
+    ? body as Record<string, unknown>
+    : {};
+  if (
+    response.status === 400 &&
+    (Number(lighterError.code) === 21100 || /account not found/i.test(String(lighterError.message || "")))
+  ) return null;
+  if (!response.ok) throw readinessError("lighter_account_lookup_unavailable", 503);
+  try {
+    return selectLighterOwnerAccount({ response: body, ownerAddress: owner }).account_index;
+  } catch {
+    throw readinessError("lighter_account_lookup_invalid", 502);
+  }
 }
 
 async function rpcHex(url: string, method: string, params: unknown[], fetchImpl: typeof fetch) {

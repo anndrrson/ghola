@@ -7,6 +7,7 @@ describe("Lighter activation readiness", () => {
   it("separates Base collateral from Base and Ethereum gas blockers", async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.includes("accountsByL1Address")) return lighterAccountMissing();
       const request = JSON.parse(String(init?.body)) as { method: string };
       if (request.method === "eth_call") return rpc("0x2dc6c0");
       if (request.method === "eth_gasPrice") return rpc(url.includes("base") ? "0x1" : "0x2");
@@ -26,16 +27,18 @@ describe("Lighter activation readiness", () => {
       estimated_base_gas_wei: "500000",
       estimated_ethereum_association_gas_wei: "1500000",
       base_deposit_ready: false,
-      ethereum_association_ready: false,
+      ethereum_association_gas_ready: false,
+      lighter_owner_account_ready: false,
       ready: false,
-      blockers: ["lighter_base_gas_required", "lighter_ethereum_association_gas_required"],
+      blockers: ["lighter_base_gas_required", "lighter_owner_account_required", "lighter_ethereum_association_gas_required"],
     });
-    expect(fetchImpl).toHaveBeenCalledTimes(5);
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
   });
 
-  it("reports ready only when collateral and both gas budgets are present", async () => {
+  it("reports ready only when the exact owner account and association gas are present", async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.includes("accountsByL1Address")) return lighterAccount();
       const request = JSON.parse(String(init?.body)) as { method: string };
       if (request.method === "eth_call") return rpc("0x2dc6c0");
       if (request.method === "eth_gasPrice") return rpc("0x1");
@@ -48,9 +51,32 @@ describe("Lighter activation readiness", () => {
       ethereumRpcUrl: "https://ethereum.example",
     });
     expect(result.base_deposit_ready).toBe(true);
-    expect(result.ethereum_association_ready).toBe(true);
+    expect(result.ethereum_association_gas_ready).toBe(true);
+    expect(result.lighter_owner_account_ready).toBe(true);
+    expect(result.lighter_account_index).toBe(123);
     expect(result.ready).toBe(true);
     expect(result.blockers).toEqual([]);
+  });
+
+  it("fails closed when gas is funded but Lighter has no owner account", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("accountsByL1Address")) return lighterAccountMissing();
+      const request = JSON.parse(String(init?.body)) as { method: string };
+      if (request.method === "eth_call") return rpc("0x2dc6c0");
+      if (request.method === "eth_gasPrice") return rpc("0x1");
+      return rpc("0xb71b0");
+    }) as unknown as typeof fetch;
+    const result = await readLighterActivationReadiness({
+      ownerAddress: OWNER,
+      fetchImpl,
+      baseRpcUrl: "https://base.example",
+      ethereumRpcUrl: "https://ethereum.example",
+    });
+    expect(result.ethereum_association_gas_ready).toBe(true);
+    expect(result.lighter_owner_account_ready).toBe(false);
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContain("lighter_owner_account_required");
   });
 
   it("rejects malformed owner addresses before any RPC call", async () => {
@@ -66,4 +92,16 @@ function rpc(result: string) {
     status: 200,
     headers: { "content-type": "application/json" },
   });
+}
+
+function lighterAccount() {
+  return Response.json({
+    code: 200,
+    l1_address: OWNER,
+    sub_accounts: [{ index: 123, account_type: 0, l1_address: OWNER }],
+  });
+}
+
+function lighterAccountMissing() {
+  return Response.json({ code: 21100, message: "account not found" }, { status: 400 });
 }

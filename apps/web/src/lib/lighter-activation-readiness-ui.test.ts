@@ -8,11 +8,12 @@ const source = readFileSync(
 );
 
 describe("Lighter activation readiness UI", () => {
-  it("shows collateral and both network-fee requirements before retrying", () => {
+  it("separates the verified owner account from both network-fee requirements", () => {
     expect(source).toContain("fetchLighterActivationReadiness");
     expect(source).toContain('label="Lighter collateral"');
     expect(source).toContain('label="Base network fee"');
-    expect(source).toContain('label="Ethereum owner association"');
+    expect(source).toContain('label="Lighter owner account"');
+    expect(source).toContain('label="Ethereum association fee"');
     expect(source).toContain("!lighterReadiness?.ready");
   });
 

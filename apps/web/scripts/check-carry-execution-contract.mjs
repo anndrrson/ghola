@@ -99,6 +99,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webSetupAuthRecoveryTest: "apps/web/src/lib/carry-setup-auth-recovery.test.ts",
   lighterActivationReadiness: "apps/web/src/lib/lighter-activation-readiness.ts",
   lighterActivationReadinessTest: "apps/web/src/lib/lighter-activation-readiness.test.ts",
+  lighterActivationReadinessServer: "apps/web/src/lib/lighter-activation-readiness.server.ts",
+  lighterActivationReadinessServerTest: "apps/web/src/lib/lighter-activation-readiness.server.test.ts",
   webPrivateAccount: "apps/web/src/lib/private-account.ts",
   webPrivateAccountTest: "apps/web/src/lib/private-account.test.ts",
   webPrivateAccountStore: "apps/web/src/lib/private-account-store.ts",
@@ -261,9 +263,13 @@ export function checkCarryExecutionContract(sources) {
   requireText("webSetupAuthRecoveryTest", "never reauthenticates as a substitute for reconciling", "carry_setup_authorization_reconciliation_test_missing");
   requireText("lighterActivationReadiness", "LIGHTER_ACTIVATION_READINESS_MAX_AGE_MS", "lighter_activation_freshness_gate_missing");
   requireText("lighterActivationReadiness", "responseOwner.toLowerCase() !== ownerAddress.toLowerCase()", "lighter_activation_owner_binding_missing");
-  requireText("lighterActivationReadiness", "body.ready !== (baseDepositReady && ethereumAssociationReady)", "lighter_activation_evidence_consistency_missing");
+  requireText("lighterActivationReadiness", "body.ready !== (lighterOwnerAccountReady && ethereumAssociationGasReady)", "lighter_activation_evidence_consistency_missing");
   requireText("lighterActivationReadinessTest", "rejects another owner and stale evidence", "lighter_activation_owner_freshness_test_missing");
   requireText("lighterActivationReadinessTest", "rejects flags or blockers that contradict", "lighter_activation_consistency_test_missing");
+  requireText("lighterActivationReadinessTest", "never equates enough Ethereum gas with a verified Lighter owner account", "lighter_activation_owner_account_proof_test_missing");
+  requireText("lighterActivationReadinessServer", "/api/v1/accountsByL1Address?l1_address=", "lighter_activation_owner_account_lookup_missing");
+  requireText("lighterActivationReadinessServer", "selectLighterOwnerAccount", "lighter_activation_owner_account_binding_missing");
+  requireText("lighterActivationReadinessServerTest", "fails closed when gas is funded but Lighter has no owner account", "lighter_activation_owner_account_server_test_missing");
   requireText("registry", "export const CARRY_BROWSER_STREAM_VENUES", "browser_stream_capability_registry_missing");
   requireText("registry", "export function venueAdapterCapability", "adapter_capability_lookup_missing");
   requireText("registry", "export function venuesWithAdapterCapability", "adapter_capability_query_missing");

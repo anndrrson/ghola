@@ -1,18 +1,21 @@
 export type LighterActivationBlocker =
   | "lighter_base_usdc_below_minimum"
   | "lighter_base_gas_required"
-  | "lighter_ethereum_association_gas_required";
+  | "lighter_ethereum_association_gas_required"
+  | "lighter_owner_account_required";
 
 export interface LighterActivationReadiness {
-  version: 1;
+  version: 2;
   owner_address: `0x${string}`;
+  lighter_account_index: number | null;
   base_usdc_microunits: string;
   base_eth_wei: string;
   ethereum_eth_wei: string;
   estimated_base_gas_wei: string;
   estimated_ethereum_association_gas_wei: string;
   base_deposit_ready: boolean;
-  ethereum_association_ready: boolean;
+  ethereum_association_gas_ready: boolean;
+  lighter_owner_account_ready: boolean;
   ready: boolean;
   blockers: readonly LighterActivationBlocker[];
   checked_at: string;
@@ -56,7 +59,7 @@ export function validateLighterActivationReadiness(
     body.estimated_ethereum_association_gas_wei,
   ];
   if (
-    body.version !== 1 ||
+    body.version !== 2 ||
     !EVM_ADDRESS.test(ownerAddress) ||
     !EVM_ADDRESS.test(responseOwner) ||
     responseOwner.toLowerCase() !== ownerAddress.toLowerCase() ||
@@ -71,32 +74,43 @@ export function validateLighterActivationReadiness(
   const ethereumEth = BigInt(string(body.ethereum_eth_wei));
   const estimatedBaseGas = BigInt(string(body.estimated_base_gas_wei));
   const estimatedEthereumGas = BigInt(string(body.estimated_ethereum_association_gas_wei));
+  const lighterOwnerAccountReady = body.lighter_owner_account_ready === true;
+  const lighterAccountIndex = body.lighter_account_index;
+  if (
+    (lighterOwnerAccountReady && (!Number.isSafeInteger(lighterAccountIndex) || Number(lighterAccountIndex) < 0)) ||
+    (!lighterOwnerAccountReady && lighterAccountIndex !== null)
+  ) throw new Error("Lighter readiness evidence is inconsistent.");
   const baseDepositReady = baseUsdc >= MINIMUM_BASE_USDC_MICROUNITS && baseEth >= estimatedBaseGas;
-  const ethereumAssociationReady = ethereumEth >= estimatedEthereumGas;
+  const ethereumAssociationGasReady = ethereumEth >= estimatedEthereumGas;
   const expectedBlockers: LighterActivationBlocker[] = [];
-  if (baseUsdc < MINIMUM_BASE_USDC_MICROUNITS) expectedBlockers.push("lighter_base_usdc_below_minimum");
-  if (baseEth < estimatedBaseGas) expectedBlockers.push("lighter_base_gas_required");
-  if (!ethereumAssociationReady) expectedBlockers.push("lighter_ethereum_association_gas_required");
+  if (!lighterOwnerAccountReady) {
+    if (baseUsdc < MINIMUM_BASE_USDC_MICROUNITS) expectedBlockers.push("lighter_base_usdc_below_minimum");
+    if (baseEth < estimatedBaseGas) expectedBlockers.push("lighter_base_gas_required");
+    expectedBlockers.push("lighter_owner_account_required");
+  }
+  if (!ethereumAssociationGasReady) expectedBlockers.push("lighter_ethereum_association_gas_required");
   const blockers = Array.isArray(body.blockers) ? body.blockers.map(string) : [];
   if (
     body.base_deposit_ready !== baseDepositReady ||
-    body.ethereum_association_ready !== ethereumAssociationReady ||
-    body.ready !== (baseDepositReady && ethereumAssociationReady) ||
+    body.ethereum_association_gas_ready !== ethereumAssociationGasReady ||
+    body.ready !== (lighterOwnerAccountReady && ethereumAssociationGasReady) ||
     blockers.length !== expectedBlockers.length ||
     blockers.some((blocker, index) => blocker !== expectedBlockers[index])
   ) throw new Error("Lighter readiness evidence is inconsistent.");
 
   return Object.freeze({
-    version: 1,
+    version: 2,
     owner_address: responseOwner as `0x${string}`,
+    lighter_account_index: lighterOwnerAccountReady ? Number(lighterAccountIndex) : null,
     base_usdc_microunits: baseUsdc.toString(),
     base_eth_wei: baseEth.toString(),
     ethereum_eth_wei: ethereumEth.toString(),
     estimated_base_gas_wei: estimatedBaseGas.toString(),
     estimated_ethereum_association_gas_wei: estimatedEthereumGas.toString(),
     base_deposit_ready: baseDepositReady,
-    ethereum_association_ready: ethereumAssociationReady,
-    ready: baseDepositReady && ethereumAssociationReady,
+    ethereum_association_gas_ready: ethereumAssociationGasReady,
+    lighter_owner_account_ready: lighterOwnerAccountReady,
+    ready: lighterOwnerAccountReady && ethereumAssociationGasReady,
     blockers: Object.freeze([...expectedBlockers]),
     checked_at: new Date(checkedAt).toISOString(),
   });
