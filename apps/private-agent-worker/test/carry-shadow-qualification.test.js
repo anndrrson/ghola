@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { CORE_PERP_VENUES } from "@ghola/execution-core";
 import {
   carryShadowQualificationKey,
   observeCarryShadowQualification,
@@ -7,6 +8,7 @@ import {
   verifyCarryShadowQualification,
 } from "../src/execution/carry-shadow-qualification.js";
 import { carryShadowFixture } from "./carry-shadow-fixture.js";
+import { DEFAULT_CARRY_SHADOW_ASSETS } from "../src/execution/perp-shadow-readiness.js";
 
 const NOW = 1_800_000_000_000;
 const IMAGE = "sha256:abcdef1234567890";
@@ -31,8 +33,12 @@ test("persists three consecutive complete five-venue samples without broadcastin
   assert.equal(result.ready, true);
   assert.equal(result.release_bound, true);
   assert.equal(result.transaction_broadcast, false);
-  assert.equal(result.venues, 5);
-  assert.equal(result.assets, 3);
+  assert.equal(result.venues, CORE_PERP_VENUES.length);
+  assert.equal(result.assets, DEFAULT_CARRY_SHADOW_ASSETS.length);
+  assert.equal(
+    result.expected_snapshots_per_sample,
+    CORE_PERP_VENUES.length * DEFAULT_CARRY_SHADOW_ASSETS.length,
+  );
   assert.equal(result.completed_samples, 3);
   assert.equal(result.minimum_span_ms, 120_000);
   assert.equal(result.duration_ms, 120_000);

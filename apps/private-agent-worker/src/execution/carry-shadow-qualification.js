@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { CORE_PERP_VENUES } from "@ghola/execution-core";
 import {
   DEFAULT_CARRY_SHADOW_ASSETS,
   verifyCarryShadowSet,
@@ -180,7 +181,7 @@ export function verifyCarryShadowQualification(value, {
     && Number.isSafeInteger(value?.duration_ms)
     && value?.minimum_span_ms === REQUIRED_MINIMUM_SPAN_MS
     && value.duration_ms >= value.minimum_span_ms
-    && value?.venues === 5
+    && value?.venues === CORE_PERP_VENUES.length
     && value?.assets >= 3
     && Array.isArray(value?.requested_assets)
     && value.requested_assets.length === value.assets

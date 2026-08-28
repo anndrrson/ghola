@@ -900,6 +900,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("fundingPersistence", "observeCarryShadowQualification", "carry_shadow_qualification_observer_missing");
   requireText("fundingPersistence", "writeCarryShadowSnapshot", "carry_shadow_snapshot_observer_missing");
   requireText("shadowQualification", "verifyCarryShadowSoak", "carry_shadow_qualification_soak_missing");
+  requireText("shadowQualification", "value?.venues === CORE_PERP_VENUES.length", "carry_shadow_qualification_registry_coverage_missing");
+  forbidText("shadowQualification", "value?.venues === 5", "carry_shadow_qualification_venue_count_hardcoded");
   requireText("shadowQualification", "PHALA_CVM_IMAGE_DIGEST", "carry_shadow_qualification_image_binding_missing");
   requireText("shadowQualification", "sample_results: sampleResults", "carry_shadow_qualification_persistence_missing");
   requireText("shadowQualification", "source_observation_commitments", "carry_shadow_qualification_source_binding_missing");
@@ -1256,6 +1258,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "data-edge-evidence={edgeEvidence.status}", "carry_funding_evidence_state_missing");
   requireText("webCarryChart", "EVID {edgeEvidence.value}", "carry_funding_evidence_display_missing");
   requireText("webCarryMarket", "carryMarketQualificationEvidence", "carry_market_qualification_model_missing");
+  requireText("webCarryMarket", "qualification.venues === CORE_PERP_VENUES.length", "carry_market_qualification_registry_coverage_missing");
+  forbidText("webCarryMarket", "qualification.venues === 5", "carry_market_qualification_venue_count_hardcoded");
   requireText("webCarryMarket", "CORE_PERP_VENUES.map((venueId) => [venueId, executionVenueLabel(venueId)])", "carry_market_venue_label_registry_missing");
   requireText("webAccountSetup", "return executionVenueLabel(venueId);", "carry_setup_venue_label_registry_missing");
   requireText("webCarryMarket", "CARRY_SHADOW_QUALIFICATION_COMMITMENT", "carry_market_qualification_commitment_gate_missing");

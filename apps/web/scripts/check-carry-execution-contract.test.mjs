@@ -1003,6 +1003,29 @@ test("rejects market labels detached from the execution venue registry", () => {
   );
 });
 
+test("rejects shadow qualification coverage hard-coded outside the venue registry", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowQualification: sources.shadowQualification.replace(
+        "value?.venues === CORE_PERP_VENUES.length",
+        "value?.venues === 5",
+      ),
+    }),
+    /carry_shadow_qualification_registry_coverage_missing|carry_shadow_qualification_venue_count_hardcoded/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryMarket: sources.webCarryMarket.replace(
+        "qualification.venues === CORE_PERP_VENUES.length",
+        "qualification.venues === 5",
+      ),
+    }),
+    /carry_market_qualification_registry_coverage_missing|carry_market_qualification_venue_count_hardcoded/,
+  );
+});
+
 test("rejects coupling public Carry intelligence back to private execution", () => {
   assert.throws(
     () => checkCarryExecutionContract({

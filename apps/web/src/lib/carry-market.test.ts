@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { CORE_PERP_VENUES } from "@ghola/execution-core";
 import {
   applyCarryLivePatches,
   buildCandidates,
   buildPairCandidates,
   builderModel,
   carryCandidateAgeMs,
+  carryMarketQualificationEvidence,
   carryRoutingAdvantage,
   carryRoutingAdvantageEvidence,
   quoteCarryCandidate,
@@ -13,6 +15,21 @@ import {
 } from "@/lib/carry-market";
 
 describe("Carry market model", () => {
+  it("derives shadow qualification coverage from the venue registry", () => {
+    const qualification = qualificationSummary();
+    const evidence = carryMarketQualificationEvidence({
+      version: 1,
+      mode: "shadow_read_only",
+      executable: false,
+      observed_at: new Date(qualification.checked_at_ms || 0).toISOString(),
+      venues: [],
+      shadow_qualification: qualification,
+    });
+    expect(qualification.venues).toBe(CORE_PERP_VENUES.length);
+    expect(qualification.expected_snapshots_per_sample).toBe(CORE_PERP_VENUES.length * qualification.assets);
+    expect(evidence).toMatchObject({ status: "ready", value: `${CORE_PERP_VENUES.length}V 3/3` });
+  });
+
   it("chooses the lowest funding long and highest funding short while excluding quarantined venues", () => {
     const candidates = buildCandidates([
       venue("hyperliquid", snapshot("hyperliquid", "BTC", 10_000_000, "degraded")),
@@ -439,9 +456,14 @@ function qualificationSummary(): NonNullable<CarryShadowResponse["shadow_qualifi
     checked_at_ms: 1_800_000_000_000,
     required_samples: 3,
     completed_samples: 3,
-    venues: 5,
+    venues: CORE_PERP_VENUES.length,
     assets: 3,
     requested_assets: ["BTC", "ETH", "SOL"],
+    minimum_span_ms: 120_000,
+    duration_ms: 120_000,
+    expected_snapshots_per_sample: CORE_PERP_VENUES.length * 3,
+    sample_commitments: ["a", "b", "c"].map((value) => `carry:shadow:sample:${value.repeat(64)}`),
+    source_observation_commitments: ["d", "e", "f"].map((value) => `carry:shadow:sources:${value.repeat(64)}`),
     failures: [],
     evidence_commitment: `carry:shadow:qualification:${"d".repeat(64)}`,
   };

@@ -256,6 +256,7 @@ const CARRY_SHADOW_SOURCE_COMMITMENT = /^carry:shadow:sources:[a-f0-9]{64}$/;
 const CARRY_SHADOW_QUALIFICATION_COMMITMENT = /^carry:shadow:qualification:[a-f0-9]{64}$/;
 const CARRY_ROUTING_ADVANTAGE_COMMITMENT = /^carry:routing:advantage:[a-f0-9]{64}$/;
 const CARRY_IMAGE_DIGEST = /^sha256:[a-f0-9]{12,128}$/;
+const CARRY_DEFAULT_SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
 const depthExecutionCache = new WeakMap<CarryShadowSnapshot, Map<string, ReturnType<typeof estimatePerpDepthExecution>>>();
 const pairCompatibilityCache = new WeakMap<CarryShadowSnapshot, WeakMap<CarryShadowSnapshot, boolean>>();
 
@@ -280,10 +281,10 @@ export function carryMarketQualificationEvidence(
   const bound = qualification.release_bound === true
     && CARRY_IMAGE_DIGEST.test(qualification.image_digest)
     && CARRY_SHADOW_QUALIFICATION_COMMITMENT.test(String(qualification.evidence_commitment || ""));
-  const coverage = qualification.venues === 5
-    && qualification.assets === 3
-    && qualification.expected_snapshots_per_sample === 15
-    && sameStrings(qualification.requested_assets, ["BTC", "ETH", "SOL"]);
+  const coverage = qualification.venues === CORE_PERP_VENUES.length
+    && qualification.assets === CARRY_DEFAULT_SHADOW_ASSETS.length
+    && qualification.expected_snapshots_per_sample === CORE_PERP_VENUES.length * CARRY_DEFAULT_SHADOW_ASSETS.length
+    && sameStrings(qualification.requested_assets, CARRY_DEFAULT_SHADOW_ASSETS);
   const durableSpan = safeNonnegativeInteger(qualification.minimum_span_ms) >= 120_000
     && safeNonnegativeInteger(qualification.duration_ms) >= safeNonnegativeInteger(qualification.minimum_span_ms);
   const distinctSamples = samples.length === completed
@@ -305,8 +306,8 @@ export function carryMarketQualificationEvidence(
   if (ready) {
     return {
       status: "ready",
-      value: `5V ${completed}/${required}`,
-      detail: "Five venues and BTC/ETH/SOL passed consecutive, worker-bound market checks.",
+      value: `${CORE_PERP_VENUES.length}V ${completed}/${required}`,
+      detail: `${CORE_PERP_VENUES.length} venues and ${CARRY_DEFAULT_SHADOW_ASSETS.join("/")} passed consecutive, worker-bound market checks.`,
     };
   }
   if (qualification.ready === true || failures.some((reason) => [
@@ -320,8 +321,8 @@ export function carryMarketQualificationEvidence(
   }
   return {
     status: "observing",
-    value: required > 0 ? `5V ${completed}/${required}` : "—",
-    detail: "Collecting consecutive five-venue market evidence; no order is submitted.",
+    value: required > 0 ? `${CORE_PERP_VENUES.length}V ${completed}/${required}` : "—",
+    detail: `Collecting consecutive ${CORE_PERP_VENUES.length}-venue market evidence; no order is submitted.`,
   };
 }
 
@@ -1068,7 +1069,7 @@ function safeNonnegativeInteger(value: unknown) {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0;
 }
 
-function sameStrings(left: unknown, right: string[]) {
+function sameStrings(left: unknown, right: readonly string[]) {
   return Array.isArray(left)
     && left.length === right.length
     && left.every((value, index) => value === right[index]);
