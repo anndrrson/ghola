@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { CARRY_EXECUTION_VENUES, venueAdapterCapability } from "@ghola/execution-core";
+import {
+  CARRY_EXECUTION_VENUES,
+  CARRY_RECOVERY_POLICY,
+  venueAdapterCapability,
+} from "@ghola/execution-core";
 import { runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
 
 const DEFAULT_MAX_AGE_MS = 15 * 60_000;
@@ -186,6 +190,9 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
     || evidence.horizon_days !== expectedRoute.horizon_days)) reasons.push("carry_readiness_route_mismatch");
   if (!expectedImage || evidence.image_digest !== expectedImage) reasons.push("carry_readiness_image_mismatch");
   if (!sameStrings(evidence.registry_venue_ids, expectedVenues)) reasons.push("carry_readiness_registry_mismatch");
+  let recoveryReady = sameRecoveryPolicy(evidence.recovery_policy);
+  if (!recoveryReady) reasons.push("carry_readiness_recovery_policy_mismatch");
+  const recoveryVenueIds = [];
   const checkedAt = positiveInteger(evidence.checked_at_ms);
   const maxAge = readinessMaxAge(env);
   if (!checkedAt || checkedAt > nowMs || nowMs - checkedAt > maxAge) reasons.push("carry_readiness_stale");
@@ -194,6 +201,8 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
   if (venues.length !== expectedVenues.length) reasons.push("carry_readiness_venue_count_invalid");
   for (const venueId of expectedVenues) {
     const expectedAdapter = venueAdapterCapability(venueId, "carry_execution")?.adapter_id;
+    const expectedNoSubmitAdapter = venueAdapterCapability(venueId, "no_submit_reconciliation")?.adapter_id;
+    const expectedRecoveryAdapter = venueAdapterCapability(venueId, "exact_quantity_recovery")?.adapter_id;
     const matchingVenues = venues.filter((item) => item?.venue_id === venueId);
     const venue = matchingVenues[0];
     if (matchingVenues.length !== 1) {
@@ -201,6 +210,16 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
       continue;
     }
     if (!expectedAdapter || venue.adapter_id !== expectedAdapter) reasons.push(`carry_readiness_adapter_mismatch:${venueId}`);
+    const recoveryBound = Boolean(expectedNoSubmitAdapter)
+      && venue.no_submit_adapter_id === expectedNoSubmitAdapter
+      && Boolean(expectedRecoveryAdapter)
+      && venue.exact_quantity_recovery_adapter_id === expectedRecoveryAdapter;
+    if (!recoveryBound) {
+      recoveryReady = false;
+      reasons.push(`carry_readiness_recovery_adapter_mismatch:${venueId}`);
+    } else {
+      recoveryVenueIds.push(venueId);
+    }
     if (venue.transaction_broadcast !== false) reasons.push(`carry_readiness_broadcast_unsafe:${venueId}`);
     if (venue.account_state_checked !== true) reasons.push(`carry_readiness_account_unchecked:${venueId}`);
     if (venue.order_request_checked !== true) reasons.push(`carry_readiness_order_unchecked:${venueId}`);
@@ -346,6 +365,9 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
     checked_at_ms: checkedAt || null,
     expires_at_ms: checkedAt ? checkedAt + maxAge : null,
     evidence_commitment: evidence.evidence_commitment || null,
+    recovery_ready: recoveryReady && recoveryVenueIds.length === expectedVenues.length,
+    recovery_policy: Object.freeze({ ...CARRY_RECOVERY_POLICY }),
+    recovery_venue_ids: Object.freeze([...recoveryVenueIds]),
     capital_ready: expectedVenues.every((venueId) => capitalByVenue.get(venueId)?.[0]?.capital_ready === true),
     capital_plan: Object.freeze(expectedVenues.map((venueId) => capitalByVenue.get(venueId)?.[0]).filter(Boolean)),
   });
@@ -367,12 +389,15 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
     registry_venue_ids: registryVenueIds,
     checked_at_ms: nowMs,
     transaction_broadcast: matrix?.transaction_broadcast === false ? false : null,
+    recovery_policy: { ...CARRY_RECOVERY_POLICY },
     venues: registryVenueIds.map((venueId) => {
       const item = matrix?.venues?.find((entry) => entry?.venue_id === venueId) || {};
       const access = request?.venue_access?.[venueId] || {};
       return {
         venue_id: venueId,
         adapter_id: venueAdapterCapability(venueId, "carry_execution")?.adapter_id || null,
+        no_submit_adapter_id: venueAdapterCapability(venueId, "no_submit_reconciliation")?.adapter_id || null,
+        exact_quantity_recovery_adapter_id: venueAdapterCapability(venueId, "exact_quantity_recovery")?.adapter_id || null,
         transaction_broadcast: item.transaction_broadcast === false && item.checks?.transaction_broadcast === false ? false : null,
         account_state_checked: item.checks?.account_state_checked === true,
         order_request_checked: item.checks?.order_request_checked === true || item.checks?.order_request_built === true,
@@ -576,6 +601,12 @@ function readinessRoute({ asset, notional_usd: notionalUsd, horizon_days: horizo
 
 function sameStrings(left, right) {
   return Array.isArray(left) && left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function sameRecoveryPolicy(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    && Object.entries(CARRY_RECOVERY_POLICY).every(([key, expected]) => value[key] === expected)
+    && Object.keys(value).length === Object.keys(CARRY_RECOVERY_POLICY).length;
 }
 
 function allVenuePairs(venues) {

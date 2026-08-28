@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { normalizeCarryLifecycleValueAttribution } from "@ghola/execution-core";
+import {
+  CARRY_EXECUTION_VENUES,
+  CARRY_RECOVERY_POLICY,
+  normalizeCarryLifecycleValueAttribution,
+} from "@ghola/execution-core";
 
 export function buildCarryPrivatePrimeReadiness({
   readiness,
@@ -18,8 +22,10 @@ export function buildCarryPrivatePrimeReadiness({
     nowMs,
   });
   const pairedLifecycle = verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs });
+  const failureRecovery = verifiedFailureRecovery(readiness);
   const reasons = [];
   if (readiness?.ready !== true) reasons.push("three_venue_no_submit_unproven");
+  if (readiness?.ready === true && failureRecovery.ready !== true) reasons.push("three_venue_recovery_unproven");
   if (readiness?.ready === true && readiness?.capital_ready !== true) reasons.push("opening_capital_shortfall");
   if (shadowQualification?.ready !== true || shadowQualification?.venues < 5) {
     reasons.push("five_venue_shadow_unproven");
@@ -55,6 +61,7 @@ export function buildCarryPrivatePrimeReadiness({
       evidence_commitment: readiness?.evidence_commitment || null,
       diagnostic_commitment: diagnostic?.diagnostic_commitment || null,
     },
+    failure_recovery: failureRecovery,
     collateral_route_observation: routeObservation,
     supervision: {
       ready: carrySupervision?.ready === true,
@@ -70,6 +77,22 @@ export function buildCarryPrivatePrimeReadiness({
   };
   material.evidence_commitment = evidenceCommitment(material);
   return Object.freeze(material);
+}
+
+function verifiedFailureRecovery(readiness) {
+  const venueIds = Array.isArray(readiness?.recovery_venue_ids) ? readiness.recovery_venue_ids : [];
+  const policy = readiness?.recovery_policy;
+  const ready = readiness?.recovery_ready === true
+    && venueIds.length === CARRY_EXECUTION_VENUES.length
+    && CARRY_EXECUTION_VENUES.every((venueId, index) => venueIds[index] === venueId)
+    && policy && typeof policy === "object" && !Array.isArray(policy)
+    && Object.entries(CARRY_RECOVERY_POLICY).every(([key, expected]) => policy[key] === expected)
+    && Object.keys(policy).length === Object.keys(CARRY_RECOVERY_POLICY).length;
+  return Object.freeze({
+    ready,
+    venue_ids: ready ? Object.freeze([...venueIds]) : Object.freeze([]),
+    policy: Object.freeze({ ...CARRY_RECOVERY_POLICY }),
+  });
 }
 
 function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {

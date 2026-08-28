@@ -7,6 +7,11 @@ export declare const SUPPORTED_EXECUTION_VENUES: readonly VenueId[];
 export declare const CORE_PERP_VENUES: readonly CorePerpVenueId[];
 export declare const CARRY_EXECUTION_VENUES: readonly CarryExecutionVenueId[];
 export declare const CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES: readonly ["carry_execution", "no_submit_reconciliation", "exact_quantity_recovery"];
+export declare const CARRY_RECOVERY_POLICY: Readonly<{
+  ambiguous_submission: "freeze_reconcile_never_retry";
+  partial_fill: "exact_quantity_reduce_only";
+  worker_restart: "reconcile_before_action";
+}>;
 export declare const CARRY_BROWSER_STREAM_VENUES: readonly CorePerpVenueId[];
 export declare const EXECUTION_VENUE_SPECS: Readonly<Record<VenueId, Readonly<Record<string, unknown>>>>;
 export declare const SUPPORTED_STRATEGIES: readonly StrategyId[];

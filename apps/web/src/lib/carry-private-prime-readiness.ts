@@ -1,4 +1,5 @@
 import {
+  CARRY_RECOVERY_POLICY,
   normalizeCarryLifecycleValueAttribution,
   type CarryLifecycleValueAttribution,
 } from "@ghola/execution-core";
@@ -20,6 +21,8 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
   }
   const shadow = record(value.five_venue_shadow);
   const execution = record(value.three_venue_execution);
+  const recovery = record(value.failure_recovery);
+  const recoveryPolicy = record(recovery.policy);
   const route = record(value.collateral_route_observation);
   const supervision = record(value.supervision);
   const pairedLifecycle = record(value.paired_lifecycle);
@@ -32,6 +35,12 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
   const executionReady = execution.ready === true
     && venues.length === CARRY_EXECUTION_VENUES.length
     && CARRY_EXECUTION_VENUES.every((venueId, index) => venues[index] === venueId);
+  const recoveryVenues = strings(recovery.venue_ids);
+  const recoveryReady = recovery.ready === true
+    && recoveryVenues.length === CARRY_EXECUTION_VENUES.length
+    && CARRY_EXECUTION_VENUES.every((venueId, index) => recoveryVenues[index] === venueId)
+    && Object.entries(CARRY_RECOVERY_POLICY).every(([key, expected]) => recoveryPolicy[key] === expected)
+    && Object.keys(recoveryPolicy).length === Object.keys(CARRY_RECOVERY_POLICY).length;
   const capitalReady = execution.capital_ready === true;
   const routeCheckedAt = integer(route.checked_at_ms);
   const routeExpiresAt = integer(route.expires_at_ms);
@@ -85,7 +94,7 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     || (value.proof_level === "live_paired_lifecycle"
       && value.live_paired_lifecycle_proven === true
       && lifecycleReady);
-  const expectedReady = shadowReady && executionReady && capitalReady && routesReady && supervisionReady && reasons.length === 0;
+  const expectedReady = shadowReady && executionReady && recoveryReady && capitalReady && routesReady && supervisionReady && reasons.length === 0;
   const valid = value.version === 1
     && value.kind === "ghola_private_prime_no_submit_readiness"
     && proofBoundaryValid
@@ -100,14 +109,14 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && value.ready === expectedReady;
   if (!valid) return { status: "invalid", value: "UNVERIFIED", detail: "WORKER PROOF INVALID", tone: "bad" };
 
-  const statusValue = `${shadowReady ? shadowCount : 0}/${CORE_PERP_VENUES.length} DATA · ${executionReady ? venues.length : 0}/${CARRY_EXECUTION_VENUES.length} EXEC · ${routesReady ? "ROUTES" : "NO ROUTES"}`;
+  const statusValue = `${shadowReady ? shadowCount : 0}/${CORE_PERP_VENUES.length} DATA · ${executionReady ? venues.length : 0}/${CARRY_EXECUTION_VENUES.length} EXEC · ${recoveryReady ? recoveryVenues.length : 0}/${CARRY_EXECUTION_VENUES.length} REC · ${routesReady ? "ROUTES" : "NO ROUTES"}`;
   if (expectedReady) {
     return {
       status: "ready",
       value: statusValue,
       detail: lifecycleReady && lifecycleAttribution
         ? liveLifecycleDetail(lifecycleAttribution)
-        : "PRE-BROADCAST · CAPITAL READY · OWNER CONTROLLED",
+        : "PRE-BROADCAST · RECOVERY BOUND · CAPITAL READY · OWNER CONTROLLED",
       tone: "good",
     };
   }
@@ -122,6 +131,7 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
 
 function reasonLabel(reason: string) {
   if (reason === "three_venue_no_submit_unproven") return "CONNECT EXECUTION";
+  if (reason === "three_venue_recovery_unproven") return "RECOVERY UNPROVEN";
   if (reason === "opening_capital_shortfall") return "OWNER CAPITAL REQUIRED";
   if (reason === "five_venue_shadow_unproven") return "DATA SOAK REQUIRED";
   if (reason === "carry_supervision_unready") return "RISK ENGINE UNREADY";

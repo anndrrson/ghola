@@ -183,6 +183,10 @@ export function checkCarryExecutionContract(sources) {
     "for (const capability of CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES)",
     "carry_required_adapter_iteration_missing",
   );
+  requireText("registry", "export const CARRY_RECOVERY_POLICY", "carry_recovery_policy_registry_missing");
+  requireText("registry", 'ambiguous_submission: "freeze_reconcile_never_retry"', "carry_recovery_ambiguity_policy_missing");
+  requireText("registry", 'partial_fill: "exact_quantity_reduce_only"', "carry_recovery_partial_fill_policy_missing");
+  requireText("registry", 'worker_restart: "reconcile_before_action"', "carry_recovery_restart_policy_missing");
   requireText("registry", "export function carryExecutionQualification", "carry_qualification_report_missing");
   requireText("registryTest", "candidate venues cannot enter Carry until the identical execution contract is complete", "carry_candidate_fail_closed_test_missing");
   requireText("adapterRegistryTest", 'registeredCarryAdapterId(venueId, "exact_quantity_recovery")', "carry_worker_recovery_registry_test_missing");
@@ -209,6 +213,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreIndex", 'from "./venues.js"', "registry_export_missing");
   requireText("coreIndex", "venueAdapterCapability", "adapter_capability_export_missing");
   requireText("coreIndex", "CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES", "carry_required_adapter_contract_export_missing");
+  requireText("coreIndex", "CARRY_RECOVERY_POLICY", "carry_recovery_policy_export_missing");
   requireText("coreIndex", "carryExecutionQualification", "carry_qualification_report_export_missing");
   requireText("coreIndex", 'from "./carry.js"', "carry_domain_export_missing");
   requireText("coreIndex", "evaluatePerpContractPairBasis", "carry_contract_basis_export_missing");
@@ -334,12 +339,17 @@ export function checkCarryExecutionContract(sources) {
   requireText("readiness", "account_commitment", "carry_readiness_account_binding_missing");
   requireText("readiness", "carry_readiness_stale", "carry_readiness_freshness_gate_missing");
   requireText("readiness", "carry_readiness_commitment_invalid", "carry_readiness_integrity_gate_missing");
+  requireText("readiness", 'venueAdapterCapability(venueId, "no_submit_reconciliation")', "carry_readiness_no_submit_adapter_binding_missing");
+  requireText("readiness", 'venueAdapterCapability(venueId, "exact_quantity_recovery")', "carry_readiness_recovery_adapter_binding_missing");
+  requireText("readiness", "sameRecoveryPolicy(evidence.recovery_policy)", "carry_readiness_recovery_policy_gate_missing");
+  requireText("readiness", "recovery_ready: recoveryReady", "carry_readiness_recovery_output_missing");
   requireText("readinessTest", "persists deployment-, owner-, account-, and registry-bound three-venue readiness", "carry_readiness_binding_test_missing");
   requireText("readinessTest", "rejects stale or tampered readiness instead of reusing transient UI state", "carry_readiness_stale_test_missing");
   requireText("readinessTest", "rejects readiness after any sealed venue binding rotates", "carry_readiness_rotation_test_missing");
   requireText("readinessTest", "requires every unique venue pair before three-venue readiness passes", "carry_all_pair_readiness_test_missing");
   requireText("readiness", "carry_readiness_leg_venue_binding_mismatch", "carry_pair_leg_receipt_binding_missing");
   requireText("readinessTest", "binds every pair to both exact no-submit leg receipts", "carry_pair_leg_receipt_binding_test_missing");
+  requireText("readinessTest", "rejects readiness detached from exact no-submit and recovery adapters", "carry_readiness_recovery_binding_test_missing");
   requireText("readiness", "carryAccountStateCommitment", "carry_no_submit_account_state_commitment_missing");
   requireText("readiness", "carry_readiness_leg_account_state_invalid", "carry_no_submit_account_state_validation_missing");
   requireText("preflight", "account_state_commitments", "carry_no_submit_account_state_propagation_missing");
@@ -879,6 +889,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadiness", "evidence?.owner_commitment === readiness?.owner_commitment", "carry_private_prime_route_owner_binding_missing");
   requireText("privatePrimeReadiness", "nowMs - checkedAtMs <= 30_000", "carry_private_prime_route_freshness_gate_missing");
   requireText("privatePrimeReadiness", "routesBoundToCurrentAccounts", "carry_private_prime_route_account_state_binding_missing");
+  requireText("privatePrimeReadiness", "failure_recovery: failureRecovery", "carry_private_prime_recovery_output_missing");
+  requireText("privatePrimeReadiness", 'reasons.push("three_venue_recovery_unproven")', "carry_private_prime_recovery_gate_missing");
+  requireText("privatePrimeReadinessTest", "refuses private-prime readiness without exact three-venue recovery policy", "carry_private_prime_recovery_test_missing");
   requireText("privatePrimeReadinessTest", "without overstating live proof", "carry_private_prime_proof_boundary_test_missing");
   requireText("privatePrimeReadinessTest", "durable paired lifecycle evidence", "carry_private_prime_live_proof_test_missing");
   requireText("privatePrimeReadinessTest", "without fresh owner-bound route evidence", "carry_private_prime_route_evidence_test_missing");
@@ -892,10 +905,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("webPrivatePrimeReadiness", "pairedLifecycle.final_flat_zero_orders === true", "carry_private_prime_ui_flat_proof_gate_missing");
   requireText("webPrivatePrimeReadiness", "route.verified === true", "carry_private_prime_ui_route_evidence_gate_missing");
   requireText("webPrivatePrimeReadiness", "route.fund_movement_authorized === false", "carry_private_prime_ui_route_authority_gate_missing");
+  requireText("webPrivatePrimeReadiness", "CARRY_RECOVERY_POLICY", "carry_private_prime_ui_recovery_policy_missing");
+  requireText("webPrivatePrimeReadiness", "REC ·", "carry_private_prime_ui_recovery_display_missing");
+  requireText("webPrivatePrimeReadinessTest", "rejects recovery coverage that permits ambiguous retries", "carry_private_prime_ui_recovery_test_missing");
   requireText("webPrivatePrimeReadinessTest", "without claiming tradable readiness", "carry_private_prime_ui_capital_test_missing");
   requireText("webCarryBuilder", 'label="PRIVATE PRIME"', "carry_private_prime_terminal_metric_missing");
   requireText("webCarryBuilder", "carryPrivatePrimeSummary", "carry_private_prime_terminal_validation_missing");
   requireText("webCarryBuilderTest", "without claiming a live lifecycle", "carry_private_prime_terminal_test_missing");
+  requireText("webCarryBuilderTest", "3/3 REC", "carry_private_prime_terminal_recovery_missing");
   requireText("webRoute", '"x-ghola-carry-qualification-confirmed": "true"', "web_confirmation_header_missing");
   requireText("webClient", "qualification_pilot_confirmed", "web_confirmation_input_missing");
   requireText("webClient", "preflightCarryExecutionMatrix", "carry_three_venue_no_submit_client_missing");

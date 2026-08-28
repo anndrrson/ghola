@@ -26,6 +26,52 @@ test("rejects a full-book scan without its composite database index", () => {
   );
 });
 
+test("rejects a recovery contract that permits ambiguous retries", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      registry: sources.registry.replaceAll("freeze_reconcile_never_retry", "retry"),
+    }),
+    /carry_recovery_ambiguity_policy_missing/,
+  );
+});
+
+test("rejects readiness detached from the registered recovery adapter", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      readiness: sources.readiness.replaceAll(
+        'venueAdapterCapability(venueId, "exact_quantity_recovery")',
+        'venueAdapterCapability(venueId, "carry_execution")',
+      ),
+    }),
+    /carry_readiness_recovery_adapter_binding_missing/,
+  );
+});
+
+test("rejects private-prime readiness that fabricates recovery coverage", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replace(
+        "failure_recovery: failureRecovery",
+        "failure_recovery: { ready: true }",
+      ),
+    }),
+    /carry_private_prime_recovery_output_missing/,
+  );
+});
+
+test("rejects a terminal that hides recovery qualification", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilderTest: sources.webCarryBuilderTest.replaceAll("3/3 REC", "RECOVERY"),
+    }),
+    /carry_private_prime_terminal_recovery_missing/,
+  );
+});
+
 test("rejects background Carry failures that are no longer supervised", () => {
   assert.throws(
     () => checkCarryExecutionContract({

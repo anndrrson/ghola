@@ -218,8 +218,8 @@ describe("CarryTerminalBuilder", () => {
     });
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     expect(container.textContent).toContain("PRIVATE PRIME");
-    expect(container.textContent).toContain("5/5 DATA · 3/3 EXEC · ROUTES");
-    expect(container.textContent).toContain("PRE-BROADCAST · CAPITAL READY · OWNER CONTROLLED");
+    expect(container.textContent).toContain("5/5 DATA · 3/3 EXEC · 3/3 REC · ROUTES");
+    expect(container.textContent).toContain("PRE-BROADCAST · RECOVERY BOUND · CAPITAL READY · OWNER CONTROLLED");
     expect(container.textContent).not.toContain("LIVE PAIRED LIFECYCLE PROVEN");
   });
 
@@ -1087,6 +1087,15 @@ function privatePrimeReadiness() {
       ready: true,
       venue_ids: ["hyperliquid", "lighter", "aster"],
       capital_ready: true,
+    },
+    failure_recovery: {
+      ready: true,
+      venue_ids: ["hyperliquid", "lighter", "aster"],
+      policy: {
+        ambiguous_submission: "freeze_reconcile_never_retry",
+        partial_fill: "exact_quantity_reduce_only",
+        worker_restart: "reconcile_before_action",
+      },
     },
     collateral_route_observation: {
       configured: true,

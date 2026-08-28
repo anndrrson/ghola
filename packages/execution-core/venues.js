@@ -44,6 +44,12 @@ export const CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES = Object.freeze([
   "exact_quantity_recovery",
 ]);
 
+export const CARRY_RECOVERY_POLICY = Object.freeze({
+  ambiguous_submission: "freeze_reconcile_never_retry",
+  partial_fill: "exact_quantity_reduce_only",
+  worker_restart: "reconcile_before_action",
+});
+
 const CARRY_IMPLEMENTATION_STATUSES = Object.freeze(["proven", "implemented_unproven"]);
 
 const specs = [
@@ -55,7 +61,7 @@ const specs = [
     }),
     carry_execution: adapter("hyperliquid_v1", "proven"),
     no_submit_reconciliation: adapter("hyperliquid_v1", "proven"),
-    exact_quantity_recovery: adapter("hyperliquid_v1", "proven"),
+    exact_quantity_recovery: adapter("hyperliquid_v1", "proven", CARRY_RECOVERY_POLICY),
     collateral_route_observer: adapter("hyperliquid_arbitrum_usdc_v1", "implemented_unproven", {
       read_only: true,
       collateral_asset: "USDC",
@@ -72,7 +78,7 @@ const specs = [
     browser_carry_stream: adapter("lighter_browser_stream_v1", "enabled"),
     carry_execution: adapter("lighter_v1", "implemented_unproven"),
     no_submit_reconciliation: adapter("lighter_v1", "implemented_unproven"),
-    exact_quantity_recovery: adapter("lighter_v1", "implemented_unproven"),
+    exact_quantity_recovery: adapter("lighter_v1", "implemented_unproven", CARRY_RECOVERY_POLICY),
     collateral_route_observer: adapter("lighter_arbitrum_usdc_v1", "implemented_unproven", {
       read_only: true,
       collateral_asset: "USDC",
@@ -89,7 +95,7 @@ const specs = [
     browser_carry_stream: adapter("aster_browser_stream_v1", "enabled"),
     carry_execution: adapter("aster_v1", "implemented_unproven"),
     no_submit_reconciliation: adapter("aster_v1", "implemented_unproven"),
-    exact_quantity_recovery: adapter("aster_v1", "implemented_unproven"),
+    exact_quantity_recovery: adapter("aster_v1", "implemented_unproven", CARRY_RECOVERY_POLICY),
     collateral_route_observer: adapter("aster_arbitrum_usdt_v1", "implemented_unproven", {
       read_only: true,
       collateral_asset: "USDT",

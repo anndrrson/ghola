@@ -14,6 +14,7 @@ test("combines five-venue shadow and three-venue no-submit evidence without over
       asset: "BTC",
       expires_at_ms: NOW + 120_000,
       registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+      ...recoveryReadiness(),
       capital_ready: true,
       capital_plan: capitalPlan(),
       evidence_commitment: "carry:readiness:evidence:0001",
@@ -34,7 +35,38 @@ test("combines five-venue shadow and three-venue no-submit evidence without over
   assert.equal(result.proof_level, "pre_broadcast_readiness");
   assert.equal(result.live_paired_lifecycle_proven, false);
   assert.equal(result.transaction_broadcast, false);
+  assert.equal(result.failure_recovery.ready, true);
+  assert.deepEqual(result.failure_recovery.venue_ids, ["hyperliquid", "lighter", "aster"]);
   assert.match(result.evidence_commitment, /^carry:private-prime:/);
+});
+
+test("refuses private-prime readiness without exact three-venue recovery policy", () => {
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: {
+      ready: true,
+      owner_commitment: "owner_commitment_0001",
+      image_digest: "sha256:abcdef123456",
+      asset: "BTC",
+      registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+      capital_ready: true,
+      capital_plan: capitalPlan(),
+      ...recoveryReadiness({
+        recovery_policy: {
+          ambiguous_submission: "retry",
+          partial_fill: "exact_quantity_reduce_only",
+          worker_restart: "reconcile_before_action",
+        },
+      }),
+    },
+    shadow_qualification: { ready: true, venues: 5 },
+    carry_supervision: { ready: true, status: "healthy" },
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.reasons, ["three_venue_recovery_unproven"]);
+  assert.equal(result.failure_recovery.ready, false);
 });
 
 test("upgrades only matching durable paired lifecycle evidence to live-proven", () => {
@@ -47,6 +79,7 @@ test("upgrades only matching durable paired lifecycle evidence to live-proven", 
       asset: "BTC",
       expires_at_ms: NOW + 120_000,
       registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+      ...recoveryReadiness(),
       capital_ready: true,
       capital_plan: capitalPlan(),
       evidence_commitment: "carry:readiness:evidence:0001",
@@ -84,6 +117,7 @@ test("never lets aggregate readiness outlive its paired lifecycle proof", () => 
       asset: "BTC",
       expires_at_ms: NOW + 120_000,
       registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+      ...recoveryReadiness(),
       capital_ready: true,
       capital_plan: capitalPlan(),
     },
@@ -108,6 +142,7 @@ test("keeps mismatched lifecycle evidence pre-broadcast", () => {
       asset: "BTC",
       expires_at_ms: NOW + 120_000,
       registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+      ...recoveryReadiness(),
       capital_ready: true,
       capital_plan: capitalPlan(),
     },
@@ -130,6 +165,7 @@ test("does not promote live proof without exact realized after-cost value", () =
       image_digest: "sha256:abcdef123456",
       asset: "BTC",
       registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+      ...recoveryReadiness(),
     },
     lifecycle_proof: lifecycleProof({ realized_net_value_micro_usdc: null }),
     now_ms: NOW,
@@ -149,6 +185,7 @@ test("does not promote mathematically inconsistent value attribution", () => {
       image_digest: "sha256:abcdef123456",
       asset: "BTC",
       registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+      ...recoveryReadiness(),
     },
     lifecycle_proof: lifecycleProof({ value_attribution: attribution }),
     now_ms: NOW,
@@ -181,6 +218,7 @@ test("keeps technically connected but unfunded accounts pre-broadcast blocked", 
       capital_ready: false,
       owner_commitment: "owner_commitment_0001",
       image_digest: "sha256:abcdef123456",
+      ...recoveryReadiness(),
       capital_plan: capitalPlan(),
     },
     shadow_qualification: { ready: true, venues: 5 },
@@ -202,6 +240,7 @@ test("rejects a configured route probe without fresh owner-bound route evidence"
       capital_ready: true,
       owner_commitment: "owner_commitment_0001",
       image_digest: "sha256:abcdef123456",
+      ...recoveryReadiness(),
     },
     shadow_qualification: { ready: true, venues: 5 },
     carry_supervision: { ready: true, status: "healthy" },
@@ -225,6 +264,7 @@ test("rejects route evidence bound to an older account-state snapshot", () => {
       capital_ready: true,
       owner_commitment: "owner_commitment_0001",
       image_digest: "sha256:abcdef123456",
+      ...recoveryReadiness(),
       capital_plan: capitalPlan(),
     },
     shadow_qualification: { ready: true, venues: 5 },
@@ -322,4 +362,17 @@ function capitalPlan() {
     venue_id: venueId,
     account_state_commitment: `carry:account-state:${venueId}:0001`,
   }));
+}
+
+function recoveryReadiness(overrides = {}) {
+  return {
+    recovery_ready: true,
+    recovery_venue_ids: ["hyperliquid", "lighter", "aster"],
+    recovery_policy: {
+      ambiguous_submission: "freeze_reconcile_never_retry",
+      partial_fill: "exact_quantity_reduce_only",
+      worker_restart: "reconcile_before_action",
+    },
+    ...overrides,
+  };
 }

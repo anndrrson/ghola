@@ -4,6 +4,7 @@ import {
   CARRY_BROWSER_STREAM_VENUES,
   CARRY_EXECUTION_VENUES,
   CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES,
+  CARRY_RECOVERY_POLICY,
   CORE_PERP_VENUES,
   EXECUTION_VENUE_SPECS,
   assessVenueReadiness,
@@ -30,6 +31,11 @@ test("registry centralizes five core perp candidates without claiming qualificat
     "no_submit_reconciliation",
     "exact_quantity_recovery",
   ]);
+  assert.deepEqual(CARRY_RECOVERY_POLICY, {
+    ambiguous_submission: "freeze_reconcile_never_retry",
+    partial_fill: "exact_quantity_reduce_only",
+    worker_restart: "reconcile_before_action",
+  });
   assert.deepEqual(CARRY_BROWSER_STREAM_VENUES, ["lighter", "aster", "edgex", "dydx"]);
   assert.equal(EXECUTION_VENUE_SPECS.hyperliquid.qualification_status, "proven");
   assert.equal(EXECUTION_VENUE_SPECS.lighter.qualification_status, "integration");

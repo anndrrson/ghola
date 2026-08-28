@@ -7,8 +7,8 @@ describe("private-prime readiness", () => {
   it("shows one compact pre-broadcast status only from complete worker proof", () => {
     expect(carryPrivatePrimeSummary(proof(), NOW)).toEqual({
       status: "ready",
-      value: "5/5 DATA · 3/3 EXEC · ROUTES",
-      detail: "PRE-BROADCAST · CAPITAL READY · OWNER CONTROLLED",
+      value: "5/5 DATA · 3/3 EXEC · 3/3 REC · ROUTES",
+      detail: "PRE-BROADCAST · RECOVERY BOUND · CAPITAL READY · OWNER CONTROLLED",
       tone: "good",
     });
   });
@@ -20,7 +20,7 @@ describe("private-prime readiness", () => {
       three_venue_execution: { ...proof().three_venue_execution, capital_ready: false },
     }), NOW)).toEqual({
       status: "blocked",
-      value: "5/5 DATA · 3/3 EXEC · ROUTES",
+      value: "5/5 DATA · 3/3 EXEC · 3/3 REC · ROUTES",
       detail: "OWNER CAPITAL REQUIRED",
       tone: "warn",
     });
@@ -33,7 +33,7 @@ describe("private-prime readiness", () => {
       paired_lifecycle: pairedLifecycle(),
     }), NOW)).toEqual({
       status: "ready",
-      value: "5/5 DATA · 3/3 EXEC · ROUTES",
+      value: "5/5 DATA · 3/3 EXEC · 3/3 REC · ROUTES",
       detail: "LIVE · NET +$0.000034 · ΔMODEL −$0.000166 · FUND +$0.000050 · PNL +$0.000010 · COST −$0.000026 · FLAT",
       tone: "good",
     });
@@ -82,8 +82,28 @@ describe("private-prime readiness", () => {
       },
     }), NOW)).toEqual({
       status: "blocked",
-      value: "5/5 DATA · 3/3 EXEC · NO ROUTES",
+      value: "5/5 DATA · 3/3 EXEC · 3/3 REC · NO ROUTES",
       detail: "ROUTES UNVERIFIED",
+      tone: "bad",
+    });
+  });
+
+  it("rejects recovery coverage that permits ambiguous retries", () => {
+    expect(carryPrivatePrimeSummary(proof({
+      ready: false,
+      reasons: ["three_venue_recovery_unproven"],
+      failure_recovery: {
+        ...proof().failure_recovery,
+        policy: {
+          ambiguous_submission: "retry",
+          partial_fill: "exact_quantity_reduce_only",
+          worker_restart: "reconcile_before_action",
+        },
+      },
+    }), NOW)).toEqual({
+      status: "blocked",
+      value: "5/5 DATA · 3/3 EXEC · 0/3 REC · ROUTES",
+      detail: "RECOVERY UNPROVEN",
       tone: "bad",
     });
   });
@@ -104,6 +124,15 @@ function proof(overrides: Record<string, unknown> = {}) {
       ready: true,
       venue_ids: ["hyperliquid", "lighter", "aster"],
       capital_ready: true,
+    },
+    failure_recovery: {
+      ready: true,
+      venue_ids: ["hyperliquid", "lighter", "aster"],
+      policy: {
+        ambiguous_submission: "freeze_reconcile_never_retry",
+        partial_fill: "exact_quantity_reduce_only",
+        worker_restart: "reconcile_before_action",
+      },
     },
     collateral_route_observation: {
       configured: true,

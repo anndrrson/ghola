@@ -139,6 +139,13 @@ test("persists deployment-, owner-, account-, and registry-bound three-venue rea
   assert.equal(read.ready, true);
   assert.equal(read.image_digest, ENV.PHALA_CVM_IMAGE_DIGEST);
   assert.ok(read.evidence_commitment.startsWith("carry:readiness:evidence:"));
+  assert.equal(read.recovery_ready, true);
+  assert.deepEqual(read.recovery_venue_ids, [...CARRY_EXECUTION_VENUES]);
+  assert.deepEqual(read.recovery_policy, {
+    ambiguous_submission: "freeze_reconcile_never_retry",
+    partial_fill: "exact_quantity_reduce_only",
+    worker_restart: "reconcile_before_action",
+  });
   assert.equal(read.capital_ready, true);
   assert.equal(read.capital_plan.length, CARRY_EXECUTION_VENUES.length);
   assert.equal(read.capital_plan.every((item) =>
@@ -289,6 +296,29 @@ test("rejects stale or tampered readiness instead of reusing transient UI state"
   });
   assert.equal(wrongRoute.ready, false);
   assert.ok(wrongRoute.reasons.includes("carry_readiness_route_mismatch"));
+});
+
+test("rejects readiness detached from exact no-submit and recovery adapters", async () => {
+  const state = memoryState();
+  await storeCarryExecutionReadiness({ state, request: request(), matrix: matrix(), now_ms: NOW, env: ENV });
+  const evidence = structuredClone([...state.rows.values()][0].receipt);
+  const lighter = evidence.venues.find((item) => item.venue_id === "lighter");
+  lighter.exact_quantity_recovery_adapter_id = "lighter_unsafe_retry_v0";
+  evidence.recovery_policy.ambiguous_submission = "retry";
+  const assessed = assessCarryExecutionReadiness({
+    evidence,
+    owner_commitment: OWNER,
+    venue_access: request().venue_access,
+    asset: "BTC",
+    notional_usd: "11",
+    horizon_days: "30",
+    now_ms: NOW,
+    env: ENV,
+  });
+  assert.equal(assessed.ready, false);
+  assert.equal(assessed.recovery_ready, false);
+  assert.ok(assessed.reasons.includes("carry_readiness_recovery_policy_mismatch"));
+  assert.ok(assessed.reasons.includes("carry_readiness_recovery_adapter_mismatch:lighter"));
 });
 
 test("fails closed when durable state or a deployment digest is unavailable", async () => {
