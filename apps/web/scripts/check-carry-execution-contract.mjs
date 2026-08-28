@@ -1377,6 +1377,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "CONNECT FLEET", "carry_terminal_fleet_remediation_missing");
   requireText("webCarryBuilder", "/account?setup=carry&return_to=", "carry_terminal_fleet_setup_scope_missing");
   requireText("webCarryBuilderTest", 'item.textContent === "CONNECT FLEET"', "carry_terminal_fleet_remediation_test_missing");
+  requireText("webCarryBuilder", "CONNECT PAIR", "carry_terminal_pair_remediation_missing");
+  requireText("webCarryBuilder", "/account?setup=carry&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}&return_to=", "carry_terminal_pair_setup_scope_missing");
+  requireText("webCarryBuilderTest", 'item.textContent === "CONNECT PAIR"', "carry_terminal_pair_remediation_test_missing");
+  requireText("webCarryBuilderTest", 'setup.searchParams.get("long_venue")', "carry_terminal_pair_setup_test_missing");
+  requireText("webCarryBuilder", "useFleetSetup ? fleetSetupHref : pairSetupHref", "carry_terminal_setup_scope_switch_missing");
   requireText("webCarryBuilderTest", "FLEET 1/3 · ASTER BLOCKED", "carry_terminal_partial_fleet_evidence_test_missing");
   requireText("webCarryBuilder", "readyStoredDiagnostic", "carry_terminal_diagnostic_restore_missing");
   requireText("webCarryBuilderTest", "restores fresh diagnostic-only fleet evidence after refresh without treating it as readiness", "carry_terminal_diagnostic_restore_test_missing");

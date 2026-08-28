@@ -9,6 +9,7 @@ import {
   carryCheckFailure,
   carryFundingPersistenceSummary,
   carryLiquidationSummary,
+  carryMatrixPairReady,
   carryOpeningCapitalSummary,
   carryPortfolioRunwaySummary,
   carryRiskMandateSummary,
@@ -167,6 +168,17 @@ describe("CarryTerminalBuilder", () => {
       label: "AUTH MISMATCH",
       reference: "AUTH-TEST",
     });
+  });
+
+  it("uses full-fleet remediation only after the selected pair is already proven", () => {
+    const matrix = {
+      pairs: [
+        { long_venue_id: "lighter", short_venue_id: "hyperliquid", no_submit_ready: true, transaction_broadcast: false },
+        { long_venue_id: "hyperliquid", short_venue_id: "aster", no_submit_ready: false, transaction_broadcast: false },
+      ],
+    };
+    expect(carryMatrixPairReady(matrix, "hyperliquid", "lighter")).toBe(true);
+    expect(carryMatrixPairReady(matrix, "hyperliquid", "aster")).toBe(false);
   });
 
   afterEach(async () => {
@@ -666,16 +678,16 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("REF LIGHTER-REF-");
   });
 
-  it("returns unified setup to the same terminal route", async () => {
+  it("scopes first-time setup to the selected pair and returns to the same terminal route", async () => {
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
-    const link = [...container.querySelectorAll("a")].find((item) => item.textContent === "CONNECT FLEET");
-    expect(link?.getAttribute("href")).toContain("setup=carry");
-    expect(link?.getAttribute("href")).not.toContain("&long_venue=");
-    expect(link?.getAttribute("href")).not.toContain("&short_venue=");
-    const decoded = decodeURIComponent(link?.getAttribute("href") || "");
-    expect(decoded).toContain("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open");
-    expect(decoded).toContain("long_venue=hyperliquid&short_venue=lighter");
+    const link = [...container.querySelectorAll("a")].find((item) => item.textContent === "CONNECT PAIR");
+    const setup = new URL(link?.getAttribute("href") || "", "https://ghola.local");
+    expect(setup.searchParams.get("setup")).toBe("carry");
+    expect(setup.searchParams.get("long_venue")).toBe("hyperliquid");
+    expect(setup.searchParams.get("short_venue")).toBe("lighter");
+    expect(setup.searchParams.get("return_to")).toContain("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open");
+    expect(setup.searchParams.get("return_to")).toContain("long_venue=hyperliquid&short_venue=lighter");
   });
 
   it("routes a fresh owner to unified setup instead of failing position creation", async () => {
@@ -694,7 +706,10 @@ describe("CarryTerminalBuilder", () => {
     await click("NO-SUBMIT CHECK");
 
     const link = [...container.querySelectorAll("a")].find((item) => item.textContent === "FINISH CARRY SETUP");
-    expect(link?.getAttribute("href")).toContain("setup=carry");
+    const setup = new URL(link?.getAttribute("href") || "", "https://ghola.local");
+    expect(setup.searchParams.get("setup")).toBe("carry");
+    expect(setup.searchParams.get("long_venue")).toBe("hyperliquid");
+    expect(setup.searchParams.get("short_venue")).toBe("lighter");
     expect(api.createCarryPosition).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("NOT SAVED");
   });

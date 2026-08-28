@@ -627,7 +627,15 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   }
 
   const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${candidate.asset}-PERP&carry=open&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}`;
-  const setupHref = `/account?setup=carry&return_to=${encodeURIComponent(terminalReturn)}`;
+  const pairSetupHref = `/account?setup=carry&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}&return_to=${encodeURIComponent(terminalReturn)}`;
+  const fleetSetupHref = `/account?setup=carry&return_to=${encodeURIComponent(terminalReturn)}`;
+  const selectedPairReady = carryMatrixPairReady(
+    executionMatrix,
+    candidate.long.venue_id,
+    candidate.short.venue_id,
+  );
+  const useFleetSetup = privateSessionReady && (restoredReadiness || selectedPairReady);
+  const connectionHref = useFleetSetup ? fleetSetupHref : pairSetupHref;
   const canSave = actionableProof && creationProofFreshness.fresh;
   const needsSetupToSave = saveSetupRequired || !perpsTurnkey.authenticated;
   const canEnter = current?.position.status === "draft" && supervision.ready;
@@ -635,7 +643,11 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const connectionAction = auth.loading
     ? "CHECKING SIGN-IN…"
     : privateSessionReady
-      ? "CONNECT FLEET"
+      ? restoredReadiness
+        ? "MANAGE FLEET"
+        : selectedPairReady
+          ? "CONNECT FLEET"
+          : "CONNECT PAIR"
       : model.netUsd == null
         ? "CONNECT TO VERIFY COSTS"
         : model.netUsd > 0
@@ -700,7 +712,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         </div>
 
         <div className="grid grid-cols-2 gap-1.5">
-          <Link href={setupHref} className={`rounded border border-[#293a50] px-2 py-2 text-center font-mono text-[10px] font-semibold text-[#8fbbe2] hover:bg-[#0d1622] ${privateSessionReady ? "" : "col-span-2"}`}>
+          <Link href={connectionHref} className={`rounded border border-[#293a50] px-2 py-2 text-center font-mono text-[10px] font-semibold text-[#8fbbe2] hover:bg-[#0d1622] ${privateSessionReady ? "" : "col-span-2"}`}>
             {connectionAction}
           </Link>
           {!privateSessionReady ? null : !recordsLoaded ? (
@@ -712,7 +724,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
               {busy === "check" ? "CHECKING…" : executionPair ? restoredReadiness ? "CHECK PAIR · FLEET READY" : "NO-SUBMIT CHECK" : "READ-ONLY ROUTE"}
             </button>
           ) : !current && canSave && needsSetupToSave ? (
-            <Link href={setupHref} className="rounded border border-[#31577a] bg-[#10243a] px-2 py-2 text-center font-mono text-[10px] font-semibold text-[#b7ddff] hover:bg-[#142c46]">
+            <Link href={pairSetupHref} className="rounded border border-[#31577a] bg-[#10243a] px-2 py-2 text-center font-mono text-[10px] font-semibold text-[#b7ddff] hover:bg-[#142c46]">
               FINISH CARRY SETUP
             </Link>
           ) : !current && canSave ? (
@@ -1506,6 +1518,28 @@ export function carryFleetGuardSummary(
     receipt: `${readyPairs}/${pairs.length} · ${detail}${age ? ` · ${age}` : ""}`,
     tone: readyPairs > 0 ? "warn" : "bad",
   };
+}
+
+export function carryMatrixPairReady(
+  matrix: Record<string, unknown> | null,
+  longVenueId: string,
+  shortVenueId: string,
+) {
+  if (!matrix) return false;
+  const selectedPair = asRecord(matrix.selected_pair);
+  const selectedResult = asRecord(selectedPair.result);
+  if (
+    selectedPair.long_venue_id === longVenueId
+    && selectedPair.short_venue_id === shortVenueId
+    && selectedPair.transaction_broadcast === false
+    && selectedResult.no_submit_ready === true
+  ) return true;
+  const pairs = Array.isArray(matrix.pairs) ? matrix.pairs.map(asRecord) : [];
+  return pairs.some((pair) => {
+    const samePair = (pair.long_venue_id === longVenueId && pair.short_venue_id === shortVenueId)
+      || (pair.long_venue_id === shortVenueId && pair.short_venue_id === longVenueId);
+    return samePair && pair.no_submit_ready === true && pair.transaction_broadcast === false;
+  });
 }
 
 export function carrySupervisionSummary(value: Record<string, unknown>): {

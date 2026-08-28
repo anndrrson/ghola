@@ -2921,6 +2921,19 @@ test("rejects a fleet setup link scoped back down to one pair", () => {
   );
 });
 
+test("rejects selected-pair onboarding that silently expands to the full fleet", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll(
+        "/account?setup=carry&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}&return_to=",
+        "/account?setup=carry&return_to=",
+      ),
+    }),
+    /carry_terminal_pair_setup_scope_missing/,
+  );
+});
+
 test("rejects carry setup that cannot distinguish a platform authorization failure", () => {
   assert.throws(
     () => checkCarryExecutionContract({
