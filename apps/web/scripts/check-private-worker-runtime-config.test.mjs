@@ -37,6 +37,37 @@ test("requires worker authentication and HTTPS", () => {
   );
 });
 
+test("blocks deployment when capability-secret aliases disagree", async () => {
+  const env = {
+    VERCEL: "1",
+    GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+    PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "current-secret",
+    GHOLA_WORKER_CAPABILITY_SECRET: "stale-secret",
+  };
+  assert.throws(
+    () => verifyPrivateWorkerRuntimeConfig(env),
+    /worker capability secret aliases disagree/,
+  );
+  await assert.rejects(
+    verifyPrivateWorkerRuntimeAuthorization(env, async () => {
+      throw new Error("the probe must not run with ambiguous authorization");
+    }),
+    /worker capability secret aliases disagree/,
+  );
+});
+
+test("blocks deployment when execution-token aliases disagree", () => {
+  assert.throws(
+    () => verifyPrivateWorkerRuntimeConfig({
+      VERCEL: "1",
+      GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "current-token",
+      PRIVATE_AGENT_EXECUTION_TOKEN: "stale-token",
+    }),
+    /private worker execution token aliases disagree/,
+  );
+});
+
 test("accepts a fully configured Vercel artifact", () => {
   assert.deepEqual(verifyPrivateWorkerRuntimeConfig({
     VERCEL: "1",

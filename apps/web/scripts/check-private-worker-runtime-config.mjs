@@ -27,12 +27,7 @@ export function verifyPrivateWorkerRuntimeConfig(env = process.env) {
     "Vercel release Carry shadow worker URL",
   );
 
-  const workerAuth = first(env,
-    "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET",
-    "GHOLA_WORKER_CAPABILITY_SECRET",
-    "GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN",
-    "PRIVATE_AGENT_EXECUTION_TOKEN",
-  );
+  const workerAuth = capabilitySecret(env) || executionToken(env);
   if (!workerAuth) throw new Error("Vercel release is missing private worker authentication");
 
   return {
@@ -102,12 +97,9 @@ function optionalHttpsUrl(raw, label) {
 }
 
 function workerAuthorization(env, path, body) {
-  const capabilitySecret = first(env,
-    "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET",
-    "GHOLA_WORKER_CAPABILITY_SECRET",
-  );
-  if (!capabilitySecret) {
-    return `Bearer ${first(env, "GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN", "PRIVATE_AGENT_EXECUTION_TOKEN")}`;
+  const secret = capabilitySecret(env);
+  if (!secret) {
+    return `Bearer ${executionToken(env)}`;
   }
   const now = Math.floor(Date.now() / 1_000);
   const payload = {
@@ -124,8 +116,33 @@ function workerAuthorization(env, path, body) {
     operation_class: body.operation_class,
   };
   const encoded = Buffer.from(stableJson(payload), "utf8").toString("base64url");
-  const signature = createHmac("sha256", capabilitySecret).update(encoded).digest("base64url");
+  const signature = createHmac("sha256", secret).update(encoded).digest("base64url");
   return `Bearer ghcap_v1.${encoded}.${signature}`;
+}
+
+function capabilitySecret(env) {
+  return consistentAlias(env,
+    "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET",
+    "GHOLA_WORKER_CAPABILITY_SECRET",
+    "worker capability secret",
+  );
+}
+
+function executionToken(env) {
+  return consistentAlias(env,
+    "GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN",
+    "PRIVATE_AGENT_EXECUTION_TOKEN",
+    "private worker execution token",
+  );
+}
+
+function consistentAlias(env, primaryKey, legacyKey, label) {
+  const primary = String(env[primaryKey] || "").trim();
+  const legacy = String(env[legacyKey] || "").trim();
+  if (primary && legacy && primary !== legacy) {
+    throw new Error(`Vercel release ${label} aliases disagree`);
+  }
+  return primary || legacy;
 }
 
 function stableJson(value) {
