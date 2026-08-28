@@ -17,6 +17,7 @@ import {
   phalaJitProvisioningEnabled,
   phalaWorkerImageConfiguredForRequestedMode,
 } from "@/lib/private-agent-phala";
+import { workerAuthorizationHeader } from "@/lib/private-agent-capability";
 
 interface RelayHealth {
   attested_provider_count?: number;
@@ -81,6 +82,7 @@ interface PhalaWorkerEvidenceBundle {
 const ATTESTATION_STATUS_MAX_AGE_MS = 5 * 60_000;
 const ATTESTATION_STATUS_FETCH_TIMEOUT_MS = 12_000;
 const WORKER_EVIDENCE_FETCH_TIMEOUT_MS = 18_000;
+const WORKER_AUTHORIZATION_FETCH_TIMEOUT_MS = 8_000;
 const X25519_PUBLIC_KEY_RE = /^[0-9a-f]{64}$/i;
 
 function thumperBase(): string {
@@ -150,6 +152,88 @@ function normalizedHttpsUrl(value: string | null | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+export async function verifyPrivateAgentWorkerAuthorization(input: {
+  executionUrl: string;
+  fetchImpl?: typeof fetch;
+  env?: Record<string, string | undefined>;
+}): Promise<boolean> {
+  const executionUrl = normalizedHttpsUrl(input.executionUrl);
+  if (!executionUrl) return false;
+  const env = input.env ?? process.env;
+  const path = "/.well-known/private-agent-authorization";
+  const body = {
+    version: 1,
+    operation_class: "runtime_authorization_probe",
+  };
+  const fallbackToken = env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
+    env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() || "";
+  const authorization = workerAuthorizationHeader({
+    env,
+    fallbackToken,
+    method: "POST",
+    path,
+    scope: "runtime:read",
+    body,
+    expected: { operation_class: "runtime_authorization_probe" },
+  });
+  if (!authorization) return false;
+
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), WORKER_AUTHORIZATION_FETCH_TIMEOUT_MS);
+  try {
+    const response = await (input.fetchImpl ?? fetch)(new URL(path, executionUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        authorization,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    if (!response.ok) return false;
+    const result = await response.json().catch(() => null) as {
+      version?: number;
+      authorized?: boolean;
+    } | null;
+    return result?.version === 1 && result.authorized === true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function requireWorkerAuthorization(
+  provider: ConfidentialComputeProviderStatus,
+): Promise<ConfidentialComputeProviderStatus> {
+  if (!provider.available) return provider;
+  const authorized = provider.execution_url
+    ? await verifyPrivateAgentWorkerAuthorization({ executionUrl: provider.execution_url })
+    : false;
+  if (authorized) {
+    return {
+      ...provider,
+      evidence: {
+        ...provider.evidence,
+        worker_authorization_verified: true,
+      },
+    };
+  }
+  return {
+    ...provider,
+    available: false,
+    supports_sealed_secrets: false,
+    supports_background_agents: false,
+    supports_trading_execution: false,
+    reason: "Private worker authorization does not match this web deployment.",
+    evidence: {
+      ...provider.evidence,
+      worker_authorization_verified: false,
+    },
+  };
 }
 
 export function phalaProviderFromAttestationStatus(input: {
@@ -490,11 +574,11 @@ function isAttestedProvider(value: unknown): value is AttestedProvider {
 
 async function phalaProvider(): Promise<ConfidentialComputeProviderStatus> {
   const discovered = await discoverPhalaPrivateAgentProvider().catch(() => null);
-  if (discovered) return discovered;
+  if (discovered) return requireWorkerAuthorization(discovered);
   const directWorker = await directWorkerPhalaProvider().catch(() => null);
-  if (directWorker) return directWorker;
+  if (directWorker) return requireWorkerAuthorization(directWorker);
   const mirrored = await mirroredPhalaProvider().catch(() => null);
-  if (mirrored) return mirrored;
+  if (mirrored) return requireWorkerAuthorization(mirrored);
   if (phalaJitProvisioningEnabled()) {
     const configIssue = phalaJitProvisioningConfigIssue();
     const configured = phalaJitProvisioningConfigured();

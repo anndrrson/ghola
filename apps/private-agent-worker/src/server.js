@@ -2905,6 +2905,33 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return json(res, 200, await publicRecipient(recipient));
       }
 
+      if (
+        req.method === "POST" &&
+        url.pathname === "/.well-known/private-agent-authorization"
+      ) {
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "runtime:read",
+          state,
+          expected: { operation_class: "runtime_authorization_probe" },
+        });
+        if (authorized.rejected) return;
+        if (
+          authorized.body?.version !== 1 ||
+          authorized.body?.operation_class !== "runtime_authorization_probe"
+        ) {
+          return json(res, 400, {
+            error: "invalid_runtime_authorization_probe",
+            error_code: "invalid_runtime_authorization_probe",
+          });
+        }
+        return json(res, 200, {
+          version: 1,
+          authorized: true,
+          checked_at: new Date().toISOString(),
+        });
+      }
+
       if (req.method === "GET" && url.pathname === "/carry/shadow") {
         const assets = String(url.searchParams.get("assets") || "BTC,ETH,SOL")
           .split(",")

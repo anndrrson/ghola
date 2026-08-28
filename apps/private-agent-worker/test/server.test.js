@@ -460,6 +460,62 @@ describe("private agent worker", () => {
     );
   });
 
+  it("proves web-to-worker authorization without submitting an order", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    const path = "/.well-known/private-agent-authorization";
+    const body = {
+      version: 1,
+      operation_class: "runtime_authorization_probe",
+    };
+    const token = capabilityToken({
+      path,
+      scope: "runtime:read",
+      body,
+      expected: { operation_class: "runtime_authorization_probe" },
+    });
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json().then(({ version, authorized }) => ({ version, authorized })), {
+      version: 1,
+      authorized: true,
+    });
+
+    const replay = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    assert.equal(replay.status, 403);
+  });
+
+  it("rejects a missing runtime authorization capability", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    const response = await fetch(`${baseUrl}/.well-known/private-agent-authorization`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        operation_class: "runtime_authorization_probe",
+      }),
+    });
+
+    assert.equal(response.status, 401);
+    assert.equal((await response.json()).error_code, "worker_capability_required");
+  });
+
   it("reports degraded Carry supervision without pretending the worker stopped", async () => {
     await close(server);
     process.env.PRIVATE_AGENT_ATTESTED_READY = "true";

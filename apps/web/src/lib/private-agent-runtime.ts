@@ -47,6 +47,7 @@ export interface ConfidentialComputeProviderStatus {
     runtime_config_matches_requested_mode?: boolean;
     runtime_config_drift_reasons?: string[];
     direct_worker_evidence?: boolean;
+    worker_authorization_verified?: boolean;
   };
 }
 
@@ -172,6 +173,11 @@ export function buildPrivateAgentRuntimeStatus(input: {
 
   if (!selected) {
     blockingReasons.push("no_attested_confidential_compute_provider");
+  }
+  if (input.providers.some((provider) =>
+    provider.evidence?.worker_authorization_verified === false
+  )) {
+    blockingReasons.push("private_worker_authorization_mismatch");
   }
   if (!input.shieldedRailReady) {
     blockingReasons.push("no_ready_shielded_settlement_rail");

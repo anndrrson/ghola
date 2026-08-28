@@ -85,6 +85,25 @@ describe("private agent runtime", () => {
     expect(selectedReadyPrivateAgentProvider(runtime)?.id).toBe("phala");
   });
 
+  it("reports web-to-worker authorization drift explicitly", () => {
+    const runtime = buildPrivateAgentRuntimeStatus({
+      providers: [{
+        ...readyPhala,
+        available: false,
+        supports_sealed_secrets: false,
+        supports_background_agents: false,
+        supports_trading_execution: false,
+        reason: "Private worker authorization does not match this web deployment.",
+        evidence: { worker_authorization_verified: false },
+      }],
+      preferredProvider: "phala",
+      shieldedRailReady: true,
+    });
+
+    expect(runtime.selected_provider).toBeNull();
+    expect(runtime.blocking_reasons).toContain("private_worker_authorization_mismatch");
+  });
+
   it("blocks free users even when the runtime is ready", () => {
     const runtime = buildPrivateAgentRuntimeStatus({
       providers: [readyPhala],

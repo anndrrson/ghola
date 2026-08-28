@@ -3,6 +3,7 @@ import {
   phalaProviderFromAttestationStatus,
   phalaProviderFromWorkerEvidence,
   phalaProviderFromWorkerEvidenceBundle,
+  verifyPrivateAgentWorkerAuthorization,
 } from "./private-agent-runtime-server";
 import type { PrivateAgentRuntimeStatus } from "./private-agent-runtime";
 
@@ -193,5 +194,49 @@ describe("phalaProviderFromWorkerEvidence", () => {
       imageDigestPin: imageDigest,
       nowMs: Date.parse(checkedAt) + 6 * 60_000,
     })).toBeNull();
+  });
+});
+
+describe("verifyPrivateAgentWorkerAuthorization", () => {
+  it("accepts an authenticated no-submit worker probe", async () => {
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe(
+        "https://worker.example.com/.well-known/private-agent-authorization",
+      );
+      expect(init?.method).toBe("POST");
+      expect(new Headers(init?.headers).get("authorization")).toMatch(/^Bearer ghcap_v1\./);
+      return new Response(JSON.stringify({ version: 1, authorized: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await expect(verifyPrivateAgentWorkerAuthorization({
+      executionUrl,
+      fetchImpl,
+      env: { PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "shared-secret" },
+    })).resolves.toBe(true);
+  });
+
+  it("fails closed when worker authorization is missing or rejected", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+    }) as typeof fetch;
+
+    await expect(verifyPrivateAgentWorkerAuthorization({
+      executionUrl,
+      fetchImpl,
+      env: {},
+    })).resolves.toBe(false);
+    expect(calls).toBe(0);
+
+    await expect(verifyPrivateAgentWorkerAuthorization({
+      executionUrl,
+      fetchImpl,
+      env: { GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "mismatched-token" },
+    })).resolves.toBe(false);
+    expect(calls).toBe(1);
   });
 });

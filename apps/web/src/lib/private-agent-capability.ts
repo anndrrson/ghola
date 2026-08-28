@@ -4,6 +4,7 @@ const CAPABILITY_PREFIX = "ghcap_v1";
 const DEFAULT_TTL_SECONDS = 300;
 
 export type WorkerCapabilityScope =
+  | "runtime:read"
   | "autopilot:control"
   | "autopilot:read"
   | "carry:read"
