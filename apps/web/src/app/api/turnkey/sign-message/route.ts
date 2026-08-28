@@ -5,6 +5,7 @@ import {
   sameOrigin,
   SESSION_COOKIE_NAME,
 } from "../../auth/session/_lib";
+import { sessionOwnsTurnkeyWallet } from "../_ownership";
 
 const TURNKEY_API_BASE_URL = "https://api.turnkey.com";
 
@@ -143,19 +144,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // TODO(turnkey-ownership-binding): there is currently NO server-side
-    // mapping from a Ghola user → the Turnkey sub-org / wallet they own
-    // (see apps/web/src/app/api/auth/session/_lib.ts — SessionUser only
-    // carries {id,email}). Until that binding exists (e.g. a
-    // user_id → sub_org_id table surfaced by thumper-cloud), this route
-    // can only prove the caller is *some* authenticated user, not that
-    // they own the referenced subOrgId/walletAddress. This is an IDOR
-    // gap. The ownership assertion MUST be implemented and enforced here
-    // BEFORE TURNKEY_DANGEROUS_SERVER_SIGNING_ALLOW_PRODUCTION is ever
-    // set in production. Reference the authenticated user so the binding
-    // has an obvious insertion point and the var isn't flagged unused.
-    void session.user.id;
-
     const orgId = process.env.TURNKEY_ORG_ID;
     const apiPublicKey = process.env.TURNKEY_API_PUBLIC_KEY;
     const apiPrivateKey = process.env.TURNKEY_API_PRIVATE_KEY;
@@ -174,6 +162,27 @@ export async function POST(req: NextRequest) {
     });
 
     const client = sdk.apiClient();
+
+    // Bind the requested signer to the authenticated Ghola identity using
+    // Turnkey's authoritative email → sub-org index, then prove the exact
+    // signing address belongs to a wallet inside that sub-org. Never trust
+    // the browser's locally stored organization or address by itself.
+    const ownsWallet = await sessionOwnsTurnkeyWallet({
+      client,
+      parentOrganizationId: orgId,
+      sessionEmail: session.user.email,
+      subOrganizationId: subOrgId,
+      walletAddress,
+    });
+    if (!ownsWallet) {
+      return NextResponse.json(
+        {
+          error: "wallet does not belong to the authenticated session",
+          code: "turnkey_wallet_session_mismatch",
+        },
+        { status: 403 }
+      );
+    }
 
     const hexPayload = hasMessageHex
       ? (messageHex as string).toLowerCase()

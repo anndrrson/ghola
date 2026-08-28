@@ -48,6 +48,20 @@ const requiredGoogleRedirectSources = [
     ],
   },
   {
+    file: "src/app/api/turnkey/sign-message/route.ts",
+    patterns: [
+      { label: "session-bound Turnkey signing ownership check", pattern: /sessionOwnsTurnkeyWallet\(\{/ },
+      { label: "fail-closed Turnkey wallet ownership response", pattern: /turnkey_wallet_session_mismatch/ },
+    ],
+  },
+  {
+    file: "src/app/api/turnkey/_ownership.ts",
+    patterns: [
+      { label: "authoritative email-to-sub-org ownership lookup", pattern: /filterType:\s*["']EMAIL["']/ },
+      { label: "exact Turnkey wallet account binding", pattern: /account\.address === walletAddress/ },
+    ],
+  },
+  {
     file: "patches/@turnkey__core@2.5.0.patch",
     patterns: [
       { label: "Turnkey platform authenticator selection", pattern: /this\.config\.withPlatformKey[\s\S]*?["']platform["']/ },

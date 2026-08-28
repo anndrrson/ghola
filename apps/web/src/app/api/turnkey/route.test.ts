@@ -1,5 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const turnkeyApi = vi.hoisted(() => ({
+  getSubOrgIds: vi.fn(),
+  getWallets: vi.fn(),
+  getWalletAccounts: vi.fn(),
+  signRawPayload: vi.fn(),
+}));
+
+vi.mock("@turnkey/sdk-server", () => ({
+  Turnkey: class {
+    apiClient() {
+      return turnkeyApi;
+    }
+  },
+}));
+
 import { POST as createWallet } from "./create-wallet/route";
 import { POST as signMessage } from "./sign-message/route";
 
@@ -70,6 +85,9 @@ function enableSigningInProd() {
   vi.stubEnv("NODE_ENV", "production");
   vi.stubEnv("TURNKEY_SERVER_SIGNING_ENABLED", "true");
   vi.stubEnv("TURNKEY_DANGEROUS_SERVER_SIGNING_ALLOW_PRODUCTION", "true");
+  vi.stubEnv("TURNKEY_ORG_ID", "parent-org");
+  vi.stubEnv("TURNKEY_API_PUBLIC_KEY", "public-key");
+  vi.stubEnv("TURNKEY_API_PRIVATE_KEY", "private-key");
 }
 
 function enableWalletsInProd() {
@@ -157,6 +175,11 @@ describe("Turnkey defense-in-depth (when enabled)", () => {
   beforeEach(() => {
     setSessionProfile(null);
     installSessionFetchStub();
+    vi.clearAllMocks();
+    turnkeyApi.getSubOrgIds.mockResolvedValue({ organizationIds: ["sub-alice"] });
+    turnkeyApi.getWallets.mockResolvedValue({ wallets: [{ walletId: "wallet-1" }] });
+    turnkeyApi.getWalletAccounts.mockResolvedValue({ accounts: [{ address: "wallet-alice" }] });
+    turnkeyApi.signRawPayload.mockResolvedValue({ r: "11".repeat(32), s: "22".repeat(32) });
   });
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -205,6 +228,42 @@ describe("Turnkey defense-in-depth (when enabled)", () => {
     const body = await res.json();
     expect(res.status).toBe(401);
     expect(body.code).toBe("turnkey_auth_required");
+  });
+
+  it("sign-message rejects another user's Turnkey sub-organization (IDOR)", async () => {
+    enableSigningInProd();
+    setSessionProfile({ id: "u1", email: "alice@example.com" });
+    const res = await signMessage(
+      authedRequest("/api/turnkey/sign-message", {
+        message: "hi",
+        subOrgId: "sub-victim",
+        walletAddress: "wallet-victim",
+      })
+    );
+    const body = await res.json();
+    expect(res.status).toBe(403);
+    expect(body.code).toBe("turnkey_wallet_session_mismatch");
+    expect(turnkeyApi.getWallets).not.toHaveBeenCalled();
+    expect(turnkeyApi.signRawPayload).not.toHaveBeenCalled();
+  });
+
+  it("sign-message signs only with the exact session-owned Turnkey wallet", async () => {
+    enableSigningInProd();
+    setSessionProfile({ id: "u1", email: "alice@example.com" });
+    const res = await signMessage(
+      authedRequest("/api/turnkey/sign-message", {
+        message: "hi",
+        subOrgId: "sub-alice",
+        walletAddress: "wallet-alice",
+      })
+    );
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.signature).toBe(Buffer.from(`${"11".repeat(32)}${"22".repeat(32)}`, "hex").toString("base64"));
+    expect(turnkeyApi.signRawPayload).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "sub-alice",
+      signWith: "wallet-alice",
+    }));
   });
 
   it("create-wallet rejects cross-site requests", async () => {
