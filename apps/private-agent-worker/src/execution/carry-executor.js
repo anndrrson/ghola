@@ -350,7 +350,11 @@ export async function executeStoredCarryExit({
   let proof;
   try {
     proof = await preflight({
-      body: { ...preflightBody(record, startedAt), phase: "monitoring" },
+      body: {
+        ...preflightBody(record, startedAt),
+        phase: "exit",
+        exit_base_size_by_venue: { ...exactBases.byVenue },
+      },
       recipient,
       state,
       verifyOrder,
@@ -1757,7 +1761,9 @@ function buildExitLegs(record, proof, entrySaga, bases, nowMs) {
     const side = entryLeg.side === "buy" ? "sell" : "buy";
     const verified = evidence.find((item) => item.venue_id === entryLeg.venue_id);
     const shape = verified?.order_shape;
-    if (!shape?.market || !shape?.limit_price || verified.transaction_broadcast !== false || !(bases[entryLeg.venue_id] > 0)) {
+    if (!shape?.market || !shape?.limit_price || shape.side !== side || shape.reduce_only !== true
+      || Number(shape.base_size) !== bases[entryLeg.venue_id]
+      || verified.transaction_broadcast !== false || !(bases[entryLeg.venue_id] > 0)) {
       return denied(`carry_exit_order_shape_missing:${entryLeg.venue_id}`);
     }
     const legId = `leg:carry:exit:${digest(`${record.position.position_id}:${entryLeg.venue_id}`).slice(0, 28)}`;

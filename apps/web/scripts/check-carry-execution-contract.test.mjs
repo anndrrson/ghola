@@ -645,6 +645,38 @@ test("rejects live Carry entry that ignores degraded supervision", () => {
   );
 });
 
+test("rejects exit execution that reuses an opening-shaped preflight", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      executor: sources.executor.replaceAll('phase: "exit"', 'phase: "monitoring"'),
+    }),
+    /carry_exit_exact_preflight_phase_missing/,
+  );
+});
+
+test("rejects exit preflight that does not verify the exact reduce-only order shape", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll("assertExactExitOrderShape({", "trustExitOrderShape({"),
+    }),
+    /carry_exit_order_shape_verification_missing/,
+  );
+});
+
+test("rejects venue no-submit receipts that omit reduce-only binding", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      lighter: sources.lighter.replaceAll("reduce_only: order.reduce_only === true", "reduce_only: false"),
+      hyperliquid: sources.hyperliquid.replaceAll("reduce_only: instruction.order?.reduce_only === true", "reduce_only: false"),
+      privateExecution: sources.privateExecution.replaceAll('reduce_only: result.order.reduceOnly === "true"', "reduce_only: false"),
+    }),
+    /lighter_no_submit_reduce_only_binding_missing|hyperliquid_no_submit_reduce_only_binding_missing|aster_no_submit_reduce_only_binding_missing/,
+  );
+});
+
 test("rejects an automatic-exit loop that never retries its failed restart audit", () => {
   assert.throws(
     () => checkCarryExecutionContract({

@@ -1254,7 +1254,10 @@ function hyperliquidNoSubmitResult({ instruction, cloid, executionMode, runnerRe
       transaction_broadcast: false,
     },
     checks,
-    order_shape: runnerResult.order_shape || null,
+    order_shape: runnerResult.order_shape ? {
+      ...runnerResult.order_shape,
+      reduce_only: instruction.order?.reduce_only === true,
+    } : null,
   };
 }
 

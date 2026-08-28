@@ -476,6 +476,7 @@ function normalizedVerification(result, order) {
       side: order.side,
       base_size: result.order_shape?.base_size || order.base_size,
       limit_price: result.order_shape?.limit_price || order.limit_price,
+      reduce_only: order.reduce_only === true,
       notional_micro_usdc: Math.round(Number(result.order_shape?.base_size || order.base_size) * Number(result.order_shape?.limit_price || order.limit_price) * 1_000_000),
       quantity_step_e8: result.order_shape?.quantity_step_e8,
       price_tick_e8: result.order_shape?.price_tick_e8,

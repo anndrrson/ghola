@@ -336,8 +336,17 @@ test("bootstraps one capped candidate only after separate qualification confirma
   assert.equal(exiting.ok, true);
   const closed = await executeStoredCarryExit({
     ...args,
-    preflight: async () => ({
+    preflight: async ({ body }) => ({
       ...proof,
+      evidence: proof.evidence.map((item) => {
+        const exit = body?.phase === "exit";
+        const side = exit ? (item.side === "buy" ? "sell" : "buy") : item.side;
+        return {
+          ...item,
+          side,
+          order_shape: { ...item.order_shape, side, reduce_only: exit },
+        };
+      }),
       account_readiness: [
         { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:pilot", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
         { venue_id: "aster", account_commitment: "account:aster:pilot", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
@@ -811,8 +820,8 @@ test("does not claim a recovered exit is flat when a venue omits exact account c
     event: { version: 1, event_id: "carry:exit:request:proof-pending", sequence: active.position.last_event_sequence + 1, type: "manual_exit_requested" },
     now_ms: NOW + 50,
   });
-  const preflight = async () => ({
-    ...preflightProof(),
+  const preflight = async ({ body }) => ({
+    ...preflightProof(undefined, { phase: body?.phase }),
     account_readiness: [
       { venue_id: "aster", account_commitment: "account:aster:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
       { venue_id: "lighter", account_commitment: "account:lighter:0001", authorized: true, flat_zero_orders: false, position_count: null, open_order_count: 0 },
@@ -845,7 +854,7 @@ test("does not claim flat when account proof belongs to another venue account", 
     event: { version: 1, event_id: "carry:exit:request:account-mismatch", sequence: active.position.last_event_sequence + 1, type: "manual_exit_requested" },
     now_ms: NOW + 50,
   });
-  const proof = preflightProof();
+  const proof = preflightProof(undefined, { phase: "exit" });
   proof.account_readiness[1].account_commitment = "account:lighter:wrong:0001";
   const result = await executeStoredCarryExit({
     ...fixture,
@@ -920,7 +929,7 @@ test("background monitoring triggers an automatic reduce-only exit and finalizes
   });
   assert.equal(entry.ok, true);
 
-  const monitoringProof = async ({ now }) => automaticMonitoringProof(undefined, now());
+  const monitoringProof = async ({ body, now }) => exitAwareMonitoringProof(undefined, body, now());
   const firstMonitor = await runCarryMonitoringTick({
     state: fixture.state,
     preflight: monitoringProof,
@@ -989,7 +998,7 @@ test("completes a supervised restart-to-flat lifecycle for every qualified venue
     });
     assert.equal(entry.ok, true, `${label}: entry ${entry.error || "failed"}`);
 
-    const monitoringProof = async ({ now }) => automaticMonitoringProof(pair, now());
+    const monitoringProof = async ({ body, now }) => exitAwareMonitoringProof(pair, body, now());
     const firstMonitor = await runCarryMonitoringTick({
       state: fixture.state,
       preflight: monitoringProof,
@@ -1065,7 +1074,7 @@ async function setup(t, suffix, pair = { long: "aster", short: "lighter" }) {
     position_id: positionId,
     recipient: { recipient_id: "did:key:carry-executor" },
     verifyOrder: async () => ({ status: "verified_no_funds" }),
-    preflight: async () => preflightProof(pair),
+    preflight: async ({ body }) => preflightProof(pair, { phase: body?.phase }),
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
     now: (() => { let value = NOW + 1; return () => value += 1; })(),
   };
@@ -1174,7 +1183,8 @@ function monitoringContext(pair = { long: "aster", short: "lighter" }) {
   };
 }
 
-function preflightProof(pair = { long: "aster", short: "lighter" }) {
+function preflightProof(pair = { long: "aster", short: "lighter" }, { phase = "opening" } = {}) {
+  const exit = phase === "exit";
   return {
     version: 1,
     transaction_broadcast: false,
@@ -1185,8 +1195,8 @@ function preflightProof(pair = { long: "aster", short: "lighter" }) {
       { venue_id: pair.short, account_commitment: `account:${pair.short}:0001`, authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
     ],
     evidence: [
-      { venue_id: pair.long, account_commitment: `account:${pair.long}:0001`, side: "buy", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.long), base_size: "0.001", limit_price: "10000" } },
-      { venue_id: pair.short, account_commitment: `account:${pair.short}:0001`, side: "sell", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.short), base_size: "0.001", limit_price: "10000" } },
+      { venue_id: pair.long, account_commitment: `account:${pair.long}:0001`, side: exit ? "sell" : "buy", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.long), side: exit ? "sell" : "buy", base_size: "0.001", limit_price: "10000", reduce_only: exit } },
+      { venue_id: pair.short, account_commitment: `account:${pair.short}:0001`, side: exit ? "buy" : "sell", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.short), side: exit ? "buy" : "sell", base_size: "0.001", limit_price: "10000", reduce_only: exit } },
     ],
   };
 }
@@ -1217,6 +1227,13 @@ function automaticMonitoringProof(pair = { long: "aster", short: "lighter" }, ch
     ],
     qualification_reasons: [],
   };
+}
+
+function exitAwareMonitoringProof(pair, body, checkedAtMs) {
+  const proof = automaticMonitoringProof(pair, checkedAtMs);
+  return body?.phase === "exit"
+    ? { ...proof, evidence: preflightProof(pair, { phase: "exit" }).evidence }
+    : proof;
 }
 
 function carryMarket(venueId) {

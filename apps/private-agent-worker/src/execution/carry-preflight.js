@@ -48,7 +48,10 @@ export async function preflightCarryPair({
     ? "monitoring"
     : body.phase === "migration"
       ? "migration"
-      : "opening";
+      : body.phase === "exit"
+        ? "exit"
+        : "opening";
+  const riskReduction = phase === "monitoring" || phase === "exit";
   const observedAt = now();
   const runtimeMaxContractDataSkewMs = carryMarketDataSkewMs(env);
   const runtimeMaxIndexPriceDivergenceBps = carryBasisBudgetBps(env, "PRIVATE_AGENT_CARRY_MAX_INDEX_PRICE_DIVERGENCE_BPS", 25);
@@ -76,7 +79,7 @@ export async function preflightCarryPair({
   const shortSnapshot = selectSnapshot(shortSnapshots, asset, shortVenue, observedAt);
   const contractDataSkewMs = Math.abs(longSnapshot.as_of_ms - shortSnapshot.as_of_ms);
   if (!Number.isSafeInteger(contractDataSkewMs)
-    || (phase !== "monitoring" && contractDataSkewMs > maxContractDataSkewMs)) {
+    || (!riskReduction && contractDataSkewMs > maxContractDataSkewMs)) {
     throw carryError("carry_market_data_skew_exceeded", 409);
   }
   const contractPairBasis = evaluatePerpContractPairBasis({
@@ -86,7 +89,7 @@ export async function preflightCarryPair({
     max_index_price_divergence_bps: maxIndexPriceDivergenceBps,
     max_mark_price_divergence_bps: maxMarkPriceDivergenceBps,
   });
-  if (phase !== "monitoring" && !contractPairBasis.eligible) {
+  if (!riskReduction && !contractPairBasis.eligible) {
     throw carryError(`carry_contract_equivalence_failed:${contractPairBasis.reasons[0]}`, 409);
   }
   const legs = [
@@ -96,7 +99,10 @@ export async function preflightCarryPair({
 
   const evidence = await Promise.all(legs.map(async (leg) => {
     const access = venueAccess(body, leg.venue_id);
-    const instruction = orderInstruction(leg, notionalUsd);
+    const instruction = orderInstruction(leg, notionalUsd, {
+      phase,
+      exact_base_size: body.exit_base_size_by_venue?.[leg.venue_id],
+    });
     const workOrderCommitment = `${body.work_order_commitment}_${leg.venue_id}`;
     const execution = executionFromAccess(access);
     const receipt = await verifyOrder({
@@ -115,6 +121,7 @@ export async function preflightCarryPair({
       recipient,
       state,
     });
+    if (phase === "exit") assertExactExitOrderShape({ receipt, instruction, venueId: leg.venue_id });
     if (receipt?.account_commitment !== access.account_commitment) {
       throw carryError(`carry_account_verification_mismatch:${leg.venue_id}`, 403);
     }
@@ -183,15 +190,15 @@ export async function preflightCarryPair({
   if (modeled.collateral_basis.supported !== true) {
     qualificationReasons.push("cross_collateral_basis_risk_unmodeled");
   }
-  if (phase !== "monitoring" && fundingPersistence.ready !== true) {
+  if (!riskReduction && fundingPersistence.ready !== true) {
     qualificationReasons.push(...fundingPersistence.reasons);
   }
   const economicOpportunity = Object.freeze({
     ...modeled.opportunity,
-    eligible: modeled.opportunity.eligible && (phase === "monitoring" || fundingPersistence.ready === true),
+    eligible: modeled.opportunity.eligible && (riskReduction || fundingPersistence.ready === true),
     reasons: Object.freeze([...new Set([
       ...modeled.opportunity.reasons,
-      ...(phase === "monitoring" ? [] : fundingPersistence.reasons),
+      ...(riskReduction ? [] : fundingPersistence.reasons),
     ])]),
     funding_persistence: fundingPersistence,
     funding_observation: fundingPersistence.current_observation || null,
@@ -206,13 +213,15 @@ export async function preflightCarryPair({
     `venue_not_proven:${pilotCandidate}`,
     `exact_quantity_recovery_unproven:${pilotCandidate}`,
   ] : []);
-  const qualificationPilotReady = env.PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED === "true"
+  const qualificationPilotReady = phase === "opening"
+    && env.PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED === "true"
     && Boolean(pilotCandidate)
     && modeled.no_submit_ready
     && modeled.capital_ready
     && economicOpportunity.eligible
     && qualificationReasons.every((reason) => pilotAllowedReasons.has(reason));
-  const liveCreationReady = modeled.no_submit_ready
+  const liveCreationReady = phase !== "exit"
+    && modeled.no_submit_ready
     && modeled.capital_ready
     && economicOpportunity.eligible
     && qualificationReasons.length === 0;
@@ -244,7 +253,9 @@ export async function preflightCarryPair({
       ? "paired_monitoring_no_submit"
       : phase === "migration"
         ? "paired_migration_no_submit"
-        : "paired_no_submit",
+        : phase === "exit"
+          ? "paired_exit_no_submit"
+          : "paired_no_submit",
     asset,
     transaction_broadcast: false,
     no_submit_ready: modeled.no_submit_ready,
@@ -474,7 +485,7 @@ export function modelCarryPairPreflight({
   conservative_funding_rate_e12_by_venue: conservativeFundingRates = null,
 }) {
   const notionalMicro = usdMicro(notionalUsd);
-  const monitoring = phase === "monitoring";
+  const monitoring = phase === "monitoring" || phase === "exit";
   const accounts = evidence.map((leg) => accountReadiness(leg, notionalMicro));
   const openingCapitalPlan = compileOpeningCapitalPlan(evidence, accounts, notionalMicro, minMarginRunwayMs);
   const marginRunways = evidence.map((leg, index) => projectedMarginRunway(leg, accounts[index], notionalMicro, nowMs));
@@ -783,8 +794,9 @@ function projectedMarginRunway(leg, readiness, notionalMicro, nowMs) {
   });
 }
 
-function orderInstruction(leg, notionalUsd) {
+function orderInstruction(leg, notionalUsd, { phase = "opening", exact_base_size: exactBaseSize = null } = {}) {
   const snapshot = leg.snapshot;
+  if (phase === "exit") return exactExitOrderInstruction(leg, exactBaseSize);
   if (leg.venue_id === "hyperliquid") {
     return {
       version: 1,
@@ -833,6 +845,69 @@ function orderInstruction(leg, notionalUsd) {
       margin_mode: "cross",
     },
   };
+}
+
+function exactExitOrderInstruction(leg, exactBaseSize) {
+  const snapshot = leg.snapshot;
+  const baseSize = positiveDecimalString(exactBaseSize, `carry_exit_base_size_invalid:${leg.venue_id}`);
+  const side = leg.side === "buy" ? "sell" : "buy";
+  const order = {
+    market: snapshot.asset,
+    side,
+    base_size: baseSize,
+    quote_size: String(Number(baseSize) * snapshot.mark_price_e8 / 100_000_000),
+    size_mode: "base",
+    order_type: "limit",
+    live_order_mode: "full_ticket",
+    max_slippage_bps: "50",
+    tif: "Ioc",
+    reduce_only: true,
+    leverage: 1,
+    margin_mode: "cross",
+  };
+  if (leg.venue_id !== "hyperliquid") {
+    const priceE8 = side === "buy" ? snapshot.best_ask_e8 : snapshot.best_bid_e8;
+    if (!(priceE8 > 0) || !(snapshot.price_tick_e8 > 0)) {
+      throw carryError(`carry_${leg.venue_id}_exit_order_shape_unavailable`, 422);
+    }
+    order.limit_price = decimalString(priceE8 / 100_000_000, snapshot.price_tick_e8 / 100_000_000);
+  }
+  return {
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: leg.venue_id,
+    operation_class: "limit_order",
+    order,
+  };
+}
+
+function assertExactExitOrderShape({ receipt, instruction, venueId }) {
+  const shape = receipt?.order_shape;
+  const order = instruction?.order;
+  if (!shape || shape.side !== order?.side || shape.reduce_only !== true
+    || !samePositiveDecimal(shape.base_size, order.base_size)
+    || (order.limit_price !== undefined && !samePositiveDecimal(shape.limit_price, order.limit_price))) {
+    throw carryError(`carry_exit_order_verification_mismatch:${venueId}`, 409);
+  }
+}
+
+function positiveDecimalString(value, code) {
+  const normalized = String(value ?? "");
+  if (!/^\d+(?:\.\d+)?$/.test(normalized) || !(Number(normalized) > 0)) throw carryError(code, 422);
+  return normalized;
+}
+
+function samePositiveDecimal(left, right) {
+  const canonical = (value) => {
+    const match = /^(\d+)(?:\.(\d+))?$/.exec(String(value ?? ""));
+    if (!match) return null;
+    const integer = match[1].replace(/^0+(?=\d)/, "");
+    const fraction = String(match[2] || "").replace(/0+$/, "");
+    const normalized = fraction ? `${integer}.${fraction}` : integer;
+    return /^0(?:\.0*)?$/.test(normalized) ? null : normalized;
+  };
+  const normalizedLeft = canonical(left);
+  return normalizedLeft !== null && normalizedLeft === canonical(right);
 }
 
 function selectSnapshot(snapshots, asset, venueId, nowMs) {

@@ -116,6 +116,84 @@ function exactFeeEvidence() {
   };
 }
 
+test("verifies the exact reduce-only exit sides and filled base quantities", async () => {
+  const verified = [];
+  const account = {
+    can_trade: true,
+    available_balance: 500,
+    margin_balance: 500,
+    initial_margin: 0,
+    maintenance_margin: 0,
+    maker_fee_bps: 1,
+    taker_fee_bps: 3,
+    ...exactFeeEvidence(),
+    position_count: 1,
+    open_order_count: 0,
+  };
+  const exactBases = { hyperliquid: "0.001", aster: "0.002" };
+  const result = await preflightCarryPair({
+    body: {
+      version: 1,
+      phase: "exit",
+      owner_commitment: "owner_commitment_0001",
+      work_order_commitment: "carry_pair_exit_preflight_0001",
+      asset: "BTC",
+      long_venue_id: "hyperliquid",
+      short_venue_id: "aster",
+      notional_usd: 100,
+      horizon_days: 30,
+      exit_base_size_by_venue: exactBases,
+      venue_access: { hyperliquid: access(), aster: access() },
+    },
+    recipient: {},
+    state: {},
+    now: () => NOW,
+    fetchVenue: async ({ venue_id }) => [snapshot(venue_id)],
+    verifyOrder: async ({ venue_id, instruction, work_order_commitment }) => {
+      verified.push({ venue_id, instruction });
+      const order = instruction.order;
+      return {
+        status: "verified_ready",
+        work_order_commitment,
+        account_commitment: access().account_commitment,
+        verification_commitment: `verification_exit_${venue_id}`,
+        checks: { order_request_checked: true, transaction_broadcast: false },
+        order_shape: {
+          market: venue_id === "aster" ? "BTCUSDT" : "BTC",
+          side: order.side,
+          base_size: order.base_size,
+          limit_price: order.limit_price || "100000",
+          reduce_only: order.reduce_only,
+          notional_micro_usdc: Math.round(Number(order.base_size) * 100_000 * 1_000_000),
+          quantity_step_e8: 1_000,
+          price_tick_e8: 1_000_000,
+        },
+        ...(venue_id === "aster" ? { account } : {}),
+      };
+    },
+    readHyperliquidSnapshot: async () => ({
+      status: "ready_to_trade",
+      trading_enabled: true,
+      position_count: 1,
+      open_order_count: 0,
+    }),
+    readHyperliquidCarryMetrics: async () => account,
+  });
+
+  assert.equal(result.mode, "paired_exit_no_submit");
+  assert.equal(result.no_submit_ready, true);
+  assert.equal(result.live_creation_ready, false);
+  assert.deepEqual(verified.map(({ venue_id: venueId, instruction }) => ({
+    venue_id: venueId,
+    side: instruction.order.side,
+    base_size: instruction.order.base_size,
+    reduce_only: instruction.order.reduce_only,
+  })), [
+    { venue_id: "hyperliquid", side: "sell", base_size: "0.001", reduce_only: true },
+    { venue_id: "aster", side: "buy", base_size: "0.002", reduce_only: true },
+  ]);
+});
+
 test("pairs authenticated no-submit evidence but blocks live creation until Aster recovery is proven", async () => {
   const verified = [];
   const account = {

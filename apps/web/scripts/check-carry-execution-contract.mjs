@@ -963,6 +963,15 @@ export function checkCarryExecutionContract(sources) {
   requireText("server", "carry_supervision: carrySupervision", "carry_entry_private_prime_supervision_binding_missing");
   requireText("executor", "readCarryEntryPrivatePrimeReadiness({", "carry_entry_private_prime_gate_missing");
   requireText("executor", "carry_entry_private_prime_readiness_unproven", "carry_entry_private_prime_fail_closed_missing");
+  requireText("executor", 'phase: "exit"', "carry_exit_exact_preflight_phase_missing");
+  requireText("executor", "exit_base_size_by_venue", "carry_exit_exact_preflight_quantity_missing");
+  requireText("executor", "shape.reduce_only !== true", "carry_exit_reduce_only_proof_missing");
+  requireText("preflight", "assertExactExitOrderShape({", "carry_exit_order_shape_verification_missing");
+  requireText("preflight", '? "paired_exit_no_submit"', "carry_exit_no_submit_mode_missing");
+  requireText("preflightTest", "verifies the exact reduce-only exit sides and filled base quantities", "carry_exit_exact_preflight_test_missing");
+  requireText("lighter", "reduce_only: order.reduce_only === true", "lighter_no_submit_reduce_only_binding_missing");
+  requireText("hyperliquid", "reduce_only: instruction.order?.reduce_only === true", "hyperliquid_no_submit_reduce_only_binding_missing");
+  requireText("privateExecution", 'reduce_only: result.order.reduceOnly === "true"', "aster_no_submit_reduce_only_binding_missing");
   requireText("executor", "readCarryExecutionReadiness({", "carry_entry_three_venue_readiness_missing");
   requireText("executor", "readCarryShadowQualification({ state", "carry_entry_five_venue_shadow_missing");
   requireText("executor", "loadCarryTransferRouteEvidence({", "carry_entry_collateral_route_readiness_missing");

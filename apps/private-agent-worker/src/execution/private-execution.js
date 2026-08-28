@@ -1268,6 +1268,7 @@ export async function verifyAsterOrderNoSubmit({ body, recipient, state }) {
       side: result.order.side.toLowerCase(),
       base_size: result.order.quantity,
       limit_price: result.order.price,
+      reduce_only: result.order.reduceOnly === "true",
       notional_micro_usdc: Math.round(Number(result.order.quantity) * Number(result.order.price) * 1_000_000),
     },
     visibility_summary: {
