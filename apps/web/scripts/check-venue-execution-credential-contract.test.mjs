@@ -31,6 +31,7 @@ const lighterComplete = readFileSync(resolve(HERE, "../src/app/v1/private-accoun
 const lighterWorker = readFileSync(resolve(HERE, "../../private-agent-worker/src/venues/lighter-provisioning.js"), "utf8");
 const lighterSigning = readFileSync(resolve(HERE, "../src/lib/perps-turnkey-lighter-signing.ts"), "utf8");
 const turnkeyProvider = readFileSync(resolve(HERE, "../src/lib/perps-turnkey-provider.tsx"), "utf8");
+const turnkeyWalletIdentity = readFileSync(resolve(HERE, "../src/lib/perps-turnkey-wallet-identity.ts"), "utf8");
 const liveClient = readFileSync(resolve(HERE, "../src/lib/private-account-client.ts"), "utf8");
 const liveRoutes = readFileSync(resolve(HERE, "../src/lib/private-account-live-routes.ts"), "utf8");
 const liveProxy = readFileSync(resolve(HERE, "../src/app/api/private-account/live-proxy/route.ts"), "utf8");
@@ -58,7 +59,7 @@ test("accepts the fail-closed venue execution credential contract", () => {
     readFileSync(resolve(HERE, "../src/lib/perps-turnkey-aster-signing.ts"), "utf8"),
     lighterSigning,
   ).ok, true);
-  assert.equal(checkTurnkeyPerpsWalletSelectionBoundary(turnkeyProvider).ok, true);
+  assert.equal(checkTurnkeyPerpsWalletSelectionBoundary(turnkeyProvider, turnkeyWalletIdentity).ok, true);
 });
 
 test("rejects venue onboarding that bypasses server-side live request proof", () => {
@@ -86,9 +87,19 @@ test("rejects changing Turnkey's exact case-sensitive owner resource address", (
 test("rejects nondeterministic selection among duplicate Turnkey wallets", () => {
   assert.throws(
     () => checkTurnkeyPerpsWalletSelectionBoundary(turnkeyProvider
-      .replace("wallet.walletId === boundWalletId", "wallet.walletName === PERPS_WALLET_NAME")
+      .replace("bindExactPerpsWalletIdentity", "bindAnyWallet"), turnkeyWalletIdentity
+      .replace("wallet.walletId === boundWalletId", "wallet.walletName === walletName")
       .replace("Multiple Ghola perps wallets are active", "Using the first wallet")),
     /turnkey_exact_bound_wallet_selection_required|turnkey_duplicate_wallet_fail_closed_required/,
+  );
+});
+
+test("rejects Turnkey signing repair that can change account identity or retry repeatedly", () => {
+  assert.throws(
+    () => checkTurnkeyPerpsWalletSelectionBoundary(turnkeyProvider, turnkeyWalletIdentity
+      .replaceAll("walletAccountId", "removedAccountId")
+      .replace("return input.execute(refreshed)", "return withOneStableTurnkeyRefresh(input)")),
+    /turnkey_wallet_account_id_binding_required|turnkey_single_refresh_retry_required/,
   );
 });
 

@@ -387,16 +387,23 @@ export function checkTurnkeyVenueOwnerAddressBoundary(asterSigningSource, lighte
   return { ok: true };
 }
 
-export function checkTurnkeyPerpsWalletSelectionBoundary(providerSource) {
+export function checkTurnkeyPerpsWalletSelectionBoundary(providerSource, identitySource) {
   const failures = [];
-  const required = [
+  const providerRequired = [
     ["TURNKEY_WALLET_BINDINGS_STORAGE_KEY", "turnkey_wallet_binding_storage_required"],
+    ["bindExactPerpsWalletIdentity", "turnkey_wallet_account_binding_required"],
+    ["withOneStableTurnkeyRefresh", "turnkey_stable_identity_refresh_required"],
+    ["useCallback(() => ensureWalletPair()", "turnkey_repair_must_preserve_identity"],
+  ];
+  const identityRequired = [
     ["wallet.walletId === boundWalletId", "turnkey_exact_bound_wallet_selection_required"],
     ["Multiple Ghola perps wallets are active", "turnkey_duplicate_wallet_fail_closed_required"],
-    ["writePerpsWalletBinding", "turnkey_wallet_binding_persistence_required"],
-    ["const replaceWalletPair = useCallback", "turnkey_explicit_wallet_repair_required"],
+    ["walletAccountId", "turnkey_wallet_account_id_binding_required"],
+    ["sameWalletAccountIdentity", "turnkey_refresh_identity_comparison_required"],
+    ["return input.execute(refreshed)", "turnkey_single_refresh_retry_required"],
   ];
-  for (const [value, code] of required) if (!providerSource.includes(value)) failures.push(code);
+  for (const [value, code] of providerRequired) if (!providerSource.includes(value)) failures.push(code);
+  for (const [value, code] of identityRequired) if (!identitySource.includes(value)) failures.push(code);
   if (failures.length > 0) {
     throw new Error(`Turnkey perps wallet selection boundary failed: ${failures.join(", ")}`);
   }
@@ -454,10 +461,10 @@ function main() {
     readFileSync(resolve(HERE, "../src/lib/perps-turnkey-aster-signing.ts"), "utf8"),
     readFileSync(resolve(HERE, "../src/lib/perps-turnkey-lighter-signing.ts"), "utf8"),
   );
-  checkTurnkeyPerpsWalletSelectionBoundary(readFileSync(
-    resolve(HERE, "../src/lib/perps-turnkey-provider.tsx"),
-    "utf8",
-  ));
+  checkTurnkeyPerpsWalletSelectionBoundary(
+    readFileSync(resolve(HERE, "../src/lib/perps-turnkey-provider.tsx"), "utf8"),
+    readFileSync(resolve(HERE, "../src/lib/perps-turnkey-wallet-identity.ts"), "utf8"),
+  );
   console.log("[venue-execution-credential-contract] verified");
 }
 
