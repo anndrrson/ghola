@@ -1059,6 +1059,21 @@ test("rejects release qualification adapters detached from the capability regist
   );
 });
 
+test("rejects restoring a hard-coded Hyperliquid qualification anchor", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier
+        .replace("CARRY_EXECUTION_VENUES.includes(venue)", 'venue in CARRY_ADAPTERS')
+        .replace(
+          'fail(pair.every((venue) => typeof CARRY_ADAPTERS[venue] === "string"), "venue_adapter_registry_invalid");',
+          'fail(pair.includes("hyperliquid"), "qualification_pair_required");',
+        ),
+    }),
+    /carry_release_pair_registry_binding_missing|carry_release_hyperliquid_anchor_hardcoded/,
+  );
+});
+
 test("rejects coupling public Carry intelligence back to private execution", () => {
   assert.throws(
     () => checkCarryExecutionContract({

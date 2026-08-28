@@ -148,8 +148,8 @@ export async function verifyCarryReleaseEvidence(evidence) {
   fail(identifier(position.position_id), "position_id_invalid");
   fail(/^[A-Z0-9][A-Z0-9._-]{0,31}$/.test(String(position.asset || "")), "asset_invalid");
   fail(notional > 0 && notional <= 25_000_000, "proof_notional_cap_exceeded");
-  fail(pair[0] !== pair[1] && pair.every((venue) => venue in CARRY_ADAPTERS), "venue_pair_invalid");
-  fail(pair.includes("hyperliquid") && pair.some((venue) => venue === "lighter" || venue === "aster"), "qualification_pair_required");
+  fail(pair[0] !== pair[1] && pair.every((venue) => CARRY_EXECUTION_VENUES.includes(venue)), "venue_pair_invalid");
+  fail(pair.every((venue) => typeof CARRY_ADAPTERS[venue] === "string"), "venue_adapter_registry_invalid");
 
   const createdAt = timestamp(position.created_at);
   fail(createdAt > 0, "position_timestamp_invalid");

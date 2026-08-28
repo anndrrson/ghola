@@ -814,6 +814,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifier", "shadowMinimumSpanMs >= 120_000", "carry_release_shadow_duration_verifier_missing");
   requireText("evidenceVerifier", "shadowQualification.venues === CORE_PERP_VENUES.length", "carry_release_shadow_registry_coverage_missing");
   requireText("evidenceVerifier", "venueAdapterCapability(venueId, \"carry_execution\")?.adapter_id", "carry_release_adapter_registry_binding_missing");
+  requireText("evidenceVerifier", "CARRY_EXECUTION_VENUES.includes(venue)", "carry_release_pair_registry_binding_missing");
+  forbidText("evidenceVerifier", "pair.includes(\"hyperliquid\")", "carry_release_hyperliquid_anchor_hardcoded");
+  requireText("evidenceVerifierTest", "accepts a registry-qualified lifecycle without a hard-coded Hyperliquid anchor", "carry_release_registry_neutral_pair_test_missing");
   forbidText("evidenceVerifier", "shadowQualification.venues === 5", "carry_release_shadow_venue_count_hardcoded");
   forbidText("evidenceVerifier", "shadowQualification.expected_snapshots_per_sample === 15", "carry_release_shadow_snapshot_count_hardcoded");
   requireText("evidenceVerifierTest", "rejects funding not reconciled to exact venue legs", "carry_release_funding_reconciliation_test_missing");

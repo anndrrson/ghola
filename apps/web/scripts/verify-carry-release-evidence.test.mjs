@@ -19,7 +19,7 @@ import { privateKeyToAccount } from "viem/accounts";
 const MANDATE_OWNER = privateKeyToAccount(`0x${"22".repeat(32)}`);
 const SHADOW_ASSETS = Object.freeze(["BTC", "ETH", "SOL"]);
 
-async function fixture() {
+async function fixture({ longVenue = "hyperliquid", shortVenue = "aster" } = {}) {
   const signedMandate = {
     version: 1,
     kind: "ghola_carry_risk_mandate",
@@ -30,8 +30,8 @@ async function fixture() {
     position_id: "carry:position:mainnet:proof:0001",
     mandate_id: "carry:mandate:mainnet:proof:0001",
     asset: "HYPE",
-    long_venue_id: "hyperliquid",
-    short_venue_id: "aster",
+    long_venue_id: longVenue,
+    short_venue_id: shortVenue,
     target_notional_micro_usdc: 11_000_000,
     risk_mandate: {
       min_expected_net_benefit_bps: 5,
@@ -64,8 +64,8 @@ async function fixture() {
       position_id: "carry:position:mainnet:proof:0001",
       asset: "HYPE",
       target_notional_micro_usdc: 11_000_000,
-      long_venue_id: "hyperliquid",
-      short_venue_id: "aster",
+      long_venue_id: longVenue,
+      short_venue_id: shortVenue,
       created_at: "2026-08-24T00:00:00.000Z",
     },
     contract_equivalence: {
@@ -112,16 +112,16 @@ async function fixture() {
     },
     qualification: {
       venues: [
-        qualification("hyperliquid", carryAdapterId("hyperliquid"), "registry_baseline"),
-        qualification("aster", carryAdapterId("aster"), "deployment_bound_lifecycle"),
+        qualification(longVenue, carryAdapterId(longVenue), qualificationSource(longVenue)),
+        qualification(shortVenue, carryAdapterId(shortVenue), qualificationSource(shortVenue)),
       ],
     },
     entry: {
       started_at: "2026-08-24T00:00:01.000Z",
       reconciled_at: "2026-08-24T00:00:02.000Z",
       legs: [
-        leg("hyperliquid", "buy", false, "order:entry:hyperliquid:0001", 5_000, 1_000, 60_000),
-        leg("aster", "sell", false, "order:entry:aster:0001", 5_000, 1_000, -10_000),
+        leg(longVenue, "buy", false, `order:entry:${longVenue}:0001`, 5_000, 1_000, 60_000),
+        leg(shortVenue, "sell", false, `order:entry:${shortVenue}:0001`, 5_000, 1_000, -10_000),
       ],
     },
     monitoring: {
@@ -134,16 +134,16 @@ async function fixture() {
           observed_at: "2026-08-24T00:00:04.000Z",
           evidence_commitment: `carry:funding:current:${"11".repeat(32)}`,
           source_observed_at_ms_by_venue: {
-            hyperliquid: Date.parse("2026-08-24T00:00:03.900Z"),
-            aster: Date.parse("2026-08-24T00:00:03.900Z"),
+            [longVenue]: Date.parse("2026-08-24T00:00:03.900Z"),
+            [shortVenue]: Date.parse("2026-08-24T00:00:03.900Z"),
           },
         },
         {
           observed_at: "2026-08-24T00:00:05.000Z",
           evidence_commitment: `carry:funding:current:${"22".repeat(32)}`,
           source_observed_at_ms_by_venue: {
-            hyperliquid: Date.parse("2026-08-24T00:00:04.900Z"),
-            aster: Date.parse("2026-08-24T00:00:04.900Z"),
+            [longVenue]: Date.parse("2026-08-24T00:00:04.900Z"),
+            [shortVenue]: Date.parse("2026-08-24T00:00:04.900Z"),
           },
         },
       ],
@@ -158,8 +158,8 @@ async function fixture() {
         transaction_broadcast: false,
       },
       margin_runways: [
-        { venue_id: "hyperliquid", status: "healthy", runway_ms: 86_400_000, stale: false },
-        { venue_id: "aster", status: "healthy", runway_ms: 86_400_000, stale: false },
+        { venue_id: longVenue, status: "healthy", runway_ms: 86_400_000, stale: false },
+        { venue_id: shortVenue, status: "healthy", runway_ms: 86_400_000, stale: false },
       ],
     },
     exit: {
@@ -179,8 +179,8 @@ async function fixture() {
       requested_at: "2026-08-24T00:00:06.000Z",
       reconciled_at: "2026-08-24T00:00:07.000Z",
       legs: [
-        leg("hyperliquid", "sell", true, "order:exit:hyperliquid:0001", 5_000, 1_500),
-        leg("aster", "buy", true, "order:exit:aster:0001", 5_000, 1_500),
+        leg(longVenue, "sell", true, `order:exit:${longVenue}:0001`, 5_000, 1_500),
+        leg(shortVenue, "buy", true, `order:exit:${shortVenue}:0001`, 5_000, 1_500),
       ],
     },
     final_state: {
@@ -190,8 +190,8 @@ async function fixture() {
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,
       venues: [
-        { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:release:0001", authorized: true, flat_zero_orders: true, nonzero_position_count: 0, open_order_count: 0, account_state_checked: true },
-        { venue_id: "aster", account_commitment: "account:aster:release:0001", authorized: true, flat_zero_orders: true, nonzero_position_count: 0, open_order_count: 0, account_state_checked: true },
+        { venue_id: longVenue, account_commitment: `account:${longVenue}:release:0001`, authorized: true, flat_zero_orders: true, nonzero_position_count: 0, open_order_count: 0, account_state_checked: true },
+        { venue_id: shortVenue, account_commitment: `account:${shortVenue}:release:0001`, authorized: true, flat_zero_orders: true, nonzero_position_count: 0, open_order_count: 0, account_state_checked: true },
       ],
     },
     value_ledger: {
@@ -236,6 +236,12 @@ function qualification(venue_id, adapter_id, source) {
 
 function carryAdapterId(venueId) {
   return venueAdapterCapability(venueId, "carry_execution")?.adapter_id;
+}
+
+function qualificationSource(venueId) {
+  return venueAdapterCapability(venueId, "carry_execution")?.status === "proven"
+    ? "registry_baseline"
+    : "deployment_bound_lifecycle";
 }
 
 function executionReadiness() {
@@ -313,6 +319,13 @@ function leg(venue_id, side, reduce_only, client_order_commitment, fee_micro_usd
 
 test("accepts a capped paired mainnet lifecycle with exact evidence", async () => {
   assert.equal((await verifyCarryReleaseEvidence(await fixture())).ok, true);
+});
+
+test("accepts a registry-qualified lifecycle without a hard-coded Hyperliquid anchor", async () => {
+  assert.equal((await verifyCarryReleaseEvidence(await fixture({
+    longVenue: "lighter",
+    shortVenue: "aster",
+  }))).ok, true);
 });
 
 test("assembles candidate metadata without changing worker-derived material", async () => {
