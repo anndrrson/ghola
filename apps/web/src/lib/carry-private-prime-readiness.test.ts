@@ -47,6 +47,12 @@ describe("private-prime readiness", () => {
       live_paired_lifecycle_proven: true,
       paired_lifecycle: pairedLifecycle({ final_flat_zero_orders: false }),
     }), NOW).status).toBe("invalid");
+    expect(carryPrivatePrimeSummary(proof({
+      proof_level: "live_paired_lifecycle",
+      live_paired_lifecycle_proven: true,
+      expires_at_ms: NOW + 60_000,
+      paired_lifecycle: pairedLifecycle({ expires_at_ms: NOW + 30_000 }),
+    }), NOW).status).toBe("invalid");
   });
 
   it("does not treat a configured probe as verified collateral routing", () => {

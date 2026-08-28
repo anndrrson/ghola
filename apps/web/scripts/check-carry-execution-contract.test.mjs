@@ -72,6 +72,45 @@ test("rejects lifecycle proof storage that is not isolated per asset", () => {
   );
 });
 
+test("rejects private-prime evidence that can outlive its paired lifecycle", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replace(
+        "function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, lifecycleExpiry)",
+        "function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry)",
+      ),
+    }),
+    /carry_private_prime_lifecycle_expiry_binding_missing/,
+  );
+});
+
+test("rejects aggregate expiry that omits the verified lifecycle deadline", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replace(
+        "pairedLifecycle.verified ? pairedLifecycle.expires_at_ms : null",
+        "null",
+      ),
+    }),
+    /carry_private_prime_lifecycle_expiry_input_missing/,
+  );
+});
+
+test("rejects a terminal that trusts an aggregate proof beyond its lifecycle deadline", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivatePrimeReadiness: sources.webPrivatePrimeReadiness.replace(
+        "expiresAt <= lifecycleExpiresAt",
+        "expiresAt > lifecycleExpiresAt",
+      ),
+    }),
+    /carry_private_prime_ui_lifecycle_expiry_gate_missing/,
+  );
+});
+
 test("rejects an HTTP readiness path that omits lifecycle asset scope", () => {
   assert.throws(
     () => checkCarryExecutionContract({

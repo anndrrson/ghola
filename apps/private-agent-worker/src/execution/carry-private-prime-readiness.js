@@ -177,8 +177,13 @@ function verifiedRouteObservation({ readiness, routeEvidence, routeObservationCo
   });
 }
 
-function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry) {
-  const values = [readinessExpiry, Number.isSafeInteger(shadowCheckedAt) ? shadowCheckedAt + 60_000 : null, routeExpiry]
+function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, lifecycleExpiry) {
+  const values = [
+    readinessExpiry,
+    Number.isSafeInteger(shadowCheckedAt) ? shadowCheckedAt + 60_000 : null,
+    routeExpiry,
+    lifecycleExpiry,
+  ]
     .filter((value) => Number.isSafeInteger(value) && value > 0);
   return values.length > 0 ? Math.min(...values) : null;
 }

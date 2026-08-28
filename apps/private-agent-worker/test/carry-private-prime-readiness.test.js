@@ -71,6 +71,31 @@ test("upgrades only matching durable paired lifecycle evidence to live-proven", 
   assert.deepEqual(result.paired_lifecycle.venue_ids, ["hyperliquid", "aster"]);
 });
 
+test("never lets aggregate readiness outlive its paired lifecycle proof", () => {
+  const lifecycleExpiresAt = NOW + 10_000;
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: {
+      ready: true,
+      owner_commitment: "owner_commitment_0001",
+      image_digest: "sha256:abcdef123456",
+      network: "mainnet",
+      asset: "BTC",
+      expires_at_ms: NOW + 120_000,
+      registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+      capital_ready: true,
+      capital_plan: capitalPlan(),
+    },
+    shadow_qualification: { ready: true, venues: 5, checked_at_ms: NOW },
+    carry_supervision: { ready: true, status: "healthy" },
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    lifecycle_proof: lifecycleProof({ expires_at_ms: lifecycleExpiresAt }),
+    now_ms: NOW,
+  });
+  assert.equal(result.proof_level, "live_paired_lifecycle");
+  assert.equal(result.expires_at_ms, lifecycleExpiresAt);
+});
+
 test("keeps mismatched lifecycle evidence pre-broadcast", () => {
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {

@@ -88,6 +88,7 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && checkedAt !== null && expiresAt !== null && checkedAt <= nowMs && expiresAt > nowMs
     && typeof value.evidence_commitment === "string"
     && value.evidence_commitment.startsWith("carry:private-prime:")
+    && (!lifecycleReady || (lifecycleExpiresAt !== null && expiresAt <= lifecycleExpiresAt))
     && value.ready === expectedReady;
   if (!valid) return { status: "invalid", value: "UNVERIFIED", detail: "WORKER PROOF INVALID", tone: "bad" };
 
