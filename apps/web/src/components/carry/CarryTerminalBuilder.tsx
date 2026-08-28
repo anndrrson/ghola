@@ -150,6 +150,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const [message, setMessage] = useState<string | null>(null);
   const [lastCheckReceipt, setLastCheckReceipt] = useState<string | null>(null);
   const autoRunNoSubmitConsumedRef = useRef(false);
+  const [saveSetupRequired, setSaveSetupRequired] = useState(false);
   const routeKey = `${candidate.asset}:${candidate.long.venue_id}:${candidate.short.venue_id}`;
   const model = useMemo(() => builderModel(candidate, notional, days), [candidate, days, notional]);
   const executionPair = isCarryExecutionVenue(candidate.long.venue_id)
@@ -230,6 +231,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     setProof(null);
     setExecutionMatrix(null);
     setMessage(null);
+    setSaveSetupRequired(false);
   }, [routeKey]);
   useEffect(() => {
     if (!privateSessionReady) {
@@ -354,6 +356,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     setProof(null);
     setExecutionMatrix(null);
     setMessage(null);
+    setSaveSetupRequired(false);
   };
 
   const runCheck = useCallback(async () => {
@@ -406,6 +409,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         ...(matrix ? { execution_matrix: matrix } : {}),
         ...(activeReadiness ? { execution_readiness: activeReadiness } : {}),
       });
+      setSaveSetupRequired(false);
       const checkedFunding = carryFundingPersistenceSummary(asRecord(result.creation_opportunity));
       const outcome = result.live_creation_ready === true
         ? "READY · synchronized market data, exact costs, margin runway and both order shapes verified"
@@ -534,12 +538,18 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         ...(pilot ? { qualification_pilot: { enabled: true as const, candidate_venue_id: pilot } } : {}),
       }));
       if (result.ok !== true) throw new Error("carry_position_not_saved");
+      setSaveSetupRequired(false);
       setMessage(migrationSource
         ? "MIGRATION SIGNED · parent is flat; replacement entry still requires the button below"
         : "OWNER-SIGNED · no order submitted; live paired entry requires the button below");
       await loadRecords();
-    } catch {
-      setMessage("NOT SAVED · refresh the route and rerun the no-submit check");
+    } catch (caught) {
+      if (carryPositionSaveNeedsSetup(caught)) {
+        setSaveSetupRequired(true);
+        setMessage("SETUP REQUIRED · finish secure Carry access; no position or order was created");
+      } else {
+        setMessage("NOT SAVED · refresh the route and rerun the no-submit check");
+      }
     } finally {
       setBusy(null);
     }
@@ -607,6 +617,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${candidate.asset}-PERP&carry=open&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}`;
   const setupHref = `/account?setup=carry&return_to=${encodeURIComponent(terminalReturn)}`;
   const canSave = actionableProof && creationProofFreshness.fresh;
+  const needsSetupToSave = saveSetupRequired || !perpsTurnkey.authenticated;
   const canEnter = current?.position.status === "draft" && supervision.ready;
   const canExit = current ? ["active", "rebalancing", "frozen"].includes(current.position.status) : false;
   const connectionAction = auth.loading
@@ -688,6 +699,10 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
             <button type="button" disabled={!executionPair || busy !== null} onClick={() => void runCheck()} className="rounded border border-[#285040] bg-[#0a1b16] px-2 py-2 font-mono text-[10px] font-semibold text-[#75d9b0] disabled:opacity-40">
               {busy === "check" ? "CHECKING…" : executionPair ? restoredReadiness ? "CHECK PAIR · FLEET READY" : "NO-SUBMIT CHECK" : "READ-ONLY ROUTE"}
             </button>
+          ) : !current && canSave && needsSetupToSave ? (
+            <Link href={setupHref} className="rounded border border-[#31577a] bg-[#10243a] px-2 py-2 text-center font-mono text-[10px] font-semibold text-[#b7ddff] hover:bg-[#142c46]">
+              FINISH CARRY SETUP
+            </Link>
           ) : !current && canSave ? (
             <button type="button" disabled={busy !== null} onClick={() => void savePosition()} className="rounded border border-[#31577a] bg-[#10243a] px-2 py-2 font-mono text-[10px] font-semibold text-[#b7ddff] disabled:opacity-40">
               {busy === "save" ? "SAVING…" : migrationSource ? "SIGN MIGRATION" : proof?.qualification_pilot_ready === true ? "ARM CAPPED PROOF" : "SAVE POSITION"}
@@ -1565,6 +1580,14 @@ function readyStoredReadiness(value: Record<string, unknown> | null, asset: stri
   return Array.isArray(registryVenueIds)
     && registryVenueIds.length === CARRY_EXECUTION_VENUES.length
     && CARRY_EXECUTION_VENUES.every((venueId, index) => registryVenueIds[index] === venueId);
+}
+
+function carryPositionSaveNeedsSetup(caught: unknown) {
+  const message = caught instanceof Error ? caught.message : String(caught || "");
+  return message === "carry_owner_auth_required" ||
+    /authenticate with turnkey|perps identity boundary/i.test(message) ||
+    /wallet provisioning failed|ghola perps wallet|wallet account .* unavailable|wallet binding/i.test(message) ||
+    /turnkey signing client is unavailable/i.test(message);
 }
 
 function isCarryRecord(value: Record<string, unknown>): value is Record<string, unknown> & CarryRecord {

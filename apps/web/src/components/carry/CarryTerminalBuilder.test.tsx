@@ -38,6 +38,7 @@ const api = vi.hoisted(() => ({
   requestCarryPositionExit: vi.fn(),
 }));
 const perps = vi.hoisted(() => ({
+  authenticated: true,
   ensureWalletPair: vi.fn(),
   signCarryRiskMandate: vi.fn(),
   signCarryCollateralReview: vi.fn(),
@@ -50,7 +51,7 @@ const auth = vi.hoisted(() => ({
 vi.mock("@/lib/private-account-client", () => api);
 vi.mock("@/lib/perps-turnkey-provider", () => ({
   usePerpsTurnkey: () => ({
-    authenticated: true,
+    authenticated: perps.authenticated,
     ensureWalletPair: perps.ensureWalletPair,
     signCarryRiskMandate: perps.signCarryRiskMandate,
     signCarryCollateralReview: perps.signCarryCollateralReview,
@@ -88,6 +89,7 @@ describe("CarryTerminalBuilder", () => {
     perps.ensureWalletPair.mockReset();
     perps.signCarryRiskMandate.mockReset();
     perps.signCarryCollateralReview.mockReset();
+    perps.authenticated = true;
     api.getPrivateAgentPassport.mockResolvedValue({ owner_commitment: "owner:carry:web:test:0001" });
     api.getCarryExecutionReadiness.mockResolvedValue({
       ready: false,
@@ -661,6 +663,50 @@ describe("CarryTerminalBuilder", () => {
     const decoded = decodeURIComponent(link?.getAttribute("href") || "");
     expect(decoded).toContain("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open");
     expect(decoded).toContain("long_venue=hyperliquid&short_venue=lighter");
+  });
+
+  it("routes a fresh owner to unified setup instead of failing position creation", async () => {
+    perps.authenticated = false;
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.preflightCarryPair.mockResolvedValue({
+      no_submit_ready: true,
+      live_creation_ready: true,
+      creation_opportunity: {
+        checked_at_ms: Date.now(),
+        eligible: true,
+        worker_authentication: { evidence_commitment: OPPORTUNITY_EVIDENCE },
+      },
+    });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    await click("NO-SUBMIT CHECK");
+
+    const link = [...container.querySelectorAll("a")].find((item) => item.textContent === "FINISH CARRY SETUP");
+    expect(link?.getAttribute("href")).toContain("setup=carry");
+    expect(api.createCarryPosition).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("NOT SAVED");
+  });
+
+  it("turns wallet provisioning failure into a resumable setup action", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.preflightCarryPair.mockResolvedValue({
+      no_submit_ready: true,
+      live_creation_ready: true,
+      creation_opportunity: {
+        checked_at_ms: Date.now(),
+        eligible: true,
+        worker_authentication: { evidence_commitment: OPPORTUNITY_EVIDENCE },
+      },
+    });
+    perps.ensureWalletPair.mockRejectedValue(new Error(
+      "Turnkey signed you in, but wallet provisioning failed.",
+    ));
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    await click("NO-SUBMIT CHECK");
+    await click("SAVE POSITION");
+
+    expect(container.textContent).toContain("SETUP REQUIRED");
+    expect([...container.querySelectorAll("a")].some((item) => item.textContent === "FINISH CARRY SETUP")).toBe(true);
+    expect(api.createCarryPosition).not.toHaveBeenCalled();
   });
 
   it("allows a new Carry Position after the previous route proved flat with zero orders", async () => {
