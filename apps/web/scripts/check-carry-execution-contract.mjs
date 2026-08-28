@@ -199,6 +199,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreMultiLegTest", "records a venue-terminal leg without claiming that Ghola cancelled it", "carry_terminal_reconciliation_event_test_missing");
   requireText("multiLegOrchestrator", '"reconcile_before_cancel"', "carry_reconcile_before_cancel_missing");
   requireText("multiLegOrchestrator", '"reconcile_after_cancel"', "carry_reconcile_after_cancel_missing");
+  requireText("multiLegOrchestratorTest", "recovers a crash after exact cancel without cancelling twice", "carry_cancel_ack_restart_test_missing");
   requireText("multiLegOrchestratorTest", "reconciles a terminal late fill before cancel and never cancels or resubmits it", "carry_late_fill_before_cancel_test_missing");
   requireCount("privateExecution", "cached?.receipt && !readOnlyReconcile", 3, "carry_fresh_reconciliation_read_missing");
   requireText("asterTest", "refreshes read-only Aster reconciliation instead of replaying a stale cache", "carry_fresh_reconciliation_read_test_missing");

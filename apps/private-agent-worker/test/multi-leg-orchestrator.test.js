@@ -145,7 +145,7 @@ test("rejects a stale saga writer instead of losing an event", async (t) => {
   assert.equal(conflict.saga.last_event_sequence, 1);
 });
 
-test("reconciles before cancel, confirms cancel, and exactly unwinds a one-leg fill", async (t) => {
+test("recovers a crash after exact cancel without cancelling twice", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-saga-recovery-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
@@ -242,10 +242,23 @@ test("reconciles before cancel, confirms cancel, and exactly unwinds a one-leg f
   await state.putIdempotency("work:hyperliquid:0001", { status: "submitted" });
 
   const calls = [];
+  let cancelAcknowledged = false;
+  let crashInjected = false;
   const executeOrder = async (args) => {
     calls.push(args);
-    if (args.operation_class === "cancel") return { status: "cancelled" };
-    if (args.operation_class === "reconcile") return { status: "reconciled", fills: [] };
+    if (args.operation_class === "cancel") {
+      cancelAcknowledged = true;
+      return { status: "cancelled" };
+    }
+    if (args.operation_class === "reconcile") {
+      if (cancelAcknowledged && !crashInjected) {
+        crashInjected = true;
+        throw new Error("simulated_worker_crash_after_cancel");
+      }
+      return cancelAcknowledged
+        ? { status: "cancelled", fills: [], final_proof: { final_venue_execution_proven: true, final_fill_proven: false } }
+        : { status: "open", fills: [] };
+    }
     return {
       status: "filled",
       final_proof: {
@@ -258,9 +271,22 @@ test("reconciles before cancel, confirms cancel, and exactly unwinds a one-leg f
   };
   const verified = [];
   const active = await state.getMultiLegSaga(created.saga.saga_id);
-  const recovered = await recoverDueMultiLegSagas({
+  const firstRecovery = await recoverDueMultiLegSagas({
     state,
     now_ms: active.unhedged_deadline_ms,
+    recipient: { recipient_id: "did:key:recovery-test" },
+    executeOrder,
+    verifyOrder: async (args) => {
+      verified.push(args);
+      return { status: "verified_no_funds" };
+    },
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
+  });
+  assert.equal(firstRecovery.ok, false);
+  assert.equal(firstRecovery.recovered[0].saga.status, "compensating");
+  const recovered = await recoverDueMultiLegSagas({
+    state,
+    now_ms: active.unhedged_deadline_ms + 1,
     recipient: { recipient_id: "did:key:recovery-test" },
     executeOrder,
     verifyOrder: async (args) => {
@@ -273,7 +299,7 @@ test("reconciles before cancel, confirms cancel, and exactly unwinds a one-leg f
   assert.equal(recovered.recovered[0].saga.status, "unwound");
   assert.equal(recovered.recovered[0].saga.terminal, true);
   assert.equal(calls.filter((call) => call.operation_class === "cancel").length, 1);
-  assert.equal(calls.filter((call) => call.operation_class === "reconcile").length, 2);
+  assert.equal(calls.filter((call) => call.operation_class === "reconcile").length, 3);
   assert.deepEqual(
     calls.filter((call) => call.venue_id === "hyperliquid").slice(0, 3).map((call) => call.operation_class),
     ["reconcile", "cancel", "reconcile"],
