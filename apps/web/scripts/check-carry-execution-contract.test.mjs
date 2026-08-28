@@ -1180,6 +1180,29 @@ test("rejects five-venue shadow qualification without a durable observation span
   );
 });
 
+test("rejects the standalone shadow verifier without the durable observation span", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowVerifierCli: sources.shadowVerifierCli.replace(
+        "minimum_span_ms: minimumSpanMs",
+        "minimum_span_ms: 0",
+      ),
+    }),
+    /carry_shadow_soak_duration_gate_missing/,
+  );
+});
+
+test("rejects a standalone verifier that can wait forever for one sample", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowVerifierCli: sources.shadowVerifierCli.replace("sampleCount > 1 ?", "true ?"),
+    }),
+    /carry_shadow_single_sample_delay_guard_missing/,
+  );
+});
+
 test("rejects release qualification that is not persistent and image-bound", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -1235,6 +1258,29 @@ test("rejects Lighter shadow data without provider-timestamped read-only streams
       shadow: sources.shadow.replace("stream?readonly=true", "stream"),
     }),
     /lighter_read_only_websocket_missing/,
+  );
+});
+
+test("rejects Lighter qualification from incremental order-book deltas", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadow: sources.shadow.replace(
+        'message?.type === "subscribed/order_book"',
+        'message?.type === "update/order_book"',
+      ),
+    }),
+    /lighter_full_orderbook_snapshot_gate_missing/,
+  );
+});
+
+test("rejects source freshness measured against the pre-fetch clock", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadow: sources.shadow.replace("Math.max(startedAtMs, completedAtMs)", "startedAtMs"),
+    }),
+    /shadow_completed_observation_clock_missing/,
   );
 });
 

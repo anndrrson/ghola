@@ -14,7 +14,11 @@ async function main() {
     ? process.env.GHOLA_CARRY_SHADOW_ASSETS.split(",").map((asset) => asset.trim()).filter(Boolean)
     : DEFAULT_CARRY_SHADOW_ASSETS;
   const sampleCount = positiveInteger(process.env.GHOLA_CARRY_SHADOW_SAMPLES, 3);
-  const intervalMs = nonNegativeInteger(process.env.GHOLA_CARRY_SHADOW_INTERVAL_MS, 1_000);
+  const minimumSpanMs = nonNegativeInteger(process.env.GHOLA_CARRY_SHADOW_MINIMUM_SPAN_MS, 120_000);
+  const intervalMs = nonNegativeInteger(
+    process.env.GHOLA_CARRY_SHADOW_INTERVAL_MS,
+    sampleCount > 1 ? Math.ceil(minimumSpanMs / (sampleCount - 1)) : 0,
+  );
   const sampleResults = [];
   for (let index = 0; index < sampleCount; index += 1) {
     const observedAtMs = Date.now();
@@ -22,7 +26,10 @@ async function main() {
     sampleResults.push(verifyCarryShadowSet(rows, { assets, now_ms: Date.now() }));
     if (index + 1 < sampleCount && intervalMs > 0) await delay(intervalMs);
   }
-  const result = verifyCarryShadowSoak(sampleResults, { required_samples: sampleCount });
+  const result = verifyCarryShadowSoak(sampleResults, {
+    required_samples: sampleCount,
+    minimum_span_ms: minimumSpanMs,
+  });
   console.log(JSON.stringify({
     version: 1,
     kind: "ghola_carry_shadow_soak_verification",

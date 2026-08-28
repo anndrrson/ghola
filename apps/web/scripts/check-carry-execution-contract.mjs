@@ -298,6 +298,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadow", "wss://mainnet.zklighter.elliot.ai/stream?readonly=true", "lighter_read_only_websocket_missing");
   requireText("shadow", 'channel: "market_stats/all"', "lighter_timestamped_market_feed_missing");
   requireText("shadow", 'channel: `order_book/${marketId}`', "lighter_timestamped_orderbook_feed_missing");
+  requireText("shadow", 'message?.type === "subscribed/order_book"', "lighter_full_orderbook_snapshot_gate_missing");
+  requireText("shadow", "Math.max(startedAtMs, completedAtMs)", "shadow_completed_observation_clock_missing");
   requireText("shadowTest", "fetches Lighter market, funding, and book timing from its public read-only WebSocket", "lighter_provider_timestamp_test_missing");
   forbidText("shadow", "market: nowMs", "carry_shadow_market_worker_clock_fallback_forbidden");
   forbidText("shadow", "funding: nowMs", "carry_shadow_funding_worker_clock_fallback_forbidden");
@@ -317,6 +319,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifierCli", "verifyCarryShadowSet", "carry_shadow_verifier_cli_runtime_missing");
   requireText("shadowVerifierCli", "verifyCarryShadowSoak(sampleResults", "carry_shadow_soak_cli_missing");
   requireText("shadowVerifierCli", "GHOLA_CARRY_SHADOW_SAMPLES", "carry_shadow_soak_sample_control_missing");
+  requireText("shadowVerifierCli", "GHOLA_CARRY_SHADOW_MINIMUM_SPAN_MS", "carry_shadow_soak_duration_control_missing");
+  requireText("shadowVerifierCli", "sampleCount > 1 ?", "carry_shadow_single_sample_delay_guard_missing");
+  requireText("shadowVerifierCli", "minimum_span_ms: minimumSpanMs", "carry_shadow_soak_duration_gate_missing");
   requireText("shadowVerifier", "CORE_PERP_VENUES", "carry_shadow_verifier_registry_missing");
   requireText("shadowVerifier", 'Object.freeze(["BTC", "ETH", "SOL"])', "carry_shadow_core_assets_missing");
   requireText("shadowVerifier", "missing_field_unjustified", "carry_shadow_missing_field_evidence_gate_missing");

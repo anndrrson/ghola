@@ -46,6 +46,7 @@ export async function fetchPerpShadowVenue({
   venue_id: venueId,
   fetchImpl = fetch,
   web_socket_ctor: WebSocketCtor = globalThis.WebSocket,
+  clock = Date.now,
   now_ms: nowMs = Date.now(),
   max_age_ms: maxAgeMs = DEFAULT_MAX_AGE_MS,
   timeout_ms: timeoutMs = 5_000,
@@ -74,7 +75,12 @@ export async function fetchPerpShadowVenue({
         body: JSON.stringify({ type: "l2Book", coin }),
       }, timeoutMs),
     ])));
-    return selectAssets(parseHyperliquidShadow({ body, books, now_ms: nowMs, max_age_ms: maxAgeMs }), assets);
+    return selectAssets(parseHyperliquidShadow({
+      body,
+      books,
+      now_ms: completedObservationTime(nowMs, clock),
+      max_age_ms: maxAgeMs,
+    }), assets);
   }
   if (adapterId === "lighter_shadow_v1") {
     const details = await jsonRequest(
@@ -94,7 +100,7 @@ export async function fetchPerpShadowVenue({
       details,
       market_stats: observation.market_stats,
       order_books: observation.order_books,
-      now_ms: nowMs,
+      now_ms: completedObservationTime(nowMs, clock),
       max_age_ms: maxAgeMs,
     }), assets);
   }
@@ -125,7 +131,7 @@ export async function fetchPerpShadowVenue({
         book_tickers: books,
         funding_info: fundingInfo,
         depth_books: depthBooks,
-        now_ms: nowMs,
+        now_ms: completedObservationTime(nowMs, clock),
         max_age_ms: maxAgeMs,
       }), assets),
       ["USDT", "USDC", "USD", "USD1", "U"],
@@ -189,7 +195,12 @@ export async function fetchPerpShadowVenue({
       data: observations.map((observation) => observation.row),
       responseTime: Math.max(0, ...observations.map((observation) => observation.responseTime)),
     };
-    return selectAssets(parseEdgeXShadow({ funding, contracts: selectedContracts, now_ms: nowMs, max_age_ms: maxAgeMs }), assets);
+    return selectAssets(parseEdgeXShadow({
+      funding,
+      contracts: selectedContracts,
+      now_ms: completedObservationTime(nowMs, clock),
+      max_age_ms: maxAgeMs,
+    }), assets);
   }
   if (adapterId === "dydx_shadow_v1") {
     const chainRests = dydxChainRestUrls(marketMetadata);
@@ -215,7 +226,7 @@ export async function fetchPerpShadowVenue({
       books,
       fee_params: feeParams,
       server_time: serverTime,
-      now_ms: nowMs,
+      now_ms: completedObservationTime(nowMs, clock),
       max_age_ms: maxAgeMs,
     }), assets);
   }
@@ -732,7 +743,11 @@ async function lighterPublicWebSocketSnapshot({
       } catch {
         return;
       }
-      if (message?.channel === "market_stats:all" && message.market_stats) {
+      if (
+        message?.channel === "market_stats:all"
+        && message?.type === "subscribed/market_stats"
+        && message.market_stats
+      ) {
         marketStats = {
           timestamp: message.timestamp,
           market_stats: Object.freeze(Object.fromEntries(
@@ -741,7 +756,12 @@ async function lighterPublicWebSocketSnapshot({
         };
       }
       const orderBookMatch = /^order_book:(\d+)$/.exec(String(message?.channel || ""));
-      if (orderBookMatch && expected.has(orderBookMatch[1]) && message.order_book) {
+      if (
+        orderBookMatch
+        && expected.has(orderBookMatch[1])
+        && message?.type === "subscribed/order_book"
+        && message.order_book
+      ) {
         orderBooks.set(orderBookMatch[1], {
           timestamp: message.timestamp,
           bids: message.order_book.bids,
@@ -1010,6 +1030,13 @@ function epochMilliseconds(value) {
 function completeSourceTimestamp(values) {
   if (!values.every((value) => Number.isSafeInteger(value) && value > 0)) return null;
   return Math.min(...values);
+}
+
+function completedObservationTime(startedAtMs, clock) {
+  const completedAtMs = typeof clock === "function" ? Number(clock()) : NaN;
+  return Number.isSafeInteger(completedAtMs) && completedAtMs > 0
+    ? Math.max(startedAtMs, completedAtMs)
+    : startedAtMs;
 }
 
 function staleSources(value) {
