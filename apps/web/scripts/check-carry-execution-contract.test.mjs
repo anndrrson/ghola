@@ -1801,6 +1801,18 @@ test("rejects a terminal that hides capital-free public source synchronization",
   );
 });
 
+test("rejects removal of the capital-free shadow-position boundary", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder
+        .replaceAll("SHADOW POSITION · LIVE-DATA MODEL", "MODEL")
+        .replaceAll("NO WALLET · NO DEPOSIT · NO ORDER", "READY"),
+    }),
+    /carry_terminal_shadow_position_missing|carry_terminal_shadow_safety_boundary_missing/,
+  );
+});
+
 test("rejects a terminal that hides index-basis evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({

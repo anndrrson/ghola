@@ -609,6 +609,16 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const canExit = current ? ["active", "rebalancing", "frozen"].includes(current.position.status) : false;
   return (
     <div className="mt-2 grid gap-2 border-t border-[#1d2733] pt-2 lg:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]" aria-label="Carry position builder">
+      {!proof && !current ? (
+        <div className="flex min-w-0 items-center justify-between gap-3 rounded border border-[#1d2733] bg-[#070a0f] px-2 py-1 lg:col-span-2">
+          <span className="truncate font-mono text-[9px] font-semibold tracking-[0.12em] text-[#8fbbe2]">
+            SHADOW POSITION · LIVE-DATA MODEL
+          </span>
+          <span className="shrink-0 font-mono text-[9px] text-[#72bfa2]">
+            NO WALLET · NO DEPOSIT · NO ORDER
+          </span>
+        </div>
+      ) : null}
       <div className="grid gap-1.5 sm:grid-cols-4">
         <Metric label="ROUTE" value={`L ${venueName(candidate.long.venue_id)} / S ${venueName(candidate.short.venue_id)}`} />
         <Metric label={proof ? "GROSS" : "GROSS EST"} value={grossFunding.value} tone={grossFunding.tone} />

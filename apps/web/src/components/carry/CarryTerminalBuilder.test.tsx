@@ -434,6 +434,8 @@ describe("CarryTerminalBuilder", () => {
     });
 
     expect(container.textContent).toContain("CONNECT TO VERIFY & TRADE");
+    expect(container.textContent).toContain("SHADOW POSITION · LIVE-DATA MODEL");
+    expect(container.textContent).toContain("NO WALLET · NO DEPOSIT · NO ORDER");
     expect(container.textContent).not.toContain("RETRY POSITION SYNC");
     expect(container.textContent).not.toContain("NO-SUBMIT CHECK");
     expect(api.listCarryPositions).not.toHaveBeenCalled();

@@ -608,6 +608,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", 'label="SOURCE SYNC"', "carry_terminal_source_sync_missing");
   requireText("webCarryBuilder", 'label="INDEX BASIS"', "carry_terminal_index_basis_missing");
   requireText("webCarryBuilder", "model.contractDataSkewMs", "carry_terminal_public_source_sync_missing");
+  requireText("webCarryBuilder", "SHADOW POSITION · LIVE-DATA MODEL", "carry_terminal_shadow_position_missing");
+  requireText("webCarryBuilder", "NO WALLET · NO DEPOSIT · NO ORDER", "carry_terminal_shadow_safety_boundary_missing");
+  requireText("webCarryBuilderTest", "SHADOW POSITION · LIVE-DATA MODEL", "carry_terminal_shadow_position_test_missing");
   requireText("webCarryBuilder", "model.indexPriceDivergenceBps", "carry_terminal_public_index_basis_missing");
   requireText("webCarryBuilder", 'label="OWNER CAPITAL"', "carry_terminal_capital_action_missing");
   requireText("webCarryBuilder", "automatic_transfer_permitted !== false", "carry_terminal_capital_authority_gate_missing");
