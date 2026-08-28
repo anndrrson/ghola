@@ -259,7 +259,7 @@ describe("CarryTerminalBuilder", () => {
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     expect(container.textContent).toContain("PRIVATE PRIME");
     expect(container.textContent).toContain("5/5 DATA · 3/3 EXEC · 3/3 REC · ROUTES");
-    expect(container.textContent).toContain("PRE-BROADCAST · RECOVERY BOUND · CAPITAL READY · OWNER CONTROLLED");
+    expect(container.textContent).toContain("QUALIFIED · NO-SUBMIT ONLY · LIVE PAIRED PROOF REQUIRED");
     expect(container.textContent).not.toContain("LIVE PAIRED LIFECYCLE PROVEN");
   });
 
@@ -1186,6 +1186,9 @@ function privatePrimeReadiness() {
     version: 1,
     kind: "ghola_private_prime_no_submit_readiness",
     ready: true,
+    no_submit_ready: true,
+    ready_for_live_users: false,
+    live_launch_blockers: ["live_paired_lifecycle_unproven"],
     proof_level: "pre_broadcast_readiness",
     checked_at_ms: now,
     expires_at_ms: now + 5_000,

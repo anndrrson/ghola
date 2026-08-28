@@ -30,6 +30,7 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
   const supervision = record(value.supervision);
   const pairedLifecycle = record(value.paired_lifecycle);
   const reasons = strings(value.reasons);
+  const liveLaunchBlockers = strings(value.live_launch_blockers);
   const venues = strings(execution.venue_ids);
   const checkedAt = integer(value.checked_at_ms);
   const expiresAt = integer(value.expires_at_ms);
@@ -104,6 +105,11 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
       && value.live_paired_lifecycle_proven === true
       && lifecycleReady);
   const expectedReady = shadowReady && executionReady && recoveryReady && capitalReady && routesReady && supervisionReady && reasons.length === 0;
+  const expectedLiveReady = expectedReady && lifecycleReady;
+  const expectedLiveLaunchBlockers = [
+    ...reasons,
+    ...(lifecycleReady ? [] : ["live_paired_lifecycle_unproven"]),
+  ];
   const valid = value.version === 1
     && value.kind === "ghola_private_prime_no_submit_readiness"
     && proofBoundaryValid
@@ -115,18 +121,27 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && value.evidence_commitment === carryPrivatePrimeEvidenceCommitment(value)
     && (!supervisionReady || (supervisionCheckedAt !== null && expiresAt <= supervisionCheckedAt + 5_000))
     && (!lifecycleReady || (lifecycleExpiresAt !== null && expiresAt <= lifecycleExpiresAt))
-    && value.ready === expectedReady;
+    && value.ready === expectedReady
+    && value.no_submit_ready === expectedReady
+    && value.ready_for_live_users === expectedLiveReady
+    && sameStrings(liveLaunchBlockers, expectedLiveLaunchBlockers);
   if (!valid) return { status: "invalid", value: "UNVERIFIED", detail: "WORKER PROOF INVALID", tone: "bad" };
 
   const statusValue = `${shadowReady ? shadowCount : 0}/${CORE_PERP_VENUES.length} DATA · ${executionReady ? venues.length : 0}/${CARRY_EXECUTION_VENUES.length} EXEC · ${recoveryReady ? recoveryVenues.length : 0}/${CARRY_EXECUTION_VENUES.length} REC · ${routesReady ? "ROUTES" : "NO ROUTES"}`;
-  if (expectedReady) {
+  if (expectedLiveReady && lifecycleAttribution) {
     return {
       status: "ready",
       value: statusValue,
-      detail: lifecycleReady && lifecycleAttribution
-        ? liveLifecycleDetail(lifecycleAttribution)
-        : "PRE-BROADCAST · RECOVERY BOUND · CAPITAL READY · OWNER CONTROLLED",
+      detail: liveLifecycleDetail(lifecycleAttribution),
       tone: "good",
+    };
+  }
+  if (expectedReady) {
+    return {
+      status: "pending",
+      value: statusValue,
+      detail: "QUALIFIED · NO-SUBMIT ONLY · LIVE PAIRED PROOF REQUIRED",
+      tone: "warn",
     };
   }
   const labels = reasons.map(reasonLabel);
@@ -172,6 +187,10 @@ function strings(value: unknown): string[] {
 
 function integer(value: unknown): number | null {
   return Number.isSafeInteger(value) ? Number(value) : null;
+}
+
+function sameStrings(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function parseLifecycleValueAttribution(input: unknown): CarryLifecycleValueAttribution | null {

@@ -9,10 +9,10 @@ const NOW = 1_800_000_000_000;
 describe("private-prime readiness", () => {
   it("shows one compact pre-broadcast status only from complete worker proof", () => {
     expect(carryPrivatePrimeSummary(proof(), NOW)).toEqual({
-      status: "ready",
+      status: "pending",
       value: "5/5 DATA · 3/3 EXEC · 3/3 REC · ROUTES",
-      detail: "PRE-BROADCAST · RECOVERY BOUND · CAPITAL READY · OWNER CONTROLLED",
-      tone: "good",
+      detail: "QUALIFIED · NO-SUBMIT ONLY · LIVE PAIRED PROOF REQUIRED",
+      tone: "warn",
     });
   });
 
@@ -74,6 +74,10 @@ describe("private-prime readiness", () => {
     const tampered = proof();
     tampered.asset = "ETH";
     expect(carryPrivatePrimeSummary(tampered, NOW).status).toBe("invalid");
+  });
+
+  it("rejects a no-submit aggregate relabeled as ready for live users", () => {
+    expect(carryPrivatePrimeSummary(proof({ ready_for_live_users: true }), NOW).status).toBe("invalid");
   });
 
   it("rejects private-prime readiness after supervision becomes stale", () => {
@@ -174,8 +178,22 @@ function proof(overrides: Record<string, unknown> = {}) {
     owner_only_withdrawals: true,
     transaction_broadcast: false,
     reasons: [],
+    no_submit_ready: false,
+    ready_for_live_users: false,
+    live_launch_blockers: [] as string[],
     ...overrides,
   };
+  const noSubmitReady = material.ready === true;
+  const liveReady = noSubmitReady
+    && material.proof_level === "live_paired_lifecycle"
+    && material.live_paired_lifecycle_proven === true;
+  material.no_submit_ready = noSubmitReady;
+  material.ready_for_live_users = liveReady;
+  material.live_launch_blockers = [
+    ...(Array.isArray(material.reasons) ? material.reasons : []),
+    ...(liveReady ? [] : ["live_paired_lifecycle_unproven"]),
+  ];
+  if ("ready_for_live_users" in overrides) material.ready_for_live_users = Boolean(overrides.ready_for_live_users);
   return {
     ...material,
     evidence_commitment: carryPrivatePrimeEvidenceCommitment(material),

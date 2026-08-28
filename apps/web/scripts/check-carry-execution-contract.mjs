@@ -980,6 +980,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("executor", "recordLifecycleProofAfterExit", "carry_lifecycle_proof_exit_hook_missing");
   requireText("privatePrimeReadiness", 'proof_level: pairedLifecycle.verified ? "live_paired_lifecycle" : "pre_broadcast_readiness"', "carry_private_prime_proof_level_missing");
   requireText("privatePrimeReadiness", "live_paired_lifecycle_proven: pairedLifecycle.verified", "carry_private_prime_live_proof_boundary_missing");
+  requireText("privatePrimeReadiness", "ready_for_live_users: readyForLiveUsers", "carry_private_prime_live_user_gate_missing");
   requireText("privatePrimeReadiness", "assessCompletedCarryLifecycleProof({", "carry_private_prime_lifecycle_commitment_verification_missing");
   requireText("privatePrimeReadiness", "verifyCarrySupervisionHealth(carrySupervision", "carry_private_prime_supervision_verification_missing");
   requireText("privatePrimeReadiness", "Number.isSafeInteger(proof?.realized_net_value_micro_usdc)", "carry_private_prime_realized_net_gate_missing");
@@ -1026,6 +1027,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webPrivatePrimeReadinessTest", "after supervision becomes stale", "carry_private_prime_ui_supervision_expiry_test_missing");
   requireText("webPrivatePrimeReadiness", 'value.proof_level === "live_paired_lifecycle"', "carry_private_prime_ui_proof_level_gate_missing");
   requireText("webPrivatePrimeReadiness", "value.live_paired_lifecycle_proven === true", "carry_private_prime_ui_live_proof_gate_missing");
+  requireText("webPrivatePrimeReadiness", "value.ready_for_live_users === expectedLiveReady", "carry_private_prime_ui_live_user_gate_missing");
+  requireText("webPrivatePrimeReadiness", "QUALIFIED · NO-SUBMIT ONLY · LIVE PAIRED PROOF REQUIRED", "carry_private_prime_ui_prebroadcast_disclosure_missing");
+  requireText("webPrivatePrimeReadinessTest", "no-submit aggregate relabeled as ready for live users", "carry_private_prime_ui_live_user_test_missing");
+  requireText("webCarryBuilderTest", "QUALIFIED · NO-SUBMIT ONLY · LIVE PAIRED PROOF REQUIRED", "carry_terminal_prebroadcast_disclosure_test_missing");
   requireText("webPrivatePrimeReadiness", "integer(pairedLifecycle.realized_net_value_micro_usdc)", "carry_private_prime_ui_realized_net_gate_missing");
   requireText("webPrivatePrimeReadiness", "parseLifecycleValueAttribution(pairedLifecycle.value_attribution)", "carry_private_prime_ui_value_attribution_gate_missing");
   requireText("webPrivatePrimeReadiness", "normalizeCarryLifecycleValueAttribution", "carry_private_prime_ui_shared_value_attribution_missing");

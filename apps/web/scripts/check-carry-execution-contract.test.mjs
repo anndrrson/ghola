@@ -446,6 +446,32 @@ test("rejects live private-prime proof that drops realized after-cost value", ()
   );
 });
 
+test("rejects private-prime readiness that hard-codes live-user readiness", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replace(
+        "ready_for_live_users: readyForLiveUsers",
+        "ready_for_live_users: true",
+      ),
+    }),
+    /carry_private_prime_live_user_gate_missing/,
+  );
+});
+
+test("rejects a terminal that trusts no-submit evidence as live-user readiness", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivatePrimeReadiness: sources.webPrivatePrimeReadiness.replace(
+        "value.ready_for_live_users === expectedLiveReady",
+        "value.ready_for_live_users === true",
+      ),
+    }),
+    /carry_private_prime_ui_live_user_gate_missing/,
+  );
+});
+
 test("rejects lifecycle proof without reconciled value attribution", () => {
   assert.throws(
     () => checkCarryExecutionContract({

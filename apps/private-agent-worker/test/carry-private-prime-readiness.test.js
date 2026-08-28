@@ -30,6 +30,9 @@ test("combines five-venue shadow and three-venue no-submit evidence without over
     now_ms: NOW,
   });
   assert.equal(result.ready, true);
+  assert.equal(result.no_submit_ready, true);
+  assert.equal(result.ready_for_live_users, false);
+  assert.deepEqual(result.live_launch_blockers, ["live_paired_lifecycle_unproven"]);
   assert.equal(result.proof_level, "pre_broadcast_readiness");
   assert.equal(result.live_paired_lifecycle_proven, false);
   assert.equal(result.transaction_broadcast, false);
@@ -84,6 +87,9 @@ test("upgrades only matching durable paired lifecycle evidence to live-proven", 
     now_ms: NOW,
   });
   assert.equal(result.ready, true);
+  assert.equal(result.no_submit_ready, true);
+  assert.equal(result.ready_for_live_users, true);
+  assert.deepEqual(result.live_launch_blockers, []);
   assert.equal(result.proof_level, "live_paired_lifecycle");
   assert.equal(result.live_paired_lifecycle_proven, true);
   assert.equal(result.paired_lifecycle.final_flat_zero_orders, true);
@@ -229,6 +235,14 @@ test("fails closed when shadow, supervision, or route evidence is missing", () =
     now_ms: NOW,
   });
   assert.equal(result.ready, false);
+  assert.equal(result.ready_for_live_users, false);
+  assert.deepEqual(result.live_launch_blockers, [
+    "three_venue_no_submit_unproven",
+    "five_venue_shadow_unproven",
+    "carry_supervision_unready",
+    "collateral_route_observation_unavailable",
+    "live_paired_lifecycle_unproven",
+  ]);
   assert.deepEqual(result.reasons, [
     "three_venue_no_submit_unproven",
     "five_venue_shadow_unproven",

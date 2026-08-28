@@ -48,10 +48,19 @@ export function buildCarryPrivatePrimeReadiness({
   if (routeObservationConfigured !== true) reasons.push("collateral_route_observation_unavailable");
   else if (routeObservation.verified !== true) reasons.push("collateral_route_evidence_unverified");
   else if (routeObservation.available_route_count < 1) reasons.push("collateral_route_unavailable");
+  const noSubmitReady = reasons.length === 0;
+  const readyForLiveUsers = noSubmitReady && pairedLifecycle.verified;
+  const liveLaunchBlockers = [
+    ...reasons,
+    ...(pairedLifecycle.verified ? [] : ["live_paired_lifecycle_unproven"]),
+  ];
   const material = {
     version: 1,
     kind: "ghola_private_prime_no_submit_readiness",
-    ready: reasons.length === 0,
+    ready: noSubmitReady,
+    no_submit_ready: noSubmitReady,
+    ready_for_live_users: readyForLiveUsers,
+    live_launch_blockers: liveLaunchBlockers,
     proof_level: pairedLifecycle.verified ? "live_paired_lifecycle" : "pre_broadcast_readiness",
     owner_commitment: readiness?.owner_commitment || null,
     network: readiness?.network || "mainnet",
