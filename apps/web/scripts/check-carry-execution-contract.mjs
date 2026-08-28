@@ -611,6 +611,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "SHADOW POSITION · LIVE-DATA MODEL", "carry_terminal_shadow_position_missing");
   requireText("webCarryBuilder", "NO WALLET · NO DEPOSIT · NO ORDER", "carry_terminal_shadow_safety_boundary_missing");
   requireText("webCarryBuilderTest", "SHADOW POSITION · LIVE-DATA MODEL", "carry_terminal_shadow_position_test_missing");
+  requireText("webCarryBuilder", 'label="RISK MANDATE"', "carry_terminal_risk_mandate_display_missing");
+  requireText("webCarryBuilder", "carryRiskMandateSummary(defaultCarryRiskMandate())", "carry_terminal_risk_mandate_binding_missing");
+  requireText("webCarryBuilderTest", "fails closed when the visible risk mandate is malformed", "carry_terminal_risk_mandate_test_missing");
   requireText("webCarryBuilder", "model.indexPriceDivergenceBps", "carry_terminal_public_index_basis_missing");
   requireText("webCarryBuilder", 'label="OWNER CAPITAL"', "carry_terminal_capital_action_missing");
   requireText("webCarryBuilder", "automatic_transfer_permitted !== false", "carry_terminal_capital_authority_gate_missing");

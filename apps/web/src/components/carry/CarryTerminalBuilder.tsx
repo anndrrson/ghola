@@ -331,6 +331,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const supervision = carrySupervisionSummary(asRecord(
     readiness?.carry_supervision || executionMatrix?.carry_supervision,
   ));
+  const mandate = carryRiskMandateSummary(defaultCarryRiskMandate());
 
   useEffect(() => {
     if (!proof || !actionableProof) return;
@@ -647,6 +648,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         />
         <Metric label="EDGE CONF" value={fundingPersistence.value} tone={fundingPersistence.tone} />
         <Metric label="PRIVATE PRIME" value={privatePrime.value} tone={privatePrime.tone} />
+        <Metric label="RISK MANDATE" value={mandate.value} tone={mandate.tone} />
         <Metric label="RISK ENGINE" value={supervision.value} tone={supervision.tone} />
         <Metric label="MONITOR" value={monitorAge(latestObservation?.recorded_at_ms)} />
       </div>
@@ -764,6 +766,24 @@ export function carryTerminalEconomics(model: ReturnType<typeof builderModel>, o
     breakEven: opportunity
       ? proofBreakEvenMs == null ? "UNVERIFIED" : `${(proofBreakEvenMs / 86_400_000).toFixed(1)}D`
       : model.breakEvenDays == null ? "—" : `${model.breakEvenDays.toFixed(1)}D`,
+  };
+}
+
+export function carryRiskMandateSummary(mandate: ReturnType<typeof defaultCarryRiskMandate>) {
+  const exitBps = finiteNumber(mandate.exit_net_value_bps);
+  const flipCount = finiteNumber(mandate.exit_after_consecutive_observations);
+  const runwayMs = finiteNumber(mandate.min_margin_runway_ms);
+  if (!Number.isSafeInteger(exitBps)
+    || !Number.isSafeInteger(flipCount)
+    || Number(flipCount) < 1
+    || !Number.isSafeInteger(runwayMs)
+    || Number(runwayMs) <= 0) {
+    return { value: "UNVERIFIED", tone: "bad" as const };
+  }
+  const exit = Number(exitBps) < 0 ? `−${Math.abs(Number(exitBps))}` : String(Number(exitBps));
+  return {
+    value: `EXIT ≤${exit}BP · ${flipCount} FLIPS · ≥${formatRunway(Number(runwayMs))}`,
+    tone: "good" as const,
   };
 }
 

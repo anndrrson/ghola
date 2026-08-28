@@ -1813,6 +1813,16 @@ test("rejects removal of the capital-free shadow-position boundary", () => {
   );
 });
 
+test("rejects a terminal that hides the signed risk mandate", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll('label="RISK MANDATE"', 'label="POLICY"'),
+    }),
+    /carry_terminal_risk_mandate_display_missing/,
+  );
+});
+
 test("rejects a terminal that hides index-basis evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({

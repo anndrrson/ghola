@@ -10,6 +10,7 @@ import {
   carryFundingPersistenceSummary,
   carryOpeningCapitalSummary,
   carryPortfolioRunwaySummary,
+  carryRiskMandateSummary,
   carrySupervisionSummary,
   carryTerminalEconomics,
   carryTerminalGrossFunding,
@@ -17,6 +18,7 @@ import {
 } from "./CarryTerminalBuilder";
 import { builderModel, type CarryCandidate } from "@/lib/carry-market";
 import { carryPrivatePrimeEvidenceCommitment } from "@/lib/carry-private-prime-readiness";
+import { defaultCarryRiskMandate } from "@/lib/carry-risk-mandate";
 
 const OPPORTUNITY_EVIDENCE = `carry:creation-opportunity:evidence:${"a".repeat(64)}`;
 
@@ -436,6 +438,8 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("CONNECT TO VERIFY & TRADE");
     expect(container.textContent).toContain("SHADOW POSITION · LIVE-DATA MODEL");
     expect(container.textContent).toContain("NO WALLET · NO DEPOSIT · NO ORDER");
+    expect(container.textContent).toContain("RISK MANDATE");
+    expect(container.textContent).toContain("EXIT ≤0BP · 2 FLIPS · ≥6.0H");
     expect(container.textContent).not.toContain("RETRY POSITION SYNC");
     expect(container.textContent).not.toContain("NO-SUBMIT CHECK");
     expect(api.listCarryPositions).not.toHaveBeenCalled();
@@ -445,6 +449,13 @@ describe("CarryTerminalBuilder", () => {
     expect(api.getCarryPortfolioValueReport).not.toHaveBeenCalled();
     expect(api.preflightCarryPair).not.toHaveBeenCalled();
     expect(api.preflightCarryExecutionMatrix).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the visible risk mandate is malformed", () => {
+    expect(carryRiskMandateSummary({
+      ...defaultCarryRiskMandate(),
+      min_margin_runway_ms: 0,
+    })).toEqual({ value: "UNVERIFIED", tone: "bad" });
   });
 
   it("restores fresh diagnostic-only fleet evidence after refresh without treating it as readiness", async () => {
