@@ -380,6 +380,75 @@ test("refreshes read-only Aster reconciliation instead of replaying a stale cach
   assert.equal((await state.getExecutionAttempt(args.work_order_commitment)).submit_count, 0);
 });
 
+test("allows exact reconciliation of a durably recorded recovery child", async (t) => {
+  const old = { ...process.env };
+  const dir = mkdtempSync(join(tmpdir(), "ghola-aster-recovery-child-"));
+  t.after(() => {
+    process.env = old;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "true";
+  process.env.PRIVATE_AGENT_ASTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_ASTER_LIVE_MODE = "full_ticket";
+  const state = createWorkerState(dir);
+  const sagaId = "saga:aster:recovery-child:0001";
+  const legId = `${sagaId}:aster`;
+  const targetWork = "work:aster:recovery-child:0001";
+  state.getMultiLegSaga = async () => ({
+    saga_id: sagaId,
+    execution_context: {
+      autopilot_session_id: "autopilot:aster:recovery-child:0001",
+      policy_commitment: "policy:aster:recovery-child:0001",
+      legs: [{ leg_id: legId, work_order_commitment: "work:aster:original:recovery-child" }],
+    },
+    legs: [{ leg_id: legId, venue_id: "aster" }],
+  });
+  const originalGetIdempotency = state.getIdempotency.bind(state);
+  state.getIdempotency = async (key) => key.startsWith("accounting:recovery:")
+    ? {
+        receipt: {
+          version: 1,
+          kind: "multi_leg_recovery_accounting",
+          saga_id: sagaId,
+          leg_id: legId,
+          venue_id: "aster",
+          action: "unwind",
+          executions: [{ work_order_commitment: targetWork }],
+        },
+      }
+    : originalGetIdempotency(key);
+  const receipt = await executeAutopilotOrder({
+    venue_id: "aster",
+    operation_class: "reconcile",
+    work_order_commitment: "work:aster:recovery-child:reconcile:0001",
+    policy_commitment: "policy:aster:recovery-child:0001",
+    session_policy: {
+      policy_commitment: "policy:aster:recovery-child:0001",
+      market_allowlist: ["BTC-PERP"],
+      max_notional_bucket: "25",
+      max_order_count: 4,
+      max_daily_notional_bucket: "100",
+      kill_switch: false,
+    },
+    instruction: {
+      version: 1,
+      kind: "ghola_private_execution_instruction",
+      venue_id: "aster",
+      operation_class: "reconcile",
+      reconcile: { market: "BTC-PERP", target_work_order_commitment: targetWork },
+    },
+    execution: {
+      execution_mode: "byo_api_key",
+      autopilot_session_id: "autopilot:aster:recovery-child:0001",
+      recovery_saga_id: sagaId,
+    },
+    recipient: null,
+    state,
+  });
+  assert.equal(receipt.status, "open");
+  assert.equal((await state.getExecutionAttempt("work:aster:recovery-child:reconcile:0001")).submit_count, 0);
+});
+
 function credential() {
   return asterCredentialFromVault({
     kind: "ghola_aster_execution_vault",

@@ -201,6 +201,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("multiLegOrchestrator", '"reconcile_after_cancel"', "carry_reconcile_after_cancel_missing");
   requireText("multiLegOrchestratorTest", "recovers a crash after exact cancel without cancelling twice", "carry_cancel_ack_restart_test_missing");
   requireText("multiLegOrchestratorTest", "reconciles a terminal late fill before cancel and never cancels or resubmits it", "carry_late_fill_before_cancel_test_missing");
+  requireText("multiLegOrchestrator", "settlePriorRecoveryExecutions", "carry_recovery_child_reconciliation_missing");
+  requireText("multiLegOrchestrator", "applied_filled_micro_usdc", "carry_recovery_incremental_fill_accounting_missing");
+  requireText("multiLegOrchestratorTest", "reconciles a partial recovery child before submitting the residual unwind", "carry_partial_recovery_child_test_missing");
+  requireText("multiLegOrchestratorTest", "reconciles a partial reduce-only completion without reopening the filled leg", "carry_partial_completion_child_test_missing");
+  requireText("asterTest", "allows exact reconciliation of a durably recorded recovery child", "aster_recovery_child_authorization_test_missing");
   requireCount("privateExecution", "cached?.receipt && !readOnlyReconcile", 3, "carry_fresh_reconciliation_read_missing");
   requireText("asterTest", "refreshes read-only Aster reconciliation instead of replaying a stale cache", "carry_fresh_reconciliation_read_test_missing");
   requireText("webAccountSetup", "shouldResumeUnsignedTurnkeySetup", "carry_setup_session_recovery_missing");

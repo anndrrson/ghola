@@ -1959,16 +1959,41 @@ async function resolvePrivateOrderTarget(instruction, { state, venue_id, body })
 }
 
 async function durableRecoveryTargetAllowed({ state, body, target, venueId }) {
-  if (!body?.[AUTOPILOT_INTERNAL_INSTRUCTION] || !body.recovery_saga_id || !body.autopilot_session_id) return false;
+  if (!body?.[AUTOPILOT_INTERNAL_INSTRUCTION] || !body.recovery_saga_id) return false;
   const saga = await state.getMultiLegSaga?.(body.recovery_saga_id);
   if (
     !saga ||
-    saga.execution_context?.autopilot_session_id !== body.autopilot_session_id ||
     saga.execution_context?.policy_commitment !== body.policy_commitment
+  ) return false;
+  if (saga.execution_context?.autopilot_session_id) {
+    if (saga.execution_context.autopilot_session_id !== body.autopilot_session_id) return false;
+  } else if (
+    saga.execution_context?.carry_position_id !== body.carry_position_id ||
+    saga.execution_context?.owner_commitment !== body.owner_commitment
   ) return false;
   const contextLeg = saga.execution_context.legs.find((leg) => leg.work_order_commitment === target);
   const sagaLeg = contextLeg && saga.legs.find((leg) => leg.leg_id === contextLeg.leg_id);
-  return sagaLeg?.venue_id === venueId;
+  if (sagaLeg?.venue_id === venueId) return true;
+  for (const leg of saga.legs.filter((item) => item.venue_id === venueId)) {
+    for (const action of ["unwind", "completion"]) {
+      const stored = await state.getIdempotency?.(recoveryAccountingKey(saga.saga_id, leg.leg_id, action));
+      const accounting = stored?.receipt;
+      if (
+        accounting?.version === 1 &&
+        accounting?.kind === "multi_leg_recovery_accounting" &&
+        accounting?.saga_id === saga.saga_id &&
+        accounting?.leg_id === leg.leg_id &&
+        accounting?.venue_id === venueId &&
+        accounting?.action === action &&
+        accounting.executions?.some((execution) => execution?.work_order_commitment === target)
+      ) return true;
+    }
+  }
+  return false;
+}
+
+function recoveryAccountingKey(sagaId, legId, action) {
+  return `accounting:recovery:${sha256Hex(`${sagaId}:${legId}:${action}`).slice(0, 40)}`;
 }
 
 function hyperliquidExecutionMode(body) {

@@ -56,6 +56,19 @@ test("rejects recovery that can reuse a stale reconciliation read", () => {
   );
 });
 
+test("rejects residual recovery submission before exact child reconciliation", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replaceAll(
+        "settlePriorRecoveryExecutions",
+        "skipPriorRecoveryExecutions",
+      ),
+    }),
+    /carry_recovery_child_reconciliation_missing/,
+  );
+});
+
 test("rejects readiness detached from the registered recovery adapter", () => {
   assert.throws(
     () => checkCarryExecutionContract({

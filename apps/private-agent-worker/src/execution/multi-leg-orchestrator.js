@@ -362,8 +362,25 @@ async function executeCompensatingRecovery({
     });
   }
   for (const action of current.next_actions.filter((item) => item.type === "submit_unwind")) {
-    const leg = current.legs.find((item) => item.leg_id === action.leg_id);
-    const context = executionLegContext(current, leg.leg_id);
+    let leg = current.legs.find((item) => item.leg_id === action.leg_id);
+    let context = executionLegContext(current, leg.leg_id);
+    const settled = await settlePriorRecoveryExecutions({
+      state,
+      saga: current,
+      leg,
+      action: "unwind",
+      context,
+      session,
+      recipient,
+      executeOrder,
+      env,
+      nowMs,
+    });
+    if (!settled.ok) return settled;
+    current = settled.saga;
+    if (!current.next_actions.some((item) => item.type === "submit_unwind" && item.leg_id === action.leg_id)) continue;
+    leg = current.legs.find((item) => item.leg_id === action.leg_id);
+    context = executionLegContext(current, leg.leg_id);
     const evidence = evidenceByLeg.get(leg.leg_id) || await recoveryEvidence({ state, saga: current, leg, env });
     const remainingMicro = leg.filled_micro_usdc - leg.unwind_filled_micro_usdc;
     const remainingBase = evidence.filledBase > 0 && leg.filled_micro_usdc > 0
@@ -398,6 +415,9 @@ async function executeCompensatingRecovery({
     });
     const workOrderCommitment = recoveryWorkOrder(current, leg, "unwind", remainingMicro);
     try {
+      if (await untrackedRecoveryAttemptExists(state, workOrderCommitment)) {
+        return { ok: false, error: "unwind_outcome_requires_reconciliation", saga: current };
+      }
       if (typeof verifyOrder === "function") {
         await verifyOrder(recoveryOrderArgs({
           state,
@@ -411,6 +431,18 @@ async function executeCompensatingRecovery({
           instruction: unwindInstruction,
         }));
       }
+      await storeRecoveryAccounting({
+        state,
+        saga: current,
+        leg,
+        action: "unwind",
+        workOrderCommitment,
+        referenceMarkPrice: price,
+        requestedBase: remainingBase,
+        requestedMicro: remainingMicro,
+        receipt: null,
+        nowMs,
+      });
       const receipt = await executeOrder(recoveryOrderArgs({
         state,
         session,
@@ -429,24 +461,30 @@ async function executeCompensatingRecovery({
         action: "unwind",
         workOrderCommitment,
         referenceMarkPrice: price,
+        requestedBase: remainingBase,
+        requestedMicro: remainingMicro,
         receipt,
         nowMs,
       });
-      const progress = unwindProgress({ receipt, requestedBase: remainingBase, remainingMicro, env });
-      if (progress.filledMicro > 0) {
-        current = await recoveryEvent({
-          state,
-          saga: current,
-          type: "unwind_fill",
-          values: {
-            leg_id: leg.leg_id,
-            cumulative_filled_micro_usdc: Math.min(
-              leg.filled_micro_usdc,
-              leg.unwind_filled_micro_usdc + progress.filledMicro,
-            ),
-          },
-          nowMs,
-        });
+      const progressed = await applyRecoveryExecutionProgress({
+        state,
+        saga: current,
+        leg,
+        action: "unwind",
+        execution: {
+          work_order_commitment: workOrderCommitment,
+          reference_mark_price_e8: Math.round(price * 100_000_000),
+          requested_base_size: trim(remainingBase),
+          requested_micro_usdc: remainingMicro,
+          applied_filled_micro_usdc: 0,
+          receipt: accountingReceipt(receipt),
+        },
+        env,
+        nowMs,
+      });
+      if (!progressed.ok) return progressed;
+      current = progressed.saga;
+      if (progressed.progress.filledMicro > 0) {
         const refreshedLeg = current.legs.find((item) => item.leg_id === leg.leg_id);
         await putRecoveryPosition({
           state,
@@ -457,7 +495,7 @@ async function executeCompensatingRecovery({
           nowMs,
         });
       }
-      if (progress.terminal && progress.filledMicro === 0) {
+      if (progressed.progress.terminal && progressed.progress.filledMicro === 0) {
         current = await recoveryEvent({
           state,
           saga: current,
@@ -491,8 +529,25 @@ async function executeRiskReducingCompletion({
 }) {
   let current = saga;
   for (const action of current.next_actions.filter((item) => item.type === "submit_completion")) {
-    const leg = current.legs.find((item) => item.leg_id === action.leg_id);
-    const context = executionLegContext(current, leg.leg_id);
+    let leg = current.legs.find((item) => item.leg_id === action.leg_id);
+    let context = executionLegContext(current, leg.leg_id);
+    const settled = await settlePriorRecoveryExecutions({
+      state,
+      saga: current,
+      leg,
+      action: "completion",
+      context,
+      session,
+      recipient,
+      executeOrder,
+      env,
+      nowMs,
+    });
+    if (!settled.ok) return settled;
+    current = settled.saga;
+    if (!current.next_actions.some((item) => item.type === "submit_completion" && item.leg_id === action.leg_id)) continue;
+    leg = current.legs.find((item) => item.leg_id === action.leg_id);
+    context = executionLegContext(current, leg.leg_id);
     const remainingMicro = leg.notional_micro_usdc - leg.filled_micro_usdc;
     const requestedBase = positiveNumber(context.instruction?.order?.base_size);
     const remainingBase = requestedBase * (remainingMicro / leg.notional_micro_usdc);
@@ -507,9 +562,7 @@ async function executeRiskReducingCompletion({
       return { ok: false, error: "exact_base_quantity_unavailable", saga: current };
     }
     const workOrderCommitment = recoveryWorkOrder(current, leg, "completion", remainingMicro);
-    const prior = await state.getIdempotency?.(workOrderCommitment);
-    const attempt = await state.getExecutionAttempt?.(workOrderCommitment);
-    if (attempt && !prior?.receipt) {
+    if (await untrackedRecoveryAttemptExists(state, workOrderCommitment)) {
       return { ok: false, error: "completion_outcome_requires_reconciliation", saga: current };
     }
     let price;
@@ -528,7 +581,7 @@ async function executeRiskReducingCompletion({
       nowMs,
     });
     try {
-      if (typeof verifyOrder === "function" && !prior?.receipt) {
+      if (typeof verifyOrder === "function") {
         await verifyOrder(recoveryOrderArgs({
           state,
           session,
@@ -541,7 +594,19 @@ async function executeRiskReducingCompletion({
           instruction,
         }));
       }
-      const receipt = prior?.receipt || await executeOrder(recoveryOrderArgs({
+      await storeRecoveryAccounting({
+        state,
+        saga: current,
+        leg,
+        action: "completion",
+        workOrderCommitment,
+        referenceMarkPrice: price,
+        requestedBase: remainingBase,
+        requestedMicro: remainingMicro,
+        receipt: null,
+        nowMs,
+      });
+      const receipt = await executeOrder(recoveryOrderArgs({
         state,
         session,
         saga: current,
@@ -559,23 +624,30 @@ async function executeRiskReducingCompletion({
         action: "completion",
         workOrderCommitment,
         referenceMarkPrice: price,
+        requestedBase: remainingBase,
+        requestedMicro: remainingMicro,
         receipt,
         nowMs,
       });
-      const progress = unwindProgress({ receipt, requestedBase: remainingBase, remainingMicro, env });
-      if (progress.filledMicro > 0) {
-        current = await recoveryEvent({
-          state,
-          saga: current,
-          type: "completion_fill",
-          values: {
-            leg_id: leg.leg_id,
-            cumulative_filled_micro_usdc: Math.min(leg.notional_micro_usdc, leg.filled_micro_usdc + progress.filledMicro),
-          },
-          nowMs,
-        });
-      }
-      if (progress.terminal && progress.filledMicro === 0) {
+      const progressed = await applyRecoveryExecutionProgress({
+        state,
+        saga: current,
+        leg,
+        action: "completion",
+        execution: {
+          work_order_commitment: workOrderCommitment,
+          reference_mark_price_e8: Math.round(price * 100_000_000),
+          requested_base_size: trim(remainingBase),
+          requested_micro_usdc: remainingMicro,
+          applied_filled_micro_usdc: 0,
+          receipt: accountingReceipt(receipt),
+        },
+        env,
+        nowMs,
+      });
+      if (!progressed.ok) return progressed;
+      current = progressed.saga;
+      if (progressed.progress.terminal && progressed.progress.filledMicro === 0) {
         current = await recoveryEvent({
           state,
           saga: current,
@@ -598,6 +670,156 @@ async function executeRiskReducingCompletion({
   return current.terminal && current.status === "reconciled"
     ? { ok: true, saga: current }
     : { ok: false, error: "risk_reducing_completion_incomplete", saga: current };
+}
+
+async function settlePriorRecoveryExecutions({
+  state,
+  saga,
+  leg,
+  action,
+  context,
+  session,
+  recipient,
+  executeOrder,
+  env,
+  nowMs,
+}) {
+  let current = saga;
+  try {
+    const accounting = await readDurableRecoveryAccounting({
+      state,
+      saga_id: saga.saga_id,
+      leg_id: leg.leg_id,
+      action,
+    });
+    for (const storedExecution of accounting?.executions || []) {
+      const requestedBase = positiveNumber(storedExecution.requested_base_size);
+      const requestedMicro = Number(storedExecution.requested_micro_usdc);
+      if (!(requestedBase > 0) || !Number.isSafeInteger(requestedMicro) || requestedMicro <= 0) {
+        return { ok: false, error: "recovery_accounting_quantity_unavailable", saga: current };
+      }
+      let execution = storedExecution;
+      let progress = unwindProgress({
+        receipt: execution.receipt,
+        requestedBase,
+        remainingMicro: requestedMicro,
+        env,
+      });
+      if (!progress.terminal) {
+        const reconcileReceipt = await executeOrder(recoveryOrderArgs({
+          state,
+          session,
+          saga: current,
+          leg,
+          context,
+          recipient,
+          operationClass: "reconcile",
+          workOrderCommitment: recoveryWorkOrder(current, leg, `${action}_reconcile`, execution.work_order_commitment),
+          instruction: recoveryChildReconcileInstruction({
+            leg,
+            context,
+            targetWorkOrderCommitment: execution.work_order_commitment,
+            nowMs,
+          }),
+        }));
+        await storeRecoveryAccounting({
+          state,
+          saga: current,
+          leg,
+          action,
+          workOrderCommitment: execution.work_order_commitment,
+          referenceMarkPrice: execution.reference_mark_price_e8 / 100_000_000,
+          requestedBase,
+          requestedMicro,
+          appliedFilledMicro: execution.applied_filled_micro_usdc,
+          receipt: reconcileReceipt,
+          nowMs,
+        });
+        execution = { ...execution, receipt: accountingReceipt(reconcileReceipt) };
+        progress = unwindProgress({ receipt: reconcileReceipt, requestedBase, remainingMicro: requestedMicro, env });
+      }
+      const progressed = await applyRecoveryExecutionProgress({
+        state,
+        saga: current,
+        leg: current.legs.find((item) => item.leg_id === leg.leg_id),
+        action,
+        execution,
+        env,
+        nowMs,
+      });
+      if (!progressed.ok) return progressed;
+      current = progressed.saga;
+      if (!progress.terminal) {
+        return { ok: false, error: `${action}_outcome_requires_reconciliation`, saga: current };
+      }
+    }
+  } catch (error) {
+    return { ok: false, error: errorCode(error), saga: await state.getMultiLegSaga(saga.saga_id) || current };
+  }
+  return { ok: true, saga: current };
+}
+
+async function untrackedRecoveryAttemptExists(state, workOrderCommitment) {
+  const [cached, attempt] = await Promise.all([
+    state.getIdempotency?.(workOrderCommitment),
+    state.getExecutionAttempt?.(workOrderCommitment),
+  ]);
+  return Boolean(cached?.receipt || attempt);
+}
+
+async function applyRecoveryExecutionProgress({ state, saga, leg, action, execution, env, nowMs }) {
+  const requestedBase = positiveNumber(execution.requested_base_size);
+  const requestedMicro = Number(execution.requested_micro_usdc);
+  const appliedMicro = Number(execution.applied_filled_micro_usdc || 0);
+  if (!(requestedBase > 0) || !Number.isSafeInteger(requestedMicro) || requestedMicro <= 0 || !Number.isSafeInteger(appliedMicro)) {
+    return { ok: false, error: "recovery_accounting_quantity_unavailable", saga };
+  }
+  const progress = unwindProgress({
+    receipt: execution.receipt,
+    requestedBase,
+    remainingMicro: requestedMicro,
+    env,
+  });
+  if (progress.filledMicro < appliedMicro) {
+    return { ok: false, error: "recovery_fill_evidence_regressed", saga };
+  }
+  let current = await state.getMultiLegSaga(saga.saga_id) || saga;
+  const delta = progress.filledMicro - appliedMicro;
+  if (delta > 0) {
+    const currentLeg = current.legs.find((item) => item.leg_id === leg.leg_id);
+    const cumulative = action === "unwind"
+      ? Math.min(currentLeg.filled_micro_usdc, currentLeg.unwind_filled_micro_usdc + delta)
+      : Math.min(currentLeg.notional_micro_usdc, currentLeg.filled_micro_usdc + delta);
+    const result = await applyDurableMultiLegEvent({
+      state,
+      saga_id: current.saga_id,
+      now_ms: Math.max(nowMs, current.updated_at_ms),
+      event: {
+        version: 1,
+        event_id: `recovery:${hash(`${current.saga_id}:${leg.leg_id}:${action}:${execution.work_order_commitment}:${progress.filledMicro}`).slice(0, 40)}`,
+        sequence: current.last_event_sequence + 1,
+        type: action === "unwind" ? "unwind_fill" : "completion_fill",
+        leg_id: leg.leg_id,
+        cumulative_filled_micro_usdc: cumulative,
+      },
+    });
+    if (!result.ok) return { ok: false, error: result.error || "saga_recovery_event_failed", saga: result.saga || current };
+    current = result.saga;
+    await storeRecoveryAccounting({
+      state,
+      saga: current,
+      leg,
+      action,
+      workOrderCommitment: execution.work_order_commitment,
+      referenceMarkPrice: execution.reference_mark_price_e8 / 100_000_000,
+      requestedBase,
+      requestedMicro,
+      appliedFilledMicro: progress.filledMicro,
+      receipt: execution.receipt,
+      nowMs,
+    });
+  }
+  return { ok: true, saga: current, progress };
 }
 
 async function applyRecoveryFillIfNew({ state, saga, leg, evidence, nowMs }) {
@@ -676,10 +898,10 @@ function fillTotalsForRecord(record) {
 
 function unwindProgress({ receipt, requestedBase, remainingMicro, env }) {
   if (env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
-    return { terminal: true, filledMicro: remainingMicro };
+    return { terminal: Boolean(receipt), filledMicro: receipt ? remainingMicro : 0 };
   }
   const proof = receipt?.final_proof;
-  const filledBase = positiveNumber(proof?.filled_base_size);
+  const filledBase = positiveNumber(proof?.filled_base_size) || fillTotalsForRecord(receipt).base;
   const ratio = requestedBase > 0 ? Math.max(0, Math.min(1, filledBase / requestedBase)) : 0;
   return {
     terminal: proof?.final_venue_execution_proven === true,
@@ -712,6 +934,21 @@ function reconcileInstruction({ leg, context, nowMs }) {
       product_id: leg.market,
       market: originalVenueMarket(leg, context),
       target_work_order_commitment: context.work_order_commitment,
+    },
+  };
+}
+
+function recoveryChildReconcileInstruction({ leg, context, targetWorkOrderCommitment, nowMs }) {
+  return {
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: leg.venue_id,
+    operation_class: "reconcile",
+    expires_at: new Date(nowMs + 5 * 60_000).toISOString(),
+    reconcile: {
+      product_id: leg.market,
+      market: originalVenueMarket(leg, context),
+      target_work_order_commitment: targetWorkOrderCommitment,
     },
   };
 }
@@ -931,14 +1168,44 @@ function recoveryAccountingKey(sagaId, legId, action) {
   return `accounting:recovery:${hash(`${sagaId}:${legId}:${action}`).slice(0, 40)}`;
 }
 
-async function storeRecoveryAccounting({ state, saga, leg, action, workOrderCommitment, referenceMarkPrice, receipt, nowMs }) {
+async function storeRecoveryAccounting({
+  state,
+  saga,
+  leg,
+  action,
+  workOrderCommitment,
+  referenceMarkPrice,
+  requestedBase,
+  requestedMicro,
+  appliedFilledMicro = 0,
+  receipt,
+  nowMs,
+}) {
   if (typeof state.getIdempotency !== "function" || typeof state.putIdempotency !== "function") return;
   const key = recoveryAccountingKey(saga.saga_id, leg.leg_id, action);
   const prior = await readDurableRecoveryAccounting({ state, saga_id: saga.saga_id, leg_id: leg.leg_id, action });
   const executions = Array.isArray(prior?.executions) ? prior.executions : [];
-  if (executions.some((item) => item.work_order_commitment === workOrderCommitment)) return;
   const referenceMarkPriceE8 = Math.round(Number(referenceMarkPrice) * 100_000_000);
   if (!Number.isSafeInteger(referenceMarkPriceE8) || referenceMarkPriceE8 <= 0) return;
+  const requestedMicroUsdc = Number(requestedMicro);
+  const appliedMicroUsdc = Number(appliedFilledMicro || 0);
+  if (!(positiveNumber(requestedBase) > 0) || !Number.isSafeInteger(requestedMicroUsdc) || requestedMicroUsdc <= 0) return;
+  if (!Number.isSafeInteger(appliedMicroUsdc) || appliedMicroUsdc < 0 || appliedMicroUsdc > requestedMicroUsdc) return;
+  const existing = executions.find((item) => item.work_order_commitment === workOrderCommitment);
+  const updatedExecution = {
+    version: 1,
+    work_order_commitment: workOrderCommitment,
+    reference_mark_price_e8: referenceMarkPriceE8,
+    requested_base_size: trim(requestedBase),
+    requested_micro_usdc: requestedMicroUsdc,
+    applied_filled_micro_usdc: Math.max(Number(existing?.applied_filled_micro_usdc || 0), appliedMicroUsdc),
+    receipt: receipt === null ? existing?.receipt || null : accountingReceipt(receipt),
+    recorded_at_ms: existing?.recorded_at_ms || nowMs,
+    updated_at_ms: nowMs,
+  };
+  const nextExecutions = existing
+    ? executions.map((item) => item.work_order_commitment === workOrderCommitment ? updatedExecution : item)
+    : [...executions, updatedExecution];
   await state.putIdempotency(key, {
     version: 1,
     kind: "multi_leg_recovery_accounting",
@@ -946,13 +1213,7 @@ async function storeRecoveryAccounting({ state, saga, leg, action, workOrderComm
     leg_id: leg.leg_id,
     venue_id: leg.venue_id,
     action,
-    executions: [...executions, {
-      version: 1,
-      work_order_commitment: workOrderCommitment,
-      reference_mark_price_e8: referenceMarkPriceE8,
-      receipt: accountingReceipt(receipt),
-      recorded_at_ms: nowMs,
-    }],
+    executions: nextExecutions,
     updated_at_ms: nowMs,
   });
 }
