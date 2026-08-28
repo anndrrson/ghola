@@ -717,6 +717,32 @@ test("rejects collateral routes detached from the current no-submit account stat
   );
 });
 
+test("rejects private-prime readiness from partial directed collateral-route coverage", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replaceAll(
+        "complete_directed_coverage: completeDirectedCoverage",
+        "complete_directed_coverage: availableRoutes.length > 0",
+      ),
+    }),
+    /carry_private_prime_route_coverage_output_missing/,
+  );
+});
+
+test("rejects a terminal that treats one collateral route as private-prime coverage", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivatePrimeReadiness: sources.webPrivatePrimeReadiness.replaceAll(
+        "route.complete_directed_coverage === true",
+        "Number(route.available_route_count) > 0",
+      ),
+    }),
+    /carry_private_prime_ui_route_coverage_gate_missing/,
+  );
+});
+
 test("rejects private-prime readiness that skips exact route commitment verification", () => {
   assert.throws(
     () => checkCarryExecutionContract({

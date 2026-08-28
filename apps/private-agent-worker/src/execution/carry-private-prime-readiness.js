@@ -47,6 +47,7 @@ export function buildCarryPrivatePrimeReadiness({
   if (routeObservationConfigured !== true) technicalReasons.push("collateral_route_observation_unavailable");
   else if (routeObservation.verified !== true) technicalReasons.push("collateral_route_evidence_unverified");
   else if (routeObservation.available_route_count < 1) technicalReasons.push("collateral_route_unavailable");
+  else if (routeObservation.complete_directed_coverage !== true) technicalReasons.push("collateral_route_coverage_incomplete");
   const noSubmitReady = technicalReasons.length === 0;
   const capitalReady = executionReadinessVerified && readiness?.capital_ready === true;
   const reasons = [
@@ -221,6 +222,10 @@ function verifiedRouteObservation({ readiness, routeEvidence, routeObservationCo
     && routes.length > 0
     && routes.every((route) => currentAccountStates.has(route?.source_account_state_commitment)
       && currentAccountStates.has(route?.destination_account_state_commitment));
+  const expectedVenueIds = Array.isArray(readiness?.registry_venue_ids)
+    ? readiness.registry_venue_ids.filter((venueId) => CARRY_EXECUTION_VENUES.includes(venueId))
+    : [];
+  const requiredRoutePairs = directedRoutePairs(expectedVenueIds);
   const verified = routeObservationConfigured === true
     && routeEvidence?.ok === true
     && assessedEvidence.ok === true
@@ -233,7 +238,7 @@ function verifiedRouteObservation({ readiness, routeEvidence, routeObservationCo
     && effectiveExpiresAtMs > nowMs
     && routesBoundToCurrentAccounts
     && evidenceCommitment?.startsWith("carry:transfer-routes:evidence:") === true;
-  const availableRouteCount = verified
+  const availableRoutes = verified
     ? routes.filter((route) => route?.status === "available"
       && route?.quote_verified === true
       && route?.all_in_fee_verified === true
@@ -241,13 +246,21 @@ function verifiedRouteObservation({ readiness, routeEvidence, routeObservationCo
       && route?.owner_approval_required === true
       && route?.fund_movement_authorized === false
       && route?.transaction_broadcast === false
-      && route?.automatic_transfer_permitted === false).length
-    : 0;
+      && route?.automatic_transfer_permitted === false)
+    : [];
+  const availableRoutePairs = new Set(availableRoutes.map((route) => `${route.from_venue_id}:${route.to_venue_id}`));
+  const completeDirectedCoverage = verified
+    && expectedVenueIds.length === CARRY_EXECUTION_VENUES.length
+    && requiredRoutePairs.length === routes.length
+    && requiredRoutePairs.length === availableRoutePairs.size
+    && requiredRoutePairs.every((pair) => availableRoutePairs.has(pair));
   return Object.freeze({
     configured: routeObservationConfigured === true,
     verified,
     route_count: verified ? routes.length : 0,
-    available_route_count: availableRouteCount,
+    required_route_count: requiredRoutePairs.length,
+    available_route_count: availableRoutes.length,
+    complete_directed_coverage: completeDirectedCoverage,
     checked_at_ms: verified ? checkedAtMs : null,
     expires_at_ms: verified ? effectiveExpiresAtMs : null,
     evidence_commitment: verified ? evidenceCommitment : null,
@@ -257,6 +270,12 @@ function verifiedRouteObservation({ readiness, routeEvidence, routeObservationCo
     transaction_broadcast: false,
     automatic_transfer_permitted: false,
   });
+}
+
+function directedRoutePairs(venueIds) {
+  return venueIds.flatMap((fromVenueId) => venueIds
+    .filter((toVenueId) => toVenueId !== fromVenueId)
+    .map((toVenueId) => `${fromVenueId}:${toVenueId}`));
 }
 
 function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, supervisionExpiry, lifecycleExpiry) {

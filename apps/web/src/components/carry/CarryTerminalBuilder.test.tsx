@@ -272,7 +272,7 @@ describe("CarryTerminalBuilder", () => {
     });
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     expect(container.textContent).toContain("PRIVATE PRIME");
-    expect(container.textContent).toContain("5/5 DATA · 3/3 EXEC · 3/3 REC · ROUTES");
+    expect(container.textContent).toContain("5/5 DATA · 3/3 EXEC · 3/3 REC · 6/6 ROUTES");
     expect(container.textContent).toContain("QUALIFIED · NO-SUBMIT ONLY · LIVE PAIRED PROOF REQUIRED");
     expect(container.textContent).not.toContain("LIVE PAIRED LIFECYCLE PROVEN");
   });
@@ -1253,8 +1253,10 @@ function privatePrimeReadiness() {
     collateral_route_observation: {
       configured: true,
       verified: true,
-      route_count: 2,
-      available_route_count: 2,
+      route_count: 6,
+      required_route_count: 6,
+      available_route_count: 6,
+      complete_directed_coverage: true,
       checked_at_ms: now,
       expires_at_ms: now + 30_000,
       evidence_commitment: "carry:transfer-routes:evidence:abcdef123456",

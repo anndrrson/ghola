@@ -319,6 +319,29 @@ test("rejects a configured route probe without fresh owner-bound route evidence"
   assert.equal(result.collateral_route_observation.available_route_count, 0);
 });
 
+test("rejects private-prime readiness without complete directed collateral routes", () => {
+  const routeEvidence = verifiedRouteEvidence();
+  routeEvidence.evidence.routes.pop();
+  refreshRouteEvidenceCommitment(routeEvidence.evidence);
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: {
+      ...readinessProof(),
+      capital_plan: capitalPlan(),
+    },
+    shadow_qualification: shadowQualification(),
+    carry_supervision: healthySupervision(),
+    route_observation_configured: true,
+    route_evidence: routeEvidence,
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.reasons, ["collateral_route_coverage_incomplete"]);
+  assert.equal(result.collateral_route_observation.verified, true);
+  assert.equal(result.collateral_route_observation.required_route_count, 6);
+  assert.equal(result.collateral_route_observation.available_route_count, 5);
+  assert.equal(result.collateral_route_observation.complete_directed_coverage, false);
+});
+
 test("rejects route evidence bound to an older account-state snapshot", () => {
   const routeEvidence = verifiedRouteEvidence();
   routeEvidence.evidence.routes[0].source_account_state_commitment = "carry:account-state:hyperliquid:old";
@@ -538,48 +561,61 @@ function shadowQualification(overrides = {}) {
 }
 
 function verifiedRouteEvidence() {
-  const route = {
-    version: 1,
-    route_id: "carry:transfer-route:hyperliquid-lighter:0001",
-    from_account_commitment: "account:hyperliquid:0001",
-    from_venue_id: "hyperliquid",
-    to_account_commitment: "account:lighter:0001",
-    to_venue_id: "lighter",
-    source_adapter_id: "hyperliquid_arbitrum_usdc_v1",
-    destination_adapter_id: "lighter_arbitrum_usdc_v1",
-    source_account_state_commitment: "carry:account-state:hyperliquid:0001",
-    destination_account_state_commitment: "carry:account-state:lighter:0001",
-    quote_commitment: "carry:transfer-quote:0001",
-    valuation_asset: "USD",
-    source_collateral_asset: "USDC",
-    destination_collateral_asset: "USDC",
-    conversion_required: false,
-    status: "available",
-    quote_verified: true,
-    all_in_fee_verified: true,
-    valuation_basis_verified: true,
-    conversion_quote_verified: true,
-    conversion_rate_e8: 100_000_000,
-    minimum_transfer_micro_usdc: 0,
-    maximum_transfer_micro_usdc: 100_000_000,
-    withdrawal_fee_micro_usdc: 1_000,
-    deposit_fee_micro_usdc: 0,
-    conversion_fee_micro_usdc: 0,
-    conversion_slippage_micro_usdc: 0,
-    fee_micro_usdc: 1_000,
-    estimated_latency_ms: 60_000,
-    as_of_ms: NOW,
-    owner_approval_required: true,
-    fund_movement_authorized: false,
-    transaction_broadcast: false,
-    automatic_transfer_permitted: false,
+  const venueIds = ["hyperliquid", "lighter", "aster"];
+  const adapters = {
+    hyperliquid: "hyperliquid_arbitrum_usdc_v1",
+    lighter: "lighter_arbitrum_usdc_v1",
+    aster: "aster_arbitrum_usdt_v1",
   };
+  const collateral = { hyperliquid: "USDC", lighter: "USDC", aster: "USDT" };
+  const routes = venueIds.flatMap((fromVenueId) => venueIds
+    .filter((toVenueId) => toVenueId !== fromVenueId)
+    .map((toVenueId) => {
+      const conversionRequired = collateral[fromVenueId] !== collateral[toVenueId];
+      return {
+        version: 1,
+        route_id: `carry:transfer-route:${fromVenueId}-${toVenueId}:0001`,
+        from_account_commitment: `account:${fromVenueId}:0001`,
+        from_venue_id: fromVenueId,
+        to_account_commitment: `account:${toVenueId}:0001`,
+        to_venue_id: toVenueId,
+        source_adapter_id: adapters[fromVenueId],
+        destination_adapter_id: adapters[toVenueId],
+        source_account_state_commitment: `carry:account-state:${fromVenueId}:0001`,
+        destination_account_state_commitment: `carry:account-state:${toVenueId}:0001`,
+        quote_commitment: `carry:transfer-quote:${fromVenueId}-${toVenueId}:0001`,
+        valuation_asset: "USD",
+        source_collateral_asset: collateral[fromVenueId],
+        destination_collateral_asset: collateral[toVenueId],
+        conversion_required: conversionRequired,
+        status: "available",
+        quote_verified: true,
+        all_in_fee_verified: true,
+        valuation_basis_verified: true,
+        conversion_quote_verified: true,
+        conversion_rate_e8: conversionRequired ? 99_950_000 : 100_000_000,
+        minimum_transfer_micro_usdc: 0,
+        maximum_transfer_micro_usdc: 100_000_000,
+        withdrawal_fee_micro_usdc: 1_000,
+        deposit_fee_micro_usdc: 0,
+        conversion_fee_micro_usdc: conversionRequired ? 500 : 0,
+        conversion_slippage_micro_usdc: conversionRequired ? 500 : 0,
+        fee_micro_usdc: conversionRequired ? 2_000 : 1_000,
+        estimated_latency_ms: 60_000,
+        as_of_ms: NOW,
+        owner_approval_required: true,
+        fund_movement_authorized: false,
+        transaction_broadcast: false,
+        automatic_transfer_permitted: false,
+      };
+    }))
+    .sort((left, right) => left.route_id.localeCompare(right.route_id));
   const material = {
     version: 1,
     kind: "ghola_carry_transfer_route_evidence",
     owner_commitment: "owner_commitment_0001",
     worker_image_digest: IMAGE,
-    routes: [route],
+    routes,
     checked_at_ms: NOW,
     expires_at_ms: NOW + 30_000,
     owner_approval_required: true,

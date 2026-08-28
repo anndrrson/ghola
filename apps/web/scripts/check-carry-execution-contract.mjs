@@ -1089,6 +1089,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadiness", "evidence?.owner_commitment === readiness?.owner_commitment", "carry_private_prime_route_owner_binding_missing");
   requireText("privatePrimeReadiness", "nowMs - checkedAtMs <= 30_000", "carry_private_prime_route_freshness_gate_missing");
   requireText("privatePrimeReadiness", "routesBoundToCurrentAccounts", "carry_private_prime_route_account_state_binding_missing");
+  requireText("privatePrimeReadiness", "complete_directed_coverage: completeDirectedCoverage", "carry_private_prime_route_coverage_output_missing");
+  requireText("privatePrimeReadiness", 'technicalReasons.push("collateral_route_coverage_incomplete")', "carry_private_prime_route_coverage_gate_missing");
+  requireText("webPrivatePrimeReadiness", "route.complete_directed_coverage === true", "carry_private_prime_ui_route_coverage_gate_missing");
   requireText("privatePrimeReadiness", "failure_recovery: failureRecovery", "carry_private_prime_recovery_output_missing");
   requireText("privatePrimeReadiness", 'technicalReasons.push("three_venue_recovery_unproven")', "carry_private_prime_recovery_gate_missing");
   requireText("privatePrimeReadiness", "const noSubmitReady = technicalReasons.length === 0", "carry_private_prime_capital_free_no_submit_gate_missing");
@@ -1098,6 +1101,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadinessTest", "durable paired lifecycle evidence", "carry_private_prime_live_proof_test_missing");
   requireText("privatePrimeReadinessTest", "lifecycle proof with a valid-looking but mismatched commitment", "carry_private_prime_lifecycle_commitment_test_missing");
   requireText("privatePrimeReadinessTest", "without fresh owner-bound route evidence", "carry_private_prime_route_evidence_test_missing");
+  requireText("privatePrimeReadinessTest", "without complete directed collateral routes", "carry_private_prime_route_coverage_test_missing");
   requireText("privatePrimeReadinessTest", "valid-looking but mismatched commitment", "carry_private_prime_route_commitment_test_missing");
   requireText("privatePrimeReadinessTest", "stale or image-unbound five-venue qualification wrappers", "carry_private_prime_shadow_wrapper_test_missing");
   requireText("privatePrimeReadinessTest", "malformed three-venue readiness wrappers", "carry_private_prime_readiness_wrapper_test_missing");

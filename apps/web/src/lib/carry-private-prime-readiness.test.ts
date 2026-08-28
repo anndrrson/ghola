@@ -10,7 +10,7 @@ describe("private-prime readiness", () => {
   it("shows one compact pre-broadcast status only from complete worker proof", () => {
     expect(carryPrivatePrimeSummary(proof(), NOW)).toEqual({
       status: "pending",
-      value: "5/5 DATA · 3/3 EXEC · 3/3 REC · ROUTES",
+      value: "5/5 DATA · 3/3 EXEC · 3/3 REC · 6/6 ROUTES",
       detail: "QUALIFIED · NO-SUBMIT ONLY · LIVE PAIRED PROOF REQUIRED",
       tone: "warn",
     });
@@ -22,7 +22,7 @@ describe("private-prime readiness", () => {
       three_venue_execution: { ...proof().three_venue_execution, capital_ready: false },
     }), NOW)).toEqual({
       status: "pending",
-      value: "5/5 DATA · 3/3 EXEC · 3/3 REC · ROUTES",
+      value: "5/5 DATA · 3/3 EXEC · 3/3 REC · 6/6 ROUTES",
       detail: "QUALIFIED · NO-SUBMIT · OWNER CAPITAL REQUIRED FOR LIVE ENTRY",
       tone: "warn",
     });
@@ -35,7 +35,7 @@ describe("private-prime readiness", () => {
       paired_lifecycle: pairedLifecycle(),
     }), NOW)).toEqual({
       status: "ready",
-      value: "5/5 DATA · 3/3 EXEC · 3/3 REC · ROUTES",
+      value: "5/5 DATA · 3/3 EXEC · 3/3 REC · 6/6 ROUTES",
       detail: "LIVE · NET +$0.000034 · ΔMODEL −$0.000166 · FUND +$0.000050 · PNL +$0.000010 · COST −$0.000026 · FLAT",
       tone: "good",
     });
@@ -103,8 +103,27 @@ describe("private-prime readiness", () => {
       },
     }), NOW)).toEqual({
       status: "blocked",
-      value: "5/5 DATA · 3/3 EXEC · 3/3 REC · NO ROUTES",
+      value: "5/5 DATA · 3/3 EXEC · 3/3 REC · 0/6 ROUTES",
       detail: "ROUTES UNVERIFIED",
+      tone: "bad",
+    });
+  });
+
+  it("blocks private-prime readiness when any directed collateral route is missing", () => {
+    expect(carryPrivatePrimeSummary(proof({
+      ready: false,
+      reasons: ["collateral_route_coverage_incomplete"],
+      collateral_route_observation: {
+        ...proof().collateral_route_observation,
+        route_count: 6,
+        required_route_count: 6,
+        available_route_count: 5,
+        complete_directed_coverage: false,
+      },
+    }), NOW)).toEqual({
+      status: "blocked",
+      value: "5/5 DATA · 3/3 EXEC · 3/3 REC · 5/6 ROUTES",
+      detail: "ROUTE COVERAGE INCOMPLETE",
       tone: "bad",
     });
   });
@@ -123,7 +142,7 @@ describe("private-prime readiness", () => {
       },
     }), NOW)).toEqual({
       status: "blocked",
-      value: "5/5 DATA · 3/3 EXEC · 0/3 REC · ROUTES",
+      value: "5/5 DATA · 3/3 EXEC · 0/3 REC · 6/6 ROUTES",
       detail: "RECOVERY UNPROVEN",
       tone: "bad",
     });
@@ -158,8 +177,10 @@ function proof(overrides: Record<string, unknown> = {}) {
     collateral_route_observation: {
       configured: true,
       verified: true,
-      route_count: 2,
-      available_route_count: 2,
+      route_count: 6,
+      required_route_count: 6,
+      available_route_count: 6,
+      complete_directed_coverage: true,
       checked_at_ms: NOW,
       expires_at_ms: NOW + 30_000,
       evidence_commitment: "carry:transfer-routes:evidence:abcdef123456",

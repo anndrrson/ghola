@@ -48,10 +48,14 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
   const capitalReady = execution.capital_ready === true;
   const routeCheckedAt = integer(route.checked_at_ms);
   const routeExpiresAt = integer(route.expires_at_ms);
+  const requiredRouteCount = CARRY_EXECUTION_VENUES.length * (CARRY_EXECUTION_VENUES.length - 1);
+  const availableRouteCount = integer(route.available_route_count) || 0;
   const routesReady = route.configured === true
     && route.verified === true
-    && Number(route.route_count) > 0
-    && Number(route.available_route_count) > 0
+    && Number(route.route_count) === requiredRouteCount
+    && Number(route.required_route_count) === requiredRouteCount
+    && availableRouteCount === requiredRouteCount
+    && route.complete_directed_coverage === true
     && routeCheckedAt !== null
     && routeCheckedAt <= nowMs
     && routeExpiresAt !== null
@@ -79,8 +83,10 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
       ? ["collateral_route_observation_unavailable"]
       : route.verified !== true
         ? ["collateral_route_evidence_unverified"]
-        : Number(route.available_route_count) < 1
+        : availableRouteCount < 1
           ? ["collateral_route_unavailable"]
+          : route.complete_directed_coverage !== true
+            ? ["collateral_route_coverage_incomplete"]
           : []),
     ...(executionReady && !capitalReady ? ["opening_capital_shortfall"] : []),
   ];
@@ -143,7 +149,7 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && sameStrings(liveLaunchBlockers, expectedLiveLaunchBlockers);
   if (!valid) return { status: "invalid", value: "UNVERIFIED", detail: "WORKER PROOF INVALID", tone: "bad" };
 
-  const statusValue = `${shadowReady ? shadowCount : 0}/${CORE_PERP_VENUES.length} DATA · ${executionReady ? venues.length : 0}/${CARRY_EXECUTION_VENUES.length} EXEC · ${recoveryReady ? recoveryVenues.length : 0}/${CARRY_EXECUTION_VENUES.length} REC · ${routesReady ? "ROUTES" : "NO ROUTES"}`;
+  const statusValue = `${shadowReady ? shadowCount : 0}/${CORE_PERP_VENUES.length} DATA · ${executionReady ? venues.length : 0}/${CARRY_EXECUTION_VENUES.length} EXEC · ${recoveryReady ? recoveryVenues.length : 0}/${CARRY_EXECUTION_VENUES.length} REC · ${Math.min(availableRouteCount, requiredRouteCount)}/${requiredRouteCount} ROUTES`;
   if (expectedLiveReady && lifecycleAttribution) {
     return {
       status: "ready",
@@ -174,7 +180,8 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
 export function carryPrivatePrimeEvidenceCommitment(input: unknown): string | null {
   const value = record(input);
   if (!Object.keys(value).length) return null;
-  const { evidence_commitment: _ignored, ...material } = value;
+  const material = { ...value };
+  delete material.evidence_commitment;
   try {
     const digest = sha256(new TextEncoder().encode(canonicalCarryCommitmentJson(material)));
     return `carry:private-prime:${bytesToHex(digest).slice(0, 40)}`;
@@ -192,6 +199,7 @@ function reasonLabel(reason: string) {
   if (reason === "collateral_route_observation_unavailable") return "ROUTES UNAVAILABLE";
   if (reason === "collateral_route_evidence_unverified") return "ROUTES UNVERIFIED";
   if (reason === "collateral_route_unavailable") return "NO SAFE ROUTE";
+  if (reason === "collateral_route_coverage_incomplete") return "ROUTE COVERAGE INCOMPLETE";
   return "CHECK REQUIRED";
 }
 
