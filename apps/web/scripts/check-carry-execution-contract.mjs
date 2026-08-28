@@ -23,6 +23,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   fundingPersistence: "apps/private-agent-worker/src/execution/carry-funding-persistence.js",
   routingAdvantage: "apps/private-agent-worker/src/execution/carry-routing-advantage.js",
   shadowQualification: "apps/private-agent-worker/src/execution/carry-shadow-qualification.js",
+  shadowDevelopmentWitness: "apps/private-agent-worker/src/execution/carry-shadow-development-witness.js",
   shadowSnapshot: "apps/private-agent-worker/src/execution/carry-shadow-snapshot.js",
   workerMandate: "apps/private-agent-worker/src/execution/carry-mandate.js",
   positions: "apps/private-agent-worker/src/execution/carry-positions.js",
@@ -49,7 +50,9 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   shadow: "apps/private-agent-worker/src/execution/perp-shadow-adapters.js",
   shadowVerifier: "apps/private-agent-worker/src/execution/perp-shadow-readiness.js",
   shadowVerifierCli: "apps/private-agent-worker/scripts/verify-carry-shadow.mjs",
+  shadowWitnessVerifierCli: "apps/private-agent-worker/scripts/verify-carry-shadow-witness.mjs",
   shadowVerifierTest: "apps/private-agent-worker/test/verify-carry-shadow.test.js",
+  shadowDevelopmentWitnessTest: "apps/private-agent-worker/test/carry-shadow-development-witness.test.js",
   hyperliquid: "apps/private-agent-worker/src/venues/hyperliquid.js",
   aster: "apps/private-agent-worker/src/venues/aster.js",
   lighter: "apps/private-agent-worker/src/venues/lighter.js",
@@ -165,6 +168,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("proofRunbook", "expiry permits only a reduce-only exit", "carry_proof_runbook_expiry_exit_missing");
   requireText("proofRunbook", "independently recover the owner signature", "carry_proof_runbook_independent_verification_missing");
   requireText("proofRunbook", "carry_execution_no_submit_matrix", "carry_proof_runbook_three_venue_matrix_missing");
+  requireText("proofRunbook", "Capital-free development witness", "carry_shadow_development_witness_runbook_missing");
+  requireText("proofRunbook", "never substitutes for image-bound qualification", "carry_shadow_development_witness_boundary_missing");
 
   const shadowAdapters = {
     hyperliquid: "hyperliquid_shadow_v1",
@@ -369,12 +374,24 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowTest", "degrades dYdX instead of choosing between conflicting chain fee sources", "dydx_chain_fee_conflict_gate_test_missing");
   requireText("shadowTest", "a fresh dYdX server clock cannot refresh detached payloads", "dydx_detached_server_clock_test_missing");
   requireText("workerPackage", '"verify:carry-shadow"', "carry_shadow_verifier_script_missing");
+  requireText("workerPackage", '"verify:carry-shadow-witness"', "carry_shadow_witness_verifier_script_missing");
   requireText("shadowVerifierCli", "verifyCarryShadowSet", "carry_shadow_verifier_cli_runtime_missing");
   requireText("shadowVerifierCli", "verifyCarryShadowSoak(sampleResults", "carry_shadow_soak_cli_missing");
   requireText("shadowVerifierCli", "GHOLA_CARRY_SHADOW_SAMPLES", "carry_shadow_soak_sample_control_missing");
   requireText("shadowVerifierCli", "GHOLA_CARRY_SHADOW_MINIMUM_SPAN_MS", "carry_shadow_soak_duration_control_missing");
   requireText("shadowVerifierCli", "sampleCount > 1 ?", "carry_shadow_single_sample_delay_guard_missing");
-  requireText("shadowVerifierCli", "minimum_span_ms: minimumSpanMs", "carry_shadow_soak_duration_gate_missing");
+  requireCount("shadowVerifierCli", "minimum_span_ms: minimumSpanMs", 2, "carry_shadow_soak_duration_gate_missing");
+  requireText("shadowVerifierCli", "GHOLA_CARRY_SHADOW_WITNESS_PATH", "carry_shadow_witness_output_missing");
+  requireText("shadowVerifierCli", "buildCarryShadowDevelopmentWitness", "carry_shadow_witness_builder_missing");
+  requireText("shadowDevelopmentWitness", 'scope: "public_market_data_only"', "carry_shadow_witness_scope_missing");
+  requireText("shadowDevelopmentWitness", "release_bound: false", "carry_shadow_witness_release_boundary_missing");
+  requireText("shadowDevelopmentWitness", "ready_for_execution: false", "carry_shadow_witness_execution_boundary_missing");
+  requireText("shadowDevelopmentWitness", "verifyCarryShadowSoak", "carry_shadow_witness_reverification_missing");
+  requireText("shadowDevelopmentWitness", "witness_commitment", "carry_shadow_witness_commitment_missing");
+  requireText("shadowWitnessVerifierCli", "verifyCarryShadowDevelopmentWitness", "carry_shadow_witness_independent_verifier_missing");
+  requireText("shadowWitnessVerifierCli", "source_revision: sourceRevision(process.env)", "carry_shadow_witness_revision_verifier_missing");
+  requireText("shadowDevelopmentWitnessTest", "without claiming execution readiness", "carry_shadow_witness_boundary_test_missing");
+  requireText("shadowDevelopmentWitnessTest", "rejects tampering and any attempt to promote", "carry_shadow_witness_tamper_test_missing");
   requireText("shadowVerifier", "CORE_PERP_VENUES", "carry_shadow_verifier_registry_missing");
   requireText("shadowVerifier", "DEFAULT_CARRY_SHADOW_ASSETS = CARRY_SHADOW_ASSETS", "carry_shadow_core_assets_missing");
   forbidText("shadowVerifier", 'Object.freeze(["BTC", "ETH", "SOL"])', "carry_shadow_verifier_asset_policy_duplicated");

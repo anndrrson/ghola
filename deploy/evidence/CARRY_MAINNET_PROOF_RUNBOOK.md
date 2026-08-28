@@ -30,3 +30,9 @@ Before any live proof, run the authenticated `carry_execution_no_submit_matrix` 
 10. Export `deploy/evidence/carry-mainnet-proof.json` and run `npm run verify:carry-release-evidence` from `apps/web`. The verifier must independently recover the owner signature, recompute the mandate commitment, and reject incomplete collateral-route coverage.
 
 Funding, transfers, withdrawals, leverage changes, and credential rotation remain owner-only. A failed evidence check invalidates the proof.
+
+## Capital-free development witness
+
+Before a worker image exists, persist the public-data soak with `GHOLA_CARRY_SHADOW_WITNESS_PATH=/safe/path/carry-shadow-witness.json npm run verify:carry-shadow`, then independently check it with `npm run verify:carry-shadow-witness -- /safe/path/carry-shadow-witness.json`.
+
+This witness is deliberately marked `release_bound: false`, `ready_for_execution: false`, and `live_trading_proven: false`. It proves only that the committed adapters produced a complete, durable, read-only five-venue market-data soak. It never substitutes for image-bound qualification, owner-bound no-submit checks, or the paired lifecycle proof.

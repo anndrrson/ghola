@@ -1,5 +1,9 @@
 #!/usr/bin/env node
-import { pathToFileURL } from "node:url";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildCarryShadowDevelopmentWitness } from "../src/execution/carry-shadow-development-witness.js";
 import { fetchCorePerpShadowSet } from "../src/execution/perp-shadow-adapters.js";
 import {
   DEFAULT_CARRY_SHADOW_ASSETS,
@@ -30,13 +34,52 @@ async function main() {
     required_samples: sampleCount,
     minimum_span_ms: minimumSpanMs,
   });
-  console.log(JSON.stringify({
+  const verification = {
     version: 1,
     kind: "ghola_carry_shadow_soak_verification",
+    transaction_broadcast: false,
     ...result,
     sample_results: sampleResults,
-  }, null, 2));
+  };
+  const witnessPath = String(process.env.GHOLA_CARRY_SHADOW_WITNESS_PATH || "").trim();
+  if (witnessPath) {
+    const witness = buildCarryShadowDevelopmentWitness({
+      sample_results: sampleResults,
+      required_samples: sampleCount,
+      minimum_span_ms: minimumSpanMs,
+      source_revision: sourceRevision(process.env),
+      created_at_ms: Date.now(),
+    });
+    writeWitness(witnessPath, witness);
+    console.log(JSON.stringify(witness, null, 2));
+  } else {
+    console.log(JSON.stringify(verification, null, 2));
+  }
   if (!result.ok) process.exitCode = 1;
+}
+
+export function sourceRevision(env = process.env) {
+  const configured = String(env.GHOLA_SOURCE_REVISION || env.GITHUB_SHA || env.VERCEL_GIT_COMMIT_SHA || "").trim();
+  if (/^[0-9a-f]{7,40}$/i.test(configured)) return configured.toLowerCase();
+  const discovered = String(execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: resolve(dirname(fileURLToPath(import.meta.url)), "../../.."),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  })).trim();
+  if (!/^[0-9a-f]{40}$/i.test(discovered)) throw new Error("source revision is unavailable");
+  return discovered.toLowerCase();
+}
+
+function writeWitness(path, witness) {
+  const destination = resolve(path);
+  const temporary = `${destination}.${process.pid}.tmp`;
+  mkdirSync(dirname(destination), { recursive: true });
+  try {
+    writeFileSync(temporary, `${JSON.stringify(witness, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    renameSync(temporary, destination);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
 }
 
 function positiveInteger(value, fallback) {
