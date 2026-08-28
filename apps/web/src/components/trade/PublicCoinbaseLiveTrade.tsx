@@ -203,6 +203,7 @@ export function PublicCoinbaseLiveTrade({
   hyperliquidMaxSlippageBps: number;
 }) {
   const auth = useThumperAuth();
+  const canPollPrivateLiveTradingStatus = auth.authenticated && !auth.loading;
   const searchParams = useSearchParams();
   const initialProduct = searchParams.get("product");
   const [tradeProduct, setTradeProduct] = useState<TradeProduct>(
@@ -293,7 +294,10 @@ export function PublicCoinbaseLiveTrade({
   }), [product, quoteSize, side, stopLoss, takeProfit]);
   const orderErrors = validatePrivateExecutionOrderDraft(order);
   const acknowledgementsReady = acceptedTerms && acceptedRisk && notProhibited;
-  const venueStatus = useMemo(() => spotVenueReadiness("coinbase", liveStatus), [liveStatus]);
+  const venueStatus = useMemo(
+    () => spotVenueReadiness("coinbase", canPollPrivateLiveTradingStatus ? liveStatus : null),
+    [canPollPrivateLiveTradingStatus, liveStatus],
+  );
   const liveReady = venueStatus.ready;
   const orderStatus = submitted?.status || (step === "prepared" ? "ready to submit" : "not started");
   const balanceReady = prepared?.can_submit_live === true;
@@ -354,6 +358,7 @@ export function PublicCoinbaseLiveTrade({
   }
 
   useEffect(() => {
+    if (!canPollPrivateLiveTradingStatus) return;
     let cancelled = false;
     async function load() {
       try {
@@ -369,7 +374,7 @@ export function PublicCoinbaseLiveTrade({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [canPollPrivateLiveTradingStatus]);
 
   useEffect(() => {
     if (!showReview) return;

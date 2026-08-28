@@ -300,6 +300,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "const auth = useThumperAuth();", "carry_private_poll_auth_boundary_missing");
   requireText("webCarryBuilder", "const privateSessionReady = auth.authenticated && !auth.loading;", "carry_private_poll_auth_gate_missing");
   requireText("webCarryBuilderTest", "does not poll private Carry state before Ghola authentication", "carry_private_poll_auth_test_missing");
+  requireText("webTradeWorkspace", "const canPollPrivateLiveTradingStatus = auth.authenticated && !auth.loading;", "trade_private_status_poll_auth_gate_missing");
+  requireText("webTradeWorkspace", "if (!canPollPrivateLiveTradingStatus) return;", "trade_private_status_poll_effect_gate_missing");
+  requireText("webTradeWorkspace", "[canPollPrivateLiveTradingStatus]", "trade_private_status_poll_auth_refresh_missing");
 
   requireText("shadow", "CORE_PERP_VENUES.map", "shadow_registry_iteration_missing");
   requireText("shadow", "SUPPORTED_EXECUTION_VENUES.flatMap", "shadow_capability_registry_missing");

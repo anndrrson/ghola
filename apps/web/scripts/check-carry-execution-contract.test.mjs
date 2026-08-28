@@ -1029,6 +1029,19 @@ test("rejects private Carry polling before Ghola authentication", () => {
   );
 });
 
+test("rejects private live-status polling before Ghola authentication", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webTradeWorkspace: sources.webTradeWorkspace.replace(
+        "const canPollPrivateLiveTradingStatus = auth.authenticated && !auth.loading;",
+        "const canPollPrivateLiveTradingStatus = true;",
+      ),
+    }),
+    /trade_private_status_poll_auth_gate_missing/,
+  );
+});
+
 test("rejects qualification evidence not bound to the deployed image", () => {
   assert.throws(
     () => checkCarryExecutionContract({
