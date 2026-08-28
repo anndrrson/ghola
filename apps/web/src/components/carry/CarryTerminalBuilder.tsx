@@ -773,16 +773,18 @@ export function carryRiskMandateSummary(mandate: ReturnType<typeof defaultCarryR
   const exitBps = finiteNumber(mandate.exit_net_value_bps);
   const flipCount = finiteNumber(mandate.exit_after_consecutive_observations);
   const runwayMs = finiteNumber(mandate.min_margin_runway_ms);
+  const ownerOnly = mandate.owner_only_operations;
   if (!Number.isSafeInteger(exitBps)
     || !Number.isSafeInteger(flipCount)
     || Number(flipCount) < 1
     || !Number.isSafeInteger(runwayMs)
-    || Number(runwayMs) <= 0) {
+    || Number(runwayMs) <= 0
+    || !(["fund", "transfer", "withdraw"] as const).every((operation) => ownerOnly.includes(operation))) {
     return { value: "UNVERIFIED", tone: "bad" as const };
   }
   const exit = Number(exitBps) < 0 ? `−${Math.abs(Number(exitBps))}` : String(Number(exitBps));
   return {
-    value: `EXIT ≤${exit}BP · ${flipCount} FLIPS · ≥${formatRunway(Number(runwayMs))}`,
+    value: `EXIT ≤${exit}BP · ${flipCount} FLIPS · ≥${formatRunway(Number(runwayMs))} · OWNER MOVES`,
     tone: "good" as const,
   };
 }

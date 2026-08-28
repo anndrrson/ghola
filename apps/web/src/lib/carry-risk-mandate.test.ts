@@ -19,6 +19,7 @@ describe("Carry signed risk mandate", () => {
       min_migration_improvement_bps: 5,
       migration_venue_allowlist: ["hyperliquid", "lighter", "aster"],
       allow_migration: true,
+      owner_only_operations: ["fund", "transfer", "withdraw"],
     });
   });
 

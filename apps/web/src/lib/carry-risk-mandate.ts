@@ -42,6 +42,7 @@ export function defaultCarryRiskMandate() {
     min_migration_improvement_bps: 5,
     migration_venue_allowlist: [...CARRY_EXECUTION_VENUES],
     allow_migration: true,
+    owner_only_operations: ["fund", "transfer", "withdraw"] as const,
   };
 }
 

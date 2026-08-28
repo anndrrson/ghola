@@ -480,6 +480,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarryTest", "rejects modeled component totals that do not reconcile", "carry_modeled_cost_reconciliation_test_missing");
   requireText("coreCarryTest", "rejects a conflicting replay under the same entry id", "carry_value_conflicting_replay_test_missing");
   requireText("coreCarry", "carryRiskMandateMessage", "carry_signed_mandate_message_missing");
+  requireText("webMandate", 'owner_only_operations: ["fund", "transfer", "withdraw"]', "carry_web_mandate_owner_only_missing");
+  requireText("webMandateTest", 'owner_only_operations: ["fund", "transfer", "withdraw"]', "carry_web_mandate_owner_only_test_missing");
   requireText("coreCarry", "export function compileCarryMigrationProposal", "carry_migration_compiler_missing");
   requireText("coreCarry", "migration_venue_allowlist", "carry_migration_signed_allowlist_missing");
   requireText("coreCarry", "proposal_only: true", "carry_migration_proposal_boundary_missing");
@@ -613,6 +615,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilderTest", "SHADOW POSITION · LIVE-DATA MODEL", "carry_terminal_shadow_position_test_missing");
   requireText("webCarryBuilder", 'label="RISK MANDATE"', "carry_terminal_risk_mandate_display_missing");
   requireText("webCarryBuilder", "carryRiskMandateSummary(defaultCarryRiskMandate())", "carry_terminal_risk_mandate_binding_missing");
+  requireText("webCarryBuilder", "OWNER MOVES", "carry_terminal_owner_only_boundary_missing");
   requireText("webCarryBuilderTest", "fails closed when the visible risk mandate is malformed", "carry_terminal_risk_mandate_test_missing");
   requireText("webCarryBuilder", "model.indexPriceDivergenceBps", "carry_terminal_public_index_basis_missing");
   requireText("webCarryBuilder", 'label="OWNER CAPITAL"', "carry_terminal_capital_action_missing");

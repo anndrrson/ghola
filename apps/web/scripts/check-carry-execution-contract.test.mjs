@@ -1823,6 +1823,19 @@ test("rejects a terminal that hides the signed risk mandate", () => {
   );
 });
 
+test("rejects a browser mandate that hides owner-only capital operations", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webMandate: sources.webMandate.replaceAll(
+        'owner_only_operations: ["fund", "transfer", "withdraw"]',
+        'owner_only_operations: []',
+      ),
+    }),
+    /carry_web_mandate_owner_only_missing/,
+  );
+});
+
 test("rejects a terminal that hides index-basis evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({

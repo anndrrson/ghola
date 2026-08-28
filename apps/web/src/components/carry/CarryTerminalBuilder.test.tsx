@@ -439,7 +439,7 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("SHADOW POSITION · LIVE-DATA MODEL");
     expect(container.textContent).toContain("NO WALLET · NO DEPOSIT · NO ORDER");
     expect(container.textContent).toContain("RISK MANDATE");
-    expect(container.textContent).toContain("EXIT ≤0BP · 2 FLIPS · ≥6.0H");
+    expect(container.textContent).toContain("EXIT ≤0BP · 2 FLIPS · ≥6.0H · OWNER MOVES");
     expect(container.textContent).not.toContain("RETRY POSITION SYNC");
     expect(container.textContent).not.toContain("NO-SUBMIT CHECK");
     expect(api.listCarryPositions).not.toHaveBeenCalled();
