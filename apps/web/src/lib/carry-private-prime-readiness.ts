@@ -50,6 +50,7 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
   const lifecycleVenues = strings(pairedLifecycle.venue_ids);
   const lifecycleVerifiedAt = integer(pairedLifecycle.verified_at_ms);
   const lifecycleExpiresAt = integer(pairedLifecycle.expires_at_ms);
+  const lifecycleRealizedNet = integer(pairedLifecycle.realized_net_value_micro_usdc);
   const lifecycleReady = pairedLifecycle.verified === true
     && pairedLifecycle.asset === value.asset
     && lifecycleVenues.length === 2
@@ -64,6 +65,7 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && pairedLifecycle.supervised_monitoring_proven === true
     && pairedLifecycle.final_flat_zero_orders === true
     && pairedLifecycle.value_ledger_finalized === true
+    && lifecycleRealizedNet !== null
     && pairedLifecycle.ambiguity_retry_count === 0
     && pairedLifecycle.owner_only_funding === true
     && pairedLifecycle.owner_only_transfers === true
@@ -98,7 +100,7 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
       status: "ready",
       value: statusValue,
       detail: lifecycleReady
-        ? "LIVE PAIRED PROOF · FLAT VERIFIED · OWNER CONTROLLED"
+        ? `LIVE PAIRED PROOF · NET ${formatSignedMicroUsd(lifecycleRealizedNet)} · FLAT · OWNER CONTROLLED`
         : "PRE-BROADCAST · CAPITAL READY · OWNER CONTROLLED",
       tone: "good",
     };
@@ -133,4 +135,11 @@ function strings(value: unknown): string[] {
 
 function integer(value: unknown): number | null {
   return Number.isSafeInteger(value) ? Number(value) : null;
+}
+
+function formatSignedMicroUsd(value: number): string {
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+  const dollars = Math.abs(value) / 1_000_000;
+  const decimals = dollars >= 100 ? 2 : dollars >= 1 ? 4 : 6;
+  return `${sign}$${dollars.toFixed(decimals)}`;
 }

@@ -34,7 +34,7 @@ describe("private-prime readiness", () => {
     }), NOW)).toEqual({
       status: "ready",
       value: "5/5 DATA · 3/3 EXEC · ROUTES",
-      detail: "LIVE PAIRED PROOF · FLAT VERIFIED · OWNER CONTROLLED",
+      detail: "LIVE PAIRED PROOF · NET +$0.000034 · FLAT · OWNER CONTROLLED",
       tone: "good",
     });
   });
@@ -46,6 +46,11 @@ describe("private-prime readiness", () => {
       proof_level: "live_paired_lifecycle",
       live_paired_lifecycle_proven: true,
       paired_lifecycle: pairedLifecycle({ final_flat_zero_orders: false }),
+    }), NOW).status).toBe("invalid");
+    expect(carryPrivatePrimeSummary(proof({
+      proof_level: "live_paired_lifecycle",
+      live_paired_lifecycle_proven: true,
+      paired_lifecycle: pairedLifecycle({ realized_net_value_micro_usdc: null }),
     }), NOW).status).toBe("invalid");
     expect(carryPrivatePrimeSummary(proof({
       proof_level: "live_paired_lifecycle",
@@ -132,6 +137,7 @@ function pairedLifecycle(overrides: Record<string, unknown> = {}) {
     supervised_monitoring_proven: true,
     final_flat_zero_orders: true,
     value_ledger_finalized: true,
+    realized_net_value_micro_usdc: 34,
     ambiguity_retry_count: 0,
     owner_only_funding: true,
     owner_only_transfers: true,

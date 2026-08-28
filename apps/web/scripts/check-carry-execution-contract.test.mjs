@@ -85,6 +85,32 @@ test("rejects private-prime evidence that can outlive its paired lifecycle", () 
   );
 });
 
+test("rejects live private-prime proof that drops realized after-cost value", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replace(
+        "Number.isSafeInteger(proof?.realized_net_value_micro_usdc)",
+        "true",
+      ),
+    }),
+    /carry_private_prime_realized_net_gate_missing/,
+  );
+});
+
+test("rejects a terminal that hides realized net value from live proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivatePrimeReadiness: sources.webPrivatePrimeReadiness.replace(
+        "LIVE PAIRED PROOF · NET ${formatSignedMicroUsd(lifecycleRealizedNet)}",
+        "LIVE PAIRED PROOF",
+      ),
+    }),
+    /carry_private_prime_ui_realized_net_display_missing/,
+  );
+});
+
 test("rejects aggregate expiry that omits the verified lifecycle deadline", () => {
   assert.throws(
     () => checkCarryExecutionContract({

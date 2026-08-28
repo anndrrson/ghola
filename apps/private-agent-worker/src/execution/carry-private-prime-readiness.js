@@ -98,6 +98,7 @@ function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {
     && proof?.owner_only_transfers === true
     && proof?.owner_only_withdrawals === true
     && proof?.recording_transaction_broadcast === false
+    && Number.isSafeInteger(proof?.realized_net_value_micro_usdc)
     && /^carry:release:material:[0-9a-f]{64}$/.test(String(proof?.worker_material_commitment || ""))
     && /^carry:lifecycle-proof:evidence:[0-9a-f]{64}$/.test(String(proof?.evidence_commitment || ""));
   return Object.freeze({
@@ -112,6 +113,7 @@ function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {
     supervised_monitoring_proven: verified,
     final_flat_zero_orders: verified,
     value_ledger_finalized: verified,
+    realized_net_value_micro_usdc: verified ? proof.realized_net_value_micro_usdc : null,
     ambiguity_retry_count: verified ? 0 : null,
     owner_only_funding: true,
     owner_only_transfers: true,

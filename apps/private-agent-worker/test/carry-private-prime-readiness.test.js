@@ -68,6 +68,7 @@ test("upgrades only matching durable paired lifecycle evidence to live-proven", 
   assert.equal(result.proof_level, "live_paired_lifecycle");
   assert.equal(result.live_paired_lifecycle_proven, true);
   assert.equal(result.paired_lifecycle.final_flat_zero_orders, true);
+  assert.equal(result.paired_lifecycle.realized_net_value_micro_usdc, 34);
   assert.deepEqual(result.paired_lifecycle.venue_ids, ["hyperliquid", "aster"]);
 });
 
@@ -118,6 +119,23 @@ test("keeps mismatched lifecycle evidence pre-broadcast", () => {
   });
   assert.equal(result.proof_level, "pre_broadcast_readiness");
   assert.equal(result.live_paired_lifecycle_proven, false);
+});
+
+test("does not promote live proof without exact realized after-cost value", () => {
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: {
+      ready: true,
+      owner_commitment: "owner_commitment_0001",
+      image_digest: "sha256:abcdef123456",
+      asset: "BTC",
+      registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+    },
+    lifecycle_proof: lifecycleProof({ realized_net_value_micro_usdc: null }),
+    now_ms: NOW,
+  });
+  assert.equal(result.proof_level, "pre_broadcast_readiness");
+  assert.equal(result.live_paired_lifecycle_proven, false);
+  assert.equal(result.paired_lifecycle.realized_net_value_micro_usdc, null);
 });
 
 test("fails closed when shadow, supervision, or route evidence is missing", () => {
@@ -243,6 +261,7 @@ function lifecycleProof(overrides = {}) {
       supervised_monitoring_proven: true,
       final_flat_zero_orders: true,
       value_ledger_finalized: true,
+      realized_net_value_micro_usdc: 34,
       ambiguity_retry_count: 0,
       owner_only_funding: true,
       owner_only_transfers: true,
