@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { normalizeCarryLifecycleValueAttribution } from "@ghola/execution-core";
 import { readCarryVenueQualification, runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
-import { carryPositionLegId } from "./carry-positions.js";
+import { carryPositionLegId, verifyStoredCarryOpportunityBinding } from "./carry-positions.js";
 import { assessCarryFlatReconciliation } from "./carry-reconciliation.js";
 import { readCarryShadowQualification } from "./carry-shadow-qualification.js";
 
@@ -153,6 +153,8 @@ export async function buildCompletedCarryReleaseMaterial({
   const record = await state?.getCarryPositionRecord?.(String(positionId || ""));
   if (!record) return denied("carry_position_not_found");
   if (record.owner_commitment !== ownerCommitment) return denied("carry_position_owner_mismatch");
+  const storedOpportunity = verifyStoredCarryOpportunityBinding({ record });
+  if (!storedOpportunity.ok) return denied("carry_release_opportunity_provenance_unproven");
   const mandate = await verifyCarryRiskMandateAuthorization({
     owner_commitment: ownerCommitment,
     position_input: record.position,

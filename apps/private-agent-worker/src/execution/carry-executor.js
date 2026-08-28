@@ -5,6 +5,7 @@ import {
   appendStoredCarryValueEntry,
   collectStoredCarryFundingEvidence,
   finalizeStoredCarryValueLedger,
+  verifyStoredCarryOpportunityBinding,
 } from "./carry-positions.js";
 import { preflightCarryPair } from "./carry-preflight.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
@@ -41,6 +42,8 @@ export async function executeStoredCarryEntry({
   if (record.position.status !== "draft") return denied("carry_entry_already_started");
   if (record.entry_saga_id) return denied("carry_entry_already_started");
   if (!record.monitoring_context?.venue_access) return denied("carry_monitor_context_missing");
+  const storedOpportunity = verifyStoredCarryOpportunityBinding({ record });
+  if (!storedOpportunity.ok) return storedOpportunity;
   const mandate = await verifyCarryRiskMandateAuthorization({
     owner_commitment: ownerCommitment,
     position_input: record.position,

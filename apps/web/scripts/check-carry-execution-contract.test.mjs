@@ -134,6 +134,58 @@ test("rejects Carry creation detached from the exact owner-approved opportunity"
   );
 });
 
+test("rejects durable Carry records that omit signed opportunity material", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll(
+        "opportunity_authentication_material",
+        "opportunity_authentication_receipt_only",
+      ),
+    }),
+    /carry_durable_opportunity_material_missing/,
+  );
+});
+
+test("rejects entry that skips durable opportunity reverification", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      executor: sources.executor.replaceAll(
+        "verifyStoredCarryOpportunityBinding({ record })",
+        "trustStoredCarryOpportunity({ record })",
+      ),
+    }),
+    /carry_entry_opportunity_reverification_missing/,
+  );
+});
+
+test("rejects monitoring that skips durable opportunity reverification", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll(
+        "require_material: false",
+        "require_material: null",
+      ),
+    }),
+    /carry_monitor_opportunity_reverification_missing/,
+  );
+});
+
+test("rejects release evidence that skips durable opportunity reverification", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replaceAll(
+        "carry_release_opportunity_provenance_unproven",
+        "carry_release_opportunity_trusted",
+      ),
+    }),
+    /carry_release_opportunity_reverification_missing/,
+  );
+});
+
 test("rejects client-authored Carry creation economics", () => {
   assert.throws(
     () => checkCarryExecutionContract({

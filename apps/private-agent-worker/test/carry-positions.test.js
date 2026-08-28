@@ -15,6 +15,7 @@ import {
   observeStoredCarryPosition,
   requestStoredCarryPositionExit,
   runCarryMonitoringTick,
+  verifyStoredCarryOpportunityBinding,
 } from "../src/execution/carry-positions.js";
 import { storeCarryTransferRouteEvidence } from "../src/execution/carry-transfer-routes.js";
 import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
@@ -44,6 +45,9 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
   assert.equal(created.ok, true);
   assert.equal(created.record.record_version, 1);
   assert.match(created.record.opportunity_provenance.evidence_commitment, /^carry:creation-opportunity:evidence:[0-9a-f]{64}$/);
+  assert.equal("opportunity_authentication_material" in created.record, false);
+  const storedCreation = await state.getCarryPositionRecord(created.record.position.position_id);
+  assert.equal(verifyStoredCarryOpportunityBinding({ record: storedCreation }).ok, true);
   assert.equal(created.record.value_ledger.modeled.breakdown_complete, true);
   assert.equal(created.record.value_ledger.modeled.trading_fee_micro_usdc, 2_000);
 
@@ -327,6 +331,40 @@ test("monitoring records funding flips and deterministically requests exit", asy
   assert.equal(second.ok, true);
   assert.equal(second.record.position.status, "exiting");
   assert.deepEqual(second.record.position.next_actions, ["reduce_only_close_both_legs"]);
+});
+
+test("monitoring exits without venue reads when durable opportunity evidence was altered", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-tampered-opportunity-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state, "tampered-opportunity");
+  const record = await state.getCarryPositionRecord(active.position.position_id);
+  const stored = await state.putCarryPositionRecord({
+    ...record,
+    opportunity: {
+      ...record.opportunity,
+      horizon_ms: record.opportunity.horizon_ms + 1,
+    },
+  }, { expected_version: record.record_version });
+  assert.equal(stored.ok, true);
+
+  let preflightCalls = 0;
+  const result = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => {
+      preflightCalls += 1;
+      return {};
+    },
+    now_ms: NOW + 100,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.record.position.status, "exiting");
+  assert.equal(result.record.lifecycle_events.at(-1).type, "mandate_invalid");
+  assert.equal(preflightCalls, 0);
 });
 
 test("monitoring preserves signed migration venues and proposes the best no-submit route only after the exit threshold", async (t) => {

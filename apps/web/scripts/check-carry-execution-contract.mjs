@@ -657,6 +657,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webMandateTest", "rejects wrong-owner, expired, and cross-position replay", "carry_signed_mandate_replay_test_missing");
   requireText("coreCarry", "opportunity_evidence_commitment", "carry_owner_opportunity_binding_missing");
   requireText("positions", "carry_opportunity_mandate_mismatch", "carry_worker_opportunity_binding_missing");
+  requireText("positions", "opportunity_authentication_material", "carry_durable_opportunity_material_missing");
+  requireText("positions", "require_material: false", "carry_monitor_opportunity_reverification_missing");
+  requireText("executor", "verifyStoredCarryOpportunityBinding({ record })", "carry_entry_opportunity_reverification_missing");
+  requireText("releaseMaterial", "carry_release_opportunity_provenance_unproven", "carry_release_opportunity_reverification_missing");
   requireText("webCarryBuilder", "opportunityEvidenceCommitment", "carry_terminal_opportunity_binding_missing");
   requireText("webMandateTest", "rejects a changed worker-signed opportunity after owner approval", "carry_opportunity_substitution_test_missing");
   requireText("webCarryBuilderTest", "does not spend owner authentication on an unbound creation opportunity", "carry_unbound_opportunity_auth_spend_test_missing");

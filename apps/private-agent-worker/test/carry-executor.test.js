@@ -124,6 +124,37 @@ test("executes and reconciles a qualified protected perp pair", async (t) => {
   assert.equal(calls.every((call) => call.execution.carry_position_id === fixture.position_id), true);
 });
 
+test("refuses entry when durable opportunity evidence was altered after owner approval", async (t) => {
+  const fixture = await setup(t, "tampered-opportunity");
+  const record = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  const stored = await fixture.state.putCarryPositionRecord({
+    ...record,
+    opportunity: {
+      ...record.opportunity,
+      horizon_ms: record.opportunity.horizon_ms + 1,
+    },
+  }, { expected_version: record.record_version });
+  assert.equal(stored.ok, true);
+
+  let preflightCalls = 0;
+  let submitCalls = 0;
+  const result = await executeStoredCarryEntry({
+    ...fixture,
+    preflight: async () => {
+      preflightCalls += 1;
+      return preflightProof();
+    },
+    executeOrder: async () => {
+      submitCalls += 1;
+      return {};
+    },
+  });
+
+  assert.equal(result.error, "carry_stored_opportunity_projection_mismatch");
+  assert.equal(preflightCalls, 0);
+  assert.equal(submitCalls, 0);
+});
+
 test("executes every qualified Hyperliquid, Lighter, and Aster pair through one contract", async (t) => {
   const pairs = [
     { long: "hyperliquid", short: "lighter" },

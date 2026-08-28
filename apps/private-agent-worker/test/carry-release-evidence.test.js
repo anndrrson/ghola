@@ -8,6 +8,7 @@ import {
   recordCompletedCarryLifecycleProof,
 } from "../src/execution/carry-release-evidence.js";
 import { carryPositionLegId } from "../src/execution/carry-positions.js";
+import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
 import { observeCarryShadowQualification } from "../src/execution/carry-shadow-qualification.js";
 import { carryShadowFixture } from "./carry-shadow-fixture.js";
 import {
@@ -72,6 +73,19 @@ test("derives release material only from a completed durable lifecycle", async (
   ]);
   assert.equal(result.material.value_ledger.realized.net_value_micro_usdc, 34);
   assert.match(result.material.worker_material_commitment, /^carry:release:material:[0-9a-f]{64}$/);
+});
+
+test("refuses release material when durable opportunity evidence was altered", async () => {
+  const fixture = await stateFixture();
+  fixture.record.opportunity.horizon_ms += 1;
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_opportunity_provenance_unproven");
 });
 
 test("records a durable owner- and image-bound paired lifecycle proof", async () => {
@@ -307,7 +321,14 @@ test("binds an automatic exit to the signed net-carry threshold", async () => {
 
 test("refuses release evidence without bounded contract equivalence", async () => {
   const fixture = await stateFixture();
+  fixture.record.opportunity_authentication_material.index_price_divergence_bps = 26;
   fixture.record.opportunity.index_price_divergence_bps = 26;
+  fixture.record.opportunity_provenance = authenticateCarryCreationOpportunity({
+    owner_commitment: OWNER,
+    opportunity: fixture.record.opportunity_authentication_material,
+  });
+  fixture.record.position.opportunity_evidence_commitment = fixture.record.opportunity_provenance.evidence_commitment;
+  fixture.record.position.mandate_authorization = await signedMandateAuthorization(fixture.record.position);
   const result = await buildCompletedCarryReleaseMaterial({
     state: fixture.state,
     owner_commitment: OWNER,
@@ -415,6 +436,49 @@ async function stateFixture() {
       amount_micro_usdc: 10,
     },
   );
+  const opportunityMaterial = {
+    version: 1,
+    eligible: true,
+    reasons: [],
+    asset: "HYPE",
+    long_venue_id: "hyperliquid",
+    short_venue_id: "aster",
+    notional_micro_usdc: 11_000_000,
+    capital_committed_micro_usdc: 5_000_000,
+    horizon_ms: 86_400_000,
+    projected_gross_funding_micro_usdc: 400,
+    projected_funding_credit_micro_usdc: 400,
+    projected_funding_debit_micro_usdc: 0,
+    projected_trading_fee_micro_usdc: 100,
+    projected_slippage_micro_usdc: 0,
+    projected_gas_micro_usdc: 0,
+    projected_latency_buffer_micro_usdc: 0,
+    projected_trading_cost_micro_usdc: 100,
+    projected_capital_cost_micro_usdc: 50,
+    risk_buffer_micro_usdc: 50,
+    projected_net_value_micro_usdc: 200,
+    projected_net_value_bps: 18,
+    break_even_ms: 21_600_000,
+    contract_data_skew_ms: 400,
+    max_contract_data_skew_ms: 2_000,
+    index_price_divergence_bps: 3,
+    mark_price_divergence_bps: 7,
+    max_index_price_divergence_bps: 25,
+    max_mark_price_divergence_bps: 50,
+    economic_equivalence_id: "carry:HYPE-usd-linear",
+    contract_type: "linear_perp",
+    long_quote_asset: "USD",
+    short_quote_asset: "USDT",
+    checked_at_ms: 1_800_000_000_000,
+    all_venues_ready: true,
+    live_creation_ready: true,
+    long_margin_runway_ms: 86_400_000,
+    short_margin_runway_ms: 86_400_000,
+  };
+  const opportunityProvenance = authenticateCarryCreationOpportunity({
+    owner_commitment: OWNER,
+    opportunity: opportunityMaterial,
+  });
   const record = {
     owner_commitment: OWNER,
     entry_saga_id: entrySaga.saga_id,
@@ -433,23 +497,14 @@ async function stateFixture() {
       long_venue_id: "hyperliquid",
       short_venue_id: "aster",
       target_notional_micro_usdc: 11_000_000,
+      opportunity_evidence_commitment: opportunityProvenance.evidence_commitment,
       risk_mandate: riskMandate(),
       created_at_ms: 1_800_000_000_000,
       status: "reconciled",
     },
-    opportunity: {
-      checked_at_ms: 1_800_000_000_000,
-      economic_equivalence_id: "carry:HYPE-usd-linear",
-      contract_type: "linear_perp",
-      long_quote_asset: "USD",
-      short_quote_asset: "USDT",
-      contract_data_skew_ms: 400,
-      max_contract_data_skew_ms: 2_000,
-      index_price_divergence_bps: 3,
-      mark_price_divergence_bps: 7,
-      max_index_price_divergence_bps: 25,
-      max_mark_price_divergence_bps: 50,
-    },
+    opportunity: structuredClone(opportunityMaterial),
+    opportunity_provenance: opportunityProvenance,
+    opportunity_authentication_material: structuredClone(opportunityMaterial),
     lifecycle_events: [
       {
         type: "observation",
@@ -587,6 +642,7 @@ async function signedMandateAuthorization(position) {
     long_venue_id: position.long_venue_id,
     short_venue_id: position.short_venue_id,
     target_notional_micro_usdc: position.target_notional_micro_usdc,
+    opportunity_evidence_commitment: position.opportunity_evidence_commitment,
     risk_mandate: position.risk_mandate,
     issued_at_ms: position.created_at_ms - 1_000,
     expires_at_ms: position.created_at_ms + 30 * 86_400_000,

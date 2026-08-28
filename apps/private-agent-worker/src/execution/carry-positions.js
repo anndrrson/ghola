@@ -84,6 +84,7 @@ export async function createStoredCarryPosition({
       position,
       opportunity: publicOpportunity(opportunity),
       opportunity_provenance: workerOpportunity.authentication,
+      opportunity_authentication_material: opportunityAuthenticationMaterial(opportunity),
       monitoring_context: normalizedMonitoring.context,
       value_ledger: ledger,
       value_evidence: {
@@ -108,6 +109,30 @@ export async function createStoredCarryPosition({
   } catch (error) {
     return denied(typeof error?.code === "string" ? error.code : "carry_position_invalid");
   }
+}
+
+export function verifyStoredCarryOpportunityBinding({ record, require_material: requireMaterial = true }) {
+  const material = record?.opportunity_authentication_material;
+  if (!material || typeof material !== "object" || Array.isArray(material)) {
+    return requireMaterial
+      ? denied("carry_stored_opportunity_material_missing")
+      : { ok: true, legacy: true };
+  }
+  const provenance = record?.opportunity_provenance;
+  const checkedAtMs = provenance?.checked_at_ms;
+  const verified = verifyCarryCreationOpportunityAuthentication({
+    owner_commitment: record?.owner_commitment,
+    opportunity: { ...material, worker_authentication: provenance },
+    now_ms: checkedAtMs,
+  });
+  if (!verified.ok) return denied(`carry_stored_opportunity_${verified.error}`);
+  if (record?.position?.opportunity_evidence_commitment !== verified.authentication.evidence_commitment) {
+    return denied("carry_stored_opportunity_mandate_mismatch");
+  }
+  if (JSON.stringify(publicOpportunity(material)) !== JSON.stringify(record?.opportunity)) {
+    return denied("carry_stored_opportunity_projection_mismatch");
+  }
+  return { ok: true, authentication: verified.authentication };
 }
 
 function validateCreationOpportunity(positionInput, opportunity, nowMs, qualificationPilot = null) {
@@ -933,6 +958,25 @@ export async function observeStoredCarryPosition({
   }
   const sequence = position.last_event_sequence + 1;
   const eventBase = `carry:monitor:${digest(`${position.position_id}:${sequence}`).slice(0, 32)}`;
+  const storedOpportunity = verifyStoredCarryOpportunityBinding({
+    record: owned.record,
+    require_material: false,
+  });
+  if (!storedOpportunity.ok) {
+    return advanceStoredCarryPosition({
+      state,
+      position_id: positionId,
+      owner_commitment: ownerCommitment,
+      event: {
+        version: 1,
+        event_id: `${eventBase}:opportunity-invalid`,
+        sequence,
+        type: "mandate_invalid",
+        reason: storedOpportunity.error,
+      },
+      now_ms: nowMs,
+    });
+  }
   const mandate = await verifyCarryRiskMandateAuthorization({
     owner_commitment: ownerCommitment,
     position_input: position,
@@ -1380,8 +1424,17 @@ function publicStoredResult(stored) {
 }
 
 function publicRecord(record) {
-  const { monitoring_context: _monitoringContext, ...safe } = record;
+  const {
+    monitoring_context: _monitoringContext,
+    opportunity_authentication_material: _opportunityAuthenticationMaterial,
+    ...safe
+  } = record;
   return JSON.parse(JSON.stringify(safe));
+}
+
+function opportunityAuthenticationMaterial(value) {
+  const { worker_authentication: _authentication, ...material } = value;
+  return Object.freeze(JSON.parse(JSON.stringify(material)));
 }
 
 function publicOpportunity(value) {
