@@ -389,6 +389,21 @@ test("rejects routing advantage evidence that can authorize execution", () => {
   );
 });
 
+test("rejects a routing advantage benchmark anchored to Hyperliquid", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      routingAdvantage: sources.routingAdvantage
+        .replace('benchmark_kind: "next_best_executable_route"', 'anchor_venue_id: "hyperliquid"')
+        .replace(
+          "bestRoute(candidates.filter((route) => !sameRoute(route, selected)))",
+          'bestRoute(candidates.filter((route) => route.long_venue_id === "hyperliquid"))',
+        ),
+    }),
+    /carry_routing_advantage_neutral_benchmark_missing|carry_routing_advantage_next_best_route_missing|carry_routing_advantage_anchor_forbidden/,
+  );
+});
+
 test("rejects background Carry failures that are no longer supervised", () => {
   assert.throws(
     () => checkCarryExecutionContract({

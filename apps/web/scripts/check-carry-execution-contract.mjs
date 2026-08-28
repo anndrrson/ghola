@@ -1289,8 +1289,17 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", 'data-modeled-net-positive={selectedHasPositiveNet ? "true" : "false"}', "carry_point_in_time_net_state_missing");
   forbidText("webCarryChart", 'data-route-qualified={selectedHasPositiveNet ? "true" : "false"}', "carry_single_tick_route_qualification_forbidden");
   requireText("webCarryMarket", "export function carryRoutingAdvantage", "carry_routing_advantage_model_missing");
-  requireText("webCarryMarketTest", "refuses a routing-edge claim when exact anchor costs are unavailable", "carry_routing_advantage_fail_closed_test_missing");
+  requireText("webCarryMarketTest", "refuses a routing-edge claim when another exact executable route is unavailable", "carry_routing_advantage_fail_closed_test_missing");
   requireText("routingAdvantage", "evaluateCarryOpportunity", "carry_routing_advantage_core_model_missing");
+  requireText("routingAdvantage", 'benchmark_kind: "next_best_executable_route"', "carry_routing_advantage_neutral_benchmark_missing");
+  requireText("routingAdvantage", "bestRoute(candidates.filter((route) => !sameRoute(route, selected)))", "carry_routing_advantage_next_best_route_missing");
+  requireText("routingAdvantageTest", "keeps the routing benchmark venue-neutral", "carry_routing_advantage_venue_neutral_test_missing");
+  requireText("routingAdvantageTest", "fails closed without a distinct comparison route", "carry_routing_advantage_comparison_test_missing");
+  requireText("webCarryMarket", 'summary.benchmark_kind === "next_best_executable_route"', "carry_routing_advantage_web_neutral_benchmark_missing");
+  requireText("webCarryMarket", "baselineDistinct", "carry_routing_advantage_distinct_baseline_gate_missing");
+  forbidText("routingAdvantage", "anchor_venue_id", "carry_routing_advantage_anchor_forbidden");
+  forbidText("webCarryMarket", "anchor_venue_id", "carry_routing_advantage_web_anchor_forbidden");
+  forbidText("webCarryMarket", "Hyperliquid-anchored", "carry_routing_advantage_hyperliquid_copy_forbidden");
   requireText("fundingPersistence", "conservative_funding_rate_e12_by_venue", "carry_routing_advantage_conservative_funding_missing");
   requireText("fundingPersistence", "current_feed_set_complete: currentFeedSetComplete", "carry_shadow_observer_complete_feed_health_missing");
   requireText("fundingPersistence", '"carry_shadow_feed_set_incomplete"', "carry_shadow_observer_complete_feed_error_missing");

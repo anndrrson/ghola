@@ -374,11 +374,11 @@ function marketQualification(
 
 function routingAdvantageSummary(observedAtMs: number): NonNullable<CarryShadowResponse["routing_advantage"]> {
   return {
-    version: 1,
+    version: 2,
     kind: "carry_routing_advantage",
     ready: true,
     failures: [],
-    anchor_venue_id: "hyperliquid",
+    benchmark_kind: "next_best_executable_route",
     execution_venue_ids: ["hyperliquid", "lighter", "aster"],
     requested_assets: ["BTC"],
     notional_micro_usdc: 10_000_000_000,

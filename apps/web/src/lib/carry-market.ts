@@ -1,4 +1,5 @@
 import {
+  CARRY_EXECUTION_VENUES,
   CARRY_SHADOW_ASSETS,
   CORE_PERP_VENUES,
   adverseExecutionSlippageE6Bps,
@@ -189,7 +190,7 @@ export interface PricedCarryCandidate {
 export interface CarryRoutingAdvantage {
   status: "advantaged" | "equal" | "disadvantaged" | "unavailable";
   indicative: true;
-  anchorVenueId: string;
+  benchmarkKind: "next_best_executable_route";
   selectedRoute: string | null;
   baselineRoute: string | null;
   dailyNetAdvantageUsd: number | null;
@@ -214,11 +215,11 @@ export interface CarryRoutingAdvantageRouteEvidence {
 }
 
 export interface CarryRoutingAdvantageSummary {
-  version: 1;
+  version: 2;
   kind: "carry_routing_advantage";
   ready: boolean;
   failures: string[];
-  anchor_venue_id: string;
+  benchmark_kind: "next_best_executable_route";
   execution_venue_ids: string[];
   requested_assets: string[];
   notional_micro_usdc: number;
@@ -483,10 +484,9 @@ export function rankCarryCandidatesByNet(
 export function carryRoutingAdvantage(
   selected: PricedCarryCandidate | null,
   candidates: PricedCarryCandidate[],
-  anchorVenueId = "hyperliquid",
 ): CarryRoutingAdvantage {
   if (!exactComparableQuote(selected)) {
-    return unavailableRoutingAdvantage(anchorVenueId, "selected_route_unpriced");
+    return unavailableRoutingAdvantage("selected_route_unpriced");
   }
   const selectedAsset = selected.candidate.asset;
   const selectedNotional = selected.quote.notionalUsd;
@@ -497,13 +497,13 @@ export function carryRoutingAdvantage(
     && item.quote.notionalUsd === selectedNotional
     && item.quote.horizonHours === selectedHorizon
   );
-  const anchored = comparable.filter(({ candidate }) =>
-    candidate.long.venue_id === anchorVenueId || candidate.short.venue_id === anchorVenueId
+  const alternatives = comparable.filter(({ candidate }) =>
+    carryRouteId(candidate) !== carryRouteId(selected.candidate)
   );
-  if (anchored.length === 0) {
-    return unavailableRoutingAdvantage(anchorVenueId, "anchor_route_unavailable", carryRouteId(selected.candidate));
+  if (alternatives.length === 0) {
+    return unavailableRoutingAdvantage("comparison_route_unavailable", carryRouteId(selected.candidate));
   }
-  const baseline = anchored.reduce((best, item) =>
+  const baseline = alternatives.reduce((best, item) =>
     item.quote.expectedNetDailyUsd! > best.quote.expectedNetDailyUsd! ? item : best
   );
   const dailyNetAdvantageUsd = selected.quote.expectedNetDailyUsd! - baseline.quote.expectedNetDailyUsd!;
@@ -516,7 +516,7 @@ export function carryRoutingAdvantage(
         ? "disadvantaged"
         : "equal",
     indicative: true,
-    anchorVenueId,
+    benchmarkKind: "next_best_executable_route",
     selectedRoute: carryRouteId(selected.candidate),
     baselineRoute: carryRouteId(baseline.candidate),
     dailyNetAdvantageUsd,
@@ -532,7 +532,7 @@ export function carryRoutingAdvantageEvidence(
 ): CarryRoutingAdvantageEvidence {
   const summary = response?.routing_advantage;
   if (!summary) return indicativeAdvantage(pointInTime);
-  const summaryValid = summary.version === 1
+  const summaryValid = summary.version === 2
     && summary.kind === "carry_routing_advantage"
     && summary.ready === true
     && summary.modeled === true
@@ -540,7 +540,7 @@ export function carryRoutingAdvantageEvidence(
     && summary.account_fee_tier_included === false
     && summary.execution_ready === false
     && summary.transaction_broadcast === false
-    && summary.anchor_venue_id === "hyperliquid"
+    && summary.benchmark_kind === "next_best_executable_route"
     && Array.isArray(summary.routes)
     && Array.isArray(summary.execution_venue_ids)
     && summary.notional_micro_usdc === 10_000_000_000
@@ -555,10 +555,10 @@ export function carryRoutingAdvantageEvidence(
     && summary.observer_image_digest === response?.shadow_qualification?.image_digest;
   if (!summaryValid) {
     return summary.ready === true
-      ? rejectedAdvantage(pointInTime)
+      ? rejectedAdvantage()
       : indicativeAdvantage(pointInTime);
   }
-  if (!selected) return rejectedAdvantage(pointInTime);
+  if (!selected) return rejectedAdvantage();
   const route = summary.routes.find((item) => item.asset === selected.candidate.asset);
   const selectedRoute = route?.selected_route;
   const baselineRoute = route?.baseline_route;
@@ -566,8 +566,12 @@ export function carryRoutingAdvantageEvidence(
     && selectedRoute?.short_venue_id === selected.candidate.short.venue_id
     && Math.round(selected.quote.notionalUsd * 1_000_000) === summary.notional_micro_usdc
     && Math.round(selected.quote.horizonHours * 3_600_000) === summary.horizon_ms;
-  const baselineAnchored = baselineRoute?.long_venue_id === "hyperliquid"
-    || baselineRoute?.short_venue_id === "hyperliquid";
+  const baselineDistinct = Boolean(baselineRoute
+    && selectedRoute
+    && CARRY_EXECUTION_VENUES.includes(baselineRoute.long_venue_id as typeof CARRY_EXECUTION_VENUES[number])
+    && CARRY_EXECUTION_VENUES.includes(baselineRoute.short_venue_id as typeof CARRY_EXECUTION_VENUES[number])
+    && (baselineRoute.long_venue_id !== selectedRoute.long_venue_id
+      || baselineRoute.short_venue_id !== selectedRoute.short_venue_id));
   const commitments = Array.isArray(route?.funding_evidence_commitments)
     ? route.funding_evidence_commitments
     : [];
@@ -578,20 +582,20 @@ export function carryRoutingAdvantageEvidence(
     && Array.isArray(route.reasons) && route.reasons.length === 0
     && ["advantaged", "equal", "disadvantaged"].includes(route.status)
     && selectedMatches
-    && baselineAnchored
+    && baselineDistinct
     && Number.isSafeInteger(route.sample_count) && route.sample_count >= route.minimum_samples
     && Number.isSafeInteger(route.observed_span_ms) && route.observed_span_ms >= route.minimum_span_ms
     && Number.isSafeInteger(route.daily_net_advantage_micro_usdc)
     && Number.isSafeInteger(route.daily_net_advantage_e6_bps)
     && commitments.length > 0
     && commitments.every((value) => CARRY_FUNDING_COMMITMENT.test(value) && knownFundingCommitments.has(value));
-  if (!routeValid) return rejectedAdvantage(pointInTime);
+  if (!routeValid) return rejectedAdvantage();
   const dailyNetAdvantageUsd = route.daily_net_advantage_micro_usdc! / 1_000_000;
   const dailyNetAdvantageBps = route.daily_net_advantage_e6_bps! / 1_000_000;
   const advantage: CarryRoutingAdvantage = {
     status: route.status,
     indicative: true,
-    anchorVenueId: summary.anchor_venue_id,
+    benchmarkKind: summary.benchmark_kind,
     selectedRoute: `${route.asset}:${selectedRoute!.long_venue_id}:${selectedRoute!.short_venue_id}`,
     baselineRoute: `${route.asset}:${baselineRoute!.long_venue_id}:${baselineRoute!.short_venue_id}`,
     dailyNetAdvantageUsd,
@@ -602,7 +606,7 @@ export function carryRoutingAdvantageEvidence(
     status: "committed",
     label: "EDGE✓",
     advantage,
-    detail: `${dailyNetAdvantageUsd >= 0 ? "+" : ""}$${dailyNetAdvantageUsd.toFixed(2)}/day worker-committed modeled net versus the best Hyperliquid-anchored route across ${route.sample_count} funding samples; excludes the account fee tier and is not realized P&L.`,
+    detail: `${dailyNetAdvantageUsd >= 0 ? "+" : ""}$${dailyNetAdvantageUsd.toFixed(2)}/day worker-committed modeled net versus the next-best executable route across ${route.sample_count} funding samples; excludes the account fee tier and is not realized P&L.`,
   };
 }
 
@@ -612,16 +616,16 @@ function indicativeAdvantage(advantage: CarryRoutingAdvantage): CarryRoutingAdva
     label: "EDGE*",
     advantage,
     detail: advantage.reason
-      ? "Indicative route edge unavailable until exact costs exist for a comparable Hyperliquid-anchored route."
-      : `${advantage.dailyNetAdvantageUsd! >= 0 ? "+" : ""}$${advantage.dailyNetAdvantageUsd!.toFixed(2)}/day point-in-time modeled net versus the best comparable Hyperliquid-anchored route; not realized P&L.`,
+      ? "Indicative route edge unavailable until exact costs exist for another executable route."
+      : `${advantage.dailyNetAdvantageUsd! >= 0 ? "+" : ""}$${advantage.dailyNetAdvantageUsd!.toFixed(2)}/day point-in-time modeled net versus the next-best executable route; not realized P&L.`,
   };
 }
 
-function rejectedAdvantage(advantage: CarryRoutingAdvantage): CarryRoutingAdvantageEvidence {
+function rejectedAdvantage(): CarryRoutingAdvantageEvidence {
   return {
     status: "rejected",
     label: "EDGE!",
-    advantage: unavailableRoutingAdvantage(advantage.anchorVenueId, "routing_advantage_evidence_invalid"),
+    advantage: unavailableRoutingAdvantage("routing_advantage_evidence_invalid"),
     detail: "Worker routing-advantage evidence failed closed; no economic benefit is claimed.",
   };
 }
@@ -874,14 +878,13 @@ function exactComparableQuote(value: PricedCarryCandidate | null): value is Pric
 }
 
 function unavailableRoutingAdvantage(
-  anchorVenueId: string,
   reason: string,
   selectedRoute: string | null = null,
 ): CarryRoutingAdvantage {
   return {
     status: "unavailable",
     indicative: true,
-    anchorVenueId,
+    benchmarkKind: "next_best_executable_route",
     selectedRoute,
     baselineRoute: null,
     dailyNetAdvantageUsd: null,

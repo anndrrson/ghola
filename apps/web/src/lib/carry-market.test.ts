@@ -68,7 +68,7 @@ describe("Carry market model", () => {
       .toBeLessThan(0);
   });
 
-  it("quantifies only exact-cost route edge against a comparable Hyperliquid anchor", () => {
+  it("quantifies exact-cost route edge against the next-best executable route", () => {
     const venues = [
       venue("hyperliquid", snapshot("hyperliquid", "BTC", 40_000_000, "ready")),
       venue("lighter", snapshot("lighter", "BTC", 10_000_000, "ready")),
@@ -79,7 +79,7 @@ describe("Carry market model", () => {
     expect(advantage).toMatchObject({
       status: "advantaged",
       indicative: true,
-      anchorVenueId: "hyperliquid",
+      benchmarkKind: "next_best_executable_route",
       selectedRoute: "BTC:lighter:aster",
       baselineRoute: "BTC:hyperliquid:aster",
       reason: null,
@@ -88,7 +88,7 @@ describe("Carry market model", () => {
     expect(advantage.dailyNetAdvantageBps).toBeGreaterThan(0);
   });
 
-  it("refuses a routing-edge claim when exact anchor costs are unavailable", () => {
+  it("refuses a routing-edge claim when another exact executable route is unavailable", () => {
     const ranked = rankCarryCandidatesByNet(buildPairCandidates([
       venue("hyperliquid", snapshot("hyperliquid", "BTC", 10_000_000, "degraded", { taker_fee_bps: null })),
       venue("lighter", snapshot("lighter", "BTC", 40_000_000, "ready")),
@@ -100,7 +100,7 @@ describe("Carry market model", () => {
       indicative: true,
       baselineRoute: null,
       dailyNetAdvantageUsd: null,
-      reason: "anchor_route_unavailable",
+      reason: "comparison_route_unavailable",
     });
   });
 
@@ -406,11 +406,11 @@ function snapshot(
 
 function routingAdvantageSummary(): NonNullable<CarryShadowResponse["routing_advantage"]> {
   return {
-    version: 1,
+    version: 2,
     kind: "carry_routing_advantage",
     ready: true,
     failures: [],
-    anchor_venue_id: "hyperliquid",
+    benchmark_kind: "next_best_executable_route",
     execution_venue_ids: ["hyperliquid", "lighter", "aster"],
     requested_assets: ["BTC"],
     notional_micro_usdc: 10_000_000_000,

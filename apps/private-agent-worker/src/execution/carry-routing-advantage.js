@@ -49,15 +49,18 @@ export function buildCarryRoutingAdvantageEvidence({
 
   const routes = requestedAssets.map((asset) => {
     const candidates = modeledRoutes.filter((route) => route.asset === asset);
-    const anchored = candidates.filter((route) =>
-      route.long_venue_id === "hyperliquid" || route.short_venue_id === "hyperliquid"
-    );
-    if (!candidates.length || !anchored.length) {
+    if (new Set(candidates.map(routeKey)).size !== candidates.length) {
       failures.push(`routing_advantage_unavailable:${asset}`);
-      return unavailableRoute(asset, !candidates.length ? "modeled_route_unavailable" : "anchor_route_unavailable");
+      return unavailableRoute(asset, "duplicate_route_evidence");
+    }
+    if (candidates.length < 2) {
+      failures.push(`routing_advantage_unavailable:${asset}`);
+      return unavailableRoute(asset, candidates.length === 0
+        ? "modeled_route_unavailable"
+        : "comparison_route_unavailable");
     }
     const selected = bestRoute(candidates);
-    const baseline = bestRoute(anchored);
+    const baseline = bestRoute(candidates.filter((route) => !sameRoute(route, selected)));
     const dailyAdvantage = selected.modeled_net_micro_usdc_per_day - baseline.modeled_net_micro_usdc_per_day;
     return Object.freeze({
       asset,
@@ -82,11 +85,11 @@ export function buildCarryRoutingAdvantageEvidence({
   });
 
   const record = {
-    version: 1,
+    version: 2,
     kind: "carry_routing_advantage",
     ready: failures.length === 0 && routes.length === requestedAssets.length && routes.every((route) => route.ready),
     failures: [...new Set(failures)],
-    anchor_venue_id: "hyperliquid",
+    benchmark_kind: "next_best_executable_route",
     execution_venue_ids: [...CARRY_EXECUTION_VENUES],
     requested_assets: requestedAssets,
     notional_micro_usdc: notionalMicro,
@@ -265,6 +268,15 @@ function bestRoute(routes) {
   return routes.reduce((best, route) =>
     route.modeled_net_micro_usdc_per_day > best.modeled_net_micro_usdc_per_day ? route : best
   );
+}
+
+function sameRoute(left, right) {
+  return left.long_venue_id === right.long_venue_id
+    && left.short_venue_id === right.short_venue_id;
+}
+
+function routeKey(route) {
+  return `${route.long_venue_id}:${route.short_venue_id}`;
 }
 
 function routeIdentity(route) {

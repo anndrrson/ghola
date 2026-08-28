@@ -81,7 +81,7 @@ function qualification(overrides = {}) {
   };
 }
 
-test("commits conservative route savings against the best Hyperliquid-anchored route", () => {
+test("commits conservative route savings against the next-best executable route", () => {
   const result = buildCarryRoutingAdvantageEvidence({
     venues: venues(),
     funding_persistence: fundingPersistence(),
@@ -91,6 +91,8 @@ test("commits conservative route savings against the best Hyperliquid-anchored r
   });
 
   assert.equal(result.ready, true);
+  assert.equal(result.version, 2);
+  assert.equal(result.benchmark_kind, "next_best_executable_route");
   assert.equal(result.modeled, true);
   assert.equal(result.realized, false);
   assert.equal(result.account_fee_tier_included, false);
@@ -109,6 +111,46 @@ test("commits conservative route savings against the best Hyperliquid-anchored r
   assert.ok(result.routes[0].daily_net_advantage_micro_usdc > 0);
   assert.equal(result.routes[0].sample_count, 8);
   assert.equal(result.routes[0].funding_evidence_commitments.length, 2);
+});
+
+test("keeps the routing benchmark venue-neutral", () => {
+  const evidence = fundingPersistence();
+  const comparison = structuredClone(evidence.routes[2]);
+  comparison.long_venue_id = "aster";
+  comparison.short_venue_id = "lighter";
+  comparison.conservative_funding_rate_e12_by_venue = {
+    aster: 100_000_000,
+    lighter: 10_000_000,
+  };
+  evidence.routes = [evidence.routes[2], comparison];
+  const result = buildCarryRoutingAdvantageEvidence({
+    venues: venues(),
+    funding_persistence: evidence,
+    shadow_qualification: qualification(),
+    assets: ["BTC"],
+    now_ms: NOW,
+  });
+
+  assert.equal(result.ready, true);
+  assert.notEqual(result.routes[0].selected_route.long_venue_id, "hyperliquid");
+  assert.notEqual(result.routes[0].selected_route.short_venue_id, "hyperliquid");
+  assert.notEqual(result.routes[0].baseline_route.long_venue_id, "hyperliquid");
+  assert.notEqual(result.routes[0].baseline_route.short_venue_id, "hyperliquid");
+});
+
+test("fails closed without a distinct comparison route", () => {
+  const evidence = fundingPersistence();
+  evidence.routes = [evidence.routes[2]];
+  const result = buildCarryRoutingAdvantageEvidence({
+    venues: venues(),
+    funding_persistence: evidence,
+    shadow_qualification: qualification(),
+    assets: ["BTC"],
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, false);
+  assert.equal(result.routes[0].reasons[0], "comparison_route_unavailable");
+  assert.equal(result.failures[0], "routing_advantage_unavailable:BTC");
 });
 
 test("fails closed when five-venue evidence is not worker-qualified", () => {
