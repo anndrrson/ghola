@@ -9,6 +9,7 @@ const IMAGE = `sha256:${"a".repeat(64)}`;
 test("combines five-venue shadow and three-venue no-submit evidence without overstating live proof", () => {
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
+      ...readinessProof(),
       ready: true,
       owner_commitment: "owner_commitment_0001",
       image_digest: IMAGE,
@@ -19,15 +20,9 @@ test("combines five-venue shadow and three-venue no-submit evidence without over
       ...recoveryReadiness(),
       capital_ready: true,
       capital_plan: capitalPlan(),
-      evidence_commitment: "carry:readiness:evidence:0001",
     },
     diagnostic: { diagnostic_commitment: "carry:diagnostic:evidence:0001" },
-    shadow_qualification: {
-      ready: true,
-      venues: 5,
-      checked_at_ms: NOW,
-      evidence_commitment: "carry:shadow:qualification:0001",
-    },
+    shadow_qualification: shadowQualification(),
     carry_supervision: { ready: true, status: "healthy" },
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
@@ -45,6 +40,7 @@ test("combines five-venue shadow and three-venue no-submit evidence without over
 test("refuses private-prime readiness without exact three-venue recovery policy", () => {
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
+      ...readinessProof(),
       ready: true,
       owner_commitment: "owner_commitment_0001",
       image_digest: IMAGE,
@@ -60,7 +56,7 @@ test("refuses private-prime readiness without exact three-venue recovery policy"
         },
       }),
     },
-    shadow_qualification: { ready: true, venues: 5 },
+    shadow_qualification: shadowQualification(),
     carry_supervision: { ready: true, status: "healthy" },
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
@@ -74,6 +70,7 @@ test("refuses private-prime readiness without exact three-venue recovery policy"
 test("upgrades only matching durable paired lifecycle evidence to live-proven", () => {
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
+      ...readinessProof(),
       ready: true,
       owner_commitment: "owner_commitment_0001",
       image_digest: IMAGE,
@@ -84,15 +81,9 @@ test("upgrades only matching durable paired lifecycle evidence to live-proven", 
       ...recoveryReadiness(),
       capital_ready: true,
       capital_plan: capitalPlan(),
-      evidence_commitment: "carry:readiness:evidence:0001",
     },
     diagnostic: { diagnostic_commitment: "carry:diagnostic:evidence:0001" },
-    shadow_qualification: {
-      ready: true,
-      venues: 5,
-      checked_at_ms: NOW,
-      evidence_commitment: "carry:shadow:qualification:0001",
-    },
+    shadow_qualification: shadowQualification(),
     carry_supervision: { ready: true, status: "healthy" },
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
@@ -112,6 +103,7 @@ test("never lets aggregate readiness outlive its paired lifecycle proof", () => 
   const lifecycleExpiresAt = NOW + 10_000;
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
+      ...readinessProof(),
       ready: true,
       owner_commitment: "owner_commitment_0001",
       image_digest: IMAGE,
@@ -123,7 +115,7 @@ test("never lets aggregate readiness outlive its paired lifecycle proof", () => 
       capital_ready: true,
       capital_plan: capitalPlan(),
     },
-    shadow_qualification: { ready: true, venues: 5, checked_at_ms: NOW },
+    shadow_qualification: shadowQualification(),
     carry_supervision: { ready: true, status: "healthy" },
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
@@ -137,6 +129,7 @@ test("never lets aggregate readiness outlive its paired lifecycle proof", () => 
 test("keeps mismatched lifecycle evidence pre-broadcast", () => {
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
+      ...readinessProof(),
       ready: true,
       owner_commitment: "owner_commitment_0001",
       image_digest: IMAGE,
@@ -148,7 +141,7 @@ test("keeps mismatched lifecycle evidence pre-broadcast", () => {
       capital_ready: true,
       capital_plan: capitalPlan(),
     },
-    shadow_qualification: { ready: true, venues: 5, checked_at_ms: NOW },
+    shadow_qualification: shadowQualification(),
     carry_supervision: { ready: true, status: "healthy" },
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
@@ -162,6 +155,7 @@ test("keeps mismatched lifecycle evidence pre-broadcast", () => {
 test("does not promote live proof without exact realized after-cost value", () => {
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
+      ...readinessProof(),
       ready: true,
       owner_commitment: "owner_commitment_0001",
       image_digest: IMAGE,
@@ -182,6 +176,7 @@ test("does not promote mathematically inconsistent value attribution", () => {
   attribution.realized.fees_micro_usdc = 19;
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
+      ...readinessProof(),
       ready: true,
       owner_commitment: "owner_commitment_0001",
       image_digest: IMAGE,
@@ -198,8 +193,8 @@ test("does not promote mathematically inconsistent value attribution", () => {
 
 test("fails closed when shadow, supervision, or route evidence is missing", () => {
   const result = buildCarryPrivatePrimeReadiness({
-    readiness: { ready: false },
-    shadow_qualification: { ready: true, venues: 4 },
+    readiness: { ...readinessProof(), ready: false },
+    shadow_qualification: shadowQualification({ venues: 4 }),
     carry_supervision: { ready: false, status: "starting" },
     route_observation_configured: false,
     now_ms: NOW,
@@ -216,6 +211,7 @@ test("fails closed when shadow, supervision, or route evidence is missing", () =
 test("keeps technically connected but unfunded accounts pre-broadcast blocked", () => {
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
+      ...readinessProof(),
       ready: true,
       capital_ready: false,
       owner_commitment: "owner_commitment_0001",
@@ -223,7 +219,7 @@ test("keeps technically connected but unfunded accounts pre-broadcast blocked", 
       ...recoveryReadiness(),
       capital_plan: capitalPlan(),
     },
-    shadow_qualification: { ready: true, venues: 5 },
+    shadow_qualification: shadowQualification(),
     carry_supervision: { ready: true, status: "healthy" },
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
@@ -238,13 +234,14 @@ test("keeps technically connected but unfunded accounts pre-broadcast blocked", 
 test("rejects a configured route probe without fresh owner-bound route evidence", () => {
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
+      ...readinessProof(),
       ready: true,
       capital_ready: true,
       owner_commitment: "owner_commitment_0001",
       image_digest: IMAGE,
       ...recoveryReadiness(),
     },
-    shadow_qualification: { ready: true, venues: 5 },
+    shadow_qualification: shadowQualification(),
     carry_supervision: { ready: true, status: "healthy" },
     route_observation_configured: true,
     route_evidence: { ok: false, error: "carry_transfer_route_evidence_missing" },
@@ -263,6 +260,7 @@ test("rejects route evidence bound to an older account-state snapshot", () => {
   refreshRouteEvidenceCommitment(routeEvidence.evidence);
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
+      ...readinessProof(),
       ready: true,
       capital_ready: true,
       owner_commitment: "owner_commitment_0001",
@@ -270,7 +268,7 @@ test("rejects route evidence bound to an older account-state snapshot", () => {
       ...recoveryReadiness(),
       capital_plan: capitalPlan(),
     },
-    shadow_qualification: { ready: true, venues: 5 },
+    shadow_qualification: shadowQualification(),
     carry_supervision: { ready: true, status: "healthy" },
     route_observation_configured: true,
     route_evidence: routeEvidence,
@@ -285,6 +283,7 @@ test("rejects collateral-route evidence with a valid-looking but mismatched comm
   routeEvidence.evidence.routes[0].maximum_transfer_micro_usdc -= 1;
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
+      ...readinessProof(),
       ready: true,
       capital_ready: true,
       owner_commitment: "owner_commitment_0001",
@@ -292,7 +291,7 @@ test("rejects collateral-route evidence with a valid-looking but mismatched comm
       ...recoveryReadiness(),
       capital_plan: capitalPlan(),
     },
-    shadow_qualification: { ready: true, venues: 5 },
+    shadow_qualification: shadowQualification(),
     carry_supervision: { ready: true, status: "healthy" },
     route_observation_configured: true,
     route_evidence: routeEvidence,
@@ -302,6 +301,90 @@ test("rejects collateral-route evidence with a valid-looking but mismatched comm
   assert.deepEqual(result.reasons, ["collateral_route_evidence_unverified"]);
   assert.equal(result.collateral_route_observation.verified, false);
 });
+
+test("rejects stale or image-unbound five-venue qualification wrappers", () => {
+  const invalidQualifications = [
+    shadowQualification({ checked_at_ms: NOW - 60_001 }),
+    shadowQualification({ image_digest: `sha256:${"b".repeat(64)}` }),
+  ];
+  for (const shadowQualificationValue of invalidQualifications) {
+    const result = buildCarryPrivatePrimeReadiness({
+      readiness: {
+        ...readinessProof(),
+        ...recoveryReadiness(),
+        capital_ready: true,
+        capital_plan: capitalPlan(),
+      },
+      shadow_qualification: shadowQualificationValue,
+      carry_supervision: { ready: true, status: "healthy" },
+      route_observation_configured: true,
+      route_evidence: verifiedRouteEvidence(),
+      now_ms: NOW,
+    });
+    assert.equal(result.ready, false);
+    assert.deepEqual(result.reasons, ["five_venue_shadow_unproven"]);
+    assert.equal(result.five_venue_shadow.ready, false);
+    assert.equal(result.five_venue_shadow.evidence_commitment, null);
+  }
+});
+
+test("rejects malformed three-venue readiness wrappers", () => {
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: {
+      ...readinessProof(),
+      ...recoveryReadiness(),
+      capital_ready: true,
+      capital_plan: capitalPlan(),
+      evidence_commitment: "carry:readiness:evidence:valid-looking",
+    },
+    shadow_qualification: shadowQualification(),
+    carry_supervision: { ready: true, status: "healthy" },
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.reasons, ["three_venue_no_submit_unproven"]);
+  assert.equal(result.three_venue_execution.ready, false);
+  assert.equal(result.three_venue_execution.evidence_commitment, null);
+});
+
+function readinessProof(overrides = {}) {
+  return {
+    version: 1,
+    ready: true,
+    owner_commitment: "owner_commitment_0001",
+    image_digest: IMAGE,
+    network: "mainnet",
+    asset: "BTC",
+    checked_at_ms: NOW,
+    expires_at_ms: NOW + 120_000,
+    registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+    evidence_commitment: `carry:readiness:evidence:${"b".repeat(40)}`,
+    ...overrides,
+  };
+}
+
+function shadowQualification(overrides = {}) {
+  return {
+    version: 1,
+    kind: "carry_shadow_qualification",
+    ready: true,
+    release_bound: true,
+    transaction_broadcast: false,
+    image_digest: IMAGE,
+    checked_at_ms: NOW,
+    required_samples: 3,
+    completed_samples: 3,
+    venues: 5,
+    assets: 3,
+    expected_snapshots_per_sample: 15,
+    degraded_snapshots: 0,
+    sample_commitments: ["c", "d", "e"].map((value) => `carry:shadow:sample:${value.repeat(64)}`),
+    evidence_commitment: `carry:shadow:qualification:${"f".repeat(64)}`,
+    ...overrides,
+  };
+}
 
 function verifiedRouteEvidence() {
   const route = {

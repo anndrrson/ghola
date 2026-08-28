@@ -86,7 +86,7 @@ test("rejects private-prime readiness that fabricates recovery coverage", () => 
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      privatePrimeReadiness: sources.privatePrimeReadiness.replace(
+      privatePrimeReadiness: sources.privatePrimeReadiness.replaceAll(
         "failure_recovery: failureRecovery",
         "failure_recovery: { ready: true }",
       ),
@@ -258,7 +258,7 @@ test("rejects private-prime evidence that can outlive its paired lifecycle", () 
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      privatePrimeReadiness: sources.privatePrimeReadiness.replace(
+      privatePrimeReadiness: sources.privatePrimeReadiness.replaceAll(
         "function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, lifecycleExpiry)",
         "function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry)",
       ),
@@ -496,6 +496,32 @@ test("rejects private-prime readiness that skips exact route commitment verifica
       ),
     }),
     /carry_private_prime_route_commitment_verification_missing/,
+  );
+});
+
+test("rejects private-prime readiness that trusts an unverified readiness wrapper", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replaceAll(
+        "verifiedExecutionReadiness(readiness, nowMs)",
+        "readiness?.ready === true",
+      ),
+    }),
+    /carry_private_prime_readiness_wrapper_verification_missing/,
+  );
+});
+
+test("rejects private-prime readiness that trusts an unbound shadow wrapper", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replaceAll(
+        "verifiedShadowQualification({",
+        "trustShadowQualification({",
+      ),
+    }),
+    /carry_private_prime_shadow_wrapper_verification_missing/,
   );
 });
 

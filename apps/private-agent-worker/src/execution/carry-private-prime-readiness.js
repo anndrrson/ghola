@@ -16,6 +16,12 @@ export function buildCarryPrivatePrimeReadiness({
   lifecycle_proof: lifecycleProof,
   now_ms: nowMs = Date.now(),
 }) {
+  const executionReadinessVerified = verifiedExecutionReadiness(readiness, nowMs);
+  const shadowQualificationVerified = verifiedShadowQualification({
+    readiness,
+    shadowQualification,
+    nowMs,
+  });
   const routeObservation = verifiedRouteObservation({
     readiness,
     routeEvidence,
@@ -25,12 +31,10 @@ export function buildCarryPrivatePrimeReadiness({
   const pairedLifecycle = verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs });
   const failureRecovery = verifiedFailureRecovery(readiness);
   const reasons = [];
-  if (readiness?.ready !== true) reasons.push("three_venue_no_submit_unproven");
-  if (readiness?.ready === true && failureRecovery.ready !== true) reasons.push("three_venue_recovery_unproven");
-  if (readiness?.ready === true && readiness?.capital_ready !== true) reasons.push("opening_capital_shortfall");
-  if (shadowQualification?.ready !== true || shadowQualification?.venues < 5) {
-    reasons.push("five_venue_shadow_unproven");
-  }
+  if (!executionReadinessVerified) reasons.push("three_venue_no_submit_unproven");
+  if (executionReadinessVerified && failureRecovery.ready !== true) reasons.push("three_venue_recovery_unproven");
+  if (executionReadinessVerified && readiness?.capital_ready !== true) reasons.push("opening_capital_shortfall");
+  if (!shadowQualificationVerified) reasons.push("five_venue_shadow_unproven");
   if (carrySupervision?.ready !== true) reasons.push("carry_supervision_unready");
   if (routeObservationConfigured !== true) reasons.push("collateral_route_observation_unavailable");
   else if (routeObservation.verified !== true) reasons.push("collateral_route_evidence_unverified");
@@ -51,15 +55,15 @@ export function buildCarryPrivatePrimeReadiness({
       pairedLifecycle.verified ? pairedLifecycle.expires_at_ms : null,
     ),
     five_venue_shadow: {
-      ready: shadowQualification?.ready === true && shadowQualification?.venues >= 5,
-      venue_count: shadowQualification?.venues || 0,
-      evidence_commitment: shadowQualification?.evidence_commitment || null,
+      ready: shadowQualificationVerified,
+      venue_count: shadowQualificationVerified ? shadowQualification.venues : 0,
+      evidence_commitment: shadowQualificationVerified ? shadowQualification.evidence_commitment : null,
     },
     three_venue_execution: {
-      ready: readiness?.ready === true,
-      venue_ids: Array.isArray(readiness?.registry_venue_ids) ? readiness.registry_venue_ids : [],
-      capital_ready: readiness?.capital_ready === true,
-      evidence_commitment: readiness?.evidence_commitment || null,
+      ready: executionReadinessVerified,
+      venue_ids: executionReadinessVerified ? readiness.registry_venue_ids : [],
+      capital_ready: executionReadinessVerified && readiness?.capital_ready === true,
+      evidence_commitment: executionReadinessVerified ? readiness.evidence_commitment : null,
       diagnostic_commitment: diagnostic?.diagnostic_commitment || null,
     },
     failure_recovery: failureRecovery,
@@ -78,6 +82,52 @@ export function buildCarryPrivatePrimeReadiness({
   };
   material.evidence_commitment = evidenceCommitment(material);
   return Object.freeze(material);
+}
+
+function verifiedExecutionReadiness(readiness, nowMs) {
+  const checkedAtMs = Number.isSafeInteger(readiness?.checked_at_ms) ? readiness.checked_at_ms : null;
+  return readiness?.version === 1
+    && readiness?.ready === true
+    && readiness?.network === "mainnet"
+    && /^[A-Za-z0-9_.:-]{8,240}$/.test(String(readiness?.owner_commitment || ""))
+    && /^sha256:[a-f0-9]{12,128}$/.test(String(readiness?.image_digest || ""))
+    && /^[A-Z0-9]{2,16}$/.test(String(readiness?.asset || ""))
+    && sameStrings(readiness?.registry_venue_ids, CARRY_EXECUTION_VENUES)
+    && checkedAtMs !== null
+    && checkedAtMs <= nowMs + 5_000
+    && Number.isSafeInteger(readiness?.expires_at_ms)
+    && readiness.expires_at_ms > nowMs
+    && /^carry:readiness:evidence:[0-9a-f]{40}$/.test(String(readiness?.evidence_commitment || ""));
+}
+
+function verifiedShadowQualification({ readiness, shadowQualification, nowMs }) {
+  const checkedAtMs = Number.isSafeInteger(shadowQualification?.checked_at_ms)
+    ? shadowQualification.checked_at_ms
+    : null;
+  const requiredSamples = shadowQualification?.required_samples;
+  const sampleCommitments = Array.isArray(shadowQualification?.sample_commitments)
+    ? shadowQualification.sample_commitments
+    : [];
+  return shadowQualification?.version === 1
+    && shadowQualification?.kind === "carry_shadow_qualification"
+    && shadowQualification?.ready === true
+    && shadowQualification?.release_bound === true
+    && shadowQualification?.transaction_broadcast === false
+    && shadowQualification?.image_digest === readiness?.image_digest
+    && checkedAtMs !== null
+    && checkedAtMs <= nowMs + 5_000
+    && nowMs - checkedAtMs <= 60_000
+    && Number.isSafeInteger(requiredSamples)
+    && requiredSamples >= 3
+    && shadowQualification?.completed_samples === requiredSamples
+    && shadowQualification?.venues === 5
+    && shadowQualification?.assets >= 3
+    && shadowQualification?.expected_snapshots_per_sample === shadowQualification.venues * shadowQualification.assets
+    && shadowQualification?.degraded_snapshots === 0
+    && sampleCommitments.length === requiredSamples
+    && new Set(sampleCommitments).size === sampleCommitments.length
+    && sampleCommitments.every((value) => /^carry:shadow:sample:[0-9a-f]{64}$/.test(String(value)))
+    && /^carry:shadow:qualification:[0-9a-f]{64}$/.test(String(shadowQualification?.evidence_commitment || ""));
 }
 
 function verifiedFailureRecovery(readiness) {
@@ -242,4 +292,10 @@ function stableJson(value) {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
     .join(",")}}`;
+}
+
+function sameStrings(left, right) {
+  return Array.isArray(left)
+    && left.length === right.length
+    && left.every((value, index) => value === right[index]);
 }
