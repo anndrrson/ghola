@@ -518,6 +518,7 @@ function shadowQualification(overrides = {}) {
     checked_at_ms: NOW,
     required_samples: 3,
     completed_samples: 3,
+    minimum_span_ms: 120_000,
     duration_ms: 120_000,
     venues: 5,
     assets: 3,

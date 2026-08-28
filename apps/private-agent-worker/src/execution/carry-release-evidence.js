@@ -318,6 +318,7 @@ export async function buildCompletedCarryReleaseMaterial({
       requested_assets: shadowQualification.requested_assets,
       required_samples: shadowQualification.required_samples,
       completed_samples: shadowQualification.completed_samples,
+      minimum_span_ms: shadowQualification.minimum_span_ms,
       duration_ms: shadowQualification.duration_ms,
       expected_snapshots_per_sample: shadowQualification.expected_snapshots_per_sample,
       sample_commitments: shadowQualification.sample_commitments,

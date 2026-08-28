@@ -131,12 +131,16 @@ export function verifyCarryShadowSnapshot(snapshot, {
 
 export function verifyCarryShadowSoak(sampleResults, {
   required_samples: requiredSamples = 3,
+  minimum_span_ms: minimumSpanMs = 0,
 } = {}) {
   const failures = [];
   const samples = Array.isArray(sampleResults) ? sampleResults : [];
   if (!Array.isArray(sampleResults)) failures.push("shadow_soak_samples_invalid");
   if (!Number.isSafeInteger(requiredSamples) || requiredSamples < 2) {
     failures.push("shadow_soak_required_samples_invalid");
+  }
+  if (!Number.isSafeInteger(minimumSpanMs) || minimumSpanMs < 0) {
+    failures.push("shadow_soak_minimum_span_invalid");
   }
   if (samples.length < requiredSamples) {
     failures.push(`shadow_soak_samples_insufficient:${samples.length}:${requiredSamples}`);
@@ -202,13 +206,18 @@ export function verifyCarryShadowSoak(sampleResults, {
   }
   const firstCheckedAt = samples[0]?.checked_at_ms;
   const lastCheckedAt = samples.at(-1)?.checked_at_ms;
+  const durationMs = Number.isSafeInteger(firstCheckedAt) && Number.isSafeInteger(lastCheckedAt)
+    ? Math.max(0, lastCheckedAt - firstCheckedAt)
+    : 0;
+  if (Number.isSafeInteger(minimumSpanMs) && minimumSpanMs >= 0 && durationMs < minimumSpanMs) {
+    failures.push(`shadow_soak_duration_insufficient:${durationMs}:${minimumSpanMs}`);
+  }
   return Object.freeze({
     ok: failures.length === 0,
     required_samples: requiredSamples,
     completed_samples: samples.length,
-    duration_ms: Number.isSafeInteger(firstCheckedAt) && Number.isSafeInteger(lastCheckedAt)
-      ? Math.max(0, lastCheckedAt - firstCheckedAt)
-      : 0,
+    minimum_span_ms: minimumSpanMs,
+    duration_ms: durationMs,
     venues: expectedVenues,
     assets: expectedAssets,
     requested_assets: Object.freeze([...(expectedRequestedAssets || [])]),

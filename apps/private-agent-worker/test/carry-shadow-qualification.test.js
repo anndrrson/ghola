@@ -34,6 +34,8 @@ test("persists three consecutive complete five-venue samples without broadcastin
   assert.equal(result.venues, 5);
   assert.equal(result.assets, 3);
   assert.equal(result.completed_samples, 3);
+  assert.equal(result.minimum_span_ms, 120_000);
+  assert.equal(result.duration_ms, 120_000);
   assert.equal(new Set(result.sample_commitments).size, 3);
   assert.equal(new Set(result.source_observation_commitments).size, 3);
   assert.match(result.evidence_commitment, /^carry:shadow:qualification:[0-9a-f]{64}$/);
@@ -52,6 +54,22 @@ test("persists three consecutive complete five-venue samples without broadcastin
     now_ms: NOW + 2 * 60_000,
     max_age_ms: 600_000,
   }).ok, true);
+});
+
+test("does not qualify rapid source updates before the two-minute observation floor", async () => {
+  const state = stateStore();
+  let result;
+  for (let index = 0; index < 3; index += 1) {
+    const nowMs = NOW + index * 1_000;
+    result = await observeCarryShadowQualification({
+      state,
+      venues: carryShadowFixture(nowMs),
+      now_ms: nowMs,
+      env: ENV,
+    });
+  }
+  assert.equal(result.ready, false);
+  assert.ok(result.failures.includes("shadow_soak_duration_insufficient:2000:120000"));
 });
 
 test("does not persist wrapper-only samples when venue source observations are unchanged", async () => {

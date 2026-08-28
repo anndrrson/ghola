@@ -319,6 +319,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifier", "shadow_soak_sample_commitment_invalid", "carry_shadow_sample_commitment_gate_missing");
   requireText("shadowVerifier", "source_observation_commitment", "carry_shadow_source_observation_commitment_missing");
   requireText("shadowVerifier", "shadow_soak_source_observation_commitments_reused", "carry_shadow_source_observation_reuse_gate_missing");
+  requireText("shadowVerifier", "shadow_soak_duration_insufficient", "carry_shadow_duration_floor_missing");
   requireText("shadowVerifier", "shadow_soak_snapshot_not_ready", "carry_shadow_degraded_qualification_gate_missing");
   requireText("shadowVerifier", "read_only_boundary_invalid", "carry_shadow_read_only_gate_missing");
   requireText("shadowVerifier", "snapshot_stale", "carry_shadow_freshness_gate_missing");
@@ -335,6 +336,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifierTest", "rejects tampered or reused shadow sample commitments", "carry_shadow_commitment_test_missing");
   requireText("shadowVerifierTest", "rejects wrapper-time progress that reuses every venue source observation", "carry_shadow_source_observation_reuse_test_missing");
   requireText("shadowVerifierTest", "rejects a venue source timestamp that regresses between samples", "carry_shadow_source_observation_regression_test_missing");
+  requireText("shadowVerifierTest", "rejects rapid fresh samples that do not meet the durable observation span", "carry_shadow_duration_floor_test_missing");
   requireText("shadowVerifierTest", "rejects a one-shot snapshot as durable shadow qualification", "carry_shadow_one_shot_rejection_test_missing");
   requireText("shadowVerifierTest", "rejects normalized gaps without explicit quality evidence", "carry_shadow_quality_evidence_test_missing");
   requireText("shadowVerifierTest", "never promotes them to durable qualification", "carry_shadow_degraded_qualification_test_missing");
@@ -753,6 +755,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterial", "readCarryShadowQualification", "carry_release_shadow_qualification_gate_missing");
   requireText("releaseMaterial", "shadow_qualification: {", "carry_release_shadow_qualification_evidence_missing");
   requireText("releaseMaterial", "source_observation_commitments: shadowQualification.source_observation_commitments", "carry_release_shadow_source_observation_evidence_missing");
+  requireText("releaseMaterial", "minimum_span_ms: shadowQualification.minimum_span_ms", "carry_release_shadow_duration_evidence_missing");
   requireText("releaseMaterial", "const fundingLegId = carryPositionLegId(record.position, sagaLeg.venue_id)", "carry_release_canonical_funding_leg_missing");
   requireText("releaseMaterial", 'funding_micro_usdc: sumSignedEntries(fundingLedgerEntries, "funding")', "carry_release_leg_funding_missing");
   requireText("releaseMaterialTest", "funding_micro_usdc), [60, -10]", "carry_release_leg_funding_test_missing");
@@ -761,6 +764,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifier", "shadow_qualification_image_mismatch", "carry_release_shadow_image_verifier_missing");
   requireText("evidenceVerifier", "shadow_qualification_samples_incomplete", "carry_release_shadow_soak_verifier_missing");
   requireText("evidenceVerifier", "shadow_qualification_source_observations_invalid", "carry_release_shadow_source_observation_verifier_missing");
+  requireText("evidenceVerifier", "shadowMinimumSpanMs >= 120_000", "carry_release_shadow_duration_verifier_missing");
   requireText("evidenceVerifierTest", "rejects funding not reconciled to exact venue legs", "carry_release_funding_reconciliation_test_missing");
   requireText("evidenceVerifierTest", "rejects missing, incomplete, or image-mismatched five-venue shadow qualification", "carry_release_shadow_qualification_test_missing");
   requireCount("privateExecution", "submit_count: readOnlyReconcile ? 0 : 1", 3, "durable_submit_count_missing");
@@ -852,12 +856,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowQualification", "PHALA_CVM_IMAGE_DIGEST", "carry_shadow_qualification_image_binding_missing");
   requireText("shadowQualification", "sample_results: sampleResults", "carry_shadow_qualification_persistence_missing");
   requireText("shadowQualification", "source_observation_commitments", "carry_shadow_qualification_source_binding_missing");
+  requireText("shadowQualification", "minimum_span_ms: REQUIRED_MINIMUM_SPAN_MS", "carry_shadow_qualification_duration_policy_missing");
   requireText("shadowQualification", "transaction_broadcast: false", "carry_shadow_qualification_no_broadcast_missing");
   requireText("shadowQualification", "export function verifyCarryShadowQualification", "carry_shadow_result_verifier_missing");
   requireText("shadowQualification", "qualification_commitment: qualificationResultCommitment(material)", "carry_shadow_result_commitment_missing");
   requireText("shadowQualificationTest", "rejects tampered qualification summaries", "carry_shadow_result_tamper_test_missing");
   requireText("shadowQualificationTest", "persists three consecutive complete five-venue samples without broadcasting", "carry_shadow_qualification_test_missing");
   requireText("shadowQualificationTest", "does not persist wrapper-only samples when venue source observations are unchanged", "carry_shadow_qualification_wrapper_reuse_test_missing");
+  requireText("shadowQualificationTest", "does not qualify rapid source updates before the two-minute observation floor", "carry_shadow_qualification_duration_test_missing");
   requireText("shadowQualificationTest", "resets consecutive qualification after one failed venue sample", "carry_shadow_qualification_reset_test_missing");
   requireText("shadowQualificationTest", "does not qualify complete-looking samples with degraded venue economics", "carry_shadow_qualification_degraded_test_missing");
   requireText("shadowQualificationTest", "fails closed for stale, tampered, or differently pinned qualification", "carry_shadow_qualification_integrity_test_missing");

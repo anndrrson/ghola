@@ -106,6 +106,7 @@ export interface CarryShadowQualificationSummary {
   venues: number;
   assets: number;
   requested_assets: string[];
+  minimum_span_ms?: number;
   duration_ms?: number | null;
   expected_snapshots_per_sample?: number;
   sample_commitments?: string[];
@@ -283,6 +284,8 @@ export function carryMarketQualificationEvidence(
     && qualification.assets === 3
     && qualification.expected_snapshots_per_sample === 15
     && sameStrings(qualification.requested_assets, ["BTC", "ETH", "SOL"]);
+  const durableSpan = safeNonnegativeInteger(qualification.minimum_span_ms) >= 120_000
+    && safeNonnegativeInteger(qualification.duration_ms) >= safeNonnegativeInteger(qualification.minimum_span_ms);
   const distinctSamples = samples.length === completed
     && new Set(samples).size === samples.length
     && samples.every((value) => CARRY_SHADOW_SAMPLE_COMMITMENT.test(value));
@@ -296,6 +299,7 @@ export function carryMarketQualificationEvidence(
     && completed >= required
     && bound
     && coverage
+    && durableSpan
     && distinctSamples
     && distinctSourceObservations;
   if (ready) {

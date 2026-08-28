@@ -270,6 +270,17 @@ test("rejects a one-shot snapshot as durable shadow qualification", () => {
   assert.ok(result.failures.includes("shadow_soak_samples_insufficient:1:3"));
 });
 
+test("rejects rapid fresh samples that do not meet the durable observation span", () => {
+  const samples = [0, 1, 2].map((offset) => verifyCarryShadowSet(
+    fixture(DEFAULT_CARRY_SHADOW_ASSETS, NOW + offset * 1_000),
+    { now_ms: NOW + offset * 1_000 },
+  ));
+  const result = verifyCarryShadowSoak(samples, { minimum_span_ms: 120_000 });
+  assert.equal(result.ok, false);
+  assert.equal(result.minimum_span_ms, 120_000);
+  assert.ok(result.failures.includes("shadow_soak_duration_insufficient:2000:120000"));
+});
+
 function fixture(assets = DEFAULT_CARRY_SHADOW_ASSETS, observedAtMs = NOW) {
   return CORE_PERP_VENUES.map((venueId) => ({
     venue_id: venueId,

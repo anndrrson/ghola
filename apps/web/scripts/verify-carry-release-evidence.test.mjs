@@ -84,6 +84,7 @@ async function fixture() {
       requested_assets: ["BTC", "ETH", "SOL"],
       required_samples: 3,
       completed_samples: 3,
+      minimum_span_ms: 120_000,
       duration_ms: 120_000,
       expected_snapshots_per_sample: 15,
       sample_commitments: ["11", "22", "33"].map((value) => `carry:shadow:sample:${value.repeat(32)}`),
@@ -444,6 +445,7 @@ test("rejects missing, incomplete, or image-mismatched five-venue shadow qualifi
     [(evidence) => { evidence.shadow_qualification.completed_samples = 2; }, /shadow_qualification_samples_incomplete|shadow_qualification_commitments_invalid/],
     [(evidence) => { evidence.shadow_qualification.image_digest = "sha256:fedcba9876543210"; }, /shadow_qualification_image_mismatch/],
     [(evidence) => { evidence.shadow_qualification.source_observation_commitments[1] = evidence.shadow_qualification.source_observation_commitments[0]; }, /shadow_qualification_source_observations_invalid/],
+    [(evidence) => { evidence.shadow_qualification.duration_ms = 2_000; }, /shadow_qualification_duration_invalid/],
   ]) {
     const evidence = await fixture();
     mutate(evidence);

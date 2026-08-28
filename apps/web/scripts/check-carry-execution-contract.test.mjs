@@ -1167,6 +1167,19 @@ test("rejects five-venue shadow qualification based on wrapper-time-only progres
   );
 });
 
+test("rejects five-venue shadow qualification without a durable observation span", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowVerifier: sources.shadowVerifier.replaceAll(
+        "shadow_soak_duration_insufficient",
+        "rapid_samples_accepted",
+      ),
+    }),
+    /carry_shadow_duration_floor_missing/,
+  );
+});
+
 test("rejects release qualification that is not persistent and image-bound", () => {
   assert.throws(
     () => checkCarryExecutionContract({

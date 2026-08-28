@@ -56,7 +56,9 @@ export async function verifyCarryReleaseEvidence(evidence) {
     "shadow_qualification_assets_invalid");
   fail(shadowRequiredSamples >= 3, "shadow_qualification_sample_floor_invalid");
   fail(shadowCompletedSamples >= shadowRequiredSamples, "shadow_qualification_samples_incomplete");
-  fail(nonNegativeInteger(shadowQualification.duration_ms) !== null,
+  const shadowMinimumSpanMs = positiveInteger(shadowQualification.minimum_span_ms);
+  const shadowDurationMs = nonNegativeInteger(shadowQualification.duration_ms);
+  fail(shadowMinimumSpanMs >= 120_000 && shadowDurationMs >= shadowMinimumSpanMs,
     "shadow_qualification_duration_invalid");
   fail(shadowQualification.expected_snapshots_per_sample === 15,
     "shadow_qualification_snapshot_coverage_invalid");

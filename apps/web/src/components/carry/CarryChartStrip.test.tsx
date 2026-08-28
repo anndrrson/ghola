@@ -361,6 +361,7 @@ function marketQualification(
     venues: 5,
     assets: 3,
     requested_assets: ["BTC", "ETH", "SOL"],
+    minimum_span_ms: 120_000,
     duration_ms: 120_000,
     expected_snapshots_per_sample: 15,
     sample_commitments: ["2", "3", "4"].map((value) => `carry:shadow:sample:${value.repeat(64)}`),

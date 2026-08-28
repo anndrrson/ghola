@@ -7,6 +7,7 @@ import {
 
 const KIND = "carry_shadow_qualification";
 const DEFAULT_REQUIRED_SAMPLES = 3;
+const REQUIRED_MINIMUM_SPAN_MS = 2 * 60_000;
 const DEFAULT_MAX_AGE_MS = 10 * 60_000;
 const SOURCE_MAX_AGE_MS = 60_000;
 
@@ -177,7 +178,8 @@ export function verifyCarryShadowQualification(value, {
     && requiredSamples >= 3
     && value?.completed_samples === requiredSamples
     && Number.isSafeInteger(value?.duration_ms)
-    && value.duration_ms >= 0
+    && value?.minimum_span_ms === REQUIRED_MINIMUM_SPAN_MS
+    && value.duration_ms >= value.minimum_span_ms
     && value?.venues === 5
     && value?.assets >= 3
     && Array.isArray(value?.requested_assets)
@@ -209,7 +211,10 @@ function qualificationResult({
   evidenceCommitment = null,
   failures = [],
 }) {
-  const soak = verifyCarryShadowSoak(sampleResults, { required_samples: requiredSamples });
+  const soak = verifyCarryShadowSoak(sampleResults, {
+    required_samples: requiredSamples,
+    minimum_span_ms: REQUIRED_MINIMUM_SPAN_MS,
+  });
   const latestCheckedAtMs = sampleResults.at(-1)?.checked_at_ms || null;
   const stale = !Number.isSafeInteger(latestCheckedAtMs) || nowMs - latestCheckedAtMs > maxAgeMs;
   const combinedFailures = [
@@ -228,6 +233,7 @@ function qualificationResult({
     checked_at_ms: latestCheckedAtMs,
     required_samples: requiredSamples,
     completed_samples: sampleResults.length,
+    minimum_span_ms: soak.minimum_span_ms,
     duration_ms: soak.duration_ms,
     venues: soak.venues || 0,
     assets: soak.assets || 0,
