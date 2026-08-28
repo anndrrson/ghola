@@ -3236,6 +3236,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
             recipient,
             verifyOrder: verifyAutopilotOrder,
             executeOrder: executeAutopilotOrder,
+            carry_supervision: carrySupervision,
             qualification_confirmed: req.headers["x-ghola-carry-qualification-confirmed"] === "true",
           })],
         };

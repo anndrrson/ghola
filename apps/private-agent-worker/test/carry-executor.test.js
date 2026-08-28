@@ -155,6 +155,33 @@ test("refuses entry when durable opportunity evidence was altered after owner ap
   assert.equal(submitCalls, 0);
 });
 
+test("refuses live entry before preflight when private-prime readiness is not current", async (t) => {
+  const fixture = await setup(t, "private-prime-readiness-unproven");
+  let preflightCalls = 0;
+  let submitCalls = 0;
+  const result = await executeStoredCarryEntry({
+    ...fixture,
+    env: {
+      PRIVATE_AGENT_CARRY_POSITION_LIVE_SUBMIT: "true",
+      PHALA_CVM_IMAGE_DIGEST: "sha256:abcdef123456",
+    },
+    carry_supervision: null,
+    preflight: async () => {
+      preflightCalls += 1;
+      return preflightProof();
+    },
+    executeOrder: async () => {
+      submitCalls += 1;
+      return {};
+    },
+  });
+
+  assert.equal(result.error, "carry_entry_private_prime_readiness_unproven");
+  assert.equal(result.private_prime_readiness.no_submit_ready, false);
+  assert.equal(preflightCalls, 0);
+  assert.equal(submitCalls, 0);
+});
+
 test("executes every qualified Hyperliquid, Lighter, and Aster pair through one contract", async (t) => {
   const pairs = [
     { long: "hyperliquid", short: "lighter" },

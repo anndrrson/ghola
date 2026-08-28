@@ -960,6 +960,13 @@ export function checkCarryExecutionContract(sources) {
   requireText("lifecycleTest", "automatic exit retries a failed restart audit before any execution sweep", "carry_restart_audit_retry_test_missing");
   requireText("server", "carry_supervision: carrySupervision", "carry_supervision_health_missing");
   requireText("server", "carry_supervision_not_ready", "carry_entry_supervision_gate_missing");
+  requireText("server", "carry_supervision: carrySupervision", "carry_entry_private_prime_supervision_binding_missing");
+  requireText("executor", "readCarryEntryPrivatePrimeReadiness({", "carry_entry_private_prime_gate_missing");
+  requireText("executor", "carry_entry_private_prime_readiness_unproven", "carry_entry_private_prime_fail_closed_missing");
+  requireText("executor", "readCarryExecutionReadiness({", "carry_entry_three_venue_readiness_missing");
+  requireText("executor", "readCarryShadowQualification({ state", "carry_entry_five_venue_shadow_missing");
+  requireText("executor", "loadCarryTransferRouteEvidence({", "carry_entry_collateral_route_readiness_missing");
+  requireText("lifecycleTest", "private-prime readiness is not current", "carry_entry_private_prime_test_missing");
   requireText("serverTest", "reports degraded Carry supervision without pretending the worker stopped", "carry_supervision_http_test_missing");
   requireText("webCarryBuilder", "carrySupervisionSummary", "carry_terminal_supervision_missing");
   requireText("webCarryBuilder", "RISK ENGINE NOT READY", "carry_terminal_supervision_gate_missing");

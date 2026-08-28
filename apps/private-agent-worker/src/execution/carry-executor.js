@@ -17,6 +17,10 @@ import {
   recordCompletedCarryVenueQualifications,
   runtimeCarryQualificationImageDigest,
 } from "./carry-qualification.js";
+import { readCarryExecutionReadiness } from "./carry-readiness.js";
+import { readCarryShadowQualification } from "./carry-shadow-qualification.js";
+import { buildCarryPrivatePrimeReadiness } from "./carry-private-prime-readiness.js";
+import { loadCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
 import { recordCompletedCarryLifecycleProof } from "./carry-release-evidence.js";
 import {
   applyDurableMultiLegEvent,
@@ -32,6 +36,7 @@ export async function executeStoredCarryEntry({
   verifyOrder,
   executeOrder,
   qualification_confirmed: qualificationConfirmed = false,
+  carry_supervision: carrySupervision = null,
   preflight = preflightCarryPair,
   env = process.env,
   now = () => Date.now(),
@@ -56,6 +61,22 @@ export async function executeStoredCarryEntry({
   if (live && pilotRecord && qualificationConfirmed !== true) return denied("carry_qualification_pilot_confirmation_required");
   let pilotBootstrap = false;
   if (live) {
+    if (!pilotRecord) {
+      const privatePrimeReadiness = await readCarryEntryPrivatePrimeReadiness({
+        state,
+        record,
+        owner_commitment: ownerCommitment,
+        carry_supervision: carrySupervision,
+        now_ms: now(),
+        env,
+      });
+      if (privatePrimeReadiness.no_submit_ready !== true) {
+        return {
+          ...denied("carry_entry_private_prime_readiness_unproven"),
+          private_prime_readiness: privatePrimeReadiness,
+        };
+      }
+    }
     const qualifications = await Promise.all([record.position.long_venue_id, record.position.short_venue_id].map((venueId) =>
       readCarryVenueQualification({ state, venue_id: venueId, now_ms: now(), env })
     ));
@@ -252,6 +273,52 @@ export async function executeStoredCarryEntry({
   return saga.status === "reconciled" && resultRecord?.position?.status === "active"
     ? { ok: true, saga, record: resultRecord, accounting: accounting.summary }
     : { ok: false, error: "carry_entry_requires_recovery", saga, record: resultRecord, accounting: accounting.summary };
+}
+
+export async function readCarryEntryPrivatePrimeReadiness({
+  state,
+  record,
+  owner_commitment: ownerCommitment,
+  carry_supervision: carrySupervision,
+  now_ms: nowMs = Date.now(),
+  env = process.env,
+}) {
+  const notionalUsd = String(record?.position?.target_notional_micro_usdc / 1_000_000);
+  const horizonDays = String(Math.max(
+    1,
+    Math.ceil(Number(record?.opportunity?.horizon_ms || 86_400_000) / 86_400_000),
+  ));
+  const venueAccess = record?.monitoring_context?.venue_access;
+  const readiness = await readCarryExecutionReadiness({
+    state,
+    owner_commitment: ownerCommitment,
+    venue_access: venueAccess,
+    asset: record?.position?.asset,
+    notional_usd: notionalUsd,
+    horizon_days: horizonDays,
+    now_ms: nowMs,
+    env,
+  });
+  const [shadowQualification, routeEvidence] = await Promise.all([
+    readCarryShadowQualification({ state, now_ms: nowMs, env }),
+    loadCarryTransferRouteEvidence({
+      state,
+      owner_commitment: ownerCommitment,
+      now_ms: nowMs,
+      max_data_age_ms: 30_000,
+      expected_worker_image_digest: runtimeCarryQualificationImageDigest(env) || "",
+    }).catch(() => ({ ok: false, error: "carry_transfer_route_evidence_unavailable" })),
+  ]);
+  return buildCarryPrivatePrimeReadiness({
+    readiness,
+    diagnostic: null,
+    shadow_qualification: shadowQualification,
+    carry_supervision: carrySupervision,
+    route_observation_configured: true,
+    route_evidence: routeEvidence,
+    lifecycle_proof: null,
+    now_ms: nowMs,
+  });
 }
 
 export async function executeStoredCarryExit({
