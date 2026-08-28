@@ -185,6 +185,16 @@ test("rejects supervision that masks a degraded recovery loop", () => {
   );
 });
 
+test("rejects a terminal that trusts aggregate health without recovery health", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replace('&& recovery.status === "healthy"', ""),
+    }),
+    /carry_terminal_recovery_health_missing/,
+  );
+});
+
 test("rejects release proof that accepts manual-only monitoring", () => {
   assert.throws(
     () => checkCarryExecutionContract({

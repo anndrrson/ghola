@@ -1406,14 +1406,22 @@ export function carrySupervisionSummary(value: Record<string, unknown>): {
   value: string;
   tone?: "good" | "warn" | "bad";
 } {
-  if (value.ready === true && value.status === "healthy") {
-    return { ready: true, value: "MONITOR + EXIT LIVE", tone: "good" };
-  }
   const monitoring = asRecord(value.monitoring);
   const execution = asRecord(value.execution);
+  const recovery = asRecord(value.recovery);
+  if (
+    value.ready === true
+    && value.status === "healthy"
+    && monitoring.status === "healthy"
+    && execution.status === "healthy"
+    && recovery.status === "healthy"
+  ) {
+    return { ready: true, value: "MON/EXIT/REC LIVE", tone: "good" };
+  }
   const degraded = [
     monitoring.status === "degraded" || monitoring.status === "failed" || monitoring.status === "stalled" ? "MONITOR" : null,
     execution.status === "degraded" || execution.status === "failed" || execution.status === "stalled" ? "EXIT" : null,
+    recovery.status === "degraded" || recovery.status === "failed" || recovery.status === "stalled" ? "RECOVERY" : null,
   ].filter(Boolean);
   if (degraded.length) return { ready: false, value: `${degraded.join(" + ")} DEGRADED`, tone: "bad" };
   if (value.status === "starting") return { ready: false, value: "STARTING", tone: "warn" };

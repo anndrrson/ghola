@@ -673,7 +673,7 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).not.toContain("CONFIRM LIVE PAIRED ENTRY");
   });
 
-  it("blocks a draft entry when monitoring or automatic exit is degraded", async () => {
+  it("blocks a draft entry when monitoring, automatic exit, or recovery is degraded", async () => {
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [carryRecord()] });
     api.getCarryExecutionReadiness.mockResolvedValue({
       ...readyReadiness(),
@@ -681,11 +681,11 @@ describe("CarryTerminalBuilder", () => {
         ...healthySupervision(),
         ready: false,
         status: "degraded",
-        execution: { status: "failed", last_error_code: "carry_execution_threw" },
+        recovery: { status: "stalled", last_error_code: "multi_leg_recovery_stalled" },
       },
     });
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
-    expect(container.textContent).toContain("EXIT DEGRADED");
+    expect(container.textContent).toContain("RECOVERY DEGRADED");
     expect(container.textContent).toContain("RISK ENGINE NOT READY");
     expect(container.textContent).not.toContain("CONFIRM LIVE PAIRED ENTRY");
   });
@@ -1003,16 +1003,17 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("SAFE RUNWAY VERIFIED · NO FUNDS MOVED");
   });
 
-  it("summarizes monitoring and automatic-exit supervision independently", () => {
+  it("summarizes monitoring, automatic-exit, and recovery supervision independently", () => {
     expect(carrySupervisionSummary(healthySupervision())).toEqual({
       ready: true,
-      value: "MONITOR + EXIT LIVE",
+      value: "MON/EXIT/REC LIVE",
       tone: "good",
     });
     expect(carrySupervisionSummary({
       status: "degraded",
       monitoring: { status: "failed" },
       execution: { status: "degraded" },
+      recovery: { status: "healthy" },
     })).toEqual({
       ready: false,
       value: "MONITOR + EXIT DEGRADED",
@@ -1022,10 +1023,21 @@ describe("CarryTerminalBuilder", () => {
       status: "degraded",
       monitoring: { status: "stalled" },
       execution: { status: "healthy" },
+      recovery: { status: "healthy" },
     })).toEqual({
       ready: false,
       value: "MONITOR DEGRADED",
       tone: "bad",
+    });
+    expect(carrySupervisionSummary({
+      ready: true,
+      status: "healthy",
+      monitoring: { status: "healthy" },
+      execution: { status: "healthy" },
+    })).toEqual({
+      ready: false,
+      value: "UNVERIFIED",
+      tone: "warn",
     });
   });
 
@@ -1117,6 +1129,7 @@ function healthySupervision() {
     status: "healthy",
     monitoring: { status: "healthy", run_count: 2, consecutive_failures: 0 },
     execution: { status: "healthy", run_count: 2, consecutive_failures: 0 },
+    recovery: { status: "healthy", run_count: 2, consecutive_failures: 0 },
   };
 }
 

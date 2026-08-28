@@ -827,7 +827,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("serverTest", "reports degraded Carry supervision without pretending the worker stopped", "carry_supervision_http_test_missing");
   requireText("webCarryBuilder", "carrySupervisionSummary", "carry_terminal_supervision_missing");
   requireText("webCarryBuilder", "RISK ENGINE NOT READY", "carry_terminal_supervision_gate_missing");
-  requireText("webCarryBuilderTest", "blocks a draft entry when monitoring or automatic exit is degraded", "carry_terminal_supervision_test_missing");
+  requireText("webCarryBuilder", 'recovery.status === "healthy"', "carry_terminal_recovery_health_missing");
+  requireText("webCarryBuilderTest", "blocks a draft entry when monitoring, automatic exit, or recovery is degraded", "carry_terminal_supervision_test_missing");
+  requireText("webCarryBuilderTest", "RECOVERY DEGRADED", "carry_terminal_recovery_health_test_missing");
   requireText("loopSupervisorTest", "fails closed when a successful loop stops making progress", "carry_loop_stall_test_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MONITOR_STALL_MS', "carry_monitor_stall_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_EXECUTION_STALL_MS', "carry_execution_stall_compose_missing");
