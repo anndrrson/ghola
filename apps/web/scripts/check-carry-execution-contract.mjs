@@ -294,6 +294,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadow", "observedAtMs", "edgex_response_freshness_missing");
   requireText("shadow", "funding_source_stale", "edgex_funding_source_staleness_gate_missing");
   requireText("shadowTest", "keeps fresh edgeX responses live without trusting a stale funding source", "edgex_split_freshness_test_missing");
+  requireText("shadowTest", "quarantines every core venue when provider timing evidence is missing", "carry_shadow_provider_timestamp_test_missing");
+  forbidText("shadow", "market: nowMs", "carry_shadow_market_worker_clock_fallback_forbidden");
+  forbidText("shadow", "funding: nowMs", "carry_shadow_funding_worker_clock_fallback_forbidden");
   requireText("shadow", "liquidation_has_no_clearance_fee", "hyperliquid_liquidation_fee_evidence_gate_missing");
   requireText("shadow", "fees_venue_base_tier_ceiling", "hyperliquid_base_fee_provenance_missing");
   requireText("shadow", "minimum_notional_protocol_floor", "hyperliquid_minimum_notional_provenance_missing");

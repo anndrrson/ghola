@@ -258,6 +258,8 @@ test("normalizes edgeX funding interval and contract metadata", () => {
       data: [{
         contractId: "10000001",
         fundingTimestamp: String(NOW),
+        marketObservedAtMs: NOW,
+        orderbookObservedAtMs: NOW,
         oraclePrice: "60000",
         indexPrice: "60001",
         fundingRate: "-0.00005537",
@@ -311,6 +313,8 @@ test("keeps fresh edgeX responses live without trusting a stale funding source",
     contractId: contract.contractId,
     fundingTimestamp: String(NOW - 60_000),
     observedAtMs: NOW,
+    marketObservedAtMs: NOW,
+    orderbookObservedAtMs: NOW,
     oraclePrice: "60000",
     indexPrice: "60001",
     markPrice: "60000",
@@ -324,7 +328,7 @@ test("keeps fresh edgeX responses live without trusting a stale funding source",
   const [fresh] = parseEdgeXShadow({ funding: { data: [row], responseTime: String(NOW) }, contracts: [contract], now_ms: NOW });
   assert.equal(fresh.stale, false);
   assert.equal(fresh.status, "ready");
-  assert.equal(fresh.as_of_ms, NOW);
+  assert.equal(fresh.as_of_ms, NOW - 60_000);
   assert.ok(fresh.quality_flags.includes("funding_source_minute_cadence"));
 
   const [staleFunding] = parseEdgeXShadow({
@@ -462,6 +466,63 @@ test("keeps dYdX degraded when its live chain fee parameters are unavailable", (
   assert.equal(snapshot.status, "degraded");
   assert.deepEqual(snapshot.missing_fields, ["maker_fee_bps", "taker_fee_bps"]);
   assert.ok(snapshot.quality_flags.includes("fees_chain_params_unavailable"));
+});
+
+test("quarantines every core venue when provider timing evidence is missing", () => {
+  const [hyperliquid] = parseHyperliquidShadow({
+    body: [
+      { universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] },
+      [{ markPx: "60000", oraclePx: "60001", funding: "0.0001" }],
+    ],
+    books: { BTC: { levels: [
+      [{ px: "59999", sz: "1" }],
+      [{ px: "60002", sz: "1" }],
+    ] } },
+    now_ms: NOW,
+  });
+  const [lighter] = parseLighterShadow({
+    details: { order_book_details: [{ market_id: 0, symbol: "BTC" }] },
+    funding: { funding_rates: [{ market_id: 0, exchange: "lighter", rate: "0.0001" }] },
+    order_books: [{ market_id: 0, bids: [{ price: "59999", size: "1" }], asks: [{ price: "60002", size: "1" }] }],
+    now_ms: NOW,
+  });
+  const [aster] = parseAsterShadow({
+    exchange_info: { symbols: [asterSymbol("BTCUSDT", "BTC", "USDT")] },
+    premium_index: [asterPremium("BTCUSDT", null)],
+    book_tickers: [asterBook("BTCUSDT", null)],
+    funding_info: [{ symbol: "BTCUSDT", fundingIntervalHours: 8 }],
+    depth_books: { BTCUSDT: { bids: [["59999", "1"]], asks: [["60002", "1"]] } },
+    now_ms: NOW,
+  });
+  const [edgex] = parseEdgeXShadow({
+    funding: { responseTime: String(NOW), data: [{
+      contractId: "1",
+      fundingTimestamp: String(NOW),
+      oraclePrice: "60000",
+      indexPrice: "60001",
+      fundingRate: "0.0001",
+      bestBidE8: 5_999_900_000_000,
+      bestAskE8: 6_000_200_000_000,
+      depthBids: [{ price: "59999", size: "1" }],
+      depthAsks: [{ price: "60002", size: "1" }],
+    }] },
+    contracts: [{ contractId: "1", symbol: "BTCUSDC", baseAsset: "BTC", quoteAsset: "USDC" }],
+    now_ms: NOW,
+  });
+  const [dydx] = parseDydxShadow({
+    markets: { markets: { "BTC-USD": { ticker: "BTC-USD", status: "ACTIVE" } } },
+    books: { "BTC-USD": { bids: [{ price: "59999", size: "1" }], asks: [{ price: "60002", size: "1" }] } },
+    server_time: {},
+    now_ms: NOW,
+  });
+
+  assert.deepEqual(hyperliquid.stale_sources, ["market", "funding", "orderbook"]);
+  assert.deepEqual(lighter.stale_sources, ["market", "funding", "orderbook"]);
+  assert.deepEqual(aster.stale_sources, ["market", "funding", "orderbook"]);
+  assert.deepEqual(edgex.stale_sources, ["market", "orderbook"]);
+  assert.deepEqual(dydx.stale_sources, ["market", "funding", "orderbook"]);
+  assert.ok([hyperliquid, lighter, aster, edgex, dydx].every((snapshot) =>
+    snapshot.status === "quarantined" && snapshot.as_of_ms === null));
 });
 
 test("requires matching dYdX fee parameters from two independent chain nodes", async () => {

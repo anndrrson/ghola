@@ -373,7 +373,13 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
     failures.push(`hyperliquid_core_contract_assets_invalid:${prefix}`);
   }
   if (snapshot.status === "quarantined" || snapshot.stale !== false) failures.push(`snapshot_quarantined:${prefix}`);
-  if (!Number.isSafeInteger(snapshot.as_of_ms) || snapshot.as_of_ms > nowMs + 5_000 || nowMs - snapshot.as_of_ms > maxAgeMs) {
+  const aggregateMaxAgeMs = Math.max(
+    maxAgeMs,
+    ...REQUIRED_SOURCES.map((source) => declared?.source_max_age_ms?.[source] || 0),
+  );
+  if (!Number.isSafeInteger(snapshot.as_of_ms)
+    || snapshot.as_of_ms > nowMs + 5_000
+    || nowMs - snapshot.as_of_ms > aggregateMaxAgeMs) {
     failures.push(`snapshot_stale:${prefix}`);
   }
   verifySourceFreshness(snapshot, { declared, prefix, nowMs, maxAgeMs, failures });

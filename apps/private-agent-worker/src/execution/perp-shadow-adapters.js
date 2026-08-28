@@ -228,6 +228,7 @@ export function parseHyperliquidShadow({ body, books = {}, now_ms: nowMs, max_ag
     const asset = assetName(meta?.name);
     const impact = Array.isArray(context.impactPxs) ? context.impactPxs : [];
     const book = books[asset] || {};
+    const bookObservedAtMs = timestamp(book.time) || null;
     const levels = Array.isArray(book.levels) ? book.levels : [];
     const marginTiers = normalizedMarginTiers(marginTables.get(String(meta?.marginTableId))?.marginTiers);
     const maxLeverage = positiveNumber(meta?.maxLeverage);
@@ -257,11 +258,11 @@ export function parseHyperliquidShadow({ body, books = {}, now_ms: nowMs, max_ag
       liquidation_fee_bps: 0,
       margin_tiers: marginTiers,
       liquidation_model: "account_equity_below_tiered_maintenance_margin",
-      as_of_ms: timestamp(book.time) || nowMs,
+      as_of_ms: bookObservedAtMs,
       source_observed_at_ms: {
-        market: nowMs,
-        funding: nowMs,
-        orderbook: timestamp(book.time) || nowMs,
+        market: bookObservedAtMs,
+        funding: bookObservedAtMs,
+        orderbook: bookObservedAtMs,
       },
       now_ms: nowMs,
       max_age_ms: maxAgeMs,
@@ -272,6 +273,7 @@ export function parseHyperliquidShadow({ body, books = {}, now_ms: nowMs, max_ag
         "price_tick_current_market",
         "liquidation_has_no_clearance_fee",
         hyperliquidQuoteEvidenceFlag(asset),
+        "market_funding_bound_to_public_l2_time",
         ...(levels.length >= 2 ? ["public_l2_bbo"] : ["orderbook_bbo_missing"]),
       ],
       ...PERP_SHADOW_ADAPTERS.hyperliquid,
@@ -291,6 +293,9 @@ export function parseLighterShadow({ details, funding, order_books: orderBooks =
     const asset = assetName(row.symbol || row.market_symbol);
     const fundingRow = fundingByMarket.get(String(row.market_id ?? row.market_index)) || {};
     const book = booksByMarket.get(String(row.market_id ?? row.market_index)) || {};
+    const orderbookObservedAtMs = timestamp(book.timestamp) || null;
+    const marketObservedAtMs = timestamp(row.timestamp ?? details?.timestamp) || orderbookObservedAtMs;
+    const fundingObservedAtMs = timestamp(fundingRow.timestamp ?? funding?.timestamp) || null;
     return shadowSnapshot({
       venue_id: "lighter",
       contract_id: `lighter:${row.market_id ?? row.market_index ?? asset}`,
@@ -315,15 +320,15 @@ export function parseLighterShadow({ details, funding, order_books: orderBooks =
       liquidation_fee_bps: percentBps(row.liquidation_fee),
       margin_tiers: Object.freeze([]),
       liquidation_model: "account_initial_maintenance_closeout_waterfall",
-      as_of_ms: oldestTimestamp([
-        timestamp(row.timestamp ?? details?.timestamp) || nowMs,
-        timestamp(fundingRow.timestamp ?? funding?.timestamp) || nowMs,
-        timestamp(book.timestamp) || nowMs,
-      ], nowMs),
+      as_of_ms: completeSourceTimestamp([
+        marketObservedAtMs,
+        fundingObservedAtMs,
+        orderbookObservedAtMs,
+      ]),
       source_observed_at_ms: {
-        market: timestamp(row.timestamp ?? details?.timestamp) || nowMs,
-        funding: timestamp(fundingRow.timestamp ?? funding?.timestamp) || nowMs,
-        orderbook: timestamp(book.timestamp) || nowMs,
+        market: marketObservedAtMs,
+        funding: fundingObservedAtMs,
+        orderbook: orderbookObservedAtMs,
       },
       now_ms: nowMs,
       max_age_ms: maxAgeMs,
@@ -349,6 +354,8 @@ export function parseAsterShadow({ exchange_info: exchangeInfo, premium_index: p
     const notionalFilter = filters.get("MIN_NOTIONAL") || {};
     const asset = assetName(row.baseAsset || String(row.symbol).replace(/USDT$|USDC$|USD$/, ""));
     const publicFees = asterPublicFeeBps(row.quoteAsset);
+    const premiumObservedAtMs = timestamp(premium.time) || null;
+    const orderbookObservedAtMs = timestamp(depth.E ?? depth.T ?? book.time) || null;
     return shadowSnapshot({
       venue_id: "aster",
       contract_id: `aster:${row.symbol}`,
@@ -373,14 +380,14 @@ export function parseAsterShadow({ exchange_info: exchangeInfo, premium_index: p
       liquidation_fee_bps: feeBps(row.liquidationFee),
       margin_tiers: Object.freeze([]),
       liquidation_model: "cross_or_isolated_account_margin",
-      as_of_ms: oldestTimestamp([
-        timestamp(premium.time) || nowMs,
-        timestamp(depth.E ?? depth.T ?? book.time) || nowMs,
-      ], nowMs),
+      as_of_ms: completeSourceTimestamp([
+        premiumObservedAtMs,
+        orderbookObservedAtMs,
+      ]),
       source_observed_at_ms: {
-        market: timestamp(premium.time) || nowMs,
-        funding: timestamp(premium.time) || nowMs,
-        orderbook: timestamp(depth.E ?? depth.T ?? book.time) || nowMs,
+        market: premiumObservedAtMs,
+        funding: premiumObservedAtMs,
+        orderbook: orderbookObservedAtMs,
       },
       now_ms: nowMs,
       max_age_ms: maxAgeMs,
@@ -406,6 +413,9 @@ export function parseEdgeXShadow({ funding, contracts = [], now_ms: nowMs, max_a
     const ask = integerOrNull(row.bestAskE8);
     const mark = priceE8(row.markPrice) || midpoint(impactBid, impactAsk) || priceE8(row.oraclePrice);
     const fundingSourceAt = timestamp(row.fundingTimestamp);
+    const marketObservedAtMs = timestamp(row.marketObservedAtMs) || null;
+    const fundingObservedAtMs = fundingSourceAt || timestamp(row.fundingObservedAtMs) || null;
+    const orderbookObservedAtMs = timestamp(row.orderbookObservedAtMs) || null;
     const fundingMaxAgeMs = Math.max(
       maxAgeMs,
       PERP_SHADOW_ADAPTERS.edgex.source_max_age_ms?.funding || 0,
@@ -443,11 +453,15 @@ export function parseEdgeXShadow({ funding, contracts = [], now_ms: nowMs, max_a
       liquidation_fee_bps: feeBps(contract.liquidateFeeRate),
       margin_tiers: marginTiers,
       liquidation_model: "tiered_starkex_maintenance_margin",
-      as_of_ms: timestamp(row.observedAtMs ?? funding?.responseTime) || fundingSourceAt || nowMs,
+      as_of_ms: completeSourceTimestamp([
+        marketObservedAtMs,
+        fundingObservedAtMs,
+        orderbookObservedAtMs,
+      ]),
       source_observed_at_ms: {
-        market: timestamp(row.marketObservedAtMs) || nowMs,
-        funding: fundingSourceAt || timestamp(row.fundingObservedAtMs) || nowMs,
-        orderbook: timestamp(row.orderbookObservedAtMs) || nowMs,
+        market: marketObservedAtMs,
+        funding: fundingObservedAtMs,
+        orderbook: orderbookObservedAtMs,
       },
       source_max_age_ms: { funding: fundingMaxAgeMs },
       now_ms: nowMs,
@@ -474,7 +488,7 @@ export function parseDydxShadow({
   max_age_ms: maxAgeMs = DEFAULT_MAX_AGE_MS,
 }) {
   const rows = Object.values(markets?.markets || {});
-  const asOfMs = timestamp(serverTime?.iso) || positiveIntegerFrom(serverTime?.epoch, 0, 1_000) || nowMs;
+  const asOfMs = timestamp(serverTime?.iso) || positiveIntegerFrom(serverTime?.epoch, 0, 1_000) || null;
   const publicFees = dydxBaseFeeBps(feeParams);
   return freezeSnapshots(rows.filter((row) => row?.status === "ACTIVE").map((row) => {
     const [base, quote = "USD"] = String(row.ticker || "").split("-");
@@ -571,7 +585,15 @@ function shadowSnapshot(value) {
   ];
   const missingFields = fields.filter((field) => value[field] === null);
   const staleSourceNames = staleSources(value);
-  const stale = value.as_of_ms > value.now_ms + 5_000 || value.now_ms - value.as_of_ms > value.max_age_ms || staleSourceNames.length > 0;
+  const aggregateMaxAgeMs = Math.max(
+    value.max_age_ms,
+    ...Object.values(value.source_max_age_ms || {}).filter(Number.isSafeInteger),
+  );
+  const stale = !Number.isSafeInteger(value.as_of_ms)
+    || value.as_of_ms <= 0
+    || value.as_of_ms > value.now_ms + 5_000
+    || value.now_ms - value.as_of_ms > aggregateMaxAgeMs
+    || staleSourceNames.length > 0;
   const criticalMissing = ["mark_price_e8", "index_price_e8", "funding_rate_e12_per_interval", "funding_interval_ms"]
     .some((field) => value[field] === null);
   const status = stale || criticalMissing ? "quarantined" : missingFields.length > 0 ? "degraded" : "ready";
@@ -880,9 +902,9 @@ function epochMilliseconds(value) {
   return value < 100_000_000_000 ? value * 1_000 : value;
 }
 
-function oldestTimestamp(values, fallback) {
-  const valid = values.filter((value) => Number.isSafeInteger(value) && value > 0);
-  return valid.length > 0 ? Math.min(...valid) : fallback;
+function completeSourceTimestamp(values) {
+  if (!values.every((value) => Number.isSafeInteger(value) && value > 0)) return null;
+  return Math.min(...values);
 }
 
 function staleSources(value) {

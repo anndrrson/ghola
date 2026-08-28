@@ -1218,6 +1218,16 @@ test("rejects five-venue shadow evidence without exact sample commitments", () =
   );
 });
 
+test("rejects core venue freshness manufactured from the worker clock", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadow: sources.shadow.replace("market: bookObservedAtMs", "market: nowMs"),
+    }),
+    /carry_shadow_market_worker_clock_fallback_forbidden/,
+  );
+});
+
 test("rejects durable five-venue qualification that can promote degraded economics", () => {
   assert.throws(
     () => checkCarryExecutionContract({
