@@ -609,6 +609,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "signCarryRiskMandate", "carry_terminal_owner_approval_missing");
   requireText("webCarryBuilder", 'label="SOURCE SYNC"', "carry_terminal_source_sync_missing");
   requireText("webCarryBuilder", 'label="INDEX BASIS"', "carry_terminal_index_basis_missing");
+  requireText("webCarryMarket", "liquidation_fee_bps?: number | null", "carry_web_liquidation_contract_missing");
+  requireText("webCarryMarket", "liquidation_model?: string | null", "carry_web_liquidation_model_missing");
+  requireText("webCarryBuilder", 'label="LIQUIDATION"', "carry_terminal_liquidation_display_missing");
+  requireText("webCarryBuilder", "carryLiquidationSummary(candidate)", "carry_terminal_liquidation_binding_missing");
+  requireText("webCarryBuilderTest", "fails closed when either leg lacks verified liquidation economics", "carry_terminal_liquidation_test_missing");
   requireText("webCarryBuilder", "model.contractDataSkewMs", "carry_terminal_public_source_sync_missing");
   requireText("webCarryBuilder", "SHADOW POSITION · LIVE-DATA MODEL", "carry_terminal_shadow_position_missing");
   requireText("webCarryBuilder", "NO WALLET · NO DEPOSIT · NO ORDER", "carry_terminal_shadow_safety_boundary_missing");

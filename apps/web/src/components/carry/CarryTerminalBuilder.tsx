@@ -313,6 +313,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const venueMinimumMargin = carryVenueMinimumMarginSummary(model, proof);
   const openingCapital = carryOpeningCapitalSummary(model, proof);
   const collateralBasis = carryCollateralBasisSummary(candidate, proofOpportunity);
+  const liquidation = carryLiquidationSummary(candidate);
   const stressCapital = carryStressCapitalSummary(proof);
   const portfolioCapital = carryPortfolioCapitalSummary(portfolioCapitalPlan);
   const portfolioRunway = carryPortfolioRunwaySummary(portfolioCapitalPlan);
@@ -634,6 +635,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="CARRY SIGNAL" value={carrySignal.value} tone={carrySignal.tone} />
         <Metric label="OWNER CAPITAL" value={displayedCapital.value} tone={displayedCapital.tone} />
         <Metric label="COLLATERAL" value={collateralBasis.value} tone={collateralBasis.tone} />
+        <Metric label="LIQUIDATION" value={liquidation.value} tone={liquidation.tone} />
         <Metric label="LEDGER" value={ledger.value} tone={ledger.tone} />
         <Metric label="EXEC Δ" value={ledger.execution} tone={ledger.executionTone} />
         <Metric
@@ -827,6 +829,20 @@ export function carryCollateralBasisSummary(
   return riskUsd === 0
     ? { value: `${longAsset}/${shortAsset} · SAME`, tone: "good" as const }
     : { value: `${longAsset}/${shortAsset} · ${formatUsd(riskUsd)} STRESS`, tone: "warn" as const };
+}
+
+export function carryLiquidationSummary(candidate: CarryCandidate) {
+  const legs = [candidate.long, candidate.short];
+  const values = legs.map((leg) => finiteNumber(leg.liquidation_fee_bps));
+  const models = legs.map((leg) => stringValue(leg.liquidation_model));
+  if (values.some((value) => value == null || value < 0)
+    || models.some((model) => !model || model === "unavailable")) {
+    return { value: "UNVERIFIED", tone: "bad" as const };
+  }
+  return {
+    value: legs.map((leg, index) => `${runwayVenueCode(leg.venue_id)} ${formatBasis(values[index])}`).join(" · "),
+    tone: undefined,
+  };
 }
 
 export function carryTerminalGrossFunding(

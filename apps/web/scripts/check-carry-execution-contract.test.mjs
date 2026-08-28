@@ -1846,6 +1846,16 @@ test("rejects a terminal that hides index-basis evidence", () => {
   );
 });
 
+test("rejects a terminal that drops normalized liquidation economics", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll('label="LIQUIDATION"', 'label="RISK"'),
+    }),
+    /carry_terminal_liquidation_display_missing/,
+  );
+});
+
 test("rejects a terminal that hides capital-free public index-basis evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({

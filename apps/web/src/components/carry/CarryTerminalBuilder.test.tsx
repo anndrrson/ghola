@@ -8,6 +8,7 @@ import {
   carryCapitalEfficiencySummary,
   carryCheckFailure,
   carryFundingPersistenceSummary,
+  carryLiquidationSummary,
   carryOpeningCapitalSummary,
   carryPortfolioRunwaySummary,
   carryRiskMandateSummary,
@@ -440,6 +441,8 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("NO WALLET · NO DEPOSIT · NO ORDER");
     expect(container.textContent).toContain("RISK MANDATE");
     expect(container.textContent).toContain("EXIT ≤0BP · 2 FLIPS · ≥6.0H · OWNER MOVES");
+    expect(container.textContent).toContain("LIQUIDATION");
+    expect(container.textContent).toContain("HYP 0BP · LTR 1BP");
     expect(container.textContent).not.toContain("RETRY POSITION SYNC");
     expect(container.textContent).not.toContain("NO-SUBMIT CHECK");
     expect(api.listCarryPositions).not.toHaveBeenCalled();
@@ -455,6 +458,13 @@ describe("CarryTerminalBuilder", () => {
     expect(carryRiskMandateSummary({
       ...defaultCarryRiskMandate(),
       min_margin_runway_ms: 0,
+    })).toEqual({ value: "UNVERIFIED", tone: "bad" });
+  });
+
+  it("fails closed when either leg lacks verified liquidation economics", () => {
+    expect(carryLiquidationSummary({
+      ...candidate(),
+      short: { ...candidate().short, liquidation_fee_bps: null },
     })).toEqual({ value: "UNVERIFIED", tone: "bad" });
   });
 
@@ -1143,6 +1153,8 @@ function snapshot(venueId: string, funding: number) {
     minimum_notional_micro_usdc: 5_000_000,
     initial_margin_bps: 500,
     maintenance_margin_bps: 250,
+    liquidation_fee_bps: venueId === "hyperliquid" ? 0 : 1,
+    liquidation_model: "account_equity_below_maintenance_margin",
     mark_price_e8: 6_000_000_000_000,
     index_price_e8: 6_000_000_000_000,
     best_bid_e8: 5_999_900_000_000,
