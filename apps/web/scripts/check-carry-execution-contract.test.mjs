@@ -1384,6 +1384,32 @@ test("rejects Lighter shadow data without provider-timestamped read-only streams
   );
 });
 
+test("rejects five-venue shadow reads without one end-to-end deadline per venue", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadow: sources.shadow.replace(
+        "fetchPerpShadowVenue({ ...options, venue_id: venueId, timeout_ms: venueTimeoutMs })",
+        "fetchPerpShadowVenue({ ...options, venue_id: venueId })",
+      ),
+    }),
+    /carry_shadow_end_to_end_venue_deadline_missing/,
+  );
+});
+
+test("rejects release configuration without the bounded shadow timeout policy", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webEnvExample: sources.webEnvExample.replace(
+        "PRIVATE_AGENT_CARRY_SHADOW_FETCH_TIMEOUT_MS=4000",
+        "PRIVATE_AGENT_CARRY_SHADOW_FETCH_TIMEOUT_MS=8000",
+      ),
+    }),
+    /carry_shadow_timeout_policy_example_missing/,
+  );
+});
+
 test("rejects Lighter qualification from incremental order-book deltas", () => {
   assert.throws(
     () => checkCarryExecutionContract({

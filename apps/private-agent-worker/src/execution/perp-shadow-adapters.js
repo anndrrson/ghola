@@ -6,6 +6,7 @@ import {
 
 const HOUR_MS = 3_600_000;
 const DEFAULT_MAX_AGE_MS = 30_000;
+const DEFAULT_PUBLIC_FETCH_TIMEOUT_MS = 4_000;
 const HYPERLIQUID_QUOTE_ASSETS = Object.freeze({
   BTC: "USDT",
   ETH: "USDT",
@@ -31,8 +32,12 @@ export const PERP_SHADOW_ADAPTERS = Object.freeze(Object.fromEntries(
 ));
 
 export async function fetchCorePerpShadowSet(options = {}) {
+  const venueTimeoutMs = positiveTimeoutMs(options.timeout_ms, DEFAULT_PUBLIC_FETCH_TIMEOUT_MS);
   const settled = await Promise.allSettled(CORE_PERP_VENUES.map((venueId) =>
-    fetchPerpShadowVenue({ ...options, venue_id: venueId })
+    withTimeout(
+      fetchPerpShadowVenue({ ...options, venue_id: venueId, timeout_ms: venueTimeoutMs }),
+      venueTimeoutMs,
+    )
   ));
   return Object.freeze(CORE_PERP_VENUES.map((venueId, index) => {
     const result = settled[index];
@@ -40,6 +45,13 @@ export async function fetchCorePerpShadowSet(options = {}) {
       ? Object.freeze({ venue_id: venueId, ok: true, snapshots: result.value })
       : Object.freeze({ venue_id: venueId, ok: false, error: errorCode(result.reason), snapshots: Object.freeze([]) });
   }));
+}
+
+export function carryShadowFetchTimeoutMs(env = process.env) {
+  const parsed = Number(env.PRIVATE_AGENT_CARRY_SHADOW_FETCH_TIMEOUT_MS);
+  return Number.isSafeInteger(parsed) && parsed >= 500 && parsed <= 8_000
+    ? parsed
+    : DEFAULT_PUBLIC_FETCH_TIMEOUT_MS;
 }
 
 export async function fetchPerpShadowVenue({
@@ -863,6 +875,11 @@ function withTimeout(promise, timeoutMs) {
     promise,
     new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("shadow_timeout")), timeoutMs); }),
   ]).finally(() => clearTimeout(timer));
+}
+
+function positiveTimeoutMs(value, fallback) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 30_000 ? parsed : fallback;
 }
 
 function rowsFrom(value, keys) {

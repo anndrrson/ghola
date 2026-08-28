@@ -297,6 +297,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webWorkerRouting", "export function resolveCarryShadowWorkerUrl", "carry_public_shadow_worker_resolver_missing");
   requireText("webWorkerRoutingTest", "keeps public Carry intelligence independent from private execution", "carry_public_shadow_worker_boundary_test_missing");
   requireText("webEnvExample", "GHOLA_CARRY_SHADOW_WORKER_URL", "carry_public_shadow_worker_example_missing");
+  requireText("webEnvExample", "PRIVATE_AGENT_CARRY_SHADOW_FETCH_TIMEOUT_MS=4000", "carry_shadow_timeout_policy_example_missing");
   requireText("webCarryBuilder", "const auth = useThumperAuth();", "carry_private_poll_auth_boundary_missing");
   requireText("webCarryBuilder", "const privateSessionReady = auth.authenticated && !auth.loading;", "carry_private_poll_auth_gate_missing");
   requireText("webCarryBuilderTest", "does not poll private Carry state before Ghola authentication", "carry_private_poll_auth_test_missing");
@@ -309,6 +310,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadow", 'venueAdapterCapability(venueId, "perp_shadow")', "shadow_capability_lookup_missing");
   requireText("shadow", "shadow_adapter_unimplemented", "shadow_unknown_adapter_fail_closed_missing");
   forbidText("shadow", "hyperliquid: Object.freeze", "shadow_capability_registry_duplicated");
+  requireText("shadow", "fetchPerpShadowVenue({ ...options, venue_id: venueId, timeout_ms: venueTimeoutMs })", "carry_shadow_end_to_end_venue_deadline_missing");
+  requireText("shadow", "export function carryShadowFetchTimeoutMs", "carry_shadow_timeout_policy_missing");
+  requireText("server", "timeout_ms: carryShadowFetchTimeoutMs(process.env)", "carry_shadow_http_timeout_policy_missing");
+  requireText("fundingPersistence", "timeout_ms: carryShadowFetchTimeoutMs(env)", "carry_shadow_observer_timeout_policy_missing");
+  requireText("shadowTest", "caps each five-venue shadow adapter by one end-to-end deadline", "carry_shadow_end_to_end_venue_deadline_test_missing");
   requireText("shadow", "max_age_ms", "shadow_staleness_gate_missing");
   requireText("shadow", "observedAtMs", "edgex_response_freshness_missing");
   requireText("shadow", "funding_source_stale", "edgex_funding_source_staleness_gate_missing");

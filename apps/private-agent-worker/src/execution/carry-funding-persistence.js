@@ -8,6 +8,7 @@ import { observeCarryShadowQualification } from "./carry-shadow-qualification.js
 import { buildCarryRoutingAdvantageEvidence } from "./carry-routing-advantage.js";
 import { createCarryLoopSupervisor, disabledCarryLoopHealth } from "./carry-loop-supervisor.js";
 import { writeCarryShadowSnapshot } from "./carry-shadow-snapshot.js";
+import { carryShadowFetchTimeoutMs } from "./perp-shadow-adapters.js";
 
 const HOUR_MS = 3_600_000;
 const DEFAULT_MIN_SAMPLES = 8;
@@ -30,7 +31,7 @@ export async function runCarryFundingObservationTick({
   const venues = await fetchPerpShadowSet({
     assets: normalizedAssets,
     now_ms: nowMs,
-    timeout_ms: 8_000,
+    timeout_ms: carryShadowFetchTimeoutMs(env),
     max_age_ms: 60_000,
   });
   const [fundingPersistence, shadowQualification] = await Promise.all([

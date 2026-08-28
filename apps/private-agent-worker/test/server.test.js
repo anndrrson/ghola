@@ -632,6 +632,7 @@ describe("private agent worker", () => {
     assert.equal(Date.parse(body.observed_at), body.readiness.checked_at_ms);
     assert.equal(requested.now_ms, body.readiness.checked_at_ms);
     assert.deepEqual(requested.assets, ["BTC"]);
+    assert.equal(requested.timeout_ms, 4_000);
     assert.equal(body.served_from, "live_fetch");
     assert.equal(joinedResponse.status, 200);
     assert.equal(joinedBody.served_from, "live_fetch");

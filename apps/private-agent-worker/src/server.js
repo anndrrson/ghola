@@ -24,7 +24,10 @@ import {
 import { revenueEvidenceStatement } from "./execution/revenue-evidence.js";
 import { publicDecisionProviderStatus } from "./execution/decision-provider.js";
 import { startMultiLegRecoveryLoop } from "./execution/multi-leg-orchestrator.js";
-import { fetchCorePerpShadowSet } from "./execution/perp-shadow-adapters.js";
+import {
+  carryShadowFetchTimeoutMs,
+  fetchCorePerpShadowSet,
+} from "./execution/perp-shadow-adapters.js";
 import { verifyCarryShadowSet } from "./execution/perp-shadow-readiness.js";
 import { preflightCarryExecutionMatrix, preflightCarryPair } from "./execution/carry-preflight.js";
 import {
@@ -2777,7 +2780,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
       const venues = await fetchPerpShadowSet({
         assets,
         now_ms: observedAtMs,
-        timeout_ms: 8_000,
+        timeout_ms: carryShadowFetchTimeoutMs(process.env),
         max_age_ms: 60_000,
       });
       const readiness = verifyCarryShadowSet(venues, {

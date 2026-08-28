@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  carryShadowFetchTimeoutMs,
   fetchCorePerpShadowSet,
   fetchPerpShadowVenue,
   parseAsterShadow,
@@ -781,6 +782,35 @@ test("all five shadow fetchers are read-only and never call private or order end
     call.method === "POST" && call.url.endsWith("/info") && ["metaAndAssetCtxs", "l2Book"].includes(JSON.parse(call.body).type)
   )));
   assert.ok(calls.every((call) => !/\/private\/|\/order(?:\?|$)/i.test(call.url)));
+});
+
+test("caps each five-venue shadow adapter by one end-to-end deadline", async () => {
+  const startedAt = Date.now();
+  const fetchImpl = async (url) => {
+    if (String(url).includes("edgex") && String(url).includes("getMetaData")) {
+      return new Promise(() => {});
+    }
+    return response(String(url).includes("hyperliquid") ? [{ universe: [] }, []] : {});
+  };
+
+  const result = await fetchCorePerpShadowSet({
+    fetchImpl,
+    now_ms: NOW,
+    timeout_ms: 25,
+  });
+
+  assert.ok(Date.now() - startedAt < 250);
+  assert.equal(result.length, 5);
+  assert.deepEqual(result.find((item) => item.venue_id === "edgex"), {
+    venue_id: "edgex",
+    ok: false,
+    error: "shadow_timeout",
+    snapshots: [],
+  });
+  assert.ok(result.filter((item) => item.venue_id !== "edgex").every((item) => item.ok));
+  assert.equal(carryShadowFetchTimeoutMs({}), 4_000);
+  assert.equal(carryShadowFetchTimeoutMs({ PRIVATE_AGENT_CARRY_SHADOW_FETCH_TIMEOUT_MS: "1500" }), 1_500);
+  assert.equal(carryShadowFetchTimeoutMs({ PRIVATE_AGENT_CARRY_SHADOW_FETCH_TIMEOUT_MS: "50" }), 4_000);
 });
 
 function response(body) {
