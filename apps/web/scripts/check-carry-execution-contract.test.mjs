@@ -486,6 +486,19 @@ test("rejects collateral routes detached from the current no-submit account stat
   );
 });
 
+test("rejects private-prime readiness that skips exact route commitment verification", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replace(
+        "verifyCarryTransferRouteEvidence(routeEvidence?.evidence)",
+        "{ ok: true, evidence: routeEvidence?.evidence }",
+      ),
+    }),
+    /carry_private_prime_route_commitment_verification_missing/,
+  );
+});
+
 test("rejects private-prime readiness backed only by a configured route probe", () => {
   assert.throws(
     () => checkCarryExecutionContract({

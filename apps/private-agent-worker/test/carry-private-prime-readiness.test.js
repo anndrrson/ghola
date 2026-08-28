@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { buildCarryPrivatePrimeReadiness } from "../src/execution/carry-private-prime-readiness.js";
 
 const NOW = 1_800_000_000_000;
+const IMAGE = `sha256:${"a".repeat(64)}`;
 
 test("combines five-venue shadow and three-venue no-submit evidence without overstating live proof", () => {
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
       ready: true,
       owner_commitment: "owner_commitment_0001",
-      image_digest: "sha256:abcdef123456",
+      image_digest: IMAGE,
       network: "mainnet",
       asset: "BTC",
       expires_at_ms: NOW + 120_000,
@@ -45,7 +47,7 @@ test("refuses private-prime readiness without exact three-venue recovery policy"
     readiness: {
       ready: true,
       owner_commitment: "owner_commitment_0001",
-      image_digest: "sha256:abcdef123456",
+      image_digest: IMAGE,
       asset: "BTC",
       registry_venue_ids: ["hyperliquid", "lighter", "aster"],
       capital_ready: true,
@@ -74,7 +76,7 @@ test("upgrades only matching durable paired lifecycle evidence to live-proven", 
     readiness: {
       ready: true,
       owner_commitment: "owner_commitment_0001",
-      image_digest: "sha256:abcdef123456",
+      image_digest: IMAGE,
       network: "mainnet",
       asset: "BTC",
       expires_at_ms: NOW + 120_000,
@@ -112,7 +114,7 @@ test("never lets aggregate readiness outlive its paired lifecycle proof", () => 
     readiness: {
       ready: true,
       owner_commitment: "owner_commitment_0001",
-      image_digest: "sha256:abcdef123456",
+      image_digest: IMAGE,
       network: "mainnet",
       asset: "BTC",
       expires_at_ms: NOW + 120_000,
@@ -137,7 +139,7 @@ test("keeps mismatched lifecycle evidence pre-broadcast", () => {
     readiness: {
       ready: true,
       owner_commitment: "owner_commitment_0001",
-      image_digest: "sha256:abcdef123456",
+      image_digest: IMAGE,
       network: "mainnet",
       asset: "BTC",
       expires_at_ms: NOW + 120_000,
@@ -162,7 +164,7 @@ test("does not promote live proof without exact realized after-cost value", () =
     readiness: {
       ready: true,
       owner_commitment: "owner_commitment_0001",
-      image_digest: "sha256:abcdef123456",
+      image_digest: IMAGE,
       asset: "BTC",
       registry_venue_ids: ["hyperliquid", "lighter", "aster"],
       ...recoveryReadiness(),
@@ -182,7 +184,7 @@ test("does not promote mathematically inconsistent value attribution", () => {
     readiness: {
       ready: true,
       owner_commitment: "owner_commitment_0001",
-      image_digest: "sha256:abcdef123456",
+      image_digest: IMAGE,
       asset: "BTC",
       registry_venue_ids: ["hyperliquid", "lighter", "aster"],
       ...recoveryReadiness(),
@@ -217,7 +219,7 @@ test("keeps technically connected but unfunded accounts pre-broadcast blocked", 
       ready: true,
       capital_ready: false,
       owner_commitment: "owner_commitment_0001",
-      image_digest: "sha256:abcdef123456",
+      image_digest: IMAGE,
       ...recoveryReadiness(),
       capital_plan: capitalPlan(),
     },
@@ -239,7 +241,7 @@ test("rejects a configured route probe without fresh owner-bound route evidence"
       ready: true,
       capital_ready: true,
       owner_commitment: "owner_commitment_0001",
-      image_digest: "sha256:abcdef123456",
+      image_digest: IMAGE,
       ...recoveryReadiness(),
     },
     shadow_qualification: { ready: true, venues: 5 },
@@ -257,13 +259,14 @@ test("rejects a configured route probe without fresh owner-bound route evidence"
 
 test("rejects route evidence bound to an older account-state snapshot", () => {
   const routeEvidence = verifiedRouteEvidence();
-  routeEvidence.routes[0].source_account_state_commitment = "carry:account-state:hyperliquid:old";
+  routeEvidence.evidence.routes[0].source_account_state_commitment = "carry:account-state:hyperliquid:old";
+  refreshRouteEvidenceCommitment(routeEvidence.evidence);
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
       ready: true,
       capital_ready: true,
       owner_commitment: "owner_commitment_0001",
-      image_digest: "sha256:abcdef123456",
+      image_digest: IMAGE,
       ...recoveryReadiness(),
       capital_plan: capitalPlan(),
     },
@@ -277,29 +280,105 @@ test("rejects route evidence bound to an older account-state snapshot", () => {
   assert.deepEqual(result.reasons, ["collateral_route_evidence_unverified"]);
 });
 
+test("rejects collateral-route evidence with a valid-looking but mismatched commitment", () => {
+  const routeEvidence = verifiedRouteEvidence();
+  routeEvidence.evidence.routes[0].maximum_transfer_micro_usdc -= 1;
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: {
+      ready: true,
+      capital_ready: true,
+      owner_commitment: "owner_commitment_0001",
+      image_digest: IMAGE,
+      ...recoveryReadiness(),
+      capital_plan: capitalPlan(),
+    },
+    shadow_qualification: { ready: true, venues: 5 },
+    carry_supervision: { ready: true, status: "healthy" },
+    route_observation_configured: true,
+    route_evidence: routeEvidence,
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.reasons, ["collateral_route_evidence_unverified"]);
+  assert.equal(result.collateral_route_observation.verified, false);
+});
+
 function verifiedRouteEvidence() {
+  const route = {
+    version: 1,
+    route_id: "carry:transfer-route:hyperliquid-lighter:0001",
+    from_account_commitment: "account:hyperliquid:0001",
+    from_venue_id: "hyperliquid",
+    to_account_commitment: "account:lighter:0001",
+    to_venue_id: "lighter",
+    source_adapter_id: "hyperliquid_arbitrum_usdc_v1",
+    destination_adapter_id: "lighter_arbitrum_usdc_v1",
+    source_account_state_commitment: "carry:account-state:hyperliquid:0001",
+    destination_account_state_commitment: "carry:account-state:lighter:0001",
+    quote_commitment: "carry:transfer-quote:0001",
+    valuation_asset: "USD",
+    source_collateral_asset: "USDC",
+    destination_collateral_asset: "USDC",
+    conversion_required: false,
+    status: "available",
+    quote_verified: true,
+    all_in_fee_verified: true,
+    valuation_basis_verified: true,
+    conversion_quote_verified: true,
+    conversion_rate_e8: 100_000_000,
+    minimum_transfer_micro_usdc: 0,
+    maximum_transfer_micro_usdc: 100_000_000,
+    withdrawal_fee_micro_usdc: 1_000,
+    deposit_fee_micro_usdc: 0,
+    conversion_fee_micro_usdc: 0,
+    conversion_slippage_micro_usdc: 0,
+    fee_micro_usdc: 1_000,
+    estimated_latency_ms: 60_000,
+    as_of_ms: NOW,
+    owner_approval_required: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+    automatic_transfer_permitted: false,
+  };
+  const material = {
+    version: 1,
+    kind: "ghola_carry_transfer_route_evidence",
+    owner_commitment: "owner_commitment_0001",
+    worker_image_digest: IMAGE,
+    routes: [route],
+    checked_at_ms: NOW,
+    expires_at_ms: NOW + 30_000,
+    owner_approval_required: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+    automatic_transfer_permitted: false,
+  };
+  const evidence = {
+    ...material,
+    evidence_commitment: `carry:transfer-routes:evidence:${createHash("sha256")
+      .update(JSON.stringify(material))
+      .digest("hex")
+      .slice(0, 40)}`,
+  };
   return {
     ok: true,
-    evidence: {
-      owner_commitment: "owner_commitment_0001",
-      worker_image_digest: "sha256:abcdef123456",
-      checked_at_ms: NOW,
-      expires_at_ms: NOW + 30_000,
-      evidence_commitment: "carry:transfer-routes:evidence:abcdef123456",
-    },
-    routes: [{
-      source_account_state_commitment: "carry:account-state:hyperliquid:0001",
-      destination_account_state_commitment: "carry:account-state:lighter:0001",
-      status: "available",
-      quote_verified: true,
-      all_in_fee_verified: true,
-      valuation_basis_verified: true,
-      owner_approval_required: true,
-      fund_movement_authorized: false,
-      transaction_broadcast: false,
-      automatic_transfer_permitted: false,
-    }],
+    evidence,
+    routes: evidence.routes.map((item) => ({
+      ...item,
+      evidence_source: "attested_worker",
+      evidence_commitment: evidence.evidence_commitment,
+      evidence_checked_at_ms: evidence.checked_at_ms,
+      worker_image_digest: evidence.worker_image_digest,
+    })),
   };
+}
+
+function refreshRouteEvidenceCommitment(evidence) {
+  const { evidence_commitment: _ignored, ...material } = evidence;
+  evidence.evidence_commitment = `carry:transfer-routes:evidence:${createHash("sha256")
+    .update(JSON.stringify(material))
+    .digest("hex")
+    .slice(0, 40)}`;
 }
 
 function lifecycleProof(overrides = {}) {
@@ -310,7 +389,7 @@ function lifecycleProof(overrides = {}) {
       kind: "ghola_carry_live_paired_lifecycle_proof",
       network: "mainnet",
       owner_commitment: "owner_commitment_0001",
-      worker_image_digest: "sha256:abcdef123456",
+      worker_image_digest: IMAGE,
       position_id: "carry:position:live:0001",
       asset: "BTC",
       venue_ids: ["hyperliquid", "aster"],

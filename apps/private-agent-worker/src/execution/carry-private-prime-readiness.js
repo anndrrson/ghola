@@ -4,6 +4,7 @@ import {
   CARRY_RECOVERY_POLICY,
   normalizeCarryLifecycleValueAttribution,
 } from "@ghola/execution-core";
+import { verifyCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
 
 export function buildCarryPrivatePrimeReadiness({
   readiness,
@@ -161,8 +162,9 @@ function safeLifecycleValueAttribution(value) {
 }
 
 function verifiedRouteObservation({ readiness, routeEvidence, routeObservationConfigured, nowMs }) {
-  const evidence = routeEvidence?.evidence;
-  const routes = Array.isArray(routeEvidence?.routes) ? routeEvidence.routes : [];
+  const assessedEvidence = verifyCarryTransferRouteEvidence(routeEvidence?.evidence);
+  const evidence = assessedEvidence.ok ? assessedEvidence.evidence : null;
+  const routes = Array.isArray(evidence?.routes) ? evidence.routes : [];
   const checkedAtMs = Number.isSafeInteger(evidence?.checked_at_ms) ? evidence.checked_at_ms : null;
   const expiresAtMs = Number.isSafeInteger(evidence?.expires_at_ms) ? evidence.expires_at_ms : null;
   const effectiveExpiresAtMs = checkedAtMs !== null && expiresAtMs !== null
@@ -180,6 +182,7 @@ function verifiedRouteObservation({ readiness, routeEvidence, routeObservationCo
       && currentAccountStates.has(route?.destination_account_state_commitment));
   const verified = routeObservationConfigured === true
     && routeEvidence?.ok === true
+    && assessedEvidence.ok === true
     && evidence?.owner_commitment === readiness?.owner_commitment
     && evidence?.worker_image_digest === readiness?.image_digest
     && checkedAtMs !== null
