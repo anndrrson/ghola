@@ -11,6 +11,7 @@ import {
   createCarryValueLedger,
   finalizeCarryValueLedger,
   normalizeCarryCollateralReviewAuthorization,
+  venueAdapterCapability,
 } from "@ghola/execution-core";
 import { hashMessage, recoverMessageAddress } from "viem";
 import { preflightCarryPair } from "./carry-preflight.js";
@@ -144,6 +145,8 @@ function validateCreationOpportunity(positionInput, opportunity, nowMs, qualific
     || opportunity.short_venue_id !== positionInput?.short_venue_id
     || opportunity.long_venue_id === opportunity.short_venue_id) return "carry_opportunity_position_mismatch";
   if (opportunity.notional_micro_usdc !== positionInput?.target_notional_micro_usdc) return "carry_opportunity_notional_mismatch";
+  const inputEvidenceError = validateCreationInputEvidence(positionInput, opportunity.input_evidence);
+  if (inputEvidenceError) return inputEvidenceError;
   const maxAgeMs = positionInput?.risk_mandate?.max_data_age_ms;
   if (!Number.isInteger(opportunity.checked_at_ms)
     || !Number.isInteger(maxAgeMs)
@@ -229,6 +232,33 @@ function validateCreationOpportunity(positionInput, opportunity, nowMs, qualific
     || breakdown.trading_fee_micro_usdc + breakdown.slippage_micro_usdc
       + breakdown.gas_micro_usdc + breakdown.latency_buffer_micro_usdc !== opportunity.projected_trading_cost_micro_usdc
   )) return "carry_value_breakdown_invalid";
+  return null;
+}
+
+function validateCreationInputEvidence(positionInput, inputEvidence) {
+  if (inputEvidence?.version !== 1 || !Array.isArray(inputEvidence.legs) || inputEvidence.legs.length !== 2) {
+    return "carry_opportunity_input_evidence_missing";
+  }
+  const expected = [
+    { venue_id: positionInput?.long_venue_id, side: "buy" },
+    { venue_id: positionInput?.short_venue_id, side: "sell" },
+  ];
+  for (let index = 0; index < expected.length; index += 1) {
+    const leg = inputEvidence.legs[index];
+    const target = expected[index];
+    const declared = venueAdapterCapability(target.venue_id, "perp_shadow");
+    if (leg?.venue_id !== target.venue_id
+      || leg?.side !== target.side
+      || !/^carry:shadow:snapshot:[0-9a-f]{64}$/.test(String(leg?.shadow_snapshot_commitment || ""))
+      || !/^carry:account-state:[0-9a-f]{40}$/.test(String(leg?.account_state_commitment || ""))
+      || !OWNER.test(String(leg?.work_order_commitment || ""))
+      || !OWNER.test(String(leg?.verification_commitment || ""))
+      || !OWNER.test(String(leg?.account_commitment || ""))
+      || leg?.margin_model !== declared?.margin_model
+      || leg?.liquidation_model !== declared?.liquidation_model) {
+      return "carry_opportunity_input_evidence_invalid";
+    }
+  }
   return null;
 }
 
@@ -1529,6 +1559,9 @@ function publicOpportunity(value) {
     live_creation_ready: value.live_creation_ready === true,
     long_margin_runway_ms: value.long_margin_runway_ms,
     short_margin_runway_ms: value.short_margin_runway_ms,
+    ...(value.input_evidence ? {
+      input_evidence: JSON.parse(JSON.stringify(value.input_evidence)),
+    } : {}),
   });
 }
 

@@ -251,6 +251,41 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
   assert.equal(result.creation_opportunity.live_creation_ready, false);
   assert.equal(result.creation_opportunity.all_venues_ready, true);
   assert.equal(typeof result.creation_opportunity.long_margin_runway_ms, "number");
+  assert.equal(result.creation_opportunity.input_evidence.version, 1);
+  assert.deepEqual(result.creation_opportunity.input_evidence.legs.map((leg, index) => ({
+    venue_id: leg.venue_id,
+    side: leg.side,
+    snapshot_bound: /^carry:shadow:snapshot:[0-9a-f]{64}$/.test(leg.shadow_snapshot_commitment),
+    account_state_commitment: leg.account_state_commitment,
+    verification_commitment: leg.verification_commitment,
+    margin_model: leg.margin_model,
+    liquidation_model: leg.liquidation_model,
+    expected_account_state_commitment: result.account_readiness[index].account_state_commitment,
+    expected_verification_commitment: result.evidence[index].verification_commitment,
+  })), [
+    {
+      venue_id: "hyperliquid",
+      side: "buy",
+      snapshot_bound: true,
+      account_state_commitment: result.account_readiness[0].account_state_commitment,
+      verification_commitment: "verification_hyperliquid",
+      margin_model: snapshot("hyperliquid").margin_model,
+      liquidation_model: snapshot("hyperliquid").liquidation_model,
+      expected_account_state_commitment: result.account_readiness[0].account_state_commitment,
+      expected_verification_commitment: "verification_hyperliquid",
+    },
+    {
+      venue_id: "aster",
+      side: "sell",
+      snapshot_bound: true,
+      account_state_commitment: result.account_readiness[1].account_state_commitment,
+      verification_commitment: "verification_aster",
+      margin_model: snapshot("aster").margin_model,
+      liquidation_model: snapshot("aster").liquidation_model,
+      expected_account_state_commitment: result.account_readiness[1].account_state_commitment,
+      expected_verification_commitment: "verification_aster",
+    },
+  ]);
   assert.ok(result.qualification_reasons.includes("venue_not_proven:aster"));
   assert.ok(result.qualification_reasons.includes("exact_quantity_recovery_unproven:aster"));
   assert.equal(result.account_readiness.every((item) => item.capital_ready), true);

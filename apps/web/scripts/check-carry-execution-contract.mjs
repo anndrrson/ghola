@@ -508,6 +508,13 @@ export function checkCarryExecutionContract(sources) {
   requireText("preflight", "maintenance_evidence_basis", "carry_maintenance_evidence_basis_missing");
   requireText("preflightTest", "without double-counting venue totals", "carry_maintenance_double_count_test_missing");
   requireText("preflight", "carry_account_owner_mismatch", "carry_preflight_owner_binding_missing");
+  requireText("preflight", "input_evidence: creationInputEvidence(evidence, accountReadiness)", "carry_creation_input_evidence_missing");
+  requireText("preflight", "carryShadowSnapshotCommitment(leg.snapshot)", "carry_creation_shadow_commitment_missing");
+  requireText("preflight", "account_state_commitment: accountReadiness[index].account_state_commitment", "carry_creation_account_state_commitment_missing");
+  requireText("positions", "validateCreationInputEvidence(positionInput, opportunity.input_evidence)", "carry_creation_input_evidence_gate_missing");
+  requireText("positions", "leg?.margin_model !== declared?.margin_model", "carry_creation_margin_model_gate_missing");
+  requireText("positions", "leg?.liquidation_model !== declared?.liquidation_model", "carry_creation_liquidation_model_gate_missing");
+  requireText("positionsTest", "refuses a worker-signed opportunity detached from its exact route inputs", "carry_creation_input_evidence_test_missing");
   requireText("preflightTest", "rejects cross-owner sealed venue access before order verification", "carry_preflight_owner_binding_test_missing");
   requireText("coreCarry", "collateral_basis_risk_bps", "collateral_basis_stress_missing");
   requireText("coreCarry", "contract_data_skew_exceeded", "carry_contract_skew_model_missing");

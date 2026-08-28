@@ -11,7 +11,10 @@ import {
   venueAdapterCapability,
 } from "@ghola/execution-core";
 import { fetchPerpShadowVenue } from "./perp-shadow-adapters.js";
-import { verifyCarryShadowSnapshot } from "./perp-shadow-readiness.js";
+import {
+  carryShadowSnapshotCommitment,
+  verifyCarryShadowSnapshot,
+} from "./perp-shadow-readiness.js";
 import { readCarryVenueQualification } from "./carry-qualification.js";
 import {
   carryAccountStateCommitment,
@@ -203,6 +206,12 @@ export async function preflightCarryPair({
     funding_persistence: fundingPersistence,
     funding_observation: fundingPersistence.current_observation || null,
   });
+  const accountReadiness = modeled.account_readiness.map((account, index) =>
+    bindAccountStateEvidence(account, evidence[index]));
+  const marginRunways = modeled.margin_runways.map((runway, index) => Object.freeze({
+    ...runway,
+    account_state_commitment: accountReadiness[index].account_state_commitment,
+  }));
   const unproven = qualifications.filter((item) => item.proven !== true);
   const pilotCandidate = unproven.length === 1
     && venueAdapterCapability(unproven[0].venue_id, "carry_execution")?.status === "implemented_unproven"
@@ -233,6 +242,7 @@ export async function preflightCarryPair({
     qualification_pilot_candidate_venue_id: pilotCandidate,
     long_margin_runway_ms: modeled.margin_runways[0]?.runway_ms ?? 0,
     short_margin_runway_ms: modeled.margin_runways[1]?.runway_ms ?? 0,
+    input_evidence: creationInputEvidence(evidence, accountReadiness),
   };
   const creationOpportunity = Object.freeze({
     ...unsignedCreationOpportunity,
@@ -241,12 +251,6 @@ export async function preflightCarryPair({
       opportunity: unsignedCreationOpportunity,
     }),
   });
-  const accountReadiness = modeled.account_readiness.map((account, index) =>
-    bindAccountStateEvidence(account, evidence[index]));
-  const marginRunways = modeled.margin_runways.map((runway, index) => Object.freeze({
-    ...runway,
-    account_state_commitment: accountReadiness[index].account_state_commitment,
-  }));
   return {
     version: 1,
     mode: phase === "monitoring"
@@ -983,6 +987,23 @@ function bindAccountStateEvidence(account, leg) {
     account_state_checked_at_ms: evidence.checked_at_ms,
     account_state_commitment: carryAccountStateCommitment(evidence),
   };
+}
+
+function creationInputEvidence(evidence, accountReadiness) {
+  return Object.freeze({
+    version: 1,
+    legs: Object.freeze(evidence.map((leg, index) => Object.freeze({
+      venue_id: leg.venue_id,
+      side: leg.side,
+      shadow_snapshot_commitment: carryShadowSnapshotCommitment(leg.snapshot),
+      margin_model: leg.snapshot.margin_model,
+      liquidation_model: leg.snapshot.liquidation_model,
+      work_order_commitment: leg.receipt.work_order_commitment,
+      verification_commitment: leg.receipt.verification_commitment,
+      account_commitment: leg.receipt.account_commitment,
+      account_state_commitment: accountReadiness[index].account_state_commitment,
+    }))),
+  });
 }
 
 function publicEvidence(leg, qualification, accountReadiness) {

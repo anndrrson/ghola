@@ -1157,6 +1157,29 @@ test("rejects margin and liquidation evidence detached from the venue registry",
   );
 });
 
+test("rejects Carry creation detached from exact shadow and account inputs", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replace(
+        "input_evidence: creationInputEvidence(evidence, accountReadiness)",
+        "input_evidence: null",
+      ),
+    }),
+    /carry_creation_input_evidence_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replace(
+        "validateCreationInputEvidence(positionInput, opportunity.input_evidence)",
+        "null",
+      ),
+    }),
+    /carry_creation_input_evidence_gate_missing/,
+  );
+});
+
 test("rejects release qualification adapters detached from the capability registry", () => {
   assert.throws(
     () => checkCarryExecutionContract({

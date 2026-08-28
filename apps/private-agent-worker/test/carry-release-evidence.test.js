@@ -24,6 +24,7 @@ import {
 } from "@ghola/execution-core";
 import { hashMessage } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { carryOpportunityInputEvidence } from "./carry-mandate-fixture.js";
 
 const NOW = 1_800_000_010_000;
 const IMAGE = `sha256:${"ab".repeat(32)}`;
@@ -541,6 +542,7 @@ async function stateFixture() {
     live_creation_ready: true,
     long_margin_runway_ms: 86_400_000,
     short_margin_runway_ms: 86_400_000,
+    input_evidence: carryOpportunityInputEvidence("hyperliquid", "aster"),
   };
   const opportunityProvenance = authenticateCarryCreationOpportunity({
     owner_commitment: OWNER,

@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import {
   carryCollateralReviewMessage,
   carryRiskMandateMessage,
   normalizeCarryRiskMandateAuthorization,
   normalizeCarryRiskMandatePayload,
+  venueAdapterCapability,
 } from "@ghola/execution-core";
 import { hashMessage } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -10,6 +12,33 @@ import { privateKeyToAccount } from "viem/accounts";
 const OWNER = privateKeyToAccount(`0x${"44".repeat(32)}`);
 
 export const TEST_CARRY_OWNER_WALLET_ADDRESS = OWNER.address.toLowerCase();
+
+export function carryOpportunityInputEvidence(longVenue, shortVenue) {
+  return {
+    version: 1,
+    legs: [
+      carryOpportunityInputLeg(longVenue, "buy"),
+      carryOpportunityInputLeg(shortVenue, "sell"),
+    ],
+  };
+}
+
+function carryOpportunityInputLeg(venueId, side) {
+  const shadow = venueAdapterCapability(venueId, "perp_shadow");
+  const digest = createHash("sha256").update(`carry:test:shadow:${venueId}`).digest("hex");
+  const accountDigest = createHash("sha256").update(`carry:test:account:${venueId}`).digest("hex").slice(0, 40);
+  return {
+    venue_id: venueId,
+    side,
+    shadow_snapshot_commitment: `carry:shadow:snapshot:${digest}`,
+    margin_model: shadow.margin_model,
+    liquidation_model: shadow.liquidation_model,
+    work_order_commitment: `carry:work-order:${venueId}:0001`,
+    verification_commitment: `carry:verification:${venueId}:0001`,
+    account_commitment: `carry:account:${venueId}:0001`,
+    account_state_commitment: `carry:account-state:${accountDigest}`,
+  };
+}
 
 export async function signedCarryCollateralReviewAuthorization(review) {
   const message = carryCollateralReviewMessage(review);

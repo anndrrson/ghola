@@ -21,6 +21,7 @@ import { storeCarryTransferRouteEvidence } from "../src/execution/carry-transfer
 import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
 import { createWorkerState } from "../src/state/private-state.js";
 import {
+  carryOpportunityInputEvidence,
   signedCarryCollateralReviewAuthorization,
   signedCarryPositionInput,
   TEST_CARRY_OWNER_WALLET_ADDRESS,
@@ -334,6 +335,33 @@ test("refuses storage until venue accounts, synchronized equivalent contracts, a
     now_ms: NOW,
   });
   assert.deepEqual(mismatchedValueBreakdown, { ok: false, error: "carry_value_breakdown_invalid" });
+});
+
+test("refuses a worker-signed opportunity detached from its exact route inputs", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-input-evidence-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const validEvidence = carryOpportunityInputEvidence("hyperliquid", "lighter");
+  const detached = opportunity({
+    input_evidence: {
+      ...validEvidence,
+      legs: [
+        { ...validEvidence.legs[0], margin_model: "detached_margin_model" },
+        validEvidence.legs[1],
+      ],
+    },
+  });
+  const created = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: await positionInput("detached-input", {}, NOW + 30 * 86_400_000, {
+      opportunity_evidence_commitment: detached.worker_authentication.evidence_commitment,
+    }),
+    opportunity: detached,
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  assert.deepEqual(created, { ok: false, error: "carry_opportunity_input_evidence_invalid" });
 });
 
 test("refuses unsigned or client-modified Carry creation economics", async (t) => {
@@ -1397,6 +1425,7 @@ function opportunity(overrides = {}) {
     short_margin_runway_ms: 7_200_000,
     ...overrides,
   };
+  value.input_evidence ??= carryOpportunityInputEvidence(value.long_venue_id, value.short_venue_id);
   return {
     ...value,
     worker_authentication: authenticateCarryCreationOpportunity({

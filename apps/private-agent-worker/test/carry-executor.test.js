@@ -16,7 +16,10 @@ import { readCarryVenueQualification } from "../src/execution/carry-qualificatio
 import { applyDurableMultiLegEvent, recoverDueMultiLegSagas } from "../src/execution/multi-leg-orchestrator.js";
 import { createWorkerState } from "../src/state/private-state.js";
 import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
-import { signedCarryPositionInput } from "./carry-mandate-fixture.js";
+import {
+  carryOpportunityInputEvidence,
+  signedCarryPositionInput,
+} from "./carry-mandate-fixture.js";
 
 const NOW = 1_800_000_000_000;
 const OWNER = "owner:carry:executor:0001";
@@ -268,6 +271,7 @@ test("bootstraps one capped candidate only after separate qualification confirma
     ...opportunity(),
     long_venue_id: "hyperliquid",
     short_venue_id: "aster",
+    input_evidence: carryOpportunityInputEvidence("hyperliquid", "aster"),
     live_creation_ready: false,
     qualification_pilot_ready: true,
     qualification_pilot_candidate_venue_id: "aster",
@@ -1150,6 +1154,7 @@ function opportunity(pair = { long: "aster", short: "lighter" }) {
     live_creation_ready: true,
     long_margin_runway_ms: 7_200_000,
     short_margin_runway_ms: 7_200_000,
+    input_evidence: carryOpportunityInputEvidence(pair.long, pair.short),
   });
 }
 

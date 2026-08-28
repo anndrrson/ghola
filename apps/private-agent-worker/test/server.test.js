@@ -27,7 +27,10 @@ import {
   asterRegistrationParameters,
   asterRegistrationTypedData,
 } from "../src/venues/aster-provisioning.js";
-import { signedCarryPositionInput } from "./carry-mandate-fixture.js";
+import {
+  carryOpportunityInputEvidence,
+  signedCarryPositionInput,
+} from "./carry-mandate-fixture.js";
 
 const OLD_ENV = { ...process.env };
 
@@ -1161,6 +1164,7 @@ describe("private agent worker", () => {
         checked_at_ms: checkedAt,
         long_margin_runway_ms: 7_200_000,
         short_margin_runway_ms: 7_200_000,
+        input_evidence: carryOpportunityInputEvidence("hyperliquid", "lighter"),
       },
     };
     body.opportunity.worker_authentication = authenticateCarryCreationOpportunity({

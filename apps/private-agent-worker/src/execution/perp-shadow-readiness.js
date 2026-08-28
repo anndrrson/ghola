@@ -240,8 +240,12 @@ function snapshotEvidenceRow(snapshot, nowMs) {
     status: snapshot?.status,
     source_observed_at_ms: Object.freeze({ ...(snapshot?.source_observed_at_ms || {}) }),
     source_max_age_ms: Object.freeze({ ...(snapshot?.source_max_age_ms || {}) }),
-    snapshot_commitment: `carry:shadow:snapshot:${digest(stableJson(snapshot))}`,
+    snapshot_commitment: carryShadowSnapshotCommitment(snapshot),
   };
+}
+
+export function carryShadowSnapshotCommitment(snapshot) {
+  return `carry:shadow:snapshot:${digest(stableJson(snapshot))}`;
 }
 
 function validSnapshotEvidence(evidence, expectedSnapshots, requestedAssets) {
