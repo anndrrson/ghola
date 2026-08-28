@@ -9,6 +9,7 @@ const ETH_ADDRESS = /^0x[0-9a-f]{40}$/;
 const ETH_SIGNATURE = /^0x[0-9a-f]{130}$/;
 const ETH_COMMITMENT = /^0x[0-9a-f]{64}$/;
 const CARRY_OPPORTUNITY_EVIDENCE = /^carry:creation-opportunity:evidence:[0-9a-f]{64}$/;
+const CURRENT_FUNDING_OBSERVATION = /^carry:funding:current:[0-9a-f]{64}$/;
 const USD_STABLE_QUOTES = new Set(["USD", "USDC", "USDT"]);
 const POSITION_STATUSES = new Set([
   "draft", "opening", "active", "rebalancing", "exiting", "reconciled", "frozen", "manual_intervention",
@@ -1729,6 +1730,8 @@ export function createCarryPosition(value) {
     } : {}),
     consecutive_exit_observations: 0,
     last_observation_as_of_ms: null,
+    last_funding_observation_commitment: null,
+    last_funding_source_observed_at_ms_by_venue: {},
     last_event_sequence: 0,
     processed_event_ids: [],
     next_actions: ["run_preflight"],
@@ -2125,12 +2128,81 @@ function applyEvent(position, event, nowMs) {
       return;
     }
     const netCarryBps = boundedInteger(event.expected_net_value_bps, -100_000, 100_000, "carry_observation_net_value");
+    const fundingCommitment = typeof event.funding_observation_commitment === "string"
+      && CURRENT_FUNDING_OBSERVATION.test(event.funding_observation_commitment)
+      ? event.funding_observation_commitment
+      : null;
+    let fundingSources = null;
+    try {
+      const rawSources = object(
+        event.funding_source_observed_at_ms_by_venue,
+        "carry_observation_funding_sources",
+      );
+      const venueIds = [position.long_venue_id, position.short_venue_id];
+      if (Object.keys(rawSources).length !== venueIds.length
+        || !venueIds.every((venueId) => Object.hasOwn(rawSources, venueId))) {
+        fail("carry_observation_funding_sources_unbound");
+      }
+      fundingSources = Object.fromEntries(venueIds.map((venueId) => {
+        const sourceAsOf = positiveInteger(
+          rawSources[venueId],
+          "carry_observation_funding_source_as_of",
+        );
+        if (sourceAsOf > asOf || asOf - sourceAsOf > position.risk_mandate.max_data_age_ms) {
+          fail("carry_observation_funding_source_stale");
+        }
+        return [venueId, sourceAsOf];
+      }));
+    } catch {
+      fundingSources = null;
+    }
+    if (!fundingCommitment || !fundingSources) {
+      position.status = "frozen";
+      position.next_actions = ["reconcile_only"];
+      position.retry_permitted = false;
+      position.terminal_reason = "funding_observation_unverifiable";
+      return;
+    }
+    const previousFundingSources = position.last_funding_source_observed_at_ms_by_venue
+      && typeof position.last_funding_source_observed_at_ms_by_venue === "object"
+      && !Array.isArray(position.last_funding_source_observed_at_ms_by_venue)
+      && [position.long_venue_id, position.short_venue_id].every((venueId) =>
+        Number.isSafeInteger(position.last_funding_source_observed_at_ms_by_venue[venueId]))
+      ? position.last_funding_source_observed_at_ms_by_venue
+      : null;
+    if (previousFundingSources) {
+      const venueIds = [position.long_venue_id, position.short_venue_id];
+      const sourceRegressed = venueIds.some((venueId) =>
+        fundingSources[venueId] < previousFundingSources[venueId]);
+      const sameSources = venueIds.every((venueId) =>
+        fundingSources[venueId] === previousFundingSources[venueId]);
+      const sameCommitment = fundingCommitment === position.last_funding_observation_commitment;
+      if (sourceRegressed
+        || (sameSources && !sameCommitment)
+        || (!sameSources && sameCommitment)
+        || (previousObservationAsOf === asOf && !sameSources)) {
+        position.status = "frozen";
+        position.next_actions = ["reconcile_only"];
+        position.retry_permitted = false;
+        position.terminal_reason = sourceRegressed
+          ? "funding_observation_time_regressed"
+          : "funding_observation_evidence_mismatch";
+        return;
+      }
+      if (sameSources) {
+        position.status = "active";
+        position.next_actions = ["monitor_carry_and_margin"];
+        return;
+      }
+    }
     if (previousObservationAsOf === asOf) {
       position.status = "active";
       position.next_actions = ["monitor_carry_and_margin"];
       return;
     }
     position.last_observation_as_of_ms = asOf;
+    position.last_funding_observation_commitment = fundingCommitment;
+    position.last_funding_source_observed_at_ms_by_venue = fundingSources;
     position.consecutive_exit_observations = netCarryBps <= position.risk_mandate.exit_net_value_bps
       ? position.consecutive_exit_observations + 1
       : 0;

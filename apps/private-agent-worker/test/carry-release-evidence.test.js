@@ -46,6 +46,10 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.equal(result.material.monitoring.supervision.automatic_observation_count, 2);
   assert.equal(result.material.monitoring.supervision.max_observation_gap_ms, 1_000);
   assert.equal(result.material.monitoring.supervision.failure_count, 0);
+  assert.deepEqual(
+    result.material.monitoring.funding_observations.map((item) => item.evidence_commitment),
+    [`carry:funding:current:${"11".repeat(32)}`, `carry:funding:current:${"22".repeat(32)}`],
+  );
   assert.equal(result.material.exit.reason, "manual");
   assert.equal(result.material.exit.trigger.kind, "owner_request");
   assert.equal(result.material.exit.trigger.observed_at, "2027-01-15T08:00:03.000Z");
@@ -269,6 +273,23 @@ test("refuses a single unattended observation as a monitoring period", async () 
     now_ms: NOW,
   });
   assert.equal(result.error, "carry_release_supervised_monitoring_insufficient");
+});
+
+test("refuses wrapper observations that reuse venue funding sources", async () => {
+  const fixture = await stateFixture();
+  const observations = fixture.record.lifecycle_events.filter((event) => event.type === "observation");
+  observations[1].funding_observation_commitment = observations[0].funding_observation_commitment;
+  observations[1].funding_source_observed_at_ms_by_venue = {
+    ...observations[0].funding_source_observed_at_ms_by_venue,
+  };
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_funding_observation_reused");
 });
 
 test("refuses a lifecycle with a monitoring outage", async () => {
@@ -536,6 +557,11 @@ async function stateFixture() {
         type: "observation",
         observation_source: "supervised_loop",
         recorded_at_ms: 1_800_000_002_000,
+        funding_observation_commitment: `carry:funding:current:${"11".repeat(32)}`,
+        funding_source_observed_at_ms_by_venue: {
+          hyperliquid: 1_800_000_001_900,
+          aster: 1_800_000_001_900,
+        },
         margin_runway_ms_by_venue: { hyperliquid: 86_400_000, aster: 86_400_000 },
         margin_runway_status_by_venue: { hyperliquid: "healthy", aster: "healthy" },
       },
@@ -543,6 +569,11 @@ async function stateFixture() {
         type: "observation",
         observation_source: "supervised_loop",
         recorded_at_ms: 1_800_000_002_500,
+        funding_observation_commitment: `carry:funding:current:${"22".repeat(32)}`,
+        funding_source_observed_at_ms_by_venue: {
+          hyperliquid: 1_800_000_002_400,
+          aster: 1_800_000_002_400,
+        },
         margin_runway_ms_by_venue: { hyperliquid: 86_400_000, aster: 86_400_000 },
         margin_runway_status_by_venue: { hyperliquid: "healthy", aster: "healthy" },
       },

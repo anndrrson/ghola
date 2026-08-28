@@ -212,6 +212,35 @@ export async function verifyCarryReleaseEvidence(evidence) {
   fail(monitoringEndedAt > monitoringStartedAt, "monitoring_period_required");
   fail(positiveInteger(monitoring.observation_count) >= 2, "monitoring_observation_cadence_missing");
   fail(positiveInteger(monitoring.funding_flip_checks) >= 2, "funding_flip_check_cadence_missing");
+  const fundingObservations = array(monitoring.funding_observations);
+  fail(fundingObservations.length === positiveInteger(monitoring.observation_count),
+    "funding_observation_count_mismatch");
+  let priorFundingObservation = null;
+  for (const observation of fundingObservations) {
+    const observedAt = timestamp(observation?.observed_at);
+    const sources = observation?.source_observed_at_ms_by_venue;
+    const sourcesValid = sources
+      && typeof sources === "object"
+      && !Array.isArray(sources)
+      && Object.keys(sources).length === pair.length
+      && pair.every((venueId) => positiveInteger(sources[venueId]) > 0
+        && sources[venueId] <= observedAt
+        && observedAt - sources[venueId] <= maxDataAgeMs);
+    fail(/^carry:funding:current:[0-9a-f]{64}$/.test(String(observation?.evidence_commitment || "")),
+      "funding_observation_commitment_invalid");
+    fail(observedAt >= monitoringStartedAt && observedAt <= monitoringEndedAt,
+      "funding_observation_timestamp_invalid");
+    fail(sourcesValid, "funding_observation_sources_invalid");
+    if (priorFundingObservation && sourcesValid) {
+      const priorSources = priorFundingObservation.source_observed_at_ms_by_venue;
+      fail(pair.every((venueId) => sources[venueId] >= priorSources[venueId]),
+        "funding_observation_source_regressed");
+      fail(pair.some((venueId) => sources[venueId] > priorSources[venueId])
+        && observation.evidence_commitment !== priorFundingObservation.evidence_commitment,
+      "funding_observation_source_reused");
+    }
+    if (sourcesValid) priorFundingObservation = observation;
+  }
   const supervision = monitoring.supervision || {};
   const automaticObservations = positiveInteger(supervision.automatic_observation_count);
   const firstAutomaticObservation = timestamp(supervision.first_automatic_observed_at);

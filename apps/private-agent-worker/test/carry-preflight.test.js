@@ -738,6 +738,14 @@ test("monitoring measures a signed basis breach without submitting or hiding it 
   assert.equal(result.transaction_broadcast, false);
   assert.equal(result.economic_opportunity.index_price_divergence_bps, 50);
   assert.equal(result.economic_opportunity.max_index_price_divergence_bps, 25);
+  assert.match(
+    result.economic_opportunity.funding_observation.evidence_commitment,
+    /^carry:funding:current:[a-f0-9]{64}$/,
+  );
+  assert.deepEqual(result.economic_opportunity.funding_observation.source_observed_at_ms_by_venue, {
+    hyperliquid: NOW,
+    aster: NOW,
+  });
   assert.equal(result.economic_opportunity.eligible, false);
   assert.ok(result.economic_opportunity.reasons.includes("index_price_divergence_exceeded"));
 });

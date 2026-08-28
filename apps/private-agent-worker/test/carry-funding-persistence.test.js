@@ -113,6 +113,33 @@ test("requires durable storage for opening funding evidence", async () => {
   assert.deepEqual(result.reasons, ["funding_persistence_state_unavailable"]);
 });
 
+test("monitoring commits current venue funding source observations", async () => {
+  const result = await observeCarryFundingPersistence({
+    phase: "monitoring",
+    evidence: [
+      { venue_id: "hyperliquid", side: "buy", snapshot: shadowSnapshot("hyperliquid") },
+      { venue_id: "lighter", side: "sell", snapshot: shadowSnapshot("lighter") },
+    ],
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, true);
+  assert.match(result.current_observation.evidence_commitment, /^carry:funding:current:[a-f0-9]{64}$/);
+  assert.deepEqual(result.current_observation.source_observed_at_ms_by_venue, {
+    hyperliquid: NOW,
+    lighter: NOW,
+  });
+});
+
+test("monitoring rejects funding evidence without source timestamps", async () => {
+  const result = await observeCarryFundingPersistence({
+    phase: "monitoring",
+    evidence: evidence(),
+    now_ms: NOW,
+  });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.reasons, ["funding_source_observation_unverifiable"]);
+});
+
 test("rejects corrupt stored observation evidence", async () => {
   const state = {
     getIdempotency: async () => ({ receipt: { version: 1, kind: "carry_funding_persistence" } }),

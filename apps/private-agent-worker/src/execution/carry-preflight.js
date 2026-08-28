@@ -194,6 +194,7 @@ export async function preflightCarryPair({
       ...(phase === "monitoring" ? [] : fundingPersistence.reasons),
     ])]),
     funding_persistence: fundingPersistence,
+    funding_observation: fundingPersistence.current_observation || null,
   });
   const unproven = qualifications.filter((item) => item.proven !== true);
   const pilotCandidate = unproven.length === 1

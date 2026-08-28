@@ -1037,6 +1037,9 @@ export async function observeStoredCarryPosition({
     return frozen.ok ? { ...frozen, observation_ok: false, observation: null } : frozen;
   }
   const opportunity = observation?.economic_opportunity || {};
+  const fundingObservation = opportunity.funding_observation
+    || observation?.funding_persistence?.current_observation
+    || null;
   let capitalActionPlan;
   try {
     capitalActionPlan = compileCarryCapitalActionPlan({
@@ -1091,6 +1094,10 @@ export async function observeStoredCarryPosition({
       observation_source: observationSource === "supervised_loop" ? "supervised_loop" : "manual",
       as_of_ms: opportunity.checked_at_ms,
       expected_net_value_bps: opportunity.projected_net_value_bps,
+      funding_observation_commitment: fundingObservation?.evidence_commitment,
+      funding_source_observed_at_ms_by_venue: {
+        ...(fundingObservation?.source_observed_at_ms_by_venue || {}),
+      },
       economic_equivalence_id: opportunity.economic_equivalence_id,
       migration_candidates: migrationCandidates,
       contract_data_skew_ms: opportunity.contract_data_skew_ms,
@@ -1498,6 +1505,10 @@ function publicObservation(event) {
     observation_source: event.observation_source === "supervised_loop" ? "supervised_loop" : "manual",
     as_of_ms: event.as_of_ms,
     expected_net_value_bps: event.expected_net_value_bps,
+    funding_observation_commitment: event.funding_observation_commitment,
+    funding_source_observed_at_ms_by_venue: {
+      ...(event.funding_source_observed_at_ms_by_venue || {}),
+    },
     contract_data_skew_ms: event.contract_data_skew_ms,
     max_contract_data_skew_ms: event.max_contract_data_skew_ms,
     index_price_divergence_bps: event.index_price_divergence_bps,

@@ -334,7 +334,18 @@ function contractObservation(overrides = {}) {
     max_index_price_divergence_bps: 25,
     max_mark_price_divergence_bps: 50,
     margin_runway_status_by_venue: { hyperliquid: "healthy", lighter: "healthy" },
+    ...fundingObservation(NOW),
     ...overrides,
+  };
+}
+
+function fundingObservation(sourceAsOfMs, suffix = 0) {
+  return {
+    funding_observation_commitment: `carry:funding:current:${String(suffix).padStart(64, "0")}`,
+    funding_source_observed_at_ms_by_venue: {
+      hyperliquid: sourceAsOfMs,
+      lighter: sourceAsOfMs,
+    },
   };
 }
 
@@ -1059,7 +1070,7 @@ test("two confirmed carry flips trigger a deterministic reduce-only exit", () =>
   current = advanceCarryPosition({
     position: current,
     event: event(3, "observation", {
-      ...contractObservation(),
+      ...contractObservation(fundingObservation(NOW + 3, 3)),
       as_of_ms: NOW + 3,
       expected_net_value_bps: -1,
       margin_runway_ms_by_venue: { hyperliquid: 30 * HOUR, lighter: 30 * HOUR },
@@ -1070,7 +1081,7 @@ test("two confirmed carry flips trigger a deterministic reduce-only exit", () =>
   current = advanceCarryPosition({
     position: current,
     event: event(4, "observation", {
-      ...contractObservation(),
+      ...contractObservation(fundingObservation(NOW + 4, 4)),
       as_of_ms: NOW + 4,
       expected_net_value_bps: -1,
       margin_runway_ms_by_venue: { hyperliquid: 30 * HOUR, lighter: 30 * HOUR },
@@ -1081,22 +1092,49 @@ test("two confirmed carry flips trigger a deterministic reduce-only exit", () =>
   assert.deepEqual(current.next_actions, ["reduce_only_close_both_legs"]);
 });
 
-test("replayed funding data cannot manufacture consecutive flip confirmations", () => {
+test("new wrapper timestamps cannot manufacture confirmations from replayed funding sources", () => {
   let current = activePositionForObservation();
-  const observation = (sequence, asOfMs) => event(sequence, "observation", {
-    ...contractObservation(),
+  const observation = (sequence, asOfMs, sourceAsOfMs, suffix) => event(sequence, "observation", {
+    ...contractObservation(fundingObservation(sourceAsOfMs, suffix)),
     as_of_ms: asOfMs,
     expected_net_value_bps: -1,
     margin_runway_ms_by_venue: { hyperliquid: 30 * HOUR, lighter: 30 * HOUR },
   });
-  current = advanceCarryPosition({ position: current, event: observation(3, NOW + 3), now_ms: NOW + 3 }).position;
+  current = advanceCarryPosition({
+    position: current,
+    event: observation(3, NOW + 3, NOW + 3, 3),
+    now_ms: NOW + 3,
+  }).position;
   assert.equal(current.consecutive_exit_observations, 1);
-  current = advanceCarryPosition({ position: current, event: observation(4, NOW + 3), now_ms: NOW + 4 }).position;
+  current = advanceCarryPosition({
+    position: current,
+    event: observation(4, NOW + 4, NOW + 3, 3),
+    now_ms: NOW + 4,
+  }).position;
   assert.equal(current.status, "active");
   assert.equal(current.consecutive_exit_observations, 1);
-  current = advanceCarryPosition({ position: current, event: observation(5, NOW + 5), now_ms: NOW + 5 }).position;
+  current = advanceCarryPosition({
+    position: current,
+    event: observation(5, NOW + 5, NOW + 5, 5),
+    now_ms: NOW + 5,
+  }).position;
   assert.equal(current.status, "exiting");
   assert.equal(current.consecutive_exit_observations, 2);
+});
+
+test("changed funding commitment without newer source evidence freezes", () => {
+  let current = activePositionForObservation();
+  const observe = (sequence, suffix) => event(sequence, "observation", {
+    ...contractObservation(fundingObservation(NOW + 3, suffix)),
+    as_of_ms: NOW + sequence,
+    expected_net_value_bps: -1,
+    margin_runway_ms_by_venue: { hyperliquid: 30 * HOUR, lighter: 30 * HOUR },
+  });
+  current = advanceCarryPosition({ position: current, event: observe(3, 3), now_ms: NOW + 3 }).position;
+  current = advanceCarryPosition({ position: current, event: observe(4, 4), now_ms: NOW + 4 }).position;
+  assert.equal(current.status, "frozen");
+  assert.equal(current.terminal_reason, "funding_observation_evidence_mismatch");
+  assert.equal(current.retry_permitted, false);
 });
 
 test("migration compiler selects only the best fresh route inside the signed venue allowlist", () => {
@@ -1168,7 +1206,7 @@ test("a qualified migration closes the old route first and persists an owner-sig
     current = advanceCarryPosition({
       position: current,
       event: event(sequence, "observation", {
-        ...contractObservation(),
+        ...contractObservation(fundingObservation(NOW + sequence, sequence)),
         as_of_ms: NOW + sequence,
         expected_net_value_bps: -2,
         economic_equivalence_id: "carry:btc-usd-linear",

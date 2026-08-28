@@ -455,12 +455,15 @@ test("creates an owner-signed migration replacement only from the selected flat 
     checked_at_ms: NOW + 4,
   };
   for (const [sequence, candidates] of [[3, []], [4, [candidate]]]) {
+    const funding = monitoringFundingObservation(NOW + sequence);
     const advanced = await advanceStoredCarryPosition({
       state,
       position_id: parent.position.position_id,
       owner_commitment: OWNER,
       event: event(sequence, "observation", {
         ...monitoringOpportunity(NOW + sequence, -1),
+        funding_observation_commitment: funding.evidence_commitment,
+        funding_source_observed_at_ms_by_venue: funding.source_observed_at_ms_by_venue,
         as_of_ms: NOW + sequence,
         expected_net_value_bps: -1,
         migration_candidates: candidates,
@@ -1286,7 +1289,18 @@ function monitoringOpportunity(checkedAtMs, projectedNetValueBps, overrides = {}
     mark_price_divergence_bps: 0,
     max_index_price_divergence_bps: 25,
     max_mark_price_divergence_bps: 50,
+    funding_observation: monitoringFundingObservation(checkedAtMs),
     ...overrides,
+  };
+}
+
+function monitoringFundingObservation(checkedAtMs) {
+  return {
+    evidence_commitment: `carry:funding:current:${checkedAtMs.toString(16).padStart(64, "0")}`,
+    source_observed_at_ms_by_venue: {
+      hyperliquid: checkedAtMs,
+      lighter: checkedAtMs,
+    },
   };
 }
 

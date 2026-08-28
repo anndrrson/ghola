@@ -255,6 +255,12 @@ export async function buildCompletedCarryReleaseMaterial({
     || maxObservationGapMs > maxAllowedObservationGapMs) {
     return denied("carry_release_monitoring_cadence_exceeded");
   }
+  const fundingObservations = releaseFundingObservations({
+    observations: supervisedObservations,
+    venue_ids: pair,
+    max_age_ms: maxAllowedObservationGapMs,
+  });
+  if (!fundingObservations.ok) return fundingObservations;
   const exitTrigger = releaseExitTrigger({
     exit_request: exitRequest,
     exit_requested_at_ms: exitRequestedAt,
@@ -353,6 +359,7 @@ export async function buildCompletedCarryReleaseMaterial({
       ended_at: iso(monitoringEndedAt),
       observation_count: supervisedObservations.length,
       funding_flip_checks: supervisedObservations.length,
+      funding_observations: fundingObservations.observations,
       supervision: {
         mode: "attested_worker_loop",
         automatic_observation_count: supervisedObservations.length,
@@ -397,6 +404,43 @@ export async function buildCompletedCarryReleaseMaterial({
   };
   material.worker_material_commitment = workerMaterialCommitment(material);
   return { ok: true, material };
+}
+
+function releaseFundingObservations({ observations, venue_ids: venueIds, max_age_ms: maxAgeMs }) {
+  const normalized = [];
+  for (const event of observations) {
+    const commitmentValue = String(event?.funding_observation_commitment || "");
+    const sources = event?.funding_source_observed_at_ms_by_venue;
+    if (!/^carry:funding:current:[0-9a-f]{64}$/.test(commitmentValue)
+      || !sources
+      || typeof sources !== "object"
+      || Array.isArray(sources)
+      || Object.keys(sources).length !== venueIds.length
+      || !venueIds.every((venueId) => positiveInteger(sources[venueId])
+        && sources[venueId] <= event.recorded_at_ms
+        && event.recorded_at_ms - sources[venueId] <= maxAgeMs)) {
+      return denied("carry_release_funding_observation_evidence_missing");
+    }
+    const prior = normalized.at(-1);
+    if (prior) {
+      const regressed = venueIds.some((venueId) =>
+        sources[venueId] < prior.source_observed_at_ms_by_venue[venueId]);
+      if (regressed) return denied("carry_release_funding_observation_time_regressed");
+      const advanced = venueIds.some((venueId) =>
+        sources[venueId] > prior.source_observed_at_ms_by_venue[venueId]);
+      if (!advanced || commitmentValue === prior.evidence_commitment) {
+        return denied("carry_release_funding_observation_reused");
+      }
+    }
+    normalized.push(Object.freeze({
+      observed_at: iso(event.recorded_at_ms),
+      evidence_commitment: commitmentValue,
+      source_observed_at_ms_by_venue: Object.freeze(Object.fromEntries(
+        venueIds.map((venueId) => [venueId, sources[venueId]]),
+      )),
+    }));
+  }
+  return { ok: true, observations: Object.freeze(normalized) };
 }
 
 function releaseExecutionReadiness({ readiness, monitoring_context: monitoringContext }) {

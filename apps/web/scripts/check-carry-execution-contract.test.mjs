@@ -160,6 +160,19 @@ test("rejects Carry creation detached from the exact owner-approved opportunity"
   );
 });
 
+test("rejects funding-flip confirmation detached from fresh venue source evidence", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarryTest: sources.coreCarryTest.replaceAll(
+        "new wrapper timestamps cannot manufacture confirmations from replayed funding sources",
+        "wrapper timestamps count as fresh confirmations",
+      ),
+    }),
+    /carry_funding_source_replay_test_missing/,
+  );
+});
+
 test("rejects durable Carry records that omit signed opportunity material", () => {
   assert.throws(
     () => checkCarryExecutionContract({

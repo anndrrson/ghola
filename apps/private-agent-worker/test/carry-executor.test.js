@@ -1176,6 +1176,13 @@ function automaticMonitoringProof(pair = { long: "aster", short: "lighter" }, ch
       mark_price_divergence_bps: 0,
       max_index_price_divergence_bps: 25,
       max_mark_price_divergence_bps: 50,
+      funding_observation: {
+        evidence_commitment: `carry:funding:current:${checkedAtMs.toString(16).padStart(64, "0")}`,
+        source_observed_at_ms_by_venue: {
+          [pair.long]: checkedAtMs,
+          [pair.short]: checkedAtMs,
+        },
+      },
     },
     margin_runways: [
       monitoringRunway(pair.long),

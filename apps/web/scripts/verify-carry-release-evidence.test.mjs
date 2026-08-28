@@ -119,6 +119,24 @@ async function fixture() {
       ended_at: "2026-08-24T00:00:05.000Z",
       observation_count: 2,
       funding_flip_checks: 2,
+      funding_observations: [
+        {
+          observed_at: "2026-08-24T00:00:04.000Z",
+          evidence_commitment: `carry:funding:current:${"11".repeat(32)}`,
+          source_observed_at_ms_by_venue: {
+            hyperliquid: Date.parse("2026-08-24T00:00:03.900Z"),
+            aster: Date.parse("2026-08-24T00:00:03.900Z"),
+          },
+        },
+        {
+          observed_at: "2026-08-24T00:00:05.000Z",
+          evidence_commitment: `carry:funding:current:${"22".repeat(32)}`,
+          source_observed_at_ms_by_venue: {
+            hyperliquid: Date.parse("2026-08-24T00:00:04.900Z"),
+            aster: Date.parse("2026-08-24T00:00:04.900Z"),
+          },
+        },
+      ],
       supervision: {
         mode: "attested_worker_loop",
         automatic_observation_count: 2,
@@ -380,6 +398,18 @@ test("rejects a single unattended observation as continuous monitoring", async (
     () => verifyCarryReleaseEvidence(evidence),
     /monitoring_observation_cadence_missing|supervised_monitoring_cadence_missing|supervised_monitoring_period_required/,
   );
+});
+
+test("rejects fresh wrapper checks that reuse venue funding sources", async () => {
+  const evidence = await fixture();
+  evidence.monitoring.funding_observations[1].evidence_commitment =
+    evidence.monitoring.funding_observations[0].evidence_commitment;
+  evidence.monitoring.funding_observations[1].source_observed_at_ms_by_venue = {
+    ...evidence.monitoring.funding_observations[0].source_observed_at_ms_by_venue,
+  };
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /funding_observation_source_reused/);
 });
 
 test("rejects monitoring outages and gaps beyond the signed freshness budget", async () => {

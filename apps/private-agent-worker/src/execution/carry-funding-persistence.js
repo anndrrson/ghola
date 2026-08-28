@@ -343,13 +343,52 @@ export async function observeCarryFundingPersistence({
 
 function monitoringResult(evidence) {
   const route = fundingRoute(evidence);
-  return result(Boolean(route), route ? [] : ["funding_persistence_route_invalid"], {
+  const currentObservation = currentFundingObservation(evidence);
+  const ready = Boolean(route && currentObservation);
+  return result(ready, [
+    ...(route ? [] : ["funding_persistence_route_invalid"]),
+    ...(route && !currentObservation ? ["funding_source_observation_unverifiable"] : []),
+  ], {
     route,
     monitoring_uses_current_funding: true,
+    current_observation: currentObservation,
     conservative_funding_rate_e12_by_venue: route ? Object.freeze({
       [route.long_venue_id]: route.long_rate_e12_per_interval,
       [route.short_venue_id]: route.short_rate_e12_per_interval,
     }) : Object.freeze({}),
+  });
+}
+
+function currentFundingObservation(evidence) {
+  if (!Array.isArray(evidence) || evidence.length !== 2) return null;
+  const long = evidence.find((item) => item?.side === "buy");
+  const short = evidence.find((item) => item?.side === "sell");
+  if (!validLeg(long) || !validLeg(short)) return null;
+  const legs = [long, short].map((leg) => ({
+    venue_id: leg.venue_id,
+    contract_id: String(leg.snapshot.contract_id || ""),
+    source_observed_at_ms: leg.snapshot.source_observed_at_ms?.funding,
+    rate_e12_per_interval: leg.snapshot.funding_rate_e12_per_interval,
+    interval_ms: leg.snapshot.funding_interval_ms,
+  }));
+  if (legs.some((leg) => !leg.contract_id
+    || !Number.isSafeInteger(leg.source_observed_at_ms)
+    || leg.source_observed_at_ms <= 0)) return null;
+  const material = {
+    version: 1,
+    kind: "carry_current_funding_observation",
+    economic_equivalence_id: long.snapshot.economic_equivalence_id,
+    asset: long.snapshot.asset,
+    legs,
+  };
+  return Object.freeze({
+    ...material,
+    source_observed_at_ms_by_venue: Object.freeze(Object.fromEntries(
+      legs.map((leg) => [leg.venue_id, leg.source_observed_at_ms]),
+    )),
+    evidence_commitment: `carry:funding:current:${createHash("sha256")
+      .update(JSON.stringify(material))
+      .digest("hex")}`,
   });
 }
 

@@ -446,7 +446,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarry", "if (status === null)", "margin_runway_status_required_missing");
   requireText("coreCarryTest", "a numeric margin runway without verified status triggers an immediate reduce-only exit", "margin_runway_status_required_test_missing");
   requireText("coreCarry", "previousObservationAsOf === asOf", "carry_funding_flip_distinct_observation_gate_missing");
-  requireText("coreCarryTest", "replayed funding data cannot manufacture consecutive flip confirmations", "carry_funding_flip_replay_test_missing");
+  requireText("coreCarryTest", "new wrapper timestamps cannot manufacture confirmations from replayed funding sources", "carry_funding_flip_replay_test_missing");
   requireText("coreCarry", "export function compileCarryCapitalActionPlan", "carry_capital_action_compiler_missing");
   requireText("coreIndex", "compileCarryCapitalActionPlan", "carry_capital_action_export_missing");
   requireText("coreCarry", "carry_capital_automatic_transfer_forbidden", "carry_capital_transfer_boundary_missing");
@@ -874,6 +874,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("fundingPersistenceTest", "collects every trusted executable route during the normal shadow cycle", "carry_funding_shadow_observer_test_missing");
   requireText("fundingPersistenceTest", "collects funding history without an open browser", "carry_unattended_funding_observer_test_missing");
   requireText("fundingPersistenceTest", "resumes durable funding history after a worker restart", "carry_funding_restart_persistence_test_missing");
+  requireText("fundingPersistence", "currentFundingObservation(evidence)", "carry_current_funding_source_binding_missing");
+  requireText("fundingPersistenceTest", "monitoring commits current venue funding source observations", "carry_current_funding_source_test_missing");
+  requireText("positions", "funding_observation_commitment: fundingObservation?.evidence_commitment", "carry_monitor_funding_commitment_missing");
+  requireText("coreCarry", "funding_observation_evidence_mismatch", "carry_funding_observation_mismatch_gate_missing");
+  requireText("coreCarryTest", "new wrapper timestamps cannot manufacture confirmations from replayed funding sources", "carry_funding_source_replay_test_missing");
+  requireText("releaseMaterial", "releaseFundingObservations", "carry_release_funding_source_gate_missing");
+  requireText("releaseMaterialTest", "refuses wrapper observations that reuse venue funding sources", "carry_release_funding_source_test_missing");
+  requireText("evidenceVerifier", "funding_observation_source_reused", "carry_release_verifier_funding_source_gate_missing");
   requireText("fundingPersistence", 'name: "carry_shadow_observer"', "carry_shadow_observer_supervisor_missing");
   requireText("fundingPersistence", "supervisor.runOnce", "carry_shadow_observer_supervision_missing");
   requireText("fundingPersistenceTest", "supervises five-venue observation failures and stalls", "carry_shadow_observer_supervision_test_missing");
