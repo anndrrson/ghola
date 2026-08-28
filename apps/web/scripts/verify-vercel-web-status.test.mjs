@@ -235,4 +235,6 @@ test("worker authorization drift is surfaced instead of collapsed", () => {
   assert.match(privateAccount, /res\.status === 401/);
   assert.match(privateAccount, /res\.status === 403/);
   assert.match(privateAccount, /errorCode === "venue_access_required"/);
+  assert.match(privateAccount, /Wallet setup is not the problem; no order was sent/);
+  assert.match(privateAccount, /authorization_verified/);
 });

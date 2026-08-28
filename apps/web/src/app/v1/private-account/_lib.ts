@@ -2610,6 +2610,9 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
     balanceSnapshot.available_micro_usdc >= pooledBalanceRequiredMicroUsdc;
   const workerConfigured = Boolean(hyperliquidWorkerConfig(runtime).url) || localHyperliquidPilotEnabled();
   const workerReady = Boolean(runtime?.selected_provider) || localHyperliquidPilotEnabled();
+  const workerProvider = runtime?.providers.find((provider) =>
+    provider.evidence?.worker_authorization_verified === false
+  ) ?? runtime?.providers.find((provider) => provider.id === runtime.preferred_provider) ?? null;
   const liveTinyFill =
     process.env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
     process.env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket";
@@ -2632,7 +2635,7 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
   const nextStep = !hasConnection
     ? "Use Ghola Vault Mode or bring an API wallet."
     : !canConnect
-      ? "Wait for the private execution worker."
+      ? privateWorkerUnavailableNextStep(runtime)
       : !connectionProof
         ? "Run the no-submit connection check."
       : !pooledBalanceReady
@@ -2659,6 +2662,9 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
       ready: workerReady,
       selected_provider: runtime?.selected_provider ?? null,
       blocking_reasons: runtime?.blocking_reasons ?? [],
+      authorization_verified:
+        workerProvider?.evidence?.worker_authorization_verified ?? null,
+      reason: workerProvider?.reason ?? null,
     },
     hyperliquid_connection_status: hyperliquidConnectionStatus,
     no_submit_verification_status: connectionProof ? "verified_no_funds" as const : "not_run" as const,
@@ -2750,7 +2756,7 @@ export async function hyperliquidAccountSnapshotForOwner(
       status: "worker_unavailable",
       account_source: accountSource,
       trading_enabled: false,
-      next_step: "Wait for the private worker to come back online.",
+      next_step: privateWorkerUnavailableNextStep(runtime),
     });
   }
   const body = hasManaged && allocation
@@ -7276,6 +7282,15 @@ function hyperliquidSnapshotStatusFromError(error: string) {
   if (error === "venue_access_required") return "venue_access_required" as const;
   if (error === "needs_funds") return "needs_funds" as const;
   return "worker_unavailable" as const;
+}
+
+function privateWorkerUnavailableNextStep(
+  runtime: Awaited<ReturnType<typeof getPrivateAgentRuntimeStatus>> | null,
+) {
+  if (runtime?.blocking_reasons.includes("private_worker_authorization_mismatch")) {
+    return "Ghola Preview and private worker authorization do not match. Wallet setup is not the problem; no order was sent.";
+  }
+  return "Wait for the private worker to come back online.";
 }
 
 function isHyperliquidAccountSnapshotStatus(value: string): value is
