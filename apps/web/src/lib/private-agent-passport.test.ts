@@ -406,13 +406,14 @@ describe("agent passport venue linking", () => {
     }
   });
 
-  it("forwards all three sealed Carry venues through one no-submit matrix", async () => {
+  it("forwards all three sealed Carry venues through one no-submit matrix and rejects a tampered selected-route proof before readiness", async () => {
     process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
     process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "report_only";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
     const matrixBodies: Record<string, unknown>[] = [];
     const readinessBodies: Record<string, unknown>[] = [];
+    let tamperSelectedOpportunity = false;
     const oldFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -422,10 +423,12 @@ describe("agent passport venue linking", () => {
       }
       if (url === "https://worker.example/carry/preflight-matrix") {
         matrixBodies.push(body);
+        const creationOpportunity = authenticatedCarryOpportunity(String(body.owner_commitment || ""));
+        if (tamperSelectedOpportunity) creationOpportunity.projected_net_value_micro_usdc = 999;
         const selectedResult = {
           no_submit_ready: true,
           transaction_broadcast: false,
-          creation_opportunity: authenticatedCarryOpportunity(String(body.owner_commitment || "")),
+          creation_opportunity: creationOpportunity,
         };
         return new Response(JSON.stringify(authenticatedPrivatePrimeResult(body, "/carry/preflight-matrix", {
           mode: "carry_execution_no_submit_matrix",
@@ -504,6 +507,29 @@ describe("agent passport venue linking", () => {
       }
       expect(matrixBody).not.toHaveProperty("api_private_key");
       expect(matrixBody).not.toHaveProperty("api_wallet_private_key");
+
+      tamperSelectedOpportunity = true;
+      const tampered = await carryRoute(new NextRequest("https://ghola.test/v1/private-account/carry", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer investor-test-token",
+          "content-type": "application/json",
+          origin: "https://ghola.test",
+        },
+        body: JSON.stringify({
+          action: "preflight_matrix",
+          asset: "BTC",
+          notional_usd: "11",
+          horizon_days: "1",
+          selected_long_venue_id: "hyperliquid",
+          selected_short_venue_id: "lighter",
+        }),
+      }));
+      expect(tampered.status).toBe(502);
+      expect(await tampered.json()).toMatchObject({
+        error: "carry_creation_opportunity_worker_authentication_invalid",
+      });
+      tamperSelectedOpportunity = false;
 
       const readinessResponse = await carryRoute(new NextRequest("https://ghola.test/v1/private-account/carry", {
         method: "POST",

@@ -1303,6 +1303,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "selected_long_venue_id", "carry_terminal_selected_pair_matrix_binding_missing");
   requireText("webCarryBuilder", "const selectedResult = asRecord(selectedPair.result)", "carry_terminal_selected_pair_matrix_reuse_missing");
   requireText("webRoute", "carry_selected_pair_worker_binding_invalid", "carry_selected_pair_proxy_binding_missing");
+  requireText("webPassportTest", "rejects a tampered selected-route proof before readiness", "carry_selected_pair_tamper_test_missing");
   requireText("webCarryBuilder", "getCarryExecutionReadiness", "carry_terminal_readiness_restore_missing");
   requireText("webCarryBuilder", "readyStoredReadiness", "carry_terminal_readiness_freshness_missing");
   requireText("webCarryBuilder", "CARRY_EXECUTION_VENUES.every", "carry_terminal_matrix_registry_missing");
