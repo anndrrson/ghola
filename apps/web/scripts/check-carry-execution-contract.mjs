@@ -71,6 +71,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webCarryBuilder: "apps/web/src/components/carry/CarryTerminalBuilder.tsx",
   webCarryBuilderTest: "apps/web/src/components/carry/CarryTerminalBuilder.test.tsx",
   webCarryMarket: "apps/web/src/lib/carry-market.ts",
+  webCarryMarketTest: "apps/web/src/lib/carry-market.test.ts",
   webCarryLiveMarket: "apps/web/src/lib/carry-live-market.ts",
   webCarryLiveMarketTest: "apps/web/src/lib/carry-live-market.test.ts",
   webCsp: "apps/web/src/lib/csp-config.ts",
@@ -92,8 +93,6 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   phalaConfig: "apps/web/src/lib/private-agent-phala.ts",
   phalaConfigTest: "apps/web/src/lib/private-agent-phala.test.ts",
   webPlatformLinkRoute: "apps/web/src/app/v1/private-account/platforms/link/route.ts",
-  webWorkspace: "apps/web/src/components/carry/CarryWorkspace.tsx",
-  webWorkspaceTest: "apps/web/src/components/carry/CarryWorkspace.test.ts",
   asterVaultSeal: "apps/web/src/lib/aster-vault-seal.ts",
   asterVaultSealTest: "apps/web/src/lib/aster-vault-seal.test.ts",
   lighterVaultSeal: "apps/web/src/lib/lighter-vault-seal.ts",
@@ -239,8 +238,6 @@ export function checkCarryExecutionContract(sources) {
   forbidText("webPrivateAccount", 'venueId === "hyperliquid" || venueId === "lighter" || venueId === "aster"', "private_account_policy_registry_duplicated");
   forbidText("webPrivateAccountStore", '["hyperliquid", "lighter", "aster",', "private_agent_registry_duplicated");
   forbidText("webPassport", '["hyperliquid", "lighter", "aster",', "private_agent_passport_registry_duplicated");
-  requireText("webWorkspace", "every(isCarryExecutionVenue)", "carry_workspace_execution_registry_missing");
-  forbidText("webWorkspace", '["aster", "hyperliquid", "lighter"]', "carry_workspace_execution_registry_duplicated");
 
   requireText("webRoute", "const worker = carryShadowWorkerConfig();", "carry_public_shadow_worker_boundary_missing");
   requireText("webRoute", "shadow_url: process.env.GHOLA_CARRY_SHADOW_WORKER_URL", "carry_public_shadow_worker_env_missing");
@@ -645,7 +642,6 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "hasExactCarryFlatReconciliation", "carry_migration_exact_flat_gate_missing");
   requireText("webCarryBuilder", "hasExactCarryFlatReconciliation", "carry_terminal_exact_flat_gate_missing");
   requireText("webCarryBuilderTest", "does not claim flat from aggregate-only reconciliation", "carry_terminal_aggregate_flat_rejection_test_missing");
-  requireText("webWorkspace", "hasExactCarryFlatReconciliation", "carry_workspace_exact_flat_display_missing");
   requireText("webReconciliationTest", "rejects aggregate-only flat claims", "carry_web_exact_flat_test_missing");
   requireText("releaseMaterialTest", "refuses aggregate-only final reconciliation evidence", "carry_release_aggregate_only_rejection_test_missing");
   requireText("releaseMaterialTest", "refuses duplicate, mismatched, or non-flat venue final state", "carry_release_venue_final_state_test_missing");
@@ -932,7 +928,8 @@ export function checkCarryExecutionContract(sources) {
   forbidText("webRoute", 'action === "value_entry"', "carry_web_value_entry_mutation_exposed");
   forbidText("webRoute", 'action === "finalize"', "carry_web_value_finalization_exposed");
   requireText("webRoute", "horizon_days: input.horizon_days", "carry_readiness_route_web_binding_missing");
-  requireText("webPage", "carry=open", "carry_chart_redirect_missing");
+  requireText("webPage", 'redirect("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open")', "carry_integrated_terminal_redirect_missing");
+  forbidText("webPage", "CarryWorkspace", "carry_standalone_workspace_restored");
   requireText("webTradeWorkspace", "CarryChartStrip", "carry_chart_strip_missing");
   requireText("webTradeWorkspace", 'label="Funding / 1h"', "hyperliquid_funding_interval_label_incorrect");
   requireText("webCarryChart", "createCarryLiveMarketStream", "carry_live_stream_missing");
@@ -1035,9 +1032,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryMarket", "CARRY_LATENCY_BUFFER_BPS_PER_LEG", "carry_terminal_latency_buffer_missing");
   requireText("webCarryMarket", "CARRY_STABLE_COLLATERAL_BASIS_RISK_BPS", "carry_terminal_collateral_basis_buffer_missing");
   requireText("webCarryMarket", "applyCarryLivePatches", "carry_incremental_quote_engine_missing");
-  requireText("webWorkspaceTest", "does not let an orderbook patch revive stale funding", "carry_partial_patch_staleness_test_missing");
-  requireText("webWorkspaceTest", "excludes same-ticker contracts when equivalence, basis, or synchronization evidence fails", "carry_terminal_contract_equivalence_test_missing");
-  requireText("webWorkspaceTest", "charges capital, latency, and cross-collateral basis buffers before ranking net value", "carry_terminal_complete_net_cost_test_missing");
+  requireText("webCarryMarketTest", "does not let an orderbook patch revive stale funding", "carry_partial_patch_staleness_test_missing");
+  requireText("webCarryMarketTest", "excludes same-ticker contracts when equivalence, basis, or synchronization evidence fails", "carry_terminal_contract_equivalence_test_missing");
+  requireText("webCarryMarketTest", "charges capital, latency, and cross-collateral basis buffers before ranking net value", "carry_terminal_complete_net_cost_test_missing");
   requireText("webCarryMarket", "export function buildPairCandidates", "carry_pair_enumeration_missing");
   requireText("webCarryMarket", "export function rankCarryCandidatesByNet", "carry_net_ranking_engine_missing");
   requireText("webCarryLiveMarket", "wss://mainnet.zklighter.elliot.ai", "lighter_live_feed_missing");
@@ -1095,12 +1092,10 @@ export function checkCarryExecutionContract(sources) {
   if (verificationGate < 0 || vaultPersistence <= verificationGate) failures.push("carry_vault_persisted_before_verification");
   requireText("asterVaultSeal", "ghola_aster_execution_vault", "aster_vault_seal_missing");
   requireText("lighterVaultSeal", "ghola_lighter_execution_vault", "lighter_vault_seal_missing");
-  requireText("webWorkspace", "CORE_PERP_VENUES.map", "web_shadow_registry_iteration_missing");
-  requireText("webWorkspace", "Collateral basis stress", "user_risk_disclosure_missing");
-  requireText("webWorkspace", "Collateral assets", "user_collateral_assets_missing");
-  requireText("webWorkspace", "Margin runway", "user_margin_runway_missing");
-  requireText("webWorkspace", "Entry requires the separate action below", "carry_submit_boundary_copy_missing");
-  requireText("webWorkspaceTest", "ranks every equivalent pair by net value instead of gross funding alone", "carry_net_route_ranking_test_missing");
+  requireText("webCarryBuilder", 'label="COLLATERAL"', "user_collateral_assets_missing");
+  requireText("webCarryBuilder", "carryCollateralBasisSummary", "user_risk_disclosure_missing");
+  requireText("webCarryBuilderTest", "shows collateral assets and only worker-priced cross-collateral stress", "user_collateral_risk_test_missing");
+  requireText("webCarryMarketTest", "ranks every equivalent pair by net value instead of gross funding alone", "carry_net_route_ranking_test_missing");
 
   requireText("lifecycleTest", "bootstraps one capped candidate only after separate qualification confirmation", "qualification_lifecycle_test_missing");
   requireText("lifecycleTest", "executes every qualified Hyperliquid, Lighter, and Aster pair through one contract", "carry_three_venue_pair_contract_test_missing");

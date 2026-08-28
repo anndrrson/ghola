@@ -9,7 +9,7 @@ import {
   rankCarryCandidatesByNet,
 } from "@/lib/carry-market";
 
-describe("CarryWorkspace model", () => {
+describe("Carry market model", () => {
   it("chooses the lowest funding long and highest funding short while excluding quarantined venues", () => {
     const candidates = buildCandidates([
       venue("hyperliquid", snapshot("hyperliquid", "BTC", 10_000_000, "degraded")),

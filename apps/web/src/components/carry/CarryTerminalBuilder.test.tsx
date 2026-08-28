@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   carryCreationProofFreshness,
+  carryCollateralBasisSummary,
   CarryTerminalBuilder,
   carryCapitalEfficiencySummary,
   carryFundingPersistenceSummary,
@@ -205,6 +206,26 @@ describe("CarryTerminalBuilder", () => {
       fresh: false,
       expires_at_ms: null,
     });
+  });
+
+  it("shows collateral assets and only worker-priced cross-collateral stress", () => {
+    expect(carryCollateralBasisSummary(candidate(), null)).toEqual({
+      value: "USDC/USDC · SAME",
+      tone: "good",
+    });
+    expect(carryCollateralBasisSummary(candidate(), {
+      long_collateral_asset: "USDC",
+      short_collateral_asset: "USDT",
+      collateral_basis_risk_micro_usdc: 500_000,
+    })).toEqual({
+      value: "USDC/USDT · $0.5 STRESS",
+      tone: "warn",
+    });
+    expect(carryCollateralBasisSummary(candidate(), {
+      long_collateral_asset: "USDC",
+      short_collateral_asset: "USDT",
+      collateral_basis_risk_micro_usdc: 0,
+    })).toEqual({ value: "UNVERIFIED", tone: "bad" });
   });
 
   it("shows only commitment-backed persistent funding as durable", () => {

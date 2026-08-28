@@ -312,6 +312,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const grossFunding = carryTerminalGrossFunding(candidate, proof ? proofOpportunity || {} : null);
   const venueMinimumMargin = carryVenueMinimumMarginSummary(model, proof);
   const openingCapital = carryOpeningCapitalSummary(model, proof);
+  const collateralBasis = carryCollateralBasisSummary(candidate, proofOpportunity);
   const stressCapital = carryStressCapitalSummary(proof);
   const portfolioCapital = carryPortfolioCapitalSummary(portfolioCapitalPlan);
   const portfolioRunway = carryPortfolioRunwaySummary(portfolioCapitalPlan);
@@ -612,6 +613,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         {portfolioRunway ? <Metric label="PORTFOLIO RUNWAY" value={portfolioRunway.value} tone={portfolioRunway.tone} /> : null}
         <Metric label="CARRY SIGNAL" value={carrySignal.value} tone={carrySignal.tone} />
         <Metric label="OWNER CAPITAL" value={displayedCapital.value} tone={displayedCapital.tone} />
+        <Metric label="COLLATERAL" value={collateralBasis.value} tone={collateralBasis.tone} />
         <Metric label="LEDGER" value={ledger.value} tone={ledger.tone} />
         <Metric label="EXEC Δ" value={ledger.execution} tone={ledger.executionTone} />
         <Metric label="SOURCE SYNC" value={proofOpportunity ? formatSkew(proofOpportunity.contract_data_skew_ms) : "PENDING"} />
@@ -753,6 +755,29 @@ export function carryCreationProofFreshness(
     fresh: nowMs <= expiresAtMs,
     expires_at_ms: expiresAtMs,
   } as const;
+}
+
+export function carryCollateralBasisSummary(
+  candidate: CarryCandidate,
+  opportunity: Record<string, unknown> | null,
+) {
+  const longAsset = stringValue(opportunity?.long_collateral_asset) || candidate.long.collateral_asset || null;
+  const shortAsset = stringValue(opportunity?.short_collateral_asset) || candidate.short.collateral_asset || null;
+  if (!longAsset || !shortAsset) return { value: "UNVERIFIED", tone: "bad" as const };
+  if (!opportunity) {
+    return longAsset === shortAsset
+      ? { value: `${longAsset}/${shortAsset} · SAME`, tone: "good" as const }
+      : { value: `${longAsset}/${shortAsset} · BASIS EST`, tone: "warn" as const };
+  }
+  const riskUsd = microUsdValue(opportunity.collateral_basis_risk_micro_usdc);
+  if (riskUsd === null
+    || (longAsset === shortAsset && riskUsd !== 0)
+    || (longAsset !== shortAsset && riskUsd <= 0)) {
+    return { value: "UNVERIFIED", tone: "bad" as const };
+  }
+  return riskUsd === 0
+    ? { value: `${longAsset}/${shortAsset} · SAME`, tone: "good" as const }
+    : { value: `${longAsset}/${shortAsset} · ${formatUsd(riskUsd)} STRESS`, tone: "warn" as const };
 }
 
 export function carryTerminalGrossFunding(

@@ -85,6 +85,26 @@ test("rejects a terminal that leaves expired creation proof actionable", () => {
   );
 });
 
+test("rejects restoring the retired standalone Carry workspace", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPage: 'import { CarryWorkspace } from "@/components/carry/CarryWorkspace"; export default CarryWorkspace;',
+    }),
+    /carry_integrated_terminal_redirect_missing|carry_standalone_workspace_restored/,
+  );
+});
+
+test("rejects an integrated terminal that hides collateral-basis risk", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replace('label="COLLATERAL"', 'label="ACCOUNT"'),
+    }),
+    /user_collateral_assets_missing/,
+  );
+});
+
 test("rejects background Carry failures that are no longer supervised", () => {
   assert.throws(
     () => checkCarryExecutionContract({
