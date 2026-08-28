@@ -135,6 +135,9 @@ export function checkCarryExecutionContract(sources) {
   const requireText = (key, value, code) => {
     if (!String(sources[key] || "").includes(value)) failures.push(code);
   };
+  const requireCount = (key, value, count, code) => {
+    if (String(sources[key] || "").split(value).length - 1 < count) failures.push(code);
+  };
   const forbidText = (key, value, code) => {
     if (String(sources[key] || "").includes(value)) failures.push(code);
   };
@@ -846,6 +849,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("runtimeRiskPolicies", "transaction_broadcast: false", "carry_runtime_route_broadcast_gate_missing");
   requireText("runtimeRiskPoliciesTest", "unsupported runtime policy bindings", "carry_runtime_route_fail_closed_test_missing");
   requireText("releaseMaterial", "export async function recordCompletedCarryLifecycleProof", "carry_lifecycle_proof_recording_missing");
+  requireText("releaseMaterial", "carryLifecycleProofKey(ownerCommitment, imageDigest, material.position.asset)", "carry_lifecycle_proof_asset_record_binding_missing");
+  requireText("releaseMaterial", "carryLifecycleProofKey(ownerCommitment, imageDigest, normalizedAsset)", "carry_lifecycle_proof_asset_read_binding_missing");
+  requireText("releaseMaterial", "asset: normalizedAsset", "carry_lifecycle_proof_asset_assessment_binding_missing");
+  requireCount("server", "readCompletedCarryLifecycleProof({\n            state,\n            owner_commitment: body.owner_commitment,\n            asset: body.asset,", 2, "carry_lifecycle_proof_asset_http_binding_missing");
+  requireText("releaseMaterialTest", "keeps lifecycle proof storage isolated per asset", "carry_lifecycle_proof_asset_isolation_test_missing");
   requireText("releaseMaterial", "final_flat_zero_orders: true", "carry_lifecycle_proof_flat_gate_missing");
   requireText("releaseMaterial", "proof?.broadcast_performed !== true", "carry_lifecycle_proof_live_broadcast_gate_missing");
   requireText("releaseMaterial", "proof.evidence_commitment === lifecycleProofCommitment(proof)", "carry_lifecycle_proof_integrity_gate_missing");

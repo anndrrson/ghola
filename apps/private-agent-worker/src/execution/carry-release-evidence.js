@@ -59,27 +59,32 @@ export async function recordCompletedCarryLifecycleProof({
     proof,
     owner_commitment: ownerCommitment,
     image_digest: imageDigest,
+    asset: material.position.asset,
     now_ms: nowMs,
   });
   if (!assessed.ok) return assessed;
-  await state.putIdempotency(carryLifecycleProofKey(ownerCommitment, imageDigest), structuredClone(proof));
+  await state.putIdempotency(carryLifecycleProofKey(ownerCommitment, imageDigest, material.position.asset), structuredClone(proof));
   return { ok: true, proof: assessed.proof };
 }
 
 export async function readCompletedCarryLifecycleProof({
   state,
   owner_commitment: ownerCommitment,
+  asset,
   env = process.env,
   now_ms: nowMs = Date.now(),
 }) {
   const imageDigest = runtimeCarryQualificationImageDigest(env);
   if (!imageDigest) return denied("carry_lifecycle_proof_image_missing");
+  const normalizedAsset = String(asset || "").trim().toUpperCase();
+  if (!/^[A-Z0-9]{1,20}$/.test(normalizedAsset)) return denied("carry_lifecycle_proof_asset_invalid");
   if (typeof state?.getIdempotency !== "function") return denied("carry_lifecycle_proof_state_unavailable");
-  const stored = await state.getIdempotency(carryLifecycleProofKey(ownerCommitment, imageDigest));
+  const stored = await state.getIdempotency(carryLifecycleProofKey(ownerCommitment, imageDigest, normalizedAsset));
   return assessCompletedCarryLifecycleProof({
     proof: stored?.receipt,
     owner_commitment: ownerCommitment,
     image_digest: imageDigest,
+    asset: normalizedAsset,
     now_ms: nowMs,
   });
 }
@@ -88,6 +93,7 @@ export function assessCompletedCarryLifecycleProof({
   proof,
   owner_commitment: ownerCommitment,
   image_digest: imageDigest,
+  asset,
   now_ms: nowMs = Date.now(),
 }) {
   if (!proof || typeof proof !== "object" || Array.isArray(proof)) return denied("carry_lifecycle_proof_missing");
@@ -100,6 +106,7 @@ export function assessCompletedCarryLifecycleProof({
     && proof.network === "mainnet"
     && proof.owner_commitment === ownerCommitment
     && proof.worker_image_digest === imageDigest
+    && (!asset || proof.asset === String(asset).trim().toUpperCase())
     && commitment(proof.position_id)
     && /^[A-Z0-9]{1,20}$/.test(String(proof.asset || ""))
     && venueIds.length === 2
@@ -127,8 +134,8 @@ export function assessCompletedCarryLifecycleProof({
   return { ok: true, proof: Object.freeze(structuredClone(proof)) };
 }
 
-export function carryLifecycleProofKey(ownerCommitment, imageDigest) {
-  return `carry:lifecycle-proof:${digest(`${ownerCommitment}\0${imageDigest}`).slice(0, 40)}`;
+export function carryLifecycleProofKey(ownerCommitment, imageDigest, asset) {
+  return `carry:lifecycle-proof:${digest(`${ownerCommitment}\0${imageDigest}\0${String(asset || "").toUpperCase()}`).slice(0, 40)}`;
 }
 
 export async function buildCompletedCarryReleaseMaterial({

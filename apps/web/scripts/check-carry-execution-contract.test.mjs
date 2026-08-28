@@ -59,6 +59,29 @@ test("rejects release proof that accepts manual-only monitoring", () => {
   );
 });
 
+test("rejects lifecycle proof storage that is not isolated per asset", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replace(
+        "carryLifecycleProofKey(ownerCommitment, imageDigest, material.position.asset)",
+        "carryLifecycleProofKey(ownerCommitment, imageDigest)",
+      ),
+    }),
+    /carry_lifecycle_proof_asset_record_binding_missing/,
+  );
+});
+
+test("rejects an HTTP readiness path that omits lifecycle asset scope", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replace("            asset: body.asset,", "            asset: undefined,"),
+    }),
+    /carry_lifecycle_proof_asset_http_binding_missing/,
+  );
+});
+
 test("rejects release proof that accepts one unattended observation", () => {
   assert.throws(
     () => checkCarryExecutionContract({

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assessCompletedCarryLifecycleProof,
   buildCompletedCarryReleaseMaterial,
+  carryLifecycleProofKey,
   readCompletedCarryLifecycleProof,
   recordCompletedCarryLifecycleProof,
 } from "../src/execution/carry-release-evidence.js";
@@ -91,12 +93,20 @@ test("records a durable owner- and image-bound paired lifecycle proof", async ()
   const loaded = await readCompletedCarryLifecycleProof({
     state: fixture.state,
     owner_commitment: OWNER,
+    asset: "HYPE",
     env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
     now_ms: NOW + 1,
   });
   assert.equal(loaded.ok, true);
   assert.equal(loaded.proof.position_id, fixture.record.position.position_id);
   assert.equal(loaded.proof.worker_image_digest, IMAGE);
+  assert.equal(assessCompletedCarryLifecycleProof({
+    proof: loaded.proof,
+    owner_commitment: OWNER,
+    image_digest: IMAGE,
+    asset: "BTC",
+    now_ms: NOW + 1,
+  }).error, "carry_lifecycle_proof_invalid");
 });
 
 test("does not reuse lifecycle proof across owners or worker images", async () => {
@@ -111,17 +121,38 @@ test("does not reuse lifecycle proof across owners or worker images", async () =
   const wrongOwner = await readCompletedCarryLifecycleProof({
     state: fixture.state,
     owner_commitment: "owner:carry:release:other",
+    asset: "HYPE",
     env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
     now_ms: NOW,
   });
   const wrongImage = await readCompletedCarryLifecycleProof({
     state: fixture.state,
     owner_commitment: OWNER,
+    asset: "HYPE",
     env: { PHALA_CVM_IMAGE_DIGEST: "sha256:123456abcdef" },
+    now_ms: NOW,
+  });
+  const wrongAsset = await readCompletedCarryLifecycleProof({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    asset: "BTC",
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
     now_ms: NOW,
   });
   assert.equal(wrongOwner.error, "carry_lifecycle_proof_missing");
   assert.equal(wrongImage.error, "carry_lifecycle_proof_missing");
+  assert.equal(wrongAsset.error, "carry_lifecycle_proof_missing");
+});
+
+test("keeps lifecycle proof storage isolated per asset", () => {
+  assert.notEqual(
+    carryLifecycleProofKey(OWNER, IMAGE, "BTC"),
+    carryLifecycleProofKey(OWNER, IMAGE, "ETH"),
+  );
+  assert.equal(
+    carryLifecycleProofKey(OWNER, IMAGE, "hype"),
+    carryLifecycleProofKey(OWNER, IMAGE, "HYPE"),
+  );
 });
 
 test("refuses to manufacture proof without a monitoring period", async () => {

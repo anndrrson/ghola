@@ -2989,6 +2989,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           readCompletedCarryLifecycleProof({
             state,
             owner_commitment: body.owner_commitment,
+            asset: body.asset,
             now_ms: nowMs,
           }),
         ]);
@@ -3072,6 +3073,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           readCompletedCarryLifecycleProof({
             state,
             owner_commitment: body.owner_commitment,
+            asset: body.asset,
             now_ms: nowMs,
           }),
         ]);
