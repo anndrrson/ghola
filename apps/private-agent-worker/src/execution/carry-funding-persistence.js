@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   CARRY_EXECUTION_VENUES,
+  CORE_PERP_VENUES,
   evaluatePerpContractPairBasis,
 } from "@ghola/execution-core";
 import { observeCarryShadowQualification } from "./carry-shadow-qualification.js";
@@ -65,16 +66,32 @@ export async function runCarryFundingObservationTick({
     routing_advantage: routingAdvantage,
     observed_at_ms: nowMs,
   });
+  const currentFeedSetComplete = coreFeedSetComplete(venues, normalizedAssets);
   return Object.freeze({
     version: 1,
-    ok: fundingPersistence.observed_route_count > 0,
+    ok: fundingPersistence.observed_route_count > 0 && currentFeedSetComplete,
+    error: currentFeedSetComplete ? null : "carry_shadow_feed_set_incomplete",
     transaction_broadcast: false,
     observed_at_ms: nowMs,
     assets: Object.freeze(normalizedAssets),
+    current_feed_set_complete: currentFeedSetComplete,
     funding_persistence: fundingPersistence,
     shadow_qualification: shadowQualification,
     routing_advantage: routingAdvantage,
     shadow_snapshot: shadowSnapshot,
+  });
+}
+
+function coreFeedSetComplete(venues, assets) {
+  const rows = Array.isArray(venues) ? venues : [];
+  const requestedAssets = new Set(assets);
+  return CORE_PERP_VENUES.every((venueId) => {
+    const matches = rows.filter((row) => row?.venue_id === venueId);
+    if (matches.length !== 1 || matches[0].ok !== true) return false;
+    const observedAssets = new Set((Array.isArray(matches[0].snapshots) ? matches[0].snapshots : [])
+      .map((snapshot) => snapshot?.asset)
+      .filter((asset) => requestedAssets.has(asset)));
+    return observedAssets.size === requestedAssets.size;
   });
 }
 

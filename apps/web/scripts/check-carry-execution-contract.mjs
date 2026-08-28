@@ -1137,6 +1137,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryMarketTest", "refuses a routing-edge claim when exact anchor costs are unavailable", "carry_routing_advantage_fail_closed_test_missing");
   requireText("routingAdvantage", "evaluateCarryOpportunity", "carry_routing_advantage_core_model_missing");
   requireText("fundingPersistence", "conservative_funding_rate_e12_by_venue", "carry_routing_advantage_conservative_funding_missing");
+  requireText("fundingPersistence", "current_feed_set_complete: currentFeedSetComplete", "carry_shadow_observer_complete_feed_health_missing");
+  requireText("fundingPersistence", '"carry_shadow_feed_set_incomplete"', "carry_shadow_observer_complete_feed_error_missing");
   requireText("routingAdvantage", 'kind: "carry_routing_advantage"', "carry_routing_advantage_worker_evidence_missing");
   requireText("routingAdvantage", "account_fee_tier_included: false", "carry_routing_advantage_fee_boundary_missing");
   requireText("routingAdvantage", "execution_ready: false", "carry_routing_advantage_execution_boundary_missing");

@@ -244,6 +244,8 @@ test("collects funding history without an open browser", async () => {
   });
 
   assert.equal(result.ok, true);
+  assert.equal(result.current_feed_set_complete, true);
+  assert.equal(result.error, null);
   assert.equal(result.transaction_broadcast, false);
   assert.deepEqual(result.assets, ["BTC"]);
   assert.deepEqual(request.assets, ["BTC"]);
@@ -255,4 +257,35 @@ test("collects funding history without an open browser", async () => {
   assert.equal(result.shadow_snapshot.stored, true);
   assert.equal(result.shadow_snapshot.ready, false);
   assert.equal(state.rows.size, 8);
+});
+
+test("degrades observer health when any core venue feed is missing", async (t) => {
+  const state = stateStore();
+  const loop = startCarryFundingObservationLoop({
+    state,
+    now: () => NOW,
+    fetchPerpShadowSet: async () => ["hyperliquid", "lighter", "aster", "edgex"].map((venueId) => ({
+      venue_id: venueId,
+      ok: true,
+      snapshots: [shadowSnapshot(venueId)],
+    })),
+    env: {
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ENABLED: "true",
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_INITIAL_DELAY_MS: "60000",
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_INTERVAL_MS: "15000",
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_STALL_MS: "30000",
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ASSETS: "BTC",
+      PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SAMPLES: "1",
+      PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SPAN_MS: "0",
+    },
+  });
+  t.after(() => loop.stop());
+
+  const result = await loop.runNow();
+  assert.equal(result.ok, false);
+  assert.equal(result.current_feed_set_complete, false);
+  assert.equal(result.error, "carry_shadow_feed_set_incomplete");
+  assert.equal(result.funding_persistence.observed_route_count, 6);
+  assert.equal(loop.health().status, "degraded");
+  assert.equal(loop.health().last_error_code, "carry_shadow_feed_set_incomplete");
 });
