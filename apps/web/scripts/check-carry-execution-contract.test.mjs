@@ -195,6 +195,26 @@ test("rejects a terminal that trusts aggregate health without recovery health", 
   );
 });
 
+test("rejects five-venue observation detached from worker supervision", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replace("observation: carryFundingObservationLoop", "observation: null"),
+    }),
+    /carry_observation_server_health_missing/,
+  );
+});
+
+test("rejects a terminal that trusts aggregate health without observation health", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replace('&& observation.status === "healthy"', ""),
+    }),
+    /carry_terminal_observation_health_missing/,
+  );
+});
+
 test("rejects release proof that accepts manual-only monitoring", () => {
   assert.throws(
     () => checkCarryExecutionContract({

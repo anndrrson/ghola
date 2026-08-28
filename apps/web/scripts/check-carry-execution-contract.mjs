@@ -782,6 +782,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("fundingPersistenceTest", "rejects carry whose historical funding advantage is not persistent", "carry_funding_persistence_test_missing");
   requireText("fundingPersistenceTest", "collects every trusted executable route during the normal shadow cycle", "carry_funding_shadow_observer_test_missing");
   requireText("fundingPersistenceTest", "collects funding history without an open browser", "carry_unattended_funding_observer_test_missing");
+  requireText("fundingPersistence", 'name: "carry_shadow_observer"', "carry_shadow_observer_supervisor_missing");
+  requireText("fundingPersistence", "supervisor.runOnce", "carry_shadow_observer_supervision_missing");
+  requireText("fundingPersistenceTest", "supervises five-venue observation failures and stalls", "carry_shadow_observer_supervision_test_missing");
   requireText("phalaConfig", "expectedCarryWorkerConfig", "carry_runtime_config_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_POSITION_LIVE_SUBMIT', "carry_live_submit_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_QUALIFICATION_PILOT_ENABLED', "carry_pilot_compose_missing");
@@ -793,6 +796,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MONITOR_INTERVAL_MS', "carry_monitor_interval_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ENABLED', "carry_shadow_observer_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_INTERVAL_MS', "carry_shadow_observer_interval_compose_missing");
+  requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_STALL_MS', "carry_shadow_observer_stall_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_SAMPLES', "carry_shadow_qualification_samples_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_MAX_AGE_MS', "carry_shadow_qualification_freshness_compose_missing");
   requireText("phalaConfig", 'PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY', "carry_monitor_concurrency_compose_missing");
@@ -819,7 +823,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("multiLegOrchestratorTest", "supervises multi-leg recovery failures and stalls", "carry_recovery_supervision_test_missing");
   requireText("loopSupervisor", "recovery: recoveryHealth", "carry_recovery_aggregate_missing");
   requireText("loopSupervisorTest", "does not mask a degraded recovery loop", "carry_recovery_aggregate_test_missing");
+  requireText("loopSupervisorTest", "does not mask a failed market observation loop", "carry_observation_aggregate_test_missing");
   requireText("server", "recovery: multiLegRecoveryLoop", "carry_recovery_server_health_missing");
+  requireText("server", "observation: carryFundingObservationLoop", "carry_observation_server_health_missing");
   requireText("executor", "const audit = await ensureRestartAudit()", "carry_restart_audit_retry_missing");
   requireText("lifecycleTest", "automatic exit retries a failed restart audit before any execution sweep", "carry_restart_audit_retry_test_missing");
   requireText("server", "carry_supervision: carrySupervision", "carry_supervision_health_missing");
@@ -828,6 +834,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "carrySupervisionSummary", "carry_terminal_supervision_missing");
   requireText("webCarryBuilder", "RISK ENGINE NOT READY", "carry_terminal_supervision_gate_missing");
   requireText("webCarryBuilder", 'recovery.status === "healthy"', "carry_terminal_recovery_health_missing");
+  requireText("webCarryBuilder", 'observation.status === "healthy"', "carry_terminal_observation_health_missing");
   requireText("webCarryBuilderTest", "blocks a draft entry when monitoring, automatic exit, or recovery is degraded", "carry_terminal_supervision_test_missing");
   requireText("webCarryBuilderTest", "RECOVERY DEGRADED", "carry_terminal_recovery_health_test_missing");
   requireText("loopSupervisorTest", "fails closed when a successful loop stops making progress", "carry_loop_stall_test_missing");

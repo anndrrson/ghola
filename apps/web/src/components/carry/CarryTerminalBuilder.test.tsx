@@ -1006,7 +1006,7 @@ describe("CarryTerminalBuilder", () => {
   it("summarizes monitoring, automatic-exit, and recovery supervision independently", () => {
     expect(carrySupervisionSummary(healthySupervision())).toEqual({
       ready: true,
-      value: "MON/EXIT/REC LIVE",
+      value: "DATA/MON/EXIT/REC LIVE",
       tone: "good",
     });
     expect(carrySupervisionSummary({
@@ -1014,6 +1014,7 @@ describe("CarryTerminalBuilder", () => {
       monitoring: { status: "failed" },
       execution: { status: "degraded" },
       recovery: { status: "healthy" },
+      observation: { status: "healthy" },
     })).toEqual({
       ready: false,
       value: "MONITOR + EXIT DEGRADED",
@@ -1024,6 +1025,7 @@ describe("CarryTerminalBuilder", () => {
       monitoring: { status: "stalled" },
       execution: { status: "healthy" },
       recovery: { status: "healthy" },
+      observation: { status: "healthy" },
     })).toEqual({
       ready: false,
       value: "MONITOR DEGRADED",
@@ -1034,6 +1036,7 @@ describe("CarryTerminalBuilder", () => {
       status: "healthy",
       monitoring: { status: "healthy" },
       execution: { status: "healthy" },
+      recovery: { status: "healthy" },
     })).toEqual({
       ready: false,
       value: "UNVERIFIED",
@@ -1130,6 +1133,7 @@ function healthySupervision() {
     monitoring: { status: "healthy", run_count: 2, consecutive_failures: 0 },
     execution: { status: "healthy", run_count: 2, consecutive_failures: 0 },
     recovery: { status: "healthy", run_count: 2, consecutive_failures: 0 },
+    observation: { status: "healthy", run_count: 2, consecutive_failures: 0 },
   };
 }
 

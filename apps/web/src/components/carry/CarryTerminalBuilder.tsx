@@ -1409,19 +1409,22 @@ export function carrySupervisionSummary(value: Record<string, unknown>): {
   const monitoring = asRecord(value.monitoring);
   const execution = asRecord(value.execution);
   const recovery = asRecord(value.recovery);
+  const observation = asRecord(value.observation);
   if (
     value.ready === true
     && value.status === "healthy"
     && monitoring.status === "healthy"
     && execution.status === "healthy"
     && recovery.status === "healthy"
+    && observation.status === "healthy"
   ) {
-    return { ready: true, value: "MON/EXIT/REC LIVE", tone: "good" };
+    return { ready: true, value: "DATA/MON/EXIT/REC LIVE", tone: "good" };
   }
   const degraded = [
     monitoring.status === "degraded" || monitoring.status === "failed" || monitoring.status === "stalled" ? "MONITOR" : null,
     execution.status === "degraded" || execution.status === "failed" || execution.status === "stalled" ? "EXIT" : null,
     recovery.status === "degraded" || recovery.status === "failed" || recovery.status === "stalled" ? "RECOVERY" : null,
+    observation.status === "degraded" || observation.status === "failed" || observation.status === "stalled" ? "DATA" : null,
   ].filter(Boolean);
   if (degraded.length) return { ready: false, value: `${degraded.join(" + ")} DEGRADED`, tone: "bad" };
   if (value.status === "starting") return { ready: false, value: "STARTING", tone: "warn" };

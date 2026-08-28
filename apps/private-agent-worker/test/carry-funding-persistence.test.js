@@ -4,6 +4,7 @@ import {
   observeCarryFundingPersistence,
   observeCarryFundingUniverse,
   runCarryFundingObservationTick,
+  startCarryFundingObservationLoop,
 } from "../src/execution/carry-funding-persistence.js";
 
 const NOW = 1_800_000_000_000;
@@ -60,6 +61,47 @@ function shadowSnapshot(venueId, overrides = {}) {
     ...overrides,
   };
 }
+
+test("supervises five-venue observation failures and stalls", async (t) => {
+  const state = stateStore();
+  let nowMs = NOW;
+  let fail = true;
+  const loop = startCarryFundingObservationLoop({
+    state,
+    now: () => nowMs,
+    fetchPerpShadowSet: async () => {
+      if (fail) throw new Error("provider secret");
+      return ["hyperliquid", "lighter", "aster", "edgex", "dydx"].map((venueId) => ({
+        venue_id: venueId,
+        ok: true,
+        snapshots: [shadowSnapshot(venueId, {
+          as_of_ms: nowMs,
+          source_observed_at_ms: { funding: nowMs },
+        })],
+      }));
+    },
+    env: {
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ENABLED: "true",
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_INITIAL_DELAY_MS: "60000",
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_INTERVAL_MS: "15000",
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_STALL_MS: "30000",
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ASSETS: "BTC",
+      PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SAMPLES: "1",
+      PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SPAN_MS: "0",
+    },
+  });
+  t.after(() => loop.stop());
+
+  assert.equal((await loop.runNow()).error, "carry_shadow_observer_threw");
+  assert.equal(loop.health().status, "failed");
+  assert.doesNotMatch(JSON.stringify(loop.health()), /provider secret/);
+  fail = false;
+  assert.equal((await loop.runNow()).ok, true);
+  assert.equal(loop.health().status, "healthy");
+  nowMs += 30_001;
+  assert.equal(loop.health().status, "stalled");
+  assert.equal(loop.health().last_error_code, "carry_shadow_observer_stalled");
+});
 
 test("requires durable storage for opening funding evidence", async () => {
   const result = await observeCarryFundingPersistence({ state: {}, evidence: evidence(), now_ms: NOW });

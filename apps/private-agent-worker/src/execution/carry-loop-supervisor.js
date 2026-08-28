@@ -99,11 +99,12 @@ export function disabledCarryLoopHealth(name) {
   });
 }
 
-export function carrySupervisionHealth({ monitoring, execution, recovery }) {
+export function carrySupervisionHealth({ monitoring, execution, recovery, observation }) {
   const monitorHealth = monitoring?.health?.() || disabledCarryLoopHealth("carry_monitor");
   const executionHealth = execution?.health?.() || disabledCarryLoopHealth("carry_execution");
   const recoveryHealth = recovery?.health?.() || disabledCarryLoopHealth("multi_leg_recovery");
-  const statuses = [monitorHealth.status, executionHealth.status, recoveryHealth.status];
+  const observationHealth = observation?.health?.() || disabledCarryLoopHealth("carry_shadow_observer");
+  const statuses = [monitorHealth.status, executionHealth.status, recoveryHealth.status, observationHealth.status];
   const status = statuses.some((value) => value === "failed" || value === "degraded" || value === "stalled")
     ? "degraded"
     : statuses.some((value) => value === "disabled")
@@ -119,6 +120,7 @@ export function carrySupervisionHealth({ monitoring, execution, recovery }) {
     monitoring: monitorHealth,
     execution: executionHealth,
     recovery: recoveryHealth,
+    observation: observationHealth,
   });
 }
 

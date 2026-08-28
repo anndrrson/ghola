@@ -123,12 +123,14 @@ test("aggregates every critical loop without masking one degraded loop", () => {
     monitoring: healthy("carry_monitor"),
     execution: degraded,
     recovery: healthy("multi_leg_recovery"),
+    observation: healthy("carry_shadow_observer"),
   }), {
     status: "degraded",
     ready: false,
     monitoring: { ...disabledCarryLoopHealth("carry_monitor"), status: "healthy" },
     execution: degraded.health(),
     recovery: { ...disabledCarryLoopHealth("multi_leg_recovery"), status: "healthy" },
+    observation: { ...disabledCarryLoopHealth("carry_shadow_observer"), status: "healthy" },
   });
   assert.equal(carrySupervisionHealth({ monitoring: null, execution: null }).status, "disabled");
 });
@@ -146,8 +148,29 @@ test("does not mask a degraded recovery loop", () => {
     monitoring: healthy("carry_monitor"),
     execution: healthy("carry_execution"),
     recovery,
+    observation: healthy("carry_shadow_observer"),
   });
   assert.equal(supervision.status, "degraded");
   assert.equal(supervision.ready, false);
   assert.equal(supervision.recovery.last_error_code, "multi_leg_recovery_stalled");
+});
+
+test("does not mask a failed market observation loop", () => {
+  const healthy = (name) => ({ health: () => ({ ...disabledCarryLoopHealth(name), status: "healthy" }) });
+  const observation = {
+    health: () => ({
+      ...disabledCarryLoopHealth("carry_shadow_observer"),
+      status: "failed",
+      last_error_code: "carry_shadow_observer_threw",
+    }),
+  };
+  const supervision = carrySupervisionHealth({
+    monitoring: healthy("carry_monitor"),
+    execution: healthy("carry_execution"),
+    recovery: healthy("multi_leg_recovery"),
+    observation,
+  });
+  assert.equal(supervision.status, "degraded");
+  assert.equal(supervision.ready, false);
+  assert.equal(supervision.observation.last_error_code, "carry_shadow_observer_threw");
 });

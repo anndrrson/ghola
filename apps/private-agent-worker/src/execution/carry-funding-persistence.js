@@ -5,6 +5,7 @@ import {
 } from "@ghola/execution-core";
 import { observeCarryShadowQualification } from "./carry-shadow-qualification.js";
 import { buildCarryRoutingAdvantageEvidence } from "./carry-routing-advantage.js";
+import { createCarryLoopSupervisor, disabledCarryLoopHealth } from "./carry-loop-supervisor.js";
 import { writeCarryShadowSnapshot } from "./carry-shadow-snapshot.js";
 
 const HOUR_MS = 3_600_000;
@@ -84,7 +85,12 @@ export function startCarryFundingObservationLoop({
   now = () => Date.now(),
 } = {}) {
   if (String(env.PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ENABLED ?? "true").toLowerCase() === "false") {
-    return { stop() {} };
+    const health = disabledCarryLoopHealth("carry_shadow_observer");
+    return {
+      runNow: async () => ({ ok: false, error: "carry_shadow_observer_disabled" }),
+      health: () => health,
+      stop() {},
+    };
   }
   const intervalMs = boundedEnvInteger(
     env.PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_INTERVAL_MS,
@@ -98,30 +104,45 @@ export function startCarryFundingObservationLoop({
     60_000,
     5_000,
   );
+  const stallAfterMs = boundedEnvInteger(
+    env.PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_STALL_MS,
+    intervalMs,
+    60 * 60_000,
+    intervalMs * 3,
+  );
   const assets = String(env.PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ASSETS || DEFAULT_OBSERVER_ASSETS.join(","))
     .split(",");
+  const supervisor = createCarryLoopSupervisor({
+    name: "carry_shadow_observer",
+    now,
+    maxSilenceMs: stallAfterMs,
+    run: () => runCarryFundingObservationTick({
+      state,
+      fetchPerpShadowSet,
+      assets,
+      now_ms: now(),
+      env,
+    }),
+  });
   let timer = null;
   let stopped = false;
   const schedule = (delay) => {
     if (stopped) return;
     timer = setTimeout(async () => {
-      await runCarryFundingObservationTick({
-        state,
-        fetchPerpShadowSet,
-        assets,
-        now_ms: now(),
-        env,
-      }).catch(() => null);
+      await supervisor.runOnce();
       schedule(intervalMs);
     }, delay);
     timer.unref?.();
   };
   schedule(initialDelayMs);
   return {
+    runNow: supervisor.runOnce,
+    health: supervisor.health,
     stop() {
       stopped = true;
       if (timer) clearTimeout(timer);
       timer = null;
+      supervisor.stop();
     },
   };
 }
