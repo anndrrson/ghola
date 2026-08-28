@@ -411,6 +411,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("coreCarryTest", "quarantines stale evidence and allocates nothing", "carry_portfolio_capital_stale_test_missing");
   requireText("coreCarry", "export function compileCarryPortfolioValueReport", "carry_portfolio_value_compiler_missing");
   requireText("coreIndex", "compileCarryPortfolioValueReport", "carry_portfolio_value_export_missing");
+  requireText("coreIndex", "normalizeCarryLifecycleValueAttribution", "carry_lifecycle_value_attribution_export_missing");
+  requireText("coreCarry", "export function normalizeCarryLifecycleValueAttribution", "carry_lifecycle_value_attribution_core_missing");
   requireText("coreCarry", "carry_portfolio_value_capital_authority_boundary", "carry_portfolio_value_authority_gate_missing");
   requireText("coreCarry", "value_proof_status: valueProofStatus", "carry_portfolio_value_proof_status_missing");
   requireText("coreCarry", "potential_new_cash_avoided_micro_usdc: reallocation", "carry_portfolio_cash_avoidance_missing");
@@ -857,12 +859,17 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterial", "final_flat_zero_orders: true", "carry_lifecycle_proof_flat_gate_missing");
   requireText("releaseMaterial", "proof?.broadcast_performed !== true", "carry_lifecycle_proof_live_broadcast_gate_missing");
   requireText("releaseMaterial", "proof.evidence_commitment === lifecycleProofCommitment(proof)", "carry_lifecycle_proof_integrity_gate_missing");
+  requireText("releaseMaterial", "safeLifecycleValueAttribution(proof.value_attribution)", "carry_lifecycle_proof_value_attribution_gate_missing");
+  requireText("releaseMaterial", "normalizeCarryLifecycleValueAttribution", "carry_lifecycle_proof_shared_value_attribution_missing");
   requireText("evidenceVerifier", "leg?.live_order_broadcast !== true", "carry_release_live_broadcast_verifier_missing");
   requireText("executor", "recordLifecycleProofAfterExit", "carry_lifecycle_proof_exit_hook_missing");
   requireText("privatePrimeReadiness", 'proof_level: pairedLifecycle.verified ? "live_paired_lifecycle" : "pre_broadcast_readiness"', "carry_private_prime_proof_level_missing");
   requireText("privatePrimeReadiness", "live_paired_lifecycle_proven: pairedLifecycle.verified", "carry_private_prime_live_proof_boundary_missing");
   requireText("privatePrimeReadiness", "Number.isSafeInteger(proof?.realized_net_value_micro_usdc)", "carry_private_prime_realized_net_gate_missing");
   requireText("privatePrimeReadiness", "realized_net_value_micro_usdc: verified ? proof.realized_net_value_micro_usdc : null", "carry_private_prime_realized_net_output_missing");
+  requireText("privatePrimeReadiness", "safeLifecycleValueAttribution(proof?.value_attribution)", "carry_private_prime_value_attribution_gate_missing");
+  requireText("privatePrimeReadiness", "normalizeCarryLifecycleValueAttribution", "carry_private_prime_shared_value_attribution_missing");
+  requireText("privatePrimeReadiness", "value_attribution: verified ? valueAttribution : null", "carry_private_prime_value_attribution_output_missing");
   requireText("privatePrimeReadiness", "function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, lifecycleExpiry)", "carry_private_prime_lifecycle_expiry_binding_missing");
   requireText("privatePrimeReadiness", "pairedLifecycle.verified ? pairedLifecycle.expires_at_ms : null", "carry_private_prime_lifecycle_expiry_input_missing");
   requireText("privatePrimeReadinessTest", "never lets aggregate readiness outlive its paired lifecycle proof", "carry_private_prime_lifecycle_expiry_test_missing");
@@ -878,7 +885,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webPrivatePrimeReadiness", 'value.proof_level === "live_paired_lifecycle"', "carry_private_prime_ui_proof_level_gate_missing");
   requireText("webPrivatePrimeReadiness", "value.live_paired_lifecycle_proven === true", "carry_private_prime_ui_live_proof_gate_missing");
   requireText("webPrivatePrimeReadiness", "integer(pairedLifecycle.realized_net_value_micro_usdc)", "carry_private_prime_ui_realized_net_gate_missing");
-  requireText("webPrivatePrimeReadiness", "LIVE PAIRED PROOF · NET ${formatSignedMicroUsd(lifecycleRealizedNet)}", "carry_private_prime_ui_realized_net_display_missing");
+  requireText("webPrivatePrimeReadiness", "parseLifecycleValueAttribution(pairedLifecycle.value_attribution)", "carry_private_prime_ui_value_attribution_gate_missing");
+  requireText("webPrivatePrimeReadiness", "normalizeCarryLifecycleValueAttribution", "carry_private_prime_ui_shared_value_attribution_missing");
+  requireText("webPrivatePrimeReadiness", "ΔMODEL ${formatSignedMicroUsd(value.variance_from_modeled_micro_usdc)}", "carry_private_prime_ui_value_attribution_display_missing");
   requireText("webPrivatePrimeReadiness", "expiresAt <= lifecycleExpiresAt", "carry_private_prime_ui_lifecycle_expiry_gate_missing");
   requireText("webPrivatePrimeReadiness", "pairedLifecycle.final_flat_zero_orders === true", "carry_private_prime_ui_flat_proof_gate_missing");
   requireText("webPrivatePrimeReadiness", "route.verified === true", "carry_private_prime_ui_route_evidence_gate_missing");

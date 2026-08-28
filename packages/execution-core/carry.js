@@ -1742,6 +1742,112 @@ export function createCarryValueLedger(value) {
   });
 }
 
+export function normalizeCarryLifecycleValueAttribution(value) {
+  const raw = object(value, "carry_lifecycle_value_attribution_required");
+  const modeledRaw = object(raw.modeled, "carry_lifecycle_value_modeled_required");
+  const realizedRaw = object(raw.realized, "carry_lifecycle_value_realized_required");
+  const modeled = {
+    gross_funding_micro_usdc: signedInteger(
+      modeledRaw.gross_funding_micro_usdc,
+      "carry_lifecycle_value_modeled_gross_funding_invalid",
+    ),
+    total_cost_micro_usdc: nonNegativeInteger(
+      modeledRaw.total_cost_micro_usdc,
+      "carry_lifecycle_value_modeled_total_cost_invalid",
+    ),
+    expected_net_micro_usdc: signedInteger(
+      modeledRaw.expected_net_micro_usdc,
+      "carry_lifecycle_value_modeled_expected_net_invalid",
+    ),
+  };
+  const realized = {
+    contract_pnl_micro_usdc: signedInteger(
+      realizedRaw.contract_pnl_micro_usdc,
+      "carry_lifecycle_value_realized_contract_pnl_invalid",
+    ),
+    funding_micro_usdc: signedInteger(
+      realizedRaw.funding_micro_usdc,
+      "carry_lifecycle_value_realized_funding_invalid",
+    ),
+    fees_micro_usdc: nonNegativeInteger(
+      realizedRaw.fees_micro_usdc,
+      "carry_lifecycle_value_realized_fees_invalid",
+    ),
+    slippage_micro_usdc: nonNegativeInteger(
+      realizedRaw.slippage_micro_usdc,
+      "carry_lifecycle_value_realized_slippage_invalid",
+    ),
+    gas_micro_usdc: nonNegativeInteger(
+      realizedRaw.gas_micro_usdc,
+      "carry_lifecycle_value_realized_gas_invalid",
+    ),
+    capital_cost_micro_usdc: nonNegativeInteger(
+      realizedRaw.capital_cost_micro_usdc,
+      "carry_lifecycle_value_realized_capital_cost_invalid",
+    ),
+    transfer_fees_micro_usdc: nonNegativeInteger(
+      realizedRaw.transfer_fees_micro_usdc,
+      "carry_lifecycle_value_realized_transfer_fees_invalid",
+    ),
+    rebates_micro_usdc: nonNegativeInteger(
+      realizedRaw.rebates_micro_usdc,
+      "carry_lifecycle_value_realized_rebates_invalid",
+    ),
+    net_value_micro_usdc: signedInteger(
+      realizedRaw.net_value_micro_usdc,
+      "carry_lifecycle_value_realized_net_invalid",
+    ),
+  };
+  const modeledNet = safeAdd(
+    modeled.gross_funding_micro_usdc,
+    -modeled.total_cost_micro_usdc,
+    "carry_lifecycle_value_modeled_overflow",
+  );
+  if (modeledNet !== modeled.expected_net_micro_usdc) {
+    fail("carry_lifecycle_value_modeled_mismatch");
+  }
+  let realizedCost = 0;
+  for (const cost of [
+    realized.fees_micro_usdc,
+    realized.slippage_micro_usdc,
+    realized.gas_micro_usdc,
+    realized.capital_cost_micro_usdc,
+    realized.transfer_fees_micro_usdc,
+    -realized.rebates_micro_usdc,
+  ]) {
+    realizedCost = safeAdd(realizedCost, cost, "carry_lifecycle_value_realized_cost_overflow");
+  }
+  const realizedGross = safeAdd(
+    realized.contract_pnl_micro_usdc,
+    realized.funding_micro_usdc,
+    "carry_lifecycle_value_realized_gross_overflow",
+  );
+  const realizedNet = safeAdd(
+    realizedGross,
+    -realizedCost,
+    "carry_lifecycle_value_realized_net_overflow",
+  );
+  if (realizedNet !== realized.net_value_micro_usdc) {
+    fail("carry_lifecycle_value_realized_mismatch");
+  }
+  const variance = signedInteger(
+    raw.variance_from_modeled_micro_usdc,
+    "carry_lifecycle_value_variance_invalid",
+  );
+  const expectedVariance = safeAdd(
+    realized.net_value_micro_usdc,
+    -modeled.expected_net_micro_usdc,
+    "carry_lifecycle_value_variance_overflow",
+  );
+  if (variance !== expectedVariance) fail("carry_lifecycle_value_variance_mismatch");
+  return deepFreeze({
+    modeled,
+    realized,
+    realized_total_cost_micro_usdc: realizedCost,
+    variance_from_modeled_micro_usdc: variance,
+  });
+}
+
 export function appendCarryValueLedgerEntry({ ledger: ledgerInput, entry: entryInput, now_ms = Date.now() }) {
   try {
     const ledger = mutableValueLedger(ledgerInput);

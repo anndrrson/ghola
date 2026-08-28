@@ -41,6 +41,27 @@ export declare function compileCarryCapitalActionPlan(input: unknown): Readonly<
 export declare function compileCarryCollateralReview(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryPortfolioCapitalPlan(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryPortfolioValueReport(input: unknown): Readonly<Record<string, unknown>>;
+export type CarryLifecycleValueAttribution = Readonly<{
+  modeled: Readonly<{
+    gross_funding_micro_usdc: number;
+    total_cost_micro_usdc: number;
+    expected_net_micro_usdc: number;
+  }>;
+  realized: Readonly<{
+    contract_pnl_micro_usdc: number;
+    funding_micro_usdc: number;
+    fees_micro_usdc: number;
+    slippage_micro_usdc: number;
+    gas_micro_usdc: number;
+    capital_cost_micro_usdc: number;
+    transfer_fees_micro_usdc: number;
+    rebates_micro_usdc: number;
+    net_value_micro_usdc: number;
+  }>;
+  realized_total_cost_micro_usdc: number;
+  variance_from_modeled_micro_usdc: number;
+}>;
+export declare function normalizeCarryLifecycleValueAttribution(input: unknown): CarryLifecycleValueAttribution;
 export declare function evaluatePerpContractPairBasis(input: unknown): Readonly<Record<string, unknown>>;
 export declare function estimatePerpDepthExecution(input: {
   side: "buy" | "sell";

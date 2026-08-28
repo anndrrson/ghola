@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { normalizeCarryLifecycleValueAttribution } from "@ghola/execution-core";
 
 export function buildCarryPrivatePrimeReadiness({
   readiness,
@@ -75,6 +76,7 @@ function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {
   const proof = lifecycleProof?.proof;
   const venueIds = Array.isArray(proof?.venue_ids) ? proof.venue_ids : [];
   const registryVenueIds = new Set(Array.isArray(readiness?.registry_venue_ids) ? readiness.registry_venue_ids : []);
+  const valueAttribution = safeLifecycleValueAttribution(proof?.value_attribution);
   const verified = lifecycleProof?.ok === true
     && proof?.version === 1
     && proof?.kind === "ghola_carry_live_paired_lifecycle_proof"
@@ -99,6 +101,8 @@ function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {
     && proof?.owner_only_withdrawals === true
     && proof?.recording_transaction_broadcast === false
     && Number.isSafeInteger(proof?.realized_net_value_micro_usdc)
+    && valueAttribution?.realized.net_value_micro_usdc === proof.realized_net_value_micro_usdc
+    && valueAttribution?.realized_total_cost_micro_usdc === proof?.value_attribution?.realized_total_cost_micro_usdc
     && /^carry:release:material:[0-9a-f]{64}$/.test(String(proof?.worker_material_commitment || ""))
     && /^carry:lifecycle-proof:evidence:[0-9a-f]{64}$/.test(String(proof?.evidence_commitment || ""));
   return Object.freeze({
@@ -114,6 +118,7 @@ function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {
     final_flat_zero_orders: verified,
     value_ledger_finalized: verified,
     realized_net_value_micro_usdc: verified ? proof.realized_net_value_micro_usdc : null,
+    value_attribution: verified ? valueAttribution : null,
     ambiguity_retry_count: verified ? 0 : null,
     owner_only_funding: true,
     owner_only_transfers: true,
@@ -122,6 +127,14 @@ function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {
     worker_material_commitment: verified ? proof.worker_material_commitment : null,
     evidence_commitment: verified ? proof.evidence_commitment : null,
   });
+}
+
+function safeLifecycleValueAttribution(value) {
+  try {
+    return normalizeCarryLifecycleValueAttribution(value);
+  } catch {
+    return null;
+  }
 }
 
 function verifiedRouteObservation({ readiness, routeEvidence, routeObservationConfigured, nowMs }) {

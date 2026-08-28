@@ -34,7 +34,7 @@ describe("private-prime readiness", () => {
     }), NOW)).toEqual({
       status: "ready",
       value: "5/5 DATA · 3/3 EXEC · ROUTES",
-      detail: "LIVE PAIRED PROOF · NET +$0.000034 · FLAT · OWNER CONTROLLED",
+      detail: "LIVE · NET +$0.000034 · ΔMODEL −$0.000166 · FUND +$0.000050 · PNL +$0.000010 · COST −$0.000026 · FLAT",
       tone: "good",
     });
   });
@@ -51,6 +51,13 @@ describe("private-prime readiness", () => {
       proof_level: "live_paired_lifecycle",
       live_paired_lifecycle_proven: true,
       paired_lifecycle: pairedLifecycle({ realized_net_value_micro_usdc: null }),
+    }), NOW).status).toBe("invalid");
+    expect(carryPrivatePrimeSummary(proof({
+      proof_level: "live_paired_lifecycle",
+      live_paired_lifecycle_proven: true,
+      paired_lifecycle: pairedLifecycle({
+        value_attribution: lifecycleValueAttribution({ fees_micro_usdc: 19 }),
+      }),
     }), NOW).status).toBe("invalid");
     expect(carryPrivatePrimeSummary(proof({
       proof_level: "live_paired_lifecycle",
@@ -138,6 +145,7 @@ function pairedLifecycle(overrides: Record<string, unknown> = {}) {
     final_flat_zero_orders: true,
     value_ledger_finalized: true,
     realized_net_value_micro_usdc: 34,
+    value_attribution: lifecycleValueAttribution(),
     ambiguity_retry_count: 0,
     owner_only_funding: true,
     owner_only_transfers: true,
@@ -146,5 +154,29 @@ function pairedLifecycle(overrides: Record<string, unknown> = {}) {
     worker_material_commitment: `carry:release:material:${"a".repeat(64)}`,
     evidence_commitment: `carry:lifecycle-proof:evidence:${"b".repeat(64)}`,
     ...overrides,
+  };
+}
+
+function lifecycleValueAttribution(realizedOverrides: Record<string, unknown> = {}) {
+  return {
+    modeled: {
+      gross_funding_micro_usdc: 400,
+      total_cost_micro_usdc: 200,
+      expected_net_micro_usdc: 200,
+    },
+    realized: {
+      contract_pnl_micro_usdc: 10,
+      funding_micro_usdc: 50,
+      fees_micro_usdc: 20,
+      slippage_micro_usdc: 5,
+      gas_micro_usdc: 0,
+      capital_cost_micro_usdc: 1,
+      transfer_fees_micro_usdc: 0,
+      rebates_micro_usdc: 0,
+      net_value_micro_usdc: 34,
+      ...realizedOverrides,
+    },
+    realized_total_cost_micro_usdc: 26,
+    variance_from_modeled_micro_usdc: -166,
   };
 }

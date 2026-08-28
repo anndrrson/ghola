@@ -87,6 +87,26 @@ test("records a durable owner- and image-bound paired lifecycle proof", async ()
   assert.equal(recorded.proof.live_entry_exit_proven, true);
   assert.equal(recorded.proof.final_flat_zero_orders, true);
   assert.equal(recorded.proof.ambiguity_retry_count, 0);
+  assert.deepEqual(recorded.proof.value_attribution, {
+    modeled: {
+      gross_funding_micro_usdc: 400,
+      total_cost_micro_usdc: 200,
+      expected_net_micro_usdc: 200,
+    },
+    realized: {
+      contract_pnl_micro_usdc: 10,
+      funding_micro_usdc: 50,
+      fees_micro_usdc: 20,
+      slippage_micro_usdc: 5,
+      gas_micro_usdc: 0,
+      capital_cost_micro_usdc: 1,
+      transfer_fees_micro_usdc: 0,
+      rebates_micro_usdc: 0,
+      net_value_micro_usdc: 34,
+    },
+    realized_total_cost_micro_usdc: 26,
+    variance_from_modeled_micro_usdc: -166,
+  });
   assert.deepEqual(recorded.proof.venue_ids, ["hyperliquid", "aster"]);
   assert.match(recorded.proof.evidence_commitment, /^carry:lifecycle-proof:evidence:[0-9a-f]{64}$/);
 

@@ -39,6 +39,7 @@ export {
   normalizeCarryRiskMandatePayload,
   normalizeCarryCollateralReviewPayload,
   normalizeCarryCollateralReviewAuthorization,
+  normalizeCarryLifecycleValueAttribution,
   normalizePerpContractSpec,
 } from "./carry.js";
 export {

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { normalizeCarryLifecycleValueAttribution } from "@ghola/execution-core";
 import { readCarryVenueQualification, runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 import { carryPositionLegId } from "./carry-positions.js";
@@ -52,6 +53,7 @@ export async function recordCompletedCarryLifecycleProof({
     owner_only_withdrawals: true,
     recording_transaction_broadcast: false,
     realized_net_value_micro_usdc: material.value_ledger.realized.net_value_micro_usdc,
+    value_attribution: lifecycleValueAttribution(material.value_ledger),
     worker_material_commitment: material.worker_material_commitment,
   };
   proof.evidence_commitment = lifecycleProofCommitment(proof);
@@ -101,6 +103,7 @@ export function assessCompletedCarryLifecycleProof({
   const accountCommitments = proof.account_commitments && typeof proof.account_commitments === "object"
     ? proof.account_commitments
     : {};
+  const valueAttribution = safeLifecycleValueAttribution(proof.value_attribution);
   const valid = proof.version === 1
     && proof.kind === "ghola_carry_live_paired_lifecycle_proof"
     && proof.network === "mainnet"
@@ -128,6 +131,8 @@ export function assessCompletedCarryLifecycleProof({
     && proof.owner_only_withdrawals === true
     && proof.recording_transaction_broadcast === false
     && Number.isSafeInteger(proof.realized_net_value_micro_usdc)
+    && valueAttribution?.realized.net_value_micro_usdc === proof.realized_net_value_micro_usdc
+    && valueAttribution?.realized_total_cost_micro_usdc === proof.value_attribution?.realized_total_cost_micro_usdc
     && /^carry:release:material:[0-9a-f]{64}$/.test(String(proof.worker_material_commitment || ""))
     && proof.evidence_commitment === lifecycleProofCommitment(proof);
   if (!valid) return denied("carry_lifecycle_proof_invalid");
@@ -619,6 +624,38 @@ function lifecycleProofMaxAge(env) {
   return Number.isInteger(parsed)
     ? Math.max(86_400_000, Math.min(365 * 86_400_000, parsed))
     : DEFAULT_LIFECYCLE_PROOF_MAX_AGE_MS;
+}
+
+function lifecycleValueAttribution(valueLedger) {
+  const modeled = valueLedger.modeled;
+  const realized = valueLedger.realized;
+  return normalizeCarryLifecycleValueAttribution({
+    modeled: {
+      gross_funding_micro_usdc: modeled.gross_funding_micro_usdc,
+      total_cost_micro_usdc: modeled.total_cost_micro_usdc,
+      expected_net_micro_usdc: modeled.expected_net_micro_usdc,
+    },
+    realized: {
+      contract_pnl_micro_usdc: realized.contract_pnl_micro_usdc,
+      funding_micro_usdc: realized.funding_micro_usdc,
+      fees_micro_usdc: realized.fees_micro_usdc,
+      slippage_micro_usdc: realized.slippage_micro_usdc,
+      gas_micro_usdc: realized.gas_micro_usdc,
+      capital_cost_micro_usdc: realized.capital_cost_micro_usdc,
+      transfer_fees_micro_usdc: realized.transfer_fees_micro_usdc,
+      rebates_micro_usdc: realized.rebates_micro_usdc,
+      net_value_micro_usdc: realized.net_value_micro_usdc,
+    },
+    variance_from_modeled_micro_usdc: realized.net_value_micro_usdc - modeled.expected_net_micro_usdc,
+  });
+}
+
+function safeLifecycleValueAttribution(value) {
+  try {
+    return normalizeCarryLifecycleValueAttribution(value);
+  } catch {
+    return null;
+  }
 }
 
 function commitment(value) {

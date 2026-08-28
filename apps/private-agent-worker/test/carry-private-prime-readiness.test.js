@@ -69,6 +69,7 @@ test("upgrades only matching durable paired lifecycle evidence to live-proven", 
   assert.equal(result.live_paired_lifecycle_proven, true);
   assert.equal(result.paired_lifecycle.final_flat_zero_orders, true);
   assert.equal(result.paired_lifecycle.realized_net_value_micro_usdc, 34);
+  assert.equal(result.paired_lifecycle.value_attribution.variance_from_modeled_micro_usdc, -166);
   assert.deepEqual(result.paired_lifecycle.venue_ids, ["hyperliquid", "aster"]);
 });
 
@@ -136,6 +137,24 @@ test("does not promote live proof without exact realized after-cost value", () =
   assert.equal(result.proof_level, "pre_broadcast_readiness");
   assert.equal(result.live_paired_lifecycle_proven, false);
   assert.equal(result.paired_lifecycle.realized_net_value_micro_usdc, null);
+});
+
+test("does not promote mathematically inconsistent value attribution", () => {
+  const attribution = lifecycleValueAttribution();
+  attribution.realized.fees_micro_usdc = 19;
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: {
+      ready: true,
+      owner_commitment: "owner_commitment_0001",
+      image_digest: "sha256:abcdef123456",
+      asset: "BTC",
+      registry_venue_ids: ["hyperliquid", "lighter", "aster"],
+    },
+    lifecycle_proof: lifecycleProof({ value_attribution: attribution }),
+    now_ms: NOW,
+  });
+  assert.equal(result.proof_level, "pre_broadcast_readiness");
+  assert.equal(result.paired_lifecycle.value_attribution, null);
 });
 
 test("fails closed when shadow, supervision, or route evidence is missing", () => {
@@ -262,6 +281,7 @@ function lifecycleProof(overrides = {}) {
       final_flat_zero_orders: true,
       value_ledger_finalized: true,
       realized_net_value_micro_usdc: 34,
+      value_attribution: lifecycleValueAttribution(),
       ambiguity_retry_count: 0,
       owner_only_funding: true,
       owner_only_transfers: true,
@@ -271,6 +291,29 @@ function lifecycleProof(overrides = {}) {
       evidence_commitment: `carry:lifecycle-proof:evidence:${"b".repeat(64)}`,
       ...overrides,
     },
+  };
+}
+
+function lifecycleValueAttribution() {
+  return {
+    modeled: {
+      gross_funding_micro_usdc: 400,
+      total_cost_micro_usdc: 200,
+      expected_net_micro_usdc: 200,
+    },
+    realized: {
+      contract_pnl_micro_usdc: 10,
+      funding_micro_usdc: 50,
+      fees_micro_usdc: 20,
+      slippage_micro_usdc: 5,
+      gas_micro_usdc: 0,
+      capital_cost_micro_usdc: 1,
+      transfer_fees_micro_usdc: 0,
+      rebates_micro_usdc: 0,
+      net_value_micro_usdc: 34,
+    },
+    realized_total_cost_micro_usdc: 26,
+    variance_from_modeled_micro_usdc: -166,
   };
 }
 

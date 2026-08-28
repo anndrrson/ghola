@@ -98,16 +98,55 @@ test("rejects live private-prime proof that drops realized after-cost value", ()
   );
 });
 
-test("rejects a terminal that hides realized net value from live proof", () => {
+test("rejects lifecycle proof without reconciled value attribution", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replace(
+        "safeLifecycleValueAttribution(proof.value_attribution)",
+        "true",
+      ),
+    }),
+    /carry_lifecycle_proof_value_attribution_gate_missing/,
+  );
+});
+
+test("rejects private-prime proof that trusts opaque value attribution", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replace(
+        "safeLifecycleValueAttribution(proof?.value_attribution)",
+        "proof?.value_attribution",
+      ),
+    }),
+    /carry_private_prime_value_attribution_gate_missing/,
+  );
+});
+
+test("rejects duplicated lifecycle value math outside execution core", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replace(
+        "export function normalizeCarryLifecycleValueAttribution",
+        "function normalizeCarryLifecycleValueAttribution",
+      ),
+    }),
+    /carry_lifecycle_value_attribution_core_missing/,
+  );
+});
+
+test("rejects a terminal that hides modeled-versus-realized attribution", () => {
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
       webPrivatePrimeReadiness: sources.webPrivatePrimeReadiness.replace(
-        "LIVE PAIRED PROOF · NET ${formatSignedMicroUsd(lifecycleRealizedNet)}",
-        "LIVE PAIRED PROOF",
+        "ΔMODEL ${formatSignedMicroUsd(value.variance_from_modeled_micro_usdc)}",
+        "VALUE HIDDEN",
       ),
     }),
-    /carry_private_prime_ui_realized_net_display_missing/,
+    /carry_private_prime_ui_value_attribution_display_missing/,
   );
 });
 

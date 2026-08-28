@@ -21,6 +21,7 @@ import {
   normalizeCarryRiskMandatePayload,
   normalizeCarryCollateralReviewPayload,
   normalizeCarryCollateralReviewAuthorization,
+  normalizeCarryLifecycleValueAttribution,
 } from "../index.js";
 
 const NOW = 1_800_000_000_000;
@@ -1413,6 +1414,95 @@ test("value ledger reports realized net after every cost and deduplicates eviden
     now_ms: NOW + 10,
   });
   assert.equal(duplicate.duplicate, true);
+});
+
+test("lifecycle value attribution reconciles modeled and realized economics", () => {
+  const attribution = normalizeCarryLifecycleValueAttribution({
+    modeled: {
+      gross_funding_micro_usdc: 400,
+      total_cost_micro_usdc: 200,
+      expected_net_micro_usdc: 200,
+    },
+    realized: {
+      contract_pnl_micro_usdc: 10,
+      funding_micro_usdc: 50,
+      fees_micro_usdc: 20,
+      slippage_micro_usdc: 5,
+      gas_micro_usdc: 0,
+      capital_cost_micro_usdc: 1,
+      transfer_fees_micro_usdc: 0,
+      rebates_micro_usdc: 0,
+      net_value_micro_usdc: 34,
+    },
+    variance_from_modeled_micro_usdc: -166,
+  });
+  assert.equal(attribution.realized_total_cost_micro_usdc, 26);
+  assert.equal(attribution.realized.net_value_micro_usdc, 34);
+  assert.equal(attribution.variance_from_modeled_micro_usdc, -166);
+  assert.equal(Object.isFrozen(attribution.realized), true);
+});
+
+test("lifecycle value attribution rejects inconsistent or unsafe economics", () => {
+  const valid = {
+    modeled: {
+      gross_funding_micro_usdc: 400,
+      total_cost_micro_usdc: 200,
+      expected_net_micro_usdc: 200,
+    },
+    realized: {
+      contract_pnl_micro_usdc: 10,
+      funding_micro_usdc: 50,
+      fees_micro_usdc: 20,
+      slippage_micro_usdc: 5,
+      gas_micro_usdc: 0,
+      capital_cost_micro_usdc: 1,
+      transfer_fees_micro_usdc: 0,
+      rebates_micro_usdc: 0,
+      net_value_micro_usdc: 34,
+    },
+    variance_from_modeled_micro_usdc: -166,
+  };
+  assert.throws(
+    () => normalizeCarryLifecycleValueAttribution({
+      ...valid,
+      modeled: { ...valid.modeled, expected_net_micro_usdc: 201 },
+    }),
+    /carry_lifecycle_value_modeled_mismatch/,
+  );
+  assert.throws(
+    () => normalizeCarryLifecycleValueAttribution({
+      ...valid,
+      realized: { ...valid.realized, fees_micro_usdc: 19 },
+    }),
+    /carry_lifecycle_value_realized_mismatch/,
+  );
+  assert.throws(
+    () => normalizeCarryLifecycleValueAttribution({ ...valid, variance_from_modeled_micro_usdc: -165 }),
+    /carry_lifecycle_value_variance_mismatch/,
+  );
+  assert.throws(
+    () => normalizeCarryLifecycleValueAttribution({
+      ...valid,
+      realized: { ...valid.realized, fees_micro_usdc: -1 },
+    }),
+    /carry_lifecycle_value_realized_fees_invalid/,
+  );
+  assert.throws(
+    () => normalizeCarryLifecycleValueAttribution({
+      modeled: {
+        gross_funding_micro_usdc: Number.MAX_SAFE_INTEGER,
+        total_cost_micro_usdc: 0,
+        expected_net_micro_usdc: Number.MAX_SAFE_INTEGER,
+      },
+      realized: {
+        ...valid.realized,
+        contract_pnl_micro_usdc: Number.MAX_SAFE_INTEGER,
+        funding_micro_usdc: 1,
+      },
+      variance_from_modeled_micro_usdc: 0,
+    }),
+    /carry_lifecycle_value_realized_gross_overflow/,
+  );
 });
 
 test("value ledger rejects modeled component totals that do not reconcile", () => {

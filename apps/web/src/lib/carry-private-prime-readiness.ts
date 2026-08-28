@@ -1,3 +1,7 @@
+import {
+  normalizeCarryLifecycleValueAttribution,
+  type CarryLifecycleValueAttribution,
+} from "@ghola/execution-core";
 import { CARRY_EXECUTION_VENUES, CORE_PERP_VENUES } from "./carry-venues";
 
 type Tone = "good" | "warn" | "bad";
@@ -51,6 +55,7 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
   const lifecycleVerifiedAt = integer(pairedLifecycle.verified_at_ms);
   const lifecycleExpiresAt = integer(pairedLifecycle.expires_at_ms);
   const lifecycleRealizedNet = integer(pairedLifecycle.realized_net_value_micro_usdc);
+  const lifecycleAttribution = parseLifecycleValueAttribution(pairedLifecycle.value_attribution);
   const lifecycleReady = pairedLifecycle.verified === true
     && pairedLifecycle.asset === value.asset
     && lifecycleVenues.length === 2
@@ -66,6 +71,7 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && pairedLifecycle.final_flat_zero_orders === true
     && pairedLifecycle.value_ledger_finalized === true
     && lifecycleRealizedNet !== null
+    && lifecycleAttribution?.realized.net_value_micro_usdc === lifecycleRealizedNet
     && pairedLifecycle.ambiguity_retry_count === 0
     && pairedLifecycle.owner_only_funding === true
     && pairedLifecycle.owner_only_transfers === true
@@ -99,8 +105,8 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     return {
       status: "ready",
       value: statusValue,
-      detail: lifecycleReady
-        ? `LIVE PAIRED PROOF · NET ${formatSignedMicroUsd(lifecycleRealizedNet)} · FLAT · OWNER CONTROLLED`
+      detail: lifecycleReady && lifecycleAttribution
+        ? liveLifecycleDetail(lifecycleAttribution)
         : "PRE-BROADCAST · CAPITAL READY · OWNER CONTROLLED",
       tone: "good",
     };
@@ -135,6 +141,18 @@ function strings(value: unknown): string[] {
 
 function integer(value: unknown): number | null {
   return Number.isSafeInteger(value) ? Number(value) : null;
+}
+
+function parseLifecycleValueAttribution(input: unknown): CarryLifecycleValueAttribution | null {
+  try {
+    return normalizeCarryLifecycleValueAttribution(input);
+  } catch {
+    return null;
+  }
+}
+
+function liveLifecycleDetail(value: CarryLifecycleValueAttribution): string {
+  return `LIVE · NET ${formatSignedMicroUsd(value.realized.net_value_micro_usdc)} · ΔMODEL ${formatSignedMicroUsd(value.variance_from_modeled_micro_usdc)} · FUND ${formatSignedMicroUsd(value.realized.funding_micro_usdc)} · PNL ${formatSignedMicroUsd(value.realized.contract_pnl_micro_usdc)} · COST ${formatSignedMicroUsd(-value.realized_total_cost_micro_usdc)} · FLAT`;
 }
 
 function formatSignedMicroUsd(value: number): string {
