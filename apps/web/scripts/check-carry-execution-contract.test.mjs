@@ -2312,6 +2312,26 @@ test("rejects a fleet setup link scoped back down to one pair", () => {
   );
 });
 
+test("rejects carry setup that cannot distinguish a platform authorization failure", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webAccountSetup: sources.webAccountSetup.replaceAll("carryWorkerPlatformGate", "ignoredWorkerPlatformGate"),
+    }),
+    /carry_setup_worker_platform_gate_missing/,
+  );
+});
+
+test("rejects carry setup that sends users back through wallet onboarding for a worker mismatch", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webAccountConnections: sources.webAccountConnections.replaceAll("Venue connections are preserved", "Reconnect every wallet"),
+    }),
+    /carry_setup_wallet_loop_prevention_missing/,
+  );
+});
+
 test("rejects a terminal that hides monitored margin runway", () => {
   assert.throws(
     () => checkCarryExecutionContract({

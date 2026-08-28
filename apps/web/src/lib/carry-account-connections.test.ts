@@ -6,6 +6,7 @@ import {
   carryExecutionPairFromReturnTo,
   carryNoSubmitVerificationHref,
   carryAccountSetupNextAction,
+  carryWorkerPlatformGate,
 } from "./carry-account-connections";
 
 describe("Carry account connections", () => {
@@ -124,5 +125,33 @@ describe("Carry account connections", () => {
     expect(carryNoSubmitVerificationHref("https://evil.example/trade")).toBe(
       "/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&carry_check=no-submit",
     );
+  });
+
+  it("preserves venue access while distinguishing a worker authorization mismatch", () => {
+    expect(carryWorkerPlatformGate({
+      selected_provider: null,
+      blocking_reasons: ["private_worker_authorization_mismatch"],
+      providers: [{
+        id: "phala",
+        available: false,
+        evidence: { worker_authorization_verified: false },
+      }],
+    })).toEqual({
+      status: "authorization_mismatch",
+      message: "This preview and its worker do not share authorization. Venue connections are preserved; do not reconnect wallets.",
+    });
+  });
+
+  it("enables route verification only for an authorization-verified worker", () => {
+    expect(carryWorkerPlatformGate({
+      selected_provider: "phala",
+      providers: [{
+        id: "phala",
+        available: true,
+        supports_trading_execution: true,
+        evidence: { worker_authorization_verified: true },
+      }],
+    }).status).toBe("ready");
+    expect(carryWorkerPlatformGate(null).status).toBe("unavailable");
   });
 });

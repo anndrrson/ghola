@@ -1260,6 +1260,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webAccountPage", "focusedCarrySetup", "carry_account_route_missing");
   requireText("webAccountPage", "<CarryAccountSetup returnTo={returnTo}", "carry_setup_return_path_missing");
   requireText("webAccountSetup", "connectionProgress.ready", "carry_setup_all_venues_gate_missing");
+  requireText("webAccountSetup", "carryWorkerPlatformGate", "carry_setup_worker_platform_gate_missing");
+  requireText("webAccountSetup", "data-worker-platform-status", "carry_setup_worker_platform_status_missing");
+  requireText("webAccountConnections", "Venue connections are preserved", "carry_setup_wallet_loop_prevention_missing");
+  requireText("webAccountConnectionsTest", "distinguishing a worker authorization mismatch", "carry_setup_worker_mismatch_test_missing");
   requireText("webAccountConnectionsTest", "unlocks route verification only when every execution venue is connected", "carry_setup_all_venues_test_missing");
   requireText("webAccountConnectionsTest", "scopes guided setup to the selected pair without weakening fleet setup", "carry_setup_pair_scope_test_missing");
   requireText("webAccountSetup", "carryAccountConnectionProgressForVenues", "carry_setup_pair_scope_missing");

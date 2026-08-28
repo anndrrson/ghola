@@ -23,6 +23,44 @@ export interface CarryExecutionPair {
   shortVenueId: CarryExecutionVenue;
 }
 
+export type CarryWorkerPlatformGate = Readonly<{
+  status: "ready" | "authorization_mismatch" | "unavailable";
+  message: string;
+}>;
+
+export function carryWorkerPlatformGate(runtime: unknown): CarryWorkerPlatformGate {
+  const status = record(runtime);
+  const blockers = Array.isArray(status.blocking_reasons)
+    ? status.blocking_reasons.filter((value): value is string => typeof value === "string")
+    : [];
+  const providers = Array.isArray(status.providers) ? status.providers.map(record) : [];
+  const authorizationMismatch = blockers.includes("private_worker_authorization_mismatch") ||
+    providers.some((provider) => record(provider.evidence).worker_authorization_verified === false);
+  if (authorizationMismatch) {
+    return Object.freeze({
+      status: "authorization_mismatch",
+      message: "This preview and its worker do not share authorization. Venue connections are preserved; do not reconnect wallets.",
+    });
+  }
+  const selectedProviderId = stringValue(status.selected_provider);
+  const selectedProvider = providers.find((provider) => provider.id === selectedProviderId);
+  if (
+    selectedProvider &&
+    selectedProvider.available === true &&
+    selectedProvider.supports_trading_execution === true &&
+    record(selectedProvider.evidence).worker_authorization_verified === true
+  ) {
+    return Object.freeze({
+      status: "ready",
+      message: "Worker authorization matches this deployment.",
+    });
+  }
+  return Object.freeze({
+    status: "unavailable",
+    message: "Ghola could not verify this preview's worker. Venue connections are preserved; route verification stays disabled.",
+  });
+}
+
 export function carryAccountConnections(input: {
   passport: unknown;
   hyperliquidStatus: unknown;

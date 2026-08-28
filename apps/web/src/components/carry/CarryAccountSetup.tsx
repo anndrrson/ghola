@@ -49,7 +49,10 @@ import {
   carryExecutionPairFromReturnTo,
   carryNoSubmitVerificationHref,
   carryAccountSetupNextAction,
+  carryWorkerPlatformGate,
+  type CarryWorkerPlatformGate,
 } from "@/lib/carry-account-connections";
+import { fetchPrivateAgentRuntimeStatus } from "@/lib/hyperliquid-vault-seal";
 import { CARRY_EXECUTION_VENUES, isCarryExecutionVenue } from "@/lib/carry-venues";
 import {
   connectInjectedHyperliquidOwner,
@@ -113,6 +116,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const [lighterReadinessError, setLighterReadinessError] = useState<string | null>(null);
   const [checkingLighterReadiness, setCheckingLighterReadiness] = useState(false);
   const [injectedOwnerAvailable, setInjectedOwnerAvailable] = useState(false);
+  const [workerPlatform, setWorkerPlatform] = useState<CarryWorkerPlatformGate | null>(null);
   const safeReturnTo = returnTo === "/carry" || returnTo.startsWith("/trade?") ? returnTo : "/carry";
   const requestedLongVenue = searchParams.get("long_venue");
   const requestedShortVenue = searchParams.get("short_venue");
@@ -138,11 +142,13 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   const refresh = useCallback(async () => {
     if (!auth.authenticated) return;
     try {
-      const [passportRaw, hyperliquidRaw] = await Promise.all([
+      const [passportRaw, hyperliquidRaw, runtimeRaw] = await Promise.all([
         getPrivateAgentPassport(),
         getHyperliquidExecutionVaultStatus().catch(() => null),
+        fetchPrivateAgentRuntimeStatus().catch(() => null),
       ]);
       const connections = carryAccountConnections({ passport: passportRaw, hyperliquidStatus: hyperliquidRaw });
+      setWorkerPlatform(carryWorkerPlatformGate(runtimeRaw));
       setAccountCommitment(connections.accountCommitment);
       setAster(connections.venues.aster ? "connected" : "needed");
       setLighter(connections.venues.lighter ? "connected" : "needed");
@@ -720,6 +726,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     connectionProgress,
     activationNeeded ? [activationNeeded.venue] : [],
   );
+  const routeVerificationEnabled = workerPlatform?.status === "ready";
   const nextSetupDisabled = nextSetupAction.kind === "connect_venue" && (
     working ||
     (nextSetupAction.venueId === "aster" && (
@@ -776,6 +783,9 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
           <span className="text-[#72dfb2]">Markets · explore now</span>
           <span>Access · {connectionProgress.connectedCount}/{connectionProgress.requiredCount}</span>
           <span>Proof · {connectionProgress.ready ? "next" : "after access"}</span>
+          <span className={workerPlatform?.status === "ready" ? "text-[#72dfb2]" : workerPlatform ? "text-[#ee9da8]" : ""}>
+            Platform · {workerPlatform?.status === "ready" ? "ready" : workerPlatform ? "repair" : "checking"}
+          </span>
           <span>Capital · later</span>
           <Link href={safeReturnTo} className="ml-auto text-[#8fcaff] hover:text-[#c4e5ff]">Explore live routes</Link>
         </div>
@@ -795,17 +805,28 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                   ? "Connections complete"
                   : `Next: ${venueLabel(nextSetupAction.venueId)}`}</p>
                 <p className="mt-1 text-xs leading-5 text-[#8f9aae]">{nextSetupAction.kind === "verify_routes"
-                  ? pairScoped ? "Run one no-submit check across this pair." : "Run one no-submit check across every venue and pair."
+                  ? routeVerificationEnabled
+                    ? pairScoped ? "Run one no-submit check across this pair." : "Run one no-submit check across every venue and pair."
+                    : workerPlatform?.message || "Checking the platform before route verification."
                   : `${connectionProgress.missingVenueIds.length} connection${connectionProgress.missingVenueIds.length === 1 ? "" : "s"} remain. Ghola resumes the next safe step.`}</p>
               </div>
               <div className="mt-4 flex shrink-0 items-center gap-3 sm:mt-0">
                 <p className={`font-mono text-sm font-semibold ${connectionProgress.ready ? "text-[#72dfb2]" : "text-[#d9bd74]"}`}>
                   {connectionProgress.connectedCount}/{connectionProgress.requiredCount}
                 </p>
-                {nextSetupAction.kind === "verify_routes" ? (
+                {nextSetupAction.kind === "verify_routes" && routeVerificationEnabled ? (
                   <Link href={noSubmitReturnTo} className="inline-flex h-10 items-center rounded-md bg-[#56d6a0] px-4 text-sm font-semibold text-[#06130e]">
                     {nextSetupLabel}
                   </Link>
+                ) : nextSetupAction.kind === "verify_routes" ? (
+                  <button
+                    type="button"
+                    disabled
+                    data-worker-platform-status={workerPlatform?.status || "checking"}
+                    className="inline-flex h-10 items-center rounded-md bg-[#25344b] px-4 text-sm font-semibold text-[#8f9aae] opacity-70"
+                  >
+                    {workerPlatform ? "Platform check required" : "Checking platform…"}
+                  </button>
                 ) : nextSetupAction.venueId === "hyperliquid" ? (
                   <Link href={`/account?setup=hyperliquid&return_to=${encodeURIComponent(setupReturnTo)}`} className="inline-flex h-10 items-center rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d]">
                     Continue
@@ -822,6 +843,14 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                 )}
               </div>
             </div>
+            {workerPlatform && workerPlatform.status !== "ready" && (
+              <div data-worker-platform-status={workerPlatform.status} className="flex items-center justify-between gap-4 rounded-lg border border-[#60303a] bg-[#251116] px-4 py-3 text-xs text-[#ee9da8]">
+                <span>{workerPlatform.message}</span>
+                <button type="button" disabled={working} onClick={() => void refresh()} className="shrink-0 font-semibold text-[#ffc1c8] hover:text-white disabled:opacity-50">
+                  Recheck
+                </button>
+              </div>
+            )}
             {perpsTurnkey.authenticated && !perpsTurnkey.hasPasskey && (
               <div className="flex items-center justify-between gap-4 rounded-xl border border-[#315277] bg-[#0b1624] p-4">
                 <div>
