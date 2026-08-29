@@ -7,5 +7,5 @@ export function shouldResumeUnsignedTurnkeySetup(input: {
   const message = input.error instanceof Error
     ? input.error.message
     : String(input.error || "");
-  return /no active session found|requires a valid session/i.test(message);
+  return /no active session found|requires a valid session|secure wallet session did not respond/i.test(message);
 }

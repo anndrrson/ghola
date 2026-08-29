@@ -3,7 +3,9 @@ import {
   createPerpsWalletProvisioningQueue,
   PERPS_TURNKEY_AUTH_CONFIG,
   PERPS_TURNKEY_AUTH_METHOD_ORDER,
+  PerpsTurnkeyOperationTimeoutError,
   perpsWalletProvisioningError,
+  withPerpsTurnkeyOperationTimeout,
 } from "./perps-turnkey-wallet-provisioning";
 
 describe("Turnkey perps wallet provisioning", () => {
@@ -46,5 +48,27 @@ describe("Turnkey perps wallet provisioning", () => {
     expect(perpsWalletProvisioningError(new Error("Failed to create wallet")).message).toMatch(
       /signed you in[\s\S]*reconcile[\s\S]*no new login code/i,
     );
+  });
+
+  it("bounds stalled reads with email recovery and no approval", async () => {
+    await expect(withPerpsTurnkeyOperationTimeout(new Promise(() => {}), {
+      timeoutMs: 1,
+      ambiguous: false,
+    })).rejects.toMatchObject({
+      ambiguous: false,
+      message: expect.stringMatching(/email[\s\S]*no approval/i),
+    });
+  });
+
+  it("freezes a timed-out mutation instead of implying a safe retry", async () => {
+    const failure = await withPerpsTurnkeyOperationTimeout(new Promise(() => {}), {
+      timeoutMs: 1,
+      ambiguous: true,
+    }).catch((error) => error);
+    expect(failure).toBeInstanceOf(PerpsTurnkeyOperationTimeoutError);
+    expect(perpsWalletProvisioningError(failure)).toMatchObject({
+      ambiguous: true,
+      message: expect.stringMatching(/unclear[\s\S]*will not retry/i),
+    });
   });
 });

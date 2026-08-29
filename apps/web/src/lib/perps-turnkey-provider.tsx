@@ -45,6 +45,7 @@ import {
   PERPS_TURNKEY_AUTH_CONFIG,
   PERPS_TURNKEY_AUTH_METHOD_ORDER,
   perpsWalletProvisioningError,
+  withPerpsTurnkeyOperationTimeout,
 } from "./perps-turnkey-wallet-provisioning";
 import {
   bindExactPerpsWalletIdentity,
@@ -62,6 +63,8 @@ const SEALING_PATH = "m/44'/501'/0'/0'";
 const TURNKEY_BINDINGS_STORAGE_KEY = "ghola_perps_turnkey_bindings_v1";
 const TURNKEY_PENDING_BINDING_STORAGE_KEY = "ghola_perps_turnkey_pending_binding_v1";
 const TURNKEY_WALLET_BINDINGS_STORAGE_KEY = "ghola_perps_turnkey_wallet_bindings_v1";
+const TURNKEY_READ_TIMEOUT_MS = 12_000;
+const TURNKEY_MUTATION_TIMEOUT_MS = 25_000;
 
 const OWNER_ACCOUNT = {
   curve: "CURVE_SECP256K1",
@@ -455,7 +458,10 @@ function PerpsTurnkeySession({
       if (!organizationId || !turnkey.httpClient || !authenticated || !thumperUserScope) {
         throw new Error("Authenticate with Turnkey before creating the perps wallets.");
       }
-      let wallets = await turnkey.refreshWallets({ organizationId });
+      let wallets = await withPerpsTurnkeyOperationTimeout(
+        turnkey.refreshWallets({ organizationId }),
+        { timeoutMs: TURNKEY_READ_TIMEOUT_MS, ambiguous: false },
+      );
       const binding = readPerpsWalletIdentityBinding(
         localStorage,
         TURNKEY_WALLET_BINDINGS_STORAGE_KEY,
@@ -464,12 +470,18 @@ function PerpsTurnkeySession({
       );
       let wallet = selectBoundPerpsWallet(wallets, PERPS_WALLET_NAME, binding?.walletId || null);
       if (!wallet) {
-        const walletId = await turnkey.createWallet({
-          organizationId,
-          walletName: PERPS_WALLET_NAME,
-          accounts: [OWNER_ACCOUNT, AGENT_ACCOUNT, SEALING_ACCOUNT],
-        });
-        wallets = await turnkey.refreshWallets({ organizationId });
+        const walletId = await withPerpsTurnkeyOperationTimeout(
+          turnkey.createWallet({
+            organizationId,
+            walletName: PERPS_WALLET_NAME,
+            accounts: [OWNER_ACCOUNT, AGENT_ACCOUNT, SEALING_ACCOUNT],
+          }),
+          { timeoutMs: TURNKEY_MUTATION_TIMEOUT_MS, ambiguous: true },
+        );
+        wallets = await withPerpsTurnkeyOperationTimeout(
+          turnkey.refreshWallets({ organizationId }),
+          { timeoutMs: TURNKEY_READ_TIMEOUT_MS, ambiguous: false },
+        );
         wallet = selectBoundPerpsWallet(wallets, PERPS_WALLET_NAME, walletId);
       }
       if (!wallet) throw new Error("Turnkey did not return the Ghola perps wallet.");
@@ -479,12 +491,18 @@ function PerpsTurnkeySession({
       const missing = required.filter((params) => !wallet?.accounts.some((account) => account.path === params.path));
       if (missing.length > 0) {
         const selectedWalletId = wallet.walletId;
-        await turnkey.createWalletAccounts({
-          organizationId,
-          walletId: selectedWalletId,
-          accounts: missing,
-        });
-        wallets = await turnkey.refreshWallets({ organizationId });
+        await withPerpsTurnkeyOperationTimeout(
+          turnkey.createWalletAccounts({
+            organizationId,
+            walletId: selectedWalletId,
+            accounts: missing,
+          }),
+          { timeoutMs: TURNKEY_MUTATION_TIMEOUT_MS, ambiguous: true },
+        );
+        wallets = await withPerpsTurnkeyOperationTimeout(
+          turnkey.refreshWallets({ organizationId }),
+          { timeoutMs: TURNKEY_READ_TIMEOUT_MS, ambiguous: false },
+        );
         wallet = selectBoundPerpsWallet(wallets, PERPS_WALLET_NAME, selectedWalletId);
       }
       if (!wallet) throw new Error("Turnkey perps wallet refresh failed.");

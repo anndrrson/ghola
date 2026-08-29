@@ -18,6 +18,14 @@ describe("Carry setup authentication recovery", () => {
     })).toBe(false);
   });
 
+  it("recovers a stalled read through portable email authentication", () => {
+    expect(shouldResumeUnsignedTurnkeySetup({
+      usingTurnkeyOwner: true,
+      authorizationProofCreated: false,
+      error: new Error("Secure wallet session did not respond. Authenticate with email and resume; no approval was submitted."),
+    })).toBe(true);
+  });
+
   it("does not relabel wallet rejection or an injected-owner failure as session expiry", () => {
     expect(shouldResumeUnsignedTurnkeySetup({
       usingTurnkeyOwner: true,

@@ -14,6 +14,38 @@ export const PERPS_TURNKEY_AUTH_METHOD_ORDER: Array<"email" | "passkey"> = [
   "passkey",
 ];
 
+export class PerpsTurnkeyOperationTimeoutError extends Error {
+  readonly ambiguous: boolean;
+
+  constructor(ambiguous: boolean) {
+    super(ambiguous
+      ? "Secure wallet provisioning outcome is unclear. Ghola stopped and will not retry. Reload once to reconcile before continuing."
+      : "Secure wallet session did not respond. Authenticate with email and resume; no approval was submitted.");
+    this.name = "PerpsTurnkeyOperationTimeoutError";
+    this.ambiguous = ambiguous;
+  }
+}
+
+export async function withPerpsTurnkeyOperationTimeout<T>(
+  operation: Promise<T>,
+  options: { timeoutMs: number; ambiguous: boolean },
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new PerpsTurnkeyOperationTimeoutError(options.ambiguous)),
+          options.timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 export function createPerpsWalletProvisioningQueue() {
   let tail: Promise<void> = Promise.resolve();
 
@@ -25,6 +57,7 @@ export function createPerpsWalletProvisioningQueue() {
 }
 
 export function perpsWalletProvisioningError(caught: unknown): Error {
+  if (caught instanceof PerpsTurnkeyOperationTimeoutError) return caught;
   const message = caught instanceof Error ? caught.message : String(caught || "");
   const normalized = message.toLowerCase();
   if (
