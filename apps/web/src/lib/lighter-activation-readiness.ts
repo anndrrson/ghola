@@ -26,6 +26,20 @@ const EVM_ADDRESS = /^0x[0-9a-f]{40}$/i;
 const MINIMUM_BASE_USDC_MICROUNITS = BigInt(3_000_000);
 export const LIGHTER_ACTIVATION_READINESS_MAX_AGE_MS = 30_000;
 
+export function describeLighterActivationNextStep(readiness: LighterActivationReadiness): string {
+  if (readiness.ready) return "Lighter is active. Recheck once to seal the existing association.";
+  const needs: string[] = [];
+  if (!readiness.lighter_owner_account_ready && BigInt(readiness.base_usdc_microunits) < MINIMUM_BASE_USDC_MICROUNITS) {
+    needs.push("3 USDC on Base");
+  }
+  if (readiness.blockers.includes("lighter_base_gas_required")) needs.push("ETH gas on Base");
+  if (readiness.blockers.includes("lighter_ethereum_association_gas_required")) needs.push("ETH gas on Ethereum");
+  if (needs.length > 0) {
+    return `Send ${joinRequirements(needs)} to the owner address above. ${readiness.lighter_owner_account_ready ? "Then recheck once." : "Then open Lighter once to create the owner account."}`;
+  }
+  return "Open Lighter once to create the owner account, then recheck once.";
+}
+
 export async function fetchLighterActivationReadiness(
   ownerAddress: string,
   fetchImpl: typeof fetch = fetch,
@@ -124,4 +138,10 @@ function record(value: unknown): Record<string, unknown> {
 
 function string(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function joinRequirements(values: readonly string[]): string {
+  if (values.length <= 1) return values[0] || "the required assets";
+  if (values.length === 2) return `${values[0]} and ${values[1]}`;
+  return `${values.slice(0, -1).join(", ")}, and ${values.at(-1)}`;
 }

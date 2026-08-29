@@ -55,6 +55,7 @@ import {
 import { fetchPrivateAgentRuntimeStatus } from "@/lib/hyperliquid-vault-seal";
 import { CARRY_EXECUTION_VENUES, isCarryExecutionVenue } from "@/lib/carry-venues";
 import {
+  describeLighterActivationNextStep,
   fetchLighterActivationReadiness,
   type LighterActivationReadiness,
 } from "@/lib/lighter-activation-readiness";
@@ -934,7 +935,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
               <p className="mt-2 text-xs leading-5 text-[#8f9aae]">Aster must recognize this exact owner first. Ghola will preserve the same sealed signer, then request one fresh owner approval—never create another signer or retry an ambiguous submission.</p>
             )}
             <a href={activationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : "https://app.lighter.xyz/"} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff]">
-              {activationNeeded.venue === "aster" ? "Open Aster" : "Open Lighter deposit"}
+              {activationNeeded.venue === "aster" ? "Open Aster" : "Open Lighter"}
             </a>
             <button type="button" disabled={working || (activationNeeded.venue === "lighter" && !lighterReadiness?.ready)} onClick={() => void retryAfterVenueActivation()} className="ml-2 mt-3 inline-flex rounded-md bg-[#4aaef8] px-3 py-2 text-xs font-semibold text-[#06111d] disabled:opacity-50">
               {activationNeeded.venue === "aster"
@@ -983,14 +984,17 @@ function LighterReadinessPanel({
         </button>
       </div>
       {readiness ? (
-        <div className="mt-2 divide-y divide-[#1b283b]">
-          {!readiness.lighter_owner_account_ready && <>
-            <ReadinessRow label="Lighter collateral" value={`${formatDecimalUnits(readiness.base_usdc_microunits, 6, 2)} USDC on Base`} ready={baseCollateralReady} />
-            <ReadinessRow label="Base network fee" value={baseGasReady ? "Funded" : `${formatDecimalUnits(readiness.estimated_base_gas_wei, 18, 6)} ETH required`} ready={baseGasReady} />
-          </>}
-          <ReadinessRow label="Lighter owner account" value={readiness.lighter_owner_account_ready ? `Verified · #${readiness.lighter_account_index}` : "Activation required"} ready={readiness.lighter_owner_account_ready} />
-          <ReadinessRow label="Ethereum association fee" value={readiness.ethereum_association_gas_ready ? "Funded" : `${formatDecimalUnits(readiness.estimated_ethereum_association_gas_wei, 18, 6)} ETH required`} ready={readiness.ethereum_association_gas_ready} />
-        </div>
+        <>
+          <p className="mt-2 text-xs leading-5 text-[#d8eaff]">{describeLighterActivationNextStep(readiness)}</p>
+          <div className="mt-2 divide-y divide-[#1b283b]">
+            {!readiness.lighter_owner_account_ready && <>
+              <ReadinessRow label="Lighter collateral" value={`${formatDecimalUnits(readiness.base_usdc_microunits, 6, 2)} USDC on Base`} ready={baseCollateralReady} />
+              <ReadinessRow label="Base network fee" value={baseGasReady ? "Funded" : `${formatDecimalUnits(readiness.estimated_base_gas_wei, 18, 6)} ETH required`} ready={baseGasReady} />
+            </>}
+            <ReadinessRow label="Lighter owner account" value={readiness.lighter_owner_account_ready ? `Verified · #${readiness.lighter_account_index}` : "Activation required"} ready={readiness.lighter_owner_account_ready} />
+            <ReadinessRow label="Ethereum association fee" value={readiness.ethereum_association_gas_ready ? "Funded" : `${formatDecimalUnits(readiness.estimated_ethereum_association_gas_wei, 18, 6)} ETH required`} ready={readiness.ethereum_association_gas_ready} />
+          </div>
+        </>
       ) : (
         <p className="mt-2 text-xs text-[#8f9aae]">{checking ? "Checking both networks…" : error || "Readiness has not been checked."}</p>
       )}
