@@ -215,6 +215,7 @@ export function checkAsterOnboardingUiBoundary(source) {
     ["\"use client\";", "aster_ui_client_boundary_required"],
     ["getCurrentVenueCredentialOnboardingPath(\"aster\")", "aster_programmatic_ux_metadata_required"],
     ["const perpsTurnkey = usePerpsTurnkey()", "aster_owner_wallet_boundary_required"],
+    ["const usingTurnkeyOwner = true", "aster_turnkey_owner_must_be_explicit"],
     ["if (nextSetupAction.venueId === \"aster\") void beginAsterProgrammatic();", "aster_programmatic_primary_action_required"],
     ["const [showAsterManual, setShowAsterManual] = useState(false)", "aster_manual_fallback_must_default_hidden"],
     ["showAsterManual && (", "aster_manual_fallback_visibility_guard_required"],
@@ -239,6 +240,9 @@ export function checkAsterOnboardingUiBoundary(source) {
     ["Withdrawals stay disabled", "aster_no_withdrawal_disclosure_required"],
   ];
   for (const [value, code] of required) if (!source.includes(value)) failures.push(code);
+  if (source.includes("resolveInjectedEvmProvider") || source.includes("signAsterAgentApprovalWithInjectedOwner")) {
+    failures.push("aster_injected_wallet_must_not_hijack_carry_setup");
+  }
   if (source.split("setAsterRegistrationAmbiguous(true);").length - 1 < 2) {
     failures.push("aster_ambiguous_all_completion_paths_required");
   }
@@ -339,13 +343,16 @@ export function checkLighterOnboardingUiBoundary(source) {
     ["onClick={() => void connectLighterManual()}", "lighter_manual_fallback_action_required"],
     ["prepareLighterProgrammaticCredential", "lighter_prepare_step_required"],
     ["signLighterKeyAssociation", "lighter_turnkey_owner_sign_step_required"],
-    ["sendLighterKeyAssociationWithInjectedOwner", "lighter_external_owner_submit_step_required"],
+    ["await perpsTurnkey.signLighterKeyAssociation", "lighter_turnkey_owner_sign_step_required"],
     ["completeLighterProgrammaticCredential", "lighter_complete_step_required"],
     ["reconcile_only: true", "lighter_reconcile_only_polling_required"],
     ["Ghola will not create or submit another key", "lighter_ambiguity_ui_hold_required"],
     ["Resume verification", "lighter_resume_reconciliation_action_required"],
   ];
   for (const [value, code] of required) if (!source.includes(value)) failures.push(code);
+  if (source.includes("sendLighterKeyAssociationWithInjectedOwner")) {
+    failures.push("lighter_injected_wallet_must_not_hijack_carry_setup");
+  }
   const prepare = source.indexOf("await prepareLighterProgrammaticCredential");
   const ownerSign = source.indexOf("await perpsTurnkey.signLighterKeyAssociation");
   const complete = source.indexOf("await completeLighterProgrammaticCredential({ preparation, authorization })");
