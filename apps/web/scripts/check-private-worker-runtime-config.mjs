@@ -1,4 +1,4 @@
-import { createHash, createHmac, createPrivateKey, createPublicKey, randomUUID } from "node:crypto";
+import { createHash, createHmac, createPublicKey, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { CARRY_EXECUTION_VENUES } from "@ghola/execution-core";
 
@@ -78,7 +78,7 @@ export async function verifyPrivateWorkerRuntimeAuthorization(
   if (
     responseBody.authorization_protocol !== "ghcap_v1" ||
     responseBody.worker_image_digest !== expected.worker_image_digest ||
-    responseBody.funding_signer_public_key_b64 !== expected.funding_signer_public_key_b64 ||
+    !expected.funding_signer_public_keys_b64.includes(responseBody.funding_signer_public_key_b64) ||
     !sameStrings(responseBody.carry_execution_venue_ids, CARRY_EXECUTION_VENUES)
   ) {
     throw new Error("Vercel release private worker compatibility evidence does not match this deployment");
@@ -165,32 +165,33 @@ function expectedWorkerCompatibility(env) {
   if (!/^sha256:[0-9a-f]{64}$/.test(imageDigest)) {
     throw new Error("Vercel release is missing a valid private worker image digest pin");
   }
-  const fundingSigningKey = consistentAlias(env,
-    "GHOLA_PRIVATE_AGENT_FUNDING_SIGNING_KEY",
-    "PRIVATE_AGENT_FUNDING_SIGNING_KEY",
-    "private worker funding signer",
+  const fundingSignerPins = consistentAlias(env,
+    "GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64",
+    "PRIVATE_AGENT_FUNDING_SIGNER_KEYS_B64",
+    "private worker funding signer pins",
   );
-  if (!fundingSigningKey) {
+  if (!fundingSignerPins) {
     throw new Error("Vercel release is missing the private worker funding signer pin");
   }
-  let fundingSignerPublicKey;
-  try {
-    const privateKey = createPrivateKey({
-      key: Buffer.from(fundingSigningKey, "base64"),
-      format: "der",
-      type: "pkcs8",
-    });
-    if (privateKey.asymmetricKeyType !== "ed25519") throw new Error("wrong key type");
-    fundingSignerPublicKey = createPublicKey(privateKey).export({
-      format: "der",
-      type: "spki",
-    }).toString("base64");
-  } catch {
-    throw new Error("Vercel release has an invalid private worker funding signer pin");
+  const fundingSignerPublicKeys = fundingSignerPins.split(",").map((pin) => pin.trim()).filter(Boolean);
+  if (fundingSignerPublicKeys.length === 0) {
+    throw new Error("Vercel release is missing the private worker funding signer pin");
+  }
+  for (const pin of fundingSignerPublicKeys) {
+    try {
+      const publicKey = createPublicKey({
+        key: Buffer.from(pin, "base64"),
+        format: "der",
+        type: "spki",
+      });
+      if (publicKey.asymmetricKeyType !== "ed25519") throw new Error("wrong key type");
+    } catch {
+      throw new Error("Vercel release has an invalid private worker funding signer pin");
+    }
   }
   return {
     worker_image_digest: imageDigest,
-    funding_signer_public_key_b64: fundingSignerPublicKey,
+    funding_signer_public_keys_b64: fundingSignerPublicKeys,
   };
 }
 

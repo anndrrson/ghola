@@ -9,11 +9,13 @@ import {
 
 const IMAGE_DIGEST = `sha256:${"a".repeat(64)}`;
 const FUNDING_PRIVATE_KEY = generateKeyPairSync("ed25519").privateKey;
-const FUNDING_SIGNING_KEY = FUNDING_PRIVATE_KEY.export({
-  format: "der",
-  type: "pkcs8",
-}).toString("base64");
 const FUNDING_PUBLIC_KEY = createPublicKey(FUNDING_PRIVATE_KEY).export({
+  format: "der",
+  type: "spki",
+}).toString("base64");
+const ROTATED_FUNDING_PUBLIC_KEY = createPublicKey(
+  generateKeyPairSync("ed25519").privateKey,
+).export({
   format: "der",
   type: "spki",
 }).toString("base64");
@@ -24,7 +26,7 @@ function vercelEnv(overrides = {}) {
     GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
     PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "shared-secret",
     GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST: IMAGE_DIGEST,
-    GHOLA_PRIVATE_AGENT_FUNDING_SIGNING_KEY: FUNDING_SIGNING_KEY,
+    GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64: FUNDING_PUBLIC_KEY,
     ...overrides,
   };
 }
@@ -114,8 +116,18 @@ test("requires exact worker image and funding-signer pins", () => {
     /worker image digest pin/,
   );
   assert.throws(
-    () => verifyPrivateWorkerRuntimeConfig(vercelEnv({ GHOLA_PRIVATE_AGENT_FUNDING_SIGNING_KEY: "" })),
+    () => verifyPrivateWorkerRuntimeConfig(vercelEnv({ GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64: "" })),
     /funding signer pin/,
+  );
+  assert.throws(
+    () => verifyPrivateWorkerRuntimeConfig(vercelEnv({ GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64: "not-a-key" })),
+    /invalid private worker funding signer pin/,
+  );
+  assert.throws(
+    () => verifyPrivateWorkerRuntimeConfig(vercelEnv({
+      PRIVATE_AGENT_FUNDING_SIGNER_KEYS_B64: ROTATED_FUNDING_PUBLIC_KEY,
+    })),
+    /funding signer pins aliases disagree/,
   );
 });
 
@@ -154,6 +166,14 @@ test("proves Vercel and the worker share authorization before deployment", async
   });
 
   assert.equal(attempts, 1);
+  assert.equal(result.worker_authorization, "verified");
+});
+
+test("accepts the active worker signer during a pinned key rotation", async () => {
+  const result = await verifyPrivateWorkerRuntimeAuthorization(vercelEnv({
+    GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64: `${ROTATED_FUNDING_PUBLIC_KEY},${FUNDING_PUBLIC_KEY}`,
+  }), async () => Response.json(compatibilityProof(), { status: 200 }));
+
   assert.equal(result.worker_authorization, "verified");
 });
 
