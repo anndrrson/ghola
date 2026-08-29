@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createPerpsWalletProvisioningQueue,
   PERPS_TURNKEY_AUTH_CONFIG,
+  PERPS_TURNKEY_AUTH_METHOD_ORDER,
   perpsWalletProvisioningError,
 } from "./perps-turnkey-wallet-provisioning";
 
@@ -9,6 +10,10 @@ describe("Turnkey perps wallet provisioning", () => {
   it("keeps wallet creation out of authentication", () => {
     expect(PERPS_TURNKEY_AUTH_CONFIG).toEqual({ autoRefreshSession: true });
     expect(PERPS_TURNKEY_AUTH_CONFIG).not.toHaveProperty("createSuborgParams");
+  });
+
+  it("defaults to portable email verification while preserving optional passkeys", () => {
+    expect(PERPS_TURNKEY_AUTH_METHOD_ORDER).toEqual(["email", "passkey"]);
   });
 
   it("serializes reconciliation so concurrent consumers cannot create duplicate wallets", async () => {

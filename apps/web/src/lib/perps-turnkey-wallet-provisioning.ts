@@ -6,6 +6,14 @@ export const PERPS_TURNKEY_AUTH_CONFIG = {
   autoRefreshSession: true,
 } satisfies NonNullable<TurnkeyProviderConfig["auth"]>;
 
+// Email OTP is the portable authentication path across embedded and external
+// browsers. A platform passkey remains available as an optional faster path
+// after the user has authenticated on a compatible device.
+export const PERPS_TURNKEY_AUTH_METHOD_ORDER: Array<"email" | "passkey"> = [
+  "email",
+  "passkey",
+];
+
 export function createPerpsWalletProvisioningQueue() {
   let tail: Promise<void> = Promise.resolve();
 

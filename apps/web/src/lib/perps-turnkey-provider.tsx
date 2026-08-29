@@ -43,6 +43,7 @@ import { signLighterChangePubKeyWithTurnkey } from "./perps-turnkey-lighter-sign
 import {
   createPerpsWalletProvisioningQueue,
   PERPS_TURNKEY_AUTH_CONFIG,
+  PERPS_TURNKEY_AUTH_METHOD_ORDER,
   perpsWalletProvisioningError,
 } from "./perps-turnkey-wallet-provisioning";
 import {
@@ -176,7 +177,7 @@ const perpsTurnkeyProviderConfig: TurnkeyProviderConfig | null = parentOrganizat
             walletAuthEnabled: false,
             googleOauthEnabled: false,
           },
-          methodOrder: ["passkey", "email"],
+          methodOrder: PERPS_TURNKEY_AUTH_METHOD_ORDER,
           oauthOrder: [],
         },
       },
