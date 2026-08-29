@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   assembleCarryReleaseEvidence,
   carryCreationInputEvidenceCommitment,
   carryEvidenceCommitment,
   carryWorkerMaterialCommitment,
+  readCarryReleaseEvidenceFile,
   verifyCarryReleaseEvidence,
 } from "./verify-carry-release-evidence.mjs";
 import {
@@ -19,6 +23,25 @@ import { hashMessage } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 const MANDATE_OWNER = privateKeyToAccount(`0x${"22".repeat(32)}`);
+
+test("reports missing and malformed proof artifacts with deterministic readiness codes", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ghola-carry-proof-"));
+  try {
+    assert.throws(
+      () => readCarryReleaseEvidenceFile(join(directory, "missing.json")),
+      /carry_release_evidence_missing/,
+    );
+    const malformedPath = join(directory, "malformed.json");
+    writeFileSync(malformedPath, "{", "utf8");
+    assert.throws(
+      () => readCarryReleaseEvidenceFile(malformedPath),
+      /carry_release_evidence_json_invalid/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 async function fixture({ longVenue = "hyperliquid", shortVenue = "aster" } = {}) {
   const signedMandate = {
     version: 1,

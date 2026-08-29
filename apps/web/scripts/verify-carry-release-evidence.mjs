@@ -19,6 +19,24 @@ export const DEFAULT_CARRY_EVIDENCE_PATH = resolve(
   "../../../deploy/evidence/carry-mainnet-proof.json",
 );
 
+export function readCarryReleaseEvidenceFile(evidencePath = DEFAULT_CARRY_EVIDENCE_PATH) {
+  const resolvedPath = resolve(evidencePath);
+  let serialized;
+  try {
+    serialized = readFileSync(resolvedPath, "utf8");
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      throw new Error(`Carry release evidence unavailable: carry_release_evidence_missing:${resolvedPath}`);
+    }
+    throw new Error(`Carry release evidence unavailable: carry_release_evidence_unreadable:${resolvedPath}`);
+  }
+  try {
+    return JSON.parse(serialized);
+  } catch {
+    throw new Error(`Carry release evidence unavailable: carry_release_evidence_json_invalid:${resolvedPath}`);
+  }
+}
+
 const CARRY_ADAPTERS = Object.freeze(Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [
   venueId,
   venueAdapterCapability(venueId, "carry_execution")?.adapter_id,
@@ -661,7 +679,7 @@ function commitment(value) {
 
 async function main() {
   const evidencePath = resolve(process.env.GHOLA_CARRY_RELEASE_EVIDENCE_PATH || DEFAULT_CARRY_EVIDENCE_PATH);
-  const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
+  const evidence = readCarryReleaseEvidenceFile(evidencePath);
   const verified = await verifyCarryReleaseEvidence(evidence);
   console.log(`[carry-release-evidence] verified ${verified.evidence_commitment}`);
 }
