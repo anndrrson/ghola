@@ -126,6 +126,47 @@ jobs:
           done < <(git ls-files '*package-lock.json')
           exit "$fail"
 
+  pnpm-audit-web:
+    name: pnpm audit (web lockfile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - name: Run fail-closed web audit
+        shell: bash
+        run: |
+          set -uo pipefail
+          audit_rc=0
+          pnpm --dir apps/web audit --audit-level=high --json \
+            > /tmp/pnpm-audit.json 2>/tmp/pnpm-audit.err || audit_rc=$?
+          if [ "${audit_rc}" -gt 1 ]; then
+            echo "::error::pnpm audit errored (exit ${audit_rc}); the scan did not run."
+            cat /tmp/pnpm-audit.err || true
+            exit 1
+          fi
+          if ! jq -e '
+            (.metadata.vulnerabilities.high | type == "number") and
+            (.metadata.vulnerabilities.critical | type == "number") and
+            (.metadata.dependencies | type == "number" and . > 0)
+          ' /tmp/pnpm-audit.json >/dev/null 2>&1; then
+            echo "::error::pnpm audit report malformed or dependency graph empty."
+            head -c 2000 /tmp/pnpm-audit.json || true
+            exit 1
+          fi
+          high="$(jq -r '.metadata.vulnerabilities.high' /tmp/pnpm-audit.json)"
+          critical="$(jq -r '.metadata.vulnerabilities.critical' /tmp/pnpm-audit.json)"
+          if [ "$((high + critical))" -gt 0 ]; then
+            jq '{vulnerabilities: .metadata.vulnerabilities, advisories: .advisories}' /tmp/pnpm-audit.json
+            exit 1
+          fi
+
   snarkjs-pin-check:
     name: snarkjs pinning
     runs-on: ubuntu-latest

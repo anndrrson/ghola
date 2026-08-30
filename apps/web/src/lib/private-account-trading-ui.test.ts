@@ -150,7 +150,7 @@ describe("private account trading UI derivation", () => {
       "utf8",
     );
     const turnkeyCorePatch = readFileSync(
-      resolve(process.cwd(), "patches/@turnkey__core@2.5.0.patch"),
+      resolve(process.cwd(), "patches/@turnkey__core@2.8.0.patch"),
       "utf8",
     );
     expect(cockpitSource).toContain("Start trading on Hyperliquid");

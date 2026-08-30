@@ -29,7 +29,7 @@ build_and_capture() {
   # — the bare hash — lands on stdout.
   echo "[$label] building…" >&2
   rm -rf .next public/.well-known/sri-manifest.json
-  npm run build > "/tmp/repro-build-${label}.log" 2>&1
+  pnpm run build > "/tmp/repro-build-${label}.log" 2>&1
   local hash
   hash=$(jq -r '.manifest_sha256' public/.well-known/sri-manifest.json)
   echo "[$label] manifest_sha256: $hash" >&2

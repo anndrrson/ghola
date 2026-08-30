@@ -43,7 +43,7 @@
  * Adding new inline-script sources
  * --------------------------------
  * If you add a third-party widget that injects an inline `<script>`,
- * re-run `npm run build` and its hash will be automatically picked
+ * re-run `pnpm run build` and its hash will be automatically picked
  * up here. If a script genuinely cannot be enumerated at build time
  * (e.g. truly per-request content) the right answer is a server-side
  * response transformer or a `'nonce-...'` source — not adding

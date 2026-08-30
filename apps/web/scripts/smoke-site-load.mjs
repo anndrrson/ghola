@@ -2,7 +2,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { chromium } from "playwright";
+import { chromium } from "@playwright/test";
 
 const DEFAULT_BASE_URL = "https://ghola.xyz";
 const TIMEOUT_MS = positiveIntegerEnv("GHOLA_SITE_SMOKE_TIMEOUT_MS", 30_000);

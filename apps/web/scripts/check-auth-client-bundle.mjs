@@ -32,7 +32,7 @@ const requiredGoogleRedirectSources = [
   {
     file: "pnpm-workspace.yaml",
     patterns: [
-      { label: "Turnkey OTP patched dependency declaration", pattern: /'@turnkey\/react-wallet-kit@2\.3\.1':\s*patches\/@turnkey__react-wallet-kit@2\.3\.1\.patch/ },
+      { label: "Turnkey OTP patched dependency declaration", pattern: /'@turnkey\/react-wallet-kit@2\.4\.2':\s*patches\/@turnkey__react-wallet-kit@2\.4\.2\.patch/ },
     ],
   },
   {
@@ -62,20 +62,22 @@ const requiredGoogleRedirectSources = [
     ],
   },
   {
-    file: "patches/@turnkey__core@2.5.0.patch",
+    file: "patches/@turnkey__core@2.8.0.patch",
     patterns: [
       { label: "Turnkey platform authenticator selection", pattern: /this\.config\.withPlatformKey[\s\S]*?["']platform["']/ },
     ],
   },
   {
-    file: "patches/@turnkey__react-wallet-kit@2.3.1.patch",
+    file: "patches/@turnkey__react-wallet-kit@2.4.2.patch",
     patterns: [
       { label: "fresh OTP fields after resend", pattern: /disabled:\s*submitting \|\| verificationAttempted[\s\S]*?otpId/ },
-      { label: "single OTP attempt per challenge", pattern: /if \(submitting \|\| verificationAttempted\) return/ },
+      { label: "single OTP attempt per challenge", pattern: /if \(verificationAttemptedRef\.current\) return/ },
+      { label: "case-normalized OTP submission", pattern: /otpCode:\s*normalizedOtpCode/ },
+      { label: "single OTP initialization per modal", pattern: /beginOtpInitialization/ },
+      { label: "modal-lifetime lock release", pattern: /ghola:turnkey-auth-modal-closed/ },
       { label: "actionable Turnkey OTP diagnostics", pattern: /\[Turnkey OTP\] verification rejected/ },
       { label: "no blind OTP retry", pattern: /Start over; do not retry it/ },
-      { label: "CAPTCHA required before OTP initialization", pattern: /Turnkey CAPTCHA is required before requesting a sign-in code/ },
-      { label: "visible CAPTCHA timeout recovery", pattern: /Verification expired\. Complete the security check, then try again/ },
+      { label: "unconfigured CAPTCHA fast path", pattern: /if \(!turnstileConfigured\) return \{\}/ },
     ],
   },
   {

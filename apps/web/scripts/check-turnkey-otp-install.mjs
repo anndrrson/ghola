@@ -1,19 +1,22 @@
 #!/usr/bin/env node
 
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 
 const required = [
-  /verificationAttempted/,
+  /verificationAttemptedRef/,
+  /normalizeOtpCode/,
+  /otpCode:\s*normalizedOtpCode/,
+  /deferred:\s*true/,
   /\[Turnkey OTP\] verification rejected/,
   /Start over; do not retry it/,
 ];
 
-const requiredCaptchaGate = [
-  /Turnkey CAPTCHA is required before requesting a sign-in code/,
-  /Verification expired\. Complete the security check, then try again/,
-  /setShowTurnstileError\(true\)/,
+const requiredCaptchaSafety = [
+  /requestToken/,
+  /turnstileConfigured/,
 ];
 
 export async function verifyTurnkeyOtpInstall(root = process.cwd()) {
@@ -34,6 +37,14 @@ export async function verifyTurnkeyOtpInstall(root = process.cwd()) {
     }
   }
 
+  const require = createRequire(import.meta.url);
+  const otpRuntime = require(files[0]);
+  for (const [input, expected] of [[" sszffp ", "SSZFFP"], ["8v6fk3", "8V6FK3"]]) {
+    if (otpRuntime.normalizeOtpCode(input) !== expected) {
+      throw new Error("installed Turnkey OTP runtime does not normalize pasted codes");
+    }
+  }
+
   const captchaFiles = [
     path.join(root, "node_modules/@turnkey/react-wallet-kit/dist/components/auth/TurnstileWidget.js"),
     path.join(root, "node_modules/@turnkey/react-wallet-kit/dist/components/auth/TurnstileWidget.mjs"),
@@ -41,10 +52,55 @@ export async function verifyTurnkeyOtpInstall(root = process.cwd()) {
 
   for (const file of captchaFiles) {
     const source = await readFile(file, "utf8");
-    for (const pattern of requiredCaptchaGate) {
+    for (const pattern of requiredCaptchaSafety) {
       if (!pattern.test(source)) {
-        throw new Error(`${path.relative(root, file)} permits OTP initialization without verified CAPTCHA`);
+        throw new Error(`${path.relative(root, file)} is missing deferred CAPTCHA safety`);
       }
+    }
+  }
+
+  const authFiles = [
+    path.join(root, "node_modules/@turnkey/react-wallet-kit/dist/components/auth/index.js"),
+    path.join(root, "node_modules/@turnkey/react-wallet-kit/dist/components/auth/index.mjs"),
+  ];
+  for (const file of authFiles) {
+    const source = await readFile(file, "utf8");
+    if (!/beginOtpInitialization/.test(source)) {
+      throw new Error(`${path.relative(root, file)} permits overlapping OTP initialization`);
+    }
+  }
+
+  const modalFiles = [
+    path.join(root, "node_modules/@turnkey/react-wallet-kit/dist/providers/modal/Provider.js"),
+    path.join(root, "node_modules/@turnkey/react-wallet-kit/dist/providers/modal/Provider.mjs"),
+  ];
+  for (const file of modalFiles) {
+    const source = await readFile(file, "utf8");
+    if (!/dispatchEvent\(new Event\(["']ghola:turnkey-auth-modal-closed["']\)\)/.test(source)) {
+      throw new Error(`${path.relative(root, file)} does not release the app modal lock on close`);
+    }
+  }
+
+  const kitRoot = await realpath(path.join(root, "node_modules/@turnkey/react-wallet-kit"));
+  const kitPackage = JSON.parse(await readFile(path.join(kitRoot, "package.json"), "utf8"));
+  if (kitPackage.version !== "2.4.2" || kitPackage.dependencies?.["@turnkey/core"] !== "2.8.0") {
+    throw new Error("Turnkey OTP runtime is not pinned to wallet-kit 2.4.2 / core 2.8.0");
+  }
+  for (const extension of ["js", "mjs"]) {
+    const coreSource = await readFile(
+      path.resolve(kitRoot, `../core/dist/__clients__/core.${extension}`),
+      "utf8",
+    );
+    if (!/attested stamper[\s\S]*?stampLogin/.test(coreSource)) {
+      throw new Error(`Turnkey OTP ${extension} runtime is missing attested stampLogin`);
+    }
+
+    const passkeySource = await readFile(
+      path.resolve(kitRoot, `../core/dist/__stampers__/passkey/base.${extension}`),
+      "utf8",
+    );
+    if (!/withPlatformKey[\s\S]*?\?\s*["']platform["'][\s\S]*?:\s*this\.config\.withSecurityKey[\s\S]*?\?\s*["']cross-platform["']/.test(passkeySource)) {
+      throw new Error(`Turnkey passkey ${extension} runtime is missing platform/security-key routing`);
     }
   }
 }

@@ -33,6 +33,10 @@ import {
   parsePerpsTurnkeyBindings,
   type PerpsTurnkeyBindings,
 } from "./perps-turnkey-session-boundary";
+import {
+  createTurnkeyAuthModalLock,
+  TURNKEY_AUTH_MODAL_CLOSED_EVENT,
+} from "./turnkey-auth-single-flight";
 import type { AsterV3AgentApprovalTypedData } from "./aster-agent-onboarding";
 import {
   signAsterAgentApprovalWithTurnkey,
@@ -272,6 +276,7 @@ function PerpsTurnkeySession({
   const [pendingBindingUserId, setPendingBindingUserId] = useState<string | null>(null);
   const [requireFreshAuthentication, setRequireFreshAuthentication] = useState(false);
   const forcedLogoutKey = useRef<string | null>(null);
+  const [authModalLock] = useState(() => createTurnkeyAuthModalLock());
   const enqueueWalletProvisioning = useRef(createPerpsWalletProvisioningQueue()).current;
 
   useEffect(() => {
@@ -287,6 +292,19 @@ function PerpsTurnkeySession({
     setPendingBindingUserId(pending);
     setBindingsLoaded(true);
   }, []);
+
+  useEffect(() => {
+    const release = () => authModalLock.release();
+    window.addEventListener(TURNKEY_AUTH_MODAL_CLOSED_EVENT, release);
+    return () => {
+      window.removeEventListener(TURNKEY_AUTH_MODAL_CLOSED_EVENT, release);
+      authModalLock.release();
+    };
+  }, [authModalLock]);
+
+  useEffect(() => {
+    if (freshAuthenticationOrganizationId) authModalLock.release();
+  }, [authModalLock, freshAuthenticationOrganizationId]);
 
   const boundary = useMemo(() => decidePerpsTurnkeyBoundary({
     thumperLoading: thumper.loading || !bindingsLoaded,
@@ -394,7 +412,7 @@ function PerpsTurnkeySession({
     boundary.kind === "await_fresh_turnkey_auth" ||
     boundary.kind === "logout";
 
-  const login = useCallback(async () => {
+  const login = useCallback(() => authModalLock.run(async () => {
     const userId = thumperUserScope;
     if (!userId || thumper.loading) {
       throw new Error("Sign in to Ghola before authenticating the perps wallet.");
@@ -418,7 +436,7 @@ function PerpsTurnkeySession({
       setPendingBindingUserId((current) => (current === userId ? null : current));
       throw error;
     }
-  }, [
+  }), [
     bindingsLoaded,
     boundary.ready,
     clearFreshAuthentication,
@@ -427,9 +445,11 @@ function PerpsTurnkeySession({
     turnkey,
     turnkeyAuthenticated,
     turnkeyOrganizationId,
+    authModalLock,
   ]);
 
   const logout = useCallback(async () => {
+    authModalLock.release();
     try {
       sessionStorage.removeItem(`${TURNKEY_PENDING_BINDING_STORAGE_KEY}:${parentOrganizationId}`);
     } catch {
@@ -439,7 +459,7 @@ function PerpsTurnkeySession({
     setRequireFreshAuthentication(true);
     clearFreshAuthentication();
     await turnkey.logout();
-  }, [clearFreshAuthentication, turnkey]);
+  }, [authModalLock, clearFreshAuthentication, turnkey]);
 
   const addPasskey = useCallback(async () => {
     if (!organizationId || !authenticated) {

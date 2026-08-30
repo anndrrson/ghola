@@ -59,6 +59,18 @@ describe("middleware security hardening", () => {
     expect(prodCsp).not.toContain("https://*.githubusercontent.com");
   });
 
+  it("allows the exact Cloudflare Turnstile origin on every required directive", () => {
+    const prodCsp = buildContentSecurityPolicy(false);
+    for (const directive of ["script-src", "connect-src", "frame-src"]) {
+      const value = prodCsp
+        .split(";")
+        .map((item) => item.trim())
+        .find((item) => item.startsWith(`${directive} `));
+      expect(value).toContain("https://challenges.cloudflare.com");
+    }
+    expect(prodCsp).not.toContain("https://*.cloudflare.com");
+  });
+
   it("sets HSTS only for https requests", () => {
     const httpsHeaders = new Headers();
     applySecurityHeaders(httpsHeaders, { isDev: false, isHttps: true, nonce: "test-nonce" });

@@ -99,7 +99,7 @@ async function main() {
   const staticOutput = await builtStaticOutput();
   if (!staticOutput.dir) {
     console.warn(
-      `[sri-manifest] built static output not found (${staticOutput.checked.join(", ")}) — skipping. Run \`npm run build\` first.`,
+      `[sri-manifest] built static output not found (${staticOutput.checked.join(", ")}) — skipping. Run \`pnpm run build\` first.`,
     );
     return;
   }

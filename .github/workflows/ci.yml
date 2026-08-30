@@ -33,23 +33,24 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-      # `npm ci` installs strictly from package-lock.json and fails if the
-      # lockfile is out of sync — the lockfile-pinning the previous
-      # `npm install --frozen-lockfile` (not a valid npm flag) never gave.
-      - run: npm ci
-      - run: npm test
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      # pnpm applies the pinned Turnkey safety patches in pnpm-workspace.yaml.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
       - name: Release gate tests
-        run: npm run test:release-gates
+        run: pnpm run test:release-gates
       - name: Block dangerous HTML sinks
         run: ../../scripts/security/check-dangerous-html.sh
       # The build IS the reproducibility check: passing GIT_COMMIT pins
       # the Next.js build ID deterministically, and the verification
-      # script runs `npm run build` twice and asserts the resulting
+      # script runs `pnpm run build` twice and asserts the resulting
       # SRI manifest hashes match byte-for-byte. A CDN-tamper attacker
       # cannot change the deployed bundle without producing a
       # manifest_sha256 that differs from what every reviewer + this
@@ -59,7 +60,7 @@ jobs:
           GIT_COMMIT: ${{ github.sha }}
         run: ./scripts/verify-reproducible-build.sh
       - name: Auth client bundle guard
-        run: npm run guard:auth-bundle
+        run: pnpm run guard:auth-bundle
       # Tier 1C — supply-chain hardening. The build step writes an SRI
       # manifest to public/.well-known/sri-manifest.json. Surface its
       # top-level hash in the CI run summary so it's discoverable from
@@ -180,6 +181,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -194,7 +198,7 @@ jobs:
       # rather than trusting a hand-edited committed file. cargo-audit and
       # cargo-deny advisory hits count as High (RustSec does not grade
       # advisories by CVSS, so any unignored advisory is treated as High);
-      # npm audit reports its own high/critical severities. The ignore
+      # pnpm audit reports its own high/critical severities. The ignore
       # lists in .cargo/audit.toml and deny.toml still apply — anything NOT
       # ignored there surfaces here and blocks the gate.
       - name: Run security scans + generate findings report
@@ -252,21 +256,35 @@ jobs:
             cargo_deny_high=1
           fi
 
-          # ---- npm audit (web app lockfile) -> JSON ----
-          npm_high=0
-          npm_critical=0
-          if [ -f apps/web/package-lock.json ]; then
-            ( cd apps/web && npm audit --audit-level=high --json > /tmp/npm-audit.json 2>/dev/null ) || true
-            npm_high="$(jq -r '[.vulnerabilities[]?|select(.severity=="high")]|length' /tmp/npm-audit.json 2>/dev/null || echo 0)"
-            npm_critical="$(jq -r '[.vulnerabilities[]?|select(.severity=="critical")]|length' /tmp/npm-audit.json 2>/dev/null || echo 0)"
-            [[ "${npm_high}" =~ ^[0-9]+$ ]] || npm_high=0
-            [[ "${npm_critical}" =~ ^[0-9]+$ ]] || npm_critical=0
+          # ---- pnpm audit (web app production lockfile) -> JSON ----
+          # Exit 1 means advisories were found and is parsed below. Any
+          # higher code means the scanner failed, so the gate fails closed.
+          pnpm_audit_rc=0
+          pnpm --dir apps/web audit --prod --audit-level=high --json \
+            > /tmp/pnpm-audit.json 2>/tmp/pnpm-audit.err || pnpm_audit_rc=$?
+          if [ "${pnpm_audit_rc}" -gt 1 ]; then
+            echo "::error::pnpm audit errored (exit ${pnpm_audit_rc}); the web advisory scan did not run."
+            cat /tmp/pnpm-audit.err || true
+            exit 1
           fi
+          if ! jq -e '
+            (.metadata.vulnerabilities.high | type == "number") and
+            (.metadata.vulnerabilities.critical | type == "number") and
+            (.metadata.dependencies | type == "number" and . > 0)
+          ' /tmp/pnpm-audit.json >/dev/null 2>&1; then
+            echo "::error::pnpm audit report malformed or dependency graph empty; refusing a false clean scan."
+            head -c 2000 /tmp/pnpm-audit.json || true
+            echo
+            cat /tmp/pnpm-audit.err || true
+            exit 1
+          fi
+          pnpm_high="$(jq -r '.metadata.vulnerabilities.high' /tmp/pnpm-audit.json)"
+          pnpm_critical="$(jq -r '.metadata.vulnerabilities.critical' /tmp/pnpm-audit.json)"
 
           # RustSec advisories carry no CVSS grade; treat every unignored
-          # one as High. npm critical maps to critical, npm high to high.
-          high=$(( cargo_audit_vulns + cargo_deny_high + npm_high ))
-          critical=$(( npm_critical ))
+          # one as High. pnpm critical maps to critical, pnpm high to high.
+          high=$(( cargo_audit_vulns + cargo_deny_high + pnpm_high ))
+          critical=$(( pnpm_critical ))
 
           jq -n \
             --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -275,8 +293,8 @@ jobs:
             --argjson high "${high}" \
             --argjson cargo_audit "${cargo_audit_vulns}" \
             --argjson cargo_deny "${cargo_deny_high}" \
-            --argjson npm_high "${npm_high}" \
-            --argjson npm_critical "${npm_critical}" \
+            --argjson pnpm_high "${pnpm_high}" \
+            --argjson pnpm_critical "${pnpm_critical}" \
             '{
               generated_at: $generated_at,
               commit: $commit,
@@ -285,8 +303,8 @@ jobs:
               breakdown: {
                 cargo_audit_vulnerabilities: $cargo_audit,
                 cargo_deny_advisory_errors: $cargo_deny,
-                npm_audit_high: $npm_high,
-                npm_audit_critical: $npm_critical
+                pnpm_audit_high: $pnpm_high,
+                pnpm_audit_critical: $pnpm_critical
               }
             }' > "${report}"
 

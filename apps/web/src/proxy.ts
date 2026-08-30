@@ -60,8 +60,8 @@ export function buildContentSecurityPolicy(isDev: boolean): string {
   // inline bootstrap scripts until these pages are made fully dynamic or the
   // build emits a stable hash allowlist.
   const scriptSrc = isDev
-    ? "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' 'unsafe-eval' https://accounts.google.com https://apis.google.com"
-    : "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://accounts.google.com https://apis.google.com";
+    ? "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' 'unsafe-eval' https://accounts.google.com https://apis.google.com https://challenges.cloudflare.com"
+    : "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://accounts.google.com https://apis.google.com https://challenges.cloudflare.com";
   const directives = [
     "default-src 'self'",
     scriptSrc,
@@ -77,7 +77,7 @@ export function buildContentSecurityPolicy(isDev: boolean): string {
     // more wide-open `connect-src 'self' https: wss:` on some routes and
     // a tight allowlist on others. No wildcards (see csp-config.ts).
     connectSrcDirective(),
-    "frame-src https://accounts.google.com",
+    "frame-src https://accounts.google.com https://challenges.cloudflare.com",
     "frame-ancestors 'none'",
     "object-src 'none'",
     "base-uri 'self'",

@@ -2540,6 +2540,7 @@ export function PrivateAccountCockpit({
   }
 
   async function authenticateHyperliquidOwner() {
+    if (working) return;
     setWorking(true);
     setContinueHyperliquidAfterOwnerAuth(true);
     setError("Complete one passkey or email sign-in to continue.");
@@ -3466,6 +3467,7 @@ export function PrivateAccountCockpit({
             {error && turnkeyWallet.walletAddress && hyperliquidVault && (
               <button
                 type="button"
+                disabled={working}
                 onClick={() => {
                   if (shouldAuthenticateHyperliquidOwner({
                     legacyApiKeysEnabled: LEGACY_HYPERLIQUID_API_KEYS_ENABLED,
@@ -3477,7 +3479,7 @@ export function PrivateAccountCockpit({
                   }
                   void armAndVerifyHyperliquid(hyperliquidVault);
                 }}
-                className="mt-6 h-11 w-full rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb]"
+                className="mt-6 h-11 w-full rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {shouldAuthenticateHyperliquidOwner({
                   legacyApiKeysEnabled: LEGACY_HYPERLIQUID_API_KEYS_ENABLED,

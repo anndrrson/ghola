@@ -1,0 +1,613 @@
+diff --git a/dist/components/auth/OTP.js b/dist/components/auth/OTP.js
+index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..7b6cf11e2dd7beb37cb590b3067fbb1eec7e2bbe 100644
+--- a/dist/components/auth/OTP.js
++++ b/dist/components/auth/OTP.js
+@@ -13,6 +13,49 @@ var freeSolidSvgIcons = require('@fortawesome/free-solid-svg-icons');
+ var clsx = require('clsx');
+ var TurnstileWidget = require('./TurnstileWidget.js');
+ 
++function normalizeOtpCode(code) {
++  return String(code || "").trim().toUpperCase();
++}
++function otpErrorDiagnostic(error) {
++  const codes = [];
++  const statuses = [];
++  const activityIds = [];
++  let current = error;
++  for (let depth = 0; depth < 5 && current; depth += 1) {
++    if (typeof current !== "object") break;
++    if (typeof current.code === "string") codes.push(current.code);
++    if (typeof current.status === "number") statuses.push(current.status);
++    for (const key of ["activityId", "activity_id", "requestId", "request_id"]) {
++      if (typeof current[key] === "string") activityIds.push(current[key].slice(0, 128));
++    }
++    current = current.cause;
++  }
++  return {
++    phase: "completeOtp",
++    codes: [...new Set(codes)],
++    statuses: [...new Set(statuses)],
++    activityIds: [...new Set(activityIds)]
++  };
++}
++function friendlyOtpError(error) {
++  const { codes } = otpErrorDiagnostic(error);
++  if (codes.includes(core.TurnkeyErrorCodes.INVALID_OTP_CODE)) {
++    return "That code is invalid or expired. Start over and use the newest code.";
++  }
++  if (codes.includes(core.TurnkeyErrorCodes.MAX_OTP_INITIATED_ERROR)) {
++    return "Too many verification attempts. Start over after the cooldown.";
++  }
++  if (codes.some(code => [
++    core.TurnkeyErrorCodes.NETWORK_ERROR,
++    core.TurnkeyErrorCodes.TIMEOUT,
++    core.TurnkeyErrorCodes.SERVICE_UNAVAILABLE,
++    core.TurnkeyErrorCodes.GATEWAY_TIMEOUT
++  ].includes(code))) {
++    return "Turnkey could not verify the code. Start over when the connection recovers.";
++  }
++  return "The code was accepted or rejected, but secure sign-in did not finish. Start over; do not retry it.";
++}
++
+ function OtpVerification(props) {
+   const {
+     contact,
+@@ -38,6 +81,8 @@ function OtpVerification(props) {
+   const [otpEncryptionTargetBundle, setOtpEncryptionTargetBundle] = react.useState(props.otpEncryptionTargetBundle);
+   const [error, setError] = react.useState(null);
+   const [shaking, setShaking] = react.useState(false);
++  const [verificationAttempted, setVerificationAttempted] = react.useState(false);
++  const verificationAttemptedRef = react.useRef(false);
+   // Deferred: entering the code doesn't need a captcha, only resending does. The
+   // widget stays unmounted until the user actually asks for a new code.
+   const {
+@@ -55,14 +100,19 @@ function OtpVerification(props) {
+     setTimeout(() => setShaking(false), 250);
+   };
+   const handleContinue = async otpCode => {
++    if (verificationAttemptedRef.current) return;
++    const normalizedOtpCode = normalizeOtpCode(otpCode);
++    verificationAttemptedRef.current = true;
++    setVerificationAttempted(true);
++    setError(null);
+     try {
+       setSubmitting(true);
+       if (onContinue) {
+-        await onContinue(otpCode);
++        await onContinue(normalizedOtpCode);
+       } else {
+         await completeOtp({
+           otpId,
+-          otpCode,
++          otpCode: normalizedOtpCode,
+           otpEncryptionTargetBundle,
+           contact,
+           otpType,
+@@ -73,10 +123,9 @@ function OtpVerification(props) {
+         closeModal();
+       }
+     } catch (error) {
+-      const niceError = error.code === core.TurnkeyErrorCodes.INVALID_OTP_CODE ? "Invalid OTP code" : "An error has occurred";
+-      setError(niceError);
++      console.error("[Turnkey OTP] verification rejected", JSON.stringify(otpErrorDiagnostic(error)));
++      setError(friendlyOtpError(error));
+       shakeInput();
+-      throw new Error(`Error completing OTP: ${error}`);
+     } finally {
+       setSubmitting(false);
+     }
+@@ -100,9 +149,15 @@ function OtpVerification(props) {
+       });
+       setOtpId(otpId);
+       setOtpEncryptionTargetBundle(otpEncryptionTargetBundle);
++      verificationAttemptedRef.current = false;
++      setVerificationAttempted(false);
+       setResent(true);
+     } catch (error) {
+-      throw new Error(`Error resending OTP: ${error}`);
++      console.error("[Turnkey OTP] resend failed", JSON.stringify({
++        ...otpErrorDiagnostic(error),
++        phase: "initOtp"
++      }));
++      setError("Could not send a new code. Start over and try again later.");
+     } finally {
+       setResending(false);
+     }
+@@ -128,8 +183,9 @@ function OtpVerification(props) {
+         children: jsxRuntime.jsx(OtpInput, {
+           otpLength: otpLength,
+           onContinue: handleContinue,
+-          alphanumeric: alphanumeric
+-        })
++          alphanumeric: alphanumeric,
++          disabled: submitting || verificationAttempted
++        }, otpId)
+       }), error && jsxRuntime.jsx("div", {
+         className: "text-red-400 text-center text-sm",
+         children: error
+@@ -157,7 +213,8 @@ function OtpInput(props) {
+   const {
+     otpLength,
+     onContinue,
+-    alphanumeric = false
++    alphanumeric = false,
++    disabled = false
+   } = props;
+   const {
+     isMobile
+@@ -165,6 +222,7 @@ function OtpInput(props) {
+   const [values, setValues] = react.useState(Array(otpLength).fill(""));
+   const inputsRef = react.useRef([]);
+   const handleChange = (index, value) => {
++    if (disabled) return;
+     if (!alphanumeric) value = value.replace(/[^0-9]/g, "");else value = value.replace(/[^a-zA-Z0-9]/g, "");
+     const newValues = [...values];
+     newValues[index] = value.slice(-1); // only last char
+@@ -177,6 +235,7 @@ function OtpInput(props) {
+     }
+   };
+   const handleKeyDown = (e, index) => {
++    if (disabled) return;
+     if (e.key === "Backspace" && !values[index] && index > 0) {
+       inputsRef.current[index - 1]?.focus();
+     }
+@@ -186,12 +245,13 @@ function OtpInput(props) {
+     if (e.key === "ArrowRight" && index < otpLength - 1) {
+       inputsRef.current[index + 1]?.focus();
+     }
+-    if (e.key === "Enter") {
++    if (e.key === "Enter" && values.every(value => value)) {
+       onContinue(values.join(""));
+     }
+   };
+   const handlePaste = e => {
+     e.preventDefault();
++    if (disabled) return;
+     const paste = e.clipboardData.getData("text").trim();
+     const cleaned = alphanumeric ? paste.replace(/[^a-zA-Z0-9]/g, "") : paste.replace(/[^0-9]/g, "");
+     const sliced = cleaned.slice(0, otpLength).split("");
+@@ -206,7 +266,7 @@ function OtpInput(props) {
+     // Focus the last filled box
+     const lastIndex = Math.min(sliced.length, otpLength - 1);
+     inputsRef.current[lastIndex]?.focus();
+-    onContinue(newValues.join(""));
++    if (newValues.every(value => value)) onContinue(newValues.join(""));
+   };
+   return jsxRuntime.jsx("div", {
+     className: clsx("flex items-center justify-center space-x-2", isMobile ? "w-[95%]" : "w-full"),
+@@ -219,6 +279,7 @@ function OtpInput(props) {
+         maxLength: 1,
+         value: values[i]?.toUpperCase(),
+         autoComplete: "off",
++        disabled: disabled,
+         onChange: e => handleChange(i, e.target.value.toUpperCase()),
+         onKeyDown: e => handleKeyDown(e, i),
+         onPaste: handlePaste,
+@@ -231,4 +292,5 @@ function OtpInput(props) {
+ 
+ exports.OtpInput = OtpInput;
+ exports.OtpVerification = OtpVerification;
++exports.normalizeOtpCode = normalizeOtpCode;
+ //# sourceMappingURL=OTP.js.map
+diff --git a/dist/components/auth/OTP.mjs b/dist/components/auth/OTP.mjs
+index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b30855a6824a 100644
+--- a/dist/components/auth/OTP.mjs
++++ b/dist/components/auth/OTP.mjs
+@@ -12,6 +12,46 @@ import { faEnvelope, faPhone } from '@fortawesome/free-solid-svg-icons';
+ import clsx from 'clsx';
+ import { useTurnstile } from './TurnstileWidget.mjs';
+ 
++function normalizeOtpCode(code) {
++  return String(code || "").trim().toUpperCase();
++}
++function otpErrorDiagnostic(error) {
++  var codes = [];
++  var statuses = [];
++  var activityIds = [];
++  var current = error;
++  for (var depth = 0; depth < 5 && current; depth += 1) {
++    if (typeof current !== "object") break;
++    if (typeof current.code === "string") codes.push(current.code);
++    if (typeof current.status === "number") statuses.push(current.status);
++    ["activityId", "activity_id", "requestId", "request_id"].forEach(function (key) {
++      if (typeof current[key] === "string") activityIds.push(current[key].slice(0, 128));
++    });
++    current = current.cause;
++  }
++  return {
++    phase: "completeOtp",
++    codes: _toConsumableArray(new Set(codes)),
++    statuses: _toConsumableArray(new Set(statuses)),
++    activityIds: _toConsumableArray(new Set(activityIds))
++  };
++}
++function friendlyOtpError(error) {
++  var codes = otpErrorDiagnostic(error).codes;
++  if (codes.includes(TurnkeyErrorCodes.INVALID_OTP_CODE)) {
++    return "That code is invalid or expired. Start over and use the newest code.";
++  }
++  if (codes.includes(TurnkeyErrorCodes.MAX_OTP_INITIATED_ERROR)) {
++    return "Too many verification attempts. Start over after the cooldown.";
++  }
++  if (codes.some(function (code) {
++    return [TurnkeyErrorCodes.NETWORK_ERROR, TurnkeyErrorCodes.TIMEOUT, TurnkeyErrorCodes.SERVICE_UNAVAILABLE, TurnkeyErrorCodes.GATEWAY_TIMEOUT].includes(code);
++  })) {
++    return "Turnkey could not verify the code. Start over when the connection recovers.";
++  }
++  return "The code was accepted or rejected, but secure sign-in did not finish. Start over; do not retry it.";
++}
++
+ function OtpVerification(props) {
+   var contact = props.contact,
+     otpType = props.otpType,
+@@ -57,6 +97,11 @@ function OtpVerification(props) {
+     _useState12 = _slicedToArray(_useState11, 2),
+     shaking = _useState12[0],
+     setShaking = _useState12[1];
++  var _useState13 = useState(false),
++    _useState14 = _slicedToArray(_useState13, 2),
++    verificationAttempted = _useState14[0],
++    setVerificationAttempted = _useState14[1];
++  var verificationAttemptedRef = useRef(false);
+   // Deferred: entering the code doesn't need a captcha, only resending does. The
+   // widget stays unmounted until the user actually asks for a new code.
+   var _useTurnstile = useTurnstile({
+@@ -76,10 +121,15 @@ function OtpVerification(props) {
+   };
+   var handleContinue = /*#__PURE__*/function () {
+     var _ref = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee(otpCode) {
+-      var niceError, _t;
++      var normalizedOtpCode, _t;
+       return _regenerator().w(function (_context) {
+         while (1) switch (_context.p = _context.n) {
+           case 0:
++            if (verificationAttemptedRef.current) return _context.a(2);
++            normalizedOtpCode = normalizeOtpCode(otpCode);
++            verificationAttemptedRef.current = true;
++            setVerificationAttempted(true);
++            setError(null);
+             _context.p = 0;
+             setSubmitting(true);
+             if (!onContinue) {
+@@ -87,7 +137,7 @@ function OtpVerification(props) {
+               break;
+             }
+             _context.n = 1;
+-            return onContinue(otpCode);
++            return onContinue(normalizedOtpCode);
+           case 1:
+             _context.n = 4;
+             break;
+@@ -95,7 +145,7 @@ function OtpVerification(props) {
+             _context.n = 3;
+             return completeOtp(_objectSpread2({
+               otpId: otpId,
+-              otpCode: otpCode,
++              otpCode: normalizedOtpCode,
+               otpEncryptionTargetBundle: otpEncryptionTargetBundle,
+               contact: contact,
+               otpType: otpType
+@@ -110,10 +160,11 @@ function OtpVerification(props) {
+           case 5:
+             _context.p = 5;
+             _t = _context.v;
+-            niceError = _t.code === TurnkeyErrorCodes.INVALID_OTP_CODE ? "Invalid OTP code" : "An error has occurred";
+-            setError(niceError);
++            console.error("[Turnkey OTP] verification rejected", JSON.stringify(otpErrorDiagnostic(_t)));
++            setError(friendlyOtpError(_t));
+             shakeInput();
+-            throw new Error("Error completing OTP: ".concat(_t));
++            _context.n = 6;
++            break;
+           case 6:
+             _context.p = 6;
+             setSubmitting(false);
+@@ -158,13 +209,20 @@ function OtpVerification(props) {
+             _otpEncryptionTargetBundle = _yield$initOtp.otpEncryptionTargetBundle;
+             setOtpId(_otpId);
+             setOtpEncryptionTargetBundle(_otpEncryptionTargetBundle);
++            verificationAttemptedRef.current = false;
++            setVerificationAttempted(false);
+             setResent(true);
+             _context2.n = 6;
+             break;
+           case 5:
+             _context2.p = 5;
+             _t2 = _context2.v;
+-            throw new Error("Error resending OTP: ".concat(_t2));
++            console.error("[Turnkey OTP] resend failed", JSON.stringify(_objectSpread2(_objectSpread2({}, otpErrorDiagnostic(_t2)), {}, {
++              phase: "initOtp"
++            })));
++            setError("Could not send a new code. Start over and try again later.");
++            _context2.n = 6;
++            break;
+           case 6:
+             _context2.p = 6;
+             setResending(false);
+@@ -199,8 +257,9 @@ function OtpVerification(props) {
+         children: jsx(OtpInput, {
+           otpLength: otpLength,
+           onContinue: handleContinue,
+-          alphanumeric: alphanumeric
+-        })
++          alphanumeric: alphanumeric,
++          disabled: submitting || verificationAttempted
++        }, otpId)
+       }), error && jsx("div", {
+         className: "text-red-400 text-center text-sm",
+         children: error
+@@ -228,15 +287,18 @@ function OtpInput(props) {
+   var otpLength = props.otpLength,
+     onContinue = props.onContinue,
+     _props$alphanumeric2 = props.alphanumeric,
+-    alphanumeric = _props$alphanumeric2 === void 0 ? false : _props$alphanumeric2;
++    alphanumeric = _props$alphanumeric2 === void 0 ? false : _props$alphanumeric2,
++    _props$disabled = props.disabled,
++    disabled = _props$disabled === void 0 ? false : _props$disabled;
+   var _useModal2 = useModal(),
+     isMobile = _useModal2.isMobile;
+-  var _useState13 = useState(Array(otpLength).fill("")),
+-    _useState14 = _slicedToArray(_useState13, 2),
+-    values = _useState14[0],
+-    setValues = _useState14[1];
++  var _useState15 = useState(Array(otpLength).fill("")),
++    _useState16 = _slicedToArray(_useState15, 2),
++    values = _useState16[0],
++    setValues = _useState16[1];
+   var inputsRef = useRef([]);
+   var handleChange = function handleChange(index, value) {
++    if (disabled) return;
+     if (!alphanumeric) value = value.replace(/[^0-9]/g, "");else value = value.replace(/[^a-zA-Z0-9]/g, "");
+     var newValues = _toConsumableArray(values);
+     newValues[index] = value.slice(-1); // only last char
+@@ -252,6 +314,7 @@ function OtpInput(props) {
+     }
+   };
+   var handleKeyDown = function handleKeyDown(e, index) {
++    if (disabled) return;
+     if (e.key === "Backspace" && !values[index] && index > 0) {
+       var _inputsRef$current2;
+       (_inputsRef$current2 = inputsRef.current[index - 1]) === null || _inputsRef$current2 === void 0 ? void 0 : _inputsRef$current2.focus();
+@@ -264,13 +327,16 @@ function OtpInput(props) {
+       var _inputsRef$current4;
+       (_inputsRef$current4 = inputsRef.current[index + 1]) === null || _inputsRef$current4 === void 0 ? void 0 : _inputsRef$current4.focus();
+     }
+-    if (e.key === "Enter") {
++    if (e.key === "Enter" && values.every(function (value) {
++      return value;
++    })) {
+       onContinue(values.join(""));
+     }
+   };
+   var handlePaste = function handlePaste(e) {
+     var _inputsRef$current$la;
+     e.preventDefault();
++    if (disabled) return;
+     var paste = e.clipboardData.getData("text").trim();
+     var cleaned = alphanumeric ? paste.replace(/[^a-zA-Z0-9]/g, "") : paste.replace(/[^0-9]/g, "");
+     var sliced = cleaned.slice(0, otpLength).split("");
+@@ -287,7 +353,9 @@ function OtpInput(props) {
+     // Focus the last filled box
+     var lastIndex = Math.min(sliced.length, otpLength - 1);
+     (_inputsRef$current$la = inputsRef.current[lastIndex]) === null || _inputsRef$current$la === void 0 ? void 0 : _inputsRef$current$la.focus();
+-    onContinue(newValues.join(""));
++    if (newValues.every(function (value) {
++      return value;
++    })) onContinue(newValues.join(""));
+   };
+   return jsx("div", {
+     className: clsx("flex items-center justify-center space-x-2", isMobile ? "w-[95%]" : "w-full"),
+@@ -301,6 +369,7 @@ function OtpInput(props) {
+         maxLength: 1,
+         value: (_values$i = values[i]) === null || _values$i === void 0 ? void 0 : _values$i.toUpperCase(),
+         autoComplete: "off",
++        disabled: disabled,
+         onChange: function onChange(e) {
+           return handleChange(i, e.target.value.toUpperCase());
+         },
+@@ -317,5 +386,5 @@ function OtpInput(props) {
+   });
+ }
+ 
+-export { OtpInput, OtpVerification };
++export { OtpInput, OtpVerification, normalizeOtpCode };
+ //# sourceMappingURL=OTP.mjs.map
+diff --git a/dist/components/auth/TurnstileWidget.js b/dist/components/auth/TurnstileWidget.js
+index fc3cfde9f82a527b39ad59026e66eb4f9bd477ff..af34bda1876dad8de9c83a44d29407ded64d113b 100644
+--- a/dist/components/auth/TurnstileWidget.js
++++ b/dist/components/auth/TurnstileWidget.js
+@@ -54,6 +54,7 @@ function useTurnstile(options) {
+     pendingToken.current = null;
+   };
+   const consumeToken = async () => {
++    if (!turnstileConfigured) return {};
+     const result = await captcha.consumeCaptchaToken(getTurnstileToken, token => {
+       setTurnstileToken(token);
+       // Cleared on consume/reset — keep actions disabled until onSuccess.
+diff --git a/dist/components/auth/TurnstileWidget.mjs b/dist/components/auth/TurnstileWidget.mjs
+index 0f4c161f58bc38e0c1a0f6bca4f11f66229d86bd..5fc3b555f9cf68e726fdfca4a4a092e1d75fe4e0 100644
+--- a/dist/components/auth/TurnstileWidget.mjs
++++ b/dist/components/auth/TurnstileWidget.mjs
+@@ -82,7 +82,13 @@ function useTurnstile(options) {
+       return _regenerator().w(function (_context) {
+         while (1) switch (_context.n) {
+           case 0:
+-            _context.n = 1;
++            if (turnstileConfigured) {
++              _context.n = 1;
++              break;
++            }
++            return _context.a(2, {});
++          case 1:
++            _context.n = 2;
+             return consumeCaptchaToken(getTurnstileToken, function (token) {
+               setTurnstileToken(token);
+               // Cleared on consume/reset — keep actions disabled until onSuccess.
+@@ -90,7 +96,7 @@ function useTurnstile(options) {
+                 setAuthEnabled(false);
+               }
+             }, turnstileRef);
+-          case 1:
++          case 2:
+             result = _context.v;
+             // Timed out with no token — ensure gated actions stay disabled.
+             if (turnstileConfigured && !("captchaToken" in result)) {
+diff --git a/dist/components/auth/index.js b/dist/components/auth/index.js
+index 5ee5880fabef3171a3790eaa483ea3834c157962..231123232546f1b3a673e30d32c70ced4f9c00fd 100644
+--- a/dist/components/auth/index.js
++++ b/dist/components/auth/index.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 
+ var jsxRuntime = require('react/jsx-runtime');
++var react = require('react');
+ var reactFontawesome = require('@fortawesome/react-fontawesome');
+ var freeBrandsSvgIcons = require('@fortawesome/free-brands-svg-icons');
+ var core = require('@turnkey/core');
+@@ -50,6 +51,16 @@ function AuthComponent({
+     consumeToken,
+     authEnabled
+   } = TurnstileWidget.useTurnstile();
++  const otpInitializationRef = react.useRef(null);
++  const beginOtpInitialization = operation => {
++    if (otpInitializationRef.current) return otpInitializationRef.current;
++    const attempt = operation();
++    otpInitializationRef.current = attempt;
++    void attempt.catch(() => {
++      if (otpInitializationRef.current === attempt) otpInitializationRef.current = null;
++    });
++    return attempt;
++  };
+   if (!config || clientState === base.ClientState.Loading) {
+     // Don't check ClientState.Error here. We already check in the modal root
+     return jsxRuntime.jsx("div", {
+@@ -65,7 +76,7 @@ function AuthComponent({
+     methodOrder = [],
+     oauthOrder = []
+   } = config.ui?.authModal || {};
+-  const handleEmailSubmit = async email => {
++  const handleEmailSubmit = email => beginOtpInitialization(async () => {
+     try {
+       const {
+         otpId,
+@@ -93,8 +104,8 @@ function AuthComponent({
+     } catch (error) {
+       throw new Error(`Error initializing OTP: ${error}`);
+     }
+-  };
+-  const handlePhoneSubmit = async (phone, formattedPhone) => {
++  });
++  const handlePhoneSubmit = (phone, formattedPhone) => beginOtpInitialization(async () => {
+     try {
+       const {
+         otpId,
+@@ -124,7 +135,7 @@ function AuthComponent({
+     } catch (error) {
+       throw new Error(`Error initializing OTP: ${error}`);
+     }
+-  };
++  });
+   const handlePasskeyLogin = () => {
+     pushPage({
+       key: "Passkey Login",
+diff --git a/dist/components/auth/index.mjs b/dist/components/auth/index.mjs
+index 3671f707007f3779aa7da942aafbe4e1eb818a66..04d571883cab4614c35846acc0c3cfe5d827c292 100644
+--- a/dist/components/auth/index.mjs
++++ b/dist/components/auth/index.mjs
+@@ -1,5 +1,6 @@
+ import { asyncToGenerator as _asyncToGenerator, regenerator as _regenerator, objectSpread2 as _objectSpread2 } from '../../_virtual/_rollupPluginBabelHelpers.mjs';
+ import { jsx, jsxs, Fragment } from 'react/jsx-runtime';
++import { useRef } from 'react';
+ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+ import { faDiscord, faXTwitter, faFacebook, faApple, faGoogle } from '@fortawesome/free-brands-svg-icons';
+ import { OtpType } from '@turnkey/core';
+@@ -46,6 +47,16 @@ function AuthComponent(_ref) {
+     turnstile = _useTurnstile.turnstile,
+     consumeToken = _useTurnstile.consumeToken,
+     authEnabled = _useTurnstile.authEnabled;
++  var otpInitializationRef = useRef(null);
++  var beginOtpInitialization = function beginOtpInitialization(operation) {
++    if (otpInitializationRef.current) return otpInitializationRef.current;
++    var attempt = operation();
++    otpInitializationRef.current = attempt;
++    void attempt.catch(function () {
++      if (otpInitializationRef.current === attempt) otpInitializationRef.current = null;
++    });
++    return attempt;
++  };
+   if (!config || clientState === ClientState.Loading) {
+     // Don't check ClientState.Error here. We already check in the modal root
+     return jsx("div", {
+@@ -63,7 +74,7 @@ function AuthComponent(_ref) {
+     methodOrder = _ref2$methodOrder === void 0 ? [] : _ref2$methodOrder,
+     _ref2$oauthOrder = _ref2.oauthOrder,
+     oauthOrder = _ref2$oauthOrder === void 0 ? [] : _ref2$oauthOrder;
+-  var handleEmailSubmit = /*#__PURE__*/function () {
++  var startEmailOtp = /*#__PURE__*/function () {
+     var _ref3 = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee(email) {
+       var _config$auth, _config$auth2, _yield$initOtp, otpId, otpEncryptionTargetBundle, _t, _t2, _t3, _t4;
+       return _regenerator().w(function (_context) {
+@@ -110,11 +121,16 @@ function AuthComponent(_ref) {
+         }
+       }, _callee, null, [[0, 3]]);
+     }));
+-    return function handleEmailSubmit(_x) {
++    return function startEmailOtp(_x) {
+       return _ref3.apply(this, arguments);
+     };
+   }();
+-  var handlePhoneSubmit = /*#__PURE__*/function () {
++  var handleEmailSubmit = function handleEmailSubmit(email) {
++    return beginOtpInitialization(function () {
++      return startEmailOtp(email);
++    });
++  };
++  var startPhoneOtp = /*#__PURE__*/function () {
+     var _ref4 = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee2(phone, formattedPhone) {
+       var _config$auth3, _config$auth4, _yield$initOtp2, otpId, otpEncryptionTargetBundle, _t5, _t6, _t7, _t8;
+       return _regenerator().w(function (_context2) {
+@@ -163,10 +179,15 @@ function AuthComponent(_ref) {
+         }
+       }, _callee2, null, [[0, 3]]);
+     }));
+-    return function handlePhoneSubmit(_x2, _x3) {
++    return function startPhoneOtp(_x2, _x3) {
+       return _ref4.apply(this, arguments);
+     };
+   }();
++  var handlePhoneSubmit = function handlePhoneSubmit(phone, formattedPhone) {
++    return beginOtpInitialization(function () {
++      return startPhoneOtp(phone, formattedPhone);
++    });
++  };
+   var handlePasskeyLogin = function handlePasskeyLogin() {
+     pushPage({
+       key: "Passkey Login",
+diff --git a/dist/providers/modal/Provider.js b/dist/providers/modal/Provider.js
+index 56918d7f41618a8b4cd572364fa6d2aed5a3d804..3ffd7c2525c65e770dd58ba4c28040c8f5d1437c 100644
+--- a/dist/providers/modal/Provider.js
++++ b/dist/providers/modal/Provider.js
+@@ -23,6 +23,9 @@ function ModalProvider({
+   const closeModal = () => {
+     setModalStack([]);
+     setSheet(null);
++    if (typeof window !== "undefined") {
++      window.dispatchEvent(new Event("ghola:turnkey-auth-modal-closed"));
++    }
+   };
+   const closeSheet = () => setSheet(null);
+   return jsxRuntime.jsx(ModalContext.Provider, {
+diff --git a/dist/providers/modal/Provider.mjs b/dist/providers/modal/Provider.mjs
+index 00ba26c8d1d4e211530507362e576feb9c855631..b3c4a42f1882c3261a42c7efe230cdfb3806dbbc 100644
+--- a/dist/providers/modal/Provider.mjs
++++ b/dist/providers/modal/Provider.mjs
+@@ -42,6 +42,9 @@ function ModalProvider(_ref) {
+   var closeModal = function closeModal() {
+     setModalStack([]);
+     setSheet(null);
++    if (typeof window !== "undefined") {
++      window.dispatchEvent(new Event("ghola:turnkey-auth-modal-closed"));
++    }
+   };
+   var closeSheet = function closeSheet() {
+     return setSheet(null);
