@@ -116,6 +116,20 @@ export async function recoverDueMultiLegSagas({
     if ((saga.status === "submitting" || saga.status === "partially_hedged") && deadlineDue(saga, now_ms)) {
       result = await applyTimeout(state, saga, now_ms);
       saga = result.saga || saga;
+    } else if (saga.status === "reconciling") {
+      await pauseParentSession(state, saga, now_ms);
+      result = recipient && typeof executeOrder === "function"
+        ? await executeReconcilingRecovery({
+            state,
+            saga,
+            recipient,
+            executeOrder,
+            env,
+            nowMs: now_ms,
+          })
+        : { ok: false, error: "saga_reconciliation_executor_unavailable", saga };
+      results.push({ saga_id: initial.saga_id, ...result });
+      continue;
     } else if (saga.status !== "compensating") {
       continue;
     }
@@ -218,6 +232,87 @@ export function startMultiLegRecoveryLoop({
       supervisor.stop();
     },
   };
+}
+
+async function executeReconcilingRecovery({ state, saga, recipient, executeOrder, env, nowMs }) {
+  if (saga.legs.some((leg) => !exactQuantityRecoveryAdapter(leg.venue_id))) {
+    return { ok: false, error: "exact_quantity_recovery_unavailable", saga };
+  }
+  const session = await recoverySessionForSaga(state, saga);
+  if (!session || !saga.execution_context) {
+    return { ok: false, error: "saga_recovery_context_unavailable", saga };
+  }
+
+  let current = await state.getMultiLegSaga(saga.saga_id) || saga;
+  for (const action of current.next_actions.filter((item) => item.type === "reconcile_leg")) {
+    const leg = current.legs.find((item) => item.leg_id === action.leg_id);
+    const context = executionLegContext(current, leg.leg_id);
+    try {
+      const receipt = await executeOrder(recoveryOrderArgs({
+        state,
+        session,
+        saga: current,
+        leg,
+        context,
+        recipient,
+        operationClass: "reconcile",
+        workOrderCommitment: recoveryWorkOrder(
+          current,
+          leg,
+          "restart_reconcile_original",
+          context.work_order_commitment,
+        ),
+        instruction: reconcileInstruction({ leg, context, nowMs }),
+      }));
+      const assessment = assessOriginalOrderReconciliation({ leg, receipt, env });
+      if (!assessment.ok) {
+        current = await recoveryEvent({
+          state,
+          saga: current,
+          type: "reconciliation_failed",
+          values: { leg_id: leg.leg_id, failure_code: assessment.error },
+          nowMs,
+        });
+        return { ok: false, error: assessment.error, saga: current };
+      }
+      current = await recoveryEvent({
+        state,
+        saga: current,
+        type: "leg_reconciled",
+        values: { leg_id: leg.leg_id },
+        nowMs,
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        error: errorCode(error),
+        saga: await state.getMultiLegSaga(saga.saga_id) || current,
+      };
+    }
+  }
+  return current.terminal && current.status === "reconciled"
+    ? { ok: true, saga: current }
+    : { ok: false, error: "saga_reconciliation_incomplete", saga: current };
+}
+
+function assessOriginalOrderReconciliation({ leg, receipt, env }) {
+  const proof = receipt?.final_proof;
+  if (env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true" && !recoveryProofTargetsLeg(leg.venue_id, proof)) {
+    return { ok: false, error: "original_order_target_unproven" };
+  }
+  if (proof?.final_venue_execution_proven !== true) {
+    return { ok: false, error: "original_order_terminal_unproven" };
+  }
+  const proofMicro = Number(proof.cumulative_filled_micro_usdc);
+  const fillMicro = fillTotalsForRecord(receipt).micro;
+  const filledMicro = Number.isSafeInteger(proofMicro) ? proofMicro : fillMicro;
+  if (!Number.isSafeInteger(filledMicro) || filledMicro < 0 || filledMicro > leg.notional_micro_usdc) {
+    return { ok: false, error: "original_order_fill_invalid" };
+  }
+  if (filledMicro !== leg.filled_micro_usdc) {
+    return { ok: false, error: "original_order_fill_mismatch" };
+  }
+  return { ok: true };
 }
 
 async function applyTimeout(state, saga, nowMs) {

@@ -116,6 +116,202 @@ async function apply(state, sagaId, sequence, type, extra = {}, nowMs = NOW + se
   });
 }
 
+async function createReconcilingCarrySaga(state, venues, suffix) {
+  const sagaId = `saga:restart-reconcile:${suffix}`;
+  const legs = venues.map((venue, index) => ({
+    leg_id: `${sagaId}:${venue}`,
+    venue_id: venue,
+    asset: "BTC",
+    market: "BTC-PERP",
+    product_type: "perp",
+    operation_class: "limit_order",
+    side: index === 0 ? "buy" : "sell",
+    notional_micro_usdc: 10_000_000,
+  }));
+  const works = Object.fromEntries(venues.map((venue) => [venue, `work:restart-reconcile:${suffix}:${venue}`]));
+  const policyCommitment = `policy:restart-reconcile:${suffix}`;
+  const created = await createDurableMultiLegSaga({
+    state,
+    definition: {
+      version: 1,
+      saga_id: sagaId,
+      idempotency_key: `idem:restart-reconcile:${suffix}`,
+      plan_commitment: `plan:restart-reconcile:${suffix}`,
+      strategy_id: "delta_neutral_carry",
+      max_unhedged_ms: 1_000,
+      max_hedge_error_micro_usdc: 0,
+      now_ms: NOW,
+      legs,
+    },
+    execution_context: {
+      version: 1,
+      carry_position_id: `carry:position:restart-reconcile:${suffix}`,
+      owner_commitment: `owner:restart-reconcile:${suffix}`,
+      policy_commitment: policyCommitment,
+      session_policy: {
+        policy_commitment: policyCommitment,
+        market_allowlist: ["BTC", "BTC-PERP"],
+        max_notional_bucket: "25",
+        max_order_count: 4,
+        max_slippage_bps: 10,
+      },
+      venue_access: Object.fromEntries(venues.map((venue) => [venue, {
+        status: "ready",
+        execution_mode: "byo_api_key",
+        account_commitment: `account:restart-reconcile:${suffix}:${venue}`,
+      }])),
+      legs: legs.map((leg) => ({
+        leg_id: leg.leg_id,
+        work_order_commitment: works[leg.venue_id],
+        instruction: {
+          version: 1,
+          kind: "ghola_private_execution_instruction",
+          venue_id: leg.venue_id,
+          operation_class: "limit_order",
+          order: {
+            market: leg.venue_id === "lighter" ? "BTC" : "BTC-PERP",
+            side: leg.side,
+            base_size: "0.001",
+            limit_price: "10000",
+            tif: "Ioc",
+          },
+        },
+      })),
+    },
+  });
+  assert.equal(created.ok, true);
+  await apply(state, sagaId, 1, "preflight_passed", { leg_id: legs[0].leg_id });
+  await apply(state, sagaId, 2, "preflight_passed", { leg_id: legs[1].leg_id });
+  await apply(state, sagaId, 3, "submission_started");
+  await apply(state, sagaId, 4, "leg_fill", {
+    leg_id: legs[0].leg_id,
+    cumulative_filled_micro_usdc: 10_000_000,
+  });
+  await apply(state, sagaId, 5, "leg_fill", {
+    leg_id: legs[1].leg_id,
+    cumulative_filled_micro_usdc: 10_000_000,
+  });
+  assert.equal((await state.getMultiLegSaga(sagaId)).status, "reconciling");
+  return { sagaId, legs, works };
+}
+
+function exactOriginalOrderReconciliationReceipt() {
+  return {
+    status: "reconciled",
+    fills: [{ size: "0.001", price: "10000" }],
+    final_proof: {
+      target_client_order_matched: true,
+      broadcast_performed: true,
+      final_venue_execution_proven: true,
+      final_fill_proven: true,
+      cumulative_filled_micro_usdc: 10_000_000,
+      filled_base_size: "0.001",
+    },
+  };
+}
+
+for (const [firstVenue, secondVenue] of CARRY_EXECUTION_VENUES.flatMap((firstVenue, index) =>
+  CARRY_EXECUTION_VENUES.slice(index + 1).map((secondVenue) => [firstVenue, secondVenue]),
+)) {
+  test(`restart reconciles only the exact original orders for ${firstVenue}/${secondVenue}`, async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), `ghola-reconciling-restart-${firstVenue}-${secondVenue}-`));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    let state = createWorkerState(dir);
+    const fixture = await createReconcilingCarrySaga(state, [firstVenue, secondVenue], `${firstVenue}-${secondVenue}`);
+    const calls = [];
+    let interruptSecondRead = true;
+    const executeOrder = async (args) => {
+      calls.push(args);
+      assert.equal(args.operation_class, "reconcile");
+      assert.equal(args.instruction.operation_class, "reconcile");
+      assert.equal(args.instruction.order, undefined);
+      assert.equal(
+        args.instruction.reconcile.target_work_order_commitment,
+        fixture.works[args.venue_id],
+      );
+      assert.equal(args.execution.target_work_order_commitment, fixture.works[args.venue_id]);
+      assert.notEqual(args.work_order_commitment, fixture.works[args.venue_id]);
+      if (args.venue_id === secondVenue && interruptSecondRead) {
+        const error = new Error("original order read was interrupted");
+        error.code = "submission_ambiguous";
+        throw error;
+      }
+      return exactOriginalOrderReconciliationReceipt();
+    };
+
+    const first = await recoverDueMultiLegSagas({
+      state,
+      now_ms: NOW + 100,
+      recipient: { recipient_id: "did:key:restart-reconcile" },
+      executeOrder,
+      env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+    });
+    assert.equal(first.ok, false);
+    assert.equal(first.recovered[0].error, "submission_ambiguous");
+    assert.deepEqual(first.recovered[0].saga.legs.map((leg) => leg.reconciled), [true, false]);
+
+    state = createWorkerState(dir);
+    interruptSecondRead = false;
+    const recovered = await recoverDueMultiLegSagas({
+      state,
+      now_ms: NOW + 200,
+      recipient: { recipient_id: "did:key:restart-reconcile" },
+      executeOrder,
+      env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+    });
+    assert.equal(recovered.ok, true);
+    assert.equal(recovered.recovered[0].saga.status, "reconciled");
+    assert.equal(recovered.recovered[0].saga.terminal, true);
+    assert.equal(calls.filter((call) => call.venue_id === firstVenue).length, 1);
+    assert.equal(calls.filter((call) => call.venue_id === secondVenue).length, 2);
+    assert.equal(calls.every((call) => call.operation_class === "reconcile"), true);
+
+    const afterTerminal = await recoverDueMultiLegSagas({
+      state,
+      now_ms: NOW + 300,
+      recipient: { recipient_id: "did:key:restart-reconcile" },
+      executeOrder,
+      env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+    });
+    assert.equal(afterTerminal.checked, 0);
+    assert.equal(calls.length, 3);
+  });
+}
+
+test("nonterminal original-order proof fails into compensation without resubmission", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-reconciling-nonterminal-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  await createReconcilingCarrySaga(state, ["hyperliquid", "lighter"], "nonterminal");
+  const calls = [];
+  const recovered = await recoverDueMultiLegSagas({
+    state,
+    now_ms: NOW + 100,
+    recipient: { recipient_id: "did:key:restart-reconcile" },
+    executeOrder: async (args) => {
+      calls.push(args);
+      if (args.venue_id === "hyperliquid") return exactOriginalOrderReconciliationReceipt();
+      return {
+        ...exactOriginalOrderReconciliationReceipt(),
+        status: "open",
+        final_proof: {
+          ...exactOriginalOrderReconciliationReceipt().final_proof,
+          final_venue_execution_proven: false,
+          final_fill_proven: false,
+        },
+      };
+    },
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(recovered.ok, false);
+  assert.equal(recovered.recovered[0].error, "original_order_terminal_unproven");
+  assert.equal(recovered.recovered[0].saga.status, "compensating");
+  assert.equal(recovered.recovered[0].saga.terminal, false);
+  assert.equal(calls.length, 2);
+  assert.equal(calls.every((call) => call.operation_class === "reconcile"), true);
+  assert.equal(calls.some((call) => call.instruction?.order), false);
+});
+
 test("persists protected multi-leg recovery across restart and bounds unwind time", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-saga-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
