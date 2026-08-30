@@ -1187,8 +1187,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterial", "proof_evidence_commitment: proof.evidence_commitment", "carry_lifecycle_proof_reference_content_binding_missing");
   requireText("releaseMaterial", "carryLifecycleProofIndexKey(ownerCommitment, imageDigest, normalizedAsset)", "carry_lifecycle_proof_legacy_index_read_missing");
   requireText("releaseMaterial", "validLifecycleProofIndex(legacyIndex", "carry_lifecycle_proof_legacy_index_validation_missing");
-  requireText("releaseMaterial", "validLegacyJsonLifecycleProofReference(storedReference", "carry_lifecycle_proof_86b_reference_validation_missing");
+  requireText("releaseMaterial", "validLegacyJsonLifecycleProofReference(reference, expected)", "carry_lifecycle_proof_86b_reference_validation_missing");
   requireText("releaseMaterial", "legacyJsonLifecycleProofReferenceMatchesProof", "carry_lifecycle_proof_86b_reference_binding_missing");
+  requireText("releaseMaterial", "const derivedReference = (await state.getIdempotency(derivedReferenceKey))?.receipt", "carry_lifecycle_proof_unscoped_reference_read_missing");
+  requireText("releaseMaterial", "carry_lifecycle_proof_reference_missing", "carry_lifecycle_proof_orphaned_pair_gate_missing");
   requireText("releaseMaterial", "sameLifecycleProofSemantics(persistedProof, proof)", "carry_lifecycle_proof_retry_semantics_missing");
   requireText("releaseMaterial", "structuredClone(persistedProof)", "carry_lifecycle_proof_legacy_pointer_immutability_missing");
   requireText("releaseMaterial", "asset: normalizedAsset", "carry_lifecycle_proof_asset_assessment_binding_missing");
@@ -1199,6 +1201,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterialTest", "returns one immutable proof when fresh-timestamp retries race", "carry_lifecycle_proof_body_concurrency_test_missing");
   requireText("releaseMaterialTest", "reads and atomically migrates a real pre-reference lifecycle proof index", "carry_lifecycle_proof_legacy_index_migration_test_missing");
   requireText("releaseMaterialTest", "reads exact 86b JSON-pair references with and without a position without overwriting them", "carry_lifecycle_proof_86b_compatibility_test_missing");
+  requireText("releaseMaterialTest", "unscopedHybrid.error", "carry_lifecycle_proof_86b_unscoped_hybrid_test_missing");
+  requireText("releaseMaterialTest", "rejects tampered current references on unscoped reads", "carry_lifecycle_proof_current_unscoped_tamper_test_missing");
+  requireText("releaseMaterialTest", "unscopedMigrated.proof_key", "carry_lifecycle_proof_pre86_unscoped_migration_test_missing");
+  requireText("releaseMaterialTest", "legacyLoaded.proof", "carry_lifecycle_proof_three_arg_compatibility_test_missing");
   requireText("releaseMaterial", "final_flat_zero_orders: true", "carry_lifecycle_proof_flat_gate_missing");
   requireText("releaseMaterial", "proof?.broadcast_performed !== true", "carry_lifecycle_proof_live_broadcast_gate_missing");
   requireText("releaseMaterial", "proof.evidence_commitment === lifecycleProofCommitment(proof)", "carry_lifecycle_proof_integrity_gate_missing");

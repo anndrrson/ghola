@@ -229,18 +229,40 @@ test("records a durable owner- and image-bound paired lifecycle proof", async ()
   assert.equal(loaded.ok, true);
   assert.equal(loaded.proof.position_id, fixture.record.position.position_id);
   assert.equal(loaded.proof.worker_image_digest, IMAGE);
-  const legacyLoaded = await readCompletedCarryLifecycleProof({
+  const unscopedLoaded = await readCompletedCarryLifecycleProof({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    asset: "HYPE",
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW + 1,
+  });
+  assert.equal(unscopedLoaded.ok, true, JSON.stringify(unscopedLoaded));
+  assert.deepEqual(unscopedLoaded.proof, recorded.proof);
+  const missingReference = await readCompletedCarryLifecycleProof({
     state: {
       ...fixture.state,
       getIdempotency: async (key) => key === referenceKey ? null : fixture.state.getIdempotency(key),
     },
     owner_commitment: OWNER,
     asset: "HYPE",
-    position_id: fixture.record.position.position_id,
     env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
     now_ms: NOW + 1,
   });
-  assert.equal(legacyLoaded.ok, true);
+  assert.equal(missingReference.error, "carry_lifecycle_proof_reference_missing");
+  const legacyKey = carryLifecycleProofKey(OWNER, IMAGE, "HYPE");
+  const legacyLoaded = await readCompletedCarryLifecycleProof({
+    state: {
+      getIdempotency: async (key) => key === legacyKey
+        ? { receipt: structuredClone(recorded.proof) }
+        : null,
+    },
+    owner_commitment: OWNER,
+    asset: "HYPE",
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW + 1,
+  });
+  assert.equal(legacyLoaded.ok, true, JSON.stringify(legacyLoaded));
+  assert.deepEqual(legacyLoaded.proof, recorded.proof);
   assert.equal(assessCompletedCarryLifecycleProof({
     proof: loaded.proof,
     owner_commitment: OWNER,
@@ -495,6 +517,14 @@ test("reads and atomically migrates a real pre-reference lifecycle proof index",
   });
   assert.equal(unscoped.ok, true, JSON.stringify(unscoped));
   assert.deepEqual(unscoped.proof, recorded.proof);
+  const unscopedMigrated = unscopedRows.get(carryLifecycleProofReferenceKey(
+    OWNER,
+    IMAGE,
+    "HYPE",
+    recorded.proof.position_id,
+  ))?.receipt;
+  assert.equal(unscopedMigrated.proof_key, proofKey);
+  assert.equal(unscopedMigrated.proof_evidence_commitment, recorded.proof.evidence_commitment);
 
   const rows = legacyRows();
   const loaded = await readCompletedCarryLifecycleProof({
@@ -516,6 +546,17 @@ test("reads and atomically migrates a real pre-reference lifecycle proof index",
   assert.equal(migrated.proof_key, proofKey);
   assert.equal(migrated.proof_evidence_commitment, recorded.proof.evidence_commitment);
   assert.equal(migrated.worker_material_commitment, recorded.proof.worker_material_commitment);
+
+  const invalidRows = legacyRows();
+  invalidRows.get(indexKey).receipt.evidence_commitment = `carry:lifecycle-proof-index:evidence:${"ff".repeat(32)}`;
+  const invalid = await readCompletedCarryLifecycleProof({
+    state: preReferenceState(invalidRows),
+    owner_commitment: OWNER,
+    asset: "HYPE",
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW + 1,
+  });
+  assert.equal(invalid.error, "carry_lifecycle_proof_legacy_index_invalid");
 });
 
 test("reads exact 86b JSON-pair references with and without a position without overwriting them", async () => {
@@ -602,6 +643,16 @@ test("reads exact 86b JSON-pair references with and without a position without o
     now_ms: NOW + 1,
   });
   assert.equal(mismatched.error, "carry_lifecycle_proof_reference_mismatch");
+  const unscopedMismatchedRows = oldRows();
+  unscopedMismatchedRows.set(jsonPairProofKey, { receipt: mismatchedProof });
+  const unscopedMismatched = await readCompletedCarryLifecycleProof({
+    state: oldState(unscopedMismatchedRows),
+    owner_commitment: OWNER,
+    asset: "HYPE",
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW + 1,
+  });
+  assert.equal(unscopedMismatched.error, "carry_lifecycle_proof_reference_mismatch");
 
   const hybridRows = oldRows();
   const hybridReference = structuredClone(oldReference);
@@ -617,6 +668,51 @@ test("reads exact 86b JSON-pair references with and without a position without o
     now_ms: NOW + 1,
   });
   assert.equal(hybrid.error, "carry_lifecycle_proof_reference_invalid");
+  const unscopedHybridRows = oldRows();
+  unscopedHybridRows.set(referenceKey, { receipt: hybridReference });
+  const unscopedHybrid = await readCompletedCarryLifecycleProof({
+    state: oldState(unscopedHybridRows),
+    owner_commitment: OWNER,
+    asset: "HYPE",
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW + 1,
+  });
+  assert.equal(unscopedHybrid.error, "carry_lifecycle_proof_reference_invalid");
+});
+
+test("rejects tampered current references on unscoped reads", async () => {
+  const fixture = await stateFixture();
+  const recorded = await recordCompletedCarryLifecycleProof({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  const referenceKey = carryLifecycleProofReferenceKey(
+    OWNER,
+    IMAGE,
+    "HYPE",
+    recorded.proof.position_id,
+  );
+  const tamperedReference = structuredClone(
+    (await fixture.state.getIdempotency(referenceKey)).receipt,
+  );
+  tamperedReference.proof_evidence_commitment = `carry:lifecycle-proof:evidence:${"ff".repeat(32)}`;
+  tamperedReference.evidence_commitment = lifecycleProofReferenceCommitmentForTest(tamperedReference);
+  const result = await readCompletedCarryLifecycleProof({
+    state: {
+      ...fixture.state,
+      getIdempotency: async (key) => key === referenceKey
+        ? { receipt: structuredClone(tamperedReference) }
+        : fixture.state.getIdempotency(key),
+    },
+    owner_commitment: OWNER,
+    asset: "HYPE",
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW + 1,
+  });
+  assert.equal(result.error, "carry_lifecycle_proof_reference_mismatch");
 });
 
 test("rejects a fetched proof whose venue roles differ from its immutable reference", async () => {

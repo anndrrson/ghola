@@ -159,20 +159,15 @@ export async function readCompletedCarryLifecycleProof({
         positionId,
       )))?.receipt
     : null;
-  const currentReferenceValid = storedReference && validLifecycleProofReference(storedReference, {
-    ownerCommitment,
-    imageDigest,
-    asset: normalizedAsset,
-    positionId,
-  });
-  const legacyJsonReferenceValid = storedReference && !currentReferenceValid
-    && validLegacyJsonLifecycleProofReference(storedReference, {
-      ownerCommitment,
-      imageDigest,
-      asset: normalizedAsset,
-      positionId,
-    });
-  if (storedReference && !currentReferenceValid && !legacyJsonReferenceValid) {
+  let referenceFormat = storedReference
+    ? lifecycleProofReferenceFormat(storedReference, {
+        ownerCommitment,
+        imageDigest,
+        asset: normalizedAsset,
+        positionId,
+      })
+    : "";
+  if (storedReference && !referenceFormat) {
     return denied("carry_lifecycle_proof_reference_invalid");
   }
   let stored;
@@ -183,11 +178,14 @@ export async function readCompletedCarryLifecycleProof({
     const legacyIndex = (await state.getIdempotency(
       carryLifecycleProofIndexKey(ownerCommitment, imageDigest, normalizedAsset),
     ))?.receipt;
-    const legacyIndexValid = validLifecycleProofIndex(legacyIndex, {
+    const legacyIndexValid = legacyIndex && validLifecycleProofIndex(legacyIndex, {
       ownerCommitment,
       imageDigest,
       asset: normalizedAsset,
     });
+    if (legacyIndex && !legacyIndexValid) {
+      return denied("carry_lifecycle_proof_legacy_index_invalid");
+    }
     const legacyEntry = legacyIndexValid
       ? legacyIndex.entries.find((entry) => !positionId || entry.position_id === positionId)
       : null;
@@ -202,7 +200,7 @@ export async function readCompletedCarryLifecycleProof({
       return denied("carry_lifecycle_proof_missing");
     }
   }
-  const assessed = assessCompletedCarryLifecycleProof({
+  let assessed = assessCompletedCarryLifecycleProof({
     proof: stored?.receipt,
     owner_commitment: ownerCommitment,
     image_digest: imageDigest,
@@ -211,17 +209,51 @@ export async function readCompletedCarryLifecycleProof({
     now_ms: nowMs,
   });
   if (!assessed.ok) return assessed;
-  if (!storedReference && migratableLegacyEntry) {
-    storedReference = lifecycleProofReference({
-      proof: assessed.proof,
+  if (!storedReference) {
+    const derivedReferenceKey = carryLifecycleProofReferenceKey(
       ownerCommitment,
       imageDigest,
-      asset: normalizedAsset,
-    });
-    if (typeof state?.claimIdempotency === "function") {
+      normalizedAsset,
+      assessed.proof.position_id,
+    );
+    const derivedReference = (await state.getIdempotency(derivedReferenceKey))?.receipt;
+    if (derivedReference) {
+      referenceFormat = lifecycleProofReferenceFormat(derivedReference, {
+        ownerCommitment,
+        imageDigest,
+        asset: normalizedAsset,
+        positionId: assessed.proof.position_id,
+      });
+      if (!referenceFormat) return denied("carry_lifecycle_proof_reference_invalid");
+      const referencedStored = await state.getIdempotency(derivedReference.proof_key);
+      const referencedAssessment = assessCompletedCarryLifecycleProof({
+        proof: referencedStored?.receipt,
+        owner_commitment: ownerCommitment,
+        image_digest: imageDigest,
+        asset: normalizedAsset,
+        position_id: assessed.proof.position_id,
+        now_ms: nowMs,
+      });
+      if (!referencedAssessment.ok
+        || stableJson(referencedAssessment.proof) !== stableJson(assessed.proof)
+        || !lifecycleReferenceMatchesProof(derivedReference, referencedAssessment.proof, referenceFormat)) {
+        return denied("carry_lifecycle_proof_reference_mismatch");
+      }
+      storedReference = derivedReference;
+      assessed = referencedAssessment;
+    } else if (migratableLegacyEntry) {
+      if (typeof state?.claimIdempotency !== "function") {
+        return denied("carry_lifecycle_proof_reference_claim_unavailable");
+      }
+      const reference = lifecycleProofReference({
+        proof: assessed.proof,
+        ownerCommitment,
+        imageDigest,
+        asset: normalizedAsset,
+      });
       const claim = await state.claimIdempotency(
-        carryLifecycleProofReferenceKey(ownerCommitment, imageDigest, normalizedAsset, assessed.proof.position_id),
-        structuredClone(storedReference),
+        derivedReferenceKey,
+        structuredClone(reference),
       );
       const persisted = claim?.ok ? claim.receipt : claim?.existing;
       if (!validLifecycleProofReference(persisted, {
@@ -229,16 +261,36 @@ export async function readCompletedCarryLifecycleProof({
         imageDigest,
         asset: normalizedAsset,
         positionId: assessed.proof.position_id,
-      }) || stableJson(persisted) !== stableJson(storedReference)) {
+      }) || stableJson(persisted) !== stableJson(reference)
+        || !lifecycleProofReferenceMatchesProof(persisted, assessed.proof)) {
         return denied("carry_lifecycle_proof_reference_conflict");
       }
       storedReference = persisted;
+      referenceFormat = "current";
+    } else {
+      const [currentPairProof, legacyJsonPairProof] = await Promise.all([
+        state.getIdempotency(carryLifecycleProofKey(
+          ownerCommitment,
+          imageDigest,
+          normalizedAsset,
+          assessed.proof.position_id,
+          assessed.proof.venue_ids,
+        )),
+        state.getIdempotency(legacyJsonPairCarryLifecycleProofKey(
+          ownerCommitment,
+          imageDigest,
+          normalizedAsset,
+          assessed.proof.position_id,
+          assessed.proof.venue_ids,
+        )),
+      ]);
+      if (currentPairProof?.receipt || legacyJsonPairProof?.receipt) {
+        return denied("carry_lifecycle_proof_reference_missing");
+      }
+      return assessed;
     }
   }
-  if (!storedReference) return assessed;
-  return (legacyJsonReferenceValid
-    ? legacyJsonLifecycleProofReferenceMatchesProof(storedReference, assessed.proof)
-    : lifecycleProofReferenceMatchesProof(storedReference, assessed.proof))
+  return lifecycleReferenceMatchesProof(storedReference, assessed.proof, referenceFormat)
     ? assessed
     : denied("carry_lifecycle_proof_reference_mismatch");
 }
@@ -1142,6 +1194,18 @@ function validLegacyJsonLifecycleProofReference(reference, {
       reference.venue_ids,
     )
     && reference.evidence_commitment === lifecycleProofReferenceCommitment(reference);
+}
+
+function lifecycleProofReferenceFormat(reference, expected) {
+  if (validLifecycleProofReference(reference, expected)) return "current";
+  if (validLegacyJsonLifecycleProofReference(reference, expected)) return "legacy_json";
+  return "";
+}
+
+function lifecycleReferenceMatchesProof(reference, proof, format) {
+  return format === "legacy_json"
+    ? legacyJsonLifecycleProofReferenceMatchesProof(reference, proof)
+    : format === "current" && lifecycleProofReferenceMatchesProof(reference, proof);
 }
 
 function lifecycleProofReferenceMatchesProof(reference, proof) {
