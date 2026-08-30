@@ -242,6 +242,7 @@ test("records a durable owner- and image-bound paired lifecycle proof", async ()
     state: {
       ...fixture.state,
       getIdempotency: async (key) => key === referenceKey ? null : fixture.state.getIdempotency(key),
+      hasIdempotencyReceipt: async () => false,
     },
     owner_commitment: OWNER,
     asset: "HYPE",
@@ -255,6 +256,7 @@ test("records a durable owner- and image-bound paired lifecycle proof", async ()
       getIdempotency: async (key) => key === legacyKey
         ? { receipt: structuredClone(recorded.proof) }
         : null,
+      hasIdempotencyReceipt: async () => false,
     },
     owner_commitment: OWNER,
     asset: "HYPE",
@@ -383,6 +385,24 @@ test("atomically claims immutable lifecycle references under concurrent writes",
     conflicts.find((claim) => !claim.ok).existing,
     conflicts.find((claim) => claim.ok).receipt,
   );
+  await state.claimIdempotency("carry:test:reference-discovery", {
+    kind: "ghola_carry_lifecycle_proof_reference",
+    owner_commitment: OWNER,
+    worker_image_digest: IMAGE,
+    asset: "HYPE",
+  });
+  assert.equal(await state.hasIdempotencyReceipt({
+    kind: "ghola_carry_lifecycle_proof_reference",
+    owner_commitment: OWNER,
+    worker_image_digest: IMAGE,
+    asset: "HYPE",
+  }), true);
+  assert.equal(await state.hasIdempotencyReceipt({
+    kind: "ghola_carry_lifecycle_proof_reference",
+    owner_commitment: OWNER,
+    worker_image_digest: IMAGE,
+    asset: "BTC",
+  }), false);
 });
 
 test("returns the original immutable proof on a default fresh-timestamp retry without refreshing expiry", async (t) => {
@@ -632,6 +652,9 @@ test("reads exact 86b JSON-pair references with and without a position without o
   ]);
   const oldState = (rows) => ({
     getIdempotency: async (key) => structuredClone(rows.get(key) || null),
+    hasIdempotencyReceipt: async (expected) => [...rows.values()].some(
+      (stored) => Object.entries(expected).every(([key, value]) => stored?.receipt?.[key] === value),
+    ),
     claimIdempotency: async () => assert.fail("86b compatibility reads must not overwrite old references"),
   });
 
@@ -709,6 +732,20 @@ test("reads exact 86b JSON-pair references with and without a position without o
     now_ms: NOW + 1,
   });
   assert.equal(unscopedHybrid.error, "carry_lifecycle_proof_reference_invalid");
+
+  const redirectedRows = oldRows();
+  const redirectedAlias = structuredClone(recorded.proof);
+  redirectedAlias.position_id = "carry:position:redirected:0001";
+  redirectedAlias.evidence_commitment = lifecycleProofCommitmentForTest(redirectedAlias);
+  redirectedRows.set(carryLifecycleProofKey(OWNER, IMAGE, "HYPE"), { receipt: redirectedAlias });
+  const redirected = await readCompletedCarryLifecycleProof({
+    state: oldState(redirectedRows),
+    owner_commitment: OWNER,
+    asset: "HYPE",
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW + 1,
+  });
+  assert.equal(redirected.error, "carry_lifecycle_proof_reference_mismatch");
 });
 
 test("rejects tampered current references on unscoped reads", async () => {
@@ -1241,6 +1278,9 @@ async function stateFixture() {
     getIdempotency: async (key) => key.startsWith("carry:qualification:aster:")
       ? { receipt: qualification }
       : shadowRows.get(key) || receipts[key] || null,
+    hasIdempotencyReceipt: async (expected) => [...shadowRows.values(), ...Object.values(receipts)].some(
+      (stored) => Object.entries(expected).every(([key, value]) => stored?.receipt?.[key] === value),
+    ),
     putIdempotency: async (key, receipt) => {
       shadowRows.set(key, { receipt: structuredClone(receipt) });
       return receipt;

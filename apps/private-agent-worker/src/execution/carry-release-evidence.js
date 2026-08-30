@@ -271,6 +271,18 @@ export async function readCompletedCarryLifecycleProof({
       storedReference = persisted;
       referenceFormat = "current";
     } else {
+      if (!positionId) {
+        if (typeof state?.hasIdempotencyReceipt !== "function") {
+          return denied("carry_lifecycle_proof_reference_lookup_unavailable");
+        }
+        const anyReference = await state.hasIdempotencyReceipt({
+          kind: "ghola_carry_lifecycle_proof_reference",
+          owner_commitment: ownerCommitment,
+          worker_image_digest: imageDigest,
+          asset: normalizedAsset,
+        });
+        if (anyReference) return denied("carry_lifecycle_proof_reference_mismatch");
+      }
       const [currentPairProof, legacyJsonPairProof] = await Promise.all([
         state.getIdempotency(carryLifecycleProofKey(
           ownerCommitment,

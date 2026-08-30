@@ -590,6 +590,20 @@ export function createPostgresWorkerState(databaseUrl) {
       };
     },
 
+    async hasIdempotencyReceipt({ kind, owner_commitment, worker_image_digest, asset }) {
+      const sql = await ensureInitialized();
+      const rows = await sql`
+        SELECT 1 AS found
+        FROM worker_idempotency
+        WHERE receipt_json->>'kind' = ${kind}
+          AND receipt_json->>'owner_commitment' = ${owner_commitment}
+          AND receipt_json->>'worker_image_digest' = ${worker_image_digest}
+          AND receipt_json->>'asset' = ${asset}
+        LIMIT 1
+      `;
+      return Boolean(rows[0]?.found);
+    },
+
     async putIdempotency(workOrderCommitment, receipt) {
       const sql = await ensureInitialized();
       await sql`
@@ -1680,6 +1694,11 @@ function filterRevenueEvidenceRows(events, input = {}) {
   });
 }
 
+function idempotencyReceiptMatches(receipt, expected = {}) {
+  return Boolean(receipt && typeof receipt === "object" && !Array.isArray(receipt))
+    && Object.entries(expected).every(([key, value]) => value == null || receipt[key] === value);
+}
+
 async function migrateLegacyPostgresDocument(sql) {
   const rows = await sql`
     SELECT state_json
@@ -1975,6 +1994,12 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
 
     async getIdempotency(workOrderCommitment) {
       return (await loadState()).idempotency[workOrderCommitment] || null;
+    },
+
+    async hasIdempotencyReceipt(expected) {
+      return Object.values((await loadState()).idempotency).some(
+        (stored) => idempotencyReceiptMatches(stored?.receipt, expected),
+      );
     },
 
     async putIdempotency(workOrderCommitment, receipt) {

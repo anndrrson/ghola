@@ -1190,6 +1190,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterial", "validLegacyJsonLifecycleProofReference(reference, expected)", "carry_lifecycle_proof_86b_reference_validation_missing");
   requireText("releaseMaterial", "legacyJsonLifecycleProofReferenceMatchesProof", "carry_lifecycle_proof_86b_reference_binding_missing");
   requireText("releaseMaterial", "const derivedReference = (await state.getIdempotency(derivedReferenceKey))?.receipt", "carry_lifecycle_proof_unscoped_reference_read_missing");
+  requireText("releaseMaterial", "const anyReference = await state.hasIdempotencyReceipt", "carry_lifecycle_proof_unscoped_reference_discovery_missing");
+  requireText("workerState", "async hasIdempotencyReceipt", "carry_lifecycle_proof_reference_discovery_state_missing");
   requireText("releaseMaterial", "carry_lifecycle_proof_reference_missing", "carry_lifecycle_proof_orphaned_pair_gate_missing");
   requireText("releaseMaterial", "legacyIndexValid && positionId && !legacyEntry", "carry_lifecycle_proof_index_position_miss_gate_missing");
   requireText("releaseMaterial", "sameLifecycleProofSemantics(persistedProof, proof)", "carry_lifecycle_proof_retry_semantics_missing");
@@ -1203,6 +1205,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterialTest", "reads and atomically migrates a real pre-reference lifecycle proof index", "carry_lifecycle_proof_legacy_index_migration_test_missing");
   requireText("releaseMaterialTest", "reads exact 86b JSON-pair references with and without a position without overwriting them", "carry_lifecycle_proof_86b_compatibility_test_missing");
   requireText("releaseMaterialTest", "unscopedHybrid.error", "carry_lifecycle_proof_86b_unscoped_hybrid_test_missing");
+  requireText("releaseMaterialTest", "redirectedAlias.position_id", "carry_lifecycle_proof_unscoped_locator_tamper_test_missing");
   requireText("releaseMaterialTest", "rejects tampered current references on unscoped reads", "carry_lifecycle_proof_current_unscoped_tamper_test_missing");
   requireText("releaseMaterialTest", "unscopedMigrated.proof_key", "carry_lifecycle_proof_pre86_unscoped_migration_test_missing");
   requireText("releaseMaterialTest", "indexedMiss.error", "carry_lifecycle_proof_index_position_miss_test_missing");
