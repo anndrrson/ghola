@@ -20,6 +20,7 @@ import { readCarryShadowQualification } from "./carry-shadow-qualification.js";
 import { loadCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
 
 const DEFAULT_LIFECYCLE_PROOF_MAX_AGE_MS = 90 * 86_400_000;
+const MAX_LIFECYCLE_PROOFS_PER_ASSET = 64;
 
 export async function recordCompletedCarryLifecycleProof({
   state,
@@ -94,24 +95,31 @@ export async function recordCompletedCarryLifecycleProof({
     material.position.position_id,
     venueIds,
   );
-  await state.putIdempotency(proofKey, structuredClone(proof));
+  const proofClaim = await state.claimIdempotency(proofKey, structuredClone(proof));
+  const persistedProof = proofClaim?.ok ? proofClaim.receipt : proofClaim?.existing;
+  const persistedAssessment = assessCompletedCarryLifecycleProof({
+    proof: persistedProof,
+    owner_commitment: ownerCommitment,
+    image_digest: imageDigest,
+    asset: material.position.asset,
+    position_id: material.position.position_id,
+    now_ms: nowMs,
+  });
+  if (!persistedAssessment.ok || stableJson(persistedProof) !== stableJson(proof)) {
+    return denied("carry_lifecycle_proof_conflict");
+  }
   const referenceKey = carryLifecycleProofReferenceKey(
     ownerCommitment,
     imageDigest,
     material.position.asset,
     material.position.position_id,
   );
-  const reference = {
-    version: 1,
-    kind: "ghola_carry_lifecycle_proof_reference",
-    owner_commitment: ownerCommitment,
-    worker_image_digest: imageDigest,
+  const reference = lifecycleProofReference({
+    proof: persistedProof,
+    ownerCommitment,
+    imageDigest,
     asset: material.position.asset,
-    position_id: proof.position_id,
-    venue_ids: [...venueIds],
-    proof_key: proofKey,
-  };
-  reference.evidence_commitment = lifecycleProofReferenceCommitment(reference);
+  });
   const claim = await state.claimIdempotency(referenceKey, structuredClone(reference));
   const persistedReference = claim?.ok ? claim.receipt : claim?.existing;
   if (!validLifecycleProofReference(persistedReference, {
@@ -126,7 +134,7 @@ export async function recordCompletedCarryLifecycleProof({
     legacyCarryLifecycleProofKey(ownerCommitment, imageDigest, material.position.asset),
     structuredClone(proof),
   );
-  return { ok: true, proof: assessed.proof };
+  return { ok: true, proof: persistedAssessment.proof };
 }
 
 export async function readCompletedCarryLifecycleProof({
@@ -143,7 +151,7 @@ export async function readCompletedCarryLifecycleProof({
   if (!/^[A-Z0-9]{1,20}$/.test(normalizedAsset)) return denied("carry_lifecycle_proof_asset_invalid");
   if (positionId != null && !commitment(positionId)) return denied("carry_lifecycle_proof_position_invalid");
   if (typeof state?.getIdempotency !== "function") return denied("carry_lifecycle_proof_state_unavailable");
-  const storedReference = positionId
+  let storedReference = positionId
     ? (await state.getIdempotency(carryLifecycleProofReferenceKey(
         ownerCommitment,
         imageDigest,
@@ -157,11 +165,32 @@ export async function readCompletedCarryLifecycleProof({
     asset: normalizedAsset,
     positionId,
   })) return denied("carry_lifecycle_proof_reference_invalid");
-  const stored = storedReference
-    ? await state.getIdempotency(storedReference.proof_key)
-    : await state.getIdempotency(legacyCarryLifecycleProofKey(ownerCommitment, imageDigest, normalizedAsset));
-  if (!storedReference && positionId && stored?.receipt?.position_id !== positionId) {
-    return denied("carry_lifecycle_proof_missing");
+  let stored;
+  let migratableLegacyEntry = null;
+  if (storedReference) {
+    stored = await state.getIdempotency(storedReference.proof_key);
+  } else {
+    const legacyIndex = (await state.getIdempotency(
+      carryLifecycleProofIndexKey(ownerCommitment, imageDigest, normalizedAsset),
+    ))?.receipt;
+    const legacyIndexValid = validLifecycleProofIndex(legacyIndex, {
+      ownerCommitment,
+      imageDigest,
+      asset: normalizedAsset,
+    });
+    const legacyEntry = legacyIndexValid
+      ? legacyIndex.entries.find((entry) => !positionId || entry.position_id === positionId)
+      : null;
+    migratableLegacyEntry = legacyEntry || null;
+    stored = legacyEntry
+      ? await state.getIdempotency(legacyEntry.proof_key)
+      : await state.getIdempotency(legacyCarryLifecycleProofKey(ownerCommitment, imageDigest, normalizedAsset));
+    if (legacyEntry && !legacyEntryMatchesProof(legacyEntry, stored?.receipt)) {
+      return denied("carry_lifecycle_proof_legacy_index_mismatch");
+    }
+    if (positionId && stored?.receipt?.position_id !== positionId) {
+      return denied("carry_lifecycle_proof_missing");
+    }
   }
   const assessed = assessCompletedCarryLifecycleProof({
     proof: stored?.receipt,
@@ -171,16 +200,33 @@ export async function readCompletedCarryLifecycleProof({
     position_id: storedReference?.position_id || positionId,
     now_ms: nowMs,
   });
-  if (!assessed.ok || !storedReference) return assessed;
-  return sameStrings(assessed.proof.venue_ids, storedReference.venue_ids)
-    && assessed.proof.position_id === storedReference.position_id
-    && storedReference.proof_key === carryLifecycleProofKey(
+  if (!assessed.ok) return assessed;
+  if (!storedReference && migratableLegacyEntry) {
+    storedReference = lifecycleProofReference({
+      proof: assessed.proof,
       ownerCommitment,
       imageDigest,
-      normalizedAsset,
-      assessed.proof.position_id,
-      assessed.proof.venue_ids,
-    )
+      asset: normalizedAsset,
+    });
+    if (typeof state?.claimIdempotency === "function") {
+      const claim = await state.claimIdempotency(
+        carryLifecycleProofReferenceKey(ownerCommitment, imageDigest, normalizedAsset, assessed.proof.position_id),
+        structuredClone(storedReference),
+      );
+      const persisted = claim?.ok ? claim.receipt : claim?.existing;
+      if (!validLifecycleProofReference(persisted, {
+        ownerCommitment,
+        imageDigest,
+        asset: normalizedAsset,
+        positionId: assessed.proof.position_id,
+      }) || stableJson(persisted) !== stableJson(storedReference)) {
+        return denied("carry_lifecycle_proof_reference_conflict");
+      }
+      storedReference = persisted;
+    }
+  }
+  if (!storedReference) return assessed;
+  return lifecycleProofReferenceMatchesProof(storedReference, assessed.proof)
     ? assessed
     : denied("carry_lifecycle_proof_reference_mismatch");
 }
@@ -257,6 +303,10 @@ export function carryLifecycleProofReferenceKey(ownerCommitment, imageDigest, as
     String(asset || "").toUpperCase(),
     String(positionId || ""),
   ].join("\0")).slice(0, 40)}`;
+}
+
+export function carryLifecycleProofIndexKey(ownerCommitment, imageDigest, asset) {
+  return `carry:lifecycle-proof-index:${digest(`${ownerCommitment}\0${imageDigest}\0${String(asset || "").toUpperCase()}`).slice(0, 40)}`;
 }
 
 export async function buildCompletedCarryReleaseMaterial({
@@ -939,10 +989,72 @@ function lifecycleProofCommitment(proof) {
   return `carry:lifecycle-proof:evidence:${digest(stableJson(payload))}`;
 }
 
+function lifecycleProofIndexCommitment(index) {
+  const payload = { ...index };
+  delete payload.evidence_commitment;
+  return `carry:lifecycle-proof-index:evidence:${digest(stableJson(payload))}`;
+}
+
+function validLifecycleProofIndex(index, { ownerCommitment, imageDigest, asset }) {
+  if (!index || typeof index !== "object" || Array.isArray(index)) return false;
+  const entries = Array.isArray(index.entries) ? index.entries : [];
+  return index.version === 1
+    && index.kind === "ghola_carry_lifecycle_proof_index"
+    && index.owner_commitment === ownerCommitment
+    && index.worker_image_digest === imageDigest
+    && index.asset === String(asset || "").toUpperCase()
+    && entries.length > 0
+    && entries.length <= MAX_LIFECYCLE_PROOFS_PER_ASSET
+    && new Set(entries.map((entry) => entry.position_id)).size === entries.length
+    && entries.every((entry) => commitment(entry?.position_id)
+      && normalizedVenuePair(entry?.venue_ids)
+      && positiveInteger(entry?.verified_at_ms)
+      && entry?.proof_key === carryLifecycleProofKey(
+        ownerCommitment,
+        imageDigest,
+        asset,
+        entry.position_id,
+        entry.venue_ids,
+      ))
+    && index.evidence_commitment === lifecycleProofIndexCommitment(index);
+}
+
+function legacyEntryMatchesProof(entry, proof) {
+  return Boolean(entry && proof)
+    && entry.position_id === proof.position_id
+    && sameStrings(entry.venue_ids, proof.venue_ids)
+    && entry.verified_at_ms === proof.verified_at_ms;
+}
+
 function lifecycleProofReferenceCommitment(reference) {
   const payload = { ...reference };
   delete payload.evidence_commitment;
   return `carry:lifecycle-proof-reference:evidence:${digest(stableJson(payload))}`;
+}
+
+function lifecycleProofReference({ proof, ownerCommitment, imageDigest, asset }) {
+  const reference = {
+    version: 1,
+    kind: "ghola_carry_lifecycle_proof_reference",
+    owner_commitment: ownerCommitment,
+    worker_image_digest: imageDigest,
+    asset: String(asset || "").toUpperCase(),
+    position_id: proof.position_id,
+    venue_ids: [...proof.venue_ids],
+    proof_key: carryLifecycleProofKey(
+      ownerCommitment,
+      imageDigest,
+      asset,
+      proof.position_id,
+      proof.venue_ids,
+    ),
+    proof_evidence_commitment: proof.evidence_commitment,
+    worker_material_commitment: proof.worker_material_commitment,
+    verified_at_ms: proof.verified_at_ms,
+    expires_at_ms: proof.expires_at_ms,
+  };
+  reference.evidence_commitment = lifecycleProofReferenceCommitment(reference);
+  return reference;
 }
 
 function validLifecycleProofReference(reference, { ownerCommitment, imageDigest, asset, positionId }) {
@@ -962,7 +1074,28 @@ function validLifecycleProofReference(reference, { ownerCommitment, imageDigest,
       reference.position_id,
       reference.venue_ids,
     )
+    && /^carry:lifecycle-proof:evidence:[0-9a-f]{64}$/.test(String(reference.proof_evidence_commitment || ""))
+    && /^carry:release:material:[0-9a-f]{64}$/.test(String(reference.worker_material_commitment || ""))
+    && positiveInteger(reference.verified_at_ms)
+    && positiveInteger(reference.expires_at_ms)
+    && reference.expires_at_ms > reference.verified_at_ms
     && reference.evidence_commitment === lifecycleProofReferenceCommitment(reference);
+}
+
+function lifecycleProofReferenceMatchesProof(reference, proof) {
+  return sameStrings(proof.venue_ids, reference.venue_ids)
+    && proof.position_id === reference.position_id
+    && proof.evidence_commitment === reference.proof_evidence_commitment
+    && proof.worker_material_commitment === reference.worker_material_commitment
+    && proof.verified_at_ms === reference.verified_at_ms
+    && proof.expires_at_ms === reference.expires_at_ms
+    && reference.proof_key === carryLifecycleProofKey(
+      reference.owner_commitment,
+      reference.worker_image_digest,
+      reference.asset,
+      proof.position_id,
+      proof.venue_ids,
+    );
 }
 
 function normalizedVenuePair(venueIds) {
@@ -970,7 +1103,7 @@ function normalizedVenuePair(venueIds) {
   return venues.length === 2
     && venues[0] !== venues[1]
     && venues.every((venueId) => CARRY_EXECUTION_VENUES.includes(venueId))
-    ? stableJson(venues)
+    ? venues.join(":")
     : "";
 }
 
