@@ -151,8 +151,8 @@ async function fixture({
       started_at: "2026-08-24T00:00:01.000Z",
       reconciled_at: "2026-08-24T00:00:02.000Z",
       legs: [
-        leg(longVenue, "buy", false, `order:entry:${longVenue}:0001`, 5_000, 1_000, 60_000),
-        leg(shortVenue, "sell", false, `order:entry:${shortVenue}:0001`, 5_000, 1_000, -10_000),
+        leg(longVenue, "buy", false, `order:entry:${longVenue}:${positionId}`, 5_000, 1_000, 60_000),
+        leg(shortVenue, "sell", false, `order:entry:${shortVenue}:${positionId}`, 5_000, 1_000, -10_000),
       ],
     },
     monitoring: {
@@ -210,8 +210,8 @@ async function fixture({
       requested_at: "2026-08-24T00:00:06.000Z",
       reconciled_at: "2026-08-24T00:00:07.000Z",
       legs: [
-        leg(longVenue, "sell", true, `order:exit:${longVenue}:0001`, 5_000, 1_500),
-        leg(shortVenue, "buy", true, `order:exit:${shortVenue}:0001`, 5_000, 1_500),
+        leg(longVenue, "sell", true, `order:exit:${longVenue}:${positionId}`, 5_000, 1_500),
+        leg(shortVenue, "buy", true, `order:exit:${shortVenue}:${positionId}`, 5_000, 1_500),
       ],
     },
     final_state: {
@@ -473,6 +473,35 @@ test("rejects fewer than two unique positions or distinct venue pairs", async ()
   await assert.rejects(
     () => verifyCommittedCarryReleaseEvidence(duplicatePair),
     /distinct_venue_pair_count_insufficient/,
+  );
+});
+
+test("rejects execution and lifecycle commitments reused across otherwise distinct lifecycles", async () => {
+  const duplicateExecution = await committedReleaseFixture();
+  duplicateExecution.lifecycles[1].entry.legs[1].client_order_commitment =
+    duplicateExecution.lifecycles[0].entry.legs[1].client_order_commitment;
+  duplicateExecution.lifecycles[1].entry.legs[1].receipt_commitment =
+    duplicateExecution.lifecycles[0].entry.legs[1].receipt_commitment;
+  duplicateExecution.lifecycles[1].worker_material_commitment = carryWorkerMaterialCommitment(
+    duplicateExecution.lifecycles[1],
+  );
+  duplicateExecution.lifecycles[1].evidence_commitment = carryEvidenceCommitment(
+    duplicateExecution.lifecycles[1],
+  );
+  duplicateExecution.evidence_commitment = carryReleaseEvidenceCommitment(duplicateExecution);
+  await assert.rejects(
+    () => verifyCommittedCarryReleaseEvidence(duplicateExecution),
+    /cross_lifecycle_client_order_commitments_not_unique|cross_lifecycle_receipt_commitments_not_unique/,
+  );
+
+  const duplicateLifecycle = await committedReleaseFixture();
+  duplicateLifecycle.lifecycles[1].evidence_commitment = duplicateLifecycle.lifecycles[0].evidence_commitment;
+  duplicateLifecycle.lifecycles[1].worker_material_commitment =
+    duplicateLifecycle.lifecycles[0].worker_material_commitment;
+  duplicateLifecycle.evidence_commitment = carryReleaseEvidenceCommitment(duplicateLifecycle);
+  await assert.rejects(
+    () => verifyCommittedCarryReleaseEvidence(duplicateLifecycle),
+    /lifecycle_evidence_commitments_not_unique|lifecycle_worker_commitments_not_unique/,
   );
 });
 

@@ -601,6 +601,23 @@ export function createPostgresWorkerState(databaseUrl) {
       return receipt;
     },
 
+    async claimIdempotency(workOrderCommitment, receipt) {
+      const sql = await ensureInitialized();
+      const rows = await sql`
+        INSERT INTO worker_idempotency (work_order_commitment, receipt_json, updated_at)
+        VALUES (${workOrderCommitment}, ${jsonParam(receipt)}::jsonb, NOW())
+        ON CONFLICT (work_order_commitment) DO NOTHING
+        RETURNING receipt_json
+      `;
+      if (rows[0]) return { ok: true, receipt: decodeJson(rows[0].receipt_json) || receipt };
+      const existingRows = await sql`
+        SELECT receipt_json
+        FROM worker_idempotency
+        WHERE work_order_commitment = ${workOrderCommitment}
+      `;
+      return { ok: false, existing: decodeJson(existingRows[0]?.receipt_json) || null };
+    },
+
     async putExecutionAttempt(workOrderCommitment, attempt) {
       const sql = await ensureInitialized();
       const next = {
@@ -1967,6 +1984,18 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
           updated_at: new Date().toISOString(),
         };
         return receipt;
+      });
+    },
+
+    async claimIdempotency(workOrderCommitment, receipt) {
+      return updateState((state) => {
+        const existing = state.idempotency[workOrderCommitment]?.receipt;
+        if (existing) return { ok: false, existing: structuredClone(existing) };
+        state.idempotency[workOrderCommitment] = {
+          receipt: structuredClone(receipt),
+          updated_at: new Date().toISOString(),
+        };
+        return { ok: true, receipt: structuredClone(receipt) };
       });
     },
 

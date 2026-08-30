@@ -1179,11 +1179,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("runtimeRiskPoliciesTest", "unsupported runtime policy bindings", "carry_runtime_route_fail_closed_test_missing");
   requireText("releaseMaterial", "export async function recordCompletedCarryLifecycleProof", "carry_lifecycle_proof_recording_missing");
   requireText("releaseMaterial", "material.position.position_id,\n    venueIds,", "carry_lifecycle_proof_position_pair_record_binding_missing");
-  requireText("releaseMaterial", "carryLifecycleProofIndexKey(ownerCommitment, imageDigest, normalizedAsset)", "carry_lifecycle_proof_asset_index_read_binding_missing");
-  requireText("releaseMaterial", "entry?.proof_key === carryLifecycleProofKey", "carry_lifecycle_proof_index_integrity_missing");
+  requireText("releaseMaterial", "carryLifecycleProofReferenceKey(\n        ownerCommitment,\n        imageDigest,\n        normalizedAsset,\n        positionId,", "carry_lifecycle_proof_position_reference_read_binding_missing");
+  requireText("releaseMaterial", "storedReference.proof_key === carryLifecycleProofKey", "carry_lifecycle_proof_reference_integrity_missing");
+  requireText("releaseMaterial", "state.claimIdempotency(referenceKey", "carry_lifecycle_proof_reference_atomic_claim_missing");
+  requireText("workerState", "async claimIdempotency(workOrderCommitment, receipt)", "carry_lifecycle_proof_reference_atomic_state_missing");
   requireText("releaseMaterial", "asset: normalizedAsset", "carry_lifecycle_proof_asset_assessment_binding_missing");
   requireCount("server", "readCompletedCarryLifecycleProof({\n            state,\n            owner_commitment: body.owner_commitment,\n            asset: body.asset,", 2, "carry_lifecycle_proof_asset_http_binding_missing");
   requireText("releaseMaterialTest", "keeps lifecycle proof storage isolated per asset, position, and venue pair", "carry_lifecycle_proof_pair_isolation_test_missing");
+  requireText("releaseMaterialTest", "atomically claims immutable lifecycle references under concurrent writes", "carry_lifecycle_proof_reference_concurrency_test_missing");
   requireText("releaseMaterial", "final_flat_zero_orders: true", "carry_lifecycle_proof_flat_gate_missing");
   requireText("releaseMaterial", "proof?.broadcast_performed !== true", "carry_lifecycle_proof_live_broadcast_gate_missing");
   requireText("releaseMaterial", "proof.evidence_commitment === lifecycleProofCommitment(proof)", "carry_lifecycle_proof_integrity_gate_missing");
@@ -1544,6 +1547,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifier", 'lifecycles.length >= 2', "carry_release_lifecycle_floor_missing");
   requireText("evidenceVerifier", "unique_position_count_insufficient", "carry_release_unique_position_gate_missing");
   requireText("evidenceVerifier", "distinct_venue_pair_count_insufficient", "carry_release_distinct_pair_gate_missing");
+  requireText("evidenceVerifier", "cross_lifecycle_client_order_commitments_not_unique", "carry_release_execution_uniqueness_gate_missing");
+  requireText("evidenceVerifier", "lifecycle_worker_commitments_not_unique", "carry_release_lifecycle_uniqueness_gate_missing");
   requireText("evidenceVerifier", "aggregate_realized_net_value_mismatch", "carry_release_aggregate_value_gate_missing");
   requireText("evidenceVerifier", "exact_exit_quantity_required", "carry_release_exact_exit_gate_missing");
   requireText("evidenceVerifier", "final_open_orders_not_zero", "carry_release_zero_orders_gate_missing");
@@ -1552,6 +1557,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifierTest", "rejects an ambiguous resubmission", "carry_release_ambiguity_test_missing");
   requireText("evidenceVerifierTest", "rejects a mutated or replayed owner mandate", "carry_release_mandate_tamper_test_missing");
   requireText("evidenceVerifierTest", "accepts two unique flat lifecycles across two venue pairs and aggregates exact net value", "carry_release_portfolio_acceptance_test_missing");
+  requireText("evidenceVerifierTest", "rejects execution and lifecycle commitments reused across otherwise distinct lifecycles", "carry_release_portfolio_uniqueness_test_missing");
   requireText("evidenceVerifierTest", "rejects any non-flat lifecycle and an inexact aggregate realized net value", "carry_release_portfolio_rejection_test_missing");
   requireText("proofRunbook", "separately confirms the capped paired trade", "carry_proof_confirmation_runbook_missing");
   requireText("proofRunbook", "zero exposure and zero open orders", "carry_proof_flat_runbook_missing");

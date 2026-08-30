@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   assessCompletedCarryLifecycleProof,
   buildCompletedCarryReleaseMaterial,
-  carryLifecycleProofIndexKey,
   carryLifecycleProofKey,
+  carryLifecycleProofReferenceKey,
   readCompletedCarryLifecycleProof,
   recordCompletedCarryLifecycleProof,
 } from "../src/execution/carry-release-evidence.js";
@@ -26,6 +30,7 @@ import {
 import { hashMessage } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { carryOpportunityInputEvidence } from "./carry-mandate-fixture.js";
+import { createWorkerState } from "../src/state/private-state.js";
 
 const NOW = 1_800_000_010_000;
 const IMAGE = `sha256:${"ab".repeat(32)}`;
@@ -186,14 +191,19 @@ test("records a durable owner- and image-bound paired lifecycle proof", async ()
   });
   assert.deepEqual(recorded.proof.venue_ids, ["hyperliquid", "aster"]);
   assert.match(recorded.proof.evidence_commitment, /^carry:lifecycle-proof:evidence:[0-9a-f]{64}$/);
-  const storedIndex = (await fixture.state.getIdempotency(
-    carryLifecycleProofIndexKey(OWNER, IMAGE, "HYPE"),
+  const referenceKey = carryLifecycleProofReferenceKey(
+    OWNER,
+    IMAGE,
+    "HYPE",
+    fixture.record.position.position_id,
+  );
+  const storedReference = (await fixture.state.getIdempotency(
+    referenceKey,
   ))?.receipt;
-  assert.equal(storedIndex.entries.length, 1);
-  assert.deepEqual(storedIndex.entries[0].venue_ids, ["hyperliquid", "aster"]);
-  assert.equal(storedIndex.entries[0].position_id, fixture.record.position.position_id);
+  assert.deepEqual(storedReference.venue_ids, ["hyperliquid", "aster"]);
+  assert.equal(storedReference.position_id, fixture.record.position.position_id);
   assert.equal(
-    storedIndex.entries[0].proof_key,
+    storedReference.proof_key,
     carryLifecycleProofKey(
       OWNER,
       IMAGE,
@@ -214,6 +224,18 @@ test("records a durable owner- and image-bound paired lifecycle proof", async ()
   assert.equal(loaded.ok, true);
   assert.equal(loaded.proof.position_id, fixture.record.position.position_id);
   assert.equal(loaded.proof.worker_image_digest, IMAGE);
+  const legacyLoaded = await readCompletedCarryLifecycleProof({
+    state: {
+      ...fixture.state,
+      getIdempotency: async (key) => key === referenceKey ? null : fixture.state.getIdempotency(key),
+    },
+    owner_commitment: OWNER,
+    asset: "HYPE",
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW + 1,
+  });
+  assert.equal(legacyLoaded.ok, true);
   assert.equal(assessCompletedCarryLifecycleProof({
     proof: loaded.proof,
     owner_commitment: OWNER,
@@ -285,9 +307,76 @@ test("keeps lifecycle proof storage isolated per asset, position, and venue pair
     carryLifecycleProofKey(OWNER, IMAGE, "HYPE", "carry:position:0001", ["hyperliquid", "lighter"]),
   );
   assert.equal(
-    carryLifecycleProofIndexKey(OWNER, IMAGE, "hype"),
-    carryLifecycleProofIndexKey(OWNER, IMAGE, "HYPE"),
+    carryLifecycleProofReferenceKey(OWNER, IMAGE, "hype", "carry:position:0001"),
+    carryLifecycleProofReferenceKey(OWNER, IMAGE, "HYPE", "carry:position:0001"),
   );
+  const legacyKey = `carry:lifecycle-proof:${createHash("sha256")
+    .update(`${OWNER}\0${IMAGE}\0HYPE`)
+    .digest("hex")
+    .slice(0, 40)}`;
+  assert.equal(carryLifecycleProofKey(OWNER, IMAGE, "HYPE"), legacyKey);
+});
+
+test("atomically claims immutable lifecycle references under concurrent writes", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-proof-references-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const positions = ["carry:position:concurrent:0001", "carry:position:concurrent:0002"];
+  const claims = await Promise.all(positions.map((positionId) => state.claimIdempotency(
+    carryLifecycleProofReferenceKey(OWNER, IMAGE, "HYPE", positionId),
+    { position_id: positionId },
+  )));
+  assert.deepEqual(claims.map((claim) => claim.ok), [true, true]);
+  const stored = await Promise.all(positions.map((positionId) => state.getIdempotency(
+    carryLifecycleProofReferenceKey(OWNER, IMAGE, "HYPE", positionId),
+  )));
+  assert.deepEqual(stored.map((item) => item.receipt.position_id), positions);
+  const conflictKey = carryLifecycleProofReferenceKey(OWNER, IMAGE, "HYPE", "carry:position:conflict");
+  const conflicts = await Promise.all([
+    state.claimIdempotency(conflictKey, { venue_ids: ["hyperliquid", "aster"] }),
+    state.claimIdempotency(conflictKey, { venue_ids: ["hyperliquid", "lighter"] }),
+  ]);
+  assert.equal(conflicts.filter((claim) => claim.ok).length, 1);
+  assert.equal(conflicts.filter((claim) => !claim.ok).length, 1);
+  assert.deepEqual(
+    conflicts.find((claim) => !claim.ok).existing,
+    conflicts.find((claim) => claim.ok).receipt,
+  );
+});
+
+test("rejects a fetched proof whose venue roles differ from its immutable reference", async () => {
+  const fixture = await stateFixture();
+  const recorded = await recordCompletedCarryLifecycleProof({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  const referenceKey = carryLifecycleProofReferenceKey(
+    OWNER,
+    IMAGE,
+    "HYPE",
+    fixture.record.position.position_id,
+  );
+  const reference = (await fixture.state.getIdempotency(referenceKey)).receipt;
+  const mismatched = structuredClone(recorded.proof);
+  mismatched.venue_ids.reverse();
+  mismatched.evidence_commitment = lifecycleProofCommitmentForTest(mismatched);
+  const result = await readCompletedCarryLifecycleProof({
+    state: {
+      ...fixture.state,
+      getIdempotency: async (key) => key === reference.proof_key
+        ? { receipt: mismatched }
+        : fixture.state.getIdempotency(key),
+    },
+    owner_commitment: OWNER,
+    asset: "HYPE",
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW + 1,
+  });
+  assert.equal(result.error, "carry_lifecycle_proof_reference_mismatch");
 });
 
 test("refuses to manufacture proof without a monitoring period", async () => {
@@ -754,6 +843,12 @@ async function stateFixture() {
       shadowRows.set(key, { receipt: structuredClone(receipt) });
       return receipt;
     },
+    claimIdempotency: async (key, receipt) => {
+      const existing = shadowRows.get(key)?.receipt;
+      if (existing) return { ok: false, existing: structuredClone(existing) };
+      shadowRows.set(key, { receipt: structuredClone(receipt) });
+      return { ok: true, receipt: structuredClone(receipt) };
+    },
   };
   const readinessRequest = {
     owner_commitment: OWNER,
@@ -1025,4 +1120,20 @@ function qualificationEvidence() {
     authority_boundary_acceptable: true,
     authority_evidence_commitment: "qualification:authority:aster:0001",
   };
+}
+
+function lifecycleProofCommitmentForTest(proof) {
+  const payload = { ...proof };
+  delete payload.evidence_commitment;
+  return `carry:lifecycle-proof:evidence:${createHash("sha256").update(stableJson(payload)).digest("hex")}`;
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, child]) => child !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+    .join(",")}}`;
 }

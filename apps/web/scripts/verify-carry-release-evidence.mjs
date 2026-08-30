@@ -64,6 +64,10 @@ export async function verifyCarryReleaseEvidence(evidence) {
 
   const candidate = evidence?.candidate;
   let realizedNet = 0n;
+  const lifecycleCommitments = [];
+  const workerCommitments = [];
+  const clientOrderCommitments = [];
+  const receiptCommitments = [];
   for (const [index, lifecycle] of lifecycles.entries()) {
     fail(sameRecord(lifecycle?.candidate, candidate), `lifecycle_candidate_mismatch:${index}`);
     try {
@@ -77,7 +81,19 @@ export async function verifyCarryReleaseEvidence(evidence) {
     } else {
       realizedNet += BigInt(net);
     }
+    lifecycleCommitments.push(String(lifecycle?.evidence_commitment || ""));
+    workerCommitments.push(String(lifecycle?.worker_material_commitment || ""));
+    for (const leg of [...array(lifecycle?.entry?.legs), ...array(lifecycle?.exit?.legs)]) {
+      clientOrderCommitments.push(String(leg?.client_order_commitment || ""));
+      receiptCommitments.push(String(leg?.receipt_commitment || ""));
+    }
   }
+  fail(uniqueCommitments(lifecycleCommitments, lifecycles.length), "lifecycle_evidence_commitments_not_unique");
+  fail(uniqueCommitments(workerCommitments, lifecycles.length), "lifecycle_worker_commitments_not_unique");
+  fail(uniqueCommitments(clientOrderCommitments, lifecycles.length * 4),
+    "cross_lifecycle_client_order_commitments_not_unique");
+  fail(uniqueCommitments(receiptCommitments, lifecycles.length * 4),
+    "cross_lifecycle_receipt_commitments_not_unique");
 
   const aggregate = evidence?.aggregate || {};
   fail(aggregate.lifecycle_count === lifecycles.length, "aggregate_lifecycle_count_mismatch");
@@ -716,6 +732,12 @@ function sameRecord(left, right) {
   const entries = Object.entries(right || {});
   return Object.keys(left).length === entries.length
     && entries.every(([key, value]) => left[key] === value);
+}
+
+function uniqueCommitments(values, expectedCount) {
+  return values.length === expectedCount
+    && values.every(commitment)
+    && new Set(values).size === values.length;
 }
 
 function normalizedVenuePair(position) {
