@@ -3,6 +3,9 @@
 !apps
 !apps/web
 !apps/web/**
+!packages
+!packages/perps-core
+!packages/perps-core/**
 
 # Vercel's linked project root is apps/web. When the CLI applies this
 # ignore file relative to that root, the repo-root exceptions above do
