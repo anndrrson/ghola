@@ -13,6 +13,12 @@ import type { TaskBounty, EarningsResponse } from "@/lib/thumper-types";
 import type { ThumperTaskResponse } from "@/lib/thumper-types";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import {
+  clearPayoutAttempt,
+  payoutAttemptStorageKey,
+  preparePayoutAttempt,
+  readPendingPayoutAttempt,
+} from "@/lib/payout-idempotency";
+import {
   Plus,
   DollarSign,
   ArrowDownToLine,
@@ -38,7 +44,7 @@ const statusColors: Record<string, string> = {
 
 export default function BountyDashboardPage() {
   const router = useRouter();
-  const { authenticated, loading: authLoading } = useThumperAuth();
+  const { authenticated, loading: authLoading, user } = useThumperAuth();
 
   const [tab, setTab] = useState<"posted" | "claimed">("posted");
   const [postedTasks, setPostedTasks] = useState<ThumperTaskResponse[]>([]);
@@ -83,6 +89,20 @@ export default function BountyDashboardPage() {
     if (authenticated) load();
   }, [authenticated, load]);
 
+  useEffect(() => {
+    if (!user?.id) return;
+    const pending = readPendingPayoutAttempt(
+      window.localStorage,
+      payoutAttemptStorageKey("bounty", user.id),
+    );
+    if (!pending) return;
+    if (pending.request.to_address) setWithdrawAddr(pending.request.to_address);
+    if (pending.request.amount_usdc != null) {
+      setWithdrawAmt(String(pending.request.amount_usdc / 1_000_000));
+    }
+    setWithdrawMsg("A withdrawal may still be pending. Retry it to refresh its final status.");
+  }, [user?.id]);
+
   async function handleWithdraw(e: React.FormEvent) {
     e.preventDefault();
     setWithdrawMsg("");
@@ -90,22 +110,76 @@ export default function BountyDashboardPage() {
       setWithdrawMsg("Enter a Solana address.");
       return;
     }
+    if (!user?.id) {
+      setWithdrawMsg("Sign in again before withdrawing.");
+      return;
+    }
+    const parsedAmount = withdrawAmt ? Number.parseFloat(withdrawAmt) : null;
+    if (parsedAmount != null && (!Number.isFinite(parsedAmount) || parsedAmount <= 0)) {
+      setWithdrawMsg("Enter a valid withdrawal amount.");
+      return;
+    }
+    const amountUsdc = parsedAmount == null
+      ? undefined
+      : Math.round(parsedAmount * 1_000_000);
+    const request = {
+      to_address: withdrawAddr.trim(),
+      amount_usdc: amountUsdc,
+    };
+    const storageKey = payoutAttemptStorageKey("bounty", user.id);
+    let prepared: ReturnType<typeof preparePayoutAttempt>;
+    try {
+      prepared = preparePayoutAttempt(window.localStorage, storageKey, request);
+    } catch {
+      setWithdrawMsg("Secure retry storage is unavailable, so no withdrawal was sent.");
+      return;
+    }
+    if (!prepared.ok) {
+      if (prepared.pending.request.to_address) {
+        setWithdrawAddr(prepared.pending.request.to_address);
+      }
+      setWithdrawAmt(
+        prepared.pending.request.amount_usdc == null
+          ? ""
+          : String(prepared.pending.request.amount_usdc / 1_000_000),
+      );
+      setWithdrawMsg("Retry the pending withdrawal before starting a different one.");
+      return;
+    }
     setWithdrawing(true);
     try {
-      const amt = withdrawAmt ? Math.round(parseFloat(withdrawAmt) * 1_000_000) : undefined;
       const res = await withdrawEarnings({
-        to_address: withdrawAddr.trim(),
-        amount_usdc: amt,
+        ...request,
+        idempotency_key: prepared.attempt.idempotency_key,
       });
-      if (res.signature) {
-        setWithdrawMsg(`Withdrawn! Tx: ${res.signature.slice(0, 16)}...`);
-      } else {
-        setWithdrawMsg(`Withdrawal ${res.status}.`);
+      const terminalSuccess = res.status === "confirmed" || res.status === "completed";
+      const terminalFailure = res.status === "failed" || res.status === "cancelled";
+      if (terminalSuccess || terminalFailure) {
+        clearPayoutAttempt(
+          window.localStorage,
+          storageKey,
+          prepared.attempt.idempotency_key,
+        );
       }
-      setWithdrawAddr("");
-      setWithdrawAmt("");
-      await load();
+      if (terminalSuccess && res.signature) {
+        setWithdrawMsg(`Withdrawn! Tx: ${res.signature.slice(0, 16)}...`);
+        setWithdrawAddr("");
+        setWithdrawAmt("");
+        await load();
+      } else if (terminalFailure) {
+        setWithdrawMsg("Withdrawal failed before confirmation. You can try again.");
+      } else {
+        setWithdrawMsg("Withdrawal submitted. Retry this same request to refresh its final status.");
+      }
     } catch (err: unknown) {
+      const status = (err as Error & { status?: number }).status;
+      if (status != null && status >= 400 && status < 500 && ![409, 425, 429].includes(status)) {
+        clearPayoutAttempt(
+          window.localStorage,
+          storageKey,
+          prepared.attempt.idempotency_key,
+        );
+      }
       setWithdrawMsg((err as Error).message || "Withdrawal failed.");
     } finally {
       setWithdrawing(false);

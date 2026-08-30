@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { thumperSignIn, thumperSignUp } from "./thumper-api";
+import {
+  thumperSignIn,
+  thumperSignUp,
+  withdrawEarnings,
+  withdrawProviderEarnings,
+} from "./thumper-api";
 
 describe("thumper auth helpers", () => {
   beforeEach(() => {
@@ -110,5 +115,59 @@ describe("thumper auth helpers", () => {
       status: 404,
       path: "/api/auth/session/email/signin",
     });
+  });
+
+  it("sends the caller's stable idempotency key for bounty withdrawals", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        payout_id: "payout_1",
+        amount_usdc: 1_000_000,
+        to_address: "solana-address",
+        signature: "signature",
+        status: "confirmed",
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await withdrawEarnings({
+      to_address: "solana-address",
+      amount_usdc: 1_000_000,
+      idempotency_key: "payout_11111111_1111_4111_8111_111111111111",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/wallet/withdraw-earnings", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        to_address: "solana-address",
+        amount_usdc: 1_000_000,
+        idempotency_key: "payout_11111111_1111_4111_8111_111111111111",
+      }),
+    }));
+  });
+
+  it("sends the caller's stable idempotency key for provider withdrawals", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        payout_id: "payout_2",
+        amount_usdc: 2_000_000,
+        to_address: "provider-address",
+        signature: "signature",
+        explorer_url: "https://explorer.test/tx/signature",
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await withdrawProviderEarnings({
+      amount_usdc: 2_000_000,
+      idempotency_key: "payout_22222222_2222_4222_8222_222222222222",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/compute/providers/me/withdraw", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        amount_usdc: 2_000_000,
+        idempotency_key: "payout_22222222_2222_4222_8222_222222222222",
+      }),
+    }));
   });
 });

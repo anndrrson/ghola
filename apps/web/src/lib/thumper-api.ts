@@ -733,10 +733,13 @@ export async function getRecentJobs(limit?: number): Promise<ComputeRecentJob[]>
   return thumperFetch(`/api/compute/jobs${params}`);
 }
 
-export async function withdrawProviderEarnings(amount_usdc?: number): Promise<import("./thumper-types").WithdrawalResponse> {
+export async function withdrawProviderEarnings(data: {
+  amount_usdc?: number;
+  idempotency_key: string;
+}): Promise<import("./thumper-types").WithdrawalResponse> {
   return thumperFetch("/api/compute/providers/me/withdraw", {
     method: "POST",
-    body: JSON.stringify(amount_usdc != null ? { amount_usdc } : {}),
+    body: JSON.stringify(data),
   });
 }
 
@@ -865,6 +868,7 @@ export async function getEarnings(): Promise<EarningsResponse> {
 export async function withdrawEarnings(data: {
   to_address: string;
   amount_usdc?: number;
+  idempotency_key: string;
 }): Promise<BountyWithdrawResponse> {
   return thumperFetch<BountyWithdrawResponse>("/api/wallet/withdraw-earnings", {
     method: "POST",
