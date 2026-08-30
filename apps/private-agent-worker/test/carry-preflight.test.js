@@ -7,6 +7,7 @@ import {
   preflightCarryPair,
 } from "../src/execution/carry-preflight.js";
 import { storeCarryVenueQualification } from "../src/execution/carry-qualification.js";
+import { liquidationDistanceSourceForVenue } from "../src/venues/liquidation-distance.js";
 
 const NOW = 1_800_000_000_000;
 
@@ -574,7 +575,10 @@ test("reserves liquidation fees and fails monitoring closed without verified dis
     { venue_id: "lighter", side: "sell" },
   ].map((leg) => ({
     ...leg,
-    account: { ...account },
+    account: {
+      ...account,
+      liquidation_distance_source: liquidationDistanceSourceForVenue(leg.venue_id),
+    },
     snapshot: { ...snapshot(leg.venue_id), liquidation_fee_bps: 25 },
     account_snapshot: leg.venue_id === "hyperliquid"
       ? { status: "ready_to_trade", trading_enabled: true, position_count: 1, open_order_count: 0 }
@@ -587,6 +591,17 @@ test("reserves liquidation fees and fails monitoring closed without verified dis
   const opening = modelCarryPairPreflight({ evidence, notional_usd: 100, horizon_days: 30, now_ms: NOW });
   assert.equal(opening.opening_capital_plan.total_liquidation_fee_reserve_micro_usdc, 500_000);
   assert.equal(opening.opportunity.liquidation_fee_risk_micro_usdc, 500_000);
+
+  evidence[0].account.liquidation_distance_source = liquidationDistanceSourceForVenue("lighter");
+  const swappedSource = modelCarryPairPreflight({
+    evidence,
+    notional_usd: 100,
+    horizon_days: 30,
+    now_ms: NOW,
+    phase: "monitoring",
+  });
+  assert.equal(swappedSource.margin_runways[0].liquidation_distance_verified, false);
+  assert.equal(swappedSource.margin_runways[0].status, "breached");
 
   delete evidence[0].account.liquidation_distance_bps;
   delete evidence[0].account.liquidation_distance_verified;

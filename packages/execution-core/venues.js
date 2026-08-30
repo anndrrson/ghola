@@ -75,7 +75,9 @@ const specs = [
       margin_model: "max_leverage_with_tiered_maintenance_margin",
       liquidation_model: "account_equity_below_tiered_maintenance_margin",
     }),
-    carry_execution: adapter("hyperliquid_v1", "proven"),
+    carry_execution: adapter("hyperliquid_v1", "proven", {
+      liquidation_distance_source: "hyperliquid_clearinghouse_state_asset_positions_v1",
+    }),
     no_submit_reconciliation: adapter("hyperliquid_v1", "proven"),
     exact_quantity_recovery: adapter("hyperliquid_v1", "proven", CARRY_RECOVERY_POLICY),
     collateral_route_observer: adapter("hyperliquid_arbitrum_usdc_v1", "implemented_unproven", {
@@ -94,7 +96,9 @@ const specs = [
       liquidation_model: "account_initial_maintenance_closeout_waterfall",
     }),
     browser_carry_stream: adapter("lighter_browser_stream_v1", "enabled"),
-    carry_execution: adapter("lighter_v1", "implemented_unproven"),
+    carry_execution: adapter("lighter_v1", "implemented_unproven", {
+      liquidation_distance_source: "lighter_account_positions_position_value_v1",
+    }),
     no_submit_reconciliation: adapter("lighter_v1", "implemented_unproven"),
     exact_quantity_recovery: adapter("lighter_v1", "implemented_unproven", CARRY_RECOVERY_POLICY),
     collateral_route_observer: adapter("lighter_arbitrum_usdc_v1", "implemented_unproven", {
@@ -113,7 +117,9 @@ const specs = [
       liquidation_model: "cross_or_isolated_account_margin",
     }),
     browser_carry_stream: adapter("aster_browser_stream_v1", "enabled"),
-    carry_execution: adapter("aster_v1", "implemented_unproven"),
+    carry_execution: adapter("aster_v1", "implemented_unproven", {
+      liquidation_distance_source: "aster_fapi_v3_position_risk_v1",
+    }),
     no_submit_reconciliation: adapter("aster_v1", "implemented_unproven"),
     exact_quantity_recovery: adapter("aster_v1", "implemented_unproven", CARRY_RECOVERY_POLICY),
     collateral_route_observer: adapter("aster_arbitrum_usdt_v1", "implemented_unproven", {

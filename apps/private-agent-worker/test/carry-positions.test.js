@@ -19,7 +19,9 @@ import {
 } from "../src/execution/carry-positions.js";
 import { storeCarryTransferRouteEvidence } from "../src/execution/carry-transfer-routes.js";
 import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
+import { carryAccountStateCommitment } from "../src/execution/carry-readiness.js";
 import { createWorkerState } from "../src/state/private-state.js";
+import { liquidationDistanceSourceForVenue } from "../src/venues/liquidation-distance.js";
 import {
   carryOpportunityInputEvidence,
   signedCarryCollateralReviewAuthorization,
@@ -455,7 +457,7 @@ test("monitoring records funding flips and deterministically requests exit", asy
   const active = await activePosition(state);
   const preflight = async ({ body, now }) => {
     assert.equal(body.risk_mandate.max_contract_data_skew_ms, 2_000);
-    return {
+    return monitoringObservation({
       version: 1,
       mode: "paired_monitoring_no_submit",
       no_submit_ready: true,
@@ -466,7 +468,7 @@ test("monitoring records funding flips and deterministically requests exit", asy
         monitoringRunway("lighter"),
       ],
       qualification_reasons: [],
-    };
+    });
   };
   const dependencies = {
     state,
@@ -538,21 +540,21 @@ test("monitoring preserves signed migration venues and proposes the best no-subm
   assert.deepEqual(Object.keys(stored.monitoring_context.venue_access).sort(), ["aster", "hyperliquid", "lighter"]);
 
   const phases = [];
-  const preflight = async ({ body }) => {
+  const preflight = async ({ body, now }) => {
     phases.push(body.phase);
     if (body.phase === "monitoring") {
-      return {
+      return monitoringObservation({
         version: 1,
         mode: "paired_monitoring_no_submit",
         no_submit_ready: true,
         transaction_broadcast: false,
-        economic_opportunity: monitoringOpportunity(NOW + phases.length, -1),
+        economic_opportunity: monitoringOpportunity(now(), -1),
         margin_runways: [
           monitoringRunway("hyperliquid"),
           monitoringRunway("lighter"),
         ],
         qualification_reasons: [],
-      };
+      });
     }
     const best = body.long_venue_id === "aster" && body.short_venue_id === "lighter";
     return {
@@ -717,7 +719,7 @@ test("monitoring records a basis breach and immediately requests a reduce-only e
     owner_commitment: OWNER,
     position_id: active.position.position_id,
     venue_access: monitoringContext().venue_access,
-    preflight: async () => ({
+    preflight: async () => monitoringObservation({
       economic_opportunity: monitoringOpportunity(NOW + 100, 9, { index_price_divergence_bps: 26 }),
       margin_runways: [
         monitoringRunway("hyperliquid"),
@@ -744,7 +746,7 @@ test("monitoring exits when verified liquidation distance breaches the floor", a
     owner_commitment: OWNER,
     position_id: active.position.position_id,
     venue_access: monitoringContext().venue_access,
-    preflight: async () => ({
+    preflight: async () => monitoringObservation({
       economic_opportunity: monitoringOpportunity(NOW + 100, 9),
       margin_runways: [
         monitoringRunway("hyperliquid", {
@@ -764,6 +766,135 @@ test("monitoring exits when verified liquidation distance breaches the floor", a
   assert.equal(result.record.latest_observation.capital_action_plan.automatic_transfer_permitted, false);
 });
 
+test("monitoring durably preserves only self-contained account-state evidence bound to its capital plan", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-account-state-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state, "account-state");
+  const result = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => {
+      const observed = monitoringObservation({
+        economic_opportunity: monitoringOpportunity(NOW + 100, 9),
+        margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
+        qualification_reasons: [],
+      });
+      observed.evidence[0].credential = "must-not-persist";
+      observed.evidence[0].account_state.private_key = "must-not-persist";
+      return observed;
+    },
+    now_ms: NOW + 100,
+  });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.observation_ok, true);
+  const restored = await createWorkerState(dir).getCarryPositionRecord(active.position.position_id);
+  const evidence = restored.latest_observation.account_state_evidence;
+  assert.equal(evidence.length, 2);
+  assert.deepEqual(evidence.map((item) => Object.keys(item)), [
+    [
+      "venue_id",
+      "account_commitment",
+      "verification_commitment",
+      "checked_at_ms",
+      "position_count",
+      "open_order_count",
+      "flat_zero_orders",
+      "liquidation_distance_bps",
+      "liquidation_distance_verified",
+      "liquidation_distance_source",
+      "account_state_commitment",
+    ],
+    [
+      "venue_id",
+      "account_commitment",
+      "verification_commitment",
+      "checked_at_ms",
+      "position_count",
+      "open_order_count",
+      "flat_zero_orders",
+      "liquidation_distance_bps",
+      "liquidation_distance_verified",
+      "liquidation_distance_source",
+      "account_state_commitment",
+    ],
+  ]);
+  const planByVenue = new Map(restored.latest_observation.capital_action_plan.legs.map((leg) => [leg.venue_id, leg]));
+  for (const item of evidence) {
+    const leg = planByVenue.get(item.venue_id);
+    assert.equal(item.checked_at_ms, restored.latest_observation.recorded_at_ms);
+    assert.equal(item.position_count, 1);
+    assert.equal(item.flat_zero_orders, false);
+    assert.match(item.account_state_commitment, /^carry:account-state:[0-9a-f]{40}$/);
+    assert.equal(item.account_state_commitment, carryAccountStateCommitment(item));
+    assert.equal(item.account_state_commitment, leg.account_state_commitment);
+    assert.equal(item.liquidation_distance_bps, leg.liquidation_distance_bps);
+    assert.equal(item.liquidation_distance_source, leg.liquidation_distance_source);
+  }
+  assert.equal(JSON.stringify(restored).includes("must-not-persist"), false);
+  assert.deepEqual(
+    restored.lifecycle_events.at(-1).account_state_evidence,
+    restored.latest_observation.account_state_evidence,
+  );
+});
+
+test("monitoring fails closed before persisting unbound account-state evidence", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-account-state-invalid-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const cases = [
+    ["missing", (observed) => { delete observed.evidence; }],
+    ["bad-commitment", (observed) => { observed.evidence[0].account_state.account_state_commitment += "a"; }],
+    ["closed-position", (observed) => {
+      observed.evidence[0].account_state.position_count = 0;
+      observed.evidence[0].account_state.flat_zero_orders = true;
+    }],
+    ["missing-flat-field", (observed) => { delete observed.evidence[0].account_state.flat_zero_orders; }],
+    ["wrong-source", (observed) => {
+      observed.evidence[0].account_state.liquidation_distance_source = liquidationDistanceSourceForVenue("lighter");
+    }],
+    ["wrong-account", (observed) => {
+      const stateEvidence = observed.evidence[0].account_state;
+      stateEvidence.account_commitment = "account:hyperliquid:other";
+      stateEvidence.account_state_commitment = carryAccountStateCommitment(stateEvidence);
+      observed.margin_runways[0].account_commitment = stateEvidence.account_commitment;
+      observed.margin_runways[0].account_state_commitment = stateEvidence.account_state_commitment;
+    }],
+    ["plan-mismatch", (observed) => {
+      observed.margin_runways[0].account_state_commitment = `carry:account-state:${"f".repeat(40)}`;
+    }],
+  ];
+  for (const [suffix, mutate] of cases) {
+    const active = await activePosition(state, `account-state-${suffix}`);
+    const result = await observeStoredCarryPosition({
+      state,
+      owner_commitment: OWNER,
+      position_id: active.position.position_id,
+      venue_access: monitoringContext().venue_access,
+      preflight: async () => {
+        const observed = monitoringObservation({
+          economic_opportunity: monitoringOpportunity(NOW + 100, 9),
+          margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
+          qualification_reasons: [],
+        });
+        mutate(observed);
+        return observed;
+      },
+      now_ms: NOW + 100,
+    });
+    assert.equal(result.ok, true, suffix);
+    assert.equal(result.observation_ok, false, suffix);
+    assert.equal(result.record.position.status, "frozen", suffix);
+    assert.equal(result.record.latest_observation, undefined, suffix);
+    assert.equal(result.record.lifecycle_events.at(-1).type, "observation_unavailable", suffix);
+    assert.match(result.record.lifecycle_events.at(-1).reason, /^account_state_evidence:/, suffix);
+    assert.equal("account_state_evidence" in result.record.lifecycle_events.at(-1), false, suffix);
+  }
+});
+
 test("monitoring stores an exact owner-only collateral recommendation without transferring", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-capital-plan-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -774,7 +905,7 @@ test("monitoring stores an exact owner-only collateral recommendation without tr
     owner_commitment: OWNER,
     position_id: active.position.position_id,
     venue_access: monitoringContext().venue_access,
-    preflight: async () => ({
+    preflight: async () => monitoringObservation({
       economic_opportunity: monitoringOpportunity(NOW + 100, 9),
       margin_runways: [
         monitoringRunway("hyperliquid", {
@@ -826,7 +957,7 @@ test("worker monitoring survives without an open browser", async (t) => {
   const active = await activePosition(state);
   const tick = await runCarryMonitoringTick({
     state,
-    preflight: async () => ({
+    preflight: async () => monitoringObservation({
       economic_opportunity: monitoringOpportunity(NOW + 100, 9),
       margin_runways: [
         monitoringRunway("hyperliquid"),
@@ -853,7 +984,7 @@ test("worker monitoring refreshes owner-scoped collateral routes from exact acco
   const tick = await runCarryMonitoringTick({
     state,
     env: ROUTE_ENV,
-    preflight: async () => ({
+    preflight: async () => monitoringObservation({
       economic_opportunity: monitoringOpportunity(NOW + 100, 9),
       margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
       qualification_reasons: [],
@@ -927,14 +1058,14 @@ test("monitoring checks independent Carry Positions with bounded concurrency", a
       started += 1;
       if (started === 2) release();
       await bothStarted;
-      return {
+      return monitoringObservation({
         economic_opportunity: monitoringOpportunity(NOW + 100, 9),
         margin_runways: [
           monitoringRunway("hyperliquid"),
           monitoringRunway("lighter"),
         ],
         qualification_reasons: [],
-      };
+      });
     },
     now_ms: NOW + 100,
   });
@@ -953,7 +1084,7 @@ test("monitoring appends only authoritative venue funding settlements", async (t
     owner_commitment: OWNER,
     position_id: active.position.position_id,
     venue_access: monitoringContext().venue_access,
-    preflight: async () => ({
+    preflight: async () => monitoringObservation({
       economic_opportunity: monitoringOpportunity(NOW + 100, 9),
       margin_runways: [
         monitoringRunway("hyperliquid"),
@@ -989,7 +1120,7 @@ test("monitoring reads both venue funding ledgers concurrently and commits them 
     owner_commitment: OWNER,
     position_id: active.position.position_id,
     venue_access: monitoringContext().venue_access,
-    preflight: async () => ({
+    preflight: async () => monitoringObservation({
       economic_opportunity: monitoringOpportunity(NOW + 100, 9),
       margin_runways: [
         monitoringRunway("hyperliquid"),
@@ -1037,7 +1168,7 @@ test("authoritative funding backfill resumes across ticks for a year-long Carry 
     owner_commitment: OWNER,
     position_id: active.position.position_id,
     venue_access: monitoringContext().venue_access,
-    preflight: async () => ({
+    preflight: async () => monitoringObservation({
       economic_opportunity: monitoringOpportunity(nowMs, 9),
       margin_runways: [
         monitoringRunway("hyperliquid", { as_of_ms: nowMs }),
@@ -1084,7 +1215,7 @@ test("monitoring canonicalizes settlement order and rejects a changed replay", a
     owner_commitment: OWNER,
     position_id: active.position.position_id,
     venue_access: monitoringContext().venue_access,
-    preflight: async () => ({
+    preflight: async () => monitoringObservation({
       economic_opportunity: monitoringOpportunity(NOW + 100, 9),
       margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
       qualification_reasons: [],
@@ -1103,7 +1234,7 @@ test("monitoring canonicalizes settlement order and rejects a changed replay", a
     owner_commitment: OWNER,
     position_id: active.position.position_id,
     venue_access: monitoringContext().venue_access,
-    preflight: async () => ({
+    preflight: async () => monitoringObservation({
       economic_opportunity: monitoringOpportunity(NOW + 200, 9),
       margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
       qualification_reasons: [],
@@ -1133,7 +1264,7 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
     owner_commitment: OWNER,
     position_id: active.position.position_id,
     venue_access: monitoringContext().venue_access,
-    preflight: async () => ({
+    preflight: async () => monitoringObservation({
       economic_opportunity: monitoringOpportunity(NOW + 100, 9),
       margin_runways: [
         monitoringRunway("hyperliquid", {
@@ -1277,7 +1408,7 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
     owner_commitment: OWNER,
     position_id: active.position.position_id,
     venue_access: monitoringContext().venue_access,
-    preflight: async () => ({
+    preflight: async () => monitoringObservation({
       economic_opportunity: monitoringOpportunity(NOW + 200, 9),
       margin_runways: [
         monitoringRunway("hyperliquid", {
@@ -1519,7 +1650,6 @@ function monitoringRunway(venueId, overrides = {}) {
     version: 1,
     venue_id: venueId,
     account_commitment: `account:${venueId}:0001`,
-    account_state_commitment: `carry:account-state:${venueId}:0001`,
     as_of_ms: NOW,
     status: "healthy",
     margin_headroom_micro_usdc: 20_000_000,
@@ -1532,8 +1662,51 @@ function monitoringRunway(venueId, overrides = {}) {
     liquidation_distance_bps: 2_500,
     minimum_liquidation_distance_bps: 1_000,
     liquidation_distance_verified: true,
-    liquidation_distance_source: "test_position_snapshot",
+    liquidation_distance_source: liquidationDistanceSourceForVenue(venueId),
     ...overrides,
+  };
+}
+
+function monitoringObservation(value, evidenceOverrides = {}) {
+  const checkedAtMs = value.economic_opportunity.checked_at_ms;
+  const runways = value.margin_runways.map((runway) => {
+    const timedRunway = { ...runway, as_of_ms: checkedAtMs };
+    return {
+      ...timedRunway,
+      account_state_commitment: monitoringAccountState(
+        timedRunway,
+        evidenceOverrides[runway.venue_id],
+      ).account_state_commitment,
+    };
+  });
+  return {
+    ...value,
+    margin_runways: runways,
+    evidence: runways.map((runway) => ({
+      venue_id: runway.venue_id,
+      account_state: monitoringAccountState(runway, evidenceOverrides[runway.venue_id]),
+    })),
+  };
+}
+
+function monitoringAccountState(runway, overrides = {}) {
+  const material = {
+    venue_id: runway.venue_id,
+    account_commitment: runway.account_commitment,
+    verification_commitment: `verify:${runway.venue_id}:0001`,
+    checked_at_ms: runway.as_of_ms,
+    position_count: runway.position_open === false ? 0 : 1,
+    open_order_count: 0,
+    flat_zero_orders: runway.position_open === false,
+    liquidation_distance_bps: runway.liquidation_distance_bps,
+    liquidation_distance_verified: runway.liquidation_distance_verified,
+    liquidation_distance_source: runway.liquidation_distance_source,
+    ...overrides,
+  };
+  return {
+    ...material,
+    account_state_commitment: overrides.account_state_commitment
+      ?? carryAccountStateCommitment(material),
   };
 }
 
@@ -1547,8 +1720,14 @@ function transferRoute(overrides = {}) {
     to_venue_id: "hyperliquid",
     source_adapter_id: "lighter_arbitrum_usdc_v1",
     destination_adapter_id: "hyperliquid_arbitrum_usdc_v1",
-    source_account_state_commitment: "carry:account-state:lighter:0001",
-    destination_account_state_commitment: "carry:account-state:hyperliquid:0001",
+    source_account_state_commitment: monitoringAccountState({
+      ...monitoringRunway("lighter"),
+      as_of_ms: NOW + 100,
+    }).account_state_commitment,
+    destination_account_state_commitment: monitoringAccountState({
+      ...monitoringRunway("hyperliquid"),
+      as_of_ms: NOW + 100,
+    }).account_state_commitment,
     quote_commitment: "carry:transfer-quote:0001",
     valuation_asset: "USD",
     source_collateral_asset: "USDC",

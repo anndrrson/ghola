@@ -63,6 +63,22 @@ describe("CarryPositionRail", () => {
     });
     expect(selectCarryPositionRecord([flat, active])?.position.position_id).toBe("carry:position:test");
   });
+
+  it("never hides a manual-intervention position behind an active or flat record", () => {
+    const active = positionRecord({ status: "active", updated_at: "2026-08-30T11:00:00.000Z" });
+    const flat = positionRecord({
+      position_id: "carry:position:flat",
+      status: "reconciled",
+      updated_at: "2026-08-30T12:00:00.000Z",
+    });
+    const manual = positionRecord({
+      position_id: "carry:position:manual",
+      status: "manual_intervention",
+      updated_at: "2026-08-30T10:00:00.000Z",
+    });
+    expect(selectCarryPositionRecord([active, flat, manual])?.position.position_id)
+      .toBe("carry:position:manual");
+  });
 });
 
 function positionRecord(overrides: {

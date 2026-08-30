@@ -2069,6 +2069,248 @@ test("rejects three-venue readiness without receipt-bound exact account state", 
   );
 });
 
+test("rejects execution adapters without authoritative liquidation-distance readers", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      liquidationDistance: sources.liquidationDistance.replaceAll(
+        "export function lighterLiquidationDistance",
+        "function lighterLiquidationDistance",
+      ),
+    }),
+    /lighter_liquidation_distance_reader_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      aster: sources.aster.replaceAll(
+        "asterLiquidationDistance(positions)",
+        "unverifiedLiquidationDistance(positions)",
+      ),
+    }),
+    /aster_liquidation_reader_binding_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      liquidationDistanceTest: sources.liquidationDistanceTest.replaceAll(
+        "Lighter flat is explicit and never defaults malformed positions",
+        "Lighter malformed positions default to safe",
+      ),
+    }),
+    /lighter_liquidation_fail_closed_test_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      liquidationDistance: sources.liquidationDistance.replaceAll(
+        'venueAdapterCapability(String(venueId || ""), "carry_execution")?.liquidation_distance_source',
+        'venueAdapterCapability(String(venueId || ""), "perp_shadow")?.liquidation_distance_source',
+      ),
+    }),
+    /liquidation_distance_registry_derivation_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      registry: sources.registry.replaceAll(
+        "lighter_account_positions_position_value_v1",
+        "unbound_lighter_position_source_v1",
+      ),
+    }),
+    /lighter_liquidation_provenance_missing/,
+  );
+});
+
+test("rejects liquidation evidence detached from readiness and release commitments", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replaceAll(
+        "validVenueLiquidationBinding(value, value.position_count)",
+        "true",
+      ),
+    }),
+    /carry_preflight_liquidation_binding_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      readiness: sources.readiness.replaceAll(
+        "validVenueLiquidationBinding(account, positionCount)",
+        "true",
+      ),
+    }),
+    /carry_capital_plan_liquidation_validation_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      readiness: sources.readiness.replaceAll(
+        "account?.liquidation_distance_bps === leg?.account_state?.liquidation_distance_bps",
+        "true",
+      ),
+    }),
+    /carry_capital_plan_liquidation_binding_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replaceAll(
+        "liquidation_distance_source: capitalByVenue.get(venueId)?.liquidation_distance_source ?? null",
+        "liquidation_distance_source: null",
+      ),
+    }),
+    /carry_release_liquidation_provenance_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll(
+        "account_state_evidence: accountStateEvidence",
+        "account_state_evidence: []",
+      ),
+    }),
+    /carry_monitor_account_state_persistence_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll(
+        "row.account_state_commitment !== carryAccountStateCommitment(row)",
+        "false",
+      ),
+    }),
+    /carry_monitor_account_state_recomputation_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replaceAll(
+        "releaseMarginRunways({",
+        "trustMarginRunways({",
+      ),
+    }),
+    /carry_release_live_runway_material_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replaceAll(
+        "state.account_state_commitment !== carryAccountStateCommitment(state)",
+        "false",
+      ),
+    }),
+    /carry_release_account_state_recomputation_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replaceAll(
+        "liquidationDistanceSourceForVenue(venueId)",
+        "unboundLiquidationSource(venueId)",
+      ),
+    }),
+    /carry_release_canonical_liquidation_source_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterialTest: sources.releaseMaterialTest.replaceAll(
+        "refuses swapped venue liquidation sources even when commitments are recomputed",
+        "accepts swapped venue liquidation sources when commitments are recomputed",
+      ),
+    }),
+    /carry_release_liquidation_source_test_missing/,
+  );
+});
+
+test("rejects an independent verifier that trusts fabricated flat-account liquidation evidence", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier.replaceAll(
+        "three_venue_liquidation_binding_invalid",
+        "three_venue_liquidation_binding_trusted",
+      ),
+    }),
+    /carry_release_liquidation_verifier_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifierTest: sources.evidenceVerifierTest.replaceAll(
+        "rejects fabricated liquidation distance for a flat readiness account",
+        "accepts fabricated liquidation distance for a flat readiness account",
+      ),
+    }),
+    /carry_release_liquidation_verifier_test_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier.replaceAll(
+        "carryAccountStateCommitment({",
+        "trustOpaqueAccountStateCommitment({",
+      ),
+    }),
+    /carry_release_account_state_recomputation_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier.replaceAll(
+        "margin_runway_open_position_unproven",
+        "margin_runway_open_position_trusted",
+      ),
+    }),
+    /carry_release_open_position_verifier_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifierTest: sources.evidenceVerifierTest.replaceAll(
+        "rejects detached or unverifiable live liquidation evidence",
+        "accepts detached or unverifiable live liquidation evidence",
+      ),
+    }),
+    /carry_release_live_liquidation_verifier_test_missing/,
+  );
+});
+
+test("rejects release verification whose account-state commitment width drifts from the worker", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      readiness: sources.readiness.replace(
+        'return `carry:account-state:${createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 40)}`;',
+        'return `carry:account-state:${createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 64)}`;',
+      ),
+    }),
+    /carry_account_state_commitment_width_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifier: sources.evidenceVerifier.replace(
+        "/^carry:account-state:[0-9a-f]{40}$/",
+        "/^carry:account-state:[0-9a-f]{64}$/",
+      ),
+    }),
+    /carry_release_account_state_width_mismatch/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      evidenceVerifierTest: sources.evidenceVerifierTest.replaceAll(
+        "rejects padded three-venue account-state commitments",
+        "accepts padded three-venue account-state commitments",
+      ),
+    }),
+    /carry_release_account_state_width_test_missing/,
+  );
+});
+
 test("rejects a three-venue check that can claim readiness without durable deployment-bound evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({

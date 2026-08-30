@@ -1,9 +1,21 @@
+import {
+  CARRY_EXECUTION_VENUES,
+  venueAdapterCapability,
+} from "@ghola/execution-core";
+
 const MAX_LIQUIDATION_DISTANCE_BPS = 100_000;
+
+export const LIQUIDATION_DISTANCE_SOURCES = Object.freeze(Object.fromEntries(
+  CARRY_EXECUTION_VENUES.flatMap((venueId) => {
+    const source = liquidationDistanceSourceForVenue(venueId);
+    return source === null ? [] : [[venueId, source]];
+  }),
+));
 
 export function hyperliquidLiquidationDistance(state) {
   return liquidationObservation({
     rows: state?.assetPositions,
-    source: "hyperliquid_clearinghouse_state_asset_positions_v1",
+    source: LIQUIDATION_DISTANCE_SOURCES.hyperliquid,
     decode: (row) => {
       const position = row?.position;
       const signedSize = decimal(position?.szi);
@@ -24,7 +36,7 @@ export function hyperliquidLiquidationDistance(state) {
 export function lighterLiquidationDistance(account) {
   return liquidationObservation({
     rows: account?.positions,
-    source: "lighter_account_positions_position_value_v1",
+    source: LIQUIDATION_DISTANCE_SOURCES.lighter,
     decode: (row) => {
       const size = nonnegativeDecimal(row?.position);
       if (size === null) return null;
@@ -44,7 +56,7 @@ export function lighterLiquidationDistance(account) {
 export function asterLiquidationDistance(positions) {
   return liquidationObservation({
     rows: positions,
-    source: "aster_fapi_v3_position_risk_v1",
+    source: LIQUIDATION_DISTANCE_SOURCES.aster,
     decode: (row) => {
       const signedSize = decimal(row?.positionAmt);
       if (signedSize === null) return null;
@@ -56,6 +68,25 @@ export function asterLiquidationDistance(positions) {
       });
     },
   });
+}
+
+export function liquidationDistanceSourceForVenue(venueId) {
+  const source = venueAdapterCapability(String(venueId || ""), "carry_execution")?.liquidation_distance_source;
+  return typeof source === "string" && /^[a-z][a-zA-Z0-9_]{7,159}$/.test(source) ? source : null;
+}
+
+export function validVenueLiquidationBinding(value, positionCount = value?.position_count) {
+  const expectedSource = liquidationDistanceSourceForVenue(value?.venue_id);
+  const distance = value?.liquidation_distance_bps;
+  const source = value?.liquidation_distance_source;
+  const verified = value?.liquidation_distance_verified === true;
+  if (!expectedSource || !Number.isSafeInteger(positionCount) || positionCount < 0) return false;
+  if (positionCount === 0) return distance === null && !verified && source === null;
+  if (!verified) return distance === null && source === null;
+  return Number.isSafeInteger(distance)
+    && distance >= 0
+    && distance <= MAX_LIQUIDATION_DISTANCE_BPS
+    && source === expectedSource;
 }
 
 function liquidationObservation({ rows, source, decode }) {

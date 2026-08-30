@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { venueAdapterCapability } from "@ghola/execution-core";
 import {
+  LIQUIDATION_DISTANCE_SOURCES,
   asterLiquidationDistance,
   hyperliquidLiquidationDistance,
   lighterLiquidationDistance,
+  validVenueLiquidationBinding,
 } from "../src/venues/liquidation-distance.js";
 
 test("derives Hyperliquid distance only from clearinghouse position fields", () => {
@@ -81,6 +84,28 @@ test("Aster flat is explicit and malformed open evidence fails closed", () => {
     liquidationPrice: "",
   }]), { ...flat(), position_count: 1 });
   assert.deepEqual(asterLiquidationDistance(null), { ...flat(), position_count: null });
+});
+
+test("accepts only the exact venue provenance for open liquidation evidence", () => {
+  for (const [venueId, source] of Object.entries(LIQUIDATION_DISTANCE_SOURCES)) {
+    assert.equal(source, venueAdapterCapability(venueId, "carry_execution")?.liquidation_distance_source);
+    const evidence = {
+      venue_id: venueId,
+      position_count: 1,
+      liquidation_distance_bps: 2_500,
+      liquidation_distance_verified: true,
+      liquidation_distance_source: source,
+    };
+    assert.equal(validVenueLiquidationBinding(evidence), true);
+    assert.equal(validVenueLiquidationBinding({
+      ...evidence,
+      liquidation_distance_source: LIQUIDATION_DISTANCE_SOURCES[venueId === "hyperliquid" ? "lighter" : "hyperliquid"],
+    }), false);
+    assert.equal(validVenueLiquidationBinding({
+      ...evidence,
+      liquidation_distance_source: "arbitrary_position_snapshot_v1",
+    }), false);
+  }
 });
 
 function flat() {

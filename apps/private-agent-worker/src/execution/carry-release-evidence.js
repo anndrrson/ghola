@@ -13,11 +13,13 @@ import {
 } from "./carry-positions.js";
 import { assessCarryFlatReconciliation } from "./carry-reconciliation.js";
 import {
+  carryAccountStateCommitment,
   readCarryExecutionReadiness,
   verifyCarryExecutionReadinessResult,
 } from "./carry-readiness.js";
 import { readCarryShadowQualification } from "./carry-shadow-qualification.js";
 import { loadCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
+import { liquidationDistanceSourceForVenue } from "../venues/liquidation-distance.js";
 
 const DEFAULT_LIFECYCLE_PROOF_MAX_AGE_MS = 90 * 86_400_000;
 const MAX_LIFECYCLE_PROOFS_PER_ASSET = 64;
@@ -513,6 +515,15 @@ export async function buildCompletedCarryReleaseMaterial({
     max_age_ms: maxAllowedObservationGapMs,
   });
   if (!fundingObservations.ok) return fundingObservations;
+  const monitoredRunways = supervisedObservations.map((observation) => releaseMarginRunways({
+    observation,
+    venue_ids: pair,
+    position: record.position,
+    monitoring_context: record.monitoring_context,
+  }));
+  const invalidRunways = monitoredRunways.find((result) => !result.ok);
+  if (invalidRunways) return invalidRunways;
+  const marginRunways = monitoredRunways.at(-1).runways;
   const exitTrigger = releaseExitTrigger({
     exit_request: exitRequest,
     exit_requested_at_ms: exitRequestedAt,
@@ -520,12 +531,6 @@ export async function buildCompletedCarryReleaseMaterial({
     position: record.position,
   });
   if (!exitTrigger.ok) return exitTrigger;
-  const runwayStatuses = latestObservation.margin_runway_status_by_venue || {};
-  const runwayValues = latestObservation.margin_runway_ms_by_venue || {};
-  const validRunwayStatuses = new Set(["healthy", "warning", "critical", "breached"]);
-  if (pair.some((venueId) => !Object.hasOwn(runwayValues, venueId) || !validRunwayStatuses.has(runwayStatuses[venueId]))) {
-    return denied("carry_release_margin_runway_evidence_missing");
-  }
   const qualifications = await Promise.all(pair.map((venueId) => readCarryVenueQualification({
     state,
     venue_id: venueId,
@@ -626,12 +631,7 @@ export async function buildCompletedCarryReleaseMaterial({
         failure_count: 0,
         transaction_broadcast: false,
       },
-      margin_runways: pair.map((venueId) => ({
-        venue_id: venueId,
-        status: runwayStatuses[venueId],
-        runway_ms: runwayValues[venueId],
-        stale: false,
-      })),
+      margin_runways: marginRunways,
     },
     exit: {
       reason: exitTrigger.reason,
@@ -771,6 +771,112 @@ function releaseFundingObservations({ observations, venue_ids: venueIds, max_age
     }));
   }
   return { ok: true, observations: Object.freeze(normalized) };
+}
+
+function releaseMarginRunways({ observation, venue_ids: venueIds, position, monitoring_context: monitoringContext }) {
+  const statuses = observation?.margin_runway_status_by_venue;
+  const values = observation?.margin_runway_ms_by_venue;
+  const states = observation?.account_state_evidence;
+  const plan = observation?.capital_action_plan;
+  const observedAt = observation?.recorded_at_ms;
+  const validStatuses = new Set(["healthy", "warning", "critical", "breached"]);
+  if (!positiveInteger(observedAt)
+    || !statuses
+    || typeof statuses !== "object"
+    || Array.isArray(statuses)
+    || !values
+    || typeof values !== "object"
+    || Array.isArray(values)
+    || !Array.isArray(states)
+    || states.length !== venueIds.length
+    || Object.keys(statuses).length !== venueIds.length
+    || Object.keys(values).length !== venueIds.length
+    || !venueIds.every((venueId) => Object.hasOwn(statuses, venueId)
+      && Object.hasOwn(values, venueId)
+      && validStatuses.has(statuses[venueId])
+      && (values[venueId] === null || nonNegativeInteger(values[venueId])))) {
+    return denied("carry_release_margin_runway_evidence_missing");
+  }
+  if (plan?.version !== 1
+    || plan.kind !== "ghola_carry_capital_action_plan"
+    || plan.position_id !== position?.position_id
+    || plan.asset !== position?.asset
+    || plan.checked_at_ms !== observedAt
+    || plan.proposal_only !== true
+    || plan.transaction_broadcast !== false
+    || plan.automatic_transfer_permitted !== false
+    || !Array.isArray(plan.legs)
+    || plan.legs.length !== venueIds.length) {
+    return denied("carry_release_margin_runway_plan_detached");
+  }
+  const statesByVenue = new Map(states.map((state) => [state?.venue_id, state]));
+  const legsByVenue = new Map(plan.legs.map((leg) => [leg?.venue_id, leg]));
+  if (statesByVenue.size !== venueIds.length
+    || legsByVenue.size !== venueIds.length
+    || !venueIds.every((venueId) => statesByVenue.has(venueId) && legsByVenue.has(venueId))) {
+    return denied("carry_release_margin_runway_plan_detached");
+  }
+  const runways = [];
+  for (const venueId of venueIds) {
+    const state = statesByVenue.get(venueId);
+    const leg = legsByVenue.get(venueId);
+    const accountCommitment = monitoringContext?.venue_access?.[venueId]?.account_commitment;
+    const source = liquidationDistanceSourceForVenue(venueId);
+    if (!commitment(accountCommitment)
+      || state?.account_commitment !== accountCommitment
+      || leg?.account_commitment !== accountCommitment) {
+      return denied("carry_release_margin_runway_account_binding_invalid");
+    }
+    if (state?.checked_at_ms !== observedAt
+      || !commitment(state?.verification_commitment)
+      || !Number.isSafeInteger(state?.position_count)
+      || state.position_count <= 0
+      || !Number.isSafeInteger(state?.open_order_count)
+      || state.open_order_count < 0
+      || state.flat_zero_orders !== false
+      || !/^carry:account-state:[0-9a-f]{40}$/.test(String(state?.account_state_commitment || ""))
+      || state.account_state_commitment !== carryAccountStateCommitment(state)
+      || leg?.account_state_commitment !== state.account_state_commitment) {
+      return denied("carry_release_margin_runway_account_state_invalid");
+    }
+    if (typeof source !== "string"
+      || state.liquidation_distance_source !== source
+      || state.liquidation_distance_verified !== true
+      || !boundedInteger(state.liquidation_distance_bps, 0, 100_000)
+      || leg.position_open !== true
+      || leg.liquidation_distance_bps !== state.liquidation_distance_bps
+      || leg.liquidation_distance_verified !== true
+      || leg.liquidation_distance_source !== source
+      || !boundedInteger(leg.minimum_liquidation_distance_bps, 0, 100_000)) {
+      return denied("carry_release_margin_runway_liquidation_binding_invalid");
+    }
+    if (leg.status !== statuses[venueId]
+      || leg.runway_ms !== values[venueId]
+      || (state.liquidation_distance_bps < leg.minimum_liquidation_distance_bps
+        && leg.status !== "breached")) {
+      return denied("carry_release_margin_runway_plan_detached");
+    }
+    runways.push(Object.freeze({
+      venue_id: venueId,
+      status: leg.status,
+      runway_ms: leg.runway_ms,
+      stale: false,
+      checked_at: iso(observedAt),
+      account_state_checked_at_ms: state.checked_at_ms,
+      account_commitment: state.account_commitment,
+      verification_commitment: state.verification_commitment,
+      account_state_commitment: state.account_state_commitment,
+      position_count: state.position_count,
+      open_order_count: state.open_order_count,
+      flat_zero_orders: state.flat_zero_orders,
+      position_open: leg.position_open,
+      liquidation_distance_bps: state.liquidation_distance_bps,
+      minimum_liquidation_distance_bps: leg.minimum_liquidation_distance_bps,
+      liquidation_distance_verified: state.liquidation_distance_verified,
+      liquidation_distance_source: state.liquidation_distance_source,
+    }));
+  }
+  return { ok: true, runways: Object.freeze(runways) };
 }
 
 function releaseExecutionReadiness({ readiness, monitoring_context: monitoringContext }) {
@@ -1357,6 +1463,14 @@ function iso(value) {
 
 function positiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0;
+}
+
+function nonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function boundedInteger(value, minimum, maximum) {
+  return Number.isSafeInteger(value) && value >= minimum && value <= maximum;
 }
 
 function positiveDecimal(value) {

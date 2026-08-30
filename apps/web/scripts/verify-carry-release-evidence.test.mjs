@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   assembleCarryReleaseEvidence,
+  carryAccountStateCommitment,
   carryCreationInputEvidenceCommitment,
   carryEvidenceCommitment,
   carryReleaseEvidenceCommitment,
@@ -189,8 +190,8 @@ async function fixture({
         transaction_broadcast: false,
       },
       margin_runways: [
-        { venue_id: longVenue, status: "healthy", runway_ms: 86_400_000, stale: false },
-        { venue_id: shortVenue, status: "healthy", runway_ms: 86_400_000, stale: false },
+        marginRunway(longVenue),
+        marginRunway(shortVenue),
       ],
     },
     exit: {
@@ -323,7 +324,11 @@ function executionReadiness() {
     venues: CARRY_EXECUTION_VENUES.map((venueId) => ({
       venue_id: venueId,
       account_commitment: `account:${venueId}:release:0001`,
-      account_state_commitment: `carry:account-state:${venueId === "hyperliquid" ? "11".repeat(32) : venueId === "lighter" ? "22".repeat(32) : "33".repeat(32)}`,
+      account_state_commitment: `carry:account-state:${venueId === "hyperliquid" ? "11".repeat(20) : venueId === "lighter" ? "22".repeat(20) : "33".repeat(20)}`,
+      position_count: 0,
+      liquidation_distance_bps: null,
+      liquidation_distance_verified: false,
+      liquidation_distance_source: null,
       account_state_checked: true,
       transaction_broadcast: false,
     })),
@@ -373,6 +378,42 @@ function leg(venue_id, side, reduce_only, client_order_commitment, fee_micro_usd
     fee_micro_usdc,
     slippage_micro_usdc,
     receipt_commitment: `receipt:${client_order_commitment}`,
+  };
+}
+
+function marginRunway(venueId, overrides = {}) {
+  const checkedAt = "2026-08-24T00:00:05.000Z";
+  const accountState = {
+    venue_id: venueId,
+    account_commitment: `account:${venueId}:release:0001`,
+    verification_commitment: `carry:verification:${venueId}:proof:0001`,
+    checked_at_ms: Date.parse(checkedAt),
+    position_count: 1,
+    open_order_count: 0,
+    flat_zero_orders: false,
+    liquidation_distance_bps: 2_500,
+    liquidation_distance_verified: true,
+    liquidation_distance_source: venueAdapterCapability(venueId, "carry_execution")?.liquidation_distance_source,
+  };
+  return {
+    venue_id: venueId,
+    status: "healthy",
+    runway_ms: 86_400_000,
+    stale: false,
+    checked_at: checkedAt,
+    account_commitment: accountState.account_commitment,
+    verification_commitment: accountState.verification_commitment,
+    account_state_checked_at_ms: accountState.checked_at_ms,
+    account_state_commitment: carryAccountStateCommitment(accountState),
+    position_open: true,
+    position_count: accountState.position_count,
+    open_order_count: accountState.open_order_count,
+    flat_zero_orders: accountState.flat_zero_orders,
+    liquidation_distance_bps: accountState.liquidation_distance_bps,
+    minimum_liquidation_distance_bps: 1_000,
+    liquidation_distance_verified: accountState.liquidation_distance_verified,
+    liquidation_distance_source: accountState.liquidation_distance_source,
+    ...overrides,
   };
 }
 
@@ -552,6 +593,30 @@ test("rejects release evidence without all three execution venue bindings", asyn
   await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /three_venue_account_bindings_invalid/);
 });
 
+test("rejects padded three-venue account-state commitments", async () => {
+  const evidence = await fixture();
+  evidence.execution_readiness.venues[0].account_state_commitment += "00";
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /three_venue_account_state_commitment_invalid:hyperliquid/);
+});
+
+test("rejects three-venue readiness whose creation account is not flat", async () => {
+  const evidence = await fixture();
+  evidence.execution_readiness.venues[0].position_count = 1;
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /three_venue_position_not_flat:hyperliquid/);
+});
+
+test("rejects fabricated liquidation distance for a flat readiness account", async () => {
+  const evidence = await fixture();
+  evidence.execution_readiness.venues[0].liquidation_distance_bps = 1;
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /three_venue_liquidation_binding_invalid:hyperliquid/);
+});
+
 test("rejects release evidence without complete collateral-route coverage", async () => {
   const evidence = await fixture();
   evidence.collateral_route_readiness.available_route_count = 5;
@@ -636,6 +701,44 @@ test("rejects margin-runway proof without verified status", async () => {
   delete evidence.monitoring.margin_runways[0].status;
   evidence.evidence_commitment = carryEvidenceCommitment(evidence);
   await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /margin_runway_status_missing:hyperliquid/);
+});
+
+test("rejects detached or unverifiable live liquidation evidence", async () => {
+  for (const [mutate, expected] of [
+    [(row) => { row.liquidation_distance_source = "aster_fapi_v3_position_risk_v1"; }, /margin_runway_liquidation_binding_invalid:hyperliquid/],
+    [(row) => { row.liquidation_distance_verified = false; }, /margin_runway_liquidation_binding_invalid:hyperliquid/],
+    [(row) => { row.position_open = false; }, /margin_runway_open_position_unproven:hyperliquid/],
+    [(row) => { row.account_commitment = "account:hyperliquid:detached:0001"; }, /margin_runway_account_binding_invalid:hyperliquid/],
+    [(row) => { row.account_state_commitment = `carry:account-state:${"ff".repeat(20)}`; }, /margin_runway_account_state_commitment_invalid:hyperliquid/],
+    [(row) => { row.checked_at = "2026-08-24T00:00:04.000Z"; }, /margin_runway_account_state_timestamp_invalid:hyperliquid/],
+  ]) {
+    const evidence = await fixture();
+    mutate(evidence.monitoring.margin_runways[0]);
+    evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+    evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+    await assert.rejects(() => verifyCarryReleaseEvidence(evidence), expected);
+  }
+});
+
+test("requires a breached status below the verified liquidation floor", async () => {
+  const evidence = await fixture();
+  const row = evidence.monitoring.margin_runways[0];
+  row.liquidation_distance_bps = 999;
+  row.account_state_commitment = carryAccountStateCommitment({
+    venue_id: row.venue_id,
+    account_commitment: row.account_commitment,
+    verification_commitment: row.verification_commitment,
+    checked_at_ms: row.account_state_checked_at_ms,
+    position_count: row.position_count,
+    open_order_count: row.open_order_count,
+    flat_zero_orders: row.flat_zero_orders,
+    liquidation_distance_bps: row.liquidation_distance_bps,
+    liquidation_distance_verified: row.liquidation_distance_verified,
+    liquidation_distance_source: row.liquidation_distance_source,
+  });
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(() => verifyCarryReleaseEvidence(evidence), /margin_runway_liquidation_status_invalid:hyperliquid/);
 });
 
 test("rejects monitoring that was not produced by the unattended worker loop", async () => {

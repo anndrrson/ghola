@@ -15,6 +15,7 @@ import {
 } from "@ghola/execution-core";
 import { hashMessage, recoverMessageAddress } from "viem";
 import { preflightCarryPair } from "./carry-preflight.js";
+import { carryAccountStateCommitment } from "./carry-readiness.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 import { hasExactCarryFlatReconciliation } from "./carry-reconciliation.js";
 import { listAllCarryPositionRecords } from "./carry-record-scan.js";
@@ -22,8 +23,10 @@ import { createCarryLoopSupervisor, disabledCarryLoopHealth } from "./carry-loop
 import { loadCarryTransferRouteEvidence, observeCarryTransferRoutes } from "./carry-transfer-routes.js";
 import { runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
 import { verifyCarryCreationOpportunityAuthentication } from "./carry-opportunity-authentication.js";
+import { validVenueLiquidationBinding } from "../venues/liquidation-distance.js";
 
 const OWNER = /^[A-Za-z0-9:_-]{8,180}$/;
+const ACCOUNT_STATE_COMMITMENT = /^carry:account-state:[0-9a-f]{40}$/;
 
 export async function createStoredCarryPosition({
   state,
@@ -1160,6 +1163,31 @@ export async function observeStoredCarryPosition({
     });
     return frozen.ok ? { ...frozen, observation_ok: false, observation: null } : frozen;
   }
+  let accountStateEvidence;
+  try {
+    accountStateEvidence = validatedMonitoringAccountStateEvidence({
+      observation,
+      position,
+      monitoringContext: owned.record.monitoring_context,
+      capitalActionPlan,
+      nowMs,
+    });
+  } catch (error) {
+    const frozen = await advanceStoredCarryPosition({
+      state,
+      position_id: positionId,
+      owner_commitment: ownerCommitment,
+      event: {
+        version: 1,
+        event_id: `${eventBase}:account-state-evidence-unavailable`,
+        sequence,
+        type: "observation_unavailable",
+        reason: `account_state_evidence:${safeError(error)}`,
+      },
+      now_ms: nowMs,
+    });
+    return frozen.ok ? { ...frozen, observation_ok: false, observation: null } : frozen;
+  }
   const migrationCandidates = ["reduce_only_exit", "reconcile_only"].includes(capitalActionPlan.recommended_action)
     ? []
     : await evaluateMigrationCandidates({
@@ -1205,6 +1233,7 @@ export async function observeStoredCarryPosition({
       margin_runway_ms_by_venue: runways,
       margin_runway_status_by_venue: runwayStatuses,
       capital_action_plan: capitalActionPlan,
+      account_state_evidence: accountStateEvidence,
       qualification_reasons: observation.qualification_reasons,
       transaction_broadcast: false,
     },
@@ -1630,10 +1659,93 @@ function publicObservation(event) {
     capital_action_plan: event.capital_action_plan
       ? JSON.parse(JSON.stringify(event.capital_action_plan))
       : null,
+    account_state_evidence: Array.isArray(event.account_state_evidence)
+      ? JSON.parse(JSON.stringify(event.account_state_evidence))
+      : [],
     qualification_reasons: Array.isArray(event.qualification_reasons) ? [...event.qualification_reasons] : [],
     transaction_broadcast: false,
     recorded_at_ms: event.recorded_at_ms,
   });
+}
+
+function validatedMonitoringAccountStateEvidence({ observation, position, monitoringContext, capitalActionPlan, nowMs }) {
+  const venueIds = [position.long_venue_id, position.short_venue_id];
+  const evidence = Array.isArray(observation?.evidence) ? observation.evidence : [];
+  if (evidence.length !== venueIds.length) failAccountStateEvidence("count_invalid");
+  const byVenue = new Map();
+  for (const item of evidence) {
+    const raw = item?.account_state;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) failAccountStateEvidence("record_invalid");
+    const venueId = String(raw?.venue_id || "");
+    if (!venueIds.includes(venueId) || byVenue.has(venueId)) failAccountStateEvidence("venues_invalid");
+    const checkedAtMs = raw?.checked_at_ms;
+    const positionCount = raw?.position_count;
+    const openOrderCount = raw?.open_order_count;
+    const row = Object.freeze({
+      venue_id: venueId,
+      account_commitment: String(raw?.account_commitment || ""),
+      verification_commitment: String(raw?.verification_commitment || ""),
+      checked_at_ms: checkedAtMs,
+      position_count: positionCount,
+      open_order_count: openOrderCount,
+      flat_zero_orders: raw?.flat_zero_orders === true,
+      liquidation_distance_bps: raw?.liquidation_distance_bps ?? null,
+      liquidation_distance_verified: raw?.liquidation_distance_verified === true,
+      liquidation_distance_source: raw?.liquidation_distance_source ?? null,
+      account_state_commitment: String(raw?.account_state_commitment || ""),
+    });
+    const expectedAccountCommitment = monitoringContext?.venue_access?.[venueId]?.account_commitment;
+    if (!OWNER.test(row.account_commitment)
+      || row.account_commitment !== expectedAccountCommitment
+      || !OWNER.test(row.verification_commitment)
+      || !Number.isSafeInteger(checkedAtMs)
+      || checkedAtMs <= 0
+      || checkedAtMs !== nowMs
+      || !Number.isSafeInteger(positionCount)
+      || positionCount <= 0
+      || !Number.isSafeInteger(openOrderCount)
+      || openOrderCount < 0
+      || raw.flat_zero_orders !== false
+      || row.flat_zero_orders !== (positionCount === 0 && openOrderCount === 0)
+      || !validVenueLiquidationBinding(row, positionCount)) {
+      failAccountStateEvidence(`invalid:${venueId}`);
+    }
+    if (!ACCOUNT_STATE_COMMITMENT.test(row.account_state_commitment)
+      || row.account_state_commitment !== carryAccountStateCommitment(row)) {
+      failAccountStateEvidence(`commitment_invalid:${venueId}`);
+    }
+    byVenue.set(venueId, row);
+  }
+  if (byVenue.size !== venueIds.length
+    || capitalActionPlan?.kind !== "ghola_carry_capital_action_plan"
+    || capitalActionPlan.position_id !== position.position_id
+    || capitalActionPlan.asset !== position.asset
+    || capitalActionPlan.checked_at_ms !== nowMs
+    || !Array.isArray(capitalActionPlan.legs)
+    || capitalActionPlan.legs.length !== venueIds.length) {
+    failAccountStateEvidence("plan_invalid");
+  }
+  const planLegs = new Map(capitalActionPlan.legs.map((leg) => [leg?.venue_id, leg]));
+  if (planLegs.size !== venueIds.length) failAccountStateEvidence("plan_venues_invalid");
+  for (const venueId of venueIds) {
+    const row = byVenue.get(venueId);
+    const leg = planLegs.get(venueId);
+    if (!row
+      || !leg
+      || leg.account_commitment !== row.account_commitment
+      || leg.account_state_commitment !== row.account_state_commitment
+      || leg.position_open !== true
+      || leg.liquidation_distance_bps !== row.liquidation_distance_bps
+      || leg.liquidation_distance_verified !== row.liquidation_distance_verified
+      || leg.liquidation_distance_source !== row.liquidation_distance_source) {
+      failAccountStateEvidence(`plan_binding_invalid:${venueId}`);
+    }
+  }
+  return Object.freeze(venueIds.map((venueId) => byVenue.get(venueId)));
+}
+
+function failAccountStateEvidence(reason) {
+  throw new Error(`carry_monitor_account_state_evidence_${reason}`);
 }
 
 function publicReconciliationEvidence(event, nowMs) {

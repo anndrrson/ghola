@@ -27,6 +27,7 @@ import {
   carryRiskMandateMessage,
   normalizeCarryRiskMandateAuthorization,
   normalizeCarryRiskMandatePayload,
+  venueAdapterCapability,
 } from "@ghola/execution-core";
 import { hashMessage } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -63,6 +64,52 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.equal(result.material.exit.trigger.kind, "owner_request");
   assert.equal(result.material.exit.trigger.observed_at, "2027-01-15T08:00:03.000Z");
   assert.equal(result.material.monitoring.margin_runways[0].status, "healthy");
+  assert.deepEqual(result.material.monitoring.margin_runways.map((runway) => ({
+    venue_id: runway.venue_id,
+    checked_at: runway.checked_at,
+    account_state_checked_at_ms: runway.account_state_checked_at_ms,
+    account_commitment: runway.account_commitment,
+    position_count: runway.position_count,
+    open_order_count: runway.open_order_count,
+    flat_zero_orders: runway.flat_zero_orders,
+    position_open: runway.position_open,
+    liquidation_distance_bps: runway.liquidation_distance_bps,
+    minimum_liquidation_distance_bps: runway.minimum_liquidation_distance_bps,
+    liquidation_distance_verified: runway.liquidation_distance_verified,
+    liquidation_distance_source: runway.liquidation_distance_source,
+  })), [
+    {
+      venue_id: "hyperliquid",
+      checked_at: "2027-01-15T08:00:02.500Z",
+      account_state_checked_at_ms: 1_800_000_002_500,
+      account_commitment: "account:hyperliquid:release:0001",
+      position_count: 1,
+      open_order_count: 0,
+      flat_zero_orders: false,
+      position_open: true,
+      liquidation_distance_bps: 2_400,
+      minimum_liquidation_distance_bps: 1_000,
+      liquidation_distance_verified: true,
+      liquidation_distance_source: "hyperliquid_clearinghouse_state_asset_positions_v1",
+    },
+    {
+      venue_id: "aster",
+      checked_at: "2027-01-15T08:00:02.500Z",
+      account_state_checked_at_ms: 1_800_000_002_500,
+      account_commitment: "account:aster:release:0001",
+      position_count: 1,
+      open_order_count: 0,
+      flat_zero_orders: false,
+      position_open: true,
+      liquidation_distance_bps: 2_100,
+      minimum_liquidation_distance_bps: 1_000,
+      liquidation_distance_verified: true,
+      liquidation_distance_source: "aster_fapi_v3_position_risk_v1",
+    },
+  ]);
+  assert.equal(result.material.monitoring.margin_runways.every((runway) =>
+    /^carry:account-state:[0-9a-f]{40}$/.test(runway.account_state_commitment)
+    && /^verification:carry:monitor:/.test(runway.verification_commitment)), true);
   assert.equal(result.material.contract_equivalence.index_price_divergence_bps, 3);
   assert.equal(result.material.creation_input_evidence.verified, true);
   assert.equal(
@@ -138,7 +185,7 @@ test("binds liquidation evidence through release material commitment", async () 
   });
   assert.equal(result.ok, true);
   const tampered = structuredClone(result.material);
-  tampered.execution_readiness.venues[0].liquidation_distance_bps = 1;
+  tampered.monitoring.margin_runways[0].liquidation_distance_bps = 1;
   assert.notEqual(
     workerMaterialCommitmentForTest(tampered),
     result.material.worker_material_commitment,
@@ -868,6 +915,95 @@ test("refuses release evidence without verified margin-runway status", async () 
   assert.equal(result.error, "carry_release_margin_runway_evidence_missing");
 });
 
+test("refuses release evidence without raw live account-state lineage", async () => {
+  const fixture = await stateFixture();
+  const latestObservation = fixture.record.lifecycle_events.filter((event) => event.type === "observation").at(-1);
+  delete latestObservation.account_state_evidence;
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_margin_runway_evidence_missing");
+});
+
+test("refuses swapped venue liquidation sources even when commitments are recomputed", async () => {
+  const fixture = await stateFixture();
+  const latestObservation = fixture.record.lifecycle_events.filter((event) => event.type === "observation").at(-1);
+  const sources = latestObservation.account_state_evidence.map((state) => state.liquidation_distance_source).reverse();
+  latestObservation.account_state_evidence.forEach((state, index) => {
+    state.liquidation_distance_source = sources[index];
+    state.account_state_commitment = carryAccountStateCommitment(state);
+    const leg = latestObservation.capital_action_plan.legs.find((item) => item.venue_id === state.venue_id);
+    leg.liquidation_distance_source = state.liquidation_distance_source;
+    leg.account_state_commitment = state.account_state_commitment;
+  });
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_margin_runway_liquidation_binding_invalid");
+});
+
+test("refuses swapped monitoring accounts even when account-state commitments are recomputed", async () => {
+  const fixture = await stateFixture();
+  const latestObservation = fixture.record.lifecycle_events.filter((event) => event.type === "observation").at(-1);
+  const accounts = latestObservation.account_state_evidence.map((state) => state.account_commitment).reverse();
+  latestObservation.account_state_evidence.forEach((state, index) => {
+    state.account_commitment = accounts[index];
+    state.account_state_commitment = carryAccountStateCommitment(state);
+    const leg = latestObservation.capital_action_plan.legs.find((item) => item.venue_id === state.venue_id);
+    leg.account_commitment = state.account_commitment;
+    leg.account_state_commitment = state.account_state_commitment;
+  });
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_margin_runway_account_binding_invalid");
+});
+
+test("refuses detached account-state and capital-plan evidence", async () => {
+  for (const [mutate, expected] of [
+    [
+      (observation) => {
+        const state = observation.account_state_evidence[0];
+        state.account_state_commitment = `carry:account-state:${"ab".repeat(20)}`;
+        observation.capital_action_plan.legs[0].account_state_commitment = state.account_state_commitment;
+      },
+      "carry_release_margin_runway_account_state_invalid",
+    ],
+    [
+      (observation) => { observation.capital_action_plan.position_id = "carry:position:detached:0001"; },
+      "carry_release_margin_runway_plan_detached",
+    ],
+    [
+      (observation) => { observation.account_state_evidence[0].checked_at_ms -= 1; },
+      "carry_release_margin_runway_account_state_invalid",
+    ],
+  ]) {
+    const fixture = await stateFixture();
+    const latestObservation = fixture.record.lifecycle_events.filter((event) => event.type === "observation").at(-1);
+    mutate(latestObservation);
+    const result = await buildCompletedCarryReleaseMaterial({
+      state: fixture.state,
+      owner_commitment: OWNER,
+      position_id: fixture.record.position.position_id,
+      env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+      now_ms: NOW,
+    });
+    assert.equal(result.error, expected);
+  }
+});
+
 test("refuses release evidence assembled from manual-only monitoring", async () => {
   const fixture = await stateFixture();
   fixture.record.lifecycle_events
@@ -1177,30 +1313,8 @@ async function stateFixture() {
     opportunity_provenance: opportunityProvenance,
     opportunity_authentication_material: structuredClone(opportunityMaterial),
     lifecycle_events: [
-      {
-        type: "observation",
-        observation_source: "supervised_loop",
-        recorded_at_ms: 1_800_000_002_000,
-        funding_observation_commitment: `carry:funding:current:${"11".repeat(32)}`,
-        funding_source_observed_at_ms_by_venue: {
-          hyperliquid: 1_800_000_001_900,
-          aster: 1_800_000_001_900,
-        },
-        margin_runway_ms_by_venue: { hyperliquid: 86_400_000, aster: 86_400_000 },
-        margin_runway_status_by_venue: { hyperliquid: "healthy", aster: "healthy" },
-      },
-      {
-        type: "observation",
-        observation_source: "supervised_loop",
-        recorded_at_ms: 1_800_000_002_500,
-        funding_observation_commitment: `carry:funding:current:${"22".repeat(32)}`,
-        funding_source_observed_at_ms_by_venue: {
-          hyperliquid: 1_800_000_002_400,
-          aster: 1_800_000_002_400,
-        },
-        margin_runway_ms_by_venue: { hyperliquid: 86_400_000, aster: 86_400_000 },
-        margin_runway_status_by_venue: { hyperliquid: "healthy", aster: "healthy" },
-      },
+      monitoringObservation(positionId, 1_800_000_002_000, "11", 1_800_000_001_900),
+      monitoringObservation(positionId, 1_800_000_002_500, "22", 1_800_000_002_400),
       { type: "manual_exit_requested", recorded_at_ms: 1_800_000_003_000 },
     ],
     final_reconciliation_evidence: {
@@ -1400,6 +1514,63 @@ function releaseVenueAccess(venueId) {
     account_commitment: `account:${venueId}:release:0001`,
     vault_commitment: `vault:${venueId}:release:0001`,
     policy_commitment: `policy:${venueId}:release:0001`,
+  };
+}
+
+function monitoringObservation(positionId, checkedAtMs, fundingByte, fundingSourceObservedAtMs) {
+  const accountStateEvidence = ["hyperliquid", "aster"].map((venueId, index) => {
+    const state = {
+      venue_id: venueId,
+      account_commitment: releaseVenueAccess(venueId).account_commitment,
+      verification_commitment: `verification:carry:monitor:${venueId}:${checkedAtMs}`,
+      checked_at_ms: checkedAtMs,
+      position_count: 1,
+      open_order_count: 0,
+      flat_zero_orders: false,
+      liquidation_distance_bps: index === 0 ? 2_400 : 2_100,
+      liquidation_distance_verified: true,
+      liquidation_distance_source: venueAdapterCapability(venueId, "carry_execution").liquidation_distance_source,
+    };
+    state.account_state_commitment = carryAccountStateCommitment(state);
+    return state;
+  });
+  return {
+    type: "observation",
+    observation_source: "supervised_loop",
+    recorded_at_ms: checkedAtMs,
+    funding_observation_commitment: `carry:funding:current:${fundingByte.repeat(32)}`,
+    funding_source_observed_at_ms_by_venue: {
+      hyperliquid: fundingSourceObservedAtMs,
+      aster: fundingSourceObservedAtMs,
+    },
+    margin_runway_ms_by_venue: { hyperliquid: 86_400_000, aster: 86_400_000 },
+    margin_runway_status_by_venue: { hyperliquid: "healthy", aster: "healthy" },
+    account_state_evidence: accountStateEvidence,
+    capital_action_plan: {
+      version: 1,
+      kind: "ghola_carry_capital_action_plan",
+      position_id: positionId,
+      asset: "HYPE",
+      status: "balanced",
+      recommended_action: "none",
+      reasons: [],
+      legs: accountStateEvidence.map((state) => ({
+        venue_id: state.venue_id,
+        account_commitment: state.account_commitment,
+        account_state_commitment: state.account_state_commitment,
+        status: "healthy",
+        runway_ms: 86_400_000,
+        position_open: true,
+        liquidation_distance_bps: state.liquidation_distance_bps,
+        minimum_liquidation_distance_bps: 1_000,
+        liquidation_distance_verified: true,
+        liquidation_distance_source: state.liquidation_distance_source,
+      })),
+      proposal_only: true,
+      transaction_broadcast: false,
+      automatic_transfer_permitted: false,
+      checked_at_ms: checkedAtMs,
+    },
   };
 }
 

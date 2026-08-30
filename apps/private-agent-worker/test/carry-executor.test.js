@@ -13,9 +13,11 @@ import {
 } from "../src/execution/carry-executor.js";
 import { advanceStoredCarryPosition, createStoredCarryPosition, runCarryMonitoringTick } from "../src/execution/carry-positions.js";
 import { readCarryVenueQualification } from "../src/execution/carry-qualification.js";
+import { carryAccountStateCommitment } from "../src/execution/carry-readiness.js";
 import { applyDurableMultiLegEvent, recoverDueMultiLegSagas } from "../src/execution/multi-leg-orchestrator.js";
 import { createWorkerState } from "../src/state/private-state.js";
 import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
+import { liquidationDistanceSourceForVenue } from "../src/venues/liquidation-distance.js";
 import {
   carryOpportunityInputEvidence,
   signedCarryPositionInput,
@@ -946,6 +948,9 @@ test("background monitoring triggers an automatic reduce-only exit and finalizes
   });
   assert.equal(firstMonitor.ok, true);
   assert.equal(firstMonitor.results[0].record.position.status, "active");
+  assert.equal(firstMonitor.results[0].record.latest_observation.account_state_evidence.length, 2);
+  assert.equal(firstMonitor.results[0].record.latest_observation.account_state_evidence.every((item) =>
+    item.account_state_commitment === carryAccountStateCommitment(item)), true);
   const secondMonitor = await runCarryMonitoringTick({
     state: fixture.state,
     preflight: monitoringProof,
@@ -1014,6 +1019,11 @@ test("completes a supervised restart-to-flat lifecycle for every qualified venue
       now_ms: NOW + 100,
     });
     assert.equal(firstMonitor.results[0].record.position.status, "active", `${label}: first observation`);
+    assert.deepEqual(
+      firstMonitor.results[0].record.latest_observation.account_state_evidence.map((item) => item.venue_id),
+      [pair.long, pair.short],
+      `${label}: account-state lineage`,
+    );
     const secondMonitor = await runCarryMonitoringTick({
       state: fixture.state,
       preflight: monitoringProof,
@@ -1224,8 +1234,13 @@ function preflightProof(pair = { long: "aster", short: "lighter" }, { phase = "o
 }
 
 function automaticMonitoringProof(pair = { long: "aster", short: "lighter" }, checkedAtMs = NOW + 100) {
+  const base = preflightProof(pair);
+  const marginRunways = [
+    monitoringRunway(pair.long, checkedAtMs),
+    monitoringRunway(pair.short, checkedAtMs),
+  ];
   return {
-    ...preflightProof(pair),
+    ...base,
     economic_opportunity: {
       checked_at_ms: checkedAtMs,
       projected_net_value_bps: -1,
@@ -1243,19 +1258,25 @@ function automaticMonitoringProof(pair = { long: "aster", short: "lighter" }, ch
         },
       },
     },
-    margin_runways: [
-      monitoringRunway(pair.long),
-      monitoringRunway(pair.short),
-    ],
+    margin_runways: marginRunways,
+    evidence: base.evidence.map((item, index) => ({
+      ...item,
+      account_state: monitoringAccountState(marginRunways[index]),
+    })),
     qualification_reasons: [],
   };
 }
 
 function exitAwareMonitoringProof(pair, body, checkedAtMs) {
   const proof = automaticMonitoringProof(pair, checkedAtMs);
-  return body?.phase === "exit"
-    ? { ...proof, evidence: preflightProof(pair, { phase: "exit" }).evidence }
-    : proof;
+  if (body?.phase !== "exit") return proof;
+  return {
+    ...proof,
+    evidence: preflightProof(pair, { phase: "exit" }).evidence.map((item, index) => ({
+      ...item,
+      account_state: proof.evidence[index].account_state,
+    })),
+  };
 }
 
 function carryMarket(venueId) {
@@ -1266,13 +1287,12 @@ function carryQuoteAsset(venueId) {
   return venueId === "lighter" ? "USD" : "USDT";
 }
 
-function monitoringRunway(venueId) {
-  return {
+function monitoringRunway(venueId, checkedAtMs) {
+  const runway = {
     version: 1,
     venue_id: venueId,
     account_commitment: `account:${venueId}:0001`,
-    account_state_commitment: `carry:account-state:${venueId}:0001`,
-    as_of_ms: NOW,
+    as_of_ms: checkedAtMs,
     status: "healthy",
     margin_headroom_micro_usdc: 20_000_000,
     stress_burn_micro_usdc_per_hour: 10_000_000,
@@ -1282,9 +1302,32 @@ function monitoringRunway(venueId) {
     liquidation_distance_bps: 2_500,
     minimum_liquidation_distance_bps: 1_000,
     liquidation_distance_verified: true,
-    liquidation_distance_source: "test_position_snapshot",
+    liquidation_distance_source: liquidationDistanceSourceForVenue(venueId),
     owner_action_required: false,
     automatic_transfer_permitted: false,
+  };
+  return {
+    ...runway,
+    account_state_commitment: monitoringAccountState(runway).account_state_commitment,
+  };
+}
+
+function monitoringAccountState(runway) {
+  const state = {
+    venue_id: runway.venue_id,
+    account_commitment: runway.account_commitment,
+    verification_commitment: `verify:${runway.venue_id}:monitoring`,
+    checked_at_ms: runway.as_of_ms,
+    position_count: 1,
+    open_order_count: 0,
+    flat_zero_orders: false,
+    liquidation_distance_bps: runway.liquidation_distance_bps,
+    liquidation_distance_verified: runway.liquidation_distance_verified,
+    liquidation_distance_source: runway.liquidation_distance_source,
+  };
+  return {
+    ...state,
+    account_state_commitment: carryAccountStateCommitment(state),
   };
 }
 

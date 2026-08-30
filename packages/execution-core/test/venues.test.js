@@ -82,6 +82,19 @@ test("registry centralizes five core perp candidates without claiming qualificat
   assert.equal(venueAdapterCapability("hyperliquid", "collateral_route_observer")?.collateral_asset, "USDC");
   assert.equal(venueAdapterCapability("lighter", "collateral_route_observer")?.collateral_asset, "USDC");
   assert.equal(venueAdapterCapability("aster", "collateral_route_observer")?.collateral_asset, "USDT");
+  assert.deepEqual(
+    Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [
+      venueId,
+      venueAdapterCapability(venueId, "carry_execution")?.liquidation_distance_source,
+    ])),
+    {
+      hyperliquid: "hyperliquid_clearinghouse_state_asset_positions_v1",
+      lighter: "lighter_account_positions_position_value_v1",
+      aster: "aster_fapi_v3_position_risk_v1",
+    },
+  );
+  assert.equal(venueAdapterCapability("edgex", "carry_execution")?.liquidation_distance_source, undefined);
+  assert.equal(venueAdapterCapability("dydx", "carry_execution")?.liquidation_distance_source, undefined);
   assert.deepEqual(venuesWithAdapterCapability("perp_shadow", {
     cohort: "core_perp",
     product: "perp",

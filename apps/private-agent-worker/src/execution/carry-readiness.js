@@ -5,6 +5,7 @@ import {
   venueAdapterCapability,
 } from "@ghola/execution-core";
 import { runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
+import { validVenueLiquidationBinding } from "../venues/liquidation-distance.js";
 
 const DEFAULT_MAX_AGE_MS = 15 * 60_000;
 
@@ -318,6 +319,12 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
       const positionCount = nonnegativeInteger(account?.position_count);
       const openOrderCount = nonnegativeInteger(account?.open_order_count);
       const leg = legs.find((item) => item?.venue_id === venueId);
+      const accountStateBound = positionCount === leg?.account_state?.position_count
+        && openOrderCount === leg?.account_state?.open_order_count
+        && account?.flat_zero_orders === leg?.account_state?.flat_zero_orders
+        && account?.liquidation_distance_bps === leg?.account_state?.liquidation_distance_bps
+        && account?.liquidation_distance_verified === leg?.account_state?.liquidation_distance_verified
+        && account?.liquidation_distance_source === leg?.account_state?.liquidation_distance_source;
       const valid = typeof account?.authorized === "boolean"
         && typeof account?.flat_zero_orders === "boolean"
         && typeof account?.capital_ready === "boolean"
@@ -330,12 +337,15 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
         && positionCount !== null
         && openOrderCount !== null
         && account.flat_zero_orders === (positionCount === 0 && openOrderCount === 0)
+        && validVenueLiquidationBinding(account, positionCount)
+        && accountStateBound
         && account.account_state_checked_at_ms === checkedAt
         && commitment(account.account_state_commitment)
         && account.account_state_commitment === leg?.account_state?.account_state_commitment
         && venueMinimum <= required
         && shortfall === Math.max(0, required - available)
         && account.capital_ready === (account.authorized && account.flat_zero_orders && shortfall === 0);
+      if (!accountStateBound) reasons.push(`carry_readiness_capital_state_binding_invalid:${left}:${right}:${venueId}`);
       if (!valid) reasons.push(`carry_readiness_capital_invalid:${left}:${right}:${venueId}`);
       pairCapitalReady = pairCapitalReady && account?.capital_ready === true;
       capitalByVenue.get(venueId)?.push(capitalRecord(account));
@@ -529,7 +539,7 @@ function validAccountStateEvidence(value, expected) {
     && positionCount !== null
     && openOrderCount !== null
     && value?.flat_zero_orders === (positionCount === 0 && openOrderCount === 0)
-    && validLiquidationBinding(value, positionCount)
+    && validVenueLiquidationBinding(value, positionCount)
     && commitment(value?.account_state_commitment)
     && value.account_state_commitment === carryAccountStateCommitment(value);
 }
@@ -630,19 +640,6 @@ function capitalRecord(value) {
     execution_leverage: value?.execution_leverage,
     owner_only_funding: value?.owner_only_funding === true,
   };
-}
-
-function validLiquidationBinding(value, positionCount) {
-  const distance = value?.liquidation_distance_bps;
-  const source = value?.liquidation_distance_source;
-  const verified = value?.liquidation_distance_verified === true;
-  if (positionCount === 0) return distance === null && !verified && source === null;
-  if (!verified) return distance === null && source === null;
-  return Number.isSafeInteger(distance)
-    && distance >= 0
-    && distance <= 100_000
-    && typeof source === "string"
-    && /^[A-Za-z0-9:_-]{8,180}$/.test(source);
 }
 
 function capitalConsistencyRecord(value) {

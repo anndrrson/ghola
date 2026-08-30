@@ -42,6 +42,11 @@ const CARRY_ADAPTERS = Object.freeze(Object.fromEntries(CARRY_EXECUTION_VENUES.m
   venueAdapterCapability(venueId, "carry_execution")?.adapter_id,
 ])));
 
+const CARRY_LIQUIDATION_SOURCES = Object.freeze(Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [
+  venueId,
+  venueAdapterCapability(venueId, "carry_execution")?.liquidation_distance_source,
+])));
+
 export async function verifyCarryReleaseEvidence(evidence) {
   const failures = [];
   const fail = (condition, code) => {
@@ -196,11 +201,17 @@ export async function verifyCarryLifecycleEvidence(evidence) {
     "three_venue_result_commitment_invalid");
   fail(sameVenueSet(readinessVenues, CARRY_EXECUTION_VENUES), "three_venue_account_bindings_invalid");
   for (const venue of readinessVenues) {
+    const venueId = String(venue?.venue_id || "");
     fail(commitment(venue?.account_commitment), `three_venue_account_commitment_invalid:${String(venue?.venue_id || "")}`);
-    fail(/^carry:account-state:[0-9a-f]{64}$/.test(String(venue?.account_state_commitment || "")),
+    fail(/^carry:account-state:[0-9a-f]{40}$/.test(String(venue?.account_state_commitment || "")),
       `three_venue_account_state_commitment_invalid:${String(venue?.venue_id || "")}`);
-    fail(venue?.account_state_checked === true, `three_venue_account_state_unchecked:${String(venue?.venue_id || "")}`);
-    fail(venue?.transaction_broadcast === false, `three_venue_account_broadcast_detected:${String(venue?.venue_id || "")}`);
+    fail(venue?.position_count === 0, `three_venue_position_not_flat:${venueId}`);
+    fail(venue?.liquidation_distance_bps === null
+      && venue?.liquidation_distance_verified === false
+      && venue?.liquidation_distance_source === null,
+    `three_venue_liquidation_binding_invalid:${venueId}`);
+    fail(venue?.account_state_checked === true, `three_venue_account_state_unchecked:${venueId}`);
+    fail(venue?.transaction_broadcast === false, `three_venue_account_broadcast_detected:${venueId}`);
   }
 
   const collateralRoutes = evidence?.collateral_route_readiness || {};
@@ -429,6 +440,14 @@ export async function verifyCarryLifecycleEvidence(evidence) {
   for (const runway of array(monitoring.margin_runways)) {
     const venue = String(runway?.venue_id || "");
     const status = String(runway?.status || "");
+    const checkedAt = timestamp(runway?.checked_at);
+    const accountStateCheckedAtMs = positiveInteger(runway?.account_state_checked_at_ms);
+    const positionCount = nonNegativeInteger(runway?.position_count);
+    const openOrderCount = nonNegativeInteger(runway?.open_order_count);
+    const liquidationDistanceBps = nonNegativeInteger(runway?.liquidation_distance_bps);
+    const minimumLiquidationDistanceBps = nonNegativeInteger(runway?.minimum_liquidation_distance_bps);
+    const readinessVenue = readinessVenues.find((item) => item?.venue_id === venue);
+    const opened = entryLegs.find((leg) => leg?.venue_id === venue);
     fail(["healthy", "warning", "critical", "breached"].includes(status), `margin_runway_status_missing:${venue}`);
     fail(
       runway?.runway_ms === null
@@ -437,6 +456,44 @@ export async function verifyCarryLifecycleEvidence(evidence) {
       `margin_runway_missing:${venue}`,
     );
     fail(runway?.stale === false, `margin_runway_stale:${String(runway?.venue_id || "")}`);
+    fail(checkedAt === monitoringEndedAt && accountStateCheckedAtMs === monitoringEndedAt,
+      `margin_runway_account_state_timestamp_invalid:${venue}`);
+    fail(commitment(runway?.account_commitment)
+      && runway.account_commitment === readinessVenue?.account_commitment
+      && runway.account_commitment === opened?.account_commitment,
+    `margin_runway_account_binding_invalid:${venue}`);
+    fail(commitment(runway?.verification_commitment), `margin_runway_verification_commitment_invalid:${venue}`);
+    fail(runway?.position_open === true && positionCount !== null && positionCount > 0,
+      `margin_runway_open_position_unproven:${venue}`);
+    fail(openOrderCount !== null && runway?.flat_zero_orders === false,
+      `margin_runway_account_shape_invalid:${venue}`);
+    fail(liquidationDistanceBps !== null
+      && liquidationDistanceBps <= 100_000
+      && minimumLiquidationDistanceBps !== null
+      && minimumLiquidationDistanceBps <= 100_000
+      && runway?.liquidation_distance_verified === true
+      && runway?.liquidation_distance_source === CARRY_LIQUIDATION_SOURCES[venue],
+    `margin_runway_liquidation_binding_invalid:${venue}`);
+    fail(liquidationDistanceBps === null
+      || minimumLiquidationDistanceBps === null
+      || liquidationDistanceBps >= minimumLiquidationDistanceBps
+      || status === "breached",
+    `margin_runway_liquidation_status_invalid:${venue}`);
+    fail(/^carry:account-state:[0-9a-f]{40}$/.test(String(runway?.account_state_commitment || ""))
+      && runway.account_state_commitment === carryAccountStateCommitment({
+        venue_id: venue,
+        account_commitment: runway.account_commitment,
+        verification_commitment: runway.verification_commitment,
+        checked_at_ms: accountStateCheckedAtMs,
+        position_count: positionCount,
+        open_order_count: openOrderCount,
+        flat_zero_orders: runway.flat_zero_orders,
+        liquidation_distance_bps: liquidationDistanceBps,
+        liquidation_distance_verified: runway.liquidation_distance_verified,
+        liquidation_distance_source: runway.liquidation_distance_source,
+        account_state_commitment: runway.account_state_commitment,
+      }),
+    `margin_runway_account_state_commitment_invalid:${venue}`);
   }
 
   const exit = evidence?.exit || {};
@@ -518,6 +575,22 @@ export function carryEvidenceCommitment(evidence) {
   const payload = { ...evidence };
   delete payload.evidence_commitment;
   return `carryproof_${createHash("sha256").update(stableJson(payload)).digest("hex")}`;
+}
+
+export function carryAccountStateCommitment(value) {
+  const material = {
+    venue_id: String(value?.venue_id || ""),
+    account_commitment: String(value?.account_commitment || ""),
+    verification_commitment: String(value?.verification_commitment || ""),
+    checked_at_ms: value?.checked_at_ms,
+    position_count: value?.position_count,
+    open_order_count: value?.open_order_count,
+    flat_zero_orders: value?.flat_zero_orders === true,
+    liquidation_distance_bps: value?.liquidation_distance_bps,
+    liquidation_distance_verified: value?.liquidation_distance_verified === true,
+    liquidation_distance_source: value?.liquidation_distance_source ?? null,
+  };
+  return `carry:account-state:${createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 40)}`;
 }
 
 export function carryReleaseEvidenceCommitment(evidence) {

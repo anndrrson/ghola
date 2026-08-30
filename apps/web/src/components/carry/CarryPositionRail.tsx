@@ -31,12 +31,12 @@ export interface CarryPositionRailRecord {
 }
 
 const POSITION_PRIORITY: Readonly<Record<string, number>> = Object.freeze({
-  active: 0,
-  rebalancing: 1,
-  frozen: 2,
-  draft: 3,
-  reconciled: 5,
-  manual_intervention: 6,
+  manual_intervention: 0,
+  frozen: 1,
+  rebalancing: 2,
+  active: 3,
+  draft: 4,
+  reconciled: 6,
 });
 
 export function CarryPositionRail() {
@@ -190,7 +190,7 @@ function comparePositionRecords(left: CarryPositionRailRecord, right: CarryPosit
 }
 
 function positionPriority(status: string) {
-  return POSITION_PRIORITY[status] ?? 4;
+  return POSITION_PRIORITY[status] ?? 5;
 }
 
 function positionRunway(record: CarryPositionRailRecord): {

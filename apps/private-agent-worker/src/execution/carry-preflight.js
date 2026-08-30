@@ -23,6 +23,7 @@ import {
 } from "./carry-readiness.js";
 import { observeCarryFundingPersistence } from "./carry-funding-persistence.js";
 import { authenticateCarryCreationOpportunity } from "./carry-opportunity-authentication.js";
+import { validVenueLiquidationBinding } from "../venues/liquidation-distance.js";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -480,22 +481,9 @@ function validAccountStateEvidence(value, receipt) {
     && Number.isSafeInteger(value?.open_order_count)
     && value.open_order_count >= 0
     && value.flat_zero_orders === (value.position_count === 0 && value.open_order_count === 0)
-    && validLiquidationBinding(value, value.position_count)
+    && validVenueLiquidationBinding(value, value.position_count)
     && validCommitment(value?.account_state_commitment)
     && value.account_state_commitment === carryAccountStateCommitment(value);
-}
-
-function validLiquidationBinding(value, positionCount) {
-  const distance = value?.liquidation_distance_bps;
-  const source = value?.liquidation_distance_source;
-  const verified = value?.liquidation_distance_verified === true;
-  if (positionCount === 0) return distance === null && !verified && source === null;
-  if (!verified) return distance === null && source === null;
-  return Number.isSafeInteger(distance)
-    && distance >= 0
-    && distance <= 100_000
-    && typeof source === "string"
-    && /^[A-Za-z0-9:_-]{8,180}$/.test(source);
 }
 
 function acceptableAuthorityBoundary(boundary) {
@@ -838,7 +826,7 @@ function projectedMarginRunway(leg, readiness, notionalMicro, nowMs, phase) {
   const liquidationFeeReserve = microFromBps(notionalMicro, leg.snapshot.liquidation_fee_bps);
   const safetyBuffer = Math.max(10_000_000, microFromBps(notionalMicro, 1_000)) + liquidationFeeReserve;
   const positionOpen = (phase === "monitoring" || phase === "exit") && readiness.position_count !== 0;
-  const verifiedLiquidation = positionOpen ? verifiedLiquidationDistance(account) : null;
+  const verifiedLiquidation = positionOpen ? verifiedLiquidationDistance(account, leg.venue_id) : null;
   const fundingDebit = leg.side === "buy"
     ? Math.max(0, Math.ceil(leg.snapshot.funding_rate_e12_per_interval / 100_000_000))
     : Math.max(0, Math.ceil(-leg.snapshot.funding_rate_e12_per_interval / 100_000_000));
@@ -873,14 +861,10 @@ function projectedMarginRunway(leg, readiness, notionalMicro, nowMs, phase) {
   });
 }
 
-function verifiedLiquidationDistance(account) {
+function verifiedLiquidationDistance(account, venueId) {
   const distance = Number(account?.liquidation_distance_bps);
   const source = String(account?.liquidation_distance_source || "");
-  if (account?.liquidation_distance_verified !== true
-    || !Number.isSafeInteger(distance)
-    || distance < 0
-    || distance > 100_000
-    || !/^[A-Za-z0-9:_-]{8,180}$/.test(source)) return null;
+  if (!validVenueLiquidationBinding({ ...account, venue_id: venueId }, 1)) return null;
   return Object.freeze({ distance_bps: distance, source });
 }
 

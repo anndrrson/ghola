@@ -431,6 +431,27 @@ test("binds verified liquidation provenance into no-submit account-state commitm
   }));
 });
 
+test("rejects capital-plan liquidation evidence detached from committed venue account state", async () => {
+  for (const mutate of [
+    (value) => { value.liquidation_distance_bps = 1; },
+    (value) => { value.liquidation_distance_verified = true; },
+    (value) => { value.liquidation_distance_source = "fabricated_position_snapshot_v1"; },
+  ]) {
+    const candidate = matrix();
+    mutate(candidate.pairs[0].account_readiness[0]);
+    const stored = await storeCarryExecutionReadiness({
+      state: memoryState(),
+      request: request(),
+      matrix: candidate,
+      now_ms: NOW,
+      env: ENV,
+    });
+    assert.equal(stored.ok, false);
+    assert.ok(stored.readiness.reasons.some((reason) =>
+      reason.startsWith("carry_readiness_capital_state_binding_invalid:")));
+  }
+});
+
 test("persists capital-free technical readiness while binding exact owner shortfalls", async () => {
   const candidate = matrix();
   for (const pair of candidate.pairs) {

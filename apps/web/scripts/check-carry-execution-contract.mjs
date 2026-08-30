@@ -16,6 +16,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   coreMultiLegTest: "packages/execution-core/test/multi-leg.test.js",
   registry: "packages/execution-core/venues.js",
   registryTest: "packages/execution-core/test/venues.test.js",
+  liquidationDistance: "apps/private-agent-worker/src/venues/liquidation-distance.js",
   server: "apps/private-agent-worker/src/server.js",
   workerState: "apps/private-agent-worker/src/state/private-state.js",
   workerPackage: "apps/private-agent-worker/package.json",
@@ -146,6 +147,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   lighterTest: "apps/private-agent-worker/test/lighter.test.js",
   hyperliquidMetricsTest: "apps/private-agent-worker/test/hyperliquid-account-metrics.test.js",
   hyperliquidReconcileTest: "apps/private-agent-worker/test/hyperliquid-reconcile.test.js",
+  liquidationDistanceTest: "apps/private-agent-worker/test/liquidation-distance.test.js",
   evidenceVerifier: "apps/web/scripts/verify-carry-release-evidence.mjs",
   evidenceVerifierTest: "apps/web/scripts/verify-carry-release-evidence.test.mjs",
   webReconciliation: "apps/web/src/lib/carry-reconciliation.ts",
@@ -512,6 +514,47 @@ export function checkCarryExecutionContract(sources) {
   requireText("readiness", "carryAccountStateCommitment", "carry_no_submit_account_state_commitment_missing");
   requireText("readiness", "carry_readiness_leg_account_state_invalid", "carry_no_submit_account_state_validation_missing");
   requireText("preflight", "account_state_commitments", "carry_no_submit_account_state_propagation_missing");
+  requireText("liquidationDistance", "export function hyperliquidLiquidationDistance", "hyperliquid_liquidation_distance_reader_missing");
+  requireText("liquidationDistance", "export function lighterLiquidationDistance", "lighter_liquidation_distance_reader_missing");
+  requireText("liquidationDistance", "export function asterLiquidationDistance", "aster_liquidation_distance_reader_missing");
+  requireText("liquidationDistance", "export const LIQUIDATION_DISTANCE_SOURCES = Object.freeze", "liquidation_distance_source_registry_missing");
+  requireText("liquidationDistance", "export function validVenueLiquidationBinding", "liquidation_distance_venue_binding_missing");
+  requireText("liquidationDistance", 'venueAdapterCapability(String(venueId || ""), "carry_execution")?.liquidation_distance_source', "liquidation_distance_registry_derivation_missing");
+  requireText("registry", "hyperliquid_clearinghouse_state_asset_positions_v1", "hyperliquid_liquidation_provenance_missing");
+  requireText("registry", "lighter_account_positions_position_value_v1", "lighter_liquidation_provenance_missing");
+  requireText("registry", "aster_fapi_v3_position_risk_v1", "aster_liquidation_provenance_missing");
+  requireText("hyperliquid", "hyperliquidLiquidationDistance(state)", "hyperliquid_liquidation_reader_binding_missing");
+  requireText("lighter", "lighterLiquidationDistance(account)", "lighter_liquidation_reader_binding_missing");
+  requireText("aster", "asterLiquidationDistance(positions)", "aster_liquidation_reader_binding_missing");
+  requireText("liquidationDistanceTest", "Hyperliquid flat is explicit and malformed open evidence fails closed", "hyperliquid_liquidation_fail_closed_test_missing");
+  requireText("liquidationDistanceTest", "Lighter flat is explicit and never defaults malformed positions", "lighter_liquidation_fail_closed_test_missing");
+  requireText("liquidationDistanceTest", "Aster flat is explicit and malformed open evidence fails closed", "aster_liquidation_fail_closed_test_missing");
+  requireText("preflight", "validVenueLiquidationBinding(value, value.position_count)", "carry_preflight_liquidation_binding_missing");
+  requireText("preflight", "validVenueLiquidationBinding({ ...account, venue_id: venueId }, 1)", "carry_monitoring_liquidation_provenance_missing");
+  requireText("readiness", "validVenueLiquidationBinding(value, positionCount)", "carry_readiness_liquidation_binding_missing");
+  requireText("readiness", "validVenueLiquidationBinding(account, positionCount)", "carry_capital_plan_liquidation_validation_missing");
+  requireText("readiness", "account?.liquidation_distance_bps === leg?.account_state?.liquidation_distance_bps", "carry_capital_plan_liquidation_binding_missing");
+  requireText("readiness", 'return `carry:account-state:${createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 40)}`;', "carry_account_state_commitment_width_missing");
+  requireText("readinessTest", "binds verified liquidation provenance into no-submit account-state commitments", "carry_readiness_liquidation_commitment_test_missing");
+  requireText("readinessTest", "rejects capital-plan liquidation evidence detached from committed venue account state", "carry_capital_plan_liquidation_binding_test_missing");
+  requireText("releaseMaterial", "liquidation_distance_source: capitalByVenue.get(venueId)?.liquidation_distance_source ?? null", "carry_release_liquidation_provenance_missing");
+  requireText("releaseMaterialTest", "binds liquidation evidence through release material commitment", "carry_release_liquidation_commitment_test_missing");
+  requireText("positions", "account_state_evidence: accountStateEvidence", "carry_monitor_account_state_persistence_missing");
+  requireText("positions", "validatedMonitoringAccountStateEvidence({", "carry_monitor_account_state_validation_missing");
+  requireText("positions", "row.account_state_commitment !== carryAccountStateCommitment(row)", "carry_monitor_account_state_recomputation_missing");
+  requireText("positionsTest", "monitoring durably preserves only self-contained account-state evidence bound to its capital plan", "carry_monitor_account_state_persistence_test_missing");
+  requireText("positionsTest", "monitoring fails closed before persisting unbound account-state evidence", "carry_monitor_account_state_fail_closed_test_missing");
+  requireText("releaseMaterial", "releaseMarginRunways({", "carry_release_live_runway_material_missing");
+  requireText("releaseMaterial", "state.account_state_commitment !== carryAccountStateCommitment(state)", "carry_release_account_state_recomputation_missing");
+  requireText("releaseMaterial", "liquidationDistanceSourceForVenue(venueId)", "carry_release_canonical_liquidation_source_missing");
+  requireText("releaseMaterialTest", "refuses release evidence without raw live account-state lineage", "carry_release_account_state_lineage_test_missing");
+  requireText("releaseMaterialTest", "refuses swapped venue liquidation sources even when commitments are recomputed", "carry_release_liquidation_source_test_missing");
+  requireText("releaseMaterialTest", "refuses detached account-state and capital-plan evidence", "carry_release_account_state_detachment_test_missing");
+  requireText("evidenceVerifier", "CARRY_LIQUIDATION_SOURCES", "carry_release_liquidation_source_verifier_missing");
+  requireText("evidenceVerifier", "carryAccountStateCommitment({", "carry_release_account_state_recomputation_missing");
+  requireText("evidenceVerifier", "margin_runway_open_position_unproven", "carry_release_open_position_verifier_missing");
+  requireText("evidenceVerifier", "margin_runway_liquidation_binding_invalid", "carry_release_live_liquidation_verifier_missing");
+  requireText("evidenceVerifierTest", "rejects detached or unverifiable live liquidation evidence", "carry_release_live_liquidation_verifier_test_missing");
   requireText("readinessTest", "item.position_count === 0", "carry_no_submit_exact_flat_counts_test_missing");
   requireText("readiness", "notionalUsd, horizonDays", "carry_readiness_route_key_missing");
   requireText("readinessTest", "preserves independent route readiness across assets and parameters", "carry_readiness_route_isolation_test_missing");
@@ -840,7 +883,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterial", "contract_equivalence: contractEquivalence.evidence", "carry_release_contract_basis_evidence_missing");
   requireText("releaseMaterial", "carry_release_signed_mandate_unproven", "carry_release_signed_mandate_gate_missing");
   requireText("releaseMaterial", "owner_signature", "carry_release_owner_signature_missing");
-  requireText("releaseMaterial", "status: runwayStatuses[venueId]", "carry_release_runway_status_missing");
+  requireText("releaseMaterial", "status: leg.status", "carry_release_runway_status_missing");
   requireText("releaseMaterial", "attempt?.submit_count !== 1", "carry_release_submit_count_gate_missing");
   requireText("releaseMaterial", "attempt?.ambiguity_retry_count !== 0", "carry_release_retry_count_gate_missing");
   requireText("executor", "venues: venueProof", "carry_reconciliation_venue_rows_missing");
@@ -1118,8 +1161,13 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterialTest", "without creation-time three-venue readiness", "carry_release_three_venue_worker_test_missing");
   requireText("evidenceVerifier", "sameStrings(executionReadiness.registry_venue_ids, CARRY_EXECUTION_VENUES)", "carry_release_three_venue_verifier_missing");
   requireText("evidenceVerifier", "sameRecord(executionReadiness.recovery_policy, CARRY_RECOVERY_POLICY)", "carry_release_three_venue_recovery_verifier_missing");
+  requireCount("evidenceVerifier", "/^carry:account-state:[0-9a-f]{40}$/", 3, "carry_release_account_state_width_mismatch");
+  requireText("evidenceVerifier", "three_venue_position_not_flat", "carry_release_flat_readiness_verifier_missing");
+  requireText("evidenceVerifier", "three_venue_liquidation_binding_invalid", "carry_release_liquidation_verifier_missing");
   requireText("evidenceVerifierTest", "without all three execution venue bindings", "carry_release_three_venue_verifier_test_missing");
+  requireText("evidenceVerifierTest", "rejects padded three-venue account-state commitments", "carry_release_account_state_width_test_missing");
   requireText("evidenceVerifierTest", "permits ambiguity retries", "carry_release_three_venue_recovery_test_missing");
+  requireText("evidenceVerifierTest", "rejects fabricated liquidation distance for a flat readiness account", "carry_release_liquidation_verifier_test_missing");
   requireText("releaseMaterial", "releaseExitTrigger", "carry_release_exit_trigger_missing");
   requireText("releaseMaterialTest", "refuses a release without an owner request or measured mandate breach", "carry_release_exit_trigger_test_missing");
   requireText("releaseMaterialTest", "binds an automatic exit to the signed net-carry threshold", "carry_release_signed_exit_trigger_test_missing");
