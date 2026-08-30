@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { didKeyFromVerifying, openSealedBundle } from "../crypto/envelope.js";
 import { fundingSigningIdentity } from "./shielded_funding_attestation.js";
+import { lighterLiquidationDistance } from "./liquidation-distance.js";
 
 const ALLOWED = new Set(["read", "limit_order", "cancel", "reconcile"]);
 const OWNER_ONLY = ["withdraw", "transfer", "leverage", "margin", "account_config", "api_key_rotation"];
@@ -510,8 +511,7 @@ function normalizedSubmit(result, clientOrderIndex, fallbackStatus) {
 }
 
 function sanitizeAccount(account = {}, market = {}) {
-  const positions = Array.isArray(account.positions) ? account.positions : [];
-  const nonzero = positions.filter((item) => Number(item.position || 0) !== 0);
+  const liquidation = lighterLiquidationDistance(account);
   const makerFeeBps = rateBps(market.maker_fee);
   const takerFeeBps = rateBps(market.taker_fee);
   return {
@@ -521,7 +521,10 @@ function sanitizeAccount(account = {}, market = {}) {
     margin_balance: decimal(account.total_asset_value ?? account.collateral),
     initial_margin: decimal(account.cross_initial_margin_requirement),
     maintenance_margin: decimal(account.cross_maintenance_margin_requirement),
-    position_count: nonzero.length,
+    position_count: liquidation.position_count,
+    liquidation_distance_bps: liquidation.liquidation_distance_bps,
+    liquidation_distance_verified: liquidation.liquidation_distance_verified,
+    liquidation_distance_source: liquidation.liquidation_distance_source,
     open_order_count: Number(account.pending_order_count || 0),
     maker_fee_bps: makerFeeBps,
     taker_fee_bps: takerFeeBps,

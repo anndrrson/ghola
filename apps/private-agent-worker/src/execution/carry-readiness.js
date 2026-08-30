@@ -529,6 +529,7 @@ function validAccountStateEvidence(value, expected) {
     && positionCount !== null
     && openOrderCount !== null
     && value?.flat_zero_orders === (positionCount === 0 && openOrderCount === 0)
+    && validLiquidationBinding(value, positionCount)
     && commitment(value?.account_state_commitment)
     && value.account_state_commitment === carryAccountStateCommitment(value);
 }
@@ -542,6 +543,9 @@ function accountStateRecord(value) {
     position_count: value?.position_count,
     open_order_count: value?.open_order_count,
     flat_zero_orders: value?.flat_zero_orders === true,
+    liquidation_distance_bps: value?.liquidation_distance_bps,
+    liquidation_distance_verified: value?.liquidation_distance_verified === true,
+    liquidation_distance_source: value?.liquidation_distance_source ?? null,
     account_state_commitment: String(value?.account_state_commitment || ""),
   };
 }
@@ -613,6 +617,9 @@ function capitalRecord(value) {
     flat_zero_orders: value?.flat_zero_orders === true,
     position_count: value?.position_count,
     open_order_count: value?.open_order_count,
+    liquidation_distance_bps: value?.liquidation_distance_bps,
+    liquidation_distance_verified: value?.liquidation_distance_verified === true,
+    liquidation_distance_source: value?.liquidation_distance_source ?? null,
     account_state_checked_at_ms: value?.account_state_checked_at_ms,
     account_state_commitment: String(value?.account_state_commitment || ""),
     capital_ready: value?.capital_ready === true,
@@ -623,6 +630,19 @@ function capitalRecord(value) {
     execution_leverage: value?.execution_leverage,
     owner_only_funding: value?.owner_only_funding === true,
   };
+}
+
+function validLiquidationBinding(value, positionCount) {
+  const distance = value?.liquidation_distance_bps;
+  const source = value?.liquidation_distance_source;
+  const verified = value?.liquidation_distance_verified === true;
+  if (positionCount === 0) return distance === null && !verified && source === null;
+  if (!verified) return distance === null && source === null;
+  return Number.isSafeInteger(distance)
+    && distance >= 0
+    && distance <= 100_000
+    && typeof source === "string"
+    && /^[A-Za-z0-9:_-]{8,180}$/.test(source);
 }
 
 function capitalConsistencyRecord(value) {

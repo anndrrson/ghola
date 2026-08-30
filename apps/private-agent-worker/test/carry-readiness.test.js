@@ -67,6 +67,9 @@ function matrix(workOrderCommitment = request().work_order_commitment) {
           position_count: 0,
           open_order_count: 0,
           flat_zero_orders: true,
+          liquidation_distance_bps: null,
+          liquidation_distance_verified: false,
+          liquidation_distance_source: null,
         };
         accountState.account_state_commitment = carryAccountStateCommitment(accountState);
         venue.work_order_commitments.push(workOrderCommitment);
@@ -98,6 +101,9 @@ function matrix(workOrderCommitment = request().work_order_commitment) {
             flat_zero_orders: true,
             position_count: 0,
             open_order_count: 0,
+            liquidation_distance_bps: null,
+            liquidation_distance_verified: false,
+            liquidation_distance_source: null,
             account_state_checked_at_ms: NOW,
             account_state_commitment: state.account_state_commitment,
             capital_ready: true,
@@ -385,6 +391,7 @@ test("binds every pair to both exact no-submit leg receipts", async () => {
     (value) => { value.pairs[0].leg_evidence[0].work_order_commitment = "wrong_work_order_0001"; },
     (value) => { value.pairs[0].leg_evidence[0].verification_commitment = "wrong_verification_0001"; },
     (value) => { value.pairs[0].leg_evidence[0].account_state.open_order_count = 1; },
+    (value) => { value.pairs[0].leg_evidence[0].account_state.liquidation_distance_bps = 1_000; },
     (value) => { value.pairs[0].account_readiness[0].position_count = 1; },
     (value) => { value.venues[0].verification_commitments[1] = value.venues[0].verification_commitments[0]; },
     (value) => { value.venues[0].account_state_commitments.pop(); },
@@ -400,6 +407,28 @@ test("binds every pair to both exact no-submit leg receipts", async () => {
     });
     assert.equal(stored.ok, false);
   }
+});
+
+test("binds verified liquidation provenance into no-submit account-state commitments", () => {
+  const flatState = matrix().pairs[0].leg_evidence[0].account_state;
+  const openState = {
+    ...flatState,
+    position_count: 1,
+    flat_zero_orders: false,
+    liquidation_distance_bps: 2_500,
+    liquidation_distance_verified: true,
+    liquidation_distance_source: "venue_position_snapshot_v1",
+  };
+  const openCommitment = carryAccountStateCommitment(openState);
+  assert.notEqual(openCommitment, flatState.account_state_commitment);
+  assert.notEqual(openCommitment, carryAccountStateCommitment({
+    ...openState,
+    liquidation_distance_bps: 2_499,
+  }));
+  assert.notEqual(openCommitment, carryAccountStateCommitment({
+    ...openState,
+    liquidation_distance_source: "swapped_position_snapshot_v1",
+  }));
 });
 
 test("persists capital-free technical readiness while binding exact owner shortfalls", async () => {

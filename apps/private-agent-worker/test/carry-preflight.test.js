@@ -212,6 +212,9 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
     ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
+    liquidation_distance_bps: null,
+    liquidation_distance_verified: false,
+    liquidation_distance_source: null,
   };
   const result = await preflightCarryPair({
     body: {
@@ -1076,6 +1079,9 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
     ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
+    liquidation_distance_bps: null,
+    liquidation_distance_verified: false,
+    liquidation_distance_source: null,
   };
   const result = await preflightCarryExecutionMatrix({
     body: {
@@ -1135,6 +1141,10 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
   assert.deepEqual(result.venues.map((item) => item.venue_id).sort(), ["aster", "hyperliquid", "lighter"]);
   assert.equal(result.venues.every((item) => item.checks.transaction_broadcast === false), true);
   assert.equal(result.pairs.length, 3);
+  assert.equal(result.pairs.flatMap((pair) => pair.result?.evidence || []).every((item) =>
+    item.account_state.liquidation_distance_bps === null
+    && item.account_state.liquidation_distance_verified === false
+    && item.account_state.liquidation_distance_source === null), true);
   assert.equal(result.selected_pair.long_venue_id, "lighter");
   assert.equal(result.selected_pair.short_venue_id, "hyperliquid");
   assert.equal(result.selected_pair.transaction_broadcast, false);

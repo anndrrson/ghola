@@ -480,8 +480,22 @@ function validAccountStateEvidence(value, receipt) {
     && Number.isSafeInteger(value?.open_order_count)
     && value.open_order_count >= 0
     && value.flat_zero_orders === (value.position_count === 0 && value.open_order_count === 0)
+    && validLiquidationBinding(value, value.position_count)
     && validCommitment(value?.account_state_commitment)
     && value.account_state_commitment === carryAccountStateCommitment(value);
+}
+
+function validLiquidationBinding(value, positionCount) {
+  const distance = value?.liquidation_distance_bps;
+  const source = value?.liquidation_distance_source;
+  const verified = value?.liquidation_distance_verified === true;
+  if (positionCount === 0) return distance === null && !verified && source === null;
+  if (!verified) return distance === null && source === null;
+  return Number.isSafeInteger(distance)
+    && distance >= 0
+    && distance <= 100_000
+    && typeof source === "string"
+    && /^[A-Za-z0-9:_-]{8,180}$/.test(source);
 }
 
 function acceptableAuthorityBoundary(boundary) {
@@ -779,12 +793,19 @@ function accountReadiness(leg, notionalMicro) {
     : account.open_order_count;
   const positionCount = Number(rawPositionCount);
   const openOrderCount = Number(rawOpenOrderCount);
+  const liquidationPositionCount = Number(account.position_count);
   const countsKnown = rawPositionCount !== undefined
+    && rawPositionCount !== null
     && rawOpenOrderCount !== undefined
+    && rawOpenOrderCount !== null
     && Number.isSafeInteger(positionCount)
     && positionCount >= 0
     && Number.isSafeInteger(openOrderCount)
-    && openOrderCount >= 0;
+    && openOrderCount >= 0
+    && (leg.venue_id !== "hyperliquid"
+      || (Number.isSafeInteger(liquidationPositionCount)
+        && liquidationPositionCount >= 0
+        && liquidationPositionCount === positionCount));
   const flat = countsKnown && positionCount === 0 && openOrderCount === 0;
   const authorized = leg.receipt?.checks?.transaction_broadcast === false && account.can_trade === true && accountSnapshotReady;
   return {
@@ -794,6 +815,9 @@ function accountReadiness(leg, notionalMicro) {
     flat_zero_orders: flat,
     position_count: countsKnown ? positionCount : null,
     open_order_count: countsKnown ? openOrderCount : null,
+    liquidation_distance_bps: account.liquidation_distance_bps ?? null,
+    liquidation_distance_verified: account.liquidation_distance_verified === true,
+    liquidation_distance_source: account.liquidation_distance_source ?? null,
     capital_ready: authorized && flat && openingCollateralShortfall === 0,
     monitoring_ready: authorized && balance > 0,
     available_balance_micro_usdc: available,
@@ -813,7 +837,7 @@ function projectedMarginRunway(leg, readiness, notionalMicro, nowMs, phase) {
   const maintenance = Math.max(reportedMaintenance, contractMaintenanceFloor);
   const liquidationFeeReserve = microFromBps(notionalMicro, leg.snapshot.liquidation_fee_bps);
   const safetyBuffer = Math.max(10_000_000, microFromBps(notionalMicro, 1_000)) + liquidationFeeReserve;
-  const positionOpen = phase === "monitoring" || phase === "exit";
+  const positionOpen = (phase === "monitoring" || phase === "exit") && readiness.position_count !== 0;
   const verifiedLiquidation = positionOpen ? verifiedLiquidationDistance(account) : null;
   const fundingDebit = leg.side === "buy"
     ? Math.max(0, Math.ceil(leg.snapshot.funding_rate_e12_per_interval / 100_000_000))
@@ -1017,6 +1041,9 @@ function bindAccountStateEvidence(account, leg) {
     position_count: account.position_count,
     open_order_count: account.open_order_count,
     flat_zero_orders: account.flat_zero_orders,
+    liquidation_distance_bps: account.liquidation_distance_bps,
+    liquidation_distance_verified: account.liquidation_distance_verified,
+    liquidation_distance_source: account.liquidation_distance_source,
   };
   return {
     ...account,
@@ -1054,6 +1081,9 @@ function publicEvidence(leg, qualification, accountReadiness) {
     position_count: accountReadiness.position_count,
     open_order_count: accountReadiness.open_order_count,
     flat_zero_orders: accountReadiness.flat_zero_orders,
+    liquidation_distance_bps: accountReadiness.liquidation_distance_bps,
+    liquidation_distance_verified: accountReadiness.liquidation_distance_verified,
+    liquidation_distance_source: accountReadiness.liquidation_distance_source,
     account_state_commitment: accountReadiness.account_state_commitment,
   };
   return {

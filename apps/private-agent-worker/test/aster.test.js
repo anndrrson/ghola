@@ -84,7 +84,12 @@ test("performs authenticated account and order-shape checks without submitting",
         totalInitialMargin: "10",
         totalMaintMargin: "5",
       });
-      if (parsed.pathname.endsWith("/positionRisk")) return jsonResponse([]);
+      if (parsed.pathname.endsWith("/positionRisk")) return jsonResponse([{
+        symbol: "BTCUSDT",
+        positionAmt: "0.5",
+        markPrice: "100000",
+        liquidationPrice: "70000",
+      }]);
       if (parsed.pathname.endsWith("/openOrders")) return jsonResponse([]);
       if (parsed.pathname.endsWith("/commissionRate")) return jsonResponse({ makerCommissionRate: "0.0001", takerCommissionRate: "0.00035" });
       return jsonResponse({}, 404);
@@ -96,6 +101,10 @@ test("performs authenticated account and order-shape checks without submitting",
   assert.equal(result.account.fee_source, "aster_account_commission_rate");
   assert.equal(result.account.fees_exact_for_account, true);
   assert.equal(result.account.fees_conservative_upper_bound, false);
+  assert.equal(result.account.position_count, 1);
+  assert.equal(result.account.liquidation_distance_bps, 3_000);
+  assert.equal(result.account.liquidation_distance_verified, true);
+  assert.equal(result.account.liquidation_distance_source, "aster_fapi_v3_position_risk_v1");
   assert.equal(result.authority_boundary.venue_native_trade_only, true);
   assert.equal(result.authority_boundary.withdrawal_request_permitted, false);
   assert.equal(calls.length, 6);

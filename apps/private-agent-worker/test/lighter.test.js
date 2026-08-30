@@ -179,7 +179,14 @@ test("builds a Lighter order packet without broadcast", async () => {
           cross_initial_margin_requirement: "0",
           cross_maintenance_margin_requirement: "0",
           pending_order_count: 0,
-          positions: [],
+          positions: [{
+            market_id: 1,
+            symbol: "BTC",
+            sign: 1,
+            position: "0.5",
+            position_value: "50000",
+            liquidation_price: "75000",
+          }],
         },
         market: { maker_fee: "0.00010", taker_fee: "0.00045" },
         order_shape: { base_size: "0.0010", limit_price: "100000.00", quantity_step_e8: 10_000, price_tick_e8: 1_000_000 },
@@ -189,6 +196,10 @@ test("builds a Lighter order packet without broadcast", async () => {
     assert.equal(result.checks.transaction_broadcast, false);
     assert.equal(result.account.taker_fee_bps, 4.5);
     assert.equal(result.account.fees_conservative_upper_bound, true);
+    assert.equal(result.account.position_count, 1);
+    assert.equal(result.account.liquidation_distance_bps, 2_500);
+    assert.equal(result.account.liquidation_distance_verified, true);
+    assert.equal(result.account.liquidation_distance_source, "lighter_account_positions_position_value_v1");
     assert.equal(result.authority_boundary.secure_withdrawal_destination, "owner_l1_only");
     assert.equal(result.authority_boundary.non_owner_fund_movement_possible, false);
     assert.equal(result.order_shape.notional_micro_usdc, 100_000_000);

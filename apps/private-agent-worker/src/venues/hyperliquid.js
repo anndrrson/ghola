@@ -11,6 +11,7 @@ import {
   turnkeyHyperliquidCredentialFromVault,
   verifyTurnkeyHyperliquidNoSubmit,
 } from "./hyperliquid-turnkey.js";
+import { hyperliquidLiquidationDistance } from "./liquidation-distance.js";
 
 const MAINNET_API_URL = "https://api.hyperliquid.xyz";
 const TESTNET_API_URL = "https://api.hyperliquid-testnet.xyz";
@@ -675,6 +676,9 @@ export async function readHyperliquidAccountSnapshot({
       trading_enabled: true,
       equity_bucket: "ready",
       position_count: 0,
+      liquidation_distance_bps: null,
+      liquidation_distance_verified: false,
+      liquidation_distance_source: null,
       open_order_count: 0,
       stream_status: "snapshot",
       positions: [],
@@ -736,6 +740,10 @@ export async function readHyperliquidCarryAccountMetrics({
       fee_source: "dry_run_conservative_ceiling",
       fees_exact_for_account: false,
       fees_conservative_upper_bound: true,
+      position_count: 0,
+      liquidation_distance_bps: null,
+      liquidation_distance_verified: false,
+      liquidation_distance_source: null,
     };
   }
   const [state, fees] = await Promise.all([
@@ -749,6 +757,7 @@ export async function readHyperliquidCarryAccountMetrics({
     }),
   ]);
   const margin = state?.marginSummary || state?.crossMarginSummary || {};
+  const liquidation = hyperliquidLiquidationDistance(state);
   const marginBalance = decimalNumber(margin.accountValue);
   const availableBalance = decimalNumber(state?.withdrawable);
   return {
@@ -762,6 +771,7 @@ export async function readHyperliquidCarryAccountMetrics({
     fee_source: "hyperliquid_user_fees",
     fees_exact_for_account: true,
     fees_conservative_upper_bound: false,
+    ...liquidation,
   };
 }
 
@@ -1029,10 +1039,11 @@ function hyperliquidAccountStateFromParts({
     ? availableSpotUsdc(spotState)
     : 0;
   const accountValue = Math.max(perpAccountValue, unifiedUsdc);
+  const liquidation = hyperliquidLiquidationDistance(state);
   const positions = sanitizePositions(state?.assetPositions);
   const sanitizedOpenOrders = sanitizeOpenOrders(openOrders);
   const recentFills = sanitizeFills(userFills);
-  const positionCount = positions.length;
+  const positionCount = liquidation.position_count;
   const openOrderCount = sanitizedOpenOrders.length;
   // Match the ticket and venue launch minimum. Previously a $5 account could
   // appear ready even though every supported order would be rejected.
@@ -1048,6 +1059,9 @@ function hyperliquidAccountStateFromParts({
         ? "low"
         : "ready",
     position_count: positionCount,
+    liquidation_distance_bps: liquidation.liquidation_distance_bps,
+    liquidation_distance_verified: liquidation.liquidation_distance_verified,
+    liquidation_distance_source: liquidation.liquidation_distance_source,
     open_order_count: openOrderCount,
     stream_status: streamStatus,
     positions,

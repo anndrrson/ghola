@@ -80,6 +80,11 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.deepEqual(result.material.execution_readiness.registry_venue_ids, [...CARRY_EXECUTION_VENUES]);
   assert.equal(result.material.execution_readiness.recovery_ready, true);
   assert.equal(result.material.execution_readiness.venues.length, 3);
+  assert.equal(result.material.execution_readiness.venues.every((venue) =>
+    venue.position_count === 0
+    && venue.liquidation_distance_bps === null
+    && venue.liquidation_distance_verified === false
+    && venue.liquidation_distance_source === null), true);
   assert.equal(result.material.collateral_route_readiness.complete_directed_coverage, true);
   assert.equal(result.material.collateral_route_readiness.available_route_count, 6);
   assert.equal(result.material.final_state.open_order_count, 0);
@@ -120,6 +125,24 @@ test("refuses release material when durable opportunity evidence was altered", a
     now_ms: NOW,
   });
   assert.equal(result.error, "carry_release_opportunity_provenance_unproven");
+});
+
+test("binds liquidation evidence through release material commitment", async () => {
+  const fixture = await stateFixture();
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.ok, true);
+  const tampered = structuredClone(result.material);
+  tampered.execution_readiness.venues[0].liquidation_distance_bps = 1;
+  assert.notEqual(
+    workerMaterialCommitmentForTest(tampered),
+    result.material.worker_material_commitment,
+  );
 });
 
 test("refuses release material without creation-time three-venue readiness", async () => {
@@ -1409,6 +1432,9 @@ function releaseReadinessMatrix(request, checkedAtMs) {
           position_count: 0,
           open_order_count: 0,
           flat_zero_orders: true,
+          liquidation_distance_bps: null,
+          liquidation_distance_verified: false,
+          liquidation_distance_source: null,
         };
         accountState.account_state_commitment = carryAccountStateCommitment(accountState);
         const venue = venues.find((item) => item.venue_id === venueId);
@@ -1439,6 +1465,9 @@ function releaseReadinessMatrix(request, checkedAtMs) {
           flat_zero_orders: true,
           position_count: 0,
           open_order_count: 0,
+          liquidation_distance_bps: null,
+          liquidation_distance_verified: false,
+          liquidation_distance_source: null,
           account_state_checked_at_ms: checkedAtMs,
           account_state_commitment: legEvidence.find((item) => item.venue_id === venueId).account_state.account_state_commitment,
           capital_ready: true,
@@ -1568,6 +1597,12 @@ function lifecycleProofCommitmentForTest(proof) {
   const payload = { ...proof };
   delete payload.evidence_commitment;
   return `carry:lifecycle-proof:evidence:${createHash("sha256").update(stableJson(payload)).digest("hex")}`;
+}
+
+function workerMaterialCommitmentForTest(material) {
+  const payload = { ...material };
+  delete payload.worker_material_commitment;
+  return `carry:release:material:${createHash("sha256").update(stableJson(payload)).digest("hex")}`;
 }
 
 function lifecycleProofIndexCommitmentForTest(index) {

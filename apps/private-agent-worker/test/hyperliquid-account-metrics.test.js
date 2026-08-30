@@ -13,6 +13,7 @@ test("loads exact Hyperliquid margin and account fee inputs for Carry", async ()
           marginSummary: { accountValue: "125.50", totalMarginUsed: "20.25" },
           crossMaintenanceMarginUsed: "9.75",
           withdrawable: "105.25",
+          assetPositions: [{ position: { szi: "0.5", positionValue: "50000", liquidationPx: "80000" } }],
         };
     return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
   };
@@ -37,6 +38,10 @@ test("loads exact Hyperliquid margin and account fee inputs for Carry", async ()
     fee_source: "hyperliquid_user_fees",
     fees_exact_for_account: true,
     fees_conservative_upper_bound: false,
+    position_count: 1,
+    liquidation_distance_bps: 2_000,
+    liquidation_distance_verified: true,
+    liquidation_distance_source: "hyperliquid_clearinghouse_state_asset_positions_v1",
   });
 });
 

@@ -1,4 +1,5 @@
 import { privateKeyToAccount } from "viem/accounts";
+import { asterLiquidationDistance } from "./liquidation-distance.js";
 
 const MAINNET_URL = "https://fapi.asterdex.com";
 const DOMAIN = Object.freeze({
@@ -135,13 +136,17 @@ export async function readAsterAccountState({
     signedRequest({ credential, method: "GET", path: "/fapi/v3/openOrders", params: { symbol: normalizedSymbol }, fetchImpl, now }),
     signedRequest({ credential, method: "GET", path: "/fapi/v3/commissionRate", params: { symbol: normalizedSymbol }, fetchImpl, now }),
   ]);
+  const liquidation = asterLiquidationDistance(positions);
   return {
     can_trade: account?.canTrade === true,
     available_balance: decimal(account?.availableBalance),
     margin_balance: decimal(account?.totalMarginBalance),
     initial_margin: decimal(account?.totalInitialMargin),
     maintenance_margin: decimal(account?.totalMaintMargin),
-    position_count: Array.isArray(positions) ? positions.filter((item) => decimal(item?.positionAmt) !== 0).length : 0,
+    position_count: liquidation.position_count,
+    liquidation_distance_bps: liquidation.liquidation_distance_bps,
+    liquidation_distance_verified: liquidation.liquidation_distance_verified,
+    liquidation_distance_source: liquidation.liquidation_distance_source,
     open_order_count: Array.isArray(openOrders) ? openOrders.length : 0,
     maker_fee_bps: rateToBps(commission?.makerCommissionRate),
     taker_fee_bps: rateToBps(commission?.takerCommissionRate),
