@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { executionVenueSpec } from "@ghola/execution-core";
 import { buildCarryRoutingAdvantageEvidence } from "../src/execution/carry-routing-advantage.js";
 
 const NOW = 1_800_000_000_000;
 
 function snapshot(venueId, fundingRate, takerFeeBps) {
+  const shadow = executionVenueSpec(venueId).adapter_capabilities.perp_shadow;
   return {
     version: 1,
     venue_id: venueId,
@@ -25,6 +27,11 @@ function snapshot(venueId, fundingRate, takerFeeBps) {
     funding_interval_ms: 3_600_000,
     maker_fee_bps: 0,
     taker_fee_bps: takerFeeBps,
+    initial_margin_bps: 1_000,
+    maintenance_margin_bps: 500,
+    liquidation_fee_bps: 0,
+    margin_model: shadow.margin_model,
+    liquidation_model: shadow.liquidation_model,
     minimum_notional_micro_usdc: 1_000_000,
     quantity_step_e8: 1_000,
     price_tick_e8: 1_000,

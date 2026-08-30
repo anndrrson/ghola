@@ -147,6 +147,19 @@ function validateCreationOpportunity(positionInput, opportunity, nowMs, qualific
   if (opportunity.notional_micro_usdc !== positionInput?.target_notional_micro_usdc) return "carry_opportunity_notional_mismatch";
   const inputEvidenceError = validateCarryCreationInputEvidence(positionInput, opportunity.input_evidence);
   if (inputEvidenceError) return inputEvidenceError;
+  const [longRisk, shortRisk] = opportunity.input_evidence.legs;
+  if (opportunity.long_initial_margin_bps !== longRisk.initial_margin_bps
+    || opportunity.short_initial_margin_bps !== shortRisk.initial_margin_bps
+    || opportunity.long_maintenance_margin_bps !== longRisk.maintenance_margin_bps
+    || opportunity.short_maintenance_margin_bps !== shortRisk.maintenance_margin_bps
+    || opportunity.long_liquidation_fee_bps !== longRisk.liquidation_fee_bps
+    || opportunity.short_liquidation_fee_bps !== shortRisk.liquidation_fee_bps
+    || opportunity.long_margin_model !== longRisk.margin_model
+    || opportunity.short_margin_model !== shortRisk.margin_model
+    || opportunity.long_liquidation_model !== longRisk.liquidation_model
+    || opportunity.short_liquidation_model !== shortRisk.liquidation_model) {
+    return "carry_opportunity_risk_evidence_mismatch";
+  }
   const maxAgeMs = positionInput?.risk_mandate?.max_data_age_ms;
   if (!Number.isInteger(opportunity.checked_at_ms)
     || !Number.isInteger(maxAgeMs)
@@ -201,6 +214,7 @@ function validateCreationOpportunity(positionInput, opportunity, nowMs, qualific
     opportunity.projected_trading_cost_micro_usdc,
     opportunity.projected_capital_cost_micro_usdc,
     opportunity.risk_buffer_micro_usdc,
+    opportunity.liquidation_fee_risk_micro_usdc,
   ];
   if (!modeledAmounts.every((value) => Number.isInteger(value) && value >= 0)
     || !Number.isInteger(opportunity.horizon_ms)
@@ -254,6 +268,12 @@ export function validateCarryCreationInputEvidence(positionInput, inputEvidence)
       || !OWNER.test(String(leg?.work_order_commitment || ""))
       || !OWNER.test(String(leg?.verification_commitment || ""))
       || !OWNER.test(String(leg?.account_commitment || ""))
+      || !Number.isSafeInteger(leg?.initial_margin_bps)
+      || !Number.isSafeInteger(leg?.maintenance_margin_bps)
+      || leg.initial_margin_bps <= leg.maintenance_margin_bps
+      || !Number.isSafeInteger(leg?.liquidation_fee_bps)
+      || leg.liquidation_fee_bps < 0
+      || leg.liquidation_fee_bps > 10_000
       || leg?.margin_model !== declared?.margin_model
       || leg?.liquidation_model !== declared?.liquidation_model) {
       return "carry_opportunity_input_evidence_invalid";
@@ -1540,6 +1560,17 @@ function publicOpportunity(value) {
     projected_latency_buffer_micro_usdc: value.projected_latency_buffer_micro_usdc,
     projected_trading_cost_micro_usdc: value.projected_trading_cost_micro_usdc,
     projected_capital_cost_micro_usdc: value.projected_capital_cost_micro_usdc,
+    liquidation_fee_risk_micro_usdc: value.liquidation_fee_risk_micro_usdc,
+    long_initial_margin_bps: value.long_initial_margin_bps,
+    short_initial_margin_bps: value.short_initial_margin_bps,
+    long_maintenance_margin_bps: value.long_maintenance_margin_bps,
+    short_maintenance_margin_bps: value.short_maintenance_margin_bps,
+    long_liquidation_fee_bps: value.long_liquidation_fee_bps,
+    short_liquidation_fee_bps: value.short_liquidation_fee_bps,
+    long_margin_model: value.long_margin_model,
+    short_margin_model: value.short_margin_model,
+    long_liquidation_model: value.long_liquidation_model,
+    short_liquidation_model: value.short_liquidation_model,
     risk_buffer_micro_usdc: value.risk_buffer_micro_usdc,
     projected_net_value_micro_usdc: value.projected_net_value_micro_usdc,
     projected_net_value_bps: value.projected_net_value_bps,

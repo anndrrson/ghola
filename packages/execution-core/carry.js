@@ -162,6 +162,15 @@ export function normalizePerpContractSpec(value) {
   exactVersion(raw.version, "contract_version");
   const venueId = venue(raw.venue_id, "contract_venue");
   if (!venueSupportsProduct(venueId, "perp")) fail("contract_venue_not_perp");
+  const declared = venueAdapterCapability(venueId, "perp_shadow");
+  const initialMarginBps = boundedInteger(raw.initial_margin_bps, 1, 10_000, "contract_initial_margin");
+  const maintenanceMarginBps = boundedInteger(raw.maintenance_margin_bps, 0, 9_999, "contract_maintenance_margin");
+  if (initialMarginBps <= maintenanceMarginBps) fail("contract_margin_model_invalid");
+  const marginModel = identifier(raw.margin_model, "contract_margin_model");
+  const liquidationModel = identifier(raw.liquidation_model, "contract_liquidation_model");
+  if (marginModel !== declared?.margin_model || liquidationModel !== declared?.liquidation_model) {
+    fail("contract_risk_model_mismatch");
+  }
   return deepFreeze({
     version: 1,
     venue_id: venueId,
@@ -187,6 +196,11 @@ export function normalizePerpContractSpec(value) {
     taker_fee_e6_bps: raw.taker_fee_e6_bps === undefined
       ? raw.taker_fee_bps * 1_000_000
       : boundedInteger(raw.taker_fee_e6_bps, 0, 10_000_000_000, "contract_taker_fee_e6"),
+    initial_margin_bps: initialMarginBps,
+    maintenance_margin_bps: maintenanceMarginBps,
+    liquidation_fee_bps: boundedInteger(raw.liquidation_fee_bps, 0, 10_000, "contract_liquidation_fee"),
+    margin_model: marginModel,
+    liquidation_model: liquidationModel,
     minimum_notional_micro_usdc: positiveInteger(raw.minimum_notional_micro_usdc, "contract_minimum_notional"),
     quantity_step_e8: positiveInteger(raw.quantity_step_e8, "contract_quantity_step"),
     price_tick_e8: positiveInteger(raw.price_tick_e8, "contract_price_tick"),
@@ -208,7 +222,15 @@ export function calculateMarginRunway(value) {
   const fundingInterval = boundedInteger(raw.funding_interval_ms, 60_000, DAY_MS, "margin_funding_interval");
   const transferLatency = nonNegativeInteger(raw.owner_transfer_latency_ms, "owner_transfer_latency");
   const responseBuffer = nonNegativeInteger(raw.owner_response_buffer_ms, "owner_response_buffer");
-  const liquidationDistance = boundedInteger(raw.liquidation_distance_bps, 0, 100_000, "liquidation_distance");
+  const positionOpen = raw.position_open !== false;
+  const liquidationDistance = raw.liquidation_distance_bps === null
+    ? null
+    : boundedInteger(raw.liquidation_distance_bps, 0, 100_000, "liquidation_distance");
+  const liquidationDistanceVerified = raw.liquidation_distance_verified === true;
+  const liquidationDistanceSource = raw.liquidation_distance_source === null
+    ? null
+    : identifier(raw.liquidation_distance_source, "liquidation_distance_source");
+  const verifiedLiquidationEvidence = liquidationDistanceVerified && liquidationDistanceSource !== null;
   const minimumLiquidationDistance = boundedInteger(raw.minimum_liquidation_distance_bps, 0, 100_000, "minimum_liquidation_distance");
   const headroom = Math.max(0, equity - maintenance - safetyBuffer);
   const stressLossPerHour = microFromBpsCeil(notional, stressBpsPerHour);
@@ -222,7 +244,10 @@ export function calculateMarginRunway(value) {
     : safeNumber((BigInt(headroom) * BigInt(HOUR_MS)) / BigInt(burnPerHour));
   const requiredResponseMs = safeAdd(transferLatency, responseBuffer, "margin_response_overflow");
   let status = "healthy";
-  if (headroom === 0 || liquidationDistance < minimumLiquidationDistance) status = "breached";
+  if (headroom === 0
+    || (positionOpen && (!verifiedLiquidationEvidence
+      || liquidationDistance === null
+      || liquidationDistance < minimumLiquidationDistance))) status = "breached";
   else if (runwayMs !== null && runwayMs <= requiredResponseMs) status = "critical";
   else if (runwayMs !== null && runwayMs <= requiredResponseMs * 2) status = "warning";
   return deepFreeze({
@@ -237,6 +262,11 @@ export function calculateMarginRunway(value) {
     stress_burn_micro_usdc_per_hour: burnPerHour,
     runway_ms: runwayMs,
     required_owner_response_ms: requiredResponseMs,
+    position_open: positionOpen,
+    liquidation_distance_bps: liquidationDistance,
+    minimum_liquidation_distance_bps: minimumLiquidationDistance,
+    liquidation_distance_verified: positionOpen && verifiedLiquidationEvidence,
+    liquidation_distance_source: liquidationDistanceSource,
     owner_action_required: status === "critical" || status === "breached",
     automatic_transfer_permitted: false,
   });
@@ -305,6 +335,11 @@ export function compileCarryCapitalActionPlan(value) {
       current_headroom_micro_usdc: runway.margin_headroom_micro_usdc,
       target_headroom_micro_usdc: targetHeadroom,
       stress_burn_micro_usdc_per_hour: runway.stress_burn_micro_usdc_per_hour,
+      position_open: runway.position_open,
+      liquidation_distance_bps: runway.liquidation_distance_bps,
+      minimum_liquidation_distance_bps: runway.minimum_liquidation_distance_bps,
+      liquidation_distance_verified: runway.liquidation_distance_verified,
+      liquidation_distance_source: runway.liquidation_distance_source,
       potential_releasable_collateral_micro_usdc: releasable,
       owner_release_permitted: releasable > 0,
     };
@@ -1484,7 +1519,16 @@ export function evaluateCarryOpportunity(value) {
     .reduce((sum, amount) => safeAdd(sum, amount, "carry_fixed_cost_overflow"), 0);
   const baseRiskBuffer = microFromBpsCeil(notional, riskBufferBps);
   const collateralBasisRisk = microFromBpsCeil(notional, collateralBasisRiskBps);
-  const riskBuffer = safeAdd(baseRiskBuffer, collateralBasisRisk, "carry_risk_buffer_overflow");
+  const liquidationFeeRisk = safeAdd(
+    microFromBpsCeil(notional, longContract.liquidation_fee_bps),
+    microFromBpsCeil(notional, shortContract.liquidation_fee_bps),
+    "carry_liquidation_fee_risk_overflow",
+  );
+  const riskBuffer = safeAdd(
+    safeAdd(baseRiskBuffer, collateralBasisRisk, "carry_risk_buffer_overflow"),
+    liquidationFeeRisk,
+    "carry_risk_buffer_overflow",
+  );
   const capitalCost = safeNumber(ceilDiv(
     BigInt(capitalCommitted) * BigInt(capitalCostBpsPerDay) * BigInt(horizonMs),
     10_000n * BigInt(DAY_MS),
@@ -1531,6 +1575,17 @@ export function evaluateCarryOpportunity(value) {
     base_risk_buffer_micro_usdc: baseRiskBuffer,
     collateral_basis_risk_bps: collateralBasisRiskBps,
     collateral_basis_risk_micro_usdc: collateralBasisRisk,
+    liquidation_fee_risk_micro_usdc: liquidationFeeRisk,
+    long_initial_margin_bps: longContract.initial_margin_bps,
+    short_initial_margin_bps: shortContract.initial_margin_bps,
+    long_maintenance_margin_bps: longContract.maintenance_margin_bps,
+    short_maintenance_margin_bps: shortContract.maintenance_margin_bps,
+    long_liquidation_fee_bps: longContract.liquidation_fee_bps,
+    short_liquidation_fee_bps: shortContract.liquidation_fee_bps,
+    long_margin_model: longContract.margin_model,
+    short_margin_model: shortContract.margin_model,
+    long_liquidation_model: longContract.liquidation_model,
+    short_liquidation_model: shortContract.liquidation_model,
     risk_buffer_micro_usdc: riskBuffer,
     projected_total_cost_micro_usdc: totalModeledCost,
     projected_net_value_micro_usdc: expectedNet,
@@ -2425,10 +2480,22 @@ function normalizeLegCosts(value, defaultFeeE6Bps) {
 
 function normalizeMarginRunwayResult(value) {
   const raw = object(value, "carry_margin_runway_invalid");
+  const positionOpen = raw.position_open !== false;
+  const liquidationDistanceVerified = raw.liquidation_distance_verified === true;
+  const liquidationDistance = raw.liquidation_distance_bps === null
+    ? null
+    : boundedInteger(raw.liquidation_distance_bps, 0, 100_000, "carry_margin_runway_liquidation_distance");
+  const liquidationDistanceSource = raw.liquidation_distance_source === null
+    ? null
+    : identifier(raw.liquidation_distance_source, "carry_margin_runway_liquidation_source");
   return deepFreeze({
     venue_id: venue(raw.venue_id, "carry_margin_runway_venue"),
     status: enumValue(raw.status, new Set(["healthy", "warning", "critical", "breached"]), "carry_margin_runway_status"),
     runway_ms: raw.runway_ms === null ? null : nonNegativeInteger(raw.runway_ms, "carry_margin_runway_ms"),
+    position_open: positionOpen,
+    liquidation_distance_bps: liquidationDistance,
+    liquidation_distance_verified: positionOpen && liquidationDistanceVerified && liquidationDistanceSource !== null,
+    liquidation_distance_source: liquidationDistanceSource,
   });
 }
 
@@ -2444,7 +2511,26 @@ function normalizeCapitalRunwayEvidence(value) {
   if (runwayMs !== expectedRunwayMs) fail("carry_capital_runway_inconsistent");
   const requiredResponseMs = nonNegativeInteger(raw.required_owner_response_ms, "carry_capital_runway_response");
   const status = enumValue(raw.status, new Set(["healthy", "warning", "critical", "breached"]), "carry_capital_runway_status");
-  const minimumStatus = headroom === 0
+  const positionOpen = raw.position_open !== false;
+  const liquidationDistance = raw.liquidation_distance_bps === null
+    ? null
+    : boundedInteger(raw.liquidation_distance_bps, 0, 100_000, "carry_capital_runway_liquidation_distance");
+  const minimumLiquidationDistance = boundedInteger(
+    raw.minimum_liquidation_distance_bps,
+    0,
+    100_000,
+    "carry_capital_runway_minimum_liquidation_distance",
+  );
+  const liquidationDistanceVerified = raw.liquidation_distance_verified === true;
+  const liquidationDistanceSource = raw.liquidation_distance_source === null
+    ? null
+    : identifier(raw.liquidation_distance_source, "carry_capital_runway_liquidation_source");
+  const liquidationEvidenceUnsafe = positionOpen
+    && (!liquidationDistanceVerified
+      || liquidationDistance === null
+      || liquidationDistanceSource === null
+      || liquidationDistance < minimumLiquidationDistance);
+  const minimumStatus = headroom === 0 || liquidationEvidenceUnsafe
     ? "breached"
     : runwayMs !== null && runwayMs <= requiredResponseMs
       ? "critical"
@@ -2463,6 +2549,11 @@ function normalizeCapitalRunwayEvidence(value) {
     stress_burn_micro_usdc_per_hour: burn,
     runway_ms: runwayMs,
     required_owner_response_ms: requiredResponseMs,
+    position_open: positionOpen,
+    liquidation_distance_bps: liquidationDistance,
+    minimum_liquidation_distance_bps: minimumLiquidationDistance,
+    liquidation_distance_verified: positionOpen && liquidationDistanceVerified && liquidationDistanceSource !== null,
+    liquidation_distance_source: liquidationDistanceSource,
   });
 }
 
@@ -2911,6 +3002,20 @@ function normalizePortfolioCapitalPositionPlan(value) {
       current_headroom_micro_usdc: currentHeadroom,
       target_headroom_micro_usdc: targetHeadroom,
       stress_burn_micro_usdc_per_hour: stressBurn,
+      position_open: leg.position_open !== false,
+      liquidation_distance_bps: leg.liquidation_distance_bps === null
+        ? null
+        : boundedInteger(leg.liquidation_distance_bps, 0, 100_000, "carry_portfolio_capital_position_leg_liquidation_distance"),
+      minimum_liquidation_distance_bps: boundedInteger(
+        leg.minimum_liquidation_distance_bps,
+        0,
+        100_000,
+        "carry_portfolio_capital_position_leg_minimum_liquidation_distance",
+      ),
+      liquidation_distance_verified: leg.position_open !== false && leg.liquidation_distance_verified === true,
+      liquidation_distance_source: leg.liquidation_distance_source === null
+        ? null
+        : identifier(leg.liquidation_distance_source, "carry_portfolio_capital_position_leg_liquidation_source"),
       minimum_additional_collateral_micro_usdc: additional,
       potential_releasable_collateral_micro_usdc: releasable,
       recommended_action: recommendedAction,

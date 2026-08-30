@@ -518,7 +518,13 @@ export function modelCarryPairPreflight({
   const monitoring = phase === "monitoring" || phase === "exit";
   const accounts = evidence.map((leg) => accountReadiness(leg, notionalMicro));
   const openingCapitalPlan = compileOpeningCapitalPlan(evidence, accounts, notionalMicro, minMarginRunwayMs);
-  const marginRunways = evidence.map((leg, index) => projectedMarginRunway(leg, accounts[index], notionalMicro, nowMs));
+  const marginRunways = evidence.map((leg, index) => projectedMarginRunway(
+    leg,
+    accounts[index],
+    notionalMicro,
+    nowMs,
+    phase,
+  ));
   const contracts = evidence.map((leg) => contractSpec(
     leg,
     notionalMicro,
@@ -552,6 +558,10 @@ export function modelCarryPairPreflight({
       venue_id: runway.venue_id,
       status: (monitoring ? accounts[index].monitoring_ready : accounts[index].capital_ready) ? runway.status : "breached",
       runway_ms: runway.runway_ms,
+      position_open: runway.position_open,
+      liquidation_distance_bps: runway.liquidation_distance_bps,
+      liquidation_distance_verified: runway.liquidation_distance_verified,
+      liquidation_distance_source: runway.liquidation_distance_source,
     })),
     now_ms: nowMs,
     max_data_age_ms: 60_000,
@@ -606,6 +616,7 @@ function compileOpeningCapitalPlan(evidence, accounts, notionalMicro, minMarginR
         ? "owner_fund_venue"
         : "none",
       stress_adjusted_target_collateral_micro_usdc: stress.target_collateral_micro_usdc,
+      liquidation_fee_reserve_micro_usdc: stress.liquidation_fee_reserve_micro_usdc,
       potential_releasable_collateral_micro_usdc: account.opening_collateral_shortfall_micro_usdc === 0
         ? stress.potential_releasable_collateral_micro_usdc
         : 0,
@@ -623,6 +634,7 @@ function compileOpeningCapitalPlan(evidence, accounts, notionalMicro, minMarginR
     total_opening_collateral_shortfall_micro_usdc: totalShortfall,
     total_excess_collateral_micro_usdc: total("excess_collateral_micro_usdc"),
     total_stress_adjusted_target_collateral_micro_usdc: total("stress_adjusted_target_collateral_micro_usdc"),
+    total_liquidation_fee_reserve_micro_usdc: total("liquidation_fee_reserve_micro_usdc"),
     total_potential_releasable_collateral_micro_usdc: total("potential_releasable_collateral_micro_usdc"),
     proposal_only: true,
     live_execution_leverage_unchanged: true,
@@ -635,7 +647,8 @@ function compileOpeningCapitalPlan(evidence, accounts, notionalMicro, minMarginR
 
 function stressAdjustedCapitalTarget(leg, notionalMicro, minMarginRunwayMs) {
   const maintenance = microFromBps(notionalMicro, leg.snapshot.maintenance_margin_bps);
-  const safetyBuffer = Math.max(10_000_000, microFromBps(notionalMicro, 1_000));
+  const liquidationFeeReserve = microFromBps(notionalMicro, leg.snapshot.liquidation_fee_bps);
+  const safetyBuffer = Math.max(10_000_000, microFromBps(notionalMicro, 1_000)) + liquidationFeeReserve;
   const stressLossPerHour = microFromBps(notionalMicro, 100);
   const fundingDebitBps = leg.side === "buy"
     ? Math.max(0, Math.ceil(leg.snapshot.funding_rate_e12_per_interval / 100_000_000))
@@ -652,6 +665,7 @@ function stressAdjustedCapitalTarget(leg, notionalMicro, minMarginRunwayMs) {
     target_collateral_micro_usdc: target,
     potential_releasable_collateral_micro_usdc: Math.max(0, notionalMicro - target),
     maximum_safe_leverage: Math.max(1, Math.floor(notionalMicro / target)),
+    liquidation_fee_reserve_micro_usdc: liquidationFeeReserve,
   });
 }
 
@@ -697,6 +711,11 @@ function contractSpec(leg, notionalMicro, conservativeFundingRate) {
     taker_fee_bps: Math.ceil(account.taker_fee_bps),
     maker_fee_e6_bps: makerE6,
     taker_fee_e6_bps: takerE6,
+    initial_margin_bps: snapshot.initial_margin_bps,
+    maintenance_margin_bps: snapshot.maintenance_margin_bps,
+    liquidation_fee_bps: snapshot.liquidation_fee_bps,
+    margin_model: snapshot.margin_model,
+    liquidation_model: snapshot.liquidation_model,
     minimum_notional_micro_usdc: Math.min(notionalMicro, positiveInteger(shape.notional_micro_usdc, "carry_order_shape_notional")),
     quantity_step_e8: positiveInteger(shape.quantity_step_e8 ?? snapshot.quantity_step_e8, "carry_quantity_step_unavailable"),
     price_tick_e8: positiveInteger(shape.price_tick_e8 ?? snapshot.price_tick_e8, "carry_price_tick_unavailable"),
@@ -787,13 +806,15 @@ function accountReadiness(leg, notionalMicro) {
   };
 }
 
-function projectedMarginRunway(leg, readiness, notionalMicro, nowMs) {
+function projectedMarginRunway(leg, readiness, notionalMicro, nowMs, phase) {
   const account = leg.account || {};
   const reportedMaintenance = usdMicro(account.maintenance_margin);
   const contractMaintenanceFloor = microFromBps(notionalMicro, leg.snapshot.maintenance_margin_bps);
   const maintenance = Math.max(reportedMaintenance, contractMaintenanceFloor);
-  const safetyBuffer = Math.max(10_000_000, microFromBps(notionalMicro, 1_000));
-  const projectedHeadroom = Math.max(0, readiness.margin_balance_micro_usdc - maintenance - safetyBuffer);
+  const liquidationFeeReserve = microFromBps(notionalMicro, leg.snapshot.liquidation_fee_bps);
+  const safetyBuffer = Math.max(10_000_000, microFromBps(notionalMicro, 1_000)) + liquidationFeeReserve;
+  const positionOpen = phase === "monitoring" || phase === "exit";
+  const verifiedLiquidation = positionOpen ? verifiedLiquidationDistance(account) : null;
   const fundingDebit = leg.side === "buy"
     ? Math.max(0, Math.ceil(leg.snapshot.funding_rate_e12_per_interval / 100_000_000))
     : Math.max(0, Math.ceil(-leg.snapshot.funding_rate_e12_per_interval / 100_000_000));
@@ -809,7 +830,10 @@ function projectedMarginRunway(leg, readiness, notionalMicro, nowMs) {
     funding_interval_ms: leg.snapshot.funding_interval_ms,
     owner_transfer_latency_ms: 2 * HOUR_MS,
     owner_response_buffer_ms: HOUR_MS,
-    liquidation_distance_bps: Math.min(100_000, Math.floor(projectedHeadroom * 10_000 / notionalMicro)),
+    position_open: positionOpen,
+    liquidation_distance_bps: verifiedLiquidation?.distance_bps ?? null,
+    liquidation_distance_verified: verifiedLiquidation !== null,
+    liquidation_distance_source: verifiedLiquidation?.source ?? null,
     minimum_liquidation_distance_bps: 1_000,
     as_of_ms: nowMs,
   });
@@ -818,10 +842,22 @@ function projectedMarginRunway(leg, readiness, notionalMicro, nowMs) {
     account_commitment: readiness.account_commitment,
     reported_maintenance_margin_micro_usdc: reportedMaintenance,
     contract_maintenance_floor_micro_usdc: contractMaintenanceFloor,
+    liquidation_fee_reserve_micro_usdc: liquidationFeeReserve,
     maintenance_evidence_basis: reportedMaintenance >= contractMaintenanceFloor
       ? "venue_account_total"
       : "contract_spec_floor",
   });
+}
+
+function verifiedLiquidationDistance(account) {
+  const distance = Number(account?.liquidation_distance_bps);
+  const source = String(account?.liquidation_distance_source || "");
+  if (account?.liquidation_distance_verified !== true
+    || !Number.isSafeInteger(distance)
+    || distance < 0
+    || distance > 100_000
+    || !/^[A-Za-z0-9:_-]{8,180}$/.test(source)) return null;
+  return Object.freeze({ distance_bps: distance, source });
 }
 
 function orderInstruction(leg, notionalUsd, { phase = "opening", exact_base_size: exactBaseSize = null } = {}) {
@@ -996,6 +1032,9 @@ function creationInputEvidence(evidence, accountReadiness) {
       venue_id: leg.venue_id,
       side: leg.side,
       shadow_snapshot_commitment: carryShadowSnapshotCommitment(leg.snapshot),
+      initial_margin_bps: leg.snapshot.initial_margin_bps,
+      maintenance_margin_bps: leg.snapshot.maintenance_margin_bps,
+      liquidation_fee_bps: leg.snapshot.liquidation_fee_bps,
       margin_model: leg.snapshot.margin_model,
       liquidation_model: leg.snapshot.liquidation_model,
       work_order_commitment: leg.receipt.work_order_commitment,

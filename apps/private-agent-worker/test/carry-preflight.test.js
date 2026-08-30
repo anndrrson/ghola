@@ -115,6 +115,9 @@ function exactFeeEvidence() {
     fee_source: "test_account_fee_schedule",
     fees_exact_for_account: true,
     fees_conservative_upper_bound: false,
+    liquidation_distance_bps: 2_500,
+    liquidation_distance_verified: true,
+    liquidation_distance_source: "test_position_snapshot",
   };
 }
 
@@ -307,6 +310,7 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
     total_opening_collateral_shortfall_micro_usdc: 0,
     total_excess_collateral_micro_usdc: 800_000_000,
     total_stress_adjusted_target_collateral_micro_usdc: 42_060_000,
+    total_liquidation_fee_reserve_micro_usdc: 0,
     total_potential_releasable_collateral_micro_usdc: 157_940_000,
     proposal_only: true,
     live_execution_leverage_unchanged: true,
@@ -322,6 +326,7 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
         excess_collateral_micro_usdc: 400_000_000,
         recommended_action: "none",
         stress_adjusted_target_collateral_micro_usdc: 21_060_000,
+        liquidation_fee_reserve_micro_usdc: 0,
         potential_releasable_collateral_micro_usdc: 78_940_000,
         owner_maximum_stress_adjusted_leverage: 4,
         owner_leverage_configuration_required: true,
@@ -334,6 +339,7 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
         excess_collateral_micro_usdc: 400_000_000,
         recommended_action: "none",
         stress_adjusted_target_collateral_micro_usdc: 21_000_000,
+        liquidation_fee_reserve_micro_usdc: 0,
         potential_releasable_collateral_micro_usdc: 79_000_000,
         owner_maximum_stress_adjusted_leverage: 4,
         owner_leverage_configuration_required: true,
@@ -453,6 +459,7 @@ test("reports exact owner-funded opening shortfalls and never advertises releasa
     total_opening_collateral_shortfall_micro_usdc: 150_000_000,
     total_excess_collateral_micro_usdc: 0,
     total_stress_adjusted_target_collateral_micro_usdc: 42_060_000,
+    total_liquidation_fee_reserve_micro_usdc: 0,
     total_potential_releasable_collateral_micro_usdc: 0,
     proposal_only: true,
     live_execution_leverage_unchanged: true,
@@ -468,6 +475,7 @@ test("reports exact owner-funded opening shortfalls and never advertises releasa
         excess_collateral_micro_usdc: 0,
         recommended_action: "owner_fund_venue",
         stress_adjusted_target_collateral_micro_usdc: 21_060_000,
+        liquidation_fee_reserve_micro_usdc: 0,
         potential_releasable_collateral_micro_usdc: 0,
         owner_maximum_stress_adjusted_leverage: 4,
         owner_leverage_configuration_required: true,
@@ -480,6 +488,7 @@ test("reports exact owner-funded opening shortfalls and never advertises releasa
         excess_collateral_micro_usdc: 0,
         recommended_action: "owner_fund_venue",
         stress_adjusted_target_collateral_micro_usdc: 21_000_000,
+        liquidation_fee_reserve_micro_usdc: 0,
         potential_releasable_collateral_micro_usdc: 0,
         owner_maximum_stress_adjusted_leverage: 4,
         owner_leverage_configuration_required: true,
@@ -543,6 +552,52 @@ test("uses the stronger maintenance requirement without double-counting venue to
     { venue_id: "hyperliquid", maintenance: 8_000_000, reported: 8_000_000, floor: 5_000_000, basis: "venue_account_total" },
     { venue_id: "aster", maintenance: 5_000_000, reported: 0, floor: 5_000_000, basis: "contract_spec_floor" },
   ]);
+});
+
+test("reserves liquidation fees and fails monitoring closed without verified distance", () => {
+  const account = {
+    can_trade: true,
+    available_balance: 100,
+    margin_balance: 100,
+    maintenance_margin: 0,
+    maker_fee_bps: 1,
+    taker_fee_bps: 2,
+    ...exactFeeEvidence(),
+    position_count: 1,
+    open_order_count: 0,
+  };
+  const evidence = [
+    { venue_id: "hyperliquid", side: "buy" },
+    { venue_id: "lighter", side: "sell" },
+  ].map((leg) => ({
+    ...leg,
+    account: { ...account },
+    snapshot: { ...snapshot(leg.venue_id), liquidation_fee_bps: 25 },
+    account_snapshot: leg.venue_id === "hyperliquid"
+      ? { status: "ready_to_trade", trading_enabled: true, position_count: 1, open_order_count: 0 }
+      : null,
+    receipt: {
+      checks: { transaction_broadcast: false, order_request_checked: true },
+      order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
+    },
+  }));
+  const opening = modelCarryPairPreflight({ evidence, notional_usd: 100, horizon_days: 30, now_ms: NOW });
+  assert.equal(opening.opening_capital_plan.total_liquidation_fee_reserve_micro_usdc, 500_000);
+  assert.equal(opening.opportunity.liquidation_fee_risk_micro_usdc, 500_000);
+
+  delete evidence[0].account.liquidation_distance_bps;
+  delete evidence[0].account.liquidation_distance_verified;
+  delete evidence[0].account.liquidation_distance_source;
+  const monitoring = modelCarryPairPreflight({
+    evidence,
+    notional_usd: 100,
+    horizon_days: 30,
+    now_ms: NOW,
+    phase: "monitoring",
+  });
+  assert.equal(monitoring.margin_runways[0].status, "breached");
+  assert.equal(monitoring.margin_runways[0].liquidation_distance_verified, false);
+  assert.ok(monitoring.opportunity.reasons.includes("margin_runway_insufficient:hyperliquid"));
 });
 
 test("prices entry and exit from notional-weighted depth without whole-bp rounding", async () => {

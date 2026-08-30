@@ -25,6 +25,7 @@ import {
   normalizeCarryCollateralReviewPayload,
   normalizeCarryCollateralReviewAuthorization,
   normalizeCarryLifecycleValueAttribution,
+  venueAdapterCapability,
 } from "../index.js";
 
 const NOW = 1_800_000_000_000;
@@ -105,6 +106,7 @@ test("measures only adverse execution slippage", () => {
 });
 
 function contract(venueId, fundingRate, overrides = {}) {
+  const shadow = venueAdapterCapability(venueId, "perp_shadow");
   return {
     version: 1,
     venue_id: venueId,
@@ -121,6 +123,11 @@ function contract(venueId, fundingRate, overrides = {}) {
     funding_interval_ms: 8 * HOUR,
     maker_fee_bps: 1,
     taker_fee_bps: 2,
+    initial_margin_bps: 1_000,
+    maintenance_margin_bps: 500,
+    liquidation_fee_bps: 0,
+    margin_model: shadow.margin_model,
+    liquidation_model: shadow.liquidation_model,
     minimum_notional_micro_usdc: 10_000_000,
     quantity_step_e8: 1_000,
     price_tick_e8: 100_000,
@@ -144,6 +151,8 @@ function runway(venueId, overrides = {}) {
     owner_transfer_latency_ms: HOUR,
     owner_response_buffer_ms: HOUR,
     liquidation_distance_bps: 2_500,
+    liquidation_distance_verified: true,
+    liquidation_distance_source: "venue_position_snapshot",
     minimum_liquidation_distance_bps: 1_000,
     as_of_ms: NOW,
     ...overrides,
@@ -430,6 +439,76 @@ test("prices collateral basis stress separately from the base risk buffer", () =
   assert.equal(result.collateral_basis_risk_micro_usdc, 50_000_000);
   assert.equal(result.risk_buffer_micro_usdc, 53_000_000);
   assert.equal(result.collateral_basis_risk_bps, 50);
+});
+
+test("binds venue liquidation models and prices liquidation fees into risk", () => {
+  const input = {
+    version: 1,
+    long_contract: contract("hyperliquid", 1, { liquidation_fee_bps: 5 }),
+    short_contract: contract("lighter", 4, { liquidation_fee_bps: 7 }),
+    notional_micro_usdc: 10_000_000_000,
+    capital_committed_micro_usdc: 4_000_000_000,
+    horizon_ms: 7 * DAY,
+    long_costs: costs(),
+    short_costs: costs(),
+    capital_cost_bps_per_day: 1,
+    risk_buffer_bps: 3,
+    min_expected_net_benefit_bps: 0,
+    min_margin_runway_ms: 6 * HOUR,
+    margin_runways: [runway("hyperliquid"), runway("lighter")],
+    now_ms: NOW,
+    max_data_age_ms: 30_000,
+    max_contract_data_skew_ms: 2_000,
+  };
+  const result = evaluateCarryOpportunity(input);
+  assert.equal(result.liquidation_fee_risk_micro_usdc, 12_000_000);
+  assert.equal(result.risk_buffer_micro_usdc, 15_000_000);
+  assert.equal(result.long_liquidation_model, venueAdapterCapability("hyperliquid", "perp_shadow").liquidation_model);
+  assert.throws(() => evaluateCarryOpportunity({
+    ...input,
+    long_contract: { ...input.long_contract, liquidation_model: "unverified_liquidation_model" },
+  }), /contract_risk_model_mismatch/);
+});
+
+test("fails margin runway closed without verified open-position liquidation distance", () => {
+  const result = calculateMarginRunway({
+    version: 1,
+    venue_id: "hyperliquid",
+    equity_micro_usdc: 2_500_000_000,
+    maintenance_margin_micro_usdc: 500_000_000,
+    safety_buffer_micro_usdc: 500_000_000,
+    position_notional_micro_usdc: 10_000_000_000,
+    stress_loss_bps_per_hour: 50,
+    funding_debit_bps_per_interval: 0,
+    funding_interval_ms: 8 * HOUR,
+    owner_transfer_latency_ms: HOUR,
+    owner_response_buffer_ms: HOUR,
+    position_open: true,
+    liquidation_distance_bps: 2_500,
+    liquidation_distance_verified: false,
+    liquidation_distance_source: "unverified_position_snapshot",
+    minimum_liquidation_distance_bps: 1_000,
+    as_of_ms: NOW,
+  });
+  assert.equal(result.status, "breached");
+  assert.equal(result.liquidation_distance_verified, false);
+  const missingSource = calculateMarginRunway({
+    ...result,
+    version: 1,
+    equity_micro_usdc: 2_500_000_000,
+    maintenance_margin_micro_usdc: 500_000_000,
+    safety_buffer_micro_usdc: 500_000_000,
+    position_notional_micro_usdc: 10_000_000_000,
+    stress_loss_bps_per_hour: 50,
+    funding_debit_bps_per_interval: 0,
+    funding_interval_ms: 8 * HOUR,
+    owner_transfer_latency_ms: HOUR,
+    owner_response_buffer_ms: HOUR,
+    liquidation_distance_verified: true,
+    liquidation_distance_source: null,
+  });
+  assert.equal(missingSource.status, "breached");
+  assert.equal(missingSource.liquidation_distance_verified, false);
 });
 
 test("preserves sub-basis-point funding precision", () => {

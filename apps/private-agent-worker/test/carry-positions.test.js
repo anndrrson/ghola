@@ -734,6 +734,36 @@ test("monitoring records a basis breach and immediately requests a reduce-only e
   assert.deepEqual(result.record.position.next_actions, ["reduce_only_close_both_legs"]);
 });
 
+test("monitoring exits when verified liquidation distance breaches the floor", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-liquidation-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const result = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => ({
+      economic_opportunity: monitoringOpportunity(NOW + 100, 9),
+      margin_runways: [
+        monitoringRunway("hyperliquid", {
+          status: "breached",
+          liquidation_distance_bps: 900,
+        }),
+        monitoringRunway("lighter"),
+      ],
+      qualification_reasons: ["margin_runway_insufficient:hyperliquid"],
+    }),
+    now_ms: NOW + 100,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.record.position.status, "exiting");
+  assert.equal(result.record.position.terminal_reason, "margin_runway_below_mandate");
+  assert.equal(result.record.latest_observation.capital_action_plan.legs[0].liquidation_distance_bps, 900);
+  assert.equal(result.record.latest_observation.capital_action_plan.automatic_transfer_permitted, false);
+});
+
 test("monitoring stores an exact owner-only collateral recommendation without transferring", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-capital-plan-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -1385,6 +1415,7 @@ async function positionInput(
 }
 
 function opportunity(overrides = {}) {
+  const inputEvidence = carryOpportunityInputEvidence("hyperliquid", "lighter");
   const value = {
     version: 1,
     eligible: true,
@@ -1404,6 +1435,17 @@ function opportunity(overrides = {}) {
     projected_latency_buffer_micro_usdc: 0,
     projected_trading_cost_micro_usdc: 3_000,
     projected_capital_cost_micro_usdc: 1_000,
+    liquidation_fee_risk_micro_usdc: 0,
+    long_initial_margin_bps: inputEvidence.legs[0].initial_margin_bps,
+    short_initial_margin_bps: inputEvidence.legs[1].initial_margin_bps,
+    long_maintenance_margin_bps: inputEvidence.legs[0].maintenance_margin_bps,
+    short_maintenance_margin_bps: inputEvidence.legs[1].maintenance_margin_bps,
+    long_liquidation_fee_bps: inputEvidence.legs[0].liquidation_fee_bps,
+    short_liquidation_fee_bps: inputEvidence.legs[1].liquidation_fee_bps,
+    long_margin_model: inputEvidence.legs[0].margin_model,
+    short_margin_model: inputEvidence.legs[1].margin_model,
+    long_liquidation_model: inputEvidence.legs[0].liquidation_model,
+    short_liquidation_model: inputEvidence.legs[1].liquidation_model,
     risk_buffer_micro_usdc: 1_000,
     projected_net_value_micro_usdc: 20_000,
     projected_net_value_bps: 20,
@@ -1426,6 +1468,17 @@ function opportunity(overrides = {}) {
     ...overrides,
   };
   value.input_evidence ??= carryOpportunityInputEvidence(value.long_venue_id, value.short_venue_id);
+  const [longRisk, shortRisk] = value.input_evidence.legs;
+  value.long_initial_margin_bps = overrides.long_initial_margin_bps ?? longRisk.initial_margin_bps;
+  value.short_initial_margin_bps = overrides.short_initial_margin_bps ?? shortRisk.initial_margin_bps;
+  value.long_maintenance_margin_bps = overrides.long_maintenance_margin_bps ?? longRisk.maintenance_margin_bps;
+  value.short_maintenance_margin_bps = overrides.short_maintenance_margin_bps ?? shortRisk.maintenance_margin_bps;
+  value.long_liquidation_fee_bps = overrides.long_liquidation_fee_bps ?? longRisk.liquidation_fee_bps;
+  value.short_liquidation_fee_bps = overrides.short_liquidation_fee_bps ?? shortRisk.liquidation_fee_bps;
+  value.long_margin_model = overrides.long_margin_model ?? longRisk.margin_model;
+  value.short_margin_model = overrides.short_margin_model ?? shortRisk.margin_model;
+  value.long_liquidation_model = overrides.long_liquidation_model ?? longRisk.liquidation_model;
+  value.short_liquidation_model = overrides.short_liquidation_model ?? shortRisk.liquidation_model;
   return {
     ...value,
     worker_authentication: authenticateCarryCreationOpportunity({
@@ -1475,6 +1528,11 @@ function monitoringRunway(venueId, overrides = {}) {
     required_owner_response_ms: 1_800_000,
     owner_action_required: false,
     automatic_transfer_permitted: false,
+    position_open: true,
+    liquidation_distance_bps: 2_500,
+    minimum_liquidation_distance_bps: 1_000,
+    liquidation_distance_verified: true,
+    liquidation_distance_source: "test_position_snapshot",
     ...overrides,
   };
 }

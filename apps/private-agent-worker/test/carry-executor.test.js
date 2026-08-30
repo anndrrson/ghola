@@ -267,11 +267,16 @@ test("bootstraps one capped candidate only after separate qualification confirma
     policy_commitment: `policy:${venueId}:pilot`,
     encrypted_execution_vault: { ciphertext: `sealed:${venueId}:pilot` },
   });
+  const pilotInputEvidence = carryOpportunityInputEvidence("hyperliquid", "aster");
   const pilotOpportunity = authenticatedOpportunity({
     ...opportunity(),
     long_venue_id: "hyperliquid",
     short_venue_id: "aster",
-    input_evidence: carryOpportunityInputEvidence("hyperliquid", "aster"),
+    input_evidence: pilotInputEvidence,
+    long_margin_model: pilotInputEvidence.legs[0].margin_model,
+    short_margin_model: pilotInputEvidence.legs[1].margin_model,
+    long_liquidation_model: pilotInputEvidence.legs[0].liquidation_model,
+    short_liquidation_model: pilotInputEvidence.legs[1].liquidation_model,
     live_creation_ready: false,
     qualification_pilot_ready: true,
     qualification_pilot_candidate_venue_id: "aster",
@@ -1116,6 +1121,7 @@ function positionInput(
 }
 
 function opportunity(pair = { long: "aster", short: "lighter" }) {
+  const inputEvidence = carryOpportunityInputEvidence(pair.long, pair.short);
   return authenticatedOpportunity({
     version: 1,
     eligible: true,
@@ -1135,6 +1141,17 @@ function opportunity(pair = { long: "aster", short: "lighter" }) {
     projected_latency_buffer_micro_usdc: 0,
     projected_trading_cost_micro_usdc: 3_000,
     projected_capital_cost_micro_usdc: 1_000,
+    liquidation_fee_risk_micro_usdc: 0,
+    long_initial_margin_bps: inputEvidence.legs[0].initial_margin_bps,
+    short_initial_margin_bps: inputEvidence.legs[1].initial_margin_bps,
+    long_maintenance_margin_bps: inputEvidence.legs[0].maintenance_margin_bps,
+    short_maintenance_margin_bps: inputEvidence.legs[1].maintenance_margin_bps,
+    long_liquidation_fee_bps: inputEvidence.legs[0].liquidation_fee_bps,
+    short_liquidation_fee_bps: inputEvidence.legs[1].liquidation_fee_bps,
+    long_margin_model: inputEvidence.legs[0].margin_model,
+    short_margin_model: inputEvidence.legs[1].margin_model,
+    long_liquidation_model: inputEvidence.legs[0].liquidation_model,
+    short_liquidation_model: inputEvidence.legs[1].liquidation_model,
     risk_buffer_micro_usdc: 1_000,
     projected_net_value_micro_usdc: 20_000,
     projected_net_value_bps: 20,
@@ -1154,7 +1171,7 @@ function opportunity(pair = { long: "aster", short: "lighter" }) {
     live_creation_ready: true,
     long_margin_runway_ms: 7_200_000,
     short_margin_runway_ms: 7_200_000,
-    input_evidence: carryOpportunityInputEvidence(pair.long, pair.short),
+    input_evidence: inputEvidence,
   });
 }
 
@@ -1261,6 +1278,11 @@ function monitoringRunway(venueId) {
     stress_burn_micro_usdc_per_hour: 10_000_000,
     runway_ms: 7_200_000,
     required_owner_response_ms: 1_800_000,
+    position_open: true,
+    liquidation_distance_bps: 2_500,
+    minimum_liquidation_distance_bps: 1_000,
+    liquidation_distance_verified: true,
+    liquidation_distance_source: "test_position_snapshot",
     owner_action_required: false,
     automatic_transfer_permitted: false,
   };

@@ -1102,6 +1102,7 @@ describe("private agent worker", () => {
       policy_commitment: `${venueId}_policy_commitment_123`,
       encrypted_execution_vault: vault.encrypted_execution_vault,
     });
+    const riskInputEvidence = carryOpportunityInputEvidence("hyperliquid", "lighter");
     const body = {
       owner_commitment: ownerCommitment,
       monitoring_context: {
@@ -1147,6 +1148,17 @@ describe("private agent worker", () => {
         projected_gross_funding_micro_usdc: 25_000,
         projected_trading_cost_micro_usdc: 3_000,
         projected_capital_cost_micro_usdc: 1_000,
+        liquidation_fee_risk_micro_usdc: 0,
+        long_initial_margin_bps: riskInputEvidence.legs[0].initial_margin_bps,
+        short_initial_margin_bps: riskInputEvidence.legs[1].initial_margin_bps,
+        long_maintenance_margin_bps: riskInputEvidence.legs[0].maintenance_margin_bps,
+        short_maintenance_margin_bps: riskInputEvidence.legs[1].maintenance_margin_bps,
+        long_liquidation_fee_bps: riskInputEvidence.legs[0].liquidation_fee_bps,
+        short_liquidation_fee_bps: riskInputEvidence.legs[1].liquidation_fee_bps,
+        long_margin_model: riskInputEvidence.legs[0].margin_model,
+        short_margin_model: riskInputEvidence.legs[1].margin_model,
+        long_liquidation_model: riskInputEvidence.legs[0].liquidation_model,
+        short_liquidation_model: riskInputEvidence.legs[1].liquidation_model,
         risk_buffer_micro_usdc: 1_000,
         projected_net_value_micro_usdc: 20_000,
         projected_net_value_bps: 20,
@@ -1164,7 +1176,7 @@ describe("private agent worker", () => {
         checked_at_ms: checkedAt,
         long_margin_runway_ms: 7_200_000,
         short_margin_runway_ms: 7_200_000,
-        input_evidence: carryOpportunityInputEvidence("hyperliquid", "lighter"),
+        input_evidence: riskInputEvidence,
       },
     };
     body.opportunity.worker_authentication = authenticateCarryCreationOpportunity({
