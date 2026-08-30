@@ -189,6 +189,9 @@ export async function readCompletedCarryLifecycleProof({
     const legacyEntry = legacyIndexValid
       ? legacyIndex.entries.find((entry) => !positionId || entry.position_id === positionId)
       : null;
+    if (legacyIndexValid && positionId && !legacyEntry) {
+      return denied("carry_lifecycle_proof_missing");
+    }
     migratableLegacyEntry = legacyEntry || null;
     stored = legacyEntry
       ? await state.getIdempotency(legacyEntry.proof_key)

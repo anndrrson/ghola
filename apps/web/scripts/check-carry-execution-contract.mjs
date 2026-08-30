@@ -1191,6 +1191,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterial", "legacyJsonLifecycleProofReferenceMatchesProof", "carry_lifecycle_proof_86b_reference_binding_missing");
   requireText("releaseMaterial", "const derivedReference = (await state.getIdempotency(derivedReferenceKey))?.receipt", "carry_lifecycle_proof_unscoped_reference_read_missing");
   requireText("releaseMaterial", "carry_lifecycle_proof_reference_missing", "carry_lifecycle_proof_orphaned_pair_gate_missing");
+  requireText("releaseMaterial", "legacyIndexValid && positionId && !legacyEntry", "carry_lifecycle_proof_index_position_miss_gate_missing");
   requireText("releaseMaterial", "sameLifecycleProofSemantics(persistedProof, proof)", "carry_lifecycle_proof_retry_semantics_missing");
   requireText("releaseMaterial", "structuredClone(persistedProof)", "carry_lifecycle_proof_legacy_pointer_immutability_missing");
   requireText("releaseMaterial", "asset: normalizedAsset", "carry_lifecycle_proof_asset_assessment_binding_missing");
@@ -1204,7 +1205,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterialTest", "unscopedHybrid.error", "carry_lifecycle_proof_86b_unscoped_hybrid_test_missing");
   requireText("releaseMaterialTest", "rejects tampered current references on unscoped reads", "carry_lifecycle_proof_current_unscoped_tamper_test_missing");
   requireText("releaseMaterialTest", "unscopedMigrated.proof_key", "carry_lifecycle_proof_pre86_unscoped_migration_test_missing");
+  requireText("releaseMaterialTest", "indexedMiss.error", "carry_lifecycle_proof_index_position_miss_test_missing");
   requireText("releaseMaterialTest", "legacyLoaded.proof", "carry_lifecycle_proof_three_arg_compatibility_test_missing");
+  requireText("releaseMaterialTest", "legacyPositionLoaded.proof", "carry_lifecycle_proof_three_arg_position_compatibility_test_missing");
   requireText("releaseMaterial", "final_flat_zero_orders: true", "carry_lifecycle_proof_flat_gate_missing");
   requireText("releaseMaterial", "proof?.broadcast_performed !== true", "carry_lifecycle_proof_live_broadcast_gate_missing");
   requireText("releaseMaterial", "proof.evidence_commitment === lifecycleProofCommitment(proof)", "carry_lifecycle_proof_integrity_gate_missing");

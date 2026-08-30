@@ -263,6 +263,20 @@ test("records a durable owner- and image-bound paired lifecycle proof", async ()
   });
   assert.equal(legacyLoaded.ok, true, JSON.stringify(legacyLoaded));
   assert.deepEqual(legacyLoaded.proof, recorded.proof);
+  const legacyPositionLoaded = await readCompletedCarryLifecycleProof({
+    state: {
+      getIdempotency: async (key) => key === legacyKey
+        ? { receipt: structuredClone(recorded.proof) }
+        : null,
+    },
+    owner_commitment: OWNER,
+    asset: "HYPE",
+    position_id: recorded.proof.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW + 1,
+  });
+  assert.equal(legacyPositionLoaded.ok, true, JSON.stringify(legacyPositionLoaded));
+  assert.deepEqual(legacyPositionLoaded.proof, recorded.proof);
   assert.equal(assessCompletedCarryLifecycleProof({
     proof: loaded.proof,
     owner_commitment: OWNER,
@@ -557,6 +571,23 @@ test("reads and atomically migrates a real pre-reference lifecycle proof index",
     now_ms: NOW + 1,
   });
   assert.equal(invalid.error, "carry_lifecycle_proof_legacy_index_invalid");
+
+  const indexedMissRows = legacyRows();
+  const unindexedSingleton = structuredClone(recorded.proof);
+  unindexedSingleton.position_id = "carry:position:release:unindexed:0002";
+  unindexedSingleton.evidence_commitment = lifecycleProofCommitmentForTest(unindexedSingleton);
+  indexedMissRows.set(carryLifecycleProofKey(OWNER, IMAGE, "HYPE"), {
+    receipt: unindexedSingleton,
+  });
+  const indexedMiss = await readCompletedCarryLifecycleProof({
+    state: preReferenceState(indexedMissRows),
+    owner_commitment: OWNER,
+    asset: "HYPE",
+    position_id: unindexedSingleton.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW + 1,
+  });
+  assert.equal(indexedMiss.error, "carry_lifecycle_proof_missing");
 });
 
 test("reads exact 86b JSON-pair references with and without a position without overwriting them", async () => {
