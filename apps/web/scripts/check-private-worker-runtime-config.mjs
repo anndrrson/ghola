@@ -1,6 +1,7 @@
 import { createHash, createHmac, createPublicKey, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { CARRY_EXECUTION_VENUES } from "@ghola/execution-core";
+import { assertMaterializedVercelEnvValue } from "./verify-preview-env-parity.mjs";
 
 export function verifyPrivateWorkerRuntimeConfig(env = process.env) {
   if (env.VERCEL !== "1") return { skipped: true };
@@ -89,7 +90,9 @@ export async function verifyPrivateWorkerRuntimeAuthorization(
 function first(env, ...keys) {
   for (const key of keys) {
     const value = String(env[key] || "").trim();
-    if (value) return value;
+    if (!value) continue;
+    assertMaterializedVercelEnvValue(key, value, "runtime");
+    return value;
   }
   return "";
 }
@@ -97,6 +100,7 @@ function first(env, ...keys) {
 function optionalHttpsUrl(raw, label) {
   const value = String(raw || "").trim();
   if (!value) return null;
+  assertMaterializedVercelEnvValue("GHOLA_CARRY_SHADOW_WORKER_URL", value, "runtime");
   let url;
   try {
     url = new URL(value);
@@ -150,6 +154,8 @@ function executionToken(env) {
 function consistentAlias(env, primaryKey, legacyKey, label) {
   const primary = String(env[primaryKey] || "").trim();
   const legacy = String(env[legacyKey] || "").trim();
+  if (primary) assertMaterializedVercelEnvValue(primaryKey, primary, "runtime");
+  if (legacy) assertMaterializedVercelEnvValue(legacyKey, legacy, "runtime");
   if (primary && legacy && primary !== legacy) {
     throw new Error(`Vercel release ${label} aliases disagree`);
   }

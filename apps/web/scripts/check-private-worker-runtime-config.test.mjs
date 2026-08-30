@@ -110,6 +110,26 @@ test("accepts a fully configured Vercel artifact", () => {
   });
 });
 
+test("rejects opaque Vercel placeholders before any worker request", async () => {
+  const env = vercelEnv({
+    PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "[SENSITIVE]",
+  });
+  assert.throws(
+    () => verifyPrivateWorkerRuntimeConfig(env),
+    /preview_env_opaque:PRIVATE_AGENT_WORKER_CAPABILITY_SECRET:runtime/,
+  );
+
+  let requests = 0;
+  await assert.rejects(
+    verifyPrivateWorkerRuntimeAuthorization(env, async () => {
+      requests += 1;
+      return Response.json({}, { status: 500 });
+    }),
+    /preview_env_opaque:PRIVATE_AGENT_WORKER_CAPABILITY_SECRET:runtime/,
+  );
+  assert.equal(requests, 0);
+});
+
 test("requires exact worker image and funding-signer pins", () => {
   assert.throws(
     () => verifyPrivateWorkerRuntimeConfig(vercelEnv({ GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST: "" })),
