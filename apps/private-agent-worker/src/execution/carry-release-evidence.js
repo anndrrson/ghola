@@ -105,7 +105,7 @@ export async function recordCompletedCarryLifecycleProof({
     position_id: material.position.position_id,
     now_ms: nowMs,
   });
-  if (!persistedAssessment.ok || stableJson(persistedProof) !== stableJson(proof)) {
+  if (!persistedAssessment.ok || !sameLifecycleProofSemantics(persistedProof, proof)) {
     return denied("carry_lifecycle_proof_conflict");
   }
   const referenceKey = carryLifecycleProofReferenceKey(
@@ -132,7 +132,7 @@ export async function recordCompletedCarryLifecycleProof({
   }
   await state.putIdempotency(
     legacyCarryLifecycleProofKey(ownerCommitment, imageDigest, material.position.asset),
-    structuredClone(proof),
+    structuredClone(persistedProof),
   );
   return { ok: true, proof: persistedAssessment.proof };
 }
@@ -159,12 +159,22 @@ export async function readCompletedCarryLifecycleProof({
         positionId,
       )))?.receipt
     : null;
-  if (storedReference && !validLifecycleProofReference(storedReference, {
+  const currentReferenceValid = storedReference && validLifecycleProofReference(storedReference, {
     ownerCommitment,
     imageDigest,
     asset: normalizedAsset,
     positionId,
-  })) return denied("carry_lifecycle_proof_reference_invalid");
+  });
+  const legacyJsonReferenceValid = storedReference && !currentReferenceValid
+    && validLegacyJsonLifecycleProofReference(storedReference, {
+      ownerCommitment,
+      imageDigest,
+      asset: normalizedAsset,
+      positionId,
+    });
+  if (storedReference && !currentReferenceValid && !legacyJsonReferenceValid) {
+    return denied("carry_lifecycle_proof_reference_invalid");
+  }
   let stored;
   let migratableLegacyEntry = null;
   if (storedReference) {
@@ -226,7 +236,9 @@ export async function readCompletedCarryLifecycleProof({
     }
   }
   if (!storedReference) return assessed;
-  return lifecycleProofReferenceMatchesProof(storedReference, assessed.proof)
+  return (legacyJsonReferenceValid
+    ? legacyJsonLifecycleProofReferenceMatchesProof(storedReference, assessed.proof)
+    : lifecycleProofReferenceMatchesProof(storedReference, assessed.proof))
     ? assessed
     : denied("carry_lifecycle_proof_reference_mismatch");
 }
@@ -989,6 +1001,18 @@ function lifecycleProofCommitment(proof) {
   return `carry:lifecycle-proof:evidence:${digest(stableJson(payload))}`;
 }
 
+function sameLifecycleProofSemantics(left, right) {
+  return stableJson(lifecycleProofSemanticBody(left)) === stableJson(lifecycleProofSemanticBody(right));
+}
+
+function lifecycleProofSemanticBody(proof) {
+  const body = { ...(proof || {}) };
+  delete body.evidence_commitment;
+  delete body.verified_at_ms;
+  delete body.expires_at_ms;
+  return body;
+}
+
 function lifecycleProofIndexCommitment(index) {
   const payload = { ...index };
   delete payload.evidence_commitment;
@@ -1082,6 +1106,44 @@ function validLifecycleProofReference(reference, { ownerCommitment, imageDigest,
     && reference.evidence_commitment === lifecycleProofReferenceCommitment(reference);
 }
 
+function validLegacyJsonLifecycleProofReference(reference, {
+  ownerCommitment,
+  imageDigest,
+  asset,
+  positionId,
+}) {
+  if (!reference || typeof reference !== "object" || Array.isArray(reference)) return false;
+  const exactKeys = [
+    "version",
+    "kind",
+    "owner_commitment",
+    "worker_image_digest",
+    "asset",
+    "position_id",
+    "venue_ids",
+    "proof_key",
+    "evidence_commitment",
+  ];
+  return Object.keys(reference).length === exactKeys.length
+    && exactKeys.every((key) => Object.hasOwn(reference, key))
+    && reference.version === 1
+    && reference.kind === "ghola_carry_lifecycle_proof_reference"
+    && reference.owner_commitment === ownerCommitment
+    && reference.worker_image_digest === imageDigest
+    && reference.asset === String(asset || "").toUpperCase()
+    && reference.position_id === positionId
+    && commitment(reference.position_id)
+    && normalizedVenuePair(reference.venue_ids)
+    && reference.proof_key === legacyJsonPairCarryLifecycleProofKey(
+      ownerCommitment,
+      imageDigest,
+      asset,
+      reference.position_id,
+      reference.venue_ids,
+    )
+    && reference.evidence_commitment === lifecycleProofReferenceCommitment(reference);
+}
+
 function lifecycleProofReferenceMatchesProof(reference, proof) {
   return sameStrings(proof.venue_ids, reference.venue_ids)
     && proof.position_id === reference.position_id
@@ -1096,6 +1158,34 @@ function lifecycleProofReferenceMatchesProof(reference, proof) {
       proof.position_id,
       proof.venue_ids,
     );
+}
+
+function legacyJsonLifecycleProofReferenceMatchesProof(reference, proof) {
+  return sameStrings(proof.venue_ids, reference.venue_ids)
+    && proof.position_id === reference.position_id
+    && reference.proof_key === legacyJsonPairCarryLifecycleProofKey(
+      reference.owner_commitment,
+      reference.worker_image_digest,
+      reference.asset,
+      proof.position_id,
+      proof.venue_ids,
+    );
+}
+
+function legacyJsonPairCarryLifecycleProofKey(ownerCommitment, imageDigest, asset, positionId, venueIds) {
+  const venues = Array.isArray(venueIds) ? venueIds.map((venueId) => String(venueId || "")) : [];
+  const pair = venues.length === 2
+    && venues[0] !== venues[1]
+    && venues.every((venueId) => CARRY_EXECUTION_VENUES.includes(venueId))
+    ? stableJson(venues)
+    : "";
+  return `carry:lifecycle-proof:${digest([
+    ownerCommitment,
+    imageDigest,
+    String(asset || "").toUpperCase(),
+    String(positionId || ""),
+    pair,
+  ].join("\0")).slice(0, 40)}`;
 }
 
 function normalizedVenuePair(venueIds) {
