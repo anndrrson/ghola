@@ -363,8 +363,9 @@ export interface WithdrawalResponse {
   payout_id: string;
   amount_usdc: number;
   to_address: string;
-  signature: string;
-  explorer_url: string;
+  signature: string | null;
+  explorer_url: string | null;
+  status: string;
 }
 
 // ── Bounty Marketplace ──

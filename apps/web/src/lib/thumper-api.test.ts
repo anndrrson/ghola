@@ -153,6 +153,7 @@ describe("thumper auth helpers", () => {
         to_address: "provider-address",
         signature: "signature",
         explorer_url: "https://explorer.test/tx/signature",
+        status: "confirmed",
       }), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
     vi.stubGlobal("fetch", fetchMock);
