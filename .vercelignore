@@ -6,6 +6,9 @@
 !packages
 !packages/perps-core
 !packages/perps-core/**
+!deploy
+!deploy/evidence
+!deploy/evidence/hyperliquid-mainnet-proof-2026-08-23.json
 
 # Vercel's linked project root is apps/web. When the CLI applies this
 # ignore file relative to that root, the repo-root exceptions above do
