@@ -84,6 +84,10 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webCarryChartTest: "apps/web/src/components/carry/CarryChartStrip.test.tsx",
   webCarryBuilder: "apps/web/src/components/carry/CarryTerminalBuilder.tsx",
   webCarryBuilderTest: "apps/web/src/components/carry/CarryTerminalBuilder.test.tsx",
+  webCarryPositionRail: "apps/web/src/components/carry/CarryPositionRail.tsx",
+  webCarryPositionRailTest: "apps/web/src/components/carry/CarryPositionRail.test.tsx",
+  webCarryTerminalChrome: "apps/web/src/lib/carry-terminal-chrome.ts",
+  webCarryTerminalChromeTest: "apps/web/src/lib/carry-terminal-chrome.test.ts",
   webCarryMarket: "apps/web/src/lib/carry-market.ts",
   webCarryMarketTest: "apps/web/src/lib/carry-market.test.ts",
   webCarryLiveMarket: "apps/web/src/lib/carry-live-market.ts",
@@ -1336,6 +1340,24 @@ export function checkCarryExecutionContract(sources) {
   requireText("webPage", 'redirect("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open")', "carry_integrated_terminal_redirect_missing");
   forbidText("webPage", "CarryWorkspace", "carry_standalone_workspace_restored");
   requireText("webTradeWorkspace", "CarryChartStrip", "carry_chart_strip_missing");
+  requireText("webTradeWorkspace", "carryTerminalChrome(carryWorkspaceOpen)", "carry_venue_neutral_chrome_missing");
+  requireText("webTradeWorkspace", "carryChrome.showVenueReadiness", "carry_venue_readiness_chrome_gate_missing");
+  requireText("webTradeWorkspace", "carryChrome.showVenueMarketStats", "carry_venue_market_chrome_gate_missing");
+  requireText("webTradeWorkspace", "carryChrome.showVenueActivity", "carry_venue_activity_chrome_gate_missing");
+  requireText("webTradeWorkspace", "carryChrome.showVenueOrderTicket", "carry_venue_ticket_chrome_gate_missing");
+  requireText("webTradeWorkspace", "carryChrome.showReferenceChart", "carry_reference_chart_gate_missing");
+  requireText("webCarryTerminalChrome", "showVenueReadiness: false", "carry_venue_readiness_not_hidden");
+  requireText("webCarryTerminalChrome", "showVenueMarketStats: false", "carry_venue_market_stats_not_hidden");
+  requireText("webCarryTerminalChrome", "showVenueActivity: false", "carry_venue_activity_not_hidden");
+  requireText("webCarryTerminalChrome", "showVenueOrderTicket: false", "carry_venue_ticket_not_hidden");
+  requireText("webCarryTerminalChrome", "showReferenceChart: true", "carry_reference_chart_hidden");
+  requireText("webCarryTerminalChromeTest", "keeps the reference chart while removing venue-owned terminal chrome", "carry_venue_neutral_chrome_test_missing");
+  requireText("webTradeWorkspace", "{carryWorkspaceOpen ? <CarryPositionRail /> : null}", "carry_persistent_position_rail_missing");
+  requireText("webCarryPositionRail", "listCarryPositions", "carry_position_rail_authoritative_sync_missing");
+  forbidText("webCarryPositionRail", "executeCarryPositionEntry", "carry_position_rail_live_entry_exposed");
+  forbidText("webCarryPositionRail", "requestCarryPositionExit", "carry_position_rail_live_exit_exposed");
+  forbidText("webCarryPositionRail", "createCarryPosition", "carry_position_rail_live_creation_exposed");
+  requireText("webCarryPositionRailTest", "keeps one authoritative Carry Position visible without a scanner candidate", "carry_position_rail_independence_test_missing");
   requireText("webTradeWorkspace", 'label="Funding / 1h"', "hyperliquid_funding_interval_label_incorrect");
   requireText("webCarryChart", "createCarryLiveMarketStream", "carry_live_stream_missing");
   requireText("webCarryChart", "createCarryPatchPublisher", "carry_ui_publication_coalescer_missing");

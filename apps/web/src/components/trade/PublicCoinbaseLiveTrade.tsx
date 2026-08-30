@@ -35,7 +35,9 @@ import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { TurnkeyPerpsManager } from "@/components/trade/TurnkeyPerpsManager";
 import { GholaMarketChart } from "@/components/private-account/GholaMarketChart";
 import { CarryChartStrip } from "@/components/carry/CarryChartStrip";
+import { CarryPositionRail } from "@/components/carry/CarryPositionRail";
 import type { CarryLiveMarketPatch } from "@/lib/carry-market";
+import { carryTerminalChrome } from "@/lib/carry-terminal-chrome";
 import {
   formatAssetQuantity,
   formatCompactUsd,
@@ -927,7 +929,10 @@ function AlternateProductWorkspace({
   const [privateRuntimeIssue, setPrivateRuntimeIssue] = useState<string | null>(null);
   const venues = capabilitiesForProduct(product);
   const selectedVenue = venues.find((item) => item.id === venue) ?? venues[0];
-  const productLabel = product === "perps" ? "Perpetuals" : product === "swap" ? "Swap" : "Automation";
+  const carryWorkspaceOpen = active && product === "perps" && workspaceParams.get("carry") === "open";
+  const carryChrome = carryTerminalChrome(carryWorkspaceOpen);
+  const productLabel = carryChrome.title
+    || (product === "perps" ? "Perpetuals" : product === "swap" ? "Swap" : "Automation");
   const baseSymbol = product === "perps" ? perpMarket : product === "swap" ? "SOL" : referenceProduct.split("-")[0];
   const marketLabel = product === "perps" ? `${baseSymbol}-PERP` : product === "swap" ? "SOL / USDC" : referenceProduct;
   const nativeProtection = selectedVenue?.protective_orders === "native";
@@ -1580,7 +1585,7 @@ function AlternateProductWorkspace({
   return (
     <main className="min-h-screen bg-[#08090b] pt-16 font-sans text-[#eceef2]">
       <div className="mx-auto flex w-full max-w-[1480px] flex-col gap-4 px-4 py-5 sm:px-6 lg:px-8">
-        {productEnvironment === "testnet" && product === "perps" && (
+        {productEnvironment === "testnet" && product === "perps" && !carryWorkspaceOpen && (
           <section className="flex flex-col gap-3 rounded-lg border border-[#315d55] bg-[linear-gradient(90deg,rgba(19,64,54,0.72),rgba(10,25,27,0.92))] px-4 py-3 sm:flex-row sm:items-center sm:justify-between" aria-label="Testnet environment">
             <div className="flex items-start gap-3">
               <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#7de0bd]" />
@@ -1594,22 +1599,24 @@ function AlternateProductWorkspace({
         )}
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[#242a32] pb-4">
           <div>
-            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#3da8ff]">Unified trading</p>
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#3da8ff]">{carryChrome.eyebrow}</p>
             <h1 className="mt-1 text-xl font-semibold tracking-[-0.025em] text-white">{productLabel}</h1>
-            <p className="mt-1 text-sm text-[#7f8998]">{marketLabel} · market context stays in place</p>
+            <p className="mt-1 text-sm text-[#7f8998]">
+              {carryWorkspaceOpen ? `${marketLabel} · one paired position` : `${marketLabel} · market context stays in place`}
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <span className="inline-flex h-9 items-center gap-2 rounded-md border border-[#26313f] bg-[#0b0e13] px-3 text-xs text-[#a8b2c1]">
               <span className={displayedMarketStatus === "live" ? "h-1.5 w-1.5 rounded-full bg-[#62d6a5]" : "h-1.5 w-1.5 rounded-full bg-[#d9b96e]"} />
               {formatStatus(displayedMarketStatus, Boolean(displayedFrame))}
             </span>
-            {product === "perps" && (
+            {product === "perps" && carryChrome.showVenueReadiness && (
               <span className="inline-flex h-9 items-center gap-2 rounded-md border border-[#26313f] bg-[#0b0e13] px-3 text-xs text-[#a8b2c1]" title={hyperliquidReadiness.detail}>
                 <span className={hyperliquidReadiness.ready ? "h-1.5 w-1.5 rounded-full bg-[#62d6a5]" : "h-1.5 w-1.5 rounded-full bg-[#d9b96e]"} />
                 {hyperliquidReadiness.label}
               </span>
             )}
-            {(product !== "perps" || hyperliquidConnectionReady) && (
+            {carryChrome.showVenueReadiness && (product !== "perps" || hyperliquidConnectionReady) && (
               <button
                 type="button"
                 onClick={() => setSetupOpen(true)}
@@ -1621,14 +1628,23 @@ function AlternateProductWorkspace({
           </div>
         </header>
 
-        <WorkspaceProductNav value={product} onChange={onProductChange} />
+        {carryChrome.showProductNavigation ? <WorkspaceProductNav value={product} onChange={onProductChange} /> : null}
 
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-          <section className="min-w-0 overflow-hidden rounded-xl border border-[#252a32] bg-[#0b0d10] p-4 shadow-[0_24px_70px_rgba(0,0,0,0.34)] sm:p-5">
+        <div className={carryWorkspaceOpen ? "grid gap-2" : "grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]"}>
+          <section className={carryWorkspaceOpen
+            ? "min-w-0 overflow-hidden rounded-xl border border-[#252a32] bg-[#0b0d10] p-3 shadow-[0_24px_70px_rgba(0,0,0,0.34)] sm:p-4"
+            : "min-w-0 overflow-hidden rounded-xl border border-[#252a32] bg-[#0b0d10] p-4 shadow-[0_24px_70px_rgba(0,0,0,0.34)] sm:p-5"}
+          >
             <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
               <div>
                 <p className="text-xs text-[#768194]">
-                  {useHyperliquidMarket ? `Hyperliquid ${hyperliquidNetwork} market` : referenceMarketProduct ? `Coinbase ${referenceMarketProduct} reference` : "Reference unavailable"} · {marketLabel}
+                  {carryChrome.marketContext
+                    ? `${carryChrome.marketContext} · ${marketLabel}`
+                    : useHyperliquidMarket
+                      ? `Hyperliquid ${hyperliquidNetwork} market · ${marketLabel}`
+                      : referenceMarketProduct
+                        ? `Coinbase ${referenceMarketProduct} reference · ${marketLabel}`
+                        : `Reference unavailable · ${marketLabel}`}
                 </p>
                 <p className="mt-1 font-mono text-3xl font-semibold tracking-[-0.04em] text-white">
                   {formatUsdPrice(displayedMid, useHyperliquidMarket ? undefined : referenceMarket?.quote_increment)}
@@ -1656,7 +1672,7 @@ function AlternateProductWorkspace({
                 />
               </div>
             </div>
-            {useHyperliquidMarket && (
+            {useHyperliquidMarket && carryChrome.showVenueMarketStats && (
               <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
                 <PerpDatum label="Mark" value={formatUsdPrice(hyperliquidMarket?.mark_price)} />
                 <PerpDatum label="Oracle" value={formatUsdPrice(hyperliquidMarket?.oracle_price)} />
@@ -1665,10 +1681,11 @@ function AlternateProductWorkspace({
                 <PerpDatum label="Max leverage" value={maxLeverage ? `${maxLeverage}×` : "Unavailable"} />
               </div>
             )}
-            {active && product === "perps" && (
+            {carryWorkspaceOpen ? <CarryPositionRail /> : null}
+            {active && product === "perps" ? (
               <CarryChartStrip
                 asset={perpMarket}
-                defaultOpen={workspaceParams.get("carry") === "open"}
+                defaultOpen={carryWorkspaceOpen}
                 autoRunNoSubmit={carryNoSubmitRequested}
                 preferredLongVenue={workspaceParams.get("long_venue")}
                 preferredShortVenue={workspaceParams.get("short_venue")}
@@ -1676,46 +1693,53 @@ function AlternateProductWorkspace({
                 onAutoRunNoSubmitConsumed={consumeCarryNoSubmitRequest}
                 onAssetSelect={changePerpMarket}
               />
-            )}
-            <GholaMarketChart
-              label={useHyperliquidMarket ? "Hyperliquid" : referenceMarketProduct ? `Coinbase · ${referenceMarketProduct}` : `${marketLabel} reference`}
-              frame={displayedFrame}
-              mode={chartMode}
-              onModeChange={onChartModeChange}
-              size="large"
-              height={390}
-            />
-            <div className="mt-4 border-t border-[#20252d] pt-3">
-              <div className="flex gap-1 overflow-x-auto" role="tablist" aria-label="Trading activity">
-                {(["positions", "orders", "activity"] as const).map((tab) => (
-                  <button
-                    key={tab}
-                    type="button"
-                    role="tab"
-                    aria-selected={activityTab === tab}
-                    onClick={() => setActivityTab(tab)}
-                    className={activityTab === tab
-                      ? "rounded-md bg-[#172235] px-3 py-2 text-xs font-semibold capitalize text-[#9ccfff]"
-                      : "rounded-md px-3 py-2 text-xs font-medium capitalize text-[#747f90] hover:text-white"}
-                  >
-                    {tab === "orders" ? "Open orders" : tab}
-                  </button>
-                ))}
-              </div>
-              <AccountActivityPanel
-                tab={activityTab}
-                authenticationLoading={authenticationLoading}
-                authenticated={authenticated}
-                state={accountState}
-                snapshot={hyperliquidAccount}
-                venueLabel={selectedVenue?.label ?? "venue"}
-                supported={useHyperliquidMarket}
+            ) : null}
+            {carryChrome.showReferenceChart ? (
+              <GholaMarketChart
+                label={carryWorkspaceOpen
+                  ? useHyperliquidMarket ? "Reference · Hyperliquid" : "Reference · Coinbase"
+                  : useHyperliquidMarket ? "Hyperliquid" : referenceMarketProduct ? `Coinbase · ${referenceMarketProduct}` : `${marketLabel} reference`}
+                frame={displayedFrame}
+                mode={chartMode}
+                onModeChange={onChartModeChange}
+                size="large"
+                height={390}
               />
-            </div>
+            ) : null}
+            {carryChrome.showVenueActivity ? (
+              <div className="mt-4 border-t border-[#20252d] pt-3">
+                <div className="flex gap-1 overflow-x-auto" role="tablist" aria-label="Trading activity">
+                  {(["positions", "orders", "activity"] as const).map((tab) => (
+                    <button
+                      key={tab}
+                      type="button"
+                      role="tab"
+                      aria-selected={activityTab === tab}
+                      onClick={() => setActivityTab(tab)}
+                      className={activityTab === tab
+                        ? "rounded-md bg-[#172235] px-3 py-2 text-xs font-semibold capitalize text-[#9ccfff]"
+                        : "rounded-md px-3 py-2 text-xs font-medium capitalize text-[#747f90] hover:text-white"}
+                    >
+                      {tab === "orders" ? "Open orders" : tab}
+                    </button>
+                  ))}
+                </div>
+                <AccountActivityPanel
+                  tab={activityTab}
+                  authenticationLoading={authenticationLoading}
+                  authenticated={authenticated}
+                  state={accountState}
+                  snapshot={hyperliquidAccount}
+                  venueLabel={selectedVenue?.label ?? "venue"}
+                  supported={useHyperliquidMarket}
+                />
+              </div>
+            ) : null}
           </section>
 
-          <aside className="xl:sticky xl:top-20 xl:self-start">
-            <div className="rounded-xl border border-[#292f38] bg-[linear-gradient(180deg,#11141a_0%,#0b0d11_100%)] p-4 shadow-[0_24px_70px_rgba(0,0,0,0.4)]">
+          {carryChrome.showVenueOrderTicket ? (
+            <aside className="xl:sticky xl:top-20 xl:self-start" aria-label="Venue order ticket">
+              <div className="rounded-xl border border-[#292f38] bg-[linear-gradient(180deg,#11141a_0%,#0b0d11_100%)] p-4 shadow-[0_24px_70px_rgba(0,0,0,0.4)]">
               <div className="mb-4 flex items-center justify-between">
                 <div>
                   <p className="text-sm font-semibold text-white">
@@ -1966,8 +1990,9 @@ function AlternateProductWorkspace({
               )}
               {perpError && <p role="alert" className="mt-3 rounded-md border border-[#5d3036] bg-[#2a1115] px-3 py-2 text-xs leading-5 text-[#ffb7bd]">{perpError}</p>}
               {perpNotice && <p role="status" className="mt-3 rounded-md border border-[#285c49] bg-[#0d251c] px-3 py-2 text-xs leading-5 text-[#92e1bd]">{perpNotice}</p>}
-            </div>
-          </aside>
+              </div>
+            </aside>
+          ) : null}
         </div>
       </div>
 

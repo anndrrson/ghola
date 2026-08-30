@@ -372,6 +372,62 @@ test("rejects restoring the retired standalone Carry workspace", () => {
   );
 });
 
+test("rejects Carry mode that restores venue-owned terminal chrome", () => {
+  for (const field of [
+    "showVenueReadiness",
+    "showVenueMarketStats",
+    "showVenueActivity",
+    "showVenueOrderTicket",
+  ]) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        webCarryTerminalChrome: sources.webCarryTerminalChrome.replace(
+          `${field}: false`,
+          `${field}: true`,
+        ),
+      }),
+      /carry_venue_(readiness_not_hidden|market_stats_not_hidden|activity_not_hidden|ticket_not_hidden)/,
+    );
+  }
+});
+
+test("rejects a Carry Position rail coupled to scanner qualification", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webTradeWorkspace: sources.webTradeWorkspace.replace(
+        "{carryWorkspaceOpen ? <CarryPositionRail /> : null}",
+        "{selectedExecution ? <CarryPositionRail /> : null}",
+      ),
+    }),
+    /carry_persistent_position_rail_missing/,
+  );
+});
+
+test("rejects live actions in the persistent Carry Position rail", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryPositionRail: `${sources.webCarryPositionRail}\nvoid executeCarryPositionEntry; void requestCarryPositionExit; void createCarryPosition;`,
+    }),
+    /carry_position_rail_live_(entry|exit|creation)_exposed/,
+  );
+});
+
+test("rejects Carry mode that removes the reference chart", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryTerminalChrome: sources.webCarryTerminalChrome.replaceAll(
+        "showReferenceChart: true",
+        "showReferenceChart: false",
+      ),
+    }),
+    /carry_reference_chart_hidden/,
+  );
+});
+
 test("rejects an integrated terminal that hides collateral-basis risk", () => {
   assert.throws(
     () => checkCarryExecutionContract({
