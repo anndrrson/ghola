@@ -7,9 +7,11 @@ import {
   assembleCarryReleaseEvidence,
   carryCreationInputEvidenceCommitment,
   carryEvidenceCommitment,
+  carryReleaseEvidenceCommitment,
   carryWorkerMaterialCommitment,
   readCarryReleaseEvidenceFile,
-  verifyCarryReleaseEvidence,
+  verifyCarryLifecycleEvidence,
+  verifyCarryReleaseEvidence as verifyCommittedCarryReleaseEvidence,
 } from "./verify-carry-release-evidence.mjs";
 import {
   CARRY_EXECUTION_VENUES,
@@ -23,6 +25,7 @@ import { hashMessage } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 const MANDATE_OWNER = privateKeyToAccount(`0x${"22".repeat(32)}`);
+const verifyCarryReleaseEvidence = verifyCarryLifecycleEvidence;
 
 test("reports missing and malformed proof artifacts with deterministic readiness codes", () => {
   const directory = mkdtempSync(join(tmpdir(), "ghola-carry-proof-"));
@@ -42,7 +45,11 @@ test("reports missing and malformed proof artifacts with deterministic readiness
   }
 });
 
-async function fixture({ longVenue = "hyperliquid", shortVenue = "aster" } = {}) {
+async function fixture({
+  longVenue = "hyperliquid",
+  shortVenue = "aster",
+  positionId = "carry:position:mainnet:proof:0001",
+} = {}) {
   const signedMandate = {
     version: 1,
     kind: "ghola_carry_risk_mandate",
@@ -50,7 +57,7 @@ async function fixture({ longVenue = "hyperliquid", shortVenue = "aster" } = {})
     network: "mainnet",
     owner_commitment: "owner:carry:mainnet:proof:0001",
     owner_wallet_address: MANDATE_OWNER.address.toLowerCase(),
-    position_id: "carry:position:mainnet:proof:0001",
+    position_id: positionId,
     mandate_id: "carry:mandate:mainnet:proof:0001",
     asset: "HYPE",
     long_venue_id: longVenue,
@@ -84,7 +91,7 @@ async function fixture({ longVenue = "hyperliquid", shortVenue = "aster" } = {})
     },
     request: { ambiguity_retry_performed: false },
     position: {
-      position_id: "carry:position:mainnet:proof:0001",
+      position_id: positionId,
       asset: "HYPE",
       target_notional_micro_usdc: 11_000_000,
       long_venue_id: longVenue,
@@ -209,7 +216,7 @@ async function fixture({ longVenue = "hyperliquid", shortVenue = "aster" } = {})
     },
     final_state: {
       owner_commitment: "owner:carry:mainnet:proof:0001",
-      carry_position_id: "carry:position:mainnet:proof:0001",
+      carry_position_id: positionId,
       checked_at: "2026-08-24T00:00:08.000Z",
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,
@@ -369,6 +376,25 @@ function leg(venue_id, side, reduce_only, client_order_commitment, fee_micro_usd
   };
 }
 
+async function committedReleaseFixture() {
+  const lifecycleEvidence = [
+    await fixture(),
+    await fixture({
+      longVenue: "lighter",
+      shortVenue: "aster",
+      positionId: "carry:position:mainnet:proof:0002",
+    }),
+  ];
+  const candidate = lifecycleEvidence[0].candidate;
+  const lifecycles = lifecycleEvidence.map((evidence) => {
+    const material = structuredClone(evidence);
+    delete material.candidate;
+    delete material.evidence_commitment;
+    return material;
+  });
+  return assembleCarryReleaseEvidence({ lifecycles, candidate });
+}
+
 test("accepts a capped paired mainnet lifecycle with exact evidence", async () => {
   assert.equal((await verifyCarryReleaseEvidence(await fixture())).ok, true);
 });
@@ -406,14 +432,80 @@ test("rejects creation evidence detached from its exact venue risk and account i
   );
 });
 
-test("assembles candidate metadata without changing worker-derived material", async () => {
-  const evidence = await fixture();
-  const candidate = evidence.candidate;
-  const material = structuredClone(evidence);
-  delete material.candidate;
-  delete material.evidence_commitment;
-  const assembled = assembleCarryReleaseEvidence({ material, candidate });
-  assert.equal((await verifyCarryReleaseEvidence(assembled)).ok, true);
+test("accepts two unique flat lifecycles across two venue pairs and aggregates exact net value", async () => {
+  const assembled = await committedReleaseFixture();
+  const verified = await verifyCommittedCarryReleaseEvidence(assembled);
+  assert.equal(verified.ok, true);
+  assert.equal(verified.lifecycle_count, 2);
+  assert.equal(verified.unique_position_count, 2);
+  assert.equal(verified.distinct_venue_pair_count, 2);
+  assert.equal(verified.realized_net_value_micro_usdc, 68_000);
+});
+
+test("rejects fewer than two unique positions or distinct venue pairs", async () => {
+  const one = await committedReleaseFixture();
+  one.lifecycles = one.lifecycles.slice(0, 1);
+  one.aggregate.lifecycle_count = 1;
+  one.aggregate.unique_position_count = 1;
+  one.aggregate.distinct_venue_pair_count = 1;
+  one.aggregate.realized_net_value_micro_usdc = 34_000;
+  one.evidence_commitment = carryReleaseEvidenceCommitment(one);
+  await assert.rejects(
+    () => verifyCommittedCarryReleaseEvidence(one),
+    /lifecycle_count_insufficient|unique_position_count_insufficient|distinct_venue_pair_count_insufficient/,
+  );
+
+  const duplicatePosition = await committedReleaseFixture();
+  duplicatePosition.lifecycles[1].position.position_id = duplicatePosition.lifecycles[0].position.position_id;
+  duplicatePosition.aggregate.unique_position_count = 1;
+  duplicatePosition.evidence_commitment = carryReleaseEvidenceCommitment(duplicatePosition);
+  await assert.rejects(
+    () => verifyCommittedCarryReleaseEvidence(duplicatePosition),
+    /unique_position_count_insufficient/,
+  );
+
+  const duplicatePair = await committedReleaseFixture();
+  duplicatePair.lifecycles[1] = structuredClone(duplicatePair.lifecycles[0]);
+  duplicatePair.lifecycles[1].position.position_id = "carry:position:mainnet:proof:0002";
+  duplicatePair.aggregate.unique_position_count = 2;
+  duplicatePair.aggregate.distinct_venue_pair_count = 1;
+  duplicatePair.evidence_commitment = carryReleaseEvidenceCommitment(duplicatePair);
+  await assert.rejects(
+    () => verifyCommittedCarryReleaseEvidence(duplicatePair),
+    /distinct_venue_pair_count_insufficient/,
+  );
+});
+
+test("rejects any non-flat lifecycle and an inexact aggregate realized net value", async () => {
+  const nonFlat = await committedReleaseFixture();
+  nonFlat.lifecycles[1].final_state.gross_exposure_micro_usdc = 1;
+  nonFlat.lifecycles[1].worker_material_commitment = carryWorkerMaterialCommitment(nonFlat.lifecycles[1]);
+  nonFlat.lifecycles[1].evidence_commitment = carryEvidenceCommitment(nonFlat.lifecycles[1]);
+  nonFlat.evidence_commitment = carryReleaseEvidenceCommitment(nonFlat);
+  await assert.rejects(
+    () => verifyCommittedCarryReleaseEvidence(nonFlat),
+    /lifecycle_invalid:1:.*final_exposure_not_flat/,
+  );
+
+  const incompleteCosts = await committedReleaseFixture();
+  incompleteCosts.lifecycles[1].value_ledger.complete_costs = false;
+  incompleteCosts.lifecycles[1].worker_material_commitment = carryWorkerMaterialCommitment(
+    incompleteCosts.lifecycles[1],
+  );
+  incompleteCosts.lifecycles[1].evidence_commitment = carryEvidenceCommitment(incompleteCosts.lifecycles[1]);
+  incompleteCosts.evidence_commitment = carryReleaseEvidenceCommitment(incompleteCosts);
+  await assert.rejects(
+    () => verifyCommittedCarryReleaseEvidence(incompleteCosts),
+    /lifecycle_invalid:1:.*value_ledger_incomplete/,
+  );
+
+  const inexactAggregate = await committedReleaseFixture();
+  inexactAggregate.aggregate.realized_net_value_micro_usdc += 1;
+  inexactAggregate.evidence_commitment = carryReleaseEvidenceCommitment(inexactAggregate);
+  await assert.rejects(
+    () => verifyCommittedCarryReleaseEvidence(inexactAggregate),
+    /aggregate_realized_net_value_mismatch/,
+  );
 });
 
 test("rejects an ambiguous resubmission", async () => {

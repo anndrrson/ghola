@@ -20,6 +20,7 @@ import { readCarryShadowQualification } from "./carry-shadow-qualification.js";
 import { loadCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
 
 const DEFAULT_LIFECYCLE_PROOF_MAX_AGE_MS = 90 * 86_400_000;
+const MAX_LIFECYCLE_PROOFS_PER_ASSET = 64;
 
 export async function recordCompletedCarryLifecycleProof({
   state,
@@ -28,7 +29,9 @@ export async function recordCompletedCarryLifecycleProof({
   env = process.env,
   now_ms: nowMs = Date.now(),
 }) {
-  if (typeof state?.putIdempotency !== "function") return denied("carry_lifecycle_proof_state_unavailable");
+  if (typeof state?.putIdempotency !== "function" || typeof state?.getIdempotency !== "function") {
+    return denied("carry_lifecycle_proof_state_unavailable");
+  }
   const imageDigest = runtimeCarryQualificationImageDigest(env);
   if (!imageDigest) return denied("carry_lifecycle_proof_image_missing");
   const completed = await buildCompletedCarryReleaseMaterial({
@@ -78,10 +81,43 @@ export async function recordCompletedCarryLifecycleProof({
     owner_commitment: ownerCommitment,
     image_digest: imageDigest,
     asset: material.position.asset,
+    position_id: material.position.position_id,
     now_ms: nowMs,
   });
   if (!assessed.ok) return assessed;
-  await state.putIdempotency(carryLifecycleProofKey(ownerCommitment, imageDigest, material.position.asset), structuredClone(proof));
+  const proofKey = carryLifecycleProofKey(
+    ownerCommitment,
+    imageDigest,
+    material.position.asset,
+    material.position.position_id,
+    venueIds,
+  );
+  await state.putIdempotency(proofKey, structuredClone(proof));
+  const indexKey = carryLifecycleProofIndexKey(ownerCommitment, imageDigest, material.position.asset);
+  const priorIndex = (await state.getIdempotency(indexKey))?.receipt;
+  const priorEntries = validLifecycleProofIndex(priorIndex, {
+    ownerCommitment,
+    imageDigest,
+    asset: material.position.asset,
+  }) ? priorIndex.entries : [];
+  const index = {
+    version: 1,
+    kind: "ghola_carry_lifecycle_proof_index",
+    owner_commitment: ownerCommitment,
+    worker_image_digest: imageDigest,
+    asset: material.position.asset,
+    entries: [
+      {
+        position_id: proof.position_id,
+        venue_ids: [...venueIds],
+        proof_key: proofKey,
+        verified_at_ms: proof.verified_at_ms,
+      },
+      ...priorEntries.filter((entry) => entry.position_id !== proof.position_id),
+    ].slice(0, MAX_LIFECYCLE_PROOFS_PER_ASSET),
+  };
+  index.evidence_commitment = lifecycleProofIndexCommitment(index);
+  await state.putIdempotency(indexKey, index);
   return { ok: true, proof: assessed.proof };
 }
 
@@ -89,6 +125,7 @@ export async function readCompletedCarryLifecycleProof({
   state,
   owner_commitment: ownerCommitment,
   asset,
+  position_id: positionId,
   env = process.env,
   now_ms: nowMs = Date.now(),
 }) {
@@ -96,13 +133,30 @@ export async function readCompletedCarryLifecycleProof({
   if (!imageDigest) return denied("carry_lifecycle_proof_image_missing");
   const normalizedAsset = String(asset || "").trim().toUpperCase();
   if (!/^[A-Z0-9]{1,20}$/.test(normalizedAsset)) return denied("carry_lifecycle_proof_asset_invalid");
+  if (positionId != null && !commitment(positionId)) return denied("carry_lifecycle_proof_position_invalid");
   if (typeof state?.getIdempotency !== "function") return denied("carry_lifecycle_proof_state_unavailable");
-  const stored = await state.getIdempotency(carryLifecycleProofKey(ownerCommitment, imageDigest, normalizedAsset));
+  const index = (await state.getIdempotency(
+    carryLifecycleProofIndexKey(ownerCommitment, imageDigest, normalizedAsset),
+  ))?.receipt;
+  const validIndex = validLifecycleProofIndex(index, {
+    ownerCommitment,
+    imageDigest,
+    asset: normalizedAsset,
+  });
+  const reference = validIndex
+    ? index.entries.find((entry) => !positionId || entry.position_id === positionId)
+    : null;
+  const stored = reference
+    ? await state.getIdempotency(reference.proof_key)
+    : positionId
+      ? null
+      : await state.getIdempotency(legacyCarryLifecycleProofKey(ownerCommitment, imageDigest, normalizedAsset));
   return assessCompletedCarryLifecycleProof({
     proof: stored?.receipt,
     owner_commitment: ownerCommitment,
     image_digest: imageDigest,
     asset: normalizedAsset,
+    position_id: positionId,
     now_ms: nowMs,
   });
 }
@@ -112,6 +166,7 @@ export function assessCompletedCarryLifecycleProof({
   owner_commitment: ownerCommitment,
   image_digest: imageDigest,
   asset,
+  position_id: positionId,
   now_ms: nowMs = Date.now(),
 }) {
   if (!proof || typeof proof !== "object" || Array.isArray(proof)) return denied("carry_lifecycle_proof_missing");
@@ -126,6 +181,7 @@ export function assessCompletedCarryLifecycleProof({
     && proof.owner_commitment === ownerCommitment
     && proof.worker_image_digest === imageDigest
     && (!asset || proof.asset === String(asset).trim().toUpperCase())
+    && (!positionId || proof.position_id === positionId)
     && commitment(proof.position_id)
     && /^[A-Z0-9]{1,20}$/.test(String(proof.asset || ""))
     && venueIds.length === 2
@@ -158,8 +214,19 @@ export function assessCompletedCarryLifecycleProof({
   return { ok: true, proof: Object.freeze(structuredClone(proof)) };
 }
 
-export function carryLifecycleProofKey(ownerCommitment, imageDigest, asset) {
-  return `carry:lifecycle-proof:${digest(`${ownerCommitment}\0${imageDigest}\0${String(asset || "").toUpperCase()}`).slice(0, 40)}`;
+export function carryLifecycleProofKey(ownerCommitment, imageDigest, asset, positionId, venueIds) {
+  const pair = normalizedVenuePair(venueIds);
+  return `carry:lifecycle-proof:${digest([
+    ownerCommitment,
+    imageDigest,
+    String(asset || "").toUpperCase(),
+    String(positionId || ""),
+    pair,
+  ].join("\0")).slice(0, 40)}`;
+}
+
+export function carryLifecycleProofIndexKey(ownerCommitment, imageDigest, asset) {
+  return `carry:lifecycle-proof-index:${digest(`${ownerCommitment}\0${imageDigest}\0${String(asset || "").toUpperCase()}`).slice(0, 40)}`;
 }
 
 export async function buildCompletedCarryReleaseMaterial({
@@ -840,6 +907,47 @@ function lifecycleProofCommitment(proof) {
   const payload = { ...proof };
   delete payload.evidence_commitment;
   return `carry:lifecycle-proof:evidence:${digest(stableJson(payload))}`;
+}
+
+function lifecycleProofIndexCommitment(index) {
+  const payload = { ...index };
+  delete payload.evidence_commitment;
+  return `carry:lifecycle-proof-index:evidence:${digest(stableJson(payload))}`;
+}
+
+function validLifecycleProofIndex(index, { ownerCommitment, imageDigest, asset }) {
+  if (!index || typeof index !== "object" || Array.isArray(index)) return false;
+  const entries = Array.isArray(index.entries) ? index.entries : [];
+  return index.version === 1
+    && index.kind === "ghola_carry_lifecycle_proof_index"
+    && index.owner_commitment === ownerCommitment
+    && index.worker_image_digest === imageDigest
+    && index.asset === String(asset || "").toUpperCase()
+    && entries.length > 0
+    && entries.length <= MAX_LIFECYCLE_PROOFS_PER_ASSET
+    && new Set(entries.map((entry) => entry.position_id)).size === entries.length
+    && entries.every((entry) => commitment(entry?.position_id)
+      && normalizedVenuePair(entry?.venue_ids)
+      && positiveInteger(entry?.verified_at_ms)
+      && entry?.proof_key === carryLifecycleProofKey(
+        ownerCommitment,
+        imageDigest,
+        asset,
+        entry.position_id,
+        entry.venue_ids,
+      ))
+    && index.evidence_commitment === lifecycleProofIndexCommitment(index);
+}
+
+function normalizedVenuePair(venueIds) {
+  const venues = Array.isArray(venueIds) ? venueIds.map((venueId) => String(venueId || "")) : [];
+  return venues.length === 2 && venues[0] && venues[1] && venues[0] !== venues[1]
+    ? venues.join(":")
+    : "";
+}
+
+function legacyCarryLifecycleProofKey(ownerCommitment, imageDigest, asset) {
+  return `carry:lifecycle-proof:${digest(`${ownerCommitment}\0${imageDigest}\0${String(asset || "").toUpperCase()}`).slice(0, 40)}`;
 }
 
 function lifecycleProofMaxAge(env) {

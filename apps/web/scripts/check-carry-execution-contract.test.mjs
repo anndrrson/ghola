@@ -526,16 +526,16 @@ test("rejects release proof that accepts manual-only monitoring", () => {
   );
 });
 
-test("rejects lifecycle proof storage that is not isolated per asset", () => {
+test("rejects lifecycle proof storage that is not isolated per position and venue pair", () => {
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
       releaseMaterial: sources.releaseMaterial.replace(
-        "carryLifecycleProofKey(ownerCommitment, imageDigest, material.position.asset)",
-        "carryLifecycleProofKey(ownerCommitment, imageDigest)",
+        "material.position.position_id,\n    venueIds,",
+        '"",\n    [],',
       ),
     }),
-    /carry_lifecycle_proof_asset_record_binding_missing/,
+    /carry_lifecycle_proof_position_pair_record_binding_missing/,
   );
 });
 

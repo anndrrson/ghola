@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   assessCompletedCarryLifecycleProof,
   buildCompletedCarryReleaseMaterial,
+  carryLifecycleProofIndexKey,
   carryLifecycleProofKey,
   readCompletedCarryLifecycleProof,
   recordCompletedCarryLifecycleProof,
@@ -185,11 +186,28 @@ test("records a durable owner- and image-bound paired lifecycle proof", async ()
   });
   assert.deepEqual(recorded.proof.venue_ids, ["hyperliquid", "aster"]);
   assert.match(recorded.proof.evidence_commitment, /^carry:lifecycle-proof:evidence:[0-9a-f]{64}$/);
+  const storedIndex = (await fixture.state.getIdempotency(
+    carryLifecycleProofIndexKey(OWNER, IMAGE, "HYPE"),
+  ))?.receipt;
+  assert.equal(storedIndex.entries.length, 1);
+  assert.deepEqual(storedIndex.entries[0].venue_ids, ["hyperliquid", "aster"]);
+  assert.equal(storedIndex.entries[0].position_id, fixture.record.position.position_id);
+  assert.equal(
+    storedIndex.entries[0].proof_key,
+    carryLifecycleProofKey(
+      OWNER,
+      IMAGE,
+      "HYPE",
+      fixture.record.position.position_id,
+      ["hyperliquid", "aster"],
+    ),
+  );
 
   const loaded = await readCompletedCarryLifecycleProof({
     state: fixture.state,
     owner_commitment: OWNER,
     asset: "HYPE",
+    position_id: fixture.record.position.position_id,
     env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
     now_ms: NOW + 1,
   });
@@ -235,19 +253,40 @@ test("does not reuse lifecycle proof across owners or worker images", async () =
     env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
     now_ms: NOW,
   });
+  const wrongPosition = await readCompletedCarryLifecycleProof({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    asset: "HYPE",
+    position_id: "carry:position:release:other",
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
   assert.equal(wrongOwner.error, "carry_lifecycle_proof_missing");
   assert.equal(wrongImage.error, "carry_lifecycle_proof_missing");
   assert.equal(wrongAsset.error, "carry_lifecycle_proof_missing");
+  assert.equal(wrongPosition.error, "carry_lifecycle_proof_missing");
 });
 
-test("keeps lifecycle proof storage isolated per asset", () => {
+test("keeps lifecycle proof storage isolated per asset, position, and venue pair", () => {
   assert.notEqual(
-    carryLifecycleProofKey(OWNER, IMAGE, "BTC"),
-    carryLifecycleProofKey(OWNER, IMAGE, "ETH"),
+    carryLifecycleProofKey(OWNER, IMAGE, "BTC", "carry:position:0001", ["hyperliquid", "aster"]),
+    carryLifecycleProofKey(OWNER, IMAGE, "ETH", "carry:position:0001", ["hyperliquid", "aster"]),
   );
   assert.equal(
-    carryLifecycleProofKey(OWNER, IMAGE, "hype"),
-    carryLifecycleProofKey(OWNER, IMAGE, "HYPE"),
+    carryLifecycleProofKey(OWNER, IMAGE, "hype", "carry:position:0001", ["hyperliquid", "aster"]),
+    carryLifecycleProofKey(OWNER, IMAGE, "HYPE", "carry:position:0001", ["hyperliquid", "aster"]),
+  );
+  assert.notEqual(
+    carryLifecycleProofKey(OWNER, IMAGE, "HYPE", "carry:position:0001", ["hyperliquid", "aster"]),
+    carryLifecycleProofKey(OWNER, IMAGE, "HYPE", "carry:position:0002", ["lighter", "aster"]),
+  );
+  assert.notEqual(
+    carryLifecycleProofKey(OWNER, IMAGE, "HYPE", "carry:position:0001", ["hyperliquid", "aster"]),
+    carryLifecycleProofKey(OWNER, IMAGE, "HYPE", "carry:position:0001", ["hyperliquid", "lighter"]),
+  );
+  assert.equal(
+    carryLifecycleProofIndexKey(OWNER, IMAGE, "hype"),
+    carryLifecycleProofIndexKey(OWNER, IMAGE, "HYPE"),
   );
 });
 

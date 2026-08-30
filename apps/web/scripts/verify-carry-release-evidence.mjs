@@ -48,6 +48,66 @@ export async function verifyCarryReleaseEvidence(evidence) {
     if (!condition) failures.push(code);
   };
 
+  fail(evidence?.version === 1, "release_version_invalid");
+  fail(evidence?.kind === "ghola_cross_venue_carry_mainnet_release_proof", "release_kind_invalid");
+  fail(evidence?.network === "mainnet", "release_mainnet_required");
+
+  const lifecycles = array(evidence?.lifecycles);
+  fail(lifecycles.length >= 2, "lifecycle_count_insufficient");
+  const positionIds = lifecycles.map((lifecycle) => String(lifecycle?.position?.position_id || ""));
+  const venuePairs = lifecycles.map((lifecycle) => normalizedVenuePair(lifecycle?.position));
+  fail(positionIds.every(identifier)
+    && positionIds.length >= 2
+    && new Set(positionIds).size === positionIds.length,
+  "unique_position_count_insufficient");
+  fail(venuePairs.every(Boolean) && new Set(venuePairs).size >= 2, "distinct_venue_pair_count_insufficient");
+
+  const candidate = evidence?.candidate;
+  let realizedNet = 0n;
+  for (const [index, lifecycle] of lifecycles.entries()) {
+    fail(sameRecord(lifecycle?.candidate, candidate), `lifecycle_candidate_mismatch:${index}`);
+    try {
+      await verifyCarryLifecycleEvidence(lifecycle);
+    } catch (error) {
+      failures.push(`lifecycle_invalid:${index}:${error instanceof Error ? error.message : String(error)}`);
+    }
+    const net = signedInteger(lifecycle?.value_ledger?.realized?.net_value_micro_usdc);
+    if (net === null) {
+      failures.push(`lifecycle_realized_net_invalid:${index}`);
+    } else {
+      realizedNet += BigInt(net);
+    }
+  }
+
+  const aggregate = evidence?.aggregate || {};
+  fail(aggregate.lifecycle_count === lifecycles.length, "aggregate_lifecycle_count_mismatch");
+  fail(aggregate.unique_position_count === new Set(positionIds).size, "aggregate_position_count_mismatch");
+  fail(aggregate.distinct_venue_pair_count === new Set(venuePairs.filter(Boolean)).size,
+    "aggregate_venue_pair_count_mismatch");
+  const aggregateNet = signedInteger(aggregate.realized_net_value_micro_usdc);
+  fail(aggregateNet !== null && BigInt(aggregateNet) === realizedNet, "aggregate_realized_net_value_mismatch");
+  fail(evidence?.evidence_commitment === carryReleaseEvidenceCommitment(evidence),
+    "release_evidence_commitment_mismatch");
+
+  if (failures.length > 0) {
+    throw new Error(`Carry release evidence failed: ${[...new Set(failures)].join(", ")}`);
+  }
+  return {
+    ok: true,
+    evidence_commitment: evidence.evidence_commitment,
+    lifecycle_count: lifecycles.length,
+    unique_position_count: new Set(positionIds).size,
+    distinct_venue_pair_count: new Set(venuePairs).size,
+    realized_net_value_micro_usdc: aggregateNet,
+  };
+}
+
+export async function verifyCarryLifecycleEvidence(evidence) {
+  const failures = [];
+  const fail = (condition, code) => {
+    if (!condition) failures.push(code);
+  };
+
   fail(evidence?.version === 1, "version_invalid");
   fail(evidence?.kind === "ghola_cross_venue_carry_mainnet_lifecycle_proof", "kind_invalid");
   fail(evidence?.network === "mainnet", "mainnet_required");
@@ -444,12 +504,48 @@ export function carryEvidenceCommitment(evidence) {
   return `carryproof_${createHash("sha256").update(stableJson(payload)).digest("hex")}`;
 }
 
-export function assembleCarryReleaseEvidence({ material, candidate }) {
-  const evidence = { ...structuredClone(material), candidate: structuredClone(candidate) };
-  if (evidence.worker_material_commitment !== carryWorkerMaterialCommitment(evidence)) {
-    throw new Error("Carry release material commitment mismatch");
+export function carryReleaseEvidenceCommitment(evidence) {
+  const payload = { ...evidence };
+  delete payload.evidence_commitment;
+  return `carryrelease_${createHash("sha256").update(stableJson(payload)).digest("hex")}`;
+}
+
+export function assembleCarryReleaseEvidence({ lifecycles, candidate }) {
+  if (!Array.isArray(lifecycles) || lifecycles.length < 2) {
+    throw new Error("Carry release requires at least two lifecycle materials");
   }
-  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  const committedLifecycles = lifecycles.map((material) => {
+    const lifecycle = { ...structuredClone(material), candidate: structuredClone(candidate) };
+    delete lifecycle.evidence_commitment;
+    if (lifecycle.worker_material_commitment !== carryWorkerMaterialCommitment(lifecycle)) {
+      throw new Error("Carry release material commitment mismatch");
+    }
+    lifecycle.evidence_commitment = carryEvidenceCommitment(lifecycle);
+    return lifecycle;
+  });
+  const positionIds = committedLifecycles.map((lifecycle) => String(lifecycle.position?.position_id || ""));
+  const venuePairs = committedLifecycles.map((lifecycle) => normalizedVenuePair(lifecycle.position)).filter(Boolean);
+  const realizedNet = committedLifecycles.reduce((sum, lifecycle) => {
+    const net = signedInteger(lifecycle?.value_ledger?.realized?.net_value_micro_usdc);
+    if (net === null) throw new Error("Carry release realized net value invalid");
+    const next = sum + net;
+    if (!Number.isSafeInteger(next)) throw new Error("Carry release realized net value overflow");
+    return next;
+  }, 0);
+  const evidence = {
+    version: 1,
+    kind: "ghola_cross_venue_carry_mainnet_release_proof",
+    network: "mainnet",
+    candidate: structuredClone(candidate),
+    lifecycles: committedLifecycles,
+    aggregate: {
+      lifecycle_count: committedLifecycles.length,
+      unique_position_count: new Set(positionIds).size,
+      distinct_venue_pair_count: new Set(venuePairs).size,
+      realized_net_value_micro_usdc: realizedNet,
+    },
+  };
+  evidence.evidence_commitment = carryReleaseEvidenceCommitment(evidence);
   return evidence;
 }
 
@@ -620,6 +716,16 @@ function sameRecord(left, right) {
   const entries = Object.entries(right || {});
   return Object.keys(left).length === entries.length
     && entries.every(([key, value]) => left[key] === value);
+}
+
+function normalizedVenuePair(position) {
+  const venues = [
+    String(position?.long_venue_id || ""),
+    String(position?.short_venue_id || ""),
+  ];
+  return venues[0] && venues[1] && venues[0] !== venues[1]
+    ? [...venues].sort().join(":")
+    : "";
 }
 
 function stableJson(value) {
