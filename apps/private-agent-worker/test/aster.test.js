@@ -7,6 +7,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import {
   AsterExecutionError,
   asterCredentialFromVault,
+  readAsterAccountState,
   readAsterFundingSettlements,
   signedRequest,
   submitAndReconcileAsterExecution,
@@ -68,29 +69,34 @@ test("performs authenticated account and order-shape checks without submitting",
     env: ENV,
     fetchImpl: async (url, init) => {
       const parsed = new URL(url);
-      calls.push({ path: parsed.pathname, method: init.method });
+      calls.push({ path: parsed.pathname, method: init.method, symbol: parsed.searchParams.get("symbol") });
       if (parsed.pathname.endsWith("/time")) return jsonResponse({ serverTime: 1_800_000_000_000 });
+      if (parsed.pathname.endsWith("/premiumIndex")) return jsonResponse({ symbol: "BTCUSDT", markPrice: "60000" });
       if (parsed.pathname.endsWith("/exchangeInfo")) return jsonResponse({ symbols: [{
         symbol: "BTCUSDT",
         status: "TRADING",
         filters: [
-          { filterType: "PRICE_FILTER", tickSize: "0.10" },
-          { filterType: "LOT_SIZE", stepSize: "0.001" },
+          { filterType: "PRICE_FILTER", minPrice: "0.10", maxPrice: "1000000", tickSize: "0.10" },
+          { filterType: "LOT_SIZE", minQty: "0.001", maxQty: "100", stepSize: "0.001" },
+          { filterType: "MIN_NOTIONAL", notional: "5" },
+          { filterType: "PERCENT_PRICE", multiplierUp: "1.15", multiplierDown: "0.85" },
+          { filterType: "MAX_NUM_ORDERS", limit: 200 },
         ],
       }] });
       if (parsed.pathname.endsWith("/account")) return jsonResponse({
         canTrade: true,
         availableBalance: "100",
+        totalMarginBalance: "100",
         totalInitialMargin: "10",
         totalMaintMargin: "5",
       });
       if (parsed.pathname.endsWith("/positionRisk")) return jsonResponse([{
-        symbol: "BTCUSDT",
+        symbol: "ETHUSDT",
         positionAmt: "0.5",
         markPrice: "100000",
         liquidationPrice: "70000",
       }]);
-      if (parsed.pathname.endsWith("/openOrders")) return jsonResponse([]);
+      if (parsed.pathname.endsWith("/openOrders")) return jsonResponse([{ symbol: "ETHUSDT", orderId: 9 }]);
       if (parsed.pathname.endsWith("/commissionRate")) return jsonResponse({ makerCommissionRate: "0.0001", takerCommissionRate: "0.00035" });
       return jsonResponse({}, 404);
     },
@@ -101,15 +107,260 @@ test("performs authenticated account and order-shape checks without submitting",
   assert.equal(result.account.fee_source, "aster_account_commission_rate");
   assert.equal(result.account.fees_exact_for_account, true);
   assert.equal(result.account.fees_conservative_upper_bound, false);
+  assert.deepEqual(result.market_rules, {
+    source: "aster_fapi_v3_exchange_info",
+    price_filter: { min_price: "0.1", max_price: "1000000", tick_size: "0.1" },
+    lot_size: { min_quantity: "0.001", max_quantity: "100", step_size: "0.001" },
+    minimum_notional: "5",
+    percent_price: { mark_price: "60000", multiplier_up: "1.15", multiplier_down: "0.85" },
+    max_num_orders: { limit: 200 },
+  });
   assert.equal(result.account.position_count, 1);
+  assert.equal(result.account.open_order_count, 1);
+  assert.equal(result.account.target_symbol_open_order_count, 0);
+  assert.equal(result.account.flat_zero_orders, false);
   assert.equal(result.account.liquidation_distance_bps, 3_000);
   assert.equal(result.account.liquidation_distance_verified, true);
   assert.equal(result.account.liquidation_distance_source, "aster_fapi_v3_position_risk_v1");
   assert.equal(result.authority_boundary.venue_native_trade_only, true);
   assert.equal(result.authority_boundary.withdrawal_request_permitted, false);
-  assert.equal(calls.length, 6);
+  assert.equal(calls.length, 7);
   assert.equal(calls.every((call) => call.method === "GET"), true);
   assert.equal(calls.some((call) => call.path.endsWith("/order")), false);
+  assert.equal(calls.find((call) => call.path.endsWith("/positionRisk")).symbol, null);
+  assert.equal(calls.find((call) => call.path.endsWith("/openOrders")).symbol, null);
+  assert.equal(calls.find((call) => call.path.endsWith("/commissionRate")).symbol, "BTCUSDT");
+});
+
+test("rejects an Aster order below venue minimum notional before authenticated account checks", async () => {
+  const calls = [];
+  await assert.rejects(() => verifyAsterNoSubmit({
+    credential: credential(),
+    instruction: orderInstruction(),
+    clientOrderId: "ghola-carry-filter-1",
+    now: () => 1_800_000_000_000,
+    env: ENV,
+    fetchImpl: async (url, init) => {
+      const path = new URL(url).pathname;
+      calls.push({ path, method: init.method });
+      if (path.endsWith("/time")) return jsonResponse({ serverTime: 1_800_000_000_000 });
+      if (path.endsWith("/premiumIndex")) return jsonResponse({ symbol: "BTCUSDT", markPrice: "60000" });
+      if (path.endsWith("/exchangeInfo")) return jsonResponse({ symbols: [{
+        symbol: "BTCUSDT",
+        status: "TRADING",
+        filters: [
+          { filterType: "PRICE_FILTER", minPrice: "0.10", maxPrice: "1000000", tickSize: "0.10" },
+          { filterType: "LOT_SIZE", minQty: "0.001", maxQty: "100", stepSize: "0.001" },
+          { filterType: "MIN_NOTIONAL", notional: "1000" },
+          { filterType: "MAX_NUM_ORDERS", limit: 200 },
+        ],
+      }] });
+      throw new Error("authenticated account read must not run");
+    },
+  }), (error) => error instanceof AsterExecutionError
+    && error.code === "venue_rejected"
+    && /minimum notional/.test(error.message));
+  assert.equal(calls.length, 3);
+  assert.equal(calls.every((call) => call.method === "GET"), true);
+  assert.equal(calls.some((call) => call.path.endsWith("/account")), false);
+});
+
+test("requires canonical PRICE_FILTER and LOT_SIZE evidence before authenticated Aster checks", async (t) => {
+  const canonical = [
+    { filterType: "PRICE_FILTER", minPrice: "0.10", maxPrice: "1000000", tickSize: "0.10" },
+    { filterType: "LOT_SIZE", minQty: "0.001", maxQty: "100", stepSize: "0.001" },
+    { filterType: "MAX_NUM_ORDERS", limit: 200 },
+  ];
+  for (const missingType of ["PRICE_FILTER", "LOT_SIZE"]) {
+    await t.test(`missing ${missingType}`, async () => {
+      let authenticatedRead = false;
+      await assert.rejects(() => verifyAsterNoSubmit({
+        credential: credential(),
+        instruction: orderInstruction(),
+        clientOrderId: `ghola-filter-${missingType === "PRICE_FILTER" ? "price" : "lot"}`,
+        now: () => 1_800_000_000_000,
+        env: ENV,
+        fetchImpl: async (url) => {
+          const path = new URL(url).pathname;
+          if (path.endsWith("/time")) return jsonResponse({ serverTime: 1_800_000_000_000 });
+          if (path.endsWith("/premiumIndex")) return jsonResponse({ symbol: "BTCUSDT", markPrice: "60000" });
+          if (path.endsWith("/exchangeInfo")) return jsonResponse({ symbols: [{
+            symbol: "BTCUSDT",
+            status: "TRADING",
+            filters: canonical.filter((filter) => filter.filterType !== missingType),
+          }] });
+          authenticatedRead = true;
+          throw new Error("authenticated account read must not run");
+        },
+      }), (error) => error instanceof AsterExecutionError
+        && error.code === "connector_submit_failed"
+        && error.message.includes(missingType));
+      assert.equal(authenticatedRead, false);
+    });
+  }
+});
+
+test("uses exact decimal math for Aster minimum-notional validation", async () => {
+  await assert.rejects(() => verifyAsterNoSubmit({
+    credential: credential(),
+    instruction: {
+      ...orderInstruction(),
+      order: { ...orderInstruction().order, base_size: "0.2", limit_price: "0.1" },
+    },
+    clientOrderId: "ghola-exact-notional-1",
+    now: () => 1_800_000_000_000,
+    env: ENV,
+    fetchImpl: noSubmitFetch({ filters: [
+      { filterType: "PRICE_FILTER", minPrice: "0.1", maxPrice: "100", tickSize: "0.1" },
+      { filterType: "LOT_SIZE", minQty: "0.1", maxQty: "100", stepSize: "0.1" },
+      { filterType: "MIN_NOTIONAL", notional: "0.020000000000000001" },
+      { filterType: "MAX_NUM_ORDERS", limit: 200 },
+    ] }),
+  }), (error) => error instanceof AsterExecutionError
+    && error.code === "venue_rejected"
+    && /minimum notional/.test(error.message));
+});
+
+test("honors disabled Aster maximum-price and tick-size rules", async () => {
+  const result = await verifyAsterNoSubmit({
+    credential: credential(),
+    instruction: orderInstruction(),
+    clientOrderId: "ghola-disabled-price-rules-1",
+    now: () => 1_800_000_000_000,
+    env: ENV,
+    fetchImpl: noSubmitFetch({ filters: [
+      { filterType: "PRICE_FILTER", minPrice: "0", maxPrice: "0", tickSize: "0" },
+      { filterType: "LOT_SIZE", minQty: "0.001", maxQty: "100", stepSize: "0.001" },
+      { filterType: "MAX_NUM_ORDERS", limit: 200 },
+    ] }),
+  });
+  assert.equal(result.status, "verified_ready");
+  assert.deepEqual(result.market_rules.price_filter, {
+    min_price: "0",
+    max_price: "0",
+    tick_size: "0",
+  });
+});
+
+test("fails closed on malformed or ambiguous Aster filter and mark-price evidence", async (t) => {
+  const base = [
+    { filterType: "PRICE_FILTER", minPrice: "0.1", maxPrice: "1000000", tickSize: "0.1" },
+    { filterType: "LOT_SIZE", minQty: "0.001", maxQty: "100", stepSize: "0.001" },
+    { filterType: "MAX_NUM_ORDERS", limit: 200 },
+  ];
+  const cases = [
+    { name: "malformed minimum notional", filters: [...base, { filterType: "MIN_NOTIONAL", notional: "invalid" }] },
+    { name: "duplicate minimum notional", filters: [...base, { filterType: "MIN_NOTIONAL", notional: "5" }, { filterType: "MIN_NOTIONAL", notional: "6" }] },
+    { name: "duplicate percent price", filters: [...base, { filterType: "PERCENT_PRICE", multiplierUp: "1.1", multiplierDown: "0.9" }, { filterType: "PERCENT_PRICE", multiplierUp: "1.2", multiplierDown: "0.8" }] },
+    { name: "mismatched mark symbol", filters: base, markSymbol: "ETHUSDT" },
+  ];
+  for (const [index, item] of cases.entries()) {
+    await t.test(item.name, async () => {
+      await assert.rejects(() => verifyAsterNoSubmit({
+        credential: credential(),
+        instruction: orderInstruction(),
+        clientOrderId: `ghola-filter-proof-${index}`,
+        now: () => 1_800_000_000_000,
+        env: ENV,
+        fetchImpl: noSubmitFetch(item),
+      }), (error) => error instanceof AsterExecutionError && error.code === "connector_submit_failed");
+    });
+  }
+});
+
+test("rejects no-submit readiness when the Aster symbol open-order limit is reached", async () => {
+  await assert.rejects(() => verifyAsterNoSubmit({
+    credential: credential(),
+    instruction: orderInstruction(),
+    clientOrderId: "ghola-max-orders-1",
+    now: () => 1_800_000_000_000,
+    env: ENV,
+    fetchImpl: noSubmitFetch({
+      filters: [
+        { filterType: "PRICE_FILTER", minPrice: "0.1", maxPrice: "1000000", tickSize: "0.1" },
+        { filterType: "LOT_SIZE", minQty: "0.001", maxQty: "100", stepSize: "0.001" },
+        { filterType: "MAX_NUM_ORDERS", limit: 1 },
+      ],
+      openOrders: [{ symbol: "BTCUSDT", orderId: 1 }],
+    }),
+  }), (error) => error instanceof AsterExecutionError
+    && error.code === "venue_rejected"
+    && /maximum open orders/.test(error.message));
+});
+
+test("fails closed when exact account-wide Aster positions or open orders are unavailable", async () => {
+  await assert.rejects(() => readAsterAccountState({
+    credential: credential(),
+    symbol: "BTC-PERP",
+    now: () => 1_800_000_000_000,
+    env: ENV,
+    fetchImpl: async (url) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/account")) return jsonResponse({ canTrade: true, availableBalance: "100" });
+      if (path.endsWith("/positionRisk")) return jsonResponse([]);
+      if (path.endsWith("/openOrders")) return jsonResponse({ orders: [] });
+      if (path.endsWith("/commissionRate")) return jsonResponse({ makerCommissionRate: "0.0001", takerCommissionRate: "0.00035" });
+      return jsonResponse({}, 404);
+    },
+  }), (error) => error instanceof AsterExecutionError
+    && error.code === "connector_submit_failed"
+    && /account state response/.test(error.message));
+});
+
+test("fails closed when Aster margin evidence is incomplete", async () => {
+  await assert.rejects(() => readAsterAccountState({
+    credential: credential(),
+    symbol: "BTC-PERP",
+    now: () => 1_800_000_000_000,
+    env: ENV,
+    fetchImpl: async (url) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/account")) return jsonResponse({
+        canTrade: true,
+        availableBalance: "100",
+        totalMarginBalance: "100",
+        totalInitialMargin: "0",
+      });
+      if (path.endsWith("/positionRisk")) return jsonResponse([]);
+      if (path.endsWith("/openOrders")) return jsonResponse([]);
+      if (path.endsWith("/commissionRate")) return jsonResponse({ makerCommissionRate: "0.0001", takerCommissionRate: "0.00035" });
+      return jsonResponse({}, 404);
+    },
+  }), (error) => error instanceof AsterExecutionError
+    && error.code === "connector_submit_failed"
+    && /account state response/.test(error.message));
+});
+
+test("marks Aster flat only from exact account-wide zero positions and orders", async () => {
+  const account = await readAsterAccountState({
+    credential: credential(),
+    symbol: "BTC-PERP",
+    now: () => 1_800_000_000_000,
+    env: ENV,
+    fetchImpl: async (url) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/account")) return jsonResponse({
+        canTrade: true,
+        availableBalance: "100",
+        totalMarginBalance: "100",
+        totalInitialMargin: "0",
+        totalMaintMargin: "0",
+      });
+      if (path.endsWith("/positionRisk")) return jsonResponse([
+        { symbol: "BTCUSDT", positionAmt: "0" },
+        { symbol: "ETHUSDT", positionAmt: "0" },
+      ]);
+      if (path.endsWith("/openOrders")) return jsonResponse([]);
+      if (path.endsWith("/commissionRate")) return jsonResponse({});
+      return jsonResponse({}, 404);
+    },
+  });
+  assert.equal(account.position_count, 0);
+  assert.equal(account.open_order_count, 0);
+  assert.equal(account.flat_zero_orders, true);
+  assert.equal(account.maker_fee_bps, null);
+  assert.equal(account.taker_fee_bps, null);
+  assert.equal(account.fees_exact_for_account, false);
 });
 
 test("never retries an ambiguous Aster submission", async () => {
@@ -144,11 +395,33 @@ test("submits Aster once and reconciles only the exact client order until termin
         return jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-0004", orderId: 44, status: "NEW", executedQty: "0" });
       }
       assert.equal(init.method, "GET");
+      if (parsed.pathname.endsWith("/userTrades")) {
+        assert.equal(parsed.searchParams.get("symbol"), "BTCUSDT");
+        assert.equal(parsed.searchParams.get("startTime"), "1800000000000");
+        assert.equal(parsed.searchParams.get("endTime"), "1800000000200");
+        assert.equal(parsed.searchParams.get("limit"), "1000");
+        return jsonResponse([
+          { symbol: "BTCUSDT", id: 4001, orderId: 44, price: "59990", qty: "0.004", quoteQty: "239.96", commission: "-0.083986", commissionAsset: "USDT", time: 1_800_000_000_100 },
+          { symbol: "BTCUSDT", id: 4002, orderId: 44, price: "60006.666666666666666667", qty: "0.006", quoteQty: "360.04", commission: "-0.126014", commissionAsset: "USDT", time: 1_800_000_000_200 },
+        ]);
+      }
       assert.equal(parsed.searchParams.get("origClientOrderId"), "ghola-carry-0004");
       reconcileCalls += 1;
       return reconcileCalls === 1
         ? jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-0004", orderId: 44, status: "NEW", executedQty: "0" })
-        : jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-0004", orderId: 44, status: "FILLED", executedQty: "0.01", avgPrice: "60000" });
+        : jsonResponse({
+            symbol: "BTCUSDT",
+            clientOrderId: "ghola-carry-0004",
+            orderId: 44,
+            status: "FILLED",
+            executedQty: "0.010",
+            cumQuote: "600.00",
+            avgPrice: "60000",
+            cumCommission: "999",
+            commissionAsset: "FAKE",
+            time: 1_800_000_000_000,
+            updateTime: 1_800_000_000_200,
+          });
     },
   });
   assert.equal(submitCalls, 1);
@@ -156,7 +429,239 @@ test("submits Aster once and reconciles only the exact client order until termin
   assert.equal(result.status, "filled");
   assert.equal(result.final_proof.target_client_order_matched, true);
   assert.equal(result.final_proof.final_venue_execution_proven, true);
+  assert.equal(result.final_proof.broadcast_performed, true);
+  assert.equal(result.final_proof.filled_base_size, "0.01");
+  assert.equal(result.final_proof.filled_quote_notional, "600");
+  assert.equal(result.final_proof.average_fill_price, "60000");
+  assert.equal(result.final_proof.fee_quote_amount, "0.21");
+  assert.equal(result.final_proof.fee_asset, "USDT");
+  assert.equal(result.final_proof.realized_fees_exact, true);
+  assert.equal(result.final_proof.realized_fee_source, "aster_fapi_v3_user_trades_v1");
+  assert.equal(result.fills.length, 2);
   assert.equal(result.provider_ref_seed.submission_order_id, 44);
+});
+
+test("fails closed when bounded Aster user-trade size, notional, or commission-asset evidence is partial", async (t) => {
+  const cases = [
+    {
+      name: "partial base size",
+      trade: { symbol: "BTCUSDT", id: 8001, orderId: 80, price: "60000", qty: "0.009", quoteQty: "540", commission: "-0.189", commissionAsset: "USDT", time: 1_800_000_000_100 },
+    },
+    {
+      name: "non-quote commission asset",
+      trade: { symbol: "BTCUSDT", id: 8002, orderId: 80, price: "60000", qty: "0.01", quoteQty: "600", commission: "-0.21", commissionAsset: "ASTER", time: 1_800_000_000_100 },
+    },
+  ];
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      await assert.rejects(() => submitAndReconcileAsterExecution({
+        credential: credential(),
+        instruction: orderInstruction(),
+        clientOrderId: "ghola-carry-exact-0080",
+        env: ENV,
+        now: () => 1_800_000_000_000,
+        sleep: async () => {},
+        fetchImpl: async (url, init) => {
+          const path = new URL(url).pathname;
+          if (init.method === "POST") {
+            return jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-exact-0080", orderId: 80, status: "NEW", executedQty: "0" });
+          }
+          if (path.endsWith("/userTrades")) return jsonResponse([item.trade]);
+          return jsonResponse({
+            symbol: "BTCUSDT",
+            clientOrderId: "ghola-carry-exact-0080",
+            orderId: 80,
+            status: "FILLED",
+            executedQty: "0.01",
+            cumQuote: "600",
+            avgPrice: "60000",
+            time: 1_800_000_000_000,
+            updateTime: 1_800_000_000_100,
+          });
+        },
+      }), (error) => error instanceof AsterExecutionError
+        && error.code === "submission_outcome_ambiguous"
+        && /trade/.test(error.message));
+    });
+  }
+});
+
+test("uses bounded monotonic Aster user-trade pagination to complete one exact order", async () => {
+  const firstPage = Array.from({ length: 999 }, (_, index) => ({
+    symbol: "BTCUSDT",
+    id: 1_000 + index,
+    orderId: 999,
+    time: 1_800_000_000_050,
+  }));
+  firstPage.push({ symbol: "BTCUSDT", id: 1_999, orderId: 90, price: "60000", qty: "0.004", quoteQty: "240", commission: "-0.084", commissionAsset: "USDT", time: 1_800_000_000_100 });
+  let tradePages = 0;
+  const result = await submitAndReconcileAsterExecution({
+    credential: credential(),
+    instruction: orderInstruction(),
+    clientOrderId: "ghola-carry-page-0090",
+    env: ENV,
+    now: () => 1_800_000_000_000,
+    sleep: async () => {},
+    fetchImpl: async (url, init) => {
+      const parsed = new URL(url);
+      if (init.method === "POST") return jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-page-0090", orderId: 90, status: "NEW", executedQty: "0" });
+      if (parsed.pathname.endsWith("/userTrades")) {
+        tradePages += 1;
+        if (tradePages === 1) return jsonResponse(firstPage);
+        assert.equal(parsed.searchParams.get("fromId"), "2000");
+        assert.equal(parsed.searchParams.has("startTime"), false);
+        return jsonResponse([{ symbol: "BTCUSDT", id: 2_000, orderId: 90, price: "60000", qty: "0.006", quoteQty: "360", commission: "-0.126", commissionAsset: "USDT", time: 1_800_000_000_200 }]);
+      }
+      return jsonResponse({
+        symbol: "BTCUSDT",
+        clientOrderId: "ghola-carry-page-0090",
+        orderId: 90,
+        status: "FILLED",
+        executedQty: "0.01",
+        cumQuote: "600",
+        avgPrice: "60000",
+        time: 1_800_000_000_000,
+        updateTime: 1_800_000_000_200,
+      });
+    },
+  });
+  assert.equal(tradePages, 2);
+  assert.equal(result.result_seed.exact_trade_evidence.fetched_page_count, 2);
+  assert.equal(result.result_seed.exact_trade_evidence.returned_trade_count, 1001);
+  assert.equal(result.final_proof.fee_quote_amount, "0.21");
+  assert.equal(result.final_proof.realized_fees_exact, true);
+});
+
+test("normalizes positive Aster commission balance deltas as exact rebates", async () => {
+  const result = await submitAndReconcileAsterExecution({
+    credential: credential(),
+    instruction: orderInstruction(),
+    clientOrderId: "ghola-carry-rebate-91",
+    env: ENV,
+    now: () => 1_800_000_000_000,
+    sleep: async () => {},
+    fetchImpl: async (url, init) => {
+      const path = new URL(url).pathname;
+      if (init.method === "POST") return jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-rebate-91", orderId: 91, status: "NEW", executedQty: "0" });
+      if (path.endsWith("/userTrades")) return jsonResponse([{ symbol: "BTCUSDT", id: 9_100, orderId: 91, price: "60000", qty: "0.01", quoteQty: "600", commission: "0.05", commissionAsset: "USDT", time: 1_800_000_000_100 }]);
+      return jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-rebate-91", orderId: 91, status: "FILLED", executedQty: "0.01", cumQuote: "600", time: 1_800_000_000_000, updateTime: 1_800_000_000_100 });
+    },
+  });
+  assert.equal(result.final_proof.fee_quote_amount, "-0.05");
+  assert.equal(result.fills[0].fee, "-0.05");
+});
+
+test("rejects a malformed terminal Aster fill with zero execution", async () => {
+  const malformed = {
+    symbol: "BTCUSDT",
+    clientOrderId: "ghola-zero-fill-1",
+    orderId: 92,
+    status: "FILLED",
+    executedQty: "0",
+    cumQuote: "0",
+    time: 1_800_000_000_000,
+    updateTime: 1_800_000_000_100,
+  };
+  const direct = await submitAsterExecution({
+    credential: credential(),
+    instruction: {
+      version: 1,
+      kind: "ghola_private_execution_instruction",
+      venue_id: "aster",
+      operation_class: "reconcile",
+      reconcile: { market: "BTC-PERP", target_client_order_id: "ghola-zero-fill-1" },
+    },
+    clientOrderId: "ignored-zero-fill",
+    env: ENV,
+    fetchImpl: async () => jsonResponse(malformed),
+  });
+  assert.equal(direct.status, "unknown");
+  assert.equal(direct.final_proof.final_venue_execution_proven, false);
+  assert.equal(direct.final_proof.open_order_count, null);
+  await assert.rejects(() => submitAndReconcileAsterExecution({
+    credential: credential(),
+    instruction: {
+      version: 1,
+      kind: "ghola_private_execution_instruction",
+      venue_id: "aster",
+      operation_class: "reconcile",
+      reconcile: { market: "BTC-PERP", target_client_order_id: "ghola-zero-fill-1" },
+    },
+    clientOrderId: "ignored-zero-fill",
+    env: ENV,
+    now: () => 1_800_000_000_000,
+    sleep: async () => {},
+    fetchImpl: async (url) => new URL(url).pathname.endsWith("/userTrades")
+      ? jsonResponse([])
+      : jsonResponse(malformed),
+  }), (error) => error instanceof AsterExecutionError
+    && error.code === "submission_outcome_ambiguous"
+    && /no exact execution/.test(error.message));
+});
+
+test("reports unknown Aster order state with unknown open-order count", async () => {
+  const result = await submitAndReconcileAsterExecution({
+    credential: credential(),
+    instruction: {
+      version: 1,
+      kind: "ghola_private_execution_instruction",
+      venue_id: "aster",
+      operation_class: "reconcile",
+      reconcile: { market: "BTC-PERP", target_client_order_id: "ghola-unknown-1" },
+    },
+    clientOrderId: "ignored-unknown",
+    env: { ...ENV, PRIVATE_AGENT_ASTER_RECONCILE_TIMEOUT_MS: "250", PRIVATE_AGENT_ASTER_RECONCILE_INTERVAL_MS: "100" },
+    now: () => 1_800_000_000_000,
+    sleep: async () => {},
+    fetchImpl: async (url) => new URL(url).pathname.endsWith("/userTrades")
+      ? jsonResponse([])
+      : jsonResponse({
+          symbol: "BTCUSDT",
+          clientOrderId: "ghola-unknown-1",
+          orderId: 93,
+          status: "PENDING_CANCEL",
+          executedQty: "0",
+          cumQuote: "0",
+          time: 1_800_000_000_000,
+          updateTime: 1_800_000_000_100,
+        }),
+  });
+  assert.equal(result.status, "unknown");
+  assert.equal(result.final_proof.final_venue_execution_proven, false);
+  assert.equal(result.final_proof.open_order_count, null);
+});
+
+test("fails closed when acknowledged and reconciled Aster order ids differ", async () => {
+  let submits = 0;
+  let reads = 0;
+  await assert.rejects(() => submitAndReconcileAsterExecution({
+    credential: credential(),
+    instruction: orderInstruction(),
+    clientOrderId: "ghola-order-id-mismatch-1",
+    env: { ...ENV, PRIVATE_AGENT_ASTER_RECONCILE_TIMEOUT_MS: "250", PRIVATE_AGENT_ASTER_RECONCILE_INTERVAL_MS: "100" },
+    now: () => 1_800_000_000_000,
+    sleep: async () => {},
+    fetchImpl: async (url, init) => {
+      if (init.method === "POST") {
+        submits += 1;
+        return jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-order-id-mismatch-1", orderId: 94, status: "NEW", executedQty: "0" });
+      }
+      if (new URL(url).pathname.endsWith("/userTrades")) throw new Error("mismatched order must not read trades");
+      reads += 1;
+      return jsonResponse({
+        symbol: "BTCUSDT",
+        clientOrderId: "ghola-order-id-mismatch-1",
+        orderId: 95,
+        status: "FILLED",
+        executedQty: "0.01",
+        cumQuote: "600",
+        time: 1_800_000_000_000,
+        updateTime: 1_800_000_000_100,
+      });
+    },
+  }), (error) => error instanceof AsterExecutionError && error.code === "submission_outcome_ambiguous");
+  assert.equal(submits, 1);
+  assert.equal(reads, 4);
 });
 
 test("recovers an ambiguous Aster submit response by reading the exact order without resubmitting", async () => {
@@ -175,20 +680,85 @@ test("recovers an ambiguous Aster submit response by reading the exact order wit
         submitCalls += 1;
         return jsonResponse({ msg: "upstream response lost after write" }, 503);
       }
+      if (parsed.pathname.endsWith("/userTrades")) {
+        return jsonResponse([{ symbol: "BTCUSDT", id: 5001, orderId: 45, price: "60000", qty: "0.01", quoteQty: "600", commission: "-0.21", commissionAsset: "USDT", time: 1_800_000_000_100 }]);
+      }
       assert.equal(parsed.searchParams.get("origClientOrderId"), "ghola-carry-0005");
       reconcileCalls += 1;
       return reconcileCalls === 1
         ? jsonResponse({ code: -2013, msg: "Order does not exist." }, 400)
-        : jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-0005", orderId: 45, status: "FILLED", executedQty: "0.01", avgPrice: "60000" });
+        : jsonResponse({
+            symbol: "BTCUSDT",
+            clientOrderId: "ghola-carry-0005",
+            orderId: 45,
+            status: "FILLED",
+            executedQty: "0.01",
+            cumQuote: "600",
+            avgPrice: "60000",
+            time: 1_800_000_000_000,
+            updateTime: 1_800_000_000_100,
+          });
     },
   });
   assert.equal(submitCalls, 1);
   assert.equal(reconcileCalls, 2);
   assert.equal(result.status, "filled");
+  assert.equal(result.final_proof.broadcast_performed, false);
   assert.equal(result.reconciliation.submissionResponseAmbiguous, true);
   assert.equal(result.reconciliation.submission_retry_count, 0);
   assert.equal(result.reconciliation.target_client_order_only, true);
   assert.equal(result.reconciliation.readFailures, 1);
+});
+
+test("recovers an ambiguous Aster cancel by reconciling the exact original order without resubmitting", async () => {
+  let cancelCalls = 0;
+  let reconcileCalls = 0;
+  const result = await submitAndReconcileAsterExecution({
+    credential: credential(),
+    instruction: {
+      version: 1,
+      kind: "ghola_private_execution_instruction",
+      venue_id: "aster",
+      operation_class: "cancel",
+      cancel: { market: "BTC-PERP", client_order_id: "ghola-original-cancel-1" },
+    },
+    clientOrderId: "ghola-cancel-work-1",
+    env: ENV,
+    now: () => 1_800_000_000_000,
+    sleep: async () => {},
+    fetchImpl: async (url, init) => {
+      const parsed = new URL(url);
+      if (init.method === "DELETE") {
+        cancelCalls += 1;
+        return jsonResponse({ msg: "response lost after cancel" }, 503);
+      }
+      if (parsed.pathname.endsWith("/userTrades")) return jsonResponse([]);
+      reconcileCalls += 1;
+      assert.equal(init.method, "GET");
+      assert.equal(parsed.searchParams.get("symbol"), "BTCUSDT");
+      assert.equal(parsed.searchParams.get("origClientOrderId"), "ghola-original-cancel-1");
+      return jsonResponse({
+        symbol: "BTCUSDT",
+        clientOrderId: "ghola-original-cancel-1",
+        orderId: 48,
+        status: "CANCELED",
+        executedQty: "0",
+        cumQuote: "0",
+        time: 1_800_000_000_000,
+        updateTime: 1_800_000_000_100,
+      });
+    },
+  });
+  assert.equal(cancelCalls, 1);
+  assert.equal(reconcileCalls, 1);
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.final_proof.target_client_order_matched, true);
+  assert.equal(result.final_proof.final_venue_execution_proven, true);
+  assert.equal(result.final_proof.broadcast_performed, false);
+  assert.equal(result.reconciliation.submissionResponseAmbiguous, true);
+  assert.equal(result.reconciliation.submission_retry_count, 0);
+  assert.equal(result.final_proof.realized_fees_exact, true);
+  assert.equal(result.final_proof.fee_quote_amount, "0");
 });
 
 test("bounds exact-order reconciliation when an ambiguous Aster submit cannot be found", async () => {
@@ -252,13 +822,14 @@ test("reconciles by the exact client order id", async () => {
     env: ENV,
     fetchImpl: async (url, init) => {
       observed = { url: new URL(url), method: init.method };
-      return jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-0003", status: "FILLED", executedQty: "0.01", avgPrice: "60000" });
+      return jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-0003", status: "FILLED", executedQty: "0.01", cumQuote: "600", avgPrice: "60000" });
     },
   });
   assert.equal(observed.method, "GET");
   assert.equal(observed.url.searchParams.get("origClientOrderId"), "ghola-carry-0003");
   assert.equal(result.status, "filled");
   assert.equal(result.final_proof.final_venue_execution_proven, true);
+  assert.equal(result.final_proof.broadcast_performed, false);
 });
 
 test("keeps explicit Aster reconciliation bound to the original order across read failures", async () => {
@@ -279,7 +850,11 @@ test("keeps explicit Aster reconciliation bound to the original order across rea
     sleep: async () => {},
     fetchImpl: async (url, init) => {
       assert.equal(init.method, "GET");
-      targets.push(new URL(url).searchParams.get("origClientOrderId"));
+      const parsed = new URL(url);
+      if (parsed.pathname.endsWith("/userTrades")) {
+        return jsonResponse([{ symbol: "BTCUSDT", id: 7001, orderId: 47, price: "60000", qty: "0.01", quoteQty: "600", commission: "-0.21", commissionAsset: "USDT", time: 1_800_000_000_100 }]);
+      }
+      targets.push(parsed.searchParams.get("origClientOrderId"));
       reads += 1;
       if (reads === 1) throw new Error("temporary read failure");
       return jsonResponse({
@@ -288,12 +863,16 @@ test("keeps explicit Aster reconciliation bound to the original order across rea
         orderId: 47,
         status: "FILLED",
         executedQty: "0.01",
+        cumQuote: "600",
         avgPrice: "60000",
+        time: 1_800_000_000_000,
+        updateTime: 1_800_000_000_100,
       });
     },
   });
   assert.deepEqual(targets, ["ghola-original-0007", "ghola-original-0007"]);
   assert.equal(result.status, "filled");
+  assert.equal(result.final_proof.broadcast_performed, false);
   assert.equal(result.reconciliation.reconcileOnly, true);
   assert.equal(result.reconciliation.submission_retry_count, 0);
 });
@@ -486,4 +1065,24 @@ function orderInstruction() {
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+function noSubmitFetch({ filters, markSymbol = "BTCUSDT", openOrders = [] }) {
+  return async (url) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/time")) return jsonResponse({ serverTime: 1_800_000_000_000 });
+    if (path.endsWith("/premiumIndex")) return jsonResponse({ symbol: markSymbol, markPrice: "60000" });
+    if (path.endsWith("/exchangeInfo")) return jsonResponse({ symbols: [{ symbol: "BTCUSDT", status: "TRADING", filters }] });
+    if (path.endsWith("/account")) return jsonResponse({
+      canTrade: true,
+      availableBalance: "100",
+      totalMarginBalance: "100",
+      totalInitialMargin: "0",
+      totalMaintMargin: "0",
+    });
+    if (path.endsWith("/positionRisk")) return jsonResponse([]);
+    if (path.endsWith("/openOrders")) return jsonResponse(openOrders);
+    if (path.endsWith("/commissionRate")) return jsonResponse({ makerCommissionRate: "0.0001", takerCommissionRate: "0.00035" });
+    return jsonResponse({}, 404);
+  };
 }

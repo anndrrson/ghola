@@ -374,7 +374,10 @@ test("submits one exact owner association, verifies Lighter, and activates the s
         assert.equal(payload.credential.account_index, 123);
         return {
           credential_verified: true,
+          account_state_checked: true,
+          market_data_checked: true,
           order_packet_built: true,
+          signed_order_fields_checked: true,
           transaction_broadcast: false,
           account: { available_balance: "50", collateral: "50", positions: [], pending_order_count: 0 },
           market: { maker_fee: "0.0001", taker_fee: "0.00045" },

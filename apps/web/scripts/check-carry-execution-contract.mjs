@@ -363,7 +363,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadow", "wss://mainnet.zklighter.elliot.ai/stream?readonly=true", "lighter_read_only_websocket_missing");
   requireText("shadow", 'channel: "market_stats/all"', "lighter_timestamped_market_feed_missing");
   requireText("shadow", 'channel: `order_book/${marketId}`', "lighter_timestamped_orderbook_feed_missing");
-  requireText("shadow", 'message?.type === "subscribed/order_book"', "lighter_full_orderbook_snapshot_gate_missing");
+  requireText("shadow", '["subscribed/order_book", "update/order_book"].includes(message?.type)', "lighter_documented_orderbook_frame_gate_missing");
+  requireText("shadow", "Array.isArray(message.order_book.bids)", "lighter_complete_orderbook_bid_gate_missing");
+  requireText("shadow", "Array.isArray(message.order_book.asks)", "lighter_complete_orderbook_ask_gate_missing");
+  requireText("shadow", "!orderBooks.has(orderBookMatch[1])", "lighter_initial_orderbook_snapshot_gate_missing");
+  requireText("shadowTest", "fails closed when a Lighter update stream never proves every requested book", "lighter_incomplete_orderbook_stream_test_missing");
   requireText("shadow", "Math.max(startedAtMs, completedAtMs)", "shadow_completed_observation_clock_missing");
   requireText("shadowTest", "fetches Lighter market, funding, and book timing from its public read-only WebSocket", "lighter_provider_timestamp_test_missing");
   forbidText("shadow", "market: nowMs", "carry_shadow_market_worker_clock_fallback_forbidden");

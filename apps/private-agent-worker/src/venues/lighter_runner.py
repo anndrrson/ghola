@@ -24,6 +24,22 @@ def as_dict(value):
     return value if isinstance(value, dict) else {}
 
 
+def exact_market_order(orders, client_order_index, market_index):
+    target_client_order = int(client_order_index)
+    target_market = int(market_index)
+    for item in orders if isinstance(orders, list) else []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            item_client_order = int(item.get("client_order_index", -1))
+            item_market = int(item.get("market_index", item.get("market_id", -1)))
+        except (TypeError, ValueError):
+            continue
+        if item_client_order == target_client_order and item_market == target_market:
+            return item
+    return None
+
+
 def scale(value, decimals):
     return int((Decimal(str(value)) * (Decimal(10) ** decimals)).to_integral_value(rounding=ROUND_DOWN))
 
@@ -92,7 +108,32 @@ def signed_order(client, order, market, *, nonce=-1, skip_nonce=0):
         "limit_price": human(price, price_decimals),
         "quantity_step_e8": 10 ** max(0, 8 - size_decimals),
         "price_tick_e8": 10 ** max(0, 8 - price_decimals),
+    }, {
+        "MarketIndex": int(market.market_id),
+        "ClientOrderIndex": int(order["client_order_index"]),
+        "BaseAmount": base_amount,
+        "Price": price,
+        "IsAsk": int(order["side"] == "sell"),
+        "Type": int(client.ORDER_TYPE_LIMIT),
+        "TimeInForce": int(tif),
+        "ReduceOnly": int(bool(order.get("reduce_only"))),
     }
+
+
+def check_signed_order_fields(tx_info, expected):
+    try:
+        packet = json.loads(tx_info)
+    except (TypeError, ValueError):
+        fail("lighter signed order packet is invalid", "venue_rejected")
+    if not isinstance(packet, dict):
+        fail("lighter signed order packet is invalid", "venue_rejected")
+    for field, expected_value in expected.items():
+        actual = packet.get(field)
+        if isinstance(actual, bool):
+            actual = int(actual)
+        if not isinstance(actual, int) or actual != expected_value:
+            fail("lighter signed order packet binding failed", "venue_rejected")
+    return True
 
 
 async def auth_token(client):
@@ -168,14 +209,18 @@ async def run(payload):
             market = await market_for(client, order.get("market"))
             account = await account_for(client, credential["account_index"])
             if action == "verify":
-                (tx_type, tx_info, tx_hash, sign_err), shape = signed_order(
+                (tx_type, tx_info, tx_hash, sign_err), shape, expected_fields = signed_order(
                     client, order, market, nonce=0, skip_nonce=client.SKIP_NONCE_ON
                 )
                 if sign_err is not None or tx_type is None or tx_info is None:
                     fail("lighter order packet could not be signed", "venue_rejected")
+                check_signed_order_fields(tx_info, expected_fields)
                 return {
                     "credential_verified": True,
+                    "account_state_checked": True,
+                    "market_data_checked": True,
                     "order_packet_built": True,
+                    "signed_order_fields_checked": True,
                     "transaction_broadcast": False,
                     "account": account,
                     "market": as_dict(market),
@@ -214,7 +259,7 @@ async def run(payload):
             )
             orders = as_dict(orders_response).get("orders", [])
             target = int(payload["client_order_index"])
-            order = next((item for item in orders if int(item.get("client_order_index", -1)) == target), None)
+            order = exact_market_order(orders, target, market.market_id)
             if order is None or order.get("order_index") is None:
                 fail("lighter cancel target is unavailable", "venue_rejected")
             tx, response, cancel_err = await client.cancel_order(
@@ -235,13 +280,8 @@ async def run(payload):
                 account_index=int(credential["account_index"]),
             )
             orders = as_dict(orders_response).get("orders", [])
-            order = next(
-                (item for item in orders
-                 if int(item.get("client_order_index", -1)) == target
-                 and int(item.get("market_index", item.get("market_id", -1))) == int(market.market_id)),
-                None,
-            )
-            return {"order": order}
+            order = exact_market_order(orders, target, market.market_id)
+            return {"order": order, "target_market_checked": True}
         if action == "funding":
             market = await market_for(client, payload.get("market"))
             auth = await auth_token(client)

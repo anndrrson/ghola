@@ -161,8 +161,14 @@ test("fetches Lighter market, funding, and book timing from its public read-only
       if (message.channel === "market_stats/all") {
         this.emit("message", { data: JSON.stringify({
           channel: "market_stats:all",
+          timestamp: sourceNow - 1,
+          type: "update/market_stats",
+          market_stats: { 0: { market_id: 0, symbol: "ETH" } },
+        }) });
+        this.emit("message", { data: JSON.stringify({
+          channel: "market_stats:all",
           timestamp: sourceNow,
-          type: "subscribed/market_stats",
+          type: "update/market_stats",
           market_stats: {
             0: {
               market_id: 0,
@@ -192,20 +198,17 @@ test("fetches Lighter market, funding, and book timing from its public read-only
       if (message.channel === "order_book/1") {
         this.emit("message", { data: JSON.stringify({
           channel: "order_book:1",
-          timestamp: sourceNow,
-          type: "subscribed/order_book",
-          order_book: {
-            bids: [{ price: "59999", size: "1.25" }],
-            asks: [{ price: "60002", size: "0.75" }],
-          },
+          timestamp: sourceNow - 1,
+          type: "update/order_book",
+          order_book: { bids: [{ price: "59998", size: "1" }] },
         }) });
         this.emit("message", { data: JSON.stringify({
           channel: "order_book:1",
-          timestamp: sourceNow + 1,
+          timestamp: sourceNow,
           type: "update/order_book",
           order_book: {
-            bids: [{ price: "59998", size: "1" }],
-            asks: [],
+            bids: [{ price: "59999", size: "1.25" }],
+            asks: [{ price: "60002", size: "0.75" }],
           },
         }) });
       }
@@ -213,7 +216,7 @@ test("fetches Lighter market, funding, and book timing from its public read-only
         this.emit("message", { data: JSON.stringify({
           channel: "order_book:0",
           timestamp: sourceNow,
-          type: "subscribed/order_book",
+          type: "update/order_book",
           order_book: {
             bids: [{ price: "2499", size: "2" }],
             asks: [{ price: "2502", size: "3" }],
@@ -285,6 +288,46 @@ test("fetches Lighter market, funding, and book timing from its public read-only
   });
   assert.ok(snapshot.quality_flags.includes("market_funding_bound_to_public_websocket_time"));
   assert.ok(snapshot.quality_flags.includes("orderbook_bound_to_public_websocket_time"));
+});
+
+test("fails closed when a Lighter update stream never proves every requested book", async () => {
+  class IncompleteLighterSocket {
+    constructor() {
+      this.listeners = new Map();
+      queueMicrotask(() => this.emit("open", {}));
+    }
+
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) || [];
+      listeners.push(listener);
+      this.listeners.set(type, listeners);
+    }
+
+    send(payload) {
+      if (JSON.parse(payload).channel !== "market_stats/all") return;
+      this.emit("message", { data: JSON.stringify({
+        channel: "market_stats:all",
+        timestamp: NOW,
+        type: "update/market_stats",
+        market_stats: { 1: { market_id: 1, mark_price: "60000", index_price: "60001", current_funding_rate: "0.0001" } },
+      }) });
+    }
+
+    close() {}
+
+    emit(type, event) {
+      for (const listener of this.listeners.get(type) || []) listener(event);
+    }
+  }
+
+  await assert.rejects(fetchPerpShadowVenue({
+    venue_id: "lighter",
+    fetchImpl: async () => response({ order_book_details: [{ market_id: 1, symbol: "BTC" }] }),
+    web_socket_ctor: IncompleteLighterSocket,
+    now_ms: NOW,
+    assets: ["BTC"],
+    timeout_ms: 25,
+  }), /shadow_lighter_websocket_timeout/);
 });
 
 test("normalizes Aster V3 exchange, premium, and book schemas", () => {

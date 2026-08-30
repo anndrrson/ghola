@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
+  LighterExecutionError,
   lighterClientOrderIndex,
   lighterCredentialFromVault,
   readLighterWithdrawalRouteQuote,
@@ -88,6 +91,58 @@ function instruction(overrides = {}) {
   };
 }
 
+test("binds every signed Lighter order field to the requested packet", () => {
+  const runnerPath = fileURLToPath(new URL("../src/venues/lighter_runner.py", import.meta.url));
+  const check = String.raw`
+import copy, importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("lighter_runner", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+def strict_fail(message, code="connector_submit_failed"):
+    raise RuntimeError(code)
+module.fail = strict_fail
+expected = {
+    "MarketIndex": 1, "ClientOrderIndex": 77, "BaseAmount": 100,
+    "Price": 600000, "IsAsk": 0, "Type": 0, "TimeInForce": 1, "ReduceOnly": 0,
+}
+module.check_signed_order_fields(json.dumps(expected), expected)
+for field in expected:
+    mutated = copy.deepcopy(expected)
+    mutated[field] += 1
+    try:
+        module.check_signed_order_fields(json.dumps(mutated), expected)
+    except RuntimeError as error:
+        assert str(error) == "venue_rejected"
+    else:
+        raise AssertionError(field)
+print("checked")
+`;
+  const result = spawnSync(process.env.PRIVATE_AGENT_PYTHON || "python3", ["-c", check, runnerPath], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stdout.trim(), "checked");
+});
+
+test("binds a Lighter cancel target to both client order index and market", () => {
+  const runnerPath = fileURLToPath(new URL("../src/venues/lighter_runner.py", import.meta.url));
+  const check = String.raw`
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("lighter_runner", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+orders = [
+    {"client_order_index": 77, "market_index": 2, "order_index": 88},
+    {"client_order_index": 77, "market_index": 1, "order_index": 89},
+]
+assert module.exact_market_order(orders, 77, 1)["order_index"] == 89
+assert module.exact_market_order(orders[:1], 77, 1) is None
+assert module.exact_market_order([{"client_order_index": 77, "market_id": 1, "order_index": 90}], 77, 1)["order_index"] == 90
+print("checked")
+`;
+  const result = spawnSync(process.env.PRIVATE_AGENT_PYTHON || "python3", ["-c", check, runnerPath], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stdout.trim(), "checked");
+});
+
 test("keeps Lighter fund operations owner-only inside the attested worker boundary", () => {
   const result = credential();
   assert.equal(result.authority_boundary.venue_native_trade_only, false);
@@ -170,7 +225,10 @@ test("builds a Lighter order packet without broadcast", async () => {
       clientOrderIndex: lighterClientOrderIndex("lighter_work_order_0001"),
       runner: async () => ({
         credential_verified: true,
+        account_state_checked: true,
+        market_data_checked: true,
         order_packet_built: true,
+        signed_order_fields_checked: true,
         transaction_broadcast: false,
         account: {
           status: 1,
@@ -200,9 +258,50 @@ test("builds a Lighter order packet without broadcast", async () => {
     assert.equal(result.account.liquidation_distance_bps, 2_500);
     assert.equal(result.account.liquidation_distance_verified, true);
     assert.equal(result.account.liquidation_distance_source, "lighter_account_positions_position_value_v1");
+    assert.equal(result.account.flat_zero_orders, false);
     assert.equal(result.authority_boundary.secure_withdrawal_destination, "owner_l1_only");
     assert.equal(result.authority_boundary.non_owner_fund_movement_possible, false);
     assert.equal(result.order_shape.notional_micro_usdc, 100_000_000);
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
+test("fails closed when Lighter no-submit omits signed packet binding or account order counts", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "read_only";
+  const verified = {
+    credential_verified: true,
+    account_state_checked: true,
+    market_data_checked: true,
+    order_packet_built: true,
+    signed_order_fields_checked: true,
+    transaction_broadcast: false,
+    account: { available_balance: "50", collateral: "50", positions: [] },
+    market: { maker_fee: "0.0001", taker_fee: "0.00045" },
+    order_shape: { base_size: "0.001", limit_price: "100000" },
+  };
+  try {
+    await assert.rejects(verifyLighterNoSubmit({
+      credential: credential(),
+      instruction: instruction(),
+      clientOrderIndex: 77,
+      runner: async () => ({ ...verified, signed_order_fields_checked: false }),
+    }), (error) => error.code === "connector_submit_failed");
+    const result = await verifyLighterNoSubmit({
+      credential: credential(),
+      instruction: instruction(),
+      clientOrderIndex: 77,
+      runner: async () => verified,
+    });
+    assert.equal(result.account.position_count, 0);
+    assert.equal(result.account.open_order_count, null);
+    assert.equal(result.account.flat_zero_orders, false);
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
@@ -236,6 +335,77 @@ test("never retries an ambiguous Lighter submission", async () => {
   }
 });
 
+test("recovers an ambiguous Lighter cancel against only its original target", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "full_ticket";
+  let cancelCalls = 0;
+  let reconcileCalls = 0;
+  try {
+    const result = await submitAndReconcileLighterExecution({
+      credential: credential(),
+      instruction: {
+        operation_class: "cancel",
+        cancel: { market: "BTC", client_order_index: 77 },
+      },
+      clientOrderIndex: 900,
+      now: () => 1_800_000_000_000,
+      sleep: async () => {},
+      runner: async (payload) => {
+        if (payload.action === "cancel") {
+          cancelCalls += 1;
+          assert.equal(payload.client_order_index, 77);
+          assert.equal(payload.market, "BTC");
+          throw new Error("cancel response lost after write");
+        }
+        reconcileCalls += 1;
+        assert.equal(payload.action, "reconcile");
+        assert.equal(payload.client_order_index, 77);
+        assert.equal(payload.market, "BTC");
+        return { target_market_checked: true, order: { status: "cancelled", client_order_index: 77, order_index: 88 } };
+      },
+    });
+    assert.equal(cancelCalls, 1);
+    assert.equal(reconcileCalls, 1);
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.final_proof.open_order_count, 0);
+    assert.equal(result.final_proof.broadcast_performed, false);
+    assert.equal(result.reconciliation.submissionResponseAmbiguous, true);
+    assert.equal(result.reconciliation.submission_retry_count, 0);
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
+test("does not relabel a deterministic Lighter rejection as ambiguous", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "full_ticket";
+  let calls = 0;
+  try {
+    await assert.rejects(submitLighterExecution({
+      credential: credential(),
+      instruction: instruction(),
+      clientOrderIndex: 77,
+      runner: async () => {
+        calls += 1;
+        throw new LighterExecutionError("rejected", 422, "venue_rejected");
+      },
+    }), (error) => error.code === "venue_rejected");
+    assert.equal(calls, 1);
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
 test("submits once and polls the exact client order until terminal fill", async () => {
   const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
   const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
@@ -259,14 +429,15 @@ test("submits once and polls the exact client order until terminal fill", async 
         assert.equal(payload.client_order_index, 77);
         reconcileCalls += 1;
         return reconcileCalls === 1
-          ? { order: { status: "open", client_order_index: 77, market_index: 1, remaining_base_amount: "0.001" } }
-          : { order: { status: "filled", client_order_index: 77, market_index: 1, filled_base_amount: "0.001", filled_quote_amount: "100" } };
+          ? { target_market_checked: true, order: { status: "open", client_order_index: 77, market_index: 1, remaining_base_amount: "0.001" } }
+          : { target_market_checked: true, order: { status: "filled", client_order_index: 77, market_index: 1, filled_base_amount: "0.001", filled_quote_amount: "100" } };
       },
     });
     assert.equal(submitCalls, 1);
     assert.equal(reconcileCalls, 2);
     assert.equal(result.status, "filled");
     assert.equal(result.final_proof.final_fill_proven, true);
+    assert.equal(result.final_proof.broadcast_performed, true);
     assert.equal(result.provider_ref_seed.submission_tx_hash, "0xsubmit");
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
@@ -299,7 +470,7 @@ test("recovers an ambiguous Lighter submit response by reading the exact order w
         assert.equal(payload.client_order_index, 78);
         reconcileCalls += 1;
         if (reconcileCalls === 1) throw new Error("read replica lag");
-        return { order: { status: "filled", client_order_index: 78, order_index: 89, filled_base_amount: "0.001", filled_quote_amount: "100" } };
+        return { target_market_checked: true, order: { status: "filled", client_order_index: 78, order_index: 89, filled_base_amount: "0.001", filled_quote_amount: "100" } };
       },
     });
     assert.equal(submitCalls, 1);
@@ -309,6 +480,7 @@ test("recovers an ambiguous Lighter submit response by reading the exact order w
     assert.equal(result.reconciliation.submission_retry_count, 0);
     assert.equal(result.reconciliation.target_client_order_only, true);
     assert.equal(result.reconciliation.readFailures, 1);
+    assert.equal(result.final_proof.broadcast_performed, false);
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
@@ -398,12 +570,24 @@ test("reconciles the exact Lighter client order index", async () => {
       runner: async (payload) => {
         assert.equal(payload.client_order_index, 77);
         assert.equal(payload.market, "BTC");
-        return { order: { status: "filled", client_order_index: 77, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" } };
+        return { target_market_checked: true, order: { status: "filled", client_order_index: 77, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" } };
       },
     });
     assert.equal(result.status, "filled");
     assert.equal(result.final_proof.final_fill_proven, true);
     assert.equal(result.fills[0].price, "100000");
+    const partial = await reconcileLighterExecution({
+      credential: credential(),
+      clientOrderIndex: 77,
+      market: "BTC",
+      runner: async () => ({
+        target_market_checked: true,
+        order: { status: "partial", client_order_index: 77, filled_base_amount: "0.0005", filled_quote_amount: "50" },
+      }),
+    });
+    assert.equal(partial.status, "partially_filled");
+    assert.equal(partial.final_proof.final_venue_execution_proven, false);
+    assert.equal(partial.final_proof.open_order_count, 1);
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
@@ -437,6 +621,7 @@ test("rejects a mismatched Lighter reconciliation row after an ambiguous submiss
         }
         reconcileCalls += 1;
         return {
+          target_market_checked: true,
           order: {
             status: "filled",
             client_order_index: 999,
@@ -482,13 +667,14 @@ test("keeps explicit Lighter reconciliation bound to the original order across r
         targets.push(payload.client_order_index);
         reads += 1;
         if (reads === 1) throw new Error("temporary read failure");
-        return { order: { status: "filled", client_order_index: 77, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" } };
+        return { target_market_checked: true, order: { status: "filled", client_order_index: 77, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" } };
       },
     });
     assert.deepEqual(targets, [77, 77]);
     assert.equal(result.status, "filled");
     assert.equal(result.reconciliation.reconcileOnly, true);
     assert.equal(result.reconciliation.submission_retry_count, 0);
+    assert.equal(result.final_proof.broadcast_performed, false);
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;

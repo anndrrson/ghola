@@ -1724,16 +1724,16 @@ test("rejects release configuration without the bounded shadow timeout policy", 
   );
 });
 
-test("rejects Lighter qualification from incremental order-book deltas", () => {
+test("rejects Lighter qualification without a complete initial order-book frame", () => {
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
       shadow: sources.shadow.replace(
-        'message?.type === "subscribed/order_book"',
-        'message?.type === "update/order_book"',
+        "&& Array.isArray(message.order_book.asks)",
+        "&& true",
       ),
     }),
-    /lighter_full_orderbook_snapshot_gate_missing/,
+    /lighter_complete_orderbook_ask_gate_missing/,
   );
 });
 

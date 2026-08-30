@@ -785,22 +785,29 @@ async function lighterPublicWebSocketSnapshot({
       }
       if (
         message?.channel === "market_stats:all"
-        && message?.type === "subscribed/market_stats"
+        && ["subscribed/market_stats", "update/market_stats"].includes(message?.type)
         && message.market_stats
+        && marketStats === null
       ) {
-        marketStats = {
-          timestamp: message.timestamp,
-          market_stats: Object.freeze(Object.fromEntries(
-            Object.entries(message.market_stats).filter(([marketId]) => expected.has(String(marketId))),
-          )),
-        };
+        const selectedStats = Object.fromEntries(
+          Object.entries(message.market_stats).filter(([marketId]) => expected.has(String(marketId))),
+        );
+        if (expectedMarketIds.every((marketId) => selectedStats[String(marketId)])) {
+          marketStats = {
+            timestamp: message.timestamp,
+            market_stats: Object.freeze(selectedStats),
+          };
+        }
       }
       const orderBookMatch = /^order_book:(\d+)$/.exec(String(message?.channel || ""));
       if (
         orderBookMatch
         && expected.has(orderBookMatch[1])
-        && message?.type === "subscribed/order_book"
+        && ["subscribed/order_book", "update/order_book"].includes(message?.type)
         && message.order_book
+        && Array.isArray(message.order_book.bids)
+        && Array.isArray(message.order_book.asks)
+        && !orderBooks.has(orderBookMatch[1])
       ) {
         orderBooks.set(orderBookMatch[1], {
           timestamp: message.timestamp,

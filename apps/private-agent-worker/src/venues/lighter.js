@@ -199,7 +199,14 @@ export async function verifyLighterNoSubmit({ credential, instruction, clientOrd
   assertLighterPilotMode(credential, "read");
   const order = normalizeOrder(instruction, clientOrderIndex);
   const result = await runner({ action: "verify", credential, order, timeout_ms: timeoutMs() });
-  if (result?.credential_verified !== true || result?.order_packet_built !== true || result?.transaction_broadcast !== false) {
+  if (
+    result?.credential_verified !== true ||
+    result?.account_state_checked !== true ||
+    result?.market_data_checked !== true ||
+    result?.order_packet_built !== true ||
+    result?.signed_order_fields_checked !== true ||
+    result?.transaction_broadcast !== false
+  ) {
     throw new LighterExecutionError("lighter no-submit verification failed", 502, "connector_submit_failed");
   }
   return normalizedVerification(result, order);
@@ -219,25 +226,27 @@ export async function submitLighterExecution({ credential, instruction, clientOr
   }
   if (operationClass === "cancel") {
     const cancel = instruction.cancel || {};
-    const result = await runner({
-      action: "cancel",
-      credential,
-      market: String(cancel.market || "").toUpperCase(),
-      client_order_index: integer(cancel.client_order_index, "lighter cancel target is invalid"),
-      timeout_ms: timeoutMs(),
-    });
-    return normalizedSubmit(result, cancel.client_order_index, "cancelled");
+    const market = lighterMarket(cancel.market);
+    const targetClientOrderIndex = integer(cancel.client_order_index, "lighter cancel target is invalid");
+    try {
+      const result = await runner({
+        action: "cancel",
+        credential,
+        market,
+        client_order_index: targetClientOrderIndex,
+        timeout_ms: timeoutMs(),
+      });
+      return normalizedSubmit(result, targetClientOrderIndex, "cancelled");
+    } catch (error) {
+      throw ambiguousLighterWrite(error);
+    }
   }
   const order = normalizeOrder(instruction, clientOrderIndex);
   let result;
   try {
     result = await runner({ action: "submit", credential, order, timeout_ms: timeoutMs() });
   } catch (error) {
-    throw new LighterExecutionError(
-      "lighter submission outcome is ambiguous; reconcile exact client order index",
-      error?.status || 502,
-      "submission_ambiguous",
-    );
+    throw ambiguousLighterWrite(error);
   }
   return normalizedSubmit(result, clientOrderIndex, "submitted");
 }
@@ -252,12 +261,17 @@ export async function submitAndReconcileLighterExecution({
   env = process.env,
 }) {
   const reconcileOnly = instruction?.operation_class === "reconcile";
+  const cancelOnly = instruction?.operation_class === "cancel";
   const reconciliationClientOrderIndex = reconcileOnly
     ? integer(instruction?.reconcile?.target_client_order_index, "lighter reconcile target is invalid")
-    : integer(clientOrderIndex, "lighter client order index is invalid");
+    : cancelOnly
+      ? integer(instruction?.cancel?.client_order_index, "lighter cancel target is invalid")
+      : integer(clientOrderIndex, "lighter client order index is invalid");
   const reconciliationMarket = reconcileOnly
     ? instruction?.reconcile?.target_market || instruction?.reconcile?.market || instruction?.reconcile?.product_id
-    : instruction?.order?.market;
+    : cancelOnly
+      ? instruction?.cancel?.market
+      : instruction?.order?.market;
   let submitted = reconcileOnly ? {
     status: "outcome_unknown",
     provider_ref_seed: { venue: "lighter", client_order_index: reconciliationClientOrderIndex, tx_hash: null },
@@ -346,6 +360,12 @@ function reconciledLighterResult(result, submitted, reconciliation) {
       target_client_order_only: true,
       submission_retry_count: 0,
     },
+    final_proof: result.final_proof ? {
+      ...result.final_proof,
+      broadcast_performed: reconciliation.reconcileOnly !== true
+        && reconciliation.submissionResponseAmbiguous !== true
+        && submitted.provider_ref_seed?.broadcast_acknowledged === true,
+    } : null,
   };
 }
 
@@ -359,7 +379,7 @@ export async function reconcileLighterExecution({ credential, clientOrderIndex, 
     market: lighterMarket(market),
     timeout_ms: timeoutMs(),
   });
-  const candidate = result?.order || null;
+  const candidate = result?.target_market_checked === true ? result?.order || null : null;
   const returnedClientOrderIndex = Number(candidate?.client_order_index);
   const targetMatched = candidate !== null &&
     Number.isSafeInteger(returnedClientOrderIndex) &&
@@ -395,7 +415,11 @@ export async function reconcileLighterExecution({ credential, clientOrderIndex, 
       average_fill_price: order ? averagePrice(order) : "0",
       fee_quote_amount: order?.fee ?? order?.total_fee ?? order?.trading_fee ?? null,
       fee_asset: order?.fee_asset ?? order?.quote_asset ?? null,
-      open_order_count: status === "open" ? 1 : 0,
+      open_order_count: status === "open" || status === "partially_filled"
+        ? 1
+        : ["filled", "cancelled", "rejected"].includes(status)
+          ? 0
+          : null,
       checked_at: new Date().toISOString(),
     },
   };
@@ -503,6 +527,7 @@ function normalizedSubmit(result, clientOrderIndex, fallbackStatus) {
       venue: "lighter",
       client_order_index: Number(clientOrderIndex),
       tx_hash: result.tx_hash || null,
+      broadcast_acknowledged: true,
     },
     result_seed: { kind: "lighter_sdk_result", status: result.status || fallbackStatus },
     fills: [],
@@ -510,8 +535,20 @@ function normalizedSubmit(result, clientOrderIndex, fallbackStatus) {
   };
 }
 
+function ambiguousLighterWrite(error) {
+  if (error instanceof LighterExecutionError && ["venue_rejected", "venue_access_required"].includes(error.code)) {
+    return error;
+  }
+  return new LighterExecutionError(
+    "lighter submission outcome is ambiguous; reconcile exact client order index",
+    error?.status || 502,
+    "submission_ambiguous",
+  );
+}
+
 function sanitizeAccount(account = {}, market = {}) {
   const liquidation = lighterLiquidationDistance(account);
+  const openOrderCount = nonnegativeIntegerOrNull(account.pending_order_count);
   const makerFeeBps = rateBps(market.maker_fee);
   const takerFeeBps = rateBps(market.taker_fee);
   return {
@@ -525,7 +562,8 @@ function sanitizeAccount(account = {}, market = {}) {
     liquidation_distance_bps: liquidation.liquidation_distance_bps,
     liquidation_distance_verified: liquidation.liquidation_distance_verified,
     liquidation_distance_source: liquidation.liquidation_distance_source,
-    open_order_count: Number(account.pending_order_count || 0),
+    open_order_count: openOrderCount,
+    flat_zero_orders: liquidation.position_count === 0 && openOrderCount === 0,
     maker_fee_bps: makerFeeBps,
     taker_fee_bps: takerFeeBps,
     fee_source: "market_schedule_conservative_upper_bound",
@@ -620,6 +658,11 @@ function positiveDecimal(value, message) {
 function decimal(value) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
+function nonnegativeIntegerOrNull(value) {
+  const number = Number(value);
+  return value !== undefined && value !== null && Number.isSafeInteger(number) && number >= 0 ? number : null;
 }
 
 function rateBps(value) {
