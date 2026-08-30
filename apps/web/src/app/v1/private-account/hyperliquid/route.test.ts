@@ -138,6 +138,7 @@ describe("Hyperliquid private-account routes", () => {
     process.env.GHOLA_ENABLE_MOCK_ATTESTED_PROVIDER = "true";
     process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
     process.env.GHOLA_CUSTOM_SHIELDED_VERIFIER_MODE = "local_test";
+    process.env.GHOLA_LIVE_TRADING_COUNTRY_ALLOWLIST = "CA";
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify([{
       address: TEST_HYPERLIQUID_AGENT,
       name: "ghola-test",
@@ -150,6 +151,7 @@ describe("Hyperliquid private-account routes", () => {
     delete process.env.GHOLA_PRIVATE_AGENT_ENCLAVE_KEY_ID;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS;
     delete process.env.GHOLA_CUSTOM_SHIELDED_VERIFIER_MODE;
+    delete process.env.GHOLA_LIVE_TRADING_COUNTRY_ALLOWLIST;
     delete process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED;
     delete process.env.GHOLA_HYPERLIQUID_LIVE_MODE;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE;
@@ -496,8 +498,45 @@ describe("Hyperliquid private-account routes", () => {
     );
     const body = await eligibilityRes.json();
 
-    expect(eligibilityRes.status).toBe(400);
+    expect(eligibilityRes.status).toBe(451);
     expect(body.error).toBe("restricted_jurisdiction");
+  });
+
+  it("rejects client-supplied country fields without trusted request geography", async () => {
+    const eligibilityRes = await verifyVenueEligibility(
+      request("/v1/private-account/venues/hyperliquid/eligibility", {
+        accepted_terms: true,
+        accepted_risk: true,
+        jurisdiction_assertion: "non_us",
+        country_code: "CA",
+        region_code: "ON",
+      }),
+      { params: Promise.resolve({ platform_class: "hyperliquid" }) },
+    );
+
+    expect(eligibilityRes.status).toBe(451);
+    await expect(eligibilityRes.json()).resolves.toMatchObject({
+      error: "restricted_jurisdiction",
+      reason_codes: ["country_header_missing"],
+    });
+  });
+
+  it("revokes pooled authorization when the configured country allowlist changes", async () => {
+    await acceptHyperliquidLaunchTerms("CA");
+    process.env.GHOLA_LIVE_TRADING_COUNTRY_ALLOWLIST = "GB";
+
+    const allocationRes = await allocateManaged(
+      request("/v1/private-account/hyperliquid/managed-allocation", {
+        execution_mode: "ghola_pooled",
+        market_allowlist: ["BTC"],
+        max_notional_bucket: "5",
+      }),
+    );
+
+    expect(allocationRes.status).toBe(451);
+    await expect(allocationRes.json()).resolves.toMatchObject({
+      error: "restricted_jurisdiction",
+    });
   });
 
   it("requires Ghola balance for Hyperliquid pooled launch caps", async () => {

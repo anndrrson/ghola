@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sameOrigin } from "../../api/auth/session/_lib";
+import {
+  evaluateLiveTradingJurisdiction,
+  liveTradingJurisdictionErrorBody,
+} from "@/lib/live-trading-jurisdiction.server";
 
 const THUMPER_API_BASE =
   process.env.NEXT_PUBLIC_THUMPER_API_URL ||
@@ -63,6 +67,16 @@ async function handle(req: NextRequest, pathParts: string[]) {
       );
     }
     headers.set("authorization", `Bearer ${sessionToken}`);
+  }
+
+  if (method === "POST" && safePath === "trading/app/execute") {
+    const jurisdiction = evaluateLiveTradingJurisdiction(req);
+    if (!jurisdiction.allowed) {
+      return NextResponse.json(liveTradingJurisdictionErrorBody(jurisdiction), {
+        status: 451,
+        headers: NO_STORE_HEADERS,
+      });
+    }
   }
 
   const bodyAllowed = !["GET", "HEAD"].includes(method);

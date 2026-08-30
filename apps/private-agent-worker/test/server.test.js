@@ -1178,6 +1178,43 @@ describe("private agent worker", () => {
     assert.match(result.results[0].receipt_commitment, /^jupiter_result_/);
   });
 
+  it("rejects an encrypted Hyperliquid autopilot vault without its account commitment", async () => {
+    const vault = await encryptedHyperliquidVault(baseUrl);
+    const body = {
+      version: 2,
+      owner_commitment: "owner_missing_hyperliquid_account",
+      session_policy: {
+        venue_allowlist: ["hyperliquid"],
+        market_allowlist: ["BTC-USD"],
+        execution_network: "testnet",
+      },
+      venue_access: {
+        hyperliquid: {
+          status: "ready",
+          execution_mode: "byo_api_key",
+          network: "testnet",
+          encrypted_execution_vault: vault.encrypted_execution_vault,
+        },
+      },
+    };
+    const response = await fetch(`${baseUrl}/autopilot/sessions`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+    const result = await response.json();
+
+    assert.equal(response.status, 400);
+    assert.equal(result.error, "invalid autopilot session request");
+    assert.ok(result.details.includes(
+      "venue_access.hyperliquid.account_commitment is required for an encrypted execution vault",
+    ));
+  });
+
   it("blocks live pooled readiness when worker state is not shared", async () => {
     process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
     process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
@@ -1234,6 +1271,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         work_order_commitment: workOrderCommitment,
+        account_commitment: vault.account_commitment,
         vault_commitment: vault.vault_commitment,
         policy_commitment: vault.policy_commitment,
         encrypted_execution_vault: vault.encrypted_execution_vault,
@@ -1272,6 +1310,7 @@ describe("private agent worker", () => {
     const requestBody = {
       version: 1,
       work_order_commitment: workOrderCommitment,
+      account_commitment: vault.account_commitment,
       vault_commitment: vault.vault_commitment,
       policy_commitment: vault.policy_commitment,
       operation_class: "limit_order",
@@ -1447,6 +1486,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         work_order_commitment: workOrderCommitment,
+        account_commitment: vault.account_commitment,
         preview_commitment: previewCommitment,
         vault_commitment: "hyperliquid_vault_commitment_123",
         policy_commitment: "hyperliquid_policy_commitment_123",
@@ -1492,6 +1532,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         work_order_commitment: "connector_work_order_cancel_123",
+        account_commitment: vault.account_commitment,
         vault_commitment: "hyperliquid_vault_commitment_123",
         policy_commitment: "hyperliquid_policy_commitment_123",
         operation_class: "cancel",
@@ -1856,6 +1897,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         work_order_commitment: "connector_work_order_mainnet_123",
+        account_commitment: "acct_commitment_123",
         vault_commitment: "hyperliquid_vault_commitment_123",
         policy_commitment: "hyperliquid_policy_commitment_123",
         operation_class: "limit_order",
@@ -1900,6 +1942,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         work_order_commitment: "connector_work_order_mainnet_non_tiny_123",
+        account_commitment: "acct_commitment_123",
         vault_commitment: "hyperliquid_vault_commitment_123",
         policy_commitment: "hyperliquid_policy_commitment_123",
         operation_class: "limit_order",
@@ -1947,6 +1990,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         work_order_commitment: "connector_work_order_mainnet_tiny_123",
+        account_commitment: "acct_commitment_123",
         vault_commitment: "hyperliquid_vault_commitment_123",
         policy_commitment: "hyperliquid_policy_commitment_123",
         operation_class: "limit_order",
@@ -2002,6 +2046,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         work_order_commitment: workOrderCommitment,
+        account_commitment: "acct_commitment_123",
         vault_commitment: "hyperliquid_vault_commitment_123",
         policy_commitment: "hyperliquid_policy_commitment_123",
         operation_class: "limit_order",
@@ -2106,6 +2151,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         work_order_commitment: "connector_work_order_mainnet_tiny_over_cap_123",
+        account_commitment: "acct_commitment_123",
         vault_commitment: "hyperliquid_vault_commitment_123",
         policy_commitment: "hyperliquid_policy_commitment_123",
         operation_class: "limit_order",
@@ -2149,6 +2195,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         work_order_commitment: "connector_work_order_cancel_unknown_123",
+        account_commitment: vault.account_commitment,
         vault_commitment: "hyperliquid_vault_commitment_123",
         policy_commitment: "hyperliquid_policy_commitment_123",
         operation_class: "cancel",

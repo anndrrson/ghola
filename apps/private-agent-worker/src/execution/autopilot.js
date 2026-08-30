@@ -38,10 +38,13 @@ export async function createAutopilotSession({ body, recipient, state, provider,
   const activationReady = policy.execution_network !== "mainnet" || (
     Boolean(policy.mainnet_activation_id) && Boolean(policy.owner_authorization_commitment)
   );
+  const liveExecutionReady = autopilotLiveExecutionReady(process.env, policy);
+  const venuePolicyBlocked = policy.venue_allowlist.some((venue) => venueAccess[venue]?.status === "blocked");
   const status = policy.kill_switch
     ? "killed"
     : !activationReady ? "pending_activation"
-      : readyVenues.length > 0 ? "running" : "pending_funding";
+      : !liveExecutionReady || venuePolicyBlocked ? "blocked"
+        : readyVenues.length > 0 ? "running" : "pending_funding";
   const id = `autopilot_${digest({
     owner_commitment: stringValue(body?.owner_commitment) || "owner_redacted",
     policy,
@@ -79,10 +82,14 @@ export async function createAutopilotSession({ body, recipient, state, provider,
       ? "Bounded intent executor is running. Trades require fresh market data, policy caps, and submit-time guardrails."
       : status === "pending_activation"
         ? "Owner authorization and explicit mainnet activation are required."
+      : status === "blocked"
+        ? !liveExecutionReady
+          ? "Live submission is disabled. Enable the private worker live-submit gate before execution."
+          : "Venue access does not match the verified execution policy."
       : status === "pending_funding"
         ? "Fund an isolated venue vault or connect a trade-only venue vault before live execution."
         : "Kill switch is active.",
-    execution_enabled: status === "running",
+    execution_enabled: status === "running" && liveExecutionReady,
     control_plane: "worker",
     visibility_summary: {
       main_wallet_prompts_per_trade: false,
@@ -132,7 +139,14 @@ export async function createAutopilotSession({ body, recipient, state, provider,
   return publicSession(session);
 }
 
-export async function controlAutopilotSession({ sessionId, action, state, recipient = null, now = new Date() }) {
+export async function controlAutopilotSession({
+  sessionId,
+  action,
+  state,
+  recipient = null,
+  venueAccess = null,
+  now = new Date(),
+}) {
   const session = await state.getAutopilotSession(sessionId);
   if (!session) return null;
   const refreshed = refreshSession(session, now);
@@ -175,19 +189,59 @@ export async function controlAutopilotSession({ sessionId, action, state, recipi
       refreshed.next_step = "Kill switch active. Create a new autonomous session to trade again.";
       stopAutopilotLoop(sessionId);
     } else {
+      const boundedHyperliquid = refreshed.session_policy.strategy_id === BOUNDED_INTENT_STRATEGY &&
+        refreshed.session_policy.venue_allowlist.includes("hyperliquid");
+      if (boundedHyperliquid) {
+        const suppliedHyperliquid = venueAccess?.hyperliquid;
+        const freshHyperliquid = suppliedHyperliquid && typeof suppliedHyperliquid === "object"
+          ? normalizeVenueAccess(
+              { hyperliquid: suppliedHyperliquid },
+              { ...refreshed.session_policy, venue_allowlist: ["hyperliquid"] },
+            ).hyperliquid
+          : null;
+        if (freshHyperliquid?.status !== "ready") {
+          refreshed.status = "paused";
+          refreshed.execution_enabled = false;
+          refreshed.next_step = "Hyperliquid verification expired. Verify the connection again before resuming.";
+          stopAutopilotLoop(sessionId);
+          refreshed.updated_at = now.toISOString();
+          await state.putAutopilotSession(refreshed);
+          const event = await appendEvent(
+            state,
+            refreshed,
+            "guardrail",
+            "Autopilot resume rejected because fresh Hyperliquid access was unavailable.",
+            { action, reason: freshHyperliquid?.reason || "fresh_hyperliquid_access_required" },
+            now,
+          );
+          return { session: publicSession(refreshed), event };
+        }
+        refreshed.venue_access = {
+          ...refreshed.venue_access,
+          hyperliquid: freshHyperliquid,
+        };
+      }
       const ready = readyVenues(refreshed);
       const activationReady = refreshed.session_policy.execution_network !== "mainnet" || (
         Boolean(refreshed.session_policy.mainnet_activation_id) &&
         Boolean(refreshed.session_policy.owner_authorization_commitment)
       );
-      refreshed.status = !activationReady ? "pending_activation" : ready.length ? "running" : "pending_funding";
-      refreshed.execution_enabled = activationReady && ready.length > 0;
+      const liveExecutionReady = autopilotLiveExecutionReady(process.env, refreshed.session_policy);
+      refreshed.status = !activationReady
+        ? "pending_activation"
+        : !liveExecutionReady ? "blocked"
+          : ready.length ? "running" : "pending_funding";
+      refreshed.execution_enabled = activationReady && liveExecutionReady && ready.length > 0;
       refreshed.next_step = !activationReady
         ? "Owner authorization and explicit mainnet activation are required."
+        : !liveExecutionReady
+          ? "Live submission is disabled. Enable the private worker live-submit gate before execution."
         : ready.length
           ? "Bounded intent executor is running."
           : "Fund an isolated venue vault before live execution.";
-      if (recipient && activationReady && ready.length) startAutopilotLoop({ sessionId, state, recipient });
+      if (recipient && activationReady && liveExecutionReady && ready.length) {
+        startAutopilotLoop({ sessionId, state, recipient });
+      }
     }
   }
   refreshed.updated_at = now.toISOString();
@@ -1337,6 +1391,8 @@ function normalizeAutopilotPolicy(raw, now) {
   const agentMandate = normalizeSessionMandate(raw.agent_mandate);
   const executionNetwork = normalizeExecutionNetwork(raw.execution_network || raw.network);
   const configuredLeverageX100 = clampInt(raw.configured_leverage_x100, 100, 500, 100);
+  const effectiveVenues = venues.length ? venues : DEFAULT_VENUES;
+  const boundedHyperliquid = strategyId === BOUNDED_INTENT_STRATEGY && effectiveVenues.includes("hyperliquid");
   const policy = {
     version: 2,
     strategy_id: strategyId,
@@ -1344,9 +1400,11 @@ function normalizeAutopilotPolicy(raw, now) {
     decision_contract: aiDirectEnabled ? "structured_proposal_v2" : "deterministic_proposal_v1",
     model_role: aiDirectEnabled ? "proposal_only" : "score_only",
     ai_direct_enabled: aiDirectEnabled,
-    venue_allowlist: venues.length ? venues : DEFAULT_VENUES,
+    venue_allowlist: effectiveVenues,
     market_allowlist: markets.length ? markets : DEFAULT_MARKETS,
-    max_notional_bucket: bucket(raw.max_notional_bucket, ["5", "10", "25", "50", "100"], "50"),
+    max_notional_bucket: boundedHyperliquid
+      ? "5"
+      : bucket(raw.max_notional_bucket, ["5", "10", "25", "50", "100"], "50"),
     max_position_notional_bucket: bucket(raw.max_position_notional_bucket, ["50", "100", "250", "500"], "100"),
     max_daily_notional_bucket: bucket(raw.max_daily_notional_bucket, ["25", "50", "100", "250"], "250"),
     max_order_count: clampInt(raw.max_order_count, 1, 25, 10),
@@ -1483,8 +1541,7 @@ function normalizeStrategyId(value) {
 }
 
 function normalizeVenueAccess(raw, policy) {
-  const dryRunReady = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" ||
-    process.env.PRIVATE_AGENT_AUTOPILOT_ASSUME_FUNDED === "true";
+  const dryRunReady = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true";
   const out = {};
   for (const venue of policy.venue_allowlist) {
     const value = raw?.[venue] || raw?.[venue.replace("_advanced", "")] || null;
@@ -1492,9 +1549,21 @@ function normalizeVenueAccess(raw, policy) {
       const requestedStatus = value.status === "ready" || value.encrypted_execution_vault || value.execution_mode === "ghola_pooled"
         ? "ready"
         : value.status || "needs_funds";
+      const network = normalizeVenueNetwork(value.network);
+      const networkBound = venue === "hyperliquid" &&
+        policy.strategy_id === BOUNDED_INTENT_STRATEGY && Boolean(
+        value.encrypted_execution_vault ||
+        value.allocation_commitment ||
+        value.managed_allocation_commitment,
+      );
+      const networkMatches = !networkBound || (
+        network !== null && policy.execution_network === network
+      );
       out[venue] = {
-        status: venue === "drift" ? "quarantined" : requestedStatus,
+        status: venue === "drift" ? "quarantined" : networkMatches ? requestedStatus : "blocked",
         execution_mode: value.execution_mode || defaultExecutionMode(venue),
+        network,
+        account_commitment: value.account_commitment || null,
         vault_commitment: value.vault_commitment || null,
         encrypted_vault_commitment: value.encrypted_vault_commitment || null,
         encrypted_execution_vault: value.encrypted_execution_vault || null,
@@ -1507,7 +1576,9 @@ function normalizeVenueAccess(raw, policy) {
         latency_ms: Number.isInteger(value.latency_ms) && value.latency_ms >= 0 ? value.latency_ms : null,
         capabilities: normalizeCapabilityEvidence(value.capabilities),
         no_submit_proof: normalizeNoSubmitProof(value.no_submit_proof),
-        reason: venue === "drift" ? "drift_runtime_quarantined" : value.reason || null,
+        reason: venue === "drift"
+          ? "drift_runtime_quarantined"
+          : networkMatches ? value.reason || null : "execution_network_mismatch",
       };
     } else {
       out[venue] = {
@@ -1993,6 +2064,8 @@ function executionForVenue(session, venue) {
   const access = session.venue_access?.[venue] || {};
   const execution = {
     execution_mode: access.execution_mode || defaultExecutionMode(venue),
+    network: access.network || undefined,
+    account_commitment: access.account_commitment || undefined,
     vault_commitment: access.vault_commitment || undefined,
     encrypted_vault_commitment: access.encrypted_vault_commitment || undefined,
     encrypted_execution_vault: access.encrypted_execution_vault || undefined,
@@ -2025,6 +2098,15 @@ function workerSessionPolicy(session) {
 }
 
 function refreshSession(session, now) {
+  if (session.status === "running" && !autopilotLiveExecutionReady(process.env, session.session_policy)) {
+    return {
+      ...session,
+      status: "blocked",
+      execution_enabled: false,
+      updated_at: now.toISOString(),
+      next_step: "Live submission is disabled. Enable the private worker live-submit gate before execution.",
+    };
+  }
   if (
     session.status !== "killed" &&
     session.status !== "blocked" &&
@@ -2336,6 +2418,24 @@ function localeHint(value) {
 function normalizeExecutionNetwork(value) {
   const network = stringValue(value).toLowerCase();
   return network === "mainnet" || network === "testnet" ? network : "paper";
+}
+
+function normalizeVenueNetwork(value) {
+  const network = stringValue(value).toLowerCase();
+  return network === "mainnet" || network === "testnet" ? network : null;
+}
+
+function autopilotLiveExecutionReady(env, policy = null) {
+  if (env.PRIVATE_AGENT_GLOBAL_KILL_SWITCH === "true") return false;
+  if (env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") return true;
+  if (env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT !== "true") return false;
+  const boundedHyperliquid = policy?.strategy_id === BOUNDED_INTENT_STRATEGY &&
+    policy?.venue_allowlist?.includes("hyperliquid");
+  if (!boundedHyperliquid || policy.execution_network !== "mainnet") return true;
+  const cap = Number.parseFloat(String(env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD || ""));
+  return env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET === "true" &&
+    env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE === "tiny_fill" &&
+    Number.isFinite(cap) && cap > 0 && cap <= 5;
 }
 
 function boundedIdentifier(value) {

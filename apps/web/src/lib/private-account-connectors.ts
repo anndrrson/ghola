@@ -813,6 +813,7 @@ export async function verifyConnectorNoSubmit(input: {
   venue_execution_vault: {
     venue_id: string;
     execution_mode: GholaVenueExecutionMode | string;
+    account_commitment: string;
     vault_commitment?: string;
     encrypted_vault_commitment?: string;
     policy_commitment: string;
@@ -869,6 +870,7 @@ export async function verifyConnectorNoSubmit(input: {
       venue_id: input.venue_execution_vault.venue_id || venueIdForPlatformClass(input.platform_class) || "phoenix",
       execution_mode: input.venue_execution_vault.execution_mode ||
         (input.platform_class === "hyperliquid_style_market" ? "byo_api_key" : "user_stealth"),
+      account_commitment: input.venue_execution_vault.account_commitment,
       work_order_commitment: input.work_order_commitment,
       manifest_commitment: input.manifest.manifest_commitment,
       operation_class: input.operation_class,
@@ -910,7 +912,8 @@ export async function verifyConnectorNoSubmit(input: {
       body: JSON.stringify(payload),
     });
     const body = asRecord(await res.json().catch(() => null));
-    if (!res.ok || body.status !== "verified_no_funds") {
+    const checks = noFundsChecks(body.checks, input.platform_class);
+    if (!res.ok || body.status !== "verified_no_funds" || !checks) {
       console.warn("[private-account] connector no-submit rejected", {
         platform_class: input.platform_class,
         status: res.status,
@@ -920,13 +923,20 @@ export async function verifyConnectorNoSubmit(input: {
           ? body.details.filter((detail): detail is string => typeof detail === "string").slice(0, 8)
           : [],
       });
-      return failedNoFundsVerification(base, noFundsReason(body, res.status), "failed", input.site_origin);
+      return failedNoFundsVerification(
+        base,
+        !checks
+          ? noFundsFailureReason(body.checks, input.platform_class)
+          : noFundsReason(body, res.status),
+        "failed",
+        input.site_origin,
+      );
     }
     return verifiedNoFundsVerification(base, {
       result_commitment: stringValue(body.result_commitment) || null,
       provider_ref_commitment: stringValue(body.provider_ref_commitment) || null,
       verification_commitment: stringValue(body.verification_commitment) || undefined,
-      checks: noFundsChecks(body.checks),
+      checks,
       site_origin: input.site_origin,
     });
   } catch (error) {
@@ -1945,8 +1955,16 @@ function defaultNoFundsChecks(ok: boolean): GholaConnectorNoFundsVerification["c
   };
 }
 
-function noFundsChecks(value: unknown): GholaConnectorNoFundsVerification["checks"] {
+function noFundsChecks(
+  value: unknown,
+  platformClass: GholaPlatformClass,
+): GholaConnectorNoFundsVerification["checks"] | null {
   const body = asRecord(value);
+  if (body.transaction_broadcast !== false) return null;
+  if (
+    platformClass === "hyperliquid_style_market" &&
+    (body.api_wallet_loaded !== true || body.order_request_built !== true)
+  ) return null;
   return {
     sealed_vault_opened: body.sealed_vault_opened === true,
     sealed_instruction_opened: body.sealed_instruction_opened === true,
@@ -1956,11 +1974,15 @@ function noFundsChecks(value: unknown): GholaConnectorNoFundsVerification["check
     rpc_reachable: body.rpc_reachable === true,
     phoenix_sdk_ready: body.phoenix_sdk_ready === true,
     order_packet_built: body.order_packet_built === true,
-    api_wallet_loaded: body.api_wallet_loaded === true || body.authority_derived === true,
+    api_wallet_loaded: body.api_wallet_loaded === true || (
+      platformClass !== "hyperliquid_style_market" && body.authority_derived === true
+    ),
     hyperliquid_api_reachable: body.hyperliquid_api_reachable === true,
     hyperliquid_sdk_ready: body.hyperliquid_sdk_ready === true,
     account_read_checked: body.account_read_checked === true,
-    order_request_built: body.order_request_built === true || body.order_packet_built === true,
+    order_request_built: body.order_request_built === true || (
+      platformClass !== "hyperliquid_style_market" && body.order_packet_built === true
+    ),
     live_venue_checked: body.live_venue_checked === true,
     jupiter_api_reachable: body.jupiter_api_reachable === true,
     jupiter_token_allowlist_passed: body.jupiter_token_allowlist_passed === true,
@@ -1970,6 +1992,16 @@ function noFundsChecks(value: unknown): GholaConnectorNoFundsVerification["check
     coinbase_order_request_built: body.coinbase_order_request_built === true || body.order_request_built === true,
     transaction_broadcast: false,
   };
+}
+
+function noFundsFailureReason(value: unknown, platformClass: GholaPlatformClass): string {
+  const body = asRecord(value);
+  if (body.transaction_broadcast !== false) return "transaction_broadcast_not_explicitly_false";
+  if (
+    platformClass === "hyperliquid_style_market" &&
+    (body.api_wallet_loaded !== true || body.order_request_built !== true)
+  ) return "required_no_submit_checks_incomplete";
+  return "no_submit_checks_incomplete";
 }
 
 function certificateVenueId(platformClass: GholaPlatformClass): "phoenix" | "hyperliquid" | "jupiter" | "coinbase_advanced" {

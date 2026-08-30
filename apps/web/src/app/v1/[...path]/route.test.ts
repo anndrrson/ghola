@@ -14,6 +14,10 @@ function forwardedHeaders(fetchSpy: { mock: { calls: unknown[][] } }): Headers {
   return new Headers(init?.headers);
 }
 
+afterEach(() => {
+  delete process.env.GHOLA_LIVE_TRADING_COUNTRY_ALLOWLIST;
+});
+
 describe("v1 x402 proxy privacy", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -95,5 +99,75 @@ describe("v1 x402 proxy privacy", () => {
     expect(res.headers.get("x-payment-response")).toBe("settled");
     expect(res.headers.get("set-cookie")).toBeNull();
     expect(res.headers.get("connection")).toBeNull();
+  });
+});
+
+describe("v1 live execution jurisdiction", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns 451 before forwarding without trusted geography", async () => {
+    process.env.GHOLA_LIVE_TRADING_COUNTRY_ALLOWLIST = "CA";
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const response = await POST(
+      request("https://ghola.test/v1/trading/app/execute", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-country-code": "CA",
+        },
+        body: JSON.stringify({ order_plan: {} }),
+      }),
+      { params: Promise.resolve({ path: ["trading", "app", "execute"] }) },
+    );
+
+    expect(response.status).toBe(451);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "restricted_jurisdiction",
+      reason_codes: ["country_header_missing"],
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("forwards only from an allowlisted test jurisdiction", async () => {
+    process.env.GHOLA_LIVE_TRADING_COUNTRY_ALLOWLIST = "CA";
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", { status: 200 }),
+    );
+
+    const response = await POST(
+      request("https://ghola.test/v1/trading/app/execute", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-ghola-test-country": "CA",
+        },
+        body: JSON.stringify({ order_plan: {} }),
+      }),
+      { params: Promise.resolve({ path: ["trading", "app", "execute"] }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it("does not bypass geography for a claimed reduce-only order", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const response = await POST(
+      request("https://ghola.test/v1/trading/app/execute", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          order_plan: { execution_policy: { reduce_only: true } },
+        }),
+      }),
+      { params: Promise.resolve({ path: ["trading", "app", "execute"] }) },
+    );
+
+    expect(response.status).toBe(451);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

@@ -10,6 +10,10 @@ import {
   createAutonomousAutopilotSessionFromBody,
   listAutopilotSessionsForOwner,
 } from "@/lib/private-account-autopilot";
+import {
+  evaluateLiveTradingJurisdiction,
+  liveTradingJurisdictionErrorBody,
+} from "@/lib/live-trading-jurisdiction.server";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +29,10 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const guarded = await privateAccountLiveGuard(req, { allowMobileWalletProof: true });
   if (!guarded.ok) return guarded.response;
+  const jurisdiction = evaluateLiveTradingJurisdiction(req);
+  if (!jurisdiction.allowed) {
+    return json(liveTradingJurisdictionErrorBody(jurisdiction), 451);
+  }
   const reservation = await reservePrivateAccountAutopilotCompute(req);
   if (!reservation.ok) return reservation.response;
   let created: Awaited<ReturnType<typeof createAutonomousAutopilotSessionFromBody>>;
@@ -49,10 +57,15 @@ export async function POST(req: Request) {
     await releasePrivateAccountAutopilotCompute(req, reservation.reservation_id, "failed", 0);
     throw error;
   }
-  if (!created.session.worker_autopilot_session_id) {
+  const armed = Boolean(
+    created.session.worker_autopilot_session_id &&
+    created.session.status === "running" &&
+    created.session.execution_enabled === true,
+  );
+  if (!armed) {
     await releasePrivateAccountAutopilotCompute(req, reservation.reservation_id, "failed", 0);
   }
-  return json({
+  const payload = {
     version: 1,
     billing: {
       tier: reservation.billing.tier,
@@ -61,5 +74,13 @@ export async function POST(req: Request) {
       metering_mode: "sparse_metered_v1",
     },
     ...created,
-  }, 201);
+  };
+  if (!armed) {
+    return json({
+      error: "autopilot_not_armed",
+      next_step: created.session.next_step,
+      ...payload,
+    }, 409);
+  }
+  return json(payload, 201);
 }

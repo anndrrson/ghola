@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ed25519, x25519 } from "@noble/curves/ed25519";
 import {
   controlAutopilotSession,
   createAutopilotSession,
@@ -10,6 +11,12 @@ import {
   runDueAutopilotSessions,
   runAutopilotTick,
 } from "../src/execution/autopilot.js";
+import {
+  bytesToBase64,
+  bytesToHex,
+  didKeyFromVerifying,
+  sealForTest,
+} from "../src/crypto/envelope.js";
 import { createSqliteWorkerState, createWorkerState } from "../src/state/private-state.js";
 
 const OLD_ENV = { ...process.env };
@@ -157,6 +164,319 @@ describe("autonomous autopilot engine", () => {
       "venue_reconcile",
       "tick_snapshot",
     ]);
+  });
+
+  it("preserves and enforces the owner-bound Hyperliquid account commitment", async () => {
+    const recipient = testRecipient();
+    const boundAccount = "account_bound_owner_123";
+    const encryptedVault = await sealedHyperliquidVault(recipient, boundAccount);
+    const now = new Date(Date.now() + 60_000);
+
+    const validState = createWorkerState(join(dir, "valid-account"));
+    const valid = await createHyperliquidAutopilot({
+      state: validState,
+      recipient,
+      now,
+      encryptedVault,
+      accountCommitment: boundAccount,
+    });
+    const stored = await validState.getAutopilotSession(valid.autopilot_session_id);
+    assert.equal(stored.venue_access.hyperliquid.account_commitment, boundAccount);
+
+    const tick = await runAutopilotTick({
+      sessionId: valid.autopilot_session_id,
+      state: validState,
+      recipient,
+      now: new Date(now.getTime() + 60_000),
+      env: process.env,
+    });
+    assert.equal(tick.ok, true);
+    assert.equal(tick.proposal.market, "BTC-USD");
+    assert.equal(tick.proposal.venue_id, "hyperliquid");
+
+    for (const [label, accountCommitment, expected] of [
+      ["wrong-account", "account_bound_attacker_456", /account binding mismatch/],
+      ["missing-account", undefined, /account commitment is unavailable/],
+    ]) {
+      const state = createWorkerState(join(dir, label));
+      const session = await createHyperliquidAutopilot({
+        state,
+        recipient,
+        now,
+        encryptedVault,
+        accountCommitment,
+      });
+      await assert.rejects(
+        () => runAutopilotTick({
+          sessionId: session.autopilot_session_id,
+          state,
+          recipient,
+          now: new Date(now.getTime() + 60_000),
+          env: process.env,
+        }),
+        expected,
+      );
+      assert.equal(await state.getIdempotency(`autopilot:${session.autopilot_session_id}:1`), null);
+    }
+  });
+
+  it("never reports execution enabled while the live-submit gate is closed", async () => {
+    delete process.env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT;
+    delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    const state = createWorkerState(join(dir, "live-gate-closed"));
+    const now = new Date(Date.now() + 60_000);
+    const session = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_live_gate_closed",
+        session_policy: {
+          venue_allowlist: ["jupiter"],
+          market_allowlist: ["SOL-USD"],
+        },
+        venue_access: {
+          jupiter: { status: "ready", execution_mode: "ghola_pooled" },
+        },
+      },
+      recipient: { recipient_id: "did:key:live-gate-closed" },
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+
+    assert.equal(session.status, "blocked");
+    assert.equal(session.execution_enabled, false);
+    assert.match(session.next_step, /Live submission is disabled/);
+    const tick = await runAutopilotTick({
+      sessionId: session.autopilot_session_id,
+      state,
+      recipient: { recipient_id: "did:key:live-gate-closed" },
+      now: new Date(now.getTime() + 60_000),
+      env: process.env,
+    });
+    assert.deepEqual(tick, { ok: false, error: "autopilot_not_running" });
+  });
+
+  it("blocks create, refresh, and resume while the global kill switch is active", async () => {
+    const recipient = { recipient_id: "did:key:global-kill" };
+    const now = new Date(Date.now() + 60_000);
+    process.env.PRIVATE_AGENT_GLOBAL_KILL_SWITCH = "true";
+    const blockedState = createWorkerState(join(dir, "global-kill-create"));
+    const blocked = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_global_kill_create",
+        session_policy: { venue_allowlist: ["jupiter"], market_allowlist: ["SOL-USD"] },
+      },
+      recipient,
+      state: blockedState,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+    assert.equal(blocked.status, "blocked");
+    assert.equal(blocked.execution_enabled, false);
+
+    delete process.env.PRIVATE_AGENT_GLOBAL_KILL_SWITCH;
+    const state = createWorkerState(join(dir, "global-kill-refresh"));
+    const running = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_global_kill_refresh",
+        session_policy: { venue_allowlist: ["jupiter"], market_allowlist: ["SOL-USD"] },
+      },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+    assert.equal(running.status, "running");
+    process.env.PRIVATE_AGENT_GLOBAL_KILL_SWITCH = "true";
+    const replay = await listAutopilotReplay({
+      sessionId: running.autopilot_session_id,
+      state,
+      now: new Date(now.getTime() + 1_000),
+    });
+    assert.equal(replay.session.status, "blocked");
+    assert.equal(replay.session.execution_enabled, false);
+    const resumed = await controlAutopilotSession({
+      sessionId: running.autopilot_session_id,
+      action: "resume",
+      state,
+      recipient,
+      now: new Date(now.getTime() + 2_000),
+    });
+    assert.equal(resumed.session.status, "blocked");
+    assert.equal(resumed.session.execution_enabled, false);
+  });
+
+  it("caps bounded Hyperliquid orders, binds the network, and refreshes access on resume", async () => {
+    const recipient = testRecipient();
+    const accountCommitment = "account_network_bound_123";
+    const encryptedVault = await sealedHyperliquidVault(recipient, accountCommitment);
+    const now = new Date(Date.now() + 60_000);
+    const access = {
+      hyperliquid: {
+        status: "ready",
+        execution_mode: "byo_api_key",
+        network: "testnet",
+        account_commitment: accountCommitment,
+        encrypted_execution_vault: encryptedVault,
+      },
+    };
+    const state = createWorkerState(join(dir, "network-bound"));
+    const session = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_network_bound",
+        session_policy: {
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+          max_notional_bucket: "100",
+          execution_network: "testnet",
+        },
+        venue_access: access,
+      },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+    assert.equal(session.status, "running");
+    assert.equal(session.session_policy.max_notional_bucket, "5");
+    assert.equal(session.venue_access.hyperliquid.network, "testnet");
+
+    await controlAutopilotSession({
+      sessionId: session.autopilot_session_id,
+      action: "pause",
+      state,
+      recipient,
+      now: new Date(now.getTime() + 1_000),
+    });
+    const rejected = await controlAutopilotSession({
+      sessionId: session.autopilot_session_id,
+      action: "resume",
+      state,
+      recipient,
+      now: new Date(now.getTime() + 2_000),
+    });
+    assert.equal(rejected.session.status, "paused");
+    assert.equal(rejected.session.execution_enabled, false);
+    const resumed = await controlAutopilotSession({
+      sessionId: session.autopilot_session_id,
+      action: "resume",
+      state,
+      recipient,
+      venueAccess: access,
+      now: new Date(now.getTime() + 3_000),
+    });
+    assert.equal(resumed.session.status, "running");
+    assert.equal(resumed.session.execution_enabled, true);
+
+    const mismatchState = createWorkerState(join(dir, "network-mismatch"));
+    const mismatch = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_network_mismatch",
+        session_policy: {
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+          execution_network: "mainnet",
+          mainnet_activation_id: "activation:mainnet:test",
+          owner_authorization_commitment: "owner_auth:testnet_mismatch",
+        },
+        venue_access: access,
+      },
+      recipient,
+      state: mismatchState,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+    assert.equal(mismatch.venue_access.hyperliquid.status, "blocked");
+    assert.equal(mismatch.venue_access.hyperliquid.reason, "execution_network_mismatch");
+    assert.equal(mismatch.execution_enabled, false);
+
+    const mainnetState = createWorkerState(join(dir, "mainnet-pending"));
+    const mainnet = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_mainnet_pending",
+        session_policy: {
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+          execution_network: "mainnet",
+        },
+        venue_access: {
+          hyperliquid: { ...access.hyperliquid, network: "mainnet" },
+        },
+      },
+      recipient,
+      state: mainnetState,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+    assert.equal(mainnet.status, "pending_activation");
+    assert.equal(mainnet.execution_enabled, false);
+
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    delete process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET;
+    delete process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE;
+    delete process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD;
+    const liveTestnet = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_live_testnet",
+        session_policy: {
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+          execution_network: "testnet",
+        },
+        venue_access: access,
+      },
+      recipient,
+      state: createWorkerState(join(dir, "live-testnet")),
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+    assert.equal(liveTestnet.status, "running");
+    assert.equal(liveTestnet.execution_enabled, true);
+
+    const activatedPolicy = {
+      venue_allowlist: ["hyperliquid"],
+      market_allowlist: ["BTC-USD"],
+      execution_network: "mainnet",
+      mainnet_activation_id: "activation:mainnet:test",
+      owner_authorization_commitment: "owner_auth:mainnet:test",
+    };
+    const activatedAccess = {
+      hyperliquid: { ...access.hyperliquid, network: "mainnet" },
+    };
+    const createMainnet = (label) => createAutopilotSession({
+      body: {
+        owner_commitment: `owner_${label}`,
+        session_policy: activatedPolicy,
+        venue_access: activatedAccess,
+      },
+      recipient,
+      state: createWorkerState(join(dir, label)),
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+
+    assert.equal((await createMainnet("mainnet-not-allowed")).status, "blocked");
+
+    process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET = "true";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "disabled";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD = "5";
+    assert.equal((await createMainnet("mainnet-mode-disabled")).status, "blocked");
+
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "tiny_fill";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD = "25";
+    assert.equal((await createMainnet("mainnet-cap-too-high")).status, "blocked");
+
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD = "5";
+    const activated = await createMainnet("mainnet-activated");
+    assert.equal(activated.status, "running");
+    assert.equal(activated.execution_enabled, true);
   });
 
   it("does not run a tick while another worker owns the durable lease", async () => {
@@ -866,3 +1186,83 @@ describe("autonomous autopilot engine", () => {
     assert.equal(eventTypes.includes("execution"), false);
   });
 });
+
+async function createHyperliquidAutopilot({
+  state,
+  recipient,
+  now,
+  encryptedVault,
+  accountCommitment,
+}) {
+  return createAutopilotSession({
+    body: {
+      owner_commitment: "owner_hyperliquid_account_binding",
+      session_policy: {
+        ai_direct_enabled: false,
+        venue_allowlist: ["hyperliquid"],
+        market_allowlist: ["BTC-USD"],
+        max_notional_bucket: "5",
+        max_daily_notional_bucket: "25",
+        max_order_count: 1,
+        ttl_ms: 2 * 60 * 60_000,
+        max_slippage_bps: 25,
+        execution_network: "testnet",
+      },
+      venue_access: {
+        hyperliquid: {
+          status: "ready",
+          execution_mode: "byo_api_key",
+          network: "testnet",
+          account_commitment: accountCommitment,
+          vault_commitment: "vault_hyperliquid_account_bound",
+          encrypted_vault_commitment: "encrypted_vault_hyperliquid_account_bound",
+          encrypted_execution_vault: encryptedVault,
+        },
+      },
+    },
+    recipient,
+    state,
+    provider: "test",
+    startLoop: false,
+    now,
+  });
+}
+
+function testRecipient() {
+  const secret = x25519.utils.randomPrivateKey();
+  return {
+    recipient_id: "did:key:test-autopilot-account-bound",
+    x25519_secret_hex: bytesToHex(secret),
+    x25519_pub_hex: bytesToHex(x25519.getPublicKey(secret)),
+  };
+}
+
+async function sealedHyperliquidVault(recipient, accountCommitment) {
+  const senderSecret = ed25519.utils.randomPrivateKey();
+  const aad = [
+    "ghola/hyperliquid-execution-vault-v1",
+    `account:${accountCommitment}`,
+    `recipient:${recipient.recipient_id}`,
+    "network:testnet",
+  ].join("|");
+  const sealed = await sealForTest({
+    senderDid: didKeyFromVerifying(ed25519.getPublicKey(senderSecret)),
+    recipientId: recipient.recipient_id,
+    recipientX25519: x25519.getPublicKey(Buffer.from(recipient.x25519_secret_hex, "hex")),
+    associatedData: aad,
+    plaintext: {
+      kind: "ghola_hyperliquid_execution_vault",
+      network: "testnet",
+      hyperliquid_account_address: `0x${"1".repeat(40)}`,
+      api_wallet_private_key: `0x${"2".repeat(64)}`,
+      agent_name: "ghola-account-bound-test",
+    },
+    signBody: async (digest) => ed25519.sign(digest, senderSecret),
+  });
+  return {
+    alg: "sealed-provider-v1",
+    ciphertext: bytesToBase64(sealed),
+    recipient: recipient.recipient_id,
+    aad,
+  };
+}

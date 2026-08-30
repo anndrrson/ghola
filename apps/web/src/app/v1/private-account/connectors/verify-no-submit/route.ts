@@ -7,7 +7,7 @@ import {
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  const guarded = await privateAccountLiveGuard(req);
+  const guarded = await privateAccountLiveGuard(req, { allowMobileWalletProof: true });
   if (!guarded.ok) return guarded.response;
   const verified = await connectorVerifyNoSubmitFromBody(guarded.body, guarded.owner, {
     site_origin: new URL(req.url).origin,

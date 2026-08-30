@@ -9,6 +9,7 @@ import { GET as walletBindingChallengeRoute } from "@/app/v1/private-account/wal
 import { POST as walletBindingRoute } from "@/app/v1/private-account/wallet-bindings/route";
 import { resetPrivateAccountStoreForTests } from "./private-account-store";
 import {
+  controlAutonomousAutopilotSessionFromBody,
   controlAutopilotSessionFromBody,
   createAutonomousAutopilotSessionFromBody,
   createAutopilotSessionFromBody,
@@ -17,6 +18,7 @@ import {
   listAutopilotReplayForOwner,
   listAutopilotSessionsForOwner,
   resetAutopilotSessionsForTests,
+  syncWorkerAutopilotSession,
 } from "./private-account-autopilot";
 import { privateAccountMobileProofMessage } from "./private-account-mobile-proof";
 
@@ -25,6 +27,7 @@ const owner = { owner_commitment: "owner_a" };
 describe("private account autopilot sessions", () => {
   beforeEach(() => {
     resetAutopilotSessionsForTests();
+    process.env.GHOLA_LIVE_TRADING_COUNTRY_ALLOWLIST = "CA";
   });
 
   afterEach(async () => {
@@ -38,6 +41,7 @@ describe("private account autopilot sessions", () => {
     delete process.env.GHOLA_HYPERLIQUID_LIVE_MODE;
     delete process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS;
     delete process.env.GHOLA_HYPERLIQUID_EXECUTION_VAULT_READY;
+    delete process.env.GHOLA_LIVE_TRADING_COUNTRY_ALLOWLIST;
     await resetPrivateAccountStoreForTests();
   });
 
@@ -54,7 +58,7 @@ describe("private account autopilot sessions", () => {
       "coinbase_advanced",
     ]);
     expect(created.session.session_policy.market_allowlist).toEqual(["SOL-USD", "BTC-USD", "ETH-USD"]);
-    expect(created.session.session_policy.max_notional_bucket).toBe("50");
+    expect(created.session.session_policy.max_notional_bucket).toBe("5");
     expect(created.session.session_policy.max_position_notional_bucket).toBe("100");
     expect(created.session.session_policy.max_daily_notional_bucket).toBe("250");
     expect(created.session.session_policy.max_order_count).toBe(10);
@@ -252,6 +256,68 @@ describe("private account autopilot sessions", () => {
     expect(created.events.some((event) => event.event_id === "worker_event_ready")).toBe(true);
   });
 
+  it("uses the connector worker for create, read, and resume", async () => {
+    const calls: string[] = [];
+    const workerSession = {
+      version: 2,
+      autopilot_session_id: "worker_same_recipient_123",
+      worker_session_commitment: "worker_same_recipient_commitment",
+      status: "running",
+      venue_access: {
+        jupiter: { status: "ready", execution_mode: "ghola_pooled" },
+      },
+      execution_enabled: true,
+    };
+    const fetchImpl = (async (input: URL | RequestInfo) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({
+        version: 1,
+        session: workerSession,
+        events: [],
+      }), { status: String(input).endsWith("/autopilot/sessions") ? 201 : 200 });
+    }) as typeof fetch;
+    const env = {
+      GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL: "https://provider-a.example",
+      GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://execution-b.example",
+      GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN: "connector-token",
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "execution-token",
+    };
+
+    const created = await createAutonomousAutopilotSessionFromBody({
+      session_policy: {
+        venue_allowlist: ["jupiter"],
+        market_allowlist: ["SOL-USD"],
+      },
+    }, owner, new Date("2026-06-01T12:00:00.000Z"), env, fetchImpl);
+    await syncWorkerAutopilotSession(
+      created.session.autopilot_session_id,
+      owner,
+      env,
+      fetchImpl,
+      new Date("2026-06-01T12:00:01.000Z"),
+    );
+    await controlAutopilotSessionFromBody(
+      created.session.autopilot_session_id,
+      "pause",
+      owner,
+      new Date("2026-06-01T12:00:02.000Z"),
+    );
+    await controlAutonomousAutopilotSessionFromBody(
+      created.session.autopilot_session_id,
+      "resume",
+      owner,
+      new Date("2026-06-01T12:00:03.000Z"),
+      env,
+      fetchImpl,
+    );
+
+    expect(calls).toEqual([
+      "https://provider-a.example/autopilot/sessions",
+      "https://provider-a.example/autopilot/sessions/worker_same_recipient_123",
+      "https://provider-a.example/autopilot/sessions/worker_same_recipient_123/resume",
+    ]);
+  });
+
   it("returns a local replay bundle from the authenticated replay route", async () => {
     process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
     const createRes = await createAutopilotRoute(new Request("https://ghola.test/v1/private-account/autopilot/sessions", {
@@ -259,6 +325,7 @@ describe("private account autopilot sessions", () => {
       headers: {
         "content-type": "application/json",
         authorization: auth("autopilot_route_user"),
+        "x-ghola-test-country": "CA",
       },
       body: JSON.stringify({
         session_policy: {
@@ -460,7 +527,7 @@ describe("private account autopilot sessions", () => {
     const res = await createAutopilotRoute(req);
     const json = await res.json();
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(409);
     expect(json.session.status).toBe("pending_worker");
     expect(json.session.session_policy.max_notional_bucket).toBe("5");
   });
@@ -500,6 +567,7 @@ describe("private account autopilot sessions", () => {
       headers: {
         authorization: auth("autopilot_route_user"),
         "content-type": "application/json",
+        "x-ghola-test-country": "CA",
       },
       body: JSON.stringify({
         session_policy: {
@@ -597,6 +665,7 @@ describe("private account autopilot sessions", () => {
       headers: {
         authorization: auth("autopilot_route_user"),
         "content-type": "application/json",
+        "x-ghola-test-country": "CA",
       },
       body: JSON.stringify({
         session_policy: {
@@ -621,6 +690,104 @@ describe("private account autopilot sessions", () => {
     expect(body.billing.reserved_seconds).toBe(300);
   });
 
+  it.each(["blocked", "pending_activation"] as const)(
+    "releases compute and returns 409 when the worker reports %s",
+    async (workerStatus) => {
+      process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "report_only";
+      process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
+      process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
+      const reserveBodies: Array<{ session_id: string }> = [];
+      const releaseBodies: Array<{ session_id: string; status: string; seconds_used: number }> = [];
+      const fetchMock = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/user/profile")) {
+          return new Response(JSON.stringify({
+            id: "autopilot_route_user",
+            email: "autopilot_route_user@example.com",
+          }), { status: 200 });
+        }
+        if (url.endsWith("/api/billing/status")) {
+          return new Response(JSON.stringify({
+            tier: "private_agent",
+            private_agent_compute: {
+              included_seconds: 108000,
+              reserved_seconds: 0,
+              used_seconds: 0,
+              remaining_seconds: 108000,
+              active_agent_limit: 1,
+              active_agent_count: 0,
+              period_start: "2026-06-01",
+              period_end: "2026-07-01",
+              metering_unit: "agent_second",
+            },
+          }), { status: 200 });
+        }
+        if (url.endsWith("/api/billing/private-agent/compute/reserve")) {
+          reserveBodies.push(JSON.parse(String(init?.body)) as { session_id: string });
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        if (url.endsWith("/api/billing/private-agent/compute/release")) {
+          releaseBodies.push(JSON.parse(String(init?.body)) as {
+            session_id: string;
+            status: string;
+            seconds_used: number;
+          });
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        if (url === "https://worker.example/autopilot/sessions") {
+          return new Response(JSON.stringify({
+            session: {
+              version: 2,
+              autopilot_session_id: `worker_${workerStatus}`,
+              worker_session_commitment: `worker_commitment_${workerStatus}`,
+              status: workerStatus,
+              venue_access: {
+                jupiter: { status: "ready", execution_mode: "ghola_pooled" },
+              },
+              next_step: workerStatus === "blocked"
+                ? "Live submission is disabled."
+                : "Owner authorization is required.",
+              execution_enabled: false,
+            },
+            events: [],
+          }), { status: 201 });
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const response = await createAutopilotRoute(new Request(
+        "https://ghola.test/v1/private-account/autopilot/sessions",
+        {
+          method: "POST",
+          headers: {
+            authorization: auth("autopilot_route_user"),
+            "content-type": "application/json",
+            "x-ghola-test-country": "CA",
+          },
+          body: JSON.stringify({
+            session_policy: {
+              venue_allowlist: ["jupiter"],
+              market_allowlist: ["SOL-USD"],
+            },
+          }),
+        },
+      ));
+      const body = await response.json();
+
+      expect(response.status).toBe(409);
+      expect(body).toMatchObject({
+        error: "autopilot_not_armed",
+        session: { status: workerStatus, execution_enabled: false },
+      });
+      expect(releaseBodies).toEqual([{
+        session_id: reserveBodies[0].session_id,
+        status: "failed",
+        seconds_used: 0,
+      }]);
+    },
+  );
+
   it("rejects invalid and replayed mobile live proofs", async () => {
     process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
     process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "enforce";
@@ -642,7 +809,7 @@ describe("private account autopilot sessions", () => {
     const first = await createAutopilotRoute(
       mobileProofPost("/v1/private-account/autopilot/sessions", signedBody, { nonce, secret }),
     );
-    expect(first.status).toBe(201);
+    expect(first.status).toBe(409);
     const replay = await createAutopilotRoute(
       mobileProofPost("/v1/private-account/autopilot/sessions", signedBody, { nonce, secret }),
     );
@@ -717,8 +884,8 @@ describe("private account autopilot sessions", () => {
       mobileProofPost("/v1/private-account/autopilot/sessions", body, { secret: secondSecret }),
     );
 
-    expect(first.status).toBe(201);
-    expect(second.status).toBe(201);
+    expect(first.status).toBe(409);
+    expect(second.status).toBe(409);
   });
 
   it("reports Seeker autopilot readiness for tiny live orders", async () => {
@@ -747,6 +914,39 @@ describe("private account autopilot sessions", () => {
     });
     expect(body.venue_readiness.find((venue: { venue_id: string }) => venue.venue_id === "hyperliquid").status)
       .toBe("ready");
+  });
+
+  it("fails closed on missing jurisdiction before billing or worker contact", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
+    process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "report_only";
+    const fetchMock = vi.fn(async () => {
+      throw new Error("jurisdiction denial must not contact services");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await createAutopilotRoute(new Request(
+      "https://ghola.test/v1/private-account/autopilot/sessions",
+      {
+        method: "POST",
+        headers: {
+          authorization: auth("autopilot_route_user"),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          session_policy: {
+            venue_allowlist: ["hyperliquid"],
+            market_allowlist: ["BTC-USD"],
+          },
+        }),
+      },
+    ));
+
+    expect(response.status).toBe(451);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "restricted_jurisdiction",
+      reason_codes: ["country_header_missing"],
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -836,6 +1036,7 @@ function mobileProofPost(
       "x-ghola-mobile-proof-timestamp": timestamp,
       "x-ghola-mobile-proof-nonce": nonce,
       "x-ghola-mobile-proof-signature-b64": signature,
+      "x-ghola-test-country": "CA",
     },
     body: JSON.stringify(body),
   });

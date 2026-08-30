@@ -16,7 +16,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const guarded = await privateAccountLiveGuard(req);
+  const guarded = await privateAccountLiveGuard(req, { allowMobileWalletProof: true });
   if (!guarded.ok) return guarded.response;
   const sealed = await sealHyperliquidVaultFromBody(guarded.body, guarded.owner);
   if ("error" in sealed) return json({ error: sealed.error }, 400);

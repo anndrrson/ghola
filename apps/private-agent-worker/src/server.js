@@ -2070,6 +2070,9 @@ function validateAutopilotSessionRequest(body, recipient) {
         continue;
       }
       if ("encrypted_execution_vault" in value && value.encrypted_execution_vault !== null) {
+        if (venue === "hyperliquid" && !isNonEmptyString(value.account_commitment)) {
+          errors.push("venue_access.hyperliquid.account_commitment is required for an encrypted execution vault");
+        }
         errors.push(...validateEncryptedBundle(
           value.encrypted_execution_vault,
           recipient,
@@ -2594,22 +2597,41 @@ export function createPrivateAgentWorkerServer(options = {}) {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const rejected = await authorizeWorkerRequest(req, {
-          path: url.pathname,
-          scope: "autopilot:control",
-          body: {},
-          state,
-          expected: {
-            autopilot_session_id: autopilotControl[1],
-            action: autopilotControl[2],
-          },
-        });
-        if (authJson(res, rejected)) return;
+        let venueAccess = null;
+        if (autopilotControl[2] === "resume") {
+          const authorized = await readAuthorizedJson(req, res, {
+            path: url.pathname,
+            scope: "autopilot:control",
+            state,
+            expected: {
+              autopilot_session_id: autopilotControl[1],
+              action: autopilotControl[2],
+            },
+          });
+          if (authorized.rejected) return;
+          if (!isObject(authorized.body) || !isObject(authorized.body.venue_access)) {
+            return json(res, 400, { error: "fresh venue_access is required to resume" });
+          }
+          venueAccess = authorized.body.venue_access;
+        } else {
+          const rejected = await authorizeWorkerRequest(req, {
+            path: url.pathname,
+            scope: "autopilot:control",
+            body: {},
+            state,
+            expected: {
+              autopilot_session_id: autopilotControl[1],
+              action: autopilotControl[2],
+            },
+          });
+          if (authJson(res, rejected)) return;
+        }
         const result = await controlAutopilotSession({
           sessionId: autopilotControl[1],
           action: autopilotControl[2],
           state,
           recipient,
+          venueAccess,
         });
         if (!result) return json(res, 404, { error: "autopilot_session_not_found" });
         return json(res, 200, { version: 1, ...result });

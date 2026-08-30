@@ -3,6 +3,8 @@ import {
   workerAuthorizationHeader,
 } from "./private-agent-capability";
 import { agentPassportVenueAccessForWorker } from "./private-agent-passport";
+import { verifiedHyperliquidVenueAccessForBoundedRun } from "./private-account-bounded-run-venue-access.server";
+import { resolvePrivateAccountWorkerConfig } from "./private-account-worker-routing";
 import type { PrivateAccountRequestOwner } from "@/app/v1/private-account/_lib";
 import {
   GHOLA_FUNDING_AMOUNT_BUCKETS,
@@ -32,6 +34,7 @@ export type AutopilotStatus =
   | "watching"
   | "running"
   | "pending_worker"
+  | "pending_activation"
   | "pending_funding"
   | "paused"
   | "killed"
@@ -108,6 +111,7 @@ export interface AutopilotSessionPolicy {
   reduce_only_on_reconcile_failure: boolean;
   locale_hint: "en" | "zh-CN" | "id";
   timezone: string | null;
+  execution_network?: "testnet" | "mainnet";
   agent_mandate?: AutopilotAgentMandate;
   policy_commitment: string;
 }
@@ -236,6 +240,7 @@ const AUTOPILOT_STATUSES = new Set<AutopilotStatus>([
   "watching",
   "running",
   "pending_worker",
+  "pending_activation",
   "pending_funding",
   "paused",
   "killed",
@@ -358,6 +363,7 @@ export async function createAutonomousAutopilotSessionFromBody(
     body,
     owner,
     session: created.session,
+    now,
     env,
     fetchImpl,
   });
@@ -474,8 +480,76 @@ export async function controlAutonomousAutopilotSessionFromBody(
   fetchImpl: typeof fetch = fetch,
 ): Promise<
   | { session: AutopilotSession; event: AutopilotEvent }
-  | { error: "autopilot_session_not_found" }
+  | {
+      error:
+        | "autopilot_session_not_found"
+        | "hyperliquid_verification_required"
+        | "worker_resume_unconfirmed";
+      session?: AutopilotSession;
+      event?: AutopilotEvent;
+    }
 > {
+  if (action === "resume") {
+    const stored = await loadSession(sessionId);
+    if (!stored || stored.owner_commitment !== owner.owner_commitment) {
+      return { error: "autopilot_session_not_found" };
+    }
+    const active = refreshExpiry(stored, now);
+    if (active.status === "expired" || active.status === "killed" || active.session_policy.kill_switch) {
+      return controlAutopilotSessionFromBody(sessionId, action, owner, now);
+    }
+
+    const boundedHyperliquid = active.session_policy.strategy_id === "bounded_intent_executor_v1" &&
+      active.session_policy.venue_allowlist.includes("hyperliquid");
+    const venueAccess = boundedHyperliquid && isPrivateAccountRequestOwner(owner)
+      ? await verifiedHyperliquidVenueAccessForBoundedRun(owner, now)
+      : {};
+    if (boundedHyperliquid && !optionalRecord(venueAccess.hyperliquid)) {
+      return blockAutopilotResume(
+        active,
+        "hyperliquid_verification_required",
+        "Hyperliquid verification expired. Verify the connection again before resuming.",
+        now,
+      );
+    }
+    if (!active.worker_autopilot_session_id) {
+      active.status = "pending_worker";
+      active.execution_enabled = false;
+      active.next_step = "Private worker is not armed.";
+      active.updated_at = now.toISOString();
+      await persistSession(active);
+      const event = makeEvent(active, "guardrail", "Autopilot resume remains pending worker arming.", {
+        action,
+      }, now);
+      await appendEvent(event, active.owner_commitment);
+      return { session: publicSession(active), event };
+    }
+
+    const worker = await controlWorkerAutopilotSession(
+      active.worker_autopilot_session_id,
+      action,
+      env,
+      fetchImpl,
+      venueAccess,
+    );
+    if (worker.ok) {
+      const merged = await mergeWorkerSession(sessionId, worker.session, now);
+      for (const workerEvent of worker.events) {
+        await appendEvent(workerEventToLocal(merged, workerEvent, now), merged.owner_commitment);
+      }
+      const event = makeEvent(merged, "session_state", "Autopilot resume.", { action }, now);
+      await appendEvent(event, merged.owner_commitment);
+      return { session: publicSession(merged), event };
+    }
+    return blockAutopilotResume(
+      active,
+      "worker_resume_unconfirmed",
+      "Autopilot remains paused because the worker did not confirm resume.",
+      now,
+      worker.error,
+    );
+  }
+
   const local = await controlAutopilotSessionFromBody(sessionId, action, owner, now);
   if ("error" in local) return local;
   const workerSessionId = local.session.worker_autopilot_session_id;
@@ -502,6 +576,31 @@ export async function controlAutonomousAutopilotSessionFromBody(
     }, now), session.owner_commitment);
   }
   return local;
+}
+
+async function blockAutopilotResume(
+  session: AutopilotSession,
+  error: "hyperliquid_verification_required" | "worker_resume_unconfirmed",
+  nextStep: string,
+  now: Date,
+  workerError?: string,
+): Promise<{
+  error: "hyperliquid_verification_required" | "worker_resume_unconfirmed";
+  session: AutopilotSession;
+  event: AutopilotEvent;
+}> {
+  session.status = "paused";
+  session.execution_enabled = false;
+  session.next_step = nextStep;
+  session.updated_at = now.toISOString();
+  await persistSession(session);
+  const event = makeEvent(session, "guardrail", nextStep, {
+    action: "resume",
+    error,
+    ...(workerError ? { worker_error: workerError } : {}),
+  }, now);
+  await appendEvent(event, session.owner_commitment);
+  return { error, session: publicSession(session), event };
 }
 
 export async function listAutopilotEventsForOwner(
@@ -680,27 +779,55 @@ async function armWorkerAutopilotSession(input: {
   body: unknown;
   owner: AutopilotOwner;
   session: AutopilotSession;
+  now: Date;
   env: Record<string, string | undefined>;
   fetchImpl: typeof fetch;
 }): Promise<
   | { ok: true; session: Record<string, unknown>; events: Record<string, unknown>[] }
   | { ok: false; error: string }
 > {
-  const cfg = workerConfig(input.env);
+  const cfg = await resolvePrivateAccountWorkerConfig({ env: input.env });
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
   const raw = record(input.body);
   const providedVenueAccess = optionalRecord(raw.venue_access) ?? optionalRecord(raw.venue_vaults);
-  const venueAccess = providedVenueAccess ??
-    ((input.session.session_policy.strategy_id === "hedged_spread_arbitrage_v1" ||
-      input.session.session_policy.strategy_id === "tri_venue_market_maker_v1") && isPrivateAccountRequestOwner(input.owner)
-      ? await agentPassportVenueAccessForWorker(input.owner)
+  const ownerBoundHyperliquidRun =
+    input.session.session_policy.strategy_id === "bounded_intent_executor_v1" &&
+    input.session.session_policy.venue_allowlist.includes("hyperliquid") &&
+    isPrivateAccountRequestOwner(input.owner);
+  const venueAccess = ownerBoundHyperliquidRun
+    ? {
+        ...Object.fromEntries(
+          Object.entries(providedVenueAccess ?? {}).filter(([venue]) => venue !== "hyperliquid"),
+        ),
+        ...await verifiedHyperliquidVenueAccessForBoundedRun(input.owner, input.now),
+      }
+    : providedVenueAccess ??
+      ((input.session.session_policy.strategy_id === "hedged_spread_arbitrage_v1" ||
+        input.session.session_policy.strategy_id === "tri_venue_market_maker_v1") && isPrivateAccountRequestOwner(input.owner)
+        ? await agentPassportVenueAccessForWorker(input.owner)
       : {});
+  const hyperliquidAccess = optionalRecord(venueAccess.hyperliquid);
+  const encryptedVault = optionalRecord(hyperliquidAccess?.encrypted_execution_vault);
+  if (
+    ownerBoundHyperliquidRun &&
+    cfg.recipient_id &&
+    encryptedVault &&
+    stringValue(encryptedVault.recipient) !== cfg.recipient_id
+  ) {
+    return { ok: false, error: "worker_recipient_mismatch" };
+  }
   const workerPath = "/autopilot/sessions";
+  const executionNetwork = hyperliquidAccess?.network === "mainnet" || hyperliquidAccess?.network === "testnet"
+    ? hyperliquidAccess.network
+    : undefined;
+  const workerPolicy = executionNetwork
+    ? { ...input.session.session_policy, execution_network: executionNetwork }
+    : input.session.session_policy;
   const payload = {
     version: 2,
     owner_commitment: input.owner.owner_commitment,
     local_autopilot_session_id: input.session.autopilot_session_id,
-    session_policy: input.session.session_policy,
+    session_policy: workerPolicy,
     venue_access: venueAccess,
     billing_metering: input.session.billing_metering ?? null,
   };
@@ -750,7 +877,7 @@ async function fetchWorkerAutopilotSession(
   | { ok: true; session: Record<string, unknown>; events: Record<string, unknown>[] }
   | { ok: false; error: string }
 > {
-  const cfg = workerConfig(env);
+  const cfg = await resolvePrivateAccountWorkerConfig({ env });
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
   const workerPath = `/autopilot/sessions/${encodeURIComponent(workerSessionId)}`;
   const authorization = workerAuthorizationHeader({
@@ -791,7 +918,7 @@ async function fetchWorkerAutopilotOpportunities(
   | { ok: true; session: Record<string, unknown>; opportunities: Record<string, unknown>[] }
   | { ok: false; error: "worker_not_configured" | "worker_unavailable" | string }
 > {
-  const cfg = workerConfig(env);
+  const cfg = await resolvePrivateAccountWorkerConfig({ env });
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
   const workerPath = `/autopilot/sessions/${encodeURIComponent(workerSessionId)}/opportunities`;
   const authorization = workerAuthorizationHeader({
@@ -842,7 +969,7 @@ async function fetchWorkerAutopilotReplay(
   }
   | { ok: false; error: "worker_not_configured" | "worker_unavailable" | string }
 > {
-  const cfg = workerConfig(env);
+  const cfg = await resolvePrivateAccountWorkerConfig({ env });
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
   const workerPath = `/autopilot/sessions/${encodeURIComponent(workerSessionId)}/replay`;
   const authorization = workerAuthorizationHeader({
@@ -884,20 +1011,22 @@ async function controlWorkerAutopilotSession(
   action: "pause" | "resume" | "kill",
   env: Record<string, string | undefined>,
   fetchImpl: typeof fetch,
+  venueAccess: Record<string, unknown> = {},
 ): Promise<
   | { ok: true; session: Record<string, unknown>; events: Record<string, unknown>[] }
   | { ok: false; error: string }
 > {
-  const cfg = workerConfig(env);
+  const cfg = await resolvePrivateAccountWorkerConfig({ env });
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
   const workerPath = `/autopilot/sessions/${encodeURIComponent(workerSessionId)}/${action}`;
+  const payload = action === "resume" ? { venue_access: venueAccess } : {};
   const authorization = workerAuthorizationHeader({
     env,
     fallbackToken: cfg.token,
     method: "POST",
     path: workerPath,
     scope: "autopilot:control",
-    body: {},
+    body: payload,
     expected: {
       autopilot_session_id: workerSessionId,
       action,
@@ -914,7 +1043,7 @@ async function controlWorkerAutopilotSession(
         "content-type": "application/json",
         "x-ghola-sealed-execution-required": "true",
       },
-      body: "{}",
+      body: JSON.stringify(payload),
     },
   ).catch(() => null);
   if (!response) return { ok: false, error: "worker_unavailable" };
@@ -1379,7 +1508,10 @@ function normalizePolicy(value: Record<string, unknown>): AutopilotSessionPolicy
     ai_direct_enabled: aiDirectEnabled,
     venue_allowlist: unique(venues.length ? venues : DEFAULT_VENUES),
     market_allowlist: unique(markets.length ? markets : DEFAULT_MARKETS),
-    max_notional_bucket: notionalBucket(rawPolicy.max_notional_bucket, GHOLA_FUNDING_AMOUNT_BUCKETS, "50"),
+    max_notional_bucket: strategyId === "bounded_intent_executor_v1" &&
+      unique(venues.length ? venues : DEFAULT_VENUES).includes("hyperliquid")
+      ? "5"
+      : notionalBucket(rawPolicy.max_notional_bucket, GHOLA_FUNDING_AMOUNT_BUCKETS, "50"),
     max_position_notional_bucket: notionalBucket(rawPolicy.max_position_notional_bucket, ["50", "100", "250", "500"], "100"),
     max_daily_notional_bucket: notionalBucket(rawPolicy.max_daily_notional_bucket, ["25", "50", "100", "250", "500", "1000", "2500", "5000"], "250"),
     max_order_count: clampInteger(rawPolicy.max_order_count, 1, 25, 10),

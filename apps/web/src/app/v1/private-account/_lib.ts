@@ -117,6 +117,10 @@ import {
   workerCapabilityExpectedFromBody,
 } from "@/lib/private-agent-capability";
 import { resolveHyperliquidWorkerUrl } from "@/lib/private-account-worker-routing";
+import {
+  evaluateLiveTradingJurisdiction,
+  isLiveTradingCountryAllowlisted,
+} from "@/lib/live-trading-jurisdiction.server";
 import { hyperliquidTriggerPriceCommitment } from "@/lib/hyperliquid-protection-proof";
 import { buildHyperliquidCapitalFreeCanary } from "@/lib/hyperliquid-release-canary";
 import {
@@ -484,6 +488,7 @@ function hasHyperliquidPooledLaunchAcceptance(record: PrivateVenueEligibilityRec
       credential.risk_disclosure_version === GHOLA_LAUNCH_RISK_DISCLOSURE_VERSION &&
       credential.jurisdiction_assertion === "non_us" &&
       credential.geofence_status === "allowed" &&
+      isLiveTradingCountryAllowlisted(credential.country_code) &&
       credential.accepted_terms_at &&
       credential.accepted_risk_at,
   );
@@ -502,7 +507,8 @@ async function requireHyperliquidPooledLaunchEligibility(input: {
   if (
     eligibility.credential.jurisdiction_assertion === "us" ||
     eligibility.credential.country_code === "US" ||
-    eligibility.credential.geofence_status === "blocked"
+    eligibility.credential.geofence_status === "blocked" ||
+    !isLiveTradingCountryAllowlisted(eligibility.credential.country_code)
   ) {
     return { error: "restricted_jurisdiction" };
   }
@@ -3422,21 +3428,6 @@ export async function venueEligibilityStatusForOwner(
   };
 }
 
-function normalizeCountryCode(value: unknown): string | null {
-  const code = stringValue(value).toUpperCase();
-  return /^[A-Z]{2}$/.test(code) ? code : null;
-}
-
-function requestCountryCode(req?: Request): string | null {
-  if (!req) return null;
-  return normalizeCountryCode(
-    req.headers.get("x-vercel-ip-country") ||
-      req.headers.get("x-country-code") ||
-      req.headers.get("cf-ipcountry") ||
-      (process.env.NODE_ENV !== "production" ? req.headers.get("x-ghola-test-country") : null),
-  );
-}
-
 export async function verifyVenueEligibilityFromBody(
   body: unknown,
   owner: PrivateAccountRequestOwner,
@@ -3451,13 +3442,19 @@ export async function verifyVenueEligibilityFromBody(
   const acceptedTerms = value.accepted_terms === true || value.terms_accepted === true;
   const acceptedRisk = value.accepted_risk === true || value.risk_accepted === true;
   const jurisdictionAssertion = stringValue(value.jurisdiction_assertion || value.jurisdiction).toLowerCase();
-  const countryCode = requestCountryCode(req) || normalizeCountryCode(value.country_code);
-  const regionCode = stringValue(value.region_code).toUpperCase() || null;
+  let countryCode: string | null = null;
   if (venueId === "hyperliquid") {
     if (!acceptedTerms || !acceptedRisk) return { error: "terms_acceptance_required" as const };
-    if (jurisdictionAssertion !== "non_us" || countryCode === "US") {
-      return { error: "restricted_jurisdiction" as const };
+    const jurisdiction = evaluateLiveTradingJurisdiction(
+      req ?? new Request("https://ghola.invalid"),
+    );
+    if (jurisdictionAssertion !== "non_us" || !jurisdiction.allowed) {
+      return {
+        error: "restricted_jurisdiction" as const,
+        reason_codes: jurisdiction.reason_codes,
+      };
     }
+    countryCode = jurisdiction.country;
   }
   const now = new Date().toISOString();
   const credential = createVenueEligibilityCredential({
@@ -3470,7 +3467,7 @@ export async function verifyVenueEligibilityFromBody(
     risk_disclosure_version: venueId === "hyperliquid" ? GHOLA_LAUNCH_RISK_DISCLOSURE_VERSION : null,
     jurisdiction_assertion: venueId === "hyperliquid" ? "non_us" : null,
     country_code: venueId === "hyperliquid" ? countryCode : null,
-    region_code: venueId === "hyperliquid" ? regionCode : null,
+    region_code: null,
     geofence_status: venueId === "hyperliquid" ? "allowed" : null,
     accepted_terms_at: venueId === "hyperliquid" ? now : null,
     accepted_risk_at: venueId === "hyperliquid" ? now : null,
@@ -6047,6 +6044,7 @@ export async function connectorVerifyNoSubmitFromBody(
   let connectorVault: {
     venue_id: string;
     execution_mode: GholaVenueExecutionMode;
+    account_commitment: string;
     vault_commitment?: string;
     encrypted_vault_commitment?: string;
     policy_commitment: string;
@@ -6064,6 +6062,7 @@ export async function connectorVerifyNoSubmitFromBody(
       connectorVault = {
         venue_id: "hyperliquid",
         execution_mode: allocation.allocation.execution_mode,
+        account_commitment: account.account_commitment,
         policy_commitment: allocation.policy_commitment,
         allocation_commitment: allocation.allocation_commitment,
       };
@@ -6078,6 +6077,7 @@ export async function connectorVerifyNoSubmitFromBody(
       connectorVault = {
         venue_id: "hyperliquid",
         execution_mode: "byo_api_key",
+        account_commitment: account.account_commitment,
         vault_commitment: vault.vault_commitment,
         encrypted_vault_commitment: vault.encrypted_vault_commitment,
         policy_commitment: vault.policy_commitment,
@@ -6101,6 +6101,7 @@ export async function connectorVerifyNoSubmitFromBody(
       connectorVault = {
         venue_id: "coinbase_advanced",
         execution_mode: "partner_omnibus",
+        account_commitment: account.account_commitment,
         policy_commitment: gholaCommitment("coinbase_omnibus_policy", {
           allocation_commitment: omnibusAllocation.allocation_commitment,
         }),
@@ -6128,6 +6129,7 @@ export async function connectorVerifyNoSubmitFromBody(
       connectorVault = {
         venue_id: venueId,
         execution_mode: "ghola_pooled",
+        account_commitment: account.account_commitment,
         policy_commitment: gholaCommitment("pooled_venue_policy", {
           pooled_allocation_commitment: pooledAllocation.pooled_allocation_commitment,
           venue_id: venueId,

@@ -46,6 +46,7 @@ export class PrivateExecutionError extends Error {
 
 const AUTOPILOT_INTERNAL_INSTRUCTION = Symbol("ghola.autopilot.internal_instruction");
 const HYPERLIQUID_PROOF_PROTOCOL = "ghola-hyperliquid-proof-v2";
+const ACCOUNT_BOUND_COMMITMENT = /^[A-Za-z0-9_.:-]{8,240}$/;
 
 export function commitment(prefix, value) {
   return `${prefix}_${sha256Hex(canonicalJson(value)).slice(0, 48)}`;
@@ -79,8 +80,9 @@ export async function storePrivateAgentSession({ body, recipient, state, provide
 export async function storeHyperliquidSession({ body, recipient, state, provider }) {
   const executionMode = hyperliquidExecutionMode(body);
   if (executionMode === "byo_api_key") {
-    await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+    await openHyperliquidExecutionVault({
+      body,
+      recipient,
       expectedKind: "ghola_hyperliquid_execution_vault",
     });
   } else if (body.managed_allocation?.credential_ref) {
@@ -276,8 +278,9 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
       credential = dryRunHyperliquidCredential();
     } else {
-      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+      const openedVault = await openHyperliquidExecutionVault({
+        body,
+        recipient,
         expectedKind: "ghola_hyperliquid_execution_vault",
       });
       credential = hyperliquidCredentialFromVault(openedVault.json);
@@ -481,8 +484,9 @@ export async function verifyVenueCredential({ body, recipient }) {
     });
   }
   if (venueId === "hyperliquid") {
-    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+    const openedVault = await openHyperliquidExecutionVault({
+      body,
+      recipient,
       expectedKind: "ghola_hyperliquid_execution_vault",
     });
     const credential = hyperliquidCredentialFromVault(openedVault.json);
@@ -536,14 +540,40 @@ async function hyperliquidCredentialForBody({ body, recipient, state }) {
     if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
       credential = dryRunHyperliquidCredential();
     } else {
-      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+      const openedVault = await openHyperliquidExecutionVault({
+        body,
+        recipient,
         expectedKind: "ghola_hyperliquid_execution_vault",
       });
       credential = hyperliquidCredentialFromVault(openedVault.json);
     }
   }
   return { executionMode, credential };
+}
+
+async function openHyperliquidExecutionVault({ body, recipient, expectedKind }) {
+  const accountCommitment = String(body?.account_commitment || "");
+  if (!ACCOUNT_BOUND_COMMITMENT.test(accountCommitment)) {
+    throw new PrivateExecutionError("hyperliquid account commitment is unavailable", 400);
+  }
+  const opened = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+    aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+    expectedKind,
+  });
+  const network = String(opened.json?.network || "");
+  if (network !== "mainnet" && network !== "testnet") {
+    throw new PrivateExecutionError("hyperliquid execution vault network is invalid", 400);
+  }
+  const expectedAad = [
+    "ghola/hyperliquid-execution-vault-v1",
+    `account:${accountCommitment}`,
+    `recipient:${recipient.recipient_id}`,
+    `network:${network}`,
+  ].join("|");
+  if (opened.associatedDataText !== expectedAad) {
+    throw new PrivateExecutionError("hyperliquid execution vault account binding mismatch", 403);
+  }
+  return opened;
 }
 
 export async function executeCoinbaseOrder({ body, recipient, state }) {
@@ -1200,8 +1230,9 @@ export async function verifyHyperliquidOrderNoSubmit({ body, recipient, state })
     if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
       credential = dryRunHyperliquidCredential();
     } else {
-      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+      const openedVault = await openHyperliquidExecutionVault({
+        body,
+        recipient,
         expectedKind: "ghola_hyperliquid_execution_vault",
       });
       credential = hyperliquidCredentialFromVault(openedVault.json);

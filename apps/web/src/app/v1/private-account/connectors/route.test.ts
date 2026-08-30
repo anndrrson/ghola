@@ -12,6 +12,7 @@ import { POST as approveAction } from "../actions/approve/route";
 import { POST as executeAction } from "../actions/execute/route";
 import { POST as verifyReceiptAction } from "../actions/verify-receipt/route";
 import { GET as operationsRoute } from "./operations/route";
+import { POST as submitConnectorRoute } from "./submit/route";
 import { POST as verifyNoSubmitRoute } from "./verify-no-submit/route";
 import { GET as getHyperliquidVault, POST as sealHyperliquidVault } from "../hyperliquid/vault/route";
 import { POST as allocateHyperliquidManaged } from "../hyperliquid/managed-allocation/route";
@@ -53,7 +54,11 @@ const AUTH = auth("connector_user_1");
 function post(path: string, body: unknown, authorization = AUTH) {
   return new Request(`https://ghola.test${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization },
+    headers: {
+      "content-type": "application/json",
+      authorization,
+      "x-ghola-test-country": "CA",
+    },
     body: JSON.stringify(body),
   });
 }
@@ -161,6 +166,7 @@ describe("private account connector gateway routes", () => {
     process.env.GHOLA_SHIELDED_POOL_MODE = "local_test";
     process.env.GHOLA_ENABLE_MOCK_ATTESTED_PROVIDER = "true";
     process.env.GHOLA_SOLANA_PERPS_LIVE_MODE = "sdk_runner";
+    process.env.GHOLA_LIVE_TRADING_COUNTRY_ALLOWLIST = "CA";
     process.env.GHOLA_PRIVATE_ACCOUNT_BATCH_MIN_DELAY_SECONDS = "0";
     process.env.GHOLA_PRIVATE_ACCOUNT_BATCH_REQUIRED_SET = "2";
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify([{
@@ -178,6 +184,7 @@ describe("private account connector gateway routes", () => {
     delete process.env.GHOLA_CONNECTOR_MODE;
     delete process.env.GHOLA_CUSTOM_SHIELDED_VERIFIER_MODE;
     delete process.env.GHOLA_SHIELDED_POOL_MODE;
+    delete process.env.GHOLA_LIVE_TRADING_COUNTRY_ALLOWLIST;
     delete process.env.GHOLA_ENABLE_MOCK_ATTESTED_PROVIDER;
     delete process.env.GHOLA_SOLANA_PERPS_LIVE_MODE;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_BATCH_MIN_DELAY_SECONDS;
@@ -273,6 +280,26 @@ describe("private account connector gateway routes", () => {
     expect(secondLimited.status).toBe(429);
     await expect(secondLimited.json()).resolves.toMatchObject({
       error: "private_account_rate_limited",
+    });
+  });
+
+  it("blocks connector order submission before execution when geography is missing", async () => {
+    const response = await submitConnectorRoute(new Request(
+      "https://ghola.test/v1/private-account/connectors/submit",
+      {
+        method: "POST",
+        headers: {
+          authorization: AUTH,
+          "content-type": "application/json",
+        },
+        body: "{}",
+      },
+    ));
+
+    expect(response.status).toBe(451);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "restricted_jurisdiction",
+      reason_codes: ["country_header_missing"],
     });
   });
 
@@ -662,6 +689,17 @@ describe("private account connector gateway routes", () => {
     process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL = "https://worker.ghola.test";
     process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS = "ready";
     process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "test-worker-capability-secret-32-bytes";
+    const proofOutcomes: Array<{
+      transactionBroadcast?: boolean;
+      omitApiWallet?: boolean;
+      omitOrderRequest?: boolean;
+    }> = [
+      { transactionBroadcast: true },
+      {},
+      { transactionBroadcast: false, omitApiWallet: true },
+      { transactionBroadcast: false, omitOrderRequest: true },
+      { transactionBroadcast: false },
+    ];
     vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
       const url = String(input);
       if (url === "https://api.hyperliquid.xyz/info") {
@@ -679,25 +717,31 @@ describe("private account connector gateway routes", () => {
         }]), { status: 200, headers: { "content-type": "application/json" } });
       }
       if (url === "https://worker.ghola.test/hyperliquid/verify") {
+        const body = JSON.parse(String(init?.body || "{}"));
+        expect(body.account_commitment).toBe(status.account_commitment);
+        const outcome = proofOutcomes.shift() ?? {};
+        const checks = {
+          sealed_vault_opened: true,
+          sealed_instruction_opened: true,
+          authority_derived: true,
+          policy_enforced: true,
+          live_gate_enforced: true,
+          ...(outcome.omitApiWallet ? {} : { api_wallet_loaded: true }),
+          hyperliquid_api_reachable: true,
+          hyperliquid_sdk_ready: true,
+          account_read_checked: true,
+          ...(outcome.omitOrderRequest ? {} : { order_request_built: true }),
+          live_venue_checked: true,
+          ...(outcome.transactionBroadcast === undefined
+            ? {}
+            : { transaction_broadcast: outcome.transactionBroadcast }),
+        };
         return new Response(JSON.stringify({
           status: "verified_no_funds",
           verification_commitment: "connector_no_submit_verification_live_test",
           result_commitment: "connector_no_submit_result_live_test",
           provider_ref_commitment: "connector_no_submit_provider_live_test",
-          checks: {
-            sealed_vault_opened: true,
-            sealed_instruction_opened: true,
-            authority_derived: true,
-            policy_enforced: true,
-            live_gate_enforced: true,
-            api_wallet_loaded: true,
-            hyperliquid_api_reachable: true,
-            hyperliquid_sdk_ready: true,
-            account_read_checked: true,
-            order_request_built: true,
-            live_venue_checked: true,
-            transaction_broadcast: false,
-          },
+          checks,
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
       if (url === "https://worker.ghola.test/hyperliquid/account-snapshot") {
@@ -746,8 +790,7 @@ describe("private account connector gateway routes", () => {
     );
     expect(sealRes.status).toBe(201);
 
-    const verifyRes = await verifyNoSubmitRoute(
-      post("/v1/private-account/connectors/verify-no-submit", {
+    const verifyRequest = () => post("/v1/private-account/connectors/verify-no-submit", {
         platform_class: "hyperliquid_style_market",
         work_order_commitment: workOrderCommitment,
         encrypted_execution_instruction_bundle: {
@@ -761,8 +804,22 @@ describe("private account connector gateway routes", () => {
             "recipient:mock_attested:dev",
           ].join("|"),
         },
-      }),
-    );
+      });
+    for (const [reason, expected] of [
+      ["reported true", "transaction_broadcast_not_explicitly_false"],
+      ["missing broadcast", "transaction_broadcast_not_explicitly_false"],
+      ["missing api wallet", "required_no_submit_checks_incomplete"],
+      ["missing order request", "required_no_submit_checks_incomplete"],
+    ] as const) {
+      const rejectedRes = await verifyNoSubmitRoute(verifyRequest());
+      const rejected = await rejectedRes.json();
+      expect(rejectedRes.status, `${reason}: ${JSON.stringify(rejected)}`).toBe(200);
+      expect(rejected.verification.status).toBe("failed");
+      expect(rejected.verification.reason).toBe(expected);
+      expect(rejected.connection_proof_persisted).toBe(false);
+    }
+
+    const verifyRes = await verifyNoSubmitRoute(verifyRequest());
     const verified = await verifyRes.json();
     expect(verifyRes.status, JSON.stringify(verified)).toBe(200);
     expect(verified.connection_proof_persisted, JSON.stringify(verified)).toBe(true);

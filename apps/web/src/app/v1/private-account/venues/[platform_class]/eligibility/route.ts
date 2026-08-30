@@ -30,6 +30,8 @@ export async function POST(
   const guarded = await privateAccountLiveGuard(req);
   if (!guarded.ok) return guarded.response;
   const verified = await verifyVenueEligibilityFromBody(guarded.body, guarded.owner, venueId, req);
-  if ("error" in verified) return json({ error: verified.error }, 400);
+  if ("error" in verified) {
+    return json(verified, verified.error === "restricted_jurisdiction" ? 451 : 400);
+  }
   return json(verified, 201);
 }

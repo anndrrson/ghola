@@ -59,6 +59,7 @@ const TEST_ENV_KEYS = [
   "PHALA_API_KEY",
   "PHALA_CLOUD_API_KEY",
   "PRIVATE_AGENT_EXECUTION_TOKEN",
+  "PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT",
   "PRIVATE_AGENT_FUNDING_SIGNING_KEY",
   "PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE",
@@ -107,6 +108,7 @@ describe("private-agent Phala provisioning", () => {
       'PRIVATE_AGENT_EXECUTION_TOKEN: "${PRIVATE_AGENT_EXECUTION_TOKEN}"',
     );
     expect(compose).toContain('PRIVATE_AGENT_VENUE_DRY_RUN: "false"');
+    expect(compose).toContain('PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT: "false"');
     expect(compose).toContain(
       'PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "disabled"',
     );
@@ -148,6 +150,19 @@ describe("private-agent Phala provisioning", () => {
     expect(compose).toContain(
       'PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS: "25"',
     );
+  });
+
+  it("propagates explicit autopilot live-submit activation", () => {
+    setTestEnv({
+      PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT: "true",
+    });
+
+    const compose = buildPhalaWorkerCompose({
+      image: "ghcr.io/example/worker@sha256:live",
+      imageDigest: "sha256:live",
+    });
+
+    expect(compose).toContain('PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT: "true"');
   });
 
   it("refuses live JIT provisioning without an explicit fresh worker image", () => {
