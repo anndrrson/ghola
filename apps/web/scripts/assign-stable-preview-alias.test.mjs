@@ -14,6 +14,7 @@ function fixture(overrides = {}) {
     status: {
       status: "green",
       release_identity: { ready: true, web_commit_sha: sha, web_deployment_url: `https://${deploymentUrl}` },
+      private_account_persistence: { status: "green", ready: true, verified: true, store: "postgres" },
     },
     ...overrides,
   };
@@ -25,6 +26,7 @@ test("accepts an exact release-ready Preview even when live trading stays disabl
       status: "red",
       live_trading_enabled: false,
       release_identity: { ready: true, web_commit_sha: sha, web_deployment_url: `https://${deploymentUrl}` },
+      private_account_persistence: { status: "green", ready: true, verified: true, store: "postgres" },
     },
   }));
   assert.equal(result.stable_alias_hostname, alias);
@@ -36,8 +38,19 @@ test("refuses a Preview whose release identity is not ready", () => {
     status: {
       status: "red",
       release_identity: { ready: false, web_commit_sha: sha, web_deployment_url: `https://${deploymentUrl}` },
+      private_account_persistence: { status: "green", ready: true, verified: true, store: "postgres" },
     },
   })), /release identity is not green/);
+});
+
+test("refuses a Preview whose private-account persistence is only configured", () => {
+  assert.throws(() => validateStablePreviewAssignment(fixture({
+    status: {
+      status: "red",
+      release_identity: { ready: true, web_commit_sha: sha, web_deployment_url: `https://${deploymentUrl}` },
+      private_account_persistence: { status: "green", ready: true, verified: false, store: "postgres" },
+    },
+  })), /persistence is not read-verified/);
 });
 
 test("refuses production deployments and non-branch aliases", () => {
@@ -57,6 +70,7 @@ test("refuses stale source or identity from another deployment", () => {
         web_commit_sha: sha,
         web_deployment_url: "https://web-other-anndrrsons-projects.vercel.app",
       },
+      private_account_persistence: { status: "green", ready: true, verified: true, store: "postgres" },
     },
   })), /different deployment/);
 });

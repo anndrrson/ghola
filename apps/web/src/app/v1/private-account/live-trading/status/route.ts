@@ -257,6 +257,7 @@ export async function liveTradingStatusResponse(input: {
       entry_protection_proof_required: true,
       final_flat_zero_orders_required: true,
       release_identity_required: true,
+      private_account_persistence_probe_required: true,
     },
     release_identity: releaseIdentity,
     product_environment: productEnvironment.environment,

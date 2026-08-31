@@ -157,6 +157,7 @@ describe("private account live trading launch gate", () => {
         entry_protection_proof_required: true,
         final_flat_zero_orders_required: true,
         release_identity_required: true,
+        private_account_persistence_probe_required: true,
       },
       byo_live_trading_enabled: false,
       pooled_live_trading_enabled: false,

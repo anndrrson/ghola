@@ -78,7 +78,8 @@ try {
     liveTradingGate.body?.release_validation?.exact_fill_reduce_only_close_required === true &&
     liveTradingGate.body?.release_validation?.entry_protection_proof_required === true &&
     liveTradingGate.body?.release_validation?.final_flat_zero_orders_required === true &&
-    liveTradingGate.body?.release_validation?.release_identity_required === true;
+    liveTradingGate.body?.release_validation?.release_identity_required === true &&
+    liveTradingGate.body?.release_validation?.private_account_persistence_probe_required === true;
   record("hyperliquid_proof_protocol", proofProtocolReady, liveTradingGate.body?.release_validation || null);
   if (!proofProtocolReady) {
     throw new Error("Release validation requires the Hyperliquid proof-v2 safety contract.");
@@ -97,10 +98,12 @@ try {
   const privateAccountPersistenceReady = liveTradingGate.ok &&
     privateAccountPersistence?.status === "green" &&
     privateAccountPersistence?.ready === true &&
+    privateAccountPersistence?.verified === true &&
     ["postgres", "blob"].includes(privateAccountPersistence?.store);
   record("private_account_persistence_ready", privateAccountPersistenceReady, {
     status: privateAccountPersistence?.status || null,
     ready: privateAccountPersistence?.ready ?? null,
+    verified: privateAccountPersistence?.verified ?? null,
     store: privateAccountPersistence?.store || null,
     reason_codes: privateAccountPersistence?.reason_codes || [],
   });

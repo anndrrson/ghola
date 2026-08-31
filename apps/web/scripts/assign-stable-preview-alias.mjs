@@ -19,6 +19,15 @@ export function validateStablePreviewAssignment({ deployment, stableAlias, expec
   if (new URL(identity.web_deployment_url).hostname !== deploymentUrl.hostname) {
     throw new Error("Preview release identity belongs to a different deployment");
   }
+  const persistence = status?.private_account_persistence;
+  if (
+    persistence?.status !== "green" ||
+    persistence?.ready !== true ||
+    persistence?.verified !== true ||
+    !["postgres", "blob"].includes(persistence?.store)
+  ) {
+    throw new Error("Preview private-account persistence is not read-verified");
+  }
   return {
     deployment_hostname: deploymentUrl.hostname,
     stable_alias_url: aliasUrl.href.replace(/\/$/, ""),
@@ -45,9 +54,7 @@ async function main() {
   execFileSync("vercel", ["alias", "set", verified.deployment_hostname, verified.stable_alias_hostname], { stdio: "inherit" });
   const aliasedStatus = await fetch(`${verified.stable_alias_url}/v1/private-account/live-trading/status`, { cache: "no-store" })
     .then((response) => response.json());
-  if (aliasedStatus?.release_identity?.web_commit_sha !== expectedSha) {
-    throw new Error("Stable Preview alias did not resolve to the expected commit");
-  }
+  validateStablePreviewAssignment({ deployment, stableAlias: aliasInput, expectedSha, status: aliasedStatus });
   console.log(`[stable-preview] ${verified.stable_alias_hostname} -> ${verified.web_commit_sha.slice(0, 12)}`);
 }
 
