@@ -29,6 +29,8 @@ describe("Lighter activation readiness", () => {
       base_deposit_ready: false,
       ethereum_association_gas_ready: false,
       lighter_owner_account_ready: false,
+      deposit_destination_verified: false,
+      funding_action_enabled: false,
       ready: false,
       blockers: ["lighter_base_usdc_below_minimum", "lighter_base_gas_required", "lighter_owner_account_required", "lighter_ethereum_association_gas_required"],
     });

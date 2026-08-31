@@ -10,7 +10,8 @@ const source = readFileSync(
 describe("Lighter activation readiness UI", () => {
   it("separates the verified owner account from both network-fee requirements", () => {
     expect(source).toContain("fetchLighterActivationReadiness");
-    expect(source).toContain('label="Lighter collateral · ≥5 USDC"');
+    expect(source).toContain('label="Owner wallet staging balance"');
+    expect(source).toContain("USDC · not deposited");
     expect(source).toContain('label="Base network fee"');
     expect(source).toContain('label="Lighter owner account"');
     expect(source).toContain('label="Ethereum association fee"');
@@ -19,6 +20,9 @@ describe("Lighter activation readiness UI", () => {
 
   it("states that the check is read-only", () => {
     expect(source).toContain("No payment, transfer, key, or order is submitted by this check.");
+    expect(source).toContain("Account identity · not a deposit address");
+    expect(source).toContain("View official Lighter requirements");
+    expect(source).toContain('scopedActivationNeeded.venue === "aster" && (');
   });
 
   it("rechecks once when the user returns from Lighter without polling or submitting", () => {

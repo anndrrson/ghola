@@ -373,7 +373,16 @@ export function checkLighterActivationReadinessBoundary(clientSource, serverSour
     [clientSource, "https://apidocs.lighter.xyz/docs/deposits-transfers-and-withdrawals", "lighter_deposit_source_required"],
     [serverSource, "LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS", "lighter_server_shared_minimum_required"],
     [setupSource, "LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS", "lighter_ui_shared_minimum_required"],
-    [setupSource, "Lighter collateral · ≥5 USDC", "lighter_ui_five_usdc_disclosure_required"],
+    [setupSource, "Owner wallet staging balance", "lighter_owner_balance_must_not_be_labeled_deposited_collateral"],
+    [setupSource, "USDC · not deposited", "lighter_owner_balance_not_deposited_disclosure_required"],
+    [setupSource, "Account identity · not a deposit address", "lighter_owner_identity_not_deposit_address_required"],
+    [setupSource, "View official Lighter requirements", "lighter_official_requirements_link_required"],
+    [clientSource, "Funding is blocked until Ghola verifies an official Lighter deposit destination", "lighter_unverified_deposit_destination_must_fail_closed"],
+    [clientSource, "Do not send USDC directly to the owner address", "lighter_direct_owner_deposit_warning_required"],
+    [clientSource, "deposit_destination_verified: false", "lighter_unverified_destination_contract_required"],
+    [clientSource, "funding_action_enabled: false", "lighter_funding_action_fail_closed_required"],
+    [serverSource, "deposit_destination_verified: false", "lighter_server_unverified_destination_required"],
+    [serverSource, "funding_action_enabled: false", "lighter_server_funding_action_block_required"],
   ];
   for (const [source, value, code] of required) if (!source.includes(value)) failures.push(code);
   for (const source of [clientSource, serverSource, setupSource]) {
@@ -382,6 +391,13 @@ export function checkLighterActivationReadinessBoundary(clientSource, serverSour
       break;
     }
   }
+  const withoutWarning = clientSource.replaceAll("Do not send USDC directly to the owner address.", "");
+  const unsafeDirectOwnerDeposit = [
+    /send[^.\n]{0,160}usdc[^.\n]{0,160}(?:owner address|owner wallet)/i,
+    /send[^.\n]{0,160}(?:owner address|owner wallet)[^.\n]{0,160}usdc/i,
+    /to the owner address above/i,
+  ].some((pattern) => pattern.test(withoutWarning));
+  if (unsafeDirectOwnerDeposit) failures.push("lighter_direct_owner_usdc_deposit_forbidden");
   if (failures.length > 0) {
     throw new Error(`Lighter activation readiness boundary failed: ${failures.join(", ")}`);
   }

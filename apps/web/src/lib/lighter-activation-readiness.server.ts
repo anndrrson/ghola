@@ -50,7 +50,7 @@ export async function readLighterActivationReadiness({
   }
   if (!ethereumAssociationGasReady) blockers.push("lighter_ethereum_association_gas_required");
   return Object.freeze({
-    version: 3,
+    version: 4,
     owner_address: owner,
     lighter_account_index: lighterAccountIndex,
     base_usdc_microunits: baseUsdc.toString(),
@@ -61,6 +61,8 @@ export async function readLighterActivationReadiness({
     base_deposit_ready: baseDepositReady,
     ethereum_association_gas_ready: ethereumAssociationGasReady,
     lighter_owner_account_ready: lighterOwnerAccountReady,
+    deposit_destination_verified: false,
+    funding_action_enabled: false,
     ready: lighterOwnerAccountReady && ethereumAssociationGasReady,
     blockers: Object.freeze(blockers),
     checked_at: now().toISOString(),

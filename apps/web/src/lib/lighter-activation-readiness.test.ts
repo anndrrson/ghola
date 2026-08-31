@@ -81,11 +81,20 @@ describe("Lighter activation readiness evidence", () => {
     }, OWNER, NOW));
     expect(instruction).toContain("at least 5 USDC on Base");
   });
+
+  it("fails closed until Ghola has an official Lighter deposit destination", () => {
+    const instruction = describeLighterActivationNextStep(
+      validateLighterActivationReadiness(readiness(), OWNER, NOW),
+    );
+    expect(instruction).toContain("Funding is blocked until Ghola verifies an official Lighter deposit destination");
+    expect(instruction).toContain("Do not send USDC directly to the owner address");
+    expect(instruction).not.toContain("Send at least 5 USDC on Base to the owner address");
+  });
 });
 
 function readiness() {
   return {
-    version: 3,
+    version: 4,
     owner_address: OWNER,
     lighter_account_index: null,
     base_usdc_microunits: "0",
@@ -96,6 +105,8 @@ function readiness() {
     base_deposit_ready: false,
     ethereum_association_gas_ready: false,
     lighter_owner_account_ready: false,
+    deposit_destination_verified: false,
+    funding_action_enabled: false,
     ready: false,
     blockers: [
       "lighter_base_usdc_below_minimum",

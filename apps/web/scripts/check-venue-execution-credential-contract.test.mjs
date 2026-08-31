@@ -359,9 +359,25 @@ test("rejects a stale or unsourced Lighter new-account minimum", () => {
         .replace("BigInt(5_000_000)", "BigInt(3_000_000)")
         .replace("https://apidocs.lighter.xyz/docs/deposits-transfers-and-withdrawals", "removed"),
       lighterReadinessServer,
-      asterUi.replace("Lighter collateral · ≥5 USDC", "Lighter collateral"),
+      asterUi.replace("Owner wallet staging balance", "Lighter collateral"),
     ),
-    /lighter_new_account_five_usdc_minimum_required|lighter_deposit_source_required|lighter_ui_five_usdc_disclosure_required|lighter_stale_three_usdc_minimum_forbidden/,
+    /lighter_new_account_five_usdc_minimum_required|lighter_deposit_source_required|lighter_owner_balance_must_not_be_labeled_deposited_collateral|lighter_stale_three_usdc_minimum_forbidden/,
+  );
+});
+
+test("rejects directing Lighter USDC to the owner without a verified deposit destination", () => {
+  assert.throws(
+    () => checkLighterActivationReadinessBoundary(
+      lighterReadiness
+        .replace(
+          "Funding is blocked until Ghola verifies an official Lighter deposit destination.",
+          "Send at least 5 USDC on Base to the owner address above.",
+        )
+        .replace("Do not send USDC directly to the owner address.", ""),
+      lighterReadinessServer,
+      asterUi,
+    ),
+    /lighter_unverified_deposit_destination_must_fail_closed|lighter_direct_owner_deposit_warning_required|lighter_direct_owner_usdc_deposit_forbidden/,
   );
 });
 

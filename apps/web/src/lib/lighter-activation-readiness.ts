@@ -5,7 +5,7 @@ export type LighterActivationBlocker =
   | "lighter_owner_account_required";
 
 export interface LighterActivationReadiness {
-  version: 3;
+  version: 4;
   owner_address: `0x${string}`;
   lighter_account_index: number | null;
   base_usdc_microunits: string;
@@ -16,6 +16,8 @@ export interface LighterActivationReadiness {
   base_deposit_ready: boolean;
   ethereum_association_gas_ready: boolean;
   lighter_owner_account_ready: boolean;
+  deposit_destination_verified: false;
+  funding_action_enabled: false;
   ready: boolean;
   blockers: readonly LighterActivationBlocker[];
   checked_at: string;
@@ -37,9 +39,15 @@ export function describeLighterActivationNextStep(readiness: LighterActivationRe
   if (readiness.blockers.includes("lighter_base_gas_required")) needs.push("ETH gas on Base");
   if (readiness.blockers.includes("lighter_ethereum_association_gas_required")) needs.push("ETH gas on Ethereum");
   if (needs.length > 0) {
-    return `Send ${joinRequirements(needs)} to the owner address above. ${readiness.lighter_owner_account_ready ? "Then recheck once." : "Then open Lighter once to create the owner account."}`;
+    if (!readiness.lighter_owner_account_ready) {
+      return `Activation requirements: ${joinRequirements(needs)}. Funding is blocked until Ghola verifies an official Lighter deposit destination. Do not send USDC directly to the owner address.`;
+    }
+    return `Activation requirement: ${joinRequirements(needs)}. Fund only the verified owner wallet, then recheck once.`;
   }
-  return "Open Lighter once to create the owner account, then recheck once.";
+  if (!readiness.lighter_owner_account_ready) {
+    return "Lighter has not created this owner account. Funding remains blocked until Ghola verifies an official Lighter deposit destination. Do not send USDC directly to the owner address.";
+  }
+  return "Recheck the verified Lighter owner account once.";
 }
 
 export async function fetchLighterActivationReadiness(
@@ -75,7 +83,7 @@ export function validateLighterActivationReadiness(
     body.estimated_ethereum_association_gas_wei,
   ];
   if (
-    body.version !== 3 ||
+    body.version !== 4 ||
     !EVM_ADDRESS.test(ownerAddress) ||
     !EVM_ADDRESS.test(responseOwner) ||
     responseOwner.toLowerCase() !== ownerAddress.toLowerCase() ||
@@ -107,6 +115,8 @@ export function validateLighterActivationReadiness(
   if (!ethereumAssociationGasReady) expectedBlockers.push("lighter_ethereum_association_gas_required");
   const blockers = Array.isArray(body.blockers) ? body.blockers.map(string) : [];
   if (
+    body.deposit_destination_verified !== false ||
+    body.funding_action_enabled !== false ||
     body.base_deposit_ready !== baseDepositReady ||
     body.ethereum_association_gas_ready !== ethereumAssociationGasReady ||
     body.ready !== (lighterOwnerAccountReady && ethereumAssociationGasReady) ||
@@ -115,7 +125,7 @@ export function validateLighterActivationReadiness(
   ) throw new Error("Lighter readiness evidence is inconsistent.");
 
   return Object.freeze({
-    version: 3,
+    version: 4,
     owner_address: responseOwner as `0x${string}`,
     lighter_account_index: lighterOwnerAccountReady ? Number(lighterAccountIndex) : null,
     base_usdc_microunits: baseUsdc.toString(),
@@ -126,6 +136,8 @@ export function validateLighterActivationReadiness(
     base_deposit_ready: baseDepositReady,
     ethereum_association_gas_ready: ethereumAssociationGasReady,
     lighter_owner_account_ready: lighterOwnerAccountReady,
+    deposit_destination_verified: false,
+    funding_action_enabled: false,
     ready: lighterOwnerAccountReady && ethereumAssociationGasReady,
     blockers: Object.freeze([...expectedBlockers]),
     checked_at: new Date(checkedAt).toISOString(),

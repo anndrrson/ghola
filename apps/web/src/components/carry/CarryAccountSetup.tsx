@@ -62,6 +62,7 @@ import {
 import {
   describeLighterActivationNextStep,
   fetchLighterActivationReadiness,
+  LIGHTER_NEW_ACCOUNT_DEPOSIT_SOURCE,
   LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS,
   type LighterActivationReadiness,
 } from "@/lib/lighter-activation-readiness";
@@ -982,11 +983,16 @@ export function CarryAccountSetup({
         {scopedActivationNeeded && (
           <div className="mt-4 rounded-lg border border-[#315277] bg-[#0b1624] p-4 text-sm">
             <p className="font-semibold text-[#d8eaff]">Activate this connected owner wallet on {scopedActivationNeeded.venue === "aster" ? "Aster" : "Lighter"}</p>
+            <p className="mt-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#718097]">
+              {scopedActivationNeeded.venue === "lighter" ? "Account identity · not a deposit address" : "Exact owner identity"}
+            </p>
             <div className="mt-2 flex items-center gap-2">
               <p className="min-w-0 break-all font-mono text-xs text-[#8fcaff]">{scopedActivationNeeded.ownerAddress}</p>
-              <button type="button" aria-label="Copy owner address" onClick={() => void navigator.clipboard.writeText(scopedActivationNeeded.ownerAddress)} className="shrink-0 rounded-md p-1.5 text-[#718097] hover:bg-[#132238] hover:text-[#a8d8ff]">
-                <Copy className="h-3.5 w-3.5" />
-              </button>
+              {scopedActivationNeeded.venue === "aster" && (
+                <button type="button" aria-label="Copy owner address" onClick={() => void navigator.clipboard.writeText(scopedActivationNeeded.ownerAddress)} className="shrink-0 rounded-md p-1.5 text-[#718097] hover:bg-[#132238] hover:text-[#a8d8ff]">
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
             {scopedActivationNeeded.venue === "lighter" ? (
               <LighterReadinessPanel
@@ -998,8 +1004,8 @@ export function CarryAccountSetup({
             ) : (
               <p className="mt-2 text-xs leading-5 text-[#8f9aae]">Aster must recognize this exact owner first. Ghola will preserve the same sealed signer, then request one fresh owner approval—never create another signer or retry an ambiguous submission.</p>
             )}
-            <a href={scopedActivationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : "https://app.lighter.xyz/"} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff]">
-              {scopedActivationNeeded.venue === "aster" ? "Open Aster" : "Open Lighter"}
+            <a href={scopedActivationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : LIGHTER_NEW_ACCOUNT_DEPOSIT_SOURCE} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff]">
+              {scopedActivationNeeded.venue === "aster" ? "Open Aster" : "View official Lighter requirements"}
             </a>
             <button type="button" disabled={working || (scopedActivationNeeded.venue === "lighter" && !lighterReadiness?.ready)} onClick={() => void retryAfterVenueActivation()} className="ml-2 mt-3 inline-flex rounded-md bg-[#4aaef8] px-3 py-2 text-xs font-semibold text-[#06111d] disabled:opacity-50">
               {scopedActivationNeeded.venue === "aster"
@@ -1032,7 +1038,7 @@ function LighterReadinessPanel({
   checking: boolean;
   onRefresh: () => void;
 }) {
-  const baseCollateralReady = readiness
+  const baseStagingBalanceReady = readiness
     ? BigInt(readiness.base_usdc_microunits) >= LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS
     : false;
   const baseGasReady = readiness
@@ -1052,7 +1058,7 @@ function LighterReadinessPanel({
           <p className="mt-2 text-xs leading-5 text-[#d8eaff]">{describeLighterActivationNextStep(readiness)}</p>
           <div className="mt-2 divide-y divide-[#1b283b]">
             {!readiness.lighter_owner_account_ready && <>
-              <ReadinessRow label="Lighter collateral · ≥5 USDC" value={`${formatDecimalUnits(readiness.base_usdc_microunits, 6, 2)} USDC on Base`} ready={baseCollateralReady} />
+              <ReadinessRow label="Owner wallet staging balance" value={`${formatDecimalUnits(readiness.base_usdc_microunits, 6, 2)} USDC · not deposited`} ready={baseStagingBalanceReady} />
               <ReadinessRow label="Base network fee" value={baseGasReady ? "Funded" : `${formatDecimalUnits(readiness.estimated_base_gas_wei, 18, 6)} ETH required`} ready={baseGasReady} />
             </>}
             <ReadinessRow label="Lighter owner account" value={readiness.lighter_owner_account_ready ? `Verified · #${readiness.lighter_account_index}` : "Activation required"} ready={readiness.lighter_owner_account_ready} />
