@@ -54,13 +54,15 @@ export function buildCarryRoutingAdvantageEvidence({
       failures.push(`routing_advantage_unavailable:${asset}`);
       return unavailableRoute(asset, "duplicate_route_evidence");
     }
-    if (candidates.length < 2) {
+    if (candidates.length === 0) {
       failures.push(`routing_advantage_unavailable:${asset}`);
-      return unavailableRoute(asset, candidates.length === 0
-        ? "modeled_route_unavailable"
-        : "comparison_route_unavailable");
+      return unavailableRoute(asset, "modeled_route_unavailable");
     }
     const selected = bestRoute(candidates);
+    if (candidates.length < 2) {
+      failures.push(`routing_advantage_unavailable:${asset}`);
+      return unavailableRoute(asset, "comparison_route_unavailable", selected, notionalMicro);
+    }
     const baseline = bestRoute(candidates.filter((route) => !sameRoute(route, selected)));
     const dailyAdvantage = selected.modeled_net_micro_usdc_per_day - baseline.modeled_net_micro_usdc_per_day;
     return Object.freeze({
@@ -76,6 +78,7 @@ export function buildCarryRoutingAdvantageEvidence({
       minimum_samples: Math.max(selected.minimum_samples, baseline.minimum_samples),
       observed_span_ms: Math.min(selected.observed_span_ms, baseline.observed_span_ms),
       minimum_span_ms: Math.max(selected.minimum_span_ms, baseline.minimum_span_ms),
+      selected_value: selectedValue(selected, notionalMicro),
       funding_evidence_commitments: Object.freeze([...new Set([
         selected.funding_evidence_commitment,
         baseline.funding_evidence_commitment,
@@ -311,21 +314,43 @@ function routeIdentity(route) {
   });
 }
 
-function unavailableRoute(asset, reason) {
+function selectedValue(route, notionalMicro) {
+  return Object.freeze({
+    benchmark_kind: "no_trade",
+    selected_route: routeIdentity(route),
+    modeled_net_micro_usdc_per_day: route.modeled_net_micro_usdc_per_day,
+    modeled_net_e6_bps_per_day: ratioE6Bps(route.modeled_net_micro_usdc_per_day, notionalMicro),
+    sample_count: route.sample_count,
+    minimum_samples: route.minimum_samples,
+    observed_span_ms: route.observed_span_ms,
+    minimum_span_ms: route.minimum_span_ms,
+    funding_evidence_commitment: route.funding_evidence_commitment,
+    ready: true,
+    reasons: Object.freeze([]),
+  });
+}
+
+function unavailableRoute(asset, reason, selected = null, notionalMicro = null) {
+  const hasSelectedValue = selected && Number.isSafeInteger(notionalMicro) && notionalMicro > 0;
   return Object.freeze({
     asset,
     status: "unavailable",
-    selected_route: null,
+    selected_route: hasSelectedValue ? routeIdentity(selected) : null,
     baseline_route: null,
-    selected_modeled_net_micro_usdc_per_day: null,
+    selected_modeled_net_micro_usdc_per_day: hasSelectedValue
+      ? selected.modeled_net_micro_usdc_per_day
+      : null,
     baseline_modeled_net_micro_usdc_per_day: null,
     daily_net_advantage_micro_usdc: null,
     daily_net_advantage_e6_bps: null,
-    sample_count: 0,
-    minimum_samples: 0,
-    observed_span_ms: 0,
-    minimum_span_ms: 0,
-    funding_evidence_commitments: Object.freeze([]),
+    sample_count: hasSelectedValue ? selected.sample_count : 0,
+    minimum_samples: hasSelectedValue ? selected.minimum_samples : 0,
+    observed_span_ms: hasSelectedValue ? selected.observed_span_ms : 0,
+    minimum_span_ms: hasSelectedValue ? selected.minimum_span_ms : 0,
+    selected_value: hasSelectedValue ? selectedValue(selected, notionalMicro) : null,
+    funding_evidence_commitments: Object.freeze(hasSelectedValue
+      ? [selected.funding_evidence_commitment]
+      : []),
     ready: false,
     reasons: Object.freeze([reason]),
   });

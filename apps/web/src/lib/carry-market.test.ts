@@ -137,6 +137,51 @@ describe("Carry market model", () => {
     expect(evidence.detail).toContain("not realized P&L");
   });
 
+  it("shows worker-committed net value without inventing route savings", () => {
+    const venues = [
+      venue("hyperliquid", snapshot("hyperliquid", "BTC", 40_000_000, "ready")),
+      venue("lighter", snapshot("lighter", "BTC", 10_000_000, "ready")),
+      venue("aster", snapshot("aster", "BTC", 150_000_000, "ready")),
+    ];
+    const ranked = rankCarryCandidatesByNet(buildPairCandidates(venues));
+    const selected = ranked[0];
+    const summary = routingAdvantageSummary();
+    const route = summary.routes[0];
+    summary.ready = false;
+    summary.failures = ["routing_advantage_unavailable:BTC"];
+    route.status = "unavailable";
+    route.baseline_route = null;
+    route.daily_net_advantage_micro_usdc = null;
+    route.daily_net_advantage_e6_bps = null;
+    route.funding_evidence_commitments = [`carry:funding:${"a".repeat(64)}`];
+    route.ready = false;
+    route.reasons = ["comparison_route_unavailable"];
+    const evidence = carryRoutingAdvantageEvidence({
+      version: 1,
+      mode: "shadow_read_only",
+      executable: false,
+      observed_at: new Date(1_800_000_000_000).toISOString(),
+      venues,
+      shadow_qualification: qualificationSummary(),
+      funding_persistence: fundingPersistenceSummary(),
+      routing_advantage: summary,
+    }, selected, carryRoutingAdvantage(selected, ranked));
+    expect(evidence).toMatchObject({
+      status: "committed",
+      label: "NET✓",
+      advantage: {
+        status: "advantaged",
+        benchmarkKind: "no_trade",
+        selectedRoute: "BTC:lighter:aster",
+        baselineRoute: null,
+        dailyNetAdvantageUsd: 3.5,
+        dailyNetAdvantageBps: 3.5,
+      },
+    });
+    expect(evidence.detail).toContain("no second funding-qualified route exists");
+    expect(evidence.detail).toContain("not realized P&L");
+  });
+
   it("rejects a forged ready routing advantage", () => {
     const venues = [
       venue("hyperliquid", snapshot("hyperliquid", "BTC", 40_000_000, "ready")),
@@ -435,6 +480,19 @@ function routingAdvantageSummary(): NonNullable<CarryShadowResponse["routing_adv
       minimum_samples: 8,
       observed_span_ms: 35 * 60_000,
       minimum_span_ms: 30 * 60_000,
+      selected_value: {
+        benchmark_kind: "no_trade",
+        selected_route: { long_venue_id: "lighter", short_venue_id: "aster" },
+        modeled_net_micro_usdc_per_day: 3_500_000,
+        modeled_net_e6_bps_per_day: 3_500_000,
+        sample_count: 8,
+        minimum_samples: 8,
+        observed_span_ms: 35 * 60_000,
+        minimum_span_ms: 30 * 60_000,
+        funding_evidence_commitment: `carry:funding:${"a".repeat(64)}`,
+        ready: true,
+        reasons: [],
+      },
       funding_evidence_commitments: [
         `carry:funding:${"a".repeat(64)}`,
         `carry:funding:${"b".repeat(64)}`,

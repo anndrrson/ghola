@@ -1473,6 +1473,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("routingAdvantage", "bestRoute(candidates.filter((route) => !sameRoute(route, selected)))", "carry_routing_advantage_next_best_route_missing");
   requireText("routingAdvantageTest", "keeps the routing benchmark venue-neutral", "carry_routing_advantage_venue_neutral_test_missing");
   requireText("routingAdvantageTest", "fails closed without a distinct comparison route", "carry_routing_advantage_comparison_test_missing");
+  requireText("routingAdvantage", 'benchmark_kind: "no_trade"', "carry_routing_selected_value_benchmark_missing");
+  requireText("routingAdvantage", 'unavailableRoute(asset, "comparison_route_unavailable", selected, notionalMicro)', "carry_routing_selected_value_binding_missing");
+  requireText("routingAdvantageTest", "selected_value.benchmark_kind", "carry_routing_selected_value_test_missing");
   requireText("webCarryMarket", 'summary.benchmark_kind === "next_best_executable_route"', "carry_routing_advantage_web_neutral_benchmark_missing");
   requireText("webCarryMarket", "baselineDistinct", "carry_routing_advantage_distinct_baseline_gate_missing");
   forbidText("routingAdvantage", "anchor_venue_id", "carry_routing_advantage_anchor_forbidden");
@@ -1494,6 +1497,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "{routingEvidence.label} {formatRoutingAdvantage", "carry_routing_advantage_display_missing");
   requireText("webCarryChart", "data-routing-evidence={routingEvidence.status}", "carry_routing_advantage_state_missing");
   requireText("webCarryMarket", "not realized P&L.", "carry_routing_advantage_modeled_disclosure_missing");
+  requireText("webCarryMarket", 'label: "NET✓"', "carry_routing_selected_value_label_missing");
+  requireText("webCarryMarket", "no second funding-qualified route exists", "carry_routing_selected_value_boundary_missing");
+  requireText("webCarryMarketTest", "shows worker-committed net value without inventing route savings", "carry_routing_selected_value_web_test_missing");
   requireText("webCarryChartTest", "shows modeled routing edge without presenting it as realized P&L", "carry_routing_advantage_disclosure_test_missing");
   requireText("webCarryChartTest", "upgrades modeled edge only when worker evidence matches the selected route", "carry_routing_advantage_worker_ui_test_missing");
   requireText("webCarryChart", "AGE {formatAge", "carry_feed_age_display_missing");

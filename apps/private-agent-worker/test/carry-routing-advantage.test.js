@@ -121,6 +121,19 @@ test("commits conservative route savings against the next-best executable route"
   assert.ok(result.routes[0].daily_net_advantage_micro_usdc > 0);
   assert.equal(result.routes[0].sample_count, 8);
   assert.equal(result.routes[0].funding_evidence_commitments.length, 2);
+  assert.deepEqual(result.routes[0].selected_value, {
+    benchmark_kind: "no_trade",
+    selected_route: { long_venue_id: "lighter", short_venue_id: "aster" },
+    modeled_net_micro_usdc_per_day: result.routes[0].selected_modeled_net_micro_usdc_per_day,
+    modeled_net_e6_bps_per_day: result.routes[0].selected_modeled_net_micro_usdc_per_day,
+    sample_count: 8,
+    minimum_samples: 8,
+    observed_span_ms: 35 * 60_000,
+    minimum_span_ms: 30 * 60_000,
+    funding_evidence_commitment: `carry:funding:${"c".repeat(64)}`,
+    ready: true,
+    reasons: [],
+  });
 });
 
 test("keeps the routing benchmark venue-neutral", () => {
@@ -161,6 +174,13 @@ test("fails closed without a distinct comparison route", () => {
   assert.equal(result.ready, false);
   assert.equal(result.routes[0].reasons[0], "comparison_route_unavailable");
   assert.equal(result.failures[0], "routing_advantage_unavailable:BTC");
+  assert.equal(result.routes[0].selected_value.ready, true);
+  assert.equal(result.routes[0].selected_value.benchmark_kind, "no_trade");
+  assert.deepEqual(result.routes[0].selected_value.selected_route, {
+    long_venue_id: "lighter",
+    short_venue_id: "aster",
+  });
+  assert.equal(result.routes[0].funding_evidence_commitments.length, 1);
 });
 
 test("fails closed when five-venue evidence is not worker-qualified", () => {

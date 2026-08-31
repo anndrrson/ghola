@@ -486,6 +486,26 @@ test("rejects a routing advantage benchmark anchored to Hyperliquid", () => {
   );
 });
 
+test("rejects removal of the no-trade selected-value boundary", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      routingAdvantage: sources.routingAdvantage.replace('benchmark_kind: "no_trade"', 'benchmark_kind: "next_best_executable_route"'),
+    }),
+    /carry_routing_selected_value_benchmark_missing/,
+  );
+});
+
+test("rejects selected-route net presented as comparative savings", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryMarket: sources.webCarryMarket.replace("no second funding-qualified route exists", "route savings verified"),
+    }),
+    /carry_routing_selected_value_boundary_missing/,
+  );
+});
+
 test("rejects background Carry failures that are no longer supervised", () => {
   assert.throws(
     () => checkCarryExecutionContract({
