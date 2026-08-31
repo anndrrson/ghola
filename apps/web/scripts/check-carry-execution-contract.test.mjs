@@ -26,6 +26,18 @@ test("rejects a no-submit assembler that can persist sealed venue access", () =>
   );
 });
 
+test("rejects a Lighter runner that calls an API absent from the pinned SDK", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      lighterRunner: sources.lighterRunner
+        .replaceAll("account_active_orders(", "account_orders(")
+        .replaceAll("account_inactive_orders(", "account_orders("),
+    }),
+    /lighter_pinned_active_order_api_missing|lighter_pinned_inactive_order_api_missing|lighter_unavailable_order_api_present/,
+  );
+});
+
 test("rejects funding observation evaluated against its pre-fetch clock", () => {
   assert.throws(
     () => checkCarryExecutionContract({

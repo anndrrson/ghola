@@ -162,6 +162,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   noSubmitEvidenceVerifierTest: "apps/web/scripts/verify-carry-no-submit-evidence.test.mjs",
   noSubmitEvidenceAssembler: "apps/web/scripts/assemble-carry-no-submit-evidence.mjs",
   noSubmitEvidenceAssemblerTest: "apps/web/scripts/assemble-carry-no-submit-evidence.test.mjs",
+  webNoSubmitEvidence: "apps/web/src/lib/carry-no-submit-evidence.ts",
+  webNoSubmitEvidenceTest: "apps/web/src/lib/carry-no-submit-evidence.test.ts",
   webReconciliation: "apps/web/src/lib/carry-reconciliation.ts",
   webReconciliationTest: "apps/web/src/lib/carry-reconciliation.test.ts",
   proofRunbook: "deploy/evidence/CARRY_MAINNET_PROOF_RUNBOOK.md",
@@ -191,6 +193,15 @@ export function checkCarryExecutionContract(sources) {
   requireText("proofRunbook", "verify:carry-no-submit-evidence", "carry_proof_runbook_no_submit_verifier_missing");
   requireText("proofRunbook", "Capital-free development witness", "carry_shadow_development_witness_runbook_missing");
   requireText("proofRunbook", "never substitutes for image-bound qualification", "carry_shadow_development_witness_boundary_missing");
+  requireText("webNoSubmitEvidence", "ghola_three_venue_no_submit_proof", "carry_preview_no_submit_artifact_missing");
+  requireText("webNoSubmitEvidence", "containsCredentialMaterial", "carry_preview_no_submit_artifact_secret_gate_missing");
+  requireText("webNoSubmitEvidenceTest", "without credentials", "carry_preview_no_submit_artifact_test_missing");
+  requireText("webRoute", "attachNoSubmitEvidence", "carry_preview_no_submit_capture_missing");
+  requireText("noSubmitEvidenceVerifier", "parsed?.no_submit_evidence || parsed", "carry_preview_no_submit_extraction_missing");
+  requireText("lighterRunner", "account_active_orders(", "lighter_pinned_active_order_api_missing");
+  requireText("lighterRunner", "account_inactive_orders(", "lighter_pinned_inactive_order_api_missing");
+  forbidText("lighterRunner", "account_orders(", "lighter_unavailable_order_api_present");
+  requireText("lighterTest", "uses the pinned Lighter SDK active and inactive order APIs", "lighter_pinned_order_api_test_missing");
 
   const shadowAdapters = {
     hyperliquid: "hyperliquid_shadow_v1",

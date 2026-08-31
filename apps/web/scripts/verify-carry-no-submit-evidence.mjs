@@ -23,7 +23,8 @@ export const DEFAULT_CARRY_NO_SUBMIT_EVIDENCE_PATH = resolve(
 
 export function readCarryNoSubmitEvidenceFile(path = DEFAULT_CARRY_NO_SUBMIT_EVIDENCE_PATH) {
   try {
-    return JSON.parse(readFileSync(resolve(path), "utf8"));
+    const parsed = JSON.parse(readFileSync(resolve(path), "utf8"));
+    return parsed?.no_submit_evidence || parsed;
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error ? error.code : null;
     throw new Error(code === "ENOENT"
@@ -174,7 +175,8 @@ export function verifyCarryNoSubmitEvidence(evidence, {
 }
 
 function privatePrimeCommitment(value) {
-  const { evidence_commitment: _ignored, ...material } = value;
+  const material = { ...value };
+  delete material.evidence_commitment;
   return `carry:private-prime:${createHash("sha256")
     .update(canonicalCarryCommitmentJson(material))
     .digest("hex")

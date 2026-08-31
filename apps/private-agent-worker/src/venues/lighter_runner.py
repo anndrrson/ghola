@@ -78,6 +78,40 @@ async def account_for(client, account_index):
     return as_dict(response.accounts[0])
 
 
+def orders_from_response(response):
+    orders = as_dict(response).get("orders")
+    if not isinstance(orders, list):
+        fail("lighter order read is invalid")
+    return orders
+
+
+async def exact_account_order(client, account_index, market_index, client_order_index, *, include_inactive):
+    auth = await auth_token(client)
+    active_response = await client.order_api.account_active_orders(
+        account_index=int(account_index),
+        market_id=int(market_index),
+        authorization=auth,
+    )
+    target = exact_market_order(
+        orders_from_response(active_response),
+        client_order_index,
+        market_index,
+    )
+    if target is not None or not include_inactive:
+        return target
+    inactive_response = await client.order_api.account_inactive_orders(
+        account_index=int(account_index),
+        limit=100,
+        authorization=auth,
+        market_id=int(market_index),
+    )
+    return exact_market_order(
+        orders_from_response(inactive_response),
+        client_order_index,
+        market_index,
+    )
+
+
 def signed_order(client, order, market, *, nonce=-1, skip_nonce=0):
     size_decimals = int(market.supported_size_decimals)
     price_decimals = int(market.supported_price_decimals)
@@ -251,15 +285,14 @@ async def run(payload):
             return {"accepted": True, "status": "submitted", "tx_hash": getattr(response, "tx_hash", None)}
         if action == "cancel":
             market = await market_for(client, payload.get("market"))
-            auth = await auth_token(client)
-            orders_response = await client.order_api.account_orders(
-                authorization=auth,
-                client_order_indexes=str(int(payload["client_order_index"])),
-                account_index=int(credential["account_index"]),
-            )
-            orders = as_dict(orders_response).get("orders", [])
             target = int(payload["client_order_index"])
-            order = exact_market_order(orders, target, market.market_id)
+            order = await exact_account_order(
+                client,
+                credential["account_index"],
+                market.market_id,
+                target,
+                include_inactive=False,
+            )
             if order is None or order.get("order_index") is None:
                 fail("lighter cancel target is unavailable", "venue_rejected")
             tx, response, cancel_err = await client.cancel_order(
@@ -272,15 +305,14 @@ async def run(payload):
             return {"accepted": True, "status": "cancelled", "tx_hash": getattr(response, "tx_hash", None)}
         if action == "reconcile":
             market = await market_for(client, payload.get("market"))
-            auth = await auth_token(client)
             target = int(payload["client_order_index"])
-            orders_response = await client.order_api.account_orders(
-                authorization=auth,
-                client_order_indexes=str(target),
-                account_index=int(credential["account_index"]),
+            order = await exact_account_order(
+                client,
+                credential["account_index"],
+                market.market_id,
+                target,
+                include_inactive=True,
             )
-            orders = as_dict(orders_response).get("orders", [])
-            order = exact_market_order(orders, target, market.market_id)
             return {"order": order, "target_market_checked": True}
         if action == "funding":
             market = await market_for(client, payload.get("market"))

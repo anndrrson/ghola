@@ -58,6 +58,9 @@ describe("agent passport venue linking", () => {
     delete process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN;
     delete process.env.GHOLA_ARB_CANARY_MAX_STALE_MS;
     delete process.env.GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64;
+    delete process.env.VERCEL_URL;
+    delete process.env.VERCEL_GIT_COMMIT_SHA;
+    delete process.env.GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST;
   });
 
   it("records sealed trade-only venue capabilities and blocks withdrawal scopes", async () => {
@@ -411,6 +414,9 @@ describe("agent passport venue linking", () => {
     process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "report_only";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
+    process.env.VERCEL_URL = "web-proof-anndrrsons-projects.vercel.app";
+    process.env.VERCEL_GIT_COMMIT_SHA = "a".repeat(40);
+    process.env.GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST = `sha256:${"b".repeat(64)}`;
     const matrixBodies: Record<string, unknown>[] = [];
     const readinessBodies: Record<string, unknown>[] = [];
     let tamperSelectedOpportunity = false;
@@ -492,6 +498,16 @@ describe("agent passport venue linking", () => {
       expect(response.status, JSON.stringify(result)).toBe(200);
       expect(result.no_submit_ready).toBe(true);
       expect(result.transaction_broadcast).toBe(false);
+      expect(result.no_submit_evidence_status).toBe("captured");
+      expect(result.no_submit_evidence).toMatchObject({
+        kind: "ghola_three_venue_no_submit_proof",
+        source: {
+          preview_url: "https://web-proof-anndrrsons-projects.vercel.app",
+          web_commit_sha: "a".repeat(40),
+          worker_image_digest: `sha256:${"b".repeat(64)}`,
+        },
+      });
+      expect(JSON.stringify(result.no_submit_evidence)).not.toContain("sealed-hyperliquid-vault");
 
       expect(matrixBodies).toHaveLength(1);
       const matrixBody = matrixBodies[0];

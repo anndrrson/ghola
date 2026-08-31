@@ -3,6 +3,9 @@ import {
   generateKeyPairSync,
   sign,
 } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   cashflowValuationEvidenceMessage,
@@ -11,7 +14,10 @@ import {
 import { authenticateCarryPrivatePrimeReadiness } from "../../private-agent-worker/src/execution/carry-private-prime-authentication.js";
 import { buildCarryPrivatePrimeReadiness } from "../../private-agent-worker/src/execution/carry-private-prime-readiness.js";
 import { preflightCarryExecutionMatrix } from "../../private-agent-worker/src/execution/carry-preflight.js";
-import { verifyCarryNoSubmitEvidence } from "./verify-carry-no-submit-evidence.mjs";
+import {
+  readCarryNoSubmitEvidenceFile,
+  verifyCarryNoSubmitEvidence,
+} from "./verify-carry-no-submit-evidence.mjs";
 
 const NOW = 1_800_000_000_000;
 const SECRET = "test-private-prime-capability-secret";
@@ -28,6 +34,19 @@ test("independently verifies exact signed three-venue no-submit evidence", async
   assert.equal(verified.three_venue_ready, true);
   assert.equal(verified.transaction_broadcast, false);
   assert.equal(verified.mac_verified, true);
+});
+
+test("extracts the exact proof artifact from a Preview matrix response", async () => {
+  const proof = await evidence();
+  const directory = mkdtempSync(join(tmpdir(), "ghola-preview-no-submit-"));
+  const path = join(directory, "response.json");
+  writeFileSync(path, JSON.stringify({
+    no_submit_ready: true,
+    transaction_broadcast: false,
+    no_submit_evidence_status: "captured",
+    no_submit_evidence: proof,
+  }));
+  assert.deepEqual(readCarryNoSubmitEvidenceFile(path), proof);
 });
 
 test("rejects tampered pair evidence, request context, signer identity, and candidate identity", async () => {

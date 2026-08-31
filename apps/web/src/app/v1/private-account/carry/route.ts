@@ -13,6 +13,7 @@ import { verifyCarryPrivatePrimeWorkerAuthentication } from "@/lib/carry-private
 import { verifyCarryCreationOpportunityWorkerAuthentication } from "@/lib/carry-creation-opportunity-authentication";
 import { verifyCarryPortfolioValueWorkerAuthentication } from "@/lib/carry-portfolio-value-worker-authentication";
 import { verifyCarryReleaseMaterialWorkerAuthentication } from "@/lib/carry-release-material-worker-authentication";
+import { buildCarryNoSubmitEvidence } from "@/lib/carry-no-submit-evidence";
 import { randomUUID } from "node:crypto";
 import { normalizeCarryShadowAssets } from "@ghola/execution-core";
 import { CARRY_EXECUTION_VENUES, isCarryExecutionVenue } from "@/lib/carry-venues";
@@ -427,6 +428,9 @@ export async function POST(req: NextRequest) {
         return response({ error: authenticated.error }, 502, correlationId);
       }
     }
+    const publicResult = upstream.ok && action === "preflight_matrix"
+      ? attachNoSubmitEvidence(body, result)
+      : result;
     console.info("[carry] request completed", {
       correlation_id: correlationId,
       action,
@@ -434,7 +438,7 @@ export async function POST(req: NextRequest) {
       status: upstream.status,
       duration_ms: Date.now() - startedAt,
     });
-    return response(result, upstream.status, correlationId);
+    return response(publicResult, upstream.status, correlationId);
   } catch (error) {
     console.error("[carry] request failed", {
       correlation_id: correlationId,
@@ -465,6 +469,13 @@ function carryRoute(action: string) {
   if (action === "observe") return { path: "/carry/positions/observe", scope: "carry:write" as const, operationClass: "/observe" };
   if (action === "execute_entry") return { path: "/carry/positions/execute-entry", scope: "order:submit" as const, operationClass: "/execute-entry" };
   return null;
+}
+
+function attachNoSubmitEvidence(request: Record<string, unknown>, workerResponse: unknown) {
+  const result = buildCarryNoSubmitEvidence({ request, response: workerResponse });
+  return result.ok
+    ? { ...record(workerResponse), no_submit_evidence_status: "captured", no_submit_evidence: result.evidence }
+    : { ...record(workerResponse), no_submit_evidence_status: result.error };
 }
 
 function workerVenueAccess(access: Record<string, unknown>, ownerCommitment: string) {

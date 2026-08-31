@@ -143,6 +143,48 @@ print("checked")
   assert.equal(result.stdout.trim(), "checked");
 });
 
+test("uses the pinned Lighter SDK active and inactive order APIs for exact reconciliation", () => {
+  const runnerPath = fileURLToPath(new URL("../src/venues/lighter_runner.py", import.meta.url));
+  const check = String.raw`
+import asyncio, importlib.util, sys
+spec = importlib.util.spec_from_file_location("lighter_runner", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.credential = {"api_key_index": 4}
+class OrderApi:
+    def __init__(self):
+        self.active_calls = []
+        self.inactive_calls = []
+    async def account_active_orders(self, **kwargs):
+        self.active_calls.append(kwargs)
+        return {"orders": [{"client_order_index": 77, "market_index": 2, "order_index": 8}]}
+    async def account_inactive_orders(self, **kwargs):
+        self.inactive_calls.append(kwargs)
+        return {"orders": [{"client_order_index": 77, "market_index": 1, "order_index": 9, "status": "filled"}]}
+class Client:
+    def __init__(self):
+        self.order_api = OrderApi()
+    def create_auth_token_with_expiry(self, api_key_index):
+        assert api_key_index == 4
+        return "signed-read-token", None
+async def main():
+    client = Client()
+    found = await module.exact_account_order(client, 123, 1, 77, include_inactive=True)
+    assert found["order_index"] == 9
+    assert client.order_api.active_calls == [{"account_index": 123, "market_id": 1, "authorization": "signed-read-token"}]
+    assert client.order_api.inactive_calls == [{"account_index": 123, "limit": 100, "authorization": "signed-read-token", "market_id": 1}]
+    client = Client()
+    missing = await module.exact_account_order(client, 123, 1, 77, include_inactive=False)
+    assert missing is None
+    assert client.order_api.inactive_calls == []
+asyncio.run(main())
+print("checked")
+`;
+  const result = spawnSync(process.env.PRIVATE_AGENT_PYTHON || "python3", ["-c", check, runnerPath], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stdout.trim(), "checked");
+});
+
 test("keeps Lighter fund operations owner-only inside the attested worker boundary", () => {
   const result = credential();
   assert.equal(result.authority_boundary.venue_native_trade_only, false);
