@@ -232,6 +232,11 @@ test("fetches Lighter market, funding, and book timing from its public read-only
     }
   }
   const fetchImpl = async (url) => {
+    if (String(url).includes("api.exchange.coinbase.com")) return response({
+      sequence: 1,
+      bids: [["0.9998", "100", "1"]],
+      asks: [["1.0002", "100", "1"]],
+    }, sourceNow);
     assert.match(String(url), /orderBookDetails$/);
     return response({ order_book_details: [
       {
@@ -410,6 +415,12 @@ test("quarantines Aster when premium funding is stale despite fresh depth", () =
 test("live Aster shadow selection emits one deterministic contract per asset", async () => {
   const fetchImpl = async (url) => {
     const value = String(url);
+    if (value.includes("/depth?") && value.includes("symbol=USDCUSDT")) return response({
+      symbol: "USDCUSDT",
+      T: NOW,
+      bids: [["0.9998", "100"]],
+      asks: [["1.0002", "100"]],
+    });
     if (value.includes("exchangeInfo")) return response({
       serverTime: NOW,
       symbols: [
@@ -729,6 +740,11 @@ test("requires matching dYdX fee parameters from two independent chain nodes", a
   const fetchImpl = async (url) => {
     const value = String(url);
     calls.push(value);
+    if (value.includes("api.exchange.coinbase.com")) return response({
+      sequence: 1,
+      bids: [["0.9998", "100", "1"]],
+      asks: [["1.0002", "100", "1"]],
+    });
     if (value.includes("perpetualMarkets")) return response({ markets: { "BTC-USD": {
       ticker: "BTC-USD",
       status: "ACTIVE",
@@ -758,6 +774,11 @@ test("requires matching dYdX fee parameters from two independent chain nodes", a
 test("degrades dYdX instead of choosing between conflicting chain fee sources", async () => {
   const fetchImpl = async (url) => {
     const value = String(url);
+    if (value.includes("api.exchange.coinbase.com")) return response({
+      sequence: 1,
+      bids: [["0.9998", "100", "1"]],
+      asks: [["1.0002", "100", "1"]],
+    });
     if (value.includes("perpetualMarkets")) return response({ markets: { "BTC-USD": {
       ticker: "BTC-USD",
       status: "ACTIVE",
@@ -856,10 +877,10 @@ test("caps each five-venue shadow adapter by one end-to-end deadline", async () 
   assert.equal(carryShadowFetchTimeoutMs({ PRIVATE_AGENT_CARRY_SHADOW_FETCH_TIMEOUT_MS: "50" }), 4_000);
 });
 
-function response(body) {
+function response(body, observedAtMs = NOW) {
   return {
     ok: true,
-    headers: { get: (name) => String(name).toLowerCase() === "date" ? new Date(NOW).toUTCString() : null },
+    headers: { get: (name) => String(name).toLowerCase() === "date" ? new Date(observedAtMs).toUTCString() : null },
     json: async () => body,
   };
 }

@@ -6,6 +6,7 @@ import {
   advanceCarryPosition,
   calculateMarginRunway,
   canonicalCarryCommitmentJson,
+  cashflowValuationEvidenceMessage,
   carryCreationOpportunityAuthenticationMessage,
   carryPrivatePrimeWorkerAuthenticationMessage,
   carryCollateralReviewMessage,
@@ -15,6 +16,7 @@ import {
   compileCarryPortfolioCapitalPlan,
   compileCarryPortfolioValueReport,
   compileCarryMigrationProposal,
+  convertSignedCashflowToMicroUsdc,
   createCarryPosition,
   createCarryValueLedger,
   evaluateCarryOpportunity,
@@ -25,6 +27,8 @@ import {
   normalizeCarryCollateralReviewPayload,
   normalizeCarryCollateralReviewAuthorization,
   normalizeCarryLifecycleValueAttribution,
+  normalizeCashflowValuation,
+  normalizePerpContractSpec,
   venueAdapterCapability,
 } from "../index.js";
 
@@ -116,6 +120,9 @@ function contract(venueId, fundingRate, overrides = {}) {
     market: "BTC-USD",
     quote_asset: "USD",
     collateral_asset: "USDC",
+    funding_settlement_asset: "USDC",
+    fee_settlement_asset: "USDC",
+    asset_valuations: [cashflowValuation("USD")],
     contract_type: "linear_perp",
     mark_price_e8: 6_000_000_000_000,
     index_price_e8: 6_000_000_000_000,
@@ -133,6 +140,27 @@ function contract(venueId, fundingRate, overrides = {}) {
     price_tick_e8: 100_000,
     as_of_ms: NOW - 500,
     ...overrides,
+  };
+}
+
+function cashflowValuation(sourceAsset, overrides = {}) {
+  const commitmentDigit = sourceAsset === "USD" ? "a" : sourceAsset === "USDT" ? "b" : "c";
+  const valuation = {
+    version: 1,
+    source_asset: sourceAsset,
+    valuation_asset: "USDC",
+    verified: true,
+    credit_rate_e8: 100_000_000,
+    debit_rate_e8: 100_000_000,
+    observed_at_ms: NOW - 1_000,
+    expires_at_ms: NOW + 30_000,
+    evidence_source: "attested:stablecoin-book:v1",
+    evidence_commitment: `carry:cashflow-valuation:evidence:${commitmentDigit.repeat(64)}`,
+    ...overrides,
+  };
+  return {
+    ...valuation,
+    evidence_message: overrides.evidence_message ?? cashflowValuationEvidenceMessage(valuation),
   };
 }
 
@@ -376,6 +404,95 @@ function activePositionForObservation() {
   }).position;
 }
 
+test("normalizes CashflowValuationV1 and rounds signed values conservatively", () => {
+  const valuation = normalizeCashflowValuation(cashflowValuation("USDT", {
+    credit_rate_e8: 99_999_999,
+    debit_rate_e8: 100_000_001,
+  }));
+  assert.equal(valuation.conversion_required, true);
+  assert.equal(convertSignedCashflowToMicroUsdc({ amount_micro: 1, valuation }), 0);
+  assert.equal(convertSignedCashflowToMicroUsdc({ amount_micro: -1, valuation }), -2);
+  assert.equal(convertSignedCashflowToMicroUsdc({ amount_micro: 0, valuation }), 0);
+  assert.throws(() => normalizeCashflowValuation({
+    ...cashflowValuation("USDT"),
+    credit_rate_e8: 100_000_001,
+    debit_rate_e8: 99_999_999,
+  }), /cashflow_valuation_spread_invalid/);
+  assert.throws(() => normalizeCashflowValuation({
+    ...cashflowValuation("USDC"),
+    credit_rate_e8: 99_999_999,
+  }), /cashflow_valuation_identity_invalid/);
+});
+
+test("binds explicit fee and funding settlement assets to verified USDC valuations", () => {
+  const normalized = normalizePerpContractSpec(contract("hyperliquid", 1));
+  assert.equal(normalized.funding_settlement_asset, "USDC");
+  assert.equal(normalized.fee_settlement_asset, "USDC");
+  assert.equal(normalized.valuation_asset, "USDC");
+  assert.equal(normalized.asset_valuations.USD.verified, true);
+  assert.equal(normalized.asset_valuations.USDC.conversion_required, false);
+
+  assert.throws(() => normalizePerpContractSpec(contract("hyperliquid", 1, {
+    asset_valuations: [],
+  })), /contract_asset_valuation_missing/);
+  assert.throws(() => normalizePerpContractSpec(contract("hyperliquid", 1, {
+    funding_settlement_asset: "USDT",
+  })), /contract_asset_valuation_missing/);
+  const usdtFunding = normalizePerpContractSpec(contract("hyperliquid", 1, {
+    funding_settlement_asset: "USDT",
+    asset_valuations: [cashflowValuation("USD"), cashflowValuation("USDT")],
+  }));
+  assert.equal(usdtFunding.asset_valuations.USDT.conversion_required, true);
+  assert.throws(() => normalizePerpContractSpec(contract("hyperliquid", 1, {
+    asset_valuations: [cashflowValuation("USDT")],
+  })), /contract_asset_valuation_unbound/);
+  assert.throws(() => normalizePerpContractSpec(contract("hyperliquid", 1, {
+    asset_valuations: [cashflowValuation("USD", {
+      expires_at_ms: NOW - 500,
+    })],
+  })), /contract_asset_valuation_stale/);
+  assert.throws(() => normalizePerpContractSpec(contract("hyperliquid", 1, {
+    asset_valuations: [cashflowValuation("USD", { verified: false })],
+  })), /cashflow_valuation_unverified/);
+  const committed = cashflowValuation("USD");
+  assert.throws(() => normalizePerpContractSpec(contract("hyperliquid", 1, {
+    asset_valuations: [{ ...committed, credit_rate_e8: 99_999_999 }],
+  })), /cashflow_valuation_evidence_message/);
+
+  const identityOnly = normalizePerpContractSpec(contract("hyperliquid", 1, {
+    quote_asset: "USDC",
+    asset_valuations: [],
+  }));
+  assert.deepEqual(Object.keys(identityOnly.asset_valuations), ["USDC"]);
+});
+
+test("fails opportunity evaluation before economics when valuation evidence expires", () => {
+  assert.throws(() => evaluateCarryOpportunity({
+    version: 1,
+    long_contract: contract("hyperliquid", 1, {
+      asset_valuations: [cashflowValuation("USD", {
+        observed_at_ms: NOW - 2_000,
+        expires_at_ms: NOW - 100,
+      })],
+      as_of_ms: NOW - 500,
+    }),
+    short_contract: contract("lighter", 4),
+    notional_micro_usdc: 10_000_000_000,
+    capital_committed_micro_usdc: 4_000_000_000,
+    horizon_ms: 7 * DAY,
+    long_costs: costs(),
+    short_costs: costs(),
+    capital_cost_bps_per_day: 1,
+    risk_buffer_bps: 3,
+    min_expected_net_benefit_bps: 5,
+    min_margin_runway_ms: 6 * HOUR,
+    margin_runways: [runway("hyperliquid"), runway("lighter")],
+    now_ms: NOW,
+    max_data_age_ms: 30_000,
+    max_contract_data_skew_ms: 2_000,
+  }), /carry_cashflow_valuation_stale/);
+});
+
 test("models carry after funding, round-trip costs, capital cost, risk buffer, and break-even", () => {
   const result = evaluateCarryOpportunity({
     version: 1,
@@ -413,6 +530,62 @@ test("models carry after funding, round-trip costs, capital cost, risk buffer, a
   assert.equal(result.risk_buffer_micro_usdc, 3_000_000);
   assert.equal(result.projected_net_value_micro_usdc, 45_200_000);
   assert.ok(result.break_even_ms > DAY && result.break_even_ms < 2 * DAY);
+});
+
+test("converts each leg's modeled funding, fees, and slippage through its settlement valuation", () => {
+  const usdtValuation = cashflowValuation("USDT", {
+    credit_rate_e8: 98_000_000,
+    debit_rate_e8: 102_000_000,
+  });
+  const input = {
+    version: 1,
+    long_contract: contract("hyperliquid", 1, {
+      quote_asset: "USDT",
+      funding_settlement_asset: "USDT",
+      fee_settlement_asset: "USDT",
+      asset_valuations: [usdtValuation],
+    }),
+    short_contract: contract("lighter", 4, {
+      quote_asset: "USDC",
+      asset_valuations: [],
+    }),
+    notional_micro_usdc: 10_000_000_000,
+    capital_committed_micro_usdc: 4_000_000_000,
+    horizon_ms: 7 * DAY,
+    long_costs: costs(),
+    short_costs: costs(),
+    capital_cost_bps_per_day: 1,
+    risk_buffer_bps: 3,
+    min_expected_net_benefit_bps: 0,
+    min_margin_runway_ms: 6 * HOUR,
+    margin_runways: [runway("hyperliquid"), runway("lighter")],
+    now_ms: NOW,
+    max_data_age_ms: 30_000,
+    max_contract_data_skew_ms: 2_000,
+  };
+  const result = evaluateCarryOpportunity(input);
+  assert.equal(result.projected_long_funding_source_amount_micro, -21_000_000);
+  assert.equal(result.projected_short_funding_source_amount_micro, 84_000_000);
+  assert.equal(result.projected_long_funding_micro_usdc, -21_420_000);
+  assert.equal(result.projected_short_funding_micro_usdc, 84_000_000);
+  assert.equal(result.projected_gross_funding_micro_usdc, 62_580_000);
+  assert.equal(result.projected_trading_fee_micro_usdc, 8_080_000);
+  assert.equal(result.projected_slippage_micro_usdc, 4_040_000);
+  assert.equal(result.projected_net_value_micro_usdc, 44_660_000);
+
+  assert.throws(() => evaluateCarryOpportunity({
+    ...input,
+    long_contract: contract("hyperliquid", 1, {
+      quote_asset: "USDT",
+      funding_settlement_asset: "USDT",
+      fee_settlement_asset: "USDT",
+      asset_valuations: [cashflowValuation("USDT", {
+        credit_rate_e8: 98_000_000,
+        debit_rate_e8: 102_000_000,
+        bound_source_amount_micro: -1,
+      })],
+    }),
+  }), /valuation_amount_mismatch/);
 });
 
 test("prices collateral basis stress separately from the base risk buffer", () => {
@@ -1598,6 +1771,14 @@ test("value ledger reports realized net after every cost and deduplicates eviden
         entry_type: entryType,
         direction,
         amount_micro_usdc: amount,
+        ...(entryType === "funding" ? {
+          source_amount_micro: direction === "credit" ? amount : -amount,
+          source_amount_decimal: String((direction === "credit" ? amount : -amount) / 1_000_000),
+          source_amount_scale: 0,
+          source_asset: "USDC",
+          valued_at_ms: NOW + index + 1,
+          cashflow_valuation: cashflowValuation("USDC"),
+        } : {}),
         venue_id: index < 2 ? "hyperliquid" : null,
         leg_id: index < 2 ? "carry:leg:long" : null,
         occurred_at_ms: NOW + index + 1,
@@ -1817,6 +1998,12 @@ test("value ledger rejects a conflicting replay under the same entry id", () => 
       entry_type: "funding",
       direction: "credit",
       amount_micro_usdc: 10,
+      source_amount_micro: 10,
+      source_amount_decimal: "0.00001",
+      source_amount_scale: 5,
+      source_asset: "USDC",
+      valued_at_ms: NOW + 1,
+      cashflow_valuation: cashflowValuation("USDC"),
       venue_id: "hyperliquid",
       leg_id: "carry:leg:long",
       occurred_at_ms: NOW + 1,
@@ -1835,6 +2022,12 @@ test("value ledger rejects a conflicting replay under the same entry id", () => 
       entry_type: "funding",
       direction: "credit",
       amount_micro_usdc: 10,
+      source_amount_micro: 10,
+      source_amount_decimal: "0.00001",
+      source_amount_scale: 5,
+      source_asset: "USDC",
+      valued_at_ms: NOW + 1,
+      cashflow_valuation: cashflowValuation("USDC"),
       venue_id: "hyperliquid",
       leg_id: "carry:leg:long",
       occurred_at_ms: NOW + 1,
@@ -1854,6 +2047,12 @@ test("value ledger rejects a conflicting replay under the same entry id", () => 
       entry_type: "funding",
       direction: "credit",
       amount_micro_usdc: 11,
+      source_amount_micro: 11,
+      source_amount_decimal: "0.000011",
+      source_amount_scale: 6,
+      source_asset: "USDC",
+      valued_at_ms: NOW + 2,
+      cashflow_valuation: cashflowValuation("USDC"),
       venue_id: "hyperliquid",
       leg_id: "carry:leg:long",
       occurred_at_ms: NOW + 1,
@@ -1864,6 +2063,93 @@ test("value ledger rejects a conflicting replay under the same entry id", () => 
   assert.equal(conflicting.ok, false);
   assert.equal(conflicting.error, "carry_value_entry_replay_mismatch");
   assert.equal(conflicting.ledger.realized.funding_credit_micro_usdc, 10);
+});
+
+test("funding ledger binds native settlement value to fresh conservative conversion evidence", () => {
+  const newLedger = () => createCarryValueLedger({
+    version: 1,
+    position_id: "carry:position:valuation:0001",
+    modeled: {
+      gross_funding_micro_usdc: 10,
+      trading_cost_micro_usdc: 2,
+      capital_cost_micro_usdc: 1,
+      risk_buffer_micro_usdc: 1,
+    },
+    now_ms: NOW,
+  });
+  const valuation = cashflowValuation("USDT", {
+    bound_source_amount_micro: 1_000_000,
+    credit_rate_e8: 99_000_000,
+    debit_rate_e8: 101_000_000,
+  });
+  const entry = {
+    version: 1,
+    entry_id: "value:entry:valuation:1",
+    sequence: 1,
+    entry_type: "funding",
+    direction: "credit",
+    amount_micro_usdc: 990_000,
+    source_amount_micro: 1_000_000,
+    source_amount_decimal: "1.00000000",
+    source_amount_scale: 8,
+    source_asset: "USDT",
+    valued_at_ms: NOW + 1,
+    cashflow_valuation: valuation,
+    venue_id: "aster",
+    leg_id: "carry:leg:short",
+    occurred_at_ms: NOW + 1,
+    evidence_commitment: "value:evidence:valuation:1",
+  };
+  const credited = appendCarryValueLedgerEntry({ ledger: newLedger(), entry, now_ms: NOW + 1 });
+  assert.equal(credited.ok, true);
+  assert.equal(credited.ledger.entries[0].source_amount_micro, 1_000_000);
+  assert.equal(credited.ledger.entries[0].source_asset, "USDT");
+  assert.equal(credited.ledger.entries[0].cashflow_valuation.evidence_commitment, valuation.evidence_commitment);
+
+  const mismatch = appendCarryValueLedgerEntry({
+    ledger: newLedger(),
+    entry: { ...entry, amount_micro_usdc: 1_000_000 },
+    now_ms: NOW + 1,
+  });
+  assert.equal(mismatch.ok, false);
+  assert.equal(mismatch.error, "carry_value_funding_conversion_mismatch");
+
+  const missing = appendCarryValueLedgerEntry({
+    ledger: newLedger(),
+    entry: { ...entry, cashflow_valuation: undefined },
+    now_ms: NOW + 1,
+  });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.error, "cashflow_valuation_required");
+
+  const stale = appendCarryValueLedgerEntry({
+    ledger: newLedger(),
+    entry,
+    now_ms: NOW + 30_000,
+  });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.error, "carry_value_funding_valuation_stale");
+
+  const debited = appendCarryValueLedgerEntry({
+    ledger: newLedger(),
+    entry: {
+      ...entry,
+      entry_id: "value:entry:valuation:2",
+      direction: "debit",
+      amount_micro_usdc: 1_010_000,
+      source_amount_micro: -1_000_000,
+      source_amount_decimal: "-1.00000000",
+      cashflow_valuation: cashflowValuation("USDT", {
+        bound_source_amount_micro: -1_000_000,
+        credit_rate_e8: 99_000_000,
+        debit_rate_e8: 101_000_000,
+      }),
+      evidence_commitment: "value:evidence:valuation:2",
+    },
+    now_ms: NOW + 1,
+  });
+  assert.equal(debited.ok, true);
+  assert.equal(debited.ledger.realized.funding_debit_micro_usdc, 1_010_000);
 });
 
 test("rebates can only credit realized value", () => {
@@ -1975,6 +2261,14 @@ test("portfolio value report separates finalized after-cost proof from accruing 
         entry_type: entryType,
         direction,
         amount_micro_usdc: amount,
+        ...(entryType === "funding" ? {
+          source_amount_micro: direction === "credit" ? amount : -amount,
+          source_amount_decimal: "0.0002",
+          source_amount_scale: 4,
+          source_asset: "USDC",
+          valued_at_ms: NOW + index + 1,
+          cashflow_valuation: cashflowValuation("USDC"),
+        } : {}),
         venue_id: index % 2 === 0 ? "hyperliquid" : "lighter",
         leg_id: index % 2 === 0 ? "carry:leg:long" : "carry:leg:short",
         occurred_at_ms: NOW + index + 1,

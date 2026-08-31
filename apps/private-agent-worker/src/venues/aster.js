@@ -1,4 +1,5 @@
 import { privateKeyToAccount } from "viem/accounts";
+import { createAsterCashflowValuationReader } from "../execution/carry-stablecoin-conversion.js";
 import { asterLiquidationDistance } from "./liquidation-distance.js";
 
 const MAINNET_URL = "https://fapi.asterdex.com";
@@ -210,14 +211,62 @@ export async function readAsterFundingSettlements({
     fetchImpl,
     now,
   });
-  return (Array.isArray(rows) ? rows : []).map((row) => ({
-    venue_id: "aster",
-    asset: normalizedSymbol.replace(/USDT$/, ""),
-    occurred_at_ms: Number(row?.time),
-    amount_quote: String(row?.income ?? ""),
-    quote_asset: String(row?.asset || "USDT").toUpperCase(),
-    settlement_id: String(row?.tranId ?? `${row?.time}:${normalizedSymbol}`),
-  })).filter((row) => Number.isSafeInteger(row.occurred_at_ms) && /^-?\d+(?:\.\d+)?$/.test(row.amount_quote));
+  if (!Array.isArray(rows)) {
+    throw new AsterExecutionError("aster funding history response is invalid", 502, "connector_submit_failed");
+  }
+  const settlements = rows.map((row) => {
+    const amount = nativeSettlementAmount(row?.income);
+    const settlement = {
+      venue_id: "aster",
+      asset: normalizedSymbol.replace(/USDT$/, ""),
+      occurred_at_ms: Number(row?.time),
+      amount_quote: amount.decimal,
+      amount_quote_scale: amount.scale,
+      amount_quote_micro: amount.micro,
+      quote_asset: String(row?.asset || "USDT").toUpperCase(),
+      settlement_id: String(row?.tranId ?? `${row?.time}:${normalizedSymbol}`),
+    };
+    if (!Number.isSafeInteger(settlement.occurred_at_ms)
+      || settlement.occurred_at_ms <= 0
+      || settlement.settlement_id.length === 0) {
+      throw new AsterExecutionError("aster funding history row is invalid", 502, "connector_submit_failed");
+    }
+    return settlement;
+  });
+  if (settlements.length === 0) return [];
+  if (settlements.some((row) => row.quote_asset !== "USDT")) {
+    throw new AsterExecutionError("aster funding settlement asset is unsupported", 502, "connector_submit_failed");
+  }
+  const checkedAtMs = Number(now());
+  const readCashflowValuation = createAsterCashflowValuationReader({ fetchImpl, now });
+  return Promise.all(settlements.map(async (row) => ({
+    ...row,
+    cashflow_valuation: await readCashflowValuation({
+      source_asset: "USDT",
+      source_amount_micro: row.amount_quote_micro,
+      source_amount_decimal: row.amount_quote,
+      source_amount_scale: row.amount_quote_scale,
+      checked_at_ms: checkedAtMs,
+    }),
+  })));
+}
+
+function nativeSettlementAmount(value) {
+  const decimal = String(value ?? "").trim();
+  const match = /^(-?)(?:0|[1-9]\d*)(?:\.(\d+))?$/.exec(decimal);
+  if (!match) throw new AsterExecutionError("aster funding history row is invalid", 502, "connector_submit_failed");
+  const scale = match[2]?.length || 0;
+  const negative = match[1] === "-";
+  const unsigned = negative ? decimal.slice(1) : decimal;
+  const [whole, fraction = ""] = unsigned.split(".");
+  const padded = `${fraction}${"0".repeat(6)}`;
+  let micro = BigInt(whole) * 1_000_000n + BigInt(padded.slice(0, 6));
+  if (negative && /[1-9]/.test(fraction.slice(6))) micro += 1n;
+  if (negative) micro = -micro;
+  if (micro === 0n || micro > BigInt(Number.MAX_SAFE_INTEGER) || micro < BigInt(Number.MIN_SAFE_INTEGER)) {
+    throw new AsterExecutionError("aster funding history row is invalid", 502, "connector_submit_failed");
+  }
+  return { decimal, scale, micro: Number(micro) };
 }
 
 export async function submitAsterExecution({

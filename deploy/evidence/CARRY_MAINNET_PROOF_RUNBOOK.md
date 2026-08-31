@@ -27,7 +27,7 @@ Before any live proof, run the authenticated `carry_execution_no_submit_matrix` 
 7. Read both accounts after exit. Require zero exposure and zero open orders on each venue.
 8. Finalize modeled-versus-realized funding, fees, slippage, capital cost, PnL, and net value.
 9. Refresh and verify all six directed collateral routes without moving funds.
-10. Export every completed proof under `lifecycles[]` in `deploy/evidence/carry-mainnet-proof.json`, with the shared candidate and an `aggregate` summary.
+10. Save the shared candidate as JSON, save each completed worker material as JSON, then run `npm run assemble:carry-release-evidence -- --candidate <candidate.json> --lifecycle <first.json> --lifecycle <second.json>` from `apps/web`. The command verifies every lifecycle before atomically writing `deploy/evidence/carry-mainnet-proof.json`.
 11. Run `npm run verify:carry-release-evidence` from `apps/web`. The verifier must independently recover the owner signature, check every lifecycle is flat with zero orders, recompute each finalized after-cost net value, require two unique positions and two distinct venue pairs, and require the aggregate realized net to equal the exact lifecycle sum.
 
 Funding, transfers, withdrawals, leverage changes, and credential rotation remain owner-only. A failed evidence check invalidates the proof.

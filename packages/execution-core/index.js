@@ -22,6 +22,7 @@ export {
   advanceCarryPosition,
   calculateMarginRunway,
   canonicalCarryCommitmentJson,
+  cashflowValuationEvidenceMessage,
   carryCreationOpportunityAuthenticationMessage,
   carryPrivatePrimeWorkerAuthenticationMessage,
   carryCollateralReviewMessage,
@@ -31,6 +32,7 @@ export {
   compileCarryPortfolioCapitalPlan,
   compileCarryPortfolioValueReport,
   compileCarryMigrationProposal,
+  convertSignedCashflowToMicroUsdc,
   createCarryPosition,
   createCarryValueLedger,
   evaluateCarryOpportunity,
@@ -43,6 +45,7 @@ export {
   normalizeCarryCollateralReviewPayload,
   normalizeCarryCollateralReviewAuthorization,
   normalizeCarryLifecycleValueAttribution,
+  normalizeCashflowValuation,
   normalizePerpContractSpec,
 } from "./carry.js";
 export {

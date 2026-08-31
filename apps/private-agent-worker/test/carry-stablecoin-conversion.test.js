@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createAsterStablecoinConversionQuoteReader } from "../src/execution/carry-stablecoin-conversion.js";
+import {
+  createAsterCashflowValuationReader,
+  createAsterStablecoinConversionQuoteReader,
+} from "../src/execution/carry-stablecoin-conversion.js";
 
 const NOW = 1_800_000_000_000;
 
@@ -65,6 +68,53 @@ test("fails closed for stale books, stale policy, and unsupported pairs", async 
     source_collateral_asset: "DAI",
     destination_collateral_asset: "USDT",
   })), /carry_conversion_pair_unsupported/);
+});
+
+test("binds conservative USDT cashflow valuation to fresh Aster bid and ask evidence", async () => {
+  const readValuation = createAsterCashflowValuationReader(dependencies({
+    book: {
+      symbol: "USDCUSDT",
+      T: NOW,
+      bids: [["0.9998", "100"]],
+      asks: [["1.000200001", "100"]],
+    },
+  }));
+  const valuation = await readValuation({
+    source_asset: "USDT",
+    source_amount_micro: 1_000_000,
+    source_amount_decimal: "1.0000009",
+    source_amount_scale: 7,
+    checked_at_ms: NOW,
+  });
+  assert.equal(valuation.bound_source_amount_micro, 1_000_000);
+  assert.equal(valuation.credit_rate_e8, 99_980_000);
+  assert.equal(valuation.debit_rate_e8, 100_020_100);
+  assert.equal(valuation.observed_at_ms, NOW);
+  assert.equal(valuation.expires_at_ms, NOW + 30_000);
+  assert.equal(valuation.evidence_source, "aster:USDCUSDT:book:v1");
+  assert.equal(valuation.evidence_payload.source_amount_decimal, "1.0000009");
+  assert.equal(valuation.evidence_payload.asks[0].price_e8, 100_020_001);
+  assert.match(valuation.evidence_commitment, /^carry:cashflow-valuation:evidence:[0-9a-f]{64}$/);
+});
+
+test("Aster cashflow valuation fails closed for stale or unbound book evidence", async () => {
+  const stale = createAsterCashflowValuationReader(dependencies({
+    book: {
+      symbol: "USDCUSDT",
+      T: NOW - 5_001,
+      bids: [["0.9998", "100"]],
+      asks: [["1.0002", "100"]],
+    },
+  }));
+  await assert.rejects(
+    () => stale({ source_asset: "USDT", checked_at_ms: NOW }),
+    /cashflow_valuation_book_stale/,
+  );
+  const reader = createAsterCashflowValuationReader(dependencies());
+  await assert.rejects(
+    () => reader({ source_asset: "USD", checked_at_ms: NOW }),
+    /cashflow_valuation_pair_unsupported/,
+  );
 });
 
 function dependencies({ book } = {}) {

@@ -4,6 +4,10 @@ import {
   SUPPORTED_EXECUTION_VENUES,
   venueAdapterCapability,
 } from "@ghola/execution-core";
+import {
+  createAsterCashflowValuationReader,
+  createCoinbaseUsdCashflowValuationReader,
+} from "./carry-stablecoin-conversion.js";
 
 const HOUR_MS = 3_600_000;
 const DEFAULT_MAX_AGE_MS = 30_000;
@@ -88,12 +92,13 @@ export async function fetchPerpShadowVenue({
         body: JSON.stringify({ type: "l2Book", coin }),
       }, timeoutMs),
     ])));
-    return selectAssets(parseHyperliquidShadow({
+    const observedAtMs = completedObservationTime(nowMs, clock);
+    return bindShadowValuations(selectAssets(parseHyperliquidShadow({
       body,
       books,
-      now_ms: completedObservationTime(nowMs, clock),
+      now_ms: observedAtMs,
       max_age_ms: maxAgeMs,
-    }), assets);
+    }), assets), { fetchImpl, checkedAtMs: observedAtMs });
   }
   if (adapterId === "lighter_shadow_v1") {
     const details = await jsonRequest(
@@ -109,13 +114,14 @@ export async function fetchPerpShadowVenue({
       web_socket_ctor: WebSocketCtor,
       timeout_ms: timeoutMs,
     });
-    return selectAssets(parseLighterShadow({
+    const observedAtMs = completedObservationTime(nowMs, clock);
+    return bindShadowValuations(selectAssets(parseLighterShadow({
       details,
       market_stats: observation.market_stats,
       order_books: observation.order_books,
-      now_ms: completedObservationTime(nowMs, clock),
+      now_ms: observedAtMs,
       max_age_ms: maxAgeMs,
-    }), assets);
+    }), assets), { fetchImpl, checkedAtMs: observedAtMs });
   }
   if (adapterId === "aster_shadow_v1") {
     const [exchangeInfo, premiums, books, fundingInfo] = await Promise.all([
@@ -137,18 +143,19 @@ export async function fetchPerpShadowVenue({
         timeoutMs,
       ),
     ])));
-    return selectPreferredAssetSnapshots(
+    const observedAtMs = completedObservationTime(nowMs, clock);
+    return bindShadowValuations(selectPreferredAssetSnapshots(
       selectAssets(parseAsterShadow({
         exchange_info: exchangeInfo,
         premium_index: premiums,
         book_tickers: books,
         funding_info: fundingInfo,
         depth_books: depthBooks,
-        now_ms: completedObservationTime(nowMs, clock),
+        now_ms: observedAtMs,
         max_age_ms: maxAgeMs,
       }), assets),
       ["USDT", "USDC", "USD", "USD1", "U"],
-    );
+    ), { fetchImpl, checkedAtMs: observedAtMs });
   }
   if (adapterId === "edgex_shadow_v1") {
     const baseUrl = "https://edgex-prod-v2.edgex.exchange";
@@ -208,12 +215,13 @@ export async function fetchPerpShadowVenue({
       data: observations.map((observation) => observation.row),
       responseTime: Math.max(0, ...observations.map((observation) => observation.responseTime)),
     };
-    return selectAssets(parseEdgeXShadow({
+    const observedAtMs = completedObservationTime(nowMs, clock);
+    return bindShadowValuations(selectAssets(parseEdgeXShadow({
       funding,
       contracts: selectedContracts,
-      now_ms: completedObservationTime(nowMs, clock),
+      now_ms: observedAtMs,
       max_age_ms: maxAgeMs,
-    }), assets);
+    }), assets), { fetchImpl, checkedAtMs: observedAtMs });
   }
   if (adapterId === "dydx_shadow_v1") {
     const chainRests = dydxChainRestUrls(marketMetadata);
@@ -237,7 +245,8 @@ export async function fetchPerpShadowVenue({
     const books = Object.fromEntries(bookObservations.map(([ticker, observation]) => [ticker, observation.body]));
     const orderbookObservedAtMsByMarket = Object.fromEntries(bookObservations
       .map(([ticker, observation]) => [ticker, observation.observed_at_ms]));
-    return selectAssets(parseDydxShadow({
+    const observedAtMs = completedObservationTime(nowMs, clock);
+    return bindShadowValuations(selectAssets(parseDydxShadow({
       markets,
       books,
       fee_params: feeParams,
@@ -246,9 +255,9 @@ export async function fetchPerpShadowVenue({
         funding: marketObservation.observed_at_ms,
       },
       orderbook_observed_at_ms_by_market: orderbookObservedAtMsByMarket,
-      now_ms: completedObservationTime(nowMs, clock),
+      now_ms: observedAtMs,
       max_age_ms: maxAgeMs,
-    }), assets);
+    }), assets), { fetchImpl, checkedAtMs: observedAtMs });
   }
   throw new Error("shadow_adapter_unimplemented");
 }
@@ -274,6 +283,8 @@ export function parseHyperliquidShadow({ body, books = {}, now_ms: nowMs, max_ag
       asset,
       quote_asset: hyperliquidQuoteAsset(asset),
       collateral_asset: "USDC",
+      funding_settlement_asset: "USDC",
+      fee_settlement_asset: "USDC",
       mark_price_e8: priceE8(context.markPx),
       index_price_e8: priceE8(context.oraclePx),
       best_bid_e8: bestBookPrice(levels[0], "bid"),
@@ -350,6 +361,8 @@ export function parseLighterShadow({ details, funding, market_stats: marketStats
       asset,
       quote_asset: "USD",
       collateral_asset: "USDC",
+      funding_settlement_asset: "USDC",
+      fee_settlement_asset: "USDC",
       mark_price_e8: priceE8(stats.mark_price ?? row.mark_price ?? row.last_trade_price ?? row.market_price),
       index_price_e8: priceE8(stats.index_price ?? row.index_price),
       best_bid_e8: priceE8(stats.best_bid_price ?? row.best_bid ?? row.bid_price ?? book.bids?.[0]?.price),
@@ -416,6 +429,8 @@ export function parseAsterShadow({ exchange_info: exchangeInfo, premium_index: p
       asset,
       quote_asset: assetName(row.quoteAsset || "USDT"),
       collateral_asset: assetName(row.marginAsset || row.quoteAsset || "USDT"),
+      funding_settlement_asset: assetName(row.marginAsset || row.quoteAsset || "USDT"),
+      fee_settlement_asset: assetName(row.marginAsset || row.quoteAsset || "USDT"),
       mark_price_e8: priceE8(premium.markPrice),
       index_price_e8: priceE8(premium.indexPrice),
       best_bid_e8: priceE8(book.bidPrice),
@@ -488,6 +503,8 @@ export function parseEdgeXShadow({ funding, contracts = [], now_ms: nowMs, max_a
       asset,
       quote_asset: assetName(contract.quoteAsset || "USD"),
       collateral_asset: assetName(contract.settleAsset || contract.quoteAsset || "USDC"),
+      funding_settlement_asset: assetName(contract.settleAsset || "USDC"),
+      fee_settlement_asset: assetName(contract.settleAsset || "USDC"),
       mark_price_e8: mark,
       index_price_e8: priceE8(row.indexPrice),
       best_bid_e8: bid,
@@ -561,6 +578,8 @@ export function parseDydxShadow({
       asset,
       quote_asset: assetName(quote),
       collateral_asset: "USDC",
+      funding_settlement_asset: "USDC",
+      fee_settlement_asset: "USDC",
       mark_price_e8: midpoint(bid, ask) || priceE8(row.oraclePrice),
       index_price_e8: priceE8(row.oraclePrice),
       best_bid_e8: bid,
@@ -621,6 +640,8 @@ export function parseVariationalShadow({ stats, now_ms: nowMs, max_age_ms: maxAg
       asset: assetName(row.ticker),
       quote_asset: "USDC",
       collateral_asset: "USDC",
+      funding_settlement_asset: "USDC",
+      fee_settlement_asset: "USDC",
       mark_price_e8: priceE8(row.mark_price),
       index_price_e8: null,
       best_bid_e8: priceE8(quote.bid),
@@ -680,6 +701,9 @@ function shadowSnapshot(value) {
     market: `${value.asset}-USD`,
     quote_asset: value.quote_asset,
     collateral_asset: value.collateral_asset,
+    funding_settlement_asset: value.funding_settlement_asset,
+    fee_settlement_asset: value.fee_settlement_asset,
+    asset_valuations: Object.freeze([...(value.asset_valuations || [])]),
     contract_type: "linear_perp",
     mark_price_e8: value.mark_price_e8,
     index_price_e8: value.index_price_e8,
@@ -722,6 +746,37 @@ function shadowSnapshot(value) {
     ])]),
     executable: false,
   });
+}
+
+async function bindShadowValuations(snapshots, { fetchImpl, checkedAtMs }) {
+  const requiredAssets = [...new Set(snapshots.flatMap((snapshot) => [
+    snapshot.quote_asset,
+    snapshot.funding_settlement_asset,
+    snapshot.fee_settlement_asset,
+  ]).filter((asset) => asset !== "USDC"))];
+  const valuations = new Map(await Promise.all(requiredAssets.map(async (sourceAsset) => {
+    const read = sourceAsset === "USDT"
+      ? createAsterCashflowValuationReader({ fetchImpl, now: () => checkedAtMs })
+      : sourceAsset === "USD"
+        ? createCoinbaseUsdCashflowValuationReader({ fetchImpl, now: () => checkedAtMs })
+        : null;
+    if (!read) throw new Error(`shadow_cashflow_valuation_asset_unsupported:${sourceAsset}`);
+    return [sourceAsset, await read({ source_asset: sourceAsset, checked_at_ms: checkedAtMs })];
+  })));
+  return Object.freeze(snapshots.map((snapshot) => {
+    const required = [...new Set([
+      snapshot.quote_asset,
+      snapshot.funding_settlement_asset,
+      snapshot.fee_settlement_asset,
+    ])].filter((asset) => asset !== "USDC");
+    const bound = required.map((asset) => valuations.get(asset));
+    if (bound.some((valuation) => !valuation
+      || valuation.observed_at_ms > snapshot.as_of_ms + 5_000
+      || valuation.expires_at_ms <= snapshot.as_of_ms)) {
+      throw new Error(`shadow_cashflow_valuation_stale:${snapshot.venue_id}:${snapshot.asset}`);
+    }
+    return Object.freeze({ ...snapshot, asset_valuations: Object.freeze(bound) });
+  }));
 }
 
 async function lighterPublicWebSocketSnapshot({

@@ -46,6 +46,36 @@ export declare function aggregatePortfolioAccounting(input: Record<string, unkno
 export declare function reconcilePortfolioAccounting(input: Record<string, unknown>): Readonly<Record<string, unknown>>;
 export declare function buildExecutionQualityReceipt(input: unknown): Readonly<Record<string, unknown>>;
 export declare function aggregateExecutionQuality(input: unknown[]): Readonly<Record<string, unknown>>;
+export declare function cashflowValuationEvidenceMessage(input: {
+  source_asset?: unknown;
+  valuation_asset?: unknown;
+  bound_source_amount_micro?: unknown;
+  credit_rate_e8?: unknown;
+  debit_rate_e8?: unknown;
+  observed_at_ms?: unknown;
+  expires_at_ms?: unknown;
+  evidence_source?: unknown;
+}): string;
+export declare function normalizeCashflowValuation(input: unknown): Readonly<{
+  version: 1;
+  source_asset: "USD" | "USDC" | "USDT";
+  valuation_asset: "USDC";
+  verified: true;
+  conversion_required: boolean;
+  bound_source_amount_micro: number | null;
+  credit_rate_e8: number;
+  debit_rate_e8: number;
+  observed_at_ms: number;
+  expires_at_ms: number;
+  evidence_source: string;
+  evidence_message: string;
+  evidence_commitment: string;
+  evidence_payload: Readonly<Record<string, unknown>> | null;
+}>;
+export declare function convertSignedCashflowToMicroUsdc(input: {
+  amount_micro: number;
+  valuation: unknown;
+}): number;
 export declare function normalizePerpContractSpec(input: unknown): Readonly<Record<string, unknown>>;
 export declare function canonicalCarryCommitmentJson(input: unknown): string;
 export declare function carryPrivatePrimeWorkerAuthenticationMessage(input: {

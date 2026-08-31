@@ -789,7 +789,7 @@ test("bounds exact-order reconciliation when an ambiguous Aster submit cannot be
 });
 
 test("reads signed Aster funding settlements without submitting", async () => {
-  let observed;
+  const observed = [];
   const rows = await readAsterFundingSettlements({
     credential: credential(),
     symbol: "BTC",
@@ -797,14 +797,50 @@ test("reads signed Aster funding settlements without submitting", async () => {
     end_time_ms: 1_800_003_600_000,
     now: () => 1_800_003_600_000,
     fetchImpl: async (url, init) => {
-      observed = { url: new URL(url), method: init.method };
+      const parsed = new URL(url);
+      observed.push({ url: parsed, method: init.method });
+      if (parsed.pathname === "/api/v3/depth") return jsonResponse({
+        symbol: "USDCUSDT",
+        T: 1_800_003_600_000,
+        bids: [["0.9998", "100"]],
+        asks: [["1.0002", "100"]],
+      });
       return jsonResponse([{ symbol: "BTCUSDT", incomeType: "FUNDING_FEE", income: "-0.0125", asset: "USDT", time: 1_800_003_600_000, tranId: 42 }]);
     },
   });
-  assert.equal(observed.method, "GET");
-  assert.equal(observed.url.pathname, "/fapi/v1/income");
-  assert.equal(observed.url.searchParams.get("incomeType"), "FUNDING_FEE");
-  assert.deepEqual(rows, [{ venue_id: "aster", asset: "BTC", occurred_at_ms: 1_800_003_600_000, amount_quote: "-0.0125", quote_asset: "USDT", settlement_id: "42" }]);
+  assert.equal(observed[0].method, "GET");
+  assert.equal(observed[0].url.pathname, "/fapi/v1/income");
+  assert.equal(observed[0].url.searchParams.get("incomeType"), "FUNDING_FEE");
+  assert.equal(observed[1].url.pathname, "/api/v3/depth");
+  const [{ cashflow_valuation: valuation, ...settlement }] = rows;
+  assert.deepEqual(settlement, {
+    venue_id: "aster",
+    asset: "BTC",
+    occurred_at_ms: 1_800_003_600_000,
+    amount_quote: "-0.0125",
+    amount_quote_scale: 4,
+    amount_quote_micro: -12_500,
+    quote_asset: "USDT",
+    settlement_id: "42",
+  });
+  assert.equal(valuation.source_asset, "USDT");
+  assert.equal(valuation.valuation_asset, "USDC");
+  assert.equal(valuation.bound_source_amount_micro, -12_500);
+  assert.equal(valuation.credit_rate_e8, 99_976_000);
+  assert.equal(valuation.debit_rate_e8, 100_024_000);
+  assert.equal(valuation.evidence_payload.source_amount_decimal, "-0.0125");
+  assert.match(valuation.evidence_commitment, /^carry:cashflow-valuation:evidence:[0-9a-f]{64}$/);
+});
+
+test("rejects a malformed Aster funding history response", async () => {
+  await assert.rejects(readAsterFundingSettlements({
+    credential: credential(),
+    symbol: "BTC",
+    start_time_ms: 1_800_000_000_000,
+    end_time_ms: 1_800_003_600_000,
+    now: () => 1_800_003_600_000,
+    fetchImpl: async () => jsonResponse({ rows: [] }),
+  }), (error) => error.code === "connector_submit_failed");
 });
 
 test("reconciles by the exact client order id", async () => {

@@ -3,14 +3,18 @@ import {
   CARRY_EXECUTION_VENUES,
   advanceCarryPosition,
   appendCarryValueLedgerEntry,
+  canonicalCarryCommitmentJson,
+  cashflowValuationEvidenceMessage,
   carryCollateralReviewMessage,
   compileCarryCapitalActionPlan,
   compileCarryCollateralReview,
   compileCarryPortfolioCapitalPlan,
   compileCarryPortfolioValueReport,
+  convertSignedCashflowToMicroUsdc,
   createCarryValueLedger,
   finalizeCarryValueLedger,
   normalizeCarryCollateralReviewAuthorization,
+  normalizeCashflowValuation,
   venueAdapterCapability,
 } from "@ghola/execution-core";
 import { hashMessage, recoverMessageAddress } from "viem";
@@ -901,7 +905,14 @@ export async function compileStoredCarryPortfolioValueReport({
         ? { status: "ready", plan: capital.plan }
         : { status: "incomplete", missing_position_ids: capital.missing_position_ids },
     });
-    return { ok: true, report };
+    return {
+      ok: true,
+      report: Object.freeze({
+        ...report,
+        valuation_asset: "USDC",
+        funding_valuation_basis: "usdc_equivalent_at_ledger_ingestion",
+      }),
+    };
   } catch (error) {
     return denied(safeError(error));
   }
@@ -1254,7 +1265,7 @@ export async function observeStoredCarryPosition({
   return { ...advanced, record: funding.record || advanced.record, observation_ok: true, observation, funding: funding.summary };
 }
 
-export async function collectStoredCarryFundingEvidence({ state, ownerCommitment, positionId, venueAccess, recipient, readFundingSettlements, nowMs, final = false }) {
+export async function collectStoredCarryFundingEvidence({ state, ownerCommitment, positionId, venueAccess, recipient, readFundingSettlements, nowMs, final = false, clock = Date.now }) {
   const initial = await state.getCarryPositionRecord(positionId);
   if (!initial) return { record: null, summary: { status: "position_missing" } };
   const venues = [initial.position.long_venue_id, initial.position.short_venue_id];
@@ -1269,6 +1280,7 @@ export async function collectStoredCarryFundingEvidence({ state, ownerCommitment
     recipient,
     state,
     readFundingSettlements,
+    clock,
   })));
   for (const read of venueReads) {
     if (!read.ok) {
@@ -1284,8 +1296,14 @@ export async function collectStoredCarryFundingEvidence({ state, ownerCommitment
         venueId: read.venue_id,
         legId: carryPositionLegId(initial.position, read.venue_id),
         row: entry.row,
-        amountMicro: entry.amount_micro_usdc,
-        nowMs,
+        sourceAmountMicro: entry.source_amount_micro,
+        sourceAsset: entry.source_asset,
+        cashflowValuation: entry.cashflow_valuation,
+        amountMicroUsdc: entry.amount_micro_usdc,
+        sourceAmountDecimal: entry.source_amount_decimal,
+        sourceAmountScale: entry.source_amount_scale,
+        settlementCutoffMs: nowMs,
+        clock,
       });
       if (!appended) {
         persisted = false;
@@ -1316,6 +1334,8 @@ export async function collectStoredCarryFundingEvidence({ state, ownerCommitment
           cursor_ms_by_venue: cursors,
           venue_status: venueStatus,
           checked_at_ms: nowMs,
+          settlement_cutoff_ms: nowMs,
+          valuation_basis: "usdc_equivalent_at_ledger_ingestion",
         },
         costs_complete: false,
       },
@@ -1328,7 +1348,7 @@ export async function collectStoredCarryFundingEvidence({ state, ownerCommitment
   };
 }
 
-async function readVenueFundingSettlements({ venueId, asset, access, startMs, endMs, recipient, state, readFundingSettlements }) {
+async function readVenueFundingSettlements({ venueId, asset, access, startMs, endMs, recipient, state, readFundingSettlements, clock }) {
   let cursor = startMs;
   const entries = [];
   try {
@@ -1345,18 +1365,43 @@ async function readVenueFundingSettlements({ venueId, asset, access, startMs, en
         recipient,
         state,
       });
-      for (const row of Array.isArray(rows) ? rows : []) {
-        const amountMicro = signedQuoteMicro(row.amount_quote);
+      if (!Array.isArray(rows)) throw new Error("funding_settlement_history_invalid");
+      for (const row of rows) {
+        const sourceAmount = nativeFundingAmount(row.amount_quote);
+        const sourceAmountMicro = sourceAmount?.micro ?? null;
         const quoteAsset = String(row.quote_asset || "").toUpperCase();
         const occurredAt = Number(row.occurred_at_ms);
         const settlementId = String(row.settlement_id || "").trim();
-        if (amountMicro === null
+        if (sourceAmountMicro === null
+          || row.venue_id !== venueId
+          || String(row.asset || "").toUpperCase() !== asset
           || settlementId.length === 0
           || !new Set(["USD", "USDC", "USDT"]).has(quoteAsset)
           || !Number.isSafeInteger(occurredAt)
           || occurredAt < cursor
           || occurredAt > pageEnd) throw new Error("funding_settlement_evidence_invalid");
-        entries.push({ row, settlement_id: settlementId, amount_micro_usdc: amountMicro });
+        const cashflowValuation = fundingCashflowValuation({
+          quoteAsset,
+          valuation: row.cashflow_valuation,
+          checkedAtMs: Math.max(endMs, freshTime(clock)),
+          sourceAmountMicro,
+          sourceAmountDecimal: sourceAmount.decimal,
+          sourceAmountScale: sourceAmount.scale,
+        });
+        const amountMicroUsdc = convertSignedCashflowToMicroUsdc({
+          amount_micro: sourceAmountMicro,
+          valuation: cashflowValuation,
+        });
+        entries.push({
+          row,
+          settlement_id: settlementId,
+          source_amount_micro: sourceAmountMicro,
+          source_amount_decimal: sourceAmount.decimal,
+          source_amount_scale: sourceAmount.scale,
+          source_asset: quoteAsset,
+          cashflow_valuation: cashflowValuation,
+          amount_micro_usdc: amountMicroUsdc,
+        });
       }
       cursor = pageEnd;
     }
@@ -1378,35 +1423,141 @@ async function readVenueFundingSettlements({ venueId, asset, access, startMs, en
   }
 }
 
-async function appendFundingEntryWithRetry({ state, ownerCommitment, positionId, venueId, legId, row, amountMicro, nowMs }) {
+async function appendFundingEntryWithRetry({
+  state,
+  ownerCommitment,
+  positionId,
+  venueId,
+  legId,
+  row,
+  sourceAmountMicro,
+  sourceAsset,
+  cashflowValuation,
+  amountMicroUsdc,
+  sourceAmountDecimal,
+  sourceAmountScale,
+  settlementCutoffMs,
+  clock,
+}) {
+  const appendNowMs = Math.max(settlementCutoffMs, freshTime(clock));
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const current = await state.getCarryPositionRecord(positionId);
     if (!current) return false;
     const settlementKey = String(row.settlement_id || "").trim();
     const settlementId = digest(`${venueId}:${settlementKey}`);
-    const evidenceId = digest(`${venueId}:${settlementKey}:${row.occurred_at_ms}:${amountMicro}:${String(row.quote_asset || "").toUpperCase()}`);
+    const entryId = `carry:value:funding:${settlementId.slice(0, 32)}`;
+    const existing = current.value_ledger.entries.find((entry) => entry.entry_id === entryId);
+    if (existing) {
+      return existing.venue_id === venueId
+        && existing.leg_id === legId
+        && existing.occurred_at_ms === Number(row.occurred_at_ms)
+        && existing.source_amount_micro === sourceAmountMicro
+        && existing.source_amount_decimal === sourceAmountDecimal
+        && existing.source_amount_scale === sourceAmountScale
+        && existing.source_asset === sourceAsset;
+    }
+    const evidenceId = digest(JSON.stringify({
+      venue_id: venueId,
+      settlement_id: settlementKey,
+      occurred_at_ms: Number(row.occurred_at_ms),
+      source_amount_micro: sourceAmountMicro,
+      source_amount_decimal: sourceAmountDecimal,
+      source_amount_scale: sourceAmountScale,
+      source_asset: sourceAsset,
+      amount_micro_usdc: amountMicroUsdc,
+      valuation_evidence_message: cashflowValuation.evidence_message,
+      valuation_evidence_commitment: cashflowValuation.evidence_commitment,
+    }));
     const result = await appendStoredCarryValueEntry({
       state,
       position_id: positionId,
       owner_commitment: ownerCommitment,
       entry: {
         version: 1,
-        entry_id: `carry:value:funding:${settlementId.slice(0, 32)}`,
+        entry_id: entryId,
         sequence: current.value_ledger.last_sequence + 1,
         entry_type: "funding",
-        direction: amountMicro < 0 ? "debit" : "credit",
-        amount_micro_usdc: Math.abs(amountMicro),
+        direction: sourceAmountMicro < 0 ? "debit" : "credit",
+        amount_micro_usdc: Math.abs(amountMicroUsdc),
+        source_amount_micro: sourceAmountMicro,
+        source_amount_decimal: sourceAmountDecimal,
+        source_amount_scale: sourceAmountScale,
+        source_asset: sourceAsset,
+        valued_at_ms: appendNowMs,
+        cashflow_valuation: cashflowValuation,
         venue_id: venueId,
         leg_id: legId,
         occurred_at_ms: Number(row.occurred_at_ms),
         evidence_commitment: `carry:value:funding:evidence:${evidenceId.slice(0, 32)}`,
       },
-      now_ms: nowMs,
+      now_ms: appendNowMs,
     });
     if (result.ok) return true;
     if (result.error !== "carry_record_version_conflict") return false;
   }
   return false;
+}
+
+function fundingCashflowValuation({ quoteAsset, valuation, checkedAtMs, sourceAmountMicro, sourceAmountDecimal, sourceAmountScale }) {
+  const raw = quoteAsset === "USDC"
+    ? usdcFundingIdentityValuation(checkedAtMs)
+    : valuation;
+  if (!raw) throw new Error("funding_cashflow_valuation_required");
+  if (quoteAsset !== "USDC") verifyFundingValuationEvidence(raw, {
+    sourceAmountMicro,
+    sourceAmountDecimal,
+    sourceAmountScale,
+  });
+  const normalized = normalizeCashflowValuation(raw);
+  if (normalized.source_asset !== quoteAsset) {
+    throw new Error("funding_cashflow_valuation_asset_mismatch");
+  }
+  if (normalized.observed_at_ms > checkedAtMs + 5_000
+    || normalized.expires_at_ms <= checkedAtMs) {
+    throw new Error("funding_cashflow_valuation_stale");
+  }
+  if (quoteAsset !== "USDC" && normalized.bound_source_amount_micro !== sourceAmountMicro) {
+    throw new Error("funding_cashflow_valuation_amount_mismatch");
+  }
+  return normalized;
+}
+
+function verifyFundingValuationEvidence(raw, { sourceAmountMicro, sourceAmountDecimal, sourceAmountScale }) {
+  const payload = raw?.evidence_payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)
+    || payload.source_amount_micro !== sourceAmountMicro
+    || payload.source_amount_decimal !== sourceAmountDecimal
+    || payload.source_amount_scale !== sourceAmountScale) {
+    throw new Error("funding_cashflow_valuation_evidence_unbound");
+  }
+  const expected = `carry:cashflow-valuation:evidence:${createHash("sha256")
+    .update(canonicalCarryCommitmentJson({
+      evidence_message: raw.evidence_message,
+      evidence_payload: payload,
+    }))
+    .digest("hex")}`;
+  if (raw.evidence_commitment !== expected) {
+    throw new Error("funding_cashflow_valuation_evidence_tampered");
+  }
+}
+
+function usdcFundingIdentityValuation(observedAtMs) {
+  const valuation = {
+    version: 1,
+    source_asset: "USDC",
+    valuation_asset: "USDC",
+    verified: true,
+    credit_rate_e8: 100_000_000,
+    debit_rate_e8: 100_000_000,
+    observed_at_ms: observedAtMs,
+    expires_at_ms: Math.min(Number.MAX_SAFE_INTEGER, observedAtMs + 300_000),
+    evidence_source: "identity:usdc:v1",
+    evidence_commitment: `carry:cashflow-valuation:evidence:${"0".repeat(64)}`,
+  };
+  return {
+    ...valuation,
+    evidence_message: cashflowValuationEvidenceMessage(valuation),
+  };
 }
 
 export function carryPositionLegId(position, venueId) {
@@ -1817,16 +1968,26 @@ function safeError(error) {
   return /^[a-z0-9_:-]{3,120}$/.test(value) ? value : "carry_monitor_unavailable";
 }
 
-function signedQuoteMicro(value) {
+function nativeFundingAmount(value) {
   const text = String(value ?? "").trim();
   const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(text);
   if (!match) return null;
   const fraction = String(match[3] || "").padEnd(6, "0");
   let amount = BigInt(match[2]) * 1_000_000n + BigInt(fraction.slice(0, 6) || "0");
-  if (fraction[6] >= "5") amount += 1n;
+  if (match[1] === "-" && /[1-9]/.test(fraction.slice(6))) amount += 1n;
   if (match[1] === "-") amount = -amount;
   if (amount > BigInt(Number.MAX_SAFE_INTEGER) || amount < BigInt(Number.MIN_SAFE_INTEGER)) return null;
-  return Number(amount);
+  return {
+    decimal: text,
+    scale: match[3]?.length || 0,
+    micro: Number(amount),
+  };
+}
+
+function freshTime(clock) {
+  const value = Number(typeof clock === "function" ? clock() : Date.now());
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error("funding_valuation_clock_invalid");
+  return value;
 }
 
 function boundedMs(value, minimum, maximum, fallback) {

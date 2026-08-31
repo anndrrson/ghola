@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { canonicalCarryCommitmentJson, cashflowValuationEvidenceMessage } from "@ghola/execution-core";
 import {
   advanceStoredCarryPosition,
   appendStoredCarryValueEntry,
@@ -10,6 +12,7 @@ import {
   compileStoredCarryCollateralReview,
   compileStoredCarryPortfolioCapitalPlan,
   compileStoredCarryPortfolioValueReport,
+  collectStoredCarryFundingEvidence,
   createStoredCarryPosition,
   finalizeStoredCarryValueLedger,
   observeStoredCarryPosition,
@@ -32,6 +35,60 @@ import {
 const NOW = 1_800_000_000_000;
 const OWNER = "owner:commitment:0001";
 const ROUTE_ENV = { PRIVATE_AGENT_IMAGE_DIGEST: `sha256:${"a".repeat(64)}` };
+
+function cashflowValuation(sourceAsset, observedAtMs, overrides = {}) {
+  const valuation = {
+    version: 1,
+    source_asset: sourceAsset,
+    valuation_asset: "USDC",
+    verified: true,
+    credit_rate_e8: 100_000_000,
+    debit_rate_e8: 100_000_000,
+    observed_at_ms: observedAtMs,
+    expires_at_ms: observedAtMs + 300_000,
+    evidence_source: sourceAsset === "USDC" ? "identity:usdc:v1" : "test:stablecoin-book:v1",
+    evidence_commitment: `carry:cashflow-valuation:evidence:${(sourceAsset === "USDC" ? "0" : "a").repeat(64)}`,
+    ...overrides,
+  };
+  return {
+    ...valuation,
+    evidence_message: cashflowValuationEvidenceMessage(valuation),
+  };
+}
+
+function boundCashflowValuation({ decimal, micro, observedAtMs, creditRateE8, debitRateE8 }) {
+  const scale = decimal.split(".")[1]?.length || 0;
+  const valuation = {
+    version: 1,
+    source_asset: "USDT",
+    valuation_asset: "USDC",
+    verified: true,
+    bound_source_amount_micro: micro,
+    credit_rate_e8: creditRateE8,
+    debit_rate_e8: debitRateE8,
+    observed_at_ms: observedAtMs,
+    expires_at_ms: observedAtMs + 300_000,
+    evidence_source: "test:stablecoin-book:v1",
+  };
+  const evidenceMessage = cashflowValuationEvidenceMessage(valuation);
+  const evidencePayload = {
+    venue_id: "test",
+    market: "USDCUSDT",
+    source_amount_micro: micro,
+    source_amount_decimal: decimal,
+    source_amount_scale: scale,
+    bids: [{ price_e8: 99_000_000, size_micro: 10_000_000 }],
+    asks: [{ price_e8: 101_000_000, size_micro: 10_000_000 }],
+  };
+  return {
+    ...valuation,
+    evidence_message: evidenceMessage,
+    evidence_payload: evidencePayload,
+    evidence_commitment: `carry:cashflow-valuation:evidence:${createHash("sha256")
+      .update(canonicalCarryCommitmentJson({ evidence_message: evidenceMessage, evidence_payload: evidencePayload }))
+      .digest("hex")}`,
+  };
+}
 
 test("persists a Carry Position, lifecycle, and final value proof across state reload", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-"));
@@ -92,6 +149,12 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
       entry_type: "funding",
       direction: "credit",
       amount_micro_usdc: 21_000,
+      source_amount_micro: 21_000,
+      source_amount_decimal: "0.021",
+      source_amount_scale: 3,
+      source_asset: "USDC",
+      valued_at_ms: NOW + 10,
+      cashflow_valuation: cashflowValuation("USDC", NOW + 10),
       venue_id: "lighter",
       leg_id: "carry:leg:short",
       occurred_at_ms: NOW + 10,
@@ -1093,6 +1156,8 @@ test("monitoring appends only authoritative venue funding settlements", async (t
       qualification_reasons: [],
     }),
     readFundingSettlements: async ({ body }) => [{
+      venue_id: body.venue_id,
+      asset: "BTC",
       settlement_id: `${body.venue_id}:settlement:1`,
       occurred_at_ms: NOW + 50,
       amount_quote: body.venue_id === "hyperliquid" ? "0.020" : "-0.005",
@@ -1106,6 +1171,203 @@ test("monitoring appends only authoritative venue funding settlements", async (t
   assert.equal(result.record.value_ledger.realized.funding_credit_micro_usdc, 20_000);
   assert.equal(result.record.value_ledger.realized.funding_debit_micro_usdc, 5_000);
   assert.equal(result.record.value_evidence.funding.status, "current");
+  assert.deepEqual(result.record.value_ledger.entries.map((entry) => entry.source_amount_micro), [20_000, -5_000]);
+  assert.ok(result.record.value_ledger.entries.every((entry) => entry.source_asset === "USDC"));
+  assert.ok(result.record.value_ledger.entries.every((entry) => entry.cashflow_valuation.verified === true));
+});
+
+test("monitoring values native USDT funding with signed conservative rates", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-funding-usdt-valuation-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const result = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => monitoringObservation({
+      economic_opportunity: monitoringOpportunity(NOW + 100, 9),
+      margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
+      qualification_reasons: [],
+    }),
+    readFundingSettlements: async ({ body }) => body.venue_id === "lighter" ? [
+      {
+        venue_id: body.venue_id,
+        asset: "BTC",
+        settlement_id: "lighter:usdt:credit",
+        occurred_at_ms: NOW + 50,
+        amount_quote: "1.0000009",
+        quote_asset: "USDT",
+        cashflow_valuation: boundCashflowValuation({
+          decimal: "1.0000009",
+          micro: 1_000_000,
+          observedAtMs: NOW + 100,
+          creditRateE8: 99_000_000,
+          debitRateE8: 101_000_000,
+        }),
+      },
+      {
+        venue_id: body.venue_id,
+        asset: "BTC",
+        settlement_id: "lighter:usdt:debit",
+        occurred_at_ms: NOW + 60,
+        amount_quote: "-1.0000001",
+        quote_asset: "USDT",
+        cashflow_valuation: boundCashflowValuation({
+          decimal: "-1.0000001",
+          micro: -1_000_001,
+          observedAtMs: NOW + 100,
+          creditRateE8: 99_000_000,
+          debitRateE8: 101_000_000,
+        }),
+      },
+    ] : [],
+    now_ms: NOW + 100,
+  });
+  assert.equal(result.funding.status, "current");
+  assert.deepEqual(
+    result.record.value_ledger.entries.map((entry) => entry.amount_micro_usdc),
+    [990_000, 1_010_002],
+  );
+  assert.deepEqual(
+    result.record.value_ledger.entries.map((entry) => entry.source_amount_micro),
+    [1_000_000, -1_000_001],
+  );
+  assert.equal(result.record.value_ledger.realized.funding_credit_micro_usdc, 990_000);
+  assert.equal(result.record.value_ledger.realized.funding_debit_micro_usdc, 1_010_002);
+});
+
+test("funding valuation uses append time after a delayed historical cutoff", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-funding-delayed-cutoff-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const appendTime = NOW + 10_000;
+  const funding = await collectStoredCarryFundingEvidence({
+    state,
+    ownerCommitment: OWNER,
+    positionId: active.position.position_id,
+    venueAccess: monitoringContext().venue_access,
+    readFundingSettlements: async ({ body }) => body.venue_id === "lighter" ? [{
+      venue_id: "lighter",
+      asset: "BTC",
+      settlement_id: "lighter:delayed:1",
+      occurred_at_ms: NOW + 50,
+      amount_quote: "1.000000",
+      quote_asset: "USDT",
+      cashflow_valuation: boundCashflowValuation({
+        decimal: "1.000000",
+        micro: 1_000_000,
+        observedAtMs: appendTime,
+        creditRateE8: 99_000_000,
+        debitRateE8: 101_000_000,
+      }),
+    }] : [],
+    nowMs: NOW + 100,
+    final: true,
+    clock: () => appendTime,
+  });
+  assert.equal(funding.summary.status, "current");
+  assert.equal(funding.record.value_ledger.entries[0].occurred_at_ms, NOW + 50);
+  assert.equal(funding.record.value_ledger.entries[0].valued_at_ms, appendTime);
+  assert.equal(funding.record.value_evidence.funding.settlement_cutoff_ms, NOW + 100);
+  assert.equal(funding.record.value_evidence.funding.valuation_basis, "usdc_equivalent_at_ledger_ingestion");
+});
+
+test("inclusive funding boundary replay dedupes before fresh revaluation changes commitment", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-funding-boundary-replay-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const collect = (cutoff, valuationTime) => collectStoredCarryFundingEvidence({
+    state,
+    ownerCommitment: OWNER,
+    positionId: active.position.position_id,
+    venueAccess: monitoringContext().venue_access,
+    readFundingSettlements: async ({ body }) => body.venue_id === "lighter" ? [{
+      venue_id: "lighter",
+      asset: "BTC",
+      settlement_id: "lighter:boundary:stable",
+      occurred_at_ms: NOW + 100,
+      amount_quote: "1.000000",
+      quote_asset: "USDT",
+      cashflow_valuation: boundCashflowValuation({
+        decimal: "1.000000",
+        micro: 1_000_000,
+        observedAtMs: valuationTime,
+        creditRateE8: valuationTime === NOW + 100 ? 99_000_000 : 98_000_000,
+        debitRateE8: 101_000_000,
+      }),
+    }] : [],
+    nowMs: cutoff,
+    clock: () => valuationTime,
+  });
+  const first = await collect(NOW + 100, NOW + 100);
+  assert.equal(first.summary.status, "current");
+  const replay = await collect(NOW + 200, NOW + 200);
+  assert.equal(replay.summary.status, "current");
+  assert.equal(replay.record.value_ledger.entries.length, 1);
+  assert.equal(replay.record.value_ledger.entries[0].amount_micro_usdc, 990_000);
+});
+
+test("non-USDC funding without verified conversion evidence cannot become complete", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-funding-valuation-required-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const result = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => monitoringObservation({
+      economic_opportunity: monitoringOpportunity(NOW + 100, 9),
+      margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
+      qualification_reasons: [],
+    }),
+    readFundingSettlements: async ({ body }) => body.venue_id === "lighter" ? [{
+      venue_id: body.venue_id,
+      asset: "BTC",
+      settlement_id: "lighter:usdt:unvalued",
+      occurred_at_ms: NOW + 50,
+      amount_quote: "1.000000",
+      quote_asset: "USDT",
+    }] : [],
+    now_ms: NOW + 100,
+  });
+  assert.equal(result.funding.status, "pending");
+  assert.equal(result.funding.venue_status.lighter, "funding_cashflow_valuation_required");
+  assert.equal(result.record.value_evidence.funding.status, "pending_authoritative_settlement_history");
+  assert.equal(result.record.value_evidence.funding.cursor_ms_by_venue.lighter, NOW);
+  assert.equal(result.record.value_ledger.entries.length, 0);
+});
+
+test("malformed funding history fails closed without advancing venue completeness", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-funding-malformed-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const result = await observeStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_id: active.position.position_id,
+    venue_access: monitoringContext().venue_access,
+    preflight: async () => monitoringObservation({
+      economic_opportunity: monitoringOpportunity(NOW + 100, 9),
+      margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
+      qualification_reasons: [],
+    }),
+    readFundingSettlements: async ({ body }) => body.venue_id === "hyperliquid" ? { rows: [] } : [],
+    now_ms: NOW + 100,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.funding.status, "pending");
+  assert.equal(result.funding.venue_status.hyperliquid, "funding_settlement_history_invalid");
+  assert.equal(result.record.value_evidence.funding.status, "pending_authoritative_settlement_history");
+  assert.equal(result.record.value_evidence.funding.cursor_ms_by_venue.hyperliquid, NOW);
+  assert.equal(result.record.value_evidence.funding.cursor_ms_by_venue.lighter, NOW + 100);
+  assert.equal(result.record.value_ledger.status, "open");
 });
 
 test("monitoring reads both venue funding ledgers concurrently and commits them deterministically", async (t) => {
@@ -1134,6 +1396,8 @@ test("monitoring reads both venue funding ledgers concurrently and commits them 
       await new Promise((resolve) => setImmediate(resolve));
       activeReads -= 1;
       return [{
+        venue_id: body.venue_id,
+        asset: "BTC",
         settlement_id: `${body.venue_id}:settlement:parallel`,
         occurred_at_ms: NOW + 50,
         amount_quote: body.venue_id === "hyperliquid" ? "0.020" : "-0.005",
@@ -1221,8 +1485,8 @@ test("monitoring canonicalizes settlement order and rejects a changed replay", a
       qualification_reasons: [],
     }),
     readFundingSettlements: async ({ body }) => body.venue_id === "hyperliquid" ? [
-      { settlement_id: "hl:later", occurred_at_ms: NOW + 20, amount_quote: "0.002", quote_asset: "USDC" },
-      { settlement_id: "hl:earlier", occurred_at_ms: NOW + 10, amount_quote: "0.001", quote_asset: "USDC" },
+      { venue_id: body.venue_id, asset: "BTC", settlement_id: "hl:later", occurred_at_ms: NOW + 20, amount_quote: "0.002", quote_asset: "USDC" },
+      { venue_id: body.venue_id, asset: "BTC", settlement_id: "hl:earlier", occurred_at_ms: NOW + 10, amount_quote: "0.001", quote_asset: "USDC" },
     ] : [],
     now_ms: NOW + 100,
   });
@@ -1240,6 +1504,8 @@ test("monitoring canonicalizes settlement order and rejects a changed replay", a
       qualification_reasons: [],
     }),
     readFundingSettlements: async ({ body }) => body.venue_id === "hyperliquid" ? [{
+      venue_id: body.venue_id,
+      asset: "BTC",
       settlement_id: "hl:later",
       occurred_at_ms: NOW + 150,
       amount_quote: "9.999",

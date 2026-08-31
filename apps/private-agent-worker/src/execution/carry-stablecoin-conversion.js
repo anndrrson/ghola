@@ -1,3 +1,10 @@
+import { createHash } from "node:crypto";
+import {
+  canonicalCarryCommitmentJson,
+  cashflowValuationEvidenceMessage,
+  normalizeCashflowValuation,
+} from "@ghola/execution-core";
+
 const ASTER_USDC_USDT_DEPTH_URL = "https://sapi.asterdex.com/api/v3/depth?symbol=USDCUSDT&limit=100";
 const RATE_SCALE = 100_000_000n;
 
@@ -78,6 +85,140 @@ export function createAsterStablecoinConversionQuoteReader({
   };
 }
 
+export function createAsterCashflowValuationReader({
+  fetchImpl = fetch,
+  now = () => Date.now(),
+} = {}) {
+  let cachedBookPromise = null;
+  return async function readAsterCashflowValuation(request) {
+    const checkedAtMs = positiveInteger(request?.checked_at_ms, "cashflow_valuation_checked_at_invalid");
+    const observedNowMs = positiveInteger(now(), "cashflow_valuation_now_invalid");
+    if (Math.abs(observedNowMs - checkedAtMs) > 5_000) fail("cashflow_valuation_checked_at_stale");
+    if (String(request?.source_asset || "") !== "USDT") fail("cashflow_valuation_pair_unsupported");
+    cachedBookPromise ??= readJsonBook(fetchImpl, ASTER_USDC_USDT_DEPTH_URL);
+    const body = await cachedBookPromise;
+    if (body?.symbol !== "USDCUSDT") fail("cashflow_valuation_book_binding_invalid");
+    const bookTimeMs = positiveInteger(body?.T ?? body?.E, "cashflow_valuation_book_time_invalid");
+    if (bookTimeMs > checkedAtMs + 5_000 || checkedAtMs - bookTimeMs > 5_000) {
+      fail("cashflow_valuation_book_stale");
+    }
+    const bids = normalizedBookLevels(body?.bids, "bid");
+    const asks = normalizedBookLevels(body?.asks, "ask");
+    const bestBidE8 = bids[0].price_e8;
+    const bestAskE8 = asks[0].price_e8;
+    if (bestBidE8 > bestAskE8) fail("cashflow_valuation_book_crossed");
+    const boundSourceAmountMicro = request?.source_amount_micro === undefined
+      ? null
+      : signedSafeInteger(request.source_amount_micro, "cashflow_valuation_source_amount_invalid");
+    if (boundSourceAmountMicro === 0) fail("cashflow_valuation_source_amount_invalid");
+    const sourceAmountDecimal = boundSourceAmountMicro === null
+      ? null
+      : canonicalSourceDecimal(request?.source_amount_decimal);
+    const sourceAmountScale = sourceAmountDecimal === null
+      ? null
+      : sourceAmountDecimal.split(".")[1]?.length || 0;
+    if (boundSourceAmountMicro !== null && request?.source_amount_scale !== sourceAmountScale) {
+      fail("cashflow_valuation_source_scale_invalid");
+    }
+    const rates = boundSourceAmountMicro === null
+      ? {
+          credit_rate_e8: RATE_SCALE * RATE_SCALE / BigInt(bestAskE8),
+          debit_rate_e8: ceilingDivide(RATE_SCALE * RATE_SCALE, BigInt(bestBidE8)),
+        }
+      : depthBoundValuationRates(BigInt(Math.abs(boundSourceAmountMicro)), bids, asks);
+    const evidenceSource = "aster:USDCUSDT:book:v1";
+    const valuation = {
+      version: 1,
+      source_asset: "USDT",
+      valuation_asset: "USDC",
+      verified: true,
+      ...(boundSourceAmountMicro === null ? {} : { bound_source_amount_micro: boundSourceAmountMicro }),
+      credit_rate_e8: safeNumber(rates.credit_rate_e8, "cashflow_valuation_credit_rate_invalid"),
+      debit_rate_e8: safeNumber(rates.debit_rate_e8, "cashflow_valuation_debit_rate_invalid"),
+      observed_at_ms: bookTimeMs,
+      expires_at_ms: bookTimeMs + 30_000,
+      evidence_source: evidenceSource,
+    };
+    const evidenceMessage = cashflowValuationEvidenceMessage(valuation);
+    const evidencePayload = {
+      venue_id: "aster",
+      market: "USDCUSDT",
+      book_time_ms: bookTimeMs,
+      ...(boundSourceAmountMicro === null ? {} : {
+        source_amount_micro: boundSourceAmountMicro,
+        source_amount_decimal: sourceAmountDecimal,
+        source_amount_scale: sourceAmountScale,
+      }),
+      bids,
+      asks,
+    };
+    return normalizeCashflowValuation({
+      ...valuation,
+      evidence_message: evidenceMessage,
+      evidence_payload: evidencePayload,
+      evidence_commitment: valuationCommitment(evidenceMessage, evidencePayload),
+    });
+  };
+}
+
+export function createCoinbaseUsdCashflowValuationReader({
+  fetchImpl = fetch,
+  now = () => Date.now(),
+} = {}) {
+  return async function readCoinbaseUsdCashflowValuation(request) {
+    const checkedAtMs = positiveInteger(request?.checked_at_ms, "cashflow_valuation_checked_at_invalid");
+    const observedNowMs = positiveInteger(now(), "cashflow_valuation_now_invalid");
+    if (Math.abs(observedNowMs - checkedAtMs) > 5_000) fail("cashflow_valuation_checked_at_stale");
+    if (String(request?.source_asset || "") !== "USD") fail("cashflow_valuation_pair_unsupported");
+    const response = await fetchImpl("https://api.exchange.coinbase.com/products/USDC-USD/book?level=2", {
+      method: "GET",
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response?.ok) fail("cashflow_valuation_book_unavailable");
+    const observedAtMs = Date.parse(String(response.headers?.get?.("date") || ""));
+    if (!Number.isSafeInteger(observedAtMs)
+      || observedAtMs > checkedAtMs + 5_000
+      || checkedAtMs - observedAtMs > 5_000) fail("cashflow_valuation_book_stale");
+    const body = await response.json();
+    const bids = normalizedBookLevels(body?.bids, "bid");
+    const asks = normalizedBookLevels(body?.asks, "ask");
+    if (bids[0].price_e8 > asks[0].price_e8) fail("cashflow_valuation_book_crossed");
+    const valuation = {
+      version: 1,
+      source_asset: "USD",
+      valuation_asset: "USDC",
+      verified: true,
+      credit_rate_e8: safeNumber(
+        RATE_SCALE * RATE_SCALE / BigInt(asks[0].price_e8),
+        "cashflow_valuation_credit_rate_invalid",
+      ),
+      debit_rate_e8: safeNumber(
+        ceilingDivide(RATE_SCALE * RATE_SCALE, BigInt(bids[0].price_e8)),
+        "cashflow_valuation_debit_rate_invalid",
+      ),
+      observed_at_ms: observedAtMs,
+      expires_at_ms: observedAtMs + 30_000,
+      evidence_source: "coinbase-exchange:USDC-USD:book:v1",
+    };
+    const evidenceMessage = cashflowValuationEvidenceMessage(valuation);
+    const evidencePayload = {
+      venue_id: "coinbase_exchange",
+      market: "USDC-USD",
+      sequence: String(body?.sequence ?? ""),
+      observed_at_ms: observedAtMs,
+      bids,
+      asks,
+    };
+    return normalizeCashflowValuation({
+      ...valuation,
+      evidence_message: evidenceMessage,
+      evidence_payload: evidencePayload,
+      evidence_commitment: valuationCommitment(evidenceMessage, evidencePayload),
+    });
+  };
+}
+
 function resolvePolicy(value, context) {
   return typeof value === "function" ? value(Object.freeze(context)) : value;
 }
@@ -131,6 +272,123 @@ function conversionLevels(rows, direction) {
           input_micro_usdc: ceilingDivide(baseMicro * priceE8, RATE_SCALE),
         });
   });
+}
+
+function bestBookPriceE8(rows, side) {
+  if (!Array.isArray(rows) || rows.length === 0) fail("cashflow_valuation_depth_invalid");
+  const prices = rows.map((row) => {
+    if (!Array.isArray(row) || row.length < 2) fail("cashflow_valuation_depth_invalid");
+    const price = decimalToScaled(
+      row[0],
+      8,
+      "cashflow_valuation_price_invalid",
+      side === "ask" ? "ceil" : "floor",
+    );
+    const quantity = decimalToScaled(row[1], 6, "cashflow_valuation_quantity_invalid");
+    if (price <= 0n || quantity <= 0n) fail("cashflow_valuation_depth_invalid");
+    return price;
+  });
+  return side === "bid"
+    ? prices.reduce((best, value) => value > best ? value : best)
+    : prices.reduce((best, value) => value < best ? value : best);
+}
+
+function normalizedBookLevels(rows, side) {
+  if (!Array.isArray(rows) || rows.length === 0) fail("cashflow_valuation_depth_invalid");
+  const levels = rows.map((row) => {
+    if (!Array.isArray(row) || row.length < 2) fail("cashflow_valuation_depth_invalid");
+    const priceE8 = decimalToScaled(
+      row[0],
+      8,
+      "cashflow_valuation_price_invalid",
+      side === "ask" ? "ceil" : "floor",
+    );
+    const sizeMicro = decimalToScaled(row[1], 6, "cashflow_valuation_quantity_invalid", "floor");
+    if (priceE8 <= 0n || sizeMicro <= 0n) fail("cashflow_valuation_depth_invalid");
+    return Object.freeze({
+      price_e8: safeNumber(priceE8, "cashflow_valuation_price_invalid"),
+      size_micro: safeNumber(sizeMicro, "cashflow_valuation_quantity_invalid"),
+    });
+  }).sort((left, right) => side === "bid"
+    ? right.price_e8 - left.price_e8
+    : left.price_e8 - right.price_e8);
+  return Object.freeze(levels);
+}
+
+function depthBoundValuationRates(sourceMagnitudeMicro, bidRows, askRows) {
+  const usdcCreditMicro = buyBaseWithQuote(sourceMagnitudeMicro, askRows);
+  const usdcDebitMicro = baseRequiredForQuote(sourceMagnitudeMicro, bidRows);
+  return {
+    credit_rate_e8: usdcCreditMicro * RATE_SCALE / sourceMagnitudeMicro,
+    debit_rate_e8: ceilingDivide(usdcDebitMicro * RATE_SCALE, sourceMagnitudeMicro),
+  };
+}
+
+function buyBaseWithQuote(sourceQuoteMicro, rows) {
+  let remainingQuote = sourceQuoteMicro;
+  let outputBase = 0n;
+  for (const row of rows) {
+    if (remainingQuote === 0n) break;
+    const price = BigInt(row.price_e8);
+    const availableBase = BigInt(row.size_micro);
+    const quoteCapacity = ceilingDivide(availableBase * price, RATE_SCALE);
+    if (remainingQuote >= quoteCapacity) {
+      outputBase += availableBase;
+      remainingQuote -= quoteCapacity;
+    } else {
+      outputBase += remainingQuote * RATE_SCALE / price;
+      remainingQuote = 0n;
+    }
+  }
+  if (remainingQuote !== 0n || outputBase === 0n) fail("cashflow_valuation_depth_insufficient");
+  return outputBase;
+}
+
+function baseRequiredForQuote(sourceQuoteMicro, rows) {
+  let remainingQuote = sourceQuoteMicro;
+  let requiredBase = 0n;
+  for (const row of rows) {
+    if (remainingQuote === 0n) break;
+    const price = BigInt(row.price_e8);
+    const availableBase = BigInt(row.size_micro);
+    const quoteCapacity = availableBase * price / RATE_SCALE;
+    if (remainingQuote > quoteCapacity) {
+      requiredBase += availableBase;
+      remainingQuote -= quoteCapacity;
+    } else {
+      requiredBase += ceilingDivide(remainingQuote * RATE_SCALE, price);
+      remainingQuote = 0n;
+    }
+  }
+  if (remainingQuote !== 0n || requiredBase === 0n) fail("cashflow_valuation_depth_insufficient");
+  return requiredBase;
+}
+
+async function readJsonBook(fetchImpl, url) {
+  const response = await fetchImpl(url, {
+    method: "GET",
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response?.ok) fail("cashflow_valuation_book_unavailable");
+  return response.json();
+}
+
+function canonicalSourceDecimal(value) {
+  const text = String(value ?? "").trim();
+  if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(text)) fail("cashflow_valuation_source_decimal_invalid");
+  return text;
+}
+
+function signedSafeInteger(value, code) {
+  if (!Number.isSafeInteger(value)) fail(code);
+  return value;
+}
+
+function valuationCommitment(evidenceMessage, evidencePayload) {
+  return `carry:cashflow-valuation:evidence:${createHash("sha256")
+    .update(canonicalCarryCommitmentJson({ evidence_message: evidenceMessage, evidence_payload: evidencePayload }))
+    .digest("hex")}`;
 }
 
 function decimalToScaled(value, decimals, code, rounding = "floor") {

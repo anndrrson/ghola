@@ -794,8 +794,11 @@ export async function readHyperliquidFundingSettlements({
     startTime: start,
     endTime: end,
   });
+  if (!Array.isArray(rows)) {
+    throw new HyperliquidExecutionError("hyperliquid funding history response is invalid", 502, "connector_submit_failed");
+  }
   const coin = String(asset || "").toUpperCase();
-  return (Array.isArray(rows) ? rows : []).filter((row) => String(row?.delta?.coin || row?.coin || "").toUpperCase() === coin).map((row) => ({
+  return rows.filter((row) => String(row?.delta?.coin || row?.coin || "").toUpperCase() === coin).map((row) => ({
     venue_id: "hyperliquid",
     asset: coin,
     occurred_at_ms: Number(row?.time),

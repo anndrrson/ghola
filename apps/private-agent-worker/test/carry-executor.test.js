@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { canonicalCarryCommitmentJson, cashflowValuationEvidenceMessage } from "@ghola/execution-core";
 import {
   assessCarryTerminalExecutionReceipt,
   auditCarryPositionsAfterRestart,
@@ -307,8 +309,8 @@ test("bootstraps one capped candidate only after separate qualification confirma
     qualification_pilot_ready: true,
     qualification_pilot_candidate_venue_id: "aster",
     evidence: [
-      { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:pilot", side: "buy", transaction_broadcast: false, verification_commitment: "verify_hyperliquid_pilot", checks: { account_state_checked: true, order_request_checked: true }, authority_boundary: { venue_native_trade_only: true }, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: "BTC", base_size: "0.001", limit_price: "10000" } },
-      { venue_id: "aster", account_commitment: "account:aster:pilot", side: "sell", transaction_broadcast: false, verification_commitment: "verify_aster_pilot", checks: { account_state_checked: true, order_request_checked: true }, authority_boundary: { venue_native_trade_only: true }, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: "BTCUSDT", base_size: "0.001", limit_price: "10000" } },
+      { ...preflightLeg("hyperliquid", "buy", false), account_commitment: "account:hyperliquid:pilot", verification_commitment: "verify_hyperliquid_pilot", checks: { account_state_checked: true, order_request_checked: true }, authority_boundary: { venue_native_trade_only: true } },
+      { ...preflightLeg("aster", "sell", false), account_commitment: "account:aster:pilot", verification_commitment: "verify_aster_pilot", checks: { account_state_checked: true, order_request_checked: true }, authority_boundary: { venue_native_trade_only: true } },
     ],
   };
   const args = {
@@ -489,6 +491,151 @@ test("restart releases a linked entry only when its saga proves no submit occurr
   });
   assert.equal(retried.ok, true);
   assert.equal(submissions, 2);
+});
+
+test("restart completes an exactly reconciled entry orphan without resubmission", async (t) => {
+  const fixture = await setup(t, "restart-reconciled-entry");
+  const orphan = await createReconciledEntryOrphan(fixture);
+  assert.equal(orphan.record.position.status, "opening");
+  assert.equal(orphan.saga.status, "reconciled");
+  assert.equal(orphan.record.value_evidence.entry.status, "pending_exact_receipts");
+
+  const restartedState = createWorkerState(fixture.state_dir);
+  const audited = await auditCarryPositionsAfterRestart({
+    state: restartedState,
+    now_ms: fixture.now(),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(audited.ok, true, JSON.stringify(audited));
+  assert.equal(audited.recovered, 1);
+  assert.equal(audited.results[0].restart_action, "entry_reconciled_completed");
+  assert.equal(orphan.submissions(), 2);
+  const active = await restartedState.getCarryPositionRecord(fixture.position_id);
+  assert.equal(active.position.status, "active");
+  assert.equal(active.value_evidence.entry.status, "complete");
+  assert.equal(active.lifecycle_events.filter((event) => event.type === "entry_reconciled").length, 1);
+});
+
+test("reconciled entry recovery retries after accounting without duplicating value", async (t) => {
+  const fixture = await setup(t, "restart-reconciled-entry-retry");
+  const orphan = await createReconciledEntryOrphan(fixture);
+  const restartCutoff = orphan.saga.updated_at_ms;
+  const putRecord = fixture.state.putCarryPositionRecord.bind(fixture.state);
+  let parentConflict = true;
+  fixture.state.putCarryPositionRecord = async (record, options) => {
+    if (parentConflict && record.position.status === "active") {
+      parentConflict = false;
+      return { ok: false, error: "carry_record_version_conflict", record: await fixture.state.getCarryPositionRecord(fixture.position_id) };
+    }
+    return putRecord(record, options);
+  };
+  const first = await auditCarryPositionsAfterRestart({
+    state: fixture.state,
+    now_ms: restartCutoff,
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(first.ok, false);
+  assert.equal(first.results[0].error, "carry_record_version_conflict");
+  const accounted = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  assert.equal(accounted.position.status, "opening");
+  assert.equal(accounted.value_evidence.entry.status, "complete");
+  const entryIds = accounted.value_ledger.entries.map((entry) => entry.entry_id);
+
+  fixture.state.putCarryPositionRecord = putRecord;
+  const listRecords = fixture.state.listCarryPositionRecords.bind(fixture.state);
+  fixture.state.listCarryPositionRecords = async (input) => (await listRecords(input)).map((record) => record.position.status === "opening"
+    ? { ...record, updated_at: new Date(restartCutoff + 1).toISOString() }
+    : record);
+  const second = await auditCarryPositionsAfterRestart({
+    state: fixture.state,
+    now_ms: restartCutoff,
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(second.ok, true, JSON.stringify(second));
+  assert.equal(second.recovered, 1);
+  const active = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  assert.equal(active.position.status, "active");
+  assert.deepEqual(active.value_ledger.entries.map((entry) => entry.entry_id), entryIds);
+  assert.equal(new Set(entryIds).size, entryIds.length);
+  assert.equal(active.lifecycle_events.filter((event) => event.type === "entry_reconciled").length, 1);
+
+  fixture.state.listCarryPositionRecords = listRecords;
+  const third = await auditCarryPositionsAfterRestart({
+    state: fixture.state,
+    now_ms: fixture.now() + 120_000,
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(third.checked, 0);
+  assert.deepEqual((await fixture.state.getCarryPositionRecord(fixture.position_id)).value_ledger.entries.map((entry) => entry.entry_id), entryIds);
+});
+
+test("reconciled entry recovery freezes when exact durable execution or value evidence is unproven", async (t) => {
+  for (const scenario of ["missing", "wrong-account", "wrong-provider", "incomplete-value"]) {
+    await t.test(scenario, async (t) => {
+      const fixture = await setup(t, `restart-reconciled-${scenario}`);
+      const orphan = await createReconciledEntryOrphan(fixture, {
+        persist: scenario !== "missing",
+        receiptFactory: (args) => {
+          const receipt = scenario === "incomplete-value" ? incompleteLiveValueReceipt(args) : exactLiveValueReceipt(args);
+          if (scenario === "wrong-account") receipt.account_commitment = "account:wrong:0001";
+          return receipt;
+        },
+      });
+      if (scenario === "wrong-provider") {
+        const context = orphan.saga.execution_context.legs[0];
+        const cached = await fixture.state.getIdempotency(context.work_order_commitment);
+        await fixture.state.putIdempotency(context.work_order_commitment, {
+          ...cached.receipt,
+          provider_ref_commitment: "provider:overwritten:0001",
+        });
+      }
+      const audited = await auditCarryPositionsAfterRestart({
+        state: fixture.state,
+        now_ms: fixture.now(),
+        env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+      });
+      assert.equal(audited.ok, true, JSON.stringify(audited));
+      assert.equal(audited.recovered, 0);
+      assert.equal(audited.frozen, 1);
+      const frozen = await fixture.state.getCarryPositionRecord(fixture.position_id);
+      assert.equal(frozen.position.status, "frozen");
+      assert.equal(frozen.position.retry_permitted, false);
+      assert.deepEqual(frozen.position.next_actions, ["reconcile_only"]);
+      assert.equal(frozen.lifecycle_events.some((event) => event.type === "entry_reconciled"), false);
+    });
+  }
+});
+
+test("reconciled entry recovery freezes a one-sided partial that cannot use the paired exit", async (t) => {
+  const fixture = await setup(t, "restart-reconciled-one-sided", undefined, { maxHedgeErrorMicroUsdc: 5_000_000 });
+  const orphan = await createReconciledEntryOrphan(fixture, { receiptFactory: oneSidedLiveValueReceipt });
+  assert.deepEqual(orphan.saga.legs.map((leg) => leg.filled_micro_usdc).sort((a, b) => a - b), [0, 5_000_000]);
+  const audited = await auditCarryPositionsAfterRestart({
+    state: fixture.state,
+    now_ms: fixture.now(),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(audited.ok, true, JSON.stringify(audited));
+  assert.equal(audited.recovered, 0);
+  assert.equal((await fixture.state.getCarryPositionRecord(fixture.position_id)).position.status, "frozen");
+  assert.equal(orphan.submissions(), 2);
+});
+
+test("restart routes an exactly reconciled symmetric partial entry to reduce-only exit", async (t) => {
+  const fixture = await setup(t, "restart-reconciled-partial");
+  const orphan = await createReconciledEntryOrphan(fixture, { receiptFactory: partialLiveValueReceipt });
+  assert.equal(orphan.saga.legs.every((leg) => leg.filled_micro_usdc === 5_000_000), true);
+  const audited = await auditCarryPositionsAfterRestart({
+    state: fixture.state,
+    now_ms: fixture.now(),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(audited.ok, true, JSON.stringify(audited));
+  assert.equal(audited.recovered, 1);
+  const exiting = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  assert.equal(exiting.position.status, "exiting");
+  assert.deepEqual(exiting.position.next_actions, ["cancel_open_orders", "reduce_only_close_filled_exposure"]);
+  assert.equal(orphan.submissions(), 2);
 });
 
 test("restart safely retries an exit linked before any submission", async (t) => {
@@ -712,7 +859,7 @@ test("records only receipt-proven fees and adverse slippage", async (t) => {
         size: "0.001",
         price: args.venue_id === "aster" ? "10001" : "9999",
         fee: args.venue_id === "aster" ? "0.003" : "0.004",
-        fee_asset: "USDT",
+        fee_asset: carryFeeSettlementAsset(args.venue_id),
       }],
     }),
   });
@@ -721,6 +868,32 @@ test("records only receipt-proven fees and adverse slippage", async (t) => {
   assert.equal(result.record.value_ledger.entries.length, 4);
   assert.equal(result.record.value_ledger.realized.trading_fee_micro_usdc, 7_000);
   assert.equal(result.record.value_ledger.realized.slippage_micro_usdc, 2_000);
+});
+
+test("values non-USDC execution fees and slippage with verified conservative rates", async (t) => {
+  const fixture = await setup(t, "stablecoin-execution-value");
+  const proof = preflightProof();
+  proof.evidence = proof.evidence.map((leg) => ({
+    ...leg,
+    asset_valuations: leg.asset_valuations.map((valuation) => executionCashflowValuation(
+      valuation.source_asset,
+      NOW,
+      valuation.source_asset === "USDT"
+        ? { credit_rate_e8: 99_000_000, debit_rate_e8: 101_000_000 }
+        : { credit_rate_e8: 98_000_000, debit_rate_e8: 102_000_000 },
+    )),
+  }));
+  const result = await executeStoredCarryEntry({
+    ...fixture,
+    preflight: async () => proof,
+    executeOrder: async (args) => exactValueReceipt(args),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.accounting.complete, true);
+  assert.equal(result.record.value_ledger.realized.trading_fee_micro_usdc, 7_030);
+  assert.equal(result.record.value_ledger.realized.slippage_micro_usdc, 2_030);
+  assert.equal(result.record.value_evidence.entry.venues.aster.fee_source_asset, "USDT");
+  assert.match(result.record.value_evidence.entry.venues.aster.fee_valuation_commitment, /^carry:cashflow-valuation:evidence:[0-9a-f]{64}$/);
 });
 
 test("routes equal partial IOC entry fills into a deterministic reduce-only exit", async (t) => {
@@ -779,9 +952,73 @@ test("closes both reconciled legs reduce-only and proves flat with zero orders",
   assert.equal(result.record.final_reconciliation_evidence.open_order_count, 0);
 });
 
-test("a failed exit leg completes reduce-only after recovery and syncs flat", async (t) => {
+test("preserves the exact high-precision entry quantity through reduce-only exit", async (t) => {
+  const fixture = await setup(t, "exit-high-precision");
+  const exactBase = "0.0010000000000000001";
+  const exactPreflight = async ({ body }) => {
+    if (body?.phase === "exit") {
+      assert.deepEqual(body.exit_base_size_by_venue, {
+        aster: exactBase,
+        lighter: exactBase,
+      });
+    }
+    const proof = preflightProof(undefined, { phase: body?.phase });
+    return {
+      ...proof,
+      evidence: proof.evidence.map((item) => ({
+        ...item,
+        order_shape: { ...item.order_shape, base_size: exactBase },
+      })),
+    };
+  };
+  const receipt = async (args) => {
+    const result = filledReceipt(args);
+    result.final_proof.filled_base_size = exactBase;
+    await fixture.state.putIdempotency(args.work_order_commitment, result);
+    return result;
+  };
+
+  const entry = await executeStoredCarryEntry({
+    ...fixture,
+    preflight: exactPreflight,
+    executeOrder: receipt,
+  });
+  assert.equal(entry.ok, true);
+  const active = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  await advanceStoredCarryPosition({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.position_id,
+    event: { version: 1, event_id: "carry:exit:request:high-precision", sequence: active.position.last_event_sequence + 1, type: "manual_exit_requested" },
+    now_ms: NOW + 50,
+  });
+
+  const calls = [];
+  const result = await executeStoredCarryExit({
+    ...fixture,
+    preflight: exactPreflight,
+    executeOrder: async (args) => {
+      calls.push(args);
+      return receipt(args);
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.record.position.status, "reconciled");
+  assert.deepEqual(calls.map((call) => call.instruction.order.base_size), [exactBase, exactBase]);
+});
+
+test("a failed exit leg completes reduce-only after recovery, syncs flat, and finalizes realized value", async (t) => {
   const fixture = await setup(t, "exit-recovery");
-  await openActive(fixture);
+  const entry = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      const receipt = exactValueReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(entry.ok, true);
+  assert.equal(entry.accounting.complete, true);
   const active = await fixture.state.getCarryPositionRecord(fixture.position_id);
   await advanceStoredCarryPosition({
     state: fixture.state,
@@ -794,7 +1031,7 @@ test("a failed exit leg completes reduce-only after recovery and syncs flat", as
     ...fixture,
     executeOrder: async (args) => {
       if (args.venue_id === "lighter") throw new Error("venue rejected order");
-      const receipt = filledReceipt(args);
+      const receipt = exactValueReceipt(args);
       await fixture.state.putIdempotency(args.work_order_commitment, receipt);
       return receipt;
     },
@@ -807,17 +1044,26 @@ test("a failed exit leg completes reduce-only after recovery and syncs flat", as
     state: restartedState,
     now_ms: started.saga.unhedged_deadline_ms - 1,
     recipient: fixture.recipient,
-    executeOrder: async (args) => filledReceipt(args),
+    executeOrder: async (args) => exactValueReceipt(args),
     verifyOrder: fixture.verifyOrder,
     env: fixture.env,
   });
   assert.equal(recovered.ok, true);
   assert.equal(recovered.recovered[0].saga.status, "reconciled");
-  const synced = await runCarryExecutionTick({ ...fixture, state: restartedState, executeOrder: async () => { throw new Error("unexpected submit"); } });
+  const synced = await runCarryExecutionTick({
+    ...fixture,
+    state: restartedState,
+    readFundingSettlements: async () => [],
+    executeOrder: async () => { throw new Error("unexpected submit"); },
+  });
   assert.equal(synced.ok, true);
   assert.equal(synced.results[0].record.position.status, "reconciled");
   assert.equal(synced.results[0].record.final_reconciliation_evidence.account_state_checked, true);
   assert.equal(synced.results[0].record.final_reconciliation_evidence.open_order_count, 0);
+  assert.equal(synced.results[0].accounting.complete, true);
+  assert.equal(synced.results[0].value_finalized, true);
+  assert.equal(synced.results[0].record.value_ledger.status, "finalized");
+  assert.equal(synced.results[0].record.value_ledger.realized.net_value_micro_usdc, 4_000);
 });
 
 test("does not claim a recovered exit is flat when a venue omits exact account counts", async (t) => {
@@ -903,12 +1149,11 @@ test("finalizes modeled-versus-realized value only after exact costs, funding, a
   });
   const result = await executeStoredCarryExit({
     ...fixture,
-    readFundingSettlements: async ({ body }) => [{
-      settlement_id: `${body.venue_id}:final:1`,
-      occurred_at_ms: Math.min(body.end_time_ms, body.start_time_ms + 1),
-      amount_quote: body.venue_id === "aster" ? "0.020" : "-0.005",
-      quote_asset: "USDC",
-    }],
+    readFundingSettlements: async ({ body }) => [fundingSettlement(
+      body,
+      body.venue_id === "aster" ? "0.020" : "-0.005",
+      "final:1",
+    )],
     executeOrder: async (args) => {
       const receipt = exactValueReceipt(args);
       await fixture.state.putIdempotency(args.work_order_commitment, receipt);
@@ -967,12 +1212,11 @@ test("background monitoring triggers an automatic reduce-only exit and finalizes
     state: restartedState,
     preflight: monitoringProof,
     now: (() => { let value = NOW + 1_000; return () => ++value; })(),
-    readFundingSettlements: async ({ body }) => [{
-      settlement_id: `${body.venue_id}:automatic-exit:1`,
-      occurred_at_ms: Math.min(body.end_time_ms, body.start_time_ms + 1),
-      amount_quote: body.venue_id === "aster" ? "0.020" : "-0.005",
-      quote_asset: "USDC",
-    }],
+    readFundingSettlements: async ({ body }) => [fundingSettlement(
+      body,
+      body.venue_id === "aster" ? "0.020" : "-0.005",
+      "automatic-exit:1",
+    )],
     executeOrder: async (args) => {
       calls.push(args);
       const receipt = exactValueReceipt(args);
@@ -1038,12 +1282,11 @@ test("completes a supervised restart-to-flat lifecycle for every qualified venue
       state: restartedState,
       preflight: monitoringProof,
       now: (() => { let value = NOW + 1_000; return () => ++value; })(),
-      readFundingSettlements: async ({ body }) => [{
-        settlement_id: `${body.venue_id}:automatic-matrix:1`,
-        occurred_at_ms: Math.min(body.end_time_ms, body.start_time_ms + 1),
-        amount_quote: body.venue_id === pair.long ? "0.020" : "-0.005",
-        quote_asset: "USDC",
-      }],
+      readFundingSettlements: async ({ body }) => [fundingSettlement(
+        body,
+        body.venue_id === pair.long ? "0.020" : "-0.005",
+        "automatic-matrix:1",
+      )],
       executeOrder: async (args) => {
         calls.push(args);
         const receipt = exactValueReceipt(args);
@@ -1064,7 +1307,7 @@ test("completes a supervised restart-to-flat lifecycle for every qualified venue
   }
 });
 
-async function setup(t, suffix, pair = { long: "aster", short: "lighter" }) {
+async function setup(t, suffix, pair = { long: "aster", short: "lighter" }, options = {}) {
   const dir = mkdtempSync(join(tmpdir(), `ghola-carry-executor-${suffix}-`));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
@@ -1077,6 +1320,7 @@ async function setup(t, suffix, pair = { long: "aster", short: "lighter" }) {
       positionId,
       pair,
       creationOpportunity.worker_authentication.evidence_commitment,
+      options,
     ), {
       ownerCommitment: OWNER,
       nowMs: NOW,
@@ -1103,6 +1347,7 @@ function positionInput(
   positionId,
   pair = { long: "aster", short: "lighter" },
   opportunityEvidenceCommitment = null,
+  { maxHedgeErrorMicroUsdc = 0 } = {},
 ) {
   return {
     version: 1,
@@ -1120,7 +1365,7 @@ function positionInput(
       exit_net_value_bps: 0,
       exit_after_consecutive_observations: 2,
       min_margin_runway_ms: 3_600_000,
-      max_hedge_error_micro_usdc: 0,
+      max_hedge_error_micro_usdc: maxHedgeErrorMicroUsdc,
       max_data_age_ms: 30_000,
       max_contract_data_skew_ms: 2_000,
       max_index_price_divergence_bps: 25,
@@ -1227,9 +1472,33 @@ function preflightProof(pair = { long: "aster", short: "lighter" }, { phase = "o
       { venue_id: pair.short, account_commitment: `account:${pair.short}:0001`, authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
     ],
     evidence: [
-      { venue_id: pair.long, account_commitment: `account:${pair.long}:0001`, side: exit ? "sell" : "buy", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.long), side: exit ? "sell" : "buy", base_size: "0.001", limit_price: "10000", reduce_only: exit } },
-      { venue_id: pair.short, account_commitment: `account:${pair.short}:0001`, side: exit ? "buy" : "sell", transaction_broadcast: false, reference_mark_price_e8: 1_000_000_000_000, order_shape: { market: carryMarket(pair.short), side: exit ? "buy" : "sell", base_size: "0.001", limit_price: "10000", reduce_only: exit } },
+      preflightLeg(pair.long, exit ? "sell" : "buy", exit),
+      preflightLeg(pair.short, exit ? "buy" : "sell", exit),
     ],
+  };
+}
+
+function preflightLeg(venueId, side, reduceOnly) {
+  const quoteAsset = carryQuoteAsset(venueId);
+  const feeSettlementAsset = carryFeeSettlementAsset(venueId);
+  const assets = [...new Set([quoteAsset, feeSettlementAsset])].filter((asset) => asset !== "USDC");
+  return {
+    venue_id: venueId,
+    account_commitment: `account:${venueId}:0001`,
+    side,
+    transaction_broadcast: false,
+    reference_mark_price_e8: 1_000_000_000_000,
+    quote_asset: quoteAsset,
+    funding_settlement_asset: carryFundingSettlementAsset(venueId),
+    fee_settlement_asset: feeSettlementAsset,
+    asset_valuations: assets.map((asset) => executionCashflowValuation(asset, NOW)),
+    order_shape: {
+      market: carryMarket(venueId),
+      side,
+      base_size: "0.001",
+      limit_price: "10000",
+      reduce_only: reduceOnly,
+    },
   };
 }
 
@@ -1285,6 +1554,77 @@ function carryMarket(venueId) {
 
 function carryQuoteAsset(venueId) {
   return venueId === "lighter" ? "USD" : "USDT";
+}
+
+function carryFeeSettlementAsset(venueId) {
+  return venueId === "aster" ? "USDT" : "USDC";
+}
+
+function carryFundingSettlementAsset(venueId) {
+  return venueId === "aster" ? "USDT" : "USDC";
+}
+
+function executionCashflowValuation(sourceAsset, observedAtMs, overrides = {}) {
+  const valuation = {
+    version: 1,
+    source_asset: sourceAsset,
+    valuation_asset: "USDC",
+    verified: true,
+    credit_rate_e8: 100_000_000,
+    debit_rate_e8: 100_000_000,
+    observed_at_ms: observedAtMs,
+    expires_at_ms: observedAtMs + 300_000,
+    evidence_source: "test:stablecoin-book:v1",
+    ...overrides,
+  };
+  const evidenceMessage = cashflowValuationEvidenceMessage(valuation);
+  const evidencePayload = {
+    venue_id: "test",
+    market: `${sourceAsset}USDC`,
+    bids: [{ price_e8: valuation.credit_rate_e8, size_micro: 1_000_000_000 }],
+    asks: [{ price_e8: valuation.debit_rate_e8, size_micro: 1_000_000_000 }],
+    ...(valuation.bound_source_amount_micro == null ? {} : {
+      source_amount_micro: valuation.bound_source_amount_micro,
+      source_amount_decimal: overrides.source_amount_decimal,
+      source_amount_scale: overrides.source_amount_scale,
+    }),
+  };
+  return {
+    ...valuation,
+    evidence_message: evidenceMessage,
+    evidence_payload: evidencePayload,
+    evidence_commitment: `carry:cashflow-valuation:evidence:${createHash("sha256")
+      .update(canonicalCarryCommitmentJson({ evidence_message: evidenceMessage, evidence_payload: evidencePayload }))
+      .digest("hex")}`,
+  };
+}
+
+function fundingSettlement(body, amountQuote, suffix) {
+  const sourceAsset = carryFundingSettlementAsset(body.venue_id);
+  const sourceAmountMicro = signedDecimalMicro(amountQuote);
+  const sourceAmountScale = amountQuote.split(".")[1]?.length || 0;
+  return {
+    settlement_id: `${body.venue_id}:${suffix}`,
+    venue_id: body.venue_id,
+    asset: body.asset,
+    occurred_at_ms: Math.min(body.end_time_ms, body.start_time_ms + 1),
+    amount_quote: amountQuote,
+    quote_asset: sourceAsset,
+    ...(sourceAsset === "USDC" ? {} : {
+      cashflow_valuation: executionCashflowValuation(sourceAsset, body.end_time_ms, {
+        bound_source_amount_micro: sourceAmountMicro,
+        source_amount_decimal: amountQuote,
+        source_amount_scale: sourceAmountScale,
+      }),
+    }),
+  };
+}
+
+function signedDecimalMicro(value) {
+  const negative = value.startsWith("-");
+  const [integer, fraction = ""] = value.replace(/^-/, "").split(".");
+  const amount = Number(integer) * 1_000_000 + Number(fraction.padEnd(6, "0").slice(0, 6));
+  return negative ? -amount : amount;
 }
 
 function monitoringRunway(venueId, checkedAtMs) {
@@ -1343,6 +1683,36 @@ async function openActive(fixture) {
   assert.equal(result.ok, true);
 }
 
+async function createReconciledEntryOrphan(fixture, { receiptFactory = exactLiveValueReceipt, persist = true } = {}) {
+  const getRecord = fixture.state.getCarryPositionRecord.bind(fixture.state);
+  let crashed = false;
+  let submissions = 0;
+  fixture.state.getCarryPositionRecord = async (positionId) => {
+    const record = await getRecord(positionId);
+    if (!crashed && record?.entry_saga_id) {
+      const saga = await fixture.state.getMultiLegSaga(record.entry_saga_id);
+      if (saga?.status === "reconciled") {
+        crashed = true;
+        throw new Error("simulated worker crash after entry saga reconciliation");
+      }
+    }
+    return record;
+  };
+  await assert.rejects(executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      submissions += 1;
+      const receipt = receiptFactory(args);
+      if (persist) await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  }), /simulated worker crash/);
+  fixture.state.getCarryPositionRecord = getRecord;
+  const record = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  const saga = await fixture.state.getMultiLegSaga(record.entry_saga_id);
+  return { record, saga, submissions: () => submissions };
+}
+
 function filledReceipt(args) {
   return {
     version: 1,
@@ -1362,17 +1732,18 @@ function filledReceipt(args) {
 }
 
 function qualificationReceipt(args) {
+  const feeAsset = carryFeeSettlementAsset(args.venue_id);
   return {
     ...filledReceipt(args),
     result_commitment: `result:${args.venue_id}:qualification`,
-    fills: [{ size: "0.001", price: "10000", fee: "0.001", fee_asset: "USDC" }],
+    fills: [{ size: "0.001", price: "10000", fee: "0.001", fee_asset: feeAsset }],
     final_proof: {
       ...filledReceipt(args).final_proof,
       broadcast_performed: true,
       target_client_order_matched: true,
       average_fill_price: "10000",
       fee_quote_amount: "0.001",
-      fee_asset: "USDC",
+      fee_asset: feeAsset,
     },
   };
 }
@@ -1385,12 +1756,69 @@ function exactValueReceipt(args) {
   const fee = args.venue_id === "aster" ? "0.003" : "0.004";
   return {
     ...filledReceipt(args),
-    fills: [{ size: "0.001", price, fee, fee_asset: "USDC" }],
+    fills: [{ size: "0.001", price, fee, fee_asset: carryFeeSettlementAsset(args.venue_id) }],
     final_proof: {
       ...filledReceipt(args).final_proof,
       average_fill_price: price,
       fee_quote_amount: fee,
-      fee_asset: "USDC",
+      fee_asset: carryFeeSettlementAsset(args.venue_id),
+    },
+  };
+}
+
+function exactLiveValueReceipt(args) {
+  const receipt = exactValueReceipt(args);
+  return {
+    ...receipt,
+    result_commitment: `result:${args.venue_id}:entry:0001`,
+    final_proof: {
+      ...receipt.final_proof,
+      broadcast_performed: true,
+      target_client_order_matched: true,
+    },
+  };
+}
+
+function partialLiveValueReceipt(args) {
+  const receipt = exactLiveValueReceipt(args);
+  return {
+    ...receipt,
+    fills: [{ size: "0.0005", price: receipt.fills[0].price, fee: receipt.fills[0].fee, fee_asset: receipt.fills[0].fee_asset }],
+    final_proof: {
+      ...receipt.final_proof,
+      cumulative_filled_micro_usdc: 5_000_000,
+      filled_base_size: "0.0005",
+    },
+  };
+}
+
+function oneSidedLiveValueReceipt(args) {
+  if (args.venue_id === "aster") return partialLiveValueReceipt(args);
+  const receipt = exactLiveValueReceipt(args);
+  return {
+    ...receipt,
+    fills: [],
+    final_proof: {
+      ...receipt.final_proof,
+      cumulative_filled_micro_usdc: 0,
+      filled_base_size: "0",
+      average_fill_price: null,
+      fee_quote_amount: null,
+      fee_asset: null,
+    },
+  };
+}
+
+function incompleteLiveValueReceipt(args) {
+  const receipt = exactLiveValueReceipt(args);
+  return {
+    ...receipt,
+    fills: [],
+    final_proof: {
+      ...receipt.final_proof,
+      average_fill_price: null,
+      fee_quote_amount: null,
+      fee_asset: null,
     },
   };
 }

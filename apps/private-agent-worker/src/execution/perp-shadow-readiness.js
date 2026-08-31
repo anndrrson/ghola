@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import { CARRY_SHADOW_ASSETS, CORE_PERP_VENUES, venueAdapterCapability } from "@ghola/execution-core";
+import {
+  CARRY_SHADOW_ASSETS,
+  CORE_PERP_VENUES,
+  normalizeCashflowValuation,
+  venueAdapterCapability,
+} from "@ghola/execution-core";
 
 export const DEFAULT_CARRY_SHADOW_ASSETS = CARRY_SHADOW_ASSETS;
 const REQUIRED_SOURCES = Object.freeze(["market", "funding", "orderbook"]);
@@ -372,6 +377,7 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
   if (!["USD", "USDC", "USDT"].includes(snapshot.quote_asset) || !["USDC", "USDT"].includes(snapshot.collateral_asset)) {
     failures.push(`settlement_asset_invalid:${prefix}`);
   }
+  verifySettlementValuations(snapshot, { prefix, nowMs, failures });
   const expectedHyperliquidQuote = ["HYPE", "PURR"].includes(asset) ? "USDC" : "USDT";
   if (venueId === "hyperliquid" && (snapshot.quote_asset !== expectedHyperliquidQuote || snapshot.collateral_asset !== "USDC")) {
     failures.push(`hyperliquid_core_contract_assets_invalid:${prefix}`);
@@ -432,6 +438,48 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
   for (const field of actualMissingFields) {
     const requiredFlag = MISSING_FIELD_EVIDENCE[field];
     if (!requiredFlag || !flags.has(requiredFlag)) failures.push(`missing_field_unjustified:${prefix}:${field}`);
+  }
+}
+
+function verifySettlementValuations(snapshot, { prefix, nowMs, failures }) {
+  const supported = new Set(["USD", "USDC", "USDT"]);
+  if (!supported.has(snapshot.funding_settlement_asset)
+    || !supported.has(snapshot.fee_settlement_asset)) {
+    failures.push(`cashflow_settlement_asset_invalid:${prefix}`);
+    return;
+  }
+  if (!Array.isArray(snapshot.asset_valuations)) {
+    failures.push(`cashflow_valuations_invalid:${prefix}`);
+    return;
+  }
+  const byAsset = new Map();
+  try {
+    for (const value of snapshot.asset_valuations) {
+      const valuation = normalizeCashflowValuation(value);
+      if (byAsset.has(valuation.source_asset)) throw new Error("duplicate");
+      byAsset.set(valuation.source_asset, valuation);
+    }
+  } catch {
+    failures.push(`cashflow_valuations_invalid:${prefix}`);
+    return;
+  }
+  const required = new Set([
+    snapshot.quote_asset,
+    snapshot.funding_settlement_asset,
+    snapshot.fee_settlement_asset,
+  ]);
+  for (const sourceAsset of required) {
+    if (sourceAsset === "USDC") continue;
+    const valuation = byAsset.get(sourceAsset);
+    if (!valuation
+      || valuation.observed_at_ms > snapshot.as_of_ms + 5_000
+      || valuation.observed_at_ms > nowMs + 5_000
+      || valuation.expires_at_ms <= nowMs) {
+      failures.push(`cashflow_valuation_missing_or_stale:${prefix}:${sourceAsset}`);
+    }
+  }
+  for (const sourceAsset of byAsset.keys()) {
+    if (!required.has(sourceAsset)) failures.push(`cashflow_valuation_unbound:${prefix}:${sourceAsset}`);
   }
 }
 

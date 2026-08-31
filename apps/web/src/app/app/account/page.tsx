@@ -104,7 +104,7 @@ export default async function GholaAccountPage({
       )}
 
       <section className={terminalFlow || focusedSetup || focusedCarrySetup ? "px-0 py-0" : "px-4 py-5 sm:px-6 lg:px-8"}>
-        {focusedCarrySetup ? <CarryAccountSetup returnTo={returnTo} /> : (
+        {focusedCarrySetup ? <CarryAccountSetup returnTo={returnTo} hyperliquidNetwork={hyperliquidNetwork} /> : (
           <PrivateAccountCockpit
             initialFlow={initialFlow}
             initialSetupVenue={setup === "hyperliquid" ? "hyperliquid" : null}

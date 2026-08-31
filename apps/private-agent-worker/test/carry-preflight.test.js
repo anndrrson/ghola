@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { executionVenueSpec } from "@ghola/execution-core";
+import { cashflowValuationEvidenceMessage, executionVenueSpec } from "@ghola/execution-core";
 import {
   modelCarryPairPreflight,
   preflightCarryExecutionMatrix,
@@ -13,6 +13,8 @@ const NOW = 1_800_000_000_000;
 
 function snapshot(venueId) {
   const shadow = executionVenueSpec(venueId).adapter_capabilities.perp_shadow;
+  const quoteAsset = venueId === "hyperliquid" || venueId === "aster" ? "USDT" : "USD";
+  const settlementAsset = venueId === "aster" ? "USDT" : "USDC";
   return {
     version: 1,
     venue_id: venueId,
@@ -23,8 +25,11 @@ function snapshot(venueId) {
     economic_equivalence_id: "carry:BTC-usd-linear",
     asset: "BTC",
     market: "BTC-USD",
-    quote_asset: venueId === "hyperliquid" || venueId === "aster" ? "USDT" : "USD",
+    quote_asset: quoteAsset,
     collateral_asset: venueId === "aster" ? "USDT" : "USDC",
+    funding_settlement_asset: settlementAsset,
+    fee_settlement_asset: settlementAsset,
+    asset_valuations: [cashflowValuation(quoteAsset)],
     contract_type: "linear_perp",
     mark_price_e8: 10_000_000_000_000,
     index_price_e8: 10_000_000_000_000,
@@ -54,6 +59,32 @@ function snapshot(venueId) {
     quality_flags: [],
     executable: false,
   };
+}
+
+function cashflowValuation(sourceAsset) {
+  const valuation = {
+    version: 1,
+    source_asset: sourceAsset,
+    valuation_asset: "USDC",
+    verified: true,
+    credit_rate_e8: 100_000_000,
+    debit_rate_e8: 100_000_000,
+    observed_at_ms: NOW - 1_000,
+    expires_at_ms: NOW + 30_000,
+    evidence_source: "test:cashflow-book:v1",
+    evidence_commitment: `carry:cashflow-valuation:evidence:${(sourceAsset === "USDT" ? "a" : "b").repeat(64)}`,
+  };
+  return { ...valuation, evidence_message: cashflowValuationEvidenceMessage(valuation) };
+}
+
+function assertPublicValuationBinding(result) {
+  for (const leg of result.evidence) {
+    const expected = snapshot(leg.venue_id);
+    assert.equal(leg.quote_asset, expected.quote_asset);
+    assert.equal(leg.funding_settlement_asset, expected.funding_settlement_asset);
+    assert.equal(leg.fee_settlement_asset, expected.fee_settlement_asset);
+    assert.deepEqual(leg.asset_valuations, expected.asset_valuations);
+  }
 }
 
 test("rejects missing margin evidence through the shared shadow contract before account verification", async () => {
@@ -189,6 +220,7 @@ test("verifies the exact reduce-only exit sides and filled base quantities", asy
   assert.equal(result.mode, "paired_exit_no_submit");
   assert.equal(result.no_submit_ready, true);
   assert.equal(result.live_creation_ready, false);
+  assertPublicValuationBinding(result);
   assert.deepEqual(verified.map(({ venue_id: venueId, instruction }) => ({
     venue_id: venueId,
     side: instruction.order.side,
@@ -259,6 +291,7 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
   assert.equal(result.creation_opportunity.all_venues_ready, true);
   assert.equal(typeof result.creation_opportunity.long_margin_runway_ms, "number");
   assert.equal(result.creation_opportunity.input_evidence.version, 1);
+  assertPublicValuationBinding(result);
   assert.deepEqual(result.creation_opportunity.input_evidence.legs.map((leg, index) => ({
     venue_id: leg.venue_id,
     side: leg.side,

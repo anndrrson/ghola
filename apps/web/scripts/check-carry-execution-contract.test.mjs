@@ -1422,13 +1422,13 @@ test("rejects onboarding recovery without an exact account binding", () => {
   );
 });
 
-test("rejects Hyperliquid setup that skips the remaining Carry venues", () => {
+test("rejects inline Hyperliquid setup that cannot resume the remaining Carry venues", () => {
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
       webAccountSetup: sources.webAccountSetup.replaceAll(
-        "return_to=${encodeURIComponent(setupReturnTo)}",
-        "return_to=${encodeURIComponent(safeReturnTo)}",
+        'setHyperliquid("connected")',
+        'setHyperliquid("needed")',
       ),
     }),
     /hyperliquid_setup_carry_resume_missing/,

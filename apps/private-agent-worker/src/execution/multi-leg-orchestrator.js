@@ -54,6 +54,9 @@ function normalizeExecutionContext(value, saga) {
       accounting_reference_mark_price_e8: Number.isSafeInteger(leg.accounting_reference_mark_price_e8) && leg.accounting_reference_mark_price_e8 > 0
         ? leg.accounting_reference_mark_price_e8
         : null,
+      accounting_quote_asset: accountingAsset(leg.accounting_quote_asset),
+      accounting_fee_settlement_asset: accountingAsset(leg.accounting_fee_settlement_asset),
+      accounting_asset_valuations: accountingValuations(leg.accounting_asset_valuations),
     });
   });
   const autopilotSessionId = optionalText(value.autopilot_session_id);
@@ -76,6 +79,23 @@ function normalizeExecutionContext(value, saga) {
     ...directCarry,
     legs: Object.freeze(normalized),
   });
+}
+
+function accountingAsset(value) {
+  if (value == null) return null;
+  const asset = String(value || "").toUpperCase();
+  if (!new Set(["USD", "USDC", "USDT"]).has(asset)) {
+    throw new Error("saga_execution_context_accounting_asset_invalid");
+  }
+  return asset;
+}
+
+function accountingValuations(value) {
+  if (value == null) return null;
+  if (!Array.isArray(value) || value.length > 3 || value.some((row) => !row || typeof row !== "object" || Array.isArray(row))) {
+    throw new Error("saga_execution_context_accounting_valuations_invalid");
+  }
+  return structuredClone(value);
 }
 
 export async function applyDurableMultiLegEvent({ state, saga_id, event, now_ms = Date.now() }) {

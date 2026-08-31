@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Copy, KeyRound, LoaderCircle, LockKeyhole, RefreshCw, X } from "lucide-react";
 import { executionVenueLabel } from "@ghola/execution-core";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
+import { TurnkeyPerpsManager } from "@/components/trade/TurnkeyPerpsManager";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { opaqueTurnkeyWalletScope, useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { usePerpsTurnkey } from "@/lib/perps-turnkey-provider";
@@ -60,6 +61,7 @@ import {
   type LighterActivationReadiness,
 } from "@/lib/lighter-activation-readiness";
 import { shouldResumeUnsignedTurnkeySetup } from "@/lib/carry-setup-auth-recovery";
+import { hyperliquidMarketFromTradeReturn } from "@/lib/hyperliquid-trade-return";
 
 type VenueState = "connected" | "needed" | "unavailable";
 type VenueActivation = { venue: "aster" | "lighter"; ownerAddress: string };
@@ -70,7 +72,13 @@ const HYPERLIQUID_ONBOARDING = getCurrentVenueCredentialOnboardingPath("hyperliq
 const ASTER_ONBOARDING = getCurrentVenueCredentialOnboardingPath("aster");
 const LIGHTER_ONBOARDING = getCurrentVenueCredentialOnboardingPath("lighter");
 
-export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }) {
+export function CarryAccountSetup({
+  returnTo = "/carry",
+  hyperliquidNetwork,
+}: {
+  returnTo?: string;
+  hyperliquidNetwork: "mainnet" | "testnet";
+}) {
   const auth = useThumperAuth();
   const searchParams = useSearchParams();
   const wallet = useTurnkeyWallet();
@@ -102,6 +110,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     api_private_key: "",
   });
   const [working, setWorking] = useState(false);
+  const [showHyperliquidSetup, setShowHyperliquidSetup] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activationNeeded, setActivationNeeded] = useState<VenueActivation | null>(null);
   const [lighterReadiness, setLighterReadiness] = useState<LighterActivationReadiness | null>(null);
@@ -118,9 +127,14 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     && requestedLongVenue !== requestedShortVenue
     && returnPair?.longVenueId === requestedLongVenue
     && returnPair.shortVenueId === requestedShortVenue;
-  const requiredVenueIds = pairScoped
+  const requiredVenueIds = useMemo(() => pairScoped
     ? CARRY_EXECUTION_VENUES.filter((venueId) => venueId === requestedLongVenue || venueId === requestedShortVenue)
-    : CARRY_EXECUTION_VENUES;
+    : CARRY_EXECUTION_VENUES,
+  [pairScoped, requestedLongVenue, requestedShortVenue]);
+  const scopedActivationNeeded = activationNeeded && requiredVenueIds.includes(activationNeeded.venue)
+    ? activationNeeded
+    : null;
+  const hyperliquidMarket = hyperliquidMarketFromTradeReturn(safeReturnTo) || "BTC";
   const noSubmitReturnTo = carryNoSubmitVerificationHref(safeReturnTo);
   const recoveryUserScope = opaqueTurnkeyWalletScope(auth.user?.id || "");
   const asterWalletRepairRequested = asterWalletRepairRequired ||
@@ -164,19 +178,19 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       }
       if (recovered?.aster) setPendingAsterLinkRecovery(recovered.aster);
       if (recovered?.lighter) setPendingLighterAssociation(recovered.lighter);
-      if (recovered?.aster_activation) {
+      if (recovered?.aster_activation && requiredVenueIds.includes("aster")) {
         setActivationNeeded({ venue: "aster", ownerAddress: recovered.aster_activation.owner_address });
         setAsterReprepareRequired(true);
-      } else if (recovered?.lighter_activation) {
+      } else if (recovered?.lighter_activation && requiredVenueIds.includes("lighter")) {
         setActivationNeeded({ venue: "lighter", ownerAddress: recovered.lighter_activation.owner_address });
       }
     } catch {
       // Storage may be unavailable; worker-side one-shot guards still apply.
     }
-  }, [accountCommitment, recoveryUserScope]);
+  }, [accountCommitment, recoveryUserScope, requiredVenueIds]);
 
   const refreshLighterReadiness = useCallback(async (ownerAddress?: string) => {
-    const owner = ownerAddress || (activationNeeded?.venue === "lighter" ? activationNeeded.ownerAddress : "");
+    const owner = ownerAddress || (scopedActivationNeeded?.venue === "lighter" ? scopedActivationNeeded.ownerAddress : "");
     if (!owner) return;
     if (lighterReadinessRequestRef.current) return lighterReadinessRequestRef.current;
     const request = (async () => {
@@ -194,20 +208,20 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     })();
     lighterReadinessRequestRef.current = request;
     return request;
-  }, [activationNeeded]);
+  }, [scopedActivationNeeded]);
 
   useEffect(() => {
-    if (activationNeeded?.venue === "lighter") {
-      void refreshLighterReadiness(activationNeeded.ownerAddress);
+    if (scopedActivationNeeded?.venue === "lighter") {
+      void refreshLighterReadiness(scopedActivationNeeded.ownerAddress);
     } else {
       setLighterReadiness(null);
       setLighterReadinessError(null);
     }
-  }, [activationNeeded, refreshLighterReadiness]);
+  }, [scopedActivationNeeded, refreshLighterReadiness]);
 
   useEffect(() => {
-    if (activationNeeded?.venue !== "lighter") return;
-    const ownerAddress = activationNeeded.ownerAddress;
+    if (scopedActivationNeeded?.venue !== "lighter") return;
+    const ownerAddress = scopedActivationNeeded.ownerAddress;
     const refreshOnReturn = () => {
       if (document.visibilityState === "visible") void refreshLighterReadiness(ownerAddress);
     };
@@ -217,7 +231,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
       window.removeEventListener("focus", refreshOnReturn);
       document.removeEventListener("visibilitychange", refreshOnReturn);
     };
-  }, [activationNeeded, refreshLighterReadiness]);
+  }, [scopedActivationNeeded, refreshLighterReadiness]);
 
   const connectAsterProgrammatic = useCallback(async (refreshExistingSigner = false) => {
     setWorking(true);
@@ -720,7 +734,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
   }, requiredVenueIds);
   const nextSetupAction = carryAccountSetupNextAction(
     connectionProgress,
-    activationNeeded ? [activationNeeded.venue] : [],
+    scopedActivationNeeded ? [scopedActivationNeeded.venue] : [],
   );
   const routeVerificationEnabled = workerPlatform?.status === "ready";
   const nextSetupDisabled = nextSetupAction.kind === "connect_venue" && (
@@ -728,11 +742,11 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
     (nextSetupAction.venueId === "aster" && (
       (perpsTurnkey.loading || !perpsTurnkey.configured) ||
       asterRegistrationAmbiguous ||
-      activationNeeded?.venue === "aster"
+      scopedActivationNeeded?.venue === "aster"
     )) ||
     (nextSetupAction.venueId === "lighter" && (
       (perpsTurnkey.loading || !perpsTurnkey.configured) ||
-      activationNeeded?.venue === "lighter" ||
+      scopedActivationNeeded?.venue === "lighter" ||
       pendingLighterAssociation?.submission_ambiguous === true
     ))
   );
@@ -746,7 +760,7 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         : working ? "Authorizing…"
         : asterWalletRepairRequested ? "Repair secure wallet"
         : asterRegistrationAmbiguous ? "Aster reconciliation required"
-        : activationNeeded?.venue === "aster" ? "Check Aster activation"
+        : scopedActivationNeeded?.venue === "aster" ? "Check Aster activation"
         : asterReprepareRequired ? "Refresh same Aster signer"
         : pendingAsterLinkRecovery
           ? pendingAsterLinkRecovery.signature
@@ -758,13 +772,14 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         : !perpsTurnkey.configured ? "Secure wallet unavailable"
         : perpsTurnkey.loading ? "Restoring secure wallet…"
         : pendingLighterAssociation?.submission_ambiguous ? "Reconciliation required"
-        : activationNeeded?.venue === "lighter" ? "Check Lighter activation"
+        : scopedActivationNeeded?.venue === "lighter" ? "Check Lighter activation"
         : working ? "Authorizing…"
         : pendingLighterAssociation ? "Resume Lighter setup"
         : "Continue";
   function continueGuidedSetup() {
     if (nextSetupAction.kind !== "connect_venue") return;
-    if (nextSetupAction.venueId === "aster") void beginAsterProgrammatic();
+    if (nextSetupAction.venueId === "hyperliquid") setShowHyperliquidSetup(true);
+    else if (nextSetupAction.venueId === "aster") void beginAsterProgrammatic();
     else if (nextSetupAction.venueId === "lighter") void beginLighterProgrammatic();
   }
   return (
@@ -824,9 +839,15 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                     {workerPlatform ? "Platform check required" : "Checking platform…"}
                   </button>
                 ) : nextSetupAction.venueId === "hyperliquid" ? (
-                  <Link href={`/account?setup=hyperliquid&return_to=${encodeURIComponent(setupReturnTo)}`} className="inline-flex h-10 items-center rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d]">
+                  <button
+                    type="button"
+                    aria-expanded={showHyperliquidSetup}
+                    aria-controls="carry-hyperliquid-setup"
+                    onClick={continueGuidedSetup}
+                    className="inline-flex h-10 items-center rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d]"
+                  >
                     Continue
-                  </Link>
+                  </button>
                 ) : (
                   <button
                     type="button"
@@ -839,6 +860,29 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
                 )}
               </div>
             </div>
+            {showHyperliquidSetup && nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "hyperliquid" ? (
+              <section id="carry-hyperliquid-setup" aria-label="Connect Hyperliquid" className="rounded-xl border border-[#315277] bg-[#0b111b] p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8fcaff]">Hyperliquid access</p>
+                    <p className="mt-1 text-xs leading-5 text-[#8f9aae]">Complete this connection here. Your selected Carry pair and return path stay intact.</p>
+                  </div>
+                  <button type="button" aria-label="Close Hyperliquid setup" onClick={() => setShowHyperliquidSetup(false)} className="rounded-md p-1.5 text-[#718097] hover:bg-[#132238] hover:text-white">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <TurnkeyPerpsManager
+                  network={hyperliquidNetwork}
+                  market={hyperliquidMarket}
+                  referencePrice={null}
+                  onReady={() => {
+                    setHyperliquid("connected");
+                    setShowHyperliquidSetup(false);
+                    void refresh();
+                  }}
+                />
+              </section>
+            ) : null}
             {workerPlatform && workerPlatform.status !== "ready" && (
               <div data-worker-platform-status={workerPlatform.status} className="flex items-center justify-between gap-4 rounded-lg border border-[#60303a] bg-[#251116] px-4 py-3 text-xs text-[#ee9da8]">
                 <span>{workerPlatform.message}</span>
@@ -915,16 +959,16 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
         )}
 
         {error && <p className="mt-4 rounded-lg border border-[#60303a] bg-[#251116] px-4 py-3 text-sm text-[#ee9da8]">{error}</p>}
-        {activationNeeded && (
+        {scopedActivationNeeded && (
           <div className="mt-4 rounded-lg border border-[#315277] bg-[#0b1624] p-4 text-sm">
-            <p className="font-semibold text-[#d8eaff]">Activate this connected owner wallet on {activationNeeded.venue === "aster" ? "Aster" : "Lighter"}</p>
+            <p className="font-semibold text-[#d8eaff]">Activate this connected owner wallet on {scopedActivationNeeded.venue === "aster" ? "Aster" : "Lighter"}</p>
             <div className="mt-2 flex items-center gap-2">
-              <p className="min-w-0 break-all font-mono text-xs text-[#8fcaff]">{activationNeeded.ownerAddress}</p>
-              <button type="button" aria-label="Copy owner address" onClick={() => void navigator.clipboard.writeText(activationNeeded.ownerAddress)} className="shrink-0 rounded-md p-1.5 text-[#718097] hover:bg-[#132238] hover:text-[#a8d8ff]">
+              <p className="min-w-0 break-all font-mono text-xs text-[#8fcaff]">{scopedActivationNeeded.ownerAddress}</p>
+              <button type="button" aria-label="Copy owner address" onClick={() => void navigator.clipboard.writeText(scopedActivationNeeded.ownerAddress)} className="shrink-0 rounded-md p-1.5 text-[#718097] hover:bg-[#132238] hover:text-[#a8d8ff]">
                 <Copy className="h-3.5 w-3.5" />
               </button>
             </div>
-            {activationNeeded.venue === "lighter" ? (
+            {scopedActivationNeeded.venue === "lighter" ? (
               <LighterReadinessPanel
                 readiness={lighterReadiness}
                 error={lighterReadinessError}
@@ -934,11 +978,11 @@ export function CarryAccountSetup({ returnTo = "/carry" }: { returnTo?: string }
             ) : (
               <p className="mt-2 text-xs leading-5 text-[#8f9aae]">Aster must recognize this exact owner first. Ghola will preserve the same sealed signer, then request one fresh owner approval—never create another signer or retry an ambiguous submission.</p>
             )}
-            <a href={activationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : "https://app.lighter.xyz/"} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff]">
-              {activationNeeded.venue === "aster" ? "Open Aster" : "Open Lighter"}
+            <a href={scopedActivationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : "https://app.lighter.xyz/"} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff]">
+              {scopedActivationNeeded.venue === "aster" ? "Open Aster" : "Open Lighter"}
             </a>
-            <button type="button" disabled={working || (activationNeeded.venue === "lighter" && !lighterReadiness?.ready)} onClick={() => void retryAfterVenueActivation()} className="ml-2 mt-3 inline-flex rounded-md bg-[#4aaef8] px-3 py-2 text-xs font-semibold text-[#06111d] disabled:opacity-50">
-              {activationNeeded.venue === "aster"
+            <button type="button" disabled={working || (scopedActivationNeeded.venue === "lighter" && !lighterReadiness?.ready)} onClick={() => void retryAfterVenueActivation()} className="ml-2 mt-3 inline-flex rounded-md bg-[#4aaef8] px-3 py-2 text-xs font-semibold text-[#06111d] disabled:opacity-50">
+              {scopedActivationNeeded.venue === "aster"
                 ? "I activated it — approve once"
                 : "I activated it — recheck once"}
             </button>

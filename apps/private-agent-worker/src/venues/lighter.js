@@ -437,7 +437,10 @@ export async function readLighterFundingSettlements({
   const end = integer(endTimeMs, "lighter funding end is invalid");
   if (start <= 0 || end < start || end - start > 366 * 86_400_000) throw new LighterExecutionError("lighter funding window is invalid", 400, "venue_rejected");
   const result = await runner({ action: "funding", credential, market: lighterMarket(market), start_time_ms: start, end_time_ms: end, timeout_ms: fundingTimeoutMs() });
-  const rows = Array.isArray(result?.funding_rows) ? result.funding_rows : [];
+  if (!Array.isArray(result?.funding_rows)) {
+    throw new LighterExecutionError("lighter funding history response is invalid", 502, "connector_submit_failed");
+  }
+  const rows = result.funding_rows;
   return rows.map((row) => {
     const rawTime = Number(row.timestamp ?? row.time ?? row.funding_timestamp);
     const occurredAt = rawTime > 0 && rawTime < 10_000_000_000 ? rawTime * 1_000 : rawTime;

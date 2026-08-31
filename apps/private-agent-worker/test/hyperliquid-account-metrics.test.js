@@ -68,3 +68,18 @@ test("reads exact Hyperliquid user funding settlements for the Carry asset", asy
   assert.deepEqual(request, { type: "userFunding", user: "0x1111111111111111111111111111111111111111", startTime: 1_800_000_000_000, endTime: 1_800_003_600_000 });
   assert.deepEqual(rows, [{ venue_id: "hyperliquid", asset: "BTC", occurred_at_ms: 1_800_003_600_000, amount_quote: "0.021", quote_asset: "USDC", settlement_id: "0xabc" }]);
 });
+
+test("rejects a malformed Hyperliquid funding history response", async () => {
+  await assert.rejects(readHyperliquidFundingSettlements({
+    credential: {
+      network: "testnet",
+      base_url: "https://api.hyperliquid-testnet.xyz",
+      account_address: "0x1111111111111111111111111111111111111111",
+      api_wallet_private_key: `0x${"31".repeat(32)}`,
+    },
+    asset: "BTC",
+    start_time_ms: 1_800_000_000_000,
+    end_time_ms: 1_800_003_600_000,
+    fetchImpl: async () => new Response(JSON.stringify({ rows: [] }), { status: 200, headers: { "content-type": "application/json" } }),
+  }), (error) => error.code === "connector_submit_failed");
+});

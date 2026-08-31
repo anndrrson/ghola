@@ -557,6 +557,27 @@ test("normalizes only user funding payments from the authenticated Lighter expor
   }
 });
 
+test("rejects a malformed Lighter funding history response", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "read_only";
+  try {
+    await assert.rejects(readLighterFundingSettlements({
+      credential: credential(),
+      market: "BTC",
+      start_time_ms: 1_800_000_000_000,
+      end_time_ms: 1_800_003_600_000,
+      runner: async () => ({ symbol: "BTC", funding_rows: null }),
+    }), (error) => error.code === "connector_submit_failed");
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
 test("reconciles the exact Lighter client order index", async () => {
   const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
   const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;

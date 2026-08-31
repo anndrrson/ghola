@@ -10,7 +10,10 @@ const ETH_SIGNATURE = /^0x[0-9a-f]{130}$/;
 const ETH_COMMITMENT = /^0x[0-9a-f]{64}$/;
 const CARRY_OPPORTUNITY_EVIDENCE = /^carry:creation-opportunity:evidence:[0-9a-f]{64}$/;
 const CURRENT_FUNDING_OBSERVATION = /^carry:funding:current:[0-9a-f]{64}$/;
+const CASHFLOW_VALUATION_EVIDENCE = /^carry:cashflow-valuation:evidence:[0-9a-f]{64}$/;
 const USD_STABLE_QUOTES = new Set(["USD", "USDC", "USDT"]);
+const USDC_RATE_E8 = 100_000_000;
+const MAX_CASHFLOW_VALUATION_LIFETIME_MS = 300_000;
 const POSITION_STATUSES = new Set([
   "draft", "opening", "active", "rebalancing", "exiting", "reconciled", "frozen", "manual_intervention",
 ]);
@@ -157,12 +160,152 @@ export function adverseExecutionSlippageE6Bps({ side, mark_price_e8: markPriceE8
   return Number((numerator + BigInt(markPriceE8) - 1n) / BigInt(markPriceE8));
 }
 
+export function cashflowValuationEvidenceMessage({
+  source_asset,
+  valuation_asset,
+  bound_source_amount_micro,
+  credit_rate_e8,
+  debit_rate_e8,
+  observed_at_ms,
+  expires_at_ms,
+  evidence_source,
+} = {}) {
+  return canonicalCarryCommitmentJson({
+    version: 1,
+    domain: "ghola-cashflow-valuation-evidence-v1",
+    source_asset,
+    valuation_asset,
+    bound_source_amount_micro,
+    credit_rate_e8,
+    debit_rate_e8,
+    observed_at_ms,
+    expires_at_ms,
+    evidence_source,
+  });
+}
+
+export function normalizeCashflowValuation(value) {
+  const raw = object(value, "cashflow_valuation_required");
+  exactVersion(raw.version, "cashflow_valuation_version");
+  const sourceAsset = enumValue(
+    normalized(raw.source_asset, ASSET, "cashflow_valuation_source_asset"),
+    USD_STABLE_QUOTES,
+    "cashflow_valuation_source_asset",
+  );
+  if (raw.valuation_asset !== "USDC" || raw.verified !== true) {
+    fail("cashflow_valuation_unverified");
+  }
+  const creditRateE8 = boundedInteger(
+    raw.credit_rate_e8,
+    1,
+    1_000_000_000,
+    "cashflow_valuation_credit_rate",
+  );
+  const debitRateE8 = boundedInteger(
+    raw.debit_rate_e8,
+    1,
+    1_000_000_000,
+    "cashflow_valuation_debit_rate",
+  );
+  if (creditRateE8 > debitRateE8) fail("cashflow_valuation_spread_invalid");
+  const observedAtMs = positiveInteger(raw.observed_at_ms, "cashflow_valuation_observed_at");
+  const expiresAtMs = positiveInteger(raw.expires_at_ms, "cashflow_valuation_expires_at");
+  if (expiresAtMs <= observedAtMs
+    || expiresAtMs - observedAtMs > MAX_CASHFLOW_VALUATION_LIFETIME_MS) {
+    fail("cashflow_valuation_lifetime_invalid");
+  }
+  if (sourceAsset === "USDC"
+    && (creditRateE8 !== USDC_RATE_E8 || debitRateE8 !== USDC_RATE_E8)) {
+    fail("cashflow_valuation_identity_invalid");
+  }
+  const boundSourceAmountMicro = raw.bound_source_amount_micro == null
+    ? null
+    : signedInteger(raw.bound_source_amount_micro, "cashflow_valuation_bound_source_amount");
+  if (boundSourceAmountMicro === 0) fail("cashflow_valuation_bound_source_amount");
+  const evidenceSource = identifier(raw.evidence_source, "cashflow_valuation_evidence_source");
+  const evidenceMessage = cashflowValuationEvidenceMessage({
+    source_asset: sourceAsset,
+    valuation_asset: "USDC",
+    bound_source_amount_micro: boundSourceAmountMicro ?? undefined,
+    credit_rate_e8: creditRateE8,
+    debit_rate_e8: debitRateE8,
+    observed_at_ms: observedAtMs,
+    expires_at_ms: expiresAtMs,
+    evidence_source: evidenceSource,
+  });
+  if (raw.evidence_message !== evidenceMessage) fail("cashflow_valuation_evidence_message");
+  const evidenceCommitment = typeof raw.evidence_commitment === "string"
+    && CASHFLOW_VALUATION_EVIDENCE.test(raw.evidence_commitment)
+    ? raw.evidence_commitment
+    : fail("cashflow_valuation_evidence_commitment");
+  const evidencePayload = raw.evidence_payload == null
+    ? null
+    : object(raw.evidence_payload, "cashflow_valuation_evidence_payload");
+  return deepFreeze({
+    version: 1,
+    source_asset: sourceAsset,
+    valuation_asset: "USDC",
+    verified: true,
+    conversion_required: sourceAsset !== "USDC",
+    bound_source_amount_micro: boundSourceAmountMicro,
+    credit_rate_e8: creditRateE8,
+    debit_rate_e8: debitRateE8,
+    observed_at_ms: observedAtMs,
+    expires_at_ms: expiresAtMs,
+    evidence_source: evidenceSource,
+    evidence_message: evidenceMessage,
+    evidence_commitment: evidenceCommitment,
+    evidence_payload: evidencePayload,
+  });
+}
+
+export function convertSignedCashflowToMicroUsdc({ amount_micro: amountMicro, valuation } = {}) {
+  const amount = signedInteger(amountMicro, "cashflow_amount_invalid");
+  const normalizedValuation = normalizeCashflowValuation(valuation);
+  if (amount === 0) return 0;
+  const magnitude = BigInt(Math.abs(amount));
+  const rateE8 = BigInt(amount > 0
+    ? normalizedValuation.credit_rate_e8
+    : normalizedValuation.debit_rate_e8);
+  const converted = amount > 0
+    ? magnitude * rateE8 / BigInt(USDC_RATE_E8)
+    : ceilDiv(magnitude * rateE8, BigInt(USDC_RATE_E8));
+  const result = safeNumber(converted);
+  return amount > 0 ? result : -result;
+}
+
 export function normalizePerpContractSpec(value) {
   const raw = object(value, "contract_required");
   exactVersion(raw.version, "contract_version");
   const venueId = venue(raw.venue_id, "contract_venue");
   if (!venueSupportsProduct(venueId, "perp")) fail("contract_venue_not_perp");
   const declared = venueAdapterCapability(venueId, "perp_shadow");
+  const asOfMs = positiveInteger(raw.as_of_ms, "contract_as_of");
+  const quoteAsset = enumValue(
+    normalized(raw.quote_asset, ASSET, "contract_quote_asset"),
+    USD_STABLE_QUOTES,
+    "contract_quote_asset_unsupported",
+  );
+  const collateralAsset = enumValue(
+    normalized(raw.collateral_asset, ASSET, "contract_collateral_asset"),
+    USD_STABLE_QUOTES,
+    "contract_collateral_asset_unsupported",
+  );
+  const fundingSettlementAsset = enumValue(
+    normalized(raw.funding_settlement_asset, ASSET, "contract_funding_settlement_asset"),
+    USD_STABLE_QUOTES,
+    "contract_funding_settlement_asset_unsupported",
+  );
+  const feeSettlementAsset = enumValue(
+    normalized(raw.fee_settlement_asset, ASSET, "contract_fee_settlement_asset"),
+    USD_STABLE_QUOTES,
+    "contract_fee_settlement_asset_unsupported",
+  );
+  const assetValuations = normalizeContractAssetValuations(
+    raw.asset_valuations,
+    new Set([quoteAsset, fundingSettlementAsset, feeSettlementAsset]),
+    asOfMs,
+  );
   const initialMarginBps = boundedInteger(raw.initial_margin_bps, 1, 10_000, "contract_initial_margin");
   const maintenanceMarginBps = boundedInteger(raw.maintenance_margin_bps, 0, 9_999, "contract_maintenance_margin");
   if (initialMarginBps <= maintenanceMarginBps) fail("contract_margin_model_invalid");
@@ -178,8 +321,12 @@ export function normalizePerpContractSpec(value) {
     economic_equivalence_id: identifier(raw.economic_equivalence_id, "economic_equivalence_id"),
     asset: normalized(raw.asset, ASSET, "contract_asset"),
     market: normalized(raw.market, MARKET, "contract_market"),
-    quote_asset: normalized(raw.quote_asset, ASSET, "contract_quote_asset"),
-    collateral_asset: normalized(raw.collateral_asset, ASSET, "contract_collateral_asset"),
+    quote_asset: quoteAsset,
+    collateral_asset: collateralAsset,
+    funding_settlement_asset: fundingSettlementAsset,
+    fee_settlement_asset: feeSettlementAsset,
+    valuation_asset: "USDC",
+    asset_valuations: assetValuations,
     contract_type: enumValue(raw.contract_type, new Set(["linear_perp", "inverse_perp"]), "contract_type"),
     mark_price_e8: positiveInteger(raw.mark_price_e8, "contract_mark_price"),
     index_price_e8: positiveInteger(raw.index_price_e8, "contract_index_price"),
@@ -204,7 +351,7 @@ export function normalizePerpContractSpec(value) {
     minimum_notional_micro_usdc: positiveInteger(raw.minimum_notional_micro_usdc, "contract_minimum_notional"),
     quantity_step_e8: positiveInteger(raw.quantity_step_e8, "contract_quantity_step"),
     price_tick_e8: positiveInteger(raw.price_tick_e8, "contract_price_tick"),
-    as_of_ms: positiveInteger(raw.as_of_ms, "contract_as_of"),
+    as_of_ms: asOfMs,
   });
 }
 
@@ -1460,6 +1607,8 @@ export function evaluateCarryOpportunity(value) {
   const longContract = normalizePerpContractSpec(raw.long_contract);
   const shortContract = normalizePerpContractSpec(raw.short_contract);
   const nowMs = positiveInteger(raw.now_ms, "carry_now");
+  assertContractValuationsCurrent(longContract, nowMs);
+  assertContractValuationsCurrent(shortContract, nowMs);
   const maxAgeMs = boundedInteger(raw.max_data_age_ms, 250, 300_000, "carry_max_data_age");
   const maxContractDataSkewMs = boundedInteger(
     raw.max_contract_data_skew_ms,
@@ -1504,15 +1653,42 @@ export function evaluateCarryOpportunity(value) {
     }
   }
 
-  const longFunding = fundingCashMicro("long", notional, longContract, horizonMs);
-  const shortFunding = fundingCashMicro("short", notional, shortContract, horizonMs);
+  const longFundingNative = fundingCashMicro("long", notional, longContract, horizonMs);
+  const shortFundingNative = fundingCashMicro("short", notional, shortContract, horizonMs);
+  const longFunding = modeledContractCashflowMicroUsdc(
+    longFundingNative,
+    longContract,
+    longContract.funding_settlement_asset,
+    "carry_long_funding",
+  );
+  const shortFunding = modeledContractCashflowMicroUsdc(
+    shortFundingNative,
+    shortContract,
+    shortContract.funding_settlement_asset,
+    "carry_short_funding",
+  );
   const grossFunding = safeAdd(longFunding, shortFunding, "carry_funding_overflow");
-  const feeE6Bps = sumCostFields([longCosts, shortCosts], ["entry_fee_e6_bps", "exit_fee_e6_bps"]);
-  const slippageE6Bps = sumCostFields([longCosts, shortCosts], ["entry_slippage_e6_bps", "exit_slippage_e6_bps"]);
-  const latencyE6Bps = sumCostFields([longCosts, shortCosts], ["latency_penalty_bps"], 1_000_000);
-  const [tradingFeeCost, slippageCost, latencyBuffer] = allocateE6BpsMicroCosts(
+  const tradingFeeCost = modeledLegCostTotalMicroUsdc(
     notional,
-    [feeE6Bps, slippageE6Bps, latencyE6Bps],
+    [[longContract, longCosts], [shortContract, shortCosts]],
+    ["entry_fee_e6_bps", "exit_fee_e6_bps"],
+    (contract) => contract.fee_settlement_asset,
+    "carry_trading_fee",
+  );
+  const slippageCost = modeledLegCostTotalMicroUsdc(
+    notional,
+    [[longContract, longCosts], [shortContract, shortCosts]],
+    ["entry_slippage_e6_bps", "exit_slippage_e6_bps"],
+    (contract) => contract.quote_asset,
+    "carry_slippage",
+  );
+  const latencyBuffer = modeledLegCostTotalMicroUsdc(
+    notional,
+    [[longContract, longCosts], [shortContract, shortCosts]],
+    ["latency_penalty_bps"],
+    (contract) => contract.quote_asset,
+    "carry_latency",
+    1_000_000,
   );
   const gasCost = safeAdd(longCosts.gas_micro_usdc, shortCosts.gas_micro_usdc, "carry_gas_overflow");
   const fixedTradingCost = [tradingFeeCost, slippageCost, latencyBuffer, gasCost]
@@ -1520,8 +1696,18 @@ export function evaluateCarryOpportunity(value) {
   const baseRiskBuffer = microFromBpsCeil(notional, riskBufferBps);
   const collateralBasisRisk = microFromBpsCeil(notional, collateralBasisRiskBps);
   const liquidationFeeRisk = safeAdd(
-    microFromBpsCeil(notional, longContract.liquidation_fee_bps),
-    microFromBpsCeil(notional, shortContract.liquidation_fee_bps),
+    modeledContractCostMicroUsdc(
+      microFromBpsCeil(notional, longContract.liquidation_fee_bps),
+      longContract,
+      longContract.fee_settlement_asset,
+      "carry_long_liquidation_fee",
+    ),
+    modeledContractCostMicroUsdc(
+      microFromBpsCeil(notional, shortContract.liquidation_fee_bps),
+      shortContract,
+      shortContract.fee_settlement_asset,
+      "carry_short_liquidation_fee",
+    ),
     "carry_liquidation_fee_risk_overflow",
   );
   const riskBuffer = safeAdd(
@@ -1537,8 +1723,18 @@ export function evaluateCarryOpportunity(value) {
   const expectedNet = safeAdd(grossFunding, -totalModeledCost, "carry_net_overflow");
   const expectedNetBps = ratioBpsFloor(expectedNet, notional);
   const dailyFunding = safeAdd(
-    fundingCashMicro("long", notional, longContract, DAY_MS),
-    fundingCashMicro("short", notional, shortContract, DAY_MS),
+    modeledContractCashflowMicroUsdc(
+      fundingCashMicro("long", notional, longContract, DAY_MS),
+      longContract,
+      longContract.funding_settlement_asset,
+      "carry_long_daily_funding",
+    ),
+    modeledContractCashflowMicroUsdc(
+      fundingCashMicro("short", notional, shortContract, DAY_MS),
+      shortContract,
+      shortContract.funding_settlement_asset,
+      "carry_short_daily_funding",
+    ),
     "carry_daily_funding_overflow",
   );
   const dailyCapitalCost = microFromBpsCeil(capitalCommitted, capitalCostBpsPerDay);
@@ -1561,6 +1757,8 @@ export function evaluateCarryOpportunity(value) {
     notional_micro_usdc: notional,
     capital_committed_micro_usdc: capitalCommitted,
     horizon_ms: horizonMs,
+    projected_long_funding_source_amount_micro: longFundingNative,
+    projected_short_funding_source_amount_micro: shortFundingNative,
     projected_long_funding_micro_usdc: longFunding,
     projected_short_funding_micro_usdc: shortFunding,
     projected_gross_funding_micro_usdc: grossFunding,
@@ -1599,6 +1797,13 @@ export function evaluateCarryOpportunity(value) {
     contract_type: contractPairBasis.contract_type,
     long_quote_asset: contractPairBasis.long_quote_asset,
     short_quote_asset: contractPairBasis.short_quote_asset,
+    long_funding_settlement_asset: longContract.funding_settlement_asset,
+    short_funding_settlement_asset: shortContract.funding_settlement_asset,
+    long_fee_settlement_asset: longContract.fee_settlement_asset,
+    short_fee_settlement_asset: shortContract.fee_settlement_asset,
+    valuation_asset: "USDC",
+    long_asset_valuations: longContract.asset_valuations,
+    short_asset_valuations: shortContract.asset_valuations,
     index_price_divergence_bps: contractPairBasis.index_price_divergence_bps,
     mark_price_divergence_bps: contractPairBasis.mark_price_divergence_bps,
     max_index_price_divergence_bps: contractPairBasis.max_index_price_divergence_bps,
@@ -1975,6 +2180,14 @@ export function appendCarryValueLedgerEntry({ ledger: ledgerInput, entry: entryI
       const existing = ledger.entries.find((item) => item.entry_id === entry.entry_id);
       if (!existing || !sameValueEntryClaim(existing, entry)) fail("carry_value_entry_replay_mismatch");
       return deepFreeze({ ok: true, duplicate: true, ledger: deepFreeze(ledgerInput) });
+    }
+    if (entry.entry_type === "funding"
+      && (entry.cashflow_valuation.observed_at_ms > nowMs + 5_000
+        || entry.cashflow_valuation.expires_at_ms <= nowMs)) {
+      fail("carry_value_funding_valuation_stale");
+    }
+    if (entry.entry_type === "funding" && entry.valued_at_ms !== nowMs) {
+      fail("carry_value_funding_valued_at_mismatch");
     }
     const claimId = valueClaimId(entry);
     if (ledger.processed_claim_ids.includes(claimId)) fail("carry_value_evidence_claim_reused");
@@ -2602,7 +2815,7 @@ function normalizeValueEntry(value) {
   if (CREDIT_ONLY_VALUE_ENTRY_TYPES.has(entryType) && direction !== "credit") {
     fail("carry_value_rebate_must_be_credit");
   }
-  return {
+  const normalizedEntry = {
     version: 1,
     entry_id: identifier(raw.entry_id, "carry_value_entry_id"),
     sequence: positiveInteger(raw.sequence, "carry_value_entry_sequence"),
@@ -2613,6 +2826,60 @@ function normalizeValueEntry(value) {
     leg_id: raw.leg_id == null ? null : identifier(raw.leg_id, "carry_value_entry_leg_id"),
     occurred_at_ms: positiveInteger(raw.occurred_at_ms, "carry_value_entry_occurred_at"),
     evidence_commitment: identifier(raw.evidence_commitment, "carry_value_entry_evidence"),
+  };
+  if (entryType !== "funding") return normalizedEntry;
+  const sourceAmountMicro = signedInteger(
+    raw.source_amount_micro,
+    "carry_value_funding_source_amount",
+  );
+  const sourceAsset = enumValue(
+    normalized(raw.source_asset, ASSET, "carry_value_funding_source_asset"),
+    USD_STABLE_QUOTES,
+    "carry_value_funding_source_asset",
+  );
+  const valuedAtMs = positiveInteger(raw.valued_at_ms, "carry_value_funding_valued_at");
+  if (normalizedEntry.occurred_at_ms > valuedAtMs) fail("carry_value_funding_valued_before_occurrence");
+  if ((sourceAmountMicro > 0 && direction !== "credit")
+    || (sourceAmountMicro < 0 && direction !== "debit")) {
+    fail("carry_value_funding_source_direction_mismatch");
+  }
+  const cashflowValuation = normalizeCashflowValuation(raw.cashflow_valuation);
+  if (cashflowValuation.source_asset !== sourceAsset) {
+    fail("carry_value_funding_valuation_asset_mismatch");
+  }
+  if (sourceAsset !== "USDC"
+    && cashflowValuation.bound_source_amount_micro !== sourceAmountMicro) {
+    fail("carry_value_funding_valuation_amount_mismatch");
+  }
+  const sourceAmountDecimal = typeof raw.source_amount_decimal === "string"
+    && /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(raw.source_amount_decimal)
+    ? raw.source_amount_decimal
+    : fail("carry_value_funding_source_decimal");
+  const sourceAmountScale = nonNegativeInteger(
+    raw.source_amount_scale,
+    "carry_value_funding_source_scale",
+  );
+  if (sourceAmountScale > 30
+    || (sourceAmountDecimal.split(".")[1]?.length || 0) !== sourceAmountScale) {
+    fail("carry_value_funding_source_scale");
+  }
+  const convertedAmountMicroUsdc = convertSignedCashflowToMicroUsdc({
+    amount_micro: sourceAmountMicro,
+    valuation: cashflowValuation,
+  });
+  if (Math.abs(convertedAmountMicroUsdc) !== normalizedEntry.amount_micro_usdc
+    || (convertedAmountMicroUsdc > 0 && direction !== "credit")
+    || (convertedAmountMicroUsdc < 0 && direction !== "debit")) {
+    fail("carry_value_funding_conversion_mismatch");
+  }
+  return {
+    ...normalizedEntry,
+    source_amount_micro: sourceAmountMicro,
+    source_amount_decimal: sourceAmountDecimal,
+    source_amount_scale: sourceAmountScale,
+    source_asset: sourceAsset,
+    valued_at_ms: valuedAtMs,
+    cashflow_valuation: cashflowValuation,
   };
 }
 
@@ -3256,6 +3523,12 @@ function valueClaimId(entry) {
     entry.entry_type,
     entry.venue_id || "portfolio",
     entry.leg_id || "none",
+    entry.source_asset || "none",
+    entry.source_amount_micro ?? "none",
+    entry.source_amount_decimal || "none",
+    entry.source_amount_scale ?? "none",
+    entry.valued_at_ms ?? "none",
+    entry.cashflow_valuation?.evidence_commitment || "none",
   ].join("|");
 }
 
@@ -3267,13 +3540,59 @@ function sameValueEntryClaim(left, right) {
     && left.venue_id === right.venue_id
     && left.leg_id === right.leg_id
     && left.occurred_at_ms === right.occurred_at_ms
-    && left.evidence_commitment === right.evidence_commitment;
+    && left.evidence_commitment === right.evidence_commitment
+    && left.source_amount_micro === right.source_amount_micro
+    && left.source_amount_decimal === right.source_amount_decimal
+    && left.source_amount_scale === right.source_amount_scale
+    && left.valued_at_ms === right.valued_at_ms
+    && left.source_asset === right.source_asset
+    && left.cashflow_valuation?.evidence_message === right.cashflow_valuation?.evidence_message
+    && left.cashflow_valuation?.evidence_commitment === right.cashflow_valuation?.evidence_commitment;
 }
 
 function fundingCashMicro(side, notional, contract, horizonMs) {
   const direction = side === "short" ? 1n : -1n;
   const numerator = direction * BigInt(notional) * BigInt(contract.funding_rate_e12_per_interval) * BigInt(horizonMs);
   return safeNumber(floorDiv(numerator, 1_000_000_000_000n * BigInt(contract.funding_interval_ms)));
+}
+
+function modeledContractCashflowMicroUsdc(amountMicro, contract, sourceAsset, code) {
+  const valuation = contract.asset_valuations[sourceAsset];
+  if (!valuation) fail(`${code}_valuation_missing`);
+  if (valuation.bound_source_amount_micro != null
+    && valuation.bound_source_amount_micro !== amountMicro) {
+    fail(`${code}_valuation_amount_mismatch`);
+  }
+  return convertSignedCashflowToMicroUsdc({ amount_micro: amountMicro, valuation });
+}
+
+function modeledContractCostMicroUsdc(amountMicro, contract, sourceAsset, code) {
+  if (amountMicro === 0) return 0;
+  return -modeledContractCashflowMicroUsdc(-amountMicro, contract, sourceAsset, code);
+}
+
+function modeledLegCostTotalMicroUsdc(
+  notional,
+  legs,
+  fields,
+  sourceAsset,
+  code,
+  multiplier = 1,
+) {
+  return legs.reduce((total, [contract, costs], legIndex) => {
+    const e6Bps = fields.reduce(
+      (sum, field) => safeAdd(sum, costs[field] * multiplier, `${code}_bps_overflow`),
+      0,
+    );
+    const nativeCost = microFromE6BpsCeil(notional, e6Bps);
+    const convertedCost = modeledContractCostMicroUsdc(
+      nativeCost,
+      contract,
+      sourceAsset(contract),
+      `${code}_${legIndex}`,
+    );
+    return safeAdd(total, convertedCost, `${code}_overflow`);
+  }, 0);
 }
 
 function sumCostFields(costs, fields, multiplier = 1) {
@@ -3331,6 +3650,64 @@ function normalizePairContract(value, leg) {
     mark_price_e8: positiveInteger(raw.mark_price_e8, `carry_${leg}_pair_mark_price`),
     index_price_e8: positiveInteger(raw.index_price_e8, `carry_${leg}_pair_index_price`),
   });
+}
+
+function normalizeContractAssetValuations(value, requiredAssets, contractAsOfMs) {
+  const rows = value === undefined
+    ? []
+    : array(value, "contract_asset_valuations", 0, USD_STABLE_QUOTES.size);
+  const byAsset = new Map();
+  for (const row of rows) {
+    const valuation = normalizeCashflowValuation(row);
+    if (byAsset.has(valuation.source_asset)) fail("contract_asset_valuation_duplicate");
+    byAsset.set(valuation.source_asset, valuation);
+  }
+  for (const sourceAsset of byAsset.keys()) {
+    if (!requiredAssets.has(sourceAsset)) fail("contract_asset_valuation_unbound");
+  }
+  for (const sourceAsset of requiredAssets) {
+    if (sourceAsset === "USDC" && !byAsset.has(sourceAsset)) {
+      byAsset.set(sourceAsset, usdcIdentityValuation(contractAsOfMs));
+    }
+    const valuation = byAsset.get(sourceAsset);
+    if (!valuation) fail("contract_asset_valuation_missing");
+    if (valuation.source_asset !== sourceAsset) fail("contract_asset_valuation_asset_mismatch");
+    if (valuation.observed_at_ms > contractAsOfMs + 5_000
+      || valuation.expires_at_ms <= contractAsOfMs) {
+      fail("contract_asset_valuation_stale");
+    }
+  }
+  return deepFreeze(Object.fromEntries(
+    [...byAsset.entries()].sort(([left], [right]) => left.localeCompare(right)),
+  ));
+}
+
+function usdcIdentityValuation(observedAtMs) {
+  const valuation = {
+    version: 1,
+    source_asset: "USDC",
+    valuation_asset: "USDC",
+    verified: true,
+    conversion_required: false,
+    credit_rate_e8: USDC_RATE_E8,
+    debit_rate_e8: USDC_RATE_E8,
+    observed_at_ms: observedAtMs,
+    expires_at_ms: Math.min(Number.MAX_SAFE_INTEGER, observedAtMs + MAX_CASHFLOW_VALUATION_LIFETIME_MS),
+    evidence_source: "identity:usdc:v1",
+    evidence_commitment: `carry:cashflow-valuation:evidence:${"0".repeat(64)}`,
+  };
+  return deepFreeze({
+    ...valuation,
+    evidence_message: cashflowValuationEvidenceMessage(valuation),
+  });
+}
+
+function assertContractValuationsCurrent(contract, nowMs) {
+  for (const valuation of Object.values(contract.asset_valuations)) {
+    if (valuation.observed_at_ms > nowMs + 5_000 || valuation.expires_at_ms <= nowMs) {
+      fail("carry_cashflow_valuation_stale");
+    }
+  }
 }
 
 function requireStatus(position, allowed) {

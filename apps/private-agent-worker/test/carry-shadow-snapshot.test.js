@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CORE_PERP_VENUES, venueAdapterCapability } from "@ghola/execution-core";
+import { CORE_PERP_VENUES, cashflowValuationEvidenceMessage, venueAdapterCapability } from "@ghola/execution-core";
 import {
   carryShadowSnapshotKey,
   readCarryShadowSnapshot,
@@ -35,6 +35,8 @@ const routingAdvantage = Object.freeze({
 function snapshot(venueId, observedAt) {
   const declared = venueAdapterCapability(venueId, "perp_shadow");
   const freshness = declared.source_max_age_ms;
+  const quoteAsset = venueId === "hyperliquid" || venueId === "aster" ? "USDT" : "USD";
+  const settlementAsset = venueId === "aster" ? "USDT" : "USDC";
   return {
     version: 1,
     venue_id: venueId,
@@ -45,8 +47,11 @@ function snapshot(venueId, observedAt) {
     economic_equivalence_id: "carry:BTC-usd-linear",
     asset: "BTC",
     market: "BTC-USD",
-    quote_asset: venueId === "hyperliquid" ? "USDT" : "USD",
+    quote_asset: quoteAsset,
     collateral_asset: "USDC",
+    funding_settlement_asset: settlementAsset,
+    fee_settlement_asset: settlementAsset,
+    asset_valuations: [cashflowValuation(quoteAsset, observedAt)],
     contract_type: "linear_perp",
     mark_price_e8: 10_000_000_000,
     index_price_e8: 10_000_000_000,
@@ -80,6 +85,22 @@ function snapshot(venueId, observedAt) {
     quality_flags: [],
     executable: false,
   };
+}
+
+function cashflowValuation(sourceAsset, observedAtMs) {
+  const valuation = {
+    version: 1,
+    source_asset: sourceAsset,
+    valuation_asset: "USDC",
+    verified: true,
+    credit_rate_e8: 99_000_000,
+    debit_rate_e8: 101_000_000,
+    observed_at_ms: observedAtMs,
+    expires_at_ms: observedAtMs + 30_000,
+    evidence_source: "test:stablecoin-book:v1",
+    evidence_commitment: `carry:cashflow-valuation:evidence:${(sourceAsset === "USDT" ? "a" : "b").repeat(64)}`,
+  };
+  return { ...valuation, evidence_message: cashflowValuationEvidenceMessage(valuation) };
 }
 
 test("serves a fresh commitment-backed five-venue snapshot from the durable observer", async () => {

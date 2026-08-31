@@ -1604,7 +1604,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webAccountSetup", "buildAsterExecutionVaultBundle", "aster_account_setup_missing");
   requireText("webAccountSetup", "buildLighterExecutionVaultBundle", "lighter_account_setup_missing");
   requireText("webAccountSetup", "href={safeReturnTo}", "carry_setup_terminal_return_missing");
-  requireText("webAccountSetup", "return_to=${encodeURIComponent(setupReturnTo)}", "hyperliquid_setup_carry_resume_missing");
+  requireText("webAccountSetup", "hyperliquidMarketFromTradeReturn(safeReturnTo)", "hyperliquid_setup_carry_return_binding_missing");
+  requireText("webAccountSetup", "<TurnkeyPerpsManager", "hyperliquid_setup_inline_manager_missing");
+  requireText("webAccountSetup", 'setHyperliquid("connected")', "hyperliquid_setup_carry_resume_missing");
   requireText("webAccountSetup", "readCarryOnboardingRecovery", "carry_setup_recovery_restore_missing");
   requireText("webAccountSetup", "updateCarryOnboardingRecovery", "carry_setup_recovery_persist_missing");
   requireText("webOnboardingRecovery", "MAX_AGE_MS", "carry_setup_recovery_expiry_missing");

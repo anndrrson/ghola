@@ -175,12 +175,18 @@ test("Carry funding history dispatches through the registered Aster adapter", as
   const priorDryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
   const priorFetch = globalThis.fetch;
   process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "true";
-  let requestUrl = "";
+  const requestUrls = [];
   globalThis.fetch = async (url) => {
-    requestUrl = String(url);
+    const requestUrl = String(url);
+    requestUrls.push(requestUrl);
     return {
       ok: true,
-      json: async () => [{ time: 1_800_000_000_100, income: "0.01", asset: "USDT", tranId: 42 }],
+      json: async () => requestUrl.includes("/api/v3/depth") ? {
+        symbol: "USDCUSDT",
+        T: Date.now(),
+        bids: [["0.9998", "100"]],
+        asks: [["1.0002", "100"]],
+      } : [{ time: 1_800_000_000_100, income: "0.01", asset: "USDT", tranId: 42 }],
     };
   };
   t.after(() => {
@@ -199,13 +205,20 @@ test("Carry funding history dispatches through the registered Aster adapter", as
     recipient: {},
     state: {},
   });
-  assert.match(requestUrl, /\/fapi\/v1\/income/);
-  assert.deepEqual(rows, [{
+  assert.ok(requestUrls.some((url) => /\/fapi\/v1\/income/.test(url)));
+  assert.ok(requestUrls.some((url) => /\/api\/v3\/depth/.test(url)));
+  const [{ cashflow_valuation: valuation, ...settlement }] = rows;
+  assert.deepEqual(settlement, {
     venue_id: "aster",
     asset: "BTC",
     occurred_at_ms: 1_800_000_000_100,
     amount_quote: "0.01",
+    amount_quote_scale: 2,
+    amount_quote_micro: 10_000,
     quote_asset: "USDT",
     settlement_id: "42",
-  }]);
+  });
+  assert.equal(valuation.source_asset, "USDT");
+  assert.equal(valuation.valuation_asset, "USDC");
+  assert.equal(valuation.verified, true);
 });
