@@ -6,6 +6,13 @@ import path from "node:path";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const BRANCH_RE = /^(?!\/)(?!.*(?:\.\.|\/\/|@\{|\.lock(?:\/|$)))[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 
+export const PREVIEW_PRODUCT_RUNTIME_ENV_KEYS = Object.freeze([
+  "NEXT_PUBLIC_TURNKEY_PERPS_ORGANIZATION_ID",
+  "NEXT_PUBLIC_TURNKEY_PERPS_AUTH_PROXY_CONFIG_ID",
+  "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED",
+  "NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED",
+]);
+
 export const PRIVATE_WORKER_PREVIEW_ENV_GROUPS = Object.freeze([
   Object.freeze({
     id: "private_worker_url",
@@ -42,19 +49,19 @@ export const PRIVATE_WORKER_PREVIEW_ENV_GROUPS = Object.freeze([
   }),
   Object.freeze({
     id: "turnkey_perps_organization",
-    keys: Object.freeze(["NEXT_PUBLIC_TURNKEY_PERPS_ORGANIZATION_ID"]),
+    keys: Object.freeze([PREVIEW_PRODUCT_RUNTIME_ENV_KEYS[0]]),
   }),
   Object.freeze({
     id: "turnkey_perps_auth_proxy",
-    keys: Object.freeze(["NEXT_PUBLIC_TURNKEY_PERPS_AUTH_PROXY_CONFIG_ID"]),
+    keys: Object.freeze([PREVIEW_PRODUCT_RUNTIME_ENV_KEYS[1]]),
   }),
   Object.freeze({
     id: "private_agent_public_beta",
-    keys: Object.freeze(["GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED"]),
+    keys: Object.freeze([PREVIEW_PRODUCT_RUNTIME_ENV_KEYS[2]]),
   }),
   Object.freeze({
     id: "perps_mainnet_delegation",
-    keys: Object.freeze(["NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED"]),
+    keys: Object.freeze([PREVIEW_PRODUCT_RUNTIME_ENV_KEYS[3]]),
   }),
 ]);
 
@@ -75,7 +82,7 @@ export function parseVercelEnvListKeys(output, knownKeys = KNOWN_KEYS) {
 }
 
 export function assessPreviewBranchEnvScope({ branch, allPreviewKeys, branchPreviewKeys }) {
-  const normalizedBranch = validBranch(branch);
+  const normalizedBranch = validPreviewBranch(branch);
   const allKeys = normalizedKeySet(allPreviewKeys);
   const branchKeys = normalizedKeySet(branchPreviewKeys);
   const missing = PRIVATE_WORKER_PREVIEW_ENV_GROUPS.filter((group) => !hasAny(branchKeys, group.keys));
@@ -109,12 +116,12 @@ export function currentGitBranch({ cwd = REPO_ROOT, run = spawnSync } = {}) {
     maxBuffer: 64 * 1024,
   });
   if (result?.status !== 0) throw new Error("preview_env_branch_unavailable:check out a named git branch before deploying");
-  return validBranch(result.stdout);
+  return validPreviewBranch(result.stdout);
 }
 
 export function listVercelPreviewEnvKeys({ branch = null, cwd = REPO_ROOT, run = spawnSync } = {}) {
   const args = ["env", "list", "preview"];
-  if (branch !== null) args.push(validBranch(branch));
+  if (branch !== null) args.push(validPreviewBranch(branch));
   args.push("--no-color", "--cwd", cwd);
   const result = run("vercel", args, {
     cwd,
@@ -138,7 +145,7 @@ export function verifyCurrentPreviewBranchEnvScope({
   list = listVercelPreviewEnvKeys,
   run = spawnSync,
 } = {}) {
-  const currentBranch = branch === null ? currentGitBranch({ cwd, run }) : validBranch(branch);
+  const currentBranch = branch === null ? currentGitBranch({ cwd, run }) : validPreviewBranch(branch);
   return assessPreviewBranchEnvScope({
     branch: currentBranch,
     allPreviewKeys: list({ cwd, run }),
@@ -154,7 +161,7 @@ function hasAny(keys, candidates) {
   return candidates.some((key) => keys.has(key));
 }
 
-function validBranch(value) {
+export function validPreviewBranch(value) {
   const branch = String(value || "").trim();
   if (!BRANCH_RE.test(branch)) throw new Error("preview_env_branch_invalid");
   return branch;
