@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import {
-  canonicalCarryCommitmentJson,
   cashflowValuationEvidenceMessage,
   convertSignedCashflowToMicroUsdc,
   exactQuantityRecoveryAdapter,
@@ -26,6 +25,7 @@ import {
 import { readCarryExecutionReadiness } from "./carry-readiness.js";
 import { readCarryShadowQualification } from "./carry-shadow-qualification.js";
 import { buildCarryPrivatePrimeReadiness } from "./carry-private-prime-readiness.js";
+import { verifyCashflowValuationEvidence } from "./carry-stablecoin-conversion.js";
 import { loadCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
 import { recordCompletedCarryLifecycleProof } from "./carry-release-evidence.js";
 import {
@@ -1866,22 +1866,12 @@ function executionCashflowValuation({ leg, sourceAsset, sourceAmountMicro, nowMs
   }
   const row = accountingValuations(leg.asset_valuations)?.find((item) => item?.source_asset === asset);
   if (!row) throw new Error("carry_execution_valuation_missing");
-  const valuation = normalizeCashflowValuation(row);
+  const valuation = verifyCashflowValuationEvidence(row);
   if (valuation.observed_at_ms > nowMs + 5_000 || valuation.expires_at_ms <= nowMs) {
     throw new Error("carry_execution_valuation_stale");
   }
   if (valuation.bound_source_amount_micro != null && valuation.bound_source_amount_micro !== sourceAmountMicro) {
     throw new Error("carry_execution_valuation_amount_mismatch");
-  }
-  if (!valuation.evidence_payload) throw new Error("carry_execution_valuation_payload_missing");
-  const expectedCommitment = `carry:cashflow-valuation:evidence:${createHash("sha256")
-    .update(canonicalCarryCommitmentJson({
-      evidence_message: valuation.evidence_message,
-      evidence_payload: valuation.evidence_payload,
-    }))
-    .digest("hex")}`;
-  if (valuation.evidence_commitment !== expectedCommitment) {
-    throw new Error("carry_execution_valuation_commitment_invalid");
   }
   return valuation;
 }

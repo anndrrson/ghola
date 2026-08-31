@@ -58,27 +58,42 @@ function cashflowValuation(sourceAsset, observedAtMs, overrides = {}) {
 
 function boundCashflowValuation({ decimal, micro, observedAtMs, creditRateE8, debitRateE8 }) {
   const scale = decimal.split(".")[1]?.length || 0;
+  const magnitude = BigInt(Math.abs(micro));
+  const effectiveCreditRateE8 = Number(
+    (magnitude * BigInt(creditRateE8) / 100_000_000n) * 100_000_000n / magnitude,
+  );
+  const effectiveDebitRateE8 = Number(
+    (((magnitude * BigInt(debitRateE8) + 99_999_999n) / 100_000_000n) * 100_000_000n + magnitude - 1n)
+      / magnitude,
+  );
   const valuation = {
     version: 1,
     source_asset: "USDT",
     valuation_asset: "USDC",
     verified: true,
     bound_source_amount_micro: micro,
-    credit_rate_e8: creditRateE8,
-    debit_rate_e8: debitRateE8,
+    credit_rate_e8: effectiveCreditRateE8,
+    debit_rate_e8: effectiveDebitRateE8,
     observed_at_ms: observedAtMs,
-    expires_at_ms: observedAtMs + 300_000,
-    evidence_source: "test:stablecoin-book:v1",
+    expires_at_ms: observedAtMs + 30_000,
+    evidence_source: "coinbase-exchange:USDT-USDC:book:v1",
   };
   const evidenceMessage = cashflowValuationEvidenceMessage(valuation);
   const evidencePayload = {
-    venue_id: "test",
-    market: "USDCUSDT",
+    venue_id: "coinbase_exchange",
+    markets: ["USDT-USDC"],
+    source_observed_at_ms: { "USDT-USDC": observedAtMs },
     source_amount_micro: micro,
     source_amount_decimal: decimal,
     source_amount_scale: scale,
-    bids: [{ price_e8: 99_000_000, size_micro: 10_000_000 }],
-    asks: [{ price_e8: 101_000_000, size_micro: 10_000_000 }],
+    books: [{
+      market: "USDT-USDC",
+      sequence: "test",
+      observed_at_ms: observedAtMs,
+      provider_book_time_ms: null,
+      bids: [{ price_e8: creditRateE8, size_micro: 10_000_000 }],
+      asks: [{ price_e8: debitRateE8, size_micro: 10_000_000 }],
+    }],
   };
   return {
     ...valuation,
@@ -1228,14 +1243,14 @@ test("monitoring values native USDT funding with signed conservative rates", asy
   assert.equal(result.funding.status, "current");
   assert.deepEqual(
     result.record.value_ledger.entries.map((entry) => entry.amount_micro_usdc),
-    [990_000, 1_010_002],
+    [990_000, 1_010_003],
   );
   assert.deepEqual(
     result.record.value_ledger.entries.map((entry) => entry.source_amount_micro),
     [1_000_000, -1_000_001],
   );
   assert.equal(result.record.value_ledger.realized.funding_credit_micro_usdc, 990_000);
-  assert.equal(result.record.value_ledger.realized.funding_debit_micro_usdc, 1_010_002);
+  assert.equal(result.record.value_ledger.realized.funding_debit_micro_usdc, 1_010_003);
 });
 
 test("funding valuation uses append time after a delayed historical cutoff", async (t) => {

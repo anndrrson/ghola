@@ -177,6 +177,59 @@ export function createCoinbaseUsdtCashflowValuationReader({
   return createCoinbaseCashflowValuationReader({ sourceAsset: "USDT", fetchImpl, now });
 }
 
+export function verifyCashflowValuationEvidence(value) {
+  const valuation = normalizeCashflowValuation(value);
+  if (valuation.source_asset === "USDC") return valuation;
+  const payload = valuation.evidence_payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    fail("cashflow_valuation_evidence_payload_invalid");
+  }
+  if (valuation.evidence_commitment !== valuationCommitment(valuation.evidence_message, payload)) {
+    fail("cashflow_valuation_evidence_commitment_invalid");
+  }
+  verifyBoundEvidencePayload(valuation, payload);
+
+  let rates;
+  let observedAtMs;
+  const magnitude = valuation.bound_source_amount_micro === null
+    ? null
+    : BigInt(Math.abs(valuation.bound_source_amount_micro));
+  if (valuation.evidence_source === "aster:USDCUSDT:book:v1") {
+    if (valuation.source_asset !== "USDT"
+      || payload.venue_id !== "aster"
+      || payload.market !== "USDCUSDT") fail("cashflow_valuation_evidence_binding_invalid");
+    observedAtMs = positiveInteger(payload.book_time_ms, "cashflow_valuation_evidence_time_invalid");
+    const book = evidenceBook(payload, "USDCUSDT", observedAtMs);
+    rates = magnitude === null
+      ? {
+          credit_rate_e8: RATE_SCALE * RATE_SCALE / BigInt(book.asks[0].price_e8),
+          debit_rate_e8: ceilingDivide(RATE_SCALE * RATE_SCALE, BigInt(book.bids[0].price_e8)),
+        }
+      : depthBoundValuationRates(magnitude, book.bids, book.asks);
+  } else if (valuation.evidence_source === "coinbase-exchange:USDT-USDC:book:v1") {
+    if (valuation.source_asset !== "USDT") fail("cashflow_valuation_evidence_binding_invalid");
+    const books = coinbaseEvidenceBooks(payload, ["USDT-USDC"]);
+    observedAtMs = books[0].observed_at_ms;
+    rates = coinbaseUsdtValuationRates(magnitude, books[0]);
+  } else if (valuation.evidence_source === "coinbase-exchange:USDT-USD:USDT-USDC:cross-book:v1") {
+    if (valuation.source_asset !== "USD") fail("cashflow_valuation_evidence_binding_invalid");
+    const books = coinbaseEvidenceBooks(payload, ["USDT-USDC", "USDT-USD"]);
+    observedAtMs = Math.min(...books.map((book) => book.observed_at_ms));
+    rates = coinbaseUsdValuationRates(magnitude, books[0], books[1]);
+  } else {
+    fail("cashflow_valuation_evidence_source_unsupported");
+  }
+  if (observedAtMs !== valuation.observed_at_ms
+    || valuation.expires_at_ms !== observedAtMs + 30_000) {
+    fail("cashflow_valuation_evidence_time_invalid");
+  }
+  if (safeNumber(rates.credit_rate_e8, "cashflow_valuation_credit_rate_invalid") !== valuation.credit_rate_e8
+    || safeNumber(rates.debit_rate_e8, "cashflow_valuation_debit_rate_invalid") !== valuation.debit_rate_e8) {
+    fail("cashflow_valuation_evidence_rate_mismatch");
+  }
+  return valuation;
+}
+
 function createCoinbaseCashflowValuationReader({ sourceAsset, fetchImpl, now }) {
   let cachedBooksPromise = null;
   return async function readCoinbaseCashflowValuation(request) {
@@ -240,6 +293,76 @@ function createCoinbaseCashflowValuationReader({ sourceAsset, fetchImpl, now }) 
       evidence_commitment: valuationCommitment(evidenceMessage, evidencePayload),
     });
   };
+}
+
+function verifyBoundEvidencePayload(valuation, payload) {
+  const amount = valuation.bound_source_amount_micro;
+  if (amount === null) {
+    if (payload.source_amount_micro !== undefined
+      || payload.source_amount_decimal !== undefined
+      || payload.source_amount_scale !== undefined) {
+      fail("cashflow_valuation_evidence_amount_unbound");
+    }
+    return;
+  }
+  const decimal = canonicalSourceDecimal(payload.source_amount_decimal);
+  const scale = decimal.split(".")[1]?.length || 0;
+  if (payload.source_amount_micro !== amount || payload.source_amount_scale !== scale) {
+    fail("cashflow_valuation_evidence_amount_mismatch");
+  }
+  if ((amount < 0) !== decimal.startsWith("-")) fail("cashflow_valuation_evidence_amount_sign_mismatch");
+}
+
+function coinbaseEvidenceBooks(payload, markets) {
+  if (payload.venue_id !== "coinbase_exchange"
+    || !Array.isArray(payload.markets)
+    || payload.markets.length !== markets.length
+    || payload.markets.some((market, index) => market !== markets[index])
+    || !Array.isArray(payload.books)
+    || payload.books.length !== markets.length
+    || !payload.source_observed_at_ms
+    || typeof payload.source_observed_at_ms !== "object"
+    || Array.isArray(payload.source_observed_at_ms)) {
+    fail("cashflow_valuation_evidence_binding_invalid");
+  }
+  return payload.books.map((book, index) => {
+    const observedAtMs = positiveInteger(book?.observed_at_ms, "cashflow_valuation_evidence_time_invalid");
+    if (payload.source_observed_at_ms[markets[index]] !== observedAtMs) {
+      fail("cashflow_valuation_evidence_time_invalid");
+    }
+    return evidenceBook(book, markets[index], observedAtMs);
+  });
+}
+
+function evidenceBook(value, market, observedAtMs) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || (value.market !== undefined && value.market !== market)
+    || (value.observed_at_ms !== undefined && value.observed_at_ms !== observedAtMs)) {
+    fail("cashflow_valuation_evidence_book_invalid");
+  }
+  const bids = evidenceBookLevels(value.bids, "bid");
+  const asks = evidenceBookLevels(value.asks, "ask");
+  if (bids[0].price_e8 > asks[0].price_e8) fail("cashflow_valuation_book_crossed");
+  return Object.freeze({ market, observed_at_ms: observedAtMs, bids, asks });
+}
+
+function evidenceBookLevels(value, side) {
+  if (!Array.isArray(value) || value.length === 0) fail("cashflow_valuation_evidence_book_invalid");
+  const levels = value.map((row) => {
+    if (!row || typeof row !== "object" || Array.isArray(row)
+      || !Number.isSafeInteger(row.price_e8) || row.price_e8 <= 0
+      || !Number.isSafeInteger(row.size_micro) || row.size_micro <= 0) {
+      fail("cashflow_valuation_evidence_book_invalid");
+    }
+    return Object.freeze({ price_e8: row.price_e8, size_micro: row.size_micro });
+  });
+  for (let index = 1; index < levels.length; index += 1) {
+    if ((side === "bid" && levels[index - 1].price_e8 < levels[index].price_e8)
+      || (side === "ask" && levels[index - 1].price_e8 > levels[index].price_e8)) {
+      fail("cashflow_valuation_evidence_book_order_invalid");
+    }
+  }
+  return Object.freeze(levels);
 }
 
 function resolvePolicy(value, context) {

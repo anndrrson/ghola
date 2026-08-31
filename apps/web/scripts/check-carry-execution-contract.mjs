@@ -388,6 +388,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("aster", "createCoinbaseUsdtCashflowValuationReader", "aster_funding_valuation_source_missing");
   requireText("stablecoinConversionTest", "values bound USDT cashflows from fresh liquid Coinbase depth", "cashflow_usdt_depth_test_missing");
   requireText("stablecoinConversionTest", "values bound USD cashflows through two fresh Coinbase books", "cashflow_usd_cross_depth_test_missing");
+  requireText("stablecoinConversion", "export function verifyCashflowValuationEvidence", "cashflow_valuation_replay_verifier_missing");
+  requireText("stablecoinConversion", "cashflow_valuation_evidence_rate_mismatch", "cashflow_valuation_depth_replay_missing");
+  requireText("executor", "verifyCashflowValuationEvidence(row)", "carry_execution_valuation_replay_missing");
+  requireText("positions", "verifyCashflowValuationEvidence(raw)", "carry_funding_valuation_replay_missing");
+  requireText("stablecoinConversionTest", "rejects self-consistent fabricated rates", "cashflow_valuation_fabrication_test_missing");
   requireText("shadow", "fees_venue_base_schedule", "aster_base_fee_provenance_missing");
   requireText("shadowTest", "keeps unsupported Aster quote fee schedules degraded", "aster_unknown_fee_schedule_test_missing");
   requireText("shadow", "fees_chain_parameter_ceiling", "dydx_chain_fee_provenance_missing");

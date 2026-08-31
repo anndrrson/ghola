@@ -1565,24 +1565,51 @@ function carryFundingSettlementAsset(venueId) {
 }
 
 function executionCashflowValuation(sourceAsset, observedAtMs, overrides = {}) {
+  const creditBookRateE8 = overrides.credit_rate_e8 ?? 100_000_000;
+  const debitBookRateE8 = overrides.debit_rate_e8 ?? 100_000_000;
+  const magnitude = overrides.bound_source_amount_micro == null
+    ? null
+    : BigInt(Math.abs(overrides.bound_source_amount_micro));
+  const creditRateE8 = magnitude === null
+    ? creditBookRateE8
+    : Number((magnitude * BigInt(creditBookRateE8) / 100_000_000n) * 100_000_000n / magnitude);
+  const debitRateE8 = magnitude === null
+    ? debitBookRateE8
+    : Number((((magnitude * BigInt(debitBookRateE8) + 99_999_999n) / 100_000_000n) * 100_000_000n + magnitude - 1n) / magnitude);
   const valuation = {
     version: 1,
     source_asset: sourceAsset,
     valuation_asset: "USDC",
     verified: true,
-    credit_rate_e8: 100_000_000,
-    debit_rate_e8: 100_000_000,
+    credit_rate_e8: creditRateE8,
+    debit_rate_e8: debitRateE8,
     observed_at_ms: observedAtMs,
-    expires_at_ms: observedAtMs + 300_000,
-    evidence_source: "test:stablecoin-book:v1",
+    expires_at_ms: observedAtMs + 30_000,
+    evidence_source: sourceAsset === "USDT"
+      ? "coinbase-exchange:USDT-USDC:book:v1"
+      : "coinbase-exchange:USDT-USD:USDT-USDC:cross-book:v1",
     ...overrides,
   };
   const evidenceMessage = cashflowValuationEvidenceMessage(valuation);
+  const book = (market, bid, ask) => ({
+    market,
+    sequence: `${market}:test`,
+    observed_at_ms: observedAtMs,
+    provider_book_time_ms: null,
+    bids: [{ price_e8: bid, size_micro: 1_000_000_000 }],
+    asks: [{ price_e8: ask, size_micro: 1_000_000_000 }],
+  });
+  const books = sourceAsset === "USDT"
+    ? [book("USDT-USDC", creditBookRateE8, debitBookRateE8)]
+    : [
+        book("USDT-USDC", creditBookRateE8, debitBookRateE8),
+        book("USDT-USD", 100_000_000, 100_000_000),
+      ];
   const evidencePayload = {
-    venue_id: "test",
-    market: `${sourceAsset}USDC`,
-    bids: [{ price_e8: valuation.credit_rate_e8, size_micro: 1_000_000_000 }],
-    asks: [{ price_e8: valuation.debit_rate_e8, size_micro: 1_000_000_000 }],
+    venue_id: "coinbase_exchange",
+    markets: books.map((row) => row.market),
+    source_observed_at_ms: Object.fromEntries(books.map((row) => [row.market, observedAtMs])),
+    books,
     ...(valuation.bound_source_amount_micro == null ? {} : {
       source_amount_micro: valuation.bound_source_amount_micro,
       source_amount_decimal: overrides.source_amount_decimal,

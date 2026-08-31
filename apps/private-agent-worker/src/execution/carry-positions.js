@@ -3,7 +3,6 @@ import {
   CARRY_EXECUTION_VENUES,
   advanceCarryPosition,
   appendCarryValueLedgerEntry,
-  canonicalCarryCommitmentJson,
   cashflowValuationEvidenceMessage,
   carryCollateralReviewMessage,
   compileCarryCapitalActionPlan,
@@ -27,6 +26,7 @@ import { createCarryLoopSupervisor, disabledCarryLoopHealth } from "./carry-loop
 import { loadCarryTransferRouteEvidence, observeCarryTransferRoutes } from "./carry-transfer-routes.js";
 import { runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
 import { verifyCarryCreationOpportunityAuthentication } from "./carry-opportunity-authentication.js";
+import { verifyCashflowValuationEvidence } from "./carry-stablecoin-conversion.js";
 import { validVenueLiquidationBinding } from "../venues/liquidation-distance.js";
 
 const OWNER = /^[A-Za-z0-9:_-]{8,180}$/;
@@ -1508,7 +1508,9 @@ function fundingCashflowValuation({ quoteAsset, valuation, checkedAtMs, sourceAm
     sourceAmountDecimal,
     sourceAmountScale,
   });
-  const normalized = normalizeCashflowValuation(raw);
+  const normalized = quoteAsset === "USDC"
+    ? normalizeCashflowValuation(raw)
+    : verifyCashflowValuationEvidence(raw);
   if (normalized.source_asset !== quoteAsset) {
     throw new Error("funding_cashflow_valuation_asset_mismatch");
   }
@@ -1529,15 +1531,6 @@ function verifyFundingValuationEvidence(raw, { sourceAmountMicro, sourceAmountDe
     || payload.source_amount_decimal !== sourceAmountDecimal
     || payload.source_amount_scale !== sourceAmountScale) {
     throw new Error("funding_cashflow_valuation_evidence_unbound");
-  }
-  const expected = `carry:cashflow-valuation:evidence:${createHash("sha256")
-    .update(canonicalCarryCommitmentJson({
-      evidence_message: raw.evidence_message,
-      evidence_payload: payload,
-    }))
-    .digest("hex")}`;
-  if (raw.evidence_commitment !== expected) {
-    throw new Error("funding_cashflow_valuation_evidence_tampered");
   }
 }
 

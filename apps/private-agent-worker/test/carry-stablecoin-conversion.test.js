@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
+import { canonicalCarryCommitmentJson, cashflowValuationEvidenceMessage } from "@ghola/execution-core";
 import {
   createAsterCashflowValuationReader,
   createCoinbaseUsdtCashflowValuationReader,
   createCoinbaseUsdCashflowValuationReader,
   createAsterStablecoinConversionQuoteReader,
+  verifyCashflowValuationEvidence,
 } from "../src/execution/carry-stablecoin-conversion.js";
 
 const NOW = 1_800_000_000_000;
@@ -168,6 +171,30 @@ test("Coinbase cashflow valuation fails closed for stale or insufficient depth",
     source_amount_scale: 0,
     checked_at_ms: NOW,
   }), /cashflow_valuation_depth_insufficient/);
+});
+
+test("replays committed depth and rejects self-consistent fabricated rates", async () => {
+  const valuation = await createCoinbaseUsdtCashflowValuationReader(coinbaseDependencies())({
+    source_asset: "USDT",
+    source_amount_micro: -1_000_000,
+    source_amount_decimal: "-1.0000009",
+    source_amount_scale: 7,
+    checked_at_ms: NOW,
+  });
+  assert.equal(verifyCashflowValuationEvidence(valuation).debit_rate_e8, 100_020_000);
+
+  const fabricated = { ...valuation, debit_rate_e8: 100_030_000 };
+  fabricated.evidence_message = cashflowValuationEvidenceMessage(fabricated);
+  fabricated.evidence_commitment = `carry:cashflow-valuation:evidence:${createHash("sha256")
+    .update(canonicalCarryCommitmentJson({
+      evidence_message: fabricated.evidence_message,
+      evidence_payload: fabricated.evidence_payload,
+    }))
+    .digest("hex")}`;
+  assert.throws(
+    () => verifyCashflowValuationEvidence(fabricated),
+    /cashflow_valuation_evidence_rate_mismatch/,
+  );
 });
 
 function dependencies({ book } = {}) {

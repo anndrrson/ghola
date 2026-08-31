@@ -1988,6 +1988,29 @@ test("rejects stale or nonexistent stablecoin valuation routes", () => {
   );
 });
 
+test("rejects value accounting that trusts a hash without replaying its committed depth", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      stablecoinConversion: sources.stablecoinConversion.replace(
+        "export function verifyCashflowValuationEvidence",
+        "function trustCashflowValuationEvidence",
+      ),
+    }),
+    /cashflow_valuation_replay_verifier_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      executor: sources.executor.replace(
+        "verifyCashflowValuationEvidence(row)",
+        "normalizeCashflowValuation(row)",
+      ),
+    }),
+    /carry_execution_valuation_replay_missing/,
+  );
+});
+
 test("rejects dYdX economics that lose their live chain provenance", () => {
   assert.throws(
     () => checkCarryExecutionContract({
