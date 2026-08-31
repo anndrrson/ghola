@@ -3,6 +3,7 @@ import { createPublicKey, generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import { CARRY_EXECUTION_VENUES } from "@ghola/execution-core";
 import {
+  verifyPreviewProductRuntimeConfig,
   verifyPrivateWorkerRuntimeAuthorization,
   verifyPrivateWorkerRuntimeConfig,
 } from "./check-private-worker-runtime-config.mjs";
@@ -43,8 +44,98 @@ function compatibilityProof(overrides = {}) {
   };
 }
 
+function productEnv(overrides = {}) {
+  return {
+    VERCEL: "1",
+    NEXT_PUBLIC_TURNKEY_PERPS_ORGANIZATION_ID: "organization-id",
+    NEXT_PUBLIC_TURNKEY_PERPS_AUTH_PROXY_CONFIG_ID: "auth-proxy-config-id",
+    GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED: "true",
+    NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED: "true",
+    DATABASE_URL: "postgres://private-account-store",
+    ...overrides,
+  };
+}
+
 test("skips local builds", () => {
   assert.deepEqual(verifyPrivateWorkerRuntimeConfig({}), { skipped: true });
+  assert.deepEqual(verifyPreviewProductRuntimeConfig({}), { skipped: true });
+});
+
+test("requires the Turnkey product runtime for every Vercel artifact", () => {
+  for (const key of [
+    "NEXT_PUBLIC_TURNKEY_PERPS_ORGANIZATION_ID",
+    "NEXT_PUBLIC_TURNKEY_PERPS_AUTH_PROXY_CONFIG_ID",
+  ]) {
+    assert.throws(
+      () => verifyPreviewProductRuntimeConfig(productEnv({ [key]: "" })),
+      new RegExp(`missing ${key}`),
+    );
+  }
+});
+
+test("requires public beta and mainnet delegation flags", () => {
+  for (const key of [
+    "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED",
+    "NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED",
+  ]) {
+    assert.throws(
+      () => verifyPreviewProductRuntimeConfig(productEnv({ [key]: "false" })),
+      new RegExp(`${key}=true`),
+    );
+  }
+});
+
+test("requires durable private account persistence", () => {
+  assert.throws(
+    () => verifyPreviewProductRuntimeConfig(productEnv({ DATABASE_URL: "" })),
+    /missing private account Postgres persistence/,
+  );
+  assert.throws(
+    () => verifyPreviewProductRuntimeConfig(productEnv({
+      GHOLA_PRIVATE_ACCOUNT_STORE: "memory",
+    })),
+    /cannot use memory-only/,
+  );
+});
+
+test("accepts Postgres or private Blob product persistence", () => {
+  assert.deepEqual(verifyPreviewProductRuntimeConfig(productEnv()), {
+    skipped: false,
+    turnkey: "configured",
+    beta_public: "enabled",
+    mainnet_delegation: "enabled",
+    persistence: "postgres",
+  });
+  assert.deepEqual(verifyPreviewProductRuntimeConfig(productEnv({
+    DATABASE_URL: "",
+    GHOLA_PRIVATE_ACCOUNT_STORE: "blob",
+    GHOLA_PRIVATE_ACCOUNT_BLOB_READ_WRITE_TOKEN: "blob-token",
+    GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS: "private",
+  })), {
+    skipped: false,
+    turnkey: "configured",
+    beta_public: "enabled",
+    mainnet_delegation: "enabled",
+    persistence: "blob-private",
+  });
+});
+
+test("rejects public Blob storage and opaque product values", () => {
+  assert.throws(
+    () => verifyPreviewProductRuntimeConfig(productEnv({
+      DATABASE_URL: "",
+      GHOLA_PRIVATE_ACCOUNT_STORE: "blob",
+      GHOLA_PRIVATE_ACCOUNT_BLOB_READ_WRITE_TOKEN: "blob-token",
+      GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS: "public",
+    })),
+    /Blob persistence must be private/,
+  );
+  assert.throws(
+    () => verifyPreviewProductRuntimeConfig(productEnv({
+      NEXT_PUBLIC_TURNKEY_PERPS_ORGANIZATION_ID: "[SENSITIVE]",
+    })),
+    /preview_env_opaque:NEXT_PUBLIC_TURNKEY_PERPS_ORGANIZATION_ID:runtime/,
+  );
 });
 
 test("requires a private worker URL for every Vercel artifact", () => {

@@ -40,6 +40,53 @@ export function verifyPrivateWorkerRuntimeConfig(env = process.env) {
   };
 }
 
+export function verifyPreviewProductRuntimeConfig(env = process.env) {
+  if (env.VERCEL !== "1") return { skipped: true };
+
+  requiredMaterialized(env, "NEXT_PUBLIC_TURNKEY_PERPS_ORGANIZATION_ID");
+  requiredMaterialized(env, "NEXT_PUBLIC_TURNKEY_PERPS_AUTH_PROXY_CONFIG_ID");
+  requiredTrue(env, "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED");
+  requiredTrue(env, "NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED");
+
+  const configuredStore = String(env.GHOLA_PRIVATE_ACCOUNT_STORE || "auto")
+    .trim()
+    .toLowerCase();
+  if (configuredStore === "memory") {
+    throw new Error("Vercel release cannot use memory-only private account persistence");
+  }
+  if (!["auto", "postgres", "blob"].includes(configuredStore)) {
+    throw new Error("Vercel release has an invalid private account store");
+  }
+
+  const databaseUrl = first(env,
+    "GHOLA_PRIVATE_ACCOUNT_DATABASE_URL",
+    "DATABASE_URL",
+    "POSTGRES_URL",
+  );
+  const blobToken = first(env,
+    "GHOLA_PRIVATE_ACCOUNT_BLOB_READ_WRITE_TOKEN",
+    "BLOB_READ_WRITE_TOKEN",
+    "BLOB_STORE_ID",
+  );
+  if (configuredStore !== "blob" && !databaseUrl) {
+    throw new Error("Vercel release is missing private account Postgres persistence");
+  }
+  if (configuredStore === "blob" && !blobToken) {
+    throw new Error("Vercel release is missing private account Blob persistence");
+  }
+  if (configuredStore === "blob" && String(env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS || "").trim() !== "private") {
+    throw new Error("Vercel release private account Blob persistence must be private");
+  }
+
+  return {
+    skipped: false,
+    turnkey: "configured",
+    beta_public: "enabled",
+    mainnet_delegation: "enabled",
+    persistence: configuredStore === "blob" ? "blob-private" : "postgres",
+  };
+}
+
 export async function verifyPrivateWorkerRuntimeAuthorization(
   env = process.env,
   fetchImpl = fetch,
@@ -95,6 +142,18 @@ function first(env, ...keys) {
     return value;
   }
   return "";
+}
+
+function requiredMaterialized(env, key) {
+  const value = String(env[key] || "").trim();
+  if (!value) throw new Error(`Vercel release is missing ${key}`);
+  assertMaterializedVercelEnvValue(key, value, "runtime");
+  return value;
+}
+
+function requiredTrue(env, key) {
+  const value = requiredMaterialized(env, key);
+  if (value !== "true") throw new Error(`Vercel release requires ${key}=true`);
 }
 
 function optionalHttpsUrl(raw, label) {
@@ -218,10 +277,11 @@ function stableJson(value) {
 }
 
 async function main() {
+  const product = verifyPreviewProductRuntimeConfig();
   const result = await verifyPrivateWorkerRuntimeAuthorization();
   console.log(result.skipped
     ? "[private-worker-runtime-config] skipped outside Vercel"
-    : `[private-worker-runtime-config] verified ${result.worker_host} authorization`);
+    : `[private-worker-runtime-config] verified ${result.worker_host} authorization and ${product.persistence} product runtime`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) await main();

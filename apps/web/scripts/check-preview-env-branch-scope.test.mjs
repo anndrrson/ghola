@@ -15,6 +15,10 @@ const KEYS = Object.freeze({
   auth: "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET",
   image: "GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST",
   signer: "GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64",
+  turnkeyOrganization: "NEXT_PUBLIC_TURNKEY_PERPS_ORGANIZATION_ID",
+  turnkeyAuthProxy: "NEXT_PUBLIC_TURNKEY_PERPS_AUTH_PROXY_CONFIG_ID",
+  publicBeta: "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED",
+  mainnetDelegation: "NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED",
 });
 
 test("extracts only allowlisted names from Vercel output and never returns values", () => {
@@ -54,11 +58,17 @@ test("fails clearly when private-worker variables exist only on another branch",
 });
 
 test("distinguishes absent Preview configuration from another-branch scope", () => {
+  const productKeys = [
+    KEYS.turnkeyOrganization,
+    KEYS.turnkeyAuthProxy,
+    KEYS.publicBeta,
+    KEYS.mainnetDelegation,
+  ];
   assert.throws(
     () => assessPreviewBranchEnvScope({
       branch: "feature/current",
-      allPreviewKeys: [KEYS.url, KEYS.auth],
-      branchPreviewKeys: [KEYS.url],
+      allPreviewKeys: [KEYS.url, KEYS.auth, ...productKeys],
+      branchPreviewKeys: [KEYS.url, ...productKeys],
     }),
     /configured only outside this branch scope: private_worker_auth; missing from every Preview scope: private_worker_image_digest,private_worker_funding_signer/,
   );

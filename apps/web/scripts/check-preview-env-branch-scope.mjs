@@ -40,6 +40,22 @@ export const PRIVATE_WORKER_PREVIEW_ENV_GROUPS = Object.freeze([
       "PRIVATE_AGENT_FUNDING_SIGNER_KEYS_B64",
     ]),
   }),
+  Object.freeze({
+    id: "turnkey_perps_organization",
+    keys: Object.freeze(["NEXT_PUBLIC_TURNKEY_PERPS_ORGANIZATION_ID"]),
+  }),
+  Object.freeze({
+    id: "turnkey_perps_auth_proxy",
+    keys: Object.freeze(["NEXT_PUBLIC_TURNKEY_PERPS_AUTH_PROXY_CONFIG_ID"]),
+  }),
+  Object.freeze({
+    id: "private_agent_public_beta",
+    keys: Object.freeze(["GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED"]),
+  }),
+  Object.freeze({
+    id: "perps_mainnet_delegation",
+    keys: Object.freeze(["NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED"]),
+  }),
 ]);
 
 const KNOWN_KEYS = Object.freeze(PRIVATE_WORKER_PREVIEW_ENV_GROUPS.flatMap((group) => group.keys));
@@ -82,7 +98,7 @@ export function assessPreviewBranchEnvScope({ branch, allPreviewKeys, branchPrev
   ].filter(Boolean).join("; ");
   throw new Error(
     `preview_env_branch_scope_invalid:${normalizedBranch}:${details}. ` +
-    `Configure the required private-worker variables for Preview branch ${normalizedBranch} before deploying.`,
+    `Configure the required product runtime variables for Preview branch ${normalizedBranch} before deploying.`,
   );
 }
 
