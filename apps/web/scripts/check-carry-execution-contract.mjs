@@ -390,6 +390,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("stablecoinConversionTest", "values bound USD cashflows through two fresh Coinbase books", "cashflow_usd_cross_depth_test_missing");
   requireText("stablecoinConversion", "export function verifyCashflowValuationEvidence", "cashflow_valuation_replay_verifier_missing");
   requireText("stablecoinConversion", "cashflow_valuation_evidence_rate_mismatch", "cashflow_valuation_depth_replay_missing");
+  requireText("stablecoinConversion", "coinbaseBoundValueMicroUsdc", "cashflow_valuation_exact_bound_value_missing");
+  requireText("coreCarry", "return normalizedValuation.bound_value_micro_usdc;", "cashflow_valuation_exact_bound_conversion_missing");
   requireText("executor", "verifyCashflowValuationEvidence(row)", "carry_execution_valuation_replay_missing");
   requireText("positions", "verifyCashflowValuationEvidence(raw)", "carry_funding_valuation_replay_missing");
   requireText("stablecoinConversionTest", "rejects self-consistent fabricated rates", "cashflow_valuation_fabrication_test_missing");

@@ -1576,6 +1576,11 @@ function executionCashflowValuation(sourceAsset, observedAtMs, overrides = {}) {
   const debitRateE8 = magnitude === null
     ? debitBookRateE8
     : Number((((magnitude * BigInt(debitBookRateE8) + 99_999_999n) / 100_000_000n) * 100_000_000n + magnitude - 1n) / magnitude);
+  const boundValueMicroUsdc = magnitude === null
+    ? null
+    : overrides.bound_source_amount_micro > 0
+      ? Number(magnitude * BigInt(creditBookRateE8) / 100_000_000n)
+      : -Number((magnitude * BigInt(debitBookRateE8) + 99_999_999n) / 100_000_000n);
   const valuation = {
     version: 1,
     source_asset: sourceAsset,
@@ -1588,6 +1593,7 @@ function executionCashflowValuation(sourceAsset, observedAtMs, overrides = {}) {
     evidence_source: sourceAsset === "USDT"
       ? "coinbase-exchange:USDT-USDC:book:v1"
       : "coinbase-exchange:USDT-USD:USDT-USDC:cross-book:v1",
+    ...(boundValueMicroUsdc === null ? {} : { bound_value_micro_usdc: boundValueMicroUsdc }),
     ...overrides,
   };
   const evidenceMessage = cashflowValuationEvidenceMessage(valuation);

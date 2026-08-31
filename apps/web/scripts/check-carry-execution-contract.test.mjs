@@ -2009,6 +2009,16 @@ test("rejects value accounting that trusts a hash without replaying its committe
     }),
     /carry_execution_valuation_replay_missing/,
   );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replace(
+        "return normalizedValuation.bound_value_micro_usdc;",
+        "return amount;",
+      ),
+    }),
+    /cashflow_valuation_exact_bound_conversion_missing/,
+  );
 });
 
 test("rejects dYdX economics that lose their live chain provenance", () => {

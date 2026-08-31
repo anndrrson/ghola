@@ -66,12 +66,16 @@ function boundCashflowValuation({ decimal, micro, observedAtMs, creditRateE8, de
     (((magnitude * BigInt(debitRateE8) + 99_999_999n) / 100_000_000n) * 100_000_000n + magnitude - 1n)
       / magnitude,
   );
+  const boundValueMicroUsdc = micro > 0
+    ? Number(magnitude * BigInt(creditRateE8) / 100_000_000n)
+    : -Number((magnitude * BigInt(debitRateE8) + 99_999_999n) / 100_000_000n);
   const valuation = {
     version: 1,
     source_asset: "USDT",
     valuation_asset: "USDC",
     verified: true,
     bound_source_amount_micro: micro,
+    bound_value_micro_usdc: boundValueMicroUsdc,
     credit_rate_e8: effectiveCreditRateE8,
     debit_rate_e8: effectiveDebitRateE8,
     observed_at_ms: observedAtMs,
@@ -1243,14 +1247,14 @@ test("monitoring values native USDT funding with signed conservative rates", asy
   assert.equal(result.funding.status, "current");
   assert.deepEqual(
     result.record.value_ledger.entries.map((entry) => entry.amount_micro_usdc),
-    [990_000, 1_010_003],
+    [990_000, 1_010_002],
   );
   assert.deepEqual(
     result.record.value_ledger.entries.map((entry) => entry.source_amount_micro),
     [1_000_000, -1_000_001],
   );
   assert.equal(result.record.value_ledger.realized.funding_credit_micro_usdc, 990_000);
-  assert.equal(result.record.value_ledger.realized.funding_debit_micro_usdc, 1_010_003);
+  assert.equal(result.record.value_ledger.realized.funding_debit_micro_usdc, 1_010_002);
 });
 
 test("funding valuation uses append time after a delayed historical cutoff", async (t) => {

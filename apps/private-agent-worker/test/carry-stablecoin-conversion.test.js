@@ -92,6 +92,7 @@ test("binds conservative USDT cashflow valuation to fresh Aster bid and ask evid
     checked_at_ms: NOW,
   });
   assert.equal(valuation.bound_source_amount_micro, 1_000_000);
+  assert.equal(valuation.bound_value_micro_usdc, 999_800);
   assert.equal(valuation.credit_rate_e8, 99_980_000);
   assert.equal(valuation.debit_rate_e8, 100_020_100);
   assert.equal(valuation.observed_at_ms, NOW);
@@ -132,6 +133,7 @@ test("values bound USDT cashflows from fresh liquid Coinbase depth", async () =>
     checked_at_ms: NOW,
   });
   assert.equal(valuation.bound_source_amount_micro, -1_000_000);
+  assert.equal(valuation.bound_value_micro_usdc, -1_000_200);
   assert.equal(valuation.credit_rate_e8, 99_980_000);
   assert.equal(valuation.debit_rate_e8, 100_020_000);
   assert.equal(valuation.evidence_source, "coinbase-exchange:USDT-USDC:book:v1");

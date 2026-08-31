@@ -164,6 +164,7 @@ export function cashflowValuationEvidenceMessage({
   source_asset,
   valuation_asset,
   bound_source_amount_micro,
+  bound_value_micro_usdc,
   credit_rate_e8,
   debit_rate_e8,
   observed_at_ms,
@@ -176,6 +177,7 @@ export function cashflowValuationEvidenceMessage({
     source_asset,
     valuation_asset,
     bound_source_amount_micro,
+    bound_value_micro_usdc,
     credit_rate_e8,
     debit_rate_e8,
     observed_at_ms,
@@ -222,11 +224,20 @@ export function normalizeCashflowValuation(value) {
     ? null
     : signedInteger(raw.bound_source_amount_micro, "cashflow_valuation_bound_source_amount");
   if (boundSourceAmountMicro === 0) fail("cashflow_valuation_bound_source_amount");
+  const boundValueMicroUsdc = raw.bound_value_micro_usdc == null
+    ? null
+    : signedInteger(raw.bound_value_micro_usdc, "cashflow_valuation_bound_value");
+  if ((boundSourceAmountMicro === null) !== (boundValueMicroUsdc === null)
+    || boundValueMicroUsdc === 0
+    || (boundSourceAmountMicro !== null && (boundSourceAmountMicro < 0) !== (boundValueMicroUsdc < 0))) {
+    fail("cashflow_valuation_bound_value");
+  }
   const evidenceSource = identifier(raw.evidence_source, "cashflow_valuation_evidence_source");
   const evidenceMessage = cashflowValuationEvidenceMessage({
     source_asset: sourceAsset,
     valuation_asset: "USDC",
     bound_source_amount_micro: boundSourceAmountMicro ?? undefined,
+    bound_value_micro_usdc: boundValueMicroUsdc ?? undefined,
     credit_rate_e8: creditRateE8,
     debit_rate_e8: debitRateE8,
     observed_at_ms: observedAtMs,
@@ -248,6 +259,7 @@ export function normalizeCashflowValuation(value) {
     verified: true,
     conversion_required: sourceAsset !== "USDC",
     bound_source_amount_micro: boundSourceAmountMicro,
+    bound_value_micro_usdc: boundValueMicroUsdc,
     credit_rate_e8: creditRateE8,
     debit_rate_e8: debitRateE8,
     observed_at_ms: observedAtMs,
@@ -263,6 +275,12 @@ export function convertSignedCashflowToMicroUsdc({ amount_micro: amountMicro, va
   const amount = signedInteger(amountMicro, "cashflow_amount_invalid");
   const normalizedValuation = normalizeCashflowValuation(valuation);
   if (amount === 0) return 0;
+  if (normalizedValuation.bound_source_amount_micro !== null) {
+    if (amount !== normalizedValuation.bound_source_amount_micro) {
+      fail("cashflow_valuation_bound_amount_mismatch");
+    }
+    return normalizedValuation.bound_value_micro_usdc;
+  }
   const magnitude = BigInt(Math.abs(amount));
   const rateE8 = BigInt(amount > 0
     ? normalizedValuation.credit_rate_e8

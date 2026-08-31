@@ -145,6 +145,12 @@ function contract(venueId, fundingRate, overrides = {}) {
 
 function cashflowValuation(sourceAsset, overrides = {}) {
   const commitmentDigit = sourceAsset === "USD" ? "a" : sourceAsset === "USDT" ? "b" : "c";
+  const boundSourceAmountMicro = overrides.bound_source_amount_micro ?? null;
+  const boundValueMicroUsdc = boundSourceAmountMicro === null
+    ? null
+    : boundSourceAmountMicro > 0
+      ? Number(BigInt(boundSourceAmountMicro) * BigInt(overrides.credit_rate_e8 ?? 100_000_000) / 100_000_000n)
+      : -Number((BigInt(Math.abs(boundSourceAmountMicro)) * BigInt(overrides.debit_rate_e8 ?? 100_000_000) + 99_999_999n) / 100_000_000n);
   const valuation = {
     version: 1,
     source_asset: sourceAsset,
@@ -156,6 +162,7 @@ function cashflowValuation(sourceAsset, overrides = {}) {
     expires_at_ms: NOW + 30_000,
     evidence_source: "attested:stablecoin-book:v1",
     evidence_commitment: `carry:cashflow-valuation:evidence:${commitmentDigit.repeat(64)}`,
+    ...(boundValueMicroUsdc === null ? {} : { bound_value_micro_usdc: boundValueMicroUsdc }),
     ...overrides,
   };
   return {
@@ -413,6 +420,16 @@ test("normalizes CashflowValuationV1 and rounds signed values conservatively", (
   assert.equal(convertSignedCashflowToMicroUsdc({ amount_micro: 1, valuation }), 0);
   assert.equal(convertSignedCashflowToMicroUsdc({ amount_micro: -1, valuation }), -2);
   assert.equal(convertSignedCashflowToMicroUsdc({ amount_micro: 0, valuation }), 0);
+  const bound = cashflowValuation("USDT", {
+    bound_source_amount_micro: -1_000_001,
+    bound_value_micro_usdc: -1_010_002,
+    debit_rate_e8: 101_000_099,
+  });
+  assert.equal(convertSignedCashflowToMicroUsdc({ amount_micro: -1_000_001, valuation: bound }), -1_010_002);
+  assert.throws(
+    () => convertSignedCashflowToMicroUsdc({ amount_micro: -1_000_000, valuation: bound }),
+    /cashflow_valuation_bound_amount_mismatch/,
+  );
   assert.throws(() => normalizeCashflowValuation({
     ...cashflowValuation("USDT"),
     credit_rate_e8: 100_000_001,

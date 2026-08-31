@@ -128,6 +128,9 @@ export function createAsterCashflowValuationReader({
           debit_rate_e8: ceilingDivide(RATE_SCALE * RATE_SCALE, BigInt(bestBidE8)),
         }
       : depthBoundValuationRates(BigInt(Math.abs(boundSourceAmountMicro)), bids, asks);
+    const boundValueMicroUsdc = boundSourceAmountMicro === null
+      ? null
+      : asterBoundValueMicroUsdc(boundSourceAmountMicro, bids, asks);
     const evidenceSource = "aster:USDCUSDT:book:v1";
     const valuation = {
       version: 1,
@@ -135,6 +138,7 @@ export function createAsterCashflowValuationReader({
       valuation_asset: "USDC",
       verified: true,
       ...(boundSourceAmountMicro === null ? {} : { bound_source_amount_micro: boundSourceAmountMicro }),
+      ...(boundValueMicroUsdc === null ? {} : { bound_value_micro_usdc: boundValueMicroUsdc }),
       credit_rate_e8: safeNumber(rates.credit_rate_e8, "cashflow_valuation_credit_rate_invalid"),
       debit_rate_e8: safeNumber(rates.debit_rate_e8, "cashflow_valuation_debit_rate_invalid"),
       observed_at_ms: bookTimeMs,
@@ -191,6 +195,7 @@ export function verifyCashflowValuationEvidence(value) {
 
   let rates;
   let observedAtMs;
+  let boundValueMicroUsdc = null;
   const magnitude = valuation.bound_source_amount_micro === null
     ? null
     : BigInt(Math.abs(valuation.bound_source_amount_micro));
@@ -206,16 +211,25 @@ export function verifyCashflowValuationEvidence(value) {
           debit_rate_e8: ceilingDivide(RATE_SCALE * RATE_SCALE, BigInt(book.bids[0].price_e8)),
         }
       : depthBoundValuationRates(magnitude, book.bids, book.asks);
+    boundValueMicroUsdc = valuation.bound_source_amount_micro === null
+      ? null
+      : asterBoundValueMicroUsdc(valuation.bound_source_amount_micro, book.bids, book.asks);
   } else if (valuation.evidence_source === "coinbase-exchange:USDT-USDC:book:v1") {
     if (valuation.source_asset !== "USDT") fail("cashflow_valuation_evidence_binding_invalid");
     const books = coinbaseEvidenceBooks(payload, ["USDT-USDC"]);
     observedAtMs = books[0].observed_at_ms;
     rates = coinbaseUsdtValuationRates(magnitude, books[0]);
+    boundValueMicroUsdc = valuation.bound_source_amount_micro === null
+      ? null
+      : coinbaseBoundValueMicroUsdc("USDT", valuation.bound_source_amount_micro, books);
   } else if (valuation.evidence_source === "coinbase-exchange:USDT-USD:USDT-USDC:cross-book:v1") {
     if (valuation.source_asset !== "USD") fail("cashflow_valuation_evidence_binding_invalid");
     const books = coinbaseEvidenceBooks(payload, ["USDT-USDC", "USDT-USD"]);
     observedAtMs = Math.min(...books.map((book) => book.observed_at_ms));
     rates = coinbaseUsdValuationRates(magnitude, books[0], books[1]);
+    boundValueMicroUsdc = valuation.bound_source_amount_micro === null
+      ? null
+      : coinbaseBoundValueMicroUsdc("USD", valuation.bound_source_amount_micro, books);
   } else {
     fail("cashflow_valuation_evidence_source_unsupported");
   }
@@ -226,6 +240,9 @@ export function verifyCashflowValuationEvidence(value) {
   if (safeNumber(rates.credit_rate_e8, "cashflow_valuation_credit_rate_invalid") !== valuation.credit_rate_e8
     || safeNumber(rates.debit_rate_e8, "cashflow_valuation_debit_rate_invalid") !== valuation.debit_rate_e8) {
     fail("cashflow_valuation_evidence_rate_mismatch");
+  }
+  if (boundValueMicroUsdc !== valuation.bound_value_micro_usdc) {
+    fail("cashflow_valuation_evidence_bound_value_mismatch");
   }
   return valuation;
 }
@@ -252,6 +269,9 @@ function createCoinbaseCashflowValuationReader({ sourceAsset, fetchImpl, now }) 
     const rates = sourceAsset === "USDT"
       ? coinbaseUsdtValuationRates(magnitude, books[0])
       : coinbaseUsdValuationRates(magnitude, books[0], books[1]);
+    const boundValueMicroUsdc = bound.amount_micro === null
+      ? null
+      : coinbaseBoundValueMicroUsdc(sourceAsset, bound.amount_micro, books);
     const evidenceSource = sourceAsset === "USDT"
       ? "coinbase-exchange:USDT-USDC:book:v1"
       : "coinbase-exchange:USDT-USD:USDT-USDC:cross-book:v1";
@@ -261,6 +281,7 @@ function createCoinbaseCashflowValuationReader({ sourceAsset, fetchImpl, now }) 
       valuation_asset: "USDC",
       verified: true,
       ...(bound.amount_micro === null ? {} : { bound_source_amount_micro: bound.amount_micro }),
+      ...(boundValueMicroUsdc === null ? {} : { bound_value_micro_usdc: boundValueMicroUsdc }),
       credit_rate_e8: safeNumber(rates.credit_rate_e8, "cashflow_valuation_credit_rate_invalid"),
       debit_rate_e8: safeNumber(rates.debit_rate_e8, "cashflow_valuation_debit_rate_invalid"),
       observed_at_ms: observedAtMs,
@@ -560,6 +581,35 @@ function depthBoundValuationRates(sourceMagnitudeMicro, bidRows, askRows) {
   };
 }
 
+function asterBoundValueMicroUsdc(sourceAmountMicro, bidRows, askRows) {
+  const magnitude = BigInt(Math.abs(sourceAmountMicro));
+  const value = sourceAmountMicro > 0
+    ? buyBaseWithQuote(magnitude, askRows)
+    : baseRequiredForQuote(magnitude, bidRows);
+  return signedSafeNumber(sourceAmountMicro > 0 ? value : -value, "cashflow_valuation_bound_value_invalid");
+}
+
+function coinbaseBoundValueMicroUsdc(sourceAsset, sourceAmountMicro, books) {
+  const magnitude = BigInt(Math.abs(sourceAmountMicro));
+  let value;
+  if (sourceAsset === "USDT") {
+    value = sourceAmountMicro > 0
+      ? sellBaseForQuote(magnitude, books[0].bids)
+      : quoteRequiredForBase(magnitude, books[0].asks);
+  } else if (sourceAsset === "USD") {
+    if (sourceAmountMicro > 0) {
+      const usdt = buyBaseWithQuote(magnitude, books[1].asks);
+      value = sellBaseForQuote(usdt, books[0].bids);
+    } else {
+      const usdt = baseRequiredForQuote(magnitude, books[1].bids);
+      value = quoteRequiredForBase(usdt, books[0].asks);
+    }
+  } else {
+    fail("cashflow_valuation_pair_unsupported");
+  }
+  return signedSafeNumber(sourceAmountMicro > 0 ? value : -value, "cashflow_valuation_bound_value_invalid");
+}
+
 function buyBaseWithQuote(sourceQuoteMicro, rows) {
   let remainingQuote = sourceQuoteMicro;
   let outputBase = 0n;
@@ -649,6 +699,11 @@ function canonicalSourceDecimal(value) {
 function signedSafeInteger(value, code) {
   if (!Number.isSafeInteger(value)) fail(code);
   return value;
+}
+
+function signedSafeNumber(value, code) {
+  if (value < BigInt(Number.MIN_SAFE_INTEGER) || value > BigInt(Number.MAX_SAFE_INTEGER)) fail(code);
+  return Number(value);
 }
 
 function valuationCommitment(evidenceMessage, evidencePayload) {
