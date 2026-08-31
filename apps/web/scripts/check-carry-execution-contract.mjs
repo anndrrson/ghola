@@ -200,6 +200,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("noSubmitEvidenceVerifier", "parsed?.no_submit_evidence || parsed", "carry_preview_no_submit_extraction_missing");
   requireText("lighterRunner", "account_active_orders(", "lighter_pinned_active_order_api_missing");
   requireText("lighterRunner", "account_inactive_orders(", "lighter_pinned_inactive_order_api_missing");
+  requireText("lighterRunner", "MAX_INACTIVE_ORDER_PAGES", "lighter_inactive_order_reconciliation_bound_missing");
+  requireText("lighterRunner", "next_cursor in seen_cursors", "lighter_inactive_order_cursor_guard_missing");
   forbidText("lighterRunner", "account_orders(", "lighter_unavailable_order_api_present");
   requireText("lighterTest", "uses the pinned Lighter SDK active and inactive order APIs", "lighter_pinned_order_api_test_missing");
 

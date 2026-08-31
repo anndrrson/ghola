@@ -10,6 +10,9 @@ from decimal import Decimal, ROUND_DOWN
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
+MAX_INACTIVE_ORDER_PAGES = 4
+INACTIVE_ORDER_PAGE_SIZE = 100
+
 
 def fail(message, code="connector_submit_failed"):
     print(json.dumps({"error": message, "error_code": code}))
@@ -78,11 +81,15 @@ async def account_for(client, account_index):
     return as_dict(response.accounts[0])
 
 
-def orders_from_response(response):
-    orders = as_dict(response).get("orders")
+def order_page_from_response(response):
+    payload = as_dict(response)
+    orders = payload.get("orders")
     if not isinstance(orders, list):
         fail("lighter order read is invalid")
-    return orders
+    cursor = payload.get("next_cursor")
+    if cursor is not None and not isinstance(cursor, str):
+        fail("lighter order cursor is invalid")
+    return orders, str(cursor or "").strip() or None
 
 
 async def exact_account_order(client, account_index, market_index, client_order_index, *, include_inactive):
@@ -92,24 +99,35 @@ async def exact_account_order(client, account_index, market_index, client_order_
         market_id=int(market_index),
         authorization=auth,
     )
+    active_orders, _ = order_page_from_response(active_response)
     target = exact_market_order(
-        orders_from_response(active_response),
+        active_orders,
         client_order_index,
         market_index,
     )
     if target is not None or not include_inactive:
         return target
-    inactive_response = await client.order_api.account_inactive_orders(
-        account_index=int(account_index),
-        limit=100,
-        authorization=auth,
-        market_id=int(market_index),
-    )
-    return exact_market_order(
-        orders_from_response(inactive_response),
-        client_order_index,
-        market_index,
-    )
+    cursor = None
+    seen_cursors = set()
+    for _ in range(MAX_INACTIVE_ORDER_PAGES):
+        params = {
+            "account_index": int(account_index),
+            "limit": INACTIVE_ORDER_PAGE_SIZE,
+            "authorization": auth,
+            "market_id": int(market_index),
+        }
+        if cursor is not None:
+            params["cursor"] = cursor
+        inactive_response = await client.order_api.account_inactive_orders(**params)
+        inactive_orders, next_cursor = order_page_from_response(inactive_response)
+        target = exact_market_order(inactive_orders, client_order_index, market_index)
+        if target is not None or next_cursor is None:
+            return target
+        if next_cursor in seen_cursors:
+            fail("lighter inactive-order pagination did not advance")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+    return None
 
 
 def signed_order(client, order, market, *, nonce=-1, skip_nonce=0):

@@ -151,6 +151,9 @@ spec = importlib.util.spec_from_file_location("lighter_runner", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 module.credential = {"api_key_index": 4}
+def strict_fail(message, code="connector_submit_failed"):
+    raise RuntimeError(code)
+module.fail = strict_fail
 class OrderApi:
     def __init__(self):
         self.active_calls = []
@@ -160,7 +163,9 @@ class OrderApi:
         return {"orders": [{"client_order_index": 77, "market_index": 2, "order_index": 8}]}
     async def account_inactive_orders(self, **kwargs):
         self.inactive_calls.append(kwargs)
-        return {"orders": [{"client_order_index": 77, "market_index": 1, "order_index": 9, "status": "filled"}]}
+        if kwargs.get("cursor") == "page-2":
+            return {"orders": [{"client_order_index": 77, "market_index": 1, "order_index": 9, "status": "filled"}]}
+        return {"orders": [{"client_order_index": 66, "market_index": 1, "order_index": 7}], "next_cursor": "page-2"}
 class Client:
     def __init__(self):
         self.order_api = OrderApi()
@@ -172,11 +177,24 @@ async def main():
     found = await module.exact_account_order(client, 123, 1, 77, include_inactive=True)
     assert found["order_index"] == 9
     assert client.order_api.active_calls == [{"account_index": 123, "market_id": 1, "authorization": "signed-read-token"}]
-    assert client.order_api.inactive_calls == [{"account_index": 123, "limit": 100, "authorization": "signed-read-token", "market_id": 1}]
+    assert client.order_api.inactive_calls == [
+        {"account_index": 123, "limit": 100, "authorization": "signed-read-token", "market_id": 1},
+        {"account_index": 123, "limit": 100, "authorization": "signed-read-token", "market_id": 1, "cursor": "page-2"},
+    ]
     client = Client()
     missing = await module.exact_account_order(client, 123, 1, 77, include_inactive=False)
     assert missing is None
     assert client.order_api.inactive_calls == []
+    client = Client()
+    async def looping_inactive(**kwargs):
+        return {"orders": [], "next_cursor": "same"}
+    client.order_api.account_inactive_orders = looping_inactive
+    try:
+        await module.exact_account_order(client, 123, 1, 77, include_inactive=True)
+    except RuntimeError as error:
+        assert str(error) == "connector_submit_failed"
+    else:
+        raise AssertionError("repeated cursor accepted")
 asyncio.run(main())
 print("checked")
 `;
