@@ -9,6 +9,7 @@ import {
   cashflowValuationEvidenceMessage,
   carryCreationOpportunityAuthenticationMessage,
   carryPortfolioValueAuthenticationMessage,
+  carryReleaseMaterialAuthenticationMessage,
   carryPrivatePrimeWorkerAuthenticationMessage,
   carryCollateralReviewMessage,
   carryRiskMandateMessage,
@@ -87,6 +88,27 @@ test("binds portfolio value proof to the owner, request, and exact replayed repo
     }),
     `{"checked_at_ms":${NOW},"domain":"ghola-carry-portfolio-value-authentication-v1","expires_at_ms":${NOW + 30_000},"max_data_age_ms":30000,"minimum_transfer_arrival_buffer_ms":300000,"owner_capital_budget_micro_usdc":0,"owner_commitment":"owner_commitment_0001","report_commitment":"carry:portfolio-value-report:${"a".repeat(64)}","route_path":"/carry/positions/value-report","version":1}`,
   );
+});
+
+test("binds release material proof to its owner, position, and exact worker material", () => {
+  const message = carryReleaseMaterialAuthenticationMessage({
+    route_path: "/carry/positions/release-evidence",
+    owner_commitment: "owner_commitment_0001",
+    position_id: "carry:position:0001",
+    material_commitment: `carry:release-response:${"a".repeat(64)}`,
+    checked_at_ms: 1_800_000_000_000,
+    expires_at_ms: 1_800_000_030_000,
+  });
+  assert.equal(message, canonicalCarryCommitmentJson({
+    version: 1,
+    domain: "ghola-carry-release-material-authentication-v1",
+    route_path: "/carry/positions/release-evidence",
+    owner_commitment: "owner_commitment_0001",
+    position_id: "carry:position:0001",
+    material_commitment: `carry:release-response:${"a".repeat(64)}`,
+    checked_at_ms: 1_800_000_000_000,
+    expires_at_ms: 1_800_000_030_000,
+  }));
 });
 
 test("estimates executable price from full depth and fails closed on insufficient liquidity", () => {

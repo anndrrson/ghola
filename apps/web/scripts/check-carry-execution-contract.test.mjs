@@ -258,6 +258,59 @@ test("rejects an unattested or report-detached portfolio value response", () => 
   );
 });
 
+test("rejects release evidence detached from the attested worker response", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replace(
+        "worker_authentication: authenticateCarryReleaseMaterial({",
+        "worker_authentication: { material_replay_bound: true }, //",
+      ),
+    }),
+    /carry_release_material_worker_response_binding_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webRoute: sources.webRoute.replace(
+        "verifyCarryReleaseMaterialWorkerAuthentication({",
+        "trustCarryReleaseMaterialWorkerAuthentication({",
+      ),
+    }),
+    /carry_release_material_gateway_authentication_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webReleaseMaterialAuthentication: sources.webReleaseMaterialAuthentication.replace(
+        "carry:release-response:",
+        "carry:release-unbound:",
+      ),
+    }),
+    /carry_release_material_gateway_exact_binding_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replace(
+        ', "/carry/positions/release-evidence"].includes(url.pathname)',
+        "].includes(url.pathname)",
+      ),
+    }),
+    /carry_release_material_worker_no_submit_gate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webRoute: sources.webRoute.replace(
+        ' || action === "release_evidence" ? { "x-ghola-no-submit-verify": "true" }',
+        ' ? { "x-ghola-no-submit-verify": "true" }',
+      ),
+    }),
+    /carry_release_material_gateway_no_submit_gate_missing/,
+  );
+});
+
 test("rejects a worker that emits unsigned private-prime evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({

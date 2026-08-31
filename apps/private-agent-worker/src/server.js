@@ -64,6 +64,7 @@ import { createReadOnlyCarryRuntimePolicies } from "./execution/carry-runtime-ri
 import { buildCarryPrivatePrimeReadiness } from "./execution/carry-private-prime-readiness.js";
 import { authenticateCarryPrivatePrimeReadiness } from "./execution/carry-private-prime-authentication.js";
 import { authenticateCarryPortfolioValueReport } from "./execution/carry-portfolio-value-authentication.js";
+import { authenticateCarryReleaseMaterial } from "./execution/carry-release-material-authentication.js";
 import {
   loadCarryTransferRouteEvidence,
   observePreopenCarryTransferRoutes,
@@ -3207,7 +3208,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        if (["/carry/positions/observe", "/carry/positions/collateral-review", "/carry/positions/collateral-review/approve", "/carry/positions/value-report"].includes(url.pathname)
+        if (["/carry/positions/observe", "/carry/positions/collateral-review", "/carry/positions/collateral-review/approve", "/carry/positions/value-report", "/carry/positions/release-evidence"].includes(url.pathname)
           && req.headers["x-ghola-no-submit-verify"] !== "true") {
           return json(res, 400, { error: "no-submit verification header is required" });
         }
@@ -3334,6 +3335,15 @@ export function createPrivateAgentWorkerServer(options = {}) {
                 report: result.report,
               }),
             }
+          : result.ok && url.pathname === "/carry/positions/release-evidence"
+            ? {
+                ...result,
+                worker_authentication: authenticateCarryReleaseMaterial({
+                  route_path: url.pathname,
+                  body: authorized.body,
+                  material: result.material,
+                }),
+              }
           : result;
         return json(res, status, authenticatedResult);
       }

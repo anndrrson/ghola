@@ -12,6 +12,7 @@ import { agentPassportVenueAccessForWorker } from "@/lib/private-agent-passport"
 import { verifyCarryPrivatePrimeWorkerAuthentication } from "@/lib/carry-private-prime-worker-authentication";
 import { verifyCarryCreationOpportunityWorkerAuthentication } from "@/lib/carry-creation-opportunity-authentication";
 import { verifyCarryPortfolioValueWorkerAuthentication } from "@/lib/carry-portfolio-value-worker-authentication";
+import { verifyCarryReleaseMaterialWorkerAuthentication } from "@/lib/carry-release-material-worker-authentication";
 import { randomUUID } from "node:crypto";
 import { normalizeCarryShadowAssets } from "@ghola/execution-core";
 import { CARRY_EXECUTION_VENUES, isCarryExecutionVenue } from "@/lib/carry-venues";
@@ -68,7 +69,7 @@ export async function POST(req: NextRequest) {
     correlation_id: correlationId,
     action,
     operation_class: route.operationClass,
-    no_submit: action.startsWith("preflight_") || ["readiness", "observe", "capital_plan", "collateral_review", "approve_collateral_review", "value_report"].includes(action),
+    no_submit: action.startsWith("preflight_") || ["readiness", "observe", "capital_plan", "collateral_review", "approve_collateral_review", "value_report", "release_evidence"].includes(action),
   });
   let body: Record<string, unknown> = {
     ...input,
@@ -295,6 +296,13 @@ export async function POST(req: NextRequest) {
       authorization: input.authorization,
     };
   }
+  if (action === "release_evidence") {
+    body = {
+      version: 1,
+      owner_commitment: owner.owner_commitment,
+      position_id: input.position_id,
+    };
+  }
   const authorization = workerAuthorizationHeader({
     fallbackToken: worker.token,
     method: "POST",
@@ -323,7 +331,7 @@ export async function POST(req: NextRequest) {
       headers: {
         "content-type": "application/json",
         "x-ghola-sealed-execution-required": "true",
-        ...(action.startsWith("preflight_") || action === "readiness" || action === "observe" || action === "capital_plan" || action === "collateral_review" || action === "approve_collateral_review" || action === "value_report" ? { "x-ghola-no-submit-verify": "true" } : {}),
+        ...(action.startsWith("preflight_") || action === "readiness" || action === "observe" || action === "capital_plan" || action === "collateral_review" || action === "approve_collateral_review" || action === "value_report" || action === "release_evidence" ? { "x-ghola-no-submit-verify": "true" } : {}),
         ...(action === "execute_entry" ? { "x-ghola-live-order-confirmed": "true" } : {}),
         ...(action === "create" && record(input.qualification_pilot).enabled === true ? { "x-ghola-carry-qualification-planned": "true" } : {}),
         ...(action === "execute_entry" && input.qualification_pilot_confirmed === true ? { "x-ghola-carry-qualification-confirmed": "true" } : {}),
@@ -395,6 +403,22 @@ export async function POST(req: NextRequest) {
       });
       if (!authenticated.ok) {
         console.error("[carry] portfolio-value worker authentication failed", {
+          correlation_id: correlationId,
+          action,
+          operation_class: route.operationClass,
+          duration_ms: Date.now() - startedAt,
+        });
+        return response({ error: authenticated.error }, 502, correlationId);
+      }
+    }
+    if (upstream.ok && action === "release_evidence") {
+      const authenticated = verifyCarryReleaseMaterialWorkerAuthentication({
+        route_path: route.path,
+        body,
+        response: result,
+      });
+      if (!authenticated.ok) {
+        console.error("[carry] release-material worker authentication failed", {
           correlation_id: correlationId,
           action,
           operation_class: route.operationClass,

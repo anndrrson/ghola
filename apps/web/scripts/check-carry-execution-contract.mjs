@@ -29,6 +29,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   workerMandate: "apps/private-agent-worker/src/execution/carry-mandate.js",
   positions: "apps/private-agent-worker/src/execution/carry-positions.js",
   portfolioValueAuthentication: "apps/private-agent-worker/src/execution/carry-portfolio-value-authentication.js",
+  releaseMaterialAuthentication: "apps/private-agent-worker/src/execution/carry-release-material-authentication.js",
   transferProbe: "apps/private-agent-worker/src/execution/carry-transfer-probe.js",
   transferVenueReaders: "apps/private-agent-worker/src/execution/carry-transfer-venue-readers.js",
   stablecoinConversion: "apps/private-agent-worker/src/execution/carry-stablecoin-conversion.js",
@@ -76,6 +77,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webCreationOpportunityAuthenticationTest: "apps/web/src/lib/carry-creation-opportunity-authentication.test.ts",
   webPortfolioValueAuthentication: "apps/web/src/lib/carry-portfolio-value-worker-authentication.ts",
   webPortfolioValueAuthenticationTest: "apps/web/src/lib/carry-portfolio-value-worker-authentication.test.ts",
+  webReleaseMaterialAuthentication: "apps/web/src/lib/carry-release-material-worker-authentication.ts",
+  webReleaseMaterialAuthenticationTest: "apps/web/src/lib/carry-release-material-worker-authentication.test.ts",
   webPerpsTurnkey: "apps/web/src/lib/perps-turnkey-provider.tsx",
   webRegistry: "apps/web/src/lib/carry-venues.ts",
   webCredentialOnboarding: "apps/web/src/lib/venue-credential-onboarding.ts",
@@ -125,6 +128,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   workerMandateTest: "apps/private-agent-worker/test/carry-mandate.test.js",
   positionsTest: "apps/private-agent-worker/test/carry-positions.test.js",
   portfolioValueAuthenticationTest: "apps/private-agent-worker/test/carry-portfolio-value-authentication.test.js",
+  releaseMaterialAuthenticationTest: "apps/private-agent-worker/test/carry-release-material-authentication.test.js",
   transferProbeTest: "apps/private-agent-worker/test/carry-transfer-probe.test.js",
   transferVenueReadersTest: "apps/private-agent-worker/test/carry-transfer-venue-readers.test.js",
   stablecoinConversionTest: "apps/private-agent-worker/test/carry-stablecoin-conversion.test.js",
@@ -1235,6 +1239,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("phalaConfigTest", "pins an explicitly enabled capped Carry qualification runtime", "carry_runtime_drift_test_missing");
   requireText("server", 'req.headers["x-ghola-carry-qualification-confirmed"] === "true"', "worker_confirmation_header_missing");
   requireText("server", '"/carry/positions/release-evidence"', "worker_release_evidence_route_missing");
+  requireText("server", '"/carry/positions/release-evidence"].includes(url.pathname)', "carry_release_material_worker_no_submit_gate_missing");
+  requireText("coreCarry", "export function carryReleaseMaterialAuthenticationMessage", "carry_release_material_auth_message_missing");
+  requireText("server", "worker_authentication: authenticateCarryReleaseMaterial({", "carry_release_material_worker_response_binding_missing");
+  requireText("releaseMaterialAuthentication", "material_replay_bound: true", "carry_release_material_worker_attestation_missing");
+  requireText("releaseMaterialAuthentication", "carryReleaseMaterialResponseCommitment(material)", "carry_release_material_worker_exact_binding_missing");
+  requireText("releaseMaterialAuthenticationTest", "attests exact release material and its owner-scoped position request", "carry_release_material_authentication_test_missing");
   requireText("server", '"/carry/positions/exit-request"', "carry_owner_exit_route_missing");
   requireText("server", "requestStoredCarryPositionExit", "carry_owner_exit_boundary_missing");
   requireText("positions", "type: \"manual_exit_requested\"", "carry_owner_exit_event_missing");
@@ -1426,6 +1436,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("webRoute", "verifyCarryPrivatePrimeWorkerAuthentication({", "carry_private_prime_gateway_authentication_missing");
   requireText("webRoute", "workerCapabilitySecret(process.env) || worker.token", "carry_private_prime_gateway_authentication_secret_missing");
   requireText("webRoute", "return response({ error: authenticated.error }, 502", "carry_private_prime_gateway_authentication_fail_closed_missing");
+  requireText("webRoute", "verifyCarryReleaseMaterialWorkerAuthentication({", "carry_release_material_gateway_authentication_missing");
+  requireText("webRoute", 'action === "release_evidence" ? { "x-ghola-no-submit-verify": "true" }', "carry_release_material_gateway_no_submit_gate_missing");
+  requireText("webReleaseMaterialAuthentication", "carry:release-response:", "carry_release_material_gateway_exact_binding_missing");
+  requireText("webReleaseMaterialAuthentication", "GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64", "carry_release_material_gateway_signer_pin_missing");
+  requireText("webReleaseMaterialAuthentication", "ed25519.verify(", "carry_release_material_gateway_signature_missing");
+  requireText("webReleaseMaterialAuthenticationTest", "accepts only exact fresh release material for the requested owner and position", "carry_release_material_gateway_test_missing");
   requireText("webCreationOpportunityAuthentication", "carryCreationOpportunityAuthenticationMessage", "carry_creation_opportunity_gateway_payload_missing");
   requireText("webCreationOpportunityAuthentication", "GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64", "carry_creation_opportunity_gateway_signer_pin_missing");
   requireText("webCreationOpportunityAuthentication", "ed25519.verify(", "carry_creation_opportunity_gateway_signature_missing");

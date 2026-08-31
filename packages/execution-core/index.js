@@ -25,6 +25,7 @@ export {
   cashflowValuationEvidenceMessage,
   carryCreationOpportunityAuthenticationMessage,
   carryPortfolioValueAuthenticationMessage,
+  carryReleaseMaterialAuthenticationMessage,
   carryPrivatePrimeWorkerAuthenticationMessage,
   carryCollateralReviewMessage,
   carryRiskMandateMessage,

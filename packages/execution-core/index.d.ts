@@ -104,6 +104,14 @@ export declare function carryPortfolioValueAuthenticationMessage(input: {
   checked_at_ms?: unknown;
   expires_at_ms?: unknown;
 }): string;
+export declare function carryReleaseMaterialAuthenticationMessage(input: {
+  route_path?: unknown;
+  owner_commitment?: unknown;
+  position_id?: unknown;
+  material_commitment?: unknown;
+  checked_at_ms?: unknown;
+  expires_at_ms?: unknown;
+}): string;
 export declare function calculateMarginRunway(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryCapitalActionPlan(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryCollateralReview(input: unknown): Readonly<Record<string, unknown>>;

@@ -111,6 +111,26 @@ export function carryPortfolioValueAuthenticationMessage({
   });
 }
 
+export function carryReleaseMaterialAuthenticationMessage({
+  route_path,
+  owner_commitment,
+  position_id,
+  material_commitment,
+  checked_at_ms,
+  expires_at_ms,
+} = {}) {
+  return canonicalCarryCommitmentJson({
+    version: 1,
+    domain: "ghola-carry-release-material-authentication-v1",
+    route_path,
+    owner_commitment,
+    position_id,
+    material_commitment,
+    checked_at_ms,
+    expires_at_ms,
+  });
+}
+
 export function estimatePerpDepthExecution({
   side,
   depth_levels: depthLevels,

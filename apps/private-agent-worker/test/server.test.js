@@ -1348,6 +1348,7 @@ describe("private agent worker", () => {
         authorization: `Bearer ${valueToken}`,
         "content-type": "application/json",
         "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
       },
       body: JSON.stringify(valueBody),
     });
@@ -1357,6 +1358,9 @@ describe("private agent worker", () => {
     assert.equal(valueReport.report.value_proof_status, "accruing");
     assert.equal(valueReport.report.position_count, 1);
     assert.equal(valueReport.report.transaction_broadcast, false);
+    assert.equal(valueReport.worker_authentication.attestation_bound, true);
+    assert.equal(valueReport.worker_authentication.report_replay_bound, true);
+    assert.equal(valueReport.worker_authentication.context.owner_commitment, ownerCommitment);
 
     const reviewToken = capabilityToken({
       path: "/carry/positions/collateral-review",
@@ -1417,7 +1421,19 @@ describe("private agent worker", () => {
       body: JSON.stringify(readBody),
     });
     assert.equal(release.status, 400);
-    assert.deepEqual(await release.json(), {
+    assert.equal((await release.json()).error, "no-submit verification header is required");
+    const releaseReadOnly = await fetch(`${baseUrl}/carry/positions/release-evidence`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${releaseToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify(readBody),
+    });
+    assert.equal(releaseReadOnly.status, 400);
+    assert.deepEqual(await releaseReadOnly.json(), {
       ok: false,
       error: "carry_release_position_not_reconciled",
     });
