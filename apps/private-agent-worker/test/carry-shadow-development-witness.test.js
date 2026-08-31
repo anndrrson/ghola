@@ -8,6 +8,7 @@ import {
   verifyCarryShadowDevelopmentWitness,
 } from "../src/execution/carry-shadow-development-witness.js";
 import { verifyCarryShadowWitnessFile } from "../scripts/verify-carry-shadow-witness.mjs";
+import { sourceRevision } from "../scripts/verify-carry-shadow.mjs";
 import { carryShadowFixture } from "./carry-shadow-fixture.js";
 import { verifyCarryShadowSet } from "../src/execution/perp-shadow-readiness.js";
 
@@ -70,6 +71,11 @@ test("independently verifies a persisted witness file", () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("canonicalizes a configured short source revision before witness binding", () => {
+  const full = sourceRevision({});
+  assert.equal(sourceRevision({ GHOLA_SOURCE_REVISION: full.slice(0, 8) }), full);
 });
 
 function buildWitness() {

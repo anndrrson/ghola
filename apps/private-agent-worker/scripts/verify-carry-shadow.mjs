@@ -60,14 +60,26 @@ async function main() {
 
 export function sourceRevision(env = process.env) {
   const configured = String(env.GHOLA_SOURCE_REVISION || env.GITHUB_SHA || env.VERCEL_GIT_COMMIT_SHA || "").trim();
-  if (/^[0-9a-f]{7,40}$/i.test(configured)) return configured.toLowerCase();
-  const discovered = String(execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: resolve(dirname(fileURLToPath(import.meta.url)), "../../.."),
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  })).trim();
-  if (!/^[0-9a-f]{40}$/i.test(discovered)) throw new Error("source revision is unavailable");
-  return discovered.toLowerCase();
+  if (/^[0-9a-f]{40}$/i.test(configured)) return configured.toLowerCase();
+  if (/^[0-9a-f]{7,39}$/i.test(configured)) {
+    return discoveredSourceRevision(configured) || configured.toLowerCase();
+  }
+  const discovered = discoveredSourceRevision("HEAD");
+  if (!discovered) throw new Error("source revision is unavailable");
+  return discovered;
+}
+
+function discoveredSourceRevision(reference) {
+  try {
+    const discovered = String(execFileSync("git", ["rev-parse", "--verify", `${reference}^{commit}`], {
+      cwd: resolve(dirname(fileURLToPath(import.meta.url)), "../../.."),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })).trim();
+    return /^[0-9a-f]{40}$/i.test(discovered) ? discovered.toLowerCase() : null;
+  } catch {
+    return null;
+  }
 }
 
 function writeWitness(path, witness) {
