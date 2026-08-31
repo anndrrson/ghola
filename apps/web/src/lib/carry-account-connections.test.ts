@@ -83,6 +83,15 @@ describe("Carry account connections", () => {
     });
   });
 
+  it("preserves long-then-short pair order for the guided connection path", () => {
+    const progress = carryAccountConnectionProgressForVenues({
+      accountCommitment: "account_test",
+      venues: { hyperliquid: false, aster: false, lighter: false },
+    }, ["aster", "lighter"]);
+    expect(progress.missingVenueIds).toEqual(["aster", "lighter"]);
+    expect(carryAccountSetupNextAction(progress)).toEqual({ kind: "connect_venue", venueId: "aster" });
+  });
+
   it("recovers only an exact distinct execution pair from a terminal return", () => {
     expect(carryExecutionPairFromReturnTo(
       "/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=aster",

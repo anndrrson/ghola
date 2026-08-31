@@ -145,6 +145,10 @@ describe("CarryAccountSetup", () => {
     expect(container.textContent).toContain("Lighter");
     expect(container.textContent).not.toContain("Aster");
     expect(container.querySelector('a[href*="setup=hyperliquid"]')).toBeNull();
+    const pairRail = container.querySelector('[aria-label="Selected Carry execution pair"]');
+    expect(pairRail?.querySelectorAll("[data-carry-venue]")).toHaveLength(2);
+    expect(pairRail?.querySelector('[data-carry-venue="hyperliquid"]')?.getAttribute("data-carry-role")).toBe("long");
+    expect(pairRail?.querySelector('[data-carry-venue="lighter"]')?.getAttribute("data-carry-role")).toBe("short");
 
     const continueButton = container.querySelector<HTMLButtonElement>('[aria-controls="carry-hyperliquid-setup"]');
     expect(continueButton?.getAttribute("aria-expanded")).toBe("false");

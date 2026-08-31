@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy, KeyRound, LoaderCircle, LockKeyhole, RefreshCw, X } from "lucide-react";
 import { executionVenueLabel } from "@ghola/execution-core";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
@@ -54,7 +54,11 @@ import {
   type CarryWorkerPlatformGate,
 } from "@/lib/carry-account-connections";
 import { fetchPrivateAgentRuntimeStatus } from "@/lib/hyperliquid-vault-seal";
-import { CARRY_EXECUTION_VENUES, isCarryExecutionVenue } from "@/lib/carry-venues";
+import {
+  CARRY_EXECUTION_VENUES,
+  isCarryExecutionVenue,
+  type CarryExecutionVenue,
+} from "@/lib/carry-venues";
 import {
   describeLighterActivationNextStep,
   fetchLighterActivationReadiness,
@@ -71,6 +75,11 @@ type PendingLighterAssociation = PendingLighterOnboarding;
 const HYPERLIQUID_ONBOARDING = getCurrentVenueCredentialOnboardingPath("hyperliquid");
 const ASTER_ONBOARDING = getCurrentVenueCredentialOnboardingPath("aster");
 const LIGHTER_ONBOARDING = getCurrentVenueCredentialOnboardingPath("lighter");
+const ONBOARDING_BY_VENUE: Readonly<Record<CarryExecutionVenue, VenueCredentialOnboardingPath>> = Object.freeze({
+  hyperliquid: HYPERLIQUID_ONBOARDING,
+  aster: ASTER_ONBOARDING,
+  lighter: LIGHTER_ONBOARDING,
+});
 
 export function CarryAccountSetup({
   returnTo = "/carry",
@@ -127,8 +136,8 @@ export function CarryAccountSetup({
     && requestedLongVenue !== requestedShortVenue
     && returnPair?.longVenueId === requestedLongVenue
     && returnPair.shortVenueId === requestedShortVenue;
-  const requiredVenueIds = useMemo(() => pairScoped
-    ? CARRY_EXECUTION_VENUES.filter((venueId) => venueId === requestedLongVenue || venueId === requestedShortVenue)
+  const requiredVenueIds = useMemo<readonly CarryExecutionVenue[]>(() => pairScoped
+    ? [requestedLongVenue as CarryExecutionVenue, requestedShortVenue as CarryExecutionVenue]
     : CARRY_EXECUTION_VENUES,
   [pairScoped, requestedLongVenue, requestedShortVenue]);
   const scopedActivationNeeded = activationNeeded && requiredVenueIds.includes(activationNeeded.venue)
@@ -736,6 +745,11 @@ export function CarryAccountSetup({
     connectionProgress,
     scopedActivationNeeded ? [scopedActivationNeeded.venue] : [],
   );
+  const venueStates: Readonly<Record<CarryExecutionVenue, VenueState>> = {
+    hyperliquid,
+    aster,
+    lighter,
+  };
   const routeVerificationEnabled = workerPlatform?.status === "ready";
   const nextSetupDisabled = nextSetupAction.kind === "connect_venue" && (
     working ||
@@ -891,19 +905,25 @@ export function CarryAccountSetup({
                 </button>
               </div>
             )}
+            <ExecutionAccessRail
+              venueIds={requiredVenueIds}
+              states={venueStates}
+              longVenueId={pairScoped ? returnPair?.longVenueId || null : null}
+              shortVenueId={pairScoped ? returnPair?.shortVenueId || null : null}
+            />
             {perpsTurnkey.authenticated && !perpsTurnkey.hasPasskey && (
-              <div className="flex items-center justify-between gap-4 rounded-xl border border-[#315277] bg-[#0b1624] p-4">
-                <div>
-                  <p className="font-semibold">Make future sign-ins one click</p>
-                  <p className="mt-1 text-xs leading-5 text-[#8f9aae]">Add Touch ID for this Ghola address. Turnkey Dashboard passkeys cannot cross domains.</p>
+              <details className="rounded-lg border border-[#1f2c41] bg-[#080d14] px-4 py-3 text-xs text-[#718097]">
+                <summary className="cursor-pointer select-none font-semibold text-[#8f9aae] hover:text-[#c4e5ff]">
+                  Optional: faster future sign-in
+                </summary>
+                <div className="mt-3 flex items-center justify-between gap-4 border-t border-[#172234] pt-3">
+                  <p className="leading-5">Enable Touch ID for this Ghola address. Turnkey Dashboard passkeys cannot cross domains.</p>
+                  <button type="button" disabled={working} onClick={() => void enableGholaTouchId()} className="shrink-0 rounded-md border border-[#315277] px-3 py-2 font-semibold text-[#a8d8ff] hover:bg-[#102033] disabled:opacity-50">
+                    {working ? "Enabling…" : "Enable Touch ID"}
+                  </button>
                 </div>
-                <button type="button" disabled={working} onClick={() => void enableGholaTouchId()} className="shrink-0 rounded-md bg-[#4aaef8] px-3 py-2 text-sm font-semibold text-[#06111d] disabled:opacity-50">
-                  {working ? "Enabling…" : "Enable Touch ID"}
-                </button>
-              </div>
+              </details>
             )}
-            {requiredVenueIds.includes("hyperliquid") ? <VenueCard name="Hyperliquid" state={hyperliquid} onboarding={HYPERLIQUID_ONBOARDING} /> : null}
-            {requiredVenueIds.includes("aster") ? <VenueCard name="Aster" state={aster} onboarding={ASTER_ONBOARDING} /> : null}
             {aster !== "connected" && nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "aster" && (
               <div className="px-1">
                 <p className="mb-2 text-xs leading-5 text-[#718097]">One owner approval enables 30 days of perpetual trading. Withdrawals stay disabled.</p>
@@ -926,7 +946,6 @@ export function CarryAccountSetup({
                 )}
               </div>
             )}
-            {requiredVenueIds.includes("lighter") ? <VenueCard name="Lighter" state={lighter} onboarding={LIGHTER_ONBOARDING} /> : null}
             {lighter !== "connected" && nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "lighter" && (
               <div className="px-1">
                 <p className="mb-2 text-xs leading-5 text-[#718097]">One owner approval. The key is created inside the worker; Ethereum and Lighter must both confirm it before use.</p>
@@ -1067,29 +1086,64 @@ function formatDecimalUnits(value: string, decimals: number, precision: number) 
   return `${whole}.${fraction.padEnd(precision, "0")}`;
 }
 
-function VenueCard({
-  name,
-  state,
-  onboarding,
-  children,
+function ExecutionAccessRail({
+  venueIds,
+  states,
+  longVenueId,
+  shortVenueId,
 }: {
-  name: string;
-  state: VenueState;
-  onboarding: VenueCredentialOnboardingPath;
-  children?: ReactNode;
+  venueIds: readonly CarryExecutionVenue[];
+  states: Readonly<Record<CarryExecutionVenue, VenueState>>;
+  longVenueId: CarryExecutionVenue | null;
+  shortVenueId: CarryExecutionVenue | null;
 }) {
+  const pairScoped = longVenueId !== null && shortVenueId !== null;
   return (
-    <div className="flex items-center justify-between gap-4 rounded-xl border border-[#1f2c41] bg-[#0a0f17] p-4">
-      <div className="flex items-center gap-3">
-        <span className={`grid h-9 w-9 place-items-center rounded-lg ${state === "connected" ? "bg-[#0d2a21] text-[#72dfb2]" : "bg-[#101b2a] text-[#8fcaff]"}`}>
-          {state === "connected" ? <Check className="h-4 w-4" /> : <KeyRound className="h-4 w-4" />}
-        </span>
-        <div>
-          <p className="font-semibold">{name}</p>
-          <p className="mt-0.5 text-xs text-[#718097]">{state === "connected" ? "Trading access connected" : state === "needed" ? onboarding.ux.badge : "Not yet execution-ready"}</p>
-        </div>
+    <div
+      aria-label={pairScoped ? "Selected Carry execution pair" : "Carry execution fleet"}
+      className="rounded-lg border border-[#1f2c41] bg-[#080d14] p-3"
+    >
+      <div className="flex items-center justify-between gap-3 px-1 pb-2">
+        <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[#718097]">
+          {pairScoped ? "Selected pair" : "Execution fleet"}
+        </p>
+        {pairScoped ? (
+          <p className="font-mono text-[10px] text-[#8f9aae]">
+            L {venueLabel(longVenueId)} <span className="text-[#3f4b5c]">/</span> S {venueLabel(shortVenueId)}
+          </p>
+        ) : null}
       </div>
-      {children}
+      <div className={`grid gap-2 ${venueIds.length === 2 ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
+        {venueIds.map((venueId) => {
+          const state = states[venueId];
+          const role = venueId === longVenueId ? "LONG" : venueId === shortVenueId ? "SHORT" : null;
+          return (
+            <div
+              key={venueId}
+              data-carry-venue={venueId}
+              data-carry-role={role?.toLowerCase() || "fleet"}
+              className="flex min-w-0 items-center gap-2.5 rounded-md border border-[#1b283b] bg-[#0a0f17] px-3 py-2.5"
+            >
+              <span className={`grid h-7 w-7 shrink-0 place-items-center rounded ${state === "connected" ? "bg-[#0d2a21] text-[#72dfb2]" : "bg-[#101b2a] text-[#8fcaff]"}`}>
+                {state === "connected" ? <Check className="h-3.5 w-3.5" /> : <KeyRound className="h-3.5 w-3.5" />}
+              </span>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold">
+                  {role ? <span className="mr-1.5 font-mono text-[9px] text-[#657188]">{role}</span> : null}
+                  {venueLabel(venueId)}
+                </p>
+                <p className="truncate text-[11px] text-[#718097]">
+                  {state === "connected"
+                    ? "Connected"
+                    : state === "needed"
+                      ? ONBOARDING_BY_VENUE[venueId].ux.badge
+                      : "Unavailable"}
+                </p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

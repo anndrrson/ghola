@@ -97,7 +97,9 @@ export function carryAccountConnectionProgressForVenues(
   connections: CarryAccountConnections,
   requiredVenueIds: readonly CarryExecutionVenue[],
 ): CarryAccountConnectionProgress {
-  const required = CARRY_EXECUTION_VENUES.filter((venueId) => requiredVenueIds.includes(venueId));
+  const required = requiredVenueIds.filter((venueId, index) =>
+    CARRY_EXECUTION_VENUES.includes(venueId) && requiredVenueIds.indexOf(venueId) === index
+  );
   const normalizedRequired = required.length >= 2 ? required : CARRY_EXECUTION_VENUES;
   const connectedVenueIds = normalizedRequired.filter((venueId) => connections.venues[venueId] === true);
   const missingVenueIds = normalizedRequired.filter((venueId) => connections.venues[venueId] !== true);
