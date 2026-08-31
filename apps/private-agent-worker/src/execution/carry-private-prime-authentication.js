@@ -27,7 +27,7 @@ export function authenticateCarryPrivatePrimeReadiness({
   sign_attested_message = signAttestedWorkerMessage,
 }) {
   if (!secret) throw new CarryPrivatePrimeAuthenticationError();
-  const message = carryPrivatePrimeWorkerAuthenticationMessage({
+  const context = Object.freeze({
     route_path,
     owner_commitment: body?.owner_commitment,
     asset: body?.asset,
@@ -37,6 +37,7 @@ export function authenticateCarryPrivatePrimeReadiness({
     checked_at_ms: private_prime_readiness?.checked_at_ms,
     expires_at_ms: private_prime_readiness?.expires_at_ms,
   });
+  const message = carryPrivatePrimeWorkerAuthenticationMessage(context);
   const attestedSignature = sign_attested_message(Buffer.from(message, "utf8"));
   return Object.freeze({
     version: 1,
@@ -47,5 +48,6 @@ export function authenticateCarryPrivatePrimeReadiness({
     attestation_bound: true,
     signature_b64: attestedSignature.signature_b64,
     signer_public_key_b64: attestedSignature.signer_public_key_b64,
+    context,
   });
 }

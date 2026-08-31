@@ -1228,8 +1228,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeAuthentication", 'createHmac("sha256", secret)', "carry_private_prime_worker_authentication_mac_missing");
   requireText("privatePrimeAuthentication", "workerCapabilitySecret(env)", "carry_private_prime_worker_authentication_secret_missing");
   requireText("privatePrimeAuthentication", "signAttestedWorkerMessage", "carry_private_prime_worker_attested_signature_missing");
+  requireText("privatePrimeAuthentication", "const context = Object.freeze({", "carry_private_prime_worker_signed_context_missing");
+  requireText("privatePrimeAuthentication", "context,", "carry_private_prime_worker_context_evidence_missing");
   requireText("workerAttestedSigner", "export function signAttestedWorkerMessage", "carry_attested_worker_signer_missing");
   requireText("privatePrimeAuthenticationTest", "exact no-submit request", "carry_private_prime_worker_authentication_test_missing");
+  requireText("privatePrimeAuthenticationTest", "context: proof.context", "carry_private_prime_worker_context_test_missing");
   requireText("serverTest", "matrix.private_prime_authentication.mac_hex", "carry_private_prime_worker_authentication_http_test_missing");
   requireText("serverTest", "matrix.private_prime_authentication.attestation_bound", "carry_private_prime_worker_attested_signature_http_test_missing");
   requireText("transferRoutes", "export async function observePreopenCarryTransferRoutes", "carry_preopen_route_compiler_missing");
@@ -1367,8 +1370,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webPrivatePrimeAuthentication", "ed25519.verify(", "carry_private_prime_gateway_attested_signature_missing");
   requireText("webPrivatePrimeAuthentication", "GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64", "carry_private_prime_gateway_signer_pin_missing");
   requireText("webPrivatePrimeAuthentication", "readiness.owner_commitment === ownerCommitment", "carry_private_prime_gateway_owner_binding_missing");
+  requireText("webPrivatePrimeAuthentication", "context.work_order_commitment === workOrderCommitment", "carry_private_prime_gateway_signed_context_missing");
   requireText("webPrivatePrimeAuthentication", "expiresAtMs > now_ms", "carry_private_prime_gateway_expiry_missing");
   requireText("webPrivatePrimeAuthenticationTest", "replay under another work order", "carry_private_prime_gateway_authentication_test_missing");
+  requireText("webPrivatePrimeAuthenticationTest", "contextTampered", "carry_private_prime_gateway_context_tamper_test_missing");
   requireText("webPrivatePrimeAuthenticationTest", 'GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64: "wrong-pin"', "carry_private_prime_gateway_signer_pin_test_missing");
   requireText("webRoute", "verifyCarryPrivatePrimeWorkerAuthentication({", "carry_private_prime_gateway_authentication_missing");
   requireText("webRoute", "workerCapabilitySecret(process.env) || worker.token", "carry_private_prime_gateway_authentication_secret_missing");

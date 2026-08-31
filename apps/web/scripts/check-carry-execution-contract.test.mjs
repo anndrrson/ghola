@@ -339,6 +339,29 @@ test("rejects private-prime evidence detached from the attested worker signer", 
   );
 });
 
+test("rejects private-prime evidence without its exact signed request context", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeAuthentication: sources.privatePrimeAuthentication.replace(
+        "const context = Object.freeze({",
+        "const context = ({",
+      ),
+    }),
+    /carry_private_prime_worker_signed_context_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivatePrimeAuthentication: sources.webPrivatePrimeAuthentication.replace(
+        "context.work_order_commitment === workOrderCommitment",
+        "workOrderCommitment.length > 0",
+      ),
+    }),
+    /carry_private_prime_gateway_signed_context_missing/,
+  );
+});
+
 test("rejects a terminal that hides recovery qualification", () => {
   assert.throws(
     () => checkCarryExecutionContract({

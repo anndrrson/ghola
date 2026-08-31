@@ -26,6 +26,7 @@ export function verifyCarryPrivatePrimeWorkerAuthentication({
   const result = record(response);
   const readiness = record(result.private_prime_readiness);
   const authentication = record(result.private_prime_authentication);
+  const context = record(authentication.context);
   const ownerCommitment = string(body.owner_commitment);
   const asset = string(body.asset);
   const operationClass = string(body.operation_class);
@@ -48,6 +49,14 @@ export function verifyCarryPrivatePrimeWorkerAuthentication({
     expiresAtMs > now_ms &&
     readiness.owner_commitment === ownerCommitment &&
     readiness.asset === asset &&
+    context.route_path === route_path &&
+    context.owner_commitment === ownerCommitment &&
+    context.asset === asset &&
+    context.operation_class === operationClass &&
+    context.work_order_commitment === workOrderCommitment &&
+    context.evidence_commitment === evidenceCommitment &&
+    context.checked_at_ms === checkedAtMs &&
+    context.expires_at_ms === expiresAtMs &&
     /^carry:private-prime:[0-9a-f]{40}$/.test(evidenceCommitment) &&
     authentication.version === 1 &&
     authentication.algorithm === "hmac-sha256" &&
@@ -60,16 +69,7 @@ export function verifyCarryPrivatePrimeWorkerAuthentication({
     signerAllowed(signerPublicKeyB64, env)
   );
   if (!validShape) return invalid();
-  const message = carryPrivatePrimeWorkerAuthenticationMessage({
-    route_path,
-    owner_commitment: ownerCommitment,
-    asset,
-    operation_class: operationClass,
-    work_order_commitment: workOrderCommitment,
-    evidence_commitment: evidenceCommitment,
-    checked_at_ms: checkedAtMs,
-    expires_at_ms: expiresAtMs,
-  });
+  const message = carryPrivatePrimeWorkerAuthenticationMessage(context);
   const expected = createHmac("sha256", secret).update(message).digest("hex");
   return safeHexEqual(macHex, expected) && attestedSignatureValid(signatureB64, signerPublicKeyB64, message)
     ? { ok: true }

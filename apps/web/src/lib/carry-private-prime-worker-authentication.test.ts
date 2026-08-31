@@ -24,6 +24,9 @@ describe("private-prime worker authentication", () => {
     const tampered = response();
     tampered.private_prime_readiness.asset = "ETH";
     expect(verify(tampered).ok).toBe(false);
+    const contextTampered = response();
+    contextTampered.private_prime_authentication.context.work_order_commitment = "carry_readiness_other";
+    expect(verify(contextTampered).ok).toBe(false);
     expect(verify(response(), { work_order_commitment: "carry_readiness_other" }).ok).toBe(false);
     expect(verify(response(), {}, NOW + 5_001).ok).toBe(false);
     expect(verify({ private_prime_readiness: response().private_prime_readiness }).ok).toBe(false);
@@ -87,6 +90,13 @@ function response() {
       attestation_bound: true,
       signature_b64: signEd25519(null, Buffer.from(message, "utf8"), SIGNER.privateKey).toString("base64"),
       signer_public_key_b64: SIGNER_PUBLIC_KEY_B64,
+      context: {
+        route_path: "/carry/readiness",
+        ...body(),
+        evidence_commitment: privatePrimeReadiness.evidence_commitment,
+        checked_at_ms: privatePrimeReadiness.checked_at_ms,
+        expires_at_ms: privatePrimeReadiness.expires_at_ms,
+      },
     },
   };
 }
