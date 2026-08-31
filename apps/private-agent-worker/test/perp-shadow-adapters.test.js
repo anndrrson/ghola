@@ -415,6 +415,11 @@ test("quarantines Aster when premium funding is stale despite fresh depth", () =
 test("live Aster shadow selection emits one deterministic contract per asset", async () => {
   const fetchImpl = async (url) => {
     const value = String(url);
+    if (value.includes("api.exchange.coinbase.com")) return response({
+      sequence: 1,
+      bids: [["0.9998", "100", "1"]],
+      asks: [["1.0002", "100", "1"]],
+    });
     if (value.includes("/depth?") && value.includes("symbol=USDCUSDT")) return response({
       symbol: "USDCUSDT",
       T: NOW,

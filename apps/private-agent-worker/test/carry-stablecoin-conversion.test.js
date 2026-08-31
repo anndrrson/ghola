@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createAsterCashflowValuationReader,
+  createCoinbaseUsdtCashflowValuationReader,
+  createCoinbaseUsdCashflowValuationReader,
   createAsterStablecoinConversionQuoteReader,
 } from "../src/execution/carry-stablecoin-conversion.js";
 
@@ -117,6 +119,57 @@ test("Aster cashflow valuation fails closed for stale or unbound book evidence",
   );
 });
 
+test("values bound USDT cashflows from fresh liquid Coinbase depth", async () => {
+  const readValuation = createCoinbaseUsdtCashflowValuationReader(coinbaseDependencies());
+  const valuation = await readValuation({
+    source_asset: "USDT",
+    source_amount_micro: -1_000_000,
+    source_amount_decimal: "-1.0000009",
+    source_amount_scale: 7,
+    checked_at_ms: NOW,
+  });
+  assert.equal(valuation.bound_source_amount_micro, -1_000_000);
+  assert.equal(valuation.credit_rate_e8, 99_980_000);
+  assert.equal(valuation.debit_rate_e8, 100_020_000);
+  assert.equal(valuation.evidence_source, "coinbase-exchange:USDT-USDC:book:v1");
+  assert.equal(valuation.evidence_payload.source_amount_decimal, "-1.0000009");
+  assert.deepEqual(valuation.evidence_payload.markets, ["USDT-USDC"]);
+});
+
+test("values bound USD cashflows through two fresh Coinbase books", async () => {
+  const readValuation = createCoinbaseUsdCashflowValuationReader(coinbaseDependencies());
+  const valuation = await readValuation({
+    source_asset: "USD",
+    source_amount_micro: 1_000_000,
+    source_amount_decimal: "1.000000",
+    source_amount_scale: 6,
+    checked_at_ms: NOW,
+  });
+  assert.equal(valuation.credit_rate_e8, 99_989_900);
+  assert.equal(valuation.debit_rate_e8, 100_050_200);
+  assert.equal(valuation.evidence_source, "coinbase-exchange:USDT-USD:USDT-USDC:cross-book:v1");
+  assert.deepEqual(valuation.evidence_payload.markets, ["USDT-USDC", "USDT-USD"]);
+  assert.equal(valuation.evidence_payload.books.length, 2);
+});
+
+test("Coinbase cashflow valuation fails closed for stale or insufficient depth", async () => {
+  const stale = createCoinbaseUsdtCashflowValuationReader(coinbaseDependencies({ observedAtMs: NOW - 5_001 }));
+  await assert.rejects(
+    () => stale({ source_asset: "USDT", checked_at_ms: NOW }),
+    /cashflow_valuation_book_stale/,
+  );
+  const insufficient = createCoinbaseUsdtCashflowValuationReader(coinbaseDependencies({
+    usdtUsdc: { bids: [["0.9998", "0.1", 1]], asks: [["1.0002", "0.1", 1]] },
+  }));
+  await assert.rejects(() => insufficient({
+    source_asset: "USDT",
+    source_amount_micro: 1_000_000,
+    source_amount_decimal: "1",
+    source_amount_scale: 0,
+    checked_at_ms: NOW,
+  }), /cashflow_valuation_depth_insufficient/);
+});
+
 function dependencies({ book } = {}) {
   return {
     now: () => NOW,
@@ -148,6 +201,26 @@ function dependencies({ book } = {}) {
           bids: [["0.9998", "100"]],
           asks: [["1.0002", "100"]],
         },
+      };
+    },
+  };
+}
+
+function coinbaseDependencies({ observedAtMs = NOW, usdtUsdc, usdtUsd } = {}) {
+  return {
+    now: () => NOW,
+    fetchImpl: async (url, options) => {
+      assert.equal(options.method, "GET");
+      const market = String(url).includes("USDT-USDC") ? "USDT-USDC" : "USDT-USD";
+      const book = market === "USDT-USDC"
+        ? usdtUsdc || { bids: [["0.9998", "100", 1]], asks: [["1.0002", "100", 1]] }
+        : usdtUsd || { bids: [["0.9997", "100", 1]], asks: [["0.9999", "100", 1]] };
+      return {
+        ok: true,
+        headers: { get: (name) => String(name).toLowerCase() === "date"
+          ? new Date(observedAtMs).toUTCString()
+          : null },
+        json: async () => ({ sequence: market === "USDT-USDC" ? 1 : 2, ...book }),
       };
     },
   };

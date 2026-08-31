@@ -376,6 +376,13 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadow", "fees_venue_base_tier_ceiling", "hyperliquid_base_fee_provenance_missing");
   requireText("shadow", "minimum_notional_protocol_floor", "hyperliquid_minimum_notional_provenance_missing");
   requireText("shadowTest", "normalizes Hyperliquid public base economics conservatively", "hyperliquid_public_economics_test_missing");
+  requireText("stablecoinConversion", "products/USDT-USDC/book?level=2", "cashflow_usdt_liquid_book_missing");
+  requireText("stablecoinConversion", "products/USDT-USD/book?level=2", "cashflow_usd_cross_book_missing");
+  forbidText("stablecoinConversion", "products/USDC-USD/book?level=2", "cashflow_dead_usdc_usd_book_restored");
+  requireText("shadow", "createCoinbaseUsdtCashflowValuationReader", "shadow_usdt_valuation_source_missing");
+  requireText("aster", "createCoinbaseUsdtCashflowValuationReader", "aster_funding_valuation_source_missing");
+  requireText("stablecoinConversionTest", "values bound USDT cashflows from fresh liquid Coinbase depth", "cashflow_usdt_depth_test_missing");
+  requireText("stablecoinConversionTest", "values bound USD cashflows through two fresh Coinbase books", "cashflow_usd_cross_depth_test_missing");
   requireText("shadow", "fees_venue_base_schedule", "aster_base_fee_provenance_missing");
   requireText("shadowTest", "keeps unsupported Aster quote fee schedules degraded", "aster_unknown_fee_schedule_test_missing");
   requireText("shadow", "fees_chain_parameter_ceiling", "dydx_chain_fee_provenance_missing");

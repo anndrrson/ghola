@@ -5,7 +5,7 @@ import {
   venueAdapterCapability,
 } from "@ghola/execution-core";
 import {
-  createAsterCashflowValuationReader,
+  createCoinbaseUsdtCashflowValuationReader,
   createCoinbaseUsdCashflowValuationReader,
 } from "./carry-stablecoin-conversion.js";
 
@@ -756,7 +756,7 @@ async function bindShadowValuations(snapshots, { fetchImpl, checkedAtMs }) {
   ]).filter((asset) => asset !== "USDC"))];
   const valuations = new Map(await Promise.all(requiredAssets.map(async (sourceAsset) => {
     const read = sourceAsset === "USDT"
-      ? createAsterCashflowValuationReader({ fetchImpl, now: () => checkedAtMs })
+      ? createCoinbaseUsdtCashflowValuationReader({ fetchImpl, now: () => checkedAtMs })
       : sourceAsset === "USD"
         ? createCoinbaseUsdCashflowValuationReader({ fetchImpl, now: () => checkedAtMs })
         : null;

@@ -181,9 +181,9 @@ test("Carry funding history dispatches through the registered Aster adapter", as
     requestUrls.push(requestUrl);
     return {
       ok: true,
-      json: async () => requestUrl.includes("/api/v3/depth") ? {
-        symbol: "USDCUSDT",
-        T: Date.now(),
+      headers: { get: (name) => String(name).toLowerCase() === "date" ? new Date().toUTCString() : null },
+      json: async () => requestUrl.includes("/products/USDT-USDC/book") ? {
+        sequence: 1,
         bids: [["0.9998", "100"]],
         asks: [["1.0002", "100"]],
       } : [{ time: 1_800_000_000_100, income: "0.01", asset: "USDT", tranId: 42 }],
@@ -206,7 +206,7 @@ test("Carry funding history dispatches through the registered Aster adapter", as
     state: {},
   });
   assert.ok(requestUrls.some((url) => /\/fapi\/v1\/income/.test(url)));
-  assert.ok(requestUrls.some((url) => /\/api\/v3\/depth/.test(url)));
+  assert.ok(requestUrls.some((url) => /\/products\/USDT-USDC\/book/.test(url)));
   const [{ cashflow_valuation: valuation, ...settlement }] = rows;
   assert.deepEqual(settlement, {
     venue_id: "aster",

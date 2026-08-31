@@ -1852,6 +1852,27 @@ test("rejects public Aster economics that lose their base-schedule provenance", 
   );
 });
 
+test("rejects stale or nonexistent stablecoin valuation routes", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      stablecoinConversion: sources.stablecoinConversion
+        .replaceAll("products/USDT-USDC/book?level=2", "products/USDC-USD/book?level=2"),
+    }),
+    /cashflow_usdt_liquid_book_missing|cashflow_dead_usdc_usd_book_restored/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadow: sources.shadow.replaceAll(
+        "createCoinbaseUsdtCashflowValuationReader",
+        "createAsterCashflowValuationReader",
+      ),
+    }),
+    /shadow_usdt_valuation_source_missing/,
+  );
+});
+
 test("rejects dYdX economics that lose their live chain provenance", () => {
   assert.throws(
     () => checkCarryExecutionContract({

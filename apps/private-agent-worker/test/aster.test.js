@@ -799,19 +799,18 @@ test("reads signed Aster funding settlements without submitting", async () => {
     fetchImpl: async (url, init) => {
       const parsed = new URL(url);
       observed.push({ url: parsed, method: init.method });
-      if (parsed.pathname === "/api/v3/depth") return jsonResponse({
-        symbol: "USDCUSDT",
-        T: 1_800_003_600_000,
+      if (parsed.pathname === "/products/USDT-USDC/book") return jsonResponse({
+        sequence: 1,
         bids: [["0.9998", "100"]],
         asks: [["1.0002", "100"]],
-      });
+      }, 200, { date: new Date(1_800_003_600_000).toUTCString() });
       return jsonResponse([{ symbol: "BTCUSDT", incomeType: "FUNDING_FEE", income: "-0.0125", asset: "USDT", time: 1_800_003_600_000, tranId: 42 }]);
     },
   });
   assert.equal(observed[0].method, "GET");
   assert.equal(observed[0].url.pathname, "/fapi/v1/income");
   assert.equal(observed[0].url.searchParams.get("incomeType"), "FUNDING_FEE");
-  assert.equal(observed[1].url.pathname, "/api/v3/depth");
+  assert.equal(observed[1].url.pathname, "/products/USDT-USDC/book");
   const [{ cashflow_valuation: valuation, ...settlement }] = rows;
   assert.deepEqual(settlement, {
     venue_id: "aster",
@@ -1099,8 +1098,11 @@ function orderInstruction() {
   };
 }
 
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+function jsonResponse(body, status = 200, headers = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", ...headers },
+  });
 }
 
 function noSubmitFetch({ filters, markSymbol = "BTCUSDT", openOrders = [] }) {

@@ -1,5 +1,5 @@
 import { privateKeyToAccount } from "viem/accounts";
-import { createAsterCashflowValuationReader } from "../execution/carry-stablecoin-conversion.js";
+import { createCoinbaseUsdtCashflowValuationReader } from "../execution/carry-stablecoin-conversion.js";
 import { asterLiquidationDistance } from "./liquidation-distance.js";
 
 const MAINNET_URL = "https://fapi.asterdex.com";
@@ -238,7 +238,7 @@ export async function readAsterFundingSettlements({
     throw new AsterExecutionError("aster funding settlement asset is unsupported", 502, "connector_submit_failed");
   }
   const checkedAtMs = Number(now());
-  const readCashflowValuation = createAsterCashflowValuationReader({ fetchImpl, now });
+  const readCashflowValuation = createCoinbaseUsdtCashflowValuationReader({ fetchImpl, now });
   return Promise.all(settlements.map(async (row) => ({
     ...row,
     cashflow_valuation: await readCashflowValuation({
