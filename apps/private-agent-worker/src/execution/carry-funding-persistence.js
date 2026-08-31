@@ -21,7 +21,8 @@ export async function runCarryFundingObservationTick({
   state,
   fetchPerpShadowSet,
   assets = CARRY_SHADOW_ASSETS,
-  now_ms: nowMs = Date.now(),
+  now_ms: requestedAtMs = Date.now(),
+  now = Date.now,
   env = process.env,
 }) {
   if (typeof fetchPerpShadowSet !== "function") throw new Error("carry_shadow_fetcher_required");
@@ -29,23 +30,27 @@ export async function runCarryFundingObservationTick({
   if (!normalizedAssets) throw new Error("carry_shadow_assets_required");
   const venues = await fetchPerpShadowSet({
     assets: normalizedAssets,
-    now_ms: nowMs,
+    now_ms: requestedAtMs,
     timeout_ms: carryShadowFetchTimeoutMs(env),
     max_age_ms: 60_000,
   });
+  const completedAtMs = now();
+  const observedAtMs = Number.isSafeInteger(completedAtMs) && completedAtMs >= requestedAtMs
+    ? completedAtMs
+    : requestedAtMs;
   const [fundingPersistence, shadowQualification] = await Promise.all([
     observeCarryFundingUniverse({
       state,
       venues,
       assets: normalizedAssets,
-      now_ms: nowMs,
+      now_ms: observedAtMs,
       env,
     }),
     observeCarryShadowQualification({
       state,
       venues,
       assets: normalizedAssets,
-      now_ms: nowMs,
+      now_ms: observedAtMs,
       env,
     }),
   ]);
@@ -54,7 +59,7 @@ export async function runCarryFundingObservationTick({
     funding_persistence: fundingPersistence,
     shadow_qualification: shadowQualification,
     assets: normalizedAssets,
-    now_ms: nowMs,
+    now_ms: observedAtMs,
     env,
   });
   const shadowSnapshot = await writeCarryShadowSnapshot({
@@ -64,7 +69,7 @@ export async function runCarryFundingObservationTick({
     funding_persistence: fundingPersistence,
     shadow_qualification: shadowQualification,
     routing_advantage: routingAdvantage,
-    observed_at_ms: nowMs,
+    observed_at_ms: observedAtMs,
   });
   const currentFeedSetComplete = coreFeedSetComplete(venues, normalizedAssets);
   return Object.freeze({
@@ -72,7 +77,7 @@ export async function runCarryFundingObservationTick({
     ok: fundingPersistence.observed_route_count > 0 && currentFeedSetComplete,
     error: currentFeedSetComplete ? null : "carry_shadow_feed_set_incomplete",
     transaction_broadcast: false,
-    observed_at_ms: nowMs,
+    observed_at_ms: observedAtMs,
     assets: Object.freeze(normalizedAssets),
     current_feed_set_complete: currentFeedSetComplete,
     funding_persistence: fundingPersistence,
@@ -140,6 +145,7 @@ export function startCarryFundingObservationLoop({
       fetchPerpShadowSet,
       assets,
       now_ms: now(),
+      now,
       env,
     }),
   });

@@ -321,6 +321,34 @@ test("collects funding history without an open browser", async () => {
   assert.equal(state.rows.size, 8);
 });
 
+test("uses the post-fetch wall clock for newer Lighter WebSocket evidence", async () => {
+  const state = stateStore();
+  const completedAtMs = NOW + 1_000;
+  const result = await runCarryFundingObservationTick({
+    state,
+    fetchPerpShadowSet: async () => ["hyperliquid", "lighter", "aster", "edgex", "dydx"].map((venueId) => ({
+      venue_id: venueId,
+      ok: true,
+      snapshots: [shadowSnapshot(venueId, venueId === "lighter" ? {
+        as_of_ms: NOW + 500,
+        source_observed_at_ms: { funding: NOW + 500 },
+      } : {})],
+    })),
+    assets: ["BTC"],
+    now_ms: NOW,
+    now: () => completedAtMs,
+    env: {
+      PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SAMPLES: "1",
+      PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SPAN_MS: "0",
+    },
+  });
+
+  assert.equal(result.observed_at_ms, completedAtMs);
+  assert.equal(result.funding_persistence.observed_route_count, 6);
+  assert.equal(result.funding_persistence.routes.some((route) =>
+    route.long_venue_id === "lighter" || route.short_venue_id === "lighter"), true);
+});
+
 test("degrades observer health when any core venue feed is missing", async (t) => {
   const state = stateStore();
   const loop = startCarryFundingObservationLoop({

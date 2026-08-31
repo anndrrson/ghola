@@ -26,6 +26,19 @@ test("rejects a no-submit assembler that can persist sealed venue access", () =>
   );
 });
 
+test("rejects funding observation evaluated against its pre-fetch clock", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      fundingPersistence: sources.fundingPersistence.replace(
+        "const completedAtMs = now();",
+        "const completedAtMs = requestedAtMs;",
+      ),
+    }),
+    /carry_funding_post_fetch_clock_missing/,
+  );
+});
+
 test("rejects a full-book scan without its composite database index", () => {
   assert.throws(
     () => checkCarryExecutionContract({

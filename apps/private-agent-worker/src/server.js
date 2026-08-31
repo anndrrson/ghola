@@ -2826,13 +2826,14 @@ export function createPrivateAgentWorkerServer(options = {}) {
     const activeRefresh = carryShadowRefreshes.get(refreshKey);
     if (activeRefresh) return activeRefresh;
     const refresh = (async () => {
-      const observedAtMs = Date.now();
+      const fetchStartedAtMs = Date.now();
       const venues = await fetchPerpShadowSet({
         assets,
-        now_ms: observedAtMs,
+        now_ms: fetchStartedAtMs,
         timeout_ms: carryShadowFetchTimeoutMs(process.env),
         max_age_ms: 60_000,
       });
+      const observedAtMs = Math.max(fetchStartedAtMs, Date.now());
       const readiness = verifyCarryShadowSet(venues, {
         assets,
         now_ms: observedAtMs,

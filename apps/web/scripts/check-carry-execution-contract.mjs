@@ -1039,6 +1039,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("fundingPersistence", "percentile(shortRates, 0.25", "carry_funding_adverse_short_quartile_missing");
   requireText("fundingPersistence", "observeCarryFundingUniverse", "carry_funding_shadow_observer_missing");
   requireText("fundingPersistence", "startCarryFundingObservationLoop", "carry_unattended_funding_observer_missing");
+  requireText("fundingPersistence", "const completedAtMs = now();", "carry_funding_post_fetch_clock_missing");
+  requireText("server", "const observedAtMs = Math.max(fetchStartedAtMs, Date.now());", "carry_shadow_http_post_fetch_clock_missing");
   requireText("fundingPersistence", "observeCarryShadowQualification", "carry_shadow_qualification_observer_missing");
   requireText("fundingPersistence", "writeCarryShadowSnapshot", "carry_shadow_snapshot_observer_missing");
   requireText("shadowQualification", "verifyCarryShadowSoak", "carry_shadow_qualification_soak_missing");
@@ -1078,6 +1080,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("fundingPersistenceTest", "rejects carry whose historical funding advantage is not persistent", "carry_funding_persistence_test_missing");
   requireText("fundingPersistenceTest", "collects every trusted executable route during the normal shadow cycle", "carry_funding_shadow_observer_test_missing");
   requireText("fundingPersistenceTest", "collects funding history without an open browser", "carry_unattended_funding_observer_test_missing");
+  requireText("fundingPersistenceTest", "post-fetch wall clock for newer Lighter WebSocket evidence", "carry_funding_post_fetch_clock_test_missing");
   requireText("fundingPersistenceTest", "resumes durable funding history after a worker restart", "carry_funding_restart_persistence_test_missing");
   requireText("fundingPersistence", "currentFundingObservation(evidence)", "carry_current_funding_source_binding_missing");
   requireText("fundingPersistenceTest", "monitoring commits current venue funding source observations", "carry_current_funding_source_test_missing");
