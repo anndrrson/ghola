@@ -756,6 +756,7 @@ function recoveryReadiness(overrides = {}) {
   return {
     recovery_ready: true,
     recovery_venue_ids: ["hyperliquid", "lighter", "aster"],
+    recovery_reasons: [],
     recovery_policy: {
       ambiguous_submission: "freeze_reconcile_never_retry",
       partial_fill: "exact_quantity_reduce_only",

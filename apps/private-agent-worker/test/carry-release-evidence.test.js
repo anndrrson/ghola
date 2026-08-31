@@ -1577,6 +1577,7 @@ function monitoringObservation(positionId, checkedAtMs, fundingByte, fundingSour
 function releaseReadinessMatrix(request, checkedAtMs) {
   const venues = CARRY_EXECUTION_VENUES.map((venueId) => ({
     venue_id: venueId,
+    qualification: releaseRecoveryQualification(venueId, checkedAtMs),
     account_commitment: releaseVenueAccess(venueId).account_commitment,
     transaction_broadcast: false,
     work_order_commitments: [],
@@ -1653,6 +1654,25 @@ function releaseReadinessMatrix(request, checkedAtMs) {
       };
     });
   return { transaction_broadcast: false, venues, pairs };
+}
+
+function releaseRecoveryQualification(venueId, checkedAtMs) {
+  const capability = venueAdapterCapability(venueId, "exact_quantity_recovery");
+  return capability?.status === "proven"
+    ? {
+        proven: true,
+        source: "registry_baseline",
+        adapter_id: capability.adapter_id,
+        image_digest: IMAGE,
+      }
+    : {
+        proven: true,
+        source: "deployment_bound_lifecycle",
+        adapter_id: capability?.adapter_id,
+        image_digest: IMAGE,
+        verified_at_ms: checkedAtMs - 1,
+        evidence_commitment: `carry:qualification:evidence:${venueId}:release`,
+      };
 }
 
 async function signedMandateAuthorization(position) {

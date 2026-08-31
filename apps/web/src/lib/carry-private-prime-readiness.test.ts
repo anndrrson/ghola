@@ -152,6 +152,24 @@ describe("private-prime readiness", () => {
       tone: "bad",
     });
   });
+
+  it("rejects recovery labels backed only by unproven adapter registration", () => {
+    expect(carryPrivatePrimeSummary(proof({
+      ready: false,
+      reasons: ["three_venue_recovery_unproven"],
+      failure_recovery: {
+        ...proof().failure_recovery,
+        ready: false,
+        venue_ids: ["hyperliquid"],
+        reasons: ["carry_recovery_qualification_unproven:lighter", "carry_recovery_qualification_unproven:aster"],
+      },
+    }), NOW)).toEqual({
+      status: "blocked",
+      value: "5/5 DATA · 3/3 EXEC · 0/3 REC · 6/6 ROUTES",
+      detail: "RECOVERY UNPROVEN",
+      tone: "bad",
+    });
+  });
 });
 
 function proof(overrides: Record<string, unknown> = {}) {
@@ -173,6 +191,7 @@ function proof(overrides: Record<string, unknown> = {}) {
     failure_recovery: {
       ready: true,
       venue_ids: ["hyperliquid", "lighter", "aster"],
+      reasons: [],
       policy: {
         ambiguous_submission: "freeze_reconcile_never_retry",
         partial_fill: "exact_quantity_reduce_only",

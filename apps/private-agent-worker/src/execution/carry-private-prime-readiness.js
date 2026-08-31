@@ -116,8 +116,11 @@ export function buildCarryPrivatePrimeReadiness({
 
 function verifiedFailureRecovery(readiness) {
   const venueIds = Array.isArray(readiness?.recovery_venue_ids) ? readiness.recovery_venue_ids : [];
+  const reasons = Array.isArray(readiness?.recovery_reasons) ? readiness.recovery_reasons : null;
   const policy = readiness?.recovery_policy;
   const ready = readiness?.recovery_ready === true
+    && reasons !== null
+    && reasons.length === 0
     && venueIds.length === CARRY_EXECUTION_VENUES.length
     && CARRY_EXECUTION_VENUES.every((venueId, index) => venueIds[index] === venueId)
     && policy && typeof policy === "object" && !Array.isArray(policy)
@@ -126,6 +129,7 @@ function verifiedFailureRecovery(readiness) {
   return Object.freeze({
     ready,
     venue_ids: ready ? Object.freeze([...venueIds]) : Object.freeze([]),
+    reasons: Object.freeze(reasons || ["carry_recovery_qualification_evidence_missing"]),
     policy: Object.freeze({ ...CARRY_RECOVERY_POLICY }),
   });
 }

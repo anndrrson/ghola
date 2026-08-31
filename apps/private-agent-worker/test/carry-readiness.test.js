@@ -40,6 +40,7 @@ function request(overrides = {}) {
 function matrix(workOrderCommitment = request().work_order_commitment) {
   const venues = CARRY_EXECUTION_VENUES.map((venueId) => ({
     venue_id: venueId,
+    qualification: qualification(venueId),
     account_commitment: access(venueId).account_commitment,
     transaction_broadcast: false,
     work_order_commitments: [],
@@ -125,6 +126,25 @@ function matrix(workOrderCommitment = request().work_order_commitment) {
   };
 }
 
+function qualification(venueId) {
+  const capability = venueAdapterCapability(venueId, "exact_quantity_recovery");
+  return capability?.status === "proven"
+    ? {
+        proven: true,
+        source: "registry_baseline",
+        adapter_id: capability.adapter_id,
+        image_digest: ENV.PHALA_CVM_IMAGE_DIGEST,
+      }
+    : {
+        proven: true,
+        source: "deployment_bound_lifecycle",
+        adapter_id: capability?.adapter_id,
+        image_digest: ENV.PHALA_CVM_IMAGE_DIGEST,
+        verified_at_ms: NOW - 1_000,
+        evidence_commitment: `carry:qualification:evidence:${venueId}:0001`,
+      };
+}
+
 function memoryState() {
   const rows = new Map();
   return {
@@ -147,6 +167,7 @@ test("persists deployment-, owner-, account-, and registry-bound three-venue rea
   assert.equal(read.image_digest, ENV.PHALA_CVM_IMAGE_DIGEST);
   assert.ok(read.evidence_commitment.startsWith("carry:readiness:evidence:"));
   assert.equal(read.recovery_ready, true);
+  assert.deepEqual(read.recovery_reasons, []);
   assert.deepEqual(read.recovery_venue_ids, [...CARRY_EXECUTION_VENUES]);
   assert.deepEqual(read.recovery_policy, {
     ambiguous_submission: "freeze_reconcile_never_retry",
@@ -162,6 +183,27 @@ test("persists deployment-, owner-, account-, and registry-bound three-venue rea
     && item.account_state_commitment.startsWith("carry:account-state:")
   ), true);
   assert.equal(verifyCarryExecutionReadinessResult(read, { now_ms: NOW + 1_000 }).ok, true);
+});
+
+test("does not promote registered recovery adapters without deployment-bound lifecycle qualification", async () => {
+  const state = memoryState();
+  const unproven = matrix();
+  const lighter = unproven.venues.find((venue) => venue.venue_id === "lighter");
+  lighter.qualification = {
+    ...lighter.qualification,
+    proven: false,
+    source: null,
+    verified_at_ms: null,
+    evidence_commitment: null,
+  };
+  const stored = await storeCarryExecutionReadiness({ state, request: request(), matrix: unproven, now_ms: NOW, env: ENV });
+  assert.equal(stored.ok, true);
+  assert.equal(stored.readiness.ready, true);
+  assert.equal(stored.readiness.recovery_ready, false);
+  assert.deepEqual(stored.readiness.recovery_venue_ids, ["hyperliquid", "aster"]);
+  assert.ok(stored.readiness.recovery_reasons.includes("carry_recovery_qualification_unproven:lighter"));
+  assert.ok(stored.readiness.recovery_reasons.includes("carry_recovery_qualification_source_invalid:lighter"));
+  assert.equal(verifyCarryExecutionReadinessResult(stored.readiness, { now_ms: NOW }).ok, true);
 });
 
 test("rejects tampered readiness summaries", async () => {

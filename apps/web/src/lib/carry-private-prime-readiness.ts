@@ -25,6 +25,7 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
   const shadow = record(value.five_venue_shadow);
   const execution = record(value.three_venue_execution);
   const recovery = record(value.failure_recovery);
+  const recoveryReasons = strings(recovery.reasons);
   const recoveryPolicy = record(recovery.policy);
   const route = record(value.collateral_route_observation);
   const supervision = record(value.supervision);
@@ -41,6 +42,8 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && CARRY_EXECUTION_VENUES.every((venueId, index) => venues[index] === venueId);
   const recoveryVenues = strings(recovery.venue_ids);
   const recoveryReady = recovery.ready === true
+    && Array.isArray(recovery.reasons)
+    && recoveryReasons.length === 0
     && recoveryVenues.length === CARRY_EXECUTION_VENUES.length
     && CARRY_EXECUTION_VENUES.every((venueId, index) => recoveryVenues[index] === venueId)
     && Object.entries(CARRY_RECOVERY_POLICY).every(([key, expected]) => recoveryPolicy[key] === expected)

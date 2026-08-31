@@ -1329,6 +1329,7 @@ function privatePrimeReadiness() {
     failure_recovery: {
       ready: true,
       venue_ids: ["hyperliquid", "lighter", "aster"],
+      reasons: [],
       policy: {
         ambiguous_submission: "freeze_reconcile_never_retry",
         partial_fill: "exact_quantity_reduce_only",

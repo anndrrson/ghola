@@ -173,6 +173,19 @@ test("rejects private-prime readiness that fabricates recovery coverage", () => 
   );
 });
 
+test("rejects recovery readiness inferred from adapter registration without lifecycle qualification", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      readiness: sources.readiness.replaceAll(
+        "qualification: recoveryQualificationRecord(item.qualification)",
+        "qualification: null",
+      ),
+    }),
+    /carry_recovery_qualification_binding_missing/,
+  );
+});
+
 test("rejects a gateway that forwards unauthenticated private-prime evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({

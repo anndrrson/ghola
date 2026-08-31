@@ -8,6 +8,7 @@ import { runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
 import { validVenueLiquidationBinding } from "../venues/liquidation-distance.js";
 
 const DEFAULT_MAX_AGE_MS = 15 * 60_000;
+const DEFAULT_QUALIFICATION_MAX_AGE_MS = 90 * 86_400_000;
 
 export async function storeCarryExecutionReadiness({ state, request, matrix, now_ms: nowMs = Date.now(), env = process.env }) {
   const evidence = buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env });
@@ -194,6 +195,7 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
   let recoveryReady = sameRecoveryPolicy(evidence.recovery_policy);
   if (!recoveryReady) reasons.push("carry_readiness_recovery_policy_mismatch");
   const recoveryVenueIds = [];
+  const recoveryReasons = [];
   const checkedAt = positiveInteger(evidence.checked_at_ms);
   const maxAge = readinessMaxAge(env);
   if (!checkedAt || checkedAt > nowMs || nowMs - checkedAt > maxAge) reasons.push("carry_readiness_stale");
@@ -203,7 +205,8 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
   for (const venueId of expectedVenues) {
     const expectedAdapter = venueAdapterCapability(venueId, "carry_execution")?.adapter_id;
     const expectedNoSubmitAdapter = venueAdapterCapability(venueId, "no_submit_reconciliation")?.adapter_id;
-    const expectedRecoveryAdapter = venueAdapterCapability(venueId, "exact_quantity_recovery")?.adapter_id;
+    const expectedRecoveryCapability = venueAdapterCapability(venueId, "exact_quantity_recovery");
+    const expectedRecoveryAdapter = expectedRecoveryCapability?.adapter_id;
     const matchingVenues = venues.filter((item) => item?.venue_id === venueId);
     const venue = matchingVenues[0];
     if (matchingVenues.length !== 1) {
@@ -218,7 +221,18 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
     if (!recoveryBound) {
       recoveryReady = false;
       reasons.push(`carry_readiness_recovery_adapter_mismatch:${venueId}`);
-    } else {
+    }
+    const recoveryQualification = assessRecoveryQualification({
+      venue_id: venueId,
+      qualification: venue.qualification,
+      capability: expectedRecoveryCapability,
+      image_digest: expectedImage,
+      checked_at_ms: checkedAt,
+    });
+    if (!recoveryQualification.proven) {
+      recoveryReady = false;
+      recoveryReasons.push(...recoveryQualification.reasons);
+    } else if (recoveryBound) {
       recoveryVenueIds.push(venueId);
     }
     if (venue.transaction_broadcast !== false) reasons.push(`carry_readiness_broadcast_unsafe:${venueId}`);
@@ -376,6 +390,7 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
     expires_at_ms: checkedAt ? checkedAt + maxAge : null,
     evidence_commitment: evidence.evidence_commitment || null,
     recovery_ready: recoveryReady && recoveryVenueIds.length === expectedVenues.length,
+    recovery_reasons: Object.freeze([...new Set(recoveryReasons)]),
     recovery_policy: Object.freeze({ ...CARRY_RECOVERY_POLICY }),
     recovery_venue_ids: Object.freeze([...recoveryVenueIds]),
     capital_ready: expectedVenues.every((venueId) => capitalByVenue.get(venueId)?.[0]?.capital_ready === true),
@@ -446,6 +461,7 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
         verification_commitments: (Array.isArray(item.verification_commitments) ? item.verification_commitments : []).map(String),
         work_order_commitments: (Array.isArray(item.work_order_commitments) ? item.work_order_commitments : []).map(String),
         account_state_commitments: (Array.isArray(item.account_state_commitments) ? item.account_state_commitments : []).map(String),
+        qualification: recoveryQualificationRecord(item.qualification),
         account_commitment: String(item.account_commitment || ""),
         vault_commitment: String(access.vault_commitment || ""),
         policy_commitment: String(access.policy_commitment || ""),
@@ -473,6 +489,48 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
   };
   evidence.evidence_commitment = evidenceCommitment(evidence);
   return evidence;
+}
+
+function assessRecoveryQualification({ venue_id: venueId, qualification, capability, image_digest: imageDigest, checked_at_ms: checkedAtMs }) {
+  const reasons = [];
+  if (qualification?.proven !== true) reasons.push(`carry_recovery_qualification_unproven:${venueId}`);
+  if (!capability?.adapter_id || qualification?.adapter_id !== capability.adapter_id) {
+    reasons.push(`carry_recovery_qualification_adapter_mismatch:${venueId}`);
+  }
+  if (!imageDigest || qualification?.image_digest !== imageDigest) {
+    reasons.push(`carry_recovery_qualification_image_mismatch:${venueId}`);
+  }
+  if (capability?.status === "proven") {
+    if (qualification?.source !== "registry_baseline") {
+      reasons.push(`carry_recovery_qualification_source_invalid:${venueId}`);
+    }
+  } else if (capability?.status === "implemented_unproven") {
+    const verifiedAtMs = positiveInteger(qualification?.verified_at_ms);
+    if (qualification?.source !== "deployment_bound_lifecycle") {
+      reasons.push(`carry_recovery_qualification_source_invalid:${venueId}`);
+    }
+    if (!verifiedAtMs || !checkedAtMs || verifiedAtMs > checkedAtMs
+      || checkedAtMs - verifiedAtMs > DEFAULT_QUALIFICATION_MAX_AGE_MS) {
+      reasons.push(`carry_recovery_qualification_stale:${venueId}`);
+    }
+    if (!commitment(qualification?.evidence_commitment)) {
+      reasons.push(`carry_recovery_qualification_evidence_missing:${venueId}`);
+    }
+  } else {
+    reasons.push(`carry_recovery_qualification_status_invalid:${venueId}`);
+  }
+  return Object.freeze({ proven: reasons.length === 0, reasons: Object.freeze(reasons) });
+}
+
+function recoveryQualificationRecord(value) {
+  return Object.freeze({
+    proven: value?.proven === true,
+    source: typeof value?.source === "string" ? value.source : null,
+    adapter_id: typeof value?.adapter_id === "string" ? value.adapter_id : null,
+    image_digest: typeof value?.image_digest === "string" ? value.image_digest : null,
+    verified_at_ms: positiveInteger(value?.verified_at_ms) || null,
+    evidence_commitment: typeof value?.evidence_commitment === "string" ? value.evidence_commitment : null,
+  });
 }
 
 function buildCarryExecutionDiagnostic({ request, matrix, now_ms: nowMs, env }) {

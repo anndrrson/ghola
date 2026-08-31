@@ -1316,6 +1316,13 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadiness", 'technicalReasons.push("collateral_route_coverage_incomplete")', "carry_private_prime_route_coverage_gate_missing");
   requireText("webPrivatePrimeReadiness", "route.complete_directed_coverage === true", "carry_private_prime_ui_route_coverage_gate_missing");
   requireText("privatePrimeReadiness", "failure_recovery: failureRecovery", "carry_private_prime_recovery_output_missing");
+  requireText("readiness", "qualification: recoveryQualificationRecord(item.qualification)", "carry_recovery_qualification_binding_missing");
+  requireText("readiness", "carry_recovery_qualification_unproven", "carry_recovery_unproven_gate_missing");
+  requireText("readiness", "capability?.status === \"implemented_unproven\"", "carry_recovery_lifecycle_qualification_gate_missing");
+  requireText("readinessTest", "does not promote registered recovery adapters without deployment-bound lifecycle qualification", "carry_recovery_qualification_test_missing");
+  requireText("privatePrimeReadiness", "reasons.length === 0", "carry_private_prime_recovery_reason_gate_missing");
+  requireText("webPrivatePrimeReadiness", "recoveryReasons.length === 0", "carry_private_prime_ui_recovery_reason_gate_missing");
+  requireText("webPrivatePrimeReadinessTest", "rejects recovery labels backed only by unproven adapter registration", "carry_private_prime_ui_recovery_qualification_test_missing");
   requireText("privatePrimeReadiness", 'technicalReasons.push("three_venue_recovery_unproven")', "carry_private_prime_recovery_gate_missing");
   requireText("privatePrimeReadiness", "const noSubmitReady = technicalReasons.length === 0", "carry_private_prime_capital_free_no_submit_gate_missing");
   requireText("privatePrimeReadiness", "noSubmitReady && capitalReady && pairedLifecycle.verified", "carry_private_prime_live_capital_gate_missing");
