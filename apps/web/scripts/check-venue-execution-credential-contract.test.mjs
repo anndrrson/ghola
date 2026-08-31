@@ -7,6 +7,7 @@ import {
   checkAsterCredentialProvisioningBoundary,
   checkAsterOnboardingUiBoundary,
   checkLighterCredentialProvisioningBoundary,
+  checkLighterActivationReadinessBoundary,
   checkLighterOnboardingUiBoundary,
   checkVenueOnboardingLiveProofBoundary,
   checkTurnkeyVenueOwnerAddressBoundary,
@@ -30,6 +31,8 @@ const lighterPrepare = readFileSync(resolve(HERE, "../src/app/v1/private-account
 const lighterComplete = readFileSync(resolve(HERE, "../src/app/v1/private-account/platforms/lighter/complete/route.ts"), "utf8");
 const lighterWorker = readFileSync(resolve(HERE, "../../private-agent-worker/src/venues/lighter-provisioning.js"), "utf8");
 const lighterSigning = readFileSync(resolve(HERE, "../src/lib/perps-turnkey-lighter-signing.ts"), "utf8");
+const lighterReadiness = readFileSync(resolve(HERE, "../src/lib/lighter-activation-readiness.ts"), "utf8");
+const lighterReadinessServer = readFileSync(resolve(HERE, "../src/lib/lighter-activation-readiness.server.ts"), "utf8");
 const turnkeyProvider = readFileSync(resolve(HERE, "../src/lib/perps-turnkey-provider.tsx"), "utf8");
 const turnkeyWalletIdentity = readFileSync(resolve(HERE, "../src/lib/perps-turnkey-wallet-identity.ts"), "utf8");
 const liveClient = readFileSync(resolve(HERE, "../src/lib/private-account-client.ts"), "utf8");
@@ -54,6 +57,11 @@ test("accepts the fail-closed venue execution credential contract", () => {
     lighterSigning,
   ).ok, true);
   assert.equal(checkLighterOnboardingUiBoundary(asterUi).ok, true);
+  assert.equal(checkLighterActivationReadinessBoundary(
+    lighterReadiness,
+    lighterReadinessServer,
+    asterUi,
+  ).ok, true);
   assert.equal(checkVenueOnboardingLiveProofBoundary(liveClient, liveRoutes, liveProxy).ok, true);
   assert.equal(checkTurnkeyVenueOwnerAddressBoundary(
     readFileSync(resolve(HERE, "../src/lib/perps-turnkey-aster-signing.ts"), "utf8"),
@@ -341,6 +349,19 @@ test("rejects exposing manual Lighter keys or removing reconcile-only recovery",
   assert.throws(
     () => checkLighterOnboardingUiBoundary(exposed),
     /lighter_programmatic_primary_action_required|lighter_manual_fallback_must_default_hidden|lighter_manual_fallback_visibility_guard_required|lighter_reconcile_only_polling_required/,
+  );
+});
+
+test("rejects a stale or unsourced Lighter new-account minimum", () => {
+  assert.throws(
+    () => checkLighterActivationReadinessBoundary(
+      lighterReadiness
+        .replace("BigInt(5_000_000)", "BigInt(3_000_000)")
+        .replace("https://apidocs.lighter.xyz/docs/deposits-transfers-and-withdrawals", "removed"),
+      lighterReadinessServer,
+      asterUi.replace("Lighter collateral · ≥5 USDC", "Lighter collateral"),
+    ),
+    /lighter_new_account_five_usdc_minimum_required|lighter_deposit_source_required|lighter_ui_five_usdc_disclosure_required|lighter_stale_three_usdc_minimum_forbidden/,
   );
 });
 

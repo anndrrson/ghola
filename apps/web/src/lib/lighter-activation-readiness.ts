@@ -5,7 +5,7 @@ export type LighterActivationBlocker =
   | "lighter_owner_account_required";
 
 export interface LighterActivationReadiness {
-  version: 2;
+  version: 3;
   owner_address: `0x${string}`;
   lighter_account_index: number | null;
   base_usdc_microunits: string;
@@ -23,14 +23,16 @@ export interface LighterActivationReadiness {
 
 const DECIMAL_INTEGER = /^(?:0|[1-9][0-9]*)$/;
 const EVM_ADDRESS = /^0x[0-9a-f]{40}$/i;
-const MINIMUM_BASE_USDC_MICROUNITS = BigInt(3_000_000);
+export const LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS = BigInt(5_000_000);
+export const LIGHTER_NEW_ACCOUNT_DEPOSIT_SOURCE =
+  "https://apidocs.lighter.xyz/docs/deposits-transfers-and-withdrawals";
 export const LIGHTER_ACTIVATION_READINESS_MAX_AGE_MS = 30_000;
 
 export function describeLighterActivationNextStep(readiness: LighterActivationReadiness): string {
   if (readiness.ready) return "Lighter is active. Recheck once to seal the existing association.";
   const needs: string[] = [];
-  if (!readiness.lighter_owner_account_ready && BigInt(readiness.base_usdc_microunits) < MINIMUM_BASE_USDC_MICROUNITS) {
-    needs.push("3 USDC on Base");
+  if (!readiness.lighter_owner_account_ready && BigInt(readiness.base_usdc_microunits) < LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS) {
+    needs.push("at least 5 USDC on Base");
   }
   if (readiness.blockers.includes("lighter_base_gas_required")) needs.push("ETH gas on Base");
   if (readiness.blockers.includes("lighter_ethereum_association_gas_required")) needs.push("ETH gas on Ethereum");
@@ -73,7 +75,7 @@ export function validateLighterActivationReadiness(
     body.estimated_ethereum_association_gas_wei,
   ];
   if (
-    body.version !== 2 ||
+    body.version !== 3 ||
     !EVM_ADDRESS.test(ownerAddress) ||
     !EVM_ADDRESS.test(responseOwner) ||
     responseOwner.toLowerCase() !== ownerAddress.toLowerCase() ||
@@ -94,11 +96,11 @@ export function validateLighterActivationReadiness(
     (lighterOwnerAccountReady && (!Number.isSafeInteger(lighterAccountIndex) || Number(lighterAccountIndex) < 0)) ||
     (!lighterOwnerAccountReady && lighterAccountIndex !== null)
   ) throw new Error("Lighter readiness evidence is inconsistent.");
-  const baseDepositReady = baseUsdc >= MINIMUM_BASE_USDC_MICROUNITS && baseEth >= estimatedBaseGas;
+  const baseDepositReady = baseUsdc >= LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS && baseEth >= estimatedBaseGas;
   const ethereumAssociationGasReady = ethereumEth >= estimatedEthereumGas;
   const expectedBlockers: LighterActivationBlocker[] = [];
   if (!lighterOwnerAccountReady) {
-    if (baseUsdc < MINIMUM_BASE_USDC_MICROUNITS) expectedBlockers.push("lighter_base_usdc_below_minimum");
+    if (baseUsdc < LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS) expectedBlockers.push("lighter_base_usdc_below_minimum");
     if (baseEth < estimatedBaseGas) expectedBlockers.push("lighter_base_gas_required");
     expectedBlockers.push("lighter_owner_account_required");
   }
@@ -113,7 +115,7 @@ export function validateLighterActivationReadiness(
   ) throw new Error("Lighter readiness evidence is inconsistent.");
 
   return Object.freeze({
-    version: 2,
+    version: 3,
     owner_address: responseOwner as `0x${string}`,
     lighter_account_index: lighterOwnerAccountReady ? Number(lighterAccountIndex) : null,
     base_usdc_microunits: baseUsdc.toString(),

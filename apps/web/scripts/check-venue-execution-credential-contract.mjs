@@ -366,6 +366,28 @@ export function checkLighterOnboardingUiBoundary(source) {
   return { ok: true };
 }
 
+export function checkLighterActivationReadinessBoundary(clientSource, serverSource, setupSource) {
+  const failures = [];
+  const required = [
+    [clientSource, "LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS = BigInt(5_000_000)", "lighter_new_account_five_usdc_minimum_required"],
+    [clientSource, "https://apidocs.lighter.xyz/docs/deposits-transfers-and-withdrawals", "lighter_deposit_source_required"],
+    [serverSource, "LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS", "lighter_server_shared_minimum_required"],
+    [setupSource, "LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS", "lighter_ui_shared_minimum_required"],
+    [setupSource, "Lighter collateral · ≥5 USDC", "lighter_ui_five_usdc_disclosure_required"],
+  ];
+  for (const [source, value, code] of required) if (!source.includes(value)) failures.push(code);
+  for (const source of [clientSource, serverSource, setupSource]) {
+    if (source.includes("BigInt(3_000_000)") || source.includes("3 USDC on Base")) {
+      failures.push("lighter_stale_three_usdc_minimum_forbidden");
+      break;
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(`Lighter activation readiness boundary failed: ${failures.join(", ")}`);
+  }
+  return { ok: true };
+}
+
 export function checkVenueOnboardingLiveProofBoundary(clientSource, routesSource, proxySource) {
   const failures = [];
   const required = [
@@ -471,6 +493,11 @@ function main() {
     resolve(HERE, "../src/components/carry/CarryAccountSetup.tsx"),
     "utf8",
   ));
+  checkLighterActivationReadinessBoundary(
+    readFileSync(resolve(HERE, "../src/lib/lighter-activation-readiness.ts"), "utf8"),
+    readFileSync(resolve(HERE, "../src/lib/lighter-activation-readiness.server.ts"), "utf8"),
+    readFileSync(resolve(HERE, "../src/components/carry/CarryAccountSetup.tsx"), "utf8"),
+  );
   checkVenueOnboardingLiveProofBoundary(
     readFileSync(resolve(HERE, "../src/lib/private-account-client.ts"), "utf8"),
     readFileSync(resolve(HERE, "../src/lib/private-account-live-routes.ts"), "utf8"),

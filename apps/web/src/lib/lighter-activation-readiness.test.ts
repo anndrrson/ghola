@@ -61,7 +61,7 @@ describe("Lighter activation readiness evidence", () => {
   it("does not request another deposit when Base collateral is already present", () => {
     const value = validateLighterActivationReadiness({
       ...readiness(),
-      base_usdc_microunits: "3000000",
+      base_usdc_microunits: "5000000",
       blockers: [
         "lighter_base_gas_required",
         "lighter_owner_account_required",
@@ -71,13 +71,21 @@ describe("Lighter activation readiness evidence", () => {
 
     const instruction = describeLighterActivationNextStep(value);
     expect(instruction).toContain("ETH gas on Base and ETH gas on Ethereum");
-    expect(instruction).not.toContain("3 USDC");
+    expect(instruction).not.toContain("5 USDC");
+  });
+
+  it("keeps a three-dollar balance blocked against Lighter's five-dollar new-account minimum", () => {
+    const instruction = describeLighterActivationNextStep(validateLighterActivationReadiness({
+      ...readiness(),
+      base_usdc_microunits: "3000000",
+    }, OWNER, NOW));
+    expect(instruction).toContain("at least 5 USDC on Base");
   });
 });
 
 function readiness() {
   return {
-    version: 2,
+    version: 3,
     owner_address: OWNER,
     lighter_account_index: null,
     base_usdc_microunits: "0",

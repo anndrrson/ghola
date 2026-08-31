@@ -30,7 +30,7 @@ describe("Lighter activation readiness", () => {
       ethereum_association_gas_ready: false,
       lighter_owner_account_ready: false,
       ready: false,
-      blockers: ["lighter_base_gas_required", "lighter_owner_account_required", "lighter_ethereum_association_gas_required"],
+      blockers: ["lighter_base_usdc_below_minimum", "lighter_base_gas_required", "lighter_owner_account_required", "lighter_ethereum_association_gas_required"],
     });
     expect(fetchImpl).toHaveBeenCalledTimes(6);
   });
@@ -40,7 +40,7 @@ describe("Lighter activation readiness", () => {
       const url = String(input);
       if (url.includes("accountsByL1Address")) return lighterAccount();
       const request = JSON.parse(String(init?.body)) as { method: string };
-      if (request.method === "eth_call") return rpc("0x2dc6c0");
+      if (request.method === "eth_call") return rpc("0x4c4b40");
       if (request.method === "eth_gasPrice") return rpc("0x1");
       return rpc(url.includes("base") ? "0x7a120" : "0xb71b0");
     }) as unknown as typeof fetch;

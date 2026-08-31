@@ -62,6 +62,7 @@ import {
 import {
   describeLighterActivationNextStep,
   fetchLighterActivationReadiness,
+  LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS,
   type LighterActivationReadiness,
 } from "@/lib/lighter-activation-readiness";
 import { shouldResumeUnsignedTurnkeySetup } from "@/lib/carry-setup-auth-recovery";
@@ -1032,7 +1033,7 @@ function LighterReadinessPanel({
   onRefresh: () => void;
 }) {
   const baseCollateralReady = readiness
-    ? BigInt(readiness.base_usdc_microunits) >= BigInt(3_000_000)
+    ? BigInt(readiness.base_usdc_microunits) >= LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS
     : false;
   const baseGasReady = readiness
     ? !readiness.blockers.includes("lighter_base_gas_required")
@@ -1051,7 +1052,7 @@ function LighterReadinessPanel({
           <p className="mt-2 text-xs leading-5 text-[#d8eaff]">{describeLighterActivationNextStep(readiness)}</p>
           <div className="mt-2 divide-y divide-[#1b283b]">
             {!readiness.lighter_owner_account_ready && <>
-              <ReadinessRow label="Lighter collateral" value={`${formatDecimalUnits(readiness.base_usdc_microunits, 6, 2)} USDC on Base`} ready={baseCollateralReady} />
+              <ReadinessRow label="Lighter collateral · ≥5 USDC" value={`${formatDecimalUnits(readiness.base_usdc_microunits, 6, 2)} USDC on Base`} ready={baseCollateralReady} />
               <ReadinessRow label="Base network fee" value={baseGasReady ? "Funded" : `${formatDecimalUnits(readiness.estimated_base_gas_wei, 18, 6)} ETH required`} ready={baseGasReady} />
             </>}
             <ReadinessRow label="Lighter owner account" value={readiness.lighter_owner_account_ready ? `Verified · #${readiness.lighter_account_index}` : "Activation required"} ready={readiness.lighter_owner_account_ready} />

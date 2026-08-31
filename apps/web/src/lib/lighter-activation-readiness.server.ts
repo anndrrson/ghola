@@ -7,9 +7,9 @@ import type {
   LighterActivationBlocker,
   LighterActivationReadiness,
 } from "./lighter-activation-readiness";
+import { LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS } from "./lighter-activation-readiness";
 
 const BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bdA02913";
-const LIGHTER_MINIMUM_USDC = BigInt(3_000_000);
 const BASE_ACTIVATION_GAS_UNITS_WITH_BUFFER = BigInt(500_000);
 const ETHEREUM_ASSOCIATION_GAS_UNITS_WITH_BUFFER = BigInt(750_000);
 
@@ -39,18 +39,18 @@ export async function readLighterActivationReadiness({
   ]);
   const estimatedBaseGas = baseGasPrice * BASE_ACTIVATION_GAS_UNITS_WITH_BUFFER;
   const estimatedEthereumGas = ethereumGasPrice * ETHEREUM_ASSOCIATION_GAS_UNITS_WITH_BUFFER;
-  const baseDepositReady = baseUsdc >= LIGHTER_MINIMUM_USDC && baseEth >= estimatedBaseGas;
+  const baseDepositReady = baseUsdc >= LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS && baseEth >= estimatedBaseGas;
   const ethereumAssociationGasReady = ethereumEth >= estimatedEthereumGas;
   const lighterOwnerAccountReady = lighterAccountIndex !== null;
   const blockers: LighterActivationBlocker[] = [];
   if (!lighterOwnerAccountReady) {
-    if (baseUsdc < LIGHTER_MINIMUM_USDC) blockers.push("lighter_base_usdc_below_minimum");
+    if (baseUsdc < LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS) blockers.push("lighter_base_usdc_below_minimum");
     if (baseEth < estimatedBaseGas) blockers.push("lighter_base_gas_required");
     blockers.push("lighter_owner_account_required");
   }
   if (!ethereumAssociationGasReady) blockers.push("lighter_ethereum_association_gas_required");
   return Object.freeze({
-    version: 2,
+    version: 3,
     owner_address: owner,
     lighter_account_index: lighterAccountIndex,
     base_usdc_microunits: baseUsdc.toString(),
