@@ -17,7 +17,7 @@ export function deployPreview({
   }
 
   const scope = verify({ cwd, run });
-  const result = run("vercel", ["deploy"], {
+  const result = run(process.execPath, ["scripts/create-git-preview-deployment.mjs"], {
     cwd,
     encoding: "utf8",
     stdio: "inherit",
