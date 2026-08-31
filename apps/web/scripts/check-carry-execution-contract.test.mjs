@@ -2765,6 +2765,26 @@ test("rejects a portfolio value report without its no-transfer authority gate", 
   );
 });
 
+test("rejects portfolio value reporting detached from its cashflow FX basis", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      positions: sources.positions.replaceAll(
+        'funding_valuation_basis: "usdc_equivalent_at_ledger_ingestion"',
+        'funding_valuation_basis: "unbound"',
+      ),
+    }),
+    /carry_portfolio_value_fx_basis_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replaceAll("UNVERIFIED FX BASIS", "REAL"),
+    }),
+    /carry_terminal_portfolio_fx_basis_failure_missing/,
+  );
+});
+
 test("rejects a stress-capital proposal that silently changes live leverage", () => {
   assert.throws(
     () => checkCarryExecutionContract({

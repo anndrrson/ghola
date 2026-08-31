@@ -12,6 +12,7 @@ import {
   carryMatrixPairReady,
   carryOpeningCapitalSummary,
   carryPortfolioRunwaySummary,
+  carryPortfolioValueSummary,
   carryRiskMandateSummary,
   carrySupervisionSummary,
   carryTerminalEconomics,
@@ -961,6 +962,8 @@ describe("CarryTerminalBuilder", () => {
           owner_approval_required: true,
           proposal_only: true,
         },
+        valuation_asset: "USDC",
+        funding_valuation_basis: "usdc_equivalent_at_ledger_ingestion",
         proposal_only: true,
         transaction_broadcast: false,
         automatic_transfer_permitted: false,
@@ -1041,7 +1044,7 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("PORTFOLIO CAPITAL · $15 REALLOCATE · $10 NEW CASH · OWNER ONLY");
     expect(container.textContent).toContain("COLLATERAL REVIEW · 1 MOVE · 0 FUND · $15 · REVIEW ONLY");
     expect(container.textContent).toContain("SIGN CAPITAL REVIEW");
-    expect(container.textContent).toContain("PORTFOLIO VALUE · $19.5 REAL · $10 OPEN MODEL · +$4.5 Δ");
+    expect(container.textContent).toContain("PORTFOLIO VALUE · $19.5 REAL · $10 OPEN MODEL · +$4.5 Δ · USDC @ BOOKED FX");
     expect(container.textContent).toContain("CAPITAL OFFSET · $15 NEW CASH AVOIDED · OWNER MOVE");
   });
 
@@ -1123,6 +1126,26 @@ describe("CarryTerminalBuilder", () => {
         proposal_only: true,
       },
     })?.value).toBe("UNVERIFIED");
+  });
+
+  it("does not label portfolio P&L real without its worker-bound FX basis", () => {
+    expect(carryPortfolioValueSummary({
+      kind: "ghola_carry_portfolio_value_report",
+      value_proof_status: "finalized",
+      position_count: 1,
+      open_position_count: 0,
+      finalized_position_count: 1,
+      modeled: { net_value_micro_usdc: 20_000_000 },
+      finalized_after_costs: {
+        net_value_micro_usdc: 19_500_000,
+        variance_from_modeled_micro_usdc: -500_000,
+      },
+      unfinalized: { modeled_net_value_micro_usdc: 0 },
+      proposal_only: true,
+      transaction_broadcast: false,
+      automatic_transfer_permitted: false,
+      owner_only_operations: ["fund", "transfer", "withdraw"],
+    })).toEqual({ value: "UNVERIFIED FX BASIS", tone: "bad" });
   });
 
   it("shows fresh account-state proof after an approved capital plan restores safe runway", async () => {

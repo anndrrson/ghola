@@ -1180,7 +1180,7 @@ function carryCollateralReviewSummary(review: Record<string, unknown> | null) {
   };
 }
 
-function carryPortfolioValueSummary(report: Record<string, unknown> | null) {
+export function carryPortfolioValueSummary(report: Record<string, unknown> | null) {
   if (!report) return null;
   const ownerOnlyOperations = Array.isArray(report.owner_only_operations) ? report.owner_only_operations : [];
   if (report.kind !== "ghola_carry_portfolio_value_report"
@@ -1201,17 +1201,21 @@ function carryPortfolioValueSummary(report: Record<string, unknown> | null) {
     || ![positions, open, finalized, modeled, realized, variance, openModeled].every(Number.isSafeInteger)
     || positions < 0 || open < 0 || finalized < 0 || open + finalized !== positions) return null;
   if (positions === 0) return null;
+  if (report.valuation_asset !== "USDC"
+    || report.funding_valuation_basis !== "usdc_equivalent_at_ledger_ingestion") {
+    return { value: "UNVERIFIED FX BASIS", tone: "bad" as const };
+  }
   const expectedStatus = finalized === positions ? "finalized" : finalized > 0 ? "mixed" : "accruing";
   if (report.value_proof_status !== expectedStatus) return null;
   if (finalized > 0) {
     return {
       value: open > 0
-        ? `${formatMicroUsd(realized)} REAL · ${formatMicroUsd(openModeled)} OPEN MODEL · ${formatSignedMicroUsd(variance)} Δ`
-        : `${formatMicroUsd(realized)} REAL · ${formatSignedMicroUsd(variance)} Δ · ALL COSTS`,
+        ? `${formatMicroUsd(realized)} REAL · ${formatMicroUsd(openModeled)} OPEN MODEL · ${formatSignedMicroUsd(variance)} Δ · USDC @ BOOKED FX`
+        : `${formatMicroUsd(realized)} REAL · ${formatSignedMicroUsd(variance)} Δ · ALL COSTS · USDC @ BOOKED FX`,
       tone: realized >= 0 ? "good" as const : "bad" as const,
     };
   }
-  return { value: `${formatMicroUsd(modeled)} MODEL · ACCRUING`, tone: "warn" as const };
+  return { value: `${formatMicroUsd(modeled)} MODEL · ACCRUING · USDC`, tone: "warn" as const };
 }
 
 export function carryCapitalEfficiencySummary(report: Record<string, unknown> | null) {

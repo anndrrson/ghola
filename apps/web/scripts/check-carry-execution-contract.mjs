@@ -802,6 +802,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("positionsTest", 'verifiedOutcome.outcome_receipt.status, "safe_runway_verified"', "carry_collateral_outcome_test_missing");
   requireText("server", '"/carry/positions/collateral-review/approve"', "carry_collateral_review_approval_route_missing");
   requireText("positions", "export async function compileStoredCarryPortfolioValueReport", "carry_portfolio_value_worker_missing");
+  requireText("positions", 'funding_valuation_basis: "usdc_equivalent_at_ledger_ingestion"', "carry_portfolio_value_fx_basis_missing");
   requireText("positionsTest", 'value.report.value_proof_status, "accruing"', "carry_portfolio_value_worker_test_missing");
   requireText("server", '"/carry/positions/value-report"', "carry_portfolio_value_route_missing");
   requireText("positions", "modeledValueBreakdown", "carry_worker_value_breakdown_missing");
@@ -851,11 +852,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("webClient", "getCarryPortfolioValueReport", "carry_portfolio_value_client_missing");
   requireText("webRoute", 'action === "value_report"', "carry_portfolio_value_proxy_missing");
   requireText("webCarryBuilder", "PORTFOLIO VALUE ·", "carry_terminal_portfolio_value_missing");
+  requireText("webCarryBuilder", 'report.funding_valuation_basis !== "usdc_equivalent_at_ledger_ingestion"', "carry_terminal_portfolio_fx_basis_gate_missing");
+  requireText("webCarryBuilder", "UNVERIFIED FX BASIS", "carry_terminal_portfolio_fx_basis_failure_missing");
   requireText("webCarryBuilder", "CAPITAL OFFSET ·", "carry_terminal_capital_efficiency_missing");
   requireText("webCarryBuilder", "STALE EVIDENCE · RECONCILE ONLY", "carry_terminal_portfolio_stale_gate_missing");
   requireText("webCarryBuilderTest", "PORTFOLIO CAPITAL · $15 REALLOCATE · $10 NEW CASH · OWNER ONLY", "carry_terminal_portfolio_capital_test_missing");
   requireText("webCarryBuilderTest", "PORTFOLIO CAPITAL · $12.5 RELEASABLE · OWNER ONLY", "carry_terminal_portfolio_optimization_test_missing");
-  requireText("webCarryBuilderTest", "PORTFOLIO VALUE · $19.5 REAL · $10 OPEN MODEL · +$4.5 Δ", "carry_terminal_portfolio_value_test_missing");
+  requireText("webCarryBuilderTest", "PORTFOLIO VALUE · $19.5 REAL · $10 OPEN MODEL · +$4.5 Δ · USDC @ BOOKED FX", "carry_terminal_portfolio_value_test_missing");
+  requireText("webCarryBuilderTest", "does not label portfolio P&L real without its worker-bound FX basis", "carry_terminal_portfolio_fx_basis_test_missing");
   requireText("webCarryBuilderTest", "CAPITAL OFFSET · $15 NEW CASH AVOIDED · OWNER MOVE", "carry_terminal_capital_efficiency_test_missing");
   requireText("webCarryBuilder", "live_execution_leverage_unchanged !== true", "carry_terminal_stress_leverage_boundary_missing");
   requireText("webCarryBuilderTest", "UP TO 1× OWNER CONFIG", "carry_terminal_stress_capital_test_missing");
