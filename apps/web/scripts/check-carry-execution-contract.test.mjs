@@ -38,6 +38,16 @@ test("rejects a Lighter runner that calls an API absent from the pinned SDK", ()
   );
 });
 
+test("rejects a worker image that never verifies the pinned Lighter SDK surface", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      workerDockerfile: sources.workerDockerfile.replaceAll("account_active_orders", "unchecked_active_orders"),
+    }),
+    /lighter_image_active_order_api_guard_missing/,
+  );
+});
+
 test("rejects funding observation evaluated against its pre-fetch clock", () => {
   assert.throws(
     () => checkCarryExecutionContract({

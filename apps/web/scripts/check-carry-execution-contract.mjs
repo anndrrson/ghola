@@ -20,6 +20,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   server: "apps/private-agent-worker/src/server.js",
   workerState: "apps/private-agent-worker/src/state/private-state.js",
   workerPackage: "apps/private-agent-worker/package.json",
+  workerDockerfile: "apps/private-agent-worker/Dockerfile",
   preflight: "apps/private-agent-worker/src/execution/carry-preflight.js",
   fundingPersistence: "apps/private-agent-worker/src/execution/carry-funding-persistence.js",
   routingAdvantage: "apps/private-agent-worker/src/execution/carry-routing-advantage.js",
@@ -204,6 +205,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("lighterRunner", "next_cursor in seen_cursors", "lighter_inactive_order_cursor_guard_missing");
   forbidText("lighterRunner", "account_orders(", "lighter_unavailable_order_api_present");
   requireText("lighterTest", "uses the pinned Lighter SDK active and inactive order APIs", "lighter_pinned_order_api_test_missing");
+  requireText("workerDockerfile", 'getattr(api, "account_active_orders", None)', "lighter_image_active_order_api_guard_missing");
+  requireText("workerDockerfile", 'getattr(api, "account_inactive_orders", None)', "lighter_image_inactive_order_api_guard_missing");
 
   const shadowAdapters = {
     hyperliquid: "hyperliquid_shadow_v1",
