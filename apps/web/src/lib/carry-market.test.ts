@@ -133,6 +133,12 @@ describe("Carry market model", () => {
       dailyNetAdvantageUsd: 1.25,
       dailyNetAdvantageBps: 1.25,
     });
+    expect(evidence.selectedNet).toEqual({
+      benchmarkKind: "no_trade",
+      dailyNetUsd: 3.5,
+      dailyNetBps: 3.5,
+      sampleCount: 8,
+    });
     expect(evidence.detail).toContain("worker-committed modeled net");
     expect(evidence.detail).toContain("not realized P&L");
   });
@@ -151,6 +157,7 @@ describe("Carry market model", () => {
     summary.failures = ["routing_advantage_unavailable:BTC"];
     route.status = "unavailable";
     route.baseline_route = null;
+    route.baseline_modeled_net_micro_usdc_per_day = null;
     route.daily_net_advantage_micro_usdc = null;
     route.daily_net_advantage_e6_bps = null;
     route.funding_evidence_commitments = [`carry:funding:${"a".repeat(64)}`];
@@ -176,6 +183,12 @@ describe("Carry market model", () => {
         baselineRoute: null,
         dailyNetAdvantageUsd: 3.5,
         dailyNetAdvantageBps: 3.5,
+      },
+      selectedNet: {
+        benchmarkKind: "no_trade",
+        dailyNetUsd: 3.5,
+        dailyNetBps: 3.5,
+        sampleCount: 8,
       },
     });
     expect(evidence.detail).toContain("no second funding-qualified route exists");
@@ -474,6 +487,8 @@ function routingAdvantageSummary(): NonNullable<CarryShadowResponse["routing_adv
       status: "advantaged",
       selected_route: { long_venue_id: "lighter", short_venue_id: "aster" },
       baseline_route: { long_venue_id: "hyperliquid", short_venue_id: "aster" },
+      selected_modeled_net_micro_usdc_per_day: 3_500_000,
+      baseline_modeled_net_micro_usdc_per_day: 2_250_000,
       daily_net_advantage_micro_usdc: 1_250_000,
       daily_net_advantage_e6_bps: 1_250_000,
       sample_count: 8,

@@ -99,6 +99,10 @@ describe("CarryChartStrip", () => {
     const edge = [...container.querySelectorAll("span")].find((item) => item.textContent?.includes("EDGE✓"));
     expect(container.querySelector('[aria-label="Cross-venue route intelligence"]')
       ?.getAttribute("data-routing-evidence")).toBe("committed");
+    expect(container.querySelector('[aria-label="Cross-venue route intelligence"]')
+      ?.getAttribute("data-net-evidence")).toBe("committed");
+    expect(container.querySelector('[aria-label="Cross-venue route intelligence"]')
+      ?.firstElementChild?.textContent).toContain("NET24H✓+3.50BP/D");
     expect(edge?.textContent).toContain("EDGE✓ +");
     expect(edge?.getAttribute("title")).toContain("worker-committed modeled net");
     expect(edge?.getAttribute("title")).toContain("excludes the account fee tier");
@@ -397,6 +401,8 @@ function routingAdvantageSummary(observedAtMs: number): NonNullable<CarryShadowR
       status: "advantaged",
       selected_route: { long_venue_id: "lighter", short_venue_id: "aster" },
       baseline_route: { long_venue_id: "hyperliquid", short_venue_id: "aster" },
+      selected_modeled_net_micro_usdc_per_day: 3_500_000,
+      baseline_modeled_net_micro_usdc_per_day: 2_250_000,
       daily_net_advantage_micro_usdc: 1_250_000,
       daily_net_advantage_e6_bps: 1_250_000,
       sample_count: 8,

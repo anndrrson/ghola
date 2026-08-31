@@ -218,6 +218,8 @@ export interface CarryRoutingAdvantageRouteEvidence {
   status: CarryRoutingAdvantage["status"];
   selected_route: { long_venue_id: string; short_venue_id: string } | null;
   baseline_route: { long_venue_id: string; short_venue_id: string } | null;
+  selected_modeled_net_micro_usdc_per_day: number | null;
+  baseline_modeled_net_micro_usdc_per_day: number | null;
   daily_net_advantage_micro_usdc: number | null;
   daily_net_advantage_e6_bps: number | null;
   sample_count: number;
@@ -256,6 +258,12 @@ export interface CarryRoutingAdvantageEvidence {
   status: "committed" | "indicative" | "rejected";
   label: "EDGE✓" | "NET✓" | "EDGE*" | "EDGE!";
   advantage: CarryRoutingAdvantage;
+  selectedNet: {
+    benchmarkKind: "no_trade";
+    dailyNetUsd: number;
+    dailyNetBps: number;
+    sampleCount: number;
+  } | null;
   detail: string;
 }
 
@@ -594,6 +602,31 @@ export function carryRoutingAdvantageEvidence(
   const knownFundingCommitments = new Set((response?.funding_persistence?.routes || [])
     .map((item) => item.evidence_commitment)
     .filter((value): value is string => typeof value === "string"));
+  const selectedValue = route?.selected_value;
+  const selectedValueValid = selectedMatches
+    && selectedValue?.ready === true
+    && Array.isArray(selectedValue.reasons) && selectedValue.reasons.length === 0
+    && selectedValue.benchmark_kind === "no_trade"
+    && selectedValue.selected_route.long_venue_id === selectedRoute?.long_venue_id
+    && selectedValue.selected_route.short_venue_id === selectedRoute?.short_venue_id
+    && Number.isSafeInteger(selectedValue.modeled_net_micro_usdc_per_day)
+    && selectedValue.modeled_net_micro_usdc_per_day === route?.selected_modeled_net_micro_usdc_per_day
+    && Number.isSafeInteger(selectedValue.modeled_net_e6_bps_per_day)
+    && selectedValue.sample_count === route?.sample_count
+    && selectedValue.minimum_samples === route?.minimum_samples
+    && selectedValue.observed_span_ms === route?.observed_span_ms
+    && selectedValue.minimum_span_ms === route?.minimum_span_ms
+    && selectedValue.sample_count >= selectedValue.minimum_samples
+    && selectedValue.observed_span_ms >= selectedValue.minimum_span_ms
+    && CARRY_FUNDING_COMMITMENT.test(selectedValue.funding_evidence_commitment)
+    && knownFundingCommitments.has(selectedValue.funding_evidence_commitment)
+    && commitments.includes(selectedValue.funding_evidence_commitment);
+  const committedSelectedNet = selectedValueValid ? {
+    benchmarkKind: "no_trade" as const,
+    dailyNetUsd: selectedValue.modeled_net_micro_usdc_per_day / 1_000_000,
+    dailyNetBps: selectedValue.modeled_net_e6_bps_per_day / 1_000_000,
+    sampleCount: selectedValue.sample_count,
+  } : null;
   const routeValid = summary.ready === true
     && summary.failures.length === 0
     && route?.ready === true
@@ -605,6 +638,7 @@ export function carryRoutingAdvantageEvidence(
     && Number.isSafeInteger(route.observed_span_ms) && route.observed_span_ms >= route.minimum_span_ms
     && Number.isSafeInteger(route.daily_net_advantage_micro_usdc)
     && Number.isSafeInteger(route.daily_net_advantage_e6_bps)
+    && selectedValueValid
     && commitments.length > 0
     && commitments.every((value) => CARRY_FUNDING_COMMITMENT.test(value) && knownFundingCommitments.has(value));
   if (routeValid) {
@@ -624,11 +658,11 @@ export function carryRoutingAdvantageEvidence(
       status: "committed",
       label: "EDGE✓",
       advantage,
+      selectedNet: committedSelectedNet,
       detail: `${dailyNetAdvantageUsd >= 0 ? "+" : ""}$${dailyNetAdvantageUsd.toFixed(2)}/day worker-committed modeled net versus the next-best executable route across ${route.sample_count} funding samples; excludes the account fee tier and is not realized P&L.`,
     };
   }
-  const selectedValue = route?.selected_value;
-  const selectedValueValid = summary.ready === false
+  const selectedOnlyValid = summary.ready === false
     && summary.failures.every((value) => value.startsWith("routing_advantage_unavailable:"))
     && summary.failures.includes(`routing_advantage_unavailable:${selected?.candidate.asset}`)
     && route?.ready === false
@@ -636,24 +670,10 @@ export function carryRoutingAdvantageEvidence(
     && route.reasons[0] === "comparison_route_unavailable"
     && selectedMatches
     && baselineRoute === null
-    && selectedValue?.ready === true
-    && Array.isArray(selectedValue.reasons) && selectedValue.reasons.length === 0
-    && selectedValue.benchmark_kind === "no_trade"
-    && selectedValue.selected_route.long_venue_id === selectedRoute?.long_venue_id
-    && selectedValue.selected_route.short_venue_id === selectedRoute?.short_venue_id
-    && Number.isSafeInteger(selectedValue.modeled_net_micro_usdc_per_day)
-    && Number.isSafeInteger(selectedValue.modeled_net_e6_bps_per_day)
-    && selectedValue.sample_count === route.sample_count
-    && selectedValue.minimum_samples === route.minimum_samples
-    && selectedValue.observed_span_ms === route.observed_span_ms
-    && selectedValue.minimum_span_ms === route.minimum_span_ms
-    && selectedValue.sample_count >= selectedValue.minimum_samples
-    && selectedValue.observed_span_ms >= selectedValue.minimum_span_ms
-    && CARRY_FUNDING_COMMITMENT.test(selectedValue.funding_evidence_commitment)
-    && knownFundingCommitments.has(selectedValue.funding_evidence_commitment)
+    && selectedValueValid
     && commitments.length === 1
     && commitments[0] === selectedValue.funding_evidence_commitment;
-  if (!selectedValueValid) return selectedValueAdvertised ? rejectedAdvantage() : indicativeAdvantage(pointInTime);
+  if (!selectedOnlyValid) return selectedValueAdvertised ? rejectedAdvantage() : indicativeAdvantage(pointInTime);
   const dailyNetUsd = selectedValue.modeled_net_micro_usdc_per_day / 1_000_000;
   const dailyNetBps = selectedValue.modeled_net_e6_bps_per_day / 1_000_000;
   return {
@@ -669,6 +689,7 @@ export function carryRoutingAdvantageEvidence(
       dailyNetAdvantageBps: dailyNetBps,
       reason: null,
     },
+    selectedNet: committedSelectedNet,
     detail: `${dailyNetUsd >= 0 ? "+" : ""}$${dailyNetUsd.toFixed(2)}/day worker-committed modeled net versus no trade across ${selectedValue.sample_count} funding samples; no second funding-qualified route exists, the account fee tier is excluded, and this is not realized P&L.`,
   };
 }
@@ -678,6 +699,7 @@ function indicativeAdvantage(advantage: CarryRoutingAdvantage): CarryRoutingAdva
     status: "indicative",
     label: "EDGE*",
     advantage,
+    selectedNet: null,
     detail: advantage.reason
       ? "Indicative route edge unavailable until exact costs exist for another executable route."
       : `${advantage.dailyNetAdvantageUsd! >= 0 ? "+" : ""}$${advantage.dailyNetAdvantageUsd!.toFixed(2)}/day point-in-time modeled net versus the next-best executable route; not realized P&L.`,
@@ -689,6 +711,7 @@ function rejectedAdvantage(): CarryRoutingAdvantageEvidence {
     status: "rejected",
     label: "EDGE!",
     advantage: unavailableRoutingAdvantage("routing_advantage_evidence_invalid"),
+    selectedNet: null,
     detail: "Worker routing-advantage evidence failed closed; no economic benefit is claimed.",
   };
 }

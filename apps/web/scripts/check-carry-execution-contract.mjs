@@ -1499,7 +1499,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryMarket", "not realized P&L.", "carry_routing_advantage_modeled_disclosure_missing");
   requireText("webCarryMarket", 'label: "NET✓"', "carry_routing_selected_value_label_missing");
   requireText("webCarryMarket", "no second funding-qualified route exists", "carry_routing_selected_value_boundary_missing");
+  requireText("webCarryMarket", "modeled_net_micro_usdc_per_day === route?.selected_modeled_net_micro_usdc_per_day", "carry_routing_selected_value_amount_binding_missing");
+  requireText("webCarryMarket", "selectedNet: committedSelectedNet", "carry_routing_selected_value_result_missing");
   requireText("webCarryMarketTest", "shows worker-committed net value without inventing route savings", "carry_routing_selected_value_web_test_missing");
+  requireText("webCarryChart", 'data-net-evidence={committedSelectedNet ? "committed" : "indicative"}', "carry_terminal_selected_net_state_missing");
+  requireText("webCarryChart", 'committedSelectedNet ? "NET24H✓" : "NET24H*"', "carry_terminal_selected_net_display_missing");
+  requireText("webCarryChartTest", "NET24H✓+3.50BP/D", "carry_terminal_selected_net_test_missing");
   requireText("webCarryChartTest", "shows modeled routing edge without presenting it as realized P&L", "carry_routing_advantage_disclosure_test_missing");
   requireText("webCarryChartTest", "upgrades modeled edge only when worker evidence matches the selected route", "carry_routing_advantage_worker_ui_test_missing");
   requireText("webCarryChart", "AGE {formatAge", "carry_feed_age_display_missing");

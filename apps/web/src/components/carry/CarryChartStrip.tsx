@@ -174,7 +174,10 @@ export function CarryChartStrip({
   const routingAdvantage = carryRoutingAdvantage(selectedExecution, assetExecutionCandidates);
   const routingEvidence = carryRoutingAdvantageEvidence(data, selectedExecution, routingAdvantage);
   const selectedAgeMs = selected ? carryCandidateAgeMs(selected.candidate, clock) : Number.POSITIVE_INFINITY;
-  const selectedHasPositiveNet = selected ? routeHasPositiveNet(selected.quote) : false;
+  const committedSelectedNet = routingEvidence.status === "committed" ? routingEvidence.selectedNet : null;
+  const selectedHasPositiveNet = committedSelectedNet
+    ? committedSelectedNet.dailyNetUsd > 0
+    : selected ? routeHasPositiveNet(selected.quote) : false;
   const edgeEvidence = carryFundingEvidenceForCandidate(
     data,
     selected?.candidate || null,
@@ -192,6 +195,7 @@ export function CarryChartStrip({
       data-edge-evidence={edgeEvidence.status}
       data-market-evidence={marketEvidence.status}
       data-routing-evidence={routingEvidence.status}
+      data-net-evidence={committedSelectedNet ? "committed" : "indicative"}
       data-cost-basis={selected?.quote.exactCosts ? "net" : "gross-only"}
       data-route-age-ms={Number.isFinite(selectedAgeMs) ? Math.round(selectedAgeMs) : undefined}
     >
@@ -226,15 +230,19 @@ export function CarryChartStrip({
               <p className="whitespace-nowrap max-[1023px]:hidden">
                 <span
                   className="mr-1.5 text-[#657286]"
-                  title="Indicative point-in-time economics. Live entry requires durable funding evidence."
+                  title={committedSelectedNet
+                    ? routingEvidence.detail
+                    : "Indicative point-in-time economics. Live entry requires durable funding evidence."}
                 >
-                  NET24H*
+                  {committedSelectedNet ? "NET24H✓" : "NET24H*"}
                 </span>
                 <span className={selected.quote.exactCosts
                   ? selectedHasPositiveNet ? "font-semibold text-[#72dfb2]" : "font-semibold text-[#e27d89]"
                   : "font-semibold text-[#d9bd74]"}
                 >
-                  {selected.quote.exactCosts ? formatBps(selectedDailyBps(selected.candidate, selected.quote)) : "—"}
+                  {committedSelectedNet
+                    ? formatBps(committedSelectedNet.dailyNetBps)
+                    : selected.quote.exactCosts ? formatBps(selectedDailyBps(selected.candidate, selected.quote)) : "—"}
                 </span>
               </p>
               <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">AGE {formatAge(selectedAgeMs)}</p>

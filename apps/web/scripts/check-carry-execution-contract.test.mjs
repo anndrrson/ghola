@@ -506,6 +506,16 @@ test("rejects selected-route net presented as comparative savings", () => {
   );
 });
 
+test("rejects hiding worker-committed selected-route net from the primary rail", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: sources.webCarryChart.replace('committedSelectedNet ? "NET24H✓" : "NET24H*"', '"NET24H*"'),
+    }),
+    /carry_terminal_selected_net_display_missing/,
+  );
+});
+
 test("rejects background Carry failures that are no longer supervised", () => {
   assert.throws(
     () => checkCarryExecutionContract({
