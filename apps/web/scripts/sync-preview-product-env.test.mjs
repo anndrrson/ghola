@@ -13,6 +13,8 @@ function sourceEnv(overrides = {}) {
     GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED: "true",
     NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED: "true",
     GHOLA_PRIVATE_ACCOUNT_STORE: "postgres",
+    GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET: "secure-private-account-request-proof-secret-2026",
+    GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE: "enforce",
     ...overrides,
   };
 }

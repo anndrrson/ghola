@@ -20,6 +20,8 @@ const KEYS = Object.freeze({
   publicBeta: "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED",
   mainnetDelegation: "NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED",
   privateAccountStore: "GHOLA_PRIVATE_ACCOUNT_STORE",
+  requestProofSecret: "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET",
+  requestProofMode: "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE",
 });
 
 test("extracts only allowlisted names from Vercel output and never returns values", () => {
@@ -85,6 +87,19 @@ test("fails before deploy when private-account persistence is absent from the br
       branchPreviewKeys: withoutPersistence,
     }),
     /configured only outside this branch scope: private_account_persistence/,
+  );
+});
+
+test("fails before deploy when private-account request proof is absent from the branch", () => {
+  const withoutRequestProof = Object.values(KEYS).filter((key) =>
+    key !== KEYS.requestProofSecret && key !== KEYS.requestProofMode);
+  assert.throws(
+    () => assessPreviewBranchEnvScope({
+      branch: "feature/current",
+      allPreviewKeys: Object.values(KEYS),
+      branchPreviewKeys: withoutRequestProof,
+    }),
+    /configured only outside this branch scope: private_account_request_proof_secret,private_account_request_proof_mode/,
   );
 });
 

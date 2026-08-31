@@ -12,6 +12,8 @@ export const PREVIEW_PRODUCT_RUNTIME_ENV_KEYS = Object.freeze([
   "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED",
   "NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED",
   "GHOLA_PRIVATE_ACCOUNT_STORE",
+  "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET",
+  "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE",
 ]);
 
 export const PRIVATE_WORKER_PREVIEW_ENV_GROUPS = Object.freeze([
@@ -67,6 +69,14 @@ export const PRIVATE_WORKER_PREVIEW_ENV_GROUPS = Object.freeze([
   Object.freeze({
     id: "private_account_persistence",
     keys: Object.freeze([PREVIEW_PRODUCT_RUNTIME_ENV_KEYS[4]]),
+  }),
+  Object.freeze({
+    id: "private_account_request_proof_secret",
+    keys: Object.freeze([PREVIEW_PRODUCT_RUNTIME_ENV_KEYS[5]]),
+  }),
+  Object.freeze({
+    id: "private_account_request_proof_mode",
+    keys: Object.freeze([PREVIEW_PRODUCT_RUNTIME_ENV_KEYS[6]]),
   }),
 ]);
 
