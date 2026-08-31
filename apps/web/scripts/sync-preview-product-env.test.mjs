@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PREVIEW_PRODUCT_RUNTIME_ENV_KEYS } from "./check-preview-env-branch-scope.mjs";
+import {
+  PREVIEW_PRODUCT_RUNTIME_ENV_KEYS,
+  PRIVATE_WORKER_PREVIEW_ENV_GROUPS,
+} from "./check-preview-env-branch-scope.mjs";
 import { syncPreviewProductEnv } from "./sync-preview-product-env.mjs";
 
 function sourceEnv(overrides = {}) {
@@ -9,6 +12,7 @@ function sourceEnv(overrides = {}) {
     NEXT_PUBLIC_TURNKEY_PERPS_AUTH_PROXY_CONFIG_ID: "auth-proxy-config-id",
     GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED: "true",
     NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED: "true",
+    GHOLA_PRIVATE_ACCOUNT_STORE: "postgres",
     ...overrides,
   };
 }
@@ -39,7 +43,10 @@ test("apply copies only product runtime values then verifies the target", async 
     source_env: { ...sourceEnv(), UNRELATED_SECRET: "never-copy" },
     apply: true,
     copy: async (entry) => copied.push(entry),
-    verify: async ({ branch }) => ({ branch, checked_groups: Array(8).fill("verified") }),
+    verify: async ({ branch }) => ({
+      branch,
+      checked_groups: PRIVATE_WORKER_PREVIEW_ENV_GROUPS.map((group) => group.id),
+    }),
   });
   assert.deepEqual(copied.map(({ key }) => key), [...PREVIEW_PRODUCT_RUNTIME_ENV_KEYS].sort());
   assert.equal(copied.some(({ value }) => value === "never-copy"), false);
@@ -48,7 +55,7 @@ test("apply copies only product runtime values then verifies the target", async 
     source_branch: "feature/source",
     target_branch: "feature/target",
     keys: [...PREVIEW_PRODUCT_RUNTIME_ENV_KEYS].sort(),
-    verified_groups: 8,
+    verified_groups: PRIVATE_WORKER_PREVIEW_ENV_GROUPS.length,
   });
 });
 

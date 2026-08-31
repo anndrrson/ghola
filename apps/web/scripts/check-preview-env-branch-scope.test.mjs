@@ -19,6 +19,7 @@ const KEYS = Object.freeze({
   turnkeyAuthProxy: "NEXT_PUBLIC_TURNKEY_PERPS_AUTH_PROXY_CONFIG_ID",
   publicBeta: "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED",
   mainnetDelegation: "NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED",
+  privateAccountStore: "GHOLA_PRIVATE_ACCOUNT_STORE",
 });
 
 test("extracts only allowlisted names from Vercel output and never returns values", () => {
@@ -63,6 +64,7 @@ test("distinguishes absent Preview configuration from another-branch scope", () 
     KEYS.turnkeyAuthProxy,
     KEYS.publicBeta,
     KEYS.mainnetDelegation,
+    KEYS.privateAccountStore,
   ];
   assert.throws(
     () => assessPreviewBranchEnvScope({
@@ -71,6 +73,18 @@ test("distinguishes absent Preview configuration from another-branch scope", () 
       branchPreviewKeys: [KEYS.url, ...productKeys],
     }),
     /configured only outside this branch scope: private_worker_auth; missing from every Preview scope: private_worker_image_digest,private_worker_funding_signer/,
+  );
+});
+
+test("fails before deploy when private-account persistence is absent from the branch", () => {
+  const withoutPersistence = Object.values(KEYS).filter((key) => key !== KEYS.privateAccountStore);
+  assert.throws(
+    () => assessPreviewBranchEnvScope({
+      branch: "feature/current",
+      allPreviewKeys: Object.values(KEYS),
+      branchPreviewKeys: withoutPersistence,
+    }),
+    /configured only outside this branch scope: private_account_persistence/,
   );
 });
 

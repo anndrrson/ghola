@@ -11,6 +11,7 @@ export const PREVIEW_PRODUCT_RUNTIME_ENV_KEYS = Object.freeze([
   "NEXT_PUBLIC_TURNKEY_PERPS_AUTH_PROXY_CONFIG_ID",
   "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED",
   "NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED",
+  "GHOLA_PRIVATE_ACCOUNT_STORE",
 ]);
 
 export const PRIVATE_WORKER_PREVIEW_ENV_GROUPS = Object.freeze([
@@ -62,6 +63,10 @@ export const PRIVATE_WORKER_PREVIEW_ENV_GROUPS = Object.freeze([
   Object.freeze({
     id: "perps_mainnet_delegation",
     keys: Object.freeze([PREVIEW_PRODUCT_RUNTIME_ENV_KEYS[3]]),
+  }),
+  Object.freeze({
+    id: "private_account_persistence",
+    keys: Object.freeze([PREVIEW_PRODUCT_RUNTIME_ENV_KEYS[4]]),
   }),
 ]);
 
