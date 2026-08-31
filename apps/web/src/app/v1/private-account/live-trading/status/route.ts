@@ -49,10 +49,15 @@ export async function GET(request?: Request) {
 }
 
 type LiveTradingCanaryReader = typeof getLatestLiveTradingCanaryReport;
+type PrivateAccountPersistenceProbe = (
+  store: "postgres" | "blob",
+  env: Record<string, string | undefined>,
+) => Promise<boolean>;
 
 export async function liveTradingStatusResponse(input: {
   env?: Record<string, string | undefined>;
   getCanaryReport?: LiveTradingCanaryReader;
+  probePrivateAccountPersistence?: PrivateAccountPersistenceProbe;
   workerReadiness?: PooledWorkerReadiness;
   host?: string | null;
   evidenceReadTimeoutMs?: number;
@@ -69,7 +74,13 @@ export async function liveTradingStatusResponse(input: {
   const evidenceReadTimeoutMs = resolveEvidenceReadTimeoutMs(
     input.evidenceReadTimeoutMs ?? env.GHOLA_LIVE_TRADING_STATUS_EVIDENCE_TIMEOUT_MS,
   );
-  const [reports, capitalFreeProofs, workerReadiness] = await Promise.all([
+  const privateAccountPersistencePromise = resolvePrivateAccountPersistenceStatus({
+    env,
+    probe: input.probePrivateAccountPersistence,
+    timeoutMs: evidenceReadTimeoutMs,
+  });
+  const [privateAccountPersistence, reports, capitalFreeProofs, workerReadiness] = await Promise.all([
+    privateAccountPersistencePromise,
     Promise.all(VENUES.map((venue) => boundedCanaryRead(
       () => getCanaryReport(venue.id),
       evidenceReadTimeoutMs,
@@ -92,8 +103,13 @@ export async function liveTradingStatusResponse(input: {
       isTestnet,
     )
   );
-  const pooledGlobalFailures = pooledLiveGateFailures(env, workerReadiness, isTestnet);
-  const byoGlobalFailures = byoLiveGateFailures(env, isTestnet);
+  const pooledGlobalFailures = pooledLiveGateFailures(
+    env,
+    workerReadiness,
+    isTestnet,
+    privateAccountPersistence.ready,
+  );
+  const byoGlobalFailures = byoLiveGateFailures(env, isTestnet, privateAccountPersistence.ready);
   const pooledUnavailableReasons = pooledGlobalFailures.concat(
     venues.flatMap((venue) => venue.reason_codes.map((reason) => `${venue.id}:${reason}`)),
   );
@@ -107,7 +123,7 @@ export async function liveTradingStatusResponse(input: {
   const publicLiveCopyAllowed = env.GHOLA_LIVE_TRADING_PUBLIC_ENABLED === "true";
   const byoVenues = VENUES.map((venue) => venueByoLiveGate(venue.id, env, isTestnet));
   const byoGreen = byoGlobalFailures.length === 0 && byoVenues.some((venue) => venue.status === "green");
-  const freshUserGlobalFailures = freshUserLaunchGateFailures(env);
+  const freshUserGlobalFailures = freshUserLaunchGateFailures(env, privateAccountPersistence.ready);
   const noKeyConfig = publicLivePhoenixNoKeyConfig(env);
   const coinbaseNoKeyConfig = publicLiveCoinbaseConfig(env);
   const publicPrimaryVenue = env.GHOLA_PUBLIC_LIVE_PRIMARY_VENUE === "coinbase" ? "coinbase" : "phoenix";
@@ -252,7 +268,7 @@ export async function liveTradingStatusResponse(input: {
     fresh_user_live_ready: freshUserLiveReady,
     launch_mode: launchMode satisfies LaunchMode,
     bounded_beta_enabled: envIs(env, "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED", "true"),
-    private_account_persistence: privateAccountPersistenceStatus(env),
+    private_account_persistence: privateAccountPersistence,
     byo_live_trading_enabled: byoGreen,
     pooled_live_trading_enabled: pooledGreen,
     launch_terms_gate: {
@@ -359,7 +375,7 @@ export async function liveTradingStatusResponse(input: {
       byo_global_failures: byoGlobalFailures,
       pooled_global_failures: pooledGlobalFailures,
       pooled_unavailable_reasons: pooledUnavailableReasons,
-      private_account_persistence: privateAccountPersistenceStatus(env),
+      private_account_persistence: privateAccountPersistence,
     }),
     checked_at: new Date().toISOString(),
   };
@@ -400,7 +416,10 @@ function resolveEvidenceReadTimeoutMs(value: string | number | undefined): numbe
   return Math.min(MAX_EVIDENCE_READ_TIMEOUT_MS, Math.max(MIN_EVIDENCE_READ_TIMEOUT_MS, Math.floor(parsed)));
 }
 
-function freshUserLaunchGateFailures(env: Record<string, string | undefined>) {
+function freshUserLaunchGateFailures(
+  env: Record<string, string | undefined>,
+  privateAccountPersistenceReady: boolean,
+) {
   const failures: string[] = [];
   if (!envIs(env, "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED", "true")) {
     failures.push("bounded_beta_public_flag_disabled");
@@ -411,23 +430,25 @@ function freshUserLaunchGateFailures(env: Record<string, string | undefined>) {
   ) {
     failures.push("operator_spend_lock");
   }
-  if (!privateAccountPersistenceStatus(env).ready) {
+  if (!privateAccountPersistenceReady) {
     failures.push("private_account_persistence_unavailable");
   }
   return failures;
 }
 
-function privateAccountPersistenceStatus(env: Record<string, string | undefined>) {
+function privateAccountPersistenceConfigurationStatus(env: Record<string, string | undefined>) {
   const configuredStore = env.GHOLA_PRIVATE_ACCOUNT_STORE?.trim().toLowerCase() || "auto";
   const databaseConfigured = Boolean(
     env.GHOLA_PRIVATE_ACCOUNT_DATABASE_URL?.trim() ||
     env.DATABASE_URL?.trim() ||
     env.POSTGRES_URL?.trim()
   );
-  const blobConfigured = Boolean(
+  const blobStaticTokenConfigured = Boolean(
     env.GHOLA_PRIVATE_ACCOUNT_BLOB_READ_WRITE_TOKEN?.trim() ||
-    env.BLOB_READ_WRITE_TOKEN?.trim() ||
-    env.BLOB_STORE_ID?.trim()
+    env.BLOB_READ_WRITE_TOKEN?.trim()
+  );
+  const blobOidcConfigured = Boolean(
+    env.BLOB_STORE_ID?.trim() && env.VERCEL_OIDC_TOKEN?.trim()
   );
   const store = configuredStore === "postgres" || configuredStore === "blob" || configuredStore === "memory"
     ? configuredStore
@@ -441,7 +462,9 @@ function privateAccountPersistenceStatus(env: Record<string, string | undefined>
     if (env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS !== "private") {
       reasonCodes.push("private_account_private_blob_required");
     }
-    if (!blobConfigured) reasonCodes.push("private_account_blob_store_missing");
+    if (!blobStaticTokenConfigured && !blobOidcConfigured) {
+      reasonCodes.push("private_account_blob_auth_missing");
+    }
   }
   if (store === "auto" && !databaseConfigured) reasonCodes.push("private_account_persistent_store_missing");
   if (!["auto", "postgres", "blob", "memory"].includes(configuredStore)) {
@@ -451,8 +474,83 @@ function privateAccountPersistenceStatus(env: Record<string, string | undefined>
     status: reasonCodes.length === 0 ? "green" as const : "red" as const,
     ready: reasonCodes.length === 0,
     store,
+    auth_mode: store === "blob"
+      ? blobOidcConfigured
+        ? "oidc"
+        : blobStaticTokenConfigured
+          ? "read_write_token"
+          : "missing"
+      : null,
+    verified: false,
     reason_codes: reasonCodes,
   };
+}
+
+async function resolvePrivateAccountPersistenceStatus(input: {
+  env: Record<string, string | undefined>;
+  probe?: PrivateAccountPersistenceProbe;
+  timeoutMs: number;
+}) {
+  const configured = privateAccountPersistenceConfigurationStatus(input.env);
+  if (!configured.ready || (configured.store !== "postgres" && configured.store !== "blob")) {
+    return configured;
+  }
+  const probe = input.probe ?? (process.env.NODE_ENV === "test" ? null : probePrivateAccountPersistence);
+  if (!probe) return configured;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), input.timeoutMs);
+  });
+  try {
+    const verified = await Promise.race([
+      probe(configured.store, input.env).catch(() => false),
+      timeout,
+    ]);
+    if (verified) {
+      return {
+        ...configured,
+        verified: true,
+      };
+    }
+    return {
+      ...configured,
+      status: "red" as const,
+      ready: false,
+      verified: false,
+      reason_codes: [
+        ...configured.reason_codes,
+        configured.store === "blob"
+          ? "private_account_blob_access_mismatch_or_unavailable"
+          : "private_account_database_unavailable",
+      ],
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function probePrivateAccountPersistence(
+  store: "postgres" | "blob",
+  env: Record<string, string | undefined>,
+): Promise<boolean> {
+  if (store === "blob") {
+    const { get } = await import("@vercel/blob");
+    await get("private-account-state/v1/.readiness-probe", {
+      access: "private",
+      useCache: false,
+    });
+    return true;
+  }
+  const databaseUrl =
+    env.GHOLA_PRIVATE_ACCOUNT_DATABASE_URL?.trim() ||
+    env.DATABASE_URL?.trim() ||
+    env.POSTGRES_URL?.trim();
+  if (!databaseUrl) return false;
+  const { neon } = await import("@neondatabase/serverless");
+  const sql = neon(databaseUrl);
+  const rows = await sql`SELECT 1 AS ok`;
+  return rows[0]?.ok === 1;
 }
 
 function publicLiveProofModel(input: {
@@ -500,11 +598,12 @@ function publicLiveProofModel(input: {
 function byoLiveGateFailures(
   env: Record<string, string | undefined>,
   isTestnet = false,
+  privateAccountPersistenceReady = privateAccountPersistenceConfigurationStatus(env).ready,
 ) {
   const failures: string[] = [];
   const maxOrderNotionalUsd = isTestnet ? 25 : 1_000;
   const dailyCapUsd = isTestnet ? 100 : 5_000;
-  if (!privateAccountPersistenceStatus(env).ready) {
+  if (!privateAccountPersistenceReady) {
     failures.push("private_account_persistence_unavailable");
   }
   if (!envIs(env, "GHOLA_LIVE_TRADING_PUBLIC_ENABLED", "true")) failures.push("live_trading_public_flag_disabled");
@@ -526,8 +625,11 @@ function pooledLiveGateFailures(
   env: Record<string, string | undefined>,
   workerReadiness: PooledWorkerReadiness,
   isTestnet = false,
+  privateAccountPersistenceReady = privateAccountPersistenceConfigurationStatus(env).ready,
 ) {
-  return [...new Set(byoLiveGateFailures(env, isTestnet).concat(workerReadiness.reason_codes))];
+  return [...new Set(
+    byoLiveGateFailures(env, isTestnet, privateAccountPersistenceReady).concat(workerReadiness.reason_codes),
+  )];
 }
 
 function coinbasePublicLiveFailures(

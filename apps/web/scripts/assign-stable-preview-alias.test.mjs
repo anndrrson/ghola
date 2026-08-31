@@ -19,10 +19,25 @@ function fixture(overrides = {}) {
   };
 }
 
-test("accepts an exact green Preview before assigning its stable branch alias", () => {
-  const result = validateStablePreviewAssignment(fixture());
+test("accepts an exact release-ready Preview even when live trading stays disabled", () => {
+  const result = validateStablePreviewAssignment(fixture({
+    status: {
+      status: "red",
+      live_trading_enabled: false,
+      release_identity: { ready: true, web_commit_sha: sha, web_deployment_url: `https://${deploymentUrl}` },
+    },
+  }));
   assert.equal(result.stable_alias_hostname, alias);
   assert.equal(result.web_commit_sha, sha);
+});
+
+test("refuses a Preview whose release identity is not ready", () => {
+  assert.throws(() => validateStablePreviewAssignment(fixture({
+    status: {
+      status: "red",
+      release_identity: { ready: false, web_commit_sha: sha, web_deployment_url: `https://${deploymentUrl}` },
+    },
+  })), /release identity is not green/);
 });
 
 test("refuses production deployments and non-branch aliases", () => {

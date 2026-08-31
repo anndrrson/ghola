@@ -30,6 +30,7 @@ const ENV_KEYS = [
   "POSTGRES_URL",
   "BLOB_READ_WRITE_TOKEN",
   "BLOB_STORE_ID",
+  "VERCEL_OIDC_TOKEN",
   "NEXT_PUBLIC_GHOLA_LEGACY_HYPERLIQUID_API_KEYS",
   "NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED",
   "NEXT_PUBLIC_TURNKEY_PERPS_ORGANIZATION_ID",
@@ -354,6 +355,54 @@ describe("private account live trading launch gate", () => {
     expect(body.status).toBe("red");
     expect(body.live_trading_enabled).toBe(false);
     expect(body.hyperliquid_byo.status).toBe("red");
+    expect(body.hyperliquid_byo.reason_codes).toContain("private_account_persistence_unavailable");
+  });
+
+  it("does not treat a Blob store id as authentication", async () => {
+    enableGreenGateEnv();
+    process.env.GHOLA_PRIVATE_ACCOUNT_STORE = "blob";
+    process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS = "private";
+    process.env.BLOB_STORE_ID = "store_preview_without_auth";
+    const probe = vi.fn(async () => true);
+
+    const res = await liveTradingStatusResponse({
+      probePrivateAccountPersistence: probe,
+      getCanaryReport: async () => null,
+    });
+    const body = await res.json();
+
+    expect(probe).not.toHaveBeenCalled();
+    expect(body.private_account_persistence).toMatchObject({
+      status: "red",
+      ready: false,
+      store: "blob",
+      auth_mode: "missing",
+      verified: false,
+      reason_codes: ["private_account_blob_auth_missing"],
+    });
+  });
+
+  it("fails closed when authenticated Blob access does not match the connected store", async () => {
+    enableGreenGateEnv();
+    process.env.GHOLA_PRIVATE_ACCOUNT_STORE = "blob";
+    process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS = "private";
+    process.env.BLOB_STORE_ID = "store_preview_public";
+    process.env.VERCEL_OIDC_TOKEN = "preview-oidc-token";
+
+    const res = await liveTradingStatusResponse({
+      probePrivateAccountPersistence: async () => false,
+      getCanaryReport: async () => null,
+    });
+    const body = await res.json();
+
+    expect(body.private_account_persistence).toMatchObject({
+      status: "red",
+      ready: false,
+      store: "blob",
+      auth_mode: "oidc",
+      verified: false,
+      reason_codes: ["private_account_blob_access_mismatch_or_unavailable"],
+    });
     expect(body.hyperliquid_byo.reason_codes).toContain("private_account_persistence_unavailable");
   });
 

@@ -10,7 +10,7 @@ export function validateStablePreviewAssignment({ deployment, stableAlias, expec
   if (!aliasUrl.hostname.includes("-git-")) throw new Error("stable alias must be a Vercel branch alias");
 
   const identity = status?.release_identity;
-  if (status?.status !== "green" || identity?.ready !== true) {
+  if (identity?.ready !== true) {
     throw new Error("Preview release identity is not green");
   }
   if (!/^[0-9a-f]{40}$/i.test(expectedSha || "") || identity.web_commit_sha !== expectedSha) {
