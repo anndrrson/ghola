@@ -16,7 +16,19 @@ This proof qualifies one exact worker image across at least two distinct adapter
 
 Before any live proof, run the authenticated `carry_execution_no_submit_matrix` through the Preview. It must return Hyperliquid, Lighter, and Aster evidence together, `no_submit_ready: true`, `transaction_broadcast: false`, an empty `failures` list, and `readiness_evidence` containing all three exact pair checks. This check never authorizes a trade.
 
-Save the exact request and response in `deploy/evidence/carry-three-venue-no-submit.json` with `version: 1`, `kind: "ghola_three_venue_no_submit_proof"`, `network: "mainnet"`, `captured_at_ms`, and a `source` containing the pinned Preview URL, web commit SHA, and worker image digest. Verify it from `apps/web` with the independently obtained candidate identity and worker signer pins:
+Save the exact request and response separately, then assemble the redacted proof from `apps/web`. The assembler drops every sealed credential, verifies the proof before writing, and atomically creates a mode-0600 artifact:
+
+```sh
+GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64=... \
+npm run assemble:carry-no-submit-evidence -- \
+  --request /safe/path/request.json \
+  --response /safe/path/response.json \
+  --preview-url https://...vercel.app \
+  --web-commit-sha ... \
+  --worker-image-digest sha256:...
+```
+
+Then verify it with the independently obtained candidate identity and worker signer pins:
 
 ```sh
 CARRY_PROOF_EXPECTED_PREVIEW_URL=https://...vercel.app \

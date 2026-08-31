@@ -16,7 +16,7 @@ test("deploys only after the branch Preview scope passes", () => {
       return { status: 0 };
     },
   });
-  assert.deepEqual(calls, [[process.execPath, ["scripts/create-git-preview-deployment.mjs"]]]);
+  assert.deepEqual(calls, [[process.execPath, ["apps/web/scripts/create-git-preview-deployment.mjs"]]]);
   assert.deepEqual(result, { branch: "feature/carry" });
 });
 

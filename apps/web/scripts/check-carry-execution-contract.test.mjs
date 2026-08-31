@@ -13,6 +13,19 @@ test("accepts the complete cross-venue Carry execution contract", () => {
   assert.equal(checkCarryExecutionContract(sources).ok, true);
 });
 
+test("rejects a no-submit assembler that can persist sealed venue access", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      noSubmitEvidenceAssembler: sources.noSubmitEvidenceAssembler.replaceAll(
+        "sanitizeRequest",
+        "persistRawRequest",
+      ),
+    }),
+    /carry_no_submit_assembler_sanitization_missing/,
+  );
+});
+
 test("rejects a full-book scan without its composite database index", () => {
   assert.throws(
     () => checkCarryExecutionContract({

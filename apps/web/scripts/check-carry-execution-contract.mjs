@@ -152,6 +152,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   evidenceVerifierTest: "apps/web/scripts/verify-carry-release-evidence.test.mjs",
   noSubmitEvidenceVerifier: "apps/web/scripts/verify-carry-no-submit-evidence.mjs",
   noSubmitEvidenceVerifierTest: "apps/web/scripts/verify-carry-no-submit-evidence.test.mjs",
+  noSubmitEvidenceAssembler: "apps/web/scripts/assemble-carry-no-submit-evidence.mjs",
+  noSubmitEvidenceAssemblerTest: "apps/web/scripts/assemble-carry-no-submit-evidence.test.mjs",
   webReconciliation: "apps/web/src/lib/carry-reconciliation.ts",
   webReconciliationTest: "apps/web/src/lib/carry-reconciliation.test.ts",
   proofRunbook: "deploy/evidence/CARRY_MAINNET_PROOF_RUNBOOK.md",
@@ -1244,6 +1246,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("noSubmitEvidenceVerifier", "capturedAtMs >= privatePrimeCheckedAtMs", "carry_no_submit_historical_capture_binding_missing");
   requireText("noSubmitEvidenceVerifierTest", "tampered pair evidence, request context, signer identity, and candidate identity", "carry_no_submit_independent_tamper_test_missing");
   requireText("noSubmitEvidenceVerifierTest", "preserves historical proof after freshness expires", "carry_no_submit_historical_proof_test_missing");
+  requireText("noSubmitEvidenceAssembler", "sanitizeRequest", "carry_no_submit_assembler_sanitization_missing");
+  requireText("noSubmitEvidenceAssembler", "atomicWriteJson", "carry_no_submit_assembler_atomic_write_missing");
+  requireText("noSubmitEvidenceAssembler", "policy_commitment", "carry_no_submit_assembler_policy_binding_missing");
+  requireText("noSubmitEvidenceAssemblerTest", "sanitizes sealed access", "carry_no_submit_assembler_secret_redaction_test_missing");
   requireText("serverTest", "matrix.private_prime_authentication.mac_hex", "carry_private_prime_worker_authentication_http_test_missing");
   requireText("serverTest", "matrix.private_prime_authentication.attestation_bound", "carry_private_prime_worker_attested_signature_http_test_missing");
   requireText("transferRoutes", "export async function observePreopenCarryTransferRoutes", "carry_preopen_route_compiler_missing");

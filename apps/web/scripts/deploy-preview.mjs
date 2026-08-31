@@ -17,7 +17,7 @@ export function deployPreview({
   }
 
   const scope = verify({ cwd, run });
-  const result = run(process.execPath, ["scripts/create-git-preview-deployment.mjs"], {
+  const result = run(process.execPath, ["apps/web/scripts/create-git-preview-deployment.mjs"], {
     cwd,
     encoding: "utf8",
     stdio: "inherit",
