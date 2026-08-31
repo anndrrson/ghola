@@ -1045,23 +1045,24 @@ function authenticatedPrivatePrimeResult(
 ) {
   const checkedAtMs = Date.now();
   const expiresAtMs = checkedAtMs + 5_000;
-  const readiness = {
-    owner_commitment: body.owner_commitment,
-    asset: body.asset,
-    evidence_commitment: `carry:private-prime:${"a".repeat(40)}`,
-    checked_at_ms: checkedAtMs,
-    expires_at_ms: expiresAtMs,
-  };
-  const message = carryPrivatePrimeWorkerAuthenticationMessage({
+  const context = {
     route_path: routePath,
     owner_commitment: body.owner_commitment,
     asset: body.asset,
     operation_class: body.operation_class,
     work_order_commitment: body.work_order_commitment,
-    evidence_commitment: readiness.evidence_commitment,
+    evidence_commitment: `carry:private-prime:${"a".repeat(40)}`,
     checked_at_ms: checkedAtMs,
     expires_at_ms: expiresAtMs,
-  });
+  };
+  const readiness = {
+    owner_commitment: body.owner_commitment,
+    asset: body.asset,
+    evidence_commitment: context.evidence_commitment,
+    checked_at_ms: checkedAtMs,
+    expires_at_ms: expiresAtMs,
+  };
+  const message = carryPrivatePrimeWorkerAuthenticationMessage(context);
   return {
     ...result,
     private_prime_readiness: readiness,
@@ -1072,6 +1073,7 @@ function authenticatedPrivatePrimeResult(
       mac_hex: createHmac("sha256", "worker-token").update(message).digest("hex"),
       signature_algorithm: "ed25519",
       attestation_bound: true,
+      context,
       signature_b64: signEd25519(null, Buffer.from(message, "utf8"), carrySigner.privateKey).toString("base64"),
       signer_public_key_b64: carrySignerPublicKeyB64,
     },

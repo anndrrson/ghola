@@ -1312,6 +1312,12 @@ export async function putPrivateAgentPassport(
   const sql = await getSql();
   if (!sql) {
     agentPassports.set(record.passport_commitment, record);
+    if (shouldUsePrivateBlobRecordStore()) {
+      await Promise.all([
+        putPrivateBlobRecord(agentPassportByAccountBlobPath(record.account_commitment), record),
+        putPrivateBlobRecord(agentPassportByCommitmentBlobPath(record.passport_commitment), record),
+      ]);
+    }
     return record;
   }
   await ensureSchema(sql);
@@ -1346,9 +1352,16 @@ export async function getPrivateAgentPassportByAccount(
 ): Promise<PrivateAgentPassportRecordV1 | null> {
   const sql = await getSql();
   if (!sql) {
-    return Array.from(agentPassports.values())
+    const inMemory = Array.from(agentPassports.values())
       .filter((record) => record.account_commitment === accountCommitment)
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0] ?? null;
+    if (inMemory || !shouldUsePrivateBlobRecordStore()) return inMemory;
+    const persisted = await readPrivateBlobRecord<PrivateAgentPassportRecordV1>(
+      agentPassportByAccountBlobPath(accountCommitment),
+    );
+    if (!persisted || persisted.account_commitment !== accountCommitment) return null;
+    agentPassports.set(persisted.passport_commitment, persisted);
+    return persisted;
   }
   await ensureSchema(sql);
   const rows = (await sql`
@@ -1366,6 +1379,12 @@ export async function putPrivateVenueCapability(
   const sql = await getSql();
   if (!sql) {
     venueCapabilities.set(record.capability_commitment, record);
+    if (shouldUsePrivateBlobRecordStore()) {
+      await Promise.all([
+        putPrivateBlobRecord(venueCapabilityByCommitmentBlobPath(record.capability_commitment), record),
+        putPrivateBlobRecord(venueCapabilityByAccountBlobPath(record.account_commitment, record.venue_id), record),
+      ]);
+    }
     return record;
   }
   await ensureSchema(sql);
@@ -1404,6 +1423,21 @@ export async function listPrivateVenueCapabilities(input: {
 }): Promise<PrivateVenueCapabilityRecordV1[]> {
   const sql = await getSql();
   if (!sql) {
+    const candidates = input.venue_id ? [input.venue_id] : PRIVATE_AGENT_VENUE_IDS;
+    if (shouldUsePrivateBlobRecordStore()) {
+      const persisted = await Promise.all(candidates.map((venueId) =>
+        readPrivateBlobRecord<PrivateVenueCapabilityRecordV1>(
+          venueCapabilityByAccountBlobPath(input.account_commitment, venueId),
+        )));
+      for (const record of persisted) {
+        if (record
+          && record.owner_commitment === input.owner_commitment
+          && record.account_commitment === input.account_commitment
+          && candidates.includes(record.venue_id)) {
+          venueCapabilities.set(record.capability_commitment, record);
+        }
+      }
+    }
     return Array.from(venueCapabilities.values())
       .filter((record) =>
         record.owner_commitment === input.owner_commitment &&
@@ -1662,6 +1696,17 @@ export async function putVenueExecutionVault(
   const sql = await getSql();
   if (!sql) {
     venueExecutionVaults.set(record.vault_commitment, record);
+    if (shouldUsePrivateBlobRecordStore()) {
+      await Promise.all([
+        putPrivateBlobRecord(venueExecutionVaultByCommitmentBlobPath(record.vault_commitment), record),
+        putPrivateBlobRecord(venueExecutionVaultByAccountBlobPath(record.account_commitment, record.venue_id), record),
+        putPrivateBlobRecord(venueExecutionVaultByAccountModeBlobPath(
+          record.account_commitment,
+          record.venue_id,
+          record.execution_mode,
+        ), record),
+      ]);
+    }
     return record;
   }
   await ensureSchema(sql);
@@ -1710,7 +1755,16 @@ export async function getVenueExecutionVault(
   vaultCommitment: string,
 ): Promise<PrivateVenueExecutionVaultRecordV1 | null> {
   const sql = await getSql();
-  if (!sql) return venueExecutionVaults.get(vaultCommitment) ?? null;
+  if (!sql) {
+    const inMemory = venueExecutionVaults.get(vaultCommitment) ?? null;
+    if (inMemory || !shouldUsePrivateBlobRecordStore()) return inMemory;
+    const persisted = await readPrivateBlobRecord<PrivateVenueExecutionVaultRecordV1>(
+      venueExecutionVaultByCommitmentBlobPath(vaultCommitment),
+    );
+    if (!persisted || persisted.vault_commitment !== vaultCommitment) return null;
+    venueExecutionVaults.set(persisted.vault_commitment, persisted);
+    return persisted;
+  }
   await ensureSchema(sql);
   const rows = (await sql`
     SELECT * FROM private_account_venue_vaults
@@ -1727,6 +1781,21 @@ export async function getVenueExecutionVaultByAccount(input: {
 }): Promise<PrivateVenueExecutionVaultRecordV1 | null> {
   const sql = await getSql();
   if (!sql) {
+    if (shouldUsePrivateBlobRecordStore()) {
+      const paths = input.venue_id && input.execution_mode
+        ? [venueExecutionVaultByAccountModeBlobPath(input.account_commitment, input.venue_id, input.execution_mode)]
+        : input.venue_id
+          ? [venueExecutionVaultByAccountBlobPath(input.account_commitment, input.venue_id)]
+          : PRIVATE_AGENT_VENUE_IDS.map((venueId) =>
+              venueExecutionVaultByAccountBlobPath(input.account_commitment, venueId));
+      const persisted = await Promise.all(paths.map((path) =>
+        readPrivateBlobRecord<PrivateVenueExecutionVaultRecordV1>(path)));
+      for (const record of persisted) {
+        if (record && record.account_commitment === input.account_commitment) {
+          venueExecutionVaults.set(record.vault_commitment, record);
+        }
+      }
+    }
     return Array.from(venueExecutionVaults.values())
       .filter((record) =>
         record.account_commitment === input.account_commitment &&
@@ -5458,7 +5527,7 @@ async function getSql(): Promise<NeonSql | null> {
 }
 
 function shouldUsePostgresStore(): boolean {
-  if (process.env.GHOLA_PRIVATE_ACCOUNT_STORE === "memory") return false;
+  if (["memory", "blob"].includes(String(process.env.GHOLA_PRIVATE_ACCOUNT_STORE || ""))) return false;
   if (process.env.GHOLA_PRIVATE_ACCOUNT_STORE === "postgres") return true;
   if (process.env.NODE_ENV === "test") return false;
   return Boolean(
@@ -5695,6 +5764,41 @@ function hyperliquidVaultByAccountBlobPath(accountCommitment: string): string {
 
 function hyperliquidVaultByCommitmentBlobPath(vaultCommitment: string): string {
   return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/hyperliquid-vaults/by-commitment/${safeBlobSegment(vaultCommitment)}.json`;
+}
+
+function agentPassportByAccountBlobPath(accountCommitment: string): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/agent-passports/by-account/${safeBlobSegment(accountCommitment)}.json`;
+}
+
+function agentPassportByCommitmentBlobPath(passportCommitment: string): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/agent-passports/by-commitment/${safeBlobSegment(passportCommitment)}.json`;
+}
+
+function venueCapabilityByAccountBlobPath(accountCommitment: string, venueId: PrivateAgentVenueId): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/venue-capabilities/by-account/${safeBlobSegment(accountCommitment)}/${safeBlobSegment(venueId)}.json`;
+}
+
+function venueCapabilityByCommitmentBlobPath(capabilityCommitment: string): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/venue-capabilities/by-commitment/${safeBlobSegment(capabilityCommitment)}.json`;
+}
+
+function venueExecutionVaultByAccountBlobPath(
+  accountCommitment: string,
+  venueId: GholaVenueExecutionVault["venue_id"],
+): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/venue-vaults/by-account/${safeBlobSegment(accountCommitment)}/${safeBlobSegment(venueId)}.json`;
+}
+
+function venueExecutionVaultByAccountModeBlobPath(
+  accountCommitment: string,
+  venueId: GholaVenueExecutionVault["venue_id"],
+  executionMode: GholaVenueExecutionVault["execution_mode"],
+): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/venue-vaults/by-account-mode/${safeBlobSegment(accountCommitment)}/${safeBlobSegment(venueId)}/${safeBlobSegment(executionMode)}.json`;
+}
+
+function venueExecutionVaultByCommitmentBlobPath(vaultCommitment: string): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/venue-vaults/by-commitment/${safeBlobSegment(vaultCommitment)}.json`;
 }
 
 async function ensureSchema(sql: NeonSql): Promise<void> {

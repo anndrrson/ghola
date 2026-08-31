@@ -6,16 +6,22 @@ import {
   consumePrivateAccountApproval,
   consumePrivateAccountPreview,
   getPrivateAccountByOwner,
+  getPrivateAgentPassportByAccount,
   getHyperliquidExecutionVaultByAccount,
   getPrivateAccountApproval,
   getPrivateAccountIntent,
   getPrivateAccountPreview,
   getPrivateVaultState,
+  getVenueExecutionVault,
+  getVenueExecutionVaultByAccount,
   getLatestAnonymityEvidence,
+  listPrivateVenueCapabilities,
   getPrivacyBudget,
   getQueuedAction,
   putPrivateAccountApproval,
   putPrivateAccountRecord,
+  putPrivateAgentPassport,
+  putPrivateVenueCapability,
   putHyperliquidExecutionVault,
   putPrivateAccountIntent,
   putPrivateAccountPreview,
@@ -23,6 +29,7 @@ import {
   putAnonymityEvidence,
   putPrivacyBudget,
   putQueuedAction,
+  putVenueExecutionVault,
   recordPrivacyBudgetEvent,
   resetPrivateAccountStoreForTests,
   setPrivateBlobRecordAdapterForTests,
@@ -32,6 +39,7 @@ import {
   createHyperliquidExecutionVault,
   createPrivateAccountAction,
   createPrivateExecutionAccount,
+  createVenueExecutionVault,
   gholaCommitment,
   previewPrivateAccountAction,
 } from "./private-account";
@@ -44,6 +52,7 @@ describe("private account store", () => {
     delete process.env.GHOLA_PRIVATE_ACCOUNT_STORE;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS;
     delete process.env.BLOB_READ_WRITE_TOKEN;
+    delete process.env.DATABASE_URL;
   });
 
   it("restores a verified Hyperliquid credential after process memory is cleared", async () => {
@@ -156,6 +165,131 @@ describe("private account store", () => {
       },
     });
     expect(JSON.stringify(reloadedVault)).not.toContain("api_wallet_private_key");
+  });
+
+  it("keeps cross-venue passports and sealed vaults in private Blob when database variables also exist", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_STORE = "blob";
+    process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS = "private";
+    process.env.BLOB_READ_WRITE_TOKEN = "private-test-token";
+    process.env.DATABASE_URL = "postgresql://must-not-be-used.invalid/ghola";
+    setPrivateBlobRecordAdapterForTests({
+      async put(pathname, value) {
+        privateBlobRecords.set(pathname, value);
+      },
+      async get(pathname) {
+        return privateBlobRecords.get(pathname) ?? null;
+      },
+    });
+    const ownerCommitment = "owner_cross_venue_reload";
+    const account = createPrivateExecutionAccount({
+      sessionId: ownerCommitment,
+      turnkeyWalletId: `turnkey:${ownerCommitment}`,
+      vaultSeed: `vault:${ownerCommitment}`,
+      policySeed: "private-mode-default",
+      platformSeed: `platforms:${ownerCommitment}`,
+      vaultReady: false,
+    });
+    const now = "2026-08-31T00:00:00.000Z";
+    await putPrivateAccountRecord({
+      version: 1,
+      owner_commitment: ownerCommitment,
+      account_commitment: account.account_commitment,
+      session_commitment: account.session_commitment,
+      turnkey_wallet_commitment: account.turnkey_wallet_commitment,
+      vault_root_commitment: account.vault_root_commitment,
+      note_root_commitment: gholaCommitment("note_root", account.vault_root_commitment),
+      nullifier_root_commitment: gholaCommitment("nullifier_root", account.vault_root_commitment),
+      platform_link_root: account.platform_link_root,
+      policy_commitment: account.policy_commitment,
+      privacy_mode: "private_mode",
+      claim_boundary: "engine_gated_full_anonymity",
+      vault_ready: false,
+      account,
+      created_at: now,
+      updated_at: now,
+    });
+    const created = createVenueExecutionVault({
+      venue_id: "lighter",
+      execution_mode: "byo_api_key",
+      account_commitment: account.account_commitment,
+      encrypted_execution_vault: {
+        alg: "sealed-provider-v1",
+        ciphertext: "encrypted-lighter-test-ciphertext",
+        recipient: "phala:cvm:cross-venue-worker",
+        aad: "ghola/lighter-execution-vault-v1",
+      },
+      now: new Date(now),
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(created.error);
+    await putVenueExecutionVault({
+      version: 1,
+      owner_commitment: ownerCommitment,
+      account_commitment: account.account_commitment,
+      venue_id: created.vault.venue_id,
+      platform_class: created.vault.platform_class,
+      execution_mode: created.vault.execution_mode,
+      vault_commitment: created.vault.vault_commitment,
+      encrypted_vault_commitment: created.vault.encrypted_vault_commitment,
+      recipient_commitment: created.vault.recipient_commitment,
+      policy_commitment: created.vault.policy_commitment,
+      allocation_commitment: created.vault.allocation_commitment,
+      status: "sealed",
+      vault: created.vault,
+      created_at: now,
+      updated_at: now,
+    });
+    await putPrivateVenueCapability({
+      version: 1,
+      owner_commitment: ownerCommitment,
+      account_commitment: account.account_commitment,
+      venue_id: "lighter",
+      capability_commitment: "lighter_capability_cross_venue_reload",
+      status: "ready",
+      capability: { can_read: true, can_trade: true, can_withdraw: false },
+      created_at: now,
+      updated_at: now,
+    });
+    await putPrivateAgentPassport({
+      version: 1,
+      owner_commitment: ownerCommitment,
+      account_commitment: account.account_commitment,
+      passport_commitment: "passport_cross_venue_reload",
+      status: "active",
+      passport: { venues: ["lighter"] },
+      created_at: now,
+      updated_at: now,
+    });
+
+    await resetPrivateAccountStoreForTests();
+
+    expect((await getPrivateAccountByOwner(ownerCommitment))?.account_commitment)
+      .toBe(account.account_commitment);
+    expect(await getPrivateAgentPassportByAccount(account.account_commitment)).toMatchObject({
+      passport_commitment: "passport_cross_venue_reload",
+      status: "active",
+    });
+    expect(await listPrivateVenueCapabilities({
+      owner_commitment: ownerCommitment,
+      account_commitment: account.account_commitment,
+    })).toEqual([expect.objectContaining({
+      venue_id: "lighter",
+      capability_commitment: "lighter_capability_cross_venue_reload",
+      status: "ready",
+    })]);
+    expect(await getVenueExecutionVaultByAccount({
+      account_commitment: account.account_commitment,
+      venue_id: "lighter",
+      execution_mode: "byo_api_key",
+    })).toMatchObject({
+      vault_commitment: created.vault.vault_commitment,
+      venue_id: "lighter",
+      status: "sealed",
+    });
+    expect(await getVenueExecutionVault(created.vault.vault_commitment)).toMatchObject({
+      account_commitment: account.account_commitment,
+      venue_id: "lighter",
+    });
   });
 
   it("persists intent, preview, and approval records in memory during tests", async () => {
