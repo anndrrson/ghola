@@ -907,11 +907,7 @@ export async function compileStoredCarryPortfolioValueReport({
     });
     return {
       ok: true,
-      report: Object.freeze({
-        ...report,
-        valuation_asset: "USDC",
-        funding_valuation_basis: "usdc_equivalent_at_ledger_ingestion",
-      }),
+      report,
     };
   } catch (error) {
     return denied(safeError(error));

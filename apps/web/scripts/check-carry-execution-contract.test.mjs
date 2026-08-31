@@ -2769,7 +2769,7 @@ test("rejects portfolio value reporting detached from its cashflow FX basis", ()
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      positions: sources.positions.replaceAll(
+      coreCarry: sources.coreCarry.replaceAll(
         'funding_valuation_basis: "usdc_equivalent_at_ledger_ingestion"',
         'funding_valuation_basis: "unbound"',
       ),
@@ -2782,6 +2782,29 @@ test("rejects portfolio value reporting detached from its cashflow FX basis", ()
       webCarryBuilder: sources.webCarryBuilder.replaceAll("UNVERIFIED FX BASIS", "REAL"),
     }),
     /carry_terminal_portfolio_fx_basis_failure_missing/,
+  );
+});
+
+test("rejects portfolio value reporting that trusts stored aggregates without replaying ledger claims", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replaceAll(
+        "carry_portfolio_value_ledger_replay_mismatch",
+        "carry_portfolio_value_aggregate_only",
+      ),
+    }),
+    /carry_portfolio_value_ledger_replay_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replaceAll(
+        "carry_portfolio_value_processed_claim_ids_mismatch",
+        "carry_portfolio_value_claims_unchecked",
+      ),
+    }),
+    /carry_portfolio_value_claim_replay_missing/,
   );
 });
 

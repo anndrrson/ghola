@@ -2344,6 +2344,8 @@ test("portfolio value report separates finalized after-cost proof from accruing 
     },
   });
   assert.equal(report.value_proof_status, "mixed");
+  assert.equal(report.valuation_asset, "USDC");
+  assert.equal(report.funding_valuation_basis, "usdc_equivalent_at_ledger_ingestion");
   assert.equal(report.modeled.net_value_micro_usdc, 185);
   assert.equal(report.finalized_after_costs.net_value_micro_usdc, 120);
   assert.equal(report.finalized_after_costs.variance_from_modeled_micro_usdc, 0);
@@ -2394,7 +2396,33 @@ test("portfolio value report rejects duplicate, tampered, or fund-moving evidenc
       },
     }],
     capital_evidence: incompleteCapital,
-  }), /carry_portfolio_value_realized_net_mismatch/);
+  }), /carry_portfolio_value_ledger_replay_mismatch/);
+  assert.throws(() => compileCarryPortfolioValueReport({
+    version: 1,
+    now_ms: NOW + 1,
+    position_values: [{
+      ...position,
+      value_ledger: {
+        ...ledger,
+        entries: [{
+          version: 1,
+          entry_id: "carry:value:tampered:0001",
+          sequence: 1,
+          entry_type: "trading_fee",
+          direction: "debit",
+          amount_micro_usdc: 1,
+          venue_id: "hyperliquid",
+          leg_id: "carry:leg:long",
+          occurred_at_ms: NOW,
+          evidence_commitment: "carry:value:evidence:tampered:0001",
+        }],
+        processed_entry_ids: ["carry:value:tampered:0001"],
+        processed_claim_ids: ["carry:value:evidence:tampered:0001|trading_fee|hyperliquid|carry:leg:long|none|none|none|none|none|none"],
+        last_sequence: 1,
+      },
+    }],
+    capital_evidence: incompleteCapital,
+  }), /carry_portfolio_value_ledger_replay_mismatch/);
   assert.throws(() => compileCarryPortfolioValueReport({
     version: 1,
     now_ms: NOW + 1,

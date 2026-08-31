@@ -802,7 +802,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("positionsTest", 'verifiedOutcome.outcome_receipt.status, "safe_runway_verified"', "carry_collateral_outcome_test_missing");
   requireText("server", '"/carry/positions/collateral-review/approve"', "carry_collateral_review_approval_route_missing");
   requireText("positions", "export async function compileStoredCarryPortfolioValueReport", "carry_portfolio_value_worker_missing");
-  requireText("positions", 'funding_valuation_basis: "usdc_equivalent_at_ledger_ingestion"', "carry_portfolio_value_fx_basis_missing");
+  requireText("coreCarry", 'funding_valuation_basis: "usdc_equivalent_at_ledger_ingestion"', "carry_portfolio_value_fx_basis_missing");
+  requireText("coreCarry", "carry_portfolio_value_ledger_replay_mismatch", "carry_portfolio_value_ledger_replay_missing");
+  requireText("coreCarry", "carry_portfolio_value_processed_claim_ids_mismatch", "carry_portfolio_value_claim_replay_missing");
+  forbidText("positions", 'funding_valuation_basis: "usdc_equivalent_at_ledger_ingestion"', "carry_portfolio_value_fx_basis_wrapper_forbidden");
   requireText("positionsTest", 'value.report.value_proof_status, "accruing"', "carry_portfolio_value_worker_test_missing");
   requireText("server", '"/carry/positions/value-report"', "carry_portfolio_value_route_missing");
   requireText("positions", "modeledValueBreakdown", "carry_worker_value_breakdown_missing");

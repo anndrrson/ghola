@@ -1542,6 +1542,8 @@ export function compileCarryPortfolioValueReport(value) {
     version: 1,
     kind: "ghola_carry_portfolio_value_report",
     value_proof_status: valueProofStatus,
+    valuation_asset: "USDC",
+    funding_valuation_basis: "usdc_equivalent_at_ledger_ingestion",
     position_count: positions.length,
     open_position_count: open.length,
     finalized_position_count: finalized.length,
@@ -2926,24 +2928,24 @@ function normalizePortfolioValuePosition(value) {
   if ((ledgerStatus === "finalized") !== (positionStatus === "reconciled")) {
     fail("carry_portfolio_value_finalization_status_mismatch");
   }
-  const modeled = object(ledger.modeled, "carry_portfolio_value_modeled_required");
+  const rawModeled = object(ledger.modeled, "carry_portfolio_value_modeled_required");
   const modeledGrossFunding = signedInteger(
-    modeled.gross_funding_micro_usdc,
+    rawModeled.gross_funding_micro_usdc,
     "carry_portfolio_value_modeled_funding",
   );
   const modeledTradingCost = nonNegativeInteger(
-    modeled.trading_cost_micro_usdc,
+    rawModeled.trading_cost_micro_usdc,
     "carry_portfolio_value_modeled_trading_cost",
   );
   const modeledCapitalCost = nonNegativeInteger(
-    modeled.capital_cost_micro_usdc,
+    rawModeled.capital_cost_micro_usdc,
     "carry_portfolio_value_modeled_capital_cost",
   );
   const modeledRiskBuffer = nonNegativeInteger(
-    modeled.risk_buffer_micro_usdc,
+    rawModeled.risk_buffer_micro_usdc,
     "carry_portfolio_value_modeled_risk_buffer",
   );
-  const modeledNet = signedInteger(modeled.net_value_micro_usdc, "carry_portfolio_value_modeled_net");
+  const modeledNet = signedInteger(rawModeled.net_value_micro_usdc, "carry_portfolio_value_modeled_net");
   const expectedModeledNet = safeAdd(
     modeledGrossFunding,
     -safeAdd(
@@ -2954,7 +2956,65 @@ function normalizePortfolioValuePosition(value) {
     "carry_portfolio_value_modeled_overflow",
   );
   if (modeledNet !== expectedModeledNet) fail("carry_portfolio_value_modeled_net_mismatch");
+  const modeled = {
+    gross_funding_micro_usdc: modeledGrossFunding,
+    trading_cost_micro_usdc: modeledTradingCost,
+    capital_cost_micro_usdc: modeledCapitalCost,
+    risk_buffer_micro_usdc: modeledRiskBuffer,
+    net_value_micro_usdc: modeledNet,
+    ...normalizeModeledValueBreakdown(rawModeled, modeledGrossFunding, modeledTradingCost),
+  };
+  if (canonicalCarryCommitmentJson(rawModeled) !== canonicalCarryCommitmentJson(modeled)) {
+    fail("carry_portfolio_value_modeled_replay_mismatch");
+  }
+  const entries = array(ledger.entries, "carry_portfolio_value_entries", 0, 4_096)
+    .map(normalizeValueEntry);
+  const entryIds = entries.map((entry) => entry.entry_id);
+  if (new Set(entryIds).size !== entryIds.length
+    || entries.some((entry, index) => entry.sequence !== index + 1)) {
+    fail("carry_portfolio_value_entry_sequence_mismatch");
+  }
+  const processedEntryIds = array(
+    ledger.processed_entry_ids,
+    "carry_portfolio_value_processed_entry_ids",
+    0,
+    4_096,
+  ).map((entryId) => identifier(entryId, "carry_portfolio_value_processed_entry_id"));
+  if (canonicalCarryCommitmentJson(processedEntryIds) !== canonicalCarryCommitmentJson(entryIds)) {
+    fail("carry_portfolio_value_processed_entry_ids_mismatch");
+  }
+  const claimIds = entries.map(valueClaimId);
+  const processedClaimIds = array(
+    ledger.processed_claim_ids,
+    "carry_portfolio_value_processed_claim_ids",
+    0,
+    4_096,
+  ).map((claimId) => String(claimId));
+  if (new Set(claimIds).size !== claimIds.length
+    || canonicalCarryCommitmentJson(processedClaimIds) !== canonicalCarryCommitmentJson(claimIds)) {
+    fail("carry_portfolio_value_processed_claim_ids_mismatch");
+  }
+  if (nonNegativeInteger(ledger.last_sequence, "carry_portfolio_value_last_sequence") !== entries.length) {
+    fail("carry_portfolio_value_last_sequence_mismatch");
+  }
+  if (ledger.currency !== "USDC") fail("carry_portfolio_value_currency_mismatch");
+  const createdAtMs = positiveInteger(ledger.created_at_ms, "carry_portfolio_value_created_at");
+  const updatedAtMs = positiveInteger(ledger.updated_at_ms, "carry_portfolio_value_updated_at");
+  if (updatedAtMs < createdAtMs
+    || entries.some((entry) => entry.occurred_at_ms > updatedAtMs
+      || (entry.entry_type === "funding" && entry.valued_at_ms > updatedAtMs))) {
+    fail("carry_portfolio_value_ledger_time_mismatch");
+  }
+  const expectedRealized = summarizeRealizedValue(entries, modeled);
+  expectedRealized.attribution = summarizeValueAttribution(
+    modeled,
+    expectedRealized,
+    ledgerStatus === "finalized",
+  );
   const realized = object(ledger.realized, "carry_portfolio_value_realized_required");
+  if (canonicalCarryCommitmentJson(realized) !== canonicalCarryCommitmentJson(expectedRealized)) {
+    fail("carry_portfolio_value_ledger_replay_mismatch");
+  }
   const realizedValues = {
     funding_credit_micro_usdc: nonNegativeInteger(realized.funding_credit_micro_usdc, "carry_portfolio_value_realized_funding_credit"),
     funding_debit_micro_usdc: nonNegativeInteger(realized.funding_debit_micro_usdc, "carry_portfolio_value_realized_funding_debit"),
