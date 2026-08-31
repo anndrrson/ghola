@@ -150,6 +150,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   liquidationDistanceTest: "apps/private-agent-worker/test/liquidation-distance.test.js",
   evidenceVerifier: "apps/web/scripts/verify-carry-release-evidence.mjs",
   evidenceVerifierTest: "apps/web/scripts/verify-carry-release-evidence.test.mjs",
+  noSubmitEvidenceVerifier: "apps/web/scripts/verify-carry-no-submit-evidence.mjs",
+  noSubmitEvidenceVerifierTest: "apps/web/scripts/verify-carry-no-submit-evidence.test.mjs",
   webReconciliation: "apps/web/src/lib/carry-reconciliation.ts",
   webReconciliationTest: "apps/web/src/lib/carry-reconciliation.test.ts",
   proofRunbook: "deploy/evidence/CARRY_MAINNET_PROOF_RUNBOOK.md",
@@ -176,6 +178,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("proofRunbook", "expiry permits only a reduce-only exit", "carry_proof_runbook_expiry_exit_missing");
   requireText("proofRunbook", "independently recover the owner signature", "carry_proof_runbook_independent_verification_missing");
   requireText("proofRunbook", "carry_execution_no_submit_matrix", "carry_proof_runbook_three_venue_matrix_missing");
+  requireText("proofRunbook", "verify:carry-no-submit-evidence", "carry_proof_runbook_no_submit_verifier_missing");
   requireText("proofRunbook", "Capital-free development witness", "carry_shadow_development_witness_runbook_missing");
   requireText("proofRunbook", "never substitutes for image-bound qualification", "carry_shadow_development_witness_boundary_missing");
 
@@ -1211,6 +1214,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("serverTest", '"/carry/positions/value-entries"', "carry_retired_value_mutation_route_test_missing");
   requireText("server", '"/carry/preflight-matrix"', "carry_three_venue_no_submit_worker_route_missing");
   requireText("serverTest", "proves the three-venue no-submit matrix and durable exact account state over HTTP", "carry_three_venue_no_submit_http_proof_missing");
+  requireText("preflight", "matrix.readiness_evidence = stored.evidence", "carry_three_venue_raw_readiness_evidence_missing");
+  requireText("readiness", "evidence: Object.freeze(structuredClone(evidence))", "carry_three_venue_raw_readiness_return_missing");
   requireText("serverTest", "returns ready-pair evidence when a matrix venue has a sanitized not-ready marker", "carry_partial_matrix_http_proof_missing");
   requireText("server", '"/carry/readiness"', "carry_readiness_resume_worker_route_missing");
   requireText("server", "readCarryExecutionReadiness", "carry_readiness_resume_worker_missing");
@@ -1233,6 +1238,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("workerAttestedSigner", "export function signAttestedWorkerMessage", "carry_attested_worker_signer_missing");
   requireText("privatePrimeAuthenticationTest", "exact no-submit request", "carry_private_prime_worker_authentication_test_missing");
   requireText("privatePrimeAuthenticationTest", "context: proof.context", "carry_private_prime_worker_context_test_missing");
+  requireText("noSubmitEvidenceVerifier", "assessCarryExecutionReadiness({", "carry_no_submit_independent_readiness_verifier_missing");
+  requireText("noSubmitEvidenceVerifier", "attestedSignatureValid", "carry_no_submit_independent_signature_verifier_missing");
+  requireText("noSubmitEvidenceVerifier", "expected_signer_public_keys_b64", "carry_no_submit_independent_signer_pin_missing");
+  requireText("noSubmitEvidenceVerifier", "capturedAtMs >= privatePrimeCheckedAtMs", "carry_no_submit_historical_capture_binding_missing");
+  requireText("noSubmitEvidenceVerifierTest", "tampered pair evidence, request context, signer identity, and candidate identity", "carry_no_submit_independent_tamper_test_missing");
+  requireText("noSubmitEvidenceVerifierTest", "preserves historical proof after freshness expires", "carry_no_submit_historical_proof_test_missing");
   requireText("serverTest", "matrix.private_prime_authentication.mac_hex", "carry_private_prime_worker_authentication_http_test_missing");
   requireText("serverTest", "matrix.private_prime_authentication.attestation_bound", "carry_private_prime_worker_attested_signature_http_test_missing");
   requireText("transferRoutes", "export async function observePreopenCarryTransferRoutes", "carry_preopen_route_compiler_missing");

@@ -829,6 +829,8 @@ describe("private agent worker", () => {
     assert.equal(matrix.private_prime_authentication.attestation_bound, true);
     assert.ok(matrix.private_prime_authentication.signature_b64.length > 0);
     assert.ok(matrix.private_prime_authentication.signer_public_key_b64.length > 0);
+    assert.equal(matrix.readiness_evidence.evidence_commitment, matrix.readiness.evidence_commitment);
+    assert.equal(matrix.readiness_evidence.pairs.length, 3);
     assert.equal(matrix.pairs.every((pair) => pair.leg_evidence.every((leg) =>
       leg.account_state.position_count === 0
       && leg.account_state.open_order_count === 0

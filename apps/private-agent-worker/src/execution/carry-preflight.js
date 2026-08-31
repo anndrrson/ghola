@@ -438,6 +438,7 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
     matrix.failures.push(stored.error || "carry_readiness_not_persisted");
   }
   matrix.readiness = stored.readiness;
+  matrix.readiness_evidence = stored.evidence;
   return matrix;
 }
 

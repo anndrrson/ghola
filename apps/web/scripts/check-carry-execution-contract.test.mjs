@@ -362,6 +362,29 @@ test("rejects private-prime evidence without its exact signed request context", 
   );
 });
 
+test("rejects a no-submit proof detached from raw pair evidence or the pinned worker signer", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replace(
+        "matrix.readiness_evidence = stored.evidence",
+        "matrix.readiness_evidence = undefined",
+      ),
+    }),
+    /carry_three_venue_raw_readiness_evidence_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      noSubmitEvidenceVerifier: sources.noSubmitEvidenceVerifier.replaceAll(
+        "expected_signer_public_keys_b64",
+        "self_described_signer_keys_b64",
+      ),
+    }),
+    /carry_no_submit_independent_signer_pin_missing/,
+  );
+});
+
 test("rejects a terminal that hides recovery qualification", () => {
   assert.throws(
     () => checkCarryExecutionContract({

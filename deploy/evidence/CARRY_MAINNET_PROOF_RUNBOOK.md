@@ -14,7 +14,19 @@ This proof qualifies one exact worker image across at least two distinct adapter
 8. The worker independently recovers the owner signature and binds its commitment to storage, entry, monitoring, recovery, and release evidence.
 9. For every lifecycle, the user separately confirms the capped paired trade after seeing venues, asset, notional, and exit policy.
 
-Before any live proof, run the authenticated `carry_execution_no_submit_matrix` through the Preview. It must return Hyperliquid, Lighter, and Aster evidence together, `no_submit_ready: true`, `transaction_broadcast: false`, and an empty `failures` list. This check never authorizes a trade.
+Before any live proof, run the authenticated `carry_execution_no_submit_matrix` through the Preview. It must return Hyperliquid, Lighter, and Aster evidence together, `no_submit_ready: true`, `transaction_broadcast: false`, an empty `failures` list, and `readiness_evidence` containing all three exact pair checks. This check never authorizes a trade.
+
+Save the exact request and response in `deploy/evidence/carry-three-venue-no-submit.json` with `version: 1`, `kind: "ghola_three_venue_no_submit_proof"`, `network: "mainnet"`, `captured_at_ms`, and a `source` containing the pinned Preview URL, web commit SHA, and worker image digest. Verify it from `apps/web` with the independently obtained candidate identity and worker signer pins:
+
+```sh
+CARRY_PROOF_EXPECTED_PREVIEW_URL=https://...vercel.app \
+CARRY_PROOF_EXPECTED_WEB_COMMIT_SHA=... \
+CARRY_PROOF_EXPECTED_WORKER_IMAGE_DIGEST=sha256:... \
+GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64=... \
+npm run verify:carry-no-submit-evidence
+```
+
+The verifier recomputes the raw readiness result, validates every pair and flat account state at capture time, verifies the pinned attested-worker signature, and reports current freshness separately. The optional worker capability secret adds MAC verification but is never written into the artifact.
 
 ## Lifecycle
 

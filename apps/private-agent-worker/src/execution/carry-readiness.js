@@ -34,7 +34,7 @@ export async function storeCarryExecutionReadiness({ state, request, matrix, now
     notional_usd: evidence.notional_usd,
     horizon_days: evidence.horizon_days,
   }), evidence);
-  return { ok: true, readiness: assessed };
+  return { ok: true, readiness: assessed, evidence: Object.freeze(structuredClone(evidence)) };
 }
 
 export async function readCarryExecutionReadiness({ state, owner_commitment: ownerCommitment, venue_access: venueAccess, asset, notional_usd: notionalUsd, horizon_days: horizonDays, now_ms: nowMs = Date.now(), env = process.env }) {

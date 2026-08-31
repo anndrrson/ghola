@@ -1225,6 +1225,10 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
   assert.equal(result.readiness.capital_ready, true);
   assert.equal(result.readiness.owner_commitment, "owner_commitment_matrix_0001");
   assert.equal(result.readiness.image_digest, "sha256:abcdef123456");
+  assert.equal(result.readiness_evidence.kind, "carry_execution_no_submit_readiness");
+  assert.equal(result.readiness_evidence.evidence_commitment, result.readiness.evidence_commitment);
+  assert.equal(result.readiness_evidence.pairs.length, 3);
+  assert.equal(result.readiness_evidence.pairs.every((pair) => pair.transaction_broadcast === false), true);
   assert.equal(result.diagnostic_persisted, true);
   assert.equal(result.diagnostic.diagnostic_only, true);
   assert.equal(result.diagnostic.reusable_for_readiness, false);
