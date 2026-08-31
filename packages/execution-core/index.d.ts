@@ -94,6 +94,16 @@ export declare function carryCreationOpportunityAuthenticationMessage(input: {
   checked_at_ms?: unknown;
   expires_at_ms?: unknown;
 }): string;
+export declare function carryPortfolioValueAuthenticationMessage(input: {
+  route_path?: unknown;
+  owner_commitment?: unknown;
+  owner_capital_budget_micro_usdc?: unknown;
+  max_data_age_ms?: unknown;
+  minimum_transfer_arrival_buffer_ms?: unknown;
+  report_commitment?: unknown;
+  checked_at_ms?: unknown;
+  expires_at_ms?: unknown;
+}): string;
 export declare function calculateMarginRunway(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryCapitalActionPlan(input: unknown): Readonly<Record<string, unknown>>;
 export declare function compileCarryCollateralReview(input: unknown): Readonly<Record<string, unknown>>;

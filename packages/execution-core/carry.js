@@ -87,6 +87,30 @@ export function carryCreationOpportunityAuthenticationMessage({
   });
 }
 
+export function carryPortfolioValueAuthenticationMessage({
+  route_path,
+  owner_commitment,
+  owner_capital_budget_micro_usdc,
+  max_data_age_ms,
+  minimum_transfer_arrival_buffer_ms,
+  report_commitment,
+  checked_at_ms,
+  expires_at_ms,
+} = {}) {
+  return canonicalCarryCommitmentJson({
+    version: 1,
+    domain: "ghola-carry-portfolio-value-authentication-v1",
+    route_path,
+    owner_commitment,
+    owner_capital_budget_micro_usdc,
+    max_data_age_ms,
+    minimum_transfer_arrival_buffer_ms,
+    report_commitment,
+    checked_at_ms,
+    expires_at_ms,
+  });
+}
+
 export function estimatePerpDepthExecution({
   side,
   depth_levels: depthLevels,

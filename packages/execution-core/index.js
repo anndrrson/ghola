@@ -24,6 +24,7 @@ export {
   canonicalCarryCommitmentJson,
   cashflowValuationEvidenceMessage,
   carryCreationOpportunityAuthenticationMessage,
+  carryPortfolioValueAuthenticationMessage,
   carryPrivatePrimeWorkerAuthenticationMessage,
   carryCollateralReviewMessage,
   carryRiskMandateMessage,

@@ -11,6 +11,7 @@ import {
 import { agentPassportVenueAccessForWorker } from "@/lib/private-agent-passport";
 import { verifyCarryPrivatePrimeWorkerAuthentication } from "@/lib/carry-private-prime-worker-authentication";
 import { verifyCarryCreationOpportunityWorkerAuthentication } from "@/lib/carry-creation-opportunity-authentication";
+import { verifyCarryPortfolioValueWorkerAuthentication } from "@/lib/carry-portfolio-value-worker-authentication";
 import { randomUUID } from "node:crypto";
 import { normalizeCarryShadowAssets } from "@ghola/execution-core";
 import { CARRY_EXECUTION_VENUES, isCarryExecutionVenue } from "@/lib/carry-venues";
@@ -384,6 +385,22 @@ export async function POST(req: NextRequest) {
         } else if (!stringValue(selectedPair.error_code)) {
           return response({ error: "carry_selected_pair_worker_binding_invalid" }, 502, correlationId);
         }
+      }
+    }
+    if (upstream.ok && action === "value_report") {
+      const authenticated = verifyCarryPortfolioValueWorkerAuthentication({
+        route_path: route.path,
+        body,
+        response: result,
+      });
+      if (!authenticated.ok) {
+        console.error("[carry] portfolio-value worker authentication failed", {
+          correlation_id: correlationId,
+          action,
+          operation_class: route.operationClass,
+          duration_ms: Date.now() - startedAt,
+        });
+        return response({ error: authenticated.error }, 502, correlationId);
       }
     }
     console.info("[carry] request completed", {

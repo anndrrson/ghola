@@ -28,6 +28,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   shadowSnapshot: "apps/private-agent-worker/src/execution/carry-shadow-snapshot.js",
   workerMandate: "apps/private-agent-worker/src/execution/carry-mandate.js",
   positions: "apps/private-agent-worker/src/execution/carry-positions.js",
+  portfolioValueAuthentication: "apps/private-agent-worker/src/execution/carry-portfolio-value-authentication.js",
   transferProbe: "apps/private-agent-worker/src/execution/carry-transfer-probe.js",
   transferVenueReaders: "apps/private-agent-worker/src/execution/carry-transfer-venue-readers.js",
   stablecoinConversion: "apps/private-agent-worker/src/execution/carry-stablecoin-conversion.js",
@@ -73,6 +74,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webPrivatePrimeAuthenticationTest: "apps/web/src/lib/carry-private-prime-worker-authentication.test.ts",
   webCreationOpportunityAuthentication: "apps/web/src/lib/carry-creation-opportunity-authentication.ts",
   webCreationOpportunityAuthenticationTest: "apps/web/src/lib/carry-creation-opportunity-authentication.test.ts",
+  webPortfolioValueAuthentication: "apps/web/src/lib/carry-portfolio-value-worker-authentication.ts",
+  webPortfolioValueAuthenticationTest: "apps/web/src/lib/carry-portfolio-value-worker-authentication.test.ts",
   webPerpsTurnkey: "apps/web/src/lib/perps-turnkey-provider.tsx",
   webRegistry: "apps/web/src/lib/carry-venues.ts",
   webCredentialOnboarding: "apps/web/src/lib/venue-credential-onboarding.ts",
@@ -121,6 +124,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   lifecycleTest: "apps/private-agent-worker/test/carry-executor.test.js",
   workerMandateTest: "apps/private-agent-worker/test/carry-mandate.test.js",
   positionsTest: "apps/private-agent-worker/test/carry-positions.test.js",
+  portfolioValueAuthenticationTest: "apps/private-agent-worker/test/carry-portfolio-value-authentication.test.js",
   transferProbeTest: "apps/private-agent-worker/test/carry-transfer-probe.test.js",
   transferVenueReadersTest: "apps/private-agent-worker/test/carry-transfer-venue-readers.test.js",
   stablecoinConversionTest: "apps/private-agent-worker/test/carry-stablecoin-conversion.test.js",
@@ -802,12 +806,17 @@ export function checkCarryExecutionContract(sources) {
   requireText("positionsTest", 'verifiedOutcome.outcome_receipt.status, "safe_runway_verified"', "carry_collateral_outcome_test_missing");
   requireText("server", '"/carry/positions/collateral-review/approve"', "carry_collateral_review_approval_route_missing");
   requireText("positions", "export async function compileStoredCarryPortfolioValueReport", "carry_portfolio_value_worker_missing");
+  requireText("coreCarry", "export function carryPortfolioValueAuthenticationMessage", "carry_portfolio_value_auth_message_missing");
   requireText("coreCarry", 'funding_valuation_basis: "usdc_equivalent_at_ledger_ingestion"', "carry_portfolio_value_fx_basis_missing");
   requireText("coreCarry", "carry_portfolio_value_ledger_replay_mismatch", "carry_portfolio_value_ledger_replay_missing");
   requireText("coreCarry", "carry_portfolio_value_processed_claim_ids_mismatch", "carry_portfolio_value_claim_replay_missing");
   forbidText("positions", 'funding_valuation_basis: "usdc_equivalent_at_ledger_ingestion"', "carry_portfolio_value_fx_basis_wrapper_forbidden");
   requireText("positionsTest", 'value.report.value_proof_status, "accruing"', "carry_portfolio_value_worker_test_missing");
   requireText("server", '"/carry/positions/value-report"', "carry_portfolio_value_route_missing");
+  requireText("server", "worker_authentication: authenticateCarryPortfolioValueReport({", "carry_portfolio_value_worker_response_binding_missing");
+  requireText("portfolioValueAuthentication", "report_replay_bound: true", "carry_portfolio_value_worker_attestation_missing");
+  requireText("portfolioValueAuthentication", "portfolioValueReportCommitment(report)", "carry_portfolio_value_worker_report_binding_missing");
+  requireText("portfolioValueAuthenticationTest", "attests the exact replayed portfolio report and owner-scoped request", "carry_portfolio_value_authentication_test_missing");
   requireText("positions", "modeledValueBreakdown", "carry_worker_value_breakdown_missing");
   requireText("positionsTest", "value_ledger.modeled.breakdown_complete", "carry_worker_value_breakdown_test_missing");
   requireText("executor", "verifyCarryRiskMandateAuthorization", "carry_entry_signature_gate_missing");
@@ -854,6 +863,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilderTest", "shows fresh account-state proof after an approved capital plan restores safe runway", "carry_terminal_collateral_outcome_test_missing");
   requireText("webClient", "getCarryPortfolioValueReport", "carry_portfolio_value_client_missing");
   requireText("webRoute", 'action === "value_report"', "carry_portfolio_value_proxy_missing");
+  requireText("webRoute", "verifyCarryPortfolioValueWorkerAuthentication({", "carry_portfolio_value_web_verification_missing");
+  requireText("webPortfolioValueAuthentication", "carry:portfolio-value-report:", "carry_portfolio_value_web_report_binding_missing");
+  requireText("webPortfolioValueAuthentication", "GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64", "carry_portfolio_value_web_signer_pin_missing");
+  requireText("webPortfolioValueAuthentication", "ed25519.verify(", "carry_portfolio_value_web_signature_missing");
+  requireText("webPortfolioValueAuthenticationTest", "accepts only the exact fresh report and owner-scoped request signed by the pinned worker", "carry_portfolio_value_web_authentication_test_missing");
   requireText("webCarryBuilder", "PORTFOLIO VALUE ·", "carry_terminal_portfolio_value_missing");
   requireText("webCarryBuilder", 'report.funding_valuation_basis !== "usdc_equivalent_at_ledger_ingestion"', "carry_terminal_portfolio_fx_basis_gate_missing");
   requireText("webCarryBuilder", "UNVERIFIED FX BASIS", "carry_terminal_portfolio_fx_basis_failure_missing");

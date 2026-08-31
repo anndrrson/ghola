@@ -225,6 +225,39 @@ test("rejects a gateway that forwards unauthenticated private-prime evidence", (
   );
 });
 
+test("rejects an unattested or report-detached portfolio value response", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replace(
+        "worker_authentication: authenticateCarryPortfolioValueReport({",
+        "worker_authentication: { report_replay_bound: true }, //",
+      ),
+    }),
+    /carry_portfolio_value_worker_response_binding_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webRoute: sources.webRoute.replace(
+        "verifyCarryPortfolioValueWorkerAuthentication({",
+        "trustCarryPortfolioValueWorkerAuthentication({",
+      ),
+    }),
+    /carry_portfolio_value_web_verification_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPortfolioValueAuthentication: sources.webPortfolioValueAuthentication.replace(
+        "carry:portfolio-value-report:",
+        "carry:unbound-report:",
+      ),
+    }),
+    /carry_portfolio_value_web_report_binding_missing/,
+  );
+});
+
 test("rejects a worker that emits unsigned private-prime evidence", () => {
   assert.throws(
     () => checkCarryExecutionContract({

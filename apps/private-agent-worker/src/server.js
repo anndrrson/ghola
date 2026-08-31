@@ -63,6 +63,7 @@ import { createCarryDepositQuoteReader } from "./execution/carry-deposit-quote.j
 import { createReadOnlyCarryRuntimePolicies } from "./execution/carry-runtime-risk-policies.js";
 import { buildCarryPrivatePrimeReadiness } from "./execution/carry-private-prime-readiness.js";
 import { authenticateCarryPrivatePrimeReadiness } from "./execution/carry-private-prime-authentication.js";
+import { authenticateCarryPortfolioValueReport } from "./execution/carry-portfolio-value-authentication.js";
 import {
   loadCarryTransferRouteEvidence,
   observePreopenCarryTransferRoutes,
@@ -3206,7 +3207,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        if (["/carry/positions/observe", "/carry/positions/collateral-review", "/carry/positions/collateral-review/approve"].includes(url.pathname)
+        if (["/carry/positions/observe", "/carry/positions/collateral-review", "/carry/positions/collateral-review/approve", "/carry/positions/value-report"].includes(url.pathname)
           && req.headers["x-ghola-no-submit-verify"] !== "true") {
           return json(res, 400, { error: "no-submit verification header is required" });
         }
@@ -3324,7 +3325,17 @@ export function createPrivateAgentWorkerServer(options = {}) {
           : result.error === "carry_position_not_found" ? 404
             : ["carry_record_version_conflict", "carry_collateral_review_replayed"].includes(result.error) ? 409
               : 400;
-        return json(res, status, result);
+        const authenticatedResult = result.ok && url.pathname === "/carry/positions/value-report"
+          ? {
+              ...result,
+              worker_authentication: authenticateCarryPortfolioValueReport({
+                route_path: url.pathname,
+                body: authorized.body,
+                report: result.report,
+              }),
+            }
+          : result;
+        return json(res, status, authenticatedResult);
       }
 
       if (req.method === "POST" && url.pathname.startsWith("/v2/kraken/")) {

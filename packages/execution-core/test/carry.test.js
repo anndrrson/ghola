@@ -8,6 +8,7 @@ import {
   canonicalCarryCommitmentJson,
   cashflowValuationEvidenceMessage,
   carryCreationOpportunityAuthenticationMessage,
+  carryPortfolioValueAuthenticationMessage,
   carryPrivatePrimeWorkerAuthenticationMessage,
   carryCollateralReviewMessage,
   carryRiskMandateMessage,
@@ -69,6 +70,22 @@ test("binds Carry creation economics to the owner and exact deterministic opport
       expires_at_ms: NOW + 30_000,
     }),
     `{"checked_at_ms":${NOW},"domain":"ghola-carry-creation-opportunity-authentication-v1","expires_at_ms":${NOW + 30_000},"opportunity":{"asset":"BTC","projected_net_value_micro_usdc":123},"owner_commitment":"owner_commitment_0001","version":1}`,
+  );
+});
+
+test("binds portfolio value proof to the owner, request, and exact replayed report", () => {
+  assert.equal(
+    carryPortfolioValueAuthenticationMessage({
+      route_path: "/carry/positions/value-report",
+      owner_commitment: "owner_commitment_0001",
+      owner_capital_budget_micro_usdc: 0,
+      max_data_age_ms: 30_000,
+      minimum_transfer_arrival_buffer_ms: 300_000,
+      report_commitment: `carry:portfolio-value-report:${"a".repeat(64)}`,
+      checked_at_ms: NOW,
+      expires_at_ms: NOW + 30_000,
+    }),
+    `{"checked_at_ms":${NOW},"domain":"ghola-carry-portfolio-value-authentication-v1","expires_at_ms":${NOW + 30_000},"max_data_age_ms":30000,"minimum_transfer_arrival_buffer_ms":300000,"owner_capital_budget_micro_usdc":0,"owner_commitment":"owner_commitment_0001","report_commitment":"carry:portfolio-value-report:${"a".repeat(64)}","route_path":"/carry/positions/value-report","version":1}`,
   );
 });
 
