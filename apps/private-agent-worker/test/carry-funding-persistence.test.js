@@ -13,7 +13,10 @@ import {
   runCarryFundingObservationTick,
   startCarryFundingObservationLoop,
 } from "../src/execution/carry-funding-persistence.js";
+import { readCarryShadowQualification } from "../src/execution/carry-shadow-qualification.js";
+import { readCarryShadowSnapshot } from "../src/execution/carry-shadow-snapshot.js";
 import { createWorkerState } from "../src/state/private-state.js";
+import { carryShadowFixture } from "./carry-shadow-fixture.js";
 
 const NOW = 1_800_000_000_000;
 const FIVE_MINUTES = 5 * 60_000;
@@ -383,6 +386,58 @@ test("collects funding history without an open browser", async () => {
   assert.equal(result.shadow_snapshot.stored, true);
   assert.equal(result.shadow_snapshot.ready, true);
   assert.equal(state.rows.size, 8);
+});
+
+test("background observation durably qualifies five venues after the two-minute floor", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-shadow-observer-restart-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const env = {
+    PHALA_CVM_IMAGE_DIGEST: "sha256:abcdef1234567890",
+    PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_SAMPLES: "3",
+    PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_MAX_AGE_MS: "600000",
+  };
+  let state = createWorkerState(dir);
+  let result;
+  for (let index = 0; index < 5; index += 1) {
+    const nowMs = NOW + index * 30_000;
+    result = await runCarryFundingObservationTick({
+      state,
+      fetchPerpShadowSet: async () => carryShadowFixture(nowMs),
+      assets: ["BTC", "ETH", "SOL"],
+      now_ms: nowMs,
+      now: () => nowMs,
+      env,
+    });
+  }
+
+  assert.equal(result.ok, true);
+  assert.equal(result.current_feed_set_ready, true);
+  assert.equal(result.shadow_qualification.ready, true);
+  assert.equal(result.shadow_qualification.venues, 5);
+  assert.equal(result.shadow_qualification.assets, 3);
+  assert.equal(result.shadow_qualification.completed_samples, 3);
+  assert.equal(result.shadow_qualification.duration_ms, 120_000);
+  assert.deepEqual(result.shadow_qualification.failures, []);
+  assert.match(result.shadow_qualification.evidence_commitment, /^carry:shadow:qualification:[a-f0-9]{64}$/);
+
+  state = createWorkerState(dir);
+  const recoveredQualification = await readCarryShadowQualification({
+    state,
+    now_ms: NOW + 120_000,
+    env,
+  });
+  const recoveredSnapshot = await readCarryShadowSnapshot({
+    state,
+    now_ms: NOW + 120_000,
+  });
+  assert.equal(recoveredQualification.ready, true);
+  assert.equal(recoveredQualification.evidence_commitment, result.shadow_qualification.evidence_commitment);
+  assert.equal(recoveredSnapshot.ok, true);
+  assert.equal(recoveredSnapshot.snapshot.shadow_qualification.ready, true);
+  assert.equal(
+    recoveredSnapshot.snapshot.shadow_qualification.evidence_commitment,
+    result.shadow_qualification.evidence_commitment,
+  );
 });
 
 test("fails closed when complete venue coverage contains a stale shadow snapshot", async (t) => {

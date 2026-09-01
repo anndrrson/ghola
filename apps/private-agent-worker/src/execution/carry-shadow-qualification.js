@@ -63,7 +63,7 @@ export async function observeCarryShadowQualification({
       && item.checked_at_ms < nowMs)
     : [];
   const sampleResults = sample.ok
-    ? appendDistinctSample(retained, sample).slice(-requiredSamples)
+    ? qualificationSampleWindow(appendDistinctSample(retained, sample), requiredSamples)
     : [];
   const record = {
     version: 1,
@@ -273,6 +273,14 @@ function appendDistinctSample(samples, sample) {
   if (samples.some((item) => item.sample_commitment === sample.sample_commitment
     || item.source_observation_commitment === sample.source_observation_commitment)) return samples;
   return [...samples, sample];
+}
+
+function qualificationSampleWindow(samples, requiredSamples) {
+  if (samples.length <= requiredSamples) return samples;
+  // Keep the beginning of the current uninterrupted healthy run while rolling
+  // the remaining observations forward. Dropping the oldest sample here makes
+  // a sub-minute observer mathematically unable to prove the two-minute floor.
+  return [samples[0], ...samples.slice(-(requiredSamples - 1))];
 }
 
 function recordCommitment(record) {

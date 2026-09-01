@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { CORE_PERP_VENUES } from "@ghola/execution-core";
 import {
@@ -9,6 +12,7 @@ import {
 } from "../src/execution/carry-shadow-qualification.js";
 import { carryShadowFixture } from "./carry-shadow-fixture.js";
 import { DEFAULT_CARRY_SHADOW_ASSETS } from "../src/execution/perp-shadow-readiness.js";
+import { createWorkerState } from "../src/state/private-state.js";
 
 const NOW = 1_800_000_000_000;
 const IMAGE = "sha256:abcdef1234567890";
@@ -76,6 +80,48 @@ test("does not qualify rapid source updates before the two-minute observation fl
   }
   assert.equal(result.ready, false);
   assert.ok(result.failures.includes("shadow_soak_duration_insufficient:2000:120000"));
+});
+
+test("qualifies at a sub-minute observer cadence and survives a worker restart", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-shadow-qualification-restart-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  let state = createWorkerState(dir);
+  let result;
+  for (let index = 0; index < 5; index += 1) {
+    const nowMs = NOW + index * 30_000;
+    result = await observeCarryShadowQualification({
+      state,
+      venues: carryShadowFixture(nowMs),
+      now_ms: nowMs,
+      env: ENV,
+    });
+    if (index === 2) {
+      assert.equal(result.ready, false);
+      assert.equal(result.completed_samples, 3);
+      assert.equal(result.duration_ms, 60_000);
+      assert.ok(result.failures.includes("shadow_soak_duration_insufficient:60000:120000"));
+    }
+  }
+
+  assert.equal(result.ready, true);
+  assert.equal(result.completed_samples, 3);
+  assert.equal(result.duration_ms, 120_000);
+  assert.deepEqual(result.failures, []);
+
+  state = createWorkerState(dir);
+  const recovered = await readCarryShadowQualification({
+    state,
+    now_ms: NOW + 120_000,
+    env: ENV,
+  });
+  assert.equal(recovered.ready, true);
+  assert.equal(recovered.duration_ms, 120_000);
+  assert.equal(recovered.evidence_commitment, result.evidence_commitment);
+  assert.equal(verifyCarryShadowQualification(recovered, {
+    image_digest: IMAGE,
+    now_ms: NOW + 120_000,
+    max_age_ms: 600_000,
+  }).ok, true);
 });
 
 test("does not persist wrapper-only samples when venue source observations are unchanged", async () => {
