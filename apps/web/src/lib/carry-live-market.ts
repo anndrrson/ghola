@@ -30,11 +30,27 @@ type MarketRef = {
 type BookState = {
   bids: Map<number, number>;
   asks: Map<number, number>;
+  bidOffsets: Map<number, bigint>;
+  askOffsets: Map<number, bigint>;
   bestBid: number | null;
   bestAsk: number | null;
+  complete: boolean;
+  sequence: bigint | null;
+};
+
+type DydxStreamState = {
+  connectionId: string | null;
+  protocolVersion: string | null;
+  subscribed: Map<string, bigint>;
+  subscriptionFrames: Map<string, Record<string, unknown>>;
+  pending: Record<string, unknown>[];
+  handshakeComplete: boolean;
+  sequence: bigint | null;
 };
 
 const UNCHANGED_PATCH_HEARTBEAT_MS = 1_000;
+export const CARRY_STREAM_HANDSHAKE_TIMEOUT_MS = 10_000;
+export const CARRY_STREAM_SILENCE_TIMEOUT_MS = 15_000;
 // One visual frame: preserve every latest venue value without asking React to
 // render faster than the display can present it.
 export const CARRY_UI_PUBLISH_INTERVAL_MS = 16;
@@ -122,7 +138,14 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
   private readonly sockets = new Map<string, WebSocketLike>();
   private readonly reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly reconnectAttempts = new Map<string, number>();
+  private readonly handshakeWatchdogs = new Map<WebSocketLike, ReturnType<typeof setTimeout>>();
+  private readonly bookWatchdogs = new Map<string, {
+    socket: WebSocketLike;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  private readonly orderbookReadySockets = new Set<WebSocketLike>();
   private readonly books = new Map<string, BookState>();
+  private readonly dydxStreams = new Map<WebSocketLike, DydxStreamState>();
   private readonly lastEmittedValues = new Map<string, Record<string, unknown>>();
   private readonly lastEmittedAt = new Map<string, number>();
   private readonly refs: MarketRef[];
@@ -149,6 +172,11 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
     this.active = false;
     for (const timer of this.reconnectTimers.values()) clearTimeout(timer);
     this.reconnectTimers.clear();
+    for (const timer of this.handshakeWatchdogs.values()) clearTimeout(timer);
+    this.handshakeWatchdogs.clear();
+    for (const { timer } of this.bookWatchdogs.values()) clearTimeout(timer);
+    this.bookWatchdogs.clear();
+    this.orderbookReadySockets.clear();
     for (const socket of this.sockets.values()) {
       socket.onopen = null;
       socket.onmessage = null;
@@ -162,6 +190,7 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
     }
     this.sockets.clear();
     this.books.clear();
+    this.dydxStreams.clear();
     this.lastEmittedValues.clear();
     this.lastEmittedAt.clear();
   }
@@ -179,8 +208,12 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
       this.sockets.set(venueId, socket);
       socket.onopen = () => {
         if (!this.active || socket !== this.sockets.get(venueId)) return;
-        this.reconnectAttempts.set(venueId, 0);
-        this.options.onStatus(venueId, "live");
+        if (this.requiresOrderbookProof(venueId)) {
+          this.armHandshakeWatchdog(venueId, socket);
+        } else {
+          this.reconnectAttempts.set(venueId, 0);
+          this.options.onStatus(venueId, "live");
+        }
         this.subscribe(venueId, socket);
       };
       socket.onmessage = (event) => {
@@ -192,7 +225,12 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
       };
       socket.onclose = () => {
         if (socket !== this.sockets.get(venueId)) return;
+        if (this.requiresOrderbookProof(venueId)) {
+          this.invalidateVenueOrderBooks(venueId, socket);
+          return;
+        }
         this.sockets.delete(venueId);
+        this.dydxStreams.delete(socket);
         if (!this.active) return;
         this.options.onStatus(venueId, "reconnecting");
         this.scheduleReconnect(venueId);
@@ -246,12 +284,12 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
     if (!message) return;
     if (venueId === "lighter") return this.handleLighter(message);
     if (venueId === "aster") return this.handleAster(message);
-    if (venueId === "dydx") return this.handleDydx(message);
+    if (venueId === "dydx") return this.handleDydx(socket, message);
     if (message.type === "ping") {
       sendJson(socket, { type: "pong", time: message.time });
       return;
     }
-    this.handleEdgeX(message);
+    this.handleEdgeX(socket, message);
   }
 
   private handleLighter(message: Record<string, unknown>) {
@@ -312,7 +350,108 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
     });
   }
 
-  private handleDydx(message: Record<string, unknown>) {
+  private handleDydx(socket: WebSocketLike, message: Record<string, unknown>) {
+    const state = this.dydxState(socket);
+    const connectionId = stringValue(message.connection_id);
+    if (message.type === "connected") {
+      if (!connectionId || (state.connectionId && state.connectionId !== connectionId)) {
+        this.invalidateVenueOrderBooks("dydx", socket);
+        return;
+      }
+      state.connectionId = connectionId;
+      return;
+    }
+    if (!connectionId || !state.connectionId || connectionId !== state.connectionId) {
+      this.invalidateVenueOrderBooks("dydx", socket);
+      return;
+    }
+
+    const sequence = sequenceValue(message.message_id);
+    const subscriptionKey = this.dydxSubscriptionKey(message);
+    if (!state.connectionId || sequence == null || !subscriptionKey) {
+      this.invalidateVenueOrderBooks("dydx", socket);
+      return;
+    }
+    if (message.type === "subscribed") {
+      if (state.handshakeComplete || state.subscribed.has(subscriptionKey)) {
+        this.invalidateVenueOrderBooks("dydx", socket);
+        return;
+      }
+      state.subscribed.set(subscriptionKey, sequence);
+      state.subscriptionFrames.set(subscriptionKey, message);
+      const expected = this.dydxSubscriptionKeys();
+      if (state.subscribed.size !== expected.size) return;
+      if ([...expected].some((key) => !state.subscribed.has(key))) {
+        this.invalidateVenueOrderBooks("dydx", socket);
+        return;
+      }
+      const subscriptionFrames = [...state.subscriptionFrames.values()].sort((left, right) =>
+        compareBigInts(sequenceValue(left.message_id)!, sequenceValue(right.message_id)!));
+      if (subscriptionFrames.some((frame) => !this.validDydxSnapshot(frame))) {
+        this.invalidateVenueOrderBooks("dydx", socket);
+        return;
+      }
+      const handshakeFrames = [...subscriptionFrames, ...state.pending].sort((left, right) =>
+        compareBigInts(sequenceValue(left.message_id)!, sequenceValue(right.message_id)!));
+      if (handshakeFrames.some((frame, index) => sequenceValue(frame.message_id) !== BigInt(index + 1))) {
+        this.invalidateVenueOrderBooks("dydx", socket);
+        return;
+      }
+      state.sequence = BigInt(0);
+      for (const frame of handshakeFrames) {
+        if (frame.type === "subscribed") {
+          const frameSequence = sequenceValue(frame.message_id)!;
+          if (frameSequence !== state.sequence + BigInt(1) || !this.applyDydxMessage(frame, true)) {
+            this.invalidateVenueOrderBooks("dydx", socket);
+            return;
+          }
+          state.sequence = frameSequence;
+          continue;
+        }
+        if (!this.applyDydxSequencedMessage(socket, state, frame)) return;
+      }
+      state.handshakeComplete = true;
+      state.pending.length = 0;
+      this.markOrderbookLive("dydx", socket);
+      return;
+    }
+    if (!state.handshakeComplete) {
+      if (state.pending.length >= 1_000) {
+        this.invalidateVenueOrderBooks("dydx", socket);
+        return;
+      }
+      state.pending.push(message);
+      return;
+    }
+    this.applyDydxSequencedMessage(socket, state, message);
+  }
+
+  private applyDydxSequencedMessage(
+    socket: WebSocketLike,
+    state: DydxStreamState,
+    message: Record<string, unknown>,
+  ) {
+    const sequence = sequenceValue(message.message_id);
+    const version = stringValue(message.version);
+    if (sequence == null || state.sequence == null || !version
+      || (state.protocolVersion && state.protocolVersion !== version)
+      || sequence !== state.sequence + BigInt(1)) {
+      this.invalidateVenueOrderBooks("dydx", socket);
+      return false;
+    }
+    state.protocolVersion = version;
+    state.sequence = sequence;
+    if (!this.applyDydxMessage(message, false)) {
+      this.invalidateVenueOrderBooks("dydx", socket);
+      return false;
+    }
+    if (stringValue(message.channel) === "v4_orderbook") {
+      this.touchOrderbook("dydx", stringValue(message.id).split("-")[0], socket);
+    }
+    return true;
+  }
+
+  private applyDydxMessage(message: Record<string, unknown>, snapshot: boolean) {
     const channel = stringValue(message.channel);
     const contentRows = Array.isArray(message.contents)
       ? arrayValue(message.contents).map(record)
@@ -321,12 +460,24 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
       const market = stringValue(message.id);
       const asset = market.split("-")[0];
       const ref = this.venueRefs("dydx").find((item) => item.asset === asset);
-      if (!ref) return;
-      const key = `dydx:${asset}`;
-      const book = this.book(key, message.type === "subscribed");
+      if (!ref) return false;
+      const book = this.book(`dydx:${asset}`, snapshot);
+      if (!snapshot && !book.complete) return false;
+      const logicalOffset = sequenceValue(message.message_id);
+      if (logicalOffset == null) return false;
       for (const contents of contentRows) {
-        applyBookLevels(book, "bid", contents.bids);
-        applyBookLevels(book, "ask", contents.asks);
+        if (!applyBookLevels(book, "bid", contents.bids, logicalOffset)
+          || !applyBookLevels(book, "ask", contents.asks, logicalOffset)) return false;
+      }
+      book.complete = true;
+      if (!uncrossDydxBook(book)) {
+        this.emit(ref, {
+          depth_bids: [],
+          depth_asks: [],
+          depth_complete: false,
+          orderbook_valid: false,
+        });
+        return true;
       }
       this.emit(ref, {
         best_bid_e8: bestBookPrice(book, "bid"),
@@ -334,10 +485,11 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
         depth_bids: bookDepthLevels(book, "bid"),
         depth_asks: bookDepthLevels(book, "ask"),
         depth_complete: true,
+        orderbook_valid: true,
       });
-      return;
+      return true;
     }
-    if (channel !== "v4_markets") return;
+    if (channel !== "v4_markets") return false;
     for (const contents of contentRows) {
       const markets = {
         ...record(contents.markets),
@@ -356,29 +508,122 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
         });
       }
     }
+    return true;
   }
 
-  private handleEdgeX(message: Record<string, unknown>) {
+  private validDydxSnapshot(message: Record<string, unknown>) {
+    const channel = stringValue(message.channel);
+    if (channel === "v4_markets") return true;
+    if (channel !== "v4_orderbook") return false;
+    const market = stringValue(message.id);
+    const asset = market.split("-")[0];
+    if (!this.venueRefs("dydx").some((item) => item.asset === asset)) return false;
+    const book: BookState = {
+      bids: new Map(),
+      asks: new Map(),
+      bidOffsets: new Map(),
+      askOffsets: new Map(),
+      bestBid: null,
+      bestAsk: null,
+      complete: false,
+      sequence: null,
+    };
+    const contentRows = Array.isArray(message.contents)
+      ? arrayValue(message.contents).map(record)
+      : [record(message.contents)];
+    const logicalOffset = sequenceValue(message.message_id);
+    if (logicalOffset == null) return false;
+    for (const contents of contentRows) {
+      if (!applyBookLevels(book, "bid", contents.bids, logicalOffset)
+        || !applyBookLevels(book, "ask", contents.asks, logicalOffset)) return false;
+    }
+    const twoSidedSnapshot = book.bids.size > 0 && book.asks.size > 0;
+    uncrossDydxBook(book);
+    return twoSidedSnapshot;
+  }
+
+  private dydxState(socket: WebSocketLike) {
+    let state = this.dydxStreams.get(socket);
+    if (!state) {
+      state = {
+        connectionId: null,
+        protocolVersion: null,
+        subscribed: new Map(),
+        subscriptionFrames: new Map(),
+        pending: [],
+        handshakeComplete: false,
+        sequence: null,
+      };
+      this.dydxStreams.set(socket, state);
+    }
+    return state;
+  }
+
+  private dydxSubscriptionKeys() {
+    return new Set([
+      "v4_markets",
+      ...this.venueRefs("dydx").map((ref) => `v4_orderbook:${ref.asset}-USD`),
+    ]);
+  }
+
+  private dydxSubscriptionKey(message: Record<string, unknown>) {
+    const channel = stringValue(message.channel);
+    if (channel === "v4_markets") return channel;
+    if (channel !== "v4_orderbook") return "";
+    const key = `${channel}:${stringValue(message.id)}`;
+    return this.dydxSubscriptionKeys().has(key) ? key : "";
+  }
+
+  private handleEdgeX(socket: WebSocketLike, message: Record<string, unknown>) {
     if (message.type !== "quote-event") return;
     const content = record(message.content);
     const channel = stringValue(message.channel || content.channel);
     const rows = arrayValue(content.data).map(record);
     if (channel.startsWith("depth.")) {
-      const reset = content.dataType === "Snapshot";
       for (const row of rows) {
         const ref = this.edgeXRef(row.contractId ?? channel.split(".")[1]);
         if (!ref) continue;
-        const book = this.book(`edgex:${ref.asset}`, reset);
-        applyBookLevels(book, "bid", row.bids);
-        applyBookLevels(book, "ask", row.asks);
+        const snapshot = stringValue(row.depthType ?? content.dataType).toLowerCase() === "snapshot";
+        const startVersion = sequenceValue(row.startVersion);
+        const endVersion = sequenceValue(row.endVersion);
+        const bookKey = `edgex:${ref.asset}`;
+        const existingBook = this.books.get(bookKey);
+        if (startVersion == null
+          || endVersion == null
+          || endVersion < startVersion
+          || (snapshot && existingBook?.sequence != null && endVersion < existingBook.sequence)
+          || (!snapshot && (!existingBook?.complete
+            || existingBook.sequence == null
+            || startVersion > existingBook.sequence + BigInt(1)))) {
+          this.invalidateVenueOrderBooks("edgex", socket);
+          return;
+        }
+        const book = this.book(bookKey, snapshot);
+        if (!snapshot && endVersion <= book.sequence!) continue;
+        if (!applyBookLevels(book, "bid", row.bids)
+          || !applyBookLevels(book, "ask", row.asks)) {
+          this.invalidateVenueOrderBooks("edgex", socket);
+          return;
+        }
+        if (book.bids.size === 0 || book.asks.size === 0 || bookIsCrossed(book)) {
+          this.invalidateVenueOrderBooks("edgex", socket);
+          return;
+        }
+        book.complete = true;
+        book.sequence = endVersion;
         this.emit(ref, {
           best_bid_e8: bestBookPrice(book, "bid"),
           best_ask_e8: bestBookPrice(book, "ask"),
           depth_bids: bookDepthLevels(book, "bid"),
           depth_asks: bookDepthLevels(book, "ask"),
           depth_complete: true,
+          orderbook_valid: true,
           source_at_ms: numericValue(row.timestamp),
         });
+        if (this.venueRefs("edgex").every((item) => this.books.get(`edgex:${item.asset}`)?.complete)) {
+          this.markOrderbookLive("edgex", socket);
+        }
+        this.touchOrderbook("edgex", ref.asset, socket);
       }
       return;
     }
@@ -431,9 +676,100 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
 
   private book(key: string, reset = false) {
     if (reset || !this.books.has(key)) {
-      this.books.set(key, { bids: new Map(), asks: new Map(), bestBid: null, bestAsk: null });
+      this.books.set(key, {
+        bids: new Map(),
+        asks: new Map(),
+        bidOffsets: new Map(),
+        askOffsets: new Map(),
+        bestBid: null,
+        bestAsk: null,
+        complete: false,
+        sequence: null,
+      });
     }
     return this.books.get(key)!;
+  }
+
+  private invalidateVenueOrderBooks(venueId: string, socket: WebSocketLike) {
+    this.clearOrderbookWatchdogs(socket);
+    this.dydxStreams.delete(socket);
+    for (const ref of this.venueRefs(venueId)) {
+      this.books.delete(`${venueId}:${ref.asset}`);
+      this.emit(ref, {
+        depth_bids: [],
+        depth_asks: [],
+        depth_complete: false,
+        orderbook_valid: false,
+      });
+    }
+    if (socket !== this.sockets.get(venueId)) return;
+    this.sockets.delete(venueId);
+    socket.onmessage = null;
+    this.options.onStatus(venueId, "reconnecting");
+    this.scheduleReconnect(venueId);
+    try {
+      socket.close();
+    } catch {
+      // The scheduled reconnect already owns recovery.
+    }
+  }
+
+  private requiresOrderbookProof(venueId: string) {
+    return venueId === "dydx" || venueId === "edgex";
+  }
+
+  private markOrderbookLive(venueId: string, socket: WebSocketLike) {
+    if (socket !== this.sockets.get(venueId) || this.orderbookReadySockets.has(socket)) return;
+    this.orderbookReadySockets.add(socket);
+    this.clearHandshakeWatchdog(socket);
+    this.reconnectAttempts.set(venueId, 0);
+    this.options.onStatus(venueId, "live");
+    for (const ref of this.venueRefs(venueId)) this.armBookWatchdog(venueId, ref.asset, socket);
+  }
+
+  private armHandshakeWatchdog(venueId: string, socket: WebSocketLike) {
+    this.clearHandshakeWatchdog(socket);
+    const timer = setTimeout(() => {
+      this.handshakeWatchdogs.delete(socket);
+      if (!this.active || socket !== this.sockets.get(venueId)) return;
+      this.invalidateVenueOrderBooks(venueId, socket);
+    }, CARRY_STREAM_HANDSHAKE_TIMEOUT_MS);
+    this.handshakeWatchdogs.set(socket, timer);
+  }
+
+  private touchOrderbook(venueId: string, asset: string, socket: WebSocketLike) {
+    if (!this.orderbookReadySockets.has(socket)) return;
+    this.armBookWatchdog(venueId, asset, socket);
+  }
+
+  private armBookWatchdog(venueId: string, asset: string, socket: WebSocketLike) {
+    const key = `${venueId}:${asset}`;
+    const existing = this.bookWatchdogs.get(key);
+    if (existing) clearTimeout(existing.timer);
+    const timer = setTimeout(() => {
+      const current = this.bookWatchdogs.get(key);
+      if (!current || current.socket !== socket) return;
+      this.bookWatchdogs.delete(key);
+      if (!this.active || socket !== this.sockets.get(venueId)) return;
+      this.invalidateVenueOrderBooks(venueId, socket);
+    }, CARRY_STREAM_SILENCE_TIMEOUT_MS);
+    this.bookWatchdogs.set(key, { socket, timer });
+  }
+
+  private clearHandshakeWatchdog(socket: WebSocketLike) {
+    const timer = this.handshakeWatchdogs.get(socket);
+    if (timer) clearTimeout(timer);
+    this.handshakeWatchdogs.delete(socket);
+  }
+
+  private clearOrderbookWatchdogs(socket: WebSocketLike) {
+    this.clearHandshakeWatchdog(socket);
+    this.orderbookReadySockets.delete(socket);
+    for (const [key, entry] of this.bookWatchdogs) {
+      if (entry.socket !== socket) continue;
+      clearTimeout(entry.timer);
+      this.bookWatchdogs.delete(key);
+    }
   }
 
   private scheduleReconnect(venueId: string) {
@@ -475,24 +811,92 @@ function parseMessage(raw: unknown): Record<string, unknown> | null {
   }
 }
 
-function applyBookLevels(book: BookState, side: "bid" | "ask", value: unknown) {
+function applyBookLevels(
+  book: BookState,
+  side: "bid" | "ask",
+  value: unknown,
+  logicalOffset?: bigint,
+) {
   const levels = side === "bid" ? book.bids : book.asks;
+  const offsets = side === "bid" ? book.bidOffsets : book.askOffsets;
   const bestKey = side === "bid" ? "bestBid" : "bestAsk";
   for (const raw of arrayValue(value)) {
     const object = record(raw);
-    const row = Array.isArray(raw) ? raw : [object.price ?? object.px, object.size ?? object.sz];
+    const row = Array.isArray(raw)
+      ? raw
+      : [object.price ?? object.px, object.size ?? object.sz, object.offset];
     const price = Number(row[0]);
     const size = Number(row[1]);
-    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(size)) continue;
-    if (size <= 0) {
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(size) || size < 0) return false;
+    const rawOffset = row[2];
+    const offset = rawOffset == null || rawOffset === "" ? logicalOffset : sequenceValue(rawOffset);
+    if (logicalOffset != null && offset == null) return false;
+    if (size === 0) {
       levels.delete(price);
+      offsets.delete(price);
     } else {
       levels.set(price, size);
+      if (offset != null) offsets.set(price, offset);
       const current = book[bestKey];
       if (current == null || (side === "bid" ? price > current : price < current)) book[bestKey] = price;
     }
   }
   if (book[bestKey] != null && !levels.has(book[bestKey]!)) book[bestKey] = findBestPrice(levels, side);
+  return true;
+}
+
+function uncrossDydxBook(book: BookState) {
+  book.bestBid = findBestPrice(book.bids, "bid");
+  book.bestAsk = findBestPrice(book.asks, "ask");
+  while (book.bestBid != null && book.bestAsk != null && book.bestBid >= book.bestAsk) {
+    const bidPrice = book.bestBid;
+    const askPrice = book.bestAsk;
+    const bidOffset = book.bidOffsets.get(bidPrice) ?? BigInt(0);
+    const askOffset = book.askOffsets.get(askPrice) ?? BigInt(0);
+    const bidSize = book.bids.get(bidPrice)!;
+    const askSize = book.asks.get(askPrice)!;
+    if (bidOffset < askOffset) {
+      book.bids.delete(bidPrice);
+      book.bidOffsets.delete(bidPrice);
+    } else if (bidOffset > askOffset) {
+      book.asks.delete(askPrice);
+      book.askOffsets.delete(askPrice);
+    } else if (bidSize > askSize) {
+      book.bids.set(bidPrice, bidSize - askSize);
+      book.asks.delete(askPrice);
+      book.askOffsets.delete(askPrice);
+    } else if (bidSize < askSize) {
+      book.asks.set(askPrice, askSize - bidSize);
+      book.bids.delete(bidPrice);
+      book.bidOffsets.delete(bidPrice);
+    } else {
+      book.bids.delete(bidPrice);
+      book.bidOffsets.delete(bidPrice);
+      book.asks.delete(askPrice);
+      book.askOffsets.delete(askPrice);
+    }
+    book.bestBid = findBestPrice(book.bids, "bid");
+    book.bestAsk = findBestPrice(book.asks, "ask");
+  }
+  return book.bestBid != null && book.bestAsk != null;
+}
+
+function sequenceValue(value: unknown): bigint | null {
+  const text = String(value ?? "").trim();
+  if (!/^[0-9]+$/.test(text)) return null;
+  try {
+    return BigInt(text);
+  } catch {
+    return null;
+  }
+}
+
+function compareBigInts(left: bigint, right: bigint) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function bookIsCrossed(book: BookState) {
+  return book.bestBid != null && book.bestAsk != null && book.bestBid >= book.bestAsk;
 }
 
 function findBestPrice(levels: Map<number, number>, side: "bid" | "ask") {

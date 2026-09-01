@@ -4183,6 +4183,192 @@ test("rejects an Aster stream without live notional depth", () => {
   );
 });
 
+test("rejects dYdX live depth without message-sequence continuity", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replace(
+        "sequence !== state.sequence + BigInt(1)",
+        "false",
+      ),
+    }),
+    /dydx_live_depth_gap_gate_missing/,
+  );
+});
+
+test("rejects dYdX live depth frames without exact connection binding", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replace(
+        "connectionId !== state.connectionId",
+        "false",
+      ),
+    }),
+    /dydx_live_depth_frame_connection_binding_missing/,
+  );
+});
+
+test("rejects dYdX handshake logic that drops interleaved updates", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replace(
+        "[...subscriptionFrames, ...state.pending]",
+        "[...subscriptionFrames]",
+      ),
+    }),
+    /dydx_live_depth_interleaved_handshake_missing/,
+  );
+});
+
+test("rejects dYdX live depth without connection binding", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replace(
+        "state.connectionId !== connectionId",
+        "false",
+      ),
+    }),
+    /dydx_live_depth_connection_binding_missing/,
+  );
+});
+
+test("rejects dYdX live depth without protocol-version binding", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replace(
+        "state.protocolVersion !== version",
+        "false",
+      ),
+    }),
+    /dydx_live_depth_version_binding_missing/,
+  );
+});
+
+test("rejects edgeX live depth without version continuity", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replace(
+        "startVersion > existingBook.sequence + BigInt(1)",
+        "false",
+      ),
+    }),
+    /edgex_live_depth_gap_gate_missing/,
+  );
+});
+
+test("rejects edgeX depth without a crossed-book quarantine", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replaceAll("bookIsCrossed(book)", "false"),
+    }),
+    /edgex_live_depth_crossed_book_gate_missing/,
+  );
+});
+
+test("rejects orderbook quarantine that retains stale BBO values", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryMarket: sources.webCarryMarket.replace(
+        "bestBid = orderbookInvalidated ? null",
+        "bestBid = false ? null",
+      ),
+    }),
+    /carry_live_orderbook_bbo_clear_missing/,
+  );
+});
+
+test("rejects orderbook quarantine that an unrelated patch can revive", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryMarket: sources.webCarryMarket.replace(
+        "orderbookInvalidated ? { orderbook: 0 }",
+        "false ? { orderbook: 0 }",
+      ),
+    }),
+    /carry_live_orderbook_persistent_quarantine_missing/,
+  );
+});
+
+test("rejects live depth that advances past malformed levels", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replace("size < 0", "false"),
+    }),
+    /carry_live_depth_malformed_level_gate_missing/,
+  );
+});
+
+test("rejects live depth without a bounded handshake watchdog", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replaceAll(
+        "CARRY_STREAM_HANDSHAKE_TIMEOUT_MS",
+        "REMOVED_HANDSHAKE_TIMEOUT",
+      ),
+    }),
+    /carry_live_depth_handshake_timeout_missing/,
+  );
+});
+
+test("rejects live depth without a bounded silence watchdog", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replaceAll(
+        "CARRY_STREAM_SILENCE_TIMEOUT_MS",
+        "REMOVED_SILENCE_TIMEOUT",
+      ),
+    }),
+    /carry_live_depth_silence_timeout_missing/,
+  );
+});
+
+test("rejects dYdX depth without logical-offset uncrossing", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replaceAll(
+        "uncrossDydxBook",
+        "REMOVED_DYDX_UNCROSS",
+      ),
+    }),
+    /dydx_live_depth_uncross_missing/,
+  );
+});
+
+test("rejects a venue-wide silence watchdog that can mask a dead book", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replaceAll(
+        "bookWatchdogs",
+        "venueWatchdogs",
+      ),
+    }),
+    /carry_live_depth_per_book_watchdog_missing/,
+  );
+});
+
+test("rejects edgeX live depth that accepts backward replacement snapshots", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replaceAll("existingBook.sequence", "null"),
+    }),
+    /edgex_live_depth_backward_snapshot_gate_missing/,
+  );
+});
+
 test("rejects a live publisher that retains stale component fields after publication", () => {
   assert.throws(
     () => checkCarryExecutionContract({

@@ -158,6 +158,7 @@ export interface CarryLiveMarketPatch {
   depth_bids?: CarryDepthLevel[];
   depth_asks?: CarryDepthLevel[];
   depth_complete?: boolean;
+  orderbook_valid?: boolean;
 }
 
 export interface CarryQuoteModel {
@@ -760,29 +761,37 @@ function applyCarryLivePatch(
   patch: CarryLiveMarketPatch,
   nowMs: number,
 ): CarryShadowSnapshot {
+  const orderbookInvalidated = patch.orderbook_valid === false;
   const markPrice = patchedNumber(patch.mark_price_e8, snapshot.mark_price_e8);
   const indexPrice = patchedNumber(patch.index_price_e8, snapshot.index_price_e8);
-  const bestBid = patchedNumber(patch.best_bid_e8, snapshot.best_bid_e8);
-  const bestAsk = patchedNumber(patch.best_ask_e8, snapshot.best_ask_e8);
+  const bestBid = orderbookInvalidated ? null : patchedNumber(patch.best_bid_e8, snapshot.best_bid_e8);
+  const bestAsk = orderbookInvalidated ? null : patchedNumber(patch.best_ask_e8, snapshot.best_ask_e8);
   const fundingRate = patchedNumber(patch.funding_rate_e12_per_interval, snapshot.funding_rate_e12_per_interval);
   const fundingInterval = patchedNumber(patch.funding_interval_ms, snapshot.funding_interval_ms);
-  const depthBids = patch.depth_bids === undefined
+  const depthBids = orderbookInvalidated
+    ? []
+    : patch.depth_bids === undefined
     ? snapshot.depth_bids
     : patch.depth_complete === true
       ? patch.depth_bids
       : mergePartialDepth(snapshot.depth_bids, patch.depth_bids, "bid", bestBid);
-  const depthAsks = patch.depth_asks === undefined
+  const depthAsks = orderbookInvalidated
+    ? []
+    : patch.depth_asks === undefined
     ? snapshot.depth_asks
     : patch.depth_complete === true
       ? patch.depth_asks
       : mergePartialDepth(snapshot.depth_asks, patch.depth_asks, "ask", bestAsk);
   const depthUpdated = patch.depth_bids !== undefined || patch.depth_asks !== undefined;
+  const orderbookUpdated = !orderbookInvalidated
+    && (patch.best_bid_e8 !== undefined || patch.best_ask_e8 !== undefined || depthUpdated);
   const sourceAt = patch.source_at_ms ?? patch.received_at_ms;
   const sourceObservedAt = {
     ...snapshot.source_observed_at_ms,
     ...(patch.mark_price_e8 !== undefined || patch.index_price_e8 !== undefined ? { market: sourceAt } : {}),
     ...(patch.funding_rate_e12_per_interval !== undefined || patch.funding_interval_ms !== undefined ? { funding: sourceAt } : {}),
-    ...(patch.best_bid_e8 !== undefined || patch.best_ask_e8 !== undefined || depthUpdated ? { orderbook: sourceAt } : {}),
+    ...(orderbookInvalidated ? { orderbook: 0 } : {}),
+    ...(orderbookUpdated ? { orderbook: sourceAt } : {}),
   };
   const values = {
     mark_price_e8: markPrice,
@@ -796,13 +805,17 @@ function applyCarryLivePatch(
     ? snapshot.missing_fields
     : snapshot.missing_fields.filter((field) => values[field as keyof typeof values] == null);
   const criticalMissing = markPrice == null || indexPrice == null || fundingRate == null || fundingInterval == null;
-  const staleSources = carryStaleSources(snapshot, sourceObservedAt, nowMs);
+  const staleSources = orderbookInvalidated
+    ? [...new Set([...carryStaleSources(snapshot, sourceObservedAt, nowMs), "orderbook"])]
+    : carryStaleSources(snapshot, sourceObservedAt, nowMs);
   return {
     ...snapshot,
     ...values,
     depth_bids: depthBids,
     depth_asks: depthAsks,
-    depth_observed_at_ms: depthUpdated && patch.depth_complete === true
+    depth_observed_at_ms: orderbookInvalidated
+      ? null
+      : depthUpdated && patch.depth_complete === true
       ? sourceAt
       : snapshot.depth_observed_at_ms ?? (depthUpdated ? sourceAt : null),
     source_observed_at_ms: sourceObservedAt,
@@ -810,7 +823,7 @@ function applyCarryLivePatch(
     observed_at_ms: patch.received_at_ms,
     stale_sources: staleSources,
     stale: staleSources.length > 0,
-    status: criticalMissing || staleSources.length > 0
+    status: orderbookInvalidated || criticalMissing || staleSources.length > 0
       ? "quarantined"
       : missingFields.length > 0
         ? "degraded"

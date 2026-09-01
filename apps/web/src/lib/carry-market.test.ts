@@ -418,6 +418,60 @@ describe("Carry market model", () => {
       venue("lighter", snapshot("lighter", "BTC", 40_000_000, "ready")),
     ])).toHaveLength(0);
   });
+
+  it("keeps an invalidated orderbook quarantined until a complete replacement arrives", () => {
+    const now = 1_800_000_000_000;
+    const base = venue("dydx", snapshot("dydx", "BTC", 10_000_000, "ready"));
+    const [invalidated] = applyCarryLivePatches([base], [{
+      venue_id: "dydx",
+      asset: "BTC",
+      received_at_ms: now,
+      orderbook_valid: false,
+    }], now);
+    expect(invalidated.snapshots[0]).toMatchObject({
+      status: "quarantined",
+      stale: true,
+      stale_sources: expect.arrayContaining(["orderbook"]),
+      best_bid_e8: null,
+      best_ask_e8: null,
+      depth_bids: [],
+      depth_asks: [],
+      depth_observed_at_ms: null,
+      source_observed_at_ms: { orderbook: 0 },
+    });
+
+    const [stillInvalid] = applyCarryLivePatches([invalidated], [{
+      venue_id: "dydx",
+      asset: "BTC",
+      received_at_ms: now + 1,
+      funding_rate_e12_per_interval: 11_000_000,
+    }], now + 1);
+    expect(stillInvalid.snapshots[0]).toMatchObject({
+      status: "quarantined",
+      stale_sources: expect.arrayContaining(["orderbook"]),
+      best_bid_e8: null,
+      best_ask_e8: null,
+    });
+
+    const [recovered] = applyCarryLivePatches([stillInvalid], [{
+      venue_id: "dydx",
+      asset: "BTC",
+      received_at_ms: now + 2,
+      best_bid_e8: 5_999_900_000_000,
+      best_ask_e8: 6_000_100_000_000,
+      depth_bids: [{ price_e8: 5_999_900_000_000, size_e8: 100_000_000 }],
+      depth_asks: [{ price_e8: 6_000_100_000_000, size_e8: 100_000_000 }],
+      depth_complete: true,
+      orderbook_valid: true,
+    }], now + 2);
+    expect(recovered.snapshots[0]).toMatchObject({
+      status: "ready",
+      stale: false,
+      stale_sources: [],
+      best_bid_e8: 5_999_900_000_000,
+      best_ask_e8: 6_000_100_000_000,
+    });
+  });
 });
 
 function venue(venue_id: string, item: ReturnType<typeof snapshot>) {
