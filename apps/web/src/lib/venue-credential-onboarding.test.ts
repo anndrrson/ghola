@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { venueAdapterCapability } from "@ghola/execution-core";
 import {
   getCurrentVenueCredentialOnboardingPath,
   getVenueCredentialOnboardingCapability,
@@ -20,6 +21,20 @@ describe("venue credential onboarding capabilities", () => {
 
   it("derives onboarding coverage from the execution capability registry", () => {
     expect(Object.keys(VENUE_CREDENTIAL_ONBOARDING)).toEqual(CARRY_EXECUTION_VENUES);
+    for (const venueId of CARRY_EXECUTION_VENUES) {
+      const declared = venueAdapterCapability(venueId, "credential_onboarding");
+      const onboarding = getVenueCredentialOnboardingCapability(venueId);
+      expect(declared).toMatchObject({
+        current_mode: onboarding.current_mode,
+        highest_proven_mode: onboarding.highest_proven_mode,
+        owner_action_required: true,
+        fund_movement_authorized: false,
+        trade_submission_authorized: false,
+      });
+      expect(onboarding.paths.some((path) =>
+        path.mode === onboarding.current_mode && path.availability === "available",
+      )).toBe(true);
+    }
   });
 
   it("advertises Hyperliquid automation without claiming silent authorization or trading", () => {

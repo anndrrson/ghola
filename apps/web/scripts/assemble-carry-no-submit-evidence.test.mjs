@@ -3,6 +3,7 @@ import { mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { CARRY_EXECUTION_VENUES } from "@ghola/execution-core";
 import {
   assembleCarryNoSubmitEvidenceFile,
   parseCarryNoSubmitAssemblyArgs,
@@ -45,6 +46,7 @@ test("sanitizes sealed access, verifies, and atomically writes no-submit evidenc
         "policy_commitment",
         "vault_commitment",
       ]);
+      assert.deepEqual(Object.keys(evidence.request.venue_access), CARRY_EXECUTION_VENUES);
       assert.equal(expected.shared_secret, "secret");
       assert.deepEqual(expected.expected_signer_public_keys_b64, ["signer"]);
       assert.equal(evidence.source.source_tree_digest, SOURCE_TREE.source_tree_digest);
@@ -169,7 +171,7 @@ function request() {
     asset: "BTC",
     notional_usd: "11",
     horizon_days: "1",
-    venue_access: Object.fromEntries(["hyperliquid", "lighter", "aster"].map((venueId) => [venueId, {
+    venue_access: Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [venueId, {
       account_commitment: `account_commitment_${venueId}`,
       vault_commitment: `vault_commitment_${venueId}`,
       policy_commitment: `policy_commitment_${venueId}`,

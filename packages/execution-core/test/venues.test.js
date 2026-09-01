@@ -42,6 +42,7 @@ test("registry centralizes five core perp candidates without claiming qualificat
     "carry_execution",
     "no_submit_reconciliation",
     "exact_quantity_recovery",
+    "credential_onboarding",
   ]);
   assert.deepEqual(CARRY_RECOVERY_POLICY, {
     ambiguous_submission: "freeze_reconcile_never_retry",
@@ -78,6 +79,41 @@ test("registry centralizes five core perp candidates without claiming qualificat
     assert.notEqual(shadow.liquidation_model, "unavailable");
   }
   assert.equal(venueAdapterCapability("dydx", "carry_execution"), null);
+  assert.deepEqual(
+    Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => {
+      const onboarding = venueAdapterCapability(venueId, "credential_onboarding");
+      return [venueId, {
+        adapter_id: onboarding?.adapter_id,
+        current_mode: onboarding?.current_mode,
+        owner_action_required: onboarding?.owner_action_required,
+        fund_movement_authorized: onboarding?.fund_movement_authorized,
+        trade_submission_authorized: onboarding?.trade_submission_authorized,
+      }];
+    })),
+    {
+      hyperliquid: {
+        adapter_id: "hyperliquid_turnkey_onboarding_v1",
+        current_mode: "wallet_authorized_auto_provisioning",
+        owner_action_required: true,
+        fund_movement_authorized: false,
+        trade_submission_authorized: false,
+      },
+      lighter: {
+        adapter_id: "lighter_turnkey_change_pubkey_v1",
+        current_mode: "programmatic_key_one_owner_signature",
+        owner_action_required: true,
+        fund_movement_authorized: false,
+        trade_submission_authorized: false,
+      },
+      aster: {
+        adapter_id: "aster_v3_agent_onboarding_v1",
+        current_mode: "programmatic_key_one_owner_signature",
+        owner_action_required: true,
+        fund_movement_authorized: false,
+        trade_submission_authorized: false,
+      },
+    },
+  );
   assert.deepEqual(venuesWithAdapterCapability("collateral_route_observer", {
     cohort: "core_perp",
     product: "perp",
@@ -132,6 +168,7 @@ test("candidate venues cannot enter Carry until the identical execution contract
         "adapter_missing:carry_execution",
         "adapter_missing:no_submit_reconciliation",
         "adapter_missing:exact_quantity_recovery",
+        "adapter_missing:credential_onboarding",
       ],
     });
   }

@@ -1,8 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCarryDepositQuoteReader } from "../src/execution/carry-deposit-quote.js";
+import { CARRY_EXECUTION_VENUES, venueAdapterCapability } from "@ghola/execution-core";
+import {
+  createCarryDepositQuoteReader,
+  registeredCarryDepositQuoteAdapterId,
+} from "../src/execution/carry-deposit-quote.js";
 
 const NOW = 1_800_000_000_000;
+
+test("derives every executable Carry deposit observer from the capability registry", () => {
+  for (const venueId of CARRY_EXECUTION_VENUES) {
+    assert.equal(
+      registeredCarryDepositQuoteAdapterId(venueId),
+      venueAdapterCapability(venueId, "collateral_route_observer")?.adapter_id,
+    );
+  }
+  assert.equal(registeredCarryDepositQuoteAdapterId("edgex"), null);
+  assert.equal(registeredCarryDepositQuoteAdapterId("dydx"), null);
+});
 
 test("verifies Hyperliquid and Lighter Arbitrum deposit routes without submitting", async () => {
   const readQuote = createCarryDepositQuoteReader(dependencies());

@@ -42,6 +42,7 @@ export const CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES = Object.freeze([
   "carry_execution",
   "no_submit_reconciliation",
   "exact_quantity_recovery",
+  "credential_onboarding",
 ]);
 
 export const CARRY_RECOVERY_POLICY = Object.freeze({
@@ -80,6 +81,13 @@ const specs = [
     }),
     no_submit_reconciliation: adapter("hyperliquid_v1", "proven"),
     exact_quantity_recovery: adapter("hyperliquid_v1", "proven", CARRY_RECOVERY_POLICY),
+    credential_onboarding: adapter("hyperliquid_turnkey_onboarding_v1", "implemented_unproven", {
+      highest_proven_mode: "wallet_authorized_auto_provisioning",
+      current_mode: "wallet_authorized_auto_provisioning",
+      owner_action_required: true,
+      fund_movement_authorized: false,
+      trade_submission_authorized: false,
+    }),
     collateral_route_observer: adapter("hyperliquid_arbitrum_usdc_v1", "implemented_unproven", {
       read_only: true,
       collateral_asset: "USDC",
@@ -101,6 +109,13 @@ const specs = [
     }),
     no_submit_reconciliation: adapter("lighter_v1", "implemented_unproven"),
     exact_quantity_recovery: adapter("lighter_v1", "implemented_unproven", CARRY_RECOVERY_POLICY),
+    credential_onboarding: adapter("lighter_turnkey_change_pubkey_v1", "implemented_unproven", {
+      highest_proven_mode: "programmatic_key_one_owner_signature",
+      current_mode: "programmatic_key_one_owner_signature",
+      owner_action_required: true,
+      fund_movement_authorized: false,
+      trade_submission_authorized: false,
+    }),
     collateral_route_observer: adapter("lighter_arbitrum_usdc_v1", "implemented_unproven", {
       read_only: true,
       collateral_asset: "USDC",
@@ -122,6 +137,13 @@ const specs = [
     }),
     no_submit_reconciliation: adapter("aster_v1", "implemented_unproven"),
     exact_quantity_recovery: adapter("aster_v1", "implemented_unproven", CARRY_RECOVERY_POLICY),
+    credential_onboarding: adapter("aster_v3_agent_onboarding_v1", "implemented_unproven", {
+      highest_proven_mode: "programmatic_key_one_owner_signature",
+      current_mode: "programmatic_key_one_owner_signature",
+      owner_action_required: true,
+      fund_movement_authorized: false,
+      trade_submission_authorized: false,
+    }),
     collateral_route_observer: adapter("aster_arbitrum_usdt_v1", "implemented_unproven", {
       read_only: true,
       collateral_asset: "USDT",

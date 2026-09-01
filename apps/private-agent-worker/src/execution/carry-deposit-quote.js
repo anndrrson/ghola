@@ -1,9 +1,25 @@
+import { venueAdapterCapability } from "@ghola/execution-core";
+
 const ARBITRUM_RPC_URL = "https://arb1.arbitrum.io/rpc";
 const HYPERLIQUID_BRIDGE = "0x2df1c51e09aecf9cacb7bc98cb1742757f163df7";
 const LIGHTER_NETWORKS_URL = "https://mainnet.zklighter.elliot.ai/api/v1/deposit/networks";
 const ASTER_DEPOSIT_ASSETS_URL = "https://www.asterdex.com/bapi/futures/v1/public/future/aster/deposit/assets?chainIds=42161&networks=EVM&accountType=perp";
 const ASTER_ETH_PRICE_URL = "https://fapi.asterdex.com/fapi/v3/ticker/price?symbol=ETHUSDT";
 const ASTER_ARBITRUM_VAULT = "0x9e36cb86a159d479ced94fa05036f235ac40e1d5";
+const ACTIVE_COLLATERAL_ROUTE_STATUSES = new Set(["proven", "implemented_unproven"]);
+const CARRY_DEPOSIT_QUOTE_ADAPTERS = Object.freeze({
+  hyperliquid_arbitrum_usdc_v1: depositQuoteAdapter("hyperliquid", hyperliquidSupport),
+  lighter_arbitrum_usdc_v1: depositQuoteAdapter("lighter", lighterSupport),
+  aster_arbitrum_usdt_v1: depositQuoteAdapter("aster", asterSupport),
+});
+
+export function registeredCarryDepositQuoteAdapterId(venueId) {
+  const declared = venueAdapterCapability(venueId, "collateral_route_observer");
+  if (!declared || !ACTIVE_COLLATERAL_ROUTE_STATUSES.has(declared.status)) return null;
+  const registered = CARRY_DEPOSIT_QUOTE_ADAPTERS[declared.adapter_id];
+  if (!registered || registered.venue_id !== venueId) fail("carry_deposit_adapter_registry_binding_invalid");
+  return declared.adapter_id;
+}
 
 export function createCarryDepositQuoteReader({
   deposit_policies: depositPolicies,
@@ -19,13 +35,10 @@ export function createCarryDepositQuoteReader({
       venue_id: venueId,
       checked_at_ms: checkedAtMs,
     }), venueId, checkedAtMs);
-    const supportRead = venueId === "hyperliquid"
-      ? hyperliquidSupport({ request, fetchImpl, checkedAtMs })
-      : venueId === "lighter"
-        ? lighterSupport({ request, fetchImpl, checkedAtMs })
-        : venueId === "aster"
-          ? asterSupport({ request, fetchImpl, checkedAtMs })
-          : fail("carry_deposit_venue_unsupported");
+    const adapterId = registeredCarryDepositQuoteAdapterId(venueId);
+    const adapter = adapterId ? CARRY_DEPOSIT_QUOTE_ADAPTERS[adapterId] : null;
+    if (!adapter) fail("carry_deposit_venue_unsupported");
+    const supportRead = adapter.read({ request, fetchImpl, checkedAtMs });
     const [support, liveGasFee] = await Promise.all([
       supportRead,
       arbitrumGasFeeUpperBound({ fetchImpl, checkedAtMs, policy }),
@@ -62,6 +75,10 @@ export function createCarryDepositQuoteReader({
       as_of_ms: support.as_of_ms,
     });
   };
+}
+
+function depositQuoteAdapter(venueId, read) {
+  return Object.freeze({ venue_id: venueId, read });
 }
 
 async function arbitrumGasFeeUpperBound({ fetchImpl, checkedAtMs, policy }) {

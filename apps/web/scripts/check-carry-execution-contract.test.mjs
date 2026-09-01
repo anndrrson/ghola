@@ -2803,6 +2803,18 @@ test("rejects no-submit evidence that duplicates the Carry venue list", () => {
   );
 });
 
+test("rejects a no-submit assembler detached from the Carry registry", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      noSubmitEvidenceAssembler: sources.noSubmitEvidenceAssembler
+        .replace('import { CARRY_EXECUTION_VENUES } from "@ghola/execution-core";\n', "")
+        .replace("for (const venueId of CARRY_EXECUTION_VENUES)", 'for (const venueId of ["hyperliquid", "lighter", "aster"])'),
+    }),
+    /carry_no_submit_assembler_registry_import_missing|carry_no_submit_assembler_registry_iteration_missing|carry_no_submit_assembler_venue_list_duplicated/,
+  );
+});
+
 test("rejects credential onboarding that duplicates the Carry venue union", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -2813,6 +2825,32 @@ test("rejects credential onboarding that duplicates the Carry venue union", () =
       ),
     }),
     /carry_onboarding_registry_type_missing/,
+  );
+});
+
+test("rejects credential onboarding detached from declared adapter capabilities", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCredentialOnboarding: sources.webCredentialOnboarding.replace(
+        'venueAdapterCapability(venueId, "credential_onboarding")',
+        "null",
+      ),
+    }),
+    /carry_onboarding_capability_registry_missing/,
+  );
+});
+
+test("rejects deposit routing detached from declared collateral adapters", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      depositQuote: sources.depositQuote.replace(
+        'venueAdapterCapability(venueId, "collateral_route_observer")',
+        "null",
+      ),
+    }),
+    /carry_deposit_capability_registry_missing/,
   );
 });
 

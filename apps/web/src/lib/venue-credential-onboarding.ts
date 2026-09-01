@@ -1,3 +1,6 @@
+import { venueAdapterCapability } from "@ghola/execution-core";
+import { CARRY_EXECUTION_VENUES, type CarryExecutionVenue } from "./carry-venues";
+
 export const VENUE_CREDENTIAL_ONBOARDING_MODES = [
   "wallet_authorized_auto_provisioning",
   "programmatic_key_one_owner_signature",
@@ -39,11 +42,7 @@ export interface VenueCredentialOnboardingCapability {
   paths: readonly VenueCredentialOnboardingPath[];
 }
 
-const HYPERLIQUID: VenueCredentialOnboardingCapability = {
-  venue_id: "hyperliquid",
-  highest_proven_mode: "wallet_authorized_auto_provisioning",
-  current_mode: "wallet_authorized_auto_provisioning",
-  paths: [
+const HYPERLIQUID_PATHS: readonly VenueCredentialOnboardingPath[] = Object.freeze([
     {
       mode: "wallet_authorized_auto_provisioning",
       availability: "available",
@@ -107,14 +106,9 @@ const HYPERLIQUID: VenueCredentialOnboardingCapability = {
         safety_note: "Never enter the collateral owner's main private key.",
       },
     },
-  ],
-};
+]);
 
-const LIGHTER: VenueCredentialOnboardingCapability = {
-  venue_id: "lighter",
-  highest_proven_mode: "programmatic_key_one_owner_signature",
-  current_mode: "programmatic_key_one_owner_signature",
-  paths: [
+const LIGHTER_PATHS: readonly VenueCredentialOnboardingPath[] = Object.freeze([
     {
       mode: "programmatic_key_one_owner_signature",
       availability: "available",
@@ -159,14 +153,9 @@ const LIGHTER: VenueCredentialOnboardingCapability = {
         safety_note: "Lighter keys are not venue-native trade-only; Ghola blocks transfer and withdrawal operations at its policy boundary.",
       },
     },
-  ],
-};
+]);
 
-const ASTER: VenueCredentialOnboardingCapability = {
-  venue_id: "aster",
-  highest_proven_mode: "programmatic_key_one_owner_signature",
-  current_mode: "programmatic_key_one_owner_signature",
-  paths: [
+const ASTER_PATHS: readonly VenueCredentialOnboardingPath[] = Object.freeze([
     {
       mode: "programmatic_key_one_owner_signature",
       availability: "available",
@@ -210,14 +199,17 @@ const ASTER: VenueCredentialOnboardingCapability = {
         safety_note: "Never enter the collateral owner's main private key.",
       },
     },
-  ],
-};
+]);
 
-export const VENUE_CREDENTIAL_ONBOARDING = Object.freeze({
-  hyperliquid: HYPERLIQUID,
-  lighter: LIGHTER,
-  aster: ASTER,
-}) satisfies Readonly<Record<CredentialOnboardingVenue, VenueCredentialOnboardingCapability>>;
+const CREDENTIAL_ONBOARDING_ADAPTERS = Object.freeze({
+  hyperliquid_turnkey_onboarding_v1: HYPERLIQUID_PATHS,
+  lighter_turnkey_change_pubkey_v1: LIGHTER_PATHS,
+  aster_v3_agent_onboarding_v1: ASTER_PATHS,
+});
+
+export const VENUE_CREDENTIAL_ONBOARDING = Object.freeze(Object.fromEntries(
+  CARRY_EXECUTION_VENUES.map((venueId) => [venueId, credentialOnboardingCapability(venueId)]),
+)) as Readonly<Record<CredentialOnboardingVenue, VenueCredentialOnboardingCapability>>;
 
 export function getVenueCredentialOnboardingCapability(venue: CredentialOnboardingVenue) {
   return VENUE_CREDENTIAL_ONBOARDING[venue];
@@ -238,4 +230,31 @@ export function getVenueCredentialOnboardingPath(
 ) {
   return getVenueCredentialOnboardingCapability(venue).paths.find((path) => path.mode === mode) ?? null;
 }
-import type { CarryExecutionVenue } from "./carry-venues";
+
+function credentialOnboardingCapability(venueId: CredentialOnboardingVenue): VenueCredentialOnboardingCapability {
+  const declared = venueAdapterCapability(venueId, "credential_onboarding");
+  const adapterId = typeof declared?.adapter_id === "string" ? declared.adapter_id : "";
+  const paths = CREDENTIAL_ONBOARDING_ADAPTERS[adapterId as keyof typeof CREDENTIAL_ONBOARDING_ADAPTERS];
+  const highestProvenMode = onboardingMode(declared?.highest_proven_mode);
+  const currentMode = onboardingMode(declared?.current_mode);
+  if (!paths || !highestProvenMode || !currentMode
+    || declared?.owner_action_required !== true
+    || declared?.fund_movement_authorized !== false
+    || declared?.trade_submission_authorized !== false
+    || !paths.some((path) => path.mode === highestProvenMode)
+    || !paths.some((path) => path.mode === currentMode && path.availability === "available")) {
+    throw new Error(`venue_credential_onboarding_registry_invalid:${venueId}`);
+  }
+  return Object.freeze({
+    venue_id: venueId,
+    highest_proven_mode: highestProvenMode,
+    current_mode: currentMode,
+    paths,
+  });
+}
+
+function onboardingMode(value: unknown): VenueCredentialOnboardingMode | null {
+  return typeof value === "string" && VENUE_CREDENTIAL_ONBOARDING_MODES.includes(value as VenueCredentialOnboardingMode)
+    ? value as VenueCredentialOnboardingMode
+    : null;
+}

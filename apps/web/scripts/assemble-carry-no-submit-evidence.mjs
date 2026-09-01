@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CARRY_EXECUTION_VENUES } from "@ghola/execution-core";
 import { attestCarryReleaseSourceTree } from "../../../scripts/carry-source-tree-attestation.mjs";
 import { CARRY_RELEASE_FILES } from "./check-carry-execution-contract.mjs";
 import {
@@ -113,7 +114,7 @@ export async function assembleCarryNoSubmitEvidenceFile({
 function sanitizeRequest(value) {
   const venueAccess = record(value?.venue_access);
   const sanitizedAccess = {};
-  for (const venueId of ["hyperliquid", "lighter", "aster"]) {
+  for (const venueId of CARRY_EXECUTION_VENUES) {
     const access = record(venueAccess[venueId]);
     const sanitized = {
       account_commitment: string(access.account_commitment),

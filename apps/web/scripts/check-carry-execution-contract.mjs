@@ -271,6 +271,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowDevelopmentWitness", "source_tree_digest", "carry_shadow_source_tree_binding_missing");
   requireText("shadowWitnessVerifierCli", "expectedSourceTreeDigest", "carry_shadow_source_tree_verifier_missing");
   requireText("noSubmitEvidenceAssembler", "source_tree_digest", "carry_no_submit_source_tree_binding_missing");
+  requireText("noSubmitEvidenceAssembler", 'import { CARRY_EXECUTION_VENUES } from "@ghola/execution-core";', "carry_no_submit_assembler_registry_import_missing");
+  requireText("noSubmitEvidenceAssembler", "for (const venueId of CARRY_EXECUTION_VENUES)", "carry_no_submit_assembler_registry_iteration_missing");
+  forbidText("noSubmitEvidenceAssembler", '["hyperliquid", "lighter", "aster"]', "carry_no_submit_assembler_venue_list_duplicated");
+  requireText("noSubmitEvidenceAssemblerTest", "CARRY_EXECUTION_VENUES.map", "carry_no_submit_assembler_registry_test_missing");
   requireText("noSubmitEvidenceVerifier", "expected_source_tree_digest", "carry_no_submit_source_tree_verifier_missing");
   requireText("evidenceAssembler", "attestCarryReleaseSourceTree", "carry_release_source_tree_assembler_missing");
   requireText("evidenceAssemblerTest", "rejects a dirty release-critical source tree", "carry_release_source_tree_dirty_assembler_test_missing");
@@ -839,9 +843,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("registry", 'collateral_asset: "USDT"', "carry_aster_usdt_collateral_missing");
   requireText(
     "registry",
-    '"carry_execution",\n  "no_submit_reconciliation",\n  "exact_quantity_recovery",',
+    '"carry_execution",\n  "no_submit_reconciliation",\n  "exact_quantity_recovery",\n  "credential_onboarding",',
     "carry_required_adapter_contract_missing",
   );
+  for (const adapterId of [
+    "hyperliquid_turnkey_onboarding_v1",
+    "lighter_turnkey_change_pubkey_v1",
+    "aster_v3_agent_onboarding_v1",
+  ]) {
+    requireText("registry", `adapter("${adapterId}", "implemented_unproven"`, `carry_credential_onboarding_adapter_missing:${adapterId}`);
+  }
   requireText("registry", "carryExecutionQualificationForSpec(spec).eligible", "carry_qualification_filter_missing");
   requireText(
     "registry",
@@ -954,6 +965,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webRegistry", "EXECUTION_CORE_BROWSER_STREAM_VENUES", "web_stream_registry_missing");
   forbidText("webRegistry", '["hyperliquid", "lighter", "aster"]', "web_execution_registry_duplicated");
   requireText("webCredentialOnboarding", "export type CredentialOnboardingVenue = CarryExecutionVenue", "carry_onboarding_registry_type_missing");
+  requireText("webCredentialOnboarding", 'venueAdapterCapability(venueId, "credential_onboarding")', "carry_onboarding_capability_registry_missing");
+  requireText("webCredentialOnboarding", "CARRY_EXECUTION_VENUES.map", "carry_onboarding_registry_iteration_missing");
+  requireText("webCredentialOnboarding", "fund_movement_authorized !== false", "carry_onboarding_fund_authority_registry_missing");
+  requireText("webCredentialOnboarding", "trade_submission_authorized !== false", "carry_onboarding_trade_authority_registry_missing");
   requireText("webCredentialOnboardingTest", "derives onboarding coverage from the execution capability registry", "carry_onboarding_registry_test_missing");
   requireText("webCredentialOnboardingTest", "for (const venue of CARRY_EXECUTION_VENUES)", "carry_onboarding_registry_iteration_missing");
   requireText("webClient", "venue_id: CarryExecutionVenue;", "carry_platform_link_registry_type_missing");
@@ -1448,12 +1463,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("stablecoinConversionTest", "bounds USDC to USDT conversion from fresh Aster depth without submitting", "carry_conversion_live_test_missing");
   requireText("stablecoinConversionTest", "fails closed for stale books, stale policy, and unsupported pairs", "carry_conversion_failure_test_missing");
   requireText("depositQuote", "createCarryDepositQuoteReader", "carry_deposit_live_reader_missing");
+  requireText("depositQuote", 'venueAdapterCapability(venueId, "collateral_route_observer")', "carry_deposit_capability_registry_missing");
+  requireText("depositQuote", "registeredCarryDepositQuoteAdapterId(venueId)", "carry_deposit_registry_dispatch_missing");
+  forbidText("depositQuote", 'venueId === "hyperliquid"', "carry_deposit_venue_policy_duplicated");
   requireText("depositQuote", "eth_getCode", "carry_deposit_hyperliquid_bridge_probe_missing");
   requireText("depositQuote", "eth_gasPrice", "carry_deposit_live_gas_probe_missing");
   requireText("depositQuote", "ETHUSDT", "carry_deposit_live_gas_valuation_missing");
   requireText("depositQuote", "api/v1/deposit/networks", "carry_deposit_lighter_network_probe_missing");
   requireText("depositQuote", "deposit/assets?chainIds=42161", "carry_deposit_aster_assets_probe_missing");
   requireText("depositQuoteTest", "verifies Hyperliquid and Lighter Arbitrum deposit routes without submitting", "carry_deposit_live_test_missing");
+  requireText("depositQuoteTest", "derives every executable Carry deposit observer from the capability registry", "carry_deposit_registry_test_missing");
   requireText("depositQuoteTest", "fails closed for missing live support, stale policy, or target drift", "carry_deposit_failure_test_missing");
   requireText("transferVenueReaders", "createCarryTransferVenueReaders", "carry_transfer_venue_readers_missing");
   requireText("transferVenueReaders", "estimateFee?chainId=42161&asset=USDT", "carry_transfer_aster_live_fee_missing");
