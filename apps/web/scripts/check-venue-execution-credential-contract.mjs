@@ -408,6 +408,7 @@ export function checkLighterActivationReadinessBoundary(clientSource, serverSour
 export function checkLighterUniversalDepositBoundary({
   serverSource,
   authorizationSource,
+  turnkeyOwnerBindingSource,
   storeSource,
   challengeRouteSource,
   destinationRouteSource,
@@ -418,6 +419,7 @@ export function checkLighterUniversalDepositBoundary({
 }) {
   serverSource = stripCodeComments(serverSource);
   authorizationSource = stripCodeComments(authorizationSource);
+  turnkeyOwnerBindingSource = stripCodeComments(turnkeyOwnerBindingSource);
   storeSource = stripCodeComments(storeSource);
   challengeRouteSource = stripCodeComments(challengeRouteSource);
   destinationRouteSource = stripCodeComments(destinationRouteSource);
@@ -436,7 +438,8 @@ export function checkLighterUniversalDepositBoundary({
     [serverSource, "AbortSignal.timeout(REQUEST_TIMEOUT_MS)", "lighter_uda_bounded_timeout_required"],
     [serverSource, 'LIGHTER_UDA_ACTION_TYPE = "LIGHTER_PERPS"', "lighter_uda_perps_action_required"],
     [serverSource, 'LIGHTER_UDA_CHAIN_ID = "3586256"', "lighter_uda_destination_chain_required"],
-    [serverSource, "validatedRecipient(resolved.recipientAddr, owner)", "lighter_uda_exact_recipient_owner_required"],
+    [serverSource, "validatedRecipient(resolved.recipientAddr, binding)", "lighter_uda_exact_recipient_binding_required"],
+    [serverSource, "validatedOwnerAccountBinding(ownerAccountBinding, owner)", "lighter_uda_owner_account_binding_required"],
     [serverSource, "fromChainId !== LIGHTER_UDA_BASE_CHAIN_ID", "lighter_uda_status_base_chain_required"],
     [serverSource, "BigInt(fromAmountBaseUnit) < LIGHTER_UDA_MINIMUM_USDC_MICROUNITS", "lighter_uda_status_minimum_required"],
     [authorizationSource, "createHmac", "lighter_uda_hmac_challenge_required"],
@@ -444,6 +447,13 @@ export function checkLighterUniversalDepositBoundary({
     [authorizationSource, "timingSafeEqual", "lighter_uda_timing_safe_verification_required"],
     [authorizationSource, "LIGHTER_DEPOSIT_AUTHORIZATION_TTL_MS = 2 * 60_000", "lighter_uda_short_challenge_required"],
     [authorizationSource, "recoverMessageAddress", "lighter_uda_owner_recovery_required"],
+    [turnkeyOwnerBindingSource, 'import "server-only";', "lighter_turnkey_query_server_only_required"],
+    [turnkeyOwnerBindingSource, "env.GHOLA_TURNKEY_QUERY_API_PUBLIC_KEY", "lighter_turnkey_query_public_key_required"],
+    [turnkeyOwnerBindingSource, "env.GHOLA_TURNKEY_QUERY_API_PRIVATE_KEY", "lighter_turnkey_query_private_key_required"],
+    [turnkeyOwnerBindingSource, "env.GHOLA_TURNKEY_QUERY_ORGANIZATION_ID", "lighter_turnkey_query_organization_binding_required"],
+    [turnkeyOwnerBindingSource, "getSubOrgIds", "lighter_turnkey_query_suborg_lookup_required"],
+    [turnkeyOwnerBindingSource, "getWallets", "lighter_turnkey_query_wallet_lookup_required"],
+    [turnkeyOwnerBindingSource, "getWalletAccounts", "lighter_turnkey_query_account_lookup_required"],
     [authorizationSource, "Ghola Lighter deposit address authorization", "lighter_uda_fixed_authorization_header_required"],
     [authorizationSource, "Source chain: Base (${LIGHTER_DEPOSIT_SOURCE_CHAIN_ID})", "lighter_uda_fixed_base_scope_required"],
     [authorizationSource, "Source asset: ${LIGHTER_DEPOSIT_SOURCE_ASSET}", "lighter_uda_fixed_asset_scope_required"],
@@ -475,7 +485,7 @@ export function checkLighterUniversalDepositBoundary({
     [destinationRouteSource, 'claim.record.status === "verified"', "lighter_uda_idempotent_verified_result_required"],
     [destinationRouteSource, "manual_reconciliation_required: true", "lighter_uda_manual_reconciliation_required"],
     [destinationRouteSource, 'status: "ambiguous"', "lighter_uda_destination_ambiguity_settlement_required"],
-    [destinationRouteSource, "createLighterUniversalDepositAddress({ ownerAddress })", "lighter_uda_single_create_call_required"],
+    [destinationRouteSource, "readLighterUdaOwnerAccountBinding({ ownerAddress })", "lighter_uda_owner_account_lookup_required"],
     [destinationRouteSource, "deposit_destination_verified: false", "lighter_uda_destination_failure_lock_required"],
     [destinationRouteSource, "funding_action_enabled: false", "lighter_uda_funding_failure_lock_required"],
     [clientSource, "validateLighterDepositAuthorizationChallenge", "lighter_uda_client_challenge_validation_required"],
@@ -491,34 +501,68 @@ export function checkLighterUniversalDepositBoundary({
     [setupSource, 'data-lighter-deposit-verified="true"', "lighter_uda_verified_ui_state_required"],
     [setupSource, "Copy verified Lighter deposit address", "lighter_uda_verified_copy_required"],
     [setupSource, "Never send to the owner address.", "lighter_uda_owner_deposit_warning_required"],
-    [setupSource, "checking || !canGenerate || retryForbidden", "lighter_uda_retry_forbidden_button_lock_required"],
     [setupSource, 'scopedActivationNeeded.venue === "aster" && (', "lighter_uda_owner_copy_must_be_aster_only"],
     [envSource, "GHOLA_LIGHTER_BUILDER_KEY=", "lighter_uda_builder_env_documentation_required"],
+    [envSource, "GHOLA_TURNKEY_QUERY_ORGANIZATION_ID=", "lighter_turnkey_query_organization_env_required"],
+    [envSource, "GHOLA_TURNKEY_QUERY_API_PUBLIC_KEY=", "lighter_turnkey_query_public_key_env_required"],
+    [envSource, "GHOLA_TURNKEY_QUERY_API_PRIVATE_KEY=", "lighter_turnkey_query_private_key_env_required"],
   ];
   for (const [source, value, code] of required) if (!source.includes(value)) failures.push(code);
+  const retryBranch = setupSource.indexOf("{retryForbidden ? (");
+  const reconcileButton = setupSource.indexOf("onClick={onReconcile}", retryBranch);
+  const generationBranch = setupSource.indexOf(") : (", retryBranch);
+  const generationButton = setupSource.indexOf("onClick={onGenerate}", generationBranch);
+  const reconciliationGuarded = /if\s*\(\s*!expectedOwner\s*\|\|\s*!lighterFundingEligibilityAccepted\s*\|\|\s*!lighterDepositRetryForbidden\s*\|\|\s*lighterDepositDestination\s*\)\s*return;/.test(setupSource);
+  const exactReconciliationCall = /reconcileExistingLighterDepositDestination\(\s*expectedOwner,\s*LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,?\s*\)/.test(setupSource);
+  if (
+    !setupSource.includes("if (lighterDepositRetryForbidden) return;") ||
+    !setupSource.includes("canGenerateDepositAddress={perpsTurnkey.authenticated && !lighterDepositRetryForbidden}") ||
+    !setupSource.includes("canReconcileDepositAddress={perpsTurnkey.authenticated && lighterDepositRetryForbidden}") ||
+    !reconciliationGuarded ||
+    !exactReconciliationCall ||
+    !setupSource.includes("Check provider status") ||
+    !setupSource.includes("provider history alone never unlocks funding.") ||
+    retryBranch < 0 ||
+    reconcileButton < retryBranch ||
+    generationBranch < reconcileButton ||
+    generationButton < generationBranch
+  ) {
+    failures.push("lighter_uda_retry_forbidden_button_lock_required");
+  }
   const verifyToken = destinationRouteSource.indexOf("const authorization = verifyLighterDepositAuthorizationToken");
   const verifySignature = destinationRouteSource.indexOf("ownerAddress = await verifyLighterDepositAuthorizationSignature");
   const configureDestination = destinationRouteSource.indexOf("assertLighterUdaCreateConfigured()");
+  const bindOwnerAccount = destinationRouteSource.indexOf("ownerAccountBinding = await readLighterUdaOwnerAccountBinding({ ownerAddress })");
   const claimDestination = destinationRouteSource.indexOf("claim = await claimPrivateLighterUdaAttempt");
-  const createDestination = destinationRouteSource.indexOf("const destination = await createLighterUniversalDepositAddress({ ownerAddress })");
+  const createDestination = destinationRouteSource.indexOf("const destination = await createLighterUniversalDepositAddress({");
+  const exactCreateCall = /const destination = await createLighterUniversalDepositAddress\(\{\s*ownerAddress,\s*ownerAccountBinding,\s*\}\);/.test(destinationRouteSource);
   if (
     verifyToken < 0 ||
     verifySignature < verifyToken ||
     configureDestination < verifySignature ||
-    claimDestination < configureDestination ||
-    createDestination < claimDestination
+    bindOwnerAccount < configureDestination ||
+    claimDestination < bindOwnerAccount ||
+    createDestination < claimDestination ||
+    !exactCreateCall
   ) {
     failures.push("lighter_uda_verify_before_create_order_required");
   }
-  if ((destinationRouteSource.match(/createLighterUniversalDepositAddress\(\{ ownerAddress \}\)/g) || []).length !== 1) {
+  if ((destinationRouteSource.match(/createLighterUniversalDepositAddress\s*\(\s*\{/g) || []).length !== 1) {
     failures.push("lighter_uda_exactly_one_create_site_required");
   }
-  if ((serverSource.match(/redirect: "error"/g) || []).length !== 2) {
+  if ((serverSource.match(/redirect: "error"/g) || []).length !== 4) {
     failures.push("lighter_uda_all_authenticated_redirects_must_fail_closed");
   }
   if ([serverSource, authorizationSource, storeSource, challengeRouteSource, destinationRouteSource, clientSource, providerSource, setupSource, envSource]
     .some((source) => source.includes("NEXT_PUBLIC_GHOLA_LIGHTER_BUILDER_KEY"))) {
     failures.push("lighter_uda_public_builder_key_forbidden");
+  }
+  if (
+    turnkeyOwnerBindingSource.includes("env.TURNKEY_API_PUBLIC_KEY") ||
+    turnkeyOwnerBindingSource.includes("env.TURNKEY_API_PRIVATE_KEY") ||
+    turnkeyOwnerBindingSource.includes("env.TURNKEY_ORG_ID")
+  ) {
+    failures.push("lighter_turnkey_query_must_not_reuse_generic_credentials");
   }
   if (failures.length > 0) {
     throw new Error(`Lighter Universal Deposit boundary failed: ${failures.join(", ")}`);
@@ -672,6 +716,7 @@ function main() {
   checkLighterUniversalDepositBoundary({
     serverSource: readFileSync(resolve(HERE, "../src/lib/lighter-universal-deposit-address.server.ts"), "utf8"),
     authorizationSource: readFileSync(resolve(HERE, "../src/lib/lighter-deposit-authorization.server.ts"), "utf8"),
+    turnkeyOwnerBindingSource: readFileSync(resolve(HERE, "../src/lib/lighter-turnkey-owner-binding.server.ts"), "utf8"),
     storeSource: readFileSync(resolve(HERE, "../src/lib/private-account-store.ts"), "utf8"),
     challengeRouteSource: readFileSync(resolve(HERE, "../src/app/api/carry/lighter-deposit-authorization/route.ts"), "utf8"),
     destinationRouteSource: readFileSync(resolve(HERE, "../src/app/api/carry/lighter-deposit-destination/route.ts"), "utf8"),

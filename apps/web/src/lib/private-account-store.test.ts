@@ -112,6 +112,8 @@ describe("private account store", () => {
       to_chain_id: "3586256" as const,
       to_token_address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as const,
       recipient_address: ownerAddress,
+      recipient_binding: "owner_address" as const,
+      owner_account_index: null,
       resolved_user_id: ownerAddress,
     };
     await settlePrivateLighterUdaAttempt({

@@ -42,6 +42,7 @@ const liveRoutes = readFileSync(resolve(HERE, "../src/lib/private-account-live-r
 const liveProxy = readFileSync(resolve(HERE, "../src/app/api/private-account/live-proxy/route.ts"), "utf8");
 const lighterUdaServer = readFileSync(resolve(HERE, "../src/lib/lighter-universal-deposit-address.server.ts"), "utf8");
 const lighterUdaAuthorization = readFileSync(resolve(HERE, "../src/lib/lighter-deposit-authorization.server.ts"), "utf8");
+const lighterTurnkeyOwnerBinding = readFileSync(resolve(HERE, "../src/lib/lighter-turnkey-owner-binding.server.ts"), "utf8");
 const privateAccountStore = readFileSync(resolve(HERE, "../src/lib/private-account-store.ts"), "utf8");
 const lighterUdaChallengeRoute = readFileSync(resolve(HERE, "../src/app/api/carry/lighter-deposit-authorization/route.ts"), "utf8");
 const lighterUdaDestinationRoute = readFileSync(resolve(HERE, "../src/app/api/carry/lighter-deposit-destination/route.ts"), "utf8");
@@ -52,6 +53,7 @@ function lighterUdaBoundary(overrides = {}) {
   return checkLighterUniversalDepositBoundary({
     serverSource: lighterUdaServer,
     authorizationSource: lighterUdaAuthorization,
+    turnkeyOwnerBindingSource: lighterTurnkeyOwnerBinding,
     storeSource: privateAccountStore,
     challengeRouteSource: lighterUdaChallengeRoute,
     destinationRouteSource: lighterUdaDestinationRoute,
@@ -419,6 +421,18 @@ test("rejects exposing the Lighter builder key or bypassing owner proof", () => 
   );
 });
 
+test("rejects generic mutation-capable credentials at the Turnkey query boundary", () => {
+  assert.throws(
+    () => lighterUdaBoundary({
+      turnkeyOwnerBindingSource: lighterTurnkeyOwnerBinding
+        .replaceAll("GHOLA_TURNKEY_QUERY_API_PUBLIC_KEY", "TURNKEY_API_PUBLIC_KEY")
+        .replaceAll("GHOLA_TURNKEY_QUERY_API_PRIVATE_KEY", "TURNKEY_API_PRIVATE_KEY")
+        .replaceAll("GHOLA_TURNKEY_QUERY_ORGANIZATION_ID", "TURNKEY_ORG_ID"),
+    }),
+    /lighter_turnkey_query_public_key_required|lighter_turnkey_query_private_key_required|lighter_turnkey_query_organization_binding_required|lighter_turnkey_query_must_not_reuse_generic_credentials/,
+  );
+});
+
 test("rejects retrying or creating a Lighter destination before owner verification", () => {
   assert.throws(
     () => lighterUdaBoundary({
@@ -465,7 +479,7 @@ test("rejects a Lighter claim that is not globally wallet-bound", () => {
 test("rejects forwarding the Lighter builder key through redirects", () => {
   assert.throws(
     () => lighterUdaBoundary({
-      serverSource: `${lighterUdaServer.replaceAll('redirect: "error"', 'redirect: "follow"')}\nconst bypass = /* redirect: "error" redirect: "error" */ 1;`,
+      serverSource: `${lighterUdaServer.replaceAll('redirect: "error"', 'redirect: "follow"')}\nconst bypass = /* redirect: "error" redirect: "error" redirect: "error" */ 1;`,
     }),
     /lighter_uda_redirect_rejection_required|lighter_uda_all_authenticated_redirects_must_fail_closed/,
   );
@@ -483,7 +497,21 @@ test("rejects a server-only marker that exists only in a comment", () => {
 test("rejects a funding lock marker that exists only in a JSX comment", () => {
   assert.throws(
     () => lighterUdaBoundary({
-      setupSource: `${asterUi.replace("checking || !canGenerate || retryForbidden", "checking || !canGenerate")}\nconst GuardComment = () => <>{/* checking || !canGenerate || retryForbidden */}</>;`,
+      setupSource: `${asterUi
+        .replace("if (lighterDepositRetryForbidden) return;", "")
+        .replace(
+          "canGenerateDepositAddress={perpsTurnkey.authenticated && !lighterDepositRetryForbidden}",
+          "canGenerateDepositAddress={perpsTurnkey.authenticated}",
+        )}\nconst GuardComment = () => <>{/* if (lighterDepositRetryForbidden) return; canGenerateDepositAddress={perpsTurnkey.authenticated && !lighterDepositRetryForbidden} */}</>;`,
+    }),
+    /lighter_uda_retry_forbidden_button_lock_required/,
+  );
+});
+
+test("rejects turning the manual reconciliation action into a generation retry", () => {
+  assert.throws(
+    () => lighterUdaBoundary({
+      setupSource: asterUi.replace("onClick={onReconcile}", "onClick={onGenerate}"),
     }),
     /lighter_uda_retry_forbidden_button_lock_required/,
   );
@@ -515,8 +543,8 @@ test("rejects retrying after an unknown or lost destination response", () => {
         .replace("ambiguousDestinationError()", "new Error()")
         .replace("!RETRYABLE_DESTINATION_REJECTIONS.has(code)", "false"),
       setupSource: asterUi.replace(
-        "checking || !canGenerate || retryForbidden",
-        "checking || !canGenerate",
+        "if (lighterDepositRetryForbidden) return;",
+        "",
       ),
     }),
     /lighter_uda_client_ambiguous_transport_lock_required|lighter_uda_client_unknown_failure_lock_required|lighter_uda_retry_forbidden_button_lock_required/,

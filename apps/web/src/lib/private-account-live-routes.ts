@@ -12,6 +12,7 @@ export const PRIVATE_ACCOUNT_LIVE_MUTATION_PATHS = [
   /^\/v1\/private-account\/hyperliquid\/vault$/,
   /^\/v1\/private-account\/omnibus\/(?:allocate|reconcile)$/,
   /^\/v1\/private-account\/platforms\/(?:aster|lighter)\/(?:prepare|complete)$/,
+  /^\/v1\/private-account\/platforms\/lighter\/recovery\/prepare$/,
   /^\/v1\/private-account\/platforms\/link$/,
   /^\/v1\/private-account\/venues\/[^/]+\/(?:agent\/session|eligibility|pool\/allocate|preflight|reconcile|secret-handles\/create|stealth-account\/create|vault)$/,
 ] as const;

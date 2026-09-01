@@ -50,9 +50,15 @@ describe("Lighter activation readiness UI", () => {
     expect(source).toContain("isLighterDepositRetryForbidden(caught)");
     expect(source).toContain("if (lighterDepositRetryForbidden) return;");
     expect(source).toContain("ghola_lighter_uda_retry_forbidden_v1:");
-    expect(source).toContain("Retry is blocked; reconcile it before continuing.");
-    expect(source).toContain("Generation blocked — reconcile manually");
+    expect(source).toContain("provider history alone stays locked.");
+    expect(source).toContain("reconcileExistingLighterDepositDestination(");
+    expect(source).toContain("!lighterFundingEligibilityAccepted");
+    expect(source).toContain('retryForbidden ? (');
+    expect(source).toContain('onClick={onReconcile}');
+    expect(source).toContain("Check provider status");
+    expect(source).toContain("provider history alone never unlocks funding.");
     expect(source).toContain("perpsTurnkey.authenticated && !lighterDepositRetryForbidden");
+    expect(source).toContain("perpsTurnkey.authenticated && lighterDepositRetryForbidden");
   });
 
   it("rechecks once when the user returns from Lighter without polling or submitting", () => {

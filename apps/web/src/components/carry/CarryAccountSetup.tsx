@@ -70,9 +70,25 @@ import {
   fetchVerifiedLighterDepositDestination,
   isLighterDepositRetryForbidden,
   LIGHTER_UDA_CLIENT_MAX_AGE_MS,
+  reconcileExistingLighterDepositDestination,
   validateVerifiedLighterDepositDestination,
   type VerifiedLighterDepositDestination,
 } from "@/lib/lighter-universal-deposit-address.client";
+import {
+  checkLighterDepositReconciliation,
+  lighterUsdcToMicrounits,
+  LIGHTER_DEPOSIT_DEFAULT_USDC,
+  LighterDepositReconciliationError,
+  type LighterDepositReconciliation,
+} from "@/lib/lighter-deposit-reconciliation.client";
+import {
+  LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
+  type LighterFundingEligibilityAttestationV1,
+} from "@/lib/lighter-funding-eligibility";
+import {
+  verifyLighterOwnerRecoveryReadiness,
+  type VerifiedLighterOwnerRecoveryReadiness,
+} from "@/lib/lighter-owner-recovery-readiness.client";
 import { shouldResumeUnsignedTurnkeySetup } from "@/lib/carry-setup-auth-recovery";
 import { hyperliquidMarketFromTradeReturn } from "@/lib/hyperliquid-trade-return";
 
@@ -88,6 +104,31 @@ const LIGHTER_UDA_RETRY_FORBIDDEN_STORAGE_PREFIX = "ghola_lighter_uda_retry_forb
 
 function lighterUdaRetryForbiddenStorageKey(ownerAddress: string) {
   return `${LIGHTER_UDA_RETRY_FORBIDDEN_STORAGE_PREFIX}${ownerAddress.toLowerCase()}`;
+}
+
+function lighterDepositDestinationFailureMessage(caught: unknown) {
+  const code = caught instanceof Error ? caught.message : "";
+  if (code === "lighter_uda_eligibility_country_restricted") {
+    return "Lighter funding is unavailable in your jurisdiction. Do not send USDC.";
+  }
+  if (code === "lighter_uda_eligibility_country_unavailable" || code === "lighter_uda_eligibility_country_mismatch") {
+    return "Funding eligibility could not be verified. Do not send USDC.";
+  }
+  if (code === "lighter_uda_builder_key_unconfigured") {
+    return "Ghola's Lighter funding connection is not enabled yet. Do not send USDC.";
+  }
+  return "Verified deposit destination unavailable. Do not send USDC.";
+}
+
+function lighterOwnerRecoveryReadinessFailureMessage(caught: unknown) {
+  const code = caught instanceof Error ? caught.message : "";
+  if (code === "lighter_recovery_owner_gas_insufficient") {
+    return "Owner recovery capability needs Ethereum gas on the exact Turnkey owner.";
+  }
+  if (code === "lighter_recovery_owner_account_not_found") {
+    return "The reconciled Lighter owner account is not available for recovery verification yet.";
+  }
+  return "Owner recovery capability could not be verified.";
 }
 const ONBOARDING_BY_VENUE: Readonly<Record<CarryExecutionVenue, VenueCredentialOnboardingPath>> = Object.freeze({
   hyperliquid: HYPERLIQUID_ONBOARDING,
@@ -145,6 +186,7 @@ export function CarryAccountSetup({
   const [lighterDepositRetryForbidden, setLighterDepositRetryForbidden] = useState(false);
   const [checkingLighterDepositDestination, setCheckingLighterDepositDestination] = useState(false);
   const [lighterDepositAddressCopied, setLighterDepositAddressCopied] = useState(false);
+  const [lighterFundingEligibilityAccepted, setLighterFundingEligibilityAccepted] = useState(false);
   const lighterDepositDestinationRequestRef = useRef<Promise<void> | null>(null);
   const [workerPlatform, setWorkerPlatform] = useState<CarryWorkerPlatformGate | null>(null);
   const safeReturnTo = returnTo === "/carry" || returnTo.startsWith("/trade?") ? returnTo : "/carry";
@@ -239,7 +281,10 @@ export function CarryAccountSetup({
     return request;
   }, [scopedActivationNeeded]);
 
-  const refreshLighterDepositDestination = useCallback(async (ownerAddress?: string) => {
+  const refreshLighterDepositDestination = useCallback(async (
+    eligibilityAttestation: LighterFundingEligibilityAttestationV1,
+    ownerAddress?: string,
+  ) => {
     const expectedOwner = ownerAddress || (scopedActivationNeeded?.venue === "lighter" ? scopedActivationNeeded.ownerAddress : "");
     if (!expectedOwner || !perpsTurnkey.authenticated) return;
     if (lighterDepositRetryForbidden) return;
@@ -253,6 +298,7 @@ export function CarryAccountSetup({
       try {
         setLighterDepositDestination(await fetchVerifiedLighterDepositDestination({
           ownerAddress: expectedOwner,
+          eligibilityAttestation,
           signLighterDepositAuthorization: perpsTurnkey.signLighterDepositAuthorization,
         }));
       } catch (caught) {
@@ -264,9 +310,9 @@ export function CarryAccountSetup({
           } catch {
             // In-memory lock still prevents another attempt in this session.
           }
-          setLighterDepositDestinationError("Address generation returned an ambiguous result. Retry is blocked; reconcile it before continuing. Do not send USDC.");
+          setLighterDepositDestinationError("Address generation returned an ambiguous result. Generation is locked. A read-only status check can restore only a previously saved direct verification; provider history alone stays locked. Do not send USDC.");
         } else {
-          setLighterDepositDestinationError("Verified deposit destination unavailable. Do not send USDC.");
+          setLighterDepositDestinationError(lighterDepositDestinationFailureMessage(caught));
         }
       } finally {
         setCheckingLighterDepositDestination(false);
@@ -276,6 +322,55 @@ export function CarryAccountSetup({
     lighterDepositDestinationRequestRef.current = request;
     return request;
   }, [lighterDepositDestination, lighterDepositRetryForbidden, perpsTurnkey, scopedActivationNeeded]);
+
+  const reconcileLighterDepositDestination = useCallback(async () => {
+    const expectedOwner = scopedActivationNeeded?.venue === "lighter"
+      ? scopedActivationNeeded.ownerAddress
+      : "";
+    if (
+      !expectedOwner ||
+      !lighterFundingEligibilityAccepted ||
+      !lighterDepositRetryForbidden ||
+      lighterDepositDestination
+    ) return;
+    if (lighterDepositDestinationRequestRef.current) return lighterDepositDestinationRequestRef.current;
+    const request = (async () => {
+      setCheckingLighterDepositDestination(true);
+      setLighterDepositDestinationError(null);
+      setLighterDepositAddressCopied(false);
+      try {
+        const reconciled = await reconcileExistingLighterDepositDestination(
+          expectedOwner,
+          LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
+        );
+        const verified = validateVerifiedLighterDepositDestination(reconciled, expectedOwner);
+        setLighterDepositDestination(verified);
+        setLighterDepositRetryForbidden(false);
+        try {
+          window.localStorage.removeItem(lighterUdaRetryForbiddenStorageKey(expectedOwner));
+        } catch {
+          // Verified state is sufficient for this session when storage is unavailable.
+        }
+      } catch (caught) {
+        setLighterDepositDestination(null);
+        setLighterDepositRetryForbidden(true);
+        const code = caught instanceof Error ? caught.message : "";
+        setLighterDepositDestinationError(code.includes("Provider history was found")
+          ? "Provider history was found, but it does not prove a current safe funding address. Generation remains locked; do not send USDC."
+          : "No current safe funding address was proven. Generation remains locked; do not send USDC.");
+      } finally {
+        setCheckingLighterDepositDestination(false);
+        lighterDepositDestinationRequestRef.current = null;
+      }
+    })();
+    lighterDepositDestinationRequestRef.current = request;
+    return request;
+  }, [
+    lighterDepositDestination,
+    lighterDepositRetryForbidden,
+    lighterFundingEligibilityAccepted,
+    scopedActivationNeeded,
+  ]);
 
   useEffect(() => {
     if (scopedActivationNeeded?.venue === "lighter") {
@@ -290,6 +385,7 @@ export function CarryAccountSetup({
     setLighterDepositDestination(null);
     setLighterDepositDestinationError(null);
     setLighterDepositAddressCopied(false);
+    setLighterFundingEligibilityAccepted(false);
     let retryForbidden = false;
     if (scopedActivationNeeded?.venue === "lighter") {
       try {
@@ -1103,9 +1199,13 @@ export function CarryAccountSetup({
                 depositDestination={lighterDepositDestination}
                 depositDestinationError={lighterDepositDestinationError}
                 depositAddressCopied={lighterDepositAddressCopied}
+                fundingEligibilityAccepted={lighterFundingEligibilityAccepted}
+                onFundingEligibilityAcceptedChange={setLighterFundingEligibilityAccepted}
                 onCopyDepositAddress={() => void copyVerifiedLighterDepositAddress()}
-                onGenerateDepositAddress={() => void refreshLighterDepositDestination()}
+                onGenerateDepositAddress={(attestation) => void refreshLighterDepositDestination(attestation)}
+                onReconcileDepositAddress={() => void reconcileLighterDepositDestination()}
                 canGenerateDepositAddress={perpsTurnkey.authenticated && !lighterDepositRetryForbidden}
+                canReconcileDepositAddress={perpsTurnkey.authenticated && lighterDepositRetryForbidden}
                 depositRetryForbidden={lighterDepositRetryForbidden}
                 onRefresh={() => void refreshLighterReadiness()}
               />
@@ -1142,9 +1242,13 @@ function LighterReadinessPanel({
   depositDestination,
   depositDestinationError,
   depositAddressCopied,
+  fundingEligibilityAccepted,
+  onFundingEligibilityAcceptedChange,
   onCopyDepositAddress,
   onGenerateDepositAddress,
+  onReconcileDepositAddress,
   canGenerateDepositAddress,
+  canReconcileDepositAddress,
   depositRetryForbidden,
   onRefresh,
 }: {
@@ -1154,9 +1258,13 @@ function LighterReadinessPanel({
   depositDestination: VerifiedLighterDepositDestination | null;
   depositDestinationError: string | null;
   depositAddressCopied: boolean;
+  fundingEligibilityAccepted: boolean;
+  onFundingEligibilityAcceptedChange: (accepted: boolean) => void;
   onCopyDepositAddress: () => void;
-  onGenerateDepositAddress: () => void;
+  onGenerateDepositAddress: (attestation: LighterFundingEligibilityAttestationV1) => void;
+  onReconcileDepositAddress: () => void;
   canGenerateDepositAddress: boolean;
+  canReconcileDepositAddress: boolean;
   depositRetryForbidden: boolean;
   onRefresh: () => void;
 }) {
@@ -1182,14 +1290,33 @@ function LighterReadinessPanel({
               ? "A fresh owner-bound Lighter deposit destination is verified. Use only USDC on Base and only the address shown below."
               : describeLighterActivationNextStep(readiness)}
           </p>
+          {!depositDestination && (
+            <div className="mt-3 flex items-start gap-2 rounded-md border border-[#315277] bg-[#0b1624] p-3">
+              <input
+                id="lighter-funding-eligibility-consent"
+                type="checkbox"
+                checked={fundingEligibilityAccepted}
+                onChange={(event) => onFundingEligibilityAcceptedChange(event.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 accent-[#4aaef8]"
+              />
+              <label htmlFor="lighter-funding-eligibility-consent" className="text-[11px] leading-4 text-[#b8c8da]">
+                I accept the <a href="https://lighter.xyz/terms" target="_blank" rel="noreferrer" className="font-semibold text-[#8fcaff] underline hover:text-white">Lighter Terms</a> and attest that neither I nor any entity I represent is a prohibited person.
+              </label>
+            </div>
+          )}
           <LighterDepositDestinationPanel
             destination={depositDestination}
             error={depositDestinationError}
             checking={checking}
             copied={depositAddressCopied}
             onCopy={onCopyDepositAddress}
-            onGenerate={onGenerateDepositAddress}
-            canGenerate={canGenerateDepositAddress}
+            onGenerate={() => {
+              if (!fundingEligibilityAccepted) return;
+              onGenerateDepositAddress(LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION);
+            }}
+            onReconcile={onReconcileDepositAddress}
+            canGenerate={canGenerateDepositAddress && fundingEligibilityAccepted}
+            canReconcile={canReconcileDepositAddress && fundingEligibilityAccepted}
             retryForbidden={depositRetryForbidden}
           />
           <div className="mt-2 divide-y divide-[#1b283b]">
@@ -1216,7 +1343,9 @@ function LighterDepositDestinationPanel({
   copied,
   onCopy,
   onGenerate,
+  onReconcile,
   canGenerate,
+  canReconcile,
   retryForbidden,
 }: {
   destination: VerifiedLighterDepositDestination | null;
@@ -1225,7 +1354,9 @@ function LighterDepositDestinationPanel({
   copied: boolean;
   onCopy: () => void;
   onGenerate: () => void;
+  onReconcile: () => void;
   canGenerate: boolean;
+  canReconcile: boolean;
   retryForbidden: boolean;
 }) {
   if (!destination) {
@@ -1235,9 +1366,18 @@ function LighterDepositDestinationPanel({
         <p className="mt-1 text-[11px] leading-4 text-[#d58c96]">
           {checking ? "Verifying an owner-bound Lighter deposit destination…" : error || "No verified deposit destination is available. Do not send USDC."}
         </p>
-        <button type="button" disabled={checking || !canGenerate || retryForbidden} onClick={onGenerate} className="mt-2 rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff] hover:bg-[#102033] disabled:border-[#60303a] disabled:text-[#9d6970] disabled:opacity-60">
-          {checking ? "Verifying…" : retryForbidden ? "Generation blocked — reconcile manually" : "Generate verified deposit address"}
-        </button>
+        {retryForbidden ? (
+          <>
+            <button type="button" disabled={checking || !canReconcile} onClick={onReconcile} className="mt-2 rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff] hover:bg-[#102033] disabled:opacity-60">
+              {checking ? "Checking provider status…" : "Check provider status"}
+            </button>
+            <p className="mt-2 text-[10px] leading-4 text-[#9d6970]">Read-only. A previously saved direct verification can be restored; provider history alone never unlocks funding.</p>
+          </>
+        ) : (
+          <button type="button" disabled={checking || !canGenerate} onClick={onGenerate} className="mt-2 rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff] hover:bg-[#102033] disabled:border-[#60303a] disabled:text-[#9d6970] disabled:opacity-60">
+            {checking ? "Verifying…" : "Generate verified deposit address"}
+          </button>
+        )}
       </div>
     );
   }
@@ -1254,6 +1394,168 @@ function LighterDepositDestinationPanel({
         </button>
       </div>
       <p className="mt-2 text-[11px] leading-4 text-[#8db4a5]">Base · USDC only · Lighter minimum 5 USDC · 5.5 USDC recommended. This address is bound to the exact Turnkey owner above. Never send to the owner address.</p>
+      <LighterDepositReconciliationPanel destination={destination} />
+    </div>
+  );
+}
+
+function LighterDepositReconciliationPanel({
+  destination,
+}: {
+  destination: VerifiedLighterDepositDestination;
+}) {
+  const perpsTurnkey = usePerpsTurnkey();
+  const [transactionHash, setTransactionHash] = useState("");
+  const [expectedUsdc, setExpectedUsdc] = useState(LIGHTER_DEPOSIT_DEFAULT_USDC);
+  const [reconciliation, setReconciliation] = useState<LighterDepositReconciliation | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [retryForbidden, setRetryForbidden] = useState(false);
+  const [recoveryReadiness, setRecoveryReadiness] = useState<VerifiedLighterOwnerRecoveryReadiness | null>(null);
+  const [recoveryReadinessError, setRecoveryReadinessError] = useState<string | null>(null);
+  const [verifyingRecoveryReadiness, setVerifyingRecoveryReadiness] = useState(false);
+  const expectedAmountMicrounits = lighterUsdcToMicrounits(expectedUsdc);
+  const validTransactionHash = /^0x[0-9a-f]{64}$/i.test(transactionHash.trim());
+  const status = reconciliation?.status || "unseen";
+  const expectationLocked = status === "PROCESSING" || status === "COMPLETED";
+
+  const checkDeposit = async () => {
+    if (checking || retryForbidden || !expectedAmountMicrounits || !validTransactionHash) return;
+    setChecking(true);
+    setError(null);
+    try {
+      setReconciliation(await checkLighterDepositReconciliation({
+        ownerAddress: destination.owner_address,
+        depositAddress: destination.destination.deposit_address,
+        transactionHash: expectationLocked && reconciliation ? reconciliation.transaction_hash : transactionHash,
+        expectedAmountMicrounits: expectationLocked && reconciliation
+          ? reconciliation.expected_amount_microunits
+          : expectedAmountMicrounits,
+      }));
+    } catch (caught) {
+      const known = caught instanceof LighterDepositReconciliationError;
+      setError(known
+        ? caught.message
+        : "The check outcome is uncertain. Do not submit it again; reconcile this exact transaction manually.");
+      if (!known || caught.retryForbidden) setRetryForbidden(true);
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const verifyOwnerRecovery = async () => {
+    if (
+      reconciliation?.status !== "COMPLETED" ||
+      !reconciliation.reconciliation_complete ||
+      verifyingRecoveryReadiness ||
+      recoveryReadiness
+    ) return;
+    setVerifyingRecoveryReadiness(true);
+    setRecoveryReadinessError(null);
+    try {
+      setRecoveryReadiness(await verifyLighterOwnerRecoveryReadiness({
+        ownerAddress: destination.owner_address,
+        signLighterRecoveryReadiness: perpsTurnkey.signLighterRecoveryReadiness,
+      }));
+    } catch (caught) {
+      setRecoveryReadiness(null);
+      setRecoveryReadinessError(lighterOwnerRecoveryReadinessFailureMessage(caught));
+    } finally {
+      setVerifyingRecoveryReadiness(false);
+    }
+  };
+
+  return (
+    <div data-lighter-deposit-reconciliation className="mt-3 rounded-md border border-[#315277] bg-[#07111e] p-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-semibold text-[#d8eaff]">Post-send deposit tracker</p>
+        <span
+          data-lighter-deposit-status={status}
+          className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+            status === "COMPLETED"
+              ? "border-[#285d4e] text-[#72dfb2]"
+              : status === "PROCESSING"
+                ? "border-[#725e2c] text-[#f0c96b]"
+                : "border-[#3c4d64] text-[#9aabc0]"
+          }`}
+        >
+          {status}
+        </span>
+      </div>
+      <p className="mt-1 text-[11px] leading-4 text-[#8f9aae]">After sending USDC yourself, submit its exact Base transaction hash once. This read-only tracker never sends funds, signs transactions, retries an uncertain check, or polls automatically.</p>
+      <label className="mt-3 block text-[11px] font-medium text-[#b8c8da]">
+        Exact Base transaction hash
+        <input
+          aria-label="Exact Base transaction hash"
+          type="text"
+          value={expectationLocked && reconciliation ? reconciliation.transaction_hash : transactionHash}
+          onChange={(event) => setTransactionHash(event.target.value)}
+          disabled={expectationLocked || retryForbidden}
+          placeholder="0x…"
+          autoComplete="off"
+          spellCheck={false}
+          className="mt-1.5 h-10 w-full rounded-md border border-[#263851] bg-[#050a11] px-3 font-mono text-xs text-[#d8eaff] outline-none focus:border-[#4a78a9] disabled:opacity-70"
+        />
+      </label>
+      <label className="mt-3 block text-[11px] font-medium text-[#b8c8da]">
+        Expected USDC amount
+        <input
+          aria-label="Expected USDC amount"
+          type="text"
+          inputMode="decimal"
+          value={expectationLocked && reconciliation
+            ? formatExactUsdc(reconciliation.expected_amount_microunits)
+            : expectedUsdc}
+          onChange={(event) => setExpectedUsdc(event.target.value)}
+          disabled={expectationLocked || retryForbidden}
+          className="mt-1.5 h-10 w-full rounded-md border border-[#263851] bg-[#050a11] px-3 font-mono text-xs text-[#d8eaff] outline-none focus:border-[#4a78a9] disabled:opacity-70"
+        />
+        <span className="mt-1 block text-[10px] font-normal text-[#657188]">Default 5.5 USDC · minimum 5 USDC</span>
+      </label>
+      <button
+        type="button"
+        disabled={checking || retryForbidden || status === "COMPLETED" || !expectedAmountMicrounits || !validTransactionHash}
+        onClick={() => void checkDeposit()}
+        className="mt-3 rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff] hover:bg-[#102033] disabled:opacity-50"
+      >
+        {checking
+          ? "Checking exact deposit…"
+          : retryForbidden
+            ? "Check locked"
+            : status === "COMPLETED"
+              ? "Deposit completed"
+              : reconciliation
+                ? "Check exact deposit again"
+                : "Check exact deposit"}
+      </button>
+      {reconciliation && (
+        <p className="mt-2 break-all text-[10px] leading-4 text-[#8f9aae]">
+          Bound to {reconciliation.transaction_hash} · {formatExactUsdc(reconciliation.expected_amount_microunits)} USDC
+        </p>
+      )}
+      {error && <p className="mt-2 text-[11px] leading-4 text-[#ee9da8]">{error}</p>}
+      {reconciliation?.status === "COMPLETED" && reconciliation.reconciliation_complete && (
+        <div data-lighter-owner-recovery-readiness className="mt-3 rounded-md border border-[#285d4e] bg-[#0b1b18] p-3">
+          <p className="text-xs font-semibold text-[#9be8c9]">Owner recovery capability</p>
+          <p className="mt-1 text-[11px] leading-4 text-[#8db4a5]">Capability only: no Lighter balance or withdrawal execution is proven. No transaction is signed or broadcast, and no funds are moved.</p>
+          <button
+            type="button"
+            disabled={verifyingRecoveryReadiness || Boolean(recoveryReadiness) || !perpsTurnkey.authenticated}
+            onClick={() => void verifyOwnerRecovery()}
+            className="mt-3 rounded-md border border-[#285d4e] px-3 py-2 text-xs font-semibold text-[#9be8c9] hover:bg-[#123027] disabled:opacity-50"
+          >
+            {verifyingRecoveryReadiness
+              ? "Verifying owner recovery…"
+              : recoveryReadiness
+                ? "Owner recovery verified"
+                : "Verify owner recovery"}
+          </button>
+          {recoveryReadiness && (
+            <p className="mt-2 text-[11px] leading-4 text-[#72dfb2]">Post-account owner recovery capability verified. No balance or withdrawal execution was proven; no transaction was signed or broadcast; no funds were moved.</p>
+          )}
+          {recoveryReadinessError && <p className="mt-2 text-[11px] leading-4 text-[#ee9da8]">{recoveryReadinessError}</p>}
+        </div>
+      )}
     </div>
   );
 }
@@ -1276,6 +1578,13 @@ function formatDecimalUnits(value: string, decimals: number, precision: number) 
   const whole = amount / divisor;
   const fraction = (amount % divisor).toString().padStart(decimals, "0").slice(0, precision);
   return `${whole}.${fraction.padEnd(precision, "0")}`;
+}
+
+function formatExactUsdc(microunits: string) {
+  const padded = microunits.padStart(7, "0");
+  const whole = padded.slice(0, -6);
+  const fraction = padded.slice(-6).replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole;
 }
 
 function ExecutionAccessRail({

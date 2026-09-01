@@ -3,6 +3,7 @@ import {
   importPrivateAccountFundingReceipt,
   prepareAsterProgrammaticCredential,
   prepareLighterProgrammaticCredential,
+  requestLighterOwnerRecoveryReadinessPhase,
 } from "./private-account-client";
 
 describe("private-account guarded client mutations", () => {
@@ -15,6 +16,10 @@ describe("private-account guarded client mutations", () => {
     ["lighter", () => prepareLighterProgrammaticCredential({
       owner_address: "0x0000000000000000000000000000000000000001",
     }), "/v1/private-account/platforms/lighter/prepare"],
+    ["lighter recovery readiness", () => requestLighterOwnerRecoveryReadinessPhase({
+      version: 1,
+      owner_address: "0x0000000000000000000000000000000000000001",
+    }), "/v1/private-account/platforms/lighter/recovery/prepare"],
     ["funding import", () => importPrivateAccountFundingReceipt({
       funding_intent_id: "funding_1",
       receipt_id: "receipt_1",

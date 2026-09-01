@@ -2,6 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { privateKeyToAccount } from "viem/accounts";
 import { POST } from "./route";
+import { LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION } from "@/lib/lighter-funding-eligibility";
+
+const bindingMocks = vi.hoisted(() => ({ resolve: vi.fn() }));
+vi.mock("@/lib/lighter-turnkey-owner-binding.server", () => ({
+  resolveLighterTurnkeyPerpsOwnerBinding: bindingMocks.resolve,
+}));
 
 const SECRET = "secure-lighter-uda-authorization-secret-2026";
 const OWNER = privateKeyToAccount(`0x${"11".repeat(32)}`).address;
@@ -12,6 +18,7 @@ vi.mock("server-only", () => ({}));
 describe("POST /api/carry/lighter-deposit-authorization", () => {
   beforeEach(() => {
     process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET = SECRET;
+    bindingMocks.resolve.mockReset().mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -37,6 +44,15 @@ describe("POST /api/carry/lighter-deposit-authorization", () => {
         source_chain: "base",
         source_asset: "USDC",
         destination_market: "perps",
+        eligibility: {
+          version: 1,
+          terms_version: "2025-12-29",
+          accepts_lighter_terms: true,
+          attests_not_prohibited_person: true,
+          country_code: "DE",
+          country_source: "vercel_request_header",
+          eligible: true,
+        },
         transfer_authorized: false,
         withdrawal_authorized: false,
         trade_authorized: false,
@@ -46,6 +62,7 @@ describe("POST /api/carry/lighter-deposit-authorization", () => {
     expect(body.message).toContain("Ghola Lighter deposit address authorization");
     expect(body.message).toContain("Source chain: Base (8453)");
     expect(body.message).toContain("This authorizes address generation only.");
+    expect(body.message).toContain("Server-verified country: DE");
     expect(body.message).toContain("It does not authorize a transfer, withdrawal, or trade.");
     expect(body.message).not.toContain(SECRET);
     expect(fetchSpy).toHaveBeenCalledOnce();
@@ -78,6 +95,44 @@ describe("POST /api/carry/lighter-deposit-authorization", () => {
     const malformed = await POST(request({ version: 2, owner_address: OWNER }));
     expect(malformed.status).toBe(400);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it.each(["US", "CA", "GB", "CN", "KP", "RU", "UA", "CU", "IR", "VE", "SD", "BY", "MM", "SY"])(
+    "blocks restricted country %s before session lookup",
+    async (country) => {
+      const fetchSpy = profileFetch();
+      const response = await POST(request({ version: 1, owner_address: OWNER }, { country }));
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: "lighter_uda_eligibility_country_restricted" });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("blocks missing or unknown country and an invalid attestation", async () => {
+    const fetchSpy = profileFetch();
+    const missing = await POST(request({ version: 1, owner_address: OWNER }, { country: null }));
+    expect(missing.status).toBe(403);
+    expect((await missing.json()).error).toBe("lighter_uda_eligibility_country_unavailable");
+    const unknown = await POST(request({ version: 1, owner_address: OWNER }, { country: "XX" }));
+    expect(unknown.status).toBe(403);
+    const invalid = await POST(request({
+      version: 1,
+      owner_address: OWNER,
+      eligibility_attestation: {
+        ...LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
+        accepts_lighter_terms: false,
+      },
+    }));
+    expect(invalid.status).toBe(400);
+    expect((await invalid.json()).error).toBe("lighter_uda_eligibility_attestation_invalid");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("never returns the raw client IP", async () => {
+    profileFetch();
+    const response = await POST(request({ version: 1, owner_address: OWNER }, { forwardedFor: "203.0.113.7" }));
+    expect(response.status).toBe(200);
+    expect(await response.text()).not.toContain("203.0.113.7");
   });
 
   it("requires a live session cookie", async () => {
@@ -123,6 +178,17 @@ describe("POST /api/carry/lighter-deposit-authorization", () => {
     expect(text).not.toContain(SECRET);
     expect(text).not.toContain("user-1");
   });
+
+  it("rejects an EOA that is not the exact server-verified Turnkey perps owner", async () => {
+    profileFetch();
+    bindingMocks.resolve.mockRejectedValueOnce(Object.assign(
+      new Error("lighter_turnkey_owner_binding_mismatch"),
+      { code: "lighter_turnkey_owner_binding_mismatch", status: 403 },
+    ));
+    const response = await POST(request({ version: 1, owner_address: OWNER }));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "lighter_uda_authorization_failed" });
+  });
 });
 
 function profileFetch(userId = "user-1") {
@@ -137,16 +203,23 @@ function request(body: Record<string, unknown>, overrides: {
   origin?: string;
   contentType?: string;
   cookie?: string;
+  country?: string | null;
+  forwardedFor?: string;
 } = {}) {
   const headers = new Headers({
     origin: overrides.origin ?? "https://ghola.example",
     "content-type": overrides.contentType ?? "application/json",
   });
+  if (overrides.country !== null) headers.set("x-vercel-ip-country", overrides.country ?? "DE");
+  if (overrides.forwardedFor) headers.set("x-forwarded-for", overrides.forwardedFor);
   const cookie = overrides.cookie === undefined ? "ghola_thumper_session=session-token" : overrides.cookie;
   if (cookie) headers.set("cookie", cookie);
+  const requestBody = Object.hasOwn(body, "eligibility_attestation")
+    ? body
+    : { ...body, eligibility_attestation: LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION };
   return new NextRequest("https://ghola.example/api/carry/lighter-deposit-authorization", {
     method: "POST",
     headers,
-    body: JSON.stringify(body),
+    body: JSON.stringify(requestBody),
   });
 }

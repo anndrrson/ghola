@@ -20,7 +20,14 @@ describe("private-account live routes", () => {
 
   it("allows a serialized owner transaction only for Lighter completion", () => {
     expect(allowsSerializedOwnerTransaction("/v1/private-account/platforms/lighter/complete")).toBe(true);
+    expect(allowsSerializedOwnerTransaction("/v1/private-account/platforms/lighter/recovery/prepare")).toBe(false);
     expect(allowsSerializedOwnerTransaction("/v1/private-account/platforms/aster/complete")).toBe(false);
+  });
+
+  it("allows only the no-submit Lighter recovery preparation endpoint", () => {
+    expect(isPrivateAccountLiveMutationPath("/v1/private-account/platforms/lighter/recovery/prepare")).toBe(true);
+    expect(isPrivateAccountLiveMutationPath("/v1/private-account/platforms/lighter/recovery/complete")).toBe(false);
+    expect(isPrivateAccountLiveMutationPath("/v1/private-account/platforms/lighter/recovery/submit")).toBe(false);
   });
 });
 

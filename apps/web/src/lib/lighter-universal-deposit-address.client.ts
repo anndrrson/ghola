@@ -1,3 +1,12 @@
+import {
+  isLighterFundingCountryCodeEligible,
+  isLighterFundingEligibilityAttestation,
+  isLighterFundingEligibilityEvidence,
+  LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION_VERSION,
+  LIGHTER_FUNDING_TERMS_VERSION,
+  type LighterFundingEligibilityAttestationV1,
+} from "./lighter-funding-eligibility";
+
 const EVM_ADDRESS = /^0x[0-9a-f]{40}$/i;
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
@@ -28,7 +37,9 @@ export type VerifiedLighterDepositDestination = Readonly<{
       to_chain_id: "3586256";
       to_token_address: `0x${string}`;
       action_type: "LIGHTER_PERPS";
-      recipient_address: `0x${string}`;
+      recipient_address: string;
+      recipient_binding: "owner_address" | "lighter_account_index";
+      owner_account_index: number | null;
       user_id: `0x${string}`;
     }>;
   }>;
@@ -46,6 +57,7 @@ export type VerifiedLighterDepositDestination = Readonly<{
 
 export type LighterDepositDestinationAuthorization = Readonly<{
   ownerAddress: string;
+  eligibilityAttestation: LighterFundingEligibilityAttestationV1;
   signLighterDepositAuthorization: (message: string, expectedOwnerAddress: string) => Promise<`0x${string}`>;
 }>;
 
@@ -84,6 +96,9 @@ export async function fetchVerifiedLighterDepositDestination(
 ): Promise<VerifiedLighterDepositDestination> {
   const ownerAddress = address(authorization.ownerAddress);
   if (!ownerAddress) throw new Error("Verified Turnkey owner identity is required.");
+  if (!isLighterFundingEligibilityAttestation(authorization.eligibilityAttestation)) {
+    throw new Error("Explicit Lighter funding eligibility attestation is required.");
+  }
   const challengeResponse = await fetchImpl("/api/carry/lighter-deposit-authorization", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -92,6 +107,7 @@ export async function fetchVerifiedLighterDepositDestination(
     body: JSON.stringify({
       version: 1,
       owner_address: ownerAddress,
+      eligibility_attestation: authorization.eligibilityAttestation,
     }),
   });
   const challengeBody = await challengeResponse.json().catch(() => null) as unknown;
@@ -140,9 +156,64 @@ export async function fetchVerifiedLighterDepositDestination(
   }
 }
 
+export async function reconcileExistingLighterDepositDestination(
+  ownerAddress: string,
+  eligibilityAttestation: LighterFundingEligibilityAttestationV1,
+  fetchImpl: typeof fetch = fetch,
+  nowMs?: number,
+): Promise<VerifiedLighterDepositDestination> {
+  const owner = address(ownerAddress);
+  if (!owner) throw new LighterDepositDestinationError("Verified Turnkey owner identity is required.", true);
+  if (!isLighterFundingEligibilityAttestation(eligibilityAttestation)) {
+    throw new LighterDepositDestinationError("Explicit Lighter funding eligibility attestation is required.", true);
+  }
+  let response: Response;
+  try {
+    response = await fetchImpl("/api/carry/lighter-uda-attempt-reconciliation", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      cache: "no-store",
+      body: JSON.stringify({
+        version: 1,
+        owner_address: owner,
+        eligibility_attestation: eligibilityAttestation,
+      }),
+    });
+  } catch {
+    throw reconciliationLockedError();
+  }
+  const body = await response.json().catch(() => null) as unknown;
+  if (response.status !== 200) {
+    const failure = object(body);
+    const code = failure.error;
+    const historyObserved = failure.historical_activity_observed === true;
+    throw new LighterDepositDestinationError(
+      historyObserved
+        ? "Provider history was found, but it cannot prove a current safe funding address. Generation remains locked."
+        : typeof code === "string" && code
+          ? code
+          : "Existing Lighter deposit address was not proven.",
+      true,
+    );
+  }
+  try {
+    return validateVerifiedLighterDepositDestination(body, owner, nowMs ?? Date.now());
+  } catch {
+    throw reconciliationLockedError();
+  }
+}
+
 function ambiguousDestinationError() {
   return new LighterDepositDestinationError(
     "Lighter deposit-address creation may have completed, but its verified result was not received. Generation is locked; reconcile manually before trying again.",
+    true,
+  );
+}
+
+function reconciliationLockedError() {
+  return new LighterDepositDestinationError(
+    "Existing Lighter deposit address was not uniquely proven. Generation remains locked.",
     true,
   );
 }
@@ -158,13 +229,13 @@ export function validateLighterDepositAuthorizationMessage(
 ) {
   const ownerAddress = address(expectedOwnerAddress);
   const lines = message.split("\n");
-  const issuedAt = Date.parse(lines[10]?.replace("Issued at: ", "") || "");
-  const expiresAt = Date.parse(lines[11]?.replace("Expires at: ", "") || "");
+  const issuedAt = Date.parse(lines[16]?.replace("Issued at: ", "") || "");
+  const expiresAt = Date.parse(lines[17]?.replace("Expires at: ", "") || "");
   if (
     !ownerAddress ||
     message.length < 20 ||
     message.length > 2_048 ||
-    lines.length !== 14 ||
+    lines.length !== 20 ||
     lines[0] !== "Ghola Lighter deposit address authorization" ||
     lines[1] !== "Version: 1" ||
     lines[2] !== "Action: create_lighter_uda" ||
@@ -174,7 +245,13 @@ export function validateLighterDepositAuthorizationMessage(
     lines[6] !== "Source chain: Base (8453)" ||
     lines[7] !== "Source asset: USDC" ||
     lines[8] !== "Destination: Lighter perps" ||
-    !/^Nonce: [0-9a-f]{64}$/.test(lines[9] || "") ||
+    lines[9] !== `Eligibility attestation version: ${LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION_VERSION}` ||
+    lines[10] !== `Lighter terms version: ${LIGHTER_FUNDING_TERMS_VERSION}` ||
+    !isLighterFundingCountryCodeEligible(lines[11]?.replace("Server-verified country: ", "")) ||
+    lines[12] !== "Lighter terms accepted: yes" ||
+    lines[13] !== "Not a prohibited person: confirmed" ||
+    lines[14] !== "Jurisdiction eligible: yes" ||
+    !/^Nonce: [0-9a-f]{64}$/.test(lines[15] || "") ||
     !Number.isFinite(issuedAt) ||
     !Number.isFinite(expiresAt) ||
     issuedAt > nowMs + 5_000 ||
@@ -182,10 +259,10 @@ export function validateLighterDepositAuthorizationMessage(
     expiresAt - issuedAt !== 2 * 60_000 ||
     expiresAt <= nowMs ||
     expiresAt > nowMs + 2 * 60_000 + 5_000 ||
-    lines[10] !== `Issued at: ${new Date(issuedAt).toISOString()}` ||
-    lines[11] !== `Expires at: ${new Date(expiresAt).toISOString()}` ||
-    lines[12] !== "This authorizes address generation only." ||
-    lines[13] !== "It does not authorize a transfer, withdrawal, or trade."
+    lines[16] !== `Issued at: ${new Date(issuedAt).toISOString()}` ||
+    lines[17] !== `Expires at: ${new Date(expiresAt).toISOString()}` ||
+    lines[18] !== "This authorizes address generation only." ||
+    lines[19] !== "It does not authorize a transfer, withdrawal, or trade."
   ) throw new Error("Lighter owner authorization message is invalid or expired.");
   return Object.freeze({
     message,
@@ -207,9 +284,10 @@ export function validateLighterDepositAuthorizationChallenge(
   const expiresAt = Date.parse(text(body.expires_at));
   const responseOwner = address(body.owner_address);
   const authorization = object(body.authorization);
+  const eligibility = authorization.eligibility;
   validateLighterDepositAuthorizationMessage(message, expectedOwnerAddress, nowMs);
   const lines = message.split("\n");
-  const issuedAt = Date.parse(lines[10]?.replace("Issued at: ", "") || "");
+  const issuedAt = Date.parse(lines[16]?.replace("Issued at: ", "") || "");
   const expiresAtIso = Number.isFinite(expiresAt) ? new Date(expiresAt).toISOString() : "";
   if (
     body.version !== 1 ||
@@ -219,7 +297,7 @@ export function validateLighterDepositAuthorizationChallenge(
     challengeToken.length < 80 ||
     challengeToken.length > 4_096 ||
     !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(challengeToken) ||
-    lines.length !== 14 ||
+    lines.length !== 20 ||
     lines[0] !== "Ghola Lighter deposit address authorization" ||
     lines[1] !== "Version: 1" ||
     lines[2] !== "Action: create_lighter_uda" ||
@@ -229,16 +307,23 @@ export function validateLighterDepositAuthorizationChallenge(
     lines[6] !== "Source chain: Base (8453)" ||
     lines[7] !== "Source asset: USDC" ||
     lines[8] !== "Destination: Lighter perps" ||
-    !/^Nonce: [0-9a-f]{64}$/.test(lines[9] || "") ||
-    !lines[10]?.startsWith("Issued at: ") ||
+    lines[9] !== `Eligibility attestation version: ${LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION_VERSION}` ||
+    lines[10] !== `Lighter terms version: ${LIGHTER_FUNDING_TERMS_VERSION}` ||
+    !isLighterFundingEligibilityEvidence(eligibility) ||
+    lines[11] !== `Server-verified country: ${eligibility.country_code}` ||
+    lines[12] !== "Lighter terms accepted: yes" ||
+    lines[13] !== "Not a prohibited person: confirmed" ||
+    lines[14] !== "Jurisdiction eligible: yes" ||
+    !/^Nonce: [0-9a-f]{64}$/.test(lines[15] || "") ||
+    !lines[16]?.startsWith("Issued at: ") ||
     !Number.isFinite(issuedAt) ||
     issuedAt > nowMs + 5_000 ||
     issuedAt < nowMs - 2 * 60_000 - 5_000 ||
     !Number.isFinite(expiresAt) ||
     expiresAt - issuedAt !== 2 * 60_000 ||
-    lines[11] !== `Expires at: ${expiresAtIso}` ||
-    lines[12] !== "This authorizes address generation only." ||
-    lines[13] !== "It does not authorize a transfer, withdrawal, or trade." ||
+    lines[17] !== `Expires at: ${expiresAtIso}` ||
+    lines[18] !== "This authorizes address generation only." ||
+    lines[19] !== "It does not authorize a transfer, withdrawal, or trade." ||
     authorization.action !== "create_lighter_uda" ||
     authorization.source_chain_id !== 8453 ||
     authorization.source_chain !== "base" ||
@@ -271,7 +356,21 @@ export function validateVerifiedLighterDepositDestination(
   const ownerAddress = address(body.owner_address);
   const expectedOwner = address(expectedOwnerAddress);
   const depositAddress = address(destination.deposit_address);
-  const recipientAddress = address(resolved.recipient_address);
+  const recipientAddress = text(resolved.recipient_address);
+  const recipientBinding = resolved.recipient_binding;
+  const ownerAccountIndex = resolved.owner_account_index === null
+    ? null
+    : typeof resolved.owner_account_index === "number" &&
+      Number.isSafeInteger(resolved.owner_account_index) &&
+      resolved.owner_account_index >= 0 &&
+      resolved.owner_account_index <= 281_474_976_710_655
+      ? resolved.owner_account_index
+      : undefined;
+  const recipientBound = recipientBinding === "owner_address"
+    ? ownerAccountIndex === null && Boolean(address(recipientAddress)) && sameAddress(recipientAddress, text(ownerAddress))
+    : recipientBinding === "lighter_account_index"
+      ? typeof ownerAccountIndex === "number" && recipientAddress === String(ownerAccountIndex)
+      : false;
   const userId = address(resolved.user_id);
   const checkedAt = Date.parse(text(body.checked_at));
 
@@ -299,7 +398,7 @@ export function validateVerifiedLighterDepositDestination(
     !sameAddress(text(resolved.to_token_address), LIGHTER_UDA_L1_USDC_ADDRESS) ||
     resolved.action_type !== "LIGHTER_PERPS" ||
     !recipientAddress ||
-    !sameAddress(recipientAddress, ownerAddress) ||
+    !recipientBound ||
     !userId ||
     !sameAddress(userId, ownerAddress) ||
     body.deposit_destination_verified !== true ||
@@ -340,6 +439,8 @@ export function validateVerifiedLighterDepositDestination(
         to_token_address: LIGHTER_UDA_L1_USDC_ADDRESS,
         action_type: "LIGHTER_PERPS",
         recipient_address: recipientAddress,
+        recipient_binding: recipientBinding as "owner_address" | "lighter_account_index",
+        owner_account_index: ownerAccountIndex as number | null,
         user_id: userId,
       }),
     }),

@@ -9,6 +9,21 @@ import {
 import { resetPrivateLighterUdaAttemptsForTests } from "@/lib/private-account-store";
 import { POST } from "./route";
 
+const bindingMocks = vi.hoisted(() => ({ resolve: vi.fn() }));
+vi.mock("@/lib/lighter-turnkey-owner-binding.server", () => ({
+  resolveLighterTurnkeyPerpsOwnerBinding: bindingMocks.resolve,
+}));
+
+const ELIGIBILITY = Object.freeze({
+  version: 1 as const,
+  terms_version: "2025-12-29" as const,
+  accepts_lighter_terms: true as const,
+  attests_not_prohibited_person: true as const,
+  country_code: "DE",
+  country_source: "vercel_request_header" as const,
+  eligible: true as const,
+});
+
 const SECRET = "secure-lighter-uda-authorization-secret-2026";
 const BUILDER_KEY = "server-only-lighter-builder-key";
 const ACCOUNT = privateKeyToAccount(`0x${"11".repeat(32)}`);
@@ -23,6 +38,7 @@ describe("POST /api/carry/lighter-deposit-destination", () => {
   beforeEach(() => {
     process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET = SECRET;
     process.env.GHOLA_LIGHTER_BUILDER_KEY = BUILDER_KEY;
+    bindingMocks.resolve.mockReset().mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -64,6 +80,8 @@ describe("POST /api/carry/lighter-deposit-destination", () => {
           to_token_address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
           action_type: "LIGHTER_PERPS",
           recipient_address: ACCOUNT.address,
+          recipient_binding: "owner_address",
+          owner_account_index: null,
           user_id: ACCOUNT.address,
         },
       },
@@ -115,6 +133,66 @@ describe("POST /api/carry/lighter-deposit-destination", () => {
     expect(udaCalls(fetchSpy)).toHaveLength(0);
   });
 
+  it("rechecks the exact server-side Turnkey binding before calling Lighter", async () => {
+    const fetchSpy = mockProfileAndUda();
+    bindingMocks.resolve.mockRejectedValueOnce(Object.assign(
+      new Error("lighter_turnkey_owner_binding_mismatch"),
+      { code: "lighter_turnkey_owner_binding_mismatch", status: 403 },
+    ));
+    const response = await POST((await signedRequest()).request);
+    expect(response.status).toBe(403);
+    expect((await response.json()).error).toBe("lighter_uda_authorization_invalid");
+    expect(udaCalls(fetchSpy)).toHaveLength(0);
+  });
+
+  it("accepts only the exact decimal recipient for an existing owner account", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/user/profile")) return profileResponse("user-1");
+      if (isAccountLookup(url)) return lighterAccountResponse(123);
+      if (url === "https://bridge.lighter.xyz/v1/uda") {
+        return udaResponse({ resolved: { recipientAddr: "123" } });
+      }
+      throw new Error("unexpected request");
+    });
+    const response = await POST((await signedRequest()).request);
+    expect(response.status).toBe(200);
+    expect((await response.json()).destination.resolved).toMatchObject({
+      recipient_address: "123",
+      recipient_binding: "lighter_account_index",
+      owner_account_index: 123,
+      user_id: ACCOUNT.address,
+    });
+    expect(udaCalls(fetchSpy)).toHaveLength(1);
+  });
+
+  it("fails owner-account preflight before claim and permits a later safe attempt", async () => {
+    let lookupAvailable = false;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/user/profile")) return profileResponse("user-1");
+      if (isAccountLookup(url)) {
+        if (!lookupAvailable) throw new TypeError("public lookup unavailable");
+        return lighterAccountMissingResponse();
+      }
+      if (url === "https://bridge.lighter.xyz/v1/uda") return udaResponse();
+      throw new Error("unexpected request");
+    });
+    const signed = await signedBody();
+    const unavailable = await POST(destinationRequest(signed));
+    expect(unavailable.status).toBe(503);
+    expect(await unavailable.json()).toMatchObject({
+      error: "lighter_uda_owner_account_lookup_unavailable",
+      deposit_destination_verified: false,
+      funding_action_enabled: false,
+    });
+    expect(udaCalls(fetchSpy)).toHaveLength(0);
+
+    lookupAvailable = true;
+    expect((await POST(destinationRequest(signed))).status).toBe(200);
+    expect(udaCalls(fetchSpy)).toHaveLength(1);
+  });
+
   it("rejects expired and tampered challenges before calling Lighter", async () => {
     const fetchSpy = mockProfileAndUda();
     const expired = authorization(Date.now() - LIGHTER_DEPOSIT_AUTHORIZATION_TTL_MS - 1);
@@ -137,6 +215,21 @@ describe("POST /api/carry/lighter-deposit-destination", () => {
     }));
     expect(tamperedResponse.status).toBe(403);
     expect((await tamperedResponse.json()).error).toBe("lighter_uda_authorization_invalid");
+    expect(udaCalls(fetchSpy)).toHaveLength(0);
+  });
+
+  it("rechecks country and blocks missing, restricted, or changed jurisdiction before Lighter", async () => {
+    const fetchSpy = mockProfileAndUda();
+    const signed = await signedBody();
+    for (const [country, error] of [
+      [null, "lighter_uda_eligibility_country_unavailable"],
+      ["US", "lighter_uda_eligibility_country_restricted"],
+      ["FR", "lighter_uda_eligibility_country_mismatch"],
+    ] as const) {
+      const response = await POST(destinationRequest(signed, { country }));
+      expect(response.status).toBe(403);
+      expect((await response.json()).error).toBe(error);
+    }
     expect(udaCalls(fetchSpy)).toHaveLength(0);
   });
 
@@ -166,6 +259,7 @@ describe("POST /api/carry/lighter-deposit-destination", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
       if (url.includes("/api/user/profile")) return profileResponse("user-1");
+      if (isAccountLookup(url)) return lighterAccountMissingResponse();
       if (url === "https://bridge.lighter.xyz/v1/uda") throw new TypeError("ambiguous transport detail");
       throw new Error("unexpected request");
     });
@@ -230,6 +324,7 @@ describe("POST /api/carry/lighter-deposit-destination", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
       if (url.includes("/api/user/profile")) return profileResponse("user-1");
+      if (isAccountLookup(url)) return lighterAccountMissingResponse();
       if (url === "https://bridge.lighter.xyz/v1/uda") {
         await udaPending;
         return udaResponse();
@@ -259,6 +354,7 @@ describe("POST /api/carry/lighter-deposit-destination", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
       if (url.includes("/api/user/profile")) return profileResponse("user-1");
+      if (isAccountLookup(url)) return lighterAccountMissingResponse();
       if (url === "https://bridge.lighter.xyz/v1/uda") {
         return Response.json({ unavailable: true }, { status: 500 });
       }
@@ -308,6 +404,7 @@ describe("POST /api/carry/lighter-deposit-destination", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
       if (url.includes("/api/user/profile")) return profileResponse(profileUser);
+      if (isAccountLookup(url)) return lighterAccountMissingResponse();
       if (url === "https://bridge.lighter.xyz/v1/uda") return udaResponse();
       throw new Error("unexpected request");
     });
@@ -347,6 +444,7 @@ function authorizationFor(
     ownerAddress,
     ownerCommitment: gholaCommitment("owner", sessionUserId),
     secret: SECRET,
+    eligibility: ELIGIBILITY,
     nowMs,
     nonceHex,
   });
@@ -374,11 +472,13 @@ function destinationRequest(body: Record<string, unknown>, overrides: {
   origin?: string;
   contentType?: string;
   cookie?: string;
+  country?: string | null;
 } = {}) {
   const headers = new Headers({
     origin: overrides.origin ?? "https://ghola.example",
     "content-type": overrides.contentType ?? "application/json",
   });
+  if (overrides.country !== null) headers.set("x-vercel-ip-country", overrides.country ?? "DE");
   const cookie = overrides.cookie === undefined ? "ghola_thumper_session=session-token" : overrides.cookie;
   if (cookie) headers.set("cookie", cookie);
   return new NextRequest("https://ghola.example/api/carry/lighter-deposit-destination", {
@@ -392,6 +492,7 @@ function mockProfileAndUda(userId = "user-1", overrides: Record<string, unknown>
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     const url = String(input);
     if (url.includes("/api/user/profile")) return profileResponse(userId);
+    if (isAccountLookup(url)) return lighterAccountMissingResponse();
     if (url === "https://bridge.lighter.xyz/v1/uda") return udaResponse(overrides);
     throw new Error("unexpected request");
   });
@@ -399,6 +500,22 @@ function mockProfileAndUda(userId = "user-1", overrides: Record<string, unknown>
 
 function profileResponse(userId: string) {
   return Response.json({ id: userId, email: "user@example.com", display_name: "User" });
+}
+
+function isAccountLookup(url: string) {
+  return url.includes("/api/v1/accountsByL1Address?");
+}
+
+function lighterAccountMissingResponse() {
+  return Response.json({ code: 21100, message: "account not found" }, { status: 400 });
+}
+
+function lighterAccountResponse(accountIndex: number) {
+  return Response.json({
+    code: 200,
+    l1_address: ACCOUNT.address,
+    sub_accounts: [{ index: accountIndex, account_type: 0, l1_address: ACCOUNT.address }],
+  });
 }
 
 function udaResponse(overrides: Record<string, unknown> = {}) {

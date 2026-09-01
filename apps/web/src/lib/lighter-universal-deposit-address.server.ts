@@ -1,6 +1,10 @@
 import "server-only";
 
 import { getAddress, isAddress, zeroAddress } from "viem";
+import {
+  LIGHTER_MAINNET_API_URL,
+  lighterAccountIndex,
+} from "./lighter-agent-association";
 
 export const LIGHTER_UDA_BASE_URL = "https://bridge.lighter.xyz";
 export const LIGHTER_UDA_CHAIN_ID = "3586256";
@@ -14,6 +18,9 @@ export const LIGHTER_UDA_MINIMUM_USDC_MICROUNITS = BigInt(5_000_000);
 
 const REQUEST_TIMEOUT_MS = 5_000;
 const DECIMAL_INTEGER = /^(?:0|[1-9][0-9]*)$/;
+const EVM_TRANSACTION_HASH = /^0x[0-9a-fA-F]{64}$/;
+const MAX_UINT256 = (BigInt(1) << BigInt(256)) - BigInt(1);
+const MAX_UINT256_DECIMAL_DIGITS = MAX_UINT256.toString().length;
 
 export type LighterUniversalDepositAddress = Readonly<{
   owner_address: `0x${string}`;
@@ -24,8 +31,16 @@ export type LighterUniversalDepositAddress = Readonly<{
   action_type: typeof LIGHTER_UDA_ACTION_TYPE;
   to_chain_id: typeof LIGHTER_UDA_CHAIN_ID;
   to_token_address: typeof LIGHTER_UDA_USDC_TOKEN_ADDRESS;
-  recipient_address: `0x${string}`;
+  recipient_address: string;
+  recipient_binding: "owner_address" | "lighter_account_index";
+  owner_account_index: number | null;
   resolved_user_id: `0x${string}`;
+}>;
+
+export type LighterUdaOwnerAccountBinding = Readonly<{
+  owner_address: `0x${string}`;
+  account_state: "new_account" | "existing_account";
+  account_index: number | null;
 }>;
 
 export type LighterUniversalDepositTransaction = Readonly<{
@@ -47,14 +62,26 @@ export type LighterUniversalDepositStatus = Readonly<{
   completed: boolean;
 }>;
 
+export type ExactLighterUniversalDepositStatus = Readonly<{
+  owner_address: `0x${string}`;
+  deposit_address: `0x${string}`;
+  transaction_hash: `0x${string}`;
+  expected_amount_base_unit: string;
+  observed: boolean;
+  transaction: LighterUniversalDepositTransaction | null;
+}>;
+
 export async function createLighterUniversalDepositAddress({
   ownerAddress,
+  ownerAccountBinding,
   fetchImpl = fetch,
 }: {
   ownerAddress: string;
+  ownerAccountBinding: LighterUdaOwnerAccountBinding;
   fetchImpl?: typeof fetch;
 }): Promise<LighterUniversalDepositAddress> {
   const owner = validatedAddress(ownerAddress, "lighter_uda_owner_address_invalid");
+  const binding = validatedOwnerAccountBinding(ownerAccountBinding, owner);
   assertLighterUdaCreateConfigured();
   const response = await lighterUdaFetch(
     `${LIGHTER_UDA_BASE_URL}/v1/uda`,
@@ -86,7 +113,7 @@ export async function createLighterUniversalDepositAddress({
   const responseOwner = validatedResponseAddress(resolved.userId);
   const depositAddress = validatedResponseAddress(body.depositAddr);
   const toTokenAddress = validatedResponseAddress(resolved.toTokenAddress);
-  const recipientAddress = validatedRecipient(resolved.recipientAddr, owner);
+  const recipientAddress = validatedRecipient(resolved.recipientAddr, binding);
   if (
     responseOwner.toLowerCase() !== owner.toLowerCase() ||
     depositAddress.toLowerCase() === owner.toLowerCase() ||
@@ -105,7 +132,49 @@ export async function createLighterUniversalDepositAddress({
     to_chain_id: LIGHTER_UDA_CHAIN_ID,
     to_token_address: LIGHTER_UDA_USDC_TOKEN_ADDRESS,
     recipient_address: recipientAddress,
+    recipient_binding: binding.account_index === null ? "owner_address" : "lighter_account_index",
+    owner_account_index: binding.account_index,
     resolved_user_id: responseOwner,
+  });
+}
+
+export async function readLighterUdaOwnerAccountBinding({
+  ownerAddress,
+  fetchImpl = fetch,
+}: {
+  ownerAddress: string;
+  fetchImpl?: typeof fetch;
+}): Promise<LighterUdaOwnerAccountBinding> {
+  const owner = validatedAddress(ownerAddress, "lighter_uda_owner_address_invalid");
+  let response: Response;
+  try {
+    response = await fetchImpl(
+      `${LIGHTER_MAINNET_API_URL}/api/v1/accountsByL1Address?l1_address=${encodeURIComponent(owner)}`,
+      {
+        method: "GET",
+        cache: "no-store",
+        redirect: "error",
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      },
+    );
+  } catch {
+    throw lighterUdaError("lighter_uda_owner_account_lookup_unavailable", 503);
+  }
+  const body = object(await response.json().catch(() => null));
+  if (!body) throw lighterUdaError("lighter_uda_owner_account_lookup_invalid", 502);
+  if (response.status === 400 && Number(body.code) === 21100) {
+    return Object.freeze({
+      owner_address: owner,
+      account_state: "new_account",
+      account_index: null,
+    });
+  }
+  if (!response.ok) throw lighterUdaError("lighter_uda_owner_account_lookup_unavailable", 503);
+  const accountIndex = exactOwnerAccountIndex(body, owner);
+  return Object.freeze({
+    owner_address: owner,
+    account_state: "existing_account",
+    account_index: accountIndex,
   });
 }
 
@@ -148,6 +217,84 @@ export async function readLighterUniversalDepositStatus({
     deposit_address: expectedDepositAddress,
     transactions: Object.freeze(transactions),
     completed: transactions.some((transaction) => transaction.status === "COMPLETED"),
+  });
+}
+
+export async function readExactLighterUniversalDepositStatus({
+  ownerAddress,
+  depositAddress,
+  transactionHash,
+  expectedAmountBaseUnit,
+  fetchImpl = fetch,
+}: {
+  ownerAddress: string;
+  depositAddress: string;
+  transactionHash: string;
+  expectedAmountBaseUnit: string;
+  fetchImpl?: typeof fetch;
+}): Promise<ExactLighterUniversalDepositStatus> {
+  const owner = validatedAddress(ownerAddress, "lighter_uda_owner_address_invalid");
+  const expectedDepositAddress = validatedAddress(depositAddress, "lighter_uda_deposit_address_invalid");
+  const expectedTransactionHash = validatedTransactionHash(transactionHash);
+  const expectedAmount = validatedExpectedAmount(expectedAmountBaseUnit);
+  if (
+    expectedDepositAddress.toLowerCase() === owner.toLowerCase() ||
+    expectedDepositAddress.toLowerCase() === zeroAddress
+  ) {
+    throw lighterUdaError("lighter_uda_deposit_address_invalid", 400);
+  }
+  const response = await fetchLighterUdaStatus(owner, fetchImpl);
+  const body = await jsonObject(response, "lighter_uda_status_response_invalid");
+  if (!Array.isArray(body.transactions)) {
+    throw lighterUdaError("lighter_uda_status_response_invalid", 502);
+  }
+  const exactCandidates = body.transactions.filter((value) => {
+    const transaction = object(value);
+    if (!transaction || !string(transaction.txHash)) {
+      throw lighterUdaError("lighter_uda_status_response_invalid", 502);
+    }
+    return String(transaction.txHash).toLowerCase() === expectedTransactionHash.toLowerCase();
+  });
+  if (exactCandidates.length > 1) {
+    throw lighterUdaError("lighter_uda_status_response_ambiguous", 502);
+  }
+  if (exactCandidates.length === 0) {
+    return Object.freeze({
+      owner_address: owner,
+      deposit_address: expectedDepositAddress,
+      transaction_hash: expectedTransactionHash,
+      expected_amount_base_unit: expectedAmount,
+      observed: false,
+      transaction: null,
+    });
+  }
+  const transaction = validateTransaction(exactCandidates[0], expectedDepositAddress);
+  if (
+    transaction.transaction_hash.toLowerCase() !== expectedTransactionHash.toLowerCase() ||
+    transaction.from_amount_base_unit !== expectedAmount
+  ) {
+    throw lighterUdaError("lighter_uda_status_binding_mismatch", 502);
+  }
+  return Object.freeze({
+    owner_address: owner,
+    deposit_address: expectedDepositAddress,
+    transaction_hash: expectedTransactionHash,
+    expected_amount_base_unit: expectedAmount,
+    observed: true,
+    transaction,
+  });
+}
+
+export function validatedLighterDepositExpectation({
+  transactionHash,
+  expectedAmountBaseUnit,
+}: {
+  transactionHash: unknown;
+  expectedAmountBaseUnit: unknown;
+}) {
+  return Object.freeze({
+    transaction_hash: validatedTransactionHash(transactionHash),
+    expected_amount_base_unit: validatedExpectedAmount(expectedAmountBaseUnit),
   });
 }
 
@@ -216,6 +363,21 @@ async function lighterUdaFetch(
   return response;
 }
 
+function fetchLighterUdaStatus(owner: `0x${string}`, fetchImpl: typeof fetch) {
+  return lighterUdaFetch(
+    `${LIGHTER_UDA_BASE_URL}/v1/uda/status/${encodeURIComponent(owner)}`,
+    {
+      method: "GET",
+      headers: lighterHeaders(false),
+      cache: "no-store",
+      redirect: "error",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    },
+    fetchImpl,
+    "status",
+  );
+}
+
 function lighterHeaders(json: boolean): HeadersInit {
   const builderKey = lighterBuilderKey();
   return json
@@ -261,21 +423,114 @@ function normalizeChainId(value: unknown) {
   return null;
 }
 
-function validatedRecipient(value: unknown, owner: `0x${string}`) {
+function validatedRecipient(value: unknown, binding: LighterUdaOwnerAccountBinding) {
+  if (binding.account_index !== null) {
+    const expected = String(binding.account_index);
+    if (typeof value !== "string" || value !== expected || !DECIMAL_INTEGER.test(value)) {
+      throw lighterUdaError("lighter_uda_create_response_invalid", 502);
+    }
+    return expected;
+  }
   if (typeof value !== "string" || !isAddress(value, { strict: true })) {
     throw lighterUdaError("lighter_uda_create_response_invalid", 502);
   }
   const recipient = getAddress(value);
-  if (recipient.toLowerCase() !== owner.toLowerCase()) {
+  if (recipient.toLowerCase() !== binding.owner_address.toLowerCase()) {
     throw lighterUdaError("lighter_uda_create_response_invalid", 502);
   }
   return recipient;
+}
+
+function validatedOwnerAccountBinding(
+  value: LighterUdaOwnerAccountBinding,
+  owner: `0x${string}`,
+): LighterUdaOwnerAccountBinding {
+  if (
+    !value ||
+    typeof value.owner_address !== "string" ||
+    value.owner_address.toLowerCase() !== owner.toLowerCase() ||
+    (value.account_state !== "new_account" && value.account_state !== "existing_account") ||
+    (value.account_state === "new_account" && value.account_index !== null) ||
+    (value.account_state === "existing_account" && value.account_index === null)
+  ) throw lighterUdaError("lighter_uda_owner_account_binding_invalid", 500);
+  if (value.account_index !== null) {
+    try {
+      lighterAccountIndex(value.account_index);
+    } catch {
+      throw lighterUdaError("lighter_uda_owner_account_binding_invalid", 500);
+    }
+  }
+  return value;
+}
+
+function exactOwnerAccountIndex(body: Record<string, unknown>, owner: `0x${string}`): number {
+  const responseOwner = responseAddressOrNull(body.l1_address);
+  if (Number(body.code) !== 200 || !responseOwner || responseOwner.toLowerCase() !== owner.toLowerCase() || !Array.isArray(body.sub_accounts)) {
+    throw lighterUdaError("lighter_uda_owner_account_lookup_invalid", 502);
+  }
+  const owned: Array<{ account_index: number; account_type: number }> = [];
+  for (const value of body.sub_accounts) {
+    const row = object(value);
+    if (!row) throw lighterUdaError("lighter_uda_owner_account_lookup_invalid", 502);
+    const rowOwner = responseAddressOrNull(row.l1_address);
+    if (!rowOwner) throw lighterUdaError("lighter_uda_owner_account_lookup_invalid", 502);
+    if (rowOwner.toLowerCase() !== owner.toLowerCase()) continue;
+    const accountType = exactDecimalInteger(row.account_type);
+    const candidateIndex = exactDecimalInteger(row.index);
+    let accountIndex: number;
+    try {
+      if (candidateIndex === null) throw new Error("invalid account index");
+      accountIndex = lighterAccountIndex(candidateIndex);
+    } catch {
+      throw lighterUdaError("lighter_uda_owner_account_lookup_invalid", 502);
+    }
+    if (accountType === null) {
+      throw lighterUdaError("lighter_uda_owner_account_lookup_invalid", 502);
+    }
+    owned.push({ account_index: accountIndex, account_type: accountType });
+  }
+  if (owned.length === 0 || new Set(owned.map((row) => row.account_index)).size !== owned.length) {
+    throw lighterUdaError("lighter_uda_owner_account_lookup_invalid", 502);
+  }
+  const masterAccounts = owned.filter((row) => row.account_type === 0);
+  if (masterAccounts.length === 1) return masterAccounts[0].account_index;
+  if (masterAccounts.length === 0 && owned.length === 1) return owned[0].account_index;
+  throw lighterUdaError("lighter_uda_owner_account_lookup_ambiguous", 409);
+}
+
+function exactDecimalInteger(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value !== "string" || !DECIMAL_INTEGER.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 && String(parsed) === value ? parsed : null;
 }
 
 function responseAddressOrNull(value: unknown): `0x${string}` | null {
   return typeof value === "string" && isAddress(value, { strict: true })
     ? getAddress(value)
     : null;
+}
+
+function validatedTransactionHash(value: unknown): `0x${string}` {
+  if (typeof value !== "string" || !EVM_TRANSACTION_HASH.test(value)) {
+    throw lighterUdaError("lighter_uda_transaction_hash_invalid", 400);
+  }
+  return value.toLowerCase() as `0x${string}`;
+}
+
+function validatedExpectedAmount(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length > MAX_UINT256_DECIMAL_DIGITS ||
+    !DECIMAL_INTEGER.test(value) ||
+    BigInt(value) < LIGHTER_UDA_MINIMUM_USDC_MICROUNITS ||
+    BigInt(value) > MAX_UINT256
+  ) {
+    throw lighterUdaError("lighter_uda_expected_amount_invalid", 400);
+  }
+  return value;
 }
 
 function object(value: unknown): Record<string, unknown> | null {

@@ -44,6 +44,11 @@ import {
 } from "./perps-turnkey-aster-signing";
 import type { LighterChangePubKeyTransactionPlan } from "./lighter-agent-association";
 import { signLighterChangePubKeyWithTurnkey } from "./perps-turnkey-lighter-signing";
+import { signLighterRecoveryReadinessWithTurnkey } from "./perps-turnkey-lighter-recovery-signing";
+import type {
+  LighterOwnerRecoveryReadinessAuthorization,
+  LighterOwnerRecoveryReadinessSigningProof,
+} from "./lighter-owner-recovery-readiness.client";
 import { validateLighterDepositAuthorizationMessage } from "./lighter-universal-deposit-address.client";
 import {
   createPerpsWalletProvisioningQueue,
@@ -113,6 +118,9 @@ interface PerpsTurnkeyContextValue {
   replaceWalletPair: () => Promise<PerpsWalletPair>;
   installDelegation: (publicKey: string) => Promise<InstallDelegationResult>;
   signLighterDepositAuthorization: (message: string, expectedOwnerAddress: string) => Promise<`0x${string}`>;
+  signLighterRecoveryReadiness: (
+    authorization: LighterOwnerRecoveryReadinessAuthorization,
+  ) => Promise<LighterOwnerRecoveryReadinessSigningProof>;
   signOwnerMandate: (mandate: unknown) => Promise<`0x${string}`>;
   signCarryRiskMandate: (mandate: unknown) => Promise<`0x${string}`>;
   signCarryCollateralReview: (review: unknown) => Promise<`0x${string}`>;
@@ -154,6 +162,7 @@ const PerpsTurnkeyContext = createContext<PerpsTurnkeyContextValue>({
   replaceWalletPair: unavailable,
   installDelegation: unavailable,
   signLighterDepositAuthorization: unavailable,
+  signLighterRecoveryReadiness: unavailable,
   signOwnerMandate: unavailable,
   signCarryRiskMandate: unavailable,
   signCarryCollateralReview: unavailable,
@@ -250,6 +259,7 @@ const CONTEXT_DEFAULTS = {
   replaceWalletPair: unavailable,
   installDelegation: unavailable,
   signLighterDepositAuthorization: unavailable,
+  signLighterRecoveryReadiness: unavailable,
   signOwnerMandate: unavailable,
   signCarryRiskMandate: unavailable,
   signCarryCollateralReview: unavailable,
@@ -614,6 +624,23 @@ function PerpsTurnkeySession({
     });
   }, [ensureWalletPair, turnkey.httpClient]);
 
+  const signLighterRecoveryReadiness = useCallback(async (
+    authorization: LighterOwnerRecoveryReadinessAuthorization,
+  ) => {
+    const client = turnkey.httpClient;
+    if (!client) throw new Error("Turnkey signing client is unavailable.");
+    return withOneStableTurnkeyRefresh({
+      load: () => ensureWalletPair(),
+      account: (pair) => pair.owner,
+      execute: (pair) => signLighterRecoveryReadinessWithTurnkey({
+        client,
+        organizationId: pair.organizationId,
+        owner: pair.owner,
+        authorization,
+      }),
+    });
+  }, [ensureWalletPair, turnkey.httpClient]);
+
   const signCarryRiskMandate = useCallback(async (mandate: unknown) => {
     const pair = await ensureWalletPair();
     if (!turnkey.httpClient) throw new Error("Turnkey signing client is unavailable.");
@@ -757,6 +784,7 @@ function PerpsTurnkeySession({
     replaceWalletPair,
     installDelegation,
     signLighterDepositAuthorization,
+    signLighterRecoveryReadiness,
     signOwnerMandate,
     signCarryRiskMandate,
     signCarryCollateralReview,
@@ -781,6 +809,7 @@ function PerpsTurnkeySession({
     organizationId,
     revokeHyperliquid,
     signLighterDepositAuthorization,
+    signLighterRecoveryReadiness,
     signOwnerMandate,
     signCarryRiskMandate,
     signCarryCollateralReview,

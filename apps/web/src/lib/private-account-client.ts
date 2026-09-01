@@ -864,6 +864,23 @@ export async function completeLighterProgrammaticCredential(input: {
   });
 }
 
+export type LighterOwnerRecoveryReadinessPhaseRequest = Readonly<{
+  version: 1;
+  owner_address: string;
+  account_index?: number;
+  challenge_token?: string;
+  owner_signature?: string;
+}>;
+
+export async function requestLighterOwnerRecoveryReadinessPhase(
+  input: LighterOwnerRecoveryReadinessPhaseRequest,
+): Promise<unknown> {
+  return privateAccountFetch("/v1/private-account/platforms/lighter/recovery/prepare", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function preflightAsterCarry(input: {
   market: string;
   side: "buy" | "sell";

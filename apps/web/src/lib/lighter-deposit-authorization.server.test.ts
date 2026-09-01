@@ -16,6 +16,15 @@ const COMMITMENT = `owner_${"1".repeat(48)}`;
 const OTHER_COMMITMENT = `owner_${"2".repeat(48)}`;
 const ACCOUNT = privateKeyToAccount(`0x${"11".repeat(32)}`);
 const OTHER_ACCOUNT = privateKeyToAccount(`0x${"22".repeat(32)}`);
+const ELIGIBILITY = Object.freeze({
+  version: 1 as const,
+  terms_version: "2025-12-29" as const,
+  accepts_lighter_terms: true as const,
+  attests_not_prohibited_person: true as const,
+  country_code: "DE",
+  country_source: "vercel_request_header" as const,
+  eligible: true as const,
+});
 
 vi.mock("server-only", () => ({}));
 
@@ -33,6 +42,7 @@ describe("Lighter deposit authorization", () => {
       source_chain_id: 8453,
       source_asset: "USDC",
       destination_market: "perps",
+      eligibility: ELIGIBILITY,
     });
     expect(authorization.message).toBe([
       "Ghola Lighter deposit address authorization",
@@ -44,6 +54,12 @@ describe("Lighter deposit authorization", () => {
       "Source chain: Base (8453)",
       "Source asset: USDC",
       "Destination: Lighter perps",
+      "Eligibility attestation version: 1",
+      "Lighter terms version: 2025-12-29",
+      "Server-verified country: DE",
+      "Lighter terms accepted: yes",
+      "Not a prohibited person: confirmed",
+      "Jurisdiction eligible: yes",
       `Nonce: ${NONCE}`,
       `Issued at: ${new Date(NOW).toISOString()}`,
       `Expires at: ${new Date(NOW + LIGHTER_DEPOSIT_AUTHORIZATION_TTL_MS).toISOString()}`,
@@ -123,6 +139,28 @@ describe("Lighter deposit authorization", () => {
       .toThrowError(expect.objectContaining({ code: "lighter_uda_authorization_invalid" }));
   });
 
+  it("binds eligibility evidence to the owner signature", async () => {
+    const issued = issue();
+    const originalSignature = await ACCOUNT.signMessage({ message: issued.message });
+    const payload = tokenPayload(issued.challenge_token);
+    const changed = verify(signPayload({
+      ...payload,
+      eligibility: { ...ELIGIBILITY, country_code: "FR" },
+    }));
+    await expect(verifyLighterDepositAuthorizationSignature({
+      authorization: changed,
+      signature: originalSignature,
+    })).rejects.toMatchObject({ code: "lighter_uda_owner_signature_mismatch", status: 403 });
+  });
+
+  it("rejects invalid or restricted eligibility evidence", () => {
+    const payload = tokenPayload(issue().challenge_token);
+    expect(() => verify(signPayload({
+      ...payload,
+      eligibility: { ...ELIGIBILITY, country_code: "US" },
+    }))).toThrowError(expect.objectContaining({ code: "lighter_uda_eligibility_evidence_invalid" }));
+  });
+
   it.each([
     ["short secret", { secret: "too-short" }, "lighter_uda_authorization_unconfigured"],
     ["placeholder secret", { secret: "placeholder-secret-that-is-long-enough-123" }, "lighter_uda_authorization_unconfigured"],
@@ -140,6 +178,7 @@ function issue(overrides: Partial<Parameters<typeof issueLighterDepositAuthoriza
     ownerAddress: ACCOUNT.address,
     ownerCommitment: COMMITMENT,
     secret: SECRET,
+    eligibility: ELIGIBILITY,
     nowMs: NOW,
     nonceHex: NONCE,
     ...overrides,

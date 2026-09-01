@@ -14,11 +14,15 @@ import {
   verifyLighterDepositAuthorizationSignature,
   verifyLighterDepositAuthorizationToken,
 } from "@/lib/lighter-deposit-authorization.server";
+import { assertLighterFundingEligibilityMatchesRequest } from "@/lib/lighter-funding-eligibility.server";
+import { resolveLighterTurnkeyPerpsOwnerBinding } from "@/lib/lighter-turnkey-owner-binding.server";
 import {
   assertLighterUdaCreateConfigured,
   createLighterUniversalDepositAddress,
   LIGHTER_UDA_ACTION_TYPE,
+  readLighterUdaOwnerAccountBinding,
   type LighterUniversalDepositAddress,
+  type LighterUdaOwnerAccountBinding,
 } from "@/lib/lighter-universal-deposit-address.server";
 import { gholaCommitment } from "@/lib/private-account";
 import {
@@ -64,6 +68,14 @@ export async function POST(req: NextRequest) {
       authorization,
       signature: body.signature,
     });
+    assertLighterFundingEligibilityMatchesRequest({
+      request: req,
+      evidence: authorization.payload.eligibility,
+    });
+    await resolveLighterTurnkeyPerpsOwnerBinding({
+      sessionEmail: session.email,
+      ownerAddress,
+    });
     claimToken = authorization.payload.nonce;
   } catch (caught) {
     return knownFailure(caught, "lighter_uda_authorization_invalid");
@@ -74,6 +86,18 @@ export async function POST(req: NextRequest) {
     assertLighterUdaCreateConfigured();
   } catch (caught) {
     return knownFailure(caught, "lighter_uda_builder_key_unconfigured", {
+      deposit_destination_verified: false,
+      funding_action_enabled: false,
+    });
+  }
+
+  let ownerAccountBinding: LighterUdaOwnerAccountBinding;
+  try {
+    // Authoritative public owner/account lookup must succeed before a durable
+    // claim exists and before the single UDA creation POST can be dispatched.
+    ownerAccountBinding = await readLighterUdaOwnerAccountBinding({ ownerAddress });
+  } catch (caught) {
+    return knownFailure(caught, "lighter_uda_owner_account_lookup_unavailable", {
       deposit_destination_verified: false,
       funding_action_enabled: false,
     });
@@ -119,7 +143,10 @@ export async function POST(req: NextRequest) {
 
   try {
     // Exactly one provider call. Never retry an ambiguous response.
-    const destination = await createLighterUniversalDepositAddress({ ownerAddress });
+    const destination = await createLighterUniversalDepositAddress({
+      ownerAddress,
+      ownerAccountBinding,
+    });
     let verified: PrivateLighterUdaDestinationV1;
     try {
       verified = (await settlePrivateLighterUdaAttempt({
@@ -196,6 +223,8 @@ function verifiedDestinationResponse(destination: LighterUniversalDepositAddress
         to_token_address: destination.to_token_address,
         action_type: LIGHTER_UDA_ACTION_TYPE,
         recipient_address: destination.recipient_address,
+        recipient_binding: destination.recipient_binding,
+        owner_account_index: destination.owner_account_index,
         user_id: destination.resolved_user_id,
       },
     },
@@ -224,12 +253,12 @@ function retryForbidden(error: string) {
 }
 
 async function verifiedSession(token: string): Promise<
-  | { ok: true; userId: string }
+  | { ok: true; userId: string; email: string }
   | { ok: false; error: string; status: number }
 > {
   try {
     const session = await fetchSessionUser(token);
-    if (session.ok) return { ok: true, userId: session.user.id };
+    if (session.ok) return { ok: true, userId: session.user.id, email: session.user.email };
     return session.status === 401 || session.status === 403
       ? { ok: false, error: "lighter_uda_session_invalid", status: 401 }
       : { ok: false, error: "lighter_uda_session_unavailable", status: 503 };

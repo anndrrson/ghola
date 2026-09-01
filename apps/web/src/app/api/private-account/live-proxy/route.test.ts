@@ -55,6 +55,7 @@ describe("private account live proxy", () => {
     "/v1/private-account/platforms/aster/complete",
     "/v1/private-account/platforms/lighter/prepare",
     "/v1/private-account/platforms/lighter/complete",
+    "/v1/private-account/platforms/lighter/recovery/prepare",
     "/v1/private-account/platforms/link",
     "/v1/private-account/funding/import",
   ])("proxies guarded onboarding mutation %s", async (path) => {

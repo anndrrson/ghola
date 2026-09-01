@@ -2,6 +2,12 @@ import "server-only";
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { getAddress, isAddress, recoverMessageAddress, type Hex } from "viem";
+import {
+  isLighterFundingEligibilityEvidence,
+  LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION_VERSION,
+  LIGHTER_FUNDING_TERMS_VERSION,
+  type LighterFundingEligibilityEvidenceV1,
+} from "./lighter-funding-eligibility";
 
 export const LIGHTER_DEPOSIT_AUTHORIZATION_TTL_MS = 2 * 60_000;
 export const LIGHTER_DEPOSIT_SOURCE_CHAIN_ID = 8453;
@@ -20,6 +26,7 @@ const TOKEN_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const PAYLOAD_KEYS = [
   "audience",
   "destination_market",
+  "eligibility",
   "expires_at_ms",
   "issued_at_ms",
   "nonce",
@@ -41,6 +48,7 @@ export type LighterDepositAuthorizationPayload = Readonly<{
   source_chain_id: typeof LIGHTER_DEPOSIT_SOURCE_CHAIN_ID;
   source_asset: typeof LIGHTER_DEPOSIT_SOURCE_ASSET;
   destination_market: typeof LIGHTER_DEPOSIT_DESTINATION_MARKET;
+  eligibility: LighterFundingEligibilityEvidenceV1;
 }>;
 
 export type LighterDepositAuthorization = Readonly<{
@@ -53,6 +61,7 @@ export function issueLighterDepositAuthorization(input: {
   ownerAddress: string;
   ownerCommitment: string;
   secret: string;
+  eligibility: LighterFundingEligibilityEvidenceV1;
   nowMs?: number;
   nonceHex?: string;
 }): LighterDepositAuthorization {
@@ -60,6 +69,7 @@ export function issueLighterDepositAuthorization(input: {
   const nowMs = validatedTime(input.nowMs ?? Date.now());
   const ownerAddress = validatedOwnerAddress(input.ownerAddress);
   const ownerCommitment = validatedOwnerCommitment(input.ownerCommitment);
+  const eligibility = validatedEligibility(input.eligibility);
   const nonce = input.nonceHex ?? randomBytes(32).toString("hex");
   if (!NONCE_PATTERN.test(nonce)) {
     throw lighterDepositAuthorizationError("lighter_uda_authorization_nonce_invalid", 500);
@@ -75,6 +85,7 @@ export function issueLighterDepositAuthorization(input: {
     source_chain_id: LIGHTER_DEPOSIT_SOURCE_CHAIN_ID,
     source_asset: LIGHTER_DEPOSIT_SOURCE_ASSET,
     destination_market: LIGHTER_DEPOSIT_DESTINATION_MARKET,
+    eligibility,
   });
   const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
   return Object.freeze({
@@ -158,6 +169,12 @@ export function lighterDepositAuthorizationMessage(payload: LighterDepositAuthor
     `Source chain: Base (${LIGHTER_DEPOSIT_SOURCE_CHAIN_ID})`,
     `Source asset: ${LIGHTER_DEPOSIT_SOURCE_ASSET}`,
     "Destination: Lighter perps",
+    `Eligibility attestation version: ${LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION_VERSION}`,
+    `Lighter terms version: ${LIGHTER_FUNDING_TERMS_VERSION}`,
+    `Server-verified country: ${payload.eligibility.country_code}`,
+    "Lighter terms accepted: yes",
+    "Not a prohibited person: confirmed",
+    "Jurisdiction eligible: yes",
     `Nonce: ${payload.nonce}`,
     `Issued at: ${new Date(payload.issued_at_ms).toISOString()}`,
     `Expires at: ${new Date(payload.expires_at_ms).toISOString()}`,
@@ -196,7 +213,15 @@ function validatedPayload(value: unknown): LighterDepositAuthorizationPayload {
     source_chain_id: LIGHTER_DEPOSIT_SOURCE_CHAIN_ID,
     source_asset: LIGHTER_DEPOSIT_SOURCE_ASSET,
     destination_market: LIGHTER_DEPOSIT_DESTINATION_MARKET,
+    eligibility: validatedEligibility(payload.eligibility),
   });
+}
+
+function validatedEligibility(value: unknown) {
+  if (!isLighterFundingEligibilityEvidence(value)) {
+    throw lighterDepositAuthorizationError("lighter_uda_eligibility_evidence_invalid", 403);
+  }
+  return Object.freeze({ ...value });
 }
 
 function validatedOwnerAddress(value: unknown): `0x${string}` {

@@ -12,12 +12,14 @@ import {
   LIGHTER_DEPOSIT_SOURCE_CHAIN,
   LIGHTER_DEPOSIT_SOURCE_CHAIN_ID,
 } from "@/lib/lighter-deposit-authorization.server";
+import { assertLighterFundingEligibility } from "@/lib/lighter-funding-eligibility.server";
+import { resolveLighterTurnkeyPerpsOwnerBinding } from "@/lib/lighter-turnkey-owner-binding.server";
 import { gholaCommitment } from "@/lib/private-account";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const BODY_KEYS = ["owner_address", "version"];
+const BODY_KEYS = ["eligibility_attestation", "owner_address", "version"];
 
 export async function POST(req: NextRequest) {
   if (!sameOrigin(req)) return json({ error: "lighter_uda_cross_site_rejected" }, 403);
@@ -26,15 +28,29 @@ export async function POST(req: NextRequest) {
   if (!body || !exactKeys(body, BODY_KEYS) || body.version !== 1 || typeof body.owner_address !== "string") {
     return json({ error: "lighter_uda_authorization_request_invalid" }, 400);
   }
+  let eligibility;
+  try {
+    eligibility = assertLighterFundingEligibility({
+      request: req,
+      attestation: body.eligibility_attestation,
+    });
+  } catch (caught) {
+    return knownFailure(caught, "lighter_uda_eligibility_failed");
+  }
   const token = req.cookies.get(SESSION_COOKIE_NAME)?.value;
   if (!token) return json({ error: "lighter_uda_session_required" }, 401);
   const session = await verifiedSession(token);
   if (!session.ok) return json({ error: session.error }, session.status);
   try {
+    await resolveLighterTurnkeyPerpsOwnerBinding({
+      sessionEmail: session.email,
+      ownerAddress: body.owner_address,
+    });
     const authorization = issueLighterDepositAuthorization({
       ownerAddress: body.owner_address,
       ownerCommitment: gholaCommitment("owner", session.userId),
       secret: process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET ?? "",
+      eligibility,
     });
     return json({
       version: 1,
@@ -48,6 +64,7 @@ export async function POST(req: NextRequest) {
         source_chain: LIGHTER_DEPOSIT_SOURCE_CHAIN,
         source_asset: LIGHTER_DEPOSIT_SOURCE_ASSET,
         destination_market: LIGHTER_DEPOSIT_DESTINATION_MARKET,
+        eligibility: authorization.payload.eligibility,
         transfer_authorized: false,
         withdrawal_authorized: false,
         trade_authorized: false,
@@ -59,12 +76,12 @@ export async function POST(req: NextRequest) {
 }
 
 async function verifiedSession(token: string): Promise<
-  | { ok: true; userId: string }
+  | { ok: true; userId: string; email: string }
   | { ok: false; error: string; status: number }
 > {
   try {
     const session = await fetchSessionUser(token);
-    if (session.ok) return { ok: true, userId: session.user.id };
+    if (session.ok) return { ok: true, userId: session.user.id, email: session.user.email };
     return session.status === 401 || session.status === 403
       ? { ok: false, error: "lighter_uda_session_invalid", status: 401 }
       : { ok: false, error: "lighter_uda_session_unavailable", status: 503 };

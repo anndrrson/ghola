@@ -2,14 +2,66 @@ import { describe, expect, it, vi } from "vitest";
 import {
   fetchVerifiedLighterDepositDestination,
   isLighterDepositRetryForbidden,
+  reconcileExistingLighterDepositDestination,
   validateVerifiedLighterDepositDestination,
 } from "./lighter-universal-deposit-address.client";
+import { LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION } from "./lighter-funding-eligibility";
 
 const NOW = Date.parse("2026-08-31T14:00:00.000Z");
 const OWNER = "0x1111111111111111111111111111111111111111";
 const DEPOSIT = "0x2222222222222222222222222222222222222222";
 
 describe("verified Lighter deposit destination client", () => {
+  it("replays a persisted direct verification through the same-origin resolver", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(validDestination()), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    await expect(reconcileExistingLighterDepositDestination(
+      OWNER,
+      LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
+      fetchImpl,
+      NOW,
+    ))
+      .resolves.toMatchObject({ owner_address: OWNER, destination: { deposit_address: DEPOSIT } });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith("/api/carry/lighter-uda-attempt-reconciliation", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      cache: "no-store",
+      body: JSON.stringify({
+        version: 1,
+        owner_address: OWNER,
+        eligibility_attestation: LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
+      }),
+    });
+  });
+
+  it.each([
+    ["inconclusive", () => Promise.resolve(new Response(JSON.stringify({
+      error: "lighter_uda_reconciliation_not_proven",
+      retry_forbidden: true,
+    }), { status: 202, headers: { "content-type": "application/json" } }))],
+    ["transport loss", () => Promise.reject(new TypeError("connection lost"))],
+    ["malformed success", () => Promise.resolve(new Response("truncated", { status: 200 }))],
+  ])("keeps generation locked after reconciliation %s", async (_label, result) => {
+    const fetchImpl = vi.fn().mockImplementation(result);
+    let caught: unknown;
+    try {
+      await reconcileExistingLighterDepositDestination(
+        OWNER,
+        LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
+        fetchImpl,
+        NOW,
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(isLighterDepositRetryForbidden(caught)).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("accepts only a fresh owner-bound Base USDC destination", () => {
     expect(validateVerifiedLighterDepositDestination(validDestination(), OWNER, NOW))
       .toMatchObject({
@@ -22,6 +74,28 @@ describe("verified Lighter deposit destination client", () => {
         },
         deposit_destination_verified: true,
         funding_action_enabled: true,
+      });
+  });
+
+  it("accepts an exact existing-account recipient binding", () => {
+    const base = validDestination();
+    const value = {
+      ...base,
+      destination: {
+        ...base.destination,
+        resolved: {
+          ...base.destination.resolved,
+          recipient_address: "123",
+          recipient_binding: "lighter_account_index",
+          owner_account_index: 123,
+        },
+      },
+    };
+    expect(validateVerifiedLighterDepositDestination(value, OWNER, NOW).destination.resolved)
+      .toMatchObject({
+        recipient_address: "123",
+        recipient_binding: "lighter_account_index",
+        owner_account_index: 123,
       });
   });
 
@@ -38,6 +112,7 @@ describe("verified Lighter deposit destination client", () => {
     ["destination chain", { destination: { ...validDestination().destination, resolved: { ...validDestination().destination.resolved, to_chain_id: "1" } } }],
     ["destination token", { destination: { ...validDestination().destination, resolved: { ...validDestination().destination.resolved, to_token_address: OWNER } } }],
     ["recipient", { destination: { ...validDestination().destination, resolved: { ...validDestination().destination.resolved, recipient_address: DEPOSIT } } }],
+    ["recipient account index", { destination: { ...validDestination().destination, resolved: { ...validDestination().destination.resolved, recipient_address: "124", recipient_binding: "lighter_account_index", owner_account_index: 123 } } }],
     ["user binding", { destination: { ...validDestination().destination, resolved: { ...validDestination().destination.resolved, user_id: DEPOSIT } } }],
     ["verification flag", { deposit_destination_verified: false }],
     ["funding flag", { funding_action_enabled: false }],
@@ -62,6 +137,7 @@ describe("verified Lighter deposit destination client", () => {
     const signLighterDepositAuthorization = vi.fn(async () => signature);
     await expect(fetchVerifiedLighterDepositDestination({
       ownerAddress: OWNER,
+      eligibilityAttestation: LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
       signLighterDepositAuthorization,
     }, fetchImpl, NOW)).resolves.toMatchObject({ owner_address: OWNER });
     expect(fetchImpl).toHaveBeenNthCalledWith(1, "/api/carry/lighter-deposit-authorization", expect.objectContaining({
@@ -71,6 +147,12 @@ describe("verified Lighter deposit destination client", () => {
       body: JSON.stringify({
         version: 1,
         owner_address: OWNER,
+        eligibility_attestation: {
+          version: 1,
+          terms_version: "2025-12-29",
+          accepts_lighter_terms: true,
+          attests_not_prohibited_person: true,
+        },
       }),
     }));
     expect(signLighterDepositAuthorization).toHaveBeenCalledWith(validChallenge().message, OWNER);
@@ -84,6 +166,26 @@ describe("verified Lighter deposit destination client", () => {
     }));
   });
 
+  it.each([
+    ["missing", undefined],
+    ["not accepted", {
+      ...LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
+      accepts_lighter_terms: false,
+    }],
+  ])("does not request a challenge when the caller attestation is %s", async (_label, eligibilityAttestation) => {
+    const fetchImpl = vi.fn();
+    const signLighterDepositAuthorization = vi.fn();
+
+    await expect(fetchVerifiedLighterDepositDestination({
+      ownerAddress: OWNER,
+      eligibilityAttestation: eligibilityAttestation as typeof LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
+      signLighterDepositAuthorization,
+    }, fetchImpl, NOW)).rejects.toThrow("Explicit Lighter funding eligibility attestation is required.");
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(signLighterDepositAuthorization).not.toHaveBeenCalled();
+  });
+
   it("fails closed when the authenticated endpoint is unavailable", async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ error: "lighter_uda_builder_key_unconfigured" }), {
       status: 503,
@@ -91,6 +193,7 @@ describe("verified Lighter deposit destination client", () => {
     }));
     await expect(fetchVerifiedLighterDepositDestination({
       ownerAddress: OWNER,
+      eligibilityAttestation: LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
       signLighterDepositAuthorization: async () => `0x${"11".repeat(65)}` as `0x${string}`,
     }, fetchImpl, NOW)).rejects.toThrow("lighter_uda_builder_key_unconfigured");
   });
@@ -114,6 +217,7 @@ describe("verified Lighter deposit destination client", () => {
     try {
       await fetchVerifiedLighterDepositDestination({
         ownerAddress: OWNER,
+        eligibilityAttestation: LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
         signLighterDepositAuthorization: async () => `0x${"11".repeat(65)}` as `0x${string}`,
       }, fetchImpl, NOW);
     } catch (error) {
@@ -142,6 +246,7 @@ describe("verified Lighter deposit destination client", () => {
     try {
       await fetchVerifiedLighterDepositDestination({
         ownerAddress: OWNER,
+        eligibilityAttestation: LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
         signLighterDepositAuthorization: async () => `0x${"11".repeat(65)}` as `0x${string}`,
       }, fetchImpl, NOW);
     } catch (error) {
@@ -168,6 +273,7 @@ describe("verified Lighter deposit destination client", () => {
     try {
       await fetchVerifiedLighterDepositDestination({
         ownerAddress: OWNER,
+        eligibilityAttestation: LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
         signLighterDepositAuthorization: async () => `0x${"11".repeat(65)}` as `0x${string}`,
       }, fetchImpl, NOW);
     } catch (error) {
@@ -192,6 +298,7 @@ describe("verified Lighter deposit destination client", () => {
     try {
       await expect(fetchVerifiedLighterDepositDestination({
         ownerAddress: OWNER,
+        eligibilityAttestation: LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
         signLighterDepositAuthorization: async () => {
           clock += 10_000;
           return `0x${"11".repeat(65)}` as `0x${string}`;
@@ -208,7 +315,11 @@ describe("verified Lighter deposit destination client", () => {
       ...validChallenge(),
       message: "Authorize a different Lighter owner address",
     }), { status: 200, headers: { "content-type": "application/json" } }));
-    await expect(fetchVerifiedLighterDepositDestination({ ownerAddress: OWNER, signLighterDepositAuthorization }, fetchImpl, NOW))
+    await expect(fetchVerifiedLighterDepositDestination({
+      ownerAddress: OWNER,
+      eligibilityAttestation: LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
+      signLighterDepositAuthorization,
+    }, fetchImpl, NOW))
       .rejects.toThrow("authorization message is invalid");
     expect(signLighterDepositAuthorization).not.toHaveBeenCalled();
   });
@@ -217,6 +328,9 @@ describe("verified Lighter deposit destination client", () => {
     ["source chain", "Source chain: Base (8453)", "Source chain: Ethereum (1)"],
     ["asset", "Source asset: USDC", "Source asset: USDT"],
     ["market", "Destination: Lighter perps", "Destination: Lighter spot"],
+    ["terms", "Lighter terms version: 2025-12-29", "Lighter terms version: old"],
+    ["country", "Server-verified country: DE", "Server-verified country: US"],
+    ["eligibility", "Jurisdiction eligible: yes", "Jurisdiction eligible: no"],
     ["scope", "This authorizes address generation only.", "This authorizes funding."],
     ["trade prohibition", "It does not authorize a transfer, withdrawal, or trade.", "It authorizes a transfer."],
   ])("does not sign a challenge with a changed %s disclosure", async (_label, expected, replacement) => {
@@ -226,7 +340,11 @@ describe("verified Lighter deposit destination client", () => {
       ...challenge,
       message: challenge.message.replace(expected, replacement),
     }), { status: 200, headers: { "content-type": "application/json" } }));
-    await expect(fetchVerifiedLighterDepositDestination({ ownerAddress: OWNER, signLighterDepositAuthorization }, fetchImpl, NOW))
+    await expect(fetchVerifiedLighterDepositDestination({
+      ownerAddress: OWNER,
+      eligibilityAttestation: LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION,
+      signLighterDepositAuthorization,
+    }, fetchImpl, NOW))
       .rejects.toThrow("authorization message is invalid");
     expect(signLighterDepositAuthorization).not.toHaveBeenCalled();
   });
@@ -248,6 +366,12 @@ function validChallenge() {
       "Source chain: Base (8453)",
       "Source asset: USDC",
       "Destination: Lighter perps",
+      "Eligibility attestation version: 1",
+      "Lighter terms version: 2025-12-29",
+      "Server-verified country: DE",
+      "Lighter terms accepted: yes",
+      "Not a prohibited person: confirmed",
+      "Jurisdiction eligible: yes",
       `Nonce: ${"cd".repeat(32)}`,
       `Issued at: ${issuedAt}`,
       `Expires at: ${expiresAt}`,
@@ -262,6 +386,15 @@ function validChallenge() {
       source_chain: "base",
       source_asset: "USDC",
       destination_market: "perps",
+      eligibility: {
+        version: 1,
+        terms_version: "2025-12-29",
+        accepts_lighter_terms: true,
+        attests_not_prohibited_person: true,
+        country_code: "DE",
+        country_source: "vercel_request_header",
+        eligible: true,
+      },
       transfer_authorized: false,
       withdrawal_authorized: false,
       trade_authorized: false,
@@ -294,6 +427,8 @@ function validDestination() {
         to_token_address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
         action_type: "LIGHTER_PERPS",
         recipient_address: OWNER,
+        recipient_binding: "owner_address",
+        owner_account_index: null,
         user_id: OWNER,
       },
     },

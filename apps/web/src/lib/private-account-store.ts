@@ -180,7 +180,9 @@ export interface PrivateLighterUdaDestinationV1 {
   action_type: "LIGHTER_PERPS";
   to_chain_id: "3586256";
   to_token_address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
-  recipient_address: `0x${string}`;
+  recipient_address: string;
+  recipient_binding: "owner_address" | "lighter_account_index";
+  owner_account_index: number | null;
   resolved_user_id: `0x${string}`;
 }
 
@@ -194,6 +196,28 @@ export interface PrivateLighterUdaAttemptRecordV1 {
   status: PrivateLighterUdaAttemptStatus;
   destination: PrivateLighterUdaDestinationV1 | null;
   failure_code: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type PrivateLighterDepositExpectationStatus = "bound" | "processing" | "completed";
+
+export interface PrivateLighterDepositExpectationRecordV1 {
+  version: 1;
+  expectation_id: string;
+  uda_attempt_id: string;
+  owner_commitment: string;
+  wallet_commitment: string;
+  owner_address: `0x${string}`;
+  destination_address: `0x${string}`;
+  transaction_hash: `0x${string}`;
+  expected_amount_microunits: string;
+  source_chain_id: "8453";
+  source_token_address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+  to_chain_id: "3586256";
+  to_token_address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+  status: PrivateLighterDepositExpectationStatus;
+  provider_created_time_ms: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -929,6 +953,13 @@ type LighterUdaAttemptRow = Omit<PrivateLighterUdaAttemptRecordV1, "version" | "
   version?: number;
   destination: unknown;
 };
+type LighterDepositExpectationRow = Omit<
+  PrivateLighterDepositExpectationRecordV1,
+  "version" | "provider_created_time_ms"
+> & {
+  version?: number;
+  provider_created_time_ms: unknown;
+};
 type ModeCanaryRow = Omit<PrivateModeCanaryRecordV1, "version"> & {
   version?: number;
 };
@@ -1146,6 +1177,7 @@ const auctionPreparedTransactions = new Map<string, PrivateAuctionPreparedTransa
 const coordinatorLocks = new Map<string, PrivateCoordinatorLockRecordV1>();
 const lighterUdaAttemptsByOwner = new Map<string, PrivateLighterUdaAttemptRecordV1>();
 const lighterUdaAttemptsByWallet = new Map<string, PrivateLighterUdaAttemptRecordV1>();
+const lighterDepositExpectationsByHash = new Map<string, PrivateLighterDepositExpectationRecordV1>();
 const modeCanaries = new Map<string, PrivateModeCanaryRecordV1>();
 const liveTradingCanaryReports = new Map<string, PrivateLiveTradingCanaryReportRecordV1>();
 const agentArbCanaryReports = new Map<string, PrivateAgentArbCanaryReportRecordV1>();
@@ -3753,6 +3785,90 @@ export async function settlePrivateLighterUdaAttempt(input: {
   return settled;
 }
 
+export async function reconcilePrivateLighterUdaAttempt(input: {
+  attempt_id: string;
+  owner_commitment: string;
+  wallet_commitment: string;
+  owner_address: `0x${string}`;
+  claim_token: string;
+  destination: PrivateLighterUdaDestinationV1;
+  now: Date;
+}): Promise<PrivateLighterUdaAttemptRecordV1> {
+  const destination = privateLighterUdaDestination(input.destination, input.owner_address);
+  if (!destination) {
+    throw lighterUdaLedgerError("lighter_uda_reconciliation_destination_invalid", 502);
+  }
+  if (process.env.NODE_ENV !== "test" && process.env.GHOLA_PRIVATE_ACCOUNT_STORE === "blob") {
+    throw lighterUdaLedgerError("lighter_uda_transactional_store_required", 503);
+  }
+  const updatedAt = input.now.toISOString();
+  const sql = await getSql();
+  if (sql) {
+    await ensureSchema(sql);
+    const updated = (await sql`
+      UPDATE private_account_lighter_uda_attempts
+      SET
+        status = 'verified',
+        destination = ${JSON.stringify(destination)}::jsonb,
+        failure_code = NULL,
+        updated_at = ${updatedAt}
+      WHERE attempt_id = ${input.attempt_id}
+        AND owner_commitment = ${input.owner_commitment}
+        AND wallet_commitment = ${input.wallet_commitment}
+        AND owner_address = ${input.owner_address}
+        AND claim_token = ${input.claim_token}
+        AND status IN ('pending', 'ambiguous')
+        AND destination IS NULL
+      RETURNING *
+    `) as LighterUdaAttemptRow[];
+    if (updated[0]) return lighterUdaAttemptRow(updated[0]);
+    const current = await getPrivateLighterUdaAttempt({
+      owner_commitment: input.owner_commitment,
+      wallet_commitment: input.wallet_commitment,
+    });
+    if (current?.attempt_id === input.attempt_id &&
+      current.owner_address.toLowerCase() === input.owner_address.toLowerCase() &&
+      current.claim_token === input.claim_token &&
+      current.status === "verified" && current.destination &&
+      samePrivateLighterUdaDestination(current.destination, destination)) return current;
+    throw lighterUdaLedgerError("lighter_uda_reconciliation_settlement_conflict", 409);
+  }
+  if (shouldUsePrivateBlobRecordStore()) {
+    throw lighterUdaLedgerError("lighter_uda_transactional_store_required", 503);
+  }
+  if (process.env.NODE_ENV !== "test") {
+    throw lighterUdaLedgerError("lighter_uda_attempt_ledger_unconfigured", 503);
+  }
+  const current = lighterUdaAttemptsByOwner.get(input.owner_commitment) ?? null;
+  const byWallet = lighterUdaAttemptsByWallet.get(input.wallet_commitment) ?? null;
+  if (!current || !byWallet || current.attempt_id !== byWallet.attempt_id) {
+    throw lighterUdaLedgerError("lighter_uda_reconciliation_settlement_conflict", 409);
+  }
+  if (current.attempt_id === input.attempt_id &&
+    current.owner_address.toLowerCase() === input.owner_address.toLowerCase() &&
+    current.claim_token === input.claim_token &&
+    current.status === "verified" && current.destination &&
+    samePrivateLighterUdaDestination(current.destination, destination)) return current;
+  if (
+    current.attempt_id !== input.attempt_id ||
+    (current.status !== "pending" && current.status !== "ambiguous") ||
+    current.owner_address.toLowerCase() !== input.owner_address.toLowerCase() ||
+    current.claim_token !== input.claim_token ||
+    current.destination !== null
+  ) {
+    throw lighterUdaLedgerError("lighter_uda_reconciliation_settlement_conflict", 409);
+  }
+  const reconciled: PrivateLighterUdaAttemptRecordV1 = {
+    ...current,
+    status: "verified",
+    destination,
+    failure_code: null,
+    updated_at: updatedAt,
+  };
+  cachePrivateLighterUdaAttempt(reconciled);
+  return reconciled;
+}
+
 export async function getPrivateLighterUdaAttempt(
   input: { owner_commitment: string; wallet_commitment: string },
 ): Promise<PrivateLighterUdaAttemptRecordV1 | null> {
@@ -3792,11 +3908,241 @@ export function resetPrivateLighterUdaAttemptsForTests() {
   if (process.env.NODE_ENV !== "test") throw new Error("lighter_uda_attempt_reset_forbidden");
   lighterUdaAttemptsByOwner.clear();
   lighterUdaAttemptsByWallet.clear();
+  lighterDepositExpectationsByHash.clear();
 }
 
 function cachePrivateLighterUdaAttempt(record: PrivateLighterUdaAttemptRecordV1) {
   lighterUdaAttemptsByOwner.set(record.owner_commitment, record);
   lighterUdaAttemptsByWallet.set(record.wallet_commitment, record);
+}
+
+function samePrivateLighterUdaDestination(
+  left: PrivateLighterUdaDestinationV1,
+  right: PrivateLighterUdaDestinationV1,
+) {
+  return left.owner_address.toLowerCase() === right.owner_address.toLowerCase() &&
+    left.deposit_address.toLowerCase() === right.deposit_address.toLowerCase() &&
+    left.market === right.market && left.asset === right.asset && left.blocked === right.blocked &&
+    left.action_type === right.action_type && left.to_chain_id === right.to_chain_id &&
+    left.to_token_address.toLowerCase() === right.to_token_address.toLowerCase() &&
+    left.recipient_address.toLowerCase() === right.recipient_address.toLowerCase() &&
+    left.recipient_binding === right.recipient_binding &&
+    left.owner_account_index === right.owner_account_index &&
+    left.resolved_user_id.toLowerCase() === right.resolved_user_id.toLowerCase();
+}
+
+export async function requirePrivateLighterVerifiedDepositDestination(input: {
+  owner_commitment: string;
+  wallet_commitment: string;
+  owner_address: `0x${string}`;
+  destination_address: `0x${string}`;
+}): Promise<PrivateLighterUdaAttemptRecordV1> {
+  const attempt = await getPrivateLighterUdaAttempt({
+    owner_commitment: input.owner_commitment,
+    wallet_commitment: input.wallet_commitment,
+  });
+  if (
+    !attempt ||
+    attempt.status !== "verified" ||
+    !attempt.destination ||
+    attempt.owner_address.toLowerCase() !== input.owner_address.toLowerCase() ||
+    attempt.destination.owner_address.toLowerCase() !== input.owner_address.toLowerCase() ||
+    attempt.destination.deposit_address.toLowerCase() !== input.destination_address.toLowerCase()
+  ) {
+    throw lighterUdaLedgerError("lighter_uda_deposit_destination_not_verified", 403);
+  }
+  return attempt;
+}
+
+export async function recordObservedPrivateLighterDepositExpectation(input: {
+  owner_commitment: string;
+  wallet_commitment: string;
+  owner_address: `0x${string}`;
+  destination_address: `0x${string}`;
+  transaction_hash: `0x${string}`;
+  expected_amount_microunits: string;
+  provider_status: "PROCESSING" | "COMPLETED";
+  provider_created_time_ms: number;
+  now: Date;
+}): Promise<PrivateLighterDepositExpectationRecordV1> {
+  if (!Number.isSafeInteger(input.provider_created_time_ms) || input.provider_created_time_ms <= 0) {
+    throw lighterUdaLedgerError("lighter_uda_status_response_invalid", 502);
+  }
+  const createdAt = input.now.toISOString();
+  const record = lighterDepositExpectationRecord({
+    version: 1,
+    expectation_id: gholaCommitment("lighter_deposit_expectation", {
+      owner_commitment: input.owner_commitment,
+      transaction_hash: input.transaction_hash,
+    }),
+    uda_attempt_id: gholaCommitment("lighter_uda_attempt", {
+      owner_commitment: input.owner_commitment,
+      wallet_commitment: input.wallet_commitment,
+    }),
+    owner_commitment: input.owner_commitment,
+    wallet_commitment: input.wallet_commitment,
+    owner_address: input.owner_address,
+    destination_address: input.destination_address,
+    transaction_hash: input.transaction_hash,
+    expected_amount_microunits: input.expected_amount_microunits,
+    source_chain_id: "8453",
+    source_token_address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    to_chain_id: "3586256",
+    to_token_address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    status: input.provider_status === "COMPLETED" ? "completed" : "processing",
+    provider_created_time_ms: input.provider_created_time_ms,
+    created_at: createdAt,
+    updated_at: createdAt,
+  });
+  if (!record) throw lighterUdaLedgerError("lighter_uda_deposit_expectation_invalid", 400);
+  const sql = await getSql();
+  if (sql) {
+    await ensureSchema(sql);
+    const inserted = (await sql`
+      INSERT INTO private_account_lighter_deposit_expectations (
+        expectation_id, uda_attempt_id, owner_commitment, wallet_commitment,
+        owner_address, destination_address, transaction_hash,
+        expected_amount_microunits, source_chain_id, source_token_address,
+        to_chain_id, to_token_address, status, provider_created_time_ms,
+        created_at, updated_at
+      )
+      SELECT
+        ${record.expectation_id}, attempt_id, ${record.owner_commitment},
+        ${record.wallet_commitment}, ${record.owner_address},
+        ${record.destination_address}, ${record.transaction_hash},
+        ${record.expected_amount_microunits}, ${record.source_chain_id},
+        ${record.source_token_address}, ${record.to_chain_id},
+        ${record.to_token_address}, ${record.status}, ${record.provider_created_time_ms},
+        ${record.created_at}, ${record.updated_at}
+      FROM private_account_lighter_uda_attempts
+      WHERE attempt_id = ${record.uda_attempt_id}
+        AND owner_commitment = ${record.owner_commitment}
+        AND wallet_commitment = ${record.wallet_commitment}
+        AND LOWER(owner_address) = ${record.owner_address.toLowerCase()}
+        AND status = 'verified'
+        AND LOWER(destination->>'owner_address') = ${record.owner_address.toLowerCase()}
+        AND LOWER(destination->>'deposit_address') = ${record.destination_address.toLowerCase()}
+        AND destination->>'market' = 'perps'
+        AND destination->>'asset' = 'USDC'
+        AND destination->>'blocked' = 'false'
+        AND destination->>'action_type' = 'LIGHTER_PERPS'
+        AND destination->>'to_chain_id' = '3586256'
+        AND LOWER(destination->>'to_token_address') = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+        AND (
+          (
+            destination->>'recipient_binding' = 'owner_address'
+            AND destination->>'owner_account_index' IS NULL
+            AND LOWER(destination->>'recipient_address') = ${record.owner_address.toLowerCase()}
+          ) OR (
+            destination->>'recipient_binding' = 'lighter_account_index'
+            AND destination->>'owner_account_index' ~ '^(0|[1-9][0-9]*)$'
+            AND destination->>'recipient_address' = destination->>'owner_account_index'
+          )
+        )
+        AND LOWER(destination->>'resolved_user_id') = ${record.owner_address.toLowerCase()}
+      ON CONFLICT (transaction_hash) DO UPDATE SET
+        expected_amount_microunits = CASE
+          WHEN private_account_lighter_deposit_expectations.status = 'bound'
+            AND private_account_lighter_deposit_expectations.provider_created_time_ms IS NULL
+          THEN EXCLUDED.expected_amount_microunits
+          ELSE private_account_lighter_deposit_expectations.expected_amount_microunits
+        END,
+        status = CASE
+          WHEN private_account_lighter_deposit_expectations.status = 'completed'
+            OR EXCLUDED.status = 'completed'
+          THEN 'completed'
+          ELSE 'processing'
+        END,
+        provider_created_time_ms = COALESCE(
+          private_account_lighter_deposit_expectations.provider_created_time_ms,
+          EXCLUDED.provider_created_time_ms
+        ),
+        updated_at = EXCLUDED.updated_at
+      WHERE private_account_lighter_deposit_expectations.expectation_id = EXCLUDED.expectation_id
+        AND private_account_lighter_deposit_expectations.uda_attempt_id = EXCLUDED.uda_attempt_id
+        AND private_account_lighter_deposit_expectations.owner_commitment = EXCLUDED.owner_commitment
+        AND private_account_lighter_deposit_expectations.wallet_commitment = EXCLUDED.wallet_commitment
+        AND LOWER(private_account_lighter_deposit_expectations.owner_address) = LOWER(EXCLUDED.owner_address)
+        AND LOWER(private_account_lighter_deposit_expectations.destination_address) = LOWER(EXCLUDED.destination_address)
+        AND private_account_lighter_deposit_expectations.source_chain_id = EXCLUDED.source_chain_id
+        AND LOWER(private_account_lighter_deposit_expectations.source_token_address) = LOWER(EXCLUDED.source_token_address)
+        AND private_account_lighter_deposit_expectations.to_chain_id = EXCLUDED.to_chain_id
+        AND LOWER(private_account_lighter_deposit_expectations.to_token_address) = LOWER(EXCLUDED.to_token_address)
+        AND (
+          (
+            private_account_lighter_deposit_expectations.status = 'bound'
+            AND private_account_lighter_deposit_expectations.provider_created_time_ms IS NULL
+          )
+          OR (
+            private_account_lighter_deposit_expectations.status IN ('processing', 'completed')
+            AND private_account_lighter_deposit_expectations.expected_amount_microunits = EXCLUDED.expected_amount_microunits
+            AND private_account_lighter_deposit_expectations.provider_created_time_ms = EXCLUDED.provider_created_time_ms
+          )
+        )
+      RETURNING *
+    `) as LighterDepositExpectationRow[];
+    if (inserted[0]) return lighterDepositExpectationRow(inserted[0]);
+    const rows = (await sql`
+      SELECT * FROM private_account_lighter_deposit_expectations
+      WHERE transaction_hash = ${record.transaction_hash}
+      LIMIT 1
+    `) as LighterDepositExpectationRow[];
+    const existing = rows[0] ? lighterDepositExpectationRow(rows[0]) : null;
+    if (!existing) throw lighterUdaLedgerError("lighter_uda_deposit_destination_not_verified", 403);
+    throw lighterUdaLedgerError("lighter_uda_deposit_expectation_conflict", 409);
+  }
+  if (process.env.NODE_ENV !== "test") {
+    throw lighterUdaLedgerError("lighter_uda_transactional_store_required", 503);
+  }
+  await requirePrivateLighterVerifiedDepositDestination({
+    owner_commitment: record.owner_commitment,
+    wallet_commitment: record.wallet_commitment,
+    owner_address: record.owner_address,
+    destination_address: record.destination_address,
+  });
+  const existing = lighterDepositExpectationsByHash.get(record.transaction_hash) ?? null;
+  if (existing && !sameLighterDepositExpectationScope(existing, record)) {
+    throw lighterUdaLedgerError("lighter_uda_deposit_expectation_conflict", 409);
+  }
+  if (existing && existing.status !== "bound" && !sameLighterDepositExpectation(existing, record)) {
+    throw lighterUdaLedgerError("lighter_uda_deposit_expectation_conflict", 409);
+  }
+  const observed = existing
+    ? {
+        ...record,
+        status: existing.status === "completed" || record.status === "completed" ? "completed" as const : "processing" as const,
+        created_at: existing.created_at,
+      }
+    : record;
+  lighterDepositExpectationsByHash.set(observed.transaction_hash, observed);
+  return observed;
+}
+
+export async function getPrivateLighterDepositExpectation(input: {
+  owner_commitment: string;
+  transaction_hash: `0x${string}`;
+}): Promise<PrivateLighterDepositExpectationRecordV1 | null> {
+  const sql = await getSql();
+  if (sql) {
+    await ensureSchema(sql);
+    const rows = (await sql`
+      SELECT * FROM private_account_lighter_deposit_expectations
+      WHERE owner_commitment = ${input.owner_commitment}
+        AND transaction_hash = ${input.transaction_hash}
+      LIMIT 1
+    `) as LighterDepositExpectationRow[];
+    return rows[0] ? lighterDepositExpectationRow(rows[0]) : null;
+  }
+  if (process.env.NODE_ENV !== "test") {
+    throw lighterUdaLedgerError("lighter_uda_transactional_store_required", 503);
+  }
+  const record = lighterDepositExpectationsByHash.get(input.transaction_hash) ?? null;
+  return record?.owner_commitment === input.owner_commitment ? record : null;
+}
+
+export function resetPrivateLighterDepositExpectationsForTests() {
+  if (process.env.NODE_ENV !== "test") throw new Error("lighter_uda_deposit_expectation_reset_forbidden");
+  lighterDepositExpectationsByHash.clear();
 }
 
 export async function putPrivateAccountIntent(
@@ -5731,6 +6077,7 @@ export async function resetPrivateAccountStoreForTests() {
   coordinatorLocks.clear();
   lighterUdaAttemptsByOwner.clear();
   lighterUdaAttemptsByWallet.clear();
+  lighterDepositExpectationsByHash.clear();
   modeCanaries.clear();
   liveTradingCanaryReports.clear();
   agentArbCanaryReports.clear();
@@ -6508,6 +6855,42 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
   await sql`
     ALTER TABLE private_account_lighter_uda_attempts
     ALTER COLUMN wallet_commitment SET NOT NULL
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS private_account_lighter_deposit_expectations (
+      expectation_id TEXT NOT NULL UNIQUE,
+      uda_attempt_id TEXT NOT NULL REFERENCES private_account_lighter_uda_attempts(attempt_id),
+      owner_commitment TEXT NOT NULL,
+      wallet_commitment TEXT NOT NULL,
+      owner_address TEXT NOT NULL,
+      destination_address TEXT NOT NULL,
+      transaction_hash TEXT PRIMARY KEY,
+      expected_amount_microunits TEXT NOT NULL,
+      source_chain_id TEXT NOT NULL,
+      source_token_address TEXT NOT NULL,
+      to_chain_id TEXT NOT NULL,
+      to_token_address TEXT NOT NULL,
+      status TEXT NOT NULL,
+      provider_created_time_ms BIGINT,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      CHECK (transaction_hash ~ '^0x[0-9a-f]{64}$'),
+      CHECK (expected_amount_microunits ~ '^[1-9][0-9]*$'),
+      CHECK (expected_amount_microunits::numeric >= 5000000),
+      CHECK (status IN ('bound', 'processing', 'completed')),
+      CHECK (
+        (status = 'bound' AND provider_created_time_ms IS NULL)
+        OR (status IN ('processing', 'completed') AND provider_created_time_ms > 0)
+      ),
+      CHECK (source_chain_id = '8453'),
+      CHECK (LOWER(source_token_address) = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'),
+      CHECK (to_chain_id = '3586256'),
+      CHECK (LOWER(to_token_address) = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48')
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS private_account_lighter_deposit_expectations_owner
+    ON private_account_lighter_deposit_expectations (owner_commitment, transaction_hash)
   `;
   await sql`
     CREATE TABLE IF NOT EXISTS private_account_accounts (
@@ -7443,9 +7826,24 @@ function privateLighterUdaDestination(
   const resolvedUserId = typeof destination.resolved_user_id === "string" && /^0x[0-9a-fA-F]{40}$/.test(destination.resolved_user_id)
     ? destination.resolved_user_id as `0x${string}`
     : null;
-  const recipientAddress = typeof destination.recipient_address === "string" && /^0x[0-9a-fA-F]{40}$/.test(destination.recipient_address)
-    ? destination.recipient_address as `0x${string}`
+  const recipientAddress = typeof destination.recipient_address === "string"
+    ? destination.recipient_address
     : null;
+  const recipientBinding = destination.recipient_binding;
+  const ownerAccountIndex = destination.owner_account_index === null
+    ? null
+    : typeof destination.owner_account_index === "number" &&
+      Number.isSafeInteger(destination.owner_account_index) &&
+      destination.owner_account_index >= 0 &&
+      destination.owner_account_index <= 281_474_976_710_655
+      ? destination.owner_account_index
+      : undefined;
+  const recipientBound = recipientBinding === "owner_address"
+    ? ownerAccountIndex === null && Boolean(recipientAddress) && /^0x[0-9a-fA-F]{40}$/.test(recipientAddress as string) &&
+      (recipientAddress as string).toLowerCase() === ownerAddress.toLowerCase()
+    : recipientBinding === "lighter_account_index"
+      ? typeof ownerAccountIndex === "number" && recipientAddress === String(ownerAccountIndex)
+      : false;
   if (
     destination.owner_address !== ownerAddress ||
     !depositAddress ||
@@ -7458,7 +7856,7 @@ function privateLighterUdaDestination(
     destination.to_chain_id !== "3586256" ||
     destination.to_token_address !== "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" ||
     !recipientAddress ||
-    recipientAddress.toLowerCase() !== ownerAddress.toLowerCase() ||
+    !recipientBound ||
     !resolvedUserId ||
     resolvedUserId.toLowerCase() !== ownerAddress.toLowerCase()
   ) return null;
@@ -7472,8 +7870,107 @@ function privateLighterUdaDestination(
     to_chain_id: "3586256",
     to_token_address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
     recipient_address: recipientAddress,
+    recipient_binding: recipientBinding as "owner_address" | "lighter_account_index",
+    owner_account_index: ownerAccountIndex as number | null,
     resolved_user_id: resolvedUserId,
   };
+}
+
+function lighterDepositExpectationRow(
+  row: LighterDepositExpectationRow,
+): PrivateLighterDepositExpectationRecordV1 {
+  const record = lighterDepositExpectationRecord({ ...row, version: 1 });
+  if (!record) throw lighterUdaLedgerError("lighter_uda_deposit_expectation_ledger_corrupt", 503);
+  return record;
+}
+
+function lighterDepositExpectationRecord(value: unknown): PrivateLighterDepositExpectationRecordV1 | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const providerCreatedTimeMs = row.provider_created_time_ms === null
+    ? null
+    : typeof row.provider_created_time_ms === "number"
+      ? row.provider_created_time_ms
+      : typeof row.provider_created_time_ms === "string" && /^[1-9][0-9]*$/.test(row.provider_created_time_ms)
+        ? Number(row.provider_created_time_ms)
+        : Number.NaN;
+  const createdAt = persistedDateString(row.created_at);
+  const updatedAt = persistedDateString(row.updated_at);
+  if (
+    row.version !== 1 ||
+    typeof row.expectation_id !== "string" ||
+    !/^lighter_deposit_expectation_[0-9a-f]{48}$/.test(row.expectation_id) ||
+    typeof row.uda_attempt_id !== "string" ||
+    !/^lighter_uda_attempt_[0-9a-f]{48}$/.test(row.uda_attempt_id) ||
+    typeof row.owner_commitment !== "string" ||
+    !/^owner_[0-9a-f]{48}$/.test(row.owner_commitment) ||
+    typeof row.wallet_commitment !== "string" ||
+    !/^wallet_[0-9a-f]{48}$/.test(row.wallet_commitment) ||
+    typeof row.owner_address !== "string" ||
+    !/^0x[0-9a-fA-F]{40}$/.test(row.owner_address) ||
+    typeof row.destination_address !== "string" ||
+    !/^0x[0-9a-fA-F]{40}$/.test(row.destination_address) ||
+    row.destination_address.toLowerCase() === row.owner_address.toLowerCase() ||
+    row.destination_address.toLowerCase() === "0x0000000000000000000000000000000000000000" ||
+    typeof row.transaction_hash !== "string" ||
+    !/^0x[0-9a-f]{64}$/.test(row.transaction_hash) ||
+    typeof row.expected_amount_microunits !== "string" ||
+    !/^[1-9][0-9]*$/.test(row.expected_amount_microunits) ||
+    BigInt(row.expected_amount_microunits) < BigInt(5_000_000) ||
+    row.source_chain_id !== "8453" ||
+    row.source_token_address !== "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" ||
+    row.to_chain_id !== "3586256" ||
+    row.to_token_address !== "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" ||
+    (row.status !== "bound" && row.status !== "processing" && row.status !== "completed") ||
+    (row.status === "bound" && providerCreatedTimeMs !== null) ||
+    (row.status !== "bound" && (!Number.isSafeInteger(providerCreatedTimeMs) || Number(providerCreatedTimeMs) <= 0)) ||
+    !createdAt ||
+    !updatedAt
+  ) return null;
+  return {
+    version: 1,
+    expectation_id: row.expectation_id,
+    uda_attempt_id: row.uda_attempt_id,
+    owner_commitment: row.owner_commitment,
+    wallet_commitment: row.wallet_commitment,
+    owner_address: row.owner_address as `0x${string}`,
+    destination_address: row.destination_address as `0x${string}`,
+    transaction_hash: row.transaction_hash as `0x${string}`,
+    expected_amount_microunits: row.expected_amount_microunits,
+    source_chain_id: "8453",
+    source_token_address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    to_chain_id: "3586256",
+    to_token_address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    status: row.status,
+    provider_created_time_ms: providerCreatedTimeMs,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  };
+}
+
+function sameLighterDepositExpectation(
+  left: PrivateLighterDepositExpectationRecordV1,
+  right: PrivateLighterDepositExpectationRecordV1,
+) {
+  return sameLighterDepositExpectationScope(left, right) &&
+    left.expected_amount_microunits === right.expected_amount_microunits;
+}
+
+function sameLighterDepositExpectationScope(
+  left: PrivateLighterDepositExpectationRecordV1,
+  right: PrivateLighterDepositExpectationRecordV1,
+) {
+  return left.expectation_id === right.expectation_id &&
+    left.uda_attempt_id === right.uda_attempt_id &&
+    left.owner_commitment === right.owner_commitment &&
+    left.wallet_commitment === right.wallet_commitment &&
+    left.owner_address.toLowerCase() === right.owner_address.toLowerCase() &&
+    left.destination_address.toLowerCase() === right.destination_address.toLowerCase() &&
+    left.transaction_hash === right.transaction_hash &&
+    left.source_chain_id === right.source_chain_id &&
+    left.source_token_address === right.source_token_address &&
+    left.to_chain_id === right.to_chain_id &&
+    left.to_token_address === right.to_token_address;
 }
 
 function persistedDateString(value: unknown): string | null {
