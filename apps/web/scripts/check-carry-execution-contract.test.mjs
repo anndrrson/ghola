@@ -13,6 +13,32 @@ test("accepts the complete cross-venue Carry execution contract", () => {
   assert.equal(checkCarryExecutionContract(sources).ok, true);
 });
 
+test("rejects release validation without direct Lighter atomic submission proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      lighterConcurrencyTest: sources.lighterConcurrencyTest.replaceAll(
+        "atomically permits exactly one Lighter submission under concurrent identical requests",
+        "does not prove concurrent Lighter submission",
+      ),
+    }),
+    /lighter_atomic_submit_concurrency_test_missing/,
+  );
+});
+
+test("rejects release validation without partial-fill and restart recovery proofs", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      lifecycleTest: sources.lifecycleTest
+        .replaceAll("restart-frozen reconciled entry resumes active or exiting without resubmission", "missing restart-frozen proof")
+        .replaceAll("restart recovery closes only the failed leg of a symmetric partial entry", "missing partial recovery proof")
+        .replaceAll("restart closes a symmetric partial entry once and remains proven flat with zero orders", "missing flat-zero proof"),
+    }),
+    /carry_restart_frozen_entry_reconciliation_test_missing|carry_partial_exit_missing_leg_recovery_test_missing|carry_partial_restart_flat_zero_test_missing/,
+  );
+});
+
 test("rejects a no-submit assembler that can persist sealed venue access", () => {
   assert.throws(
     () => checkCarryExecutionContract({

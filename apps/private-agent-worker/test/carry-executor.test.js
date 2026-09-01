@@ -648,6 +648,76 @@ test("restart routes an exactly reconciled symmetric partial entry to reduce-onl
   assert.equal(orphan.submissions(), 2);
 });
 
+test("restart-frozen reconciled entry resumes active or exiting without resubmission", async (t) => {
+  for (const scenario of [
+    { name: "full", receiptFactory: exactLiveValueReceipt, filledMicroUsdc: 10_000_000, expectedStatus: "active" },
+    { name: "symmetric-partial", receiptFactory: partialLiveValueReceipt, filledMicroUsdc: 5_000_000, expectedStatus: "exiting" },
+  ]) {
+    await t.test(scenario.name, async (t) => {
+      const fixture = await setup(t, `restart-frozen-${scenario.name}`);
+      const orphan = await createReconcilingEntryOrphan(fixture, scenario.receiptFactory);
+      assert.equal(orphan.saga.status, "reconciling");
+      assert.equal(orphan.submissions(), 2);
+
+      const audited = await auditCarryPositionsAfterRestart({
+        state: fixture.state,
+        now_ms: fixture.now(),
+        env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+      });
+      assert.equal(audited.ok, true, JSON.stringify(audited));
+      const frozen = await fixture.state.getCarryPositionRecord(fixture.position_id);
+      assert.equal(frozen.position.status, "frozen");
+      assert.equal(frozen.position.terminal_reason, "restart_detected");
+
+      const reconciliationCalls = [];
+      const recovered = await recoverDueMultiLegSagas({
+        state: fixture.state,
+        now_ms: fixture.now(),
+        recipient: fixture.recipient,
+        executeOrder: async (args) => {
+          reconciliationCalls.push(args);
+          return {
+            status: "reconciled",
+            final_proof: {
+              final_venue_execution_proven: true,
+              cumulative_filled_micro_usdc: scenario.filledMicroUsdc,
+              broadcast_performed: true,
+              target_client_order_matched: true,
+            },
+          };
+        },
+        verifyOrder: fixture.verifyOrder,
+        env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+      });
+      assert.equal(recovered.ok, true, JSON.stringify(recovered));
+      assert.equal(recovered.recovered[0].saga.status, "reconciled");
+      assert.equal(reconciliationCalls.length, 2);
+      assert.equal(reconciliationCalls.every((call) => call.operation_class === "reconcile"), true);
+
+      const restartedState = createWorkerState(fixture.state_dir);
+      const synchronized = await runCarryExecutionTick({
+        ...fixture,
+        state: restartedState,
+        env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+        executeOrder: async () => {
+          throw new Error("restart-frozen parent must not resubmit entry");
+        },
+      });
+      assert.equal(synchronized.ok, true, JSON.stringify(synchronized));
+      assert.equal(synchronized.results[0].restart_action, "entry_reconciled_completed");
+      assert.equal(synchronized.results[0].record.position.status, scenario.expectedStatus);
+      assert.equal(orphan.submissions(), 2);
+      if (scenario.expectedStatus === "active") {
+        assert.deepEqual(synchronized.results[0].record.position.next_actions, ["monitor_carry_and_margin"]);
+        assert.equal(synchronized.results[0].record.position.terminal_reason, null);
+      } else {
+        assert.deepEqual(synchronized.results[0].record.position.next_actions, ["cancel_open_orders", "reduce_only_close_filled_exposure"]);
+        assert.equal(synchronized.results[0].record.position.terminal_reason, "entry_hedge_mismatch");
+      }
+    });
+  }
+});
+
 test("restart safely retries an exit linked before any submission", async (t) => {
   const fixture = await setup(t, "restart-exit-before-submit");
   await openActive(fixture);
@@ -932,6 +1002,204 @@ test("routes equal partial IOC entry fills into a deterministic reduce-only exit
   assert.deepEqual(result.record.position.next_actions, ["cancel_open_orders", "reduce_only_close_filled_exposure"]);
 });
 
+test("restart closes a symmetric partial entry once and remains proven flat with zero orders", async (t) => {
+  const pair = { long: "aster", short: "lighter" };
+  const fixture = await setup(t, "restart-partial-to-flat", pair);
+  const submissionCounts = new Map();
+  const calls = [];
+  const recordSubmission = (args) => {
+    calls.push(args);
+    const count = (submissionCounts.get(args.work_order_commitment) || 0) + 1;
+    submissionCounts.set(args.work_order_commitment, count);
+    assert.equal(count, 1, `duplicate submission: ${args.work_order_commitment}`);
+  };
+  const partialReceipt = (args) => {
+    const receipt = exactLiveValueReceipt(args);
+    return {
+      ...receipt,
+      fills: [{
+        ...receipt.fills[0],
+        size: "0.0005",
+      }],
+      final_proof: {
+        ...receipt.final_proof,
+        cumulative_filled_micro_usdc: 5_000_000,
+        filled_base_size: "0.0005",
+      },
+    };
+  };
+  const entry = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      recordSubmission(args);
+      const receipt = partialReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(entry.ok, false);
+  assert.equal(entry.error, "carry_entry_requires_recovery");
+  assert.equal(entry.record.position.status, "exiting");
+
+  const restartedState = createWorkerState(fixture.state_dir);
+  const preflight = async ({ body }) => {
+    const proof = preflightProof(pair, { phase: body?.phase });
+    if (body?.phase !== "exit") return proof;
+    return {
+      ...proof,
+      evidence: proof.evidence.map((item) => ({
+        ...item,
+        order_shape: {
+          ...item.order_shape,
+          base_size: body.exit_base_size_by_venue[item.venue_id],
+        },
+      })),
+    };
+  };
+  const exited = await runCarryExecutionTick({
+    ...fixture,
+    state: restartedState,
+    preflight,
+    executeOrder: async (args) => {
+      recordSubmission(args);
+      const receipt = partialReceipt(args);
+      await restartedState.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(exited.ok, true, JSON.stringify(exited));
+  assert.equal(exited.checked, 1);
+  assert.equal(calls.length, 4);
+  assert.equal(calls.slice(0, 2).every((call) => call.instruction.order.reduce_only === false), true);
+  assert.equal(calls.slice(2).every((call) => call.instruction.order.reduce_only === true), true);
+  assert.deepEqual(calls.slice(2).map((call) => call.instruction.order.base_size), ["0.0005", "0.0005"]);
+
+  const terminal = exited.results[0].record;
+  assert.equal(terminal.position.status, "reconciled");
+  assert.equal(terminal.final_reconciliation_evidence.gross_exposure_micro_usdc, 0);
+  assert.equal(terminal.final_reconciliation_evidence.open_order_count, 0);
+  assert.equal(terminal.final_reconciliation_evidence.venues.length, 2);
+  assert.equal(terminal.final_reconciliation_evidence.venues.every((venue) =>
+    venue.position_count === 0 && venue.open_order_count === 0), true);
+
+  const submissionsBeforeSecondRestart = calls.length;
+  const secondRestart = createWorkerState(fixture.state_dir);
+  const replay = await runCarryExecutionTick({
+    ...fixture,
+    state: secondRestart,
+    preflight,
+    executeOrder: async (args) => {
+      recordSubmission(args);
+      throw new Error("terminal Carry must not resubmit");
+    },
+  });
+  assert.equal(replay.ok, true);
+  assert.equal(replay.checked, 0);
+  assert.equal(calls.length, submissionsBeforeSecondRestart);
+  assert.equal(submissionCounts.size, 4);
+  assert.equal([...submissionCounts.values()].every((count) => count === 1), true);
+});
+
+test("restart recovery closes only the failed leg of a symmetric partial entry", async (t) => {
+  const pair = { long: "aster", short: "lighter" };
+  const fixture = await setup(t, "restart-partial-exit-recovery", pair);
+  const partialReceipt = (args) => {
+    const receipt = exactLiveValueReceipt(args);
+    return {
+      ...receipt,
+      fills: [{ ...receipt.fills[0], size: "0.0005" }],
+      final_proof: {
+        ...receipt.final_proof,
+        cumulative_filled_micro_usdc: 5_000_000,
+        filled_base_size: "0.0005",
+      },
+    };
+  };
+  const entry = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      const receipt = partialReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(entry.ok, false);
+  assert.equal(entry.error, "carry_entry_requires_recovery");
+  assert.equal(entry.record.position.status, "exiting");
+
+  const preflight = async ({ body }) => {
+    const proof = preflightProof(pair, { phase: body?.phase });
+    if (body?.phase !== "exit") return proof;
+    return {
+      ...proof,
+      evidence: proof.evidence.map((item) => ({
+        ...item,
+        order_shape: {
+          ...item.order_shape,
+          base_size: body.exit_base_size_by_venue[item.venue_id],
+        },
+      })),
+    };
+  };
+  const restartedState = createWorkerState(fixture.state_dir);
+  const exitAttempts = [];
+  const started = await runCarryExecutionTick({
+    ...fixture,
+    state: restartedState,
+    preflight,
+    executeOrder: async (args) => {
+      exitAttempts.push(args);
+      if (args.venue_id === "lighter") throw new Error("venue rejected order");
+      const receipt = partialReceipt(args);
+      await restartedState.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(started.ok, false);
+  assert.equal(started.results[0].ok, false);
+  assert.equal(started.results[0].error, "carry_exit_requires_recovery");
+  assert.equal(exitAttempts.length, 2);
+  assert.deepEqual(exitAttempts.map((call) => call.instruction.order.quote_size), ["5", "5"]);
+  assert.deepEqual(exitAttempts.map((call) => call.instruction.order.base_size), ["0.0005", "0.0005"]);
+
+  const recoveryCalls = [];
+  const recovered = await recoverDueMultiLegSagas({
+    state: restartedState,
+    now_ms: started.results[0].saga.unhedged_deadline_ms - 1,
+    recipient: fixture.recipient,
+    executeOrder: async (args) => {
+      recoveryCalls.push(args);
+      return partialReceipt(args);
+    },
+    verifyOrder: fixture.verifyOrder,
+    env: fixture.env,
+  });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.recovered[0].saga.status, "reconciled");
+  assert.equal(recoveryCalls.length, 1);
+  assert.equal(recoveryCalls[0].venue_id, "lighter");
+  assert.equal(recoveryCalls[0].instruction.order.reduce_only, true);
+  assert.equal(recoveryCalls[0].instruction.order.quote_size, "5");
+  assert.equal(recoveryCalls[0].instruction.order.base_size, "0.0005");
+
+  const finalState = createWorkerState(fixture.state_dir);
+  const synced = await runCarryExecutionTick({
+    ...fixture,
+    state: finalState,
+    preflight,
+    readFundingSettlements: async () => [],
+    executeOrder: async () => {
+      throw new Error("reconciled partial exit must not resubmit");
+    },
+  });
+  assert.equal(synced.ok, true);
+  assert.equal(synced.results[0].record.position.status, "reconciled");
+  assert.equal(synced.results[0].record.final_reconciliation_evidence.gross_exposure_micro_usdc, 0);
+  assert.equal(synced.results[0].record.final_reconciliation_evidence.open_order_count, 0);
+  assert.equal(synced.results[0].record.final_reconciliation_evidence.venues.every((venue) =>
+    venue.position_count === 0 && venue.open_order_count === 0), true);
+});
+
 test("closes both reconciled legs reduce-only and proves flat with zero orders", async (t) => {
   const fixture = await setup(t, "exit-success");
   await openActive(fixture);
@@ -1019,9 +1287,16 @@ test("preserves the exact high-precision entry quantity through reduce-only exit
 
 test("a failed exit leg completes reduce-only after recovery, syncs flat, and finalizes realized value", async (t) => {
   const fixture = await setup(t, "exit-recovery");
+  const submissionCounts = new Map();
+  const submit = (args) => {
+    const count = (submissionCounts.get(args.work_order_commitment) || 0) + 1;
+    submissionCounts.set(args.work_order_commitment, count);
+    assert.equal(count, 1, `duplicate submission: ${args.work_order_commitment}`);
+  };
   const entry = await executeStoredCarryEntry({
     ...fixture,
     executeOrder: async (args) => {
+      submit(args);
       const receipt = exactValueReceipt(args);
       await fixture.state.putIdempotency(args.work_order_commitment, receipt);
       return receipt;
@@ -1040,6 +1315,7 @@ test("a failed exit leg completes reduce-only after recovery, syncs flat, and fi
   const started = await executeStoredCarryExit({
     ...fixture,
     executeOrder: async (args) => {
+      submit(args);
       if (args.venue_id === "lighter") throw new Error("venue rejected order");
       const receipt = exactValueReceipt(args);
       await fixture.state.putIdempotency(args.work_order_commitment, receipt);
@@ -1054,26 +1330,55 @@ test("a failed exit leg completes reduce-only after recovery, syncs flat, and fi
     state: restartedState,
     now_ms: started.saga.unhedged_deadline_ms - 1,
     recipient: fixture.recipient,
-    executeOrder: async (args) => exactValueReceipt(args),
+    executeOrder: async (args) => {
+      submit(args);
+      return exactValueReceipt(args);
+    },
     verifyOrder: fixture.verifyOrder,
     env: fixture.env,
   });
   assert.equal(recovered.ok, true);
   assert.equal(recovered.recovered[0].saga.status, "reconciled");
+  assert.equal([...submissionCounts.values()].every((count) => count === 1), true);
+
+  const secondRestart = createWorkerState(fixture.state_dir);
+  const recoveredAgain = await recoverDueMultiLegSagas({
+    state: secondRestart,
+    now_ms: started.saga.unhedged_deadline_ms + 1,
+    recipient: fixture.recipient,
+    executeOrder: async (args) => {
+      submit(args);
+      throw new Error("terminal recovery must not resubmit");
+    },
+    verifyOrder: fixture.verifyOrder,
+    env: fixture.env,
+  });
+  assert.equal(recoveredAgain.ok, true);
+  assert.equal(recoveredAgain.recovered.length, 0);
+
   const synced = await runCarryExecutionTick({
     ...fixture,
-    state: restartedState,
+    state: secondRestart,
     readFundingSettlements: async () => [],
-    executeOrder: async () => { throw new Error("unexpected submit"); },
+    executeOrder: async (args) => {
+      submit(args);
+      throw new Error("terminal Carry must not resubmit");
+    },
   });
   assert.equal(synced.ok, true);
   assert.equal(synced.results[0].record.position.status, "reconciled");
   assert.equal(synced.results[0].record.final_reconciliation_evidence.account_state_checked, true);
+  assert.equal(synced.results[0].record.final_reconciliation_evidence.gross_exposure_micro_usdc, 0);
   assert.equal(synced.results[0].record.final_reconciliation_evidence.open_order_count, 0);
+  assert.equal(synced.results[0].record.final_reconciliation_evidence.venues.length, 2);
+  assert.equal(synced.results[0].record.final_reconciliation_evidence.venues.every((venue) =>
+    venue.position_count === 0 && venue.open_order_count === 0), true);
   assert.equal(synced.results[0].accounting.complete, true);
   assert.equal(synced.results[0].value_finalized, true);
   assert.equal(synced.results[0].record.value_ledger.status, "finalized");
   assert.equal(synced.results[0].record.value_ledger.realized.net_value_micro_usdc, 4_000);
+  assert.equal(submissionCounts.size, 5);
+  assert.equal([...submissionCounts.values()].every((count) => count === 1), true);
 });
 
 test("does not claim a recovered exit is flat when a venue omits exact account counts", async (t) => {
@@ -1751,6 +2056,33 @@ async function createReconciledEntryOrphan(fixture, { receiptFactory = exactLive
     },
   }), /simulated worker crash/);
   fixture.state.getCarryPositionRecord = getRecord;
+  const record = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  const saga = await fixture.state.getMultiLegSaga(record.entry_saga_id);
+  return { record, saga, submissions: () => submissions };
+}
+
+async function createReconcilingEntryOrphan(fixture, receiptFactory) {
+  const putSaga = fixture.state.putMultiLegSaga.bind(fixture.state);
+  let crashed = false;
+  let submissions = 0;
+  fixture.state.putMultiLegSaga = async (saga, options) => {
+    const stored = await putSaga(saga, options);
+    if (!crashed && stored.ok && stored.saga?.status === "reconciling") {
+      crashed = true;
+      throw new Error("simulated worker crash before entry reconciliation");
+    }
+    return stored;
+  };
+  await assert.rejects(executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      submissions += 1;
+      const receipt = receiptFactory(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  }), /simulated worker crash before entry reconciliation/);
+  fixture.state.putMultiLegSaga = putSaga;
   const record = await fixture.state.getCarryPositionRecord(fixture.position_id);
   const saga = await fixture.state.getMultiLegSaga(record.entry_saga_id);
   return { record, saga, submissions: () => submissions };

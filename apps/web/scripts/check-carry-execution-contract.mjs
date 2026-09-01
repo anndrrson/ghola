@@ -154,6 +154,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   shadowTest: "apps/private-agent-worker/test/perp-shadow-adapters.test.js",
   asterTest: "apps/private-agent-worker/test/aster.test.js",
   lighterTest: "apps/private-agent-worker/test/lighter.test.js",
+  lighterConcurrencyTest: "apps/private-agent-worker/test/lighter-concurrency.test.js",
   hyperliquidMetricsTest: "apps/private-agent-worker/test/hyperliquid-account-metrics.test.js",
   hyperliquidReconcileTest: "apps/private-agent-worker/test/hyperliquid-reconcile.test.js",
   liquidationDistanceTest: "apps/private-agent-worker/test/liquidation-distance.test.js",
@@ -1014,6 +1015,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("privateExecution", "state.claimExecutionAttempt(workOrderCommitment, attempt)", "durable_atomic_state_claim_missing");
   requireText("asterTest", "atomically claims one Aster submission under concurrent identical requests", "durable_atomic_submit_concurrency_test_missing");
   requireText("serverTest", "atomically accepts one concurrent Hyperliquid submission", "hyperliquid_atomic_submit_concurrency_test_missing");
+  requireText("lighterConcurrencyTest", "atomically permits exactly one Lighter submission under concurrent identical requests", "lighter_atomic_submit_concurrency_test_missing");
   requireText("privateExecution", 'venueAdapterCapability(venueId, capability)', "worker_carry_capability_registry_missing");
   requireText("privateExecution", 'registeredCarryAdapter(venue_id, "carry_execution")', "worker_carry_execution_registry_dispatch_missing");
   requireText("privateExecution", 'registeredCarryAdapter(venue_id, "no_submit_reconciliation")', "worker_carry_no_submit_registry_dispatch_missing");
@@ -1774,6 +1776,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("lifecycleTest", "calls.every((call) => call.instruction.order.reduce_only === true)", "carry_automatic_exit_reduce_only_test_missing");
   requireText("lifecycleTest", "restart releases a linked entry only when its saga proves no submit occurred", "carry_restart_entry_pre_submit_test_missing");
   requireText("lifecycleTest", "restart safely retries an exit linked before any submission", "carry_restart_exit_pre_submit_test_missing");
+  requireText("lifecycleTest", "restart-frozen reconciled entry resumes active or exiting without resubmission", "carry_restart_frozen_entry_reconciliation_test_missing");
+  requireText("lifecycleTest", "restart recovery closes only the failed leg of a symmetric partial entry", "carry_partial_exit_missing_leg_recovery_test_missing");
+  requireText("lifecycleTest", "restart closes a symmetric partial entry once and remains proven flat with zero orders", "carry_partial_restart_flat_zero_test_missing");
   requireText("evidenceVerifier", "ghola_cross_venue_carry_mainnet_release_proof", "carry_release_evidence_kind_missing");
   requireText("evidenceVerifier", 'lifecycles.length >= 2', "carry_release_lifecycle_floor_missing");
   requireText("evidenceVerifier", "unique_position_count_insufficient", "carry_release_unique_position_gate_missing");

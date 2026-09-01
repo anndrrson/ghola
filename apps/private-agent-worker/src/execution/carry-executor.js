@@ -400,7 +400,7 @@ export async function executeStoredCarryExit({
         product_type: "perp",
         operation_class: "limit_order",
         side: leg.side,
-        notional_micro_usdc: record.position.target_notional_micro_usdc,
+        notional_micro_usdc: leg.notional_micro_usdc,
       })),
     },
     execution_context: {
@@ -461,9 +461,9 @@ export async function executeStoredCarryExit({
     receipts.push(receipt);
     receiptByLeg[leg.leg_id] = receipt;
     await sagaEvent(state, sagaId, "leg_acknowledged", { leg_id: leg.leg_id, provider_ref_commitment: receipt?.provider_ref_commitment || null }, now());
-    const progress = fillProgress(receipt, leg, record.position.target_notional_micro_usdc, env);
+    const progress = fillProgress(receipt, leg, leg.notional_micro_usdc, env);
     if (progress.filled_micro_usdc > 0) await sagaEvent(state, sagaId, "leg_fill", { leg_id: leg.leg_id, cumulative_filled_micro_usdc: progress.filled_micro_usdc }, now());
-    if (progress.terminal && progress.filled_micro_usdc < record.position.target_notional_micro_usdc) {
+    if (progress.terminal && progress.filled_micro_usdc < leg.notional_micro_usdc) {
       await sagaEvent(state, sagaId, "leg_finalized", { leg_id: leg.leg_id, cumulative_filled_micro_usdc: progress.filled_micro_usdc }, now());
     } else if (!progress.terminal) ambiguous = true;
   }
@@ -815,7 +815,7 @@ async function completeReconciledCarryEntry({ state, record, saga, env, liveLegs
     };
   }
   const current = await state.getCarryPositionRecord(record.position.position_id);
-  if (!current || current.owner_commitment !== record.owner_commitment || current.position.status !== "opening") {
+  if (!current || current.owner_commitment !== record.owner_commitment || !entryParentCanComplete(current.position)) {
     return {
       ok: false,
       error: "carry_entry_parent_state_changed",
@@ -839,7 +839,7 @@ async function completeReconciledCarryEntry({ state, record, saga, env, liveLegs
 }
 
 async function reconciledCarryEntryMaterial({ state, record, saga, env, liveLegs, receiptByLeg }) {
-  if (!record || record.position?.status !== "opening" || record.entry_saga_id !== saga?.saga_id
+  if (!record || !entryParentCanComplete(record.position) || record.entry_saga_id !== saga?.saga_id
     || saga?.terminal !== true || saga.status !== "reconciled" || saga.terminal_reason !== "all_legs_reconciled"
     || saga.recovery_mode !== "unwind" || saga.execution_context?.carry_position_id !== record.position.position_id
     || saga.execution_context?.owner_commitment !== record.owner_commitment
@@ -920,6 +920,11 @@ async function reconciledCarryEntryMaterial({ state, record, saga, env, liveLegs
   return { ok: true, legs, receiptByLeg: recoveredReceipts, longLeg, shortLeg };
 }
 
+function entryParentCanComplete(position) {
+  return position?.status === "opening"
+    || (position?.status === "frozen" && position.terminal_reason === "restart_detected");
+}
+
 function provablyPreSubmitCarrySaga(saga, record, phase) {
   const prefix = phase === "entry" ? "saga:carry:" : "saga:carry:exit:";
   const recoveryMode = phase === "entry" ? "unwind" : "complete_reduce_only";
@@ -972,6 +977,13 @@ async function synchronizeFrozenCarryRecovery({ state, record, recipient, verify
   }
   if (!["reconciled", "unwound", "failed_no_fill", "failed_no_submit"].includes(saga.status)) {
     return { ok: false, error: "carry_recovery_terminal_state_unrecognized", saga_status: saga.status };
+  }
+  if (!record.exit_saga_id && record.entry_saga_id === saga.saga_id
+    && record.position.terminal_reason === "restart_detected" && saga.status === "reconciled") {
+    const completed = await completeReconciledCarryEntry({ state, record, saga, env });
+    return completed.ok
+      ? { ...completed, restart_action: "entry_reconciled_completed" }
+      : completed;
   }
   const checkedAt = now();
   const accountState = await inspectCarryAccountState({
@@ -2062,8 +2074,11 @@ function buildExitLegs(record, proof, entrySaga, bases, nowMs) {
     const feeSettlementAsset = accountingAsset(verified?.fee_settlement_asset);
     const assetValuations = accountingValuations(verified?.asset_valuations);
     const base = bases[entryLeg.venue_id];
+    const notionalMicroUsdc = Number(entryLeg.filled_micro_usdc);
     if (!shape?.market || !shape?.limit_price || shape.side !== side || shape.reduce_only !== true
       || !base || canonicalPositiveDecimal(shape.base_size) !== base
+      || !Number.isSafeInteger(notionalMicroUsdc) || notionalMicroUsdc <= 0
+      || notionalMicroUsdc > record.position.target_notional_micro_usdc
       || verified.transaction_broadcast !== false || !quoteAsset || !feeSettlementAsset || !assetValuations) {
       return denied(`carry_exit_order_shape_missing:${entryLeg.venue_id}`);
     }
@@ -2073,6 +2088,7 @@ function buildExitLegs(record, proof, entrySaga, bases, nowMs) {
       venue_id: entryLeg.venue_id,
       side,
       market: String(shape.market),
+      notional_micro_usdc: notionalMicroUsdc,
       reference_mark_price_e8: verified.reference_mark_price_e8,
       quote_asset: quoteAsset,
       fee_settlement_asset: feeSettlementAsset,
@@ -2086,7 +2102,7 @@ function buildExitLegs(record, proof, entrySaga, bases, nowMs) {
         expires_at: new Date(nowMs + 5 * 60_000).toISOString(),
         order: {
           market: String(shape.market), side, base_size: base,
-          quote_size: String(record.position.target_notional_micro_usdc / 1_000_000), limit_price: String(shape.limit_price),
+          quote_size: String(notionalMicroUsdc / 1_000_000), limit_price: String(shape.limit_price),
           order_type: "limit", size_mode: "base", live_order_mode: "full_ticket", reduce_only: true,
           tif: "Ioc", leverage: 1, margin_mode: "cross",
         },

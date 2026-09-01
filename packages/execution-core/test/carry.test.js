@@ -1711,6 +1711,53 @@ test("ambiguous submission freezes and permits reconciliation, never retry", () 
   assert.equal(duplicate.duplicate, true);
 });
 
+test("only a restart-frozen entry can complete from durable reconciliation", () => {
+  let opening = position();
+  opening = advanceCarryPosition({
+    position: opening,
+    event: event(1, "preflight_passed", { opportunity_eligible: true, all_venues_ready: true }),
+    now_ms: NOW + 1,
+  }).position;
+  const restarted = advanceCarryPosition({
+    position: opening,
+    event: event(2, "restart_detected"),
+    now_ms: NOW + 2,
+  }).position;
+  const recovered = advanceCarryPosition({
+    position: restarted,
+    event: event(3, "entry_reconciled", {
+      long_filled_micro_usdc: 10_000_000_000,
+      short_filled_micro_usdc: 10_000_000_000,
+      hedge_error_micro_usdc: 0,
+    }),
+    now_ms: NOW + 3,
+  });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.position.status, "active");
+  assert.equal(recovered.position.terminal_reason, null);
+  assert.deepEqual(recovered.position.next_actions, ["monitor_carry_and_margin"]);
+
+  let unavailable = activePositionForObservation();
+  unavailable = advanceCarryPosition({
+    position: unavailable,
+    event: event(3, "observation_unavailable"),
+    now_ms: NOW + 3,
+  }).position;
+  const denied = advanceCarryPosition({
+    position: unavailable,
+    event: event(4, "entry_reconciled", {
+      long_filled_micro_usdc: 10_000_000_000,
+      short_filled_micro_usdc: 10_000_000_000,
+      hedge_error_micro_usdc: 0,
+    }),
+    now_ms: NOW + 4,
+  });
+  assert.equal(denied.ok, false);
+  assert.equal(denied.error, "carry_event_not_allowed_in_state");
+  assert.equal(denied.position.status, "frozen");
+  assert.equal(denied.position.terminal_reason, "observation_unavailable");
+});
+
 test("an unavailable monitoring observation freezes without retry", () => {
   let current = position();
   current = advanceCarryPosition({

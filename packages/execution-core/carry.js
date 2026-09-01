@@ -2328,7 +2328,10 @@ function applyEvent(position, event, nowMs) {
     return;
   }
   if (event.type === "entry_reconciled") {
-    requireStatus(position, new Set(["opening"]));
+    requireStatus(position, new Set(["opening", "frozen"]));
+    if (position.status === "frozen" && position.terminal_reason !== "restart_detected") {
+      fail("carry_event_not_allowed_in_state");
+    }
     const longFilled = nonNegativeInteger(event.long_filled_micro_usdc, "carry_long_filled");
     const shortFilled = nonNegativeInteger(event.short_filled_micro_usdc, "carry_short_filled");
     const hedgeError = nonNegativeInteger(event.hedge_error_micro_usdc, "carry_hedge_error");
@@ -2338,6 +2341,7 @@ function applyEvent(position, event, nowMs) {
     if (longFilled === position.target_notional_micro_usdc && shortFilled === position.target_notional_micro_usdc && hedgeError <= position.risk_mandate.max_hedge_error_micro_usdc) {
       position.status = "active";
       position.next_actions = ["monitor_carry_and_margin"];
+      position.terminal_reason = null;
     } else {
       position.status = "exiting";
       position.next_actions = ["cancel_open_orders", "reduce_only_close_filled_exposure"];
