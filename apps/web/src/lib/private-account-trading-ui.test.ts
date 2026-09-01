@@ -398,8 +398,8 @@ describe("private account trading UI derivation", () => {
     expect(serverSource).toContain('await wakePrivateWorkerForUse("hyperliquid_account_stream")');
     expect(serverSource).toContain("verified_runtime_ready: runtimeHealth.status === \"green\"");
     expect(serverSource).toContain("configuredMeasurement === expectedMeasurement");
-    expect(serverSource).toContain("hyperliquid_${executionMode}_no_submit_check");
-    expect(serverSource).toContain("hyperliquid_${venueExecutionMode ?? \"unknown\"}_submit");
+    expect(serverSource).toContain("${venueId}_${executionMode}_no_submit_check");
+    expect(serverSource).toContain("${venueId}_${venueExecutionMode ?? \"unknown\"}_submit");
     expect(serverSource).toContain('process.env.GHOLA_PRIVATE_WORKER_WAKE_ON_USE === "false"');
     expect(serverSource).toContain("skip_worker_wake: true");
 

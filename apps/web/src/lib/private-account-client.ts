@@ -36,6 +36,7 @@ export type PrivateAccountProductBucket =
 export interface PrivateAccountSafeInput {
   action_class: GholaPrivateAccountActionClass;
   platform_class: GholaPlatformClass;
+  venue_id?: GholaVenueId;
   product_bucket: PrivateAccountProductBucket;
   amount_bucket: GholaFundingAmountBucket;
   urgency: "maximum_privacy" | "next_batch" | "fast_degraded";
@@ -47,6 +48,27 @@ export interface PrivateAccountSafeInput {
     | "external_public_address";
   asset_bucket: "stablecoin" | "SOL" | "ETH" | "BTC" | "major" | "long_tail";
   solver_count_bucket: "1" | "2-4" | "5+";
+}
+
+const DEFAULT_PRIVATE_EXECUTION_VENUE: Partial<Record<GholaPlatformClass, GholaVenueId>> = {
+  hyperliquid_style_market: "hyperliquid",
+  solana_perps_market: "phoenix",
+  solana_swap_aggregator: "jupiter",
+  coinbase_style_provider: "coinbase_advanced",
+};
+
+export function bindPrivateAccountSafeInputPlatform(
+  input: PrivateAccountSafeInput,
+  platformClass: GholaPlatformClass,
+): PrivateAccountSafeInput {
+  const safeInput = { ...input };
+  delete safeInput.venue_id;
+  const venueId = DEFAULT_PRIVATE_EXECUTION_VENUE[platformClass];
+  return {
+    ...safeInput,
+    platform_class: platformClass,
+    ...(venueId ? { venue_id: venueId } : {}),
+  };
 }
 
 export type PrivateAutopilotVenueId = "jupiter" | "phoenix" | "backpack" | "hyperliquid" | "coinbase_advanced";
@@ -597,8 +619,11 @@ export async function createPrivateAccountIntent(input: PrivateAccountSafeInput)
     method: "POST",
     body: JSON.stringify({
       action_class: input.action_class,
+      platform_class: input.platform_class,
+      venue_id: input.venue_id,
       product_bucket: input.product_bucket,
       intent_seed: {
+        venue_id: input.venue_id,
         amount_bucket: input.amount_bucket,
         urgency: input.urgency,
         destination_class: input.destination_class,

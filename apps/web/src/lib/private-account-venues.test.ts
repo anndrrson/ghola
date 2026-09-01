@@ -120,6 +120,7 @@ describe("Coinbase Advanced private venue and omnibus model", () => {
     const blockedManifest = getConnectorManifest("coinbase_style_provider", NOW);
     const blocked = await connectorReadiness({
       manifest: blockedManifest,
+      venue_id: "coinbase_advanced",
       now: NOW,
       execution_mode: "partner_omnibus",
       omnibus_allocation_ready: false,
@@ -141,6 +142,7 @@ describe("Coinbase Advanced private venue and omnibus model", () => {
     const readyManifest = getConnectorManifest("coinbase_style_provider", NOW);
     const ready = await connectorReadiness({
       manifest: readyManifest,
+      venue_id: "coinbase_advanced",
       now: NOW,
       execution_mode: "partner_omnibus",
       omnibus_allocation_ready: true,
@@ -170,9 +172,12 @@ describe("Coinbase Advanced private venue and omnibus model", () => {
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       void input;
-      void init;
+      const request = JSON.parse(String(init?.body));
       return Response.json({
         ok: true,
+        venue_id: request.venue_id,
+        platform_class: request.platform_class,
+        work_order_commitment: request.work_order_commitment,
         provider_ref_commitment: "coinbase_provider_ref_test",
         result_commitment: "coinbase_result_test",
       }, { status: 202 });
@@ -184,6 +189,7 @@ describe("Coinbase Advanced private venue and omnibus model", () => {
     const manifest = getConnectorManifest("coinbase_style_provider", NOW);
     const readiness = await connectorReadiness({
       manifest,
+      venue_id: "coinbase_advanced",
       now: NOW,
       env,
       execution_mode: "partner_omnibus",
@@ -197,6 +203,7 @@ describe("Coinbase Advanced private venue and omnibus model", () => {
       action_commitment: action.action_commitment,
       action_class: action.action_class,
       platform_class: "coinbase_style_provider",
+      venue_id: "coinbase_advanced",
       product_bucket: "provider",
       manifest,
       safe_input: {
@@ -303,9 +310,12 @@ describe("Coinbase Advanced private venue and omnibus model", () => {
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       void input;
-      void init;
+      const request = JSON.parse(String(init?.body));
       return Response.json({
         ok: true,
+        venue_id: request.venue_id,
+        platform_class: request.platform_class,
+        work_order_commitment: request.work_order_commitment,
         provider_ref_commitment: "phoenix_provider_ref_test",
         result_commitment: "phoenix_result_test",
       }, { status: 202 });
@@ -317,6 +327,7 @@ describe("Coinbase Advanced private venue and omnibus model", () => {
     const manifest = getConnectorManifest("solana_perps_market", NOW);
     const readiness = await connectorReadiness({
       manifest,
+      venue_id: "phoenix",
       now: NOW,
       env,
       execution_mode: "user_stealth",
@@ -332,6 +343,7 @@ describe("Coinbase Advanced private venue and omnibus model", () => {
       action_commitment: action.action_commitment,
       action_class: action.action_class,
       platform_class: "solana_perps_market",
+      venue_id: "phoenix",
       product_bucket: "perps",
       manifest,
       safe_input: {

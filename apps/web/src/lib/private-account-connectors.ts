@@ -3,6 +3,7 @@ import {
   containsForbiddenPublicPrivateAccountField,
   getPlatformPrivacyProfile,
   gholaCommitment,
+  venuePlatformClass,
   venueIdForPlatformClass,
   type GholaConnectorPreviewContext,
   type GholaHyperliquidExecutionVault,
@@ -12,6 +13,7 @@ import {
   type GholaPrivacyPreview,
   type GholaRailKind,
   type GholaVenueExecutionMode,
+  type GholaVenueId,
 } from "./private-account";
 import {
   pilotEnabled,
@@ -91,6 +93,7 @@ export interface GholaConnectorManifest {
 export interface GholaConnectorReadiness {
   version: 1;
   platform_class: GholaPlatformClass;
+  venue_id: GholaVenueId | null;
   status: GholaConnectorStatus;
   mode: GholaConnectorMode;
   manifest_commitment: string;
@@ -110,6 +113,7 @@ export interface GholaCompiledPrivateIntent {
   action_commitment: string;
   action_class: GholaPrivateAccountActionClass;
   platform_class: GholaPlatformClass;
+  venue_id: GholaVenueId;
   product_bucket: string;
   amount_bucket: string;
   asset_bucket: string;
@@ -165,6 +169,7 @@ export interface GholaConnectorWorkOrder {
   approval_commitment: string | null;
   execution_plan_commitment: string | null;
   platform_class: GholaPlatformClass;
+  venue_id: GholaVenueId;
   selected_rail: GholaRailKind;
   manifest_commitment: string;
   connector_readiness_commitment: string;
@@ -182,6 +187,7 @@ export interface GholaConnectorResult {
   connector_result_commitment: string;
   work_order_commitment: string;
   platform_class: GholaPlatformClass;
+  venue_id: GholaVenueId;
   status: "submitted" | "reconciled" | "ambiguous" | "failed" | "cancelled" | "blocked";
   provider_ref_commitment: string | null;
   result_commitment: string;
@@ -228,6 +234,7 @@ export interface GholaConnectorFinalProof {
 export interface GholaConnectorNoFundsVerification {
   version: 1;
   platform_class: GholaPlatformClass;
+  venue_id: GholaVenueId;
   status: "verified_no_funds" | "failed" | "worker_unavailable";
   verification_commitment: string;
   work_order_commitment: string;
@@ -257,6 +264,13 @@ export interface GholaConnectorNoFundsVerification {
     jupiter_transaction_built?: boolean;
     coinbase_api_reachable?: boolean;
     coinbase_order_request_built?: boolean;
+    backpack_rest_ready?: boolean;
+    sdk_checked?: boolean;
+    signer_matches_key?: boolean;
+    market_data_checked?: boolean;
+    account_state_checked?: boolean;
+    margin_state_checked?: boolean;
+    order_request_checked?: boolean;
     transaction_broadcast: false;
   };
   visibility_summary: {
@@ -275,7 +289,7 @@ export interface GholaLiveReadinessCertificate {
   status: "ready_to_attempt_broadcast" | "not_ready" | "worker_unavailable";
   proof_level: "pre_broadcast_live_readiness";
   platform_class: GholaPlatformClass;
-  venue_id: "phoenix" | "hyperliquid" | "jupiter" | "coinbase_advanced";
+  venue_id: GholaVenueId;
   work_order_commitment: string;
   manifest_commitment: string;
   connector_readiness_commitment: string;
@@ -310,6 +324,13 @@ export interface GholaLiveReadinessCertificate {
     jupiter_transaction_built?: boolean;
     coinbase_api_reachable?: boolean;
     coinbase_order_request_built?: boolean;
+    backpack_rest_ready?: boolean;
+    sdk_checked?: boolean;
+    signer_matches_key?: boolean;
+    market_data_checked?: boolean;
+    account_state_checked?: boolean;
+    margin_state_checked?: boolean;
+    order_request_checked?: boolean;
     transaction_broadcast: false;
   };
   what_is_proven: string[];
@@ -318,6 +339,7 @@ export interface GholaLiveReadinessCertificate {
 }
 
 export interface ConnectorSafeIntentInput {
+  venue_id?: GholaVenueId;
   product_bucket?: string;
   amount_bucket?: string;
   asset_bucket?: string;
@@ -363,13 +385,20 @@ export function compilePrivateConnectorIntent(input: {
   action_commitment: string;
   action_class: GholaPrivateAccountActionClass;
   platform_class: GholaPlatformClass;
+  venue_id: GholaVenueId;
   product_bucket: string;
   manifest: GholaConnectorManifest;
   safe_input?: ConnectorSafeIntentInput | null;
   now?: Date;
-}): { ok: true; compiled_intent: GholaCompiledPrivateIntent } | { ok: false; error: "forbidden_raw_connector_field" } {
+}): { ok: true; compiled_intent: GholaCompiledPrivateIntent } | { ok: false; error: "forbidden_raw_connector_field" | "venue_platform_mismatch" } {
   if (containsForbiddenPublicPrivateAccountField(input.safe_input ?? {})) {
     return { ok: false, error: "forbidden_raw_connector_field" };
+  }
+  if (
+    venuePlatformClass(input.venue_id) !== input.platform_class ||
+    (input.safe_input?.venue_id && input.safe_input.venue_id !== input.venue_id)
+  ) {
+    return { ok: false, error: "venue_platform_mismatch" };
   }
   const now = input.now ?? new Date();
   const safe = input.safe_input ?? {};
@@ -379,6 +408,7 @@ export function compilePrivateConnectorIntent(input: {
     action_commitment: input.action_commitment,
     action_class: input.action_class,
     platform_class: input.platform_class,
+    venue_id: input.venue_id,
     product_bucket: input.product_bucket,
     amount_bucket: bucket(safe.amount_bucket, "25"),
     asset_bucket: bucket(safe.asset_bucket, "stablecoin"),
@@ -399,6 +429,7 @@ export function compilePrivateConnectorIntent(input: {
       action_commitment: input.action_commitment,
       action_class: input.action_class,
       platform_class: input.platform_class,
+      venue_id: input.venue_id,
       product_bucket: input.product_bucket,
       amount_bucket: ticket.amount_bucket,
       asset_bucket: ticket.asset_bucket,
@@ -414,6 +445,7 @@ export function compilePrivateConnectorIntent(input: {
 
 export async function connectorReadiness(input: {
   manifest: GholaConnectorManifest;
+  venue_id?: GholaVenueId | null;
   now?: Date;
   env?: Record<string, string | undefined>;
   execution_vault_ready?: boolean;
@@ -424,16 +456,29 @@ export async function connectorReadiness(input: {
   operation_class?: string;
   omnibus_allocation_ready?: boolean;
   pooled_allocation_ready?: boolean;
+  platform_summary?: boolean;
 }): Promise<GholaConnectorReadiness> {
   const now = input.now ?? new Date();
   const env = input.env ?? process.env;
+  const defaultVenueId = venueIdForPlatformClass(input.manifest.platform_class);
+  const venueId = input.venue_id === undefined ? defaultVenueId : input.venue_id;
+  const venueBindingRequired = defaultVenueId !== null ||
+    input.manifest.platform_class === "hyperliquid_style_market";
   const mode = connectorMode(env);
   const verification = verifyConnectorManifest(input.manifest, now);
   const reasonCodes: string[] = [];
+  if (!venueId) {
+    if (input.platform_summary === true) reasonCodes.push("platform_summary_only");
+    else if (venueBindingRequired) reasonCodes.push("venue_binding_required");
+  }
+  if (venueId && venuePlatformClass(venueId) !== input.manifest.platform_class) {
+    reasonCodes.push("venue_platform_mismatch");
+  }
   if (!verification.ok) reasonCodes.push(verification.error);
   if (!input.manifest.allow_live_submit) reasonCodes.push("connector_live_submit_blocked");
   const venueGate = venueReadinessGate({
     manifest: input.manifest,
+    venue_id: venueId,
     env,
     execution_vault_ready: input.execution_vault_ready === true,
     shielded_funding_ready: input.shielded_funding_ready === true,
@@ -447,11 +492,13 @@ export async function connectorReadiness(input: {
   reasonCodes.push(...venueGate.reason_codes);
   if (mode === "local_test") {
     const localAllowed = process.env.NODE_ENV !== "production";
-    const ready = verification.ok && localAllowed && input.manifest.allow_live_submit && venueGate.ok;
+    const ready = (!venueBindingRequired || Boolean(venueId)) &&
+      verification.ok && localAllowed && input.manifest.allow_live_submit && venueGate.ok;
     return readiness({
       manifest: input.manifest,
+      venue_id: venueId,
       mode,
-      status: ready ? "ready" : "blocked",
+      status: ready ? "ready" : input.platform_summary === true && !venueId ? "missing" : "blocked",
       live_submit_enabled: ready,
       reason_codes: localAllowed ? reasonCodes : [...reasonCodes, "local_test_connector_disabled_in_production"],
       now,
@@ -464,7 +511,9 @@ export async function connectorReadiness(input: {
   if (!cfg.readiness) reasonCodes.push("connector_readiness_missing");
   if (cfg.readiness === "stale") reasonCodes.push("connector_readiness_stale");
   if (cfg.readiness === "blocked") reasonCodes.push("connector_readiness_blocked");
-  const status: GholaConnectorStatus = !verification.ok || cfg.readiness === "blocked"
+  const status: GholaConnectorStatus = venueBindingRequired && !venueId
+    ? input.platform_summary === true ? "missing" : "blocked"
+    : !verification.ok || cfg.readiness === "blocked"
     || !venueGate.ok
     ? "blocked"
     : cfg.readiness === "stale"
@@ -474,6 +523,7 @@ export async function connectorReadiness(input: {
         : "missing";
   return readiness({
     manifest: input.manifest,
+    venue_id: venueId,
     mode,
     status,
     live_submit_enabled: status === "ready",
@@ -524,7 +574,7 @@ export function connectorSandboxPolicy(input: {
 export function scoreConnectorLinkability(input: {
   account_commitment: string;
   platform_class: GholaPlatformClass;
-  compiled_intent: GholaCompiledPrivateIntent;
+  compiled_intent: Pick<GholaCompiledPrivateIntent, "compiler_commitment">;
   prior_platform_actions?: number;
   same_amount_bucket_actions?: number;
   same_asset_bucket_actions?: number;
@@ -626,6 +676,12 @@ export function buildConnectorWorkOrder(input: {
   now?: Date;
 }): GholaConnectorWorkOrder {
   const now = input.now ?? new Date();
+  if (
+    input.compiled_intent.venue_id !== input.readiness.venue_id ||
+    venuePlatformClass(input.compiled_intent.venue_id) !== input.manifest.platform_class
+  ) {
+    throw new Error("connector_venue_binding_mismatch");
+  }
   const platformFundingAccountCommitment = input.preview.rotation?.platform_funding_account_commitment ??
     gholaCommitment("platform_funding_account", {
       owner_commitment: input.owner_commitment,
@@ -650,6 +706,7 @@ export function buildConnectorWorkOrder(input: {
       compiler_commitment: input.compiled_intent.compiler_commitment,
       readiness_commitment: input.readiness.readiness_commitment,
       linkability_score_commitment: input.linkability_score.score_commitment,
+      venue_id: input.compiled_intent.venue_id,
     }),
     owner_commitment: input.owner_commitment,
     intent_id: input.intent_id,
@@ -659,6 +716,7 @@ export function buildConnectorWorkOrder(input: {
     approval_commitment: input.approval_commitment ?? null,
     execution_plan_commitment: input.execution_plan_commitment ?? null,
     platform_class: input.manifest.platform_class,
+    venue_id: input.compiled_intent.venue_id,
     selected_rail: input.preview.selected_rail,
     manifest_commitment: input.manifest.manifest_commitment,
     connector_readiness_commitment: input.readiness.readiness_commitment,
@@ -732,6 +790,17 @@ export async function submitConnectorWorkOrder(input: {
   | { ok: false; error: GholaConnectorSubmitError }
 > {
   const now = input.now ?? new Date();
+  const venueId = input.work_order.venue_id;
+  if (
+    venueId !== input.compiled_intent.venue_id ||
+    venueId !== input.readiness.venue_id ||
+    !venueId ||
+    venuePlatformClass(venueId) !== input.manifest.platform_class ||
+    ((venueId === "aster" || venueId === "lighter") && !input.venue_execution_vault) ||
+    (input.venue_execution_vault && input.venue_execution_vault.venue_id !== venueId)
+  ) {
+    return { ok: false, error: "connector_submit_blocked" };
+  }
   if (input.readiness.status !== "ready" || !input.readiness.live_submit_enabled) {
     return { ok: false, error: "connector_not_ready" };
   }
@@ -755,7 +824,7 @@ export async function submitConnectorWorkOrder(input: {
   const cfg = connectorEnvConfig(input.manifest.platform_class, input.env ?? process.env);
   if (!cfg.url) return { ok: false, error: "connector_not_ready" };
   try {
-    const submitPath = connectorSubmitPath(input.manifest.platform_class);
+    const submitPath = connectorSubmitPath(venueId);
     const payload = redactedConnectorPayload(input);
     const authorization = workerAuthorizationHeader({
       env: input.env ?? process.env,
@@ -765,7 +834,7 @@ export async function submitConnectorWorkOrder(input: {
       scope: "order:submit",
       body: payload,
       expected: workerCapabilityExpectedFromBody(payload, {
-        venue_id: payload.venue_id || venueIdForPlatformClass(input.manifest.platform_class),
+        venue_id: venueId,
       }),
     });
     const res = await fetch(new URL(submitPath, cfg.url), {
@@ -794,6 +863,13 @@ export async function submitConnectorWorkOrder(input: {
       }
       return { ok: false, error: connectorSubmitError(body, res.status) };
     }
+    if (!connectorResponseBindingMatches(body, {
+      venue_id: venueId,
+      work_order_commitment: input.work_order.work_order_commitment,
+      platform_class: input.manifest.platform_class,
+    })) {
+      return { ok: false, error: "connector_submit_ambiguous" };
+    }
     return {
       ok: true,
       result: connectorResult({
@@ -820,7 +896,7 @@ export async function verifyConnectorNoSubmit(input: {
   work_order_commitment: string;
   operation_class: string;
   venue_execution_vault: {
-    venue_id: string;
+    venue_id: GholaVenueId;
     execution_mode: GholaVenueExecutionMode | string;
     vault_commitment?: string;
     encrypted_vault_commitment?: string;
@@ -843,11 +919,18 @@ export async function verifyConnectorNoSubmit(input: {
   const base = {
     version: 1 as const,
     platform_class: input.platform_class,
+    venue_id: input.venue_execution_vault.venue_id,
     work_order_commitment: input.work_order_commitment,
     manifest_commitment: input.manifest.manifest_commitment,
     connector_readiness_commitment: input.readiness.readiness_commitment,
     created_at: now.toISOString(),
   };
+  if (
+    venuePlatformClass(base.venue_id) !== input.platform_class ||
+    input.readiness.venue_id !== base.venue_id
+  ) {
+    return failedNoFundsVerification(base, "venue_platform_mismatch", "failed", input.site_origin);
+  }
   if (![
     "solana_perps_market",
     "hyperliquid_style_market",
@@ -871,11 +954,11 @@ export async function verifyConnectorNoSubmit(input: {
   const cfg = connectorEnvConfig(input.platform_class, input.env ?? process.env);
   if (!cfg.url) return failedNoFundsVerification(base, "connector_endpoint_missing", "failed", input.site_origin);
   try {
-    const verifyPath = connectorNoSubmitVerifyPath(input.platform_class);
+    const verifyPath = connectorNoSubmitVerifyPath(base.venue_id);
     const payload = {
       version: 1,
       platform_class: input.platform_class,
-      venue_id: input.venue_execution_vault.venue_id || venueIdForPlatformClass(input.platform_class) || "phoenix",
+      venue_id: base.venue_id,
       execution_mode: input.venue_execution_vault.execution_mode ||
         (input.platform_class === "hyperliquid_style_market" ? "byo_api_key" : "user_stealth"),
       work_order_commitment: input.work_order_commitment,
@@ -919,7 +1002,10 @@ export async function verifyConnectorNoSubmit(input: {
       body: JSON.stringify(payload),
     });
     const body = asRecord(await res.json().catch(() => null));
-    if (!res.ok || body.status !== "verified_no_funds") {
+    const workerStatus = stringValue(body.status);
+    const statusAccepted = workerStatus === "verified_no_funds" ||
+      ((base.venue_id === "aster" || base.venue_id === "lighter") && workerStatus === "verified_ready");
+    if (!res.ok || !statusAccepted) {
       console.warn("[private-account] connector no-submit rejected", {
         platform_class: input.platform_class,
         status: res.status,
@@ -930,6 +1016,17 @@ export async function verifyConnectorNoSubmit(input: {
           : [],
       });
       return failedNoFundsVerification(base, noFundsReason(body, res.status), "failed", input.site_origin);
+    }
+    if (!connectorResponseBindingMatches(body, {
+      venue_id: base.venue_id,
+      work_order_commitment: base.work_order_commitment,
+      platform_class: input.platform_class,
+    })) {
+      return failedNoFundsVerification(base, "venue_response_mismatch", "failed", input.site_origin);
+    }
+    const checksFailure = mandatoryNoSubmitChecksFailure(base.venue_id, body.checks);
+    if (checksFailure) {
+      return failedNoFundsVerification(base, checksFailure, "failed", input.site_origin);
     }
     return verifiedNoFundsVerification(base, {
       result_commitment: stringValue(body.result_commitment) || null,
@@ -989,6 +1086,16 @@ export async function reconcileConnectorResult(input: {
       now,
     });
   }
+  if (input.work_order.venue_id !== input.venue_id) {
+    return connectorResult({
+      work_order: input.work_order,
+      manifest: input.manifest,
+      status: "ambiguous",
+      provider_ref_seed: input.existing_result?.provider_ref_commitment ?? input.work_order.work_order_commitment,
+      reason: "connector_reconcile_venue_mismatch",
+      now,
+    });
+  }
   if (
     (input.venue_id === "aster" || input.venue_id === "lighter") &&
     (
@@ -1008,8 +1115,19 @@ export async function reconcileConnectorResult(input: {
       now,
     });
   }
-  const mode = connectorMode(input.env ?? process.env);
+  const connectorEnv = input.env ?? process.env;
+  const mode = connectorMode(connectorEnv);
   if (mode === "local_test") {
+    if (connectorEnv.NODE_ENV !== "test") {
+      return connectorResult({
+        work_order: input.work_order,
+        manifest: input.manifest,
+        status: "ambiguous",
+        provider_ref_seed: input.existing_result?.provider_ref_commitment ?? input.work_order.work_order_commitment,
+        reason: "local_test_reconcile_disabled",
+        now,
+      });
+    }
     return connectorResult({
       work_order: input.work_order,
       manifest: input.manifest,
@@ -1288,6 +1406,7 @@ function blockedActionsFor(platformClass: GholaPlatformClass): GholaPrivateAccou
 
 function readiness(input: {
   manifest: GholaConnectorManifest;
+  venue_id: GholaVenueId | null;
   mode: GholaConnectorMode;
   status: GholaConnectorStatus;
   live_submit_enabled: boolean;
@@ -1297,11 +1416,13 @@ function readiness(input: {
   return {
     version: 1,
     platform_class: input.manifest.platform_class,
+    venue_id: input.venue_id,
     status: input.status,
     mode: input.mode,
     manifest_commitment: input.manifest.manifest_commitment,
     readiness_commitment: gholaCommitment("connector_readiness", {
       platform_class: input.manifest.platform_class,
+      venue_id: input.venue_id,
       manifest_commitment: input.manifest.manifest_commitment,
       status: input.status,
       mode: input.mode,
@@ -1328,6 +1449,7 @@ function connectorResult(input: {
     : null;
   const resultSeed = {
     work_order_commitment: input.work_order.work_order_commitment,
+    venue_id: input.work_order.venue_id,
     status: input.status,
     provider_ref_commitment: providerRefCommitment,
     reason: input.reason,
@@ -1337,6 +1459,7 @@ function connectorResult(input: {
     connector_result_commitment: gholaCommitment("connector_result", resultSeed),
     work_order_commitment: input.work_order.work_order_commitment,
     platform_class: input.manifest.platform_class,
+    venue_id: input.work_order.venue_id,
     status: input.status,
     provider_ref_commitment: providerRefCommitment,
     result_commitment: gholaCommitment("connector_result_body", resultSeed),
@@ -1530,6 +1653,7 @@ function redactedConnectorPayload(input: {
   return {
     version: 1,
     platform_class: input.manifest.platform_class,
+    venue_id: input.work_order.venue_id,
     work_order_commitment: input.work_order.work_order_commitment,
     manifest_commitment: input.manifest.manifest_commitment,
     compiler_commitment: input.compiled_intent.compiler_commitment,
@@ -1541,7 +1665,7 @@ function redactedConnectorPayload(input: {
     ...(input.encrypted_execution_instruction_bundle
       ? { encrypted_execution_instruction_bundle: input.encrypted_execution_instruction_bundle }
       : {}),
-    ...(input.manifest.platform_class === "hyperliquid_style_market" && input.hyperliquid_execution_vault
+    ...(input.work_order.venue_id === "hyperliquid" && input.hyperliquid_execution_vault
       ? {
           execution_mode: "byo_api_key",
           vault_commitment: input.hyperliquid_execution_vault.vault_commitment,
@@ -1550,7 +1674,7 @@ function redactedConnectorPayload(input: {
           encrypted_execution_vault: input.hyperliquid_execution_vault.encrypted_execution_vault,
         }
       : {}),
-    ...(input.manifest.platform_class === "hyperliquid_style_market" && input.hyperliquid_managed_allocation
+    ...(input.work_order.venue_id === "hyperliquid" && input.hyperliquid_managed_allocation
       ? {
           execution_mode: input.hyperliquid_managed_allocation.execution_mode === "ghola_pooled"
             ? "ghola_pooled"
@@ -1570,9 +1694,21 @@ function redactedConnectorPayload(input: {
             : null,
         }
       : {}),
+    ...((input.work_order.venue_id === "aster" || input.work_order.venue_id === "lighter") && input.venue_execution_vault
+      ? {
+          execution_mode: input.venue_execution_vault.execution_mode,
+          vault_commitment: input.venue_execution_vault.vault_commitment,
+          encrypted_vault_commitment: input.venue_execution_vault.encrypted_vault_commitment,
+          policy_commitment: input.venue_execution_vault.policy_commitment,
+          allocation_commitment: input.venue_execution_vault.allocation_commitment ?? null,
+          ...(input.venue_execution_vault.encrypted_execution_vault
+            ? { encrypted_execution_vault: input.venue_execution_vault.encrypted_execution_vault }
+            : {}),
+        }
+      : {}),
     ...(input.manifest.platform_class === "coinbase_style_provider"
       ? {
-          venue_id: input.venue_execution_vault?.venue_id ?? "coinbase_advanced",
+          venue_id: input.work_order.venue_id,
           execution_mode: input.venue_execution_vault?.execution_mode ??
             (input.omnibus_allocation ? "partner_omnibus" : "byo_api_key"),
           vault_commitment: input.venue_execution_vault?.vault_commitment ?? null,
@@ -1599,7 +1735,7 @@ function redactedConnectorPayload(input: {
       : {}),
     ...(input.manifest.platform_class === "solana_perps_market"
       ? {
-          venue_id: input.venue_execution_vault?.venue_id ?? "phoenix",
+          venue_id: input.work_order.venue_id,
           execution_mode: input.pooled_venue_allocation
             ? "ghola_pooled"
             : input.venue_execution_vault?.execution_mode ?? "user_stealth",
@@ -1629,7 +1765,7 @@ function redactedConnectorPayload(input: {
       : {}),
     ...(input.manifest.platform_class === "solana_swap_aggregator"
       ? {
-          venue_id: input.venue_execution_vault?.venue_id ?? "jupiter",
+          venue_id: input.work_order.venue_id,
           execution_mode: input.pooled_venue_allocation
             ? "ghola_pooled"
             : input.venue_execution_vault?.execution_mode ?? "user_stealth",
@@ -1662,6 +1798,7 @@ function redactedConnectorPayload(input: {
 
 function venueReadinessGate(input: {
   manifest: GholaConnectorManifest;
+  venue_id: GholaVenueId | null;
   env: Record<string, string | undefined>;
   execution_vault_ready: boolean;
   shielded_funding_ready: boolean;
@@ -1671,13 +1808,30 @@ function venueReadinessGate(input: {
   operation_class?: string;
   runtime_health: GholaRuntimeHealth | null;
 }): { ok: boolean; reason_codes: string[] } {
-  const venueId = venueIdForPlatformClass(input.manifest.platform_class);
-  if (!venueId) {
-    return { ok: true, reason_codes: [] };
-  }
+  const venueId = input.venue_id;
+  if (!venueId) return { ok: true, reason_codes: [] };
   const reasonCodes: string[] = [];
+  if (venuePlatformClass(venueId) !== input.manifest.platform_class) {
+    reasonCodes.push("venue_platform_mismatch");
+  }
   if (venueId === "hyperliquid" && input.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED !== "true") {
     reasonCodes.push("hyperliquid_pilot_disabled");
+  }
+  if (venueId === "aster") {
+    if (input.env.PRIVATE_AGENT_ASTER_ALLOW_MAINNET !== "true") {
+      reasonCodes.push("aster_pilot_disabled");
+    }
+    if (input.env.PRIVATE_AGENT_ASTER_LIVE_MODE !== "full_ticket") {
+      reasonCodes.push("aster_live_mode_disabled");
+    }
+  }
+  if (venueId === "lighter") {
+    if (input.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET !== "true") {
+      reasonCodes.push("lighter_pilot_disabled");
+    }
+    if (input.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE !== "full_ticket") {
+      reasonCodes.push("lighter_live_mode_disabled");
+    }
   }
   if (venueId === "coinbase_advanced" && input.env.GHOLA_V6_COINBASE_PILOT_ENABLED !== "true") {
     reasonCodes.push("coinbase_pilot_disabled");
@@ -1745,6 +1899,9 @@ function venueReadinessGate(input: {
     }
   } else if (venueId === "hyperliquid" && !input.execution_vault_ready) {
     reasonCodes.push("venue_access_required", "hyperliquid_execution_vault_not_ready");
+  }
+  if ((venueId === "aster" || venueId === "lighter") && !input.execution_vault_ready) {
+    reasonCodes.push("venue_access_required", `${venueId}_execution_vault_not_ready`);
   }
   if (venueId === "coinbase_advanced") {
     const mode = input.execution_mode ?? "partner_omnibus";
@@ -1849,8 +2006,10 @@ function operationForAction(platformClass: GholaPlatformClass, action: GholaPriv
   return hyperliquidOperationForAction(action);
 }
 
-function connectorSubmitPath(platformClass: GholaPlatformClass): string {
-  return connectorSdkSpecForPlatform(platformClass).http_paths.submit;
+function connectorSubmitPath(venueId: GholaVenueId): string {
+  if (venueId === "aster") return "/venues/aster/orders";
+  if (venueId === "lighter") return "/venues/lighter/orders";
+  return connectorSdkSpecForPlatform(venuePlatformClass(venueId)).http_paths.submit;
 }
 
 function connectorReconcilePath(venueId: GholaConnectorReconcileVenueId): string {
@@ -1869,14 +2028,17 @@ function connectorReconcileVenueMatchesPlatform(
     : platformClass === "coinbase_style_provider" && venueId === "coinbase_advanced";
 }
 
-function connectorNoSubmitVerifyPath(platformClass: GholaPlatformClass): string {
-  return connectorSdkSpecForPlatform(platformClass).http_paths.verify_no_submit;
+function connectorNoSubmitVerifyPath(venueId: GholaVenueId): string {
+  if (venueId === "aster") return "/venues/aster/verify";
+  if (venueId === "lighter") return "/venues/lighter/verify";
+  return connectorSdkSpecForPlatform(venuePlatformClass(venueId)).http_paths.verify_no_submit;
 }
 
 function verifiedNoFundsVerification(
   base: {
     version: 1;
     platform_class: GholaPlatformClass;
+    venue_id: GholaVenueId;
     work_order_commitment: string;
     manifest_commitment: string;
     connector_readiness_commitment: string;
@@ -1926,6 +2088,7 @@ function failedNoFundsVerification(
   base: {
     version: 1;
     platform_class: GholaPlatformClass;
+    venue_id: GholaVenueId;
     work_order_commitment: string;
     manifest_commitment: string;
     connector_readiness_commitment: string;
@@ -1971,6 +2134,7 @@ function liveReadinessCertificate(input: {
   base: {
     version: 1;
     platform_class: GholaPlatformClass;
+    venue_id: GholaVenueId;
     work_order_commitment: string;
     manifest_commitment: string;
     connector_readiness_commitment: string;
@@ -1985,14 +2149,16 @@ function liveReadinessCertificate(input: {
 }): GholaLiveReadinessCertificate {
   const siteOrigin = stringValue(input.site_origin);
   const expiresAt = new Date(new Date(input.base.created_at).getTime() + 10 * 60_000).toISOString();
-  const venueId = certificateVenueId(input.base.platform_class);
+  const venueId = input.base.venue_id;
   const checks = {
     production_site_reachable: Boolean(siteOrigin),
     private_agent_worker_reachable: Boolean(
       input.checks.sealed_vault_opened ||
       input.checks.rpc_reachable ||
       input.checks.hyperliquid_api_reachable ||
-      input.checks.jupiter_api_reachable
+      input.checks.jupiter_api_reachable ||
+      input.checks.coinbase_api_reachable ||
+      input.checks.sdk_checked
     ),
     sealed_vault_opened: input.checks.sealed_vault_opened,
     sealed_instruction_opened: input.checks.sealed_instruction_opened,
@@ -2012,6 +2178,13 @@ function liveReadinessCertificate(input: {
     jupiter_transaction_built: input.checks.jupiter_transaction_built,
     coinbase_api_reachable: input.checks.coinbase_api_reachable,
     coinbase_order_request_built: input.checks.coinbase_order_request_built,
+    backpack_rest_ready: input.checks.backpack_rest_ready,
+    sdk_checked: input.checks.sdk_checked,
+    signer_matches_key: input.checks.signer_matches_key,
+    market_data_checked: input.checks.market_data_checked,
+    account_state_checked: input.checks.account_state_checked,
+    margin_state_checked: input.checks.margin_state_checked,
+    order_request_checked: input.checks.order_request_checked,
     transaction_broadcast: false as const,
   };
   const seed = {
@@ -2056,7 +2229,7 @@ function liveReadinessCertificate(input: {
     transaction_simulation_status: "not_performed",
     checks,
     what_is_proven: input.status === "ready_to_attempt_broadcast"
-      ? provenNoSubmitClaims(input.base.platform_class)
+      ? provenNoSubmitClaims(input.base.venue_id)
       : [
           "ghola produced a commitment-safe failed readiness artifact",
           "no transaction was broadcast",
@@ -2095,6 +2268,13 @@ function defaultNoFundsChecks(ok: boolean): GholaConnectorNoFundsVerification["c
     jupiter_transaction_built: ok,
     coinbase_api_reachable: ok,
     coinbase_order_request_built: ok,
+    backpack_rest_ready: ok,
+    sdk_checked: ok,
+    signer_matches_key: ok,
+    market_data_checked: ok,
+    account_state_checked: ok,
+    margin_state_checked: ok,
+    order_request_checked: ok,
     transaction_broadcast: false,
   };
 }
@@ -2122,19 +2302,108 @@ function noFundsChecks(value: unknown): GholaConnectorNoFundsVerification["check
     jupiter_transaction_built: body.jupiter_transaction_built === true,
     coinbase_api_reachable: body.coinbase_api_reachable === true || body.provider_api_reachable === true,
     coinbase_order_request_built: body.coinbase_order_request_built === true || body.order_request_built === true,
+    backpack_rest_ready: body.backpack_rest_ready === true,
+    sdk_checked: body.sdk_checked === true,
+    signer_matches_key: body.signer_matches_key === true,
+    market_data_checked: body.market_data_checked === true,
+    account_state_checked: body.account_state_checked === true,
+    margin_state_checked: body.margin_state_checked === true,
+    order_request_checked: body.order_request_checked === true,
     transaction_broadcast: false,
   };
 }
 
-function certificateVenueId(platformClass: GholaPlatformClass): "phoenix" | "hyperliquid" | "jupiter" | "coinbase_advanced" {
-  if (platformClass === "hyperliquid_style_market") return "hyperliquid";
-  if (platformClass === "solana_swap_aggregator") return "jupiter";
-  if (platformClass === "coinbase_style_provider") return "coinbase_advanced";
-  return "phoenix";
+function mandatoryNoSubmitChecksFailure(venueId: GholaVenueId, value: unknown): string | null {
+  const checks = asRecord(value);
+  if (checks.transaction_broadcast !== false) return "transaction_broadcast_not_false";
+  const required = mandatoryNoSubmitChecks(venueId);
+  if (!required) return "mandatory_no_submit_checks_unsupported";
+  if (required.some((check) => !(check in checks))) return "mandatory_no_submit_checks_incomplete";
+  if (required.some((check) => checks[check] !== true)) return "mandatory_no_submit_check_failed";
+  return null;
 }
 
-function provenNoSubmitClaims(platformClass: GholaPlatformClass): string[] {
-  if (platformClass === "hyperliquid_style_market") {
+function mandatoryNoSubmitChecks(venueId: GholaVenueId): readonly string[] | null {
+  if (venueId === "aster") {
+    return [
+      "sdk_checked",
+      "signer_matches_key",
+      "market_data_checked",
+      "account_state_checked",
+      "order_request_checked",
+    ];
+  }
+  if (venueId === "lighter") {
+    return [
+      "sdk_checked",
+      "signer_matches_key",
+      "market_data_checked",
+      "account_state_checked",
+      "margin_state_checked",
+      "order_request_checked",
+    ];
+  }
+  if (venueId === "hyperliquid") {
+    return [
+      "sealed_vault_opened",
+      "sealed_instruction_opened",
+      "authority_derived",
+      "policy_enforced",
+      "live_gate_enforced",
+      "api_wallet_loaded",
+      "hyperliquid_api_reachable",
+      "hyperliquid_sdk_ready",
+      "account_read_checked",
+      "order_request_built",
+      "live_venue_checked",
+    ];
+  }
+  if (venueId === "phoenix" || venueId === "drift") {
+    return [
+      "sealed_vault_opened",
+      "sealed_instruction_opened",
+      "authority_derived",
+      "policy_enforced",
+      "live_gate_enforced",
+      "rpc_reachable",
+      "phoenix_sdk_ready",
+      "order_packet_built",
+    ];
+  }
+  if (venueId === "backpack") {
+    return [
+      "sealed_vault_opened",
+      "sealed_instruction_opened",
+      "authority_derived",
+      "policy_enforced",
+      "live_gate_enforced",
+      "rpc_reachable",
+      "backpack_rest_ready",
+      "order_packet_built",
+    ];
+  }
+  if (venueId === "jupiter") {
+    return [
+      "sealed_vault_opened",
+      "sealed_instruction_opened",
+      "authority_derived",
+      "policy_enforced",
+      "live_gate_enforced",
+      "order_request_built",
+      "jupiter_api_reachable",
+      "jupiter_token_allowlist_passed",
+      "jupiter_order_built",
+      "jupiter_transaction_built",
+    ];
+  }
+  if (venueId === "coinbase_advanced") {
+    return ["coinbase_api_reachable", "coinbase_order_request_built"];
+  }
+  return null;
+}
+
+function provenNoSubmitClaims(venueId: GholaVenueId): string[] {
+  if (venueId === "hyperliquid") {
     return [
       "ghola production route answered this request",
       "private-agent worker accepted sealed vault and instruction bundles",
@@ -2144,7 +2413,16 @@ function provenNoSubmitClaims(platformClass: GholaPlatformClass): string[] {
       "Hyperliquid order request was built without broadcasting",
     ];
   }
-  if (platformClass === "solana_swap_aggregator") {
+  if (venueId === "aster" || venueId === "lighter") {
+    return [
+      "ghola production route answered this request",
+      "private-agent worker accepted the exact venue-bound sealed vault and instruction bundles",
+      `${venueId} live gates and capped order policy passed`,
+      `${venueId} account state was read without broadcasting`,
+      `${venueId} order request was built without broadcasting`,
+    ];
+  }
+  if (venueId === "jupiter") {
     return [
       "ghola production route answered this request",
       "private-agent worker accepted sealed vault and instruction bundles",
@@ -2153,7 +2431,7 @@ function provenNoSubmitClaims(platformClass: GholaPlatformClass): string[] {
       "Jupiter swap transaction was built without broadcasting",
     ];
   }
-  if (platformClass === "coinbase_style_provider") {
+  if (venueId === "coinbase_advanced") {
     return [
       "ghola production route answered this request",
       "private-agent worker accepted sealed venue access and instruction bundles",
@@ -2222,6 +2500,7 @@ function connectorEnvConfig(platformClass: GholaPlatformClass, env: Record<strin
 }
 
 function connectorMode(env: Record<string, string | undefined>): GholaConnectorMode {
+  if (env.NODE_ENV === "production") return "http";
   if (env.GHOLA_CONNECTOR_MODE === "http") return "http";
   if (env.GHOLA_CONNECTOR_MODE === "local_test" || env.GHOLA_SHIELDED_POOL_MODE === "local_test") {
     return "local_test";
@@ -2268,6 +2547,19 @@ function connectorFinalProof(value: unknown): GholaConnectorFinalProof | null {
     original_order_target_matched: body.original_order_target_matched === true,
     checked_at: checkedAt,
   };
+}
+
+function connectorResponseBindingMatches(
+  body: Record<string, unknown>,
+  expected: {
+    venue_id: GholaVenueId;
+    work_order_commitment: string;
+    platform_class: GholaPlatformClass;
+  },
+): boolean {
+  return stringValue(body.venue_id) === expected.venue_id &&
+    stringValue(body.work_order_commitment) === expected.work_order_commitment &&
+    stringValue(body.platform_class) === expected.platform_class;
 }
 
 function bucket(value: unknown, fallback: string): string {

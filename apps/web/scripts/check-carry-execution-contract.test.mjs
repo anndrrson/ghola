@@ -117,12 +117,47 @@ test("rejects Lighter recovery that coerces a missing venue order id into proof"
     () => checkCarryExecutionContract({
       ...sources,
       lighter: sources.lighter.replace(
+        "unsignedDecimalIntegerText(order?.order_index) !== null",
         "nonnegativeIntegerOrNull(order?.order_index) !== null",
-        "Number.isSafeInteger(Number(order?.order_index))",
       ),
     }),
     /lighter_original_order_id_proof_missing/,
   );
+});
+
+test("rejects tampering with exact Lighter realized-fee evidence", () => {
+  const cases = [
+    ["workerDockerfile", 'assert callable(getattr(api, "trades", None));', "", /lighter_image_trade_api_guard_missing/],
+    ["workerDockerfile", 'assert callable(getattr(api, "trades_with_http_info", None));', "", /lighter_image_raw_trade_api_guard_missing/],
+    ["workerDockerfile", '"maker_fee", "taker_fee"', '"taker_fee"', /lighter_image_trade_field_guard_missing:maker_fee/],
+    ["lighterRunner", "MAX_TRADE_PAGES = 8", "MAX_TRADE_PAGES = 7", /lighter_trade_pagination_bound_missing/],
+    ["lighterRunner", "if next_cursor is None:", "if True:", /lighter_trade_pagination_completion_missing/],
+    ["lighterRunner", "if next_cursor == cursor or next_cursor in seen_cursors:", "if False:", /lighter_trade_cursor_guard_missing/],
+    ["lighterRunner", 'if trade.get("type") != "trade":', "if False:", /lighter_trade_type_binding_missing/],
+    ["lighterRunner", "if account_is_ask == account_is_bid:", "if False:", /lighter_trade_account_binding_missing/],
+    ["lighterRunner", 'if exact_integer(bound_order_id, "lighter trade order is invalid") != order_index:', "if False:", /lighter_trade_order_binding_missing/],
+    ["lighterRunner", 'if exact_integer(bound_client_id, "lighter trade client order is invalid") != client_order_index:', "if False:", /lighter_trade_client_order_binding_missing/],
+    ["lighterRunner", 'role = "maker" if account_is_ask == is_maker_ask else "taker"', 'role = "maker"', /lighter_trade_fee_role_binding_missing/],
+    ["lighterRunner", "LIGHTER_FEE_TICK_DENOMINATOR = Decimal(1_000_000)", "LIGHTER_FEE_TICK_DENOMINATOR = Decimal(1)", /lighter_trade_fee_denominator_missing/],
+    ["lighterRunner", "if base_total != expected_base or quote_total != expected_quote:", "if False:", /lighter_trade_total_completion_guard_missing/],
+    ["lighterRunner", "status in LIGHTER_CANCELED_ORDER_STATUSES", "False", /lighter_runner_cancel_status_enum_missing/],
+    ["lighter", "LIGHTER_CANCELED_ORDER_STATUSES.has(value)", "false", /lighter_cancel_status_enum_missing/],
+    ["lighterRunner", "fee_tick = 0 if fee_key not in trade else exact_integer(", "fee_tick = exact_integer(", /lighter_omitted_zero_fee_semantics_missing/],
+    ["lighter", "const zeroFillFeeExact = exactOriginalOrderObserved", "const zeroFillFeeExact = true", /lighter_zero_fill_order_id_binding_missing/],
+    ["lighter", '&& filledQuote === "0"', "", /lighter_zero_fill_quote_binding_missing/],
+    ["lighter", "fee: feeProof.complete === true ? feeProof.fee_quote_amount : null", "fee: order.fee", /lighter_exact_fee_fill_binding_missing|lighter_synthetic_order_fee_fallback_present/],
+    ["lighter", "unsignedDecimalIntegerText(order?.order_index) !== null", "nonnegativeIntegerOrNull(order?.order_index) !== null", /lighter_original_order_id_proof_missing/],
+  ];
+  for (const [key, before, after, failure] of cases) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        [key]: sources[key].replace(before, after),
+      }),
+      failure,
+      `${key}: ${before}`,
+    );
+  }
 });
 
 test("rejects release validation when any venue bypasses the atomic policy-and-attempt claim", () => {
@@ -2029,6 +2064,18 @@ test("rejects private-account policy that drifts from the Carry registry", () =>
       ),
     }),
     /private_account_policy_registry_missing/,
+  );
+});
+
+test("rejects no-submit evidence that duplicates the Carry venue list", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webNoSubmitEvidence: sources.webNoSubmitEvidence
+        .replace('import { CARRY_EXECUTION_VENUES } from "./carry-venues";\n', "")
+        .replace("for (const venueId of CARRY_EXECUTION_VENUES)", 'for (const venueId of ["hyperliquid", "lighter", "aster"])'),
+    }),
+    /carry_no_submit_registry_import_missing|carry_no_submit_registry_iteration_missing|carry_no_submit_venue_list_duplicated/,
   );
 });
 
@@ -5091,6 +5138,365 @@ test("rejects terminal minimum margin that ignores worker proof", () => {
     }),
     /carry_terminal_proof_margin_fallback_missing/,
   );
+});
+
+test("rejects raw no-submit proof that can normalize or omit broadcast evidence", () => {
+  const cases = [
+    {
+      from: 'if (checks.transaction_broadcast !== false) return "transaction_broadcast_not_false";',
+      to: 'if (checks.transaction_broadcast === true) return "transaction_broadcast_not_false";',
+      error: /connector_no_submit_raw_transaction_broadcast_false_gate_missing/,
+    },
+    {
+      from: 'if (required.some((check) => !(check in checks))) return "mandatory_no_submit_checks_incomplete";',
+      to: 'if (!required) return "mandatory_no_submit_checks_incomplete";',
+      error: /connector_no_submit_mandatory_presence_gate_missing/,
+    },
+    {
+      from: 'if (required.some((check) => checks[check] !== true)) return "mandatory_no_submit_check_failed";',
+      to: 'if (required.some((check) => Boolean(checks[check]) === false)) return "mandatory_no_submit_check_failed";',
+      error: /connector_no_submit_mandatory_truth_gate_missing/,
+    },
+  ];
+  for (const mutation of cases) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        webConnectorReconciliation: mutateSection(
+          sources.webConnectorReconciliation,
+          "function mandatoryNoSubmitChecksFailure(",
+          "function mandatoryNoSubmitChecks(",
+          (section) => section.replace(mutation.from, mutation.to),
+        ),
+      }),
+      mutation.error,
+    );
+  }
+
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webConnectorReconciliation: mutateSection(
+        sources.webConnectorReconciliation,
+        "export async function verifyConnectorNoSubmit(",
+        "export async function reconcileConnectorResult(",
+        (section) => section.replace(
+          "mandatoryNoSubmitChecksFailure(base.venue_id, body.checks)",
+          "mandatoryNoSubmitChecksFailure(base.venue_id, noFundsChecks(body.checks))",
+        ),
+      ),
+    }),
+    /connector_no_submit_raw_checks_gate_missing/,
+  );
+});
+
+test("rejects an incomplete mandatory no-submit checklist for every venue family", () => {
+  const cases = [
+    ['if (venueId === "aster") {', 'if (venueId === "lighter") {', "signer_matches_key", "aster"],
+    ['if (venueId === "lighter") {', 'if (venueId === "hyperliquid") {', "margin_state_checked", "lighter"],
+    ['if (venueId === "hyperliquid") {', 'if (venueId === "phoenix" || venueId === "drift") {', "live_venue_checked", "hyperliquid"],
+    ['if (venueId === "phoenix" || venueId === "drift") {', 'if (venueId === "backpack") {', "phoenix_sdk_ready", "phoenix_drift"],
+    ['if (venueId === "backpack") {', 'if (venueId === "jupiter") {', "backpack_rest_ready", "backpack"],
+    ['if (venueId === "jupiter") {', 'if (venueId === "coinbase_advanced") {', "jupiter_transaction_built", "jupiter"],
+    ['if (venueId === "coinbase_advanced") {', "return null;", "coinbase_order_request_built", "coinbase_advanced"],
+  ];
+  for (const [start, end, check, venue] of cases) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        webConnectorReconciliation: mutateSection(
+          sources.webConnectorReconciliation,
+          "function mandatoryNoSubmitChecks(",
+          "function provenNoSubmitClaims(",
+          (section) => mutateSection(
+            section,
+            start,
+            end,
+            (venueSection) => venueSection.replace(`"${check}"`, '"tampered_check"'),
+          ),
+        ),
+      }),
+      new RegExp(`connector_no_submit_mandatory_checks_missing:${venue}:${check}`),
+    );
+  }
+});
+
+test("rejects local-test execution in production or synthetic reconciliation outside exact tests", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webConnectorReconciliation: mutateSection(
+        sources.webConnectorReconciliation,
+        "function connectorMode(",
+        "function signManifest(",
+        (section) => section.replace(
+          'if (env.NODE_ENV === "production") return "http";',
+          'if (env.NODE_ENV === "development") return "http";',
+        ),
+      ),
+    }),
+    /connector_production_local_test_override_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webConnectorReconciliation: mutateSection(
+        sources.webConnectorReconciliation,
+        "export async function reconcileConnectorResult(",
+        "function connectorResult(",
+        (section) => section.replace(
+          'if (connectorEnv.NODE_ENV !== "test") {',
+          'if (connectorEnv.NODE_ENV === "production") {',
+        ),
+      ),
+    }),
+    /connector_synthetic_reconcile_exact_test_gate_missing/,
+  );
+});
+
+test("rejects an existing connector result detached from owner, work order, platform, or venue", () => {
+  const cases = [
+    [
+      "existingResult.owner_commitment !== owner.owner_commitment",
+      "false",
+      /connector_existing_result_owner_binding_missing/,
+    ],
+    [
+      "existingResult.work_order_commitment !== workOrderRecord.work_order_commitment",
+      "false",
+      /connector_existing_result_record_work_order_binding_missing/,
+    ],
+    [
+      "existingResult.result.work_order_commitment !== workOrderRecord.work_order_commitment",
+      "false",
+      /connector_existing_result_embedded_work_order_binding_missing/,
+    ],
+    [
+      "existingResult.platform_class !== workOrderRecord.platform_class",
+      "false",
+      /connector_existing_result_record_platform_binding_missing/,
+    ],
+    [
+      "existingResult.result.platform_class !== workOrderRecord.platform_class",
+      "false",
+      /connector_existing_result_embedded_platform_binding_missing/,
+    ],
+    [
+      "!existingResult.result.venue_id",
+      "false",
+      /connector_existing_result_non_null_venue_binding_missing/,
+    ],
+    [
+      "existingResult.result.venue_id !== workOrderRecord.venue_id",
+      "false",
+      /connector_existing_result_exact_venue_binding_missing/,
+    ],
+  ];
+  for (const [from, to, error] of cases) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        webPrivateAccountRouteLib: mutateSection(
+          sources.webPrivateAccountRouteLib,
+          "export async function connectorReconcileFromBody(",
+          "export async function connectorOperationsForOwner(",
+          (section) => section.replace(from, to),
+        ),
+      }),
+      error,
+    );
+  }
+});
+
+test("rejects generic privacy previews without history scoring and persistence", () => {
+  const cases = [
+    [
+      "listLinkabilityScores(input.owner.owner_commitment, 200)",
+      "listLinkabilityScores(input.owner.owner_commitment, 0)",
+      /generic_preview_linkability_history_missing/,
+    ],
+    [
+      "scoreConnectorLinkability({",
+      "fabricateConnectorLinkability({",
+      /generic_preview_linkability_scoring_missing/,
+    ],
+    [
+      "putLinkabilityScore({",
+      "discardLinkabilityScore({",
+      /generic_preview_linkability_persistence_missing/,
+    ],
+  ];
+  for (const [from, to, error] of cases) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        webPrivateAccountRouteLib: mutateSection(
+          sources.webPrivateAccountRouteLib,
+          "async function genericPrivacyRuntimeForIntent(",
+          "async function connectorContextForIntent(",
+          (section) => section.replace(from, to),
+        ),
+      }),
+      error,
+    );
+  }
+});
+
+test("rejects fabricated zero-risk or proceed decisions in generic privacy previews", () => {
+  for (const [injected, error] of [
+    ["\n  const fabricatedScore = { score_bps: 0 };", /generic_preview_zero_linkability_score_forbidden/],
+    ["\n  const fabricatedDecision = { decision: 'proceed' };", /generic_preview_proceed_decision_fabrication_forbidden/],
+  ]) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        webPrivateAccountRouteLib: sources.webPrivateAccountRouteLib.replace(
+          "async function genericPrivacyRuntimeForIntent(input: {",
+          `async function genericPrivacyRuntimeForIntent(input: {${injected}`,
+        ),
+      }),
+      error,
+    );
+  }
+});
+
+test("rejects removal of audit-regression coverage", () => {
+  const cases = [
+    ["webConnectorExecutionTest", "mandatory_no_submit_checks_incomplete", "mandatory_no_submit_checks_removed", /connector_no_submit_mandatory_presence_test_missing/],
+    ["webConnectorExecutionTest", "transaction_broadcast_not_false", "broadcast_check_removed", /connector_no_submit_transaction_broadcast_test_missing/],
+    ["webConnectorReconciliationTest", "does not honor a local-test connector flag in production", "accepts production local test", /connector_production_local_test_test_missing/],
+    ["webConnectorReconciliationBindingTest", "hides and rejects a cross-owner result", "accepts a cross-owner result", /connector_existing_result_owner_binding_test_missing/],
+    ["webPrivacyPreviewRouteTest", "raises generic linkability risk from the owner's repeated private activity", "keeps generic linkability static", /generic_preview_linkability_history_test_missing/],
+  ];
+  for (const [key, from, to, error] of cases) {
+    const changed = sources[key].replaceAll(from, to);
+    assert.notEqual(changed, sources[key], `mutation did not match: ${key}:${from}`);
+    assert.throws(
+      () => checkCarryExecutionContract({ ...sources, [key]: changed }),
+      error,
+    );
+  }
+});
+
+test("rejects exact venue binding removed from any connector boundary", () => {
+  const mutations = [
+    {
+      key: "webPrivateAccountRouteLib",
+      from: "if (!connectorExecutionCachedResultBindingValid({",
+      to: "if (false && !connectorExecutionCachedResultBindingValid({",
+      error: "connector_cached_result_all_reuse_paths_binding_missing",
+    },
+    {
+      key: "webPrivateAccountRouteLib",
+      from: "input.result_record.result.venue_id === input.work_order_record.venue_id",
+      to: "true",
+      error: "connector_cached_result_exact_venue_binding_missing",
+    },
+    {
+      key: "webConnectorExecutionResultBindingTest",
+      from: "accepts only the exact owner, work-order, platform, and venue binding",
+      to: "accepts cached results",
+      error: "connector_cached_result_binding_test_missing",
+    },
+    {
+      key: "webConnectorReconciliation",
+      from: "if (!connectorResponseBindingMatches(body, {",
+      to: 'if ((venueId === "aster" || venueId === "lighter") && !connectorResponseBindingMatches(body, {',
+      error: "connector_submit_response_binding_unconditional_missing",
+    },
+    {
+      key: "webConnectorReconciliation",
+      from: "stringValue(body.platform_class) === expected.platform_class",
+      to: "true",
+      error: "connector_response_platform_binding_missing",
+    },
+    {
+      key: "webConnectorResponseBindingTest",
+      from: "rejects missing or mismatched %s submit echoes",
+      to: "checks submit responses",
+      error: "connector_submit_all_venue_response_binding_test_missing",
+    },
+    {
+      key: "privateExecution",
+      from: "work_order_commitment: input.body.work_order_commitment",
+      to: "work_order_commitment: null",
+      error: "worker_response_work_order_echo_missing",
+    },
+    {
+      key: "webPrivateAccountStore",
+      from: "platform_class TEXT NOT NULL,\n      venue_id TEXT NOT NULL,\n      manifest_commitment TEXT NOT NULL,",
+      to: "platform_class TEXT NOT NULL,\n      venue_id TEXT,\n      manifest_commitment TEXT NOT NULL,",
+      error: "connector_compiled_venue_schema_missing",
+    },
+    {
+      key: "webConnectorReconciliation",
+      from: "venuePlatformClass(input.venue_id) !== input.platform_class",
+      to: "false",
+      error: "connector_compiler_venue_platform_gate_missing",
+    },
+    {
+      key: "webConnectorReconciliation",
+      from: 'if (venueId === "aster") return "/venues/aster/orders";',
+      to: 'if (venueId === "aster") return "/hyperliquid/orders";',
+      error: "connector_aster_submit_route_missing",
+    },
+    {
+      key: "webConnectorReconciliation",
+      from: '((venueId === "aster" || venueId === "lighter") && !input.venue_execution_vault)',
+      to: "false",
+      error: "connector_submit_venue_vault_gate_missing",
+    },
+    {
+      key: "webConnectorReconciliation",
+      from: "input.work_order.venue_id !== input.venue_id",
+      to: "false",
+      error: "connector_reconcile_work_order_venue_gate_missing",
+    },
+    {
+      key: "webPrivateAccountRouteLib",
+      from: "const privacyRuntime = connectorVenueId",
+      to: "const privacyRuntime = false",
+      error: "generic_preview_connector_bypass_missing",
+    },
+    {
+      key: "webPrivateAccountRouteLib",
+      from: "genericPrivacyRuntimeForIntent({",
+      to: "unboundGenericPrivacyRuntime({",
+      error: "generic_preview_runtime_missing",
+    },
+    {
+      key: "webClient",
+      from: "export function bindPrivateAccountSafeInputPlatform(",
+      to: "function bindUnsafeInputPlatform(",
+      error: "connector_client_venue_switch_binding_missing",
+    },
+    {
+      key: "webClientVenueBindingTest",
+      from: "replaces an old venue on every execution-platform switch",
+      to: "keeps the old venue while switching platforms",
+      error: "connector_client_venue_replace_test_missing",
+    },
+    {
+      key: "webPrivacyPreviewRouteTest",
+      from: "preserves generic previews without minting connector artifacts",
+      to: "preserves generic previews",
+      error: "generic_preview_connector_bypass_test_missing",
+    },
+    {
+      key: "webConnectorExecutionTest",
+      from: "binds %s submit route and vault before fetch",
+      to: "submits through a connector",
+      error: "connector_submit_exact_venue_test_missing",
+    },
+  ];
+  for (const mutation of mutations) {
+    const changed = sources[mutation.key].replaceAll(mutation.from, mutation.to);
+    assert.notEqual(changed, sources[mutation.key], `mutation did not match: ${mutation.error}`);
+    assert.throws(
+      () => checkCarryExecutionContract({ ...sources, [mutation.key]: changed }),
+      new RegExp(mutation.error),
+    );
+  }
 });
 
 test("reports required sources absent from git", () => {

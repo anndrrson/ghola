@@ -13,6 +13,21 @@ const UINT48_MAX = 281_474_976_710_655;
 const GOLDILOCKS_MODULUS = 0xffffffff00000001n;
 const LIGHTER_ACCOUNT_STATUS_INACTIVE = 0;
 const LIGHTER_ACCOUNT_STATUS_ACTIVE = 1;
+const LIGHTER_CANCELED_ORDER_STATUSES = new Set([
+  "canceled",
+  "canceled-post-only",
+  "canceled-reduce-only",
+  "canceled-position-not-allowed",
+  "canceled-margin-not-allowed",
+  "canceled-too-much-slippage",
+  "canceled-not-enough-liquidity",
+  "canceled-self-trade",
+  "canceled-expired",
+  "canceled-oco",
+  "canceled-child",
+  "canceled-liquidation",
+  "canceled-invalid-balance",
+]);
 
 export class LighterExecutionError extends Error {
   constructor(message, status = 400, code = "venue_rejected") {
@@ -390,8 +405,30 @@ export async function reconcileLighterExecution({ credential, clientOrderIndex, 
     returnedClientOrderIndex === targetClientOrderIndex;
   const order = targetMatched ? candidate : null;
   const exactOriginalOrderObserved = targetMatched
-    && nonnegativeIntegerOrNull(order?.order_index) !== null;
+    && unsignedDecimalIntegerText(order?.order_index) !== null;
   const status = orderStatus(order);
+  const filledBase = canonicalDecimal(order?.filled_base_amount);
+  const filledQuote = canonicalDecimal(order?.filled_quote_amount);
+  const fillAmountValid = filledBase !== null;
+  const hasFill = fillAmountValid && filledBase !== "0";
+  const feeProof = order
+    ? normalizedLighterFeeProof(result?.fee_proof, {
+      credential,
+      order,
+      targetClientOrderIndex,
+    })
+    : { complete: false, reason: "target_order_unavailable" };
+  const terminal = status === "filled" || status === "cancelled";
+  const zeroFillFeeExact = exactOriginalOrderObserved
+    && terminal
+    && status !== "filled"
+    && filledBase === "0"
+    && filledQuote === "0";
+  const feeExact = zeroFillFeeExact || (hasFill && feeProof.complete === true);
+  const terminalEvidenceComplete = terminal
+    && fillAmountValid
+    && (status !== "filled" || hasFill)
+    && feeExact;
   return {
     status,
     provider_ref_seed: {
@@ -400,13 +437,18 @@ export async function reconcileLighterExecution({ credential, clientOrderIndex, 
       order_index: order?.order_index ?? null,
       venue_status: order?.status || null,
     },
-    result_seed: { kind: "lighter_exact_reconcile", status },
-    fills: order && Number(order.filled_base_amount || 0) > 0 ? [{
+    result_seed: {
+      kind: "lighter_exact_reconcile",
+      status,
+      fee_exact: feeExact,
+      fee_evidence_commitment: feeProof.evidence_commitment || null,
+    },
+    fills: order && hasFill ? [{
       size: String(order.filled_base_amount),
       quote_size: String(order.filled_quote_amount || "0"),
       price: averagePrice(order),
-      fee: order.fee ?? order.total_fee ?? order.trading_fee ?? null,
-      fee_asset: order.fee_asset ?? order.quote_asset ?? null,
+      fee: feeProof.complete === true ? feeProof.fee_quote_amount : null,
+      fee_asset: feeProof.complete === true ? feeProof.fee_asset : null,
     }] : [],
     final_proof: {
       version: 1,
@@ -418,19 +460,89 @@ export async function reconcileLighterExecution({ credential, clientOrderIndex, 
       broadcast_performed: false,
       original_order_target_matched: exactOriginalOrderObserved,
       original_order_broadcast_proven: exactOriginalOrderObserved,
-      final_venue_execution_proven: ["filled", "cancelled", "rejected"].includes(status),
-      final_fill_proven: status === "filled",
+      final_venue_execution_proven: terminalEvidenceComplete,
+      final_fill_proven: status === "filled" && hasFill && feeProof.complete === true,
       filled_base_size: order?.filled_base_amount || "0",
       average_fill_price: order ? averagePrice(order) : "0",
-      fee_quote_amount: order?.fee ?? order?.total_fee ?? order?.trading_fee ?? null,
-      fee_asset: order?.fee_asset ?? order?.quote_asset ?? null,
+      fee_exact: feeExact,
+      fee_quote_amount: zeroFillFeeExact ? "0" : feeProof.complete === true ? feeProof.fee_quote_amount : null,
+      fee_asset: feeExact ? "USDC" : null,
+      fee_evidence_kind: zeroFillFeeExact ? "lighter_terminal_zero_fill_v1" : feeProof.proof_kind || null,
+      fee_evidence_commitment: feeProof.evidence_commitment || null,
+      fee_evidence_trade_count: feeProof.trade_count ?? null,
+      fee_evidence_pagination_complete: feeProof.pagination_complete === true,
+      fee_evidence_incomplete_reason: feeExact ? null : feeProof.reason || null,
       open_order_count: status === "open" || status === "partially_filled"
         ? 1
-        : ["filled", "cancelled", "rejected"].includes(status)
+        : terminal
           ? 0
           : null,
       checked_at: new Date().toISOString(),
     },
+  };
+}
+
+function normalizedLighterFeeProof(raw, { credential, order, targetClientOrderIndex }) {
+  if (raw === undefined || raw === null) {
+    return { complete: false, pagination_complete: false, reason: "missing_authenticated_trade_evidence" };
+  }
+  const invalid = () => {
+    throw new LighterExecutionError("lighter authenticated trade fee proof is invalid", 502, "connector_submit_failed");
+  };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)
+    || raw.version !== 1
+    || raw.proof_kind !== "lighter_authenticated_order_trades_fee_v1"
+    || raw.transaction_broadcast !== false
+    || raw.pagination_complete !== true) invalid();
+  const accountIndex = nonnegativeIntegerOrNull(raw.account_index);
+  const marketId = nonnegativeIntegerOrNull(raw.market_id);
+  const orderIndex = unsignedDecimalIntegerText(raw.order_index);
+  const proofClientOrderIndex = nonnegativeIntegerOrNull(raw.client_order_index);
+  const expectedMarketId = nonnegativeIntegerOrNull(order?.market_index ?? order?.market_id);
+  const expectedOrderIndex = unsignedDecimalIntegerText(order?.order_index);
+  if (accountIndex !== credential.account_index
+    || marketId === null
+    || marketId !== expectedMarketId
+    || orderIndex === null
+    || orderIndex !== expectedOrderIndex
+    || proofClientOrderIndex !== targetClientOrderIndex) invalid();
+  if (raw.complete === false) {
+    if (!new Set(["no_order_trades", "trade_totals_incomplete"]).has(raw.reason)
+      || raw.fee_quote_amount !== undefined
+      || raw.evidence_commitment !== undefined) invalid();
+    return {
+      complete: false,
+      pagination_complete: true,
+      proof_kind: raw.proof_kind,
+      reason: raw.reason,
+    };
+  }
+  if (raw.complete !== true
+    || raw.fee_rate_tick_denominator !== 1_000_000
+    || raw.quote_atomic_denominator !== 1_000_000
+    || raw.fee_asset !== "USDC"
+    || !/^sha256:[0-9a-f]{64}$/.test(String(raw.evidence_commitment || ""))) invalid();
+  const tradeCount = nonnegativeIntegerOrNull(raw.trade_count);
+  const firstTradeId = unsignedDecimalIntegerText(raw.first_trade_id);
+  const lastTradeId = unsignedDecimalIntegerText(raw.last_trade_id);
+  const proofBase = canonicalDecimal(raw.filled_base_amount, { positive: true });
+  const proofQuote = canonicalDecimal(raw.filled_quote_amount, { positive: true });
+  const orderBase = canonicalDecimal(order?.filled_base_amount, { positive: true });
+  const orderQuote = canonicalDecimal(order?.filled_quote_amount, { positive: true });
+  const fee = canonicalDecimal(raw.fee_quote_amount, { signed: true });
+  if (tradeCount === null || tradeCount < 1 || tradeCount > 800
+    || firstTradeId === null || lastTradeId === null
+    || proofBase === null || proofBase !== orderBase
+    || proofQuote === null || proofQuote !== orderQuote
+    || fee === null) invalid();
+  return {
+    complete: true,
+    pagination_complete: true,
+    proof_kind: raw.proof_kind,
+    fee_quote_amount: fee,
+    fee_asset: "USDC",
+    trade_count: tradeCount,
+    evidence_commitment: raw.evidence_commitment,
   };
 }
 
@@ -631,10 +743,9 @@ function orderStatus(order) {
   if (!order) return "outcome_unknown";
   const value = String(order.status || "").toLowerCase();
   if (value === "filled") return "filled";
-  if (value === "canceled" || value === "cancelled") return "cancelled";
-  if (value === "rejected" || value === "expired") return "rejected";
-  if (value === "new" || value === "open" || Number(order.remaining_base_amount || 0) > 0) return "open";
-  return Number(order.filled_base_amount || 0) > 0 ? "partially_filled" : "outcome_unknown";
+  if (LIGHTER_CANCELED_ORDER_STATUSES.has(value)) return "cancelled";
+  if (value === "in-progress" || value === "pending" || value === "open") return "open";
+  return "outcome_unknown";
 }
 
 function averagePrice(order) {
@@ -717,12 +828,36 @@ function strictDecimal(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function canonicalDecimal(value, { signed = false, positive = false } = {}) {
+  const raw = String(value ?? "").trim();
+  if (raw.length === 0 || raw.length > 128) return null;
+  const match = (signed ? /^(-?)(\d+)(?:\.(\d+))?$/ : /^(\d+)(?:\.(\d+))?$/).exec(raw);
+  if (!match) return null;
+  const negative = signed && match[1] === "-";
+  const wholeIndex = signed ? 2 : 1;
+  const fractionIndex = signed ? 3 : 2;
+  const whole = match[wholeIndex].replace(/^0+(?=\d)/, "");
+  const fraction = String(match[fractionIndex] || "").replace(/0+$/, "");
+  const zero = whole === "0" && fraction.length === 0;
+  if (positive && zero) return null;
+  return `${negative && !zero ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}`;
+}
+
 function nonnegativeIntegerOrNull(value) {
   if (typeof value !== "number" && (typeof value !== "string" || !/^(?:0|[1-9]\d*)$/.test(value.trim()))) {
     return null;
   }
   const number = Number(value);
   return Number.isSafeInteger(number) && number >= 0 ? number : null;
+}
+
+function unsignedDecimalIntegerText(value) {
+  const text = typeof value === "number" && Number.isSafeInteger(value)
+    ? String(value)
+    : typeof value === "string"
+      ? value.trim()
+      : "";
+  return /^(?:0|[1-9]\d*)$/.test(text) && text.length <= 64 ? text : null;
 }
 
 function rateBps(value) {

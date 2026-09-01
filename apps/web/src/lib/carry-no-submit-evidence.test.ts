@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildCarryNoSubmitEvidence } from "./carry-no-submit-evidence";
+import { CARRY_EXECUTION_VENUES } from "./carry-venues";
 
 const ENV = {
   VERCEL_URL: "web-proof-anndrrsons-projects.vercel.app",
@@ -60,7 +61,7 @@ function request() {
     asset: "BTC",
     notional_usd: "11",
     horizon_days: "1",
-    venue_access: Object.fromEntries(["hyperliquid", "lighter", "aster"].map((venueId) => [venueId, {
+    venue_access: Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => [venueId, {
       account_commitment: `account_${venueId}`,
       vault_commitment: `vault_${venueId}`,
       policy_commitment: `policy_${venueId}`,

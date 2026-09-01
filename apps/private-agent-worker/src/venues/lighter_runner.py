@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 import csv
+import hashlib
 import io
 import ipaddress
 import json
@@ -12,6 +13,24 @@ from urllib.request import Request, urlopen
 
 MAX_INACTIVE_ORDER_PAGES = 4
 INACTIVE_ORDER_PAGE_SIZE = 100
+MAX_TRADE_PAGES = 8
+TRADE_PAGE_SIZE = 100
+LIGHTER_FEE_TICK_DENOMINATOR = Decimal(1_000_000)
+LIGHTER_CANCELED_ORDER_STATUSES = frozenset({
+    "canceled",
+    "canceled-post-only",
+    "canceled-reduce-only",
+    "canceled-position-not-allowed",
+    "canceled-margin-not-allowed",
+    "canceled-too-much-slippage",
+    "canceled-not-enough-liquidity",
+    "canceled-self-trade",
+    "canceled-expired",
+    "canceled-oco",
+    "canceled-child",
+    "canceled-liquidation",
+    "canceled-invalid-balance",
+})
 
 
 def fail(message, code="connector_submit_failed"):
@@ -90,6 +109,222 @@ def order_page_from_response(response):
     if cursor is not None and not isinstance(cursor, str):
         fail("lighter order cursor is invalid")
     return orders, str(cursor or "").strip() or None
+
+
+def trade_page_from_response(response):
+    raw_data = getattr(response, "raw_data", None)
+    if raw_data is not None:
+        if not isinstance(raw_data, (bytes, bytearray, str)):
+            fail("lighter raw trade read is invalid")
+        try:
+            payload = json.loads(raw_data)
+        except (TypeError, ValueError, UnicodeDecodeError):
+            fail("lighter raw trade read is invalid")
+    else:
+        payload = as_dict(response)
+    if not isinstance(payload, dict):
+        fail("lighter trade read is invalid")
+    trades = payload.get("trades")
+    if not isinstance(trades, list):
+        fail("lighter trade read is invalid")
+    cursor = payload.get("next_cursor")
+    if cursor is not None and not isinstance(cursor, str):
+        fail("lighter trade cursor is invalid")
+    normalized = [as_dict(item) for item in trades]
+    if any(not item for item in normalized):
+        fail("lighter trade row is invalid")
+    return normalized, str(cursor or "").strip() or None
+
+
+def exact_integer(value, label, *, signed=False):
+    if isinstance(value, bool):
+        fail(label)
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str):
+        text = value.strip()
+        digits = text[1:] if signed and text.startswith("-") else text
+        if not digits.isdigit():
+            fail(label)
+        number = int(text)
+    else:
+        fail(label)
+    if not signed and number < 0:
+        fail(label)
+    return number
+
+
+def exact_decimal(value, label, *, positive=False):
+    text = "" if value is None else str(value).strip()
+    unsigned = text[1:] if text.startswith("-") else text
+    parts = unsigned.split(".")
+    if len(parts) > 2 or not parts[0].isdigit() or (len(parts) == 2 and not parts[1].isdigit()):
+        fail(label)
+    number = Decimal(text)
+    if not number.is_finite() or (positive and number <= 0):
+        fail(label)
+    return number
+
+
+def decimal_text(value):
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in ("", "-0") else text
+
+
+def terminal_order_status(value):
+    status = str(value or "").lower()
+    return status == "filled" or status in LIGHTER_CANCELED_ORDER_STATUSES
+
+
+def incomplete_trade_fee_proof(account_index, market_index, order_index, client_order_index, reason):
+    return {
+        "version": 1,
+        "proof_kind": "lighter_authenticated_order_trades_fee_v1",
+        "complete": False,
+        "pagination_complete": True,
+        "transaction_broadcast": False,
+        "account_index": int(account_index),
+        "market_id": int(market_index),
+        "order_index": str(order_index),
+        "client_order_index": int(client_order_index),
+        "reason": reason,
+    }
+
+
+async def exact_account_order_trades(client, account_index, market_index, client_order_index, order):
+    account_index = int(account_index)
+    market_index = int(market_index)
+    client_order_index = int(client_order_index)
+    order_index = exact_integer(order.get("order_index"), "lighter terminal order index is invalid")
+    expected_base = exact_decimal(order.get("filled_base_amount"), "lighter terminal fill size is invalid", positive=True)
+    expected_quote = exact_decimal(order.get("filled_quote_amount"), "lighter terminal fill quote is invalid", positive=True)
+    auth = await auth_token(client)
+    cursor = None
+    seen_cursors = set()
+    rows = []
+    for _ in range(MAX_TRADE_PAGES):
+        params = {
+            "sort_by": "timestamp",
+            "sort_dir": "desc",
+            "limit": TRADE_PAGE_SIZE,
+            "authorization": auth,
+            "market_id": market_index,
+            "account_index": account_index,
+            "order_index": order_index,
+            "aggregate": False,
+        }
+        if cursor is not None:
+            params["cursor"] = cursor
+        response = await client.order_api.trades_with_http_info(**params)
+        page, next_cursor = trade_page_from_response(response)
+        rows.extend(page)
+        if next_cursor is None:
+            break
+        if next_cursor == cursor or next_cursor in seen_cursors:
+            fail("lighter trade pagination did not advance")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+    else:
+        fail("lighter trade pagination exceeded the evidence bound")
+
+    normalized = []
+    seen_trade_ids = set()
+    base_total = Decimal(0)
+    quote_total = Decimal(0)
+    fee_total = Decimal(0)
+    expected_is_ask = order.get("is_ask")
+    if expected_is_ask is not None and not isinstance(expected_is_ask, bool):
+        fail("lighter terminal order side is invalid")
+    for trade in rows:
+        trade_id = exact_integer(trade.get("trade_id"), "lighter trade id is invalid")
+        if trade_id in seen_trade_ids:
+            fail("lighter trade evidence contains a duplicate trade")
+        seen_trade_ids.add(trade_id)
+        if trade.get("type") != "trade":
+            fail("lighter trade type binding failed")
+        if exact_integer(trade.get("market_id"), "lighter trade market is invalid") != market_index:
+            fail("lighter trade market binding failed")
+        ask_account = exact_integer(trade.get("ask_account_id"), "lighter trade ask account is invalid")
+        bid_account = exact_integer(trade.get("bid_account_id"), "lighter trade bid account is invalid")
+        account_is_ask = ask_account == account_index
+        account_is_bid = bid_account == account_index
+        if account_is_ask == account_is_bid:
+            fail("lighter trade account binding failed")
+        side = "ask" if account_is_ask else "bid"
+        bound_order_id = trade.get("ask_id") if account_is_ask else trade.get("bid_id")
+        bound_client_id = trade.get("ask_client_id") if account_is_ask else trade.get("bid_client_id")
+        if exact_integer(bound_order_id, "lighter trade order is invalid") != order_index:
+            fail("lighter trade order binding failed")
+        if exact_integer(bound_client_id, "lighter trade client order is invalid") != client_order_index:
+            fail("lighter trade client-order binding failed")
+        if expected_is_ask is not None and expected_is_ask != account_is_ask:
+            fail("lighter trade side binding failed")
+        is_maker_ask = trade.get("is_maker_ask")
+        if not isinstance(is_maker_ask, bool):
+            fail("lighter trade maker side is invalid")
+        role = "maker" if account_is_ask == is_maker_ask else "taker"
+        fee_key = f"{role}_fee"
+        fee_tick = 0 if fee_key not in trade else exact_integer(
+            trade[fee_key], "lighter trade fee tick is invalid", signed=True
+        )
+        if abs(fee_tick) > int(LIGHTER_FEE_TICK_DENOMINATOR):
+            fail("lighter trade fee tick is out of bounds")
+        size = exact_decimal(trade.get("size"), "lighter trade size is invalid", positive=True)
+        price = exact_decimal(trade.get("price"), "lighter trade price is invalid", positive=True)
+        quote = exact_decimal(trade.get("usd_amount"), "lighter trade quote amount is invalid", positive=True)
+        fee = quote * Decimal(fee_tick) / LIGHTER_FEE_TICK_DENOMINATOR
+        base_total += size
+        quote_total += quote
+        fee_total += fee
+        normalized.append({
+            "trade_id": trade_id,
+            "market_id": market_index,
+            "account_index": account_index,
+            "order_index": order_index,
+            "client_order_index": client_order_index,
+            "side": side,
+            "role": role,
+            "size": decimal_text(size),
+            "price": decimal_text(price),
+            "quote_size": decimal_text(quote),
+            "fee_rate_tick": fee_tick,
+            "fee_quote_amount": decimal_text(fee),
+        })
+
+    if not normalized:
+        return incomplete_trade_fee_proof(
+            account_index, market_index, order_index, client_order_index, "no_order_trades"
+        )
+    if base_total > expected_base or quote_total > expected_quote:
+        fail("lighter trade totals exceed the terminal order")
+    if base_total != expected_base or quote_total != expected_quote:
+        return incomplete_trade_fee_proof(
+            account_index, market_index, order_index, client_order_index, "trade_totals_incomplete"
+        )
+    evidence = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    return {
+        "version": 1,
+        "proof_kind": "lighter_authenticated_order_trades_fee_v1",
+        "complete": True,
+        "pagination_complete": True,
+        "transaction_broadcast": False,
+        "account_index": account_index,
+        "market_id": market_index,
+        "order_index": str(order_index),
+        "client_order_index": client_order_index,
+        "trade_count": len(normalized),
+        "first_trade_id": str(normalized[0]["trade_id"]),
+        "last_trade_id": str(normalized[-1]["trade_id"]),
+        "filled_base_amount": decimal_text(base_total),
+        "filled_quote_amount": decimal_text(quote_total),
+        "fee_quote_amount": decimal_text(fee_total),
+        "fee_asset": "USDC",
+        "fee_rate_tick_denominator": int(LIGHTER_FEE_TICK_DENOMINATOR),
+        "quote_atomic_denominator": 1_000_000,
+        "evidence_commitment": "sha256:" + hashlib.sha256(evidence.encode("utf-8")).hexdigest(),
+    }
 
 
 async def exact_account_order(client, account_index, market_index, client_order_index, *, include_inactive):
@@ -331,7 +566,32 @@ async def run(payload):
                 target,
                 include_inactive=True,
             )
-            return {"order": order, "target_market_checked": True}
+            fee_proof = None
+            if order is not None:
+                status = str(order.get("status") or "").lower()
+                filled = exact_decimal(order.get("filled_base_amount", "0"), "lighter fill size is invalid")
+                if terminal_order_status(status):
+                    filled_quote = exact_decimal(
+                        order.get("filled_quote_amount", "0"), "lighter fill quote is invalid"
+                    )
+                    if filled == 0 and filled_quote != 0:
+                        fail("lighter zero-fill terminal order quote is invalid")
+                    if filled > 0:
+                        fee_proof = await exact_account_order_trades(
+                            client,
+                            credential["account_index"],
+                            market.market_id,
+                            target,
+                            order,
+                        )
+            outbound_order = None
+            if order is not None:
+                outbound_order = dict(order)
+                if outbound_order.get("order_index") is not None:
+                    outbound_order["order_index"] = str(exact_integer(
+                        outbound_order["order_index"], "lighter order index is invalid"
+                    ))
+            return {"order": outbound_order, "fee_proof": fee_proof, "target_market_checked": True}
         if action == "funding":
             market = await market_for(client, payload.get("market"))
             auth = await auth_token(client)

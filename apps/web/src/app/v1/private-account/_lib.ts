@@ -52,6 +52,7 @@ import {
   PRIVATE_ACCOUNT_INTENT_TTL_MS,
   previewPrivateAccountAction,
   requiresPrivateSettlementBinding,
+  venuePlatformClass,
   venueIdForPlatformClass,
   DEFAULT_ANONYMITY_SET_POLICY,
   type GholaAnonymitySetSummary,
@@ -1315,17 +1316,35 @@ export function buildActionFromBody(body: unknown) {
   const value = objectBody(body);
   const actionClass = stringValue(value.action_class);
   if (!isActionClass(actionClass)) return null;
+  const rawIntentSeed = value.intent_seed || value.intent_commitment_seed || "commitment-only";
+  const platformClass = stringValue(value.platform_class);
+  const venueId = stringValue(value.venue_id) || stringValue(objectBody(value.intent_seed).venue_id);
   return createPrivateAccountAction({
     action_class: actionClass,
     product_bucket: stringValue(value.product_bucket) || "general",
     policy_commitment: stringValue(value.policy_commitment) || undefined,
-    intent_seed: value.intent_seed || value.intent_commitment_seed || "commitment-only",
+    intent_seed: platformClass || venueId
+      ? {
+          intent_seed: rawIntentSeed,
+          platform_class: platformClass || null,
+          venue_id: venueId || null,
+        }
+      : rawIntentSeed,
   });
 }
 
 export async function createIntentFromBody(body: unknown, owner: PrivateAccountRequestOwner) {
   const action = buildActionFromBody(body);
   if (!action) return null;
+  const value = objectBody(body);
+  const platformValue = stringValue(value.platform_class);
+  const venueValue = stringValue(value.venue_id) || stringValue(objectBody(value.intent_seed).venue_id);
+  const platformRequiresVenue = isPlatformClass(platformValue) && venueIdForPlatformClass(platformValue) !== null;
+  const hasVenueBinding = Boolean(venueValue) || platformRequiresVenue;
+  if (
+    hasVenueBinding &&
+    (!isPlatformClass(platformValue) || !isVenueId(venueValue) || venuePlatformClass(venueValue) !== platformValue)
+  ) return null;
   const now = new Date();
   const accountRecord = await createOrGetStoredPrivateAccount(owner);
   const intentId = `pact_intent_${crypto.randomUUID()}`;
@@ -1336,6 +1355,8 @@ export async function createIntentFromBody(body: unknown, owner: PrivateAccountR
     account_commitment: accountRecord.account_commitment,
     action_commitment: action.action_commitment,
     action_class: action.action_class,
+    platform_class: hasVenueBinding ? platformValue as GholaPlatformClass : null,
+    venue_id: hasVenueBinding ? venueValue as GholaVenueId : null,
     product_bucket: action.product_bucket,
     policy_commitment: action.policy_commitment,
     intent_commitment: action.intent_commitment,
@@ -1423,16 +1444,30 @@ export async function createStoredPreviewFromBody(body: unknown, owner: PrivateA
     evidence_commitment: evidence?.evidence_commitment ?? null,
   });
   const safeInput = safeConnectorInput(value.safe_input);
-  const connectorContext = await connectorContextForIntent({
-    owner,
-    intent,
-    platform_class: platformClass,
-    selected_rail: rail ? rail as GholaRailKind : undefined,
-    evidence_ready: Boolean(evidenceContext.chain?.batch_evidence_commitment),
-    runtime_envelope_commitment: stringValue(value.runtime_envelope_commitment),
-    safe_input: safeInput,
-  });
-  if ("error" in connectorContext) return connectorContext;
+  const connectorVenueId = venueIdForPlatformClass(platformClass);
+  if (!connectorVenueId && (intent.platform_class || intent.venue_id)) {
+    return { error: "connector_compile_failed" as const };
+  }
+  const privacyRuntime = connectorVenueId
+    ? await connectorContextForIntent({
+        owner,
+        intent,
+        platform_class: platformClass,
+        selected_rail: rail ? rail as GholaRailKind : undefined,
+        evidence_ready: Boolean(evidenceContext.chain?.batch_evidence_commitment),
+        runtime_envelope_commitment: stringValue(value.runtime_envelope_commitment),
+        safe_input: safeInput,
+      })
+    : await genericPrivacyRuntimeForIntent({
+        owner,
+        intent,
+        platform_class: platformClass,
+        selected_rail: rail ? rail as GholaRailKind : undefined,
+        evidence_ready: Boolean(evidenceContext.chain?.batch_evidence_commitment),
+        runtime_envelope_commitment: stringValue(value.runtime_envelope_commitment),
+        safe_input: safeInput,
+      });
+  if ("error" in privacyRuntime) return privacyRuntime;
   const preview = previewPrivateAccountAction({
     account: {
       account_commitment: intent.account_commitment,
@@ -1452,11 +1487,11 @@ export async function createStoredPreviewFromBody(body: unknown, owner: PrivateA
     privacy_budget: budget?.budget,
     evidence_status: evidenceContext.status,
     evidence_chain: evidenceContext.chain,
-    connector_context: connectorContext.context,
-    sealed_runtime_context: connectorContext.sealed_runtime_context,
-    schedule_decision: connectorContext.schedule_decision,
-    rotation: connectorContext.rotation,
-    linkability_simulation: connectorContext.linkability_simulation,
+    connector_context: privacyRuntime.context,
+    sealed_runtime_context: privacyRuntime.sealed_runtime_context,
+    schedule_decision: privacyRuntime.schedule_decision,
+    rotation: privacyRuntime.rotation,
+    linkability_simulation: privacyRuntime.linkability_simulation,
     front_run_mode: value.front_run_mode === "zero_front_run" ? "zero_front_run" : "pre_submit_private",
     require_private_mode_evidence: true,
     explicit_testnet_venue_canary:
@@ -4833,16 +4868,30 @@ export async function refreshQueuedActionFromBody(body: unknown, owner: PrivateA
     queue_id: queued.queue_id,
   });
   const safeInput = safeConnectorInput(value.safe_input);
-  const connectorContext = await connectorContextForIntent({
-    owner,
-    intent,
-    platform_class: queued.platform_class,
-    selected_rail: queued.requested_rail,
-    evidence_ready: Boolean(evidenceContext.chain?.batch_evidence_commitment),
-    runtime_envelope_commitment: stringValue(value.runtime_envelope_commitment),
-    safe_input: safeInput,
-  });
-  if ("error" in connectorContext) return connectorContext;
+  const connectorVenueId = venueIdForPlatformClass(queued.platform_class);
+  if (!connectorVenueId && (intent.platform_class || intent.venue_id)) {
+    return { error: "connector_compile_failed" as const };
+  }
+  const privacyRuntime = connectorVenueId
+    ? await connectorContextForIntent({
+        owner,
+        intent,
+        platform_class: queued.platform_class,
+        selected_rail: queued.requested_rail,
+        evidence_ready: Boolean(evidenceContext.chain?.batch_evidence_commitment),
+        runtime_envelope_commitment: stringValue(value.runtime_envelope_commitment),
+        safe_input: safeInput,
+      })
+    : await genericPrivacyRuntimeForIntent({
+        owner,
+        intent,
+        platform_class: queued.platform_class,
+        selected_rail: queued.requested_rail,
+        evidence_ready: Boolean(evidenceContext.chain?.batch_evidence_commitment),
+        runtime_envelope_commitment: stringValue(value.runtime_envelope_commitment),
+        safe_input: safeInput,
+      });
+  if ("error" in privacyRuntime) return privacyRuntime;
   const preview = previewPrivateAccountAction({
     account: {
       account_commitment: intent.account_commitment,
@@ -4861,11 +4910,11 @@ export async function refreshQueuedActionFromBody(body: unknown, owner: PrivateA
     privacy_budget: budget?.budget,
     evidence_status: evidenceContext.status,
     evidence_chain: evidenceContext.chain,
-    connector_context: connectorContext.context,
-    sealed_runtime_context: connectorContext.sealed_runtime_context,
-    schedule_decision: connectorContext.schedule_decision,
-    rotation: connectorContext.rotation,
-    linkability_simulation: connectorContext.linkability_simulation,
+    connector_context: privacyRuntime.context,
+    sealed_runtime_context: privacyRuntime.sealed_runtime_context,
+    schedule_decision: privacyRuntime.schedule_decision,
+    rotation: privacyRuntime.rotation,
+    linkability_simulation: privacyRuntime.linkability_simulation,
     front_run_mode: value.front_run_mode === "zero_front_run" ? "zero_front_run" : "pre_submit_private",
     require_private_mode_evidence: true,
   });
@@ -5866,7 +5915,8 @@ export async function privateModeHealthBody() {
   ).length;
   const rejectedImports = imports.filter((record) => record.verifier_status !== "verified").length;
   const manifestsCurrent = connectorReadinessList.every((record) =>
-    record.status !== "stale" && record.status !== "missing"
+    record.status !== "stale" &&
+    (record.status !== "missing" || record.reason_codes.includes("platform_summary_only"))
   );
   const productionGates = v6ProductionGateStatus({
     verifier_green: verifier.status === "green",
@@ -6154,25 +6204,36 @@ export async function connectorVerifyNoSubmitFromBody(
   } = {},
 ) {
   const value = objectBody(body);
-  const platformClass = stringValue(value.platform_class) || "solana_perps_market";
   const workOrderCommitment = stringValue(value.work_order_commitment);
   const encryptedInstruction = value.encrypted_execution_instruction_bundle;
-  if (!isPlatformClass(platformClass)) return { error: "valid platform_class is required" as const };
-  if (![
-    "solana_perps_market",
-    "hyperliquid_style_market",
-    "solana_swap_aggregator",
-    "coinbase_style_provider",
-  ].includes(platformClass)) {
-    return { error: "unsupported_platform" as const };
-  }
   if (!workOrderCommitment) return { error: "work_order_commitment_required" as const };
   if (!encryptedInstruction || typeof encryptedInstruction !== "object") {
     return { error: "encrypted_execution_instruction_required" as const };
   }
 
-  const venueId = venueIdForPlatformClass(platformClass);
-  if (!venueId) return { error: "venue_not_supported" as const };
+  const workOrderRecord = await getConnectorWorkOrder(workOrderCommitment);
+  const requestedPlatform = stringValue(value.platform_class);
+  const requestedVenue = stringValue(value.venue_id);
+  if (workOrderRecord && workOrderRecord.owner_commitment !== owner.owner_commitment) {
+    return { error: "work_order_not_found" as const };
+  }
+  if (workOrderRecord && (
+    !workOrderRecord.venue_id ||
+    !workOrderRecord.work_order.venue_id ||
+    workOrderRecord.venue_id !== workOrderRecord.work_order.venue_id
+  )) return { error: "venue_platform_mismatch" as const };
+  const platformClass = workOrderRecord?.platform_class || requestedPlatform || "solana_perps_market";
+  if (!isPlatformClass(platformClass)) return { error: "valid platform_class is required" as const };
+  const venueId = workOrderRecord?.venue_id ||
+    (isVenueId(requestedVenue) ? requestedVenue : venueIdForPlatformClass(platformClass));
+  if (
+    !venueId ||
+    (workOrderRecord && workOrderRecord.work_order.venue_id !== venueId) ||
+    venuePlatformClass(venueId) !== platformClass ||
+    (requestedPlatform && requestedPlatform !== platformClass) ||
+    (requestedVenue && requestedVenue !== venueId) ||
+    ((venueId === "aster" || venueId === "lighter") && !workOrderRecord)
+  ) return { error: "venue_platform_mismatch" as const };
 
   const manifest = getConnectorManifest(platformClass);
   const [account, connectorEnv] = await Promise.all([
@@ -6184,7 +6245,7 @@ export async function connectorVerifyNoSubmitFromBody(
   let hyperliquidSignerBindingVerified = false;
   let hyperliquidAgentSession: Awaited<ReturnType<typeof armHyperliquidAgentSessionFromBody>> | null = null;
   let connectorVault: {
-    venue_id: string;
+    venue_id: GholaVenueId;
     execution_mode: GholaVenueExecutionMode;
     vault_commitment?: string;
     encrypted_vault_commitment?: string;
@@ -6192,7 +6253,7 @@ export async function connectorVerifyNoSubmitFromBody(
     allocation_commitment: string | null;
     encrypted_execution_vault?: unknown;
   };
-  if (platformClass === "hyperliquid_style_market") {
+  if (venueId === "hyperliquid") {
     const [vault, allocation] = await Promise.all([
       getHyperliquidExecutionVaultByAccount(account.account_commitment),
       getHyperliquidManagedAllocationByAccount(account.account_commitment),
@@ -6275,7 +6336,9 @@ export async function connectorVerifyNoSubmitFromBody(
       };
     } else if (!vault || vault.owner_commitment !== owner.owner_commitment || vault.status !== "sealed") {
       return {
-        error: platformClass === "solana_swap_aggregator"
+        error: venueId === "aster" || venueId === "lighter"
+          ? "venue_access_required" as const
+          : platformClass === "solana_swap_aggregator"
           ? "jupiter_execution_vault_not_ready" as const
           : "solana_perps_execution_vault_not_ready" as const,
       };
@@ -6291,14 +6354,14 @@ export async function connectorVerifyNoSubmitFromBody(
       fastRuntimeHealthEnv(connectorEnv),
     );
     await wakePrivateWorkerForUse(
-      `hyperliquid_${executionMode}_no_submit_check`,
+      `${venueId}_${executionMode}_no_submit_check`,
       { verified_runtime_ready: runtimeHealth.status === "green" },
     );
     if (runtimeHealth.status !== "green") {
       runtimeHealth = await freshSealedRuntimeHealth(undefined, connectorEnv);
     }
     const requestedSession = objectBody(value.hyperliquid_session);
-    if (Object.keys(requestedSession).length > 0) {
+    if (venueId === "hyperliquid" && Object.keys(requestedSession).length > 0) {
       const armed = await armHyperliquidAgentSessionFromBody(requestedSession, owner, {
         skip_worker_wake: true,
         worker_config: hyperliquidWorkerConfig(null, connectorEnv),
@@ -6312,6 +6375,7 @@ export async function connectorVerifyNoSubmitFromBody(
 
   const readiness = await connectorReadiness({
     manifest,
+    venue_id: venueId,
     execution_vault_ready: Boolean(connectorVault.vault_commitment || connectorVault.allocation_commitment),
     execution_mode: executionMode,
     action_class: "trade_on_platform",
@@ -6346,14 +6410,14 @@ export async function connectorVerifyNoSubmitFromBody(
     env: connectorEnv,
   });
   let connectionProofPersisted = false;
-  let connectionProofReason = platformClass === "hyperliquid_style_market"
+  let connectionProofReason = venueId === "hyperliquid"
     ? "required_live_checks_incomplete"
     : null;
   let releaseCanaryPersisted = false;
-  let releaseCanaryReason = platformClass === "hyperliquid_style_market"
+  let releaseCanaryReason = venueId === "hyperliquid"
     ? "hyperliquid_no_submit_proof_incomplete"
     : null;
-  if (platformClass === "hyperliquid_style_market" &&
+  if (venueId === "hyperliquid" &&
       verification.status === "verified_no_funds" &&
       verification.checks.sealed_vault_opened &&
       verification.checks.sealed_instruction_opened &&
@@ -6455,7 +6519,7 @@ export async function connectorVerifyNoSubmitFromBody(
         releaseCanaryReason = persisted.reason;
       }
     }
-  } else if (platformClass === "hyperliquid_style_market") {
+  } else if (venueId === "hyperliquid") {
     if (verification.status !== "verified_no_funds") {
       connectionProofReason = verification.reason || verification.status;
     } else if (executionMode === "byo_api_key" && !hyperliquidSignerBindingVerified) {
@@ -6472,7 +6536,7 @@ export async function connectorVerifyNoSubmitFromBody(
     account_commitment: account.account_commitment,
     readiness: publicConnectorReadiness(readiness),
     verification,
-    ...(platformClass === "hyperliquid_style_market"
+    ...(venueId === "hyperliquid"
       ? {
           connection_proof_persisted: connectionProofPersisted,
           connection_proof_reason: connectionProofReason,
@@ -6495,6 +6559,10 @@ export async function connectorReconcileFromBody(
   const previewCommitment = stringValue(value.preview_commitment);
   const resultCommitment = stringValue(value.connector_result_commitment);
   const existingResult = resultCommitment ? await getConnectorResult(resultCommitment) : null;
+  if (
+    resultCommitment &&
+    (!existingResult || existingResult.owner_commitment !== owner.owner_commitment)
+  ) return { error: "connector_result_not_found" as const };
   const workOrderRecord = workOrderCommitment
     ? await getConnectorWorkOrder(workOrderCommitment)
     : previewCommitment
@@ -6505,18 +6573,32 @@ export async function connectorReconcileFromBody(
   if (!workOrderRecord || workOrderRecord.owner_commitment !== owner.owner_commitment) {
     return { error: "connector_work_order_not_found" as const };
   }
+  if (
+    existingResult &&
+    (
+      existingResult.work_order_commitment !== workOrderRecord.work_order_commitment ||
+      existingResult.result.work_order_commitment !== workOrderRecord.work_order_commitment ||
+      existingResult.platform_class !== workOrderRecord.platform_class ||
+      existingResult.result.platform_class !== workOrderRecord.platform_class ||
+      !existingResult.result.venue_id ||
+      existingResult.result.venue_id !== workOrderRecord.venue_id
+    )
+  ) return { error: "connector_result_binding_mismatch" as const };
   const manifestRecord = await getConnectorManifestRecord(workOrderRecord.work_order.manifest_commitment);
   if (!manifestRecord) return { error: "connector_artifact_missing" as const };
   const requestedVenueId = stringValue(value.venue_id);
   const priorProofVenueId = existingResult?.result.final_proof?.venue_id ?? "";
+  if (
+    !workOrderRecord.venue_id ||
+    workOrderRecord.work_order.venue_id !== workOrderRecord.venue_id ||
+    venuePlatformClass(workOrderRecord.venue_id) !== workOrderRecord.platform_class ||
+    manifestRecord.platform_class !== workOrderRecord.platform_class ||
+    (requestedVenueId && requestedVenueId !== workOrderRecord.venue_id) ||
+    (priorProofVenueId && priorProofVenueId !== workOrderRecord.venue_id) ||
+    (existingResult?.result.venue_id && existingResult.result.venue_id !== workOrderRecord.venue_id)
+  ) return { error: "connector_reconcile_venue_required" as const };
   const reconcileVenueId = connectorReconcileVenueId(
-    requestedVenueId || priorProofVenueId || (
-      workOrderRecord.platform_class === "coinbase_style_provider"
-        ? "coinbase_advanced"
-        : workOrderRecord.platform_class === "hyperliquid_style_market"
-          ? "hyperliquid"
-          : ""
-    ),
+    workOrderRecord.venue_id,
     workOrderRecord.platform_class,
   );
   if (!reconcileVenueId) return { error: "connector_reconcile_venue_required" as const };
@@ -7889,6 +7971,7 @@ function publicConnectorReadiness(record: GholaConnectorReadiness) {
   return {
     version: 1,
     platform_class: record.platform_class,
+    venue_id: record.venue_id,
     status: record.status,
     mode: record.mode,
     manifest_commitment: record.manifest_commitment,
@@ -7910,6 +7993,7 @@ function publicCompiledIntent(record: GholaCompiledPrivateIntent) {
     action_commitment: record.action_commitment,
     action_class: record.action_class,
     platform_class: record.platform_class,
+    venue_id: record.venue_id,
     product_bucket: record.product_bucket,
     amount_bucket: record.amount_bucket,
     asset_bucket: record.asset_bucket,
@@ -7958,6 +8042,7 @@ function publicConnectorWorkOrder(record: GholaConnectorWorkOrder) {
     approval_commitment: record.approval_commitment,
     execution_plan_commitment: record.execution_plan_commitment,
     platform_class: record.platform_class,
+    venue_id: record.venue_id,
     selected_rail: record.selected_rail,
     manifest_commitment: record.manifest_commitment,
     connector_readiness_commitment: record.connector_readiness_commitment,
@@ -7981,6 +8066,7 @@ function publicConnectorResult(record: GholaConnectorResult) {
     connector_result_commitment: record.connector_result_commitment,
     work_order_commitment: record.work_order_commitment,
     platform_class: record.platform_class,
+    venue_id: record.venue_id,
     status: record.status,
     provider_ref_commitment: record.provider_ref_commitment,
     result_commitment: record.result_commitment,
@@ -8372,7 +8458,9 @@ async function evidenceChainForExecution(input: {
 
 function safeConnectorInput(value: unknown): ConnectorSafeIntentInput {
   const body = objectBody(value);
+  const venueId = stringValue(body.venue_id);
   return {
+    venue_id: isVenueId(venueId) ? venueId : undefined,
     product_bucket: stringValue(body.product_bucket) || undefined,
     amount_bucket: stringValue(body.amount_bucket) || undefined,
     asset_bucket: stringValue(body.asset_bucket) || undefined,
@@ -8448,6 +8536,189 @@ function ttlMsFromBody(value: unknown, scope: GholaViewKey["scope"]): number | n
   return scope === "auditor_selective_disclosure" ? 7 * 24 * 60 * 60 * 1_000 : null;
 }
 
+async function genericPrivacyRuntimeForIntent(input: {
+  owner: PrivateAccountRequestOwner;
+  intent: PrivateAccountIntentRecordV1;
+  platform_class: GholaPlatformClass;
+  selected_rail?: GholaRailKind;
+  evidence_ready?: boolean;
+  runtime_envelope_commitment?: string;
+  safe_input?: ConnectorSafeIntentInput | null;
+}): Promise<
+  | {
+      context: null;
+      sealed_runtime_context: GholaSealedRuntimeContext;
+      schedule_decision: GholaPrivacyScheduleDecision;
+      rotation: GholaPlatformFundingRotation;
+      linkability_simulation: GholaAdversarialLinkabilitySimulation;
+      runtime_envelope: GholaRuntimeEnvelope;
+    }
+  | { error: "connector_compile_failed" }
+> {
+  const now = new Date();
+  const runtimeHealth = await freshSealedRuntimeHealth(
+    now,
+    await connectorRuntimeEnv(input.platform_class),
+  );
+  const existingEnvelope = input.runtime_envelope_commitment
+    ? await getRuntimeEnvelope(input.runtime_envelope_commitment)
+    : await getRuntimeEnvelopeByIntent(input.intent.intent_id);
+  const envelope = existingEnvelope?.owner_commitment === input.owner.owner_commitment
+    ? existingEnvelope.envelope
+    : (() => {
+        const created = createRuntimeEnvelope({
+          owner_commitment: input.owner.owner_commitment,
+          intent_id: input.intent.intent_id,
+          account_commitment: input.intent.account_commitment,
+          action_commitment: input.intent.action_commitment,
+          platform_class: input.platform_class,
+          safe_input: input.safe_input,
+          now,
+        });
+        return created.ok ? created.envelope : null;
+      })();
+  if (!envelope) return { error: "connector_compile_failed" };
+  await putRuntimeEnvelope({
+    version: 1,
+    runtime_envelope_commitment: envelope.runtime_envelope_commitment,
+    owner_commitment: input.owner.owner_commitment,
+    intent_id: input.intent.intent_id,
+    account_commitment: input.intent.account_commitment,
+    action_commitment: input.intent.action_commitment,
+    platform_class: input.platform_class,
+    envelope,
+    created_at: envelope.created_at,
+    expires_at: envelope.expires_at,
+  });
+  await putRuntimeHealth({
+    version: 1,
+    runtime_health_commitment: runtimeHealth.runtime_health_commitment,
+    health: runtimeHealth,
+    created_at: runtimeHealth.observed_at,
+  });
+  const runtimeContext = sealedRuntimeContext({ envelope, health: runtimeHealth });
+  const selectedRail = input.selected_rail ?? connectorDefaultRail(input.platform_class);
+  const amountBucket = input.safe_input?.amount_bucket || "25";
+  const assetBucket = input.safe_input?.asset_bucket || "stablecoin";
+  const destinationClass = input.safe_input?.destination_class || "private_account";
+  const compilerCommitment = gholaCommitment("private_runtime_policy", {
+    intent_id: input.intent.intent_id,
+    platform_class: input.platform_class,
+  });
+  const prior = (await listLinkabilityScores(input.owner.owner_commitment, 200))
+    .filter((record) => record.intent_id !== input.intent.intent_id);
+  const platformPrior = prior.filter((record) => record.platform_class === input.platform_class);
+  const sameAmount = platformPrior.filter((record) => record.amount_bucket === amountBucket);
+  const sameAsset = platformPrior.filter((record) => record.asset_bucket === assetBucket);
+  const sameDestination = platformPrior.filter((record) => record.destination_class === destinationClass);
+  const sameSolver = input.platform_class === "rfq_solver_network"
+    ? platformPrior.filter((record) =>
+        record.score.reason_codes.includes("same_solver") ||
+        record.score.platform_class === input.platform_class
+      )
+    : [];
+  const rotation = platformFundingRotation({
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.intent.account_commitment,
+    platform_class: input.platform_class,
+    manifest: { requires_omnibus_funding: false },
+    reuse_count: platformPrior.length,
+    withdrawal_destination_reuse_count: input.intent.action_class === "withdraw"
+      ? sameDestination.length
+      : 0,
+    now,
+  });
+  const linkabilityScore = scoreConnectorLinkability({
+    account_commitment: input.intent.account_commitment,
+    platform_class: input.platform_class,
+    compiled_intent: { compiler_commitment: compilerCommitment },
+    prior_platform_actions: platformPrior.length,
+    same_amount_bucket_actions: sameAmount.length,
+    same_asset_bucket_actions: sameAsset.length,
+    reused_platform_funding_account: false,
+    same_solver_actions: sameSolver.length,
+    withdrawal_destination_reuse: input.intent.action_class === "withdraw"
+      ? sameDestination.length
+      : 0,
+    repeated_timing_actions: platformPrior.length > 2 ? platformPrior.length - 2 : 0,
+    now,
+  });
+  await putLinkabilityScore({
+    version: 1,
+    score_commitment: linkabilityScore.score_commitment,
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.intent.account_commitment,
+    intent_id: input.intent.intent_id,
+    platform_class: input.platform_class,
+    amount_bucket: amountBucket,
+    asset_bucket: assetBucket,
+    destination_class: destinationClass,
+    score: linkabilityScore,
+    created_at: linkabilityScore.created_at,
+  });
+  const profile = getPlatformPrivacyProfile(input.platform_class);
+  const simulation = adversarialLinkabilitySimulation({
+    platform_class: input.platform_class,
+    selected_rail: selectedRail,
+    linkability_score: linkabilityScore,
+    rotation,
+    public_chain_visible: profile.public_chain_sees === "visible" || selectedRail === "direct_public_fallback",
+    platform_order_visible: profile.platform_sees === "order_visible" || profile.platform_sees === "account_visible",
+    provider_account_visible: profile.platform_sees === "account_visible",
+    now,
+  });
+  const schedule = privacyScheduleDecision({
+    compiled_intent: {
+      compiler_commitment: compilerCommitment,
+      urgency_bucket: input.safe_input?.urgency || "maximum_privacy",
+      account_commitment: input.intent.account_commitment,
+      platform_class: input.platform_class,
+      asset_bucket: assetBucket,
+      amount_bucket: amountBucket,
+    },
+    evidence_ready: input.evidence_ready === true,
+    runtime_ready: runtimeContext.runtime_status === "ready",
+    rotation_status: rotation.status,
+    simulator_decision: simulation.decision,
+    now,
+  });
+  await putPlatformRotation({
+    version: 1,
+    rotation_commitment: rotation.rotation_commitment,
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.intent.account_commitment,
+    platform_class: input.platform_class,
+    rotation,
+    created_at: now.toISOString(),
+  });
+  await putLinkabilitySimulation({
+    version: 1,
+    simulator_commitment: simulation.simulator_commitment,
+    owner_commitment: input.owner.owner_commitment,
+    intent_id: input.intent.intent_id,
+    preview_commitment: null,
+    simulation,
+    created_at: simulation.simulated_at,
+  });
+  await putScheduleDecision({
+    version: 1,
+    schedule_commitment: schedule.schedule_commitment,
+    owner_commitment: input.owner.owner_commitment,
+    intent_id: input.intent.intent_id,
+    preview_commitment: null,
+    decision: schedule,
+    created_at: now.toISOString(),
+  });
+  return {
+    context: null,
+    sealed_runtime_context: runtimeContext,
+    schedule_decision: schedule,
+    rotation,
+    linkability_simulation: simulation,
+    runtime_envelope: envelope,
+  };
+}
+
 async function connectorContextForIntent(input: {
   owner: PrivateAccountRequestOwner;
   intent: PrivateAccountIntentRecordV1;
@@ -8472,19 +8743,27 @@ async function connectorContextForIntent(input: {
   | { error: "connector_compile_failed" }
 > {
   const now = new Date();
+  const venueId = input.intent.venue_id;
+  if (
+    !venueId ||
+    (input.intent.platform_class && input.intent.platform_class !== input.platform_class) ||
+    venuePlatformClass(venueId) !== input.platform_class ||
+    (input.safe_input?.venue_id && input.safe_input.venue_id !== venueId) ||
+    ((venueId === "aster" || venueId === "lighter") && input.intent.venue_id !== venueId)
+  ) return { error: "connector_compile_failed" };
   const manifest = getConnectorManifest(input.platform_class, now);
   const connectorEnv = await connectorRuntimeEnv(input.platform_class);
   const runtimeHealth = await freshSealedRuntimeHealth(now, connectorEnv);
-  const hyperliquidVault = input.platform_class === "hyperliquid_style_market"
+  const hyperliquidVault = venueId === "hyperliquid"
     ? await getHyperliquidExecutionVaultByAccount(input.intent.account_commitment)
     : null;
-  const hyperliquidAllocation = input.platform_class === "hyperliquid_style_market"
+  const hyperliquidAllocation = venueId === "hyperliquid"
     ? await getHyperliquidManagedAllocationByAccount(input.intent.account_commitment)
     : null;
-  const venueId = venueIdForPlatformClass(input.platform_class);
   const usesVenueVault = input.platform_class === "coinbase_style_provider" ||
     input.platform_class === "solana_perps_market" ||
-    input.platform_class === "solana_swap_aggregator";
+    input.platform_class === "solana_swap_aggregator" ||
+    venueId === "aster" || venueId === "lighter";
   const [venueVault, omnibusAllocation, pooledAllocation] = usesVenueVault
     ? await Promise.all([
         getVenueExecutionVaultByAccount({
@@ -8510,15 +8789,17 @@ async function connectorContextForIntent(input: {
     ? omnibusAllocation?.status === "allocated"
       ? "partner_omnibus"
       : venueVault?.execution_mode ?? "partner_omnibus"
-    : input.platform_class === "solana_perps_market" || input.platform_class === "solana_swap_aggregator"
+    : input.platform_class === "solana_perps_market" || input.platform_class === "solana_swap_aggregator" ||
+        venueId === "aster" || venueId === "lighter"
       ? pooledAllocationReady
         ? "ghola_pooled"
-        : venueVault?.execution_mode ?? "user_stealth"
+        : venueVault?.execution_mode ?? (venueId === "aster" || venueId === "lighter" ? "byo_api_key" : "user_stealth")
     : hyperliquidAllocation?.status === "allocated"
       ? hyperliquidAllocation.allocation.execution_mode
       : "byo_api_key";
   const readiness = await connectorReadiness({
     manifest,
+    venue_id: venueId,
     now,
     execution_vault_ready: usesVenueVault
       ? venueVault?.status === "sealed"
@@ -8555,6 +8836,7 @@ async function connectorContextForIntent(input: {
     action_commitment: input.intent.action_commitment,
     action_class: input.intent.action_class,
     platform_class: input.platform_class,
+    venue_id: venueId,
     product_bucket: input.intent.product_bucket,
     manifest,
     safe_input: input.safe_input,
@@ -8569,6 +8851,7 @@ async function connectorContextForIntent(input: {
     account_commitment: input.intent.account_commitment,
     action_commitment: input.intent.action_commitment,
     platform_class: input.platform_class,
+    venue_id: venueId,
     manifest_commitment: manifest.manifest_commitment,
     compiled_intent: compiled.compiled_intent,
     created_at: compiled.compiled_intent.created_at,
@@ -9143,6 +9426,7 @@ async function connectorForExecution(input: {
         | "connector_submit_blocked"
         | "connector_submit_in_progress"
         | "connector_submit_ambiguous"
+        | "connector_result_binding_mismatch"
         | "hyperliquid_agent_binding_required"
         | "hyperliquid_agent_not_authorized"
         | "hyperliquid_binding_check_unavailable"
@@ -9176,16 +9460,24 @@ async function connectorForExecution(input: {
   ) {
     return { error: "connector_artifact_missing" };
   }
-  const hyperliquidVault = manifestRecord.platform_class === "hyperliquid_style_market"
+  const venueId = compiledRecord.venue_id;
+  if (
+    !venueId ||
+    input.intent.venue_id !== venueId ||
+    (input.intent.platform_class && input.intent.platform_class !== manifestRecord.platform_class) ||
+    venuePlatformClass(venueId) !== manifestRecord.platform_class ||
+    compiledRecord.compiled_intent.venue_id !== venueId
+  ) return { error: "connector_artifact_missing" };
+  const hyperliquidVault = venueId === "hyperliquid"
     ? await getHyperliquidExecutionVaultByAccount(input.intent.account_commitment)
     : null;
-  const hyperliquidAllocation = manifestRecord.platform_class === "hyperliquid_style_market"
+  const hyperliquidAllocation = venueId === "hyperliquid"
     ? await getHyperliquidManagedAllocationByAccount(input.intent.account_commitment)
     : null;
-  const venueId = venueIdForPlatformClass(manifestRecord.platform_class);
   const usesVenueVault = manifestRecord.platform_class === "coinbase_style_provider" ||
     manifestRecord.platform_class === "solana_perps_market" ||
-    manifestRecord.platform_class === "solana_swap_aggregator";
+    manifestRecord.platform_class === "solana_swap_aggregator" ||
+    venueId === "aster" || venueId === "lighter";
   const [venueVault, omnibusAllocation, pooledAllocation] = usesVenueVault
     ? await Promise.all([
         getVenueExecutionVaultByAccount({
@@ -9211,10 +9503,11 @@ async function connectorForExecution(input: {
     ? omnibusAllocation?.status === "allocated"
       ? "partner_omnibus"
       : venueVault?.execution_mode ?? "partner_omnibus"
-    : manifestRecord.platform_class === "solana_perps_market" || manifestRecord.platform_class === "solana_swap_aggregator"
+    : manifestRecord.platform_class === "solana_perps_market" || manifestRecord.platform_class === "solana_swap_aggregator" ||
+        venueId === "aster" || venueId === "lighter"
       ? pooledAllocationReady
         ? "ghola_pooled"
-        : venueVault?.execution_mode ?? "user_stealth"
+        : venueVault?.execution_mode ?? (venueId === "aster" || venueId === "lighter" ? "byo_api_key" : "user_stealth")
     : hyperliquidAllocation?.status === "allocated"
       ? hyperliquidAllocation.allocation.execution_mode
       : "byo_api_key";
@@ -9226,7 +9519,7 @@ async function connectorForExecution(input: {
       hyperliquidAllocation.allocation.execution_mode === "ghola_pooled"
     );
   if (
-    manifestRecord.platform_class === "hyperliquid_style_market" &&
+    venueId === "hyperliquid" &&
     venueExecutionMode === "byo_api_key"
   ) {
     if (!hyperliquidVault || hyperliquidVault.status !== "sealed") {
@@ -9235,8 +9528,8 @@ async function connectorForExecution(input: {
     const signerBinding = await reverifyStoredHyperliquidSignerBinding(hyperliquidVault);
     if (!signerBinding.ok) return { error: signerBinding.error };
   }
-  if (manifestRecord.platform_class === "hyperliquid_style_market") {
-    await wakePrivateWorkerForUse(`hyperliquid_${venueExecutionMode ?? "unknown"}_submit`);
+  if (venueId === "hyperliquid" || venueId === "aster" || venueId === "lighter") {
+    await wakePrivateWorkerForUse(`${venueId}_${venueExecutionMode ?? "unknown"}_submit`);
   } else if (usesPooledExecution) {
     await wakePrivateWorkerForUse(`pooled_${pooledWorkerVenueId(venueId ?? "hyperliquid") ?? venueId ?? "hyperliquid"}_submit`);
   }
@@ -9244,6 +9537,7 @@ async function connectorForExecution(input: {
   const connectorEnv = await connectorRuntimeEnv(manifestRecord.platform_class);
   const readiness = await connectorReadiness({
     manifest: manifestRecord.manifest,
+    venue_id: venueId,
     execution_vault_ready: usesVenueVault
       ? venueVault?.status === "sealed"
       : hyperliquidVault?.status === "sealed" || hyperliquidAllocation?.status === "allocated",
@@ -9288,6 +9582,7 @@ async function connectorForExecution(input: {
       approval_commitment: input.approval_commitment,
       execution_plan_commitment: input.execution_plan_commitment,
       platform_class: manifestRecord.platform_class,
+      venue_id: venueId,
       status: workOrder.status,
       work_order: workOrder,
       created_at: workOrder.created_at,
@@ -9302,6 +9597,8 @@ async function connectorForExecution(input: {
     workOrderRecord.action_commitment !== input.intent.action_commitment ||
     workOrderRecord.preview_commitment !== input.preview.preview_commitment ||
     workOrderRecord.platform_class !== manifestRecord.platform_class ||
+    workOrderRecord.venue_id !== venueId ||
+    workOrderRecord.work_order.venue_id !== venueId ||
     workOrderRecord.approval_commitment !== input.approval_commitment
   ) {
     // A preview is a one-shot authorization envelope. It can never mint a
@@ -9309,7 +9606,12 @@ async function connectorForExecution(input: {
     return { error: "connector_submit_ambiguous" };
   }
   const existingResult = await getConnectorResultByWorkOrder(workOrderRecord.work_order_commitment);
-  if (existingResult && existingResult.owner_commitment === input.owner.owner_commitment) {
+  if (existingResult) {
+    if (!connectorExecutionCachedResultBindingValid({
+      result_record: existingResult,
+      work_order_record: workOrderRecord,
+      owner_commitment: input.owner.owner_commitment,
+    })) return { error: "connector_result_binding_mismatch" };
     return {
       work_order: workOrderRecord.work_order,
       result: existingResult.result,
@@ -9331,7 +9633,12 @@ async function connectorForExecution(input: {
   });
   if (!lock.acquired) {
     const repeatedResult = await getConnectorResultByWorkOrder(workOrderRecord.work_order_commitment);
-    if (repeatedResult && repeatedResult.owner_commitment === input.owner.owner_commitment) {
+    if (repeatedResult) {
+      if (!connectorExecutionCachedResultBindingValid({
+        result_record: repeatedResult,
+        work_order_record: workOrderRecord,
+        owner_commitment: input.owner.owner_commitment,
+      })) return { error: "connector_result_binding_mismatch" };
       return {
         work_order: workOrderRecord.work_order,
         result: repeatedResult.result,
@@ -9341,7 +9648,12 @@ async function connectorForExecution(input: {
   }
   try {
     const repeatedResult = await getConnectorResultByWorkOrder(workOrderRecord.work_order_commitment);
-    if (repeatedResult && repeatedResult.owner_commitment === input.owner.owner_commitment) {
+    if (repeatedResult) {
+      if (!connectorExecutionCachedResultBindingValid({
+        result_record: repeatedResult,
+        work_order_record: workOrderRecord,
+        owner_commitment: input.owner.owner_commitment,
+      })) return { error: "connector_result_binding_mismatch" };
       return {
         work_order: workOrderRecord.work_order,
         result: repeatedResult.result,
@@ -9459,6 +9771,26 @@ async function connectorForExecution(input: {
       lockRunCommitment,
     );
   }
+}
+
+export function connectorExecutionCachedResultBindingValid(input: {
+  result_record: Pick<
+    PrivateConnectorResultRecordV1,
+    "owner_commitment" | "work_order_commitment" | "platform_class" | "result"
+  >;
+  work_order_record: Pick<
+    PrivateConnectorWorkOrderRecordV1,
+    "work_order_commitment" | "platform_class" | "venue_id"
+  >;
+  owner_commitment: string;
+}): boolean {
+  return input.result_record.owner_commitment === input.owner_commitment &&
+    input.result_record.work_order_commitment === input.work_order_record.work_order_commitment &&
+    input.result_record.result.work_order_commitment === input.work_order_record.work_order_commitment &&
+    input.result_record.platform_class === input.work_order_record.platform_class &&
+    input.result_record.result.platform_class === input.work_order_record.platform_class &&
+    Boolean(input.result_record.result.venue_id) &&
+    input.result_record.result.venue_id === input.work_order_record.venue_id;
 }
 
 async function recordRejectedFundingImport(input: {
@@ -9658,6 +9990,8 @@ function connectorReconcileVenueId(
 export function isVenueId(value: string): value is GholaVenueId {
   return [
     "hyperliquid",
+    "aster",
+    "lighter",
     "phoenix",
     "drift",
     "jupiter",
@@ -9827,6 +10161,7 @@ async function connectorReadinessForManifest(
   now?: Date,
 ): Promise<GholaConnectorReadiness> {
   const observedAt = now ?? new Date();
+  const platformSummaryVenueId = venueIdForPlatformClass(manifest.platform_class);
   const env = await connectorRuntimeEnv(manifest.platform_class);
   const platformLaunchReady =
     manifest.platform_class === "hyperliquid_style_market"
@@ -9860,6 +10195,8 @@ async function connectorReadinessForManifest(
   const launchUsesPooledVenue = launchExecutionMode === "ghola_pooled";
   return connectorReadiness({
     manifest,
+    venue_id: platformSummaryVenueId,
+    platform_summary: true,
     now: observedAt,
     env,
     // Manifest readiness is platform-scoped. Per-account vault and funding gates

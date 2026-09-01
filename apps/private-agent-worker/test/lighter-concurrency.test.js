@@ -49,12 +49,32 @@ const result = payload.action === "submit"
       target_market_checked: true,
       order: {
         client_order_index: payload.client_order_index,
-        order_index: 7,
+        order_index: "7",
+        market_index: 1,
         status: "filled",
         filled_base_amount: "0.01",
+        filled_quote_amount: "10"
+      },
+      fee_proof: {
+        version: 1,
+        proof_kind: "lighter_authenticated_order_trades_fee_v1",
+        complete: true,
+        pagination_complete: true,
+        transaction_broadcast: false,
+        account_index: 123,
+        market_id: 1,
+        order_index: "7",
+        client_order_index: payload.client_order_index,
+        trade_count: 1,
+        first_trade_id: "9223372036854775807",
+        last_trade_id: "9223372036854775807",
+        filled_base_amount: "0.01",
         filled_quote_amount: "10",
-        fee: "0.001",
-        fee_asset: "USDC"
+        fee_quote_amount: "0.001",
+        fee_asset: "USDC",
+        fee_rate_tick_denominator: 1000000,
+        quote_atomic_denominator: 1000000,
+        evidence_commitment: "sha256:${"ab".repeat(32)}"
       }
     };
 process.stdout.write(JSON.stringify(result));

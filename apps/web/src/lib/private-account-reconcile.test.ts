@@ -10,7 +10,12 @@ const NOW = new Date("2026-08-22T10:00:00.000Z");
 
 afterEach(() => vi.unstubAllGlobals());
 
-function workOrder(platformClass: GholaConnectorWorkOrder["platform_class"] = "hyperliquid_style_market"): GholaConnectorWorkOrder {
+function workOrder(
+  platformClass: GholaConnectorWorkOrder["platform_class"] = "hyperliquid_style_market",
+  venueId: GholaConnectorWorkOrder["venue_id"] = platformClass === "coinbase_style_provider"
+    ? "coinbase_advanced"
+    : "hyperliquid",
+): GholaConnectorWorkOrder {
   const manifest = getConnectorManifest(platformClass, NOW);
   return {
     version: 1,
@@ -23,6 +28,7 @@ function workOrder(platformClass: GholaConnectorWorkOrder["platform_class"] = "h
     approval_commitment: "approval_test",
     execution_plan_commitment: null,
     platform_class: platformClass,
+    venue_id: venueId,
     selected_rail: "direct_public_fallback",
     manifest_commitment: manifest.manifest_commitment,
     connector_readiness_commitment: "readiness_test",
@@ -73,7 +79,7 @@ function reconcileInstruction(venueId: "aster" | "lighter") {
     alg: "sealed-provider-v1",
     ciphertext: `sealed-reconcile-${venueId}`,
     recipient: "phala:cvm:test",
-    aad: `ghola/private-execution-instruction-v1|work_order:${workOrder().work_order_commitment}|venue:${venueId}|recipient:phala:cvm:test`,
+    aad: `ghola/private-execution-instruction-v1|work_order:${workOrder("hyperliquid_style_market", venueId).work_order_commitment}|venue:${venueId}|recipient:phala:cvm:test`,
   };
 }
 
@@ -106,6 +112,38 @@ function proof(proofKind: string) {
 }
 
 describe("Hyperliquid reconciliation protocol", () => {
+  it("does not honor a local-test connector flag in production", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await reconcileConnectorResult({
+      work_order: workOrder(),
+      manifest: getConnectorManifest("hyperliquid_style_market", NOW),
+      venue_id: "hyperliquid",
+      env: {
+        NODE_ENV: "production",
+        GHOLA_CONNECTOR_MODE: "local_test",
+      },
+      now: NOW,
+    });
+    expect(result.status).toBe("ambiguous");
+    expect(result.reason).toBe("connector_endpoint_missing");
+    expect(result.final_proof).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not synthesize reconciliation for a local-test flag without test runtime evidence", async () => {
+    const result = await reconcileConnectorResult({
+      work_order: workOrder(),
+      manifest: getConnectorManifest("hyperliquid_style_market", NOW),
+      venue_id: "hyperliquid",
+      env: { GHOLA_SHIELDED_POOL_MODE: "local_test" },
+      now: NOW,
+    });
+    expect(result.status).toBe("ambiguous");
+    expect(result.reason).toBe("local_test_reconcile_disabled");
+    expect(result.final_proof).toBeNull();
+  });
+
   it("keeps legacy worker reconciliation ambiguous", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
       status: "reconciled",
@@ -185,7 +223,7 @@ describe("all-venue reconciliation proof gates", () => {
     path,
     proofKind,
   ) => {
-    const order = workOrder();
+    const order = workOrder("hyperliquid_style_market", venueId);
     const fetchMock = vi.fn(async () => Response.json({
       status: "reconciled",
       venue_id: venueId,
@@ -227,7 +265,7 @@ describe("all-venue reconciliation proof gates", () => {
   });
 
   it("rejects a cross-venue proof for an exact Lighter reconciliation", async () => {
-    const order = workOrder();
+    const order = workOrder("hyperliquid_style_market", "lighter");
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
       status: "reconciled",
       venue_id: "aster",
@@ -257,6 +295,27 @@ describe("all-venue reconciliation proof gates", () => {
     const result = await reconcileConnectorResult({
       work_order: workOrder("coinbase_style_provider"),
       manifest: getConnectorManifest("coinbase_style_provider", NOW),
+      venue_id: "lighter",
+      venue_execution_vault: venueVault("lighter"),
+      encrypted_execution_instruction_bundle: reconcileInstruction("lighter"),
+      env: env(),
+      now: NOW,
+    });
+    expect(result.status).toBe("ambiguous");
+    expect(result.reason).toBe("connector_reconcile_venue_mismatch");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before fetch for a legacy work order with no venue", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const legacyOrder = {
+      ...workOrder("hyperliquid_style_market", "lighter"),
+      venue_id: null as unknown as GholaConnectorWorkOrder["venue_id"],
+    };
+    const result = await reconcileConnectorResult({
+      work_order: legacyOrder,
+      manifest: getConnectorManifest("hyperliquid_style_market", NOW),
       venue_id: "lighter",
       venue_execution_vault: venueVault("lighter"),
       encrypted_execution_instruction_bundle: reconcileInstruction("lighter"),

@@ -5,7 +5,11 @@ import { POST as queueAction } from "../queue/route";
 import { POST as createFundingInstruction } from "../../funding/instruction/route";
 import { POST as importFunding } from "../../funding/import/route";
 import { POST as runBatchCoordinator } from "../../funding/batch/run/route";
-import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
+import {
+  getCompiledIntentByIntent,
+  getConnectorWorkOrderByPreview,
+  resetPrivateAccountStoreForTests,
+} from "@/lib/private-account-store";
 
 const INTERNAL_TOKEN = "test_internal_private_account_token";
 
@@ -110,6 +114,65 @@ describe("private account privacy preview route", () => {
     expect(res.status).toBe(200);
     expect(body.preview.claim_status).toBe("wait_for_anonymity");
     expect(body.preview.wait_reasons).toContain("private account vault is not ready");
+  });
+
+  it("preserves generic previews without minting connector artifacts", async () => {
+    const intentRes = await createIntent(
+      request({
+        action_class: "transfer",
+        product_bucket: "stablecoin",
+      }),
+    );
+    const intent = await intentRes.json();
+    const res = await POST(
+      request({
+        intent_id: intent.intent_id,
+        platform_class: "solana_private_balance",
+        requested_rail: "shielded_pool",
+      }),
+    );
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.preview.connector_context).toBeNull();
+    expect(await getCompiledIntentByIntent(intent.intent_id)).toBeNull();
+    expect(await getConnectorWorkOrderByPreview(body.preview.preview_commitment)).toBeNull();
+  });
+
+  it("raises generic linkability risk from the owner's repeated private activity", async () => {
+    const simulations: Array<{ score_bps: number; decision: string }> = [];
+
+    for (let index = 0; index < 4; index += 1) {
+      const intentRes = await createIntent(
+        request({
+          action_class: "transfer",
+          product_bucket: "stablecoin",
+        }),
+      );
+      const intent = await intentRes.json();
+      const res = await POST(
+        request({
+          intent_id: intent.intent_id,
+          platform_class: "solana_private_balance",
+          requested_rail: "shielded_pool",
+          safe_input: {
+            amount_bucket: "25",
+            asset_bucket: "stablecoin",
+            destination_class: "private_account",
+          },
+        }),
+      );
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.preview.connector_context).toBeNull();
+      expect(await getCompiledIntentByIntent(intent.intent_id)).toBeNull();
+      expect(await getConnectorWorkOrderByPreview(body.preview.preview_commitment)).toBeNull();
+      simulations.push(body.preview.linkability_simulation);
+    }
+
+    expect(simulations.at(-1)?.score_bps).toBeGreaterThan(simulations[0]?.score_bps ?? 0);
+    expect(simulations.at(-1)?.decision).not.toBe("proceed");
   });
 
   it("returns private-mode only after internal vault readiness and anonymity evidence exist", async () => {

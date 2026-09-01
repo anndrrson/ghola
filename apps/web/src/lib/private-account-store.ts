@@ -50,6 +50,7 @@ import type {
   GholaStealthVenueAccount,
   GholaVenueEligibilityCredential,
   GholaVenueExecutionVault,
+  GholaVenueId,
 } from "./private-account";
 
 export type PrivateAccountIntentStatus =
@@ -68,6 +69,8 @@ export interface PrivateAccountIntentRecordV1 {
   account_commitment: string;
   action_commitment: string;
   action_class: GholaPrivateAccountActionClass;
+  platform_class: GholaPlatformClass | null;
+  venue_id: GholaVenueId | null;
   product_bucket: string;
   policy_commitment: string;
   intent_commitment: string;
@@ -310,6 +313,7 @@ export interface PrivateCompiledIntentRecordV1 {
   account_commitment: string;
   action_commitment: string;
   platform_class: GholaPlatformClass;
+  venue_id: GholaVenueId;
   manifest_commitment: string;
   compiled_intent: GholaCompiledPrivateIntent;
   created_at: string;
@@ -340,6 +344,7 @@ export interface PrivateConnectorWorkOrderRecordV1 {
   approval_commitment: string | null;
   execution_plan_commitment: string | null;
   platform_class: GholaPlatformClass;
+  venue_id: GholaVenueId;
   status: GholaConnectorWorkOrder["status"];
   work_order: GholaConnectorWorkOrder;
   created_at: string;
@@ -4161,6 +4166,8 @@ export async function putPrivateAccountIntent(
       account_commitment,
       action_commitment,
       action_class,
+      platform_class,
+      venue_id,
       product_bucket,
       policy_commitment,
       intent_commitment,
@@ -4173,6 +4180,8 @@ export async function putPrivateAccountIntent(
       ${record.account_commitment},
       ${record.action_commitment},
       ${record.action_class},
+      ${record.platform_class},
+      ${record.venue_id},
       ${record.product_bucket},
       ${record.policy_commitment},
       ${record.intent_commitment},
@@ -5075,6 +5084,7 @@ export async function putCompiledIntent(
       account_commitment,
       action_commitment,
       platform_class,
+      venue_id,
       manifest_commitment,
       compiled_intent,
       created_at
@@ -5085,6 +5095,7 @@ export async function putCompiledIntent(
       ${record.account_commitment},
       ${record.action_commitment},
       ${record.platform_class},
+      ${record.venue_id},
       ${record.manifest_commitment},
       ${JSON.stringify(record.compiled_intent)}::jsonb,
       ${record.created_at}
@@ -5230,6 +5241,7 @@ export async function putConnectorWorkOrder(
       approval_commitment,
       execution_plan_commitment,
       platform_class,
+      venue_id,
       status,
       work_order,
       created_at,
@@ -5244,6 +5256,7 @@ export async function putConnectorWorkOrder(
       ${record.approval_commitment},
       ${record.execution_plan_commitment},
       ${record.platform_class},
+      ${record.venue_id},
       ${record.status},
       ${JSON.stringify(record.work_order)}::jsonb,
       ${record.created_at},
@@ -5282,6 +5295,7 @@ export async function claimConnectorWorkOrderForPreview(
       approval_commitment,
       execution_plan_commitment,
       platform_class,
+      venue_id,
       status,
       work_order,
       created_at,
@@ -5296,6 +5310,7 @@ export async function claimConnectorWorkOrderForPreview(
       ${record.approval_commitment},
       ${record.execution_plan_commitment},
       ${record.platform_class},
+      ${record.venue_id},
       ${record.status},
       ${JSON.stringify(record.work_order)}::jsonb,
       ${record.created_at},
@@ -6508,6 +6523,8 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
       account_commitment TEXT NOT NULL,
       action_commitment TEXT NOT NULL,
       action_class TEXT NOT NULL,
+      platform_class TEXT,
+      venue_id TEXT,
       product_bucket TEXT NOT NULL,
       policy_commitment TEXT NOT NULL,
       intent_commitment TEXT NOT NULL,
@@ -6695,6 +6712,7 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
       account_commitment TEXT NOT NULL,
       action_commitment TEXT NOT NULL,
       platform_class TEXT NOT NULL,
+      venue_id TEXT NOT NULL,
       manifest_commitment TEXT NOT NULL,
       compiled_intent JSONB NOT NULL,
       created_at TIMESTAMPTZ NOT NULL
@@ -6725,6 +6743,7 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
       approval_commitment TEXT,
       execution_plan_commitment TEXT,
       platform_class TEXT NOT NULL,
+      venue_id TEXT NOT NULL,
       status TEXT NOT NULL,
       work_order JSONB NOT NULL,
       created_at TIMESTAMPTZ NOT NULL,
@@ -7341,6 +7360,10 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
     )
   `;
   await sql`ALTER TABLE private_account_intents ADD COLUMN IF NOT EXISTS owner_commitment TEXT NOT NULL DEFAULT 'owner_legacy'`;
+  await sql`ALTER TABLE private_account_intents ADD COLUMN IF NOT EXISTS platform_class TEXT`;
+  await sql`ALTER TABLE private_account_intents ADD COLUMN IF NOT EXISTS venue_id TEXT`;
+  await sql`ALTER TABLE private_account_compiled_intents ADD COLUMN IF NOT EXISTS venue_id TEXT`;
+  await sql`ALTER TABLE private_account_connector_work_orders ADD COLUMN IF NOT EXISTS venue_id TEXT`;
   await sql`ALTER TABLE private_account_previews ADD COLUMN IF NOT EXISTS owner_commitment TEXT NOT NULL DEFAULT 'owner_legacy'`;
   await sql`ALTER TABLE private_account_approvals ADD COLUMN IF NOT EXISTS owner_commitment TEXT NOT NULL DEFAULT 'owner_legacy'`;
   await sql`ALTER TABLE private_account_approvals ADD COLUMN IF NOT EXISTS execution_plan_commitment TEXT`;
@@ -7455,6 +7478,8 @@ function intentRow(row: IntentRow): PrivateAccountIntentRecordV1 {
     account_commitment: row.account_commitment,
     action_commitment: row.action_commitment,
     action_class: row.action_class as GholaPrivateAccountActionClass,
+    platform_class: row.platform_class ? row.platform_class as GholaPlatformClass : null,
+    venue_id: row.venue_id ? row.venue_id as GholaVenueId : null,
     product_bucket: row.product_bucket,
     policy_commitment: row.policy_commitment,
     intent_commitment: row.intent_commitment,
@@ -7676,6 +7701,7 @@ function compiledIntentRow(row: CompiledIntentRow): PrivateCompiledIntentRecordV
     account_commitment: row.account_commitment,
     action_commitment: row.action_commitment,
     platform_class: row.platform_class as GholaPlatformClass,
+    venue_id: row.venue_id as GholaVenueId,
     manifest_commitment: row.manifest_commitment,
     compiled_intent: row.compiled_intent as GholaCompiledPrivateIntent,
     created_at: dateString(row.created_at),
@@ -7710,6 +7736,7 @@ function connectorWorkOrderRow(row: ConnectorWorkOrderRow): PrivateConnectorWork
     approval_commitment: row.approval_commitment ?? null,
     execution_plan_commitment: row.execution_plan_commitment ?? null,
     platform_class: row.platform_class as GholaPlatformClass,
+    venue_id: row.venue_id as GholaVenueId,
     status: row.status as GholaConnectorWorkOrder["status"],
     work_order: row.work_order as GholaConnectorWorkOrder,
     created_at: dateString(row.created_at),

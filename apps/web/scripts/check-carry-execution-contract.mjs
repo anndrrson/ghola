@@ -80,8 +80,14 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webWorkerRoutingTest: "apps/web/src/lib/private-account-worker-routing.test.ts",
   webEnvExample: "apps/web/.env.example",
   webClient: "apps/web/src/lib/private-account-client.ts",
+  webClientVenueBindingTest: "apps/web/src/lib/private-account-client-venue-binding.test.ts",
+  webPrivateAccountCockpit: "apps/web/src/components/private-account/PrivateAccountCockpit.tsx",
   webConnectorReconciliation: "apps/web/src/lib/private-account-connectors.ts",
   webConnectorReconciliationTest: "apps/web/src/lib/private-account-reconcile.test.ts",
+  webConnectorReconciliationBindingTest: "apps/web/src/lib/private-account-reconcile-binding.test.ts",
+  webConnectorExecutionTest: "apps/web/src/lib/private-account-hyperliquid.test.ts",
+  webConnectorExecutionResultBindingTest: "apps/web/src/lib/private-account-execution-result-binding.test.ts",
+  webConnectorResponseBindingTest: "apps/web/src/lib/private-account-response-binding.test.ts",
   webMandate: "apps/web/src/lib/carry-risk-mandate.ts",
   webMandateTest: "apps/web/src/lib/carry-risk-mandate.test.ts",
   webCollateralReview: "apps/web/src/lib/carry-collateral-review.ts",
@@ -135,6 +141,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webPrivateAccountStore: "apps/web/src/lib/private-account-store.ts",
   webPrivateAccountStoreTest: "apps/web/src/lib/private-account-store.test.ts",
   webPrivateAccountRouteLib: "apps/web/src/app/v1/private-account/_lib.ts",
+  webPrivacyPreviewRouteTest: "apps/web/src/app/v1/private-account/actions/privacy-preview/route.test.ts",
   webPassport: "apps/web/src/lib/private-agent-passport.ts",
   webPassportTest: "apps/web/src/lib/private-agent-passport.test.ts",
   phalaConfig: "apps/web/src/lib/private-agent-phala.ts",
@@ -249,7 +256,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifier", "expected_source_tree_digest", "carry_release_source_tree_verifier_missing");
   requireText("webNoSubmitEvidence", "ghola_three_venue_no_submit_proof", "carry_preview_no_submit_artifact_missing");
   requireText("webNoSubmitEvidence", "containsCredentialMaterial", "carry_preview_no_submit_artifact_secret_gate_missing");
+  requireText("webNoSubmitEvidence", 'import { CARRY_EXECUTION_VENUES } from "./carry-venues";', "carry_no_submit_registry_import_missing");
+  requireText("webNoSubmitEvidence", "for (const venueId of CARRY_EXECUTION_VENUES)", "carry_no_submit_registry_iteration_missing");
+  forbidText("webNoSubmitEvidence", '["hyperliquid", "lighter", "aster"]', "carry_no_submit_venue_list_duplicated");
   requireText("webNoSubmitEvidenceTest", "without credentials", "carry_preview_no_submit_artifact_test_missing");
+  requireText("webNoSubmitEvidenceTest", "CARRY_EXECUTION_VENUES.map", "carry_no_submit_registry_test_missing");
   requireText("webRoute", "attachNoSubmitEvidence", "carry_preview_no_submit_capture_missing");
   requireText("noSubmitEvidenceVerifier", "parsed?.no_submit_evidence || parsed", "carry_preview_no_submit_extraction_missing");
   requireText("lighterRunner", "account_active_orders(", "lighter_pinned_active_order_api_missing");
@@ -260,6 +271,480 @@ export function checkCarryExecutionContract(sources) {
   requireText("lighterTest", "uses the pinned Lighter SDK active and inactive order APIs", "lighter_pinned_order_api_test_missing");
   requireText("workerDockerfile", 'getattr(api, "account_active_orders", None)', "lighter_image_active_order_api_guard_missing");
   requireText("workerDockerfile", 'getattr(api, "account_inactive_orders", None)', "lighter_image_inactive_order_api_guard_missing");
+  requireText("workerDockerfile", 'getattr(api, "trades", None)', "lighter_image_trade_api_guard_missing");
+  requireText("workerDockerfile", 'getattr(api, "trades_with_http_info", None)', "lighter_image_raw_trade_api_guard_missing");
+  for (const field of [
+    "trade_id", "type", "market_id", "size", "price", "usd_amount", "ask_id", "bid_id",
+    "ask_client_id", "bid_client_id", "ask_account_id", "bid_account_id", "is_maker_ask",
+    "maker_fee", "taker_fee",
+  ]) {
+    requireText("workerDockerfile", `"${field}"`, `lighter_image_trade_field_guard_missing:${field}`);
+  }
+  requireText("lighterRunner", "async def exact_account_order_trades(", "lighter_exact_trade_fee_reader_missing");
+  requireText("lighterRunner", "trades_with_http_info(**params)", "lighter_raw_trade_read_missing");
+  requireText("lighterRunner", 'raw_data = getattr(response, "raw_data", None)', "lighter_raw_trade_evidence_missing");
+  requireText("lighterRunner", "MAX_TRADE_PAGES = 8", "lighter_trade_pagination_bound_missing");
+  requireText("lighterRunner", "for _ in range(MAX_TRADE_PAGES):", "lighter_trade_pagination_loop_missing");
+  requireText("lighterRunner", "if next_cursor is None:", "lighter_trade_pagination_completion_missing");
+  requireText("lighterRunner", "if next_cursor == cursor or next_cursor in seen_cursors:", "lighter_trade_cursor_guard_missing");
+  requireText("lighterRunner", 'fail("lighter trade pagination exceeded the evidence bound")', "lighter_trade_pagination_fail_closed_missing");
+  requireText("lighterRunner", '"pagination_complete": True', "lighter_trade_pagination_proof_missing");
+  requireText("lighterRunner", "if trade_id in seen_trade_ids:", "lighter_trade_duplicate_guard_missing");
+  requireText("lighterRunner", 'if trade.get("type") != "trade":', "lighter_trade_type_binding_missing");
+  requireText("lighterRunner", 'if exact_integer(trade.get("market_id"), "lighter trade market is invalid") != market_index:', "lighter_trade_market_binding_missing");
+  requireText("lighterRunner", "if account_is_ask == account_is_bid:", "lighter_trade_account_binding_missing");
+  requireText("lighterRunner", 'if exact_integer(bound_order_id, "lighter trade order is invalid") != order_index:', "lighter_trade_order_binding_missing");
+  requireText("lighterRunner", 'if exact_integer(bound_client_id, "lighter trade client order is invalid") != client_order_index:', "lighter_trade_client_order_binding_missing");
+  requireText("lighterRunner", 'role = "maker" if account_is_ask == is_maker_ask else "taker"', "lighter_trade_fee_role_binding_missing");
+  requireText("lighterRunner", 'fee_key = f"{role}_fee"', "lighter_trade_realized_fee_field_missing");
+  requireText("lighterRunner", "fee_tick = 0 if fee_key not in trade else exact_integer(", "lighter_omitted_zero_fee_semantics_missing");
+  requireText("lighterRunner", 'trade[fee_key], "lighter trade fee tick is invalid", signed=True', "lighter_explicit_fee_validation_missing");
+  requireText("lighterRunner", "LIGHTER_FEE_TICK_DENOMINATOR = Decimal(1_000_000)", "lighter_trade_fee_denominator_missing");
+  requireText("lighterRunner", "fee = quote * Decimal(fee_tick) / LIGHTER_FEE_TICK_DENOMINATOR", "lighter_trade_fee_conversion_missing");
+  requireText("lighterRunner", "if base_total > expected_base or quote_total > expected_quote:", "lighter_trade_total_overfill_guard_missing");
+  requireText("lighterRunner", "if base_total != expected_base or quote_total != expected_quote:", "lighter_trade_total_completion_guard_missing");
+  requireCount("lighterRunner", '"order_index": str(', 2, "lighter_order_index_string_proof_missing");
+  requireText("lighterRunner", 'outbound_order["order_index"] = str(exact_integer(', "lighter_order_index_string_transport_missing");
+  requireText("lighter", "unsignedDecimalIntegerText(order?.order_index) !== null", "lighter_original_order_id_proof_missing");
+  requireText("lighter", "const orderIndex = unsignedDecimalIntegerText(raw.order_index);", "lighter_fee_order_id_string_binding_missing");
+  requireText("lighter", "LIGHTER_CANCELED_ORDER_STATUSES.has(value)", "lighter_cancel_status_enum_missing");
+  requireText("lighterRunner", "status in LIGHTER_CANCELED_ORDER_STATUSES", "lighter_runner_cancel_status_enum_missing");
+  forbidText("lighter", '.startsWith("canceled")', "lighter_cancel_status_prefix_present");
+  forbidText("lighterRunner", '.startswith("canceled")', "lighter_runner_cancel_status_prefix_present");
+  for (const status of [
+    "canceled", "canceled-post-only", "canceled-reduce-only", "canceled-position-not-allowed",
+    "canceled-margin-not-allowed", "canceled-too-much-slippage", "canceled-not-enough-liquidity",
+    "canceled-self-trade", "canceled-expired", "canceled-oco", "canceled-child",
+    "canceled-liquidation", "canceled-invalid-balance",
+  ]) {
+    requireText("lighter", `"${status}"`, `lighter_cancel_status_enum_value_missing:${status}`);
+    requireText("lighterRunner", `"${status}"`, `lighter_runner_cancel_status_enum_value_missing:${status}`);
+  }
+  requireText("lighter", "const zeroFillFeeExact = exactOriginalOrderObserved", "lighter_zero_fill_order_id_binding_missing");
+  requireText("lighter", '&& filledBase === "0"', "lighter_zero_fill_base_binding_missing");
+  requireText("lighter", '&& filledQuote === "0"', "lighter_zero_fill_quote_binding_missing");
+  requireText("lighter", "fee: feeProof.complete === true ? feeProof.fee_quote_amount : null", "lighter_exact_fee_fill_binding_missing");
+  forbidText("lighter", "order.fee", "lighter_synthetic_order_fee_fallback_present");
+  forbidText("lighter", "order.total_fee", "lighter_synthetic_total_fee_fallback_present");
+  forbidText("lighter", "order.trading_fee", "lighter_synthetic_trading_fee_fallback_present");
+  requireText("lighterTest", "derives exact Lighter fees from bound paginated Trade rows", "lighter_exact_trade_fee_test_missing");
+  requireText("lighterTest", '("type", "liquidation")', "lighter_trade_type_negative_test_missing");
+  requireText("lighterTest", 'const largeOrderIndex = "1152921504606846975";', "lighter_large_order_index_test_missing");
+  requireText("lighterTest", 'status: "canceled-too-much-slippage"', "lighter_partial_cancel_fee_test_missing");
+  requireText("lighterTest", 'status: "canceled-post-only"', "lighter_zero_fill_cancel_fee_test_missing");
+  requireText("lighterTest", 'del omitted_zero[0]["maker_fee"]', "lighter_omitted_zero_fee_test_missing");
+  requireText("lighterTest", 'explicit_null[0]["maker_fee"] = None', "lighter_explicit_null_fee_test_missing");
+  requireText("lighterTest", "zeroWithoutOrderIndex", "lighter_zero_fill_order_id_negative_test_missing");
+  requireText("lighterTest", "contradictoryZero", "lighter_zero_fill_quote_negative_test_missing");
+  requireText("lighterTest", '"canceled-unknown"', "lighter_unknown_cancel_status_negative_test_missing");
+
+  requireText(
+    "webPrivateAccountStore",
+    "platform_class: GholaPlatformClass | null;\n  venue_id: GholaVenueId | null;",
+    "connector_intent_venue_binding_schema_missing",
+  );
+  requireText(
+    "webPrivateAccountStore",
+    "platform_class TEXT NOT NULL,\n      venue_id TEXT NOT NULL,\n      manifest_commitment TEXT NOT NULL,",
+    "connector_compiled_venue_schema_missing",
+  );
+  requireText(
+    "webPrivateAccountStore",
+    "platform_class TEXT NOT NULL,\n      venue_id TEXT NOT NULL,\n      status TEXT NOT NULL,\n      work_order JSONB NOT NULL,",
+    "connector_work_order_venue_schema_missing",
+  );
+  requireText(
+    "webPrivateAccountStore",
+    "ALTER TABLE private_account_compiled_intents ADD COLUMN IF NOT EXISTS venue_id TEXT",
+    "connector_compiled_legacy_venue_column_missing",
+  );
+  requireText(
+    "webPrivateAccountStore",
+    "ALTER TABLE private_account_connector_work_orders ADD COLUMN IF NOT EXISTS venue_id TEXT",
+    "connector_work_order_legacy_venue_column_missing",
+  );
+  requireText("webConnectorReconciliation", "venuePlatformClass(input.venue_id) !== input.platform_class", "connector_compiler_venue_platform_gate_missing");
+  requireText("webConnectorReconciliation", "venue_id: input.compiled_intent.venue_id", "connector_work_order_venue_commitment_missing");
+  requireText("webConnectorReconciliation", "venue_id: input.work_order.venue_id", "connector_result_venue_commitment_missing");
+  requireText("webConnectorReconciliation", "input.compiled_intent.venue_id !== input.readiness.venue_id", "connector_work_order_readiness_venue_gate_missing");
+  requireText("webConnectorReconciliation", 'if (venueId === "aster") return "/venues/aster/orders";', "connector_aster_submit_route_missing");
+  requireText("webConnectorReconciliation", 'if (venueId === "lighter") return "/venues/lighter/orders";', "connector_lighter_submit_route_missing");
+  requireText("webConnectorReconciliation", 'if (venueId === "aster") return "/venues/aster/verify";', "connector_aster_verify_route_missing");
+  requireText("webConnectorReconciliation", 'if (venueId === "lighter") return "/venues/lighter/verify";', "connector_lighter_verify_route_missing");
+  const venueSubmitSection = sourceSection(
+    "webConnectorReconciliation",
+    "export async function submitConnectorWorkOrder(",
+    "export async function verifyConnectorNoSubmit(",
+  );
+  if (!venueSubmitSection.includes('((venueId === "aster" || venueId === "lighter") && !input.venue_execution_vault)')) {
+    failures.push("connector_submit_venue_vault_gate_missing");
+  }
+  requireOrdered(
+    venueSubmitSection,
+    '((venueId === "aster" || venueId === "lighter") && !input.venue_execution_vault)',
+    "const res = await fetch",
+    "connector_submit_venue_vault_gate_after_fetch",
+  );
+  if (!venueSubmitSection.includes("if (!connectorResponseBindingMatches(body, {")) {
+    failures.push("connector_submit_response_binding_unconditional_missing");
+  }
+  for (const value of [
+    "venue_id: venueId",
+    "work_order_commitment: input.work_order.work_order_commitment",
+    "platform_class: input.manifest.platform_class",
+  ]) {
+    if (!venueSubmitSection.includes(value)) failures.push("connector_submit_response_exact_binding_missing");
+  }
+  const venueVerifySection = sourceSection(
+    "webConnectorReconciliation",
+    "export async function verifyConnectorNoSubmit(",
+    "export async function reconcileConnectorResult(",
+  );
+  if (!venueVerifySection.includes("input.readiness.venue_id !== base.venue_id")) {
+    failures.push("connector_verify_readiness_venue_gate_missing");
+  }
+  if (!venueVerifySection.includes("if (!connectorResponseBindingMatches(body, {")) {
+    failures.push("connector_verify_response_binding_unconditional_missing");
+  }
+  for (const value of [
+    "venue_id: base.venue_id",
+    "work_order_commitment: base.work_order_commitment",
+    "platform_class: input.platform_class",
+  ]) {
+    if (!venueVerifySection.includes(value)) failures.push("connector_verify_response_exact_binding_missing");
+  }
+  const rawNoSubmitValidation = "const checksFailure = mandatoryNoSubmitChecksFailure(base.venue_id, body.checks);";
+  if (!venueVerifySection.includes(rawNoSubmitValidation)) {
+    failures.push("connector_no_submit_raw_checks_gate_missing");
+  }
+  const rawNoSubmitValidationSection = venueVerifySection.slice(
+    Math.max(0, venueVerifySection.indexOf(rawNoSubmitValidation)),
+  );
+  requireOrdered(
+    rawNoSubmitValidationSection,
+    rawNoSubmitValidation,
+    "if (checksFailure)",
+    "connector_no_submit_raw_checks_failure_gate_missing",
+  );
+  requireOrdered(
+    rawNoSubmitValidationSection,
+    "if (checksFailure)",
+    "return verifiedNoFundsVerification(base, {",
+    "connector_no_submit_raw_checks_gate_after_acceptance",
+  );
+  requireOrdered(
+    rawNoSubmitValidationSection,
+    "if (checksFailure)",
+    "checks: noFundsChecks(body.checks)",
+    "connector_no_submit_checks_normalized_before_raw_validation",
+  );
+  const mandatoryNoSubmitFailureSection = sourceSection(
+    "webConnectorReconciliation",
+    "function mandatoryNoSubmitChecksFailure(",
+    "function mandatoryNoSubmitChecks(",
+  );
+  if (!mandatoryNoSubmitFailureSection.includes(
+    'if (checks.transaction_broadcast !== false) return "transaction_broadcast_not_false";',
+  )) {
+    failures.push("connector_no_submit_raw_transaction_broadcast_false_gate_missing");
+  }
+  if (!mandatoryNoSubmitFailureSection.includes(
+    'if (required.some((check) => !(check in checks))) return "mandatory_no_submit_checks_incomplete";',
+  )) {
+    failures.push("connector_no_submit_mandatory_presence_gate_missing");
+  }
+  if (!mandatoryNoSubmitFailureSection.includes(
+    'if (required.some((check) => checks[check] !== true)) return "mandatory_no_submit_check_failed";',
+  )) {
+    failures.push("connector_no_submit_mandatory_truth_gate_missing");
+  }
+  const mandatoryNoSubmitChecksSection = sourceSection(
+    "webConnectorReconciliation",
+    "function mandatoryNoSubmitChecks(",
+    "function provenNoSubmitClaims(",
+  );
+  const mandatoryNoSubmitVenueChecks = [
+    {
+      id: "aster",
+      start: 'if (venueId === "aster") {',
+      end: 'if (venueId === "lighter") {',
+      checks: ["sdk_checked", "signer_matches_key", "market_data_checked", "account_state_checked", "order_request_checked"],
+    },
+    {
+      id: "lighter",
+      start: 'if (venueId === "lighter") {',
+      end: 'if (venueId === "hyperliquid") {',
+      checks: ["sdk_checked", "signer_matches_key", "market_data_checked", "account_state_checked", "margin_state_checked", "order_request_checked"],
+    },
+    {
+      id: "hyperliquid",
+      start: 'if (venueId === "hyperliquid") {',
+      end: 'if (venueId === "phoenix" || venueId === "drift") {',
+      checks: [
+        "sealed_vault_opened",
+        "sealed_instruction_opened",
+        "authority_derived",
+        "policy_enforced",
+        "live_gate_enforced",
+        "api_wallet_loaded",
+        "hyperliquid_api_reachable",
+        "hyperliquid_sdk_ready",
+        "account_read_checked",
+        "order_request_built",
+        "live_venue_checked",
+      ],
+    },
+    {
+      id: "phoenix_drift",
+      start: 'if (venueId === "phoenix" || venueId === "drift") {',
+      end: 'if (venueId === "backpack") {',
+      checks: [
+        "sealed_vault_opened",
+        "sealed_instruction_opened",
+        "authority_derived",
+        "policy_enforced",
+        "live_gate_enforced",
+        "rpc_reachable",
+        "phoenix_sdk_ready",
+        "order_packet_built",
+      ],
+    },
+    {
+      id: "backpack",
+      start: 'if (venueId === "backpack") {',
+      end: 'if (venueId === "jupiter") {',
+      checks: [
+        "sealed_vault_opened",
+        "sealed_instruction_opened",
+        "authority_derived",
+        "policy_enforced",
+        "live_gate_enforced",
+        "rpc_reachable",
+        "backpack_rest_ready",
+        "order_packet_built",
+      ],
+    },
+    {
+      id: "jupiter",
+      start: 'if (venueId === "jupiter") {',
+      end: 'if (venueId === "coinbase_advanced") {',
+      checks: [
+        "sealed_vault_opened",
+        "sealed_instruction_opened",
+        "authority_derived",
+        "policy_enforced",
+        "live_gate_enforced",
+        "order_request_built",
+        "jupiter_api_reachable",
+        "jupiter_token_allowlist_passed",
+        "jupiter_order_built",
+        "jupiter_transaction_built",
+      ],
+    },
+    {
+      id: "coinbase_advanced",
+      start: 'if (venueId === "coinbase_advanced") {',
+      end: "return null;",
+      checks: ["coinbase_api_reachable", "coinbase_order_request_built"],
+    },
+  ];
+  for (const venue of mandatoryNoSubmitVenueChecks) {
+    const startIndex = mandatoryNoSubmitChecksSection.indexOf(venue.start);
+    const endIndex = mandatoryNoSubmitChecksSection.indexOf(venue.end, startIndex + venue.start.length);
+    if (startIndex < 0 || endIndex < 0) {
+      failures.push(`connector_no_submit_mandatory_branch_missing:${venue.id}`);
+      continue;
+    }
+    const venueSection = mandatoryNoSubmitChecksSection.slice(startIndex, endIndex);
+    for (const check of venue.checks) {
+      if (!venueSection.includes(`"${check}"`)) {
+        failures.push(`connector_no_submit_mandatory_checks_missing:${venue.id}:${check}`);
+      }
+    }
+  }
+  const connectorModeSection = sourceSection(
+    "webConnectorReconciliation",
+    "function connectorMode(",
+    "function signManifest(",
+  );
+  if (!connectorModeSection.includes('if (env.NODE_ENV === "production") return "http";')) {
+    failures.push("connector_production_local_test_override_missing");
+  }
+  requireOrdered(
+    connectorModeSection,
+    'if (env.NODE_ENV === "production") return "http";',
+    'env.GHOLA_CONNECTOR_MODE === "local_test"',
+    "connector_production_local_test_override_too_late",
+  );
+  const venueReconcileSection = sourceSection(
+    "webConnectorReconciliation",
+    "export async function reconcileConnectorResult(",
+    "function connectorResult(",
+  );
+  if (!venueReconcileSection.includes("input.work_order.venue_id !== input.venue_id")) {
+    failures.push("connector_reconcile_work_order_venue_gate_missing");
+  }
+  requireOrdered(
+    venueReconcileSection,
+    "input.work_order.venue_id !== input.venue_id",
+    "const res = await fetch",
+    "connector_reconcile_venue_gate_after_fetch",
+  );
+  if (!venueReconcileSection.includes('if (connectorEnv.NODE_ENV !== "test") {')) {
+    failures.push("connector_synthetic_reconcile_exact_test_gate_missing");
+  }
+  const localTestReconcileSection = venueReconcileSection.slice(
+    Math.max(0, venueReconcileSection.indexOf('if (mode === "local_test") {')),
+  );
+  requireOrdered(
+    localTestReconcileSection,
+    'if (connectorEnv.NODE_ENV !== "test") {',
+    'status: "reconciled"',
+    "connector_synthetic_reconcile_exact_test_gate_after_acceptance",
+  );
+  requireText("webPrivateAccountRouteLib", "const platformRequiresVenue =", "connector_intent_venue_requirement_missing");
+  requireText("webPrivateAccountRouteLib", "venuePlatformClass(venueValue) !== platformValue", "connector_intent_platform_venue_gate_missing");
+  requireText("webPrivateAccountRouteLib", "!workOrderRecord.venue_id", "connector_legacy_work_order_venue_gate_missing");
+  requireText(
+    "webPrivateAccountRouteLib",
+    '((venueId === "aster" || venueId === "lighter") && !workOrderRecord)',
+    "connector_no_submit_stored_work_order_gate_missing",
+  );
+  requireText("webPrivateAccountRouteLib", "input.intent.venue_id !== venueId", "connector_execution_intent_venue_gate_missing");
+  requireText("webPrivateAccountRouteLib", "compiledRecord.compiled_intent.venue_id !== venueId", "connector_execution_compiled_venue_gate_missing");
+  requireText("webPrivateAccountRouteLib", "const privacyRuntime = connectorVenueId", "generic_preview_connector_bypass_missing");
+  requireText("webPrivateAccountRouteLib", "genericPrivacyRuntimeForIntent({", "generic_preview_runtime_missing");
+  const genericPrivacyRuntimeSection = sourceSection(
+    "webPrivateAccountRouteLib",
+    "async function genericPrivacyRuntimeForIntent(",
+    "async function connectorContextForIntent(",
+  );
+  for (const [value, code] of [
+    ["listLinkabilityScores(input.owner.owner_commitment, 200)", "generic_preview_linkability_history_missing"],
+    ["record.intent_id !== input.intent.intent_id", "generic_preview_current_intent_history_exclusion_missing"],
+    ["record.platform_class === input.platform_class", "generic_preview_platform_history_binding_missing"],
+    ["scoreConnectorLinkability({", "generic_preview_linkability_scoring_missing"],
+    ["putLinkabilityScore({", "generic_preview_linkability_persistence_missing"],
+    ["linkability_score: linkabilityScore", "generic_preview_simulation_score_binding_missing"],
+  ]) {
+    if (!genericPrivacyRuntimeSection.includes(value)) failures.push(code);
+  }
+  requireOrdered(
+    genericPrivacyRuntimeSection,
+    "listLinkabilityScores(input.owner.owner_commitment, 200)",
+    "scoreConnectorLinkability({",
+    "generic_preview_linkability_scored_before_history",
+  );
+  requireOrdered(
+    genericPrivacyRuntimeSection,
+    "scoreConnectorLinkability({",
+    "putLinkabilityScore({",
+    "generic_preview_linkability_persisted_before_scoring",
+  );
+  if (/score_bps\s*:\s*0(?:\D|$)/.test(genericPrivacyRuntimeSection)) {
+    failures.push("generic_preview_zero_linkability_score_forbidden");
+  }
+  if (/decision\s*:\s*["']proceed["']/.test(genericPrivacyRuntimeSection)) {
+    failures.push("generic_preview_proceed_decision_fabrication_forbidden");
+  }
+  requireText("webPrivacyPreviewRouteTest", "preserves generic previews without minting connector artifacts", "generic_preview_connector_bypass_test_missing");
+  requireText("webPrivacyPreviewRouteTest", "getCompiledIntentByIntent", "generic_preview_compiled_artifact_negative_test_missing");
+  requireText("webPrivacyPreviewRouteTest", "getConnectorWorkOrderByPreview", "generic_preview_work_order_negative_test_missing");
+  requireText("webPrivacyPreviewRouteTest", "raises generic linkability risk from the owner's repeated private activity", "generic_preview_linkability_history_test_missing");
+  requireText("webPrivacyPreviewRouteTest", "toBeGreaterThan", "generic_preview_linkability_score_increase_test_missing");
+  requireText("webPrivacyPreviewRouteTest", 'not.toBe("proceed")', "generic_preview_linkability_decision_test_missing");
+  requireText("webClient", "export function bindPrivateAccountSafeInputPlatform(", "connector_client_venue_switch_binding_missing");
+  requireText("webClient", "venue_id: input.venue_id", "connector_client_intent_venue_transport_missing");
+  requireCount("webPrivateAccountCockpit", "bindPrivateAccountSafeInputPlatform(", 5, "connector_cockpit_venue_switch_binding_missing");
+  requireText("webTradeWorkspace", 'venue_id: "hyperliquid"', "public_trade_default_venue_binding_missing");
+  requireText("webClientVenueBindingTest", "replaces an old venue on every execution-platform switch", "connector_client_venue_replace_test_missing");
+  requireText("webClientVenueBindingTest", "removes a prior venue when switching to a non-execution platform", "connector_client_venue_clear_test_missing");
+  requireText("webConnectorExecutionTest", "binds %s submit route and vault before fetch", "connector_submit_exact_venue_test_missing");
+  requireText("webConnectorExecutionTest", "binds %s no-submit route and response proof", "connector_verify_exact_venue_test_missing");
+  requireText("webConnectorExecutionTest", "mandatory_no_submit_checks_incomplete", "connector_no_submit_mandatory_presence_test_missing");
+  requireText("webConnectorExecutionTest", "mandatory_no_submit_check_failed", "connector_no_submit_mandatory_truth_test_missing");
+  requireText("webConnectorExecutionTest", "transaction_broadcast_not_false", "connector_no_submit_transaction_broadcast_test_missing");
+  requireText("webConnectorExecutionTest", "delete missingBroadcastCheck.transaction_broadcast", "connector_no_submit_missing_transaction_broadcast_test_missing");
+  const responseBindingSection = sourceSection(
+    "webConnectorReconciliation",
+    "function connectorResponseBindingMatches(",
+    "function bucket(",
+  );
+  for (const [value, code] of [
+    ["stringValue(body.venue_id) === expected.venue_id", "connector_response_venue_binding_missing"],
+    ["stringValue(body.work_order_commitment) === expected.work_order_commitment", "connector_response_work_order_binding_missing"],
+    ["stringValue(body.platform_class) === expected.platform_class", "connector_response_platform_binding_missing"],
+  ]) if (!responseBindingSection.includes(value)) failures.push(code);
+  requireText("webConnectorResponseBindingTest", "rejects missing or mismatched %s submit echoes", "connector_submit_all_venue_response_binding_test_missing");
+  requireText("webConnectorResponseBindingTest", "rejects missing or mismatched %s no-submit echoes", "connector_verify_all_venue_response_binding_test_missing");
+  const cachedExecutionSection = sourceSection(
+    "webPrivateAccountRouteLib",
+    "async function connectorForExecution(",
+    "export function connectorExecutionCachedResultBindingValid(",
+  );
+  if ((cachedExecutionSection.match(/if \(!connectorExecutionCachedResultBindingValid\(\{/g) || []).length !== 3) {
+    failures.push("connector_cached_result_all_reuse_paths_binding_missing");
+  }
+  if ((cachedExecutionSection.match(/error: "connector_result_binding_mismatch"/g) || []).length !== 3) {
+    failures.push("connector_cached_result_all_reuse_paths_fail_closed_missing");
+  }
+  const cachedBindingSection = sourceSection(
+    "webPrivateAccountRouteLib",
+    "export function connectorExecutionCachedResultBindingValid(",
+    "async function recordRejectedFundingImport(",
+  );
+  for (const [value, code] of [
+    ["input.result_record.owner_commitment === input.owner_commitment", "connector_cached_result_owner_binding_missing"],
+    ["input.result_record.work_order_commitment === input.work_order_record.work_order_commitment", "connector_cached_result_outer_work_order_binding_missing"],
+    ["input.result_record.result.work_order_commitment === input.work_order_record.work_order_commitment", "connector_cached_result_inner_work_order_binding_missing"],
+    ["input.result_record.platform_class === input.work_order_record.platform_class", "connector_cached_result_outer_platform_binding_missing"],
+    ["input.result_record.result.platform_class === input.work_order_record.platform_class", "connector_cached_result_inner_platform_binding_missing"],
+    ["Boolean(input.result_record.result.venue_id)", "connector_cached_result_non_null_venue_binding_missing"],
+    ["input.result_record.result.venue_id === input.work_order_record.venue_id", "connector_cached_result_exact_venue_binding_missing"],
+  ]) if (!cachedBindingSection.includes(value)) failures.push(code);
+  requireText("webConnectorExecutionResultBindingTest", "accepts only the exact owner, work-order, platform, and venue binding", "connector_cached_result_binding_test_missing");
+  requireText("webConnectorExecutionResultBindingTest", "rejects a mismatched %s", "connector_cached_result_tamper_matrix_test_missing");
+  requireText("privateExecution", 'venue_id: "hyperliquid"', "worker_hyperliquid_response_venue_echo_missing");
+  requireText("privateExecution", 'platform_class: "hyperliquid_style_market"', "worker_hyperliquid_response_platform_echo_missing");
+  requireText("privateExecution", "work_order_commitment: input.body.work_order_commitment", "worker_response_work_order_echo_missing");
+  requireText("serverTest", 'it("submits Hyperliquid orders through commitment and ciphertext ingress"', "worker_hyperliquid_response_binding_test_missing");
+  requireText("webConnectorReconciliationTest", "fails closed before fetch for a legacy work order with no venue", "connector_legacy_reconcile_venue_test_missing");
+  requireText("webConnectorReconciliationTest", "does not honor a local-test connector flag in production", "connector_production_local_test_test_missing");
+  requireText("webConnectorReconciliationTest", "does not synthesize reconciliation for a local-test flag without test runtime evidence", "connector_synthetic_reconcile_exact_test_test_missing");
+  const reconcileFromBodySection = sourceSection(
+    "webPrivateAccountRouteLib",
+    "export async function connectorReconcileFromBody(",
+    "export async function connectorOperationsForOwner(",
+  );
+  if (!reconcileFromBodySection.includes("existingResult.owner_commitment !== owner.owner_commitment")) {
+    failures.push("connector_existing_result_owner_binding_missing");
+  }
+  const existingResultBindingStart = reconcileFromBodySection.indexOf("if (\n    existingResult &&");
+  const existingResultBindingEnd = reconcileFromBodySection.indexOf(
+    "const manifestRecord =",
+    existingResultBindingStart,
+  );
+  const existingResultBindingSection = existingResultBindingStart >= 0 && existingResultBindingEnd > existingResultBindingStart
+    ? reconcileFromBodySection.slice(existingResultBindingStart, existingResultBindingEnd)
+    : "";
+  for (const [value, code] of [
+    ["existingResult.work_order_commitment !== workOrderRecord.work_order_commitment", "connector_existing_result_record_work_order_binding_missing"],
+    ["existingResult.result.work_order_commitment !== workOrderRecord.work_order_commitment", "connector_existing_result_embedded_work_order_binding_missing"],
+    ["existingResult.platform_class !== workOrderRecord.platform_class", "connector_existing_result_record_platform_binding_missing"],
+    ["existingResult.result.platform_class !== workOrderRecord.platform_class", "connector_existing_result_embedded_platform_binding_missing"],
+    ["!existingResult.result.venue_id", "connector_existing_result_non_null_venue_binding_missing"],
+    ["existingResult.result.venue_id !== workOrderRecord.venue_id", "connector_existing_result_exact_venue_binding_missing"],
+    ['error: "connector_result_binding_mismatch"', "connector_existing_result_binding_failure_missing"],
+  ]) {
+    if (!existingResultBindingSection.includes(value)) failures.push(code);
+  }
+  requireText("webConnectorReconciliationBindingTest", "hides and rejects a cross-owner result", "connector_existing_result_owner_binding_test_missing");
+  requireText("webConnectorReconciliationBindingTest", "record work order", "connector_existing_result_record_work_order_test_missing");
+  requireText("webConnectorReconciliationBindingTest", "embedded work order", "connector_existing_result_embedded_work_order_test_missing");
+  requireText("webConnectorReconciliationBindingTest", "record platform", "connector_existing_result_record_platform_test_missing");
+  requireText("webConnectorReconciliationBindingTest", "embedded platform", "connector_existing_result_embedded_platform_test_missing");
+  requireText("webConnectorReconciliationBindingTest", "legacy null venue", "connector_existing_result_non_null_venue_test_missing");
+  requireText("webConnectorReconciliationBindingTest", "cross venue", "connector_existing_result_exact_venue_test_missing");
 
   const shadowAdapters = {
     hyperliquid: "hyperliquid_shadow_v1",
@@ -1480,7 +1965,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webConnectorReconciliationTest", "rejects a cross-venue proof for an exact Lighter reconciliation", "web_reconcile_cross_venue_negative_test_missing");
   requireText("aster", "original_order_broadcast_proven: exactOriginalOrderObserved", "aster_original_broadcast_proof_missing");
   requireText("lighter", "original_order_broadcast_proven: exactOriginalOrderObserved", "lighter_original_broadcast_proof_missing");
-  requireText("lighter", "nonnegativeIntegerOrNull(order?.order_index) !== null", "lighter_original_order_id_proof_missing");
+  requireText("lighter", "unsignedDecimalIntegerText(order?.order_index) !== null", "lighter_original_order_id_proof_missing");
   requireText("lighterTest", "assert.equal(partial.final_proof.original_order_broadcast_proven, false)", "lighter_missing_order_id_negative_test_missing");
   requireText("multiLegOrchestrator", "proof?.original_order_broadcast_proven === true", "carry_recovery_original_broadcast_gate_missing");
   requireText("multiLegOrchestratorTest", "restart rejects a read-only query without explicit original-order broadcast proof", "carry_recovery_query_only_negative_test_missing");

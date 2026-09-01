@@ -1,4 +1,4 @@
-const EXECUTION_VENUES = ["hyperliquid", "lighter", "aster"] as const;
+import { CARRY_EXECUTION_VENUES } from "./carry-venues";
 
 type ProofResult =
   | { ok: true; evidence: Record<string, unknown> }
@@ -45,7 +45,7 @@ export function buildCarryNoSubmitEvidence(input: {
 
   const venueAccess = record(request.venue_access);
   const sanitizedAccess: Record<string, unknown> = {};
-  for (const venueId of EXECUTION_VENUES) {
+  for (const venueId of CARRY_EXECUTION_VENUES) {
     const access = record(venueAccess[venueId]);
     const sanitized = {
       account_commitment: string(access.account_commitment),

@@ -2443,6 +2443,7 @@ export async function verifyHyperliquidOrderNoSubmit({ body, recipient, state })
   return {
     version: 1,
     execution_protocol: HYPERLIQUID_PROOF_PROTOCOL,
+    venue_id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
     execution_mode: executionMode,
     status: "verified_no_funds",
@@ -2744,7 +2745,7 @@ function executionReceipt(input) {
   const mandate = input.instruction?.mandate || null;
   return {
     version: 1,
-    venue_id: input.venue_id === "hyperliquid" ? undefined : input.venue_id,
+    venue_id: input.venue_id,
     platform_class: input.platform_class,
     execution_mode: input.execution_mode || undefined,
     status: input.status || "submitted",

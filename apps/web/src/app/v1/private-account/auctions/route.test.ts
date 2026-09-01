@@ -62,6 +62,7 @@ function hex(byte: string, bytes = 32) {
 
 async function queueAuctionIntent() {
   const safeInput = {
+    venue_id: "rfq_network",
     product_bucket: "perps",
     amount_bucket: "25",
     asset_bucket: "ETH",
@@ -72,6 +73,8 @@ async function queueAuctionIntent() {
   const intentRes = await createIntent(
     post("/v1/private-account/actions/intent", {
       action_class: "trade_on_platform",
+      platform_class: "rfq_solver_network",
+      venue_id: "rfq_network",
       product_bucket: "perps",
     }),
   );

@@ -7,10 +7,6 @@ import { POST as createIntent } from "../actions/intent/route";
 import { POST as previewAction } from "../actions/privacy-preview/route";
 import { POST as queueAction } from "../actions/queue/route";
 import { POST as refreshQueue } from "../actions/queue/refresh/route";
-import { POST as planAction } from "../actions/plan/route";
-import { POST as approveAction } from "../actions/approve/route";
-import { POST as executeAction } from "../actions/execute/route";
-import { POST as verifyReceiptAction } from "../actions/verify-receipt/route";
 import { GET as operationsRoute } from "./operations/route";
 import { POST as verifyNoSubmitRoute } from "./verify-no-submit/route";
 import { GET as getHyperliquidVault, POST as sealHyperliquidVault } from "../hyperliquid/vault/route";
@@ -329,16 +325,19 @@ describe("private account connector gateway routes", () => {
   it("compiles only commitment-safe connector tickets", async () => {
     const intentRes = await createIntent(
       post("/v1/private-account/actions/intent", {
-        action_class: "transfer",
-        product_bucket: "stablecoin",
+        action_class: "trade_on_platform",
+        platform_class: "hyperliquid_style_market",
+        venue_id: "hyperliquid",
+        product_bucket: "perps",
       }),
     );
     const intent = await intentRes.json();
     const forbiddenRes = await compileIntentRoute(
       post("/v1/private-account/actions/compile-intent", {
         intent_id: intent.intent_id,
-        platform_class: "solana_private_balance",
+        platform_class: "hyperliquid_style_market",
         safe_input: {
+          venue_id: "hyperliquid",
           amount_bucket: "25",
           wallet_address: "raw-wallet",
         },
@@ -351,13 +350,14 @@ describe("private account connector gateway routes", () => {
     const compileRes = await compileIntentRoute(
       post("/v1/private-account/actions/compile-intent", {
         intent_id: intent.intent_id,
-        platform_class: "solana_private_balance",
-        requested_rail: "shielded_pool",
+        platform_class: "hyperliquid_style_market",
+        requested_rail: "direct_public_fallback",
         safe_input: {
+          venue_id: "hyperliquid",
           amount_bucket: "25",
-          asset_bucket: "stablecoin",
-          destination_class: "ghola_user",
-          urgency: "maximum_privacy",
+          asset_bucket: "BTC",
+          destination_class: "platform_subaccount",
+          urgency: "fast_degraded",
           solver_count_bucket: "5+",
         },
       }),
@@ -374,6 +374,8 @@ describe("private account connector gateway routes", () => {
     const intentRes = await createIntent(
       post("/v1/private-account/actions/intent", {
         action_class: "trade_on_platform",
+        platform_class: "hyperliquid_style_market",
+        venue_id: "hyperliquid",
         product_bucket: "perps",
       }),
     );
@@ -384,6 +386,7 @@ describe("private account connector gateway routes", () => {
         platform_class: "hyperliquid_style_market",
         requested_rail: "direct_public_fallback",
         safe_input: {
+          venue_id: "hyperliquid",
           amount_bucket: "5",
           asset_bucket: "BTC",
           destination_class: "platform_subaccount",
@@ -699,8 +702,12 @@ describe("private account connector gateway routes", () => {
         }), { status: 201, headers: { "content-type": "application/json" } });
       }
       if (url === "https://worker.ghola.test/hyperliquid/verify") {
+        const request = JSON.parse(String(init?.body || "{}"));
         return new Response(JSON.stringify({
           status: "verified_no_funds",
+          venue_id: request.venue_id,
+          platform_class: request.platform_class,
+          work_order_commitment: request.work_order_commitment,
           verification_commitment: "connector_no_submit_verification_live_test",
           result_commitment: "connector_no_submit_result_live_test",
           provider_ref_commitment: "connector_no_submit_provider_live_test",
@@ -1025,7 +1032,7 @@ describe("private account connector gateway routes", () => {
     expect(JSON.stringify(verified)).not.toContain("sealed-hyperliquid-pooled-instruction");
   });
 
-  it("binds connector evidence into Private Mode execution receipts", async () => {
+  it("keeps generic Private Mode previews connector-free", async () => {
     await importCompatibleFunding("connector_user_1");
     await importCompatibleFunding("connector_user_2");
     const safeInput = {
@@ -1051,7 +1058,7 @@ describe("private account connector gateway routes", () => {
       }),
     );
     const waiting = await previewRes.json();
-    expect(waiting.preview.connector_context.manifest_commitment).toMatch(/^connector_manifest_/);
+    expect(waiting.preview.connector_context).toBeNull();
     expect(waiting.preview.claim_status).toBe("wait_for_anonymity");
 
     const queuedRes = await queueAction(
@@ -1073,63 +1080,17 @@ describe("private account connector gateway routes", () => {
       }),
     );
     const refreshed = await refreshedRes.json();
+    expect(refreshed.preview.connector_context).toBeNull();
     expect(refreshed.preview.claim_status).toBe("private_mode_available");
-    expect(refreshed.preview.connector_context.connector_status).toBe("ready");
-    expect(refreshed.preview.connector_context.main_wallet_exposed).toBe(false);
-
-    const planRes = await planAction(
-      post("/v1/private-account/actions/plan", {
-        preview_commitment: refreshed.preview.preview_commitment,
-      }),
-    );
-    const plan = await planRes.json();
-    expect(plan.plan.manifest_commitment).toBe(refreshed.preview.connector_context.manifest_commitment);
-    expect(plan.plan.compiler_commitment).toBe(refreshed.preview.connector_context.compiler_commitment);
-
-    const approvalRes = await approveAction(
-      post("/v1/private-account/actions/approve", {
-        intent_id: intent.intent_id,
-        preview_commitment: refreshed.preview.preview_commitment,
-        execution_plan_commitment: plan.plan.plan_commitment,
-      }),
-    );
-    const approval = await approvalRes.json();
-    const executeRes = await executeAction(
-      post("/v1/private-account/actions/execute", {
-        intent_id: intent.intent_id,
-        preview_commitment: refreshed.preview.preview_commitment,
-        approval_commitment: approval.approval.approval_commitment,
-      }),
-    );
-    const executed = await executeRes.json();
-    expect(executeRes.status).toBe(201);
-    expect(executed.receipt.manifest_commitment).toBe(refreshed.preview.connector_context.manifest_commitment);
-    expect(executed.receipt.compiler_commitment).toBe(refreshed.preview.connector_context.compiler_commitment);
-    expect(executed.receipt.work_order_commitment).toMatch(/^connector_work_order_/);
-    expect(executed.receipt.connector_result_commitment).toMatch(/^connector_result_/);
-    expect(executed.receipt.venue_access_source).toBe("none");
-    expect(executed.receipt.ghola_access_role).toBe("private_state_operator");
-
-    const verifyRes = await verifyReceiptAction(
-      post("/v1/private-account/actions/verify-receipt", {
-        receipt_commitment: executed.receipt.receipt_commitment,
-      }),
-    );
-    const verified = await verifyRes.json();
-    expect(verified.verified).toBe(true);
-    expect(verified.checks.manifest_bound).toBe("pass");
-    expect(verified.checks.connector_readiness_bound).toBe("pass");
-    expect(verified.checks.compiler_bound).toBe("pass");
-    expect(verified.checks.linkability_bound).toBe("pass");
-    expect(verified.checks.work_order_bound).toBe("pass");
-    expect(verified.checks.connector_result_bound).toBe("pass");
+    expect(refreshed.preview.claim_levels_missing).toHaveLength(0);
 
     const opsRes = await operationsRoute(
       get("/v1/private-account/connectors/operations"),
     );
     const ops = await opsRes.json();
-    expect(ops.work_order_depth).toBe(1);
-    expect(ops.results[0].connector_result_commitment).toBe(executed.receipt.connector_result_commitment);
-    expect(ops.linkability.length).toBeGreaterThan(0);
+    expect(ops.work_order_depth).toBe(0);
+    expect(ops.results).toHaveLength(0);
+    expect(ops.linkability).toHaveLength(1);
+    expect(ops.linkability[0].platform_class).toBe("solana_private_balance");
   });
 });

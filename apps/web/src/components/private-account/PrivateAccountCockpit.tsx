@@ -17,6 +17,7 @@ import {
   allocatePooledVenueAccount,
   armHyperliquidExecutionAgent,
   armVenueExecutionAgent,
+  bindPrivateAccountSafeInputPlatform,
   cancelPrivateAccountQueue,
   commitPrivateAccountAuction,
   controlPrivateAutopilotSession,
@@ -363,6 +364,7 @@ const LEGACY_HYPERLIQUID_API_KEYS_ENABLED =
 const DEFAULT_HYPERLIQUID_LIVE_INPUT: PrivateAccountSafeInput = {
   action_class: "trade_on_platform",
   platform_class: "hyperliquid_style_market",
+  venue_id: "hyperliquid",
   product_bucket: "perps",
   amount_bucket: "25",
   urgency: "fast_degraded",
@@ -426,6 +428,7 @@ function smallLiveAmountBucket(bucket: PrivateAccountSafeInput["amount_bucket"])
 const DEFAULT_PHOENIX_LIVE_INPUT: PrivateAccountSafeInput = {
   action_class: "trade_on_platform",
   platform_class: "solana_perps_market",
+  venue_id: "phoenix",
   product_bucket: "perps",
   amount_bucket: "5",
   urgency: "fast_degraded",
@@ -437,6 +440,7 @@ const DEFAULT_PHOENIX_LIVE_INPUT: PrivateAccountSafeInput = {
 const DEFAULT_JUPITER_LIVE_INPUT: PrivateAccountSafeInput = {
   action_class: "trade_on_platform",
   platform_class: "solana_swap_aggregator",
+  venue_id: "jupiter",
   product_bucket: "swap",
   amount_bucket: "5",
   urgency: "fast_degraded",
@@ -448,6 +452,7 @@ const DEFAULT_JUPITER_LIVE_INPUT: PrivateAccountSafeInput = {
 const DEFAULT_COINBASE_INPUT: PrivateAccountSafeInput = {
   action_class: "trade_on_platform",
   platform_class: "coinbase_style_provider",
+  venue_id: "coinbase_advanced",
   product_bucket: "provider",
   amount_bucket: "5",
   urgency: "fast_degraded",
@@ -1692,14 +1697,13 @@ export function PrivateAccountCockpit({
     setLiveHyperliquidFlow(false);
     setLivePhoenixFlow(false);
     setLiveJupiterFlow(false);
-    setInput({
+    setInput(bindPrivateAccountSafeInputPlatform({
       ...input,
       action_class: "trade_on_platform",
-      platform_class: "coinbase_style_provider",
       product_bucket: "provider",
       destination_class: "platform_subaccount",
       asset_bucket: input.asset_bucket === "stablecoin" ? "BTC" : input.asset_bucket,
-    });
+    }, "coinbase_style_provider"));
     setOrderDraft((current) =>
       current.venue_id === "coinbase_advanced" ? current : DEFAULT_COINBASE_ORDER
     );
@@ -1754,14 +1758,13 @@ export function PrivateAccountCockpit({
     setHyperliquidVerification(null);
     setJupiterVerification(null);
     setCoinbaseVerification(null);
-    setInput({
+    setInput(bindPrivateAccountSafeInputPlatform({
       ...input,
-      platform_class: "hyperliquid_style_market",
       action_class: "trade_on_platform",
       product_bucket: "perps",
       destination_class: "platform_subaccount",
       asset_bucket: hyperliquidAssetBucket(market),
-    });
+    }, "hyperliquid_style_market"));
     setOrderDraft(normalizeOrderForPlatform({
       ...orderDraft,
       venue_id: "hyperliquid",
@@ -1782,14 +1785,13 @@ export function PrivateAccountCockpit({
     setLiveHyperliquidFlow(false);
     setLivePhoenixFlow(false);
     setLiveJupiterFlow(false);
-    setInput({
+    setInput(bindPrivateAccountSafeInputPlatform({
       ...input,
-      platform_class: "coinbase_style_provider",
       action_class: "trade_on_platform",
       product_bucket: "provider",
       destination_class: "platform_subaccount",
       asset_bucket: coinbaseAssetBucket(productId),
-    });
+    }, "coinbase_style_provider"));
     setOrderDraft(normalizeOrderForPlatform({
       ...orderDraft,
       venue_id: "coinbase_advanced",
@@ -2833,10 +2835,9 @@ export function PrivateAccountCockpit({
     if (preset.platformClass === "solana_swap_aggregator") {
       setJupiterVerification(null);
     }
-    setInput({
+    setInput(bindPrivateAccountSafeInputPlatform({
       ...input,
       action_class: preset.actionClass as never,
-      platform_class: preset.platformClass as never,
       destination_class: preset.destinationClass as never,
       product_bucket: preset.productBucket as never,
       asset_bucket: preset.assetBucket as never,
@@ -2847,7 +2848,7 @@ export function PrivateAccountCockpit({
             urgency: "fast_degraded" as const,
           }
         : {}),
-    });
+    }, preset.platformClass));
     setDestinationQuery(preset.destination);
     if (preset.platformClass === "hyperliquid_style_market") {
       setOrderDraft(liveHyperliquidFlow ? DEFAULT_HYPERLIQUID_LIVE_ORDER : DEFAULT_HYPERLIQUID_ORDER);
@@ -2910,9 +2911,8 @@ export function PrivateAccountCockpit({
       setLiveHyperliquidFlow(false);
       setLiveJupiterFlow(false);
     }
-    setInput({
+    setInput(bindPrivateAccountSafeInputPlatform({
       ...input,
-      platform_class: platformClass as never,
       destination_class: destinationForApp(platformClass) as never,
       solver_count_bucket: platformClass === "rfq_solver_network" ? "5+" : input.solver_count_bucket,
       ...(liveHyperliquidFlow && platformClass === "hyperliquid_style_market"
@@ -2942,7 +2942,7 @@ export function PrivateAccountCockpit({
             asset_bucket: "SOL" as const,
           }
         : {}),
-    });
+    }, platformClass as PrivateAccountSafeInput["platform_class"]));
     setDestinationQuery(nextQuery);
   };
 

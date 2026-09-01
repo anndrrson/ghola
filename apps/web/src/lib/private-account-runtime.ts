@@ -386,7 +386,15 @@ export function sealedRuntimeContext(input: {
 }
 
 export function privacyScheduleDecision(input: {
-  compiled_intent: GholaCompiledPrivateIntent;
+  compiled_intent: Pick<
+    GholaCompiledPrivateIntent,
+    | "compiler_commitment"
+    | "urgency_bucket"
+    | "account_commitment"
+    | "platform_class"
+    | "asset_bucket"
+    | "amount_bucket"
+  >;
   evidence_ready: boolean;
   runtime_ready: boolean;
   rotation_status: GholaPlatformFundingRotation["status"];
@@ -443,7 +451,7 @@ export function platformFundingRotation(input: {
   owner_commitment: string;
   account_commitment: string;
   platform_class: GholaPlatformClass;
-  manifest: GholaConnectorManifest;
+  manifest: Pick<GholaConnectorManifest, "requires_omnibus_funding">;
   reuse_count?: number;
   withdrawal_destination_reuse_count?: number;
   now?: Date;

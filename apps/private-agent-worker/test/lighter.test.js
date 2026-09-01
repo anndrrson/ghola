@@ -108,6 +108,37 @@ function instruction(overrides = {}) {
   };
 }
 
+function exactFeeProof({
+  clientOrderIndex = 77,
+  orderIndex = 88,
+  marketId = 1,
+  base = "0.001",
+  quote = "100",
+  fee = "0.05",
+} = {}) {
+  return {
+    version: 1,
+    proof_kind: "lighter_authenticated_order_trades_fee_v1",
+    complete: true,
+    pagination_complete: true,
+    transaction_broadcast: false,
+    account_index: 123,
+    market_id: marketId,
+    order_index: String(orderIndex),
+    client_order_index: clientOrderIndex,
+    trade_count: 2,
+    first_trade_id: "9223372036854775806",
+    last_trade_id: "9223372036854775807",
+    filled_base_amount: base,
+    filled_quote_amount: quote,
+    fee_quote_amount: fee,
+    fee_asset: "USDC",
+    fee_rate_tick_denominator: 1_000_000,
+    quote_atomic_denominator: 1_000_000,
+    evidence_commitment: `sha256:${"ab".repeat(32)}`,
+  };
+}
+
 test("binds every signed Lighter order field to the requested packet", () => {
   const runnerPath = fileURLToPath(new URL("../src/venues/lighter_runner.py", import.meta.url));
   const check = String.raw`
@@ -212,6 +243,155 @@ async def main():
         assert str(error) == "connector_submit_failed"
     else:
         raise AssertionError("repeated cursor accepted")
+asyncio.run(main())
+print("checked")
+`;
+  const result = spawnSync(process.env.PRIVATE_AGENT_PYTHON || "python3", ["-c", check, runnerPath], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stdout.trim(), "checked");
+});
+
+test("derives exact Lighter fees from bound paginated Trade rows", () => {
+  const runnerPath = fileURLToPath(new URL("../src/venues/lighter_runner.py", import.meta.url));
+  const check = String.raw`
+import asyncio, copy, importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("lighter_runner", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.credential = {"api_key_index": 4}
+def strict_fail(message, code="connector_submit_failed"):
+    raise RuntimeError(code)
+module.fail = strict_fail
+trades = [
+    {
+        "trade_id": 901, "type": "trade", "market_id": 1, "size": "0.001", "price": "100000", "usd_amount": "100",
+        "ask_id": 88, "bid_id": 188, "ask_client_id": 77, "bid_client_id": 177,
+        "ask_account_id": 123, "bid_account_id": 456, "is_maker_ask": True,
+        "maker_fee": 40, "taker_fee": 900,
+    },
+    {
+        "trade_id": 902, "type": "trade", "market_id": 1, "size": "0.002", "price": "100000", "usd_amount": "200",
+        "ask_id": 88, "bid_id": 189, "ask_client_id": 77, "bid_client_id": 178,
+        "ask_account_id": 123, "bid_account_id": 457, "is_maker_ask": False,
+        "maker_fee": 10, "taker_fee": 280,
+    },
+]
+class OrderApi:
+    def __init__(self, rows=None):
+        self.rows = copy.deepcopy(rows if rows is not None else trades)
+        self.calls = []
+    async def trades_with_http_info(self, **kwargs):
+        self.calls.append(kwargs)
+        if kwargs.get("cursor") == "page-2":
+            payload = {"trades": [self.rows[1]]}
+        else:
+            payload = {"trades": [self.rows[0]], "next_cursor": "page-2"}
+        return type("RawResponse", (), {"raw_data": json.dumps(payload).encode("utf-8")})()
+class Client:
+    def __init__(self, rows=None):
+        self.order_api = OrderApi(rows)
+    def create_auth_token_with_expiry(self, api_key_index):
+        assert api_key_index == 4
+        return "signed-read-token", None
+async def exact(rows=None, order=None):
+    client = Client(rows)
+    proof = await module.exact_account_order_trades(client, 123, 1, 77, order or {
+        "order_index": 88, "is_ask": True, "filled_base_amount": "0.003", "filled_quote_amount": "300",
+    })
+    return client, proof
+async def must_fail(rows=None, client=None):
+    try:
+        if client is None:
+            await exact(rows)
+        else:
+            await module.exact_account_order_trades(client, 123, 1, 77, {
+                "order_index": 88, "is_ask": True, "filled_base_amount": "0.003", "filled_quote_amount": "300",
+            })
+    except RuntimeError as error:
+        assert str(error) == "connector_submit_failed"
+    else:
+        raise AssertionError("invalid trade evidence accepted")
+async def main():
+    assert module.LIGHTER_CANCELED_ORDER_STATUSES == frozenset({
+        "canceled", "canceled-post-only", "canceled-reduce-only",
+        "canceled-position-not-allowed", "canceled-margin-not-allowed",
+        "canceled-too-much-slippage", "canceled-not-enough-liquidity",
+        "canceled-self-trade", "canceled-expired", "canceled-oco",
+        "canceled-child", "canceled-liquidation", "canceled-invalid-balance",
+    })
+    assert module.terminal_order_status("filled") is True
+    for status in module.LIGHTER_CANCELED_ORDER_STATUSES:
+        assert module.terminal_order_status(status) is True
+    for status in ("open", "pending", "in-progress", "cancelled", "rejected", "expired", "canceled-unknown"):
+        assert module.terminal_order_status(status) is False
+    client, proof = await exact()
+    assert proof["complete"] is True
+    assert proof["fee_quote_amount"] == "0.06"
+    assert proof["fee_asset"] == "USDC"
+    assert proof["fee_rate_tick_denominator"] == 1000000
+    assert proof["quote_atomic_denominator"] == 1000000
+    assert proof["trade_count"] == 2
+    assert proof["order_index"] == "88"
+    assert proof["evidence_commitment"].startswith("sha256:")
+    assert client.order_api.calls == [
+        {"sort_by": "timestamp", "sort_dir": "desc", "limit": 100, "authorization": "signed-read-token", "market_id": 1, "account_index": 123, "order_index": 88, "aggregate": False},
+        {"sort_by": "timestamp", "sort_dir": "desc", "limit": 100, "authorization": "signed-read-token", "market_id": 1, "account_index": 123, "order_index": 88, "aggregate": False, "cursor": "page-2"},
+    ]
+    omitted_zero = copy.deepcopy(trades)
+    del omitted_zero[0]["maker_fee"]
+    del omitted_zero[1]["taker_fee"]
+    _, zero_proof = await exact(omitted_zero)
+    assert zero_proof["complete"] is True
+    assert zero_proof["fee_quote_amount"] == "0"
+    explicit_null = copy.deepcopy(omitted_zero)
+    explicit_null[0]["maker_fee"] = None
+    await must_fail(explicit_null)
+    malformed_fee = copy.deepcopy(omitted_zero)
+    malformed_fee[1]["taker_fee"] = "0.0"
+    await must_fail(malformed_fee)
+    _, incomplete = await exact(order={
+        "order_index": 88, "is_ask": True, "filled_base_amount": "0.004", "filled_quote_amount": "400",
+    })
+    assert incomplete == {
+        "version": 1, "proof_kind": "lighter_authenticated_order_trades_fee_v1",
+        "complete": False, "pagination_complete": True, "transaction_broadcast": False,
+        "account_index": 123, "market_id": 1, "order_index": "88", "client_order_index": 77,
+        "reason": "trade_totals_incomplete",
+    }
+    for field, value in [
+        ("type", "liquidation"), ("market_id", 2), ("ask_account_id", 999), ("ask_id", 89), ("ask_client_id", 78),
+    ]:
+        invalid = copy.deepcopy(trades)
+        invalid[0][field] = value
+        await must_fail(invalid)
+    duplicate = copy.deepcopy(trades)
+    duplicate[1]["trade_id"] = duplicate[0]["trade_id"]
+    await must_fail(duplicate)
+    large_order_id = 1152921504606846975
+    large = copy.deepcopy(trades)
+    for row in large:
+        row["ask_id"] = large_order_id
+    _, large_proof = await exact(rows=large, order={
+        "order_index": large_order_id, "is_ask": True,
+        "filled_base_amount": "0.003", "filled_quote_amount": "300",
+    })
+    assert large_proof["order_index"] == str(large_order_id)
+    looping = Client()
+    async def looping_trades(**kwargs):
+        payload = {"trades": [], "next_cursor": "same"}
+        return type("RawResponse", (), {"raw_data": json.dumps(payload).encode("utf-8")})()
+    looping.order_api.trades_with_http_info = looping_trades
+    await must_fail(client=looping)
+    bounded = Client()
+    calls = 0
+    async def endless_trades(**kwargs):
+        nonlocal calls
+        calls += 1
+        payload = {"trades": [], "next_cursor": "page-" + str(calls)}
+        return type("RawResponse", (), {"raw_data": json.dumps(payload).encode("utf-8")})()
+    bounded.order_api.trades_with_http_info = endless_trades
+    await must_fail(client=bounded)
+    assert calls == module.MAX_TRADE_PAGES
 asyncio.run(main())
 print("checked")
 `;
@@ -529,7 +709,16 @@ test("recovers an ambiguous Lighter cancel against only its original target", as
         assert.equal(payload.action, "reconcile");
         assert.equal(payload.client_order_index, 77);
         assert.equal(payload.market, "BTC");
-        return { target_market_checked: true, order: { status: "cancelled", client_order_index: 77, order_index: 88 } };
+        return {
+          target_market_checked: true,
+          order: {
+            status: "canceled",
+            client_order_index: 77,
+            order_index: 88,
+            filled_base_amount: "0",
+            filled_quote_amount: "0",
+          },
+        };
       },
     });
     assert.equal(cancelCalls, 1);
@@ -596,7 +785,11 @@ test("submits once and polls the exact client order until terminal fill", async 
         reconcileCalls += 1;
         return reconcileCalls === 1
           ? { target_market_checked: true, order: { status: "open", client_order_index: 77, market_index: 1, remaining_base_amount: "0.001" } }
-          : { target_market_checked: true, order: { status: "filled", client_order_index: 77, market_index: 1, filled_base_amount: "0.001", filled_quote_amount: "100" } };
+          : {
+            target_market_checked: true,
+            order: { status: "filled", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" },
+            fee_proof: exactFeeProof(),
+          };
       },
     });
     assert.equal(submitCalls, 1);
@@ -636,7 +829,11 @@ test("recovers an ambiguous Lighter submit response by reading the exact order w
         assert.equal(payload.client_order_index, 78);
         reconcileCalls += 1;
         if (reconcileCalls === 1) throw new Error("read replica lag");
-        return { target_market_checked: true, order: { status: "filled", client_order_index: 78, order_index: 89, filled_base_amount: "0.001", filled_quote_amount: "100" } };
+        return {
+          target_market_checked: true,
+          order: { status: "filled", client_order_index: 78, market_index: 1, order_index: 89, filled_base_amount: "0.001", filled_quote_amount: "100" },
+          fee_proof: exactFeeProof({ clientOrderIndex: 78, orderIndex: 89 }),
+        };
       },
     });
     assert.equal(submitCalls, 1);
@@ -760,7 +957,11 @@ test("reconciles the exact Lighter client order index", async () => {
       runner: async (payload) => {
         assert.equal(payload.client_order_index, 77);
         assert.equal(payload.market, "BTC");
-        return { target_market_checked: true, order: { status: "filled", client_order_index: 77, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" } };
+        return {
+          target_market_checked: true,
+          order: { status: "filled", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" },
+          fee_proof: exactFeeProof(),
+        };
       },
     });
     assert.equal(result.status, "filled");
@@ -770,20 +971,143 @@ test("reconciles the exact Lighter client order index", async () => {
     assert.equal(result.final_proof.original_order_target_matched, true);
     assert.equal(result.final_proof.original_order_broadcast_proven, true);
     assert.equal(result.fills[0].price, "100000");
+    assert.equal(result.fills[0].fee, "0.05");
+    assert.equal(result.fills[0].fee_asset, "USDC");
+    assert.equal(result.final_proof.fee_exact, true);
+    assert.equal(result.final_proof.fee_quote_amount, "0.05");
+    assert.equal(result.final_proof.fee_evidence_trade_count, 2);
+    assert.match(result.final_proof.fee_evidence_commitment, /^sha256:[0-9a-f]{64}$/);
+    const largeOrderIndex = "1152921504606846975";
+    const largeOrder = await reconcileLighterExecution({
+      credential: credential(),
+      clientOrderIndex: 77,
+      market: "BTC",
+      runner: async () => ({
+        target_market_checked: true,
+        order: { status: "filled", client_order_index: 77, market_index: 1, order_index: largeOrderIndex, filled_base_amount: "0.001", filled_quote_amount: "100" },
+        fee_proof: exactFeeProof({ orderIndex: largeOrderIndex }),
+      }),
+    });
+    assert.equal(largeOrder.provider_ref_seed.order_index, largeOrderIndex);
+    assert.equal(largeOrder.final_proof.original_order_target_matched, true);
+    assert.equal(largeOrder.final_proof.fee_exact, true);
     const partial = await reconcileLighterExecution({
       credential: credential(),
       clientOrderIndex: 77,
       market: "BTC",
       runner: async () => ({
         target_market_checked: true,
-        order: { status: "partial", client_order_index: 77, order_index: null, filled_base_amount: "0.0005", filled_quote_amount: "50" },
+        order: { status: "open", client_order_index: 77, order_index: null, filled_base_amount: "0.0005", filled_quote_amount: "50" },
       }),
     });
-    assert.equal(partial.status, "partially_filled");
+    assert.equal(partial.status, "open");
     assert.equal(partial.final_proof.final_venue_execution_proven, false);
     assert.equal(partial.final_proof.open_order_count, 1);
     assert.equal(partial.final_proof.original_order_target_matched, false);
     assert.equal(partial.final_proof.original_order_broadcast_proven, false);
+    const incomplete = await reconcileLighterExecution({
+      credential: credential(),
+      clientOrderIndex: 77,
+      market: "BTC",
+      runner: async () => ({
+        target_market_checked: true,
+        order: { status: "filled", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" },
+        fee_proof: {
+          version: 1,
+          proof_kind: "lighter_authenticated_order_trades_fee_v1",
+          complete: false,
+          pagination_complete: true,
+          transaction_broadcast: false,
+          account_index: 123,
+          market_id: 1,
+          order_index: 88,
+          client_order_index: 77,
+          reason: "trade_totals_incomplete",
+        },
+      }),
+    });
+    assert.equal(incomplete.status, "filled");
+    assert.equal(incomplete.final_proof.final_venue_execution_proven, false);
+    assert.equal(incomplete.final_proof.final_fill_proven, false);
+    assert.equal(incomplete.final_proof.fee_exact, false);
+    assert.equal(incomplete.fills[0].fee, null);
+    const cancelledPartial = await reconcileLighterExecution({
+      credential: credential(),
+      clientOrderIndex: 77,
+      market: "BTC",
+      runner: async () => ({
+        target_market_checked: true,
+        order: { status: "canceled-too-much-slippage", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0.0005", filled_quote_amount: "50" },
+        fee_proof: exactFeeProof({ base: "0.0005", quote: "50", fee: "0.025" }),
+      }),
+    });
+    assert.equal(cancelledPartial.status, "cancelled");
+    assert.equal(cancelledPartial.final_proof.final_venue_execution_proven, true);
+    assert.equal(cancelledPartial.final_proof.final_fill_proven, false);
+    assert.equal(cancelledPartial.final_proof.fee_exact, true);
+    assert.equal(cancelledPartial.fills[0].fee, "0.025");
+    const cancelledZero = await reconcileLighterExecution({
+      credential: credential(),
+      clientOrderIndex: 77,
+      market: "BTC",
+      runner: async () => ({
+        target_market_checked: true,
+        order: { status: "canceled-post-only", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0", filled_quote_amount: "0" },
+      }),
+    });
+    assert.equal(cancelledZero.status, "cancelled");
+    assert.equal(cancelledZero.final_proof.final_venue_execution_proven, true);
+    assert.equal(cancelledZero.final_proof.fee_exact, true);
+    assert.equal(cancelledZero.final_proof.fee_quote_amount, "0");
+    assert.equal(cancelledZero.final_proof.fee_asset, "USDC");
+    assert.equal(cancelledZero.final_proof.fee_evidence_kind, "lighter_terminal_zero_fill_v1");
+    const zeroWithoutOrderIndex = await reconcileLighterExecution({
+      credential: credential(),
+      clientOrderIndex: 77,
+      market: "BTC",
+      runner: async () => ({
+        target_market_checked: true,
+        order: { status: "canceled-post-only", client_order_index: 77, market_index: 1, filled_base_amount: "0", filled_quote_amount: "0" },
+      }),
+    });
+    assert.equal(zeroWithoutOrderIndex.final_proof.original_order_target_matched, false);
+    assert.equal(zeroWithoutOrderIndex.final_proof.fee_exact, false);
+    assert.equal(zeroWithoutOrderIndex.final_proof.final_venue_execution_proven, false);
+    const contradictoryZero = await reconcileLighterExecution({
+      credential: credential(),
+      clientOrderIndex: 77,
+      market: "BTC",
+      runner: async () => ({
+        target_market_checked: true,
+        order: { status: "canceled-post-only", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0", filled_quote_amount: "100" },
+      }),
+    });
+    assert.equal(contradictoryZero.final_proof.fee_exact, false);
+    assert.equal(contradictoryZero.final_proof.final_venue_execution_proven, false);
+    for (const invalidTerminalStatus of ["canceled-unknown", "cancelled", "rejected", "expired"]) {
+      const invalidTerminal = await reconcileLighterExecution({
+        credential: credential(),
+        clientOrderIndex: 77,
+        market: "BTC",
+        runner: async () => ({
+          target_market_checked: true,
+          order: { status: invalidTerminalStatus, client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0", filled_quote_amount: "0" },
+        }),
+      });
+      assert.equal(invalidTerminal.status, "outcome_unknown");
+      assert.equal(invalidTerminal.final_proof.fee_exact, false);
+      assert.equal(invalidTerminal.final_proof.final_venue_execution_proven, false);
+    }
+    await assert.rejects(reconcileLighterExecution({
+      credential: credential(),
+      clientOrderIndex: 77,
+      market: "BTC",
+      runner: async () => ({
+        target_market_checked: true,
+        order: { status: "filled", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" },
+        fee_proof: exactFeeProof({ orderIndex: 89 }),
+      }),
+    }), (error) => error.code === "connector_submit_failed");
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
@@ -863,7 +1187,11 @@ test("keeps explicit Lighter reconciliation bound to the original order across r
         targets.push(payload.client_order_index);
         reads += 1;
         if (reads === 1) throw new Error("temporary read failure");
-        return { target_market_checked: true, order: { status: "filled", client_order_index: 77, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" } };
+        return {
+          target_market_checked: true,
+          order: { status: "filled", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" },
+          fee_proof: exactFeeProof(),
+        };
       },
     });
     assert.deepEqual(targets, [77, 77]);

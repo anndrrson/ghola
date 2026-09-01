@@ -85,20 +85,32 @@ async function happyPathInput(input: {
 } = {}) {
   await importCompatibleFunding("user_1");
   await importCompatibleFunding("user_2");
+  const platformClass = input.platform_class || "solana_private_balance";
+  const venueId = {
+    hyperliquid_style_market: "hyperliquid",
+    solana_perps_market: "phoenix",
+    solana_swap_aggregator: "jupiter",
+    coinbase_style_provider: "coinbase_advanced",
+    rfq_solver_network: "rfq_network",
+  }[platformClass];
+  const safeInput = venueId
+    ? { ...input.safe_input, venue_id: venueId }
+    : input.safe_input;
   const intentRes = await createIntent(
     request("/v1/private-account/actions/intent", {
       action_class: input.action_class || "transfer",
       product_bucket: input.product_bucket || "stablecoin",
       vault_ready: true,
+      ...(venueId ? { platform_class: platformClass, venue_id: venueId } : {}),
     }),
   );
   const intent = await intentRes.json();
   const previewRes = await previewAction(
     request("/v1/private-account/actions/privacy-preview", {
       intent_id: intent.intent_id,
-      platform_class: input.platform_class || "solana_private_balance",
+      platform_class: platformClass,
       requested_rail: input.requested_rail || "shielded_pool",
-      safe_input: input.safe_input,
+      safe_input: safeInput,
     }),
   );
   const preview = await previewRes.json();
@@ -118,7 +130,7 @@ async function happyPathInput(input: {
   const refreshedRes = await refreshQueue(
     request("/v1/private-account/actions/queue/refresh", {
       queue_id: queued.queued_action.queue_id,
-      safe_input: input.safe_input,
+      safe_input: safeInput,
     }),
   );
   const refreshed = await refreshedRes.json();

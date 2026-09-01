@@ -2308,6 +2308,7 @@ function perpSafeInput(market: string, amount: string): PrivateAccountSafeInput 
   return {
     action_class: "trade_on_platform",
     platform_class: "hyperliquid_style_market",
+    venue_id: "hyperliquid",
     product_bucket: "perps",
     amount_bucket: String(bucket) as PrivateAccountSafeInput["amount_bucket"],
     urgency: "fast_degraded",

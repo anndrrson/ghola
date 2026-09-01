@@ -3077,6 +3077,9 @@ describe("private agent worker", () => {
     assert.equal(response.status, 202);
     const body = await response.json();
     assert.equal(body.status, "submitted");
+    assert.equal(body.venue_id, "hyperliquid");
+    assert.equal(body.platform_class, "hyperliquid_style_market");
+    assert.equal(body.work_order_commitment, workOrderCommitment);
     assert.match(body.provider_ref_commitment, /^hyperliquid_provider_ref_/);
     assert.equal(body.visibility_summary.main_wallet_exposed, false);
     assert.equal(body.visibility_summary.venue_access_source, "user_provided_credentials");
@@ -4073,6 +4076,9 @@ describe("private agent worker", () => {
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.status, "verified_no_funds");
+    assert.equal(body.venue_id, "hyperliquid");
+    assert.equal(body.platform_class, "hyperliquid_style_market");
+    assert.equal(body.work_order_commitment, workOrderCommitment);
     assert.match(body.provider_ref_commitment, /^hyperliquid_provider_ref_/);
     assert.match(body.verification_commitment, /^hyperliquid_no_submit_verification_/);
     assert.equal(body.checks.transaction_broadcast, false);
