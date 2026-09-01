@@ -3,10 +3,14 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { attestCarryReleaseSourceTree } from "../../../scripts/carry-source-tree-attestation.mjs";
+import { CARRY_RELEASE_FILES } from "./check-carry-execution-contract.mjs";
 import {
   DEFAULT_CARRY_NO_SUBMIT_EVIDENCE_PATH,
   verifyCarryNoSubmitEvidence,
 } from "./verify-carry-no-submit-evidence.mjs";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 const REQUIRED_FLAGS = Object.freeze([
   "--request",
@@ -60,6 +64,12 @@ export async function assembleCarryNoSubmitEvidenceFile({
   }
   const read = dependencies.readFile || readFile;
   const verify = dependencies.verify || verifyCarryNoSubmitEvidence;
+  const attest = dependencies.attestSourceTree || attestCarryReleaseSourceTree;
+  const sourceTree = attest({
+    repoRoot: REPO_ROOT,
+    releaseFiles: Object.values(CARRY_RELEASE_FILES),
+    expectedRevision: webCommitSha,
+  });
   const request = sanitizeRequest(await readJson(resolvedRequest, read, "request"));
   const response = await readJson(resolvedResponse, read, "response");
   const capturedAtMs = response?.private_prime_readiness?.checked_at_ms;
@@ -75,6 +85,7 @@ export async function assembleCarryNoSubmitEvidenceFile({
       preview_url: previewUrl,
       web_commit_sha: webCommitSha,
       worker_image_digest: workerImageDigest,
+      source_tree_digest: sourceTree.source_tree_digest,
     },
     request,
     response,
@@ -83,6 +94,7 @@ export async function assembleCarryNoSubmitEvidenceFile({
     expected_preview_url: previewUrl,
     expected_web_commit_sha: webCommitSha,
     expected_worker_image_digest: workerImageDigest,
+    expected_source_tree_digest: sourceTree.source_tree_digest,
     expected_signer_public_keys_b64: signerPublicKeysB64,
     shared_secret: sharedSecret,
     now_ms: capturedAtMs,

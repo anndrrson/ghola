@@ -4,6 +4,11 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  attestCarryReleaseSourceTree,
+  validCarrySourceTreeDigest,
+} from "../../../scripts/carry-source-tree-attestation.mjs";
+import { CARRY_RELEASE_FILES } from "./check-carry-execution-contract.mjs";
+import {
   CARRY_EXECUTION_VENUES,
   CARRY_RECOVERY_POLICY,
   CARRY_SHADOW_ASSETS,
@@ -14,6 +19,7 @@ import {
 import { hashMessage, recoverMessageAddress } from "viem";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(HERE, "../../..");
 export const DEFAULT_CARRY_EVIDENCE_PATH = resolve(
   HERE,
   "../../../deploy/evidence/carry-mainnet-proof.json",
@@ -47,7 +53,9 @@ const CARRY_LIQUIDATION_SOURCES = Object.freeze(Object.fromEntries(CARRY_EXECUTI
   venueAdapterCapability(venueId, "carry_execution")?.liquidation_distance_source,
 ])));
 
-export async function verifyCarryReleaseEvidence(evidence) {
+export async function verifyCarryReleaseEvidence(evidence, {
+  expected_source_tree_digest: expectedSourceTreeDigest,
+} = {}) {
   const failures = [];
   const fail = (condition, code) => {
     if (!condition) failures.push(code);
@@ -68,6 +76,10 @@ export async function verifyCarryReleaseEvidence(evidence) {
   fail(venuePairs.every(Boolean) && new Set(venuePairs).size >= 2, "distinct_venue_pair_count_insufficient");
 
   const candidate = evidence?.candidate;
+  fail(validCarrySourceTreeDigest(candidate?.source_tree_digest), "candidate_source_tree_digest_invalid");
+  if (expectedSourceTreeDigest) {
+    fail(candidate?.source_tree_digest === expectedSourceTreeDigest, "candidate_source_tree_digest_mismatch");
+  }
   let realizedNet = 0n;
   const lifecycleCommitments = [];
   const workerCommitments = [];
@@ -138,9 +150,11 @@ export async function verifyCarryLifecycleEvidence(evidence) {
   const commitSha = String(evidence?.candidate?.web_commit_sha || "");
   const previewUrl = String(evidence?.candidate?.preview_url || "");
   const imageDigest = String(evidence?.candidate?.worker_image_digest || "").toLowerCase();
+  const sourceTreeDigest = String(evidence?.candidate?.source_tree_digest || "");
   fail(/^[0-9a-f]{7,40}$/i.test(commitSha), "candidate_sha_invalid");
   fail(/^https:\/\/[^/]+\.vercel\.app$/i.test(previewUrl), "candidate_url_invalid");
   fail(/^sha256:[0-9a-f]{12,128}$/.test(imageDigest), "worker_image_digest_invalid");
+  fail(validCarrySourceTreeDigest(sourceTreeDigest), "candidate_source_tree_digest_invalid");
 
   const shadowQualification = evidence?.shadow_qualification || {};
   const shadowCheckedAt = timestamp(shadowQualification.checked_at);
@@ -881,7 +895,15 @@ function commitment(value) {
 async function main() {
   const evidencePath = resolve(process.env.GHOLA_CARRY_RELEASE_EVIDENCE_PATH || DEFAULT_CARRY_EVIDENCE_PATH);
   const evidence = readCarryReleaseEvidenceFile(evidencePath);
-  const verified = await verifyCarryReleaseEvidence(evidence);
+  const sourceTree = attestCarryReleaseSourceTree({
+    repoRoot: REPO_ROOT,
+    releaseFiles: Object.values(CARRY_RELEASE_FILES),
+    expectedRevision: evidence?.candidate?.web_commit_sha,
+    expectedDigest: evidence?.candidate?.source_tree_digest,
+  });
+  const verified = await verifyCarryReleaseEvidence(evidence, {
+    expected_source_tree_digest: sourceTree.source_tree_digest,
+  });
   console.log(`[carry-release-evidence] verified ${verified.evidence_commitment}`);
 }
 

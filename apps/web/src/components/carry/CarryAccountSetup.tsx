@@ -93,6 +93,7 @@ import { shouldResumeUnsignedTurnkeySetup } from "@/lib/carry-setup-auth-recover
 import { hyperliquidMarketFromTradeReturn } from "@/lib/hyperliquid-trade-return";
 
 type VenueState = "connected" | "needed" | "unavailable";
+type AccountReadinessState = "unknown" | "loading" | "ready" | "failed";
 type VenueActivation = { venue: "aster" | "lighter"; ownerAddress: string };
 type PendingAsterLinkRecovery = PendingAsterOnboarding;
 type PendingLighterAssociation = PendingLighterOnboarding;
@@ -147,6 +148,7 @@ export function CarryAccountSetup({
   const searchParams = useSearchParams();
   const wallet = useTurnkeyWallet();
   const perpsTurnkey = usePerpsTurnkey();
+  const recoveryUserScope = opaqueTurnkeyWalletScope(auth.user?.id || "") || "";
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("signin");
   const [accountCommitment, setAccountCommitment] = useState<string | null>(null);
@@ -164,6 +166,18 @@ export function CarryAccountSetup({
   const [showLighterManual, setShowLighterManual] = useState(false);
   const [pendingLighterAuthorization, setPendingLighterAuthorization] = useState(false);
   const [pendingLighterAssociation, setPendingLighterAssociation] = useState<PendingLighterAssociation | null>(null);
+  const [accountReadinessState, setAccountReadinessState] = useState<AccountReadinessState>("unknown");
+  const [accountReadinessResolvedScope, setAccountReadinessResolvedScope] = useState<string | null>(null);
+  const accountReadinessRequestRef = useRef<{
+    scope: string;
+    generation: number;
+    promise: Promise<void>;
+  } | null>(null);
+  const accountReadinessGenerationRef = useRef(0);
+  const accountReadinessScopeRef = useRef("");
+  const accountReadinessReady = accountReadinessState === "ready"
+    && Boolean(recoveryUserScope)
+    && accountReadinessResolvedScope === recoveryUserScope;
   const [draft, setDraft] = useState<AsterExecutionCredentialDraft>({
     user_address: "",
     api_wallet_private_key: "",
@@ -207,7 +221,6 @@ export function CarryAccountSetup({
     : null;
   const hyperliquidMarket = hyperliquidMarketFromTradeReturn(safeReturnTo) || "BTC";
   const noSubmitReturnTo = carryNoSubmitVerificationHref(safeReturnTo);
-  const recoveryUserScope = opaqueTurnkeyWalletScope(auth.user?.id || "");
   const asterWalletRepairRequested = asterWalletRepairRequired ||
     (!asterWalletRepairCompleted && searchParams.get("repair") === "aster-wallet");
   const setupReturnTo = `/account?${new URLSearchParams({
@@ -216,25 +229,71 @@ export function CarryAccountSetup({
     return_to: safeReturnTo,
   }).toString()}`;
 
-  const refresh = useCallback(async () => {
-    if (!auth.authenticated) return;
-    try {
-      const [passportRaw, hyperliquidRaw, runtimeRaw] = await Promise.all([
-        getPrivateAgentPassport(),
-        getHyperliquidExecutionVaultStatus().catch(() => null),
-        fetchPrivateAgentRuntimeStatus().catch(() => null),
-      ]);
-      const connections = carryAccountConnections({ passport: passportRaw, hyperliquidStatus: hyperliquidRaw });
-      setWorkerPlatform(carryWorkerPlatformGate(runtimeRaw));
-      setAccountCommitment(connections.accountCommitment);
-      setAster(connections.venues.aster ? "connected" : "needed");
-      setLighter(connections.venues.lighter ? "connected" : "needed");
-      setHyperliquid(connections.venues.hyperliquid ? "connected" : "needed");
-      setError(null);
-    } catch {
-      setError("Account readiness could not be refreshed.");
+  const refresh = useCallback(() => {
+    const scope = auth.authenticated ? recoveryUserScope : "";
+    if (accountReadinessScopeRef.current !== scope) {
+      accountReadinessGenerationRef.current += 1;
+      accountReadinessRequestRef.current = null;
+      accountReadinessScopeRef.current = scope;
+      setAccountReadinessResolvedScope(null);
+      setAccountReadinessState("unknown");
+      setAccountCommitment(null);
+      setWorkerPlatform(null);
+      setAster("needed");
+      setLighter("needed");
+      setHyperliquid("needed");
+      setActivationNeeded(null);
+      setPendingAsterAuthorization(false);
+      setPendingAsterWalletRepair(false);
+      setPendingAsterLinkRecovery(null);
+      setPendingLighterAuthorization(false);
+      setPendingLighterAssociation(null);
     }
-  }, [auth.authenticated]);
+    if (!scope) {
+      return Promise.resolve();
+    }
+    if (accountReadinessRequestRef.current?.scope === scope) {
+      return accountReadinessRequestRef.current.promise;
+    }
+    const generation = accountReadinessGenerationRef.current + 1;
+    accountReadinessGenerationRef.current = generation;
+    setAccountReadinessResolvedScope(null);
+    const request = (async () => {
+      setAccountReadinessState("loading");
+      setError(null);
+      try {
+        const [passportRaw, hyperliquidRaw, runtimeRaw] = await Promise.all([
+          getPrivateAgentPassport(),
+          getHyperliquidExecutionVaultStatus(),
+          fetchPrivateAgentRuntimeStatus().catch(() => null),
+        ]);
+        if (generation !== accountReadinessGenerationRef.current
+          || accountReadinessScopeRef.current !== scope) return;
+        const connections = carryAccountConnections({ passport: passportRaw, hyperliquidStatus: hyperliquidRaw });
+        setWorkerPlatform(carryWorkerPlatformGate(runtimeRaw));
+        setAccountCommitment(connections.accountCommitment);
+        setAster(connections.venues.aster ? "connected" : "needed");
+        setLighter(connections.venues.lighter ? "connected" : "needed");
+        setHyperliquid(connections.venues.hyperliquid ? "connected" : "needed");
+        setAccountReadinessResolvedScope(scope);
+        setAccountReadinessState("ready");
+      } catch {
+        if (generation !== accountReadinessGenerationRef.current
+          || accountReadinessScopeRef.current !== scope) return;
+        setWorkerPlatform(null);
+        setAccountReadinessResolvedScope(null);
+        setAccountReadinessState("failed");
+        setError("Account readiness could not be refreshed. No wallet action was enabled.");
+      } finally {
+        if (accountReadinessRequestRef.current?.scope === scope
+          && accountReadinessRequestRef.current.generation === generation) {
+          accountReadinessRequestRef.current = null;
+        }
+      }
+    })();
+    accountReadinessRequestRef.current = { scope, generation, promise: request };
+    return request;
+  }, [auth.authenticated, recoveryUserScope]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
@@ -285,6 +344,7 @@ export function CarryAccountSetup({
     eligibilityAttestation: LighterFundingEligibilityAttestationV1,
     ownerAddress?: string,
   ) => {
+    if (!accountReadinessReady) return;
     const expectedOwner = ownerAddress || (scopedActivationNeeded?.venue === "lighter" ? scopedActivationNeeded.ownerAddress : "");
     if (!expectedOwner || !perpsTurnkey.authenticated) return;
     if (lighterDepositRetryForbidden) return;
@@ -321,7 +381,7 @@ export function CarryAccountSetup({
     })();
     lighterDepositDestinationRequestRef.current = request;
     return request;
-  }, [lighterDepositDestination, lighterDepositRetryForbidden, perpsTurnkey, scopedActivationNeeded]);
+  }, [accountReadinessReady, lighterDepositDestination, lighterDepositRetryForbidden, perpsTurnkey, scopedActivationNeeded]);
 
   const reconcileLighterDepositDestination = useCallback(async () => {
     const expectedOwner = scopedActivationNeeded?.venue === "lighter"
@@ -442,6 +502,7 @@ export function CarryAccountSetup({
   }, [lighterDepositDestination, scopedActivationNeeded]);
 
   const connectAsterProgrammatic = useCallback(async (refreshExistingSigner = false) => {
+    if (!accountReadinessReady) return;
     setWorking(true);
     setError(null);
     setActivationNeeded(null);
@@ -545,9 +606,10 @@ export function CarryAccountSetup({
     } finally {
       setWorking(false);
     }
-  }, [accountCommitment, pendingAsterLinkRecovery, perpsTurnkey, recoveryUserScope, refresh]);
+  }, [accountCommitment, accountReadinessReady, pendingAsterLinkRecovery, perpsTurnkey, recoveryUserScope, refresh]);
 
   const repairAsterWallet = useCallback(async () => {
+    if (!accountReadinessReady) return;
     setWorking(true);
     setError(null);
     try {
@@ -568,10 +630,10 @@ export function CarryAccountSetup({
     } finally {
       setWorking(false);
     }
-  }, [accountCommitment, connectAsterProgrammatic, pendingAsterLinkRecovery, perpsTurnkey, recoveryUserScope]);
+  }, [accountCommitment, accountReadinessReady, connectAsterProgrammatic, pendingAsterLinkRecovery, perpsTurnkey, recoveryUserScope]);
 
   const finishAsterLinkRecovery = useCallback(async () => {
-    if (!pendingAsterLinkRecovery?.signature) return;
+    if (!accountReadinessReady || !pendingAsterLinkRecovery?.signature) return;
     setWorking(true);
     setError(null);
     try {
@@ -617,18 +679,19 @@ export function CarryAccountSetup({
     } finally {
       setWorking(false);
     }
-  }, [accountCommitment, pendingAsterLinkRecovery, recoveryUserScope, refresh]);
+  }, [accountCommitment, accountReadinessReady, pendingAsterLinkRecovery, recoveryUserScope, refresh]);
 
   useEffect(() => {
-    if (!pendingAsterAuthorization || !perpsTurnkey.authenticated) return;
+    if (!accountReadinessReady || !pendingAsterAuthorization || !perpsTurnkey.authenticated) return;
     const repairRequested = pendingAsterWalletRepair;
     setPendingAsterAuthorization(false);
     setPendingAsterWalletRepair(false);
     if (repairRequested) void repairAsterWallet();
     else void connectAsterProgrammatic(asterReprepareRequired);
-  }, [asterReprepareRequired, connectAsterProgrammatic, pendingAsterAuthorization, pendingAsterWalletRepair, perpsTurnkey.authenticated, repairAsterWallet]);
+  }, [accountReadinessReady, asterReprepareRequired, connectAsterProgrammatic, pendingAsterAuthorization, pendingAsterWalletRepair, perpsTurnkey.authenticated, repairAsterWallet]);
 
   async function beginAsterProgrammatic() {
+    if (!accountReadinessReady) return;
     if (!auth.authenticated) {
       setAuthMode("signin");
       setAuthOpen(true);
@@ -672,6 +735,7 @@ export function CarryAccountSetup({
   }
 
   async function connectAsterManual() {
+    if (!accountReadinessReady) return;
     if (!auth.authenticated) {
       setAuthMode("signin");
       setAuthOpen(true);
@@ -734,6 +798,7 @@ export function CarryAccountSetup({
   }, []);
 
   const connectLighterProgrammatic = useCallback(async () => {
+    if (!accountReadinessReady) return;
     setWorking(true);
     setError(null);
     setActivationNeeded(null);
@@ -803,10 +868,10 @@ export function CarryAccountSetup({
     } finally {
       setWorking(false);
     }
-  }, [accountCommitment, pendingLighterAssociation, perpsTurnkey, reconcileLighterAssociation, recoveryUserScope, refresh]);
+  }, [accountCommitment, accountReadinessReady, pendingLighterAssociation, perpsTurnkey, reconcileLighterAssociation, recoveryUserScope, refresh]);
 
   const finishLighterAssociation = useCallback(async () => {
-    if (!pendingLighterAssociation?.authorization) return;
+    if (!accountReadinessReady || !pendingLighterAssociation?.authorization) return;
     setWorking(true);
     setError(null);
     try {
@@ -826,15 +891,16 @@ export function CarryAccountSetup({
     } finally {
       setWorking(false);
     }
-  }, [accountCommitment, pendingLighterAssociation, reconcileLighterAssociation, recoveryUserScope, refresh]);
+  }, [accountCommitment, accountReadinessReady, pendingLighterAssociation, reconcileLighterAssociation, recoveryUserScope, refresh]);
 
   useEffect(() => {
-    if (!pendingLighterAuthorization || !perpsTurnkey.authenticated) return;
+    if (!accountReadinessReady || !pendingLighterAuthorization || !perpsTurnkey.authenticated) return;
     setPendingLighterAuthorization(false);
     void connectLighterProgrammatic();
-  }, [connectLighterProgrammatic, pendingLighterAuthorization, perpsTurnkey.authenticated]);
+  }, [accountReadinessReady, connectLighterProgrammatic, pendingLighterAuthorization, perpsTurnkey.authenticated]);
 
   async function beginLighterProgrammatic() {
+    if (!accountReadinessReady) return;
     if (!auth.authenticated) {
       setAuthMode("signin");
       setAuthOpen(true);
@@ -870,6 +936,7 @@ export function CarryAccountSetup({
   }
 
   async function connectLighterManual() {
+    if (!accountReadinessReady) return;
     if (!auth.authenticated) {
       setAuthMode("signin");
       setAuthOpen(true);
@@ -910,6 +977,7 @@ export function CarryAccountSetup({
   }
 
   async function enableGholaTouchId() {
+    if (!accountReadinessReady) return;
     setWorking(true);
     setError(null);
     try {
@@ -922,6 +990,7 @@ export function CarryAccountSetup({
   }
 
   async function retryAfterVenueActivation() {
+    if (!accountReadinessReady) return;
     const requirement = activationNeeded;
     if (!requirement) return;
     setActivationNeeded(null);
@@ -951,6 +1020,7 @@ export function CarryAccountSetup({
   };
   const routeVerificationEnabled = workerPlatform?.status === "ready";
   const nextSetupDisabled = nextSetupAction.kind === "connect_venue" && (
+    !accountReadinessReady ||
     working ||
     (nextSetupAction.venueId === "aster" && (
       (perpsTurnkey.loading || !perpsTurnkey.configured) ||
@@ -990,7 +1060,7 @@ export function CarryAccountSetup({
         : pendingLighterAssociation ? "Resume Lighter setup"
         : "Continue";
   function continueGuidedSetup() {
-    if (nextSetupAction.kind !== "connect_venue") return;
+    if (!accountReadinessReady || nextSetupAction.kind !== "connect_venue") return;
     if (nextSetupAction.venueId === "hyperliquid") setShowHyperliquidSetup(true);
     else if (nextSetupAction.venueId === "aster") void beginAsterProgrammatic();
     else if (nextSetupAction.venueId === "lighter") void beginLighterProgrammatic();
@@ -1005,8 +1075,12 @@ export function CarryAccountSetup({
 
         <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 border-y border-[#172234] py-3 font-mono text-[11px] uppercase tracking-[0.1em] text-[#718097]">
           <span className="text-[#72dfb2]">Markets · explore now</span>
-          <span>Access · {connectionProgress.connectedCount}/{connectionProgress.requiredCount}</span>
-          <span>Proof · {connectionProgress.ready ? "next" : "after access"}</span>
+          <span>Access · {accountReadinessReady
+            ? `${connectionProgress.connectedCount}/${connectionProgress.requiredCount}`
+            : accountReadinessState === "failed" ? "check failed" : "checking"}</span>
+          <span>Proof · {accountReadinessReady
+            ? connectionProgress.ready ? "next" : "after access"
+            : "blocked"}</span>
           <span className={workerPlatform?.status === "ready" ? "text-[#72dfb2]" : workerPlatform ? "text-[#ee9da8]" : ""}>
             Platform · {workerPlatform?.status === "ready" ? "ready" : workerPlatform ? "repair" : "checking"}
           </span>
@@ -1020,7 +1094,30 @@ export function CarryAccountSetup({
           </button>
         )}
 
-        {auth.authenticated && (
+        {auth.authenticated && !accountReadinessReady && (
+          <div
+            data-carry-account-readiness={accountReadinessState}
+            className="mt-8 rounded-xl border border-[#60303a] bg-[#251116] p-4 sm:flex sm:items-center sm:justify-between sm:gap-5"
+          >
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#ee9da8]">Account readiness</p>
+              <p className="mt-1 text-sm font-semibold text-[#ffd7dc]">
+                {accountReadinessState === "loading" ? "Checking existing connections" : "Connection state is unknown"}
+              </p>
+              <p className="mt-1 text-xs leading-5 text-[#d59aa2]">Wallet creation and venue authorization stay locked until Ghola confirms your existing account state.</p>
+            </div>
+            <button
+              type="button"
+              disabled={accountReadinessState === "loading"}
+              onClick={() => void refresh()}
+              className="mt-4 h-10 shrink-0 rounded-md border border-[#75434c] px-4 text-sm font-semibold text-[#ffc1c8] hover:bg-[#351820] disabled:opacity-50 sm:mt-0"
+            >
+              {accountReadinessState === "loading" ? "Checking…" : "Retry account check"}
+            </button>
+          </div>
+        )}
+
+        {auth.authenticated && accountReadinessReady && (
           <div className="mt-8 space-y-3">
             <div className="rounded-xl border border-[#315277] bg-[#0b1624] p-4 sm:flex sm:items-center sm:justify-between sm:gap-5">
               <div className="min-w-0">
@@ -1177,7 +1274,7 @@ export function CarryAccountSetup({
         )}
 
         {error && <p className="mt-4 rounded-lg border border-[#60303a] bg-[#251116] px-4 py-3 text-sm text-[#ee9da8]">{error}</p>}
-        {scopedActivationNeeded && (
+        {accountReadinessReady && scopedActivationNeeded && (
           <div className="mt-4 rounded-lg border border-[#315277] bg-[#0b1624] p-4 text-sm">
             <p className="font-semibold text-[#d8eaff]">Activate this connected owner wallet on {scopedActivationNeeded.venue === "aster" ? "Aster" : "Lighter"}</p>
             <p className="mt-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#718097]">

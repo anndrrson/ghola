@@ -691,6 +691,7 @@ function lifecycleProof(overrides = {}) {
     collateral_route_evidence_commitment: `carry:transfer-routes:evidence:${"b".repeat(40)}`,
     creation_input_evidence_commitment: `carry:creation-inputs:${"c".repeat(64)}`,
     realized_net_value_micro_usdc: 34,
+    settlement_evidence_commitment: `carry:settlement:evidence:${"d".repeat(64)}`,
     value_attribution: lifecycleValueAttribution(),
     ambiguity_retry_count: 0,
     owner_only_funding: true,

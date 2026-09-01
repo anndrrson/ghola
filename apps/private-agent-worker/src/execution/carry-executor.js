@@ -154,6 +154,7 @@ export async function executeStoredCarryEntry({
         accounting_reference_mark_price_e8: leg.reference_mark_price_e8,
         accounting_quote_asset: leg.quote_asset,
         accounting_fee_settlement_asset: leg.fee_settlement_asset,
+        accounting_pnl_settlement_asset: leg.pnl_settlement_asset,
         accounting_asset_valuations: leg.asset_valuations,
       })),
     },
@@ -345,6 +346,7 @@ export async function executeStoredCarryExit({
   verifyOrder,
   executeOrder,
   readFundingSettlements,
+  readCashflowValuation,
   preflight = preflightCarryPair,
   env = process.env,
   now = () => Date.now(),
@@ -422,6 +424,7 @@ export async function executeStoredCarryExit({
         accounting_reference_mark_price_e8: leg.reference_mark_price_e8,
         accounting_quote_asset: leg.quote_asset,
         accounting_fee_settlement_asset: leg.fee_settlement_asset,
+        accounting_pnl_settlement_asset: leg.pnl_settlement_asset,
         accounting_asset_valuations: leg.asset_valuations,
       })),
     },
@@ -520,6 +523,7 @@ export async function executeStoredCarryExit({
     venueAccess: current.monitoring_context.venue_access,
     recipient,
     readFundingSettlements,
+    readCashflowValuation,
     nowMs: now(),
   });
   const qualification = await recordCompletedCarryVenueQualifications({ state, position_id: positionId, now_ms: now(), env });
@@ -540,6 +544,7 @@ export async function runCarryExecutionTick({
   verifyOrder,
   executeOrder,
   readFundingSettlements,
+  readCashflowValuation,
   preflight = preflightCarryPair,
   env = process.env,
   now = () => Date.now(),
@@ -553,6 +558,14 @@ export async function runCarryExecutionTick({
     record.value_ledger?.status === "open"
     && record.value_evidence?.aborted_entry_recovery?.status === "complete"
   );
+  const pendingNormalFinalization = reconciledRecords.filter((record) =>
+    record.value_ledger?.status === "open"
+    && Boolean(record.exit_saga_id)
+    && record.value_evidence?.entry?.status === "complete"
+    && record.value_evidence?.exit?.status === "complete"
+    && typeof readFundingSettlements === "function"
+    && typeof readCashflowValuation === "function"
+  );
   const tasks = [
     ...records.map((record) => ({
       position_id: record.position?.position_id,
@@ -563,6 +576,7 @@ export async function runCarryExecutionTick({
         verifyOrder,
         executeOrder,
         readFundingSettlements,
+        readCashflowValuation,
         preflight,
         env,
         now,
@@ -576,10 +590,50 @@ export async function runCarryExecutionTick({
         recipient,
         verifyOrder,
         readFundingSettlements,
+        readCashflowValuation,
         preflight,
         env,
         now,
       }),
+    })),
+    ...pendingNormalFinalization.map((record) => ({
+      position_id: record.position?.position_id,
+      run: async () => {
+        const finalized = await finalizeCarryValueEvidenceIfComplete({
+          state,
+          ownerCommitment: record.owner_commitment,
+          positionId: record.position.position_id,
+          venueAccess: record.monitoring_context.venue_access,
+          recipient,
+          readFundingSettlements,
+          readCashflowValuation,
+          nowMs: now(),
+        });
+        if (!finalized.finalized) {
+          return { ok: true, pending: true, value_finalized: false, ...finalized };
+        }
+        const qualification = await recordCompletedCarryVenueQualifications({
+          state,
+          position_id: record.position.position_id,
+          now_ms: now(),
+          env,
+        });
+        const lifecycleProof = await recordLifecycleProofAfterExit({
+          state,
+          ownerCommitment: record.owner_commitment,
+          positionId: record.position.position_id,
+          qualification,
+          env,
+          nowMs: now(),
+        });
+        return {
+          ok: true,
+          value_finalized: true,
+          ...finalized,
+          qualification,
+          lifecycle_proof: lifecycleProof,
+        };
+      },
     })),
     ...pendingAbortedFinalization.map((record) => ({
       position_id: record.position?.position_id,
@@ -588,6 +642,7 @@ export async function runCarryExecutionTick({
         record,
         recipient,
         readFundingSettlements,
+        readCashflowValuation,
         nowMs: now(),
       }),
     })),
@@ -616,6 +671,7 @@ async function processExitingCarryRecord({
   verifyOrder,
   executeOrder,
   readFundingSettlements,
+  readCashflowValuation,
   preflight,
   env,
   now,
@@ -629,6 +685,7 @@ async function processExitingCarryRecord({
       verifyOrder,
       executeOrder,
       readFundingSettlements,
+      readCashflowValuation,
       preflight,
       env,
       now,
@@ -688,6 +745,7 @@ async function processExitingCarryRecord({
     venueAccess: current.monitoring_context.venue_access,
     recipient,
     readFundingSettlements,
+    readCashflowValuation,
     nowMs: now(),
   });
   const qualification = await recordCompletedCarryVenueQualifications({
@@ -892,6 +950,7 @@ async function reconciledCarryEntryMaterial({ state, record, saga, env, liveLegs
       reference_mark_price_e8: context.accounting_reference_mark_price_e8,
       quote_asset: context.accounting_quote_asset,
       fee_settlement_asset: context.accounting_fee_settlement_asset,
+      pnl_settlement_asset: context.accounting_pnl_settlement_asset,
       asset_valuations: context.accounting_asset_valuations,
     };
     const durableReceipt = await receiptForWorkOrder(state, context.work_order_commitment);
@@ -974,7 +1033,7 @@ async function detachPreSubmitCarrySaga({ state, record, phase, saga, nowMs }) {
     : { ok: false, error: stored.error || "carry_restart_record_conflict", saga };
 }
 
-async function synchronizeFrozenCarryRecovery({ state, record, recipient, verifyOrder, readFundingSettlements, preflight, env, now }) {
+async function synchronizeFrozenCarryRecovery({ state, record, recipient, verifyOrder, readFundingSettlements, readCashflowValuation, preflight, env, now }) {
   const sagaId = record.exit_saga_id || record.entry_saga_id;
   if (!sagaId) return denied("carry_frozen_recovery_saga_missing");
   const saga = await state.getMultiLegSaga(sagaId);
@@ -1020,6 +1079,7 @@ async function synchronizeFrozenCarryRecovery({ state, record, recipient, verify
       ownerCommitment: record.owner_commitment,
       positionId: record.position.position_id,
       saga,
+      readCashflowValuation,
       nowMs: checkedAt,
     });
   }
@@ -1040,6 +1100,7 @@ async function synchronizeFrozenCarryRecovery({ state, record, recipient, verify
       record: await state.getCarryPositionRecord(record.position.position_id),
       recipient,
       readFundingSettlements,
+      readCashflowValuation,
       nowMs: checkedAt,
     });
     return {
@@ -1064,6 +1125,7 @@ async function synchronizeFrozenCarryRecovery({ state, record, recipient, verify
     venueAccess: record.monitoring_context.venue_access,
     recipient,
     readFundingSettlements,
+    readCashflowValuation,
     nowMs: checkedAt,
   });
   return { ...advanced, record: finalized.record || accounting.record || advanced.record, accounting: accounting.summary, value_finalized: finalized.finalized };
@@ -1185,6 +1247,7 @@ async function recordExecutionValueEvidence({ state, ownerCommitment, positionId
       average_fill_price_e8: evidence.fill.averagePriceE8,
       reference_mark_price_e8: Number.isSafeInteger(leg.reference_mark_price_e8) ? leg.reference_mark_price_e8 : null,
       side: leg.side,
+      pnl_settlement_asset: accountingAsset(leg.pnl_settlement_asset),
       evidence_commitment: evidence.evidenceCommitment,
     };
     const entries = [];
@@ -1301,6 +1364,7 @@ async function recordRecoveredExitValueEvidence({ state, ownerCommitment, positi
       reference_mark_price_e8: context.accounting_reference_mark_price_e8,
       quote_asset: context.accounting_quote_asset,
       fee_settlement_asset: context.accounting_fee_settlement_asset,
+      pnl_settlement_asset: context.accounting_pnl_settlement_asset,
       asset_valuations: context.accounting_asset_valuations,
     });
   }
@@ -1315,17 +1379,50 @@ async function recordRecoveredExitValueEvidence({ state, ownerCommitment, positi
   });
 }
 
-async function recordRecoveredEntryUnwindValueEvidence({ state, ownerCommitment, positionId, saga, nowMs }) {
+async function recordRecoveredEntryUnwindValueEvidence({
+  state,
+  ownerCommitment,
+  positionId,
+  saga,
+  readCashflowValuation,
+  nowMs,
+}) {
   const venues = {};
   let complete = true;
-  let totalContractPnlE16 = 0n;
   let totalSlippageMicro = 0n;
+  const pnlComponents = [];
+  const before = await state.getCarryPositionRecord(positionId);
+  const persistedSettlement = before?.value_ledger?.entries?.find(
+    (entry) => entry.entry_id === "carry:value:aborted-entry:round-trip-pnl",
+  ) || null;
   for (const sagaLeg of saga.legs) {
+    const context = saga.execution_context?.legs?.find((item) => item.leg_id === sagaLeg.leg_id);
+    const pnlSettlementAsset = accountingAsset(context?.accounting_pnl_settlement_asset);
     if (sagaLeg.filled_micro_usdc === 0) {
-      venues[sagaLeg.venue_id] = { status: "no_fill", filled_base_e8: "0", contract_pnl_micro_usdc: 0 };
+      const component = pnlSettlementAsset
+        ? verifiedStoredPnlComponent(
+            persistedSettlement?.pnl_components?.find((item) => item?.venue_id === sagaLeg.venue_id),
+            { venueId: sagaLeg.venue_id, sourceAsset: pnlSettlementAsset, sourceAmountMicro: 0 },
+          ) || await exactPnlValuationComponent({
+            venueId: sagaLeg.venue_id,
+            sourceAsset: pnlSettlementAsset,
+            sourceAmountMicro: 0,
+            readCashflowValuation,
+            nowMs,
+          })
+        : null;
+      if (component) pnlComponents.push(component);
+      complete &&= component !== null;
+      venues[sagaLeg.venue_id] = {
+        status: component ? "no_fill" : "pending_exact_valuation",
+        filled_base_e8: "0",
+        pnl_settlement_asset: pnlSettlementAsset,
+        contract_pnl_source_amount_micro: 0,
+        contract_pnl_micro_usdc: component?.converted_amount_micro_usdc ?? null,
+        valuation_commitment: null,
+      };
       continue;
     }
-    const context = saga.execution_context?.legs?.find((item) => item.leg_id === sagaLeg.leg_id);
     const openingReceipt = context ? await receiptForWorkOrder(state, context.work_order_commitment) : null;
     const recovery = await readDurableRecoveryAccounting({
       state,
@@ -1353,6 +1450,7 @@ async function recordRecoveredEntryUnwindValueEvidence({ state, ownerCommitment,
           reference_mark_price_e8: context.accounting_reference_mark_price_e8,
           quote_asset: context.accounting_quote_asset,
           fee_settlement_asset: context.accounting_fee_settlement_asset,
+          pnl_settlement_asset: context.accounting_pnl_settlement_asset,
           asset_valuations: context.accounting_asset_valuations,
         },
         receipt: openingReceipt,
@@ -1369,6 +1467,7 @@ async function recordRecoveredEntryUnwindValueEvidence({ state, ownerCommitment,
           reference_mark_price_e8: execution.reference_mark_price_e8,
           quote_asset: context?.accounting_quote_asset,
           fee_settlement_asset: context?.accounting_fee_settlement_asset,
+          pnl_settlement_asset: context?.accounting_pnl_settlement_asset,
           asset_valuations: context?.accounting_asset_valuations,
         },
         receipt: execution.receipt,
@@ -1391,7 +1490,7 @@ async function recordRecoveredEntryUnwindValueEvidence({ state, ownerCommitment,
       });
       exactCosts &&= persisted;
     }
-    let contractPnlMicro = null;
+    let pnlComponent = null;
     if (exactBases) {
       const base = BigInt(openingSummary.baseE8);
       const openingPrice = BigInt(openingSummary.averagePriceE8);
@@ -1399,11 +1498,24 @@ async function recordRecoveredEntryUnwindValueEvidence({ state, ownerCommitment,
       const pnlE16 = sagaLeg.side === "buy"
         ? (unwindPrice - openingPrice) * base
         : (openingPrice - unwindPrice) * base;
-      totalContractPnlE16 += pnlE16;
       const pnl = signedRoundedDiv(pnlE16, 10_000_000_000n);
-      if (pnl <= BigInt(Number.MAX_SAFE_INTEGER) && pnl >= BigInt(Number.MIN_SAFE_INTEGER)) contractPnlMicro = Number(pnl);
-      else exactCosts = false;
+      if (pnl <= BigInt(Number.MAX_SAFE_INTEGER)
+        && pnl >= BigInt(Number.MIN_SAFE_INTEGER)
+        && pnlSettlementAsset) {
+        pnlComponent = verifiedStoredPnlComponent(
+          persistedSettlement?.pnl_components?.find((item) => item?.venue_id === sagaLeg.venue_id),
+          { venueId: sagaLeg.venue_id, sourceAsset: pnlSettlementAsset, sourceAmountMicro: Number(pnl) },
+        ) || await exactPnlValuationComponent({
+            venueId: sagaLeg.venue_id,
+            sourceAsset: pnlSettlementAsset,
+            sourceAmountMicro: Number(pnl),
+            readCashflowValuation,
+            nowMs,
+          });
+      }
+      exactCosts &&= pnlComponent !== null;
     }
+    if (pnlComponent) pnlComponents.push(pnlComponent);
     complete &&= exactCosts;
     venues[sagaLeg.venue_id] = {
       status: exactCosts ? "complete" : "pending_exact_receipts",
@@ -1411,19 +1523,38 @@ async function recordRecoveredEntryUnwindValueEvidence({ state, ownerCommitment,
       unwind_base_e8: unwindSummary.baseE8,
       opening_average_price_e8: openingSummary.averagePriceE8,
       unwind_average_price_e8: unwindSummary.averagePriceE8,
-      contract_pnl_micro_usdc: contractPnlMicro,
+      pnl_settlement_asset: pnlSettlementAsset,
+      contract_pnl_source_amount_micro: pnlComponent?.source_amount_micro ?? null,
+      contract_pnl_micro_usdc: pnlComponent?.converted_amount_micro_usdc ?? null,
+      valuation_commitment: pnlComponent?.cashflow_valuation?.evidence_commitment || null,
       executions: executionEvidence.length,
     };
   }
   let contractPnlMicro = null;
+  let settlementAdjustmentMicro = null;
   if (complete) {
-    const pnl = signedRoundedDiv(totalContractPnlE16, 10_000_000_000n);
+    const pnl = pnlComponents.reduce(
+      (sum, component) => sum + BigInt(component.converted_amount_micro_usdc),
+      0n,
+    );
     const adjustment = pnl + totalSlippageMicro;
-    if (pnl <= BigInt(Number.MAX_SAFE_INTEGER)
+    if (pnlComponents.length === saga.legs.length
+      && pnl <= BigInt(Number.MAX_SAFE_INTEGER)
       && pnl >= BigInt(Number.MIN_SAFE_INTEGER)
+      && totalSlippageMicro <= BigInt(Number.MAX_SAFE_INTEGER)
       && adjustment <= BigInt(Number.MAX_SAFE_INTEGER)
       && adjustment >= BigInt(Number.MIN_SAFE_INTEGER)) {
       contractPnlMicro = Number(pnl);
+      settlementAdjustmentMicro = Number(adjustment);
+      const slippageReversalMicro = Number(totalSlippageMicro);
+      const settlementEvidenceCommitment = persistedSettlement?.evidence_commitment
+        || `carry:value:aborted-entry:${digest(JSON.stringify({
+          saga_id: saga.saga_id,
+          venues,
+          pnl_components: pnlComponents,
+          slippage_reversal_micro_usdc: slippageReversalMicro,
+        })).slice(0, 40)}`;
+      const settlementOccurredAtMs = persistedSettlement?.occurred_at_ms || nowMs;
       complete = await appendValueEntryWithRetry({
         state,
         ownerCommitment,
@@ -1436,8 +1567,10 @@ async function recordRecoveredEntryUnwindValueEvidence({ state, ownerCommitment,
           amount_micro_usdc: Number(adjustment < 0n ? -adjustment : adjustment),
           venue_id: null,
           leg_id: null,
-          occurred_at_ms: nowMs,
-          evidence_commitment: `carry:value:aborted-entry:${digest(JSON.stringify({ saga_id: saga.saga_id, venues })).slice(0, 40)}`,
+          occurred_at_ms: settlementOccurredAtMs,
+          evidence_commitment: settlementEvidenceCommitment,
+          pnl_components: pnlComponents,
+          slippage_reversal_micro_usdc: slippageReversalMicro,
         },
         nowMs,
       });
@@ -1455,7 +1588,10 @@ async function recordRecoveredEntryUnwindValueEvidence({ state, ownerCommitment,
           status: complete ? "complete" : "pending_exact_receipts",
           saga_id: saga.saga_id,
           contract_pnl_micro_usdc: contractPnlMicro,
+          pnl_components: complete ? pnlComponents : null,
           attributed_slippage_micro_usdc: totalSlippageMicro <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(totalSlippageMicro) : null,
+          slippage_reversal_micro_usdc: totalSlippageMicro <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(totalSlippageMicro) : null,
+          settlement_adjustment_micro_usdc: settlementAdjustmentMicro,
           venues,
           checked_at_ms: nowMs,
         },
@@ -1466,7 +1602,14 @@ async function recordRecoveredEntryUnwindValueEvidence({ state, ownerCommitment,
   }
   return {
     record: storedRecord ? publicCarryRecord(storedRecord) : null,
-    summary: { phase: "aborted_entry_recovery", complete, contract_pnl_micro_usdc: contractPnlMicro, venues },
+    summary: {
+      phase: "aborted_entry_recovery",
+      complete,
+      contract_pnl_micro_usdc: contractPnlMicro,
+      pnl_components: complete ? pnlComponents : null,
+      settlement_adjustment_micro_usdc: settlementAdjustmentMicro,
+      venues,
+    },
   };
 }
 
@@ -1492,6 +1635,17 @@ async function appendExecutionCostEvidence({ state, ownerCommitment, positionId,
     });
   }
   for (const entry of entries) {
+    const current = await state.getCarryPositionRecord(positionId);
+    const existing = current?.value_ledger?.entries?.find((item) => item.entry_id === entry.entry_id);
+    if (existing) {
+      if (existing.entry_type !== entry.entry_type
+        || existing.direction !== entry.direction
+        || existing.amount_micro_usdc !== entry.amount_micro_usdc
+        || existing.venue_id !== venueId
+        || existing.leg_id !== legId
+        || existing.evidence_commitment !== entry.evidence_commitment) return false;
+      continue;
+    }
     const persisted = await appendValueEntryWithRetry({
       state,
       ownerCommitment,
@@ -1580,6 +1734,9 @@ async function finalizeAbortedCarryValueEvidenceIfComplete({ state, record, reci
           status: "complete",
           mode: "aborted_entry_unwind",
           contract_pnl_micro_usdc: current.value_evidence.aborted_entry_recovery.contract_pnl_micro_usdc,
+          pnl_components: current.value_evidence.aborted_entry_recovery.pnl_components,
+          slippage_reversal_micro_usdc: current.value_evidence.aborted_entry_recovery.slippage_reversal_micro_usdc,
+          settlement_adjustment_micro_usdc: current.value_evidence.aborted_entry_recovery.settlement_adjustment_micro_usdc,
           capital_cost_micro_usdc: capitalCost,
           checked_at_ms: exitAtMs,
         },
@@ -1612,7 +1769,7 @@ async function receiptForWorkOrder(state, workOrderCommitment) {
   return cached?.receipt || attempt || null;
 }
 
-async function finalizeCarryValueEvidenceIfComplete({ state, ownerCommitment, positionId, venueAccess, recipient, readFundingSettlements, nowMs }) {
+async function finalizeCarryValueEvidenceIfComplete({ state, ownerCommitment, positionId, venueAccess, recipient, readFundingSettlements, readCashflowValuation, nowMs }) {
   if (typeof readFundingSettlements !== "function") return { finalized: false, record: null };
   await collectStoredCarryFundingEvidence({
     state,
@@ -1629,9 +1786,27 @@ async function finalizeCarryValueEvidenceIfComplete({ state, ownerCommitment, po
   if (!current || evidence?.entry?.status !== "complete" || evidence?.exit?.status !== "complete" || evidence?.funding?.status !== "complete_through_exit") {
     return { finalized: false, record: current ? publicCarryRecord(current) : null };
   }
-  const economics = realizedCarryEconomics(current);
+  const persistedSettlement = current.value_ledger?.entries?.find(
+    (entry) => entry.entry_id === "carry:value:realized:contract-pnl",
+  ) || null;
+  const economics = await realizedCarryEconomics(current, {
+    readCashflowValuation,
+    persistedSettlement,
+    nowMs,
+  });
   if (!economics.ok) return { finalized: false, record: publicCarryRecord(current) };
-  const economicCommitment = `carry:value:economics:${digest(JSON.stringify(economics.evidence)).slice(0, 40)}`;
+  const economicCommitment = persistedSettlement?.evidence_commitment
+    || `carry:value:economics:${digest(JSON.stringify(economics.evidence)).slice(0, 40)}`;
+  const settlementOccurredAtMs = persistedSettlement?.occurred_at_ms || nowMs;
+  const persistedCapital = current.value_ledger?.entries?.find(
+    (entry) => entry.entry_id === "carry:value:realized:capital-cost",
+  ) || null;
+  if (persistedCapital
+    && (persistedCapital.amount_micro_usdc !== economics.capitalCostMicro
+      || persistedCapital.direction !== "debit"
+      || persistedCapital.evidence_commitment !== economicCommitment)) {
+    return { finalized: false, record: publicCarryRecord(current) };
+  }
   const pnlStored = await appendValueEntryWithRetry({
     state,
     ownerCommitment,
@@ -1644,8 +1819,10 @@ async function finalizeCarryValueEvidenceIfComplete({ state, ownerCommitment, po
       amount_micro_usdc: Math.abs(economics.settlementAdjustmentMicro),
       venue_id: null,
       leg_id: null,
-      occurred_at_ms: nowMs,
+      occurred_at_ms: settlementOccurredAtMs,
       evidence_commitment: economicCommitment,
+      pnl_components: economics.pnlComponents,
+      slippage_reversal_micro_usdc: economics.slippageReversalMicro,
     },
     nowMs,
   });
@@ -1661,7 +1838,7 @@ async function finalizeCarryValueEvidenceIfComplete({ state, ownerCommitment, po
       amount_micro_usdc: economics.capitalCostMicro,
       venue_id: null,
       leg_id: null,
-      occurred_at_ms: nowMs,
+      occurred_at_ms: persistedCapital?.occurred_at_ms || nowMs,
       evidence_commitment: economicCommitment,
     },
     nowMs,
@@ -1676,6 +1853,9 @@ async function finalizeCarryValueEvidenceIfComplete({ state, ownerCommitment, po
         realized_economics: {
           status: "complete",
           contract_pnl_micro_usdc: economics.contractPnlMicro,
+          pnl_components: economics.pnlComponents,
+          slippage_reversal_micro_usdc: economics.slippageReversalMicro,
+          settlement_adjustment_micro_usdc: economics.settlementAdjustmentMicro,
           capital_cost_micro_usdc: economics.capitalCostMicro,
           evidence_commitment: economicCommitment,
           checked_at_ms: nowMs,
@@ -1709,11 +1889,133 @@ async function finalizeCarryValueEvidenceIfComplete({ state, ownerCommitment, po
   return { finalized: finalized.ok, record: finalized.record || publicCarryRecord(current) };
 }
 
-function realizedCarryEconomics(record) {
+async function exactPnlValuationComponent({
+  venueId,
+  sourceAsset,
+  sourceAmountMicro,
+  readCashflowValuation,
+  nowMs,
+}) {
+  if (!Number.isSafeInteger(sourceAmountMicro)
+    || !Number.isSafeInteger(nowMs)
+    || nowMs <= 0) return null;
+  const sourceAmountDecimal = signedMicroDecimal(sourceAmountMicro);
+  const sourceAmountScale = 6;
+  if (sourceAmountMicro === 0) {
+    return Object.freeze({
+      venue_id: venueId,
+      source_asset: sourceAsset,
+      source_amount_micro: 0,
+      source_amount_decimal: sourceAmountDecimal,
+      source_amount_scale: sourceAmountScale,
+      converted_amount_micro_usdc: 0,
+      valued_at_ms: nowMs,
+      cashflow_valuation: null,
+    });
+  }
+  let valuation;
+  try {
+    valuation = sourceAsset === "USDC"
+      ? exactUsdcIdentityValuation(sourceAmountMicro, nowMs)
+      : await readCashflowValuation?.({
+          venue_id: venueId,
+          source_asset: sourceAsset,
+          source_amount_micro: sourceAmountMicro,
+          source_amount_decimal: sourceAmountDecimal,
+          source_amount_scale: sourceAmountScale,
+          checked_at_ms: nowMs,
+        });
+    valuation = verifyCashflowValuationEvidence(valuation);
+    if (valuation.source_asset !== sourceAsset
+      || valuation.bound_source_amount_micro !== sourceAmountMicro
+      || valuation.observed_at_ms > nowMs + 5_000
+      || valuation.expires_at_ms <= nowMs) return null;
+    const converted = convertSignedCashflowToMicroUsdc({
+      amount_micro: sourceAmountMicro,
+      valuation,
+    });
+    if (!Number.isSafeInteger(converted)) return null;
+    return Object.freeze({
+      venue_id: venueId,
+      source_asset: sourceAsset,
+      source_amount_micro: sourceAmountMicro,
+      source_amount_decimal: sourceAmountDecimal,
+      source_amount_scale: sourceAmountScale,
+      converted_amount_micro_usdc: converted,
+      valued_at_ms: nowMs,
+      cashflow_valuation: valuation,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function exactUsdcIdentityValuation(amountMicro, nowMs) {
+  const valuation = {
+    version: 1,
+    source_asset: "USDC",
+    valuation_asset: "USDC",
+    verified: true,
+    bound_source_amount_micro: amountMicro,
+    bound_value_micro_usdc: amountMicro,
+    credit_rate_e8: 100_000_000,
+    debit_rate_e8: 100_000_000,
+    observed_at_ms: nowMs,
+    expires_at_ms: nowMs + 300_000,
+    evidence_source: "identity:usdc:v1",
+  };
+  const evidenceMessage = cashflowValuationEvidenceMessage(valuation);
+  return normalizeCashflowValuation({
+    ...valuation,
+    evidence_message: evidenceMessage,
+    evidence_commitment: `carry:cashflow-valuation:evidence:${digest(evidenceMessage)}`,
+  });
+}
+
+function signedMicroDecimal(amountMicro) {
+  const negative = amountMicro < 0;
+  const magnitude = BigInt(Math.abs(amountMicro));
+  const integer = magnitude / 1_000_000n;
+  const fraction = String(magnitude % 1_000_000n).padStart(6, "0");
+  return `${negative ? "-" : ""}${integer}.${fraction}`;
+}
+
+function verifiedStoredPnlComponent(value, { venueId, sourceAsset, sourceAmountMicro }) {
+  try {
+    if (!value
+      || value.venue_id !== venueId
+      || value.source_asset !== sourceAsset
+      || value.source_amount_micro !== sourceAmountMicro
+      || value.source_amount_decimal !== signedMicroDecimal(sourceAmountMicro)
+      || value.source_amount_scale !== 6
+      || !Number.isSafeInteger(value.converted_amount_micro_usdc)
+      || !Number.isSafeInteger(value.valued_at_ms)
+      || value.valued_at_ms <= 0) return null;
+    if (sourceAmountMicro === 0) {
+      return value.converted_amount_micro_usdc === 0 && value.cashflow_valuation === null
+        ? value
+        : null;
+    }
+    const valuation = verifyCashflowValuationEvidence(value.cashflow_valuation);
+    if (valuation.source_asset !== sourceAsset
+      || valuation.bound_source_amount_micro !== sourceAmountMicro
+      || valuation.observed_at_ms > value.valued_at_ms + 5_000
+      || valuation.expires_at_ms <= value.valued_at_ms
+      || convertSignedCashflowToMicroUsdc({
+        amount_micro: sourceAmountMicro,
+        valuation,
+      }) !== value.converted_amount_micro_usdc) return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+async function realizedCarryEconomics(record, { readCashflowValuation, persistedSettlement, nowMs }) {
   try {
     const venues = [record.position.long_venue_id, record.position.short_venue_id];
-    let pnlE16 = 0n;
     const pairs = [];
+    const pnlComponents = [];
     for (const venueId of venues) {
       const entry = record.value_evidence.entry.venues[venueId];
       const exit = record.value_evidence.exit.venues[venueId];
@@ -1725,24 +2027,77 @@ function realizedCarryEconomics(record) {
       const venuePnl = entry.side === "buy"
         ? (exitPrice - entryPrice) * entryBase
         : (entryPrice - exitPrice) * entryBase;
-      pnlE16 += venuePnl;
-      pairs.push({ venue_id: venueId, side: entry.side, base_e8: entry.filled_base_e8, entry_price_e8: entry.average_fill_price_e8, exit_price_e8: exit.average_fill_price_e8 });
+      const nativePnl = signedRoundedDiv(venuePnl, 10_000_000_000n);
+      if (nativePnl > BigInt(Number.MAX_SAFE_INTEGER) || nativePnl < BigInt(Number.MIN_SAFE_INTEGER)) return { ok: false };
+      const pnlSettlementAsset = accountingAsset(entry.pnl_settlement_asset);
+      if (!pnlSettlementAsset || pnlSettlementAsset !== accountingAsset(exit.pnl_settlement_asset)) return { ok: false };
+      const persistedComponent = persistedSettlement?.pnl_components?.find(
+        (item) => item?.venue_id === venueId,
+      );
+      const component = verifiedStoredPnlComponent(persistedComponent, {
+        venueId,
+        sourceAsset: pnlSettlementAsset,
+        sourceAmountMicro: Number(nativePnl),
+      }) || await exactPnlValuationComponent({
+        venueId,
+        sourceAsset: pnlSettlementAsset,
+        sourceAmountMicro: Number(nativePnl),
+        readCashflowValuation,
+        nowMs,
+      });
+      if (!component) return { ok: false };
+      pnlComponents.push(component);
+      pairs.push({
+        venue_id: venueId,
+        side: entry.side,
+        base_e8: entry.filled_base_e8,
+        entry_price_e8: entry.average_fill_price_e8,
+        exit_price_e8: exit.average_fill_price_e8,
+        pnl_settlement_asset: pnlSettlementAsset,
+        source_contract_pnl_micro: component.source_amount_micro,
+        converted_contract_pnl_micro_usdc: component.converted_amount_micro_usdc,
+        valuation_commitment: component.cashflow_valuation?.evidence_commitment || null,
+      });
     }
-    const contractPnl = signedRoundedDiv(pnlE16, 10_000_000_000n);
-    if (contractPnl > BigInt(Number.MAX_SAFE_INTEGER) || contractPnl < BigInt(Number.MIN_SAFE_INTEGER)) return { ok: false };
+    const contractPnlMicro = pnlComponents.reduce((sum, component) => {
+      const value = BigInt(component.converted_amount_micro_usdc);
+      return sum + value;
+    }, 0n);
+    if (contractPnlMicro > BigInt(Number.MAX_SAFE_INTEGER) || contractPnlMicro < BigInt(Number.MIN_SAFE_INTEGER)) return { ok: false };
     const elapsedMs = Math.max(0, Number(record.final_reconciliation_evidence.checked_at_ms) - Number(record.position.created_at_ms));
     const modeledCapital = BigInt(record.opportunity.projected_capital_cost_micro_usdc);
     const horizon = BigInt(record.opportunity.horizon_ms);
     const capitalCost = horizon > 0n ? roundedDiv(modeledCapital * BigInt(elapsedMs), horizon) : 0n;
     if (capitalCost > BigInt(Number.MAX_SAFE_INTEGER)) return { ok: false };
-    const contractPnlMicro = Number(contractPnl);
     const slippageMicro = Number(record.value_ledger.realized.slippage_micro_usdc || 0);
+    const settlementAdjustment = contractPnlMicro + BigInt(slippageMicro);
+    if (settlementAdjustment > BigInt(Number.MAX_SAFE_INTEGER)
+      || settlementAdjustment < BigInt(Number.MIN_SAFE_INTEGER)) return { ok: false };
+    if (persistedSettlement
+      && (persistedSettlement.slippage_reversal_micro_usdc !== slippageMicro
+        || persistedSettlement.direction !== (settlementAdjustment < 0n ? "debit" : "credit")
+        || persistedSettlement.amount_micro_usdc
+          !== Number(settlementAdjustment < 0n ? -settlementAdjustment : settlementAdjustment))) {
+      return { ok: false };
+    }
     return {
       ok: true,
-      contractPnlMicro,
-      settlementAdjustmentMicro: contractPnlMicro + slippageMicro,
+      contractPnlMicro: Number(contractPnlMicro),
+      settlementAdjustmentMicro: Number(settlementAdjustment),
+      pnlComponents,
+      slippageReversalMicro: slippageMicro,
       capitalCostMicro: Number(capitalCost),
-      evidence: { position_id: record.position.position_id, pairs, contract_pnl_micro_usdc: contractPnlMicro, attributed_slippage_micro_usdc: slippageMicro, capital_cost_micro_usdc: Number(capitalCost), elapsed_ms: elapsedMs },
+      evidence: {
+        position_id: record.position.position_id,
+        pairs,
+        pnl_components: pnlComponents,
+        contract_pnl_micro_usdc: Number(contractPnlMicro),
+        attributed_slippage_micro_usdc: slippageMicro,
+        slippage_reversal_micro_usdc: slippageMicro,
+        settlement_adjustment_micro_usdc: Number(settlementAdjustment),
+        capital_cost_micro_usdc: Number(capitalCost),
+        elapsed_ms: elapsedMs,
+      },
     };
   } catch {
     return { ok: false };
@@ -1777,6 +2132,7 @@ function executionValueEvidence({ leg, receipt, nowMs }) {
     final_proof: receipt?.final_proof || null,
     accounting_quote_asset: leg.quote_asset || null,
     accounting_fee_settlement_asset: leg.fee_settlement_asset || null,
+    accounting_pnl_settlement_asset: leg.pnl_settlement_asset || null,
     accounting_valuation_commitments: Array.isArray(leg.asset_valuations)
       ? leg.asset_valuations.map((row) => row?.evidence_commitment || null).sort()
       : null,
@@ -1980,7 +2336,7 @@ function signedRoundedDiv(numerator, denominator) {
     : roundedDiv(numerator, denominator);
 }
 
-export function startCarryExecutionLoop({ state, recipient, verifyOrder, executeOrder, readFundingSettlements, preflight = preflightCarryPair, env = process.env, now = () => Date.now() } = {}) {
+export function startCarryExecutionLoop({ state, recipient, verifyOrder, executeOrder, readFundingSettlements, readCashflowValuation, preflight = preflightCarryPair, env = process.env, now = () => Date.now() } = {}) {
   if (String(env.PRIVATE_AGENT_CARRY_AUTO_EXIT_ENABLED ?? "true").toLowerCase() === "false") {
     const health = disabledCarryLoopHealth("carry_execution");
     return {
@@ -2024,7 +2380,7 @@ export function startCarryExecutionLoop({ state, recipient, verifyOrder, execute
     run: async () => {
       const audit = await ensureRestartAudit();
       if (audit?.ok !== true) return { ok: false, error: audit?.error || "carry_restart_audit_failed" };
-      return runCarryExecutionTick({ state, recipient, verifyOrder, executeOrder, readFundingSettlements, preflight, env, now });
+      return runCarryExecutionTick({ state, recipient, verifyOrder, executeOrder, readFundingSettlements, readCashflowValuation, preflight, env, now });
     },
   });
   const schedule = (delay) => {
@@ -2080,6 +2436,7 @@ function buildExitLegs(record, proof, entrySaga, bases, nowMs) {
     const shape = verified?.order_shape;
     const quoteAsset = accountingAsset(verified?.quote_asset);
     const feeSettlementAsset = accountingAsset(verified?.fee_settlement_asset);
+    const pnlSettlementAsset = accountingAsset(verified?.collateral_asset);
     const assetValuations = accountingValuations(verified?.asset_valuations);
     const base = bases[entryLeg.venue_id];
     const notionalMicroUsdc = Number(entryLeg.filled_micro_usdc);
@@ -2087,7 +2444,8 @@ function buildExitLegs(record, proof, entrySaga, bases, nowMs) {
       || !base || canonicalPositiveDecimal(shape.base_size) !== base
       || !Number.isSafeInteger(notionalMicroUsdc) || notionalMicroUsdc <= 0
       || notionalMicroUsdc > record.position.target_notional_micro_usdc
-      || verified.transaction_broadcast !== false || !quoteAsset || !feeSettlementAsset || !assetValuations) {
+      || verified.transaction_broadcast !== false || !quoteAsset || !feeSettlementAsset
+      || !pnlSettlementAsset || !assetValuations) {
       return denied(`carry_exit_order_shape_missing:${entryLeg.venue_id}`);
     }
     const legId = `leg:carry:exit:${digest(`${record.position.position_id}:${entryLeg.venue_id}`).slice(0, 28)}`;
@@ -2100,6 +2458,7 @@ function buildExitLegs(record, proof, entrySaga, bases, nowMs) {
       reference_mark_price_e8: verified.reference_mark_price_e8,
       quote_asset: quoteAsset,
       fee_settlement_asset: feeSettlementAsset,
+      pnl_settlement_asset: pnlSettlementAsset,
       asset_valuations: assetValuations,
       work_order_commitment: `work:carry:exit:${digest(`${record.position.position_id}:${entryLeg.venue_id}`).slice(0, 32)}`,
       instruction: {
@@ -2200,9 +2559,10 @@ function buildLegs(record, proof, nowMs) {
     const shape = verified?.order_shape;
     const quoteAsset = accountingAsset(verified?.quote_asset);
     const feeSettlementAsset = accountingAsset(verified?.fee_settlement_asset);
+    const pnlSettlementAsset = accountingAsset(verified?.collateral_asset);
     const assetValuations = accountingValuations(verified?.asset_valuations);
     if (!shape?.market || !shape?.base_size || !shape?.limit_price || verified.transaction_broadcast !== false
-      || !quoteAsset || !feeSettlementAsset || !assetValuations) {
+      || !quoteAsset || !feeSettlementAsset || !pnlSettlementAsset || !assetValuations) {
       return denied(`carry_entry_order_shape_missing:${spec.venue_id}`);
     }
     const legId = `leg:carry:${digest(`${record.position.position_id}:${spec.id}`).slice(0, 32)}`;
@@ -2215,6 +2575,7 @@ function buildLegs(record, proof, nowMs) {
       reference_mark_price_e8: verified.reference_mark_price_e8,
       quote_asset: quoteAsset,
       fee_settlement_asset: feeSettlementAsset,
+      pnl_settlement_asset: pnlSettlementAsset,
       asset_valuations: assetValuations,
       work_order_commitment: workOrder,
       instruction: {

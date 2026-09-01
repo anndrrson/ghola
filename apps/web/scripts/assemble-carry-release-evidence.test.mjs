@@ -9,6 +9,11 @@ import {
 } from "./assemble-carry-release-evidence.mjs";
 
 const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+const SOURCE_TREE = Object.freeze({
+  source_revision: "a".repeat(40),
+  source_tree_digest: `sha256:${"c".repeat(64)}`,
+  release_file_count: 1,
+});
 
 test("assembles, verifies, and atomically writes canonical lifecycle evidence", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ghola-carry-assemble-"));
@@ -27,6 +32,7 @@ test("assembles, verifies, and atomically writes canonical lifecycle evidence", 
     lifecyclePaths: [firstPath, secondPath],
     outputPath,
   }, {
+    attestSourceTree: () => SOURCE_TREE,
     assemble: ({ candidate, lifecycles }) => ({
       z: lifecycles,
       candidate,
@@ -35,6 +41,7 @@ test("assembles, verifies, and atomically writes canonical lifecycle evidence", 
     verify: async (evidence) => {
       verifyCalls += 1;
       assert.deepEqual(evidence.z, [{ position_id: "first" }, { position_id: "second" }]);
+      assert.equal(evidence.candidate.source_tree_digest, SOURCE_TREE.source_tree_digest);
       return { ok: true, evidence_commitment: evidence.evidence_commitment };
     },
   });
@@ -62,6 +69,7 @@ test("never changes the prior artifact when verification fails", async () => {
     lifecyclePaths: [firstPath, secondPath],
     outputPath,
   }, {
+    attestSourceTree: () => SOURCE_TREE,
     assemble: () => ({ evidence_commitment: "invalid" }),
     verify: async () => {
       throw new Error("proof rejected");
@@ -69,6 +77,36 @@ test("never changes the prior artifact when verification fails", async () => {
   }), /proof rejected/);
   assert.equal(await readFile(outputPath, "utf8"), "existing-proof\n");
   assert.deepEqual((await readdir(directory)).filter((name) => name.endsWith(".tmp")), []);
+});
+
+test("rejects a dirty release-critical source tree before assembling evidence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ghola-carry-assemble-dirty-"));
+  const candidatePath = join(directory, "candidate.json");
+  const firstPath = join(directory, "first.json");
+  const secondPath = join(directory, "second.json");
+  const outputPath = join(directory, "proof.json");
+  await Promise.all([
+    writeFile(candidatePath, JSON.stringify({ web_commit_sha: "a".repeat(40) })),
+    writeFile(firstPath, "{}"),
+    writeFile(secondPath, "{}"),
+    writeFile(outputPath, "existing-proof\n"),
+  ]);
+  let assembled = false;
+  await assert.rejects(() => assembleCarryReleaseEvidenceFile({
+    candidatePath,
+    lifecyclePaths: [firstPath, secondPath],
+    outputPath,
+  }, {
+    attestSourceTree: () => {
+      throw new Error("carry_release_source_tree_dirty:apps/web/release-critical.ts");
+    },
+    assemble: () => {
+      assembled = true;
+      return {};
+    },
+  }), /carry_release_source_tree_dirty:apps\/web\/release-critical\.ts/);
+  assert.equal(assembled, false);
+  assert.equal(await readFile(outputPath, "utf8"), "existing-proof\n");
 });
 
 test("requires one candidate and two unique lifecycle inputs", () => {

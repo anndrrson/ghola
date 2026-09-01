@@ -878,6 +878,8 @@ function AlternateProductWorkspace({
   const router = useRouter();
   const workspaceParams = useSearchParams();
   const workspaceQuery = workspaceParams.toString();
+  const workspaceQueryRef = useRef(workspaceQuery);
+  workspaceQueryRef.current = workspaceQuery;
   const carryNoSubmitQuery = workspaceParams.get("carry_check");
   const perpsTurnkey = usePerpsTurnkey();
   const privateAccountWallet = useTurnkeyWallet();
@@ -946,18 +948,24 @@ function AlternateProductWorkspace({
   useEffect(() => {
     if (carryNoSubmitQuery !== "no-submit") {
       carryNoSubmitUrlConsumedRef.current = false;
+      setCarryNoSubmitRequested(false);
       return;
     }
     if (carryNoSubmitUrlConsumedRef.current) return;
     carryNoSubmitUrlConsumedRef.current = true;
     setCarryNoSubmitRequested(true);
-    const params = new URLSearchParams(workspaceQuery);
+  }, [carryNoSubmitQuery]);
+
+  const beginCarryNoSubmitRequest = useCallback(() => {
+    setCarryNoSubmitRequested(false);
+  }, []);
+
+  const resolveCarryNoSubmitRequest = useCallback((outcome: "completed" | "auth_required") => {
+    setCarryNoSubmitRequested(false);
+    if (outcome === "auth_required") return;
+    const params = new URLSearchParams(workspaceQueryRef.current);
     params.delete("carry_check");
     replaceTradeUrlAfterPaint(`/trade?${params.toString()}`);
-  }, [carryNoSubmitQuery, workspaceQuery]);
-
-  const consumeCarryNoSubmitRequest = useCallback(() => {
-    setCarryNoSubmitRequested(false);
   }, []);
   const hyperliquidRecord = useMarketData({
     venue: "hyperliquid",
@@ -1690,7 +1698,8 @@ function AlternateProductWorkspace({
                 preferredLongVenue={workspaceParams.get("long_venue")}
                 preferredShortVenue={workspaceParams.get("short_venue")}
                 hyperliquidLivePatch={hyperliquidCarryPatch}
-                onAutoRunNoSubmitConsumed={consumeCarryNoSubmitRequest}
+                onAutoRunNoSubmitStarted={beginCarryNoSubmitRequest}
+                onAutoRunNoSubmitResolved={resolveCarryNoSubmitRequest}
                 onAssetSelect={changePerpMarket}
               />
             ) : null}

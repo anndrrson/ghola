@@ -3,11 +3,17 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { attestCarryReleaseSourceTree } from "../../../scripts/carry-source-tree-attestation.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../../..");
 
 export const CARRY_RELEASE_FILES = Object.freeze({
+  sourceTreeAttestation: "scripts/carry-source-tree-attestation.mjs",
+  sourceTreeAttestationTest: "apps/web/scripts/carry-source-tree-attestation.test.mjs",
+  executionContract: "apps/web/scripts/check-carry-execution-contract.mjs",
+  executionContractTest: "apps/web/scripts/check-carry-execution-contract.test.mjs",
+  webPackage: "apps/web/package.json",
   vercelIgnore: ".vercelignore",
   coreIndex: "packages/execution-core/index.js",
   coreCarry: "packages/execution-core/carry.js",
@@ -86,6 +92,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webCredentialOnboardingTest: "apps/web/src/lib/venue-credential-onboarding.test.ts",
   webPage: "apps/web/src/app/carry/page.tsx",
   webTradeWorkspace: "apps/web/src/components/trade/PublicCoinbaseLiveTrade.tsx",
+  webTradeLifecycleTest: "apps/web/src/lib/public-hyperliquid-trade-lifecycle.test.ts",
   webTradeReadiness: "apps/web/src/lib/trade-readiness.ts",
   webTradeReadinessTest: "apps/web/src/lib/trade-readiness.test.ts",
   webCarryChart: "apps/web/src/components/carry/CarryChartStrip.tsx",
@@ -103,6 +110,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webCsp: "apps/web/src/lib/csp-config.ts",
   webAccountPage: "apps/web/src/app/app/account/page.tsx",
   webAccountSetup: "apps/web/src/components/carry/CarryAccountSetup.tsx",
+  webAccountSetupTest: "apps/web/src/components/carry/CarryAccountSetup.test.tsx",
   webAccountConnections: "apps/web/src/lib/carry-account-connections.ts",
   webAccountConnectionsTest: "apps/web/src/lib/carry-account-connections.test.ts",
   webOnboardingRecovery: "apps/web/src/lib/carry-onboarding-recovery.ts",
@@ -159,6 +167,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   hyperliquidMetricsTest: "apps/private-agent-worker/test/hyperliquid-account-metrics.test.js",
   hyperliquidReconcileTest: "apps/private-agent-worker/test/hyperliquid-reconcile.test.js",
   liquidationDistanceTest: "apps/private-agent-worker/test/liquidation-distance.test.js",
+  evidenceAssembler: "apps/web/scripts/assemble-carry-release-evidence.mjs",
+  evidenceAssemblerTest: "apps/web/scripts/assemble-carry-release-evidence.test.mjs",
   evidenceVerifier: "apps/web/scripts/verify-carry-release-evidence.mjs",
   evidenceVerifierTest: "apps/web/scripts/verify-carry-release-evidence.test.mjs",
   noSubmitEvidenceVerifier: "apps/web/scripts/verify-carry-no-submit-evidence.mjs",
@@ -196,6 +206,22 @@ export function checkCarryExecutionContract(sources) {
   requireText("proofRunbook", "verify:carry-no-submit-evidence", "carry_proof_runbook_no_submit_verifier_missing");
   requireText("proofRunbook", "Capital-free development witness", "carry_shadow_development_witness_runbook_missing");
   requireText("proofRunbook", "never substitutes for image-bound qualification", "carry_shadow_development_witness_boundary_missing");
+  requireText("sourceTreeAttestation", "ghola-carry-release-source-tree-v1", "carry_source_tree_attestation_domain_missing");
+  requireText("sourceTreeAttestation", "carry_release_source_tree_dirty", "carry_source_tree_dirty_gate_missing");
+  requireText("sourceTreeAttestationTest", "ignores unrelated dirt", "carry_source_tree_unrelated_dirty_test_missing");
+  requireText("sourceTreeAttestationTest", "tampered expected digest", "carry_source_tree_tamper_test_missing");
+  requireText("sourceTreeAttestation", "carry_release_source_not_regular", "carry_source_tree_regular_file_gate_missing");
+  requireText("sourceTreeAttestationTest", "rejects a release-critical symlink escape", "carry_source_tree_symlink_escape_test_missing");
+  requireText("executionContract", "clean release-critical sources", "carry_source_tree_guard_status_missing");
+  forbidText("executionContract", ["committed", "sources"].join(" "), "carry_source_tree_guard_misleading_status_present");
+  requireText("shadowDevelopmentWitness", "source_tree_digest", "carry_shadow_source_tree_binding_missing");
+  requireText("shadowWitnessVerifierCli", "expectedSourceTreeDigest", "carry_shadow_source_tree_verifier_missing");
+  requireText("noSubmitEvidenceAssembler", "source_tree_digest", "carry_no_submit_source_tree_binding_missing");
+  requireText("noSubmitEvidenceVerifier", "expected_source_tree_digest", "carry_no_submit_source_tree_verifier_missing");
+  requireText("evidenceAssembler", "attestCarryReleaseSourceTree", "carry_release_source_tree_assembler_missing");
+  requireText("evidenceAssemblerTest", "rejects a dirty release-critical source tree", "carry_release_source_tree_dirty_assembler_test_missing");
+  requireText("evidenceVerifier", "source_tree_digest", "carry_release_source_tree_binding_missing");
+  requireText("evidenceVerifier", "expected_source_tree_digest", "carry_release_source_tree_verifier_missing");
   requireText("webNoSubmitEvidence", "ghola_three_venue_no_submit_proof", "carry_preview_no_submit_artifact_missing");
   requireText("webNoSubmitEvidence", "containsCredentialMaterial", "carry_preview_no_submit_artifact_secret_gate_missing");
   requireText("webNoSubmitEvidenceTest", "without credentials", "carry_preview_no_submit_artifact_test_missing");
@@ -297,10 +323,22 @@ export function checkCarryExecutionContract(sources) {
   requireText("webAccountConnections", "carryNoSubmitVerificationHref", "carry_setup_no_submit_handoff_missing");
   requireText("webAccountSetup", "href={noSubmitReturnTo}", "carry_setup_no_submit_link_missing");
   requireText("webTradeWorkspace", 'carryNoSubmitQuery !== "no-submit"', "carry_terminal_no_submit_intent_missing");
+  requireText("webTradeWorkspace", "const beginCarryNoSubmitRequest", "carry_terminal_no_submit_parent_start_missing");
+  requireText("webTradeWorkspace", "onAutoRunNoSubmitStarted={beginCarryNoSubmitRequest}", "carry_terminal_no_submit_parent_binding_missing");
+  requireText("webTradeWorkspace", "workspaceQueryRef.current = workspaceQuery", "carry_terminal_no_submit_latest_query_ref_missing");
+  requireText("webTradeWorkspace", "new URLSearchParams(workspaceQueryRef.current)", "carry_terminal_no_submit_latest_query_resolution_missing");
   requireText("webTradeWorkspace", "Worker update required", "carry_terminal_runtime_mismatch_ui_missing");
   requireText("webTradeReadinessTest", "keeps deployment faults out of wallet onboarding", "carry_terminal_runtime_mismatch_test_missing");
   requireText("webCarryBuilder", "autoRunNoSubmitConsumedRef", "carry_terminal_no_submit_one_shot_missing");
-  requireText("webCarryBuilderTest", "consumes the setup handoff once and runs only the no-submit proof", "carry_terminal_no_submit_handoff_test_missing");
+  requireText(
+    "webCarryBuilder",
+    "autoRunNoSubmitConsumedRef.current = true;\n    onAutoRunNoSubmitStarted?.();\n    void runCheck(true)",
+    "carry_terminal_no_submit_parent_start_order_missing",
+  );
+  requireText("webCarryBuilderTest", "resolves the setup handoff after exactly one no-submit request", "carry_terminal_no_submit_handoff_test_missing");
+  requireText("webCarryBuilderTest", "keeps one no-submit request when the keyed terminal remounts in flight", "carry_terminal_no_submit_remount_test_missing");
+  requireText("webTradeLifecycleTest", "resolves an in-flight carry handoff against the latest workspace query", "carry_terminal_no_submit_latest_query_test_missing");
+  requireText("webCarryBuilderTest", "keeps an auth-expired handoff pending and never retries automatically", "carry_terminal_no_submit_auth_expiry_test_missing");
   requireText("webSetupAuthRecovery", "!input.usingTurnkeyOwner || input.authorizationProofCreated", "carry_setup_auth_proof_boundary_missing");
   requireText("webSetupAuthRecoveryTest", "reauthenticates an exact prepared action", "carry_setup_unsigned_recovery_test_missing");
   requireText("webSetupAuthRecoveryTest", "never reauthenticates as a substitute for reconciling", "carry_setup_authorization_reconciliation_test_missing");
@@ -458,7 +496,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowDevelopmentWitness", "verifyCarryShadowSoak", "carry_shadow_witness_reverification_missing");
   requireText("shadowDevelopmentWitness", "witness_commitment", "carry_shadow_witness_commitment_missing");
   requireText("shadowWitnessVerifierCli", "verifyCarryShadowDevelopmentWitness", "carry_shadow_witness_independent_verifier_missing");
-  requireText("shadowWitnessVerifierCli", "source_revision: sourceRevision(process.env)", "carry_shadow_witness_revision_verifier_missing");
+  requireText("shadowWitnessVerifierCli", "source_revision: sourceTree.source_revision", "carry_shadow_witness_revision_verifier_missing");
   requireText("shadowDevelopmentWitnessTest", "without claiming execution readiness", "carry_shadow_witness_boundary_test_missing");
   requireText("shadowDevelopmentWitnessTest", "rejects tampering and any attempt to promote", "carry_shadow_witness_tamper_test_missing");
   requireText("shadowVerifier", "CORE_PERP_VENUES", "carry_shadow_verifier_registry_missing");
@@ -1662,7 +1700,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilderTest", "3/3 REC", "carry_private_prime_terminal_recovery_missing");
   requireText("webCarryBuilder", "carryCreationProofFreshness(proofOpportunity)", "carry_creation_proof_freshness_missing");
   requireText("webCarryBuilder", "const canSave = routeQualified && actionableProof && creationProofFreshness.fresh", "carry_creation_stale_action_gate_missing");
-  requireText("webCarryBuilder", "if (!executionPair || !privateSessionReady || !routeQualified) return;", "carry_terminal_stale_route_check_gate_missing");
+  requireText(
+    "webCarryBuilder",
+    "if (!executionPair || !privateSessionReady || !routeQualified || autoRunNoSubmitConsumedRef.current) return;",
+    "carry_terminal_stale_route_check_gate_missing",
+  );
+  requireText("webCarryBuilderTest", "hides retained route economics when the route is stale", "carry_terminal_stale_route_economics_test_missing");
   requireText("webCarryBuilder", "const canEnter = routeQualified && current?.position.status === \"draft\"", "carry_terminal_stale_route_entry_gate_missing");
   requireText("webCarryChart", "const terminalExecution = selectedExecution || retainedForDesiredRoute;", "carry_terminal_transient_route_retention_missing");
   requireText("webCarryChart", "key={carryRouteKey(terminalExecution.candidate)}", "carry_terminal_route_state_scope_missing");
@@ -1898,6 +1941,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("webAccountSetup", "connectionProgress.ready", "carry_setup_all_venues_gate_missing");
   requireText("webAccountSetup", "carryWorkerPlatformGate", "carry_setup_worker_platform_gate_missing");
   requireText("webAccountSetup", "data-worker-platform-status", "carry_setup_worker_platform_status_missing");
+  requireText("webAccountSetup", "data-carry-account-readiness", "carry_setup_account_readiness_status_missing");
+  requireText("webAccountSetup", "No wallet action was enabled.", "carry_setup_account_readiness_fail_closed_missing");
+  requireText("webAccountSetup", "getHyperliquidExecutionVaultStatus(),", "carry_setup_vault_status_fail_closed_missing");
+  forbidText("webAccountSetup", "getHyperliquidExecutionVaultStatus().catch", "carry_setup_vault_status_soft_fail_forbidden");
+  requireText("webAccountSetup", "accountReadinessGenerationRef.current", "carry_setup_readiness_generation_gate_missing");
+  requireText("webAccountSetup", "accountReadinessResolvedScope === recoveryUserScope", "carry_setup_readiness_user_scope_gate_missing");
+  requireText("webAccountSetup", "accountReadinessReady && scopedActivationNeeded", "carry_setup_account_readiness_activation_gate_missing");
+  requireText("webAccountSetupTest", "blocks wallet preparation on vault-status failure and unlocks only after a successful retry", "carry_setup_vault_status_retry_test_missing");
+  requireText("webAccountSetupTest", "ignores a readiness response that resolves after logout", "carry_setup_readiness_logout_race_test_missing");
+  requireText("webAccountSetupTest", "rechecks a switched user and ignores the prior user's late response", "carry_setup_readiness_user_switch_test_missing");
   requireText("webAccountConnections", "Venue connections are preserved", "carry_setup_wallet_loop_prevention_missing");
   requireText("webAccountConnectionsTest", "distinguishing a worker authorization mismatch", "carry_setup_worker_mismatch_test_missing");
   requireText("webAccountConnectionsTest", "unlocks route verification only when every execution venue is connected", "carry_setup_all_venues_test_missing");
@@ -2005,7 +2058,11 @@ function main() {
   if (untracked.length > 0) {
     throw new Error(`Carry release files are not committed: ${untracked.join(", ")}`);
   }
-  console.log(`[carry-execution-contract] verified ${result.required_file_count} committed sources`);
+  const attestation = attestCarryReleaseSourceTree({
+    repoRoot: REPO_ROOT,
+    releaseFiles: Object.values(CARRY_RELEASE_FILES),
+  });
+  console.log(`[carry-execution-contract] attested ${result.required_file_count} clean release-critical sources ${attestation.source_tree_digest}`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main();

@@ -10,12 +10,18 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  attestCarryReleaseSourceTree,
+  validCarrySourceTreeDigest,
+} from "../../../scripts/carry-source-tree-attestation.mjs";
+import { CARRY_RELEASE_FILES } from "./check-carry-execution-contract.mjs";
+import {
   canonicalCarryCommitmentJson,
   carryPrivatePrimeWorkerAuthenticationMessage,
 } from "@ghola/execution-core";
 import { assessCarryExecutionReadiness } from "../../private-agent-worker/src/execution/carry-readiness.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(HERE, "../../..");
 export const DEFAULT_CARRY_NO_SUBMIT_EVIDENCE_PATH = resolve(
   HERE,
   "../../../deploy/evidence/carry-three-venue-no-submit.json",
@@ -37,6 +43,7 @@ export function verifyCarryNoSubmitEvidence(evidence, {
   expected_preview_url: expectedPreviewUrl,
   expected_web_commit_sha: expectedWebCommitSha,
   expected_worker_image_digest: expectedWorkerImageDigest,
+  expected_source_tree_digest: expectedSourceTreeDigest,
   expected_signer_public_keys_b64: expectedSignerPublicKeysB64,
   shared_secret: sharedSecret = "",
   now_ms: nowMs = Date.now(),
@@ -67,11 +74,14 @@ export function verifyCarryNoSubmitEvidence(evidence, {
     "no_submit_web_revision_mismatch");
   fail(nonemptyString(expectedWorkerImageDigest) && source.worker_image_digest === expectedWorkerImageDigest,
     "no_submit_worker_image_mismatch");
+  fail(nonemptyString(expectedSourceTreeDigest) && source.source_tree_digest === expectedSourceTreeDigest,
+    "no_submit_source_tree_digest_mismatch");
   fail(/^https:\/\/[^/]+\.vercel\.app$/i.test(String(source.preview_url || "")),
     "no_submit_preview_url_invalid");
   fail(/^[0-9a-f]{7,40}$/i.test(String(source.web_commit_sha || "")), "no_submit_web_revision_invalid");
   fail(/^sha256:[a-f0-9]{12,128}$/.test(String(source.worker_image_digest || "")),
     "no_submit_worker_image_invalid");
+  fail(validCarrySourceTreeDigest(source.source_tree_digest), "no_submit_source_tree_digest_invalid");
   fail(capturedAtMs !== null, "no_submit_capture_time_invalid");
 
   fail(request.operation_class === "matrix_no_submit", "no_submit_operation_invalid");
@@ -244,12 +254,18 @@ function cliExpectations(env = process.env) {
   if (primarySecret && legacySecret && primarySecret !== legacySecret) {
     throw new Error("worker_capability_secret_alias_mismatch");
   }
+  const sourceTree = attestCarryReleaseSourceTree({
+    repoRoot: REPO_ROOT,
+    releaseFiles: Object.values(CARRY_RELEASE_FILES),
+    expectedRevision: env.CARRY_PROOF_EXPECTED_WEB_COMMIT_SHA,
+  });
   return {
     expected_preview_url: env.CARRY_PROOF_EXPECTED_PREVIEW_URL,
     expected_web_commit_sha: env.CARRY_PROOF_EXPECTED_WEB_COMMIT_SHA,
     expected_worker_image_digest: env.CARRY_PROOF_EXPECTED_WORKER_IMAGE_DIGEST
       || env.PHALA_CVM_IMAGE_DIGEST
       || env.PRIVATE_AGENT_IMAGE_DIGEST,
+    expected_source_tree_digest: sourceTree.source_tree_digest,
     expected_signer_public_keys_b64: String(env.GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64 || "")
       .split(",")
       .map((value) => value.trim())

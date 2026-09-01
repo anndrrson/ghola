@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { attestCarryReleaseSourceTree } from "../../../scripts/carry-source-tree-attestation.mjs";
+import { CARRY_RELEASE_FILES } from "../../web/scripts/check-carry-execution-contract.mjs";
 import { buildCarryShadowDevelopmentWitness } from "../src/execution/carry-shadow-development-witness.js";
 import { fetchCorePerpShadowSet } from "../src/execution/perp-shadow-adapters.js";
 import {
@@ -12,6 +14,8 @@ import {
 } from "../src/execution/perp-shadow-readiness.js";
 
 export { DEFAULT_CARRY_SHADOW_ASSETS, verifyCarryShadowSet, verifyCarryShadowSoak };
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 async function main() {
   const assets = process.env.GHOLA_CARRY_SHADOW_ASSETS
@@ -43,11 +47,17 @@ async function main() {
   };
   const witnessPath = String(process.env.GHOLA_CARRY_SHADOW_WITNESS_PATH || "").trim();
   if (witnessPath) {
+    const sourceTree = attestCarryReleaseSourceTree({
+      repoRoot: REPO_ROOT,
+      releaseFiles: Object.values(CARRY_RELEASE_FILES),
+      expectedRevision: sourceRevision(process.env),
+    });
     const witness = buildCarryShadowDevelopmentWitness({
       sample_results: sampleResults,
       required_samples: sampleCount,
       minimum_span_ms: minimumSpanMs,
-      source_revision: sourceRevision(process.env),
+      source_revision: sourceTree.source_revision,
+      source_tree_digest: sourceTree.source_tree_digest,
       created_at_ms: Date.now(),
     });
     writeWitness(witnessPath, witness);
@@ -72,7 +82,7 @@ export function sourceRevision(env = process.env) {
 function discoveredSourceRevision(reference) {
   try {
     const discovered = String(execFileSync("git", ["rev-parse", "--verify", `${reference}^{commit}`], {
-      cwd: resolve(dirname(fileURLToPath(import.meta.url)), "../../.."),
+      cwd: REPO_ROOT,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     })).trim();

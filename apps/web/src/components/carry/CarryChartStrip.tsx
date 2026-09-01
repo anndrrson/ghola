@@ -42,7 +42,8 @@ export function CarryChartStrip({
   preferredLongVenue,
   preferredShortVenue,
   hyperliquidLivePatch,
-  onAutoRunNoSubmitConsumed,
+  onAutoRunNoSubmitStarted,
+  onAutoRunNoSubmitResolved,
   onAssetSelect,
 }: {
   asset: string;
@@ -51,7 +52,8 @@ export function CarryChartStrip({
   preferredLongVenue?: string | null;
   preferredShortVenue?: string | null;
   hyperliquidLivePatch?: CarryLiveMarketPatch | null;
-  onAutoRunNoSubmitConsumed?: () => void;
+  onAutoRunNoSubmitStarted?: () => void;
+  onAutoRunNoSubmitResolved?: (outcome: "completed" | "auth_required") => void;
   onAssetSelect: (asset: string) => void;
 }) {
   const [data, setData] = useState<CarryShadowResponse | null>(null);
@@ -420,7 +422,8 @@ export function CarryChartStrip({
                   candidate={terminalExecution.candidate}
                   routeQualified={Boolean(selectedExecution)}
                   autoRunNoSubmit={autoRunNoSubmit}
-                  onAutoRunNoSubmitConsumed={onAutoRunNoSubmitConsumed}
+                  onAutoRunNoSubmitStarted={onAutoRunNoSubmitStarted}
+                  onAutoRunNoSubmitResolved={onAutoRunNoSubmitResolved}
                 />
               </div>
             </>

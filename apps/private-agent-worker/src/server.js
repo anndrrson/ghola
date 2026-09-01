@@ -58,7 +58,10 @@ import {
 import { carrySupervisionHealth } from "./execution/carry-loop-supervisor.js";
 import { createCarryTransferRouteProbe } from "./execution/carry-transfer-probe.js";
 import { createCarryTransferVenueReaders } from "./execution/carry-transfer-venue-readers.js";
-import { createAsterStablecoinConversionQuoteReader } from "./execution/carry-stablecoin-conversion.js";
+import {
+  createAsterCashflowValuationReader,
+  createAsterStablecoinConversionQuoteReader,
+} from "./execution/carry-stablecoin-conversion.js";
 import { createCarryDepositQuoteReader } from "./execution/carry-deposit-quote.js";
 import { createReadOnlyCarryRuntimePolicies } from "./execution/carry-runtime-risk-policies.js";
 import { buildCarryPrivatePrimeReadiness } from "./execution/carry-private-prime-readiness.js";
@@ -2781,6 +2784,8 @@ export function createPrivateAgentWorkerServer(options = {}) {
               : undefined),
         })
       : undefined);
+  const readCarryCashflowValuation = options.readCarryCashflowValuation
+    || createAsterCashflowValuationReader({ fetchImpl: options.fetchImpl || fetch });
   const carryFundingObservationLoop = options.startCarryFundingObservationLoop === false
     ? null
     : startCarryFundingObservationLoop({ state, fetchPerpShadowSet });
@@ -2818,6 +2823,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         verifyOrder: verifyAutopilotOrder,
         executeOrder: executeAutopilotOrder,
         readFundingSettlements: readCarryFundingSettlements,
+        readCashflowValuation: readCarryCashflowValuation,
       });
   const krakenHeartbeat = options.startKrakenV2Heartbeat === false
     ? null

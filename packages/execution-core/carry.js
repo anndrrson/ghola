@@ -241,6 +241,10 @@ export function normalizeCashflowValuation(value) {
   if (raw.valuation_asset !== "USDC" || raw.verified !== true) {
     fail("cashflow_valuation_unverified");
   }
+  const conversionRequired = sourceAsset !== "USDC";
+  if (raw.conversion_required != null && raw.conversion_required !== conversionRequired) {
+    fail("cashflow_valuation_conversion_flag_invalid");
+  }
   const creditRateE8 = boundedInteger(
     raw.credit_rate_e8,
     1,
@@ -276,6 +280,11 @@ export function normalizeCashflowValuation(value) {
     || (boundSourceAmountMicro !== null && (boundSourceAmountMicro < 0) !== (boundValueMicroUsdc < 0))) {
     fail("cashflow_valuation_bound_value");
   }
+  if (sourceAsset === "USDC"
+    && boundSourceAmountMicro !== null
+    && boundValueMicroUsdc !== boundSourceAmountMicro) {
+    fail("cashflow_valuation_identity_bound_value_invalid");
+  }
   const evidenceSource = identifier(raw.evidence_source, "cashflow_valuation_evidence_source");
   const evidenceMessage = cashflowValuationEvidenceMessage({
     source_asset: sourceAsset,
@@ -296,12 +305,15 @@ export function normalizeCashflowValuation(value) {
   const evidencePayload = raw.evidence_payload == null
     ? null
     : object(raw.evidence_payload, "cashflow_valuation_evidence_payload");
+  if (sourceAsset === "USDC" && evidencePayload !== null) {
+    fail("cashflow_valuation_identity_payload_invalid");
+  }
   return deepFreeze({
     version: 1,
     source_asset: sourceAsset,
     valuation_asset: "USDC",
     verified: true,
-    conversion_required: sourceAsset !== "USDC",
+    conversion_required: conversionRequired,
     bound_source_amount_micro: boundSourceAmountMicro,
     bound_value_micro_usdc: boundValueMicroUsdc,
     credit_rate_e8: creditRateE8,
@@ -2253,6 +2265,20 @@ export function appendCarryValueLedgerEntry({ ledger: ledgerInput, entry: entryI
     if (entry.entry_type === "funding" && entry.valued_at_ms !== nowMs) {
       fail("carry_value_funding_valued_at_mismatch");
     }
+    if (entry.entry_type === "settlement_adjustment") {
+      if (entry.slippage_reversal_micro_usdc !== ledger.realized.slippage_micro_usdc) {
+        fail("carry_value_settlement_slippage_reversal_mismatch");
+      }
+      for (const component of entry.pnl_components) {
+        if (component.valued_at_ms !== nowMs
+          || entry.occurred_at_ms > component.valued_at_ms
+          || (component.cashflow_valuation !== null
+            && (component.cashflow_valuation.observed_at_ms > nowMs + 5_000
+              || component.cashflow_valuation.expires_at_ms <= nowMs))) {
+          fail("carry_value_settlement_valuation_stale");
+        }
+      }
+    }
     const claimId = valueClaimId(entry);
     if (ledger.processed_claim_ids.includes(claimId)) fail("carry_value_evidence_claim_reused");
     if (entry.sequence !== ledger.last_sequence + 1) fail("carry_value_entry_sequence_invalid");
@@ -2900,6 +2926,9 @@ function normalizeValueEntry(value) {
     occurred_at_ms: positiveInteger(raw.occurred_at_ms, "carry_value_entry_occurred_at"),
     evidence_commitment: identifier(raw.evidence_commitment, "carry_value_entry_evidence"),
   };
+  if (entryType === "settlement_adjustment") {
+    return normalizeSettlementAdjustmentEntry(raw, normalizedEntry);
+  }
   if (entryType !== "funding") return normalizedEntry;
   const sourceAmountMicro = signedInteger(
     raw.source_amount_micro,
@@ -2954,6 +2983,115 @@ function normalizeValueEntry(value) {
     valued_at_ms: valuedAtMs,
     cashflow_valuation: cashflowValuation,
   };
+}
+
+function normalizeSettlementAdjustmentEntry(raw, normalizedEntry) {
+  const pnlComponents = array(
+    raw.pnl_components,
+    "carry_value_settlement_pnl_components",
+    2,
+    2,
+  ).map((value) => normalizeSettlementPnlComponent(value));
+  if (new Set(pnlComponents.map((component) => component.venue_id)).size !== pnlComponents.length) {
+    fail("carry_value_settlement_pnl_venue_duplicate");
+  }
+  const slippageReversal = nonNegativeInteger(
+    raw.slippage_reversal_micro_usdc,
+    "carry_value_settlement_slippage_reversal",
+  );
+  const convertedPnl = pnlComponents.reduce(
+    (sum, component) => safeAdd(
+      sum,
+      component.converted_amount_micro_usdc,
+      "carry_value_settlement_pnl_overflow",
+    ),
+    0,
+  );
+  const signedAdjustment = safeAdd(
+    convertedPnl,
+    slippageReversal,
+    "carry_value_settlement_adjustment_overflow",
+  );
+  if (Math.abs(signedAdjustment) !== normalizedEntry.amount_micro_usdc
+    || (signedAdjustment < 0 && normalizedEntry.direction !== "debit")
+    || (signedAdjustment >= 0 && normalizedEntry.direction !== "credit")) {
+    fail("carry_value_settlement_adjustment_mismatch");
+  }
+  return {
+    ...normalizedEntry,
+    pnl_components: Object.freeze(pnlComponents),
+    slippage_reversal_micro_usdc: slippageReversal,
+  };
+}
+
+function normalizeSettlementPnlComponent(value) {
+  const raw = object(value, "carry_value_settlement_pnl_component_required");
+  const sourceAmountMicro = signedInteger(
+    raw.source_amount_micro,
+    "carry_value_settlement_pnl_source_amount",
+  );
+  const convertedAmountMicroUsdc = signedInteger(
+    raw.converted_amount_micro_usdc,
+    "carry_value_settlement_pnl_converted_amount",
+  );
+  const sourceAsset = enumValue(
+    normalized(raw.source_asset, ASSET, "carry_value_settlement_pnl_source_asset"),
+    USD_STABLE_QUOTES,
+    "carry_value_settlement_pnl_source_asset",
+  );
+  const sourceAmountDecimal = typeof raw.source_amount_decimal === "string"
+    && /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(raw.source_amount_decimal)
+    ? raw.source_amount_decimal
+    : fail("carry_value_settlement_pnl_source_decimal");
+  const sourceAmountScale = nonNegativeInteger(
+    raw.source_amount_scale,
+    "carry_value_settlement_pnl_source_scale",
+  );
+  if (sourceAmountScale !== 6
+    || sourceAmountDecimal !== signedMicroDecimal(sourceAmountMicro)) {
+    fail("carry_value_settlement_pnl_source_scale");
+  }
+  const valuedAtMs = positiveInteger(raw.valued_at_ms, "carry_value_settlement_pnl_valued_at");
+  if (sourceAmountMicro === 0) {
+    if (convertedAmountMicroUsdc !== 0 || raw.cashflow_valuation !== null) {
+      fail("carry_value_settlement_zero_pnl_invalid");
+    }
+    return Object.freeze({
+      venue_id: venue(raw.venue_id, "carry_value_settlement_pnl_venue"),
+      source_asset: sourceAsset,
+      source_amount_micro: 0,
+      source_amount_decimal: sourceAmountDecimal,
+      source_amount_scale: sourceAmountScale,
+      converted_amount_micro_usdc: 0,
+      valued_at_ms: valuedAtMs,
+      cashflow_valuation: null,
+    });
+  }
+  const cashflowValuation = normalizeCashflowValuation(raw.cashflow_valuation);
+  if (cashflowValuation.source_asset !== sourceAsset
+    || cashflowValuation.bound_source_amount_micro !== sourceAmountMicro
+    || convertSignedCashflowToMicroUsdc({
+      amount_micro: sourceAmountMicro,
+      valuation: cashflowValuation,
+    }) !== convertedAmountMicroUsdc) {
+    fail("carry_value_settlement_pnl_conversion_mismatch");
+  }
+  return Object.freeze({
+    venue_id: venue(raw.venue_id, "carry_value_settlement_pnl_venue"),
+    source_asset: sourceAsset,
+    source_amount_micro: sourceAmountMicro,
+    source_amount_decimal: sourceAmountDecimal,
+    source_amount_scale: sourceAmountScale,
+    converted_amount_micro_usdc: convertedAmountMicroUsdc,
+    valued_at_ms: valuedAtMs,
+    cashflow_valuation: cashflowValuation,
+  });
+}
+
+function signedMicroDecimal(value) {
+  const negative = value < 0;
+  const magnitude = BigInt(Math.abs(value));
+  return `${negative ? "-" : ""}${magnitude / 1_000_000n}.${String(magnitude % 1_000_000n).padStart(6, "0")}`;
 }
 
 function normalizePortfolioValuePosition(value) {
@@ -3660,6 +3798,8 @@ function valueClaimId(entry) {
     entry.source_amount_scale ?? "none",
     entry.valued_at_ms ?? "none",
     entry.cashflow_valuation?.evidence_commitment || "none",
+    entry.slippage_reversal_micro_usdc ?? "none",
+    entry.pnl_components ? canonicalCarryCommitmentJson(entry.pnl_components) : "none",
   ].join("|");
 }
 
@@ -3678,7 +3818,10 @@ function sameValueEntryClaim(left, right) {
     && left.valued_at_ms === right.valued_at_ms
     && left.source_asset === right.source_asset
     && left.cashflow_valuation?.evidence_message === right.cashflow_valuation?.evidence_message
-    && left.cashflow_valuation?.evidence_commitment === right.cashflow_valuation?.evidence_commitment;
+    && left.cashflow_valuation?.evidence_commitment === right.cashflow_valuation?.evidence_commitment
+    && left.slippage_reversal_micro_usdc === right.slippage_reversal_micro_usdc
+    && canonicalCarryCommitmentJson(left.pnl_components || null)
+      === canonicalCarryCommitmentJson(right.pnl_components || null);
 }
 
 function fundingCashMicro(side, notional, contract, horizonMs) {

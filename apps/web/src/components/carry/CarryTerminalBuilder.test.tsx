@@ -6,6 +6,7 @@ import {
   carryCollateralBasisSummary,
   CarryTerminalBuilder,
   carryCapitalEfficiencySummary,
+  carryCheckAuthenticationRequired,
   carryCheckFailure,
   carryFundingPersistenceSummary,
   carryLiquidationSummary,
@@ -183,6 +184,17 @@ describe("CarryTerminalBuilder", () => {
       new Error("aster_deposit_required"),
       "ghola-aster-direct-test",
     ).label).toBe("ASTER DEPOSIT REQUIRED");
+  });
+
+  it("recognizes an expired private-account session", () => {
+    expect(carryCheckAuthenticationRequired(Object.assign(
+      new Error("private_account_auth_required"),
+      { status: 401, body: { error: "private_account_auth_required" } },
+    ))).toBe(true);
+    expect(carryCheckFailure(
+      Object.assign(new Error("private_account_auth_required"), { status: 401 }),
+      "ghola-auth-expired",
+    ).label).toBe("SIGN-IN REQUIRED · NO ORDER SUBMITTED");
   });
 
   it("uses full-fleet remediation only after the selected pair is already proven", () => {
@@ -452,6 +464,22 @@ describe("CarryTerminalBuilder", () => {
     expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
   });
 
+  it("hides retained route economics when the route is stale", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+
+    await act(async () => root.render(
+      <CarryTerminalBuilder candidate={candidate()} routeQualified={false} />,
+    ));
+
+    expect(container.textContent).toContain("ROUTE RETAINED · ECONOMICS HIDDEN");
+    expect(container.textContent).toContain("STALE OR UNAVAILABLE · NO CHECK");
+    expect(container.textContent).not.toContain("SHADOW POSITION · LIVE-DATA MODEL");
+    expect(container.textContent).not.toContain("+7.20 BP/D");
+    expect(container.textContent).toContain("ROUTE STALE · WAITING");
+    expect(api.preflightCarryExecutionMatrix).not.toHaveBeenCalled();
+    expect(api.preflightCarryPair).not.toHaveBeenCalled();
+  });
+
   it("removes an expired creation action instead of failing after owner signing", async () => {
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
     api.preflightCarryPair.mockResolvedValue({
@@ -634,7 +662,7 @@ describe("CarryTerminalBuilder", () => {
     expect(api.preflightCarryExecutionMatrix).not.toHaveBeenCalled();
   });
 
-  it("consumes the setup handoff once and runs only the no-submit proof", async () => {
+  it("resolves the setup handoff after exactly one no-submit request", async () => {
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
     api.preflightCarryPair.mockResolvedValue({
       correlation_id: "ghola-pair-auto-1234",
@@ -643,14 +671,16 @@ describe("CarryTerminalBuilder", () => {
       qualification_pilot_ready: false,
       creation_opportunity: { eligible: false },
     });
-    const consumed = vi.fn();
+    const started = vi.fn();
+    const resolved = vi.fn();
 
     await act(async () => {
       root.render(
         <CarryTerminalBuilder
           candidate={candidate()}
           autoRunNoSubmit
-          onAutoRunNoSubmitConsumed={consumed}
+          onAutoRunNoSubmitStarted={started}
+          onAutoRunNoSubmitResolved={resolved}
         />,
       );
       await Promise.resolve();
@@ -658,8 +688,10 @@ describe("CarryTerminalBuilder", () => {
       await Promise.resolve();
     });
 
-    expect(consumed).toHaveBeenCalledOnce();
-    expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
+    expect(started).toHaveBeenCalledOnce();
+    expect(resolved).toHaveBeenCalledOnce();
+    expect(resolved).toHaveBeenCalledWith("completed");
+    expect(api.preflightCarryExecutionMatrix).not.toHaveBeenCalled();
     expect(api.preflightCarryPair).toHaveBeenCalledOnce();
     expect(api.createCarryPosition).not.toHaveBeenCalled();
     expect(api.executeCarryPositionEntry).not.toHaveBeenCalled();
@@ -669,13 +701,126 @@ describe("CarryTerminalBuilder", () => {
         <CarryTerminalBuilder
           candidate={candidate()}
           autoRunNoSubmit
-          onAutoRunNoSubmitConsumed={consumed}
+          onAutoRunNoSubmitResolved={resolved}
         />,
       );
       await Promise.resolve();
     });
-    expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
+    expect(api.preflightCarryExecutionMatrix).not.toHaveBeenCalled();
     expect(api.preflightCarryPair).toHaveBeenCalledOnce();
+    expect(resolved).toHaveBeenCalledOnce();
+  });
+
+  it("keeps one no-submit request when the keyed terminal remounts in flight", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    let finish: ((value: Record<string, unknown>) => void) | null = null;
+    api.preflightCarryPair.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    let autoRun = true;
+    const started = vi.fn(() => { autoRun = false; });
+    const resolved = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <div key="route-a">
+          <CarryTerminalBuilder
+            candidate={candidate()}
+            autoRunNoSubmit={autoRun}
+            onAutoRunNoSubmitStarted={started}
+            onAutoRunNoSubmitResolved={resolved}
+          />
+        </div>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.preflightCarryPair).toHaveBeenCalledOnce();
+    expect(started).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      root.render(
+        <div key="route-b">
+          <CarryTerminalBuilder
+            candidate={candidate()}
+            autoRunNoSubmit={autoRun}
+            onAutoRunNoSubmitStarted={started}
+            onAutoRunNoSubmitResolved={resolved}
+          />
+        </div>,
+      );
+      await Promise.resolve();
+    });
+    expect(api.preflightCarryPair).toHaveBeenCalledOnce();
+    expect(started).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      finish?.({
+        correlation_id: "ghola-pair-remount-1234",
+        no_submit_ready: true,
+        capital_ready: false,
+        live_creation_ready: false,
+        qualification_pilot_ready: false,
+        creation_opportunity: { eligible: false },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(resolved).toHaveBeenCalledOnce();
+    expect(resolved).toHaveBeenCalledWith("completed");
+  });
+
+  it("keeps an auth-expired handoff pending and never retries automatically", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.preflightCarryPair.mockRejectedValue(Object.assign(
+      new Error("private_account_auth_required"),
+      {
+        status: 401,
+        body: { error: "private_account_auth_required" },
+        correlationId: "ghola-auth-required-1234",
+      },
+    ));
+    const resolved = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <CarryTerminalBuilder
+          candidate={candidate()}
+          autoRunNoSubmit
+          onAutoRunNoSubmitResolved={resolved}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.preflightCarryExecutionMatrix).not.toHaveBeenCalled();
+    expect(api.preflightCarryPair).toHaveBeenCalledOnce();
+    expect(resolved).toHaveBeenCalledOnce();
+    expect(resolved).toHaveBeenCalledWith("auth_required");
+    expect(container.textContent).toContain("SIGN IN AGAIN · SESSION EXPIRED · NO ORDER SUBMITTED");
+    const signIn = [...container.querySelectorAll("a")]
+      .find((item) => item.textContent === "SIGN IN AGAIN · NO ORDER SUBMITTED");
+    const signInUrl = new URL(signIn?.getAttribute("href") || "", "https://ghola.test");
+    const returnUrl = new URL(signInUrl.searchParams.get("redirect") || "", "https://ghola.test");
+    expect(returnUrl.searchParams.get("carry_check")).toBe("no-submit");
+    expect(returnUrl.searchParams.get("long_venue")).toBe("hyperliquid");
+    expect(returnUrl.searchParams.get("short_venue")).toBe("lighter");
+    expect(api.createCarryPosition).not.toHaveBeenCalled();
+    expect(api.executeCarryPositionEntry).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.render(
+        <CarryTerminalBuilder
+          candidate={candidate()}
+          autoRunNoSubmit
+          onAutoRunNoSubmitResolved={resolved}
+        />,
+      );
+      await Promise.resolve();
+    });
+    expect(api.preflightCarryExecutionMatrix).not.toHaveBeenCalled();
+    expect(api.preflightCarryPair).toHaveBeenCalledOnce();
+    expect(resolved).toHaveBeenCalledOnce();
   });
 
   it("restores fresh deployment-bound readiness after refresh without rerunning the three-venue matrix", async () => {

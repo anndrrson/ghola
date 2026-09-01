@@ -8,6 +8,8 @@ const state = vi.hoisted(() => ({
   search: "",
   recovery: null as null | Record<string, unknown>,
   perpsAuthenticated: false,
+  authenticated: true,
+  userId: "carry-user",
 }));
 const api = vi.hoisted(() => ({
   getHyperliquidExecutionVaultStatus: vi.fn(),
@@ -19,6 +21,8 @@ const api = vi.hoisted(() => ({
   checkLighterDepositReconciliation: vi.fn(),
   verifyLighterOwnerRecoveryReadiness: vi.fn(),
   signLighterRecoveryReadiness: vi.fn(),
+  prepareAsterProgrammaticCredential: vi.fn(),
+  prepareLighterProgrammaticCredential: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -47,13 +51,15 @@ vi.mock("@/components/trade/TurnkeyPerpsManager", () => ({
 }));
 vi.mock("@/lib/thumper-auth-context", () => ({
   useThumperAuth: () => ({
-    authenticated: true,
+    authenticated: state.authenticated,
     loading: false,
-    user: { id: "carry-user", email: "carry@example.com" },
+    user: state.authenticated ? { id: state.userId, email: "carry@example.com" } : null,
   }),
 }));
 vi.mock("@/lib/turnkey-provider", () => ({
-  opaqueTurnkeyWalletScope: () => "a".repeat(64),
+  opaqueTurnkeyWalletScope: (value: string) => value === "carry-user-2"
+    ? "b".repeat(64)
+    : value ? "a".repeat(64) : "",
   useTurnkeyWallet: () => ({
     walletAddress: `0x${"11".repeat(20)}`,
     createWallet: vi.fn(),
@@ -83,8 +89,8 @@ vi.mock("@/lib/private-account-client", () => ({
   linkPrivateAgentPlatform: vi.fn(),
   completeAsterProgrammaticCredential: vi.fn(),
   completeLighterProgrammaticCredential: vi.fn(),
-  prepareAsterProgrammaticCredential: vi.fn(),
-  prepareLighterProgrammaticCredential: vi.fn(),
+  prepareAsterProgrammaticCredential: api.prepareAsterProgrammaticCredential,
+  prepareLighterProgrammaticCredential: api.prepareLighterProgrammaticCredential,
 }));
 vi.mock("@/lib/hyperliquid-vault-seal", () => ({
   fetchPrivateAgentRuntimeStatus: api.fetchPrivateAgentRuntimeStatus,
@@ -138,6 +144,8 @@ describe("CarryAccountSetup", () => {
     state.search = "long_venue=hyperliquid&short_venue=lighter";
     state.recovery = null;
     state.perpsAuthenticated = false;
+    state.authenticated = true;
+    state.userId = "carry-user";
     window.localStorage.clear();
     api.getPrivateAgentPassport.mockReset().mockResolvedValue({
       account_commitment: "carry:account:test:0001",
@@ -160,6 +168,8 @@ describe("CarryAccountSetup", () => {
     api.checkLighterDepositReconciliation.mockReset();
     api.verifyLighterOwnerRecoveryReadiness.mockReset();
     api.signLighterRecoveryReadiness.mockReset();
+    api.prepareAsterProgrammaticCredential.mockReset();
+    api.prepareLighterProgrammaticCredential.mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -168,6 +178,100 @@ describe("CarryAccountSetup", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it("fails closed when existing account readiness cannot be loaded", async () => {
+    api.getPrivateAgentPassport.mockReset().mockRejectedValue(new Error("offline"));
+
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+    await flush();
+
+    expect(container.querySelector('[data-carry-account-readiness="failed"]')).toBeTruthy();
+    expect(container.textContent).toContain("Connection state is unknown");
+    expect(container.textContent).toContain("No wallet action was enabled");
+    expect(container.querySelector('[aria-controls="carry-hyperliquid-setup"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Selected Carry execution pair"]')).toBeNull();
+    expect(container.querySelector('[data-testid="hyperliquid-manager"]')).toBeNull();
+    expect([...container.querySelectorAll("button")].map((button) => button.textContent?.trim()))
+      .toEqual(["Retry account check"]);
+  });
+
+  it("blocks wallet preparation on vault-status failure and unlocks only after a successful retry", async () => {
+    api.getHyperliquidExecutionVaultStatus.mockReset()
+      .mockRejectedValueOnce(new Error("vault status offline"))
+      .mockResolvedValue({});
+
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+    await flush();
+    expect(container.querySelector('[data-carry-account-readiness="failed"]')).toBeTruthy();
+    expect(container.querySelector('[aria-controls="carry-hyperliquid-setup"]')).toBeNull();
+    expect(api.prepareAsterProgrammaticCredential).not.toHaveBeenCalled();
+    expect(api.prepareLighterProgrammaticCredential).not.toHaveBeenCalled();
+    const retry = [...container.querySelectorAll("button")]
+      .find((button) => button.textContent?.trim() === "Retry account check");
+
+    await act(async () => {
+      retry?.click();
+      await flush();
+    });
+
+    expect(api.getHyperliquidExecutionVaultStatus).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("[data-carry-account-readiness]")).toBeNull();
+    expect(container.querySelector('[aria-label="Selected Carry execution pair"]')).toBeTruthy();
+    const continueButton = container.querySelector<HTMLButtonElement>('[aria-controls="carry-hyperliquid-setup"]');
+    expect(continueButton).toBeTruthy();
+    await act(async () => continueButton?.click());
+    expect(container.querySelector('[data-testid="hyperliquid-manager"]')).toBeTruthy();
+  });
+
+  it("ignores a readiness response that resolves after logout", async () => {
+    const passport = deferred<Record<string, unknown>>();
+    api.getPrivateAgentPassport.mockReset().mockReturnValueOnce(passport.promise);
+
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+    state.authenticated = false;
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+    await act(async () => {
+      passport.resolve({
+        account_commitment: "carry:account:old-user",
+        venues: [{ venue_id: "lighter" }],
+      });
+      await flush();
+    });
+
+    expect(container.textContent).toContain("Sign in to continue");
+    expect(container.querySelector("[data-carry-account-readiness]")).toBeNull();
+    expect(container.querySelector('[aria-label="Selected Carry execution pair"]')).toBeNull();
+    expect(container.querySelector('[data-testid="hyperliquid-manager"]')).toBeNull();
+  });
+
+  it("rechecks a switched user and ignores the prior user's late response", async () => {
+    const firstPassport = deferred<Record<string, unknown>>();
+    api.getPrivateAgentPassport.mockReset()
+      .mockReturnValueOnce(firstPassport.promise)
+      .mockResolvedValueOnce({
+        account_commitment: "carry:account:new-user",
+        venues: [],
+      });
+
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+    state.userId = "carry-user-2";
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+    await flush();
+    expect(api.getPrivateAgentPassport).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("0/2");
+
+    await act(async () => {
+      firstPassport.resolve({
+        account_commitment: "carry:account:old-user",
+        venues: [{ venue_id: "lighter" }],
+      });
+      await flush();
+    });
+
+    expect(container.textContent).toContain("0/2");
+    expect(container.textContent).not.toContain("1/2");
+    expect(container.querySelector('[aria-label="Selected Carry execution pair"]')).toBeTruthy();
   });
 
   it("opens the existing Hyperliquid manager inline and preserves the selected pair", async () => {
@@ -587,4 +691,10 @@ function recoveryReadiness(ownerAddress: string) {
       funds_moved: false,
     },
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => { resolve = complete; });
+  return { promise, resolve };
 }

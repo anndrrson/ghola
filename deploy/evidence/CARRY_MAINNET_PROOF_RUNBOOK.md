@@ -4,7 +4,7 @@ This proof qualifies one exact worker image across at least two distinct adapter
 
 ## Preconditions
 
-1. `guard:carry-release` passes on committed sources.
+1. `guard:carry-release` passes on a clean release-critical source tree and prints its deterministic `source_tree_digest`. Unrelated working-tree changes are ignored; any Carry release-file change fails closed.
 2. `verify:carry-shadow` passes three consecutive complete samples across five venues and BTC, ETH, and SOL; one lucky snapshot is not qualification.
 3. One worker image digest and one Preview URL are pinned to the same commit.
 4. The owner completes the single guided Carry setup. It resumes the next safe missing connection, can skip a venue blocked on external activation, and unlocks verification only after Hyperliquid, Lighter, and Aster are connected.
@@ -38,7 +38,7 @@ GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64=... \
 npm run verify:carry-no-submit-evidence
 ```
 
-The verifier recomputes the raw readiness result, validates every pair and flat account state at capture time, verifies the pinned attested-worker signature, and reports current freshness separately. The optional worker capability secret adds MAC verification but is never written into the artifact.
+The assembler binds the clean release-critical source-tree digest. The verifier independently recomputes it, recomputes the raw readiness result, validates every pair and flat account state at capture time, verifies the pinned attested-worker signature, and reports current freshness separately. The optional worker capability secret adds MAC verification but is never written into the artifact.
 
 ## Lifecycle
 
@@ -52,7 +52,7 @@ The verifier recomputes the raw readiness result, validates every pair and flat 
 8. Finalize modeled-versus-realized funding, fees, slippage, capital cost, PnL, and net value.
 9. Refresh and verify all six directed collateral routes without moving funds.
 10. Save the shared candidate as JSON, save each completed worker material as JSON, then run `npm run assemble:carry-release-evidence -- --candidate <candidate.json> --lifecycle <first.json> --lifecycle <second.json>` from `apps/web`. The command verifies every lifecycle before atomically writing `deploy/evidence/carry-mainnet-proof.json`.
-11. Run `npm run verify:carry-release-evidence` from `apps/web`. The verifier must independently recover the owner signature, check every lifecycle is flat with zero orders, recompute each finalized after-cost net value, require two unique positions and two distinct venue pairs, and require the aggregate realized net to equal the exact lifecycle sum.
+11. Run `npm run verify:carry-release-evidence` from `apps/web`. The verifier must independently recompute the clean release-critical source-tree digest, independently recover the owner signature, check every lifecycle is flat with zero orders, recompute each finalized after-cost net value, require two unique positions and two distinct venue pairs, and require the aggregate realized net to equal the exact lifecycle sum.
 
 Funding, transfers, withdrawals, leverage changes, and credential rotation remain owner-only. A failed evidence check invalidates the proof.
 

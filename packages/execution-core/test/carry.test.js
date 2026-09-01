@@ -480,6 +480,25 @@ test("normalizes CashflowValuationV1 and rounds signed values conservatively", (
   }), /cashflow_valuation_identity_invalid/);
 });
 
+test("rejects contradictory or value-changing USDC identity evidence", () => {
+  assert.throws(() => normalizeCashflowValuation(cashflowValuation("USDC", {
+    bound_source_amount_micro: 500_000,
+    bound_value_micro_usdc: 500_001,
+  })), /cashflow_valuation_identity_bound_value_invalid/);
+  assert.throws(() => normalizeCashflowValuation({
+    ...cashflowValuation("USDC"),
+    conversion_required: true,
+  }), /cashflow_valuation_conversion_flag_invalid/);
+  assert.throws(() => normalizeCashflowValuation({
+    ...cashflowValuation("USDC"),
+    evidence_payload: { unbound: true },
+  }), /cashflow_valuation_identity_payload_invalid/);
+  assert.throws(() => normalizeCashflowValuation({
+    ...cashflowValuation("USDT"),
+    conversion_required: false,
+  }), /cashflow_valuation_conversion_flag_invalid/);
+});
+
 test("binds explicit fee and funding settlement assets to verified USDC valuations", () => {
   const normalized = normalizePerpContractSpec(contract("hyperliquid", 1));
   assert.equal(normalized.funding_settlement_asset, "USDC");
@@ -2286,6 +2305,281 @@ test("funding ledger binds native settlement value to fresh conservative convers
   assert.equal(debited.ledger.realized.funding_debit_micro_usdc, 1_010_000);
 });
 
+function settlementLedger() {
+  const ledger = createCarryValueLedger({
+    version: 1,
+    position_id: "carry:position:settlement:0001",
+    modeled: {
+      gross_funding_micro_usdc: 10,
+      trading_cost_micro_usdc: 2,
+      capital_cost_micro_usdc: 1,
+      risk_buffer_micro_usdc: 1,
+    },
+    now_ms: NOW,
+  });
+  return appendCarryValueLedgerEntry({
+    ledger,
+    entry: {
+      version: 1,
+      entry_id: "value:entry:settlement:slippage",
+      sequence: 1,
+      entry_type: "slippage",
+      direction: "debit",
+      amount_micro_usdc: 20_000,
+      venue_id: "aster",
+      leg_id: "leg:settlement:aster",
+      occurred_at_ms: NOW,
+      evidence_commitment: "value:evidence:settlement:slippage",
+    },
+    now_ms: NOW,
+  }).ledger;
+}
+
+function settlementPnlComponent({
+  venueId,
+  sourceAsset,
+  sourceAmountMicro,
+  convertedAmountMicroUsdc,
+  valuation,
+}) {
+  return {
+    venue_id: venueId,
+    source_asset: sourceAsset,
+    source_amount_micro: sourceAmountMicro,
+    source_amount_decimal: sourceAmountMicro === 1_000_000
+      ? "1.000000"
+      : sourceAmountMicro === -500_000
+        ? "-0.500000"
+        : sourceAmountMicro === -490_000
+          ? "-0.490000"
+          : String(sourceAmountMicro),
+    source_amount_scale: [1_000_000, -500_000, -490_000].includes(sourceAmountMicro) ? 6 : 0,
+    converted_amount_micro_usdc: convertedAmountMicroUsdc,
+    valued_at_ms: NOW + 1,
+    cashflow_valuation: valuation,
+  };
+}
+
+function exactSettlementEntry(overrides = {}) {
+  const usdtValuation = cashflowValuation("USDT", {
+    bound_source_amount_micro: 1_000_000,
+    credit_rate_e8: 99_000_000,
+    debit_rate_e8: 101_000_000,
+  });
+  const usdcValuation = cashflowValuation("USDC", {
+    bound_source_amount_micro: -500_000,
+  });
+  return {
+    version: 1,
+    entry_id: "value:entry:settlement:1",
+    sequence: 2,
+    entry_type: "settlement_adjustment",
+    direction: "credit",
+    amount_micro_usdc: 510_000,
+    venue_id: null,
+    leg_id: null,
+    occurred_at_ms: NOW + 1,
+    evidence_commitment: "value:evidence:settlement:1",
+    pnl_components: [
+      settlementPnlComponent({
+        venueId: "aster",
+        sourceAsset: "USDT",
+        sourceAmountMicro: 1_000_000,
+        convertedAmountMicroUsdc: 990_000,
+        valuation: usdtValuation,
+      }),
+      settlementPnlComponent({
+        venueId: "lighter",
+        sourceAsset: "USDC",
+        sourceAmountMicro: -500_000,
+        convertedAmountMicroUsdc: -500_000,
+        valuation: usdcValuation,
+      }),
+    ],
+    slippage_reversal_micro_usdc: 20_000,
+    ...overrides,
+  };
+}
+
+test("settlement adjustment converts exact-bound venue PnL independently and accepts exact replay", () => {
+  const entry = exactSettlementEntry();
+  const appended = appendCarryValueLedgerEntry({
+    ledger: settlementLedger(),
+    entry,
+    now_ms: NOW + 1,
+  });
+  assert.equal(appended.ok, true);
+  assert.equal(appended.ledger.realized.settlement_adjustment_micro_usdc, 510_000);
+  assert.deepEqual(
+    appended.ledger.entries[1].pnl_components.map((component) => ({
+      venue_id: component.venue_id,
+      source_asset: component.source_asset,
+      source_amount_micro: component.source_amount_micro,
+      converted_amount_micro_usdc: component.converted_amount_micro_usdc,
+      bound_source_amount_micro: component.cashflow_valuation.bound_source_amount_micro,
+    })),
+    [
+      {
+        venue_id: "aster",
+        source_asset: "USDT",
+        source_amount_micro: 1_000_000,
+        converted_amount_micro_usdc: 990_000,
+        bound_source_amount_micro: 1_000_000,
+      },
+      {
+        venue_id: "lighter",
+        source_asset: "USDC",
+        source_amount_micro: -500_000,
+        converted_amount_micro_usdc: -500_000,
+        bound_source_amount_micro: -500_000,
+      },
+    ],
+  );
+
+  const replay = appendCarryValueLedgerEntry({
+    ledger: appended.ledger,
+    entry: { ...entry, sequence: 2 },
+    now_ms: NOW + 2,
+  });
+  assert.equal(replay.ok, true);
+  assert.equal(replay.duplicate, true);
+  assert.equal(replay.ledger.last_sequence, 2);
+});
+
+test("settlement adjustment fails closed on mismatched, stale, or tampered PnL evidence", () => {
+  const entry = exactSettlementEntry();
+  const boundMismatch = appendCarryValueLedgerEntry({
+    ledger: settlementLedger(),
+    entry: {
+      ...entry,
+      pnl_components: [
+        {
+          ...entry.pnl_components[0],
+          cashflow_valuation: cashflowValuation("USDT", {
+            bound_source_amount_micro: 999_999,
+            credit_rate_e8: 99_000_000,
+            debit_rate_e8: 101_000_000,
+          }),
+        },
+        entry.pnl_components[1],
+      ],
+    },
+    now_ms: NOW + 1,
+  });
+  assert.equal(boundMismatch.ok, false);
+  assert.equal(boundMismatch.error, "carry_value_settlement_pnl_conversion_mismatch");
+
+  const convertedMismatch = appendCarryValueLedgerEntry({
+    ledger: settlementLedger(),
+    entry: {
+      ...entry,
+      pnl_components: [
+        { ...entry.pnl_components[0], converted_amount_micro_usdc: 990_001 },
+        entry.pnl_components[1],
+      ],
+    },
+    now_ms: NOW + 1,
+  });
+  assert.equal(convertedMismatch.ok, false);
+  assert.equal(convertedMismatch.error, "carry_value_settlement_pnl_conversion_mismatch");
+
+  const missingVenue = appendCarryValueLedgerEntry({
+    ledger: settlementLedger(),
+    entry: { ...entry, pnl_components: [entry.pnl_components[0]] },
+    now_ms: NOW + 1,
+  });
+  assert.equal(missingVenue.ok, false);
+  assert.equal(missingVenue.error, "carry_value_settlement_pnl_components");
+
+  const decimalMismatch = appendCarryValueLedgerEntry({
+    ledger: settlementLedger(),
+    entry: {
+      ...entry,
+      pnl_components: [
+        { ...entry.pnl_components[0], source_amount_decimal: "999.000000" },
+        entry.pnl_components[1],
+      ],
+    },
+    now_ms: NOW + 1,
+  });
+  assert.equal(decimalMismatch.ok, false);
+  assert.equal(decimalMismatch.error, "carry_value_settlement_pnl_source_scale");
+
+  const stale = appendCarryValueLedgerEntry({
+    ledger: settlementLedger(),
+    entry,
+    now_ms: NOW + 30_000,
+  });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.error, "carry_value_settlement_valuation_stale");
+
+  const first = appendCarryValueLedgerEntry({
+    ledger: settlementLedger(),
+    entry,
+    now_ms: NOW + 1,
+  });
+  assert.equal(first.ok, true);
+  const tamperedReplay = appendCarryValueLedgerEntry({
+    ledger: first.ledger,
+    entry: {
+      ...entry,
+      sequence: 2,
+      pnl_components: [
+        settlementPnlComponent({
+          venueId: "aster",
+          sourceAsset: "USDT",
+          sourceAmountMicro: 1_000_000,
+          convertedAmountMicroUsdc: 980_000,
+          valuation: cashflowValuation("USDT", {
+            bound_source_amount_micro: 1_000_000,
+            credit_rate_e8: 98_000_000,
+            debit_rate_e8: 102_000_000,
+          }),
+        }),
+        settlementPnlComponent({
+          venueId: "lighter",
+          sourceAsset: "USDC",
+          sourceAmountMicro: -490_000,
+          convertedAmountMicroUsdc: -490_000,
+          valuation: cashflowValuation("USDC", {
+            bound_source_amount_micro: -490_000,
+          }),
+        }),
+      ],
+    },
+    now_ms: NOW + 1,
+  });
+  assert.equal(tamperedReplay.ok, false);
+  assert.equal(tamperedReplay.error, "carry_value_entry_replay_mismatch");
+});
+
+test("settlement adjustment binds the slippage reversal to the signed ledger amount", () => {
+  const entry = exactSettlementEntry();
+  const invalidReversal = appendCarryValueLedgerEntry({
+    ledger: settlementLedger(),
+    entry: { ...entry, slippage_reversal_micro_usdc: 20_001 },
+    now_ms: NOW + 1,
+  });
+  assert.equal(invalidReversal.ok, false);
+  assert.equal(invalidReversal.error, "carry_value_settlement_adjustment_mismatch");
+
+  const invalidAmount = appendCarryValueLedgerEntry({
+    ledger: settlementLedger(),
+    entry: { ...entry, amount_micro_usdc: 510_001 },
+    now_ms: NOW + 1,
+  });
+  assert.equal(invalidAmount.ok, false);
+  assert.equal(invalidAmount.error, "carry_value_settlement_adjustment_mismatch");
+
+  const coherentButIncompleteReversal = appendCarryValueLedgerEntry({
+    ledger: settlementLedger(),
+    entry: { ...entry, slippage_reversal_micro_usdc: 19_999, amount_micro_usdc: 509_999 },
+    now_ms: NOW + 1,
+  });
+  assert.equal(coherentButIncompleteReversal.ok, false);
+  assert.equal(coherentButIncompleteReversal.error, "carry_value_settlement_slippage_reversal_mismatch");
+});
+
 test("rebates can only credit realized value", () => {
   const ledger = createCarryValueLedger({
     version: 1,
@@ -2534,7 +2828,7 @@ test("portfolio value report rejects duplicate, tampered, or fund-moving evidenc
           evidence_commitment: "carry:value:evidence:tampered:0001",
         }],
         processed_entry_ids: ["carry:value:tampered:0001"],
-        processed_claim_ids: ["carry:value:evidence:tampered:0001|trading_fee|hyperliquid|carry:leg:long|none|none|none|none|none|none"],
+        processed_claim_ids: ["carry:value:evidence:tampered:0001|trading_fee|hyperliquid|carry:leg:long|none|none|none|none|none|none|none|none"],
         last_sequence: 1,
       },
     }],

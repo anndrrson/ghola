@@ -2014,6 +2014,135 @@ test("rejects onboarding that loses its exact signed preparation on refresh", ()
   );
 });
 
+test("rejects Carry onboarding without visible fail-closed account readiness", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webAccountSetup: sources.webAccountSetup.replaceAll(
+        "data-carry-account-readiness",
+        "data-removed-account-readiness",
+      ),
+    }),
+    /carry_setup_account_readiness_status_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webAccountSetup: sources.webAccountSetup.replaceAll(
+        "No wallet action was enabled.",
+        "Wallet action may continue.",
+      ),
+    }),
+    /carry_setup_account_readiness_fail_closed_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webAccountSetup: sources.webAccountSetup.replaceAll(
+        "accountReadinessReady && scopedActivationNeeded",
+        "scopedActivationNeeded",
+      ),
+    }),
+    /carry_setup_account_readiness_activation_gate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webAccountSetup: sources.webAccountSetup.replace(
+        "getHyperliquidExecutionVaultStatus(),",
+        "getHyperliquidExecutionVaultStatus().catch(() => null),",
+      ),
+    }),
+    /carry_setup_vault_status_fail_closed_missing|carry_setup_vault_status_soft_fail_forbidden/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webAccountSetupTest: sources.webAccountSetupTest.replace(
+        "blocks wallet preparation on vault-status failure and unlocks only after a successful retry",
+        "retries account readiness",
+      ),
+    }),
+    /carry_setup_vault_status_retry_test_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webAccountSetup: sources.webAccountSetup.replaceAll(
+        "accountReadinessGenerationRef.current",
+        "accountReadinessGeneration",
+      ),
+    }),
+    /carry_setup_readiness_generation_gate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webAccountSetup: sources.webAccountSetup.replaceAll(
+        "accountReadinessResolvedScope === recoveryUserScope",
+        "Boolean(accountReadinessResolvedScope)",
+      ),
+    }),
+    /carry_setup_readiness_user_scope_gate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webAccountSetupTest: sources.webAccountSetupTest.replace(
+        "ignores a readiness response that resolves after logout",
+        "handles logout",
+      ),
+    }),
+    /carry_setup_readiness_logout_race_test_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webAccountSetupTest: sources.webAccountSetupTest.replace(
+        "rechecks a switched user and ignores the prior user's late response",
+        "handles a switched user",
+      ),
+    }),
+    /carry_setup_readiness_user_switch_test_missing/,
+  );
+});
+
+test("rejects a misleading committed-source attestation claim", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      executionContract: sources.executionContract.replaceAll(
+        "clean release-critical sources",
+        ["committed", "sources"].join(" "),
+      ),
+    }),
+    /carry_source_tree_guard_status_missing|carry_source_tree_guard_misleading_status_present/,
+  );
+});
+
+test("rejects source attestation that can follow release-critical symlinks", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      sourceTreeAttestation: sources.sourceTreeAttestation.replaceAll(
+        "carry_release_source_not_regular",
+        "carry_release_source_allowed",
+      ),
+    }),
+    /carry_source_tree_regular_file_gate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      sourceTreeAttestationTest: sources.sourceTreeAttestationTest.replace(
+        "rejects a release-critical symlink escape",
+        "accepts a release-critical symlink",
+      ),
+    }),
+    /carry_source_tree_symlink_escape_test_missing/,
+  );
+});
+
 test("rejects onboarding recovery without an exact account binding", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -2109,6 +2238,104 @@ test("rejects a terminal rail that can execute aged routes", () => {
       webCarryChart: sources.webCarryChart.replace("const freshCandidates", "const visibleCandidates"),
     }),
     /carry_ui_execution_stale_route_gate_missing/,
+  );
+});
+
+test("rejects a terminal without exact-once setup handoff proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilderTest: sources.webCarryBuilderTest.replace(
+        "resolves the setup handoff after exactly one no-submit request",
+        "resolves the setup handoff",
+      ),
+    }),
+    /carry_terminal_no_submit_handoff_test_missing/,
+  );
+});
+
+test("rejects a terminal without a parent-scoped in-flight no-submit latch", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webTradeWorkspace: sources.webTradeWorkspace.replace(
+        "onAutoRunNoSubmitStarted={beginCarryNoSubmitRequest}",
+        "onAutoRunNoSubmitStarted={undefined}",
+      ),
+    }),
+    /carry_terminal_no_submit_parent_binding_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilderTest: sources.webCarryBuilderTest.replace(
+        "keeps one no-submit request when the keyed terminal remounts in flight",
+        "remounts the keyed terminal in flight",
+      ),
+    }),
+    /carry_terminal_no_submit_remount_test_missing/,
+  );
+});
+
+test("rejects a terminal that resolves an in-flight handoff against a stale query", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webTradeWorkspace: sources.webTradeWorkspace.replace(
+        "new URLSearchParams(workspaceQueryRef.current)",
+        "new URLSearchParams(workspaceQuery)",
+      ),
+    }),
+    /carry_terminal_no_submit_latest_query_resolution_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webTradeLifecycleTest: sources.webTradeLifecycleTest.replace(
+        "resolves an in-flight carry handoff against the latest workspace query",
+        "resolves an in-flight carry handoff",
+      ),
+    }),
+    /carry_terminal_no_submit_latest_query_test_missing/,
+  );
+});
+
+test("rejects a terminal without auth-expiry no-retry proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilderTest: sources.webCarryBuilderTest.replace(
+        "keeps an auth-expired handoff pending and never retries automatically",
+        "handles an auth-expired handoff",
+      ),
+    }),
+    /carry_terminal_no_submit_auth_expiry_test_missing/,
+  );
+});
+
+test("rejects a terminal that can auto-check a stale retained route", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replace(
+        "!routeQualified || autoRunNoSubmitConsumedRef.current",
+        "autoRunNoSubmitConsumedRef.current",
+      ),
+    }),
+    /carry_terminal_stale_route_check_gate_missing/,
+  );
+});
+
+test("rejects a terminal without stale-route economics quarantine proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilderTest: sources.webCarryBuilderTest.replace(
+        "hides retained route economics when the route is stale",
+        "renders a retained route when the route is stale",
+      ),
+    }),
+    /carry_terminal_stale_route_economics_test_missing/,
   );
 });
 

@@ -125,12 +125,14 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   candidate,
   routeQualified = true,
   autoRunNoSubmit = false,
-  onAutoRunNoSubmitConsumed,
+  onAutoRunNoSubmitStarted,
+  onAutoRunNoSubmitResolved,
 }: {
   candidate: CarryCandidate;
   routeQualified?: boolean;
   autoRunNoSubmit?: boolean;
-  onAutoRunNoSubmitConsumed?: () => void;
+  onAutoRunNoSubmitStarted?: () => void;
+  onAutoRunNoSubmitResolved?: (outcome: "completed" | "auth_required") => void;
 }) {
   const perpsTurnkey = usePerpsTurnkey();
   const auth = useThumperAuth();
@@ -151,6 +153,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const [busy, setBusy] = useState<"check" | "save" | "enter" | "exit" | "approve" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [lastCheckReceipt, setLastCheckReceipt] = useState<string | null>(null);
+  const [noSubmitAuthRequired, setNoSubmitAuthRequired] = useState(false);
   const autoRunNoSubmitConsumedRef = useRef(false);
   const [saveSetupRequired, setSaveSetupRequired] = useState(false);
   const routeKey = `${candidate.asset}:${candidate.long.venue_id}:${candidate.short.venue_id}`;
@@ -311,20 +314,43 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const proofOpportunity = proof ? asRecord(proof.creation_opportunity) : null;
   const actionableProof = proof?.live_creation_ready === true || proof?.qualification_pilot_ready === true;
   const creationProofFreshness = carryCreationProofFreshness(proofOpportunity);
-  const fundingPersistence = carryFundingPersistenceSummary(proofOpportunity);
-  const economics = carryTerminalEconomics(model, proofOpportunity);
-  const grossFunding = carryTerminalGrossFunding(candidate, proof ? proofOpportunity || {} : null);
-  const venueMinimumMargin = carryVenueMinimumMarginSummary(model, proof);
-  const openingCapital = carryOpeningCapitalSummary(model, proof);
-  const collateralBasis = carryCollateralBasisSummary(candidate, proofOpportunity);
-  const liquidation = carryLiquidationSummary(candidate);
-  const stressCapital = carryStressCapitalSummary(proof);
+  const staleRouteMetric = { value: "STALE", tone: "warn" as const };
+  const fundingPersistence = routeQualified
+    ? carryFundingPersistenceSummary(proofOpportunity)
+    : { value: "PAUSED", tone: "warn" as const, ready: false };
+  const economics = routeQualified
+    ? carryTerminalEconomics(model, proofOpportunity)
+    : {
+        fees: "—",
+        slippage: "—",
+        depth: "STALE",
+        depthTone: "warn" as const,
+        net: "—",
+        netTone: undefined,
+        breakEven: "—",
+      };
+  const grossFunding = routeQualified
+    ? carryTerminalGrossFunding(candidate, proof ? proofOpportunity || {} : null)
+    : staleRouteMetric;
+  const venueMinimumMargin = routeQualified
+    ? carryVenueMinimumMarginSummary(model, proof)
+    : staleRouteMetric;
+  const openingCapital = routeQualified
+    ? carryOpeningCapitalSummary(model, proof)
+    : staleRouteMetric;
+  const collateralBasis = routeQualified
+    ? carryCollateralBasisSummary(candidate, proofOpportunity)
+    : staleRouteMetric;
+  const liquidation = routeQualified ? carryLiquidationSummary(candidate) : staleRouteMetric;
+  const stressCapital = routeQualified ? carryStressCapitalSummary(proof) : null;
   const portfolioCapital = carryPortfolioCapitalSummary(portfolioCapitalPlan);
   const portfolioRunway = carryPortfolioRunwaySummary(portfolioCapitalPlan);
   const collateral = carryCollateralReviewSummary(collateralReview);
   const portfolioValue = carryPortfolioValueSummary(portfolioValueReport);
   const capitalEfficiency = carryCapitalEfficiencySummary(portfolioValueReport);
-  const displayedCapital = latestObservation?.capital_action_plan ? capital : openingCapital;
+  const displayedCapital = routeQualified
+    ? latestObservation?.capital_action_plan ? capital : openingCapital
+    : staleRouteMetric;
   const restoredReadiness = readyStoredReadiness(readiness, candidate.asset, notional, days);
   const fleetGuard = carryFleetGuardSummary(executionMatrix, restoredReadiness);
   const workerPrivatePrime = carryPrivatePrimeSummary(readiness?.private_prime_readiness);
@@ -361,20 +387,21 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     setSaveSetupRequired(false);
   };
 
-  const runCheck = useCallback(async () => {
-    if (!executionPair || !privateSessionReady || !routeQualified) return;
+  const runCheck = useCallback(async (pairOnly = false): Promise<"completed" | "auth_required" | "blocked"> => {
+    if (!executionPair || !privateSessionReady || !routeQualified) return "blocked";
     const localReference = shortReference(`ghola-${Date.now().toString(36)}`);
     const checkedRoute = `${candidate.asset} · L ${venueName(candidate.long.venue_id)} / S ${venueName(candidate.short.venue_id)}`;
     setBusy("check");
     setMessage(null);
     setProof(null);
     setExecutionMatrix(null);
+    setNoSubmitAuthRequired(false);
     setLastCheckReceipt(`${checkedRoute} · CHECKING · REF ${localReference}`);
     let activeReadiness = restoredReadiness ? readiness : null;
     let matrix: Record<string, unknown> | null = null;
     try {
       let result: Record<string, unknown>;
-      if (activeReadiness) {
+      if (pairOnly || activeReadiness) {
         result = asRecord(await preflightCarryPair({
           asset: candidate.asset,
           long_venue_id: candidate.long.venue_id as CarryExecutionVenue,
@@ -445,10 +472,17 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         : carryFleetGuardSummary(matrix, false).receipt;
       const pairReference = shortReference(stringValue(result.correlation_id) || localReference);
       setLastCheckReceipt(`${checkedRoute} · ${outcome} · PAIR ${pairReference} · FLEET ${matrixReference}`);
+      return "completed";
     } catch (error) {
       const failure = carryCheckFailure(error, localReference);
       const matrixReference = carryFleetGuardSummary(matrix, Boolean(activeReadiness)).receipt;
       setLastCheckReceipt(`${checkedRoute} · ${failure.label} · REF ${failure.reference} · FLEET ${matrixReference}`);
+      if (carryCheckAuthenticationRequired(error)) {
+        setNoSubmitAuthRequired(true);
+        setMessage("SIGN IN AGAIN · SESSION EXPIRED · NO ORDER SUBMITTED");
+        return "auth_required";
+      }
+      return "completed";
     } finally {
       setBusy(null);
     }
@@ -472,9 +506,11 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     }
     if (!executionPair || !privateSessionReady || !routeQualified || autoRunNoSubmitConsumedRef.current) return;
     autoRunNoSubmitConsumedRef.current = true;
-    onAutoRunNoSubmitConsumed?.();
-    void runCheck();
-  }, [autoRunNoSubmit, executionPair, onAutoRunNoSubmitConsumed, privateSessionReady, routeQualified, runCheck]);
+    onAutoRunNoSubmitStarted?.();
+    void runCheck(true).then((outcome) => {
+      if (outcome !== "blocked") onAutoRunNoSubmitResolved?.(outcome);
+    });
+  }, [autoRunNoSubmit, executionPair, onAutoRunNoSubmitResolved, onAutoRunNoSubmitStarted, privateSessionReady, routeQualified, runCheck]);
 
   async function savePosition() {
     if (!proof) return;
@@ -630,6 +666,8 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   }
 
   const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${candidate.asset}-PERP&carry=open&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}`;
+  const noSubmitReturn = `${terminalReturn}&carry_check=no-submit`;
+  const noSubmitSignInHref = `/signin?redirect=${encodeURIComponent(noSubmitReturn)}`;
   const pairSetupHref = `/account?setup=carry&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}&return_to=${encodeURIComponent(terminalReturn)}`;
   const fleetSetupHref = `/account?setup=carry&return_to=${encodeURIComponent(terminalReturn)}`;
   const selectedPairReady = carryMatrixPairReady(
@@ -665,10 +703,10 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
       {!proof && !current ? (
         <div className="flex min-w-0 items-center justify-between gap-3 rounded border border-[#1d2733] bg-[#070a0f] px-2 py-1 lg:col-span-2">
           <span className="truncate font-mono text-[9px] font-semibold tracking-[0.12em] text-[#8fbbe2]">
-            SHADOW POSITION · LIVE-DATA MODEL
+            {routeQualified ? "SHADOW POSITION · LIVE-DATA MODEL" : "ROUTE RETAINED · ECONOMICS HIDDEN"}
           </span>
-          <span className="shrink-0 font-mono text-[9px] text-[#72bfa2]">
-            NO WALLET · NO DEPOSIT · NO ORDER
+          <span className={`shrink-0 font-mono text-[9px] ${routeQualified ? "text-[#72bfa2]" : "text-[#d9bd74]"}`}>
+            {routeQualified ? "NO WALLET · NO DEPOSIT · NO ORDER" : "STALE OR UNAVAILABLE · NO CHECK"}
           </span>
         </div>
       ) : null}
@@ -691,13 +729,17 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
         <Metric label="EXEC Δ" value={ledger.execution} tone={ledger.executionTone} />
         <Metric
           label="SOURCE SYNC"
-          value={`${formatSkew(proofOpportunity?.contract_data_skew_ms ?? model.contractDataSkewMs)}${proofOpportunity ? "" : " · EST"}`}
-          tone={model.contractsComparable ? "good" : "bad"}
+          value={routeQualified
+            ? `${formatSkew(proofOpportunity?.contract_data_skew_ms ?? model.contractDataSkewMs)}${proofOpportunity ? "" : " · EST"}`
+            : "STALE"}
+          tone={routeQualified && model.contractsComparable ? "good" : routeQualified ? "bad" : "warn"}
         />
         <Metric
           label="INDEX BASIS"
-          value={`${formatBasis(proofOpportunity?.index_price_divergence_bps ?? model.indexPriceDivergenceBps)}${proofOpportunity ? "" : " · EST"}`}
-          tone={model.contractsComparable ? "good" : "bad"}
+          value={routeQualified
+            ? `${formatBasis(proofOpportunity?.index_price_divergence_bps ?? model.indexPriceDivergenceBps)}${proofOpportunity ? "" : " · EST"}`
+            : "STALE"}
+          tone={routeQualified && model.contractsComparable ? "good" : routeQualified ? "bad" : "warn"}
         />
         <Metric label="EDGE CONF" value={fundingPersistence.value} tone={fundingPersistence.tone} />
         <Metric label="PRIVATE PRIME" value={privatePrime.value} tone={privatePrime.tone} />
@@ -722,7 +764,11 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
           <Link href={connectionHref} className={`rounded border border-[#293a50] px-2 py-2 text-center font-mono text-[10px] font-semibold text-[#8fbbe2] hover:bg-[#0d1622] ${privateSessionReady ? "" : "col-span-2"}`}>
             {connectionAction}
           </Link>
-          {!privateSessionReady ? null : !recordsLoaded ? (
+          {noSubmitAuthRequired ? (
+            <Link href={noSubmitSignInHref} className="rounded border border-[#63333b] bg-[#231014] px-2 py-2 text-center font-mono text-[10px] font-semibold text-[#ffc2c7] hover:bg-[#2b151a]">
+              SIGN IN AGAIN · NO ORDER SUBMITTED
+            </Link>
+          ) : !privateSessionReady ? null : !recordsLoaded ? (
             <button type="button" disabled={recordsLoading} onClick={() => void loadRecords()} className="rounded border border-[#594b2b] bg-[#1e190c] px-2 py-2 font-mono text-[10px] font-semibold text-[#d9bd74] disabled:opacity-40">
               {recordsLoading ? "SYNCING POSITIONS…" : "RETRY POSITION SYNC"}
             </button>
@@ -1491,6 +1537,8 @@ export function carryCheckFailure(error: unknown, fallback: string) {
   return {
     label: asterDepositRequired
       ? "ASTER DEPOSIT REQUIRED"
+      : carryCheckAuthenticationRequired(error)
+        ? "SIGN-IN REQUIRED · NO ORDER SUBMITTED"
       : venue
         ? `${venueName(venue)} NOT READY`
         : code === "carry_worker_authorization_misconfigured"
@@ -1500,6 +1548,16 @@ export function carryCheckFailure(error: unknown, fallback: string) {
             : "CHECK FAILED",
     reference,
   };
+}
+
+export function carryCheckAuthenticationRequired(error: unknown) {
+  const candidate = error && typeof error === "object"
+    ? error as { message?: unknown; status?: unknown; body?: unknown }
+    : {};
+  const body = asRecord(candidate.body);
+  return candidate.status === 401
+    || candidate.message === "private_account_auth_required"
+    || body.error === "private_account_auth_required";
 }
 
 export function carryFleetGuardSummary(

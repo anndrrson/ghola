@@ -24,6 +24,7 @@ const SECRET = "test-private-prime-capability-secret";
 const PREVIEW_URL = "https://web-proof-anndrrsons-projects.vercel.app";
 const WEB_COMMIT_SHA = "a".repeat(40);
 const WORKER_IMAGE_DIGEST = `sha256:${"b".repeat(64)}`;
+const SOURCE_TREE_DIGEST = `sha256:${"c".repeat(64)}`;
 const SIGNER = generateKeyPairSync("ed25519");
 const SIGNER_PUBLIC_KEY_B64 = SIGNER.publicKey.export({ format: "der", type: "spki" }).toString("base64");
 
@@ -78,6 +79,13 @@ test("rejects tampered pair evidence, request context, signer identity, and cand
   assert.throws(
     () => verifyCarryNoSubmitEvidence(candidateTampered, expectations()),
     /no_submit_web_revision_mismatch/,
+  );
+
+  const sourceTreeTampered = structuredClone(await evidence());
+  sourceTreeTampered.source.source_tree_digest = `sha256:${"d".repeat(64)}`;
+  assert.throws(
+    () => verifyCarryNoSubmitEvidence(sourceTreeTampered, expectations()),
+    /no_submit_source_tree_digest_mismatch/,
   );
 });
 
@@ -200,6 +208,7 @@ async function evidence() {
       preview_url: PREVIEW_URL,
       web_commit_sha: WEB_COMMIT_SHA,
       worker_image_digest: WORKER_IMAGE_DIGEST,
+      source_tree_digest: SOURCE_TREE_DIGEST,
     },
     request: {
       ...request,
@@ -222,6 +231,7 @@ function expectations() {
     expected_preview_url: PREVIEW_URL,
     expected_web_commit_sha: WEB_COMMIT_SHA,
     expected_worker_image_digest: WORKER_IMAGE_DIGEST,
+    expected_source_tree_digest: SOURCE_TREE_DIGEST,
     expected_signer_public_keys_b64: [SIGNER_PUBLIC_KEY_B64],
     shared_secret: SECRET,
     now_ms: NOW + 1_000,

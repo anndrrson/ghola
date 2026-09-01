@@ -3,11 +3,15 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { attestCarryReleaseSourceTree } from "../../../scripts/carry-source-tree-attestation.mjs";
+import { CARRY_RELEASE_FILES } from "./check-carry-execution-contract.mjs";
 import {
   assembleCarryReleaseEvidence,
   DEFAULT_CARRY_EVIDENCE_PATH,
   verifyCarryReleaseEvidence,
 } from "./verify-carry-release-evidence.mjs";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 export function parseCarryAssemblyArgs(args) {
   const parsed = { candidatePath: "", lifecyclePaths: [], outputPath: DEFAULT_CARRY_EVIDENCE_PATH };
@@ -57,15 +61,28 @@ export async function assembleCarryReleaseEvidenceFile({
   const read = dependencies.readFile || readFile;
   const assemble = dependencies.assemble || assembleCarryReleaseEvidence;
   const verify = dependencies.verify || verifyCarryReleaseEvidence;
+  const attest = dependencies.attestSourceTree || attestCarryReleaseSourceTree;
   const candidate = await readJson(candidatePath, read, "candidate");
+  const sourceTree = attest({
+    repoRoot: REPO_ROOT,
+    releaseFiles: Object.values(CARRY_RELEASE_FILES),
+    expectedRevision: candidate.web_commit_sha,
+    ...(candidate.source_tree_digest ? { expectedDigest: candidate.source_tree_digest } : {}),
+  });
+  const boundCandidate = {
+    ...candidate,
+    source_tree_digest: sourceTree.source_tree_digest,
+  };
   const lifecycles = await Promise.all(lifecyclePaths.map(async (path) => {
     const parsed = await readJson(path, read, "lifecycle");
     return parsed?.material && typeof parsed.material === "object" && !Array.isArray(parsed.material)
       ? parsed.material
       : parsed;
   }));
-  const evidence = assemble({ candidate, lifecycles });
-  const verified = await verify(evidence);
+  const evidence = assemble({ candidate: boundCandidate, lifecycles });
+  const verified = await verify(evidence, {
+    expected_source_tree_digest: sourceTree.source_tree_digest,
+  });
   if (verified?.ok !== true || verified.evidence_commitment !== evidence?.evidence_commitment) {
     throw new Error("carry_release_verification_result_invalid");
   }

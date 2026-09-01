@@ -66,6 +66,31 @@ describe("public Hyperliquid lifecycle integration", () => {
     expect(componentSource).toContain("Withdrawals remain disabled · no trade during setup");
   });
 
+  it("retains the carry no-submit handoff until a definitive result", () => {
+    const handoff = componentSource.slice(
+      componentSource.indexOf('const carryNoSubmitQuery = workspaceParams.get("carry_check")'),
+      componentSource.indexOf("const hyperliquidRecord = useMarketData"),
+    );
+    const trigger = handoff.slice(handoff.indexOf("useEffect(() =>"), handoff.indexOf("const resolveCarryNoSubmitRequest"));
+    const resolution = handoff.slice(handoff.indexOf("const resolveCarryNoSubmitRequest"));
+
+    expect(trigger).not.toContain('params.delete("carry_check")');
+    expect(trigger).toContain("const beginCarryNoSubmitRequest");
+    expect(trigger).toContain("setCarryNoSubmitRequested(false)");
+    expect(resolution).toContain('if (outcome === "auth_required") return;');
+    expect(resolution).toContain("new URLSearchParams(workspaceQueryRef.current)");
+    expect(resolution).toContain('params.delete("carry_check")');
+    expect(componentSource).toContain("onAutoRunNoSubmitStarted={beginCarryNoSubmitRequest}");
+    expect(componentSource).toContain("onAutoRunNoSubmitResolved={resolveCarryNoSubmitRequest}");
+  });
+
+  it("resolves an in-flight carry handoff against the latest workspace query", () => {
+    expect(componentSource).toContain("const workspaceQueryRef = useRef(workspaceQuery)");
+    expect(componentSource).toContain("workspaceQueryRef.current = workspaceQuery");
+    expect(componentSource).toContain("new URLSearchParams(workspaceQueryRef.current)");
+    expect(componentSource).not.toContain("new URLSearchParams(workspaceQuery);\n    params.delete(\"carry_check\")");
+  });
+
   it("serializes initial worker access and bounds every pre-trade worker request", () => {
     const accountSnapshotRoute = privateAccountServerSource.slice(
       privateAccountServerSource.indexOf("export async function hyperliquidAccountSnapshotForOwner"),

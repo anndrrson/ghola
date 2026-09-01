@@ -14,6 +14,7 @@ export function buildCarryShadowDevelopmentWitness({
   required_samples: requiredSamples = MINIMUM_SAMPLES,
   minimum_span_ms: minimumSpanMs = MINIMUM_SPAN_MS,
   source_revision: sourceRevision,
+  source_tree_digest: sourceTreeDigest,
   created_at_ms: createdAtMs = Date.now(),
 }) {
   const soak = verifyCarryShadowSoak(sampleResults, {
@@ -26,6 +27,7 @@ export function buildCarryShadowDevelopmentWitness({
     requiredSamples,
     minimumSpanMs,
     sourceRevision,
+    sourceTreeDigest,
     createdAtMs,
   });
   if (failures.length > 0) {
@@ -36,6 +38,7 @@ export function buildCarryShadowDevelopmentWitness({
     kind: KIND,
     scope: "public_market_data_only",
     source_revision: sourceRevision,
+    source_tree_digest: sourceTreeDigest,
     created_at_ms: createdAtMs,
     release_bound: false,
     worker_image_digest: null,
@@ -56,6 +59,7 @@ export function buildCarryShadowDevelopmentWitness({
 export function verifyCarryShadowDevelopmentWitness(value, {
   now_ms: nowMs = Date.now(),
   source_revision: expectedSourceRevision,
+  source_tree_digest: expectedSourceTreeDigest,
 } = {}) {
   const sampleResults = Array.isArray(value?.sample_results) ? value.sample_results : [];
   const recomputed = verifyCarryShadowSoak(sampleResults, {
@@ -68,6 +72,8 @@ export function verifyCarryShadowDevelopmentWitness(value, {
     ...(value?.scope === "public_market_data_only" ? [] : ["witness_scope_invalid"]),
     ...(!expectedSourceRevision || value?.source_revision === expectedSourceRevision
       ? [] : ["witness_source_revision_mismatch"]),
+    ...(!expectedSourceTreeDigest || value?.source_tree_digest === expectedSourceTreeDigest
+      ? [] : ["witness_source_tree_digest_mismatch"]),
     ...(value?.release_bound === false ? [] : ["witness_release_boundary_invalid"]),
     ...(value?.worker_image_digest === null ? [] : ["witness_worker_image_claim_forbidden"]),
     ...(value?.owner_accounts_bound === false ? [] : ["witness_owner_account_claim_forbidden"]),
@@ -81,6 +87,7 @@ export function verifyCarryShadowDevelopmentWitness(value, {
       requiredSamples: value?.required_samples,
       minimumSpanMs: value?.minimum_span_ms,
       sourceRevision: value?.source_revision,
+      sourceTreeDigest: value?.source_tree_digest,
       createdAtMs: value?.created_at_ms,
       nowMs,
     }),
@@ -101,6 +108,7 @@ function witnessFailures({
   requiredSamples,
   minimumSpanMs,
   sourceRevision,
+  sourceTreeDigest,
   createdAtMs,
   nowMs = createdAtMs,
 }) {
@@ -121,6 +129,7 @@ function witnessFailures({
       ? [] : ["witness_snapshot_coverage_invalid"]),
     ...(soak?.degraded_snapshots === 0 ? [] : ["witness_degraded_snapshot_detected"]),
     ...(/^[0-9a-f]{7,40}$/i.test(String(sourceRevision || "")) ? [] : ["witness_source_revision_invalid"]),
+    ...(/^sha256:[0-9a-f]{64}$/.test(String(sourceTreeDigest || "")) ? [] : ["witness_source_tree_digest_invalid"]),
     ...(Number.isSafeInteger(createdAtMs)
       && Number.isSafeInteger(latestCheckedAtMs)
       && createdAtMs >= latestCheckedAtMs

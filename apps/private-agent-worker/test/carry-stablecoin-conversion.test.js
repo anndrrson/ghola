@@ -123,6 +123,45 @@ test("Aster cashflow valuation fails closed for stale or unbound book evidence",
   );
 });
 
+test("Aster cashflow valuation refreshes the book for later settlements", async () => {
+  let nowMs = NOW;
+  let reads = 0;
+  const reader = createAsterCashflowValuationReader({
+    now: () => nowMs,
+    fetchImpl: async () => {
+      reads += 1;
+      return {
+        ok: true,
+        json: async () => ({
+          symbol: "USDCUSDT",
+          T: nowMs,
+          bids: [[reads === 1 ? "0.9998" : "0.9997", "100"]],
+          asks: [[reads === 1 ? "1.0002" : "1.0003", "100"]],
+        }),
+      };
+    },
+  });
+  const first = await reader({
+    source_asset: "USDT",
+    source_amount_micro: 1_000_000,
+    source_amount_decimal: "1.000000",
+    source_amount_scale: 6,
+    checked_at_ms: nowMs,
+  });
+  nowMs += 60_000;
+  const second = await reader({
+    source_asset: "USDT",
+    source_amount_micro: 1_000_000,
+    source_amount_decimal: "1.000000",
+    source_amount_scale: 6,
+    checked_at_ms: nowMs,
+  });
+  assert.equal(reads, 2);
+  assert.equal(first.observed_at_ms, NOW);
+  assert.equal(second.observed_at_ms, NOW + 60_000);
+  assert.notEqual(first.evidence_commitment, second.evidence_commitment);
+});
+
 test("values bound USDT cashflows from fresh liquid Coinbase depth", async () => {
   const readValuation = createCoinbaseUsdtCashflowValuationReader(coinbaseDependencies());
   const valuation = await readValuation({

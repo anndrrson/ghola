@@ -27,6 +27,7 @@ import { privateKeyToAccount } from "viem/accounts";
 
 const MANDATE_OWNER = privateKeyToAccount(`0x${"22".repeat(32)}`);
 const verifyCarryReleaseEvidence = verifyCarryLifecycleEvidence;
+const SOURCE_TREE_DIGEST = `sha256:${"c".repeat(64)}`;
 
 test("reports missing and malformed proof artifacts with deterministic readiness codes", () => {
   const directory = mkdtempSync(join(tmpdir(), "ghola-carry-proof-"));
@@ -89,6 +90,7 @@ async function fixture({
       web_commit_sha: "5b487f6f",
       preview_url: "https://ghola-carry-proof.vercel.app",
       worker_image_digest: "sha256:abcdef1234567890",
+      source_tree_digest: SOURCE_TREE_DIGEST,
     },
     request: { ambiguity_retry_performed: false },
     position: {
@@ -481,6 +483,16 @@ test("accepts two unique flat lifecycles across two venue pairs and aggregates e
   assert.equal(verified.unique_position_count, 2);
   assert.equal(verified.distinct_venue_pair_count, 2);
   assert.equal(verified.realized_net_value_micro_usdc, 68_000);
+});
+
+test("rejects a release proof detached from the independently attested source tree", async () => {
+  const assembled = await committedReleaseFixture();
+  await assert.rejects(
+    () => verifyCommittedCarryReleaseEvidence(assembled, {
+      expected_source_tree_digest: `sha256:${"d".repeat(64)}`,
+    }),
+    /candidate_source_tree_digest_mismatch/,
+  );
 });
 
 test("rejects fewer than two unique positions or distinct venue pairs", async () => {

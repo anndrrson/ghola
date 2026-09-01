@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  cashflowValuationEvidenceMessage,
+  venueAdapterCapability,
+} from "@ghola/execution-core";
+import {
   observeCarryFundingPersistence,
   observeCarryFundingUniverse,
   runCarryFundingObservationTick,
@@ -44,26 +48,85 @@ function evidence({ longRate = 0, shortRate = 100_000_000 } = {}) {
 
 function shadowSnapshot(venueId, overrides = {}) {
   const venueRates = { hyperliquid: 10_000, lighter: 30_000, aster: -20_000 };
-  return {
+  const declared = venueAdapterCapability(venueId, "perp_shadow");
+  const quoteAsset = venueId === "hyperliquid" || venueId === "aster" ? "USDT" : "USD";
+  const settlementAsset = venueId === "aster" ? "USDT" : "USDC";
+  const base = {
     version: 1,
     venue_id: venueId,
+    adapter_mode: "shadow_read_only",
+    source_schema: declared.source_schema,
+    trading_api_available: true,
     contract_id: `${venueId}:BTC`,
     economic_equivalence_id: "carry:BTC-usd-linear",
     asset: "BTC",
+    market: "BTC-USD",
     contract_type: "linear_perp",
-    quote_asset: "USDC",
+    quote_asset: quoteAsset,
+    collateral_asset: venueId === "aster" ? "USDT" : "USDC",
+    funding_settlement_asset: settlementAsset,
+    fee_settlement_asset: settlementAsset,
+    asset_valuations: [cashflowValuation(quoteAsset)],
     mark_price_e8: 10_000_000_000,
     index_price_e8: 10_000_000_000,
+    best_bid_e8: 9_999_000_000,
+    best_ask_e8: 10_001_000_000,
+    depth_bids: [{ price_e8: 9_999_000_000, size_e8: 100_000_000 }],
+    depth_asks: [{ price_e8: 10_001_000_000, size_e8: 100_000_000 }],
     funding_rate_e12_per_interval: venueRates[venueId] ?? 10_000,
     funding_interval_ms: 3_600_000,
+    maker_fee_bps: 1,
+    taker_fee_bps: 2,
+    minimum_notional_micro_usdc: 1_000_000,
+    quantity_step_e8: 1_000,
+    price_tick_e8: 1_000,
+    initial_margin_bps: 500,
+    maintenance_margin_bps: 250,
+    liquidation_fee_bps: 0,
+    margin_model: declared.margin_model,
+    liquidation_model: declared.liquidation_model,
     as_of_ms: NOW,
-    source_observed_at_ms: { funding: NOW },
-    source_max_age_ms: { funding: 60_000 },
+    source_observed_at_ms: { market: NOW, funding: NOW, orderbook: NOW },
+    source_max_age_ms: {
+      market: declared.source_max_age_ms?.market ?? 60_000,
+      funding: declared.source_max_age_ms?.funding ?? 60_000,
+      orderbook: declared.source_max_age_ms?.orderbook ?? 60_000,
+    },
     stale_sources: [],
     status: "ready",
     stale: false,
-    ...overrides,
+    missing_fields: [],
+    quality_flags: [],
+    executable: false,
   };
+  return {
+    ...base,
+    ...overrides,
+    source_observed_at_ms: {
+      ...base.source_observed_at_ms,
+      ...(overrides.source_observed_at_ms || {}),
+    },
+    source_max_age_ms: {
+      ...base.source_max_age_ms,
+      ...(overrides.source_max_age_ms || {}),
+    },
+  };
+}
+
+function cashflowValuation(sourceAsset) {
+  const valuation = {
+    version: 1,
+    source_asset: sourceAsset,
+    valuation_asset: "USDC",
+    verified: true,
+    credit_rate_e8: 99_000_000,
+    debit_rate_e8: 101_000_000,
+    observed_at_ms: NOW,
+    expires_at_ms: NOW + 60_000,
+    evidence_source: "test:stablecoin-book:v1",
+    evidence_commitment: `carry:cashflow-valuation:evidence:${(sourceAsset === "USDT" ? "a" : "b").repeat(64)}`,
+  };
+  return { ...valuation, evidence_message: cashflowValuationEvidenceMessage(valuation) };
 }
 
 test("supervises five-venue observation failures and stalls", async (t) => {
@@ -307,6 +370,7 @@ test("collects funding history without an open browser", async () => {
 
   assert.equal(result.ok, true);
   assert.equal(result.current_feed_set_complete, true);
+  assert.equal(result.current_feed_set_ready, true);
   assert.equal(result.error, null);
   assert.equal(result.transaction_broadcast, false);
   assert.deepEqual(result.assets, ["BTC"]);
@@ -317,8 +381,69 @@ test("collects funding history without an open browser", async () => {
   assert.equal(result.routing_advantage.realized, false);
   assert.equal(result.routing_advantage.execution_ready, false);
   assert.equal(result.shadow_snapshot.stored, true);
-  assert.equal(result.shadow_snapshot.ready, false);
+  assert.equal(result.shadow_snapshot.ready, true);
   assert.equal(state.rows.size, 8);
+});
+
+test("fails closed when complete venue coverage contains a stale shadow snapshot", async (t) => {
+  const state = stateStore();
+  const loop = startCarryFundingObservationLoop({
+    state,
+    now: () => NOW,
+    fetchPerpShadowSet: async () => ["hyperliquid", "lighter", "aster", "edgex", "dydx"].map((venueId) => ({
+      venue_id: venueId,
+      ok: true,
+      snapshots: [shadowSnapshot(venueId, venueId === "dydx" ? {
+        as_of_ms: NOW - 120_001,
+      } : {})],
+    })),
+    env: {
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ENABLED: "true",
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_INITIAL_DELAY_MS: "60000",
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_INTERVAL_MS: "15000",
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_STALL_MS: "30000",
+      PRIVATE_AGENT_CARRY_SHADOW_OBSERVER_ASSETS: "BTC",
+      PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SAMPLES: "1",
+      PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SPAN_MS: "0",
+    },
+  });
+  t.after(() => loop.stop());
+
+  const result = await loop.runNow();
+  assert.equal(result.current_feed_set_complete, true);
+  assert.equal(result.current_feed_set_ready, false);
+  assert.equal(result.shadow_snapshot.stored, true);
+  assert.equal(result.shadow_snapshot.ready, false);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "carry_shadow_feed_set_unready");
+  assert.equal(loop.health().status, "degraded");
+  assert.equal(loop.health().last_error_code, "carry_shadow_feed_set_unready");
+});
+
+test("fails closed when a ready feed set cannot be stored durably", async () => {
+  const result = await runCarryFundingObservationTick({
+    state: {},
+    fetchPerpShadowSet: async () => ["hyperliquid", "lighter", "aster", "edgex", "dydx"].map((venueId) => ({
+      venue_id: venueId,
+      ok: true,
+      snapshots: [shadowSnapshot(venueId)],
+    })),
+    assets: ["BTC"],
+    now_ms: NOW,
+    env: {
+      PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SAMPLES: "1",
+      PRIVATE_AGENT_CARRY_FUNDING_PERSISTENCE_MIN_SPAN_MS: "0",
+    },
+  });
+
+  assert.equal(result.current_feed_set_complete, true);
+  assert.equal(result.current_feed_set_ready, false);
+  assert.deepEqual(result.shadow_snapshot, {
+    stored: false,
+    reason: "shadow_snapshot_state_unavailable",
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "carry_shadow_snapshot_not_stored");
 });
 
 test("uses the post-fetch wall clock for newer Lighter WebSocket evidence", async () => {
@@ -374,6 +499,7 @@ test("degrades observer health when any core venue feed is missing", async (t) =
   const result = await loop.runNow();
   assert.equal(result.ok, false);
   assert.equal(result.current_feed_set_complete, false);
+  assert.equal(result.current_feed_set_ready, false);
   assert.equal(result.error, "carry_shadow_feed_set_incomplete");
   assert.equal(result.funding_persistence.observed_route_count, 6);
   assert.equal(loop.health().status, "degraded");

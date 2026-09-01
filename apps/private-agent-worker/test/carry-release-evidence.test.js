@@ -24,7 +24,9 @@ import { storeCarryTransferRouteEvidence } from "../src/execution/carry-transfer
 import { carryShadowFixture } from "./carry-shadow-fixture.js";
 import {
   CARRY_EXECUTION_VENUES,
+  cashflowValuationEvidenceMessage,
   carryRiskMandateMessage,
+  normalizeCashflowValuation,
   normalizeCarryRiskMandateAuthorization,
   normalizeCarryRiskMandatePayload,
   venueAdapterCapability,
@@ -157,8 +159,81 @@ test("derives release material only from a completed durable lifecycle", async (
     { venue_id: "hyperliquid", authorized: true, flat_zero_orders: true, nonzero_position_count: 0, open_order_count: 0 },
     { venue_id: "aster", authorized: true, flat_zero_orders: true, nonzero_position_count: 0, open_order_count: 0 },
   ]);
-  assert.equal(result.material.value_ledger.realized.net_value_micro_usdc, 34);
+  assert.equal(result.material.value_ledger.realized.contract_pnl_micro_usdc, 10);
+  assert.equal(result.material.value_ledger.realized.execution_slippage_micro_usdc, 5);
+  assert.equal(result.material.value_ledger.realized.slippage_reversal_micro_usdc, 5);
+  assert.equal(result.material.value_ledger.realized.slippage_micro_usdc, 0);
+  assert.equal(result.material.value_ledger.realized.settlement_adjustment_micro_usdc, 15);
+  assert.deepEqual(result.material.value_ledger.realized.pnl_components.map((component) => ({
+    venue_id: component.venue_id,
+    source_asset: component.source_asset,
+    source_amount_micro: component.source_amount_micro,
+    converted_amount_micro_usdc: component.converted_amount_micro_usdc,
+  })), [
+    { venue_id: "hyperliquid", source_asset: "USDC", source_amount_micro: 6, converted_amount_micro_usdc: 6 },
+    { venue_id: "aster", source_asset: "USDT", source_amount_micro: 5, converted_amount_micro_usdc: 4 },
+  ]);
+  assert.deepEqual(result.material.value_ledger.realized.execution_bindings.map((binding) => ({
+    venue_id: binding.venue_id,
+    pnl_settlement_asset: binding.pnl_settlement_asset,
+    source_amount_micro: binding.source_amount_micro,
+  })), [
+    { venue_id: "hyperliquid", pnl_settlement_asset: "USDC", source_amount_micro: 6 },
+    { venue_id: "aster", pnl_settlement_asset: "USDT", source_amount_micro: 5 },
+  ]);
+  assert.match(result.material.value_ledger.realized.settlement_evidence_commitment, /^carry:settlement:evidence:[0-9a-f]{64}$/);
+  assert.equal(result.material.value_ledger.realized.net_value_micro_usdc, 39);
   assert.match(result.material.worker_material_commitment, /^carry:release:material:[0-9a-f]{64}$/);
+});
+
+test("fails closed when settlement conversion or slippage-reversal evidence is missing or tampered", async (t) => {
+  const mutations = [
+    ["missing durable components", (record) => { delete record.value_evidence.realized_economics.pnl_components; }],
+    ["durable converted PnL mismatch", (record) => {
+      record.value_evidence.realized_economics.pnl_components[1].converted_amount_micro_usdc += 1;
+    }],
+    ["ledger exact-amount binding mismatch", (record) => {
+      const entry = record.value_ledger.entries.find((item) => item.entry_type === "settlement_adjustment");
+      entry.pnl_components[1].cashflow_valuation.bound_source_amount_micro += 1;
+    }],
+    ["USDC identity value changed with a recomputed commitment", (record) => {
+      const entry = record.value_ledger.entries.find((item) => item.entry_type === "settlement_adjustment");
+      const component = entry.pnl_components.find((item) => item.source_asset === "USDC");
+      component.converted_amount_micro_usdc += 1;
+      component.cashflow_valuation.bound_value_micro_usdc += 1;
+      component.cashflow_valuation.evidence_message = cashflowValuationEvidenceMessage(component.cashflow_valuation);
+      component.cashflow_valuation.evidence_commitment = `carry:cashflow-valuation:evidence:${createHash("sha256")
+        .update(component.cashflow_valuation.evidence_message)
+        .digest("hex")}`;
+      entry.amount_micro_usdc += 1;
+      record.value_evidence.realized_economics.pnl_components = structuredClone(entry.pnl_components);
+      record.value_evidence.realized_economics.contract_pnl_micro_usdc += 1;
+      record.value_evidence.realized_economics.settlement_adjustment_micro_usdc += 1;
+      record.value_ledger.realized.settlement_adjustment_micro_usdc += 1;
+      record.value_ledger.realized.net_value_micro_usdc += 1;
+    }],
+    ["ledger slippage reversal mismatch", (record) => {
+      const entry = record.value_ledger.entries.find((item) => item.entry_type === "settlement_adjustment");
+      entry.slippage_reversal_micro_usdc -= 1;
+    }],
+    ["durable settlement adjustment mismatch", (record) => {
+      record.value_evidence.realized_economics.settlement_adjustment_micro_usdc += 1;
+    }],
+  ];
+  for (const [name, mutate] of mutations) {
+    await t.test(name, async () => {
+      const fixture = await stateFixture();
+      mutate(fixture.record);
+      const result = await buildCompletedCarryReleaseMaterial({
+        state: fixture.state,
+        owner_commitment: OWNER,
+        position_id: fixture.record.position.position_id,
+        env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+        now_ms: NOW,
+      });
+      assert.equal(result.error, "carry_release_settlement_evidence_unproven");
+    });
+  }
 });
 
 test("refuses release material when durable opportunity evidence was altered", async () => {
@@ -239,6 +314,7 @@ test("records a durable owner- and image-bound paired lifecycle proof", async ()
   assert.equal(recorded.proof.collateral_route_coverage_proven, true);
   assert.match(recorded.proof.collateral_route_evidence_commitment, /^carry:transfer-routes:evidence:/);
   assert.match(recorded.proof.creation_input_evidence_commitment, /^carry:creation-inputs:[0-9a-f]{64}$/);
+  assert.match(recorded.proof.settlement_evidence_commitment, /^carry:settlement:evidence:[0-9a-f]{64}$/);
   assert.equal(recorded.proof.ambiguity_retry_count, 0);
   assert.deepEqual(recorded.proof.value_attribution, {
     modeled: {
@@ -250,15 +326,15 @@ test("records a durable owner- and image-bound paired lifecycle proof", async ()
       contract_pnl_micro_usdc: 10,
       funding_micro_usdc: 50,
       fees_micro_usdc: 20,
-      slippage_micro_usdc: 5,
+      slippage_micro_usdc: 0,
       gas_micro_usdc: 0,
       capital_cost_micro_usdc: 1,
       transfer_fees_micro_usdc: 0,
       rebates_micro_usdc: 0,
-      net_value_micro_usdc: 34,
+      net_value_micro_usdc: 39,
     },
-    realized_total_cost_micro_usdc: 26,
-    variance_from_modeled_micro_usdc: -166,
+    realized_total_cost_micro_usdc: 21,
+    variance_from_modeled_micro_usdc: -161,
   });
   assert.deepEqual(recorded.proof.venue_ids, ["hyperliquid", "aster"]);
   assert.match(recorded.proof.evidence_commitment, /^carry:lifecycle-proof:evidence:[0-9a-f]{64}$/);
@@ -1217,10 +1293,103 @@ test("refuses release evidence assembled from another account's execution receip
   assert.equal(result.error, "carry_release_entry_account_binding_mismatch:aster");
 });
 
+test("binds settlement PnL to immutable entry and exit fill evidence", async () => {
+  const fixture = await stateFixture();
+  fixture.receipts["work:carry:exit:aster"].receipt.final_proof.average_fill_price = "9999.99994545";
+  fixture.record.value_evidence.exit.venues.aster.average_fill_price_e8 = "999999994545";
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_settlement_evidence_unproven");
+});
+
+function releasePnlComponents(valuedAtMs) {
+  const identityMaterial = {
+    version: 1,
+    source_asset: "USDC",
+    valuation_asset: "USDC",
+    verified: true,
+    bound_source_amount_micro: 6,
+    bound_value_micro_usdc: 6,
+    credit_rate_e8: 100_000_000,
+    debit_rate_e8: 100_000_000,
+    observed_at_ms: valuedAtMs,
+    expires_at_ms: valuedAtMs + 30_000,
+    evidence_source: "identity:usdc:v1",
+  };
+  const identityMessage = cashflowValuationEvidenceMessage(identityMaterial);
+  const identityValuation = normalizeCashflowValuation({
+    ...identityMaterial,
+    evidence_message: identityMessage,
+    evidence_commitment: `carry:cashflow-valuation:evidence:${createHash("sha256").update(identityMessage).digest("hex")}`,
+  });
+  const asterPayload = {
+    venue_id: "aster",
+    market: "USDCUSDT",
+    book_time_ms: valuedAtMs,
+    source_amount_micro: 5,
+    source_amount_decimal: "0.000005",
+    source_amount_scale: 6,
+    bids: [{ price_e8: 120_000_000, size_micro: 1_000_000 }],
+    asks: [{ price_e8: 125_000_000, size_micro: 1_000_000 }],
+  };
+  const asterMaterial = {
+    version: 1,
+    source_asset: "USDT",
+    valuation_asset: "USDC",
+    verified: true,
+    bound_source_amount_micro: 5,
+    bound_value_micro_usdc: 4,
+    credit_rate_e8: 80_000_000,
+    debit_rate_e8: 100_000_000,
+    observed_at_ms: valuedAtMs,
+    expires_at_ms: valuedAtMs + 30_000,
+    evidence_source: "aster:USDCUSDT:book:v1",
+  };
+  const asterMessage = cashflowValuationEvidenceMessage(asterMaterial);
+  const asterValuation = normalizeCashflowValuation({
+    ...asterMaterial,
+    evidence_message: asterMessage,
+    evidence_payload: asterPayload,
+    evidence_commitment: `carry:cashflow-valuation:evidence:${createHash("sha256")
+      .update(stableJson({ evidence_message: asterMessage, evidence_payload: asterPayload }))
+      .digest("hex")}`,
+  });
+  return [
+    {
+      venue_id: "hyperliquid",
+      source_asset: "USDC",
+      source_amount_micro: 6,
+      source_amount_decimal: "0.000006",
+      source_amount_scale: 6,
+      converted_amount_micro_usdc: 6,
+      valued_at_ms: valuedAtMs,
+      cashflow_valuation: identityValuation,
+    },
+    {
+      venue_id: "aster",
+      source_asset: "USDT",
+      source_amount_micro: 5,
+      source_amount_decimal: "0.000005",
+      source_amount_scale: 6,
+      converted_amount_micro_usdc: 4,
+      valued_at_ms: valuedAtMs,
+      cashflow_valuation: asterValuation,
+    },
+  ];
+}
+
 async function stateFixture() {
   const positionId = "carry:position:release:0001";
   const entrySaga = saga("entry", 1_800_000_000_500, 1_800_000_001_000, false);
   const exitSaga = saga("exit", 1_800_000_003_000, 1_800_000_004_000, true);
+  const settlementValuedAtMs = 1_800_000_005_000;
+  const pnlComponents = releasePnlComponents(settlementValuedAtMs);
+  const settlementEvidenceCommitment = `carry:value:economics:${"ef".repeat(20)}`;
   const ledgerEntries = [...entrySaga.legs, ...exitSaga.legs].flatMap((leg, index) => [
     { leg_id: leg.leg_id, entry_type: "trading_fee", direction: "debit", amount_micro_usdc: 5 },
     { leg_id: leg.leg_id, entry_type: "slippage", direction: "debit", amount_micro_usdc: index === 3 ? 2 : 1 },
@@ -1239,6 +1408,20 @@ async function stateFixture() {
       entry_type: "funding",
       direction: "debit",
       amount_micro_usdc: 10,
+    },
+    {
+      version: 1,
+      entry_id: "carry:value:realized:contract-pnl",
+      sequence: ledgerEntries.length + 1,
+      entry_type: "settlement_adjustment",
+      direction: "credit",
+      amount_micro_usdc: 15,
+      venue_id: null,
+      leg_id: null,
+      occurred_at_ms: settlementValuedAtMs,
+      evidence_commitment: settlementEvidenceCommitment,
+      pnl_components: structuredClone(pnlComponents),
+      slippage_reversal_micro_usdc: 5,
     },
   );
   const opportunityMaterial = {
@@ -1333,7 +1516,18 @@ async function stateFixture() {
     },
     value_evidence: {
       costs_complete: true,
-      realized_economics: { contract_pnl_micro_usdc: 10 },
+      entry: releaseExecutionValueEvidence(entrySaga),
+      exit: releaseExecutionValueEvidence(exitSaga),
+      realized_economics: {
+        status: "complete",
+        contract_pnl_micro_usdc: 10,
+        pnl_components: structuredClone(pnlComponents),
+        slippage_reversal_micro_usdc: 5,
+        settlement_adjustment_micro_usdc: 15,
+        capital_cost_micro_usdc: 1,
+        evidence_commitment: settlementEvidenceCommitment,
+        checked_at_ms: settlementValuedAtMs,
+      },
     },
     value_ledger: {
       status: "finalized",
@@ -1353,7 +1547,8 @@ async function stateFixture() {
         capital_cost_micro_usdc: 1,
         transfer_fee_micro_usdc: 0,
         rebate_micro_usdc: 0,
-        net_value_micro_usdc: 34,
+        settlement_adjustment_micro_usdc: 15,
+        net_value_micro_usdc: 39,
       },
       entries: ledgerEntries,
     },
@@ -1376,6 +1571,7 @@ async function stateFixture() {
           target_client_order_matched: true,
           final_venue_execution_proven: true,
           filled_base_size: "0.11",
+          average_fill_price: releaseFillPrice(context.work_order_commitment),
         },
       },
     },
@@ -1728,6 +1924,7 @@ function saga(phase, createdAt, updatedAt, reduceOnly) {
   const contexts = legs.map((leg) => ({
     leg_id: leg.leg_id,
     work_order_commitment: `work:carry:${phase}:${leg.venue_id}`,
+    accounting_pnl_settlement_asset: leg.venue_id === "aster" ? "USDT" : "USDC",
     instruction: { order: { side: leg.side, reduce_only: reduceOnly } },
   }));
   return {
@@ -1737,6 +1934,32 @@ function saga(phase, createdAt, updatedAt, reduceOnly) {
     updated_at_ms: updatedAt,
     legs,
     execution_context: { legs: contexts },
+  };
+}
+
+function releaseFillPrice(workOrderCommitment) {
+  if (workOrderCommitment === "work:carry:exit:hyperliquid") return "10000.00005455";
+  if (workOrderCommitment === "work:carry:exit:aster") return "9999.99995455";
+  return "10000";
+}
+
+function releaseExecutionValueEvidence(sagaValue) {
+  return {
+    status: "complete",
+    venues: Object.fromEntries(sagaValue.execution_context.legs.map((context) => [
+      context.work_order_commitment.endsWith(":aster") ? "aster" : "hyperliquid",
+      {
+        filled_base_e8: "11000000",
+        average_fill_price_e8: context.work_order_commitment === "work:carry:exit:hyperliquid"
+          ? "1000000005455"
+          : context.work_order_commitment === "work:carry:exit:aster"
+            ? "999999995455"
+            : "1000000000000",
+        side: context.instruction.order.side,
+        pnl_settlement_asset: context.accounting_pnl_settlement_asset,
+        evidence_commitment: `carry:value:execution:${context.work_order_commitment}`,
+      },
+    ])),
   };
 }
 

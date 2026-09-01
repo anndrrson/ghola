@@ -14,6 +14,7 @@ import { verifyCarryShadowSet } from "../src/execution/perp-shadow-readiness.js"
 
 const NOW = 1_800_000_000_000;
 const REVISION = "a".repeat(40);
+const SOURCE_TREE_DIGEST = `sha256:${"b".repeat(64)}`;
 
 test("persists a capital-free five-venue witness without claiming execution readiness", () => {
   const witness = buildWitness();
@@ -28,10 +29,12 @@ test("persists a capital-free five-venue witness without claiming execution read
   assert.equal(witness.assets, 3);
   assert.equal(witness.completed_samples, 3);
   assert.equal(witness.duration_ms, 120_000);
+  assert.equal(witness.source_tree_digest, SOURCE_TREE_DIGEST);
   assert.match(witness.witness_commitment, /^carry:shadow:development:[0-9a-f]{64}$/);
   assert.equal(verifyCarryShadowDevelopmentWitness(witness, {
     now_ms: NOW + 120_000,
     source_revision: REVISION,
+    source_tree_digest: SOURCE_TREE_DIGEST,
   }).ok, true);
 });
 
@@ -56,6 +59,13 @@ test("rejects tampering and any attempt to promote a development witness", () =>
   });
   assert.equal(revisionResult.ok, false);
   assert.ok(revisionResult.failures.includes("witness_source_revision_mismatch"));
+
+  const digestResult = verifyCarryShadowDevelopmentWitness(buildWitness(), {
+    now_ms: NOW + 120_000,
+    source_tree_digest: `sha256:${"c".repeat(64)}`,
+  });
+  assert.equal(digestResult.ok, false);
+  assert.ok(digestResult.failures.includes("witness_source_tree_digest_mismatch"));
 });
 
 test("independently verifies a persisted witness file", () => {
@@ -66,6 +76,7 @@ test("independently verifies a persisted witness file", () => {
     const result = verifyCarryShadowWitnessFile(path, {
       now_ms: NOW + 120_000,
       source_revision: REVISION,
+      source_tree_digest: SOURCE_TREE_DIGEST,
     });
     assert.equal(result.ok, true);
   } finally {
@@ -88,6 +99,7 @@ function buildWitness() {
     required_samples: 3,
     minimum_span_ms: 120_000,
     source_revision: REVISION,
+    source_tree_digest: SOURCE_TREE_DIGEST,
     created_at_ms: NOW + 120_000,
   });
 }

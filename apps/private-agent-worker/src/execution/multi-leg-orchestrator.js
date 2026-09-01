@@ -59,6 +59,7 @@ function normalizeExecutionContext(value, saga) {
         : null,
       accounting_quote_asset: accountingAsset(leg.accounting_quote_asset),
       accounting_fee_settlement_asset: accountingAsset(leg.accounting_fee_settlement_asset),
+      accounting_pnl_settlement_asset: accountingAsset(leg.accounting_pnl_settlement_asset),
       accounting_asset_valuations: accountingValuations(leg.accounting_asset_valuations),
     });
   });

@@ -9,6 +9,11 @@ import {
 } from "./assemble-carry-no-submit-evidence.mjs";
 
 const NOW = 1_800_000_000_000;
+const SOURCE_TREE = Object.freeze({
+  source_revision: "a".repeat(40),
+  source_tree_digest: `sha256:${"c".repeat(64)}`,
+  release_file_count: 1,
+});
 
 test("sanitizes sealed access, verifies, and atomically writes no-submit evidence", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ghola-no-submit-assemble-"));
@@ -30,6 +35,7 @@ test("sanitizes sealed access, verifies, and atomically writes no-submit evidenc
     signerPublicKeysB64: ["signer"],
     sharedSecret: "secret",
   }, {
+    attestSourceTree: () => SOURCE_TREE,
     verify: (evidence, expected) => {
       verifyCalls += 1;
       assert.equal("encrypted_execution_vault" in evidence.request.venue_access.hyperliquid, false);
@@ -41,6 +47,8 @@ test("sanitizes sealed access, verifies, and atomically writes no-submit evidenc
       ]);
       assert.equal(expected.shared_secret, "secret");
       assert.deepEqual(expected.expected_signer_public_keys_b64, ["signer"]);
+      assert.equal(evidence.source.source_tree_digest, SOURCE_TREE.source_tree_digest);
+      assert.equal(expected.expected_source_tree_digest, SOURCE_TREE.source_tree_digest);
       return {
         ok: true,
         evidence_commitment: evidence.response.private_prime_readiness.evidence_commitment,
@@ -73,6 +81,7 @@ test("never replaces prior evidence when verification fails", async () => {
     workerImageDigest: `sha256:${"b".repeat(64)}`,
     outputPath,
   }, {
+    attestSourceTree: () => SOURCE_TREE,
     verify: () => { throw new Error("proof rejected"); },
   }), /proof rejected/);
   assert.equal(await readFile(outputPath, "utf8"), "existing\n");

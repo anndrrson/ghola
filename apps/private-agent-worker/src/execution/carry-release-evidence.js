@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import {
   CARRY_EXECUTION_VENUES,
   CARRY_RECOVERY_POLICY,
+  convertSignedCashflowToMicroUsdc,
   normalizeCarryLifecycleValueAttribution,
+  venueAdapterCapability,
 } from "@ghola/execution-core";
 import { readCarryVenueQualification, runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
@@ -19,6 +21,7 @@ import {
 } from "./carry-readiness.js";
 import { readCarryShadowQualification } from "./carry-shadow-qualification.js";
 import { loadCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
+import { verifyCashflowValuationEvidence } from "./carry-stablecoin-conversion.js";
 import { liquidationDistanceSourceForVenue } from "../venues/liquidation-distance.js";
 
 const DEFAULT_LIFECYCLE_PROOF_MAX_AGE_MS = 90 * 86_400_000;
@@ -74,6 +77,7 @@ export async function recordCompletedCarryLifecycleProof({
     owner_only_withdrawals: true,
     recording_transaction_broadcast: false,
     realized_net_value_micro_usdc: material.value_ledger.realized.net_value_micro_usdc,
+    settlement_evidence_commitment: material.value_ledger.realized.settlement_evidence_commitment,
     value_attribution: lifecycleValueAttribution(material.value_ledger),
     worker_material_commitment: material.worker_material_commitment,
   };
@@ -357,6 +361,7 @@ export function assessCompletedCarryLifecycleProof({
     && proof.owner_only_withdrawals === true
     && proof.recording_transaction_broadcast === false
     && Number.isSafeInteger(proof.realized_net_value_micro_usdc)
+    && /^carry:settlement:evidence:[0-9a-f]{64}$/.test(String(proof.settlement_evidence_commitment || ""))
     && valueAttribution?.realized.net_value_micro_usdc === proof.realized_net_value_micro_usdc
     && valueAttribution?.realized_total_cost_micro_usdc === proof.value_attribution?.realized_total_cost_micro_usdc
     && /^carry:release:material:[0-9a-f]{64}$/.test(String(proof.worker_material_commitment || ""))
@@ -546,6 +551,11 @@ export async function buildCompletedCarryReleaseMaterial({
   ]);
   if (!entryLegs.ok) return entryLegs;
   if (!exitLegs.ok) return exitLegs;
+  const settlementEvidence = releaseSettlementEvidence(record, {
+    entry_legs: entryLegs.legs,
+    exit_legs: exitLegs.legs,
+  });
+  if (!settlementEvidence.ok) return settlementEvidence;
   const monitoringEndedAt = latestObservation.recorded_at_ms;
   if (monitoringEndedAt <= entryReconciledAt) return denied("carry_release_monitoring_period_missing");
   if (!positiveInteger(exitRequestedAt) || exitRequestedAt < monitoringEndedAt) {
@@ -656,7 +666,7 @@ export async function buildCompletedCarryReleaseMaterial({
         account_state_checked: true,
       })),
     },
-    value_ledger: releaseValueLedger(record),
+    value_ledger: releaseValueLedger(record, settlementEvidence.evidence),
   };
   material.worker_material_commitment = workerMaterialCommitment(material);
   return { ok: true, material };
@@ -1046,13 +1056,30 @@ async function materialLegs({ state, saga, record, phase }) {
       return denied(`carry_release_${phase}_account_binding_mismatch:${sagaLeg.venue_id}`);
     }
     const proof = receipt?.final_proof || attempt?.final_proof || null;
+    const valueEvidence = record.value_evidence?.[phase]?.venues?.[sagaLeg.venue_id];
+    const filledBaseE8 = decimalToScaled(proof?.filled_base_size, 8);
+    const averageFillPriceE8 = decimalToScaled(proof?.average_fill_price, 8);
+    const settlementAsset = String(context.accounting_pnl_settlement_asset || "");
+    const expectedSettlementAsset = venueAdapterCapability(
+      sagaLeg.venue_id,
+      "collateral_route_observer",
+    )?.collateral_asset;
     if (attempt?.submit_count !== 1 || attempt?.ambiguity_retry_count !== 0) {
       return denied(`carry_release_${phase}_submission_count_unproven:${sagaLeg.venue_id}`);
     }
     if (proof?.broadcast_performed !== true
       || proof?.target_client_order_matched !== true
       || proof?.final_venue_execution_proven !== true
-      || !positiveDecimal(proof?.filled_base_size)) {
+      || !positiveDecimal(proof?.filled_base_size)
+      || !positiveDecimal(proof?.average_fill_price)
+      || filledBaseE8 === null
+      || averageFillPriceE8 === null
+      || !valueEvidence
+      || valueEvidence.filled_base_e8 !== filledBaseE8.toString()
+      || valueEvidence.average_fill_price_e8 !== averageFillPriceE8.toString()
+      || valueEvidence.side !== context.instruction?.order?.side
+      || valueEvidence.pnl_settlement_asset !== settlementAsset
+      || settlementAsset !== expectedSettlementAsset) {
       return denied(`carry_release_${phase}_terminal_proof_missing:${sagaLeg.venue_id}`);
     }
     const ledgerEntries = record.value_ledger.entries || [];
@@ -1075,6 +1102,10 @@ async function materialLegs({ state, saga, record, phase }) {
       target_client_order_matched: true,
       final_venue_execution_proven: true,
       filled_base_size: String(proof.filled_base_size),
+      filled_base_e8: filledBaseE8.toString(),
+      average_fill_price: String(proof.average_fill_price),
+      average_fill_price_e8: averageFillPriceE8.toString(),
+      pnl_settlement_asset: settlementAsset,
       funding_micro_usdc: sumSignedEntries(fundingLedgerEntries, "funding"),
       fee_micro_usdc: sumEntries(executionLedgerEntries, "trading_fee"),
       slippage_micro_usdc: sumEntries(executionLedgerEntries, "slippage"),
@@ -1084,11 +1115,180 @@ async function materialLegs({ state, saga, record, phase }) {
   return legs.length === 2 ? { ok: true, legs } : denied(`carry_release_${phase}_legs_missing`);
 }
 
-function releaseValueLedger(record) {
+function releaseSettlementEvidence(record, { entry_legs: entryLegs, exit_legs: exitLegs }) {
+  try {
+    const ledger = record.value_ledger;
+    const entries = Array.isArray(ledger?.entries) ? ledger.entries : [];
+    const settlementEntries = entries.filter((entry) => entry?.entry_type === "settlement_adjustment");
+    const entry = settlementEntries.length === 1 ? settlementEntries[0] : null;
+    const durable = record.value_evidence?.realized_economics;
+    const venueIds = [record.position?.long_venue_id, record.position?.short_venue_id];
+    const components = Array.isArray(entry?.pnl_components) ? entry.pnl_components : [];
+    const durableComponents = Array.isArray(durable?.pnl_components) ? durable.pnl_components : [];
+    if (!entry
+      || durable?.status !== "complete"
+      || components.length !== 2
+      || durableComponents.length !== 2
+      || stableJson(components) !== stableJson(durableComponents)
+      || new Set(components.map((component) => component?.venue_id)).size !== 2
+      || !venueIds.every((venueId) => components.some((component) => component?.venue_id === venueId))
+      || entry.venue_id !== null
+      || entry.leg_id !== null
+      || !commitment(entry.entry_id)
+      || !commitment(entry.evidence_commitment)
+      || !positiveInteger(entry.occurred_at_ms)
+      || !nonNegativeInteger(entry.amount_micro_usdc)
+      || !["credit", "debit"].includes(entry.direction)
+      || !nonNegativeInteger(entry.slippage_reversal_micro_usdc)
+      || entry.slippage_reversal_micro_usdc !== ledger.realized?.slippage_micro_usdc
+      || durable.slippage_reversal_micro_usdc !== entry.slippage_reversal_micro_usdc) {
+      return denied("carry_release_settlement_evidence_unproven");
+    }
+    const normalizedComponents = [];
+    const executionBindings = [];
+    let convertedPnl = 0n;
+    for (const component of components) {
+      const sourceAmount = component?.source_amount_micro;
+      const convertedAmount = component?.converted_amount_micro_usdc;
+      const valuedAtMs = component?.valued_at_ms;
+      if (!Number.isSafeInteger(sourceAmount)
+        || !Number.isSafeInteger(convertedAmount)
+        || !["USD", "USDC", "USDT"].includes(component?.source_asset)
+        || component?.source_amount_scale !== 6
+        || component?.source_amount_decimal !== signedMicroDecimal(sourceAmount)
+        || valuedAtMs !== entry.occurred_at_ms) {
+        return denied("carry_release_settlement_evidence_unproven");
+      }
+      let valuation = null;
+      if (sourceAmount === 0) {
+        if (convertedAmount !== 0 || component.cashflow_valuation !== null) {
+          return denied("carry_release_settlement_evidence_unproven");
+        }
+      } else {
+        valuation = verifyCashflowValuationEvidence(component.cashflow_valuation);
+        if (stableJson(valuation) !== stableJson(component.cashflow_valuation)
+          || valuation.source_asset !== component.source_asset
+          || valuation.bound_source_amount_micro !== sourceAmount
+          || valuation.observed_at_ms > valuedAtMs + 5_000
+          || valuation.expires_at_ms <= valuedAtMs
+          || convertSignedCashflowToMicroUsdc({
+            amount_micro: sourceAmount,
+            valuation,
+          }) !== convertedAmount
+          || (valuation.source_asset === "USDC"
+            && valuation.evidence_commitment !== `carry:cashflow-valuation:evidence:${digest(valuation.evidence_message)}`)) {
+          return denied("carry_release_settlement_evidence_unproven");
+        }
+      }
+      const executionBinding = releasePnlExecutionBinding({
+        record,
+        component,
+        entryLegs,
+        exitLegs,
+      });
+      if (!executionBinding) return denied("carry_release_settlement_evidence_unproven");
+      convertedPnl += BigInt(convertedAmount);
+      normalizedComponents.push({
+        venue_id: component.venue_id,
+        source_asset: component.source_asset,
+        source_amount_micro: sourceAmount,
+        source_amount_decimal: component.source_amount_decimal,
+        source_amount_scale: component.source_amount_scale,
+        converted_amount_micro_usdc: convertedAmount,
+        valued_at_ms: valuedAtMs,
+        cashflow_valuation: valuation ? structuredClone(valuation) : null,
+      });
+      executionBindings.push(executionBinding);
+    }
+    if (convertedPnl < BigInt(Number.MIN_SAFE_INTEGER)
+      || convertedPnl > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return denied("carry_release_settlement_evidence_unproven");
+    }
+    const convertedPnlMicroUsdc = Number(convertedPnl);
+    const settlementAdjustment = convertedPnlMicroUsdc + entry.slippage_reversal_micro_usdc;
+    const signedEntryAmount = entry.direction === "credit"
+      ? entry.amount_micro_usdc
+      : -entry.amount_micro_usdc;
+    if (!Number.isSafeInteger(settlementAdjustment)
+      || signedEntryAmount !== settlementAdjustment
+      || durable.contract_pnl_micro_usdc !== convertedPnlMicroUsdc
+      || durable.settlement_adjustment_micro_usdc !== settlementAdjustment
+      || ledger.realized?.settlement_adjustment_micro_usdc !== settlementAdjustment
+      || (durable.evidence_commitment != null
+        && durable.evidence_commitment !== entry.evidence_commitment)) {
+      return denied("carry_release_settlement_evidence_unproven");
+    }
+    const evidence = {
+      version: 1,
+      entry_id: entry.entry_id,
+      entry_evidence_commitment: entry.evidence_commitment,
+      pnl_components: normalizedComponents,
+      execution_bindings: executionBindings,
+      converted_contract_pnl_micro_usdc: convertedPnlMicroUsdc,
+      execution_slippage_micro_usdc: ledger.realized.slippage_micro_usdc,
+      slippage_reversal_micro_usdc: entry.slippage_reversal_micro_usdc,
+      settlement_adjustment_micro_usdc: settlementAdjustment,
+      valued_at_ms: entry.occurred_at_ms,
+    };
+    evidence.evidence_commitment = `carry:settlement:evidence:${digest(stableJson(evidence))}`;
+    return { ok: true, evidence: Object.freeze(evidence) };
+  } catch {
+    return denied("carry_release_settlement_evidence_unproven");
+  }
+}
+
+function releasePnlExecutionBinding({ record, component, entryLegs, exitLegs }) {
+  try {
+    const venueId = component?.venue_id;
+    const entry = entryLegs.find((leg) => leg?.venue_id === venueId);
+    const exit = exitLegs.find((leg) => leg?.venue_id === venueId);
+    const expectedAsset = venueAdapterCapability(venueId, "collateral_route_observer")?.collateral_asset;
+    const expectedEntrySide = venueId === record.position.long_venue_id ? "buy" : "sell";
+    const expectedExitSide = expectedEntrySide === "buy" ? "sell" : "buy";
+    if (!entry
+      || !exit
+      || entry.side !== expectedEntrySide
+      || exit.side !== expectedExitSide
+      || entry.reduce_only === true
+      || exit.reduce_only !== true
+      || entry.pnl_settlement_asset !== expectedAsset
+      || exit.pnl_settlement_asset !== expectedAsset
+      || component.source_asset !== expectedAsset) return null;
+    const entryBase = BigInt(entry.filled_base_e8);
+    const exitBase = BigInt(exit.filled_base_e8);
+    const entryPrice = BigInt(entry.average_fill_price_e8);
+    const exitPrice = BigInt(exit.average_fill_price_e8);
+    if (entryBase <= 0n || entryBase !== exitBase || entryPrice <= 0n || exitPrice <= 0n) return null;
+    const pnlE16 = expectedEntrySide === "buy"
+      ? (exitPrice - entryPrice) * entryBase
+      : (entryPrice - exitPrice) * entryBase;
+    const nativePnl = signedRoundedDiv(pnlE16, 10_000_000_000n);
+    if (nativePnl > BigInt(Number.MAX_SAFE_INTEGER)
+      || nativePnl < BigInt(Number.MIN_SAFE_INTEGER)
+      || component.source_amount_micro !== Number(nativePnl)) return null;
+    return {
+      venue_id: venueId,
+      pnl_settlement_asset: expectedAsset,
+      source_amount_micro: Number(nativePnl),
+      filled_base_e8: entryBase.toString(),
+      entry_side: entry.side,
+      entry_average_fill_price_e8: entryPrice.toString(),
+      entry_receipt_commitment: entry.receipt_commitment,
+      exit_side: exit.side,
+      exit_average_fill_price_e8: exitPrice.toString(),
+      exit_receipt_commitment: exit.receipt_commitment,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function releaseValueLedger(record, settlementEvidence) {
   const ledger = record.value_ledger;
   const modeled = ledger.modeled;
   const realized = ledger.realized;
-  const contractPnl = Number(record.value_evidence?.realized_economics?.contract_pnl_micro_usdc || 0);
+  const contractPnl = settlementEvidence.converted_contract_pnl_micro_usdc;
+  const effectiveSlippage = realized.slippage_micro_usdc - settlementEvidence.slippage_reversal_micro_usdc;
   return {
     finalized: ledger.status === "finalized",
     complete_costs: record.value_evidence?.costs_complete === true,
@@ -1101,7 +1301,13 @@ function releaseValueLedger(record) {
       contract_pnl_micro_usdc: contractPnl,
       funding_micro_usdc: realized.funding_credit_micro_usdc - realized.funding_debit_micro_usdc,
       fees_micro_usdc: realized.trading_fee_micro_usdc,
-      slippage_micro_usdc: realized.slippage_micro_usdc,
+      slippage_micro_usdc: effectiveSlippage,
+      execution_slippage_micro_usdc: realized.slippage_micro_usdc,
+      slippage_reversal_micro_usdc: settlementEvidence.slippage_reversal_micro_usdc,
+      settlement_adjustment_micro_usdc: settlementEvidence.settlement_adjustment_micro_usdc,
+      pnl_components: structuredClone(settlementEvidence.pnl_components),
+      execution_bindings: structuredClone(settlementEvidence.execution_bindings),
+      settlement_evidence_commitment: settlementEvidence.evidence_commitment,
       gas_micro_usdc: realized.gas_micro_usdc,
       capital_cost_micro_usdc: realized.capital_cost_micro_usdc,
       transfer_fees_micro_usdc: realized.transfer_fee_micro_usdc,
@@ -1469,12 +1675,38 @@ function nonNegativeInteger(value) {
   return Number.isSafeInteger(value) && value >= 0;
 }
 
+function signedMicroDecimal(value) {
+  if (!Number.isSafeInteger(value)) return "";
+  const negative = value < 0;
+  const magnitude = BigInt(Math.abs(value));
+  return `${negative ? "-" : ""}${magnitude / 1_000_000n}.${String(magnitude % 1_000_000n).padStart(6, "0")}`;
+}
+
 function boundedInteger(value, minimum, maximum) {
   return Number.isSafeInteger(value) && value >= minimum && value <= maximum;
 }
 
 function positiveDecimal(value) {
   return /^\d+(?:\.\d+)?$/.test(String(value || "")) && Number(value) > 0;
+}
+
+function decimalToScaled(value, scale) {
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(String(value ?? "").trim());
+  if (!match) return null;
+  const fraction = String(match[2] || "").padEnd(scale, "0");
+  let result = BigInt(match[1]) * (10n ** BigInt(scale)) + BigInt(fraction.slice(0, scale) || "0");
+  if (fraction.slice(scale)[0] >= "5") result += 1n;
+  return result;
+}
+
+function roundedDiv(numerator, denominator) {
+  return (numerator + denominator / 2n) / denominator;
+}
+
+function signedRoundedDiv(numerator, denominator) {
+  return numerator < 0n
+    ? -roundedDiv(-numerator, denominator)
+    : roundedDiv(numerator, denominator);
 }
 
 function sameStrings(left, right) {

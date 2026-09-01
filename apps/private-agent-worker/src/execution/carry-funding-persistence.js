@@ -72,19 +72,42 @@ export async function runCarryFundingObservationTick({
     observed_at_ms: observedAtMs,
   });
   const currentFeedSetComplete = coreFeedSetComplete(venues, normalizedAssets);
+  const currentFeedSetReady = currentFeedSetComplete
+    && shadowSnapshot.stored === true
+    && shadowSnapshot.ready === true;
+  const error = observationTickError({
+    currentFeedSetComplete,
+    currentFeedSetReady,
+    shadowSnapshot,
+    observedRouteCount: fundingPersistence.observed_route_count,
+  });
   return Object.freeze({
     version: 1,
-    ok: fundingPersistence.observed_route_count > 0 && currentFeedSetComplete,
-    error: currentFeedSetComplete ? null : "carry_shadow_feed_set_incomplete",
+    ok: error === null,
+    error,
     transaction_broadcast: false,
     observed_at_ms: observedAtMs,
     assets: Object.freeze(normalizedAssets),
     current_feed_set_complete: currentFeedSetComplete,
+    current_feed_set_ready: currentFeedSetReady,
     funding_persistence: fundingPersistence,
     shadow_qualification: shadowQualification,
     routing_advantage: routingAdvantage,
     shadow_snapshot: shadowSnapshot,
   });
+}
+
+function observationTickError({
+  currentFeedSetComplete,
+  currentFeedSetReady,
+  shadowSnapshot,
+  observedRouteCount,
+}) {
+  if (!currentFeedSetComplete) return "carry_shadow_feed_set_incomplete";
+  if (shadowSnapshot?.stored !== true) return "carry_shadow_snapshot_not_stored";
+  if (!currentFeedSetReady) return "carry_shadow_feed_set_unready";
+  if (!(observedRouteCount > 0)) return "carry_shadow_routes_unavailable";
+  return null;
 }
 
 function coreFeedSetComplete(venues, assets) {

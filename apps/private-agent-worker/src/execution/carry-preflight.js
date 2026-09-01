@@ -1087,6 +1087,7 @@ function publicEvidence(leg, qualification, accountReadiness) {
     reference_mark_price_e8: leg.snapshot.mark_price_e8,
     reference_price_source: "verified_pre_submit_mark",
     quote_asset: leg.snapshot.quote_asset,
+    collateral_asset: leg.snapshot.collateral_asset,
     funding_settlement_asset: leg.snapshot.funding_settlement_asset,
     fee_settlement_asset: leg.snapshot.fee_settlement_asset,
     asset_valuations: leg.snapshot.asset_valuations,

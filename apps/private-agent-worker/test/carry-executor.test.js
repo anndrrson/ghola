@@ -960,6 +960,16 @@ test("aborted entry recovery finalizes exact fees, slippage, and round-trip valu
   assert.equal(record.position.status, "reconciled");
   assert.equal(record.value_evidence.aborted_entry_recovery.status, "complete");
   assert.equal(record.value_evidence.aborted_entry_recovery.contract_pnl_micro_usdc, 9_000);
+  assert.deepEqual(record.value_evidence.aborted_entry_recovery.pnl_components.map((component) => ({
+    venue_id: component.venue_id,
+    source_asset: component.source_asset,
+    source_amount_micro: component.source_amount_micro,
+    converted_amount_micro_usdc: component.converted_amount_micro_usdc,
+    exact_bound: component.cashflow_valuation?.bound_source_amount_micro ?? null,
+  })), [
+    { venue_id: "aster", source_asset: "USDT", source_amount_micro: 9_000, converted_amount_micro_usdc: 9_000, exact_bound: 9_000 },
+    { venue_id: "lighter", source_asset: "USDC", source_amount_micro: 0, converted_amount_micro_usdc: 0, exact_bound: null },
+  ]);
   assert.equal(record.value_evidence.costs_complete, true);
   assert.equal(record.value_ledger.status, "finalized");
   assert.equal(record.value_ledger.realized.trading_fee_micro_usdc, 6_000);
@@ -1641,6 +1651,192 @@ test("finalizes modeled-versus-realized value only after exact costs, funding, a
   assert.equal(result.record.value_ledger.finalization_evidence.open_order_count, 0);
 });
 
+test("converts each venue PnL independently before final settlement", async (t) => {
+  const fixture = await setup(t, "converted-final-value-ledger");
+  const entry = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      const receipt = exactValueReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(entry.ok, true);
+  const active = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  await advanceStoredCarryPosition({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.position_id,
+    event: { version: 1, event_id: "carry:exit:request:converted-final-ledger", sequence: active.position.last_event_sequence + 1, type: "manual_exit_requested" },
+    now_ms: NOW + 50,
+  });
+  const result = await executeStoredCarryExit({
+    ...fixture,
+    readFundingSettlements: async ({ body }) => [fundingSettlement(
+      body,
+      body.venue_id === "aster" ? "0.020" : "-0.005",
+      "converted-final:1",
+    )],
+    readCashflowValuation: async (request) => executionCashflowValuation(
+      request.source_asset,
+      request.checked_at_ms,
+      {
+        bound_source_amount_micro: request.source_amount_micro,
+        source_amount_decimal: request.source_amount_decimal,
+        source_amount_scale: request.source_amount_scale,
+        credit_rate_e8: 99_000_000,
+        debit_rate_e8: 101_000_000,
+      },
+    ),
+    executeOrder: async (args) => {
+      const receipt = exactValueReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.value_finalized, true);
+  assert.equal(result.record.value_evidence.realized_economics.contract_pnl_micro_usdc, 17_910);
+  assert.deepEqual(result.record.value_evidence.realized_economics.pnl_components.map((component) => ({
+    venue_id: component.venue_id,
+    source_asset: component.source_asset,
+    source_amount_micro: component.source_amount_micro,
+    converted_amount_micro_usdc: component.converted_amount_micro_usdc,
+    exact_bound: component.cashflow_valuation?.bound_source_amount_micro,
+  })), [
+    { venue_id: "aster", source_asset: "USDT", source_amount_micro: 9_000, converted_amount_micro_usdc: 8_910, exact_bound: 9_000 },
+    { venue_id: "lighter", source_asset: "USDC", source_amount_micro: 9_000, converted_amount_micro_usdc: 9_000, exact_bound: 9_000 },
+  ]);
+  assert.equal(result.record.value_evidence.realized_economics.slippage_reversal_micro_usdc, 2_000);
+  assert.equal(result.record.value_ledger.realized.settlement_adjustment_micro_usdc, 19_910);
+  assert.equal(result.record.value_ledger.realized.net_value_micro_usdc, 18_910);
+});
+
+test("refuses a coherently replayed settlement that changes USDC identity value", async (t) => {
+  const fixture = await setup(t, "tampered-usdc-settlement-replay");
+  const entry = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      const receipt = exactValueReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(entry.ok, true);
+  const active = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  await advanceStoredCarryPosition({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.position_id,
+    event: { version: 1, event_id: "carry:exit:request:tampered-usdc", sequence: active.position.last_event_sequence + 1, type: "manual_exit_requested" },
+    now_ms: NOW + 50,
+  });
+  const exited = await executeStoredCarryExit({
+    ...fixture,
+    readFundingSettlements: async () => [],
+    executeOrder: async (args) => {
+      const receipt = exactValueReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(exited.value_finalized, true);
+
+  const stored = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  const forged = structuredClone(stored);
+  const settlement = forged.value_ledger.entries.find((item) => item.entry_type === "settlement_adjustment");
+  const usdc = settlement.pnl_components.find((component) => component.source_asset === "USDC");
+  usdc.converted_amount_micro_usdc += 1;
+  usdc.cashflow_valuation.bound_value_micro_usdc += 1;
+  usdc.cashflow_valuation.evidence_message = cashflowValuationEvidenceMessage(usdc.cashflow_valuation);
+  usdc.cashflow_valuation.evidence_commitment = `carry:cashflow-valuation:evidence:${createHash("sha256")
+    .update(usdc.cashflow_valuation.evidence_message)
+    .digest("hex")}`;
+  settlement.amount_micro_usdc += 1;
+  forged.value_evidence.realized_economics.pnl_components = structuredClone(settlement.pnl_components);
+  forged.value_evidence.realized_economics.contract_pnl_micro_usdc += 1;
+  forged.value_evidence.realized_economics.settlement_adjustment_micro_usdc += 1;
+  forged.value_ledger.realized.settlement_adjustment_micro_usdc += 1;
+  forged.value_ledger.realized.net_value_micro_usdc += 1;
+  forged.value_ledger.status = "open";
+  forged.value_ledger.finalized_at_ms = null;
+  delete forged.value_ledger.finalization_evidence;
+  const replaced = await fixture.state.putCarryPositionRecord(forged, {
+    expected_version: stored.record_version,
+  });
+  assert.equal(replaced.ok, true);
+
+  let submitCalls = 0;
+  const retried = await runCarryExecutionTick({
+    ...fixture,
+    readFundingSettlements: async () => [],
+    executeOrder: async () => { submitCalls += 1; },
+  });
+  assert.equal(retried.ok, true);
+  assert.equal(submitCalls, 0);
+  assert.equal(retried.results[0].value_finalized, false);
+  assert.equal(retried.results[0].record.value_ledger.status, "open");
+});
+
+test("retries a reconciled open ledger after stale PnL conversion evidence becomes fresh", async (t) => {
+  const fixture = await setup(t, "stale-pnl-conversion");
+  const entry = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      const receipt = exactValueReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(entry.ok, true);
+  const active = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  await advanceStoredCarryPosition({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.position_id,
+    event: { version: 1, event_id: "carry:exit:request:stale-pnl", sequence: active.position.last_event_sequence + 1, type: "manual_exit_requested" },
+    now_ms: NOW + 50,
+  });
+  const result = await executeStoredCarryExit({
+    ...fixture,
+    readFundingSettlements: async () => [],
+    readCashflowValuation: async (request) => executionCashflowValuation(
+      request.source_asset,
+      request.checked_at_ms - 60_000,
+      {
+        bound_source_amount_micro: request.source_amount_micro,
+        source_amount_decimal: request.source_amount_decimal,
+        source_amount_scale: request.source_amount_scale,
+      },
+    ),
+    executeOrder: async (args) => {
+      const receipt = exactValueReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.value_finalized, false);
+  assert.equal(result.record.value_evidence.costs_complete, false);
+  assert.equal(result.record.value_ledger.status, "open");
+  assert.equal(result.record.value_ledger.entries.some((item) => item.entry_type === "settlement_adjustment"), false);
+
+  let submitCalls = 0;
+  const retried = await runCarryExecutionTick({
+    ...fixture,
+    readFundingSettlements: async () => [],
+    executeOrder: async () => { submitCalls += 1; },
+  });
+  assert.equal(retried.ok, true);
+  assert.equal(retried.checked, 1);
+  assert.equal(submitCalls, 0);
+  assert.equal(retried.results[0].value_finalized, true);
+  assert.equal(retried.results[0].record.value_ledger.status, "finalized");
+  assert.equal(retried.results[0].record.value_ledger.entries.filter(
+    (item) => item.entry_type === "settlement_adjustment",
+  ).length, 1);
+});
+
 test("background monitoring triggers an automatic reduce-only exit and finalizes flat value evidence", async (t) => {
   const fixture = await setup(t, "automatic-monitored-exit");
   const entry = await executeStoredCarryEntry({
@@ -1807,6 +2003,15 @@ async function setup(t, suffix, pair = { long: "aster", short: "lighter" }, opti
     recipient: { recipient_id: "did:key:carry-executor" },
     verifyOrder: async (args) => recoveryVerification(args),
     preflight: async ({ body }) => preflightProof(pair, { phase: body?.phase }),
+    readCashflowValuation: async (request) => executionCashflowValuation(
+      request.source_asset,
+      request.checked_at_ms,
+      {
+        bound_source_amount_micro: request.source_amount_micro,
+        source_amount_decimal: request.source_amount_decimal,
+        source_amount_scale: request.source_amount_scale,
+      },
+    ),
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
     now: (() => { let value = NOW + 1; return () => value += 1; })(),
   };
@@ -1950,7 +2155,8 @@ function preflightProof(pair = { long: "aster", short: "lighter" }, { phase = "o
 function preflightLeg(venueId, side, reduceOnly) {
   const quoteAsset = carryQuoteAsset(venueId);
   const feeSettlementAsset = carryFeeSettlementAsset(venueId);
-  const assets = [...new Set([quoteAsset, feeSettlementAsset])].filter((asset) => asset !== "USDC");
+  const collateralAsset = carryCollateralAsset(venueId);
+  const assets = [...new Set([quoteAsset, feeSettlementAsset, collateralAsset])].filter((asset) => asset !== "USDC");
   return {
     venue_id: venueId,
     account_commitment: `account:${venueId}:0001`,
@@ -1958,6 +2164,7 @@ function preflightLeg(venueId, side, reduceOnly) {
     transaction_broadcast: false,
     reference_mark_price_e8: 1_000_000_000_000,
     quote_asset: quoteAsset,
+    collateral_asset: collateralAsset,
     funding_settlement_asset: carryFundingSettlementAsset(venueId),
     fee_settlement_asset: feeSettlementAsset,
     asset_valuations: assets.map((asset) => executionCashflowValuation(asset, NOW)),
@@ -2026,6 +2233,10 @@ function carryQuoteAsset(venueId) {
 }
 
 function carryFeeSettlementAsset(venueId) {
+  return venueId === "aster" ? "USDT" : "USDC";
+}
+
+function carryCollateralAsset(venueId) {
   return venueId === "aster" ? "USDT" : "USDC";
 }
 

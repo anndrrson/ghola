@@ -91,14 +91,12 @@ export function createAsterCashflowValuationReader({
   fetchImpl = fetch,
   now = () => Date.now(),
 } = {}) {
-  let cachedBookPromise = null;
   return async function readAsterCashflowValuation(request) {
     const checkedAtMs = positiveInteger(request?.checked_at_ms, "cashflow_valuation_checked_at_invalid");
     const observedNowMs = positiveInteger(now(), "cashflow_valuation_now_invalid");
     if (Math.abs(observedNowMs - checkedAtMs) > 5_000) fail("cashflow_valuation_checked_at_stale");
     if (String(request?.source_asset || "") !== "USDT") fail("cashflow_valuation_pair_unsupported");
-    cachedBookPromise ??= readJsonBook(fetchImpl, ASTER_USDC_USDT_DEPTH_URL);
-    const body = await cachedBookPromise;
+    const body = await readJsonBook(fetchImpl, ASTER_USDC_USDT_DEPTH_URL);
     if (body?.symbol !== "USDCUSDT") fail("cashflow_valuation_book_binding_invalid");
     const bookTimeMs = positiveInteger(body?.T ?? body?.E, "cashflow_valuation_book_time_invalid");
     if (bookTimeMs > checkedAtMs + 5_000 || checkedAtMs - bookTimeMs > 5_000) {
