@@ -161,7 +161,37 @@ export async function verifyTurnkeyHyperliquidNoSubmit(input) {
   };
 }
 
-export async function submitTurnkeyHyperliquidExecution({
+export async function submitTurnkeyHyperliquidExecution(input) {
+  let broadcastStarted = false;
+  try {
+    return await submitTurnkeyHyperliquidExecutionInternal({
+      ...input,
+      markBroadcastStarted: () => {
+        broadcastStarted = true;
+      },
+    });
+  } catch (error) {
+    if (!broadcastStarted) {
+      const failure = new TurnkeyHyperliquidError(
+        error?.message || "Hyperliquid request failed before submission.",
+        Number.isInteger(error?.status) ? error.status : 502,
+        error?.code === "venue_access_required" ? "venue_access_required" : "pre_submit_failed",
+      );
+      failure.cause = error;
+      throw failure;
+    }
+    if (error?.code === "submission_ambiguous") throw error;
+    const failure = new TurnkeyHyperliquidError(
+      "Hyperliquid submission outcome is ambiguous.",
+      Number.isInteger(error?.status) ? error.status : 502,
+      "submission_ambiguous",
+    );
+    failure.cause = error;
+    throw failure;
+  }
+}
+
+async function submitTurnkeyHyperliquidExecutionInternal({
   credential,
   instruction,
   cloid,
@@ -169,6 +199,7 @@ export async function submitTurnkeyHyperliquidExecution({
   marketContext,
   contextProvider = fetchTurnkeyRiskContext,
   exchangeFactory = defaultExchangeFactory,
+  markBroadcastStarted,
 }) {
   if (env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" || env.GHOLA_PERPS_LOCAL_MOCK === "true") {
     const prepared = await prepareTurnkeyHyperliquidExecution({
@@ -197,6 +228,7 @@ export async function submitTurnkeyHyperliquidExecution({
   });
   const exchange = exchangeFactory({ credential, env });
   if (prepared.operation === "cancel") {
+    markBroadcastStarted();
     const result = prepared.cancel.client_order_id
       ? await exchange.cancelByCloid({
           cancels: [{ asset: prepared.asset_index, cloid: prepared.cancel.client_order_id }],
@@ -207,15 +239,13 @@ export async function submitTurnkeyHyperliquidExecution({
     assertStatuses(result, 1, "cancel");
     return { status: "cancelled", oid: prepared.cancel.order_id || null, bracket_count: 0, risk_decision: prepared.risk_decision };
   }
+  markBroadcastStarted();
   const result = await exchange.order({
     orders: prepared.orders,
     grouping: prepared.orders.length > 1 ? "normalTpsl" : "na",
   });
+  assertStatuses(result, prepared.orders.length, "order", prepared.orders.map((order) => order.c));
   const statuses = responseStatuses(result);
-  if (statuses.length !== prepared.orders.length || statuses.some((item) => item?.error)) {
-    await compensateUnprotectedEntry({ exchange, prepared, entryStatus: statuses[0] }).catch(() => {});
-    throw new TurnkeyHyperliquidError("Hyperliquid did not acknowledge the complete protected order.", 502, "venue_rejected");
-  }
   const entry = statuses[0] || {};
   const fill = entry.filled || null;
   return {
@@ -436,37 +466,68 @@ function defaultExchangeFactory({ credential, env }) {
   });
 }
 
-async function compensateUnprotectedEntry({ exchange, prepared, entryStatus }) {
-  if (entryStatus?.resting) {
-    await exchange.cancelByCloid({ cancels: [{ asset: prepared.asset_index, cloid: prepared.orders[0].c }] });
-    return;
-  }
-  if (entryStatus?.filled) {
-    const entry = prepared.orders[0];
-    await exchange.order({
-      orders: [{
-        a: prepared.asset_index,
-        b: !entry.b,
-        p: entry.p,
-        s: entryStatus.filled.totalSz || entry.s,
-        r: true,
-        t: { limit: { tif: "Ioc" } },
-        c: derivedCloid(entry.c, "emergency-close"),
-      }],
-      grouping: "na",
-    });
-  }
-}
-
 function responseStatuses(result) {
-  return result?.response?.data?.statuses || [];
+  return Array.isArray(result?.response?.data?.statuses)
+    ? result.response.data.statuses
+    : [];
 }
 
-function assertStatuses(result, count, action) {
+function assertStatuses(result, count, action, expectedCloids = []) {
   const statuses = responseStatuses(result);
-  if (statuses.length !== count || statuses.some((item) => item?.error)) {
-    throw new TurnkeyHyperliquidError(`Hyperliquid ${action} was rejected.`, 502, "venue_rejected");
+  const responseMatches = result?.status === "ok" && result?.response?.type === action;
+  const statusesMatch = action === "cancel"
+    ? statuses.every((item) => item === "success")
+    : statuses.every((item, index) => explicitOrderAcknowledgement(item, expectedCloids[index]));
+  if (!responseMatches || statuses.length !== count || !statusesMatch) {
+    throw new TurnkeyHyperliquidError(`Hyperliquid ${action} acknowledgement is ambiguous.`, 502, "submission_ambiguous");
   }
+}
+
+function explicitOrderAcknowledgement(item, expectedCloid) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+  const keys = Object.keys(item);
+  if (keys.length !== 1) return false;
+  if (keys[0] === "resting") return validRestingAcknowledgement(item.resting, expectedCloid);
+  if (keys[0] === "filled") return validFilledAcknowledgement(item.filled, expectedCloid);
+  return false;
+}
+
+function validRestingAcknowledgement(value, expectedCloid) {
+  return exactObjectKeys(value, ["oid"], ["cloid"])
+    && Number.isSafeInteger(value.oid)
+    && value.oid >= 0
+    && validOptionalCloid(value.cloid, expectedCloid);
+}
+
+function validFilledAcknowledgement(value, expectedCloid) {
+  return exactObjectKeys(value, ["oid", "totalSz", "avgPx"], ["cloid"])
+    && Number.isSafeInteger(value.oid)
+    && value.oid >= 0
+    && positiveDecimalString(value.totalSz)
+    && positiveDecimalString(value.avgPx)
+    && validOptionalCloid(value.cloid, expectedCloid);
+}
+
+function exactObjectKeys(value, required, optional) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const allowed = new Set([...required, ...optional]);
+  return required.every((key) => Object.hasOwn(value, key))
+    && Object.keys(value).every((key) => allowed.has(key));
+}
+
+function validOptionalCloid(value, expected) {
+  return value === undefined || (
+    /^0x[0-9a-f]{32}$/i.test(value)
+    && typeof expected === "string"
+    && value.toLowerCase() === expected.toLowerCase()
+  );
+}
+
+function positiveDecimalString(value) {
+  return typeof value === "string"
+    && /^\d+(?:\.\d+)?$/.test(value)
+    && Number.isFinite(Number(value))
+    && Number(value) > 0;
 }
 
 function redactPreparedAction(prepared) {

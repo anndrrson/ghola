@@ -57,11 +57,18 @@ import {
 } from "../venues/lighter.js";
 
 export class PrivateExecutionError extends Error {
-  constructor(message, status = 400) {
+  constructor(message, status = 400, code = null, options = undefined) {
     super(message);
     this.name = "PrivateExecutionError";
     this.status = status;
+    if (code) this.code = code;
+    if (options?.cause) this.cause = options.cause;
   }
+}
+
+function isProvenHyperliquidNoSubmit(error, readOnlyReconcile) {
+  if (readOnlyReconcile) return true;
+  return ["venue_access_required", "pre_submit_failed"].includes(error?.code);
 }
 
 async function claimSubmissionAfterPolicyValidation({
@@ -505,13 +512,25 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
       cloid,
     });
   } catch (error) {
+    const noSubmitProven = isProvenHyperliquidNoSubmit(error, readOnlyReconcile);
     await state.putExecutionAttempt(body.work_order_commitment, {
       ...pendingAttempt,
-      result_seed: { kind: "hyperliquid_submission_ambiguous" },
-      status: "ambiguous",
+      result_seed: {
+        kind: noSubmitProven
+          ? "hyperliquid_failed_no_submit"
+          : "hyperliquid_submission_ambiguous",
+        source_code: typeof error?.code === "string" ? error.code : null,
+      },
+      status: noSubmitProven ? "failed_no_submit" : "ambiguous",
       updated_at: new Date().toISOString(),
     });
-    throw error;
+    if (noSubmitProven) throw error;
+    throw new PrivateExecutionError(
+      "hyperliquid submission outcome is ambiguous; reconcile the durable CLOID before any further action",
+      Number.isInteger(error?.status) ? error.status : 502,
+      "submission_ambiguous",
+      { cause: error },
+    );
   }
   await state.putExecutionAttempt(body.work_order_commitment, {
     ...pendingAttempt,

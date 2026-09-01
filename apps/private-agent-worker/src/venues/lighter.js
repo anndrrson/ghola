@@ -362,6 +362,7 @@ function reconciledLighterResult(result, submitted, reconciliation) {
     },
     final_proof: result.final_proof ? {
       ...result.final_proof,
+      query_broadcast: false,
       broadcast_performed: reconciliation.reconcileOnly !== true
         && reconciliation.submissionResponseAmbiguous !== true
         && submitted.provider_ref_seed?.broadcast_acknowledged === true,
@@ -385,6 +386,8 @@ export async function reconcileLighterExecution({ credential, clientOrderIndex, 
     Number.isSafeInteger(returnedClientOrderIndex) &&
     returnedClientOrderIndex === targetClientOrderIndex;
   const order = targetMatched ? candidate : null;
+  const exactOriginalOrderObserved = targetMatched
+    && nonnegativeIntegerOrNull(order?.order_index) !== null;
   const status = orderStatus(order);
   return {
     status,
@@ -408,7 +411,10 @@ export async function reconcileLighterExecution({ credential, clientOrderIndex, 
       status,
       venue_id: "lighter",
       target_client_order_matched: targetMatched,
-      broadcast_performed: order !== null,
+      query_broadcast: false,
+      broadcast_performed: false,
+      original_order_target_matched: exactOriginalOrderObserved,
+      original_order_broadcast_proven: exactOriginalOrderObserved,
       final_venue_execution_proven: ["filled", "cancelled", "rejected"].includes(status),
       final_fill_proven: status === "filled",
       filled_base_size: order?.filled_base_amount || "0",
@@ -664,8 +670,11 @@ function decimal(value) {
 }
 
 function nonnegativeIntegerOrNull(value) {
+  if (typeof value !== "number" && (typeof value !== "string" || !/^(?:0|[1-9]\d*)$/.test(value.trim()))) {
+    return null;
+  }
   const number = Number(value);
-  return value !== undefined && value !== null && Number.isSafeInteger(number) && number >= 0 ? number : null;
+  return Number.isSafeInteger(number) && number >= 0 ? number : null;
 }
 
 function rateBps(value) {

@@ -289,7 +289,7 @@ export async function submitAsterExecution({
   if (instruction?.operation_class === "reconcile") {
     const symbol = asterSymbol(instruction.reconcile?.market || instruction.reconcile?.product_id);
     const target = instruction.reconcile?.target_client_order_id || clientOrderId;
-    return normalizedResult(await signedRequest({
+    const reconciled = normalizedResult(await signedRequest({
       credential,
       method: "GET",
       path: "/fapi/v3/order",
@@ -297,6 +297,18 @@ export async function submitAsterExecution({
       fetchImpl,
       now,
     }), { targetClientOrderId: target, expectedSymbol: symbol, broadcastPerformed: false });
+    const exactOriginalOrderObserved = reconciled.final_proof?.target_client_order_matched === true
+      && reconciled.final_proof?.target_symbol_matched === true
+      && exactUnsignedIdentifier(reconciled.provider_ref_seed?.order_id) !== null;
+    return {
+      ...reconciled,
+      final_proof: {
+        ...reconciled.final_proof,
+        query_broadcast: false,
+        original_order_target_matched: exactOriginalOrderObserved,
+        original_order_broadcast_proven: exactOriginalOrderObserved,
+      },
+    };
   }
   if (instruction?.operation_class === "cancel") {
     const symbol = asterSymbol(instruction.cancel?.market);
@@ -456,6 +468,7 @@ function reconciledAsterResult(result, submitted, reconciliation) {
     },
     final_proof: result.final_proof ? {
       ...result.final_proof,
+      query_broadcast: false,
       broadcast_performed: reconciliation.reconcileOnly !== true
         && reconciliation.submissionResponseAmbiguous !== true
         && submitted.final_proof?.broadcast_performed === true,

@@ -13,6 +13,107 @@ test("accepts the complete cross-venue Carry execution contract", () => {
   assert.equal(checkCarryExecutionContract(sources).ok, true);
 });
 
+test("rejects Hyperliquid carry handling that loses post-broadcast ambiguity", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      hyperliquidRunner: sources.hyperliquidRunner.replace(
+        'return "submission_ambiguous" if broadcast_started else "pre_submit_failed"',
+        'return "venue_rejected"',
+      ),
+    }),
+    /hyperliquid_post_broadcast_ambiguity_classification_missing/,
+  );
+});
+
+test("rejects Hyperliquid handling that trusts a generic venue rejection as no-submit proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privateExecution: sources.privateExecution.replace(
+        'return ["venue_access_required", "pre_submit_failed"].includes(error?.code);',
+        'return ["venue_rejected", "venue_access_required", "pre_submit_failed"].includes(error?.code);',
+      ),
+    }),
+    /hyperliquid_no_submit_proof_whitelist_missing/,
+  );
+});
+
+test("rejects Turnkey Hyperliquid recovery that performs an untracked compensation", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      hyperliquidTurnkey: `${sources.hyperliquidTurnkey}\nfunction compensateUnprotectedEntry() {}`,
+    }),
+    /hyperliquid_turnkey_untracked_compensation_forbidden/,
+  );
+});
+
+test("rejects Turnkey Hyperliquid handling without an explicit broadcast boundary", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      hyperliquidTurnkey: sources.hyperliquidTurnkey.replaceAll(
+        "markBroadcastStarted();",
+        "void 0;",
+      ),
+    }),
+    /hyperliquid_turnkey_broadcast_boundary_missing/,
+  );
+});
+
+test("rejects Hyperliquid handling without explicit acknowledgement shapes", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      hyperliquidRunner: sources.hyperliquidRunner.replaceAll(
+        "explicit_order_acknowledgement(item, expected_cloids[index])",
+        "item is not None",
+      ),
+    }),
+    /hyperliquid_order_acknowledgement_shape_gate_missing/,
+  );
+});
+
+test("rejects Turnkey Hyperliquid handling without explicit acknowledgement shapes", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      hyperliquidTurnkey: sources.hyperliquidTurnkey.replace(
+        "explicitOrderAcknowledgement(item, expectedCloids[index])",
+        "statuses.every(Boolean)",
+      ),
+    }),
+    /hyperliquid_turnkey_order_acknowledgement_shape_gate_missing/,
+  );
+});
+
+test("rejects restart recovery without explicit original-order broadcast proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replace(
+        "proof?.original_order_broadcast_proven === true",
+        "proof?.original_order_broadcast_proven !== false",
+      ),
+    }),
+    /carry_recovery_original_broadcast_gate_missing/,
+  );
+});
+
+test("rejects Lighter recovery that coerces a missing venue order id into proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      lighter: sources.lighter.replace(
+        "nonnegativeIntegerOrNull(order?.order_index) !== null",
+        "Number.isSafeInteger(Number(order?.order_index))",
+      ),
+    }),
+    /lighter_original_order_id_proof_missing/,
+  );
+});
+
 test("rejects release validation when any venue bypasses the atomic policy-and-attempt claim", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -4069,6 +4170,29 @@ test("rejects a duplicated browser-stream venue list", () => {
       ),
     }),
     /carry_browser_stream_registry_missing|carry_browser_stream_registry_duplicated/,
+  );
+});
+
+test("rejects an Aster stream without live notional depth", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replaceAll("@depth20@100ms", "@bookTicker"),
+    }),
+    /aster_live_depth_feed_missing/,
+  );
+});
+
+test("rejects a live publisher that retains stale component fields after publication", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryLiveMarket: sources.webCarryLiveMarket.replace(
+        "const batch = [...patches.values()];\n    patches.clear();",
+        "const batch = [...patches.values()];",
+      ),
+    }),
+    /carry_live_publisher_sticky_patch_forbidden/,
   );
 });
 

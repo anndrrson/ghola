@@ -541,6 +541,9 @@ test("recovers an ambiguous Lighter submit response by reading the exact order w
     assert.equal(result.reconciliation.target_client_order_only, true);
     assert.equal(result.reconciliation.readFailures, 1);
     assert.equal(result.final_proof.broadcast_performed, false);
+    assert.equal(result.final_proof.query_broadcast, false);
+    assert.equal(result.final_proof.original_order_target_matched, true);
+    assert.equal(result.final_proof.original_order_broadcast_proven, true);
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
@@ -656,6 +659,10 @@ test("reconciles the exact Lighter client order index", async () => {
     });
     assert.equal(result.status, "filled");
     assert.equal(result.final_proof.final_fill_proven, true);
+    assert.equal(result.final_proof.query_broadcast, false);
+    assert.equal(result.final_proof.broadcast_performed, false);
+    assert.equal(result.final_proof.original_order_target_matched, true);
+    assert.equal(result.final_proof.original_order_broadcast_proven, true);
     assert.equal(result.fills[0].price, "100000");
     const partial = await reconcileLighterExecution({
       credential: credential(),
@@ -663,12 +670,14 @@ test("reconciles the exact Lighter client order index", async () => {
       market: "BTC",
       runner: async () => ({
         target_market_checked: true,
-        order: { status: "partial", client_order_index: 77, filled_base_amount: "0.0005", filled_quote_amount: "50" },
+        order: { status: "partial", client_order_index: 77, order_index: null, filled_base_amount: "0.0005", filled_quote_amount: "50" },
       }),
     });
     assert.equal(partial.status, "partially_filled");
     assert.equal(partial.final_proof.final_venue_execution_proven, false);
     assert.equal(partial.final_proof.open_order_count, 1);
+    assert.equal(partial.final_proof.original_order_target_matched, false);
+    assert.equal(partial.final_proof.original_order_broadcast_proven, false);
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
@@ -756,6 +765,9 @@ test("keeps explicit Lighter reconciliation bound to the original order across r
     assert.equal(result.reconciliation.reconcileOnly, true);
     assert.equal(result.reconciliation.submission_retry_count, 0);
     assert.equal(result.final_proof.broadcast_performed, false);
+    assert.equal(result.final_proof.query_broadcast, false);
+    assert.equal(result.final_proof.original_order_target_matched, true);
+    assert.equal(result.final_proof.original_order_broadcast_proven, true);
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;

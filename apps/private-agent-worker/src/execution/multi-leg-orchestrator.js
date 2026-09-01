@@ -1137,9 +1137,12 @@ function unwindProgress({ receipt, requestedBase, remainingMicro, venueId, env }
 }
 
 function recoveryProofTargetsLeg(venueId, proof) {
+  const originalOrderBroadcastProven = proof?.query_broadcast === false
+    && proof?.original_order_target_matched === true
+    && proof?.original_order_broadcast_proven === true;
   return exactQuantityRecoveryAdapter(venueId) !== null
     && proof?.target_client_order_matched === true
-    && proof?.broadcast_performed === true;
+    && (proof?.broadcast_performed === true || originalOrderBroadcastProven);
 }
 
 function cancelInstruction({ leg, context, nowMs }) {

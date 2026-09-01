@@ -64,6 +64,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   shadowVerifierTest: "apps/private-agent-worker/test/verify-carry-shadow.test.js",
   shadowDevelopmentWitnessTest: "apps/private-agent-worker/test/carry-shadow-development-witness.test.js",
   hyperliquid: "apps/private-agent-worker/src/venues/hyperliquid.js",
+  hyperliquidRunner: "apps/private-agent-worker/src/venues/hyperliquid_runner.py",
+  hyperliquidTurnkey: "apps/private-agent-worker/src/venues/hyperliquid-turnkey.js",
   aster: "apps/private-agent-worker/src/venues/aster.js",
   lighter: "apps/private-agent-worker/src/venues/lighter.js",
   workerAttestedSigner: "apps/private-agent-worker/src/venues/shielded_funding_attestation.js",
@@ -166,6 +168,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   privateStatePolicyClaimTest: "apps/private-agent-worker/test/private-state-policy-claim.test.js",
   hyperliquidMetricsTest: "apps/private-agent-worker/test/hyperliquid-account-metrics.test.js",
   hyperliquidReconcileTest: "apps/private-agent-worker/test/hyperliquid-reconcile.test.js",
+  hyperliquidTurnkeyTest: "apps/private-agent-worker/test/hyperliquid-turnkey.test.js",
   liquidationDistanceTest: "apps/private-agent-worker/test/liquidation-distance.test.js",
   evidenceAssembler: "apps/web/scripts/assemble-carry-release-evidence.mjs",
   evidenceAssemblerTest: "apps/web/scripts/assemble-carry-release-evidence.test.mjs",
@@ -1244,6 +1247,30 @@ export function checkCarryExecutionContract(sources) {
   requireText("adapterRegistryTest", "Carry funding history dispatches through the registered Aster adapter", "worker_carry_funding_registry_test_missing");
 
   requireText("hyperliquid", "target_client_order_matched", "hyperliquid_target_match_proof_missing");
+  requireText("hyperliquidRunner", 'return "submission_ambiguous" if broadcast_started else "pre_submit_failed"', "hyperliquid_post_broadcast_ambiguity_classification_missing");
+  requireText("hyperliquidRunner", "assert_cancel_statuses_ok(result, 1)", "hyperliquid_cancel_acknowledgement_gate_missing");
+  requireText("hyperliquidRunner", "explicit_order_acknowledgement(item, expected_cloids[index])", "hyperliquid_order_acknowledgement_shape_gate_missing");
+  requireText("hyperliquidRunner", "value.lower() == expected.lower()", "hyperliquid_order_acknowledgement_cloid_binding_missing");
+  requireText("hyperliquidRunner", 'not all(item == "success" for item in statuses)', "hyperliquid_cancel_acknowledgement_shape_gate_missing");
+  requireText("hyperliquidRunner", 'fail(message, "submission_ambiguous")', "hyperliquid_post_broadcast_action_ambiguity_missing");
+  forbidText("hyperliquidRunner", "compensate_failed_bracket", "hyperliquid_untracked_bracket_compensation_forbidden");
+  requireCount("hyperliquidTurnkey", '"submission_ambiguous"', 2, "hyperliquid_turnkey_post_broadcast_ambiguity_missing");
+  requireText("hyperliquidTurnkey", "let broadcastStarted = false;", "hyperliquid_turnkey_broadcast_stage_missing");
+  requireCount("hyperliquidTurnkey", "markBroadcastStarted();", 2, "hyperliquid_turnkey_broadcast_boundary_missing");
+  requireText("hyperliquidTurnkey", "explicitOrderAcknowledgement(item, expectedCloids[index])", "hyperliquid_turnkey_order_acknowledgement_shape_gate_missing");
+  requireText("hyperliquidTurnkey", "value.toLowerCase() === expected.toLowerCase()", "hyperliquid_turnkey_order_acknowledgement_cloid_binding_missing");
+  requireText("hyperliquidTurnkey", 'statuses.every((item) => item === "success")', "hyperliquid_turnkey_cancel_acknowledgement_shape_gate_missing");
+  forbidText("hyperliquidTurnkey", "compensateUnprotectedEntry", "hyperliquid_turnkey_untracked_compensation_forbidden");
+  requireText("privateExecution", 'return ["venue_access_required", "pre_submit_failed"].includes(error?.code);', "hyperliquid_no_submit_proof_whitelist_missing");
+  requireText("privateExecution", '"submission_ambiguous",\n      { cause: error }', "hyperliquid_ambiguous_error_propagation_missing");
+  requireText("serverTest", "persists an ambiguous Hyperliquid attempt before refusing any retry", "hyperliquid_ambiguous_retry_test_missing");
+  requireText("serverTest", 'assert.equal(firstBody.error_code, "submission_ambiguous")', "hyperliquid_ambiguous_error_code_test_missing");
+  requireText("hyperliquidReconcileTest", "classifies only post-broadcast runner failures as submission ambiguous", "hyperliquid_runner_ambiguity_test_missing");
+  requireText("hyperliquidTurnkeyTest", "freezes an incomplete Turnkey bracket acknowledgement without an untracked compensation submit", "hyperliquid_turnkey_bracket_ambiguity_test_missing");
+  requireText("hyperliquidTurnkeyTest", "never claims a Turnkey cancel when its post-broadcast acknowledgement is incomplete", "hyperliquid_turnkey_cancel_ambiguity_test_missing");
+  requireText("hyperliquidTurnkeyTest", "never claims a Turnkey order from malformed acknowledgements", "hyperliquid_turnkey_order_shape_test_missing");
+  requireText("hyperliquidTurnkeyTest", "never claims a Turnkey cancel from a malformed acknowledgement", "hyperliquid_turnkey_cancel_shape_test_missing");
+  requireText("hyperliquidTurnkeyTest", "freezes a Turnkey transport failure after submission starts", "hyperliquid_turnkey_transport_ambiguity_test_missing");
   requireText("hyperliquid", "venueCloid === targetCloid", "hyperliquid_reconciliation_response_binding_missing");
   requireText("hyperliquid", "isTerminalHyperliquidOrderStatus(normalizedVenueOrderStatus)", "hyperliquid_reconciliation_terminal_gate_missing");
   requireText("hyperliquidReconcileTest", "rejects an orderStatus row that does not match the requested CLOID", "hyperliquid_reconciliation_response_binding_test_missing");
@@ -1252,6 +1279,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("aster", "target_client_order_matched", "aster_target_match_proof_missing");
   requireText("lighter", "submitAndReconcileLighterExecution", "lighter_exact_reconcile_missing");
   requireText("lighter", "target_client_order_matched", "lighter_target_match_proof_missing");
+  requireText("aster", "original_order_broadcast_proven: exactOriginalOrderObserved", "aster_original_broadcast_proof_missing");
+  requireText("lighter", "original_order_broadcast_proven: exactOriginalOrderObserved", "lighter_original_broadcast_proof_missing");
+  requireText("lighter", "nonnegativeIntegerOrNull(order?.order_index) !== null", "lighter_original_order_id_proof_missing");
+  requireText("lighterTest", "assert.equal(partial.final_proof.original_order_broadcast_proven, false)", "lighter_missing_order_id_negative_test_missing");
+  requireText("multiLegOrchestrator", "proof?.original_order_broadcast_proven === true", "carry_recovery_original_broadcast_gate_missing");
+  requireText("multiLegOrchestratorTest", "restart rejects a read-only query without explicit original-order broadcast proof", "carry_recovery_query_only_negative_test_missing");
   requireText("aster", "submission_outcome_ambiguous", "aster_ambiguity_freeze_missing");
   requireText("lighter", "submission_ambiguous", "lighter_ambiguity_freeze_missing");
   requireText("aster", "submission_retry_count: 0", "aster_ambiguous_submit_retry_guard_missing");
@@ -1920,7 +1953,13 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryLiveMarket", "CARRY_BROWSER_STREAM_VENUES", "carry_browser_stream_registry_missing");
   forbidText("webCarryLiveMarket", '["lighter", "aster", "dydx", "edgex"]', "carry_browser_stream_registry_duplicated");
   requireText("webCarryLiveMarket", "UNCHANGED_PATCH_HEARTBEAT_MS", "carry_live_patch_dedupe_missing");
+  requireText(
+    "webCarryLiveMarket",
+    "const batch = [...patches.values()];\n    patches.clear();",
+    "carry_live_publisher_sticky_patch_forbidden",
+  );
   requireText("webCarryLiveMarket", "wss://fstream.asterdex.com", "aster_live_feed_missing");
+  requireText("webCarryLiveMarket", "@depth20@100ms", "aster_live_depth_feed_missing");
   requireText("webCarryLiveMarket", "wss://indexer.dydx.trade", "dydx_live_feed_missing");
   requireText("webCarryLiveMarket", "wss://edgex-quote-prod-v2.edgex.exchange", "edgex_live_feed_missing");
   requireText("webCarryLiveMarketTest", "inside one 16ms UI frame", "carry_hot_path_benchmark_missing");
@@ -1930,6 +1969,8 @@ export function checkCarryExecutionContract(sources) {
   forbidText("webCarryLiveMarketTest", "below one millisecond", "carry_unrealistic_sub_ms_claim_forbidden");
   forbidText("webCarryLiveMarketTest", "sub-ms", "carry_unrealistic_sub_ms_claim_forbidden");
   requireText("webCarryLiveMarketTest", "suppresses non-BBO dYdX depth churn", "carry_depth_churn_test_missing");
+  requireText("webCarryLiveMarketTest", "keeps Aster slippage depth live", "aster_live_depth_test_missing");
+  requireText("webCarryLiveMarketTest", "assertPatchOmitsDepth", "aster_live_depth_isolation_test_missing");
   for (const host of [
     "wss://mainnet.zklighter.elliot.ai",
     "wss://fstream.asterdex.com",

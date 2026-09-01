@@ -6,12 +6,17 @@ import time
 from decimal import Decimal, ROUND_DOWN, InvalidOperation, localcontext
 
 
-def fail(message, error_code="connector_submit_failed"):
+def fail(message, error_code="pre_submit_failed"):
     print(json.dumps({"status": "failed", "error": message, "error_code": error_code}))
     sys.exit(1)
 
 
+def request_failure_code(broadcast_started):
+    return "submission_ambiguous" if broadcast_started else "pre_submit_failed"
+
+
 def main():
+    broadcast_started = False
     try:
         payload = json.load(sys.stdin)
         credential = payload["credential"]
@@ -44,7 +49,7 @@ def main():
     try:
         if payload.get("verify_no_submit"):
             if op != "limit_order":
-                fail("unsupported hyperliquid no-submit operation", "venue_rejected")
+                fail("unsupported hyperliquid no-submit operation", "pre_submit_failed")
             order = instruction["order"]
             info = Info(base_url, skip_ws=True)
             resolved = resolve_limit_order(info, order, account_address, require_funds=False)
@@ -73,44 +78,44 @@ def main():
             assert_leverage_supported(info, order)
             assert_protective_prices(info, order)
             requests = [build_entry_request(order, resolved, Cloid.from_str(cloid))]
+            expected_cloids = [cloid.lower()]
             protection = order.get("protective_orders") or {}
             if protection.get("take_profit"):
+                take_profit_cloid = derived_cloid(cloid, "tp")
                 requests.append(build_trigger_request(
                     order,
                     resolved,
                     protection["take_profit"],
                     "tp",
-                    derived_cloid(cloid, "tp", Cloid),
+                    Cloid.from_str(take_profit_cloid),
                 ))
+                expected_cloids.append(take_profit_cloid)
             if protection.get("stop_loss"):
+                stop_loss_cloid = derived_cloid(cloid, "sl")
                 requests.append(build_trigger_request(
                     order,
                     resolved,
                     protection["stop_loss"],
                     "sl",
-                    derived_cloid(cloid, "sl", Cloid),
+                    Cloid.from_str(stop_loss_cloid),
                 ))
+                expected_cloids.append(stop_loss_cloid)
+            broadcast_started = True
             result = exchange.bulk_orders(
                 requests,
                 grouping="normalTpsl" if len(requests) > 1 else "na",
             )
-            assert_order_statuses_ok(
-                result,
-                len(requests),
-                exchange=exchange,
-                order=order,
-                resolved=resolved,
-                entry_cloid=Cloid.from_str(cloid),
-                cloid_type=Cloid,
-            )
+            assert_order_statuses_ok(result, expected_cloids)
             print(json.dumps(redact_result("submitted", result, bracket_count=len(requests) - 1)))
             return
         if op == "cancel":
             cancel = instruction["cancel"]
+            broadcast_started = True
             if cancel.get("client_order_id"):
                 result = exchange.cancel_by_cloid(cancel["market"], Cloid.from_str(cancel["client_order_id"]))
             else:
                 result = exchange.cancel(cancel["market"], int(cancel["order_id"]))
+            assert_cancel_statuses_ok(result, 1)
             print(json.dumps(redact_result("cancelled", result)))
             return
         if op in ("read", "reconcile"):
@@ -122,9 +127,15 @@ def main():
             }))
             return
     except Exception:
-        fail("hyperliquid request failed", "venue_rejected")
+        error_code = request_failure_code(broadcast_started)
+        message = (
+            "hyperliquid submission outcome is ambiguous"
+            if broadcast_started
+            else "hyperliquid request failed before submission"
+        )
+        fail(message, error_code)
 
-    fail("unsupported hyperliquid operation")
+    fail("unsupported hyperliquid operation", "pre_submit_failed")
 
 
 def build_entry_request(order, resolved, cloid):
@@ -142,7 +153,7 @@ def build_entry_request(order, resolved, cloid):
 def build_trigger_request(order, resolved, trigger_px, tpsl, cloid):
     trigger = Decimal(str(trigger_px))
     if trigger <= 0:
-        fail("invalid hyperliquid trigger price", "venue_rejected")
+        fail("invalid hyperliquid trigger price", "pre_submit_failed")
     return {
         "coin": order["market"],
         "is_buy": order["side"] != "buy",
@@ -160,47 +171,104 @@ def build_trigger_request(order, resolved, trigger_px, tpsl, cloid):
     }
 
 
-def derived_cloid(parent, suffix, cloid_type):
+def derived_cloid(parent, suffix):
     digest = hashlib.sha256(f"{parent}:{suffix}".encode("utf-8")).hexdigest()[:32]
-    return cloid_type.from_str(f"0x{digest}")
+    return f"0x{digest}"
 
 
 def assert_action_ok(result, message):
     if not isinstance(result, dict) or result.get("status") != "ok":
-        fail(message, "venue_rejected")
+        fail(message, "submission_ambiguous")
 
 
-def assert_order_statuses_ok(result, expected, exchange=None, order=None, resolved=None, entry_cloid=None, cloid_type=None):
-    assert_action_ok(result, "hyperliquid order batch failed")
-    statuses = result.get("response", {}).get("data", {}).get("statuses", [])
-    if len(statuses) != expected:
-        if statuses:
-            compensate_failed_bracket(exchange, order, resolved, statuses[0], entry_cloid, cloid_type)
-        fail("hyperliquid order acknowledgement was incomplete", "venue_rejected")
-    errors = [item.get("error") for item in statuses if isinstance(item, dict) and item.get("error")]
-    if errors:
-        compensate_failed_bracket(exchange, order, resolved, statuses[0], entry_cloid, cloid_type)
-        fail(str(errors[0]), "venue_rejected")
+def assert_order_statuses_ok(result, expected_cloids):
+    statuses = response_statuses(result, len(expected_cloids), "order")
+    if not all(
+        explicit_order_acknowledgement(item, expected_cloids[index])
+        for index, item in enumerate(statuses)
+    ):
+        fail("hyperliquid order acknowledgement was incomplete", "submission_ambiguous")
 
 
-def compensate_failed_bracket(exchange, order, resolved, entry_status, entry_cloid, cloid_type):
-    if not exchange or not order or not resolved or not isinstance(entry_status, dict):
-        return
+def assert_cancel_statuses_ok(result, expected):
+    statuses = response_statuses(result, expected, "cancel")
+    if not all(item == "success" for item in statuses):
+        fail("hyperliquid cancel acknowledgement was incomplete", "submission_ambiguous")
+
+
+def response_statuses(result, expected, action):
+    assert_action_ok(result, f"hyperliquid {action} failed")
+    response = result.get("response")
+    if not isinstance(response, dict):
+        fail(f"hyperliquid {action} acknowledgement was incomplete", "submission_ambiguous")
+    data = response.get("data") if isinstance(response, dict) else None
+    statuses = data.get("statuses") if isinstance(data, dict) else None
+    if response.get("type") != action or not isinstance(statuses, list) or len(statuses) != expected:
+        fail(f"hyperliquid {action} acknowledgement was incomplete", "submission_ambiguous")
+    return statuses
+
+
+def explicit_order_acknowledgement(item, expected_cloid):
+    if not isinstance(item, dict):
+        return False
+    resting = item.get("resting")
+    if set(item) == {"resting"} and valid_resting_acknowledgement(resting, expected_cloid):
+        return True
+    filled = item.get("filled")
+    return (
+        set(item) == {"filled"}
+        and valid_filled_acknowledgement(filled, expected_cloid)
+    )
+
+
+def valid_resting_acknowledgement(value, expected_cloid):
+    return (
+        isinstance(value, dict)
+        and set(value).issubset({"oid", "cloid"})
+        and nonnegative_integer(value.get("oid"))
+        and ("cloid" not in value or matching_cloid(value["cloid"], expected_cloid))
+    )
+
+
+def valid_filled_acknowledgement(value, expected_cloid):
+    return (
+        isinstance(value, dict)
+        and set(value).issubset({"oid", "cloid", "totalSz", "avgPx"})
+        and {"oid", "totalSz", "avgPx"}.issubset(value)
+        and nonnegative_integer(value.get("oid"))
+        and positive_decimal(value.get("totalSz"))
+        and positive_decimal(value.get("avgPx"))
+        and ("cloid" not in value or matching_cloid(value["cloid"], expected_cloid))
+    )
+
+
+def matching_cloid(value, expected):
+    if not isinstance(value, str) or len(value) != 34 or not value.startswith("0x"):
+        return False
+    return (
+        all(character in "0123456789abcdefABCDEF" for character in value[2:])
+        and value.lower() == expected.lower()
+    )
+
+
+def nonnegative_integer(value):
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= 9_007_199_254_740_991
+    )
+
+
+def positive_decimal(value):
+    if not isinstance(value, str) or not value or len(value) > 64:
+        return False
+    whole, separator, fraction = value.partition(".")
+    if not whole.isdigit() or (separator and not fraction.isdigit()):
+        return False
     try:
-        if entry_status.get("resting"):
-            exchange.cancel_by_cloid(order["market"], entry_cloid)
-            return
-        if entry_status.get("filled"):
-            exchange.market_close(
-                order["market"],
-                sz=float(resolved["base_size"]),
-                slippage=0.01,
-                cloid=derived_cloid(str(entry_cloid), "emergency-close", cloid_type),
-            )
-    except Exception:
-        # The caller fails closed and reconciliation will surface an unprotected
-        # position instead of claiming the bracket succeeded.
-        return
+        return Decimal(value).is_finite() and Decimal(value) > 0
+    except InvalidOperation:
+        return False
 
 
 def assert_leverage_supported(info, order):
@@ -210,13 +278,13 @@ def assert_leverage_supported(info, order):
             if asset.get("name") == order.get("market"):
                 maximum = int(asset.get("maxLeverage") or 1)
                 if requested > maximum:
-                    fail("requested leverage exceeds the market maximum", "venue_rejected")
+                    fail("requested leverage exceeds the market maximum", "pre_submit_failed")
                 return
     except SystemExit:
         raise
     except Exception:
-        fail("hyperliquid market metadata unavailable", "connector_submit_failed")
-    fail("hyperliquid market is unavailable", "venue_rejected")
+        fail("hyperliquid market metadata unavailable", "pre_submit_failed")
+    fail("hyperliquid market is unavailable", "pre_submit_failed")
 
 
 def assert_protective_prices(info, order):
@@ -228,12 +296,12 @@ def assert_protective_prices(info, order):
         stop = Decimal(str(protection["stop_loss"])) if protection.get("stop_loss") else None
         take = Decimal(str(protection["take_profit"])) if protection.get("take_profit") else None
     except Exception:
-        fail("hyperliquid trigger reference is unavailable", "connector_submit_failed")
+        fail("hyperliquid trigger reference is unavailable", "pre_submit_failed")
     is_buy = order.get("side") == "buy"
     if stop is not None and ((is_buy and stop >= reference) or (not is_buy and stop <= reference)):
-        fail("invalid stop-loss price for current mark", "venue_rejected")
+        fail("invalid stop-loss price for current mark", "pre_submit_failed")
     if take is not None and ((is_buy and take <= reference) or (not is_buy and take >= reference)):
-        fail("invalid take-profit price for current mark", "venue_rejected")
+        fail("invalid take-profit price for current mark", "pre_submit_failed")
 
 
 def resolve_limit_order(info, order, account_address, require_funds=True):
@@ -246,13 +314,13 @@ def resolve_limit_order(info, order, account_address, require_funds=True):
             base = Decimal(str(order.get("base_size") or "0"))
             quote = Decimal(str(order.get("quote_size") or "0"))
         except (InvalidOperation, ValueError):
-            fail("invalid hyperliquid limit order", "venue_rejected")
+            fail("invalid hyperliquid limit order", "pre_submit_failed")
         if price <= 0:
-            fail("invalid hyperliquid limit price", "venue_rejected")
+            fail("invalid hyperliquid limit price", "pre_submit_failed")
         if base <= 0 and quote > 0:
             base = floor_decimal(quote / price, coin_size_decimals(info, order.get("market")))
         if base <= 0:
-            fail("hyperliquid limit order size is below venue minimum", "venue_rejected")
+            fail("hyperliquid limit order size is below venue minimum", "pre_submit_failed")
         notional = base * price
         if notional > 0:
             check_account_value(
@@ -273,9 +341,9 @@ def resolve_limit_order(info, order, account_address, require_funds=True):
         quote_size = Decimal(str(order.get("quote_size") or "0"))
         slippage_bps = Decimal(str(order.get("max_slippage_bps") or "50"))
     except (InvalidOperation, ValueError):
-        fail("invalid hyperliquid tiny fill order", "venue_rejected")
+        fail("invalid hyperliquid tiny fill order", "pre_submit_failed")
     if quote_size <= 0 or slippage_bps <= 0:
-        fail("invalid hyperliquid tiny fill order", "venue_rejected")
+        fail("invalid hyperliquid tiny fill order", "pre_submit_failed")
 
     try:
         mids = info.all_mids()
@@ -295,12 +363,12 @@ def resolve_limit_order(info, order, account_address, require_funds=True):
     slippage = slippage_bps / Decimal("10000")
     limit = mid * (Decimal("1") + slippage if order.get("side") == "buy" else Decimal("1") - slippage)
     if limit <= 0:
-        fail("invalid hyperliquid tiny fill limit", "venue_rejected")
+        fail("invalid hyperliquid tiny fill limit", "pre_submit_failed")
 
     price = price_to_5_sig(limit)
     base_size = floor_decimal(quote_size / price, coin_size_decimals(info, coin))
     if base_size <= 0:
-        fail("hyperliquid tiny fill size is below venue minimum", "venue_rejected")
+        fail("hyperliquid tiny fill size is below venue minimum", "pre_submit_failed")
     return {
         "base_size": decimal_text(base_size),
         "limit_price": decimal_text(price),
@@ -314,9 +382,9 @@ def resolve_market_ioc_order(info, order, account_address, require_funds=True):
     try:
         slippage_bps = Decimal(str(order.get("max_slippage_bps") or "50"))
     except (InvalidOperation, ValueError):
-        fail("invalid hyperliquid market order", "venue_rejected")
+        fail("invalid hyperliquid market order", "pre_submit_failed")
     if slippage_bps <= 0:
-        fail("invalid hyperliquid market order", "venue_rejected")
+        fail("invalid hyperliquid market order", "pre_submit_failed")
     try:
         mids = info.all_mids()
         mid = Decimal(str(mids[coin]))
@@ -331,9 +399,9 @@ def resolve_market_ioc_order(info, order, account_address, require_funds=True):
         quote_size = Decimal(str(quote_raw)) if quote_raw else Decimal("0")
         base_size = Decimal(str(base_raw)) if base_raw else Decimal("0")
     except (InvalidOperation, ValueError):
-        fail("invalid hyperliquid market order size", "venue_rejected")
+        fail("invalid hyperliquid market order size", "pre_submit_failed")
     if quote_size <= 0 and base_size <= 0:
-        fail("invalid hyperliquid market order size", "venue_rejected")
+        fail("invalid hyperliquid market order size", "pre_submit_failed")
 
     notional = quote_size if quote_size > 0 else base_size * mid
     account_state_checked = check_account_value(
@@ -346,12 +414,12 @@ def resolve_market_ioc_order(info, order, account_address, require_funds=True):
     slippage = slippage_bps / Decimal("10000")
     limit = mid * (Decimal("1") + slippage if order.get("side") == "buy" else Decimal("1") - slippage)
     if limit <= 0:
-        fail("invalid hyperliquid market order limit", "venue_rejected")
+        fail("invalid hyperliquid market order limit", "pre_submit_failed")
     price = price_to_5_sig(limit)
     if base_size <= 0:
         base_size = floor_decimal(quote_size / price, coin_size_decimals(info, coin))
     if base_size <= 0:
-        fail("hyperliquid market order size is below venue minimum", "venue_rejected")
+        fail("hyperliquid market order size is below venue minimum", "pre_submit_failed")
     return {
         "base_size": decimal_text(base_size),
         "limit_price": decimal_text(price),
@@ -385,15 +453,15 @@ def check_account_value(info, account_address, quote_size, leverage=1, require_f
             pass
         leverage_value = Decimal(str(leverage or 1))
         if leverage_value <= 0:
-            fail("invalid hyperliquid leverage", "venue_rejected")
+            fail("invalid hyperliquid leverage", "pre_submit_failed")
         required_margin = (quote_size / leverage_value) * Decimal("1.01")
         if require_funds and available < required_margin:
-            fail("hyperliquid account has insufficient available value", "venue_rejected")
+            fail("hyperliquid account has insufficient available value", "pre_submit_failed")
         return True
     except SystemExit:
         raise
     except Exception:
-        fail("hyperliquid account state unavailable", "venue_rejected")
+        fail("hyperliquid account state unavailable", "pre_submit_failed")
 
 
 def coin_size_decimals(info, coin):

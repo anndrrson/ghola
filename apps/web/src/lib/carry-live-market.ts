@@ -69,8 +69,10 @@ export function createCarryPatchPublisher(options: {
   const publish = () => {
     cancelScheduled = null;
     if (!active || patches.size === 0) return;
+    const batch = [...patches.values()];
+    patches.clear();
     lastPublishedAt = now();
-    options.onPublish([...patches.values()]);
+    options.onPublish(batch);
   };
 
   return {
@@ -206,7 +208,7 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
     if (venueId === "aster") {
       const streams = this.venueRefs("aster").flatMap((ref) => {
         const symbol = ref.contractId.replace(/^aster:/, "").toLowerCase();
-        return [`${symbol}@bookTicker`, `${symbol}@markPrice@1s`];
+        return [`${symbol}@bookTicker`, `${symbol}@markPrice@1s`, `${symbol}@depth20@100ms`];
       });
       return `wss://fstream.asterdex.com/stream?streams=${streams.join("/")}`;
     }
@@ -284,11 +286,24 @@ class BrowserCarryLiveMarketStream implements CarryLiveMarketStream {
     const symbol = stringValue(data.s).toUpperCase();
     const ref = this.venueRefs("aster").find((item) => item.contractId === `aster:${symbol}`);
     if (!ref) return;
+    const stream = stringValue(message.stream).toLowerCase();
+    if (stream.includes("@depth20")) {
+      const book = this.book(`aster:${ref.asset}`, true);
+      applyBookLevels(book, "bid", data.bids ?? data.b);
+      applyBookLevels(book, "ask", data.asks ?? data.a);
+      this.emit(ref, {
+        best_bid_e8: bestBookPrice(book, "bid"),
+        best_ask_e8: bestBookPrice(book, "ask"),
+        depth_bids: bookDepthLevels(book, "bid"),
+        depth_asks: bookDepthLevels(book, "ask"),
+        depth_complete: true,
+        source_at_ms: numericValue(data.E ?? data.T),
+      });
+      return;
+    }
     this.emit(ref, {
       best_bid_e8: scaledDecimal(data.b, 100_000_000),
       best_ask_e8: scaledDecimal(data.a, 100_000_000),
-      depth_bids: singleDepthLevel(data.b, data.B),
-      depth_asks: singleDepthLevel(data.a, data.A),
       mark_price_e8: scaledDecimal(data.p, 100_000_000),
       index_price_e8: scaledDecimal(data.i, 100_000_000),
       funding_rate_e12_per_interval: scaledDecimal(data.r, 1_000_000_000_000, true),
@@ -464,7 +479,8 @@ function applyBookLevels(book: BookState, side: "bid" | "ask", value: unknown) {
   const levels = side === "bid" ? book.bids : book.asks;
   const bestKey = side === "bid" ? "bestBid" : "bestAsk";
   for (const raw of arrayValue(value)) {
-    const row = Array.isArray(raw) ? raw : [record(raw).price, record(raw).size];
+    const object = record(raw);
+    const row = Array.isArray(raw) ? raw : [object.price ?? object.px, object.size ?? object.sz];
     const price = Number(row[0]);
     const size = Number(row[1]);
     if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(size)) continue;

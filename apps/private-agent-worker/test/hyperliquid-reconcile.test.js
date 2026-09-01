@@ -1,5 +1,7 @@
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   reconcileHyperliquidOpenOrders,
   submitHyperliquidExecution,
@@ -31,6 +33,67 @@ function instruction(cloid) {
 }
 
 describe("Hyperliquid targeted reconciliation", () => {
+  it("classifies only post-broadcast runner failures as submission ambiguous", () => {
+    const runnerPath = fileURLToPath(new URL("../src/venues/hyperliquid_runner.py", import.meta.url));
+    const check = String.raw`
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("hyperliquid_runner", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.request_failure_code(False) == "pre_submit_failed"
+assert module.request_failure_code(True) == "submission_ambiguous"
+def strict_fail(message, code="connector_submit_failed"):
+    raise RuntimeError(code)
+module.fail = strict_fail
+expected_cloid = "0x11111111111111111111111111111111"
+bad_acks = [
+    {},
+    {"status": "ok", "response": None},
+    {"status": "ok", "response": {"data": {"statuses": []}}},
+    {"status": "ok", "response": {"data": {"statuses": [{"error": "rejected"}]}}},
+    {"status": "ok", "response": {"type": "order", "data": {"statuses": [{}]}}},
+    {"status": "ok", "response": {"type": "order", "data": {"statuses": [None]}}},
+    {"status": "ok", "response": {"type": "order", "data": {"statuses": ["waitingForFill"]}}},
+    {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 7, "cloid": "0x22222222222222222222222222222222"}}]}}},
+    {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"oid": 8, "totalSz": "9" * 400, "avgPx": "100"}}]}}},
+    {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 2 ** 60}}]}}},
+]
+for acknowledgement in bad_acks:
+    try:
+        module.assert_order_statuses_ok(acknowledgement, [expected_cloid])
+    except RuntimeError as error:
+        assert str(error) == "submission_ambiguous"
+    else:
+        raise AssertionError("post-broadcast acknowledgement accepted")
+module.assert_order_statuses_ok({
+    "status": "ok",
+    "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 7, "cloid": expected_cloid}}]}},
+}, [expected_cloid])
+module.assert_order_statuses_ok({
+    "status": "ok",
+    "response": {"type": "order", "data": {"statuses": [{"filled": {"oid": 8, "totalSz": "0.1", "avgPx": "100"}}]}},
+}, [expected_cloid])
+for acknowledgement in [
+    {"status": "ok", "response": {"type": "cancel", "data": {"statuses": [{}]}}},
+    {"status": "ok", "response": {"type": "cancel", "data": {"statuses": [None]}}},
+]:
+    try:
+        module.assert_cancel_statuses_ok(acknowledgement, 1)
+    except RuntimeError as error:
+        assert str(error) == "submission_ambiguous"
+    else:
+        raise AssertionError("malformed cancel acknowledgement accepted")
+module.assert_cancel_statuses_ok({
+    "status": "ok",
+    "response": {"type": "cancel", "data": {"statuses": ["success"]}},
+}, 1)
+print("checked")
+`;
+    const result = spawnSync(process.env.PRIVATE_AGENT_PYTHON || "python3", ["-c", check, runnerPath], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stdout.trim(), "checked");
+  });
+
   it("keeps an unknown CLOID ambiguous and never invents venue proof", async () => {
     process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
     const cloid = `0x${"12".repeat(16)}`;

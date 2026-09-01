@@ -202,7 +202,10 @@ function exactOriginalOrderReconciliationReceipt({ baseSize = "0.001", cumulativ
     fills: [{ size: baseSize, price: "10000" }],
     final_proof: {
       target_client_order_matched: true,
-      broadcast_performed: true,
+      query_broadcast: false,
+      broadcast_performed: false,
+      original_order_target_matched: true,
+      original_order_broadcast_proven: true,
       final_venue_execution_proven: true,
       final_fill_proven: true,
       cumulative_filled_micro_usdc: cumulativeMicro,
@@ -210,6 +213,29 @@ function exactOriginalOrderReconciliationReceipt({ baseSize = "0.001", cumulativ
     },
   };
 }
+
+test("restart rejects a read-only query without explicit original-order broadcast proof", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-reconciling-query-only-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  await createReconcilingCarrySaga(state, ["aster", "lighter"], "query-only");
+
+  const recovered = await recoverDueMultiLegSagas({
+    state,
+    now_ms: NOW + 100,
+    recipient: { recipient_id: "did:key:restart-reconcile" },
+    executeOrder: async () => ({
+      ...exactOriginalOrderReconciliationReceipt(),
+      final_proof: {
+        ...exactOriginalOrderReconciliationReceipt().final_proof,
+        original_order_broadcast_proven: false,
+      },
+    }),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(recovered.ok, false);
+  assert.equal(recovered.recovered[0].error, "original_order_target_unproven");
+});
 
 for (const [firstVenue, secondVenue] of CARRY_EXECUTION_VENUES.flatMap((firstVenue, index) =>
   CARRY_EXECUTION_VENUES.slice(index + 1).map((secondVenue) => [firstVenue, secondVenue]),

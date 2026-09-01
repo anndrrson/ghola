@@ -882,7 +882,7 @@ test("reconciles by the exact client order id", async () => {
     env: ENV,
     fetchImpl: async (url, init) => {
       observed = { url: new URL(url), method: init.method };
-      return jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-0003", status: "FILLED", executedQty: "0.01", cumQuote: "600", avgPrice: "60000" });
+      return jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-0003", orderId: 46, status: "FILLED", executedQty: "0.01", cumQuote: "600", avgPrice: "60000" });
     },
   });
   assert.equal(observed.method, "GET");
@@ -890,6 +890,9 @@ test("reconciles by the exact client order id", async () => {
   assert.equal(result.status, "filled");
   assert.equal(result.final_proof.final_venue_execution_proven, true);
   assert.equal(result.final_proof.broadcast_performed, false);
+  assert.equal(result.final_proof.query_broadcast, false);
+  assert.equal(result.final_proof.original_order_target_matched, true);
+  assert.equal(result.final_proof.original_order_broadcast_proven, true);
 });
 
 test("keeps explicit Aster reconciliation bound to the original order across read failures", async () => {
@@ -933,6 +936,9 @@ test("keeps explicit Aster reconciliation bound to the original order across rea
   assert.deepEqual(targets, ["ghola-original-0007", "ghola-original-0007"]);
   assert.equal(result.status, "filled");
   assert.equal(result.final_proof.broadcast_performed, false);
+  assert.equal(result.final_proof.query_broadcast, false);
+  assert.equal(result.final_proof.original_order_target_matched, true);
+  assert.equal(result.final_proof.original_order_broadcast_proven, true);
   assert.equal(result.reconciliation.reconcileOnly, true);
   assert.equal(result.reconciliation.submission_retry_count, 0);
 });

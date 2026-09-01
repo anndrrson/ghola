@@ -84,6 +84,77 @@ describe("carry live market stream", () => {
     stream.stop();
   });
 
+  it("keeps Aster slippage depth live with complete 20-level snapshots", () => {
+    const sockets: FakeSocket[] = [];
+    const patches: CarryLiveMarketPatch[] = [];
+    const stream = createCarryLiveMarketStream({
+      venues: [venue("aster", "BTC", "aster:BTCUSDT", 28_800_000)],
+      onPatch: (patch) => patches.push(patch),
+      onStatus: () => undefined,
+      webSocketCtor: class extends FakeSocket {
+        constructor(url: string) {
+          super(url);
+          sockets.push(this);
+        }
+      },
+      now: () => 1_800_000_000_100,
+    });
+    stream.start();
+    sockets[0].open();
+    expect(sockets[0].url).toContain("btcusdt@depth20@100ms");
+    sockets[0].message({
+      stream: "btcusdt@depth20@100ms",
+      data: {
+        e: "depthUpdate",
+        E: 1_800_000_000_050,
+        s: "BTCUSDT",
+        b: [["60000", "1"], ["59999", "2"]],
+        a: [["60001", "1.5"], ["60002", "2.5"]],
+      },
+    });
+    expect(patches.at(-1)).toMatchObject({
+      venue_id: "aster",
+      asset: "BTC",
+      best_bid_e8: 6_000_000_000_000,
+      best_ask_e8: 6_000_100_000_000,
+      depth_bids: [
+        { price_e8: 6_000_000_000_000, size_e8: 100_000_000 },
+        { price_e8: 5_999_900_000_000, size_e8: 200_000_000 },
+      ],
+      depth_asks: [
+        { price_e8: 6_000_100_000_000, size_e8: 150_000_000 },
+        { price_e8: 6_000_200_000_000, size_e8: 250_000_000 },
+      ],
+      depth_complete: true,
+      source_at_ms: 1_800_000_000_050,
+    });
+    sockets[0].message({
+      stream: "btcusdt@depth20@100ms",
+      data: {
+        E: 1_800_000_000_060,
+        s: "BTCUSDT",
+        b: [["60003", "3"]],
+        a: [["60004", "4"]],
+      },
+    });
+    expect(patches.at(-1)).toMatchObject({
+      depth_bids: [{ price_e8: 6_000_300_000_000, size_e8: 300_000_000 }],
+      depth_asks: [{ price_e8: 6_000_400_000_000, size_e8: 400_000_000 }],
+      depth_complete: true,
+    });
+    sockets[0].message({
+      stream: "btcusdt@bookTicker",
+      data: { E: 1_800_000_000_070, s: "BTCUSDT", b: "60005", B: "1", a: "60006", A: "1" },
+    });
+    expect(patches.at(-1)).toMatchObject({
+      best_bid_e8: 6_000_500_000_000,
+      best_ask_e8: 6_000_600_000_000,
+      source_at_ms: 1_800_000_000_070,
+    });
+    assertPatchOmitsDepth(patches.at(-1)!);
+    stream.stop();
+  });
+
   it("keeps a representative recalculation batch inside one 16ms UI frame", () => {
     const venues = [
       venue("hyperliquid", "BTC", "hyperliquid:BTC", 3_600_000, 10_000_000),
@@ -128,7 +199,12 @@ describe("carry live market stream", () => {
       },
     });
 
-    publisher.push(livePatch({ funding_rate_e12_per_interval: 10_000_000 }));
+    publisher.push(livePatch({
+      funding_rate_e12_per_interval: 10_000_000,
+      depth_bids: [{ price_e8: 5_999_900_000_000, size_e8: 100_000_000 }],
+      depth_asks: [{ price_e8: 6_000_100_000_000, size_e8: 100_000_000 }],
+      depth_complete: true,
+    }));
     expect(publications).toHaveLength(1);
     now = 110;
     publisher.push(livePatch({ received_at_ms: 110, best_bid_e8: 5_999_990_000_000 }));
@@ -141,10 +217,11 @@ describe("carry live market stream", () => {
     expect(publications).toHaveLength(2);
     expect(publications[1]).toEqual([expect.objectContaining({
       received_at_ms: 111,
-      funding_rate_e12_per_interval: 10_000_000,
       best_bid_e8: 5_999_990_000_000,
       best_ask_e8: 6_000_010_000_000,
     })]);
+    expect(publications[1][0]).not.toHaveProperty("funding_rate_e12_per_interval");
+    assertPatchOmitsDepth(publications[1][0]);
     publisher.stop();
   });
 
@@ -313,4 +390,10 @@ function livePatch(overrides: Partial<CarryLiveMarketPatch> = {}): CarryLiveMark
     received_at_ms: 100,
     ...overrides,
   };
+}
+
+function assertPatchOmitsDepth(patch: CarryLiveMarketPatch) {
+  expect(patch).not.toHaveProperty("depth_bids");
+  expect(patch).not.toHaveProperty("depth_asks");
+  expect(patch).not.toHaveProperty("depth_complete");
 }

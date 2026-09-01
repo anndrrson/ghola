@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { privateKeyToAccount } from "viem/accounts";
 import {
   ownerMandateMessage,
   prepareTurnkeyHyperliquidExecution,
@@ -16,6 +17,7 @@ import {
 const NOW = Date.now();
 const OWNER = "0x1111111111111111111111111111111111111111";
 const AGENT = "0x2222222222222222222222222222222222222222";
+const SIGNING_OWNER = privateKeyToAccount(`0x${"55".repeat(32)}`);
 
 function mandate(overrides = {}) {
   return {
@@ -108,6 +110,20 @@ function context(overrides = {}) {
       ...overrides,
     },
   };
+}
+
+async function liveCredential() {
+  const perpsMandate = mandate({
+    owner_address: SIGNING_OWNER.address,
+    execution_address: SIGNING_OWNER.address,
+  });
+  const signature = await SIGNING_OWNER.signMessage({ message: ownerMandateMessage(perpsMandate) });
+  return turnkeyHyperliquidCredentialFromVault(vault({
+    owner_wallet_address: SIGNING_OWNER.address,
+    hyperliquid_account_address: SIGNING_OWNER.address,
+    owner_mandate_signature: signature,
+    perps_mandate: perpsMandate,
+  }));
 }
 
 test("vault contains references and a signed mandate, never a wallet private key", () => {
@@ -326,8 +342,163 @@ test("rejects leverage escalation before any signer or exchange call", async () 
       exchangeCalled = true;
       return {};
     },
-  }), /leverage_changed/);
+  }), (error) => {
+    assert.equal(error?.code, "pre_submit_failed");
+    assert.match(error?.message || "", /leverage_changed/);
+    return true;
+  });
   assert.equal(exchangeCalled, false);
+});
+
+test("freezes a Turnkey transport failure after submission starts", async () => {
+  const credential = await liveCredential();
+  let orderCalls = 0;
+  await assert.rejects(() => submitTurnkeyHyperliquidExecution({
+    credential,
+    instruction: instruction(),
+    cloid: "0x11111111111111111111111111111111",
+    env: {},
+    marketContext: context(),
+    exchangeFactory: () => ({
+      order: async () => {
+        orderCalls += 1;
+        throw new Error("transport reset");
+      },
+    }),
+  }), (error) => error?.code === "submission_ambiguous");
+  assert.equal(orderCalls, 1);
+});
+
+test("freezes an incomplete Turnkey bracket acknowledgement without an untracked compensation submit", async () => {
+  const credential = await liveCredential();
+  let orderCalls = 0;
+  await assert.rejects(() => submitTurnkeyHyperliquidExecution({
+    credential,
+    instruction: instruction(),
+    cloid: "0x11111111111111111111111111111111",
+    env: {},
+    marketContext: context(),
+    exchangeFactory: () => ({
+      order: async () => {
+        orderCalls += 1;
+        return { response: { data: { statuses: [{ resting: { oid: 101 } }] } } };
+      },
+    }),
+  }), (error) => error?.code === "submission_ambiguous");
+  assert.equal(orderCalls, 1);
+});
+
+test("never claims a Turnkey order from malformed acknowledgements", async () => {
+  const credential = await liveCredential();
+  for (const statuses of [
+    [{}, {}, {}],
+    [null, null, null],
+    ["waitingForFill", "waitingForTrigger", "waitingForTrigger"],
+    [
+      { resting: { oid: 101, cloid: "0x22222222222222222222222222222222" } },
+      { resting: { oid: 102 } },
+      { resting: { oid: 103 } },
+    ],
+    [
+      { filled: { oid: 101, totalSz: "9".repeat(400), avgPx: "100" } },
+      { resting: { oid: 102 } },
+      { resting: { oid: 103 } },
+    ],
+  ]) {
+    await assert.rejects(() => submitTurnkeyHyperliquidExecution({
+      credential,
+      instruction: instruction(),
+      cloid: "0x11111111111111111111111111111111",
+      env: {},
+      marketContext: context(),
+      exchangeFactory: () => ({
+        order: async () => ({
+          status: "ok",
+          response: { type: "order", data: { statuses } },
+        }),
+      }),
+    }), (error) => error?.code === "submission_ambiguous");
+  }
+});
+
+test("accepts only explicit Turnkey order success shapes", async () => {
+  const credential = await liveCredential();
+  const result = await submitTurnkeyHyperliquidExecution({
+    credential,
+    instruction: instruction(),
+    cloid: "0x11111111111111111111111111111111",
+    env: {},
+    marketContext: context(),
+    exchangeFactory: () => ({
+      order: async () => ({
+        status: "ok",
+        response: {
+          type: "order",
+          data: {
+            statuses: [
+              { resting: { oid: 101, cloid: "0x11111111111111111111111111111111" } },
+              { resting: { oid: 102 } },
+              { resting: { oid: 103 } },
+            ],
+          },
+        },
+      }),
+    }),
+  });
+  assert.equal(result.status, "submitted");
+  assert.equal(result.oid, 101);
+});
+
+test("never claims a Turnkey cancel when its post-broadcast acknowledgement is incomplete", async () => {
+  const credential = await liveCredential();
+  let cancelCalls = 0;
+  await assert.rejects(() => submitTurnkeyHyperliquidExecution({
+    credential,
+    instruction: {
+      operation_class: "cancel",
+      cancel: {
+        market: "BTC",
+        client_order_id: "0x11111111111111111111111111111111",
+      },
+    },
+    cloid: "0x22222222222222222222222222222222",
+    env: {},
+    marketContext: context({
+      managed_open_order_ids: ["0x11111111111111111111111111111111"],
+    }),
+    exchangeFactory: () => ({
+      cancelByCloid: async () => {
+        cancelCalls += 1;
+        return { response: { data: { statuses: [] } } };
+      },
+    }),
+  }), (error) => error?.code === "submission_ambiguous");
+  assert.equal(cancelCalls, 1);
+});
+
+test("never claims a Turnkey cancel from a malformed acknowledgement", async () => {
+  const credential = await liveCredential();
+  await assert.rejects(() => submitTurnkeyHyperliquidExecution({
+    credential,
+    instruction: {
+      operation_class: "cancel",
+      cancel: {
+        market: "BTC",
+        client_order_id: "0x11111111111111111111111111111111",
+      },
+    },
+    cloid: "0x22222222222222222222222222222222",
+    env: {},
+    marketContext: context({
+      managed_open_order_ids: ["0x11111111111111111111111111111111"],
+    }),
+    exchangeFactory: () => ({
+      cancelByCloid: async () => ({
+        status: "ok",
+        response: { type: "cancel", data: { statuses: [{}] } },
+      }),
+    }),
+  }), (error) => error?.code === "submission_ambiguous");
 });
 
 test("no-submit verification never asks the exchange to sign or broadcast", async () => {

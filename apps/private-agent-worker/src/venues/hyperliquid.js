@@ -112,30 +112,34 @@ export function assertHyperliquidPilotNetwork(credential, instruction = null) {
   const network = credential?.network === "testnet" ? "testnet" : "mainnet";
   if (network === "testnet") return;
   if (process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET !== "true") {
-    throw new HyperliquidExecutionError("hyperliquid pilot is testnet-only unless live mainnet is explicitly enabled", 400);
+    throw new HyperliquidExecutionError(
+      "hyperliquid pilot is testnet-only unless live mainnet is explicitly enabled",
+      400,
+      "pre_submit_failed",
+    );
   }
   const liveMode = process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE || "disabled";
   const operationClass = instruction?.operation_class || "read";
   if (operationClass === "read" || operationClass === "reconcile") {
     if (liveMode === "read_only" || liveMode === "tiny_fill" || liveMode === "full_ticket") return;
-    throw new HyperliquidExecutionError("hyperliquid mainnet read mode is disabled", 400);
+    throw new HyperliquidExecutionError("hyperliquid mainnet read mode is disabled", 400, "pre_submit_failed");
   }
   if (operationClass === "cancel") {
     if (liveMode === "tiny_fill" || liveMode === "full_ticket") return;
-    throw new HyperliquidExecutionError("hyperliquid mainnet cancel mode is disabled", 400);
+    throw new HyperliquidExecutionError("hyperliquid mainnet cancel mode is disabled", 400, "pre_submit_failed");
   }
   if (liveMode === "full_ticket") {
     if (operationClass !== "limit_order") {
-      throw new HyperliquidExecutionError("hyperliquid mainnet submit requires limit_order operation", 400);
+      throw new HyperliquidExecutionError("hyperliquid mainnet submit requires limit_order operation", 400, "pre_submit_failed");
     }
     return;
   }
   if (operationClass !== "limit_order" || liveMode !== "tiny_fill") {
-    throw new HyperliquidExecutionError("hyperliquid mainnet submit requires tiny_fill live mode", 400);
+    throw new HyperliquidExecutionError("hyperliquid mainnet submit requires tiny_fill live mode", 400, "pre_submit_failed");
   }
   const order = instruction?.order || {};
   if (order.live_order_mode !== "tiny_fill" || order.tif !== "Ioc" || !order.quote_size) {
-    throw new HyperliquidExecutionError("hyperliquid mainnet order must use tiny_fill IOC quote sizing", 400);
+    throw new HyperliquidExecutionError("hyperliquid mainnet order must use tiny_fill IOC quote sizing", 400, "pre_submit_failed");
   }
 }
 
@@ -1459,12 +1463,19 @@ function parseRunnerFailure(text) {
     const message = typeof body.error === "string" && body.error.trim()
       ? body.error.trim()
       : "hyperliquid runner failed";
-    const code = body.error_code === "venue_rejected"
-      ? "venue_rejected"
-      : body.error_code === "venue_access_required"
-        ? "venue_access_required"
-        : "connector_submit_failed";
-    const status = code === "venue_rejected" ? 422 : code === "venue_access_required" ? 400 : 502;
+    const code = [
+      "venue_rejected",
+      "venue_access_required",
+      "pre_submit_failed",
+      "submission_ambiguous",
+    ].includes(body.error_code)
+      ? body.error_code
+      : "connector_submit_failed";
+    const status = code === "venue_rejected"
+      ? 422
+      : code === "venue_access_required"
+        ? 400
+        : 502;
     return { message, code, status };
   } catch {
     return {

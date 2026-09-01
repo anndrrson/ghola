@@ -2250,6 +2250,9 @@ describe("private agent worker", () => {
 
     const first = await submit();
     assert.equal(first.status, 502);
+    const firstBody = await first.json();
+    assert.equal(firstBody.error_code, "submission_ambiguous");
+    assert.match(firstBody.error, /reconcile the durable CLOID/);
     const attempt = await state.getExecutionAttempt(workOrderCommitment);
     assert.equal(attempt.status, "ambiguous");
     assert.match(attempt.provider_ref_seed.cloid, /^0x[0-9a-f]{32}$/);
