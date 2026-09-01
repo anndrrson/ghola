@@ -13,10 +13,23 @@ describe("Google auth redirect safety", () => {
     );
   });
 
-  it("rejects absolute and protocol-relative redirects", () => {
+  it("preserves an already-decoded Carry setup with its nested terminal return", () => {
+    const target = "/account?setup=carry&long_venue=hyperliquid&short_venue=aster&return_to=%2Ftrade%3Fproduct%3Dperps%26venue%3Dhyperliquid%26market%3DBTC-PERP%26carry%3Dopen%26long_venue%3Dhyperliquid%26short_venue%3Daster";
+    expect(safeInternalRedirect(target)).toBe(target);
+    const setup = new URL(safeInternalRedirect(target), "https://ghola.test");
+    expect(setup.searchParams.get("return_to")).toBe(
+      "/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=aster",
+    );
+  });
+
+  it("rejects absolute, protocol-relative, and backslash redirects", () => {
     expect(safeInternalRedirect("https://evil.test/steal")).toBe("/trade");
     expect(safeInternalRedirect("//evil.test/steal")).toBe("/trade");
     expect(safeInternalRedirect("%2F%2Fevil.test%2Fsteal")).toBe("/trade");
+    expect(safeInternalRedirect("/\\evil.test/steal")).toBe("/trade");
+    expect(safeInternalRedirect("/%5Cevil.test/steal")).toBe("/trade");
+    expect(safeInternalRedirect("%2F%5Cevil.test%2Fsteal")).toBe("/trade");
+    expect(safeInternalRedirect("/%255Cevil.test/steal")).toBe("/trade");
   });
 
   it("returns sign-in users to trading from either supported query name", () => {

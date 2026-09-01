@@ -66,6 +66,33 @@ describe("Google redirect callback", () => {
     expect(res.headers.get("set-cookie")).toContain("ghola_thumper_session=");
   });
 
+  it("returns Carry onboarding to the same exact pair after Google authentication", async () => {
+    const token = makeJwt({
+      sub: "user-id",
+      email: "alice@example.com",
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ id: "user-id", email: "alice@example.com" }),
+          { status: 200 },
+        ),
+      );
+    const carrySetup = "/account?setup=carry&long_venue=hyperliquid&short_venue=aster&return_to=%2Ftrade%3Fproduct%3Dperps%26venue%3Dhyperliquid%26market%3DBTC-PERP%26carry%3Dopen%26long_venue%3Dhyperliquid%26short_venue%3Daster";
+
+    const res = await POST(callbackRequest({ redirect: encodeURIComponent(carrySetup) }));
+
+    const location = new URL(res.headers.get("location") || "");
+    expect(location.pathname).toBe("/account");
+    expect(location.searchParams.get("long_venue")).toBe("hyperliquid");
+    expect(location.searchParams.get("short_venue")).toBe("aster");
+    expect(location.searchParams.get("return_to")).toBe(
+      "/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=aster",
+    );
+  });
+
   it("rejects a mismatched Google CSRF token before contacting the backend", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 

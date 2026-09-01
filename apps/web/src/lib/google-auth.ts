@@ -39,14 +39,49 @@ export function safeInternalRedirect(
   fallback = "/trade",
 ): string {
   if (!value) return fallback;
+  // Callers pass both raw internal paths and once-encoded query/cookie values.
+  // Keep a raw path byte-for-byte so nested return targets remain encoded.
+  if (isInternalPath(value)) return value;
   let decoded = value;
   try {
     decoded = decodeURIComponent(value);
   } catch {
     return fallback;
   }
-  if (!decoded.startsWith("/") || decoded.startsWith("//")) return fallback;
-  return decoded;
+  return isInternalPath(decoded) ? decoded : fallback;
+}
+
+function isInternalPath(value: string): boolean {
+  const trustedOrigin = "https://ghola.local";
+  let candidate = value;
+
+  // URL parsers treat backslashes as path separators. Validate decoded forms too,
+  // without returning them, so nested return_to encoding remains byte-for-byte.
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (
+      !candidate.startsWith("/")
+      || candidate.startsWith("//")
+      || candidate.includes("\\")
+    ) {
+      return false;
+    }
+    try {
+      if (new URL(candidate, trustedOrigin).origin !== trustedOrigin) return false;
+    } catch {
+      return false;
+    }
+
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(candidate);
+    } catch {
+      return false;
+    }
+    if (decoded === candidate) return true;
+    candidate = decoded;
+  }
+
+  return false;
 }
 
 export function resolveAuthRedirect(
