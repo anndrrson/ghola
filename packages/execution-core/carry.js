@@ -2338,14 +2338,19 @@ function applyEvent(position, event, nowMs) {
     position.long_filled_micro_usdc = longFilled;
     position.short_filled_micro_usdc = shortFilled;
     position.hedge_error_micro_usdc = hedgeError;
-    if (longFilled === position.target_notional_micro_usdc && shortFilled === position.target_notional_micro_usdc && hedgeError <= position.risk_mandate.max_hedge_error_micro_usdc) {
+    const mandateExpiresAt = position.mandate_authorization?.signed_mandate?.expires_at_ms;
+    const mandateValid = Number.isSafeInteger(mandateExpiresAt) && mandateExpiresAt > nowMs;
+    if (longFilled === position.target_notional_micro_usdc && shortFilled === position.target_notional_micro_usdc
+      && hedgeError <= position.risk_mandate.max_hedge_error_micro_usdc && mandateValid) {
       position.status = "active";
       position.next_actions = ["monitor_carry_and_margin"];
       position.terminal_reason = null;
     } else {
       position.status = "exiting";
       position.next_actions = ["cancel_open_orders", "reduce_only_close_filled_exposure"];
-      position.terminal_reason = "entry_hedge_mismatch";
+      position.terminal_reason = !mandateValid
+        ? Number.isSafeInteger(mandateExpiresAt) ? "risk_mandate_expired" : "risk_mandate_authorization_unverifiable"
+        : "entry_hedge_mismatch";
     }
     return;
   }

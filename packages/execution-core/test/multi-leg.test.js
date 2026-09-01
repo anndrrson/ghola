@@ -214,11 +214,18 @@ test("risk-reducing exits complete the missing close instead of reopening exposu
   assert.equal(completion.reduce_only, true);
   saga = advance(saga, 6, "completion_fill", {
     leg_id: "leg:perp:0001",
+    cumulative_filled_micro_usdc: 4_000_000,
+  });
+  assert.equal(saga.status, "compensating");
+  assert.equal(saga.legs[1].submission_status, "failed");
+  assert.equal(saga.next_actions.some((action) => action.type === "cancel_leg" && action.leg_id === "leg:perp:0001"), false);
+  saga = advance(saga, 7, "completion_fill", {
+    leg_id: "leg:perp:0001",
     cumulative_filled_micro_usdc: 10_000_000,
   });
   assert.equal(saga.status, "reconciling");
-  saga = advance(saga, 7, "leg_reconciled", { leg_id: "leg:spot:0001" });
-  saga = advance(saga, 8, "leg_reconciled", { leg_id: "leg:perp:0001" });
+  saga = advance(saga, 8, "leg_reconciled", { leg_id: "leg:spot:0001" });
+  saga = advance(saga, 9, "leg_reconciled", { leg_id: "leg:perp:0001" });
   assert.equal(saga.status, "reconciled");
   assert.equal(saga.terminal, true);
 });

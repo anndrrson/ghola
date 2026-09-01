@@ -1758,6 +1758,37 @@ test("only a restart-frozen entry can complete from durable reconciliation", () 
   assert.equal(denied.position.terminal_reason, "observation_unavailable");
 });
 
+test("restart-frozen reconciliation never reactivates exposure after mandate expiry", () => {
+  let opening = position();
+  opening = advanceCarryPosition({
+    position: opening,
+    event: event(1, "preflight_passed", { opportunity_eligible: true, all_venues_ready: true }),
+    now_ms: NOW + 1,
+  }).position;
+  const restarted = advanceCarryPosition({
+    position: opening,
+    event: event(2, "restart_detected"),
+    now_ms: NOW + 2,
+  }).position;
+  const expiresAtMs = restarted.mandate_authorization.signed_mandate.expires_at_ms;
+  const recovered = advanceCarryPosition({
+    position: restarted,
+    event: event(3, "entry_reconciled", {
+      long_filled_micro_usdc: 10_000_000_000,
+      short_filled_micro_usdc: 10_000_000_000,
+      hedge_error_micro_usdc: 0,
+    }),
+    now_ms: expiresAtMs,
+  });
+
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.position.status, "exiting");
+  assert.equal(recovered.position.terminal_reason, "risk_mandate_expired");
+  assert.deepEqual(recovered.position.next_actions, ["cancel_open_orders", "reduce_only_close_filled_exposure"]);
+  assert.equal(recovered.position.long_filled_micro_usdc, 10_000_000_000);
+  assert.equal(recovered.position.short_filled_micro_usdc, 10_000_000_000);
+});
+
 test("an unavailable monitoring observation freezes without retry", () => {
   let current = position();
   current = advanceCarryPosition({

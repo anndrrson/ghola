@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   bestArbitrageOpportunity,
+  bestCarryExitOpportunity,
   bestCarryOpportunity,
   enforceArbitrageLiveConfig,
   enforceCarryLiveConfig,
@@ -119,6 +120,27 @@ describe("guarded arbitrage autopilot", () => {
     });
     assert.equal(checked.ok, false);
     assert.ok(checked.reason_codes.includes("max_leg_notional_required"));
+  });
+
+  it("preserves exact signed position bases in carry exit sizing", async () => {
+    const exactBase = "0.0010000000000000001";
+    const opportunity = await bestCarryExitOpportunity({
+      session: { autopilot_session_id: "autopilot_exact_exit" },
+      positions: [
+        { venue_id: "coinbase_advanced", market: "SOL-USD", product_type: "spot", signed_notional_micro_usdc: 10_000_000, signed_base_size: exactBase, protected_pair_id: "pair:exact" },
+        { venue_id: "hyperliquid", market: "SOL-USD", product_type: "perp", signed_notional_micro_usdc: -10_000_000, signed_base_size: `-${exactBase}`, protected_pair_id: "pair:exact" },
+      ],
+      env: {
+        PRIVATE_AGENT_VENUE_DRY_RUN: "false",
+        PRIVATE_AGENT_CARRY_SIGNAL_MODE: "force",
+        PRIVATE_AGENT_CARRY_FORCE_SPOT_PRICE: "100",
+        PRIVATE_AGENT_CARRY_FORCE_PERP_PRICE: "100",
+      },
+      now: new Date("2026-06-03T12:03:00.000Z"),
+    });
+    assert.equal(opportunity.ok, true, JSON.stringify(opportunity));
+    assert.equal(opportunity.sell_base_size, exactBase);
+    assert.equal(opportunity.buy_base_size, exactBase);
   });
 
   it("parses Hyperliquid asset contexts and funding history for live carry screening", async () => {
@@ -376,7 +398,7 @@ describe("guarded arbitrage autopilot", () => {
     assert.equal(closed.opportunity.risk_reducing, true);
     const closedPositions = await state.listAutopilotPositions(created.autopilot_session_id);
     assert.ok(closedPositions.every((position) => position.signed_notional_micro_usdc === 0));
-    assert.ok(closedPositions.every((position) => position.signed_base_size === 0));
+    assert.ok(closedPositions.every((position) => position.signed_base_size === "0"));
     assert.ok(closedPositions.every((position) => Boolean(position.closed_at)));
     const afterClose = await state.getAutopilotSession(created.autopilot_session_id);
     assert.equal(afterClose.daily_notional_used_bucket, entryTurnover);

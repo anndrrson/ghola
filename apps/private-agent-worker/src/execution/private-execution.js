@@ -64,22 +64,117 @@ export class PrivateExecutionError extends Error {
   }
 }
 
-async function persistPreSubmissionAttempt({
+async function claimSubmissionAfterPolicyValidation({
+  body,
+  instruction,
+  session,
   state,
-  workOrderCommitment,
   attempt,
   readOnlyReconcile,
   retryMessage,
+  venueId,
 }) {
+  const trustedInternal = Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]);
   if (readOnlyReconcile) {
-    await state.putExecutionAttempt(workOrderCommitment, attempt);
-    return;
+    await enforceInstructionPolicy({
+      body,
+      instruction,
+      session,
+      state,
+      trusted_internal: trustedInternal,
+      account_usage: false,
+    });
+    const reconcileAttempt = { ...attempt, submit_count: 0 };
+    await state.putExecutionAttempt(body.work_order_commitment, reconcileAttempt);
+    return reconcileAttempt;
   }
-  if (typeof state.claimExecutionAttempt !== "function") {
-    throw new PrivateExecutionError("atomic execution attempt state is unavailable", 503);
+  if (typeof state.claimExecutionAttemptWithPolicyUsage !== "function") {
+    throw new PrivateExecutionError("atomic execution policy state is unavailable", 503);
   }
-  const claim = await state.claimExecutionAttempt(workOrderCommitment, attempt);
-  if (!claim?.ok) throw new PrivateExecutionError(retryMessage, 409);
+  const collector = policyUsageCollector(state);
+  await enforceInstructionPolicy({
+    body,
+    instruction,
+    session,
+    state: collector.state,
+    trusted_internal: trustedInternal,
+    account_usage: true,
+  });
+  const allowedAttempt = {
+    ...attempt,
+    submit_count: 1,
+    updated_at: new Date().toISOString(),
+  };
+  const deniedAttempt = {
+    ...attempt,
+    result_seed: { kind: `${venueId}_policy_failed_no_submit` },
+    status: "failed_no_submit",
+    submit_count: 0,
+    updated_at: new Date().toISOString(),
+  };
+  const claim = await state.claimExecutionAttemptWithPolicyUsage(body.work_order_commitment, {
+    allowed_attempt: allowedAttempt,
+    denied_attempt: deniedAttempt,
+    counts: collector.counts,
+    amounts: collector.amounts,
+    rearm_failed_no_submit: true,
+  });
+  if (claim?.ok) return claim.attempt || allowedAttempt;
+  if (claim?.reason === "policy_denied") {
+    const denial = claim.denied || {};
+    throw new PrivateExecutionError(
+      denial.error || "private execution policy usage exceeded",
+      Number.isInteger(denial.status) ? denial.status : 400,
+    );
+  }
+  throw new PrivateExecutionError(retryMessage, 409);
+}
+
+function policyUsageCollector(state) {
+  const counts = [];
+  const amounts = [];
+  const collectingState = new Proxy(state, {
+    get(target, property, receiver) {
+      if (property === "incrementPolicyCount") {
+        return async (key, maxCount) => {
+          counts.push({
+            key: String(key),
+            max_count: Number.isInteger(maxCount) ? maxCount : null,
+            ...policyUsageDenial("count", key),
+          });
+          return { ok: true, count: 1 };
+        };
+      }
+      if (property === "incrementPolicyAmount") {
+        return async (key, amount, maxAmount) => {
+          amounts.push({
+            key: String(key),
+            amount: Number(amount),
+            max_amount: Number(maxAmount),
+            ...policyUsageDenial("amount", key),
+          });
+          return { ok: true, amount: Number(amount) };
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { state: collectingState, counts, amounts };
+}
+
+function policyUsageDenial(type, keyValue) {
+  const key = String(keyValue);
+  if (type === "count" && key.startsWith("rate:")) {
+    return { error: "private execution rate limit exceeded", status: 429 };
+  }
+  if (type === "count") return { error: "session policy order count exceeded", status: 400 };
+  if (key.startsWith("session_daily_notional:")) return { error: "session policy daily notional cap exceeded", status: 400 };
+  if (key.startsWith("hyperliquid_live_notional:")) return { error: "hyperliquid tiny fill daily notional cap exceeded", status: 400 };
+  if (key.startsWith("hyperliquid_full_ticket_notional:")) return { error: "hyperliquid full-ticket daily notional cap exceeded", status: 400 };
+  if (key.startsWith("aster_full_ticket_notional:")) return { error: "aster daily notional cap exceeded", status: 400 };
+  if (key.startsWith("lighter_full_ticket_notional:")) return { error: "lighter daily notional cap exceeded", status: 400 };
+  return { error: "private execution policy amount exceeded", status: 400 };
 }
 
 const AUTOPILOT_INTERNAL_INSTRUCTION = Symbol("ghola.autopilot.internal_instruction");
@@ -377,20 +472,13 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     venue_id: "hyperliquid",
     session,
   }), { state, venue_id: "hyperliquid", body });
-  await enforceInstructionPolicy({
-    body,
-    instruction,
-    session,
-    state,
-    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
-  });
   const cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
-  const pendingAttempt = {
+  let pendingAttempt = {
     venue_id: "hyperliquid",
     account_commitment: allocation?.account_commitment || body.account_commitment || null,
     platform_class: "hyperliquid_style_market",
     execution_mode: executionMode,
-    submit_count: readOnlyReconcile ? 0 : 1,
+    submit_count: 0,
     ambiguity_retry_count: 0,
     provider_ref_seed: { venue: "hyperliquid", cloid, pending: true },
     result_seed: { kind: "hyperliquid_submission_pending" },
@@ -399,12 +487,15 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     status: "pending",
     created_at: new Date().toISOString(),
   };
-  await persistPreSubmissionAttempt({
+  pendingAttempt = await claimSubmissionAfterPolicyValidation({
+    body,
+    instruction,
+    session,
     state,
-    workOrderCommitment: body.work_order_commitment,
     attempt: pendingAttempt,
     readOnlyReconcile,
     retryMessage: "hyperliquid work order already has a durable submission attempt; reconcile it instead of retrying",
+    venueId: "hyperliquid",
   });
   let adapterResult;
   try {
@@ -1175,20 +1266,13 @@ export async function executeAsterOrder({ body, recipient, state }) {
     venue_id: "aster",
     session,
   }), { state, venue_id: "aster", body });
-  await enforceInstructionPolicy({
-    body,
-    instruction,
-    session,
-    state,
-    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
-  });
   const clientOrderId = await state.deriveClientOrderId("gh", body.work_order_commitment);
-  const pending = {
+  let pending = {
     venue_id: "aster",
     account_commitment: body.account_commitment || null,
     platform_class: "hyperliquid_style_market",
     execution_mode: "byo_api_key",
-    submit_count: readOnlyReconcile ? 0 : 1,
+    submit_count: 0,
     ambiguity_retry_count: 0,
     provider_ref_seed: { venue: "aster", client_order_id: clientOrderId, pending: true },
     result_seed: { kind: "aster_submission_pending" },
@@ -1197,12 +1281,15 @@ export async function executeAsterOrder({ body, recipient, state }) {
     status: "pending",
     created_at: new Date().toISOString(),
   };
-  await persistPreSubmissionAttempt({
+  pending = await claimSubmissionAfterPolicyValidation({
+    body,
+    instruction,
+    session,
     state,
-    workOrderCommitment: body.work_order_commitment,
     attempt: pending,
     readOnlyReconcile,
     retryMessage: "aster work order already has an attempt; reconcile it instead of retrying",
+    venueId: "aster",
   });
   let result;
   try {
@@ -1341,20 +1428,13 @@ export async function executeLighterOrder({ body, recipient, state }) {
     venue_id: "lighter",
     session,
   }), { state, venue_id: "lighter", body });
-  await enforceInstructionPolicy({
-    body,
-    instruction,
-    session,
-    state,
-    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
-  });
   const clientOrderIndex = lighterClientOrderIndex(body.work_order_commitment);
-  const pending = {
+  let pending = {
     venue_id: "lighter",
     account_commitment: body.account_commitment || null,
     platform_class: "hyperliquid_style_market",
     execution_mode: "byo_api_key",
-    submit_count: readOnlyReconcile ? 0 : 1,
+    submit_count: 0,
     ambiguity_retry_count: 0,
     provider_ref_seed: { venue: "lighter", client_order_index: clientOrderIndex, pending: true },
     result_seed: { kind: "lighter_submission_pending" },
@@ -1363,12 +1443,15 @@ export async function executeLighterOrder({ body, recipient, state }) {
     status: "pending",
     created_at: new Date().toISOString(),
   };
-  await persistPreSubmissionAttempt({
+  pending = await claimSubmissionAfterPolicyValidation({
+    body,
+    instruction,
+    session,
     state,
-    workOrderCommitment: body.work_order_commitment,
     attempt: pending,
     readOnlyReconcile,
     retryMessage: "lighter work order already has an attempt; reconcile it instead of retrying",
+    venueId: "lighter",
   });
   let result;
   try {

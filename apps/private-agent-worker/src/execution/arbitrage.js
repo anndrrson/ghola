@@ -14,6 +14,8 @@ import { evaluateAutopilotMultiLegPlan } from "./portfolio-risk.js";
 const SUPPORTED_MARKETS = new Set(["BTC-USD", "ETH-USD", "SOL-USD"]);
 const CARRY_STRATEGY = "delta_neutral_carry_v1";
 const PORTFOLIO_CONTRACT_VENUES = new Set(SUPPORTED_EXECUTION_VENUES);
+const MAX_EXACT_BASE_DIGITS = 80;
+const MAX_EXACT_BASE_SCALE = 40;
 const DEFAULT_FEE_BPS = {
   coinbase_advanced: 60,
   hyperliquid: 5,
@@ -514,11 +516,13 @@ async function recordProtectedPairPositions({ state, session, saga, receipts, ca
       ? prior.signed_notional_micro_usdc
       : 0;
     const filledMicro = Number(leg.filled_micro_usdc || 0);
-    const filledBase = Number.parseFloat(String(receipt?.final_proof?.filled_base_size || ""));
+    const filledBase = exactAbsolutePositiveDecimal(receipt?.final_proof?.filled_base_size);
     const nextSigned = priorSigned + direction * filledMicro;
-    const nextBase = Number.isFinite(filledBase)
-      ? Number(prior?.signed_base_size || 0) + direction * filledBase
-      : nextSigned === 0 ? 0 : prior?.signed_base_size ?? null;
+    const priorBase = canonicalExactSignedDecimal(prior?.signed_base_size ?? "0");
+    const directedFill = filledBase && direction < 0 ? `-${filledBase}` : filledBase;
+    const nextBase = filledBase && priorBase
+      ? sumExactSignedDecimals(priorBase, directedFill)
+      : nextSigned === 0 ? "0" : canonicalExactSignedDecimal(prior?.signed_base_size);
     await state.putAutopilotPosition(session.autopilot_session_id, {
       venue_id: leg.venue_id,
       asset: leg.asset,
@@ -527,7 +531,7 @@ async function recordProtectedPairPositions({ state, session, saga, receipts, ca
       side: direction < 0 ? "sell" : "buy",
       signed_notional_micro_usdc: nextSigned,
       estimated_exposure_notional_usd: Math.abs(nextSigned) / 1_000_000,
-      signed_base_size: Math.abs(nextBase || 0) < 1e-12 ? 0 : nextBase,
+      signed_base_size: nextBase,
       leverage_x100: leg.product_type === "perp" ? session.portfolio_mandate?.configured_leverage_x100 || 100 : 100,
       liquidation_distance_bps: leg.product_type === "perp" ? 100_000 : 100_000,
       strategy_id: carryMode ? CARRY_STRATEGY : "hedged_spread_arbitrage_v1",
@@ -826,13 +830,13 @@ export async function bestCarryExitOpportunity({
     return carryExitFailure("carry_exit_market_data_unavailable", "Fresh spot and perp marks are required before closing carry.", {});
   }
 
-  const recordedSpotBase = Math.abs(Number(spotPosition.signed_base_size));
-  const recordedPerpBase = Math.abs(Number(perpPosition.signed_base_size));
-  if (!dryRun && (!(recordedSpotBase > 0) || !(recordedPerpBase > 0))) {
+  const recordedSpotBase = exactAbsolutePositiveDecimal(spotPosition.signed_base_size);
+  const recordedPerpBase = exactAbsolutePositiveDecimal(perpPosition.signed_base_size);
+  if (!dryRun && (!recordedSpotBase || !recordedPerpBase)) {
     return carryExitFailure("carry_exact_exit_quantity_unavailable", "Final venue fill proof did not preserve exact base quantities for live exit.", {});
   }
-  const spotBase = recordedSpotBase > 0 ? recordedSpotBase : spotNotionalUsd / spotPrice;
-  const perpBase = recordedPerpBase > 0 ? recordedPerpBase : perpNotionalUsd / perpPrice;
+  const spotBase = recordedSpotBase || trim(spotNotionalUsd / spotPrice);
+  const perpBase = recordedPerpBase || trim(perpNotionalUsd / perpPrice);
   const basisBps = Math.round(((perpPrice - spotPrice) / spotPrice) * 10_000);
   const estimatedCostBps = carryFeeBps(spotPosition.venue_id, env) + carryFeeBps(perpPosition.venue_id, env) +
     2 * boundedNonNegativeInt(env.PRIVATE_AGENT_CARRY_ESTIMATED_SLIPPAGE_BPS, 0, 1_000, 2);
@@ -855,8 +859,8 @@ export async function bestCarryExitOpportunity({
     buy_leg_notional_usd: perpNotionalUsd,
     sell_leg_notional_usd: spotNotionalUsd,
     leg_notional_usd: Math.max(perpNotionalUsd, spotNotionalUsd),
-    buy_base_size: trim(perpBase),
-    sell_base_size: trim(spotBase),
+    buy_base_size: perpBase,
+    sell_base_size: spotBase,
     gross_edge_bps: 0,
     projected_funding_bps: 0,
     holding_horizon_hours: 0,
@@ -1449,6 +1453,52 @@ function venueMarketSymbol(venue, productId) {
 function numberValue(value) {
   const parsed = Number.parseFloat(String(value ?? ""));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function exactAbsolutePositiveDecimal(value) {
+  const parsed = exactSignedDecimalParts(value);
+  return parsed && parsed.units !== 0n
+    ? exactSignedDecimalString({ ...parsed, units: parsed.units < 0n ? -parsed.units : parsed.units })
+    : null;
+}
+
+function canonicalExactSignedDecimal(value) {
+  const parsed = exactSignedDecimalParts(value);
+  return parsed ? exactSignedDecimalString(parsed) : null;
+}
+
+function sumExactSignedDecimals(...values) {
+  const parsed = values.map(exactSignedDecimalParts);
+  if (parsed.some((item) => !item)) return null;
+  const scale = Math.max(...parsed.map((item) => item.scale));
+  const units = parsed.reduce((sum, item) => sum + item.units * (10n ** BigInt(scale - item.scale)), 0n);
+  const result = exactSignedDecimalString({ units, scale });
+  return exactSignedDecimalParts(result) ? result : null;
+}
+
+function exactSignedDecimalParts(value) {
+  const text = typeof value === "string"
+    ? value.trim()
+    : typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+  if (!text || text.length > MAX_EXACT_BASE_DIGITS + 2) return null;
+  const negative = text.startsWith("-");
+  const unsigned = negative || text.startsWith("+") ? text.slice(1) : text;
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(unsigned);
+  if (!match) return null;
+  const fraction = match[2] || "";
+  if (match[1].length + fraction.length > MAX_EXACT_BASE_DIGITS || fraction.length > MAX_EXACT_BASE_SCALE) return null;
+  const units = BigInt(`${match[1]}${fraction}`);
+  return { units: negative ? -units : units, scale: fraction.length };
+}
+
+function exactSignedDecimalString({ units, scale }) {
+  const negative = units < 0n;
+  const digits = (negative ? -units : units).toString().padStart(scale + 1, "0");
+  if (scale === 0) return negative && digits !== "0" ? `-${digits}` : digits;
+  const integer = digits.slice(0, -scale).replace(/^0+(?=\d)/, "");
+  const fraction = digits.slice(-scale).replace(/0+$/, "");
+  const unsigned = fraction ? `${integer}.${fraction}` : integer;
+  return negative && unsigned !== "0" ? `-${unsigned}` : unsigned;
 }
 
 function trim(value) {

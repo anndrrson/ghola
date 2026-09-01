@@ -113,7 +113,7 @@ process.stdout.write(JSON.stringify(result));
       policy_commitment: "policy:lighter:concurrent:0001",
       market_allowlist: ["BTC-PERP"],
       max_notional_bucket: "25",
-      max_order_count: 2,
+      max_order_count: 1,
       max_daily_notional_bucket: "100",
       kill_switch: false,
     },
@@ -146,7 +146,7 @@ process.stdout.write(JSON.stringify(result));
   };
 
   const originalGetAttempt = state.getExecutionAttempt.bind(state);
-  const originalClaimAttempt = state.claimExecutionAttempt.bind(state);
+  const originalClaimAttempt = state.claimExecutionAttemptWithPolicyUsage.bind(state);
   let reads = 0;
   let releaseReads;
   let firstRead;
@@ -166,7 +166,7 @@ process.stdout.write(JSON.stringify(result));
     }
     return result;
   };
-  state.claimExecutionAttempt = async (...claimArgs) => {
+  state.claimExecutionAttemptWithPolicyUsage = async (...claimArgs) => {
     const result = await originalClaimAttempt(...claimArgs);
     claims.push(result.ok);
     return result;
@@ -187,4 +187,56 @@ process.stdout.write(JSON.stringify(result));
   assert.equal(attempt.status, "filled");
   assert.equal(attempt.submit_count, 1);
   assert.equal(attempt.ambiguity_retry_count, 0);
+
+  const persisted = JSON.parse(readFileSync(join(dir, "private-agent-execution-state-v1.json"), "utf8"));
+  assert.deepEqual(Object.keys(persisted.policy_counts), [args.policy_commitment]);
+  assert.equal(persisted.policy_counts[args.policy_commitment].count, 1);
+  assert.equal(Object.keys(persisted.policy_amounts).length, 2);
+  assert.equal(Object.values(persisted.policy_amounts).every((entry) => entry.amount === 10), true);
+
+  const deniedArgs = {
+    ...args,
+    work_order_commitment: "work:lighter:policy-denied:0001",
+    policy_commitment: "policy:lighter:policy-denied:0001",
+    session_policy: {
+      ...args.session_policy,
+      policy_commitment: "policy:lighter:policy-denied:0001",
+      max_order_count: 0,
+    },
+  };
+  const runnerCallsBeforeDenial = readFileSync(actionLog, "utf8");
+  await assert.rejects(
+    executeAutopilotOrder(deniedArgs),
+    /session policy order count exceeded/,
+  );
+  assert.equal(readFileSync(actionLog, "utf8"), runnerCallsBeforeDenial);
+  const deniedAttempt = await originalGetAttempt(deniedArgs.work_order_commitment);
+  assert.equal(deniedAttempt.status, "failed_no_submit");
+  assert.equal(deniedAttempt.submit_count, 0);
+  assert.equal(deniedAttempt.final_proof, null);
+
+  const recovered = await executeAutopilotOrder({
+    ...deniedArgs,
+    session_policy: {
+      ...deniedArgs.session_policy,
+      max_order_count: 1,
+    },
+  });
+  assert.equal(recovered.status, "filled");
+  const rearmedAttempt = await originalGetAttempt(deniedArgs.work_order_commitment);
+  assert.equal(rearmedAttempt.status, "filled");
+  assert.equal(rearmedAttempt.submit_count, 1);
+  assert.equal(rearmedAttempt.ambiguity_retry_count, 0);
+  assert.equal(rearmedAttempt.policy_rearm_count, 1);
+  assert.equal(rearmedAttempt.policy_rearm_lineage.length, 1);
+  assert.equal(rearmedAttempt.policy_rearm_lineage[0].status, "failed_no_submit");
+  assert.equal(rearmedAttempt.policy_rearm_lineage[0].submit_count, 0);
+  assert.equal(rearmedAttempt.policy_rearm_lineage[0].policy_denial.key, deniedArgs.policy_commitment);
+
+  const recoveredState = JSON.parse(readFileSync(join(dir, "private-agent-execution-state-v1.json"), "utf8"));
+  assert.equal(recoveredState.policy_counts[deniedArgs.policy_commitment].count, 1);
+  const recoveredAmounts = Object.entries(recoveredState.policy_amounts)
+    .filter(([key]) => key.includes(deniedArgs.policy_commitment));
+  assert.equal(recoveredAmounts.length, 2);
+  assert.equal(recoveredAmounts.every(([, entry]) => entry.amount === 10), true);
 });

@@ -208,8 +208,12 @@ test("release isolates local and Turnkey signing sessions by the authenticated u
   assert.match(walletProvider, /key=\{authScope \|\| "signed-out"\}/);
   assert.match(walletProvider, /authResolved=\{!thumperAuth\.loading\}/);
   assert.match(perpsProvider, /opaqueTurnkeyWalletScope\(thumper\.user\?\.id \|\| ""\)/);
-  assert.match(perpsProvider, /onAuthenticationSuccess/);
-  assert.match(perpsProvider, /void turnkey\.logout\(\)/);
+  assert.match(perpsProvider, /sessionKey: attempt\.attemptId/);
+  assert.match(perpsProvider, /exactSession\?\.sessionKey !== expectedPending\.attemptId/);
+  assert.match(perpsProvider, /acceptedSessions\[thumperUserScope\]\?\.sessionKey \|\| null/);
+  assert.match(perpsProvider, /turnkey\.logout\(\{ sessionKey: expectedPending\.attemptId \}\)/);
+  assert.match(perpsBoundary, /const confirmedSessionKey = await reader\.getActiveSessionKey\(\)/);
+  assert.match(perpsBoundary, /confirmedSessionKey !== sessionKey/);
   assert.match(perpsBoundary, /thumper_identity_mismatch/);
   assert.match(perpsBoundary, /turnkey_organization_mismatch/);
   assert.match(perpsBoundary, /unbound_turnkey_session/);

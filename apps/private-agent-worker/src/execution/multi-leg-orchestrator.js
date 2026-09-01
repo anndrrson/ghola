@@ -9,6 +9,9 @@ import {
   disabledCarryLoopHealth,
 } from "./carry-loop-supervisor.js";
 
+const MAX_EXACT_BASE_DIGITS = 80;
+const MAX_EXACT_BASE_SCALE = 40;
+
 export async function createDurableMultiLegSaga({ state, definition, execution_context = null }) {
   assertState(state);
   let saga;
@@ -284,7 +287,7 @@ async function executeReconcilingRecovery({ state, saga, recipient, executeOrder
         ),
         instruction: reconcileInstruction({ leg, context, nowMs }),
       }));
-      const assessment = assessOriginalOrderReconciliation({ leg, receipt, env });
+      const assessment = assessOriginalOrderReconciliation({ leg, context, receipt, env });
       if (!assessment.ok) {
         current = await recoveryEvent({
           state,
@@ -315,7 +318,7 @@ async function executeReconcilingRecovery({ state, saga, recipient, executeOrder
     : { ok: false, error: "saga_reconciliation_incomplete", saga: current };
 }
 
-function assessOriginalOrderReconciliation({ leg, receipt, env }) {
+function assessOriginalOrderReconciliation({ leg, context, receipt, env }) {
   const proof = receipt?.final_proof;
   if (env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true" && !recoveryProofTargetsLeg(leg.venue_id, proof)) {
     return { ok: false, error: "original_order_target_unproven" };
@@ -323,9 +326,17 @@ function assessOriginalOrderReconciliation({ leg, receipt, env }) {
   if (proof?.final_venue_execution_proven !== true) {
     return { ok: false, error: "original_order_terminal_unproven" };
   }
+  const baseModeReduceOnly = context.instruction?.order?.reduce_only === true
+    && context.instruction?.order?.size_mode === "base";
   const proofMicro = Number(proof.cumulative_filled_micro_usdc);
   const fillMicro = fillTotalsForRecord(receipt).micro;
-  const filledMicro = Number.isSafeInteger(proofMicro) ? proofMicro : fillMicro;
+  const filledMicro = baseModeReduceOnly
+    ? proportionalMicroForExactBase({
+        requestedBase: context.instruction.order.base_size,
+        filledBase: proof.filled_base_size,
+        expectedMicro: leg.notional_micro_usdc,
+      })
+    : Number.isSafeInteger(proofMicro) ? proofMicro : fillMicro;
   if (!Number.isSafeInteger(filledMicro) || filledMicro < 0 || filledMicro > leg.notional_micro_usdc) {
     return { ok: false, error: "original_order_fill_invalid" };
   }
@@ -498,10 +509,12 @@ async function executeCompensatingRecovery({
     context = executionLegContext(current, leg.leg_id);
     const evidence = evidenceByLeg.get(leg.leg_id) || await recoveryEvidence({ state, saga: current, leg, env });
     const remainingMicro = leg.filled_micro_usdc - leg.unwind_filled_micro_usdc;
-    const remainingBase = evidence.filledBase > 0 && leg.filled_micro_usdc > 0
-      ? evidence.filledBase * (remainingMicro / leg.filled_micro_usdc)
-      : 0;
-    if (!(remainingBase > 0)) {
+    const remainingBase = proportionalExactBase({
+      base: evidence.filledBase,
+      numeratorMicro: remainingMicro,
+      denominatorMicro: leg.filled_micro_usdc,
+    });
+    if (!remainingBase) {
       current = await recoveryEvent({
         state,
         saga: current,
@@ -556,6 +569,7 @@ async function executeCompensatingRecovery({
         referenceMarkPrice: price,
         requestedBase: remainingBase,
         requestedMicro: remainingMicro,
+        positionFilledBase: evidence.filledBase,
         receipt: null,
         nowMs,
       });
@@ -579,6 +593,7 @@ async function executeCompensatingRecovery({
         referenceMarkPrice: price,
         requestedBase: remainingBase,
         requestedMicro: remainingMicro,
+        positionFilledBase: evidence.filledBase,
         receipt,
         nowMs,
       });
@@ -587,12 +602,14 @@ async function executeCompensatingRecovery({
         saga: current,
         leg,
         action: "unwind",
+        session,
         execution: {
           work_order_commitment: workOrderCommitment,
           reference_mark_price_e8: Math.round(price * 100_000_000),
-          requested_base_size: trim(remainingBase),
+          requested_base_size: remainingBase,
           requested_micro_usdc: remainingMicro,
           applied_filled_micro_usdc: 0,
+          position_filled_base_size: evidence.filledBase,
           receipt: accountingReceipt(receipt),
         },
         env,
@@ -600,17 +617,6 @@ async function executeCompensatingRecovery({
       });
       if (!progressed.ok) return progressed;
       current = progressed.saga;
-      if (progressed.progress.filledMicro > 0) {
-        const refreshedLeg = current.legs.find((item) => item.leg_id === leg.leg_id);
-        await putRecoveryPosition({
-          state,
-          session,
-          saga: current,
-          leg: refreshedLeg,
-          filledBase: evidence.filledBase,
-          nowMs,
-        });
-      }
       if (progressed.progress.terminal && progressed.progress.filledMicro === 0) {
         current = await recoveryEvent({
           state,
@@ -665,9 +671,13 @@ async function executeRiskReducingCompletion({
     leg = current.legs.find((item) => item.leg_id === action.leg_id);
     context = executionLegContext(current, leg.leg_id);
     const remainingMicro = leg.notional_micro_usdc - leg.filled_micro_usdc;
-    const requestedBase = positiveNumber(context.instruction?.order?.base_size);
-    const remainingBase = requestedBase * (remainingMicro / leg.notional_micro_usdc);
-    if (!(remainingBase > 0)) {
+    const requestedBase = canonicalExactPositiveDecimal(context.instruction?.order?.base_size);
+    const remainingBase = proportionalExactBase({
+      base: requestedBase,
+      numeratorMicro: remainingMicro,
+      denominatorMicro: leg.notional_micro_usdc,
+    });
+    if (!remainingBase) {
       current = await recoveryEvent({
         state,
         saga: current,
@@ -751,10 +761,11 @@ async function executeRiskReducingCompletion({
         saga: current,
         leg,
         action: "completion",
+        session,
         execution: {
           work_order_commitment: workOrderCommitment,
           reference_mark_price_e8: Math.round(price * 100_000_000),
-          requested_base_size: trim(remainingBase),
+          requested_base_size: remainingBase,
           requested_micro_usdc: remainingMicro,
           applied_filled_micro_usdc: 0,
           receipt: accountingReceipt(receipt),
@@ -810,9 +821,9 @@ async function settlePriorRecoveryExecutions({
       action,
     });
     for (const storedExecution of accounting?.executions || []) {
-      const requestedBase = positiveNumber(storedExecution.requested_base_size);
+      const requestedBase = canonicalExactPositiveDecimal(storedExecution.requested_base_size);
       const requestedMicro = Number(storedExecution.requested_micro_usdc);
-      if (!(requestedBase > 0) || !Number.isSafeInteger(requestedMicro) || requestedMicro <= 0) {
+      if (!requestedBase || !Number.isSafeInteger(requestedMicro) || requestedMicro <= 0) {
         return { ok: false, error: "recovery_accounting_quantity_unavailable", saga: current };
       }
       let execution = storedExecution;
@@ -867,12 +878,35 @@ async function settlePriorRecoveryExecutions({
         saga: current,
         leg: current.legs.find((item) => item.leg_id === leg.leg_id),
         action,
+        session,
         execution,
         env,
         nowMs,
       });
       if (!progressed.ok) return progressed;
       current = progressed.saga;
+      if (progress.terminal && progress.filledMicro === 0) {
+        current = await recoveryEvent({
+          state,
+          saga: current,
+          type: action === "unwind" ? "unwind_failed" : "completion_failed",
+          values: {
+            leg_id: leg.leg_id,
+            failure_code: action === "unwind"
+              ? "terminal_unwind_without_fill"
+              : "terminal_completion_without_fill",
+          },
+          nowMs,
+        });
+        if (action === "unwind") await pauseParentSession(state, current, nowMs);
+        return {
+          ok: false,
+          error: action === "unwind"
+            ? "terminal_unwind_without_fill"
+            : "terminal_completion_without_fill",
+          saga: current,
+        };
+      }
       if (!progress.terminal) {
         return { ok: false, error: `${action}_outcome_requires_reconciliation`, saga: current };
       }
@@ -891,11 +925,12 @@ async function untrackedRecoveryAttemptExists(state, workOrderCommitment) {
   return Boolean(cached?.receipt || attempt);
 }
 
-async function applyRecoveryExecutionProgress({ state, saga, leg, action, execution, env, nowMs }) {
-  const requestedBase = positiveNumber(execution.requested_base_size);
+async function applyRecoveryExecutionProgress({ state, saga, leg, action, session, execution, env, nowMs }) {
+  const requestedBase = canonicalExactPositiveDecimal(execution.requested_base_size);
   const requestedMicro = Number(execution.requested_micro_usdc);
   const appliedMicro = Number(execution.applied_filled_micro_usdc || 0);
-  if (!(requestedBase > 0) || !Number.isSafeInteger(requestedMicro) || requestedMicro <= 0 || !Number.isSafeInteger(appliedMicro)) {
+  if (!requestedBase || !Number.isSafeInteger(requestedMicro) || requestedMicro <= 0
+    || !Number.isSafeInteger(appliedMicro) || appliedMicro < 0 || appliedMicro > requestedMicro) {
     return { ok: false, error: "recovery_accounting_quantity_unavailable", saga };
   }
   const progress = unwindProgress({
@@ -908,28 +943,24 @@ async function applyRecoveryExecutionProgress({ state, saga, leg, action, execut
   if (progress.filledMicro < appliedMicro) {
     return { ok: false, error: "recovery_fill_evidence_regressed", saga };
   }
+  const applicableFilledMicro = !progress.terminal && progress.filledMicro === requestedMicro
+    ? appliedMicro
+    : progress.filledMicro;
+  const applicableProgress = { ...progress, filledMicro: applicableFilledMicro };
   let current = await state.getMultiLegSaga(saga.saga_id) || saga;
-  const delta = progress.filledMicro - appliedMicro;
-  if (delta > 0) {
-    const currentLeg = current.legs.find((item) => item.leg_id === leg.leg_id);
-    const cumulative = action === "unwind"
-      ? Math.min(currentLeg.filled_micro_usdc, currentLeg.unwind_filled_micro_usdc + delta)
-      : Math.min(currentLeg.notional_micro_usdc, currentLeg.filled_micro_usdc + delta);
-    const result = await applyDurableMultiLegEvent({
-      state,
-      saga_id: current.saga_id,
-      now_ms: Math.max(nowMs, current.updated_at_ms),
-      event: {
-        version: 1,
-        event_id: `recovery:${hash(`${current.saga_id}:${leg.leg_id}:${action}:${execution.work_order_commitment}:${progress.filledMicro}`).slice(0, 40)}`,
-        sequence: current.last_event_sequence + 1,
-        type: action === "unwind" ? "unwind_fill" : "completion_fill",
-        leg_id: leg.leg_id,
-        cumulative_filled_micro_usdc: cumulative,
-      },
-    });
-    if (!result.ok) return { ok: false, error: result.error || "saga_recovery_event_failed", saga: result.saga || current };
-    current = result.saga;
+  const currentLeg = current.legs.find((item) => item.leg_id === leg.leg_id);
+  const startingCumulative = action === "unwind"
+    ? currentLeg.filled_micro_usdc - requestedMicro
+    : currentLeg.notional_micro_usdc - requestedMicro;
+  if (!Number.isSafeInteger(startingCumulative) || startingCumulative < 0) {
+    return { ok: false, error: "recovery_accounting_quantity_unavailable", saga: current };
+  }
+  const currentCumulative = action === "unwind"
+    ? currentLeg.unwind_filled_micro_usdc
+    : currentLeg.filled_micro_usdc;
+  const cumulativeLimit = action === "unwind" ? currentLeg.filled_micro_usdc : currentLeg.notional_micro_usdc;
+  const targetCumulative = Math.min(cumulativeLimit, startingCumulative + applicableFilledMicro);
+  if (applicableFilledMicro > appliedMicro) {
     await storeRecoveryAccounting({
       state,
       saga: current,
@@ -939,12 +970,44 @@ async function applyRecoveryExecutionProgress({ state, saga, leg, action, execut
       referenceMarkPrice: execution.reference_mark_price_e8 / 100_000_000,
       requestedBase,
       requestedMicro,
-      appliedFilledMicro: progress.filledMicro,
+      appliedFilledMicro: applicableFilledMicro,
+      positionFilledBase: execution.position_filled_base_size,
       receipt: execution.receipt,
       nowMs,
     });
   }
-  return { ok: true, saga: current, progress };
+  if (action === "unwind" && targetCumulative > currentCumulative) {
+    const filledBase = canonicalExactPositiveDecimal(execution.position_filled_base_size);
+    if (!filledBase) {
+      return { ok: false, error: "recovery_position_base_unavailable", saga: current };
+    }
+    await putRecoveryPosition({
+      state,
+      session,
+      saga: current,
+      leg: { ...currentLeg, unwind_filled_micro_usdc: targetCumulative },
+      filledBase,
+      nowMs,
+    });
+  }
+  if (targetCumulative > currentCumulative) {
+    const result = await applyDurableMultiLegEvent({
+      state,
+      saga_id: current.saga_id,
+      now_ms: Math.max(nowMs, current.updated_at_ms),
+      event: {
+        version: 1,
+        event_id: `recovery:${hash(`${current.saga_id}:${leg.leg_id}:${action}:${execution.work_order_commitment}:${applicableFilledMicro}`).slice(0, 40)}`,
+        sequence: current.last_event_sequence + 1,
+        type: action === "unwind" ? "unwind_fill" : "completion_fill",
+        leg_id: leg.leg_id,
+        cumulative_filled_micro_usdc: targetCumulative,
+      },
+    });
+    if (!result.ok) return { ok: false, error: result.error || "saga_recovery_event_failed", saga: result.saga || current };
+    current = result.saga;
+  }
+  return { ok: true, saga: current, progress: applicableProgress };
 }
 
 async function applyRecoveryFillIfNew({ state, saga, leg, evidence, nowMs }) {
@@ -982,28 +1045,62 @@ async function recoveryEvent({ state, saga, type, values, nowMs }) {
 
 async function recoveryEvidence({ state, saga, leg, extraReceipts = [], env }) {
   const context = executionLegContext(saga, leg.leg_id);
+  const baseModeReduceOnly = context.instruction?.order?.reduce_only === true
+    && context.instruction?.order?.size_mode === "base";
   const cached = await state.getIdempotency?.(context.work_order_commitment);
   const attempt = await state.getExecutionAttempt?.(context.work_order_commitment);
   const records = [cached?.receipt, attempt, ...extraReceipts].filter(Boolean);
-  let filledMicro = leg.filled_micro_usdc;
-  let filledBase = 0;
+  let evidenceMicro = null;
+  let evidenceBase = null;
   let terminal = false;
+  let selectedEvidence = false;
+  let terminalRegressed = false;
   for (const record of records) {
     const proof = record.final_proof;
     if (env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true" && !recoveryProofTargetsLeg(leg.venue_id, proof)) continue;
     const proofMicro = Number(proof?.cumulative_filled_micro_usdc);
     const fillTotals = fillTotalsForRecord(record);
-    const candidateMicro = Number.isSafeInteger(proofMicro) ? proofMicro : fillTotals.micro;
-    const candidateBase = positiveNumber(proof?.filled_base_size) || fillTotals.base;
-    if (candidateMicro >= filledMicro) {
-      filledMicro = Math.min(leg.notional_micro_usdc, candidateMicro);
-      if (candidateBase > 0) filledBase = candidateBase;
+    const candidateMicro = baseModeReduceOnly
+      ? proportionalMicroForExactBase({
+          requestedBase: context.instruction.order.base_size,
+          filledBase: proof?.filled_base_size,
+          expectedMicro: leg.notional_micro_usdc,
+        })
+      : Number.isSafeInteger(proofMicro) ? proofMicro : fillTotals.micro;
+    const candidateBase = canonicalExactPositiveDecimal(proof?.filled_base_size);
+    if (!Number.isSafeInteger(candidateMicro) || candidateMicro < 0 || candidateMicro > leg.notional_micro_usdc) {
+      continue;
     }
-    terminal ||= proof?.final_venue_execution_proven === true;
+    if (evidenceMicro === null || candidateMicro > evidenceMicro) {
+      evidenceMicro = candidateMicro;
+      evidenceBase = candidateBase;
+      terminal = proof?.final_venue_execution_proven === true;
+      selectedEvidence = true;
+      terminalRegressed = false;
+    } else if (candidateMicro === evidenceMicro) {
+      if (candidateBase && evidenceBase && evidenceBase !== candidateBase) {
+        throw new Error("saga_recovery_fill_base_conflict");
+      }
+      if (candidateBase) evidenceBase = candidateBase;
+      const candidateTerminal = proof?.final_venue_execution_proven === true;
+      if (selectedEvidence && terminal && !candidateTerminal) {
+        terminal = false;
+        terminalRegressed = true;
+      } else if (!terminalRegressed && candidateTerminal) {
+        terminal = true;
+      }
+      selectedEvidence = true;
+    }
   }
-  if (env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && filledMicro > 0 && !(filledBase > 0)) {
-    const requestedBase = positiveNumber(context.instruction?.order?.base_size);
-    if (requestedBase > 0) filledBase = requestedBase * (filledMicro / leg.notional_micro_usdc);
+  const filledMicro = Math.max(leg.filled_micro_usdc, evidenceMicro ?? 0);
+  let filledBase = evidenceMicro === filledMicro ? evidenceBase : null;
+  if (evidenceMicro !== filledMicro) terminal = false;
+  if (env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && filledMicro > 0 && !filledBase) {
+    filledBase = proportionalExactBase({
+      base: context.instruction?.order?.base_size,
+      numeratorMicro: filledMicro,
+      denominatorMicro: leg.notional_micro_usdc,
+    });
   }
   return { filledMicro, filledBase, terminal };
 }
@@ -1028,11 +1125,13 @@ function unwindProgress({ receipt, requestedBase, remainingMicro, venueId, env }
   }
   const proof = receipt?.final_proof;
   if (!recoveryProofTargetsLeg(venueId, proof)) return { terminal: false, filledMicro: 0 };
-  const filledBase = positiveNumber(proof?.filled_base_size) || fillTotalsForRecord(receipt).base;
-  const ratio = requestedBase > 0 ? Math.max(0, Math.min(1, filledBase / requestedBase)) : 0;
   return {
     terminal: proof?.final_venue_execution_proven === true,
-    filledMicro: Math.round(remainingMicro * ratio),
+    filledMicro: proportionalMicroForExactBase({
+      requestedBase,
+      filledBase: proof?.filled_base_size,
+      expectedMicro: remainingMicro,
+    }),
   };
 }
 
@@ -1103,7 +1202,7 @@ function recoveryUnwindInstruction({ leg, context, session, remainingMicro, rema
     order: {
       market: originalVenueMarket(leg, context),
       side,
-      base_size: trim(remainingBase),
+      base_size: requiredExactPositiveDecimal(remainingBase, "exact_base_quantity_unavailable"),
       quote_size: trim(remainingMicro / 1_000_000),
       limit_price: trim(limit),
       order_type: "market",
@@ -1133,7 +1232,7 @@ function recoveryCompletionInstruction({ leg, context, session, remainingMicro, 
     order: {
       market: originalVenueMarket(leg, context),
       side,
-      base_size: trim(remainingBase),
+      base_size: requiredExactPositiveDecimal(remainingBase, "exact_base_quantity_unavailable"),
       quote_size: trim(remainingMicro / 1_000_000),
       limit_price: trim(limit),
       order_type: "market",
@@ -1200,16 +1299,8 @@ async function verifyRecoveryOrderNoSubmit({ verifyOrder, args }) {
 }
 
 function samePositiveDecimal(left, right) {
-  const canonical = (value) => {
-    const match = /^(\d+)(?:\.(\d+))?$/.exec(String(value ?? ""));
-    if (!match) return null;
-    const integer = match[1].replace(/^0+(?=\d)/, "");
-    const fraction = String(match[2] || "").replace(/0+$/, "");
-    const normalized = fraction ? `${integer}.${fraction}` : integer;
-    return /^0(?:\.0*)?$/.test(normalized) ? null : normalized;
-  };
-  const normalizedLeft = canonical(left);
-  return normalizedLeft !== null && normalizedLeft === canonical(right);
+  const normalizedLeft = canonicalExactPositiveDecimal(left);
+  return normalizedLeft !== null && normalizedLeft === canonicalExactPositiveDecimal(right);
 }
 
 function executionForRecovery(session, venue) {
@@ -1281,7 +1372,14 @@ async function recoveryMark({ leg, context, fetchImpl, env }) {
 async function putRecoveryPosition({ state, session, saga, leg, filledBase, nowMs }) {
   if (!session.autopilot_session_id || typeof state.putAutopilotPosition !== "function" || typeof state.listAutopilotPositions !== "function") return;
   const remainingMicro = leg.filled_micro_usdc - leg.unwind_filled_micro_usdc;
-  const remainingBase = leg.filled_micro_usdc > 0 ? filledBase * (remainingMicro / leg.filled_micro_usdc) : 0;
+  const remainingBase = remainingMicro === 0
+    ? "0"
+    : proportionalExactBase({
+        base: filledBase,
+        numeratorMicro: remainingMicro,
+        denominatorMicro: leg.filled_micro_usdc,
+      });
+  if (!remainingBase) throw new Error("recovery_position_base_unavailable");
   const positions = await state.listAutopilotPositions(session.autopilot_session_id);
   const prior = positions.find((position) =>
     position.venue_id === leg.venue_id && String(position.market).toUpperCase() === String(leg.market).toUpperCase()
@@ -1290,13 +1388,16 @@ async function putRecoveryPosition({ state, session, saga, leg, filledBase, nowM
     ? Number(prior.recovery_component_signed_notional_micro_usdc || 0)
     : 0;
   const priorComponentBase = prior?.recovery_saga_id === saga.saga_id
-    ? Number(prior.recovery_component_signed_base_size || 0)
-    : 0;
+    ? canonicalExactSignedDecimal(prior.recovery_component_signed_base_size ?? "0")
+    : "0";
+  const priorSignedBase = canonicalExactSignedDecimal(prior?.signed_base_size ?? "0");
+  if (!priorComponentBase || !priorSignedBase) throw new Error("recovery_position_base_unavailable");
   const direction = leg.side === "sell" ? -1 : 1;
   const componentNotional = direction * remainingMicro;
-  const componentBase = direction * remainingBase;
+  const componentBase = direction < 0 ? negateExactDecimal(remainingBase) : remainingBase;
   const signedNotional = Number(prior?.signed_notional_micro_usdc || 0) - priorComponentNotional + componentNotional;
-  const signedBase = Number(prior?.signed_base_size || 0) - priorComponentBase + componentBase;
+  const signedBase = sumExactSignedDecimals(priorSignedBase, negateExactDecimal(priorComponentBase), componentBase);
+  if (!signedBase) throw new Error("recovery_position_base_unavailable");
   await state.putAutopilotPosition(session.autopilot_session_id, {
     ...prior,
     venue_id: leg.venue_id,
@@ -1305,7 +1406,7 @@ async function putRecoveryPosition({ state, session, saga, leg, filledBase, nowM
     product_type: leg.product_type,
     side: signedNotional < 0 ? "sell" : "buy",
     signed_notional_micro_usdc: signedNotional,
-    signed_base_size: Math.abs(signedBase) < 1e-12 ? 0 : signedBase,
+    signed_base_size: signedBase,
     estimated_exposure_notional_usd: Math.abs(signedNotional) / 1_000_000,
     recovery_saga_id: saga.saga_id,
     recovery_component_signed_notional_micro_usdc: componentNotional,
@@ -1344,6 +1445,7 @@ async function storeRecoveryAccounting({
   requestedBase,
   requestedMicro,
   appliedFilledMicro = 0,
+  positionFilledBase = null,
   receipt,
   nowMs,
 }) {
@@ -1355,16 +1457,20 @@ async function storeRecoveryAccounting({
   if (!Number.isSafeInteger(referenceMarkPriceE8) || referenceMarkPriceE8 <= 0) return;
   const requestedMicroUsdc = Number(requestedMicro);
   const appliedMicroUsdc = Number(appliedFilledMicro || 0);
-  if (!(positiveNumber(requestedBase) > 0) || !Number.isSafeInteger(requestedMicroUsdc) || requestedMicroUsdc <= 0) return;
-  if (!Number.isSafeInteger(appliedMicroUsdc) || appliedMicroUsdc < 0 || appliedMicroUsdc > requestedMicroUsdc) return;
+  const requestedBaseSize = canonicalExactPositiveDecimal(requestedBase);
   const existing = executions.find((item) => item.work_order_commitment === workOrderCommitment);
+  const positionFilledBaseSize = canonicalExactPositiveDecimal(positionFilledBase)
+    || canonicalExactPositiveDecimal(existing?.position_filled_base_size);
+  if (!requestedBaseSize || !Number.isSafeInteger(requestedMicroUsdc) || requestedMicroUsdc <= 0) return;
+  if (!Number.isSafeInteger(appliedMicroUsdc) || appliedMicroUsdc < 0 || appliedMicroUsdc > requestedMicroUsdc) return;
   const updatedExecution = {
     version: 1,
     work_order_commitment: workOrderCommitment,
     reference_mark_price_e8: referenceMarkPriceE8,
-    requested_base_size: trim(requestedBase),
+    requested_base_size: requestedBaseSize,
     requested_micro_usdc: requestedMicroUsdc,
     applied_filled_micro_usdc: Math.max(Number(existing?.applied_filled_micro_usdc || 0), appliedMicroUsdc),
+    position_filled_base_size: positionFilledBaseSize,
     receipt: receipt === null ? existing?.receipt || null : accountingReceipt(receipt),
     recorded_at_ms: existing?.recorded_at_ms || nowMs,
     updated_at_ms: nowMs,
@@ -1397,6 +1503,109 @@ function accountingReceipt(receipt) {
 function positiveNumber(value) {
   const parsed = Number.parseFloat(String(value ?? ""));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function proportionalMicroForExactBase({ requestedBase, filledBase, expectedMicro }) {
+  if (!Number.isSafeInteger(expectedMicro) || expectedMicro <= 0) return 0;
+  const requested = exactDecimalParts(requestedBase);
+  const filled = exactDecimalParts(filledBase);
+  if (!requested || requested.units <= 0n || !filled || filled.units <= 0n) return 0;
+  const scale = Math.max(requested.scale, filled.scale);
+  const requestedUnits = requested.units * (10n ** BigInt(scale - requested.scale));
+  const filledUnits = filled.units * (10n ** BigInt(scale - filled.scale));
+  if (filledUnits >= requestedUnits) return expectedMicro;
+  if (expectedMicro === 1) return 0;
+  const proportional = Number((BigInt(expectedMicro) * filledUnits) / requestedUnits);
+  return Math.max(1, Math.min(expectedMicro - 1, proportional));
+}
+
+function proportionalExactBase({ base, numeratorMicro, denominatorMicro }) {
+  const parsed = exactDecimalParts(base);
+  if (!parsed || parsed.units <= 0n
+    || !Number.isSafeInteger(numeratorMicro) || numeratorMicro <= 0
+    || !Number.isSafeInteger(denominatorMicro) || denominatorMicro <= 0
+    || numeratorMicro > denominatorMicro) return null;
+  const targetScale = Math.min(
+    MAX_EXACT_BASE_SCALE,
+    MAX_EXACT_BASE_DIGITS - parsed.integerDigits,
+    parsed.scale + String(denominatorMicro).length,
+  );
+  const scaleFactor = 10n ** BigInt(targetScale - parsed.scale);
+  const numerator = parsed.units * BigInt(numeratorMicro) * scaleFactor;
+  const denominator = BigInt(denominatorMicro);
+  const units = (numerator + denominator - 1n) / denominator;
+  return units > 0n ? exactDecimalString({ units, scale: targetScale }) : null;
+}
+
+function canonicalExactPositiveDecimal(value) {
+  const parsed = exactDecimalParts(value);
+  return parsed && parsed.units > 0n ? exactDecimalString(parsed) : null;
+}
+
+function canonicalExactSignedDecimal(value) {
+  const parsed = exactSignedDecimalParts(value);
+  return parsed ? exactSignedDecimalString(parsed) : null;
+}
+
+function negateExactDecimal(value) {
+  const parsed = exactSignedDecimalParts(value);
+  return parsed ? exactSignedDecimalString({ ...parsed, units: -parsed.units }) : null;
+}
+
+function sumExactSignedDecimals(...values) {
+  const parsed = values.map(exactSignedDecimalParts);
+  if (parsed.some((item) => !item)) return null;
+  const scale = Math.max(...parsed.map((item) => item.scale));
+  const units = parsed.reduce(
+    (sum, item) => sum + item.units * (10n ** BigInt(scale - item.scale)),
+    0n,
+  );
+  const result = exactSignedDecimalString({ units, scale });
+  return exactSignedDecimalParts(result) ? result : null;
+}
+
+function requiredExactPositiveDecimal(value, code) {
+  const canonical = canonicalExactPositiveDecimal(value);
+  if (!canonical) throw new Error(code);
+  return canonical;
+}
+
+function exactDecimalParts(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (text.length > MAX_EXACT_BASE_DIGITS + 1) return null;
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(text);
+  if (!match) return null;
+  const fraction = match[2] || "";
+  if (match[1].length + fraction.length > MAX_EXACT_BASE_DIGITS || fraction.length > MAX_EXACT_BASE_SCALE) return null;
+  const integerDigits = match[1].replace(/^0+(?=\d)/, "").length;
+  return { units: BigInt(`${match[1]}${fraction}`), scale: fraction.length, integerDigits };
+}
+
+function exactSignedDecimalParts(value) {
+  const text = typeof value === "string"
+    ? value.trim()
+    : typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+  if (!text || text.length > MAX_EXACT_BASE_DIGITS + 2) return null;
+  const negative = text.startsWith("-");
+  const unsigned = negative || text.startsWith("+") ? text.slice(1) : text;
+  const parsed = exactDecimalParts(unsigned);
+  if (!parsed) return null;
+  return { ...parsed, units: negative ? -parsed.units : parsed.units };
+}
+
+function exactDecimalString({ units, scale }) {
+  const digits = units.toString().padStart(scale + 1, "0");
+  if (scale === 0) return digits;
+  const integer = digits.slice(0, -scale).replace(/^0+(?=\d)/, "");
+  const fraction = digits.slice(-scale).replace(/0+$/, "");
+  return fraction ? `${integer}.${fraction}` : integer;
+}
+
+function exactSignedDecimalString({ units, scale }) {
+  const negative = units < 0n;
+  const unsigned = exactDecimalString({ units: negative ? -units : units, scale });
+  return negative && unsigned !== "0" ? `-${unsigned}` : unsigned;
 }
 
 function trim(value) {

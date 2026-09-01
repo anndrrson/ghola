@@ -10,6 +10,8 @@ const COINBASE_ALLOWED = new Set([
 ]);
 const SOLANA_PERPS_ALLOWED = new Set(["read", "perp_limit_order", "cancel", "fills", "reconcile"]);
 const JUPITER_ALLOWED = new Set(["read", "preview_order", "swap", "reconcile"]);
+const MAX_EXACT_BASE_DIGITS = 80;
+const MAX_EXACT_BASE_SCALE = 40;
 const BLOCKED_OPERATION_WORDS = [
   "withdraw",
   "transfer",
@@ -387,13 +389,13 @@ async function enforceLogicalSpotReduction({ body, instruction, policy, state, t
   if (!position || !directionReduces) {
     throw new ExecutionPolicyError("coinbase logical reduce-only does not reduce a recorded position");
   }
-  const requestedBase = Number.parseFloat(String(instruction.order.base_size || ""));
-  const recordedBase = Math.abs(Number(position.signed_base_size));
-  if (!(requestedBase > 0)) {
+  const requestedBase = exactPositiveDecimal(instruction.order.base_size);
+  const recordedBase = exactAbsolutePositiveDecimal(position.signed_base_size);
+  if (!requestedBase) {
     throw new ExecutionPolicyError("coinbase logical reduce-only base size is invalid");
   }
-  if (recordedBase > 0) {
-    if (requestedBase > recordedBase + 1e-12) {
+  if (recordedBase) {
+    if (compareExactPositiveDecimals(requestedBase, recordedBase) > 0) {
       throw new ExecutionPolicyError("coinbase logical reduce-only exceeds the recorded base position");
     }
     return;
@@ -838,6 +840,46 @@ function decimalString(value) {
     throw new ExecutionPolicyError("execution instruction numeric field is invalid");
   }
   return string;
+}
+
+function exactPositiveDecimal(value) {
+  const parsed = exactDecimalParts(value);
+  return parsed && parsed.units > 0n ? exactDecimalString(parsed) : null;
+}
+
+function exactAbsolutePositiveDecimal(value) {
+  const text = stringValue(value);
+  if (!text || text.length > MAX_EXACT_BASE_DIGITS + 2) return null;
+  const parsed = exactDecimalParts(text.startsWith("-") || text.startsWith("+") ? text.slice(1) : text);
+  return parsed && parsed.units > 0n ? exactDecimalString(parsed) : null;
+}
+
+function compareExactPositiveDecimals(left, right) {
+  const leftParts = exactDecimalParts(left);
+  const rightParts = exactDecimalParts(right);
+  if (!leftParts || !rightParts) throw new ExecutionPolicyError("coinbase logical reduce-only exact base position is unavailable");
+  const scale = Math.max(leftParts.scale, rightParts.scale);
+  const leftUnits = leftParts.units * (10n ** BigInt(scale - leftParts.scale));
+  const rightUnits = rightParts.units * (10n ** BigInt(scale - rightParts.scale));
+  return leftUnits < rightUnits ? -1 : leftUnits > rightUnits ? 1 : 0;
+}
+
+function exactDecimalParts(value) {
+  const text = stringValue(value);
+  if (!text || text.length > MAX_EXACT_BASE_DIGITS + 1) return null;
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(text);
+  if (!match) return null;
+  const fraction = match[2] || "";
+  if (match[1].length + fraction.length > MAX_EXACT_BASE_DIGITS || fraction.length > MAX_EXACT_BASE_SCALE) return null;
+  return { units: BigInt(`${match[1]}${fraction}`), scale: fraction.length };
+}
+
+function exactDecimalString({ units, scale }) {
+  const digits = units.toString().padStart(scale + 1, "0");
+  if (scale === 0) return digits;
+  const integer = digits.slice(0, -scale).replace(/^0+(?=\d)/, "");
+  const fraction = digits.slice(-scale).replace(/0+$/, "");
+  return fraction ? `${integer}.${fraction}` : integer;
 }
 
 function integerString(value) {

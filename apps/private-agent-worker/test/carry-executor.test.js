@@ -718,6 +718,57 @@ test("restart-frozen reconciled entry resumes active or exiting without resubmis
   }
 });
 
+test("restart-frozen reconciled entry uses recovery time and exits after mandate expiry", async (t) => {
+  const expiresAtMs = NOW + 1_000;
+  const fixture = await setup(t, "restart-frozen-expired-mandate", undefined, { mandateExpiresAtMs: expiresAtMs });
+  const orphan = await createReconcilingEntryOrphan(fixture, exactLiveValueReceipt);
+  assert.equal(orphan.saga.status, "reconciling");
+  assert.equal(orphan.saga.updated_at_ms < expiresAtMs, true);
+
+  const audited = await auditCarryPositionsAfterRestart({
+    state: fixture.state,
+    now_ms: fixture.now(),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(audited.ok, true, JSON.stringify(audited));
+  assert.equal((await fixture.state.getCarryPositionRecord(fixture.position_id)).position.terminal_reason, "restart_detected");
+
+  const recovered = await recoverDueMultiLegSagas({
+    state: fixture.state,
+    now_ms: fixture.now(),
+    recipient: fixture.recipient,
+    executeOrder: async () => ({
+      status: "reconciled",
+      final_proof: {
+        final_venue_execution_proven: true,
+        cumulative_filled_micro_usdc: 10_000_000,
+        broadcast_performed: true,
+        target_client_order_matched: true,
+      },
+    }),
+    verifyOrder: fixture.verifyOrder,
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(recovered.ok, true, JSON.stringify(recovered));
+
+  const restartedState = createWorkerState(fixture.state_dir);
+  const synchronized = await runCarryExecutionTick({
+    ...fixture,
+    state: restartedState,
+    now: () => expiresAtMs + 1,
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+    executeOrder: async () => {
+      throw new Error("expired restart recovery must not resubmit entry");
+    },
+  });
+  assert.equal(synchronized.ok, true, JSON.stringify(synchronized));
+  assert.equal(synchronized.results[0].restart_action, "entry_reconciled_completed");
+  assert.equal(synchronized.results[0].record.position.status, "exiting");
+  assert.equal(synchronized.results[0].record.position.terminal_reason, "risk_mandate_expired");
+  assert.deepEqual(synchronized.results[0].record.position.next_actions, ["cancel_open_orders", "reduce_only_close_filled_exposure"]);
+  assert.equal(orphan.submissions(), 2);
+});
+
 test("restart safely retries an exit linked before any submission", async (t) => {
   const fixture = await setup(t, "restart-exit-before-submit");
   await openActive(fixture);
@@ -1252,6 +1303,9 @@ test("preserves the exact high-precision entry quantity through reduce-only exit
   const receipt = async (args) => {
     const result = filledReceipt(args);
     result.final_proof.filled_base_size = exactBase;
+    if (args.instruction.order.reduce_only === true) {
+      result.final_proof.cumulative_filled_micro_usdc = 8_000_000;
+    }
     await fixture.state.putIdempotency(args.work_order_commitment, result);
     return result;
   };
@@ -1283,6 +1337,105 @@ test("preserves the exact high-precision entry quantity through reduce-only exit
   assert.equal(result.ok, true);
   assert.equal(result.record.position.status, "reconciled");
   assert.deepEqual(calls.map((call) => call.instruction.order.base_size), [exactBase, exactBase]);
+  assert.equal(result.saga.legs.every((leg) => leg.filled_micro_usdc === 10_000_000), true);
+});
+
+test("does not round a near-equal high-precision reduce-only base fill up to complete", async (t) => {
+  const fixture = await setup(t, "exit-high-precision-partial");
+  const exactBase = "0.0010000000000000001";
+  const exactPreflight = async ({ body }) => {
+    const proof = preflightProof(undefined, { phase: body?.phase });
+    return {
+      ...proof,
+      evidence: proof.evidence.map((item) => ({
+        ...item,
+        order_shape: { ...item.order_shape, base_size: exactBase },
+      })),
+    };
+  };
+  const entryReceipt = async (args) => {
+    const receipt = filledReceipt(args);
+    receipt.final_proof.filled_base_size = exactBase;
+    await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+    return receipt;
+  };
+
+  const entry = await executeStoredCarryEntry({
+    ...fixture,
+    preflight: exactPreflight,
+    executeOrder: entryReceipt,
+  });
+  assert.equal(entry.ok, true);
+  const active = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  await advanceStoredCarryPosition({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.position_id,
+    event: { version: 1, event_id: "carry:exit:request:high-precision-partial", sequence: active.position.last_event_sequence + 1, type: "manual_exit_requested" },
+    now_ms: NOW + 50,
+  });
+
+  const result = await executeStoredCarryExit({
+    ...fixture,
+    preflight: exactPreflight,
+    executeOrder: async (args) => {
+      const receipt = filledReceipt(args);
+      const partial = args.venue_id === "aster";
+      receipt.final_proof.filled_base_size = partial ? "0.001" : exactBase;
+      receipt.final_proof.cumulative_filled_micro_usdc = 10_000_000;
+      receipt.final_proof.final_fill_proven = !partial;
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "carry_exit_requires_recovery");
+  assert.deepEqual(result.saga.legs.map((leg) => leg.filled_micro_usdc).sort((a, b) => a - b), [9_999_999, 10_000_000]);
+});
+
+test("rejects an oversized reduce-only base receipt before decimal expansion", async (t) => {
+  const fixture = await setup(t, "exit-oversized-exact-base");
+  const oversizedBase = `0.${"1".repeat(5_000)}`;
+  const exactPreflight = async ({ body }) => {
+    const proof = preflightProof(undefined, { phase: body?.phase });
+    return {
+      ...proof,
+      evidence: proof.evidence.map((item) => ({
+        ...item,
+        order_shape: { ...item.order_shape, base_size: oversizedBase },
+      })),
+    };
+  };
+  const receipt = async (args) => {
+    const result = filledReceipt(args);
+    result.final_proof.filled_base_size = oversizedBase;
+    await fixture.state.putIdempotency(args.work_order_commitment, result);
+    return result;
+  };
+
+  const entry = await executeStoredCarryEntry({
+    ...fixture,
+    preflight: exactPreflight,
+    executeOrder: receipt,
+  });
+  assert.equal(entry.ok, true, JSON.stringify(entry));
+  const active = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  await advanceStoredCarryPosition({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.position_id,
+    event: { version: 1, event_id: "carry:exit:request:oversized-base", sequence: active.position.last_event_sequence + 1, type: "manual_exit_requested" },
+    now_ms: NOW + 50,
+  });
+
+  const result = await executeStoredCarryExit({
+    ...fixture,
+    preflight: exactPreflight,
+    executeOrder: receipt,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "carry_exit_requires_recovery");
+  assert.equal(result.saga.legs.every((leg) => leg.filled_micro_usdc === 0), true);
 });
 
 test("a failed exit leg completes reduce-only after recovery, syncs flat, and finalizes realized value", async (t) => {
@@ -1639,6 +1792,7 @@ async function setup(t, suffix, pair = { long: "aster", short: "lighter" }, opti
     ), {
       ownerCommitment: OWNER,
       nowMs: NOW,
+      ...(options.mandateExpiresAtMs ? { expiresAtMs: options.mandateExpiresAtMs } : {}),
     }),
     opportunity: creationOpportunity,
     monitoring_context: monitoringContext(pair),

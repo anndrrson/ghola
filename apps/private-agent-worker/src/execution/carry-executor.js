@@ -34,6 +34,9 @@ import {
   readDurableRecoveryAccounting,
 } from "./multi-leg-orchestrator.js";
 
+const MAX_EXACT_BASE_DIGITS = 80;
+const MAX_EXACT_BASE_SCALE = 40;
+
 export async function executeStoredCarryEntry({
   state,
   owner_commitment: ownerCommitment,
@@ -256,11 +259,13 @@ export async function executeStoredCarryEntry({
     });
     return { ok: false, error: "carry_entry_failed_no_fill", saga, record: result.record };
   }
+  const completionNow = now();
   const completed = await completeReconciledCarryEntry({
     state,
     record: await state.getCarryPositionRecord(positionId),
     saga,
     env,
+    nowMs: completionNow,
     liveLegs: legs.legs,
     receiptByLeg,
   });
@@ -274,7 +279,7 @@ export async function executeStoredCarryEntry({
           owner_commitment: ownerCommitment,
           position_id: positionId,
           event: carryEvent(current.position, "recovery_failed"),
-          now_ms: saga.updated_at_ms,
+          now_ms: completionNow,
         });
         failureRecord = frozen.record || failureRecord;
       }
@@ -765,7 +770,7 @@ export async function auditCarryPositionsAfterRestart({ state, now_ms: nowMs = D
       continue;
     }
     if (phase === "entry" && record.position.status === "opening" && saga?.terminal === true && saga.status === "reconciled") {
-      const completed = await completeReconciledCarryEntry({ state, record, saga, env });
+      const completed = await completeReconciledCarryEntry({ state, record, saga, env, nowMs });
       if (completed.ok) {
         results.push({ ...completed, restart_action: "entry_reconciled_completed", saga });
         continue;
@@ -793,10 +798,13 @@ export async function auditCarryPositionsAfterRestart({ state, now_ms: nowMs = D
   };
 }
 
-async function completeReconciledCarryEntry({ state, record, saga, env, liveLegs = null, receiptByLeg = null }) {
+async function completeReconciledCarryEntry({ state, record, saga, env, nowMs = Date.now(), liveLegs = null, receiptByLeg = null }) {
   const material = await reconciledCarryEntryMaterial({ state, record, saga, env, liveLegs, receiptByLeg });
   if (!material.ok) return { ...material, completion_proven: false };
   const evidenceAt = saga.updated_at_ms;
+  const transitionAt = Number.isSafeInteger(nowMs) && nowMs > 0
+    ? Math.max(evidenceAt, nowMs)
+    : evidenceAt;
   const accounting = await recordExecutionValueEvidence({
     state,
     ownerCommitment: record.owner_commitment,
@@ -833,7 +841,7 @@ async function completeReconciledCarryEntry({ state, record, saga, env, liveLegs
       short_filled_micro_usdc: material.shortLeg.filled_micro_usdc,
       hedge_error_micro_usdc: saga.hedge_error_micro_usdc,
     }),
-    now_ms: evidenceAt,
+    now_ms: transitionAt,
   });
   return { ...advanced, completion_proven: true, accounting: accounting.summary };
 }
@@ -978,14 +986,14 @@ async function synchronizeFrozenCarryRecovery({ state, record, recipient, verify
   if (!["reconciled", "unwound", "failed_no_fill", "failed_no_submit"].includes(saga.status)) {
     return { ok: false, error: "carry_recovery_terminal_state_unrecognized", saga_status: saga.status };
   }
+  const checkedAt = now();
   if (!record.exit_saga_id && record.entry_saga_id === saga.saga_id
     && record.position.terminal_reason === "restart_detected" && saga.status === "reconciled") {
-    const completed = await completeReconciledCarryEntry({ state, record, saga, env });
+    const completed = await completeReconciledCarryEntry({ state, record, saga, env, nowMs: checkedAt });
     return completed.ok
       ? { ...completed, restart_action: "entry_reconciled_completed" }
       : completed;
   }
-  const checkedAt = now();
   const accountState = await inspectCarryAccountState({
     state,
     record,
@@ -2331,6 +2339,18 @@ function carryEvent(position, type, values = {}) {
 function fillProgress(receipt, leg, expectedMicro, env) {
   if (env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !receipt?.final_proof) return { terminal: true, filled_micro_usdc: expectedMicro };
   const proof = receipt?.final_proof;
+  const baseModeReduceOnly = leg.instruction?.order?.reduce_only === true
+    && leg.instruction?.order?.size_mode === "base";
+  if (baseModeReduceOnly) {
+    return {
+      terminal: proof?.final_venue_execution_proven === true,
+      filled_micro_usdc: proportionalMicroForExactBase({
+        requestedBase: leg.instruction.order.base_size,
+        filledBase: proof?.filled_base_size,
+        expectedMicro,
+      }),
+    };
+  }
   const reported = Number(proof?.cumulative_filled_micro_usdc);
   const targetBase = Number(leg.instruction?.order?.base_size);
   const filledBase = Number(proof?.filled_base_size);
@@ -2343,6 +2363,31 @@ function fillProgress(receipt, leg, expectedMicro, env) {
       ? Math.min(expectedMicro, reported)
       : proof?.final_fill_proven === true ? proportional : 0,
   };
+}
+
+function proportionalMicroForExactBase({ requestedBase, filledBase, expectedMicro }) {
+  if (!Number.isSafeInteger(expectedMicro) || expectedMicro <= 0) return 0;
+  const requested = exactDecimalParts(requestedBase);
+  const filled = exactDecimalParts(filledBase);
+  if (!requested || requested.units <= 0n || !filled || filled.units <= 0n) return 0;
+  const scale = Math.max(requested.scale, filled.scale);
+  const requestedUnits = requested.units * (10n ** BigInt(scale - requested.scale));
+  const filledUnits = filled.units * (10n ** BigInt(scale - filled.scale));
+  if (filledUnits >= requestedUnits) return expectedMicro;
+  if (expectedMicro === 1) return 0;
+  const proportional = Number((BigInt(expectedMicro) * filledUnits) / requestedUnits);
+  return Math.max(1, Math.min(expectedMicro - 1, proportional));
+}
+
+function exactDecimalParts(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (text.length > MAX_EXACT_BASE_DIGITS + 1) return null;
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(text);
+  if (!match) return null;
+  const fraction = match[2] || "";
+  if (match[1].length + fraction.length > MAX_EXACT_BASE_DIGITS || fraction.length > MAX_EXACT_BASE_SCALE) return null;
+  return { units: BigInt(`${match[1]}${fraction}`), scale: fraction.length };
 }
 
 export function assessCarryTerminalExecutionReceipt({

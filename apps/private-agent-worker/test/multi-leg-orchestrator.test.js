@@ -116,7 +116,7 @@ async function apply(state, sagaId, sequence, type, extra = {}, nowMs = NOW + se
   });
 }
 
-async function createReconcilingCarrySaga(state, venues, suffix) {
+async function createReconcilingCarrySaga(state, venues, suffix, { baseSize = "0.001", reduceOnly = false } = {}) {
   const sagaId = `saga:restart-reconcile:${suffix}`;
   const legs = venues.map((venue, index) => ({
     leg_id: `${sagaId}:${venue}`,
@@ -171,9 +171,10 @@ async function createReconcilingCarrySaga(state, venues, suffix) {
           order: {
             market: leg.venue_id === "lighter" ? "BTC" : "BTC-PERP",
             side: leg.side,
-            base_size: "0.001",
+            base_size: baseSize,
             limit_price: "10000",
             tif: "Ioc",
+            ...(reduceOnly ? { size_mode: "base", reduce_only: true } : {}),
           },
         },
       })),
@@ -195,17 +196,17 @@ async function createReconcilingCarrySaga(state, venues, suffix) {
   return { sagaId, legs, works };
 }
 
-function exactOriginalOrderReconciliationReceipt() {
+function exactOriginalOrderReconciliationReceipt({ baseSize = "0.001", cumulativeMicro = 10_000_000 } = {}) {
   return {
     status: "reconciled",
-    fills: [{ size: "0.001", price: "10000" }],
+    fills: [{ size: baseSize, price: "10000" }],
     final_proof: {
       target_client_order_matched: true,
       broadcast_performed: true,
       final_venue_execution_proven: true,
       final_fill_proven: true,
-      cumulative_filled_micro_usdc: 10_000_000,
-      filled_base_size: "0.001",
+      cumulative_filled_micro_usdc: cumulativeMicro,
+      filled_base_size: baseSize,
     },
   };
 }
@@ -277,6 +278,76 @@ for (const [firstVenue, secondVenue] of CARRY_EXECUTION_VENUES.flatMap((firstVen
     assert.equal(calls.length, 3);
   });
 }
+
+test("restart accepts a full exact-base reduce-only close when quote notional changed", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-reconciling-exact-base-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const exactBase = "0.0010000000000000001";
+  await createReconcilingCarrySaga(state, ["aster", "lighter"], "exact-base", {
+    baseSize: exactBase,
+    reduceOnly: true,
+  });
+
+  const recovered = await recoverDueMultiLegSagas({
+    state,
+    now_ms: NOW + 100,
+    recipient: { recipient_id: "did:key:restart-reconcile" },
+    executeOrder: async () => exactOriginalOrderReconciliationReceipt({
+      baseSize: exactBase,
+      cumulativeMicro: 8_000_000,
+    }),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.recovered[0].saga.status, "reconciled");
+  assert.equal(recovered.recovered[0].saga.terminal, true);
+});
+
+test("restart rejects a near-equal high-precision reduce-only base as partial", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-reconciling-exact-base-partial-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  await createReconcilingCarrySaga(state, ["aster", "lighter"], "exact-base-partial", {
+    baseSize: "0.0010000000000000001",
+    reduceOnly: true,
+  });
+
+  const recovered = await recoverDueMultiLegSagas({
+    state,
+    now_ms: NOW + 100,
+    recipient: { recipient_id: "did:key:restart-reconcile" },
+    executeOrder: async () => exactOriginalOrderReconciliationReceipt({
+      baseSize: "0.001",
+      cumulativeMicro: 10_000_000,
+    }),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(recovered.ok, false);
+  assert.equal(recovered.recovered[0].error, "original_order_fill_mismatch");
+  assert.equal(recovered.recovered[0].saga.status, "compensating");
+});
+
+test("restart rejects an oversized exact-base receipt before decimal expansion", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-reconciling-exact-base-oversized-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const oversizedBase = `0.${"1".repeat(5_000)}`;
+  await createReconcilingCarrySaga(state, ["aster", "lighter"], "exact-base-oversized", {
+    baseSize: oversizedBase,
+    reduceOnly: true,
+  });
+
+  const recovered = await recoverDueMultiLegSagas({
+    state,
+    now_ms: NOW + 100,
+    recipient: { recipient_id: "did:key:restart-reconcile" },
+    executeOrder: async () => exactOriginalOrderReconciliationReceipt({ baseSize: oversizedBase }),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(recovered.ok, false);
+  assert.equal(recovered.recovered[0].error, "original_order_fill_mismatch");
+});
 
 test("nonterminal original-order proof fails into compensation without resubmission", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-reconciling-nonterminal-"));
@@ -556,7 +627,7 @@ test("recovers a crash after exact cancel without cancelling twice", async (t) =
   assert.equal(accounting.executions[0].reference_mark_price_e8 > 0, true);
   const positions = await state.listAutopilotPositions(context.autopilot_session_id);
   assert.equal(positions[0].signed_notional_micro_usdc, 0);
-  assert.equal(positions[0].signed_base_size, 0);
+  assert.equal(positions[0].signed_base_size, "0");
   assert.equal((await state.getAutopilotSession(context.autopilot_session_id)).status, "paused");
 });
 
@@ -659,6 +730,608 @@ test("reconciles a terminal late fill before cancel and never cancels or resubmi
   assert.equal(calls.filter((call) => call.operation_class === "reconcile").length, 1);
   assert.equal(calls.filter((call) => call.instruction?.order?.reduce_only === true).length, 2);
   assert.equal(calls[0].instruction.reconcile.target_work_order_commitment, lighterWork);
+});
+
+test("never pairs newer fill notional with stale exact base evidence", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-saga-stale-base-evidence-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const sagaId = "saga:recovery:stale-base:0001";
+  const asterLeg = `${sagaId}:aster`;
+  const lighterLeg = `${sagaId}:lighter`;
+  const asterWork = "work:recovery:stale-base:aster";
+  const lighterWork = "work:recovery:stale-base:lighter";
+  const order = (venue, side) => ({
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: venue,
+    operation_class: "limit_order",
+    order: {
+      market: venue === "lighter" ? "BTC" : "BTC-PERP",
+      side,
+      base_size: "0.001",
+      limit_price: "10000",
+      reduce_only: false,
+      tif: "Ioc",
+    },
+  });
+  const created = await createDurableMultiLegSaga({
+    state,
+    definition: {
+      version: 1,
+      saga_id: sagaId,
+      idempotency_key: "idem:recovery:stale-base:0001",
+      plan_commitment: "plan:recovery:stale-base:0001",
+      strategy_id: "delta_neutral_carry",
+      max_unhedged_ms: 1_000,
+      max_hedge_error_micro_usdc: 0,
+      now_ms: NOW,
+      legs: [
+        { leg_id: asterLeg, venue_id: "aster", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "buy", notional_micro_usdc: 10_000_000 },
+        { leg_id: lighterLeg, venue_id: "lighter", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "sell", notional_micro_usdc: 10_000_000 },
+      ],
+    },
+    execution_context: {
+      version: 1,
+      carry_position_id: "carry:position:stale-base:0001",
+      owner_commitment: "owner:recovery:stale-base:0001",
+      policy_commitment: "policy:recovery:stale-base:0001",
+      session_policy: { policy_commitment: "policy:recovery:stale-base:0001", market_allowlist: ["BTC", "BTC-PERP"], max_notional_bucket: "25", max_order_count: 4, max_slippage_bps: 10 },
+      venue_access: {
+        aster: { status: "ready", account_commitment: "account:stale-base:aster" },
+        lighter: { status: "ready", account_commitment: "account:stale-base:lighter" },
+      },
+      legs: [
+        { leg_id: asterLeg, work_order_commitment: asterWork, instruction: order("aster", "buy") },
+        { leg_id: lighterLeg, work_order_commitment: lighterWork, instruction: order("lighter", "sell") },
+      ],
+    },
+  });
+  await apply(state, sagaId, 1, "preflight_passed", { leg_id: asterLeg });
+  await apply(state, sagaId, 2, "preflight_passed", { leg_id: lighterLeg });
+  await apply(state, sagaId, 3, "submission_started");
+  await apply(state, sagaId, 4, "leg_fill", { leg_id: asterLeg, cumulative_filled_micro_usdc: 8_000_000 });
+  await state.putIdempotency(asterWork, {
+    status: "open",
+    final_proof: {
+      target_client_order_matched: true,
+      broadcast_performed: true,
+      final_venue_execution_proven: true,
+      cumulative_filled_micro_usdc: 4_000_000,
+      filled_base_size: "0.0004",
+    },
+  });
+  await state.putIdempotency(lighterWork, { status: "submitted" });
+
+  const calls = [];
+  const active = await state.getMultiLegSaga(created.saga.saga_id);
+  const recovered = await recoverDueMultiLegSagas({
+    state,
+    now_ms: active.unhedged_deadline_ms,
+    recipient: { recipient_id: "did:key:stale-base" },
+    executeOrder: async (args) => {
+      calls.push(args);
+      if (args.operation_class === "cancel") return { status: "cancelled" };
+      if (args.operation_class !== "reconcile") throw new Error("stale base must not be submitted");
+      return {
+        status: "filled",
+        final_proof: {
+          target_client_order_matched: true,
+          broadcast_performed: true,
+          final_venue_execution_proven: true,
+          final_fill_proven: true,
+          cumulative_filled_micro_usdc: args.venue_id === "aster" ? 4_000_000 : 0,
+          filled_base_size: args.venue_id === "aster" ? "0.0004" : undefined,
+        },
+      };
+    },
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(recovered.ok, false);
+  assert.equal(recovered.recovered[0].error, "exact_base_quantity_unavailable");
+  assert.equal(calls.filter((call) => call.operation_class === "cancel").length, 1);
+  assert.equal(calls.some((call) => call.instruction?.order?.reduce_only === true), false);
+});
+
+async function createCrashSafeUnwindFixture(state, suffix) {
+  const sagaId = `saga:recovery:crash-safe:${suffix}`;
+  const sessionId = `autopilot:recovery:crash-safe:${suffix}`;
+  const filledLeg = `${sagaId}:aster`;
+  const hedgeLeg = `${sagaId}:lighter`;
+  const filledWork = `work:recovery:crash-safe:${suffix}:aster`;
+  const hedgeWork = `work:recovery:crash-safe:${suffix}:lighter`;
+  const policyCommitment = `policy:recovery:crash-safe:${suffix}`;
+  const instruction = (venue, side) => ({
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: venue,
+    operation_class: "limit_order",
+    order: {
+      market: venue === "lighter" ? "BTC" : "BTC-PERP",
+      side,
+      base_size: "0.001",
+      limit_price: "10000",
+      reduce_only: false,
+      tif: "Ioc",
+    },
+  });
+  await state.putAutopilotSession({
+    autopilot_session_id: sessionId,
+    status: "running",
+    execution_enabled: true,
+    session_policy: {
+      policy_commitment: policyCommitment,
+      market_allowlist: ["BTC", "BTC-PERP"],
+      max_notional_bucket: "25",
+      max_order_count: 4,
+      max_slippage_bps: 10,
+    },
+    venue_access: { aster: { status: "ready" }, lighter: { status: "ready" } },
+    updated_at: new Date(NOW).toISOString(),
+  });
+  const created = await createDurableMultiLegSaga({
+    state,
+    definition: {
+      version: 1,
+      saga_id: sagaId,
+      idempotency_key: `idem:recovery:crash-safe:${suffix}`,
+      plan_commitment: `plan:recovery:crash-safe:${suffix}`,
+      strategy_id: "delta_neutral_carry",
+      max_unhedged_ms: 1_000,
+      max_hedge_error_micro_usdc: 0,
+      now_ms: NOW,
+      legs: [
+        { leg_id: filledLeg, venue_id: "aster", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "buy", notional_micro_usdc: 10_000_000 },
+        { leg_id: hedgeLeg, venue_id: "lighter", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "sell", notional_micro_usdc: 10_000_000 },
+      ],
+    },
+    execution_context: {
+      version: 1,
+      autopilot_session_id: sessionId,
+      policy_commitment: policyCommitment,
+      legs: [
+        { leg_id: filledLeg, work_order_commitment: filledWork, instruction: instruction("aster", "buy") },
+        { leg_id: hedgeLeg, work_order_commitment: hedgeWork, instruction: instruction("lighter", "sell") },
+      ],
+    },
+  });
+  await apply(state, sagaId, 1, "preflight_passed", { leg_id: filledLeg });
+  await apply(state, sagaId, 2, "preflight_passed", { leg_id: hedgeLeg });
+  await apply(state, sagaId, 3, "submission_started");
+  await apply(state, sagaId, 4, "leg_fill", { leg_id: filledLeg, cumulative_filled_micro_usdc: 10_000_000 });
+  await state.putIdempotency(filledWork, {
+    status: "filled",
+    final_proof: {
+      target_client_order_matched: true,
+      broadcast_performed: true,
+      final_venue_execution_proven: true,
+      final_fill_proven: true,
+      cumulative_filled_micro_usdc: 10_000_000,
+      filled_base_size: "0.001",
+    },
+  });
+  await state.putIdempotency(hedgeWork, { status: "submitted" });
+  return { sagaId, sessionId, filledLeg, hedgeWork, active: await state.getMultiLegSaga(created.saga.saga_id) };
+}
+
+function terminalOriginalZeroReceipt() {
+  return {
+    status: "reconciled",
+    final_proof: {
+      target_client_order_matched: true,
+      broadcast_performed: true,
+      final_venue_execution_proven: true,
+      final_fill_proven: false,
+      cumulative_filled_micro_usdc: 0,
+    },
+  };
+}
+
+test("reconciles after a crash between recovery broadcast and receipt persistence without resubmitting", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-recovery-broadcast-crash-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  let state = createWorkerState(dir);
+  const fixture = await createCrashSafeUnwindFixture(state, "broadcast-before-receipt");
+  let submissions = 0;
+  let crashAfterBroadcast = true;
+  const executeOrder = async (args) => {
+    if (args.operation_class === "reconcile") {
+      if (args.instruction.reconcile.target_work_order_commitment === fixture.hedgeWork) {
+        return terminalOriginalZeroReceipt();
+      }
+      return {
+        status: "filled",
+        final_proof: {
+          target_client_order_matched: true,
+          broadcast_performed: true,
+          final_venue_execution_proven: true,
+          final_fill_proven: true,
+          filled_base_size: "0.001",
+        },
+      };
+    }
+    submissions += 1;
+    if (crashAfterBroadcast) {
+      crashAfterBroadcast = false;
+      const error = new Error("simulated_crash_after_recovery_broadcast");
+      error.code = "submission_ambiguous";
+      throw error;
+    }
+    throw new Error("recovery order must never be resubmitted");
+  };
+  const common = {
+    recipient: { recipient_id: "did:key:recovery-broadcast-crash" },
+    executeOrder,
+    verifyOrder: async (args) => recoveryVerification(args),
+    fetchImpl: async () => ({ ok: true, json: async () => ({ markPrice: "10000" }) }),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  };
+
+  const first = await recoverDueMultiLegSagas({
+    ...common,
+    state,
+    now_ms: fixture.active.unhedged_deadline_ms,
+  });
+  assert.equal(first.ok, false);
+  assert.equal(first.recovered[0].error, "submission_ambiguous");
+  assert.equal(submissions, 1);
+  let accounting = await readDurableRecoveryAccounting({
+    state,
+    saga_id: fixture.sagaId,
+    leg_id: fixture.filledLeg,
+    action: "unwind",
+  });
+  assert.equal(accounting.executions.length, 1);
+  assert.equal(accounting.executions[0].receipt, null);
+
+  state = createWorkerState(dir);
+  const second = await recoverDueMultiLegSagas({
+    ...common,
+    state,
+    now_ms: fixture.active.unhedged_deadline_ms + 1,
+  });
+  assert.equal(second.ok, true, JSON.stringify(second));
+  assert.equal(second.recovered[0].saga.status, "unwound");
+  assert.equal(submissions, 1);
+  accounting = await readDurableRecoveryAccounting({
+    state,
+    saga_id: fixture.sagaId,
+    leg_id: fixture.filledLeg,
+    action: "unwind",
+  });
+  assert.equal(accounting.executions[0].applied_filled_micro_usdc, 10_000_000);
+  const positions = await state.listAutopilotPositions(fixture.sessionId);
+  assert.equal(positions[0].signed_notional_micro_usdc, 0);
+  assert.equal(positions[0].signed_base_size, "0");
+});
+
+for (const boundary of ["applied-accounting", "flat-position"]) {
+  test(`replays a crash after ${boundary} persistence without resubmitting the unwind`, async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), `ghola-recovery-${boundary}-crash-`));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    let state = createWorkerState(dir);
+    const fixture = await createCrashSafeUnwindFixture(state, boundary);
+    const originalPutIdempotency = state.putIdempotency.bind(state);
+    const originalPutPosition = state.putAutopilotPosition.bind(state);
+    let crashInjected = false;
+    if (boundary === "applied-accounting") {
+      state.putIdempotency = async (key, value) => {
+        const result = await originalPutIdempotency(key, value);
+        if (!crashInjected && value?.kind === "multi_leg_recovery_accounting"
+          && value.action === "unwind"
+          && value.executions?.some((execution) => execution.applied_filled_micro_usdc === 10_000_000)) {
+          crashInjected = true;
+          throw new Error("simulated_crash_after_applied_recovery_accounting");
+        }
+        return result;
+      };
+    } else {
+      state.putAutopilotPosition = async (sessionId, position) => {
+        const result = await originalPutPosition(sessionId, position);
+        if (!crashInjected && position.recovery_saga_id === fixture.sagaId
+          && position.signed_notional_micro_usdc === 0) {
+          crashInjected = true;
+          throw new Error("simulated_crash_after_flat_recovery_position");
+        }
+        return result;
+      };
+    }
+    let submissions = 0;
+    const executeOrder = async (args) => {
+      if (args.operation_class === "reconcile") return terminalOriginalZeroReceipt();
+      submissions += 1;
+      if (submissions > 1) throw new Error("recovery order must never be resubmitted");
+      return {
+        status: "filled",
+        final_proof: {
+          target_client_order_matched: true,
+          broadcast_performed: true,
+          final_venue_execution_proven: true,
+          final_fill_proven: true,
+          filled_base_size: "0.001",
+        },
+      };
+    };
+    const common = {
+      recipient: { recipient_id: `did:key:recovery-${boundary}-crash` },
+      executeOrder,
+      verifyOrder: async (args) => recoveryVerification(args),
+      fetchImpl: async () => ({ ok: true, json: async () => ({ markPrice: "10000" }) }),
+      env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+    };
+    const first = await recoverDueMultiLegSagas({
+      ...common,
+      state,
+      now_ms: fixture.active.unhedged_deadline_ms,
+    });
+    assert.equal(first.ok, false);
+    assert.equal(crashInjected, true);
+    assert.equal((await state.getMultiLegSaga(fixture.sagaId)).status, "compensating");
+    assert.equal(submissions, 1);
+
+    state = createWorkerState(dir);
+    const second = await recoverDueMultiLegSagas({
+      ...common,
+      state,
+      now_ms: fixture.active.unhedged_deadline_ms + 1,
+    });
+    assert.equal(second.ok, true, JSON.stringify(second));
+    assert.equal(second.recovered[0].saga.status, "unwound");
+    assert.equal(submissions, 1);
+    const accounting = await readDurableRecoveryAccounting({
+      state,
+      saga_id: fixture.sagaId,
+      leg_id: fixture.filledLeg,
+      action: "unwind",
+    });
+    assert.equal(accounting.executions[0].applied_filled_micro_usdc, 10_000_000);
+    const positions = await state.listAutopilotPositions(fixture.sessionId);
+    assert.equal(positions[0].signed_notional_micro_usdc, 0);
+    assert.equal(positions[0].signed_base_size, "0");
+  });
+}
+
+async function createCrashSafeCompletionFixture(state) {
+  const sagaId = "saga:recovery:completion-crash-safe:0001";
+  const sessionId = "autopilot:recovery:completion-crash-safe:0001";
+  const filledLeg = `${sagaId}:hyperliquid`;
+  const completionLeg = `${sagaId}:lighter`;
+  const policyCommitment = "policy:recovery:completion-crash-safe:0001";
+  const instruction = (venue, side) => ({
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: venue,
+    operation_class: "limit_order",
+    order: {
+      market: venue === "lighter" ? "BTC" : "BTC-PERP",
+      side,
+      base_size: "0.001",
+      limit_price: "10000",
+      reduce_only: true,
+      tif: "Ioc",
+    },
+  });
+  await state.putAutopilotSession({
+    autopilot_session_id: sessionId,
+    status: "running",
+    execution_enabled: true,
+    session_policy: {
+      policy_commitment: policyCommitment,
+      market_allowlist: ["BTC", "BTC-PERP"],
+      max_notional_bucket: "25",
+      max_order_count: 4,
+      max_slippage_bps: 10,
+    },
+    venue_access: { hyperliquid: { status: "ready" }, lighter: { status: "ready" } },
+    updated_at: new Date(NOW).toISOString(),
+  });
+  const created = await createDurableMultiLegSaga({
+    state,
+    definition: {
+      version: 1,
+      saga_id: sagaId,
+      idempotency_key: "idem:recovery:completion-crash-safe:0001",
+      plan_commitment: "plan:recovery:completion-crash-safe:0001",
+      strategy_id: "exposure_rebalance",
+      recovery_mode: "complete_reduce_only",
+      max_unhedged_ms: 1_000,
+      max_hedge_error_micro_usdc: 0,
+      now_ms: NOW,
+      legs: [
+        { leg_id: filledLeg, venue_id: "hyperliquid", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "sell", notional_micro_usdc: 10_000_000 },
+        { leg_id: completionLeg, venue_id: "lighter", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "buy", notional_micro_usdc: 10_000_000 },
+      ],
+    },
+    execution_context: {
+      version: 1,
+      autopilot_session_id: sessionId,
+      policy_commitment: policyCommitment,
+      legs: [
+        { leg_id: filledLeg, work_order_commitment: "work:recovery:completion-crash-safe:hyperliquid", instruction: instruction("hyperliquid", "sell") },
+        { leg_id: completionLeg, work_order_commitment: "work:recovery:completion-crash-safe:lighter", instruction: instruction("lighter", "buy") },
+      ],
+    },
+  });
+  await apply(state, sagaId, 1, "preflight_passed", { leg_id: filledLeg });
+  await apply(state, sagaId, 2, "preflight_passed", { leg_id: completionLeg });
+  await apply(state, sagaId, 3, "submission_started");
+  await apply(state, sagaId, 4, "leg_fill", { leg_id: filledLeg, cumulative_filled_micro_usdc: 10_000_000 });
+  await apply(state, sagaId, 5, "leg_failed", { leg_id: completionLeg, failure_code: "venue_rejected" });
+  return { sagaId, completionLeg, active: await state.getMultiLegSaga(created.saga.saga_id) };
+}
+
+test("replays completion after applied accounting without resubmitting", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-completion-accounting-crash-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  let state = createWorkerState(dir);
+  const fixture = await createCrashSafeCompletionFixture(state);
+  const originalPutIdempotency = state.putIdempotency.bind(state);
+  let crashInjected = false;
+  state.putIdempotency = async (key, value) => {
+    const result = await originalPutIdempotency(key, value);
+    if (!crashInjected && value?.kind === "multi_leg_recovery_accounting"
+      && value.action === "completion"
+      && value.executions?.some((execution) => execution.applied_filled_micro_usdc === 10_000_000)) {
+      crashInjected = true;
+      throw new Error("simulated_crash_after_applied_completion_accounting");
+    }
+    return result;
+  };
+  let submissions = 0;
+  const executeOrder = async (args) => {
+    if (args.operation_class === "reconcile") return terminalOriginalZeroReceipt();
+    submissions += 1;
+    if (submissions > 1) throw new Error("completion order must never be resubmitted");
+    return {
+      status: "filled",
+      final_proof: {
+        target_client_order_matched: true,
+        broadcast_performed: true,
+        final_venue_execution_proven: true,
+        final_fill_proven: true,
+        filled_base_size: "0.001",
+      },
+    };
+  };
+  const common = {
+    recipient: { recipient_id: "did:key:completion-accounting-crash" },
+    executeOrder,
+    verifyOrder: async (args) => recoveryVerification(args),
+    fetchImpl: async () => ({ ok: true, json: async () => ({ order_book_details: [{ symbol: "BTC", mark_price: "10000" }] }) }),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  };
+  const first = await recoverDueMultiLegSagas({
+    ...common,
+    state,
+    now_ms: fixture.active.unhedged_deadline_ms - 1,
+  });
+  assert.equal(first.ok, false);
+  assert.equal(crashInjected, true);
+  assert.equal((await state.getMultiLegSaga(fixture.sagaId)).status, "compensating");
+  assert.equal(submissions, 1);
+
+  state = createWorkerState(dir);
+  const second = await recoverDueMultiLegSagas({
+    ...common,
+    state,
+    now_ms: fixture.active.unhedged_deadline_ms,
+  });
+  assert.equal(second.ok, true, JSON.stringify(second));
+  assert.equal(second.recovered[0].saga.status, "reconciled");
+  assert.equal(submissions, 1);
+  const accounting = await readDurableRecoveryAccounting({
+    state,
+    saga_id: fixture.sagaId,
+    leg_id: fixture.completionLeg,
+    action: "completion",
+  });
+  assert.equal(accounting.executions[0].applied_filled_micro_usdc, 10_000_000);
+});
+
+test("recovers a persisted terminal-zero unwind receipt without retrying the order", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-terminal-zero-crash-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const fixture = await createCrashSafeUnwindFixture(state, "terminal-zero");
+  const originalPutSaga = state.putMultiLegSaga.bind(state);
+  let failureWriteCrashed = false;
+  state.putMultiLegSaga = async (saga, input) => {
+    if (!failureWriteCrashed && saga.status === "manual_intervention") {
+      failureWriteCrashed = true;
+      throw new Error("simulated_crash_before_terminal_zero_failure_write");
+    }
+    return originalPutSaga(saga, input);
+  };
+  let submissions = 0;
+  const executeOrder = async (args) => {
+    if (args.operation_class === "reconcile") return terminalOriginalZeroReceipt();
+    submissions += 1;
+    return {
+      status: "rejected",
+      final_proof: {
+        target_client_order_matched: true,
+        broadcast_performed: true,
+        final_venue_execution_proven: true,
+        final_fill_proven: false,
+        filled_base_size: "0",
+      },
+    };
+  };
+  const args = {
+    state,
+    recipient: { recipient_id: "did:key:terminal-zero-crash" },
+    executeOrder,
+    verifyOrder: async (orderArgs) => recoveryVerification(orderArgs),
+    fetchImpl: async () => ({ ok: true, json: async () => ({ markPrice: "10000" }) }),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  };
+  const first = await recoverDueMultiLegSagas({ ...args, now_ms: fixture.active.unhedged_deadline_ms });
+  assert.equal(first.ok, false);
+  assert.equal(failureWriteCrashed, true);
+  assert.equal((await state.getMultiLegSaga(fixture.sagaId)).status, "compensating");
+  state.putMultiLegSaga = originalPutSaga;
+
+  const second = await recoverDueMultiLegSagas({ ...args, now_ms: fixture.active.unhedged_deadline_ms + 1 });
+  assert.equal(second.ok, false);
+  assert.equal(second.recovered[0].error, "terminal_unwind_without_fill");
+  assert.equal(second.recovered[0].saga.status, "manual_intervention");
+  assert.equal(second.recovered[0].saga.terminal, true);
+  assert.equal(submissions, 1);
+});
+
+test("persists unwind accounting and flat position before terminal saga advancement", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-terminal-unwind-crash-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const fixture = await createCrashSafeUnwindFixture(state, "terminal-unwind");
+  const originalPutSaga = state.putMultiLegSaga.bind(state);
+  let terminalWriteCrashed = false;
+  state.putMultiLegSaga = async (saga, input) => {
+    const result = await originalPutSaga(saga, input);
+    if (!terminalWriteCrashed && result.saga?.status === "unwound") {
+      terminalWriteCrashed = true;
+      throw new Error("simulated_crash_after_terminal_unwind_write");
+    }
+    return result;
+  };
+  let submissions = 0;
+  const recovered = await recoverDueMultiLegSagas({
+    state,
+    now_ms: fixture.active.unhedged_deadline_ms,
+    recipient: { recipient_id: "did:key:terminal-unwind-crash" },
+    executeOrder: async (args) => {
+      if (args.operation_class === "reconcile") return terminalOriginalZeroReceipt();
+      submissions += 1;
+      return {
+        status: "filled",
+        final_proof: {
+          target_client_order_matched: true,
+          broadcast_performed: true,
+          final_venue_execution_proven: true,
+          final_fill_proven: true,
+          filled_base_size: "0.001",
+        },
+      };
+    },
+    verifyOrder: async (args) => recoveryVerification(args),
+    fetchImpl: async () => ({ ok: true, json: async () => ({ markPrice: "10000" }) }),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(recovered.ok, false);
+  assert.equal(terminalWriteCrashed, true);
+  assert.equal((await state.getMultiLegSaga(fixture.sagaId)).status, "unwound");
+  const accounting = await readDurableRecoveryAccounting({
+    state,
+    saga_id: fixture.sagaId,
+    leg_id: fixture.filledLeg,
+    action: "unwind",
+  });
+  assert.equal(accounting.executions[0].applied_filled_micro_usdc, 10_000_000);
+  assert.equal(accounting.executions[0].position_filled_base_size, "0.001");
+  const positions = await state.listAutopilotPositions(fixture.sessionId);
+  assert.equal(positions[0].signed_notional_micro_usdc, 0);
+  assert.equal(positions[0].signed_base_size, "0");
+  assert.equal(submissions, 1);
 });
 
 for (const [filledVenue, hedgeVenue] of CARRY_EXECUTION_VENUES.flatMap((filledVenue) =>
@@ -783,7 +1456,7 @@ for (const [filledVenue, hedgeVenue] of CARRY_EXECUTION_VENUES.flatMap((filledVe
   });
 }
 
-test("reconciles a partial recovery child before submitting the residual unwind and rejects a mismatched target", async (t) => {
+test("preserves exact base precision while reconciling a partial recovery child and residual unwind", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-partial-recovery-child-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
@@ -792,6 +1465,9 @@ test("reconciles a partial recovery child before submitting the residual unwind 
   const hedgeLeg = `${sagaId}:lighter`;
   const filledWork = "work:partial-recovery-child:aster";
   const hedgeWork = "work:partial-recovery-child:lighter";
+  const exactBase = "0.0010000000000000001";
+  const partialBase = "0.00040000000000000004";
+  const reconciledBase = "0.00060000000000000006";
   const instruction = (venue, side) => ({
     version: 1,
     kind: "ghola_private_execution_instruction",
@@ -800,7 +1476,7 @@ test("reconciles a partial recovery child before submitting the residual unwind 
     order: {
       market: venue === "lighter" ? "BTC" : "BTC-PERP",
       side,
-      base_size: "0.001",
+      base_size: exactBase,
       limit_price: "10000",
       reduce_only: false,
       tif: "Ioc",
@@ -852,7 +1528,7 @@ test("reconciles a partial recovery child before submitting the residual unwind 
   await apply(state, sagaId, 4, "leg_fill", { leg_id: filledLeg, cumulative_filled_micro_usdc: 10_000_000 });
   await state.putIdempotency(filledWork, {
     status: "filled",
-    final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: "0.001" },
+    final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: exactBase },
   });
   await state.putIdempotency(hedgeWork, { status: "submitted" });
 
@@ -873,15 +1549,13 @@ test("reconciles a partial recovery child before submitting the residual unwind 
           broadcast_performed: true,
           final_venue_execution_proven: true,
           final_fill_proven: true,
-          filled_base_size: "0.0006",
+          filled_base_size: childReconcileAttempts > 2 ? partialBase : reconciledBase,
         },
       };
     }
     if (args.operation_class === "cancel") return { status: "cancelled" };
     recoverySubmissions += 1;
-    return recoverySubmissions === 1
-      ? { status: "open", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: false, final_fill_proven: false, filled_base_size: "0.0004" } }
-      : { status: "filled", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.0004" } };
+    return { status: "open", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: false, final_fill_proven: false, filled_base_size: partialBase } };
   };
   const fetchImpl = async () => ({ ok: true, json: async () => ({ markPrice: "10000" }) });
   const active = await state.getMultiLegSaga(created.saga.saga_id);
@@ -898,6 +1572,9 @@ test("reconciles a partial recovery child before submitting the residual unwind 
   assert.equal(recoverySubmissions, 1);
   let accounting = await readDurableRecoveryAccounting({ state, saga_id: sagaId, leg_id: filledLeg, action: "unwind" });
   assert.equal(accounting.executions[0].applied_filled_micro_usdc, 4_000_000);
+  let positions = await state.listAutopilotPositions("autopilot:partial-recovery-child:0001");
+  assert.equal(positions[0].signed_base_size, reconciledBase);
+  assert.equal(positions[0].recovery_component_signed_base_size, reconciledBase);
 
   const second = await recoverDueMultiLegSagas({
     state,
@@ -924,14 +1601,38 @@ test("reconciles a partial recovery child before submitting the residual unwind 
     fetchImpl,
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
   });
-  assert.equal(third.ok, true);
-  assert.equal(third.recovered[0].saga.status, "unwound");
+  assert.equal(third.ok, false);
+  assert.equal(third.recovered[0].saga.status, "compensating");
   assert.equal(childReconcileAttempts, 2);
+  assert.equal(recoverySubmissions, 2);
+  accounting = await readDurableRecoveryAccounting({ state, saga_id: sagaId, leg_id: filledLeg, action: "unwind" });
+  assert.deepEqual(accounting.executions.map((execution) => execution.applied_filled_micro_usdc), [6_000_000, 0]);
+
+  const fourth = await recoverDueMultiLegSagas({
+    state,
+    now_ms: active.unhedged_deadline_ms + 3,
+    recipient: { recipient_id: "did:key:partial-recovery-child" },
+    executeOrder,
+    verifyOrder: async (args) => recoveryVerification(args),
+    fetchImpl,
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(fourth.ok, true, JSON.stringify(fourth));
+  assert.equal(fourth.recovered[0].saga.status, "unwound");
+  assert.equal(childReconcileAttempts, 3);
   assert.equal(recoverySubmissions, 2);
   const childReconcile = calls.find((call) => call.operation_class === "reconcile" && call.instruction.reconcile.target_work_order_commitment !== hedgeWork);
   assert.equal(childReconcile.instruction.reconcile.target_work_order_commitment, accounting.executions[0].work_order_commitment);
   accounting = await readDurableRecoveryAccounting({ state, saga_id: sagaId, leg_id: filledLeg, action: "unwind" });
   assert.deepEqual(accounting.executions.map((execution) => execution.applied_filled_micro_usdc), [6_000_000, 4_000_000]);
+  assert.deepEqual(accounting.executions.map((execution) => execution.requested_base_size), [exactBase, partialBase]);
+  assert.deepEqual(
+    calls.filter((call) => call.instruction?.order?.reduce_only === true).map((call) => call.instruction.order.base_size),
+    [exactBase, partialBase],
+  );
+  positions = await state.listAutopilotPositions("autopilot:partial-recovery-child:0001");
+  assert.equal(positions[0].signed_base_size, "0");
+  assert.equal(positions[0].recovery_component_signed_base_size, "0");
 });
 
 test("recovers a Carry Position saga directly from its sealed venue context", async (t) => {
@@ -1021,7 +1722,11 @@ for (const [filledVenue, completionVenue] of CARRY_EXECUTION_VENUES.flatMap((fil
     .filter((completionVenue) => completionVenue !== filledVenue)
     .map((completionVenue) => [filledVenue, completionVenue]),
 )) {
-  test(`reconciles a partial reduce-only completion for every ordered execution pair: ${filledVenue} then ${completionVenue}`, async (t) => {
+  const fullBaseNonterminal = filledVenue === "hyperliquid" && completionVenue === "lighter";
+  const scenarioName = fullBaseNonterminal
+    ? `keeps a full-base nonterminal completion compensating until exact reconciliation: ${filledVenue} then ${completionVenue}`
+    : `reconciles a partial reduce-only completion for every ordered execution pair: ${filledVenue} then ${completionVenue}`;
+  test(scenarioName, async (t) => {
     const dir = mkdtempSync(join(tmpdir(), `ghola-carry-exit-${filledVenue}-${completionVenue}-`));
     t.after(() => rmSync(dir, { recursive: true, force: true }));
     const state = createWorkerState(dir);
@@ -1082,7 +1787,7 @@ for (const [filledVenue, completionVenue] of CARRY_EXECUTION_VENUES.flatMap((fil
         return { status: "filled", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.001" } };
       }
       submissions += 1;
-      return { status: "open", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: false, final_fill_proven: false, filled_base_size: "0.0004" } };
+      return { status: "open", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: false, final_fill_proven: false, filled_base_size: fullBaseNonterminal ? "0.001" : "0.0004" } };
     };
     const fetchImpl = async () => ({
       ok: true,
@@ -1117,6 +1822,12 @@ for (const [filledVenue, completionVenue] of CARRY_EXECUTION_VENUES.flatMap((fil
     });
     assert.equal(first.ok, false);
     assert.equal(submissions, 1);
+    if (fullBaseNonterminal) {
+      assert.equal(first.recovered[0].saga.status, "compensating");
+      assert.equal(first.recovered[0].saga.legs.find((leg) => leg.leg_id === completionLeg).filled_micro_usdc, 0);
+      const pendingAccounting = await readDurableRecoveryAccounting({ state, saga_id: sagaId, leg_id: completionLeg, action: "completion" });
+      assert.equal(pendingAccounting.executions[0].applied_filled_micro_usdc, 0);
+    }
     const recovered = await recoverDueMultiLegSagas({
       state,
       now_ms: active.unhedged_deadline_ms,

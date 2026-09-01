@@ -2263,7 +2263,7 @@ describe("private agent worker", () => {
     await close(server);
     const state = createWorkerState(dir);
     const originalGetAttempt = state.getExecutionAttempt.bind(state);
-    const originalClaimAttempt = state.claimExecutionAttempt.bind(state);
+    const originalClaimAttempt = state.claimExecutionAttemptWithPolicyUsage.bind(state);
     const claims = [];
     let reads = 0;
     let releaseReads;
@@ -2284,7 +2284,7 @@ describe("private agent worker", () => {
       }
       return result;
     };
-    state.claimExecutionAttempt = async (...args) => {
+    state.claimExecutionAttemptWithPolicyUsage = async (...args) => {
       const result = await originalClaimAttempt(...args);
       claims.push(result.ok);
       return result;

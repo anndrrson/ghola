@@ -1013,7 +1013,7 @@ test("atomically claims one Aster submission under concurrent identical requests
     state,
   };
   const originalGetAttempt = state.getExecutionAttempt.bind(state);
-  const originalClaimAttempt = state.claimExecutionAttempt.bind(state);
+  const originalClaimAttempt = state.claimExecutionAttemptWithPolicyUsage.bind(state);
   let reads = 0;
   let releaseReads;
   let firstRead;
@@ -1033,7 +1033,7 @@ test("atomically claims one Aster submission under concurrent identical requests
     }
     return result;
   };
-  state.claimExecutionAttempt = async (...claimArgs) => {
+  state.claimExecutionAttemptWithPolicyUsage = async (...claimArgs) => {
     const result = await originalClaimAttempt(...claimArgs);
     claims.push(result.ok);
     return result;
@@ -1068,7 +1068,7 @@ test("refreshes read-only Aster reconciliation instead of replaying a stale cach
   await state.putIdempotency(targetWork, { status: "submitted" });
   const originalPutAttempt = state.putExecutionAttempt.bind(state);
   let attemptWrites = 0;
-  state.claimExecutionAttempt = async () => {
+  state.claimExecutionAttemptWithPolicyUsage = async () => {
     throw new Error("read-only reconciliation must not claim a submission");
   };
   state.putExecutionAttempt = async (...args) => {

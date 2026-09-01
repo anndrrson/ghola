@@ -173,7 +173,7 @@ export function createSqliteWorkerState(dbPath) {
     }
   }
 
-  function save(state) {
+  function persist(state) {
     const next = {
       ...state,
       version: STATE_VERSION,
@@ -182,18 +182,39 @@ export function createSqliteWorkerState(dbPath) {
     const stateJson = JSON.stringify(next);
     const stateSha = createHash("sha256").update(stateJson).digest("hex");
     const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO worker_state_documents (id, state_json, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at
+    `).run("private-agent-execution-state-v1", stateJson, now);
+    db.prepare(`
+      INSERT INTO worker_state_ledger (document_id, state_json, state_sha256, created_at)
+      VALUES (?, ?, ?, ?)
+    `).run("private-agent-execution-state-v1", stateJson, stateSha, now);
+  }
+
+  function save(state) {
     db.exec("BEGIN IMMEDIATE");
     try {
-      db.prepare(`
-        INSERT INTO worker_state_documents (id, state_json, updated_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at
-      `).run("private-agent-execution-state-v1", stateJson, now);
-      db.prepare(`
-        INSERT INTO worker_state_ledger (document_id, state_json, state_sha256, created_at)
-        VALUES (?, ?, ?, ?)
-      `).run("private-agent-execution-state-v1", stateJson, stateSha, now);
+      persist(state);
       db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  function atomicUpdate(mutator) {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const state = normalizeState(load());
+      const result = mutator(state);
+      if (result && typeof result.then === "function") {
+        throw new Error("sqlite atomic state mutation must be synchronous");
+      }
+      persist(state);
+      db.exec("COMMIT");
+      return result;
     } catch (error) {
       db.exec("ROLLBACK");
       throw error;
@@ -205,6 +226,7 @@ export function createSqliteWorkerState(dbPath) {
     hmacSecret,
     load,
     save,
+    atomicUpdate,
   });
 }
 
@@ -213,6 +235,7 @@ export function createPostgresWorkerState(databaseUrl) {
     throw new Error("PRIVATE_AGENT_STATE_STORE=postgres requires PRIVATE_AGENT_STATE_POSTGRES_URL or DATABASE_URL");
   }
   let sqlPromise = null;
+  let poolPromise = null;
   let initPromise = null;
   let hmacSecretPromise = null;
 
@@ -221,6 +244,14 @@ export function createPostgresWorkerState(databaseUrl) {
       sqlPromise = import("@neondatabase/serverless").then(({ neon }) => neon(databaseUrl));
     }
     return sqlPromise;
+  }
+
+  async function transactionPool() {
+    if (!poolPromise) {
+      poolPromise = import("@neondatabase/serverless")
+        .then(({ Pool }) => new Pool({ connectionString: databaseUrl }));
+    }
+    return poolPromise;
   }
 
   async function ensureInitialized() {
@@ -673,6 +704,197 @@ export function createPostgresWorkerState(databaseUrl) {
         WHERE work_order_commitment = ${workOrderCommitment}
       `;
       return { ok: false, existing: decodeJson(existingRows[0]?.attempt_json) || null };
+    },
+
+    async claimExecutionAttemptWithPolicyUsage(workOrderCommitment, input = {}) {
+      await ensureInitialized();
+      const usage = normalizePolicyUsage(input);
+      const now = new Date().toISOString();
+      const allowedAttempt = {
+        ...(input.allowed_attempt || {}),
+        work_order_commitment: workOrderCommitment,
+        updated_at: now,
+      };
+      const deniedAttempt = {
+        ...(input.denied_attempt || {}),
+        work_order_commitment: workOrderCommitment,
+        updated_at: now,
+      };
+      const lockKeys = [...new Set([
+        `execution-attempt:${workOrderCommitment}`,
+        ...usage.counts.map((item) => policyAdvisoryLockKey("count", item.key)),
+        ...usage.amounts.map((item) => policyAdvisoryLockKey("amount", item.key)),
+      ])].sort();
+      const pool = await transactionPool();
+      const client = await pool.connect();
+      let transactionOpen = false;
+      try {
+        await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+        transactionOpen = true;
+        for (const lockKey of lockKeys) {
+          await client.query(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            [lockKey],
+          );
+        }
+
+        const existingRows = await client.query(
+          `SELECT attempt_json
+           FROM worker_execution_attempts
+           WHERE work_order_commitment = $1`,
+          [workOrderCommitment],
+        );
+        const existing = decodeJson(existingRows.rows[0]?.attempt_json);
+        const rearmExisting = input.rearm_failed_no_submit === true && isPolicyFailedNoSubmitAttempt(existing);
+        if (existing && !rearmExisting) {
+          await client.query("COMMIT");
+          transactionOpen = false;
+          return { ok: false, reason: "attempt_exists", existing };
+        }
+
+        const countRows = usage.counts.length > 0
+          ? await client.query(
+            "SELECT key, count FROM worker_policy_counts WHERE key = ANY($1::text[])",
+            [usage.counts.map((item) => item.key)],
+          )
+          : { rows: [] };
+        const amountRows = usage.amounts.length > 0
+          ? await client.query(
+            "SELECT key, amount FROM worker_policy_amounts WHERE key = ANY($1::text[])",
+            [usage.amounts.map((item) => item.key)],
+          )
+          : { rows: [] };
+        const countsByKey = new Map(
+          countRows.rows.map((row) => [row.key, Number(row.count || 0)]),
+        );
+        const amountsByKey = new Map(
+          amountRows.rows.map((row) => [row.key, Number(row.amount || 0)]),
+        );
+        const denials = [];
+        for (const item of usage.counts) {
+          const current = countsByKey.get(item.key) || 0;
+          if (item.invalid || (
+            Number.isInteger(item.max_count) &&
+            current + item.increment > item.max_count
+          )) {
+            denials.push(item);
+          }
+        }
+        for (const item of usage.amounts) {
+          const current = amountsByKey.get(item.key) || 0;
+          if (item.invalid || (
+            Number.isFinite(item.max_amount) &&
+            item.max_amount > 0 &&
+            current + item.amount > item.max_amount
+          )) {
+            denials.push(item);
+          }
+        }
+        const denied = denials.sort((a, b) => a.ordinal - b.ordinal)[0] || null;
+        if (denied && rearmExisting) {
+          await client.query("COMMIT");
+          transactionOpen = false;
+          return {
+            ok: false,
+            reason: "policy_denied",
+            denied: policyDenialResult(denied),
+            attempt: existing,
+          };
+        }
+        const selectedAttempt = denied
+          ? policyDeniedAttempt(deniedAttempt, denied)
+          : rearmExisting ? rearmedPolicyAttempt(allowedAttempt, existing, now) : allowedAttempt;
+        const claimed = rearmExisting
+          ? await client.query(
+            `UPDATE worker_execution_attempts
+             SET attempt_json = $2::jsonb, status = $3, updated_at = NOW()
+             WHERE work_order_commitment = $1
+               AND status = 'failed_no_submit'
+               AND attempt_json = $4::jsonb
+             RETURNING attempt_json`,
+            [
+              workOrderCommitment,
+              jsonParam(selectedAttempt),
+              selectedAttempt.status || null,
+              jsonParam(existing),
+            ],
+          )
+          : await client.query(
+            `INSERT INTO worker_execution_attempts (
+               work_order_commitment,
+               attempt_json,
+               status,
+               updated_at
+             )
+             VALUES ($1, $2::jsonb, $3, NOW())
+             ON CONFLICT (work_order_commitment) DO NOTHING
+             RETURNING attempt_json`,
+            [workOrderCommitment, jsonParam(selectedAttempt), selectedAttempt.status || null],
+          );
+        if (!claimed.rows[0]) {
+          const racedRows = await client.query(
+            `SELECT attempt_json
+             FROM worker_execution_attempts
+             WHERE work_order_commitment = $1`,
+            [workOrderCommitment],
+          );
+          await client.query("COMMIT");
+          transactionOpen = false;
+          return {
+            ok: false,
+            reason: "attempt_exists",
+            existing: decodeJson(racedRows.rows[0]?.attempt_json) || null,
+          };
+        }
+        if (denied) {
+          await client.query("COMMIT");
+          transactionOpen = false;
+          return {
+            ok: false,
+            reason: "policy_denied",
+            denied: policyDenialResult(denied),
+            attempt: decodeJson(claimed.rows[0].attempt_json) || selectedAttempt,
+          };
+        }
+
+        for (const item of usage.counts) {
+          await client.query(
+            `INSERT INTO worker_policy_counts (key, count, updated_at)
+             VALUES ($1, $2, NOW())
+             ON CONFLICT (key) DO UPDATE SET
+               count = worker_policy_counts.count + excluded.count,
+               updated_at = NOW()`,
+            [item.key, item.increment],
+          );
+        }
+        for (const item of usage.amounts) {
+          await client.query(
+            `INSERT INTO worker_policy_amounts (key, amount, updated_at)
+             VALUES ($1, $2, NOW())
+             ON CONFLICT (key) DO UPDATE SET
+               amount = worker_policy_amounts.amount + excluded.amount,
+               updated_at = NOW()`,
+            [item.key, item.amount],
+          );
+        }
+        await client.query("COMMIT");
+        transactionOpen = false;
+        return {
+          ok: true,
+          attempt: decodeJson(claimed.rows[0].attempt_json) || selectedAttempt,
+        };
+      } catch (error) {
+        if (transactionOpen) {
+          try {
+            await client.query("ROLLBACK");
+          } catch {
+            // Preserve the original transaction failure.
+          }
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
     },
 
     async getExecutionAttempt(workOrderCommitment) {
@@ -1387,30 +1609,45 @@ export function createPostgresWorkerState(databaseUrl) {
 
     async incrementPolicyCount(key, maxCount) {
       const sql = await ensureInitialized();
+      const lockKey = policyAdvisoryLockKey("count", key);
       if (Number.isInteger(maxCount)) {
         if (maxCount <= 0) return { ok: false, count: 0 };
         const rows = await sql`
-          INSERT INTO worker_policy_counts (key, count, updated_at)
-          VALUES (${key}, 1, NOW())
-          ON CONFLICT (key)
-          DO UPDATE SET
-            count = worker_policy_counts.count + 1,
-            updated_at = NOW()
-          WHERE worker_policy_counts.count < ${maxCount}
-          RETURNING count
+          WITH lock AS MATERIALIZED (
+            SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0)) AS acquired
+          ),
+          changed AS (
+            INSERT INTO worker_policy_counts (key, count, updated_at)
+            SELECT ${key}, 1, NOW() FROM lock
+            ON CONFLICT (key)
+            DO UPDATE SET
+              count = worker_policy_counts.count + 1,
+              updated_at = NOW()
+            WHERE worker_policy_counts.count < ${maxCount}
+            RETURNING count
+          )
+          SELECT TRUE AS ok, count FROM changed
+          UNION ALL
+          SELECT FALSE AS ok, COALESCE(current.count, 0) AS count
+          FROM lock
+          LEFT JOIN worker_policy_counts current ON current.key = ${key}
+          WHERE NOT EXISTS (SELECT 1 FROM changed)
+          LIMIT 1
         `;
-        if (rows[0]) return { ok: true, count: Number(rows[0].count || 0) };
-        const current = await sql`
-          SELECT count FROM worker_policy_counts WHERE key = ${key}
-        `;
-        return { ok: false, count: Number(current[0]?.count || 0) };
+        return { ok: Boolean(rows[0]?.ok), count: Number(rows[0]?.count || 0) };
       }
       const rows = await sql`
-        INSERT INTO worker_policy_counts (key, count, updated_at)
-        VALUES (${key}, 1, NOW())
-        ON CONFLICT (key)
-        DO UPDATE SET count = worker_policy_counts.count + 1, updated_at = NOW()
-        RETURNING count
+        WITH lock AS MATERIALIZED (
+          SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0)) AS acquired
+        ),
+        changed AS (
+          INSERT INTO worker_policy_counts (key, count, updated_at)
+          SELECT ${key}, 1, NOW() FROM lock
+          ON CONFLICT (key)
+          DO UPDATE SET count = worker_policy_counts.count + 1, updated_at = NOW()
+          RETURNING count
+        )
+        SELECT count FROM changed
       `;
       return { ok: true, count: Number(rows[0]?.count || 0) };
     },
@@ -1422,30 +1659,46 @@ export function createPostgresWorkerState(databaseUrl) {
       if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
         return { ok: false, amount: 0 };
       }
+      const lockKey = policyAdvisoryLockKey("amount", key);
       if (Number.isFinite(parsedMax) && parsedMax > 0) {
         const rows = await sql`
-          INSERT INTO worker_policy_amounts (key, amount, updated_at)
-          SELECT ${key}, ${parsedAmount}, NOW()
-          WHERE ${parsedAmount} <= ${parsedMax}
-          ON CONFLICT (key)
-          DO UPDATE SET
-            amount = worker_policy_amounts.amount + ${parsedAmount},
-            updated_at = NOW()
-          WHERE worker_policy_amounts.amount + ${parsedAmount} <= ${parsedMax}
-          RETURNING amount
+          WITH lock AS MATERIALIZED (
+            SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0)) AS acquired
+          ),
+          changed AS (
+            INSERT INTO worker_policy_amounts (key, amount, updated_at)
+            SELECT ${key}, ${parsedAmount}, NOW()
+            FROM lock
+            WHERE ${parsedAmount} <= ${parsedMax}
+            ON CONFLICT (key)
+            DO UPDATE SET
+              amount = worker_policy_amounts.amount + ${parsedAmount},
+              updated_at = NOW()
+            WHERE worker_policy_amounts.amount + ${parsedAmount} <= ${parsedMax}
+            RETURNING amount
+          )
+          SELECT TRUE AS ok, amount FROM changed
+          UNION ALL
+          SELECT FALSE AS ok, COALESCE(current.amount, 0) AS amount
+          FROM lock
+          LEFT JOIN worker_policy_amounts current ON current.key = ${key}
+          WHERE NOT EXISTS (SELECT 1 FROM changed)
+          LIMIT 1
         `;
-        if (rows[0]) return { ok: true, amount: Number(rows[0].amount || 0) };
-        const current = await sql`
-          SELECT amount FROM worker_policy_amounts WHERE key = ${key}
-        `;
-        return { ok: false, amount: Number(current[0]?.amount || 0) };
+        return { ok: Boolean(rows[0]?.ok), amount: Number(rows[0]?.amount || 0) };
       }
       const rows = await sql`
-        INSERT INTO worker_policy_amounts (key, amount, updated_at)
-        VALUES (${key}, ${parsedAmount}, NOW())
-        ON CONFLICT (key)
-        DO UPDATE SET amount = worker_policy_amounts.amount + ${parsedAmount}, updated_at = NOW()
-        RETURNING amount
+        WITH lock AS MATERIALIZED (
+          SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0)) AS acquired
+        ),
+        changed AS (
+          INSERT INTO worker_policy_amounts (key, amount, updated_at)
+          SELECT ${key}, ${parsedAmount}, NOW() FROM lock
+          ON CONFLICT (key)
+          DO UPDATE SET amount = worker_policy_amounts.amount + ${parsedAmount}, updated_at = NOW()
+          RETURNING amount
+        )
+        SELECT amount FROM changed
       `;
       return { ok: true, amount: Number(rows[0]?.amount || 0) };
     },
@@ -1564,6 +1817,10 @@ export function createPostgresWorkerState(databaseUrl) {
 
 function jsonParam(value) {
   return JSON.stringify(value ?? null);
+}
+
+function policyAdvisoryLockKey(type, key) {
+  return `policy-${type}:${key}`;
 }
 
 function decodeJson(value) {
@@ -1957,7 +2214,7 @@ async function migrateLegacyPostgresDocument(sql) {
   }
 }
 
-export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
+export function createWorkerStateAdapter({ path, hmacSecret, load, save, atomicUpdate = null }) {
   let mutationQueue = Promise.resolve();
   async function hmacHex(parts) {
     const secret = typeof hmacSecret === "function" ? await hmacSecret() : hmacSecret;
@@ -1972,6 +2229,7 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
 
   function updateState(mutator) {
     const run = mutationQueue.then(async () => {
+      if (typeof atomicUpdate === "function") return atomicUpdate(mutator);
       const state = await loadState();
       const result = await mutator(state);
       await save(state);
@@ -2047,6 +2305,15 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
         state.execution_attempts[workOrderCommitment] = claimed;
         return { ok: true, attempt: claimed };
       });
+    },
+
+    async claimExecutionAttemptWithPolicyUsage(workOrderCommitment, input = {}) {
+      const mutate = (state) => claimExecutionAttemptWithPolicyUsageInState(
+        state,
+        workOrderCommitment,
+        input,
+      );
+      return updateState(mutate);
     },
 
     async getExecutionAttempt(workOrderCommitment) {
@@ -2526,4 +2793,182 @@ function normalizeState(value) {
     hyperliquid_managed_allocations: loaded.hyperliquid_managed_allocations || {},
     omnibus: loaded.omnibus || {},
   };
+}
+
+function normalizePolicyUsage(input = {}) {
+  const countsByKey = new Map();
+  const amountsByKey = new Map();
+  let ordinal = 0;
+
+  for (const raw of Array.isArray(input.counts) ? input.counts : []) {
+    const key = String(raw?.key ?? "");
+    const incrementValue = raw?.increment ?? 1;
+    const increment = Number(incrementValue);
+    const maxValue = raw?.max_count;
+    const maxCount = Number.isInteger(maxValue) ? maxValue : null;
+    const item = {
+      ...raw,
+      type: "count",
+      key,
+      increment,
+      max_count: maxCount,
+      invalid: !key || !Number.isInteger(increment) || increment <= 0,
+      ordinal: ordinal++,
+    };
+    const existing = countsByKey.get(key);
+    if (!existing) {
+      countsByKey.set(key, item);
+      continue;
+    }
+    existing.increment += increment;
+    existing.invalid ||= item.invalid;
+    if (maxCount !== null) {
+      existing.max_count = existing.max_count === null
+        ? maxCount
+        : Math.min(existing.max_count, maxCount);
+    }
+  }
+
+  for (const raw of Array.isArray(input.amounts) ? input.amounts : []) {
+    const key = String(raw?.key ?? "");
+    const amount = Number(raw?.amount);
+    const maxValue = Number(raw?.max_amount);
+    const maxAmount = Number.isFinite(maxValue) && maxValue > 0 ? maxValue : null;
+    const item = {
+      ...raw,
+      type: "amount",
+      key,
+      amount,
+      max_amount: maxAmount,
+      invalid: !key || !Number.isFinite(amount) || amount <= 0,
+      ordinal: ordinal++,
+    };
+    const existing = amountsByKey.get(key);
+    if (!existing) {
+      amountsByKey.set(key, item);
+      continue;
+    }
+    existing.amount += amount;
+    existing.invalid ||= item.invalid;
+    if (maxAmount !== null) {
+      existing.max_amount = existing.max_amount === null
+        ? maxAmount
+        : Math.min(existing.max_amount, maxAmount);
+    }
+  }
+
+  return {
+    counts: [...countsByKey.values()].sort((a, b) => a.ordinal - b.ordinal),
+    amounts: [...amountsByKey.values()].sort((a, b) => a.ordinal - b.ordinal),
+  };
+}
+
+function claimExecutionAttemptWithPolicyUsageInState(state, workOrderCommitment, input = {}) {
+  const existing = state.execution_attempts[workOrderCommitment] || null;
+  const rearmExisting = input.rearm_failed_no_submit === true && isPolicyFailedNoSubmitAttempt(existing);
+  if (existing && !rearmExisting) {
+    return { ok: false, reason: "attempt_exists", existing: structuredClone(existing) };
+  }
+
+  const usage = normalizePolicyUsage(input);
+  const denials = [];
+  for (const item of usage.counts) {
+    const current = Number(state.policy_counts[item.key]?.count || 0);
+    if (item.invalid || (Number.isInteger(item.max_count) && current + item.increment > item.max_count)) {
+      denials.push(item);
+    }
+  }
+  for (const item of usage.amounts) {
+    const current = Number(state.policy_amounts[item.key]?.amount || 0);
+    if (item.invalid || (
+      Number.isFinite(item.max_amount) &&
+      item.max_amount > 0 &&
+      current + item.amount > item.max_amount
+    )) {
+      denials.push(item);
+    }
+  }
+
+  const now = new Date().toISOString();
+  const denied = denials.sort((a, b) => a.ordinal - b.ordinal)[0] || null;
+  if (denied) {
+    const attempt = rearmExisting
+      ? existing
+      : policyDeniedAttempt({
+          ...(input.denied_attempt || {}),
+          work_order_commitment: workOrderCommitment,
+          updated_at: now,
+        }, denied);
+    if (!rearmExisting) state.execution_attempts[workOrderCommitment] = attempt;
+    return {
+      ok: false,
+      reason: "policy_denied",
+      denied: policyDenialResult(denied),
+      attempt: structuredClone(attempt),
+    };
+  }
+
+  for (const item of usage.counts) {
+    const current = Number(state.policy_counts[item.key]?.count || 0);
+    state.policy_counts[item.key] = { count: current + item.increment, updated_at: now };
+  }
+  for (const item of usage.amounts) {
+    const current = Number(state.policy_amounts[item.key]?.amount || 0);
+    state.policy_amounts[item.key] = { amount: current + item.amount, updated_at: now };
+  }
+  const allowedAttempt = {
+    ...(input.allowed_attempt || {}),
+    work_order_commitment: workOrderCommitment,
+    updated_at: now,
+  };
+  const attempt = rearmExisting
+    ? rearmedPolicyAttempt(allowedAttempt, existing, now)
+    : allowedAttempt;
+  state.execution_attempts[workOrderCommitment] = attempt;
+  return { ok: true, attempt: structuredClone(attempt) };
+}
+
+function isPolicyFailedNoSubmitAttempt(attempt) {
+  return attempt?.status === "failed_no_submit" &&
+    attempt.submit_count === 0 &&
+    Number(attempt.ambiguity_retry_count || 0) === 0 &&
+    attempt.final_proof == null &&
+    /_policy_failed_no_submit$/.test(String(attempt.result_seed?.kind || ""));
+}
+
+function policyDeniedAttempt(attempt, denied) {
+  return {
+    ...attempt,
+    policy_denial: policyDenialResult(denied),
+  };
+}
+
+function rearmedPolicyAttempt(attempt, existing, now) {
+  const priorLineage = Array.isArray(existing.policy_rearm_lineage)
+    ? existing.policy_rearm_lineage.slice(-7)
+    : [];
+  return {
+    ...attempt,
+    policy_rearm_count: Number.isSafeInteger(existing.policy_rearm_count)
+      ? existing.policy_rearm_count + 1
+      : 1,
+    policy_rearm_lineage: [
+      ...priorLineage,
+      {
+        status: existing.status,
+        submit_count: existing.submit_count,
+        ambiguity_retry_count: existing.ambiguity_retry_count ?? 0,
+        result_seed: structuredClone(existing.result_seed || null),
+        policy_denial: structuredClone(existing.policy_denial || null),
+        created_at: existing.created_at || null,
+        updated_at: existing.updated_at || null,
+        rearmed_at: now,
+      },
+    ],
+  };
+}
+
+function policyDenialResult(item) {
+  const { invalid: _invalid, ordinal: _ordinal, ...denied } = item;
+  return denied;
 }

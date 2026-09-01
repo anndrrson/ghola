@@ -191,6 +191,29 @@ describe("full-ticket execution policy", () => {
     );
   });
 
+  it("compares Coinbase logical reduce-only base sizes without float tolerance", async () => {
+    const exactBase = "0.0010000000000000001";
+    await enforceInstructionPolicy({
+      body: coinbaseRecoveryBody(),
+      instruction: coinbaseReduceOnlyOrder({ base_size: exactBase }),
+      session: null,
+      state: coinbaseRecoveryState({ signedBaseSize: exactBase }),
+      trusted_internal: true,
+      account_usage: false,
+    });
+    await assert.rejects(
+      () => enforceInstructionPolicy({
+        body: coinbaseRecoveryBody(),
+        instruction: coinbaseReduceOnlyOrder({ base_size: "0.0010000000000000002" }),
+        session: null,
+        state: coinbaseRecoveryState({ signedBaseSize: exactBase }),
+        trusted_internal: true,
+        account_usage: false,
+      }),
+      /exceeds the recorded base position/,
+    );
+  });
+
   it("preserves sealed agent mandates during normalization", () => {
     const instruction = hyperliquidFullTicketOrder({}, {
       mandate: {
@@ -349,7 +372,7 @@ function coinbaseRecoveryBody() {
   };
 }
 
-function coinbaseRecoveryState() {
+function coinbaseRecoveryState({ signedBaseSize = 0.25 } = {}) {
   return {
     async getAutopilotSession() {
       return { session_policy: { policy_commitment: "policy_recovery_test" } };
@@ -359,7 +382,7 @@ function coinbaseRecoveryState() {
         venue_id: "coinbase_advanced",
         market: "SOL-USD",
         signed_notional_micro_usdc: 25_000_000,
-        signed_base_size: 0.25,
+        signed_base_size: signedBaseSize,
       }];
     },
   };

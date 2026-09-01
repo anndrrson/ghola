@@ -13,6 +13,97 @@ test("accepts the complete cross-venue Carry execution contract", () => {
   assert.equal(checkCarryExecutionContract(sources).ok, true);
 });
 
+test("rejects release validation when any venue bypasses the atomic policy-and-attempt claim", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privateExecution: sources.privateExecution.replace(
+        "pendingAttempt = await claimSubmissionAfterPolicyValidation({",
+        "pendingAttempt = await claimExecutionAttemptOnly({",
+      ),
+    }),
+    /durable_atomic_policy_adapter_claim_missing/,
+  );
+});
+
+test("rejects release validation when quota updates are detached from the claimed attempt", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      workerState: sources.workerState.replace(
+        'client.query("BEGIN ISOLATION LEVEL READ COMMITTED")',
+        'client.query("SELECT 1")',
+      ),
+    }),
+    /durable_atomic_policy_postgres_transaction_missing/,
+  );
+});
+
+test("rejects rearming a failed-no-submit attempt without zero-submit proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      workerState: sources.workerState.replace(
+        "attempt.submit_count === 0",
+        "attempt.submit_count >= 0",
+      ),
+    }),
+    /durable_atomic_policy_rearm_zero_submit_missing/,
+  );
+});
+
+test("rejects rearming a failed-no-submit attempt with prior ambiguity", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      workerState: sources.workerState.replace(
+        "Number(attempt.ambiguity_retry_count || 0) === 0",
+        "Number(attempt.ambiguity_retry_count || 0) >= 0",
+      ),
+    }),
+    /durable_atomic_policy_rearm_no_ambiguity_missing/,
+  );
+});
+
+test("rejects a Postgres policy rearm without exact-prior compare", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      workerState: sources.workerState.replace(
+        "AND attempt_json = $4::jsonb",
+        "AND attempt_json IS NOT NULL",
+      ),
+    }),
+    /durable_atomic_policy_postgres_exact_prior_compare_missing/,
+  );
+});
+
+test("rejects release validation when SQLite bypasses its atomic state transaction", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      workerState: sources.workerState.replace(
+        'if (typeof atomicUpdate === "function") return atomicUpdate(mutator);',
+        'if (false) return atomicUpdate(mutator);',
+      ),
+    }),
+    /durable_atomic_policy_sqlite_routing_missing/,
+  );
+});
+
+test("rejects release validation without distinct allowed and denied attempt bindings", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privateExecution: sources.privateExecution.replace(
+        "denied_attempt: deniedAttempt",
+        "denied_attempt: allowedAttempt",
+      ),
+    }),
+    /durable_atomic_policy_denied_binding_missing/,
+  );
+});
+
 test("rejects release validation without direct Lighter atomic submission proof", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -23,6 +114,232 @@ test("rejects release validation without direct Lighter atomic submission proof"
       ),
     }),
     /lighter_atomic_submit_concurrency_test_missing/,
+  );
+});
+
+test("rejects terminal status inherited from lower-fill evidence", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replace(
+        "terminal = proof?.final_venue_execution_proven === true;\n      selectedEvidence = true;\n      terminalRegressed = false;",
+        "terminal ||= proof?.final_venue_execution_proven === true;\n      selectedEvidence = true;",
+      ),
+    }),
+    /carry_recovery_highest_fill_terminal_reset_missing/,
+  );
+});
+
+test("rejects same-fill terminal evidence that can regress true to false open", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replace(
+        "if (selectedEvidence && terminal && !candidateTerminal) {\n        terminal = false;\n        terminalRegressed = true;",
+        "if (selectedEvidence && terminal && !candidateTerminal) {\n        terminal = true;\n        terminalRegressed = false;",
+      ),
+    }),
+    /carry_recovery_terminal_regression_fail_closed_missing/,
+  );
+});
+
+test("rejects recovery that cannot advance same-fill evidence from nonterminal to terminal", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replace(
+        "} else if (!terminalRegressed && candidateTerminal) {\n        terminal = true;",
+        "} else if (false) {\n        terminal = true;",
+      ),
+    }),
+    /carry_recovery_terminal_progression_missing/,
+  );
+});
+
+test("rejects exact base evidence retained below the selected fill amount", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replace(
+        "let filledBase = evidenceMicro === filledMicro ? evidenceBase : null;",
+        "let filledBase = evidenceBase;",
+      ),
+    }),
+    /carry_recovery_highest_fill_exact_base_binding_missing/,
+  );
+});
+
+test("rejects terminal proof detached from the final selected fill amount", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replace(
+        "if (evidenceMicro !== filledMicro) terminal = false;",
+        "if (evidenceMicro !== filledMicro) terminal = true;",
+      ),
+    }),
+    /carry_recovery_terminal_fill_binding_missing/,
+  );
+});
+
+test("rejects a full requested fill applied before terminal proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replace(
+        "const applicableFilledMicro = !progress.terminal && progress.filledMicro === requestedMicro\n    ? appliedMicro\n    : progress.filledMicro;",
+        "const applicableFilledMicro = progress.filledMicro;",
+      ),
+    }),
+    /carry_recovery_nonterminal_full_fill_withhold_missing/,
+  );
+});
+
+test("rejects reconciled unwind progress detached from durable position state", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replace(
+        'if (action === "unwind" && targetCumulative > currentCumulative) {',
+        "if (false) {",
+      ),
+    }),
+    /carry_recovery_reconciled_unwind_position_sync_missing/,
+  );
+});
+
+test("rejects terminal saga advancement before durable unwind position state", () => {
+  const safePositionWrite = `    await putRecoveryPosition({
+      state,
+      session,
+      saga: current,
+      leg: { ...currentLeg, unwind_filled_micro_usdc: targetCumulative },
+      filledBase,
+      nowMs,
+    });`;
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replace(safePositionWrite, ""),
+    }),
+    /carry_recovery_(reconciled_unwind_position_sync|position_before_terminal)_missing/,
+  );
+});
+
+test("rejects removal of terminal-zero crash recovery coverage", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestratorTest: sources.multiLegOrchestratorTest.replace(
+        "recovers a persisted terminal-zero unwind receipt without retrying the order",
+        "ignores a persisted terminal-zero unwind receipt",
+      ),
+    }),
+    /carry_recovery_terminal_zero_crash_test_missing/,
+  );
+});
+
+test("rejects recovery submission without a durable pre-broadcast intent", () => {
+  const source = sources.multiLegOrchestrator;
+  const start = source.indexOf(
+    'const workOrderCommitment = recoveryWorkOrder(current, leg, "unwind", remainingMicro);',
+  );
+  const head = source.slice(0, start);
+  const tail = source.slice(start).replace("await storeRecoveryAccounting({", "await Promise.resolve({");
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, multiLegOrchestrator: head + tail }),
+    /carry_recovery_unwind_intent_before_submit_missing/,
+  );
+});
+
+test("rejects removal of a two-phase unwind crash boundary", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestratorTest: sources.multiLegOrchestratorTest.replace(
+        'for (const boundary of ["applied-accounting", "flat-position"])',
+        'for (const boundary of ["applied-accounting"])',
+      ),
+    }),
+    /carry_recovery_two_phase_crash_matrix_missing/,
+  );
+});
+
+test("rejects removal of the full-base nonterminal completion regression", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestratorTest: sources.multiLegOrchestratorTest.replace(
+        "keeps a full-base nonterminal completion compensating until exact reconciliation",
+        "accepts full-base completion without terminal proof",
+      ),
+    }),
+    /carry_recovery_full_nonterminal_completion_test_missing/,
+  );
+});
+
+test("rejects removal of zero-applied accounting before residual reconciliation", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestratorTest: sources.multiLegOrchestratorTest.replace(
+        "[6_000_000, 0]",
+        "[6_000_000, 4_000_000]",
+      ),
+    }),
+    /carry_recovery_partial_nonterminal_accounting_test_missing/,
+  );
+});
+
+test("rejects partial completion that overwrites original submission state", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreMultiLeg: sources.coreMultiLeg.replace(
+        "const originalSubmissionStatus = leg.submission_status;\n    applyFill(leg, event.cumulative_filled_micro_usdc, \"filled_micro_usdc\");\n    leg.submission_status = originalSubmissionStatus;",
+        "applyFill(leg, event.cumulative_filled_micro_usdc, \"filled_micro_usdc\");",
+      ),
+    }),
+    /carry_partial_completion_submission_status_preservation_missing/,
+  );
+});
+
+test("rejects removal of crash-after-cancel terminal progression proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestratorTest: sources.multiLegOrchestratorTest.replace(
+        "recovers a crash after exact cancel without cancelling twice",
+        "does not prove crash-after-cancel recovery",
+      ),
+    }),
+    /carry_cancel_ack_restart_test_missing/,
+  );
+});
+
+test("rejects recovery decimal comparison that bypasses bounded canonical parsing", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replace(
+        "function samePositiveDecimal(left, right) {\n  const normalizedLeft = canonicalExactPositiveDecimal(left);\n  return normalizedLeft !== null && normalizedLeft === canonicalExactPositiveDecimal(right);\n}",
+        "function samePositiveDecimal(left, right) {\n  return Number(left) === Number(right);\n}",
+      ),
+    }),
+    /carry_recovery_exact_decimal_comparator_missing/,
+  );
+});
+
+test("rejects unbounded recovery decimal precision", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replace(
+        "if (match[1].length + fraction.length > MAX_EXACT_BASE_DIGITS || fraction.length > MAX_EXACT_BASE_SCALE) return null;",
+        "if (false) return null;",
+      ),
+    }),
+    /carry_recovery_exact_decimal_bounds_missing/,
   );
 });
 

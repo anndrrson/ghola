@@ -169,7 +169,9 @@ function applyEvent(saga, event, nowMs) {
   }
   if (event.type === "completion_fill") {
     const leg = sagaLeg(saga, event.leg_id);
+    const originalSubmissionStatus = leg.submission_status;
     applyFill(leg, event.cumulative_filled_micro_usdc, "filled_micro_usdc");
+    leg.submission_status = originalSubmissionStatus;
     settleCompensation(saga);
     return;
   }

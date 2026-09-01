@@ -155,6 +155,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   asterTest: "apps/private-agent-worker/test/aster.test.js",
   lighterTest: "apps/private-agent-worker/test/lighter.test.js",
   lighterConcurrencyTest: "apps/private-agent-worker/test/lighter-concurrency.test.js",
+  privateStatePolicyClaimTest: "apps/private-agent-worker/test/private-state-policy-claim.test.js",
   hyperliquidMetricsTest: "apps/private-agent-worker/test/hyperliquid-account-metrics.test.js",
   hyperliquidReconcileTest: "apps/private-agent-worker/test/hyperliquid-reconcile.test.js",
   liquidationDistanceTest: "apps/private-agent-worker/test/liquidation-distance.test.js",
@@ -256,13 +257,19 @@ export function checkCarryExecutionContract(sources) {
   requireText("multiLegOrchestratorTest", "reduce_only === true", "carry_recovery_reduce_only_assertion_missing");
   requireText("coreMultiLeg", '"leg_finalized"', "carry_terminal_reconciliation_event_missing");
   requireText("coreMultiLegTest", "records a venue-terminal leg without claiming that Ghola cancelled it", "carry_terminal_reconciliation_event_test_missing");
+  requireText(
+    "coreMultiLeg",
+    "const originalSubmissionStatus = leg.submission_status;\n    applyFill(leg, event.cumulative_filled_micro_usdc, \"filled_micro_usdc\");\n    leg.submission_status = originalSubmissionStatus;",
+    "carry_partial_completion_submission_status_preservation_missing",
+  );
+  requireText("coreMultiLegTest", 'assert.equal(saga.legs[1].submission_status, "failed")', "carry_partial_completion_submission_status_test_missing");
   requireText("multiLegOrchestrator", '"reconcile_before_cancel"', "carry_reconcile_before_cancel_missing");
   requireText("multiLegOrchestrator", '"reconcile_after_cancel"', "carry_reconcile_after_cancel_missing");
   requireText("multiLegOrchestratorTest", "recovers a crash after exact cancel without cancelling twice", "carry_cancel_ack_restart_test_missing");
   requireText("multiLegOrchestratorTest", "reconciles a terminal late fill before cancel and never cancels or resubmits it", "carry_late_fill_before_cancel_test_missing");
   requireText("multiLegOrchestrator", "settlePriorRecoveryExecutions", "carry_recovery_child_reconciliation_missing");
   requireText("multiLegOrchestrator", "applied_filled_micro_usdc", "carry_recovery_incremental_fill_accounting_missing");
-  requireText("multiLegOrchestratorTest", "reconciles a partial recovery child before submitting the residual unwind", "carry_partial_recovery_child_test_missing");
+  requireText("multiLegOrchestratorTest", "preserves exact base precision while reconciling a partial recovery child and residual unwind", "carry_partial_recovery_child_test_missing");
   requireCount("multiLegOrchestrator", "recoveryProofTargetsLeg(", 3, "carry_recovery_exact_target_gate_missing");
   requireText(
     "multiLegOrchestrator",
@@ -275,7 +282,7 @@ export function checkCarryExecutionContract(sources) {
     "carry_recovery_venue_registry_duplicated",
   );
   requireText("multiLegOrchestrator", "proof?.broadcast_performed === true", "carry_recovery_live_broadcast_gate_missing");
-  requireText("multiLegOrchestratorTest", "rejects a mismatched target", "carry_recovery_exact_target_test_missing");
+  requireText("multiLegOrchestratorTest", "target_client_order_matched: childReconcileAttempts > 1", "carry_recovery_exact_target_test_missing");
   requireText("multiLegOrchestratorTest", "reconciles a partial reduce-only completion for every ordered execution pair", "carry_partial_completion_pair_matrix_missing");
   requireCount("multiLegOrchestrator", "await verifyRecoveryOrderNoSubmit({", 2, "carry_recovery_exact_no_submit_gate_missing");
   requireText("multiLegOrchestrator", "receipt?.checks?.transaction_broadcast !== false", "carry_recovery_no_broadcast_proof_missing");
@@ -1009,13 +1016,181 @@ export function checkCarryExecutionContract(sources) {
   forbidText("evidenceVerifier", "shadowQualification.expected_snapshots_per_sample === 15", "carry_release_shadow_snapshot_count_hardcoded");
   requireText("evidenceVerifierTest", "rejects funding not reconciled to exact venue legs", "carry_release_funding_reconciliation_test_missing");
   requireText("evidenceVerifierTest", "rejects missing, incomplete, or image-mismatched five-venue shadow qualification", "carry_release_shadow_qualification_test_missing");
-  requireCount("privateExecution", "submit_count: readOnlyReconcile ? 0 : 1", 3, "durable_submit_count_missing");
   requireText("privateExecution", "ambiguity_retry_count: 0", "durable_retry_count_missing");
-  requireCount("privateExecution", "persistPreSubmissionAttempt({", 3, "durable_atomic_submit_claim_missing");
-  requireText("privateExecution", "state.claimExecutionAttempt(workOrderCommitment, attempt)", "durable_atomic_state_claim_missing");
+  requireText("privateExecution", "async function claimSubmissionAfterPolicyValidation({", "durable_atomic_policy_claim_helper_missing");
+  requireCount("privateExecution", "= await claimSubmissionAfterPolicyValidation({", 3, "durable_atomic_policy_adapter_claim_missing");
+  requireText("privateExecution", 'typeof state.claimExecutionAttemptWithPolicyUsage !== "function"', "durable_atomic_policy_fail_closed_missing");
+  requireText("privateExecution", "const allowedAttempt = {", "durable_atomic_allowed_attempt_missing");
+  requireText("privateExecution", "...attempt,\n    submit_count: 1,", "durable_atomic_allowed_submit_count_missing");
+  requireText("privateExecution", "const deniedAttempt = {", "durable_atomic_denied_attempt_missing");
+  requireText("privateExecution", 'status: "failed_no_submit",\n    submit_count: 0,', "durable_atomic_denied_attempt_status_missing");
+  requireText("privateExecution", "state.claimExecutionAttemptWithPolicyUsage(body.work_order_commitment, {", "durable_atomic_policy_state_claim_missing");
+  requireText("privateExecution", "allowed_attempt: allowedAttempt", "durable_atomic_policy_allowed_binding_missing");
+  requireText("privateExecution", "denied_attempt: deniedAttempt", "durable_atomic_policy_denied_binding_missing");
+  requireText("privateExecution", "counts: collector.counts", "durable_atomic_policy_count_binding_missing");
+  requireText("privateExecution", "amounts: collector.amounts", "durable_atomic_policy_amount_binding_missing");
+  forbidText("privateExecution", "persistPreSubmissionAttempt({", "durable_legacy_split_submit_claim_forbidden");
+  forbidText("privateExecution", "state.claimExecutionAttempt(", "durable_legacy_attempt_only_claim_forbidden");
+  requireCount("workerState", "async claimExecutionAttemptWithPolicyUsage(workOrderCommitment, input = {}) {", 2, "durable_atomic_policy_state_implementations_missing");
+  requireText("workerState", 'client.query("BEGIN ISOLATION LEVEL READ COMMITTED")', "durable_atomic_policy_postgres_transaction_missing");
+  requireText("workerState", '"SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"', "durable_atomic_policy_postgres_lock_missing");
+  requireText("workerState", "const selectedAttempt = denied\n          ? policyDeniedAttempt(deniedAttempt, denied)", "durable_atomic_policy_attempt_decision_missing");
+  requireText("workerState", "const claimed = rearmExisting", "durable_atomic_policy_attempt_insert_missing");
+  requireCount(
+    "workerState",
+    "input.rearm_failed_no_submit === true && isPolicyFailedNoSubmitAttempt(existing)",
+    2,
+    "durable_atomic_policy_rearm_predicate_missing",
+  );
+  requireText("workerState", 'attempt?.status === "failed_no_submit"', "durable_atomic_policy_rearm_status_missing");
+  requireText("workerState", "attempt.submit_count === 0", "durable_atomic_policy_rearm_zero_submit_missing");
+  requireText("workerState", "Number(attempt.ambiguity_retry_count || 0) === 0", "durable_atomic_policy_rearm_no_ambiguity_missing");
+  requireText("workerState", "attempt.final_proof == null", "durable_atomic_policy_rearm_no_final_proof_missing");
+  requireText("workerState", "/_policy_failed_no_submit$/.test", "durable_atomic_policy_rearm_policy_proof_missing");
+  requireText("workerState", "AND attempt_json = $4::jsonb", "durable_atomic_policy_postgres_exact_prior_compare_missing");
+  requireText("workerState", "jsonParam(existing)", "durable_atomic_policy_postgres_exact_prior_binding_missing");
+  requireText("workerState", 'await client.query("ROLLBACK")', "durable_atomic_policy_postgres_rollback_missing");
+  requireText("workerState", "const mutate = (state) => claimExecutionAttemptWithPolicyUsageInState(", "durable_atomic_policy_local_mutation_missing");
+  requireText("workerState", "function atomicUpdate(mutator) {", "durable_atomic_policy_sqlite_transaction_missing");
+  requireText("workerState", 'db.exec("BEGIN IMMEDIATE")', "durable_atomic_policy_sqlite_begin_missing");
+  requireText("workerState", 'if (typeof atomicUpdate === "function") return atomicUpdate(mutator);', "durable_atomic_policy_sqlite_routing_missing");
+  requireText("workerState", "return updateState(mutate)", "durable_atomic_policy_file_transaction_missing");
+  requireText("privateStatePolicyClaimTest", "atomic policy claim rolls back every quota charge when a later quota denies", "durable_atomic_policy_rollback_test_missing");
+  requireText("privateStatePolicyClaimTest", "duplicate concurrent atomic claims charge quota exactly once", "durable_atomic_policy_duplicate_test_missing");
+  requireText("privateStatePolicyClaimTest", "a policy-proven no-submit attempt rearms once after quota permits and preserves lineage", "durable_atomic_policy_rearm_test_missing");
+  requireText("privateStatePolicyClaimTest", "ambiguous attempts can never use the policy no-submit rearm", "durable_atomic_policy_rearm_ambiguity_test_missing");
+  requireText("privateStatePolicyClaimTest", "SQLite serializes competing quota claims across adapter instances", "durable_atomic_policy_sqlite_concurrency_test_missing");
   requireText("asterTest", "atomically claims one Aster submission under concurrent identical requests", "durable_atomic_submit_concurrency_test_missing");
   requireText("serverTest", "atomically accepts one concurrent Hyperliquid submission", "hyperliquid_atomic_submit_concurrency_test_missing");
   requireText("lighterConcurrencyTest", "atomically permits exactly one Lighter submission under concurrent identical requests", "lighter_atomic_submit_concurrency_test_missing");
+  requireText(
+    "multiLegOrchestrator",
+    "if (evidenceMicro === null || candidateMicro > evidenceMicro) {\n      evidenceMicro = candidateMicro;\n      evidenceBase = candidateBase;",
+    "carry_recovery_highest_fill_selection_missing",
+  );
+  requireText(
+    "multiLegOrchestrator",
+    "terminal = proof?.final_venue_execution_proven === true;\n      selectedEvidence = true;\n      terminalRegressed = false;",
+    "carry_recovery_highest_fill_terminal_reset_missing",
+  );
+  requireText(
+    "multiLegOrchestrator",
+    "} else if (candidateMicro === evidenceMicro) {",
+    "carry_recovery_equal_highest_fill_selection_missing",
+  );
+  requireText(
+    "multiLegOrchestrator",
+    "if (selectedEvidence && terminal && !candidateTerminal) {\n        terminal = false;\n        terminalRegressed = true;",
+    "carry_recovery_terminal_regression_fail_closed_missing",
+  );
+  requireText(
+    "multiLegOrchestrator",
+    "} else if (!terminalRegressed && candidateTerminal) {\n        terminal = true;",
+    "carry_recovery_terminal_progression_missing",
+  );
+  requireText(
+    "multiLegOrchestrator",
+    "let filledBase = evidenceMicro === filledMicro ? evidenceBase : null;",
+    "carry_recovery_highest_fill_exact_base_binding_missing",
+  );
+  requireText(
+    "multiLegOrchestrator",
+    "if (evidenceMicro !== filledMicro) terminal = false;",
+    "carry_recovery_terminal_fill_binding_missing",
+  );
+  requireText(
+    "multiLegOrchestrator",
+    "const applicableFilledMicro = !progress.terminal && progress.filledMicro === requestedMicro\n    ? appliedMicro\n    : progress.filledMicro;",
+    "carry_recovery_nonterminal_full_fill_withhold_missing",
+  );
+  requireText("multiLegOrchestrator", "const applicableProgress = { ...progress, filledMicro: applicableFilledMicro };", "carry_recovery_applicable_progress_missing");
+  requireText(
+    "multiLegOrchestrator",
+    'const startingCumulative = action === "unwind"\n    ? currentLeg.filled_micro_usdc - requestedMicro\n    : currentLeg.notional_micro_usdc - requestedMicro;',
+    "carry_recovery_child_baseline_missing",
+  );
+  requireText(
+    "multiLegOrchestrator",
+    "const targetCumulative = Math.min(cumulativeLimit, startingCumulative + applicableFilledMicro);",
+    "carry_recovery_replay_target_missing",
+  );
+  requireText("multiLegOrchestrator", "appliedFilledMicro: applicableFilledMicro", "carry_recovery_applicable_accounting_missing");
+  requireText("multiLegOrchestrator", "positionFilledBase: execution.position_filled_base_size", "carry_recovery_position_evidence_persistence_missing");
+  requireText("multiLegOrchestrator", "progress: applicableProgress", "carry_recovery_applicable_result_missing");
+  requireText(
+    "multiLegOrchestrator",
+    'if (action === "unwind" && targetCumulative > currentCumulative) {',
+    "carry_recovery_reconciled_unwind_position_sync_missing",
+  );
+  requireText(
+    "multiLegOrchestrator",
+    "leg: { ...currentLeg, unwind_filled_micro_usdc: targetCumulative },",
+    "carry_recovery_reconciled_unwind_position_evidence_missing",
+  );
+  requireText("multiLegOrchestrator", "position_filled_base_size: evidence.filledBase", "carry_recovery_reconciled_unwind_exact_base_missing");
+  const recoveryProgressSource = String(sources.multiLegOrchestrator || "");
+  const recoveryProgressStart = recoveryProgressSource.indexOf("async function applyRecoveryExecutionProgress(");
+  const recoveryProgressEnd = recoveryProgressSource.indexOf("\nasync function applyRecoveryFillIfNew(", recoveryProgressStart);
+  const recoveryProgress = recoveryProgressStart >= 0 && recoveryProgressEnd > recoveryProgressStart
+    ? recoveryProgressSource.slice(recoveryProgressStart, recoveryProgressEnd)
+    : "";
+  const recoveryAccountingWrite = recoveryProgress.indexOf("await storeRecoveryAccounting({");
+  const recoveryPositionWrite = recoveryProgress.indexOf("await putRecoveryPosition({");
+  const recoverySagaWrite = recoveryProgress.indexOf("await applyDurableMultiLegEvent({");
+  if (recoveryAccountingWrite < 0 || recoverySagaWrite < 0 || recoveryAccountingWrite >= recoverySagaWrite) {
+    failures.push("carry_recovery_accounting_before_terminal_missing");
+  }
+  if (recoveryPositionWrite < 0 || recoverySagaWrite < 0 || recoveryPositionWrite >= recoverySagaWrite) {
+    failures.push("carry_recovery_position_before_terminal_missing");
+  }
+  const unwindSubmitStart = recoveryProgressSource.indexOf(
+    'const workOrderCommitment = recoveryWorkOrder(current, leg, "unwind", remainingMicro);',
+  );
+  const unwindSubmitEnd = recoveryProgressSource.indexOf("\nasync function executeRiskReducingCompletion(", unwindSubmitStart);
+  const unwindSubmit = unwindSubmitStart >= 0 && unwindSubmitEnd > unwindSubmitStart
+    ? recoveryProgressSource.slice(unwindSubmitStart, unwindSubmitEnd)
+    : "";
+  const unwindIntentWrite = unwindSubmit.indexOf("await storeRecoveryAccounting({");
+  const unwindBroadcast = unwindSubmit.indexOf("const receipt = await executeOrder(");
+  if (unwindIntentWrite < 0 || unwindBroadcast < 0 || unwindIntentWrite >= unwindBroadcast) {
+    failures.push("carry_recovery_unwind_intent_before_submit_missing");
+  }
+  const completionSubmitStart = recoveryProgressSource.indexOf(
+    'const workOrderCommitment = recoveryWorkOrder(current, leg, "completion", remainingMicro);',
+  );
+  const completionSubmitEnd = recoveryProgressSource.indexOf("\nasync function settlePriorRecoveryExecutions(", completionSubmitStart);
+  const completionSubmit = completionSubmitStart >= 0 && completionSubmitEnd > completionSubmitStart
+    ? recoveryProgressSource.slice(completionSubmitStart, completionSubmitEnd)
+    : "";
+  const completionIntentWrite = completionSubmit.indexOf("await storeRecoveryAccounting({");
+  const completionBroadcast = completionSubmit.indexOf("const receipt = await executeOrder(");
+  if (completionIntentWrite < 0 || completionBroadcast < 0 || completionIntentWrite >= completionBroadcast) {
+    failures.push("carry_recovery_completion_intent_before_submit_missing");
+  }
+  requireText("multiLegOrchestratorTest", "never pairs newer fill notional with stale exact base evidence", "carry_recovery_newer_fill_stale_base_test_missing");
+  requireText("multiLegOrchestratorTest", "reconciles after a crash between recovery broadcast and receipt persistence without resubmitting", "carry_recovery_broadcast_crash_test_missing");
+  requireText("multiLegOrchestratorTest", 'for (const boundary of ["applied-accounting", "flat-position"])', "carry_recovery_two_phase_crash_matrix_missing");
+  requireText("multiLegOrchestratorTest", "replays a crash after ${boundary} persistence without resubmitting the unwind", "carry_recovery_two_phase_replay_test_missing");
+  requireText("multiLegOrchestratorTest", "replays completion after applied accounting without resubmitting", "carry_recovery_completion_accounting_crash_test_missing");
+  requireText("multiLegOrchestratorTest", "recovers a persisted terminal-zero unwind receipt without retrying the order", "carry_recovery_terminal_zero_crash_test_missing");
+  requireText("multiLegOrchestratorTest", "persists unwind accounting and flat position before terminal saga advancement", "carry_recovery_terminal_side_effect_order_test_missing");
+  requireText("multiLegOrchestratorTest", "keeps a full-base nonterminal completion compensating until exact reconciliation", "carry_recovery_full_nonterminal_completion_test_missing");
+  requireText("multiLegOrchestratorTest", "[6_000_000, 0]", "carry_recovery_partial_nonterminal_accounting_test_missing");
+  requireText("multiLegOrchestratorTest", 'assert.equal(positions[0].recovery_component_signed_base_size, "0")', "carry_recovery_reconciled_unwind_position_test_missing");
+  requireText(
+    "multiLegOrchestrator",
+    "function samePositiveDecimal(left, right) {\n  const normalizedLeft = canonicalExactPositiveDecimal(left);\n  return normalizedLeft !== null && normalizedLeft === canonicalExactPositiveDecimal(right);\n}",
+    "carry_recovery_exact_decimal_comparator_missing",
+  );
+  requireText("multiLegOrchestrator", "const MAX_EXACT_BASE_DIGITS = 80;", "carry_recovery_exact_decimal_digit_bound_missing");
+  requireText("multiLegOrchestrator", "const MAX_EXACT_BASE_SCALE = 40;", "carry_recovery_exact_decimal_scale_bound_missing");
+  requireText("multiLegOrchestrator", "if (text.length > MAX_EXACT_BASE_DIGITS + 1) return null;", "carry_recovery_exact_decimal_length_gate_missing");
+  requireText(
+    "multiLegOrchestrator",
+    "if (match[1].length + fraction.length > MAX_EXACT_BASE_DIGITS || fraction.length > MAX_EXACT_BASE_SCALE) return null;",
+    "carry_recovery_exact_decimal_bounds_missing",
+  );
+  requireText("multiLegOrchestratorTest", "restart rejects an oversized exact-base receipt before decimal expansion", "carry_recovery_exact_decimal_bounds_test_missing");
   requireText("privateExecution", 'venueAdapterCapability(venueId, capability)', "worker_carry_capability_registry_missing");
   requireText("privateExecution", 'registeredCarryAdapter(venue_id, "carry_execution")', "worker_carry_execution_registry_dispatch_missing");
   requireText("privateExecution", 'registeredCarryAdapter(venue_id, "no_submit_reconciliation")', "worker_carry_no_submit_registry_dispatch_missing");
