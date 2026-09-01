@@ -6,6 +6,10 @@ const source = readFileSync(
   resolve(process.cwd(), "src/components/carry/CarryAccountSetup.tsx"),
   "utf8",
 );
+const turnkeyProviderSource = readFileSync(
+  resolve(process.cwd(), "src/lib/perps-turnkey-provider.tsx"),
+  "utf8",
+);
 
 describe("Lighter activation readiness UI", () => {
   it("separates the verified owner account from both network-fee requirements", () => {
@@ -23,6 +27,32 @@ describe("Lighter activation readiness UI", () => {
     expect(source).toContain("Account identity · not a deposit address");
     expect(source).toContain("View official Lighter requirements");
     expect(source).toContain('scopedActivationNeeded.venue === "aster" && (');
+  });
+
+  it("shows a copy action only after the authenticated UDA contract verifies every field", () => {
+    expect(source).toContain("fetchVerifiedLighterDepositDestination");
+    expect(source).toContain("validateVerifiedLighterDepositDestination");
+    expect(source).toContain("signLighterDepositAuthorization: perpsTurnkey.signLighterDepositAuthorization");
+    expect(source).toContain('data-lighter-deposit-verified="false"');
+    expect(source).toContain('data-lighter-deposit-verified="true"');
+    expect(source).toContain("Verified Lighter deposit address");
+    expect(source).toContain("Generate verified deposit address");
+    expect(source).toContain("Never send to the owner address.");
+    expect(turnkeyProviderSource).toContain("const signLighterDepositAuthorization = useCallback");
+    expect(turnkeyProviderSource).toContain("validateLighterDepositAuthorizationMessage(message, expectedOwnerAddress)");
+    expect(turnkeyProviderSource).toContain("withOneStableTurnkeyRefresh");
+    expect(turnkeyProviderSource).toContain("pair.owner.address.toLowerCase() !== expectedOwnerAddress.toLowerCase()");
+    expect(turnkeyProviderSource).not.toContain("signOwnerMessage:");
+    expect(source.match(/void refreshLighterDepositDestination\(/g)).toHaveLength(1);
+  });
+
+  it("locks address generation after an ambiguous provider result", () => {
+    expect(source).toContain("isLighterDepositRetryForbidden(caught)");
+    expect(source).toContain("if (lighterDepositRetryForbidden) return;");
+    expect(source).toContain("ghola_lighter_uda_retry_forbidden_v1:");
+    expect(source).toContain("Retry is blocked; reconcile it before continuing.");
+    expect(source).toContain("Generation blocked — reconcile manually");
+    expect(source).toContain("perpsTurnkey.authenticated && !lighterDepositRetryForbidden");
   });
 
   it("rechecks once when the user returns from Lighter without polling or submitting", () => {

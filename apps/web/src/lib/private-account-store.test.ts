@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 const privateBlobRecords = new Map<string, string>();
 
 import {
+  claimPrivateLighterUdaAttempt,
   consumePrivateAccountApproval,
   consumePrivateAccountPreview,
   getPrivateAccountByOwner,
@@ -32,6 +33,7 @@ import {
   putVenueExecutionVault,
   recordPrivacyBudgetEvent,
   resetPrivateAccountStoreForTests,
+  settlePrivateLighterUdaAttempt,
   setPrivateBlobRecordAdapterForTests,
 } from "./private-account-store";
 import {
@@ -53,6 +55,153 @@ describe("private account store", () => {
     delete process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS;
     delete process.env.BLOB_READ_WRITE_TOKEN;
     delete process.env.DATABASE_URL;
+  });
+
+  it("atomically persists one owner-bound Lighter UDA result across process-memory resets", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_STORE = "blob";
+    process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS = "private";
+    process.env.BLOB_READ_WRITE_TOKEN = "private-test-token";
+    setPrivateBlobRecordAdapterForTests({
+      async put(pathname, value) {
+        privateBlobRecords.set(pathname, value);
+      },
+      async putIfAbsent(pathname, value) {
+        if (privateBlobRecords.has(pathname)) return false;
+        privateBlobRecords.set(pathname, value);
+        return true;
+      },
+      async get(pathname) {
+        return privateBlobRecords.get(pathname) ?? null;
+      },
+    });
+    const ownerCommitment = gholaCommitment("owner", "lighter-uda-owner");
+    const ownerAddress = "0xa0582521e11effdf12ff00b50087802c3346e7ef" as const;
+    const walletCommitment = gholaCommitment("wallet", ownerAddress);
+    const attemptId = gholaCommitment("lighter_uda_attempt", {
+      owner_commitment: ownerCommitment,
+      wallet_commitment: walletCommitment,
+    });
+    const claims = await Promise.all([
+      claimPrivateLighterUdaAttempt({
+        attempt_id: attemptId,
+        owner_commitment: ownerCommitment,
+        wallet_commitment: walletCommitment,
+        owner_address: ownerAddress,
+        claim_token: "aa".repeat(32),
+        now: new Date("2026-08-31T00:00:00.000Z"),
+      }),
+      claimPrivateLighterUdaAttempt({
+        attempt_id: attemptId,
+        owner_commitment: ownerCommitment,
+        wallet_commitment: walletCommitment,
+        owner_address: ownerAddress,
+        claim_token: "bb".repeat(32),
+        now: new Date("2026-08-31T00:00:00.001Z"),
+      }),
+    ]);
+    expect(claims.filter((claim) => claim.acquired)).toHaveLength(1);
+    const winner = claims.find((claim) => claim.acquired);
+    if (!winner?.acquired) throw new Error("missing atomic claim winner");
+    const destination = {
+      owner_address: ownerAddress,
+      deposit_address: "0x2222222222222222222222222222222222222222" as const,
+      market: "perps" as const,
+      asset: "USDC" as const,
+      blocked: false as const,
+      action_type: "LIGHTER_PERPS" as const,
+      to_chain_id: "3586256" as const,
+      to_token_address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as const,
+      recipient_address: ownerAddress,
+      resolved_user_id: ownerAddress,
+    };
+    await settlePrivateLighterUdaAttempt({
+      owner_commitment: ownerCommitment,
+      wallet_commitment: walletCommitment,
+      owner_address: ownerAddress,
+      claim_token: winner.record.claim_token,
+      status: "verified",
+      destination,
+      failure_code: null,
+      now: new Date("2026-08-31T00:00:01.000Z"),
+    });
+
+    await resetPrivateAccountStoreForTests();
+
+    const replay = await claimPrivateLighterUdaAttempt({
+      attempt_id: attemptId,
+      owner_commitment: ownerCommitment,
+      wallet_commitment: walletCommitment,
+      owner_address: ownerAddress,
+      claim_token: "cc".repeat(32),
+      now: new Date("2026-08-31T00:01:00.000Z"),
+    });
+    expect(replay).toMatchObject({ acquired: false, record: { status: "verified", destination } });
+    const rotated = await claimPrivateLighterUdaAttempt({
+      attempt_id: gholaCommitment("lighter_uda_attempt", "rotated"),
+      owner_commitment: ownerCommitment,
+      wallet_commitment: gholaCommitment("wallet", "0x1111111111111111111111111111111111111111"),
+      owner_address: "0x1111111111111111111111111111111111111111",
+      claim_token: "dd".repeat(32),
+      now: new Date("2026-08-31T00:02:00.000Z"),
+    });
+    expect(rotated).toMatchObject({
+      acquired: false,
+      record: { owner_address: ownerAddress, status: "verified" },
+    });
+    const crossSession = await claimPrivateLighterUdaAttempt({
+      attempt_id: gholaCommitment("lighter_uda_attempt", "cross-session"),
+      owner_commitment: gholaCommitment("owner", "another-session"),
+      wallet_commitment: walletCommitment,
+      owner_address: ownerAddress,
+      claim_token: "12".repeat(32),
+      now: new Date("2026-08-31T00:03:00.000Z"),
+    });
+    expect(crossSession).toMatchObject({
+      acquired: false,
+      record: { owner_commitment: ownerCommitment, status: "verified" },
+    });
+  });
+
+  it("keeps an interrupted Lighter UDA claim durably pending and retry-forbidden", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_STORE = "blob";
+    process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS = "private";
+    process.env.BLOB_READ_WRITE_TOKEN = "private-test-token";
+    setPrivateBlobRecordAdapterForTests({
+      async put(pathname, value) {
+        privateBlobRecords.set(pathname, value);
+      },
+      async putIfAbsent(pathname, value) {
+        if (privateBlobRecords.has(pathname)) return false;
+        privateBlobRecords.set(pathname, value);
+        return true;
+      },
+      async get(pathname) {
+        return privateBlobRecords.get(pathname) ?? null;
+      },
+    });
+    const ownerCommitment = gholaCommitment("owner", "lighter-uda-interrupted");
+    const attemptId = gholaCommitment("lighter_uda_attempt", ownerCommitment);
+    const ownerAddress = "0xa0582521e11effdf12ff00b50087802c3346e7ef" as const;
+    const walletCommitment = gholaCommitment("wallet", ownerAddress);
+    expect((await claimPrivateLighterUdaAttempt({
+      attempt_id: attemptId,
+      owner_commitment: ownerCommitment,
+      wallet_commitment: walletCommitment,
+      owner_address: ownerAddress,
+      claim_token: "ee".repeat(32),
+      now: new Date("2026-08-31T00:00:00.000Z"),
+    })).acquired).toBe(true);
+
+    await resetPrivateAccountStoreForTests();
+
+    expect(await claimPrivateLighterUdaAttempt({
+      attempt_id: attemptId,
+      owner_commitment: ownerCommitment,
+      wallet_commitment: walletCommitment,
+      owner_address: ownerAddress,
+      claim_token: "ff".repeat(32),
+      now: new Date("2026-08-31T00:01:00.000Z"),
+    })).toMatchObject({ acquired: false, record: { status: "pending" } });
   });
 
   it("restores a verified Hyperliquid credential after process memory is cleared", async () => {

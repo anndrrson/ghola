@@ -92,6 +92,7 @@
     "next": "16.3.2",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "server-only": "0.0.1",
     "three": "^0.184.0",
     "viem": "2.55.13",
     "workflow": "4.8.4"

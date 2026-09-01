@@ -1,0 +1,152 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
+import { privateKeyToAccount } from "viem/accounts";
+import { POST } from "./route";
+
+const SECRET = "secure-lighter-uda-authorization-secret-2026";
+const OWNER = privateKeyToAccount(`0x${"11".repeat(32)}`).address;
+const OLD_SECRET = process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET;
+
+vi.mock("server-only", () => ({}));
+
+describe("POST /api/carry/lighter-deposit-authorization", () => {
+  beforeEach(() => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET = SECRET;
+  });
+
+  afterEach(() => {
+    if (OLD_SECRET === undefined) delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET;
+    else process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET = OLD_SECRET;
+    vi.restoreAllMocks();
+  });
+
+  it("issues a no-store, session-bound address-generation challenge", async () => {
+    const fetchSpy = profileFetch();
+    const response = await POST(request({ version: 1, owner_address: OWNER }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store, max-age=0");
+    expect(response.headers.get("pragma")).toBe("no-cache");
+    expect(body).toMatchObject({
+      version: 1,
+      owner_address: OWNER,
+      authorization: {
+        action: "create_lighter_uda",
+        source_chain_id: 8453,
+        source_chain: "base",
+        source_asset: "USDC",
+        destination_market: "perps",
+        transfer_authorized: false,
+        withdrawal_authorized: false,
+        trade_authorized: false,
+      },
+    });
+    expect(body.challenge_token).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    expect(body.message).toContain("Ghola Lighter deposit address authorization");
+    expect(body.message).toContain("Source chain: Base (8453)");
+    expect(body.message).toContain("This authorizes address generation only.");
+    expect(body.message).toContain("It does not authorize a transfer, withdrawal, or trade.");
+    expect(body.message).not.toContain(SECRET);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it("uses crypto-secure unique nonces for separate challenges", async () => {
+    profileFetch();
+    const one = await (await POST(request({ version: 1, owner_address: OWNER }))).json();
+    const two = await (await POST(request({ version: 1, owner_address: OWNER }))).json();
+    expect(one.challenge_token).not.toBe(two.challenge_token);
+    expect(one.message).not.toBe(two.message);
+  });
+
+  it("rejects cross-site requests before session lookup", async () => {
+    const fetchSpy = profileFetch();
+    const response = await POST(request({ version: 1, owner_address: OWNER }, {
+      origin: "https://attacker.example",
+    }));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "lighter_uda_cross_site_rejected" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("requires JSON and an exact request schema", async () => {
+    const fetchSpy = profileFetch();
+    const notJson = await POST(request({ version: 1, owner_address: OWNER }, { contentType: "text/plain" }));
+    expect(notJson.status).toBe(415);
+    const smuggled = await POST(request({ version: 1, owner_address: OWNER, amount: "5000000" }));
+    expect(smuggled.status).toBe(400);
+    const malformed = await POST(request({ version: 2, owner_address: OWNER }));
+    expect(malformed.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("requires a live session cookie", async () => {
+    const fetchSpy = profileFetch();
+    const response = await POST(request({ version: 1, owner_address: OWNER }, { cookie: "" }));
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "lighter_uda_session_required" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [401, 401, "lighter_uda_session_invalid"],
+    [403, 401, "lighter_uda_session_invalid"],
+    [500, 503, "lighter_uda_session_unavailable"],
+  ])("fails closed for session status %i", async (upstreamStatus, status, error) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({}, { status: upstreamStatus }));
+    const response = await POST(request({ version: 1, owner_address: OWNER }));
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ error });
+  });
+
+  it("fails closed when session verification is unavailable", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("network detail must not leak"));
+    const response = await POST(request({ version: 1, owner_address: OWNER }));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "lighter_uda_session_unavailable" });
+  });
+
+  it("fails closed when the server-only HMAC secret is absent", async () => {
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET;
+    profileFetch();
+    const response = await POST(request({ version: 1, owner_address: OWNER }));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "lighter_uda_authorization_unconfigured" });
+  });
+
+  it("rejects an invalid owner without exposing the session or secret", async () => {
+    profileFetch();
+    const response = await POST(request({ version: 1, owner_address: "0x123" }));
+    expect(response.status).toBe(400);
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({ error: "lighter_uda_owner_address_invalid" });
+    expect(text).not.toContain(SECRET);
+    expect(text).not.toContain("user-1");
+  });
+});
+
+function profileFetch(userId = "user-1") {
+  return vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({
+    id: userId,
+    email: "user@example.com",
+    display_name: "User",
+  }));
+}
+
+function request(body: Record<string, unknown>, overrides: {
+  origin?: string;
+  contentType?: string;
+  cookie?: string;
+} = {}) {
+  const headers = new Headers({
+    origin: overrides.origin ?? "https://ghola.example",
+    "content-type": overrides.contentType ?? "application/json",
+  });
+  const cookie = overrides.cookie === undefined ? "ghola_thumper_session=session-token" : overrides.cookie;
+  if (cookie) headers.set("cookie", cookie);
+  return new NextRequest("https://ghola.example/api/carry/lighter-deposit-authorization", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+}

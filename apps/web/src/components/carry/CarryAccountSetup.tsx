@@ -66,6 +66,13 @@ import {
   LIGHTER_NEW_ACCOUNT_MINIMUM_USDC_MICROUNITS,
   type LighterActivationReadiness,
 } from "@/lib/lighter-activation-readiness";
+import {
+  fetchVerifiedLighterDepositDestination,
+  isLighterDepositRetryForbidden,
+  LIGHTER_UDA_CLIENT_MAX_AGE_MS,
+  validateVerifiedLighterDepositDestination,
+  type VerifiedLighterDepositDestination,
+} from "@/lib/lighter-universal-deposit-address.client";
 import { shouldResumeUnsignedTurnkeySetup } from "@/lib/carry-setup-auth-recovery";
 import { hyperliquidMarketFromTradeReturn } from "@/lib/hyperliquid-trade-return";
 
@@ -77,6 +84,11 @@ type PendingLighterAssociation = PendingLighterOnboarding;
 const HYPERLIQUID_ONBOARDING = getCurrentVenueCredentialOnboardingPath("hyperliquid");
 const ASTER_ONBOARDING = getCurrentVenueCredentialOnboardingPath("aster");
 const LIGHTER_ONBOARDING = getCurrentVenueCredentialOnboardingPath("lighter");
+const LIGHTER_UDA_RETRY_FORBIDDEN_STORAGE_PREFIX = "ghola_lighter_uda_retry_forbidden_v1:";
+
+function lighterUdaRetryForbiddenStorageKey(ownerAddress: string) {
+  return `${LIGHTER_UDA_RETRY_FORBIDDEN_STORAGE_PREFIX}${ownerAddress.toLowerCase()}`;
+}
 const ONBOARDING_BY_VENUE: Readonly<Record<CarryExecutionVenue, VenueCredentialOnboardingPath>> = Object.freeze({
   hyperliquid: HYPERLIQUID_ONBOARDING,
   aster: ASTER_ONBOARDING,
@@ -128,6 +140,12 @@ export function CarryAccountSetup({
   const [lighterReadinessError, setLighterReadinessError] = useState<string | null>(null);
   const [checkingLighterReadiness, setCheckingLighterReadiness] = useState(false);
   const lighterReadinessRequestRef = useRef<Promise<void> | null>(null);
+  const [lighterDepositDestination, setLighterDepositDestination] = useState<VerifiedLighterDepositDestination | null>(null);
+  const [lighterDepositDestinationError, setLighterDepositDestinationError] = useState<string | null>(null);
+  const [lighterDepositRetryForbidden, setLighterDepositRetryForbidden] = useState(false);
+  const [checkingLighterDepositDestination, setCheckingLighterDepositDestination] = useState(false);
+  const [lighterDepositAddressCopied, setLighterDepositAddressCopied] = useState(false);
+  const lighterDepositDestinationRequestRef = useRef<Promise<void> | null>(null);
   const [workerPlatform, setWorkerPlatform] = useState<CarryWorkerPlatformGate | null>(null);
   const safeReturnTo = returnTo === "/carry" || returnTo.startsWith("/trade?") ? returnTo : "/carry";
   const requestedLongVenue = searchParams.get("long_venue");
@@ -221,6 +239,44 @@ export function CarryAccountSetup({
     return request;
   }, [scopedActivationNeeded]);
 
+  const refreshLighterDepositDestination = useCallback(async (ownerAddress?: string) => {
+    const expectedOwner = ownerAddress || (scopedActivationNeeded?.venue === "lighter" ? scopedActivationNeeded.ownerAddress : "");
+    if (!expectedOwner || !perpsTurnkey.authenticated) return;
+    if (lighterDepositRetryForbidden) return;
+    if (lighterDepositDestination) return;
+    if (lighterDepositDestinationRequestRef.current) return lighterDepositDestinationRequestRef.current;
+    const request = (async () => {
+      setCheckingLighterDepositDestination(true);
+      setLighterDepositDestination(null);
+      setLighterDepositDestinationError(null);
+      setLighterDepositAddressCopied(false);
+      try {
+        setLighterDepositDestination(await fetchVerifiedLighterDepositDestination({
+          ownerAddress: expectedOwner,
+          signLighterDepositAuthorization: perpsTurnkey.signLighterDepositAuthorization,
+        }));
+      } catch (caught) {
+        setLighterDepositDestination(null);
+        if (isLighterDepositRetryForbidden(caught)) {
+          setLighterDepositRetryForbidden(true);
+          try {
+            window.localStorage.setItem(lighterUdaRetryForbiddenStorageKey(expectedOwner), "1");
+          } catch {
+            // In-memory lock still prevents another attempt in this session.
+          }
+          setLighterDepositDestinationError("Address generation returned an ambiguous result. Retry is blocked; reconcile it before continuing. Do not send USDC.");
+        } else {
+          setLighterDepositDestinationError("Verified deposit destination unavailable. Do not send USDC.");
+        }
+      } finally {
+        setCheckingLighterDepositDestination(false);
+        lighterDepositDestinationRequestRef.current = null;
+      }
+    })();
+    lighterDepositDestinationRequestRef.current = request;
+    return request;
+  }, [lighterDepositDestination, lighterDepositRetryForbidden, perpsTurnkey, scopedActivationNeeded]);
+
   useEffect(() => {
     if (scopedActivationNeeded?.venue === "lighter") {
       void refreshLighterReadiness(scopedActivationNeeded.ownerAddress);
@@ -229,6 +285,34 @@ export function CarryAccountSetup({
       setLighterReadinessError(null);
     }
   }, [scopedActivationNeeded, refreshLighterReadiness]);
+
+  useEffect(() => {
+    setLighterDepositDestination(null);
+    setLighterDepositDestinationError(null);
+    setLighterDepositAddressCopied(false);
+    let retryForbidden = false;
+    if (scopedActivationNeeded?.venue === "lighter") {
+      try {
+        retryForbidden = window.localStorage.getItem(
+          lighterUdaRetryForbiddenStorageKey(scopedActivationNeeded.ownerAddress),
+        ) === "1";
+      } catch {
+        // Storage may be unavailable; retain only the current in-memory lock.
+      }
+    }
+    setLighterDepositRetryForbidden(retryForbidden);
+  }, [scopedActivationNeeded?.ownerAddress, scopedActivationNeeded?.venue]);
+
+  useEffect(() => {
+    if (!lighterDepositDestination) return;
+    const expiresAt = Date.parse(lighterDepositDestination.checked_at) + LIGHTER_UDA_CLIENT_MAX_AGE_MS;
+    const timeout = window.setTimeout(() => {
+      setLighterDepositDestination(null);
+      setLighterDepositDestinationError("Verified deposit destination expired. Refresh before copying.");
+      setLighterDepositAddressCopied(false);
+    }, Math.max(0, expiresAt - Date.now()));
+    return () => window.clearTimeout(timeout);
+  }, [lighterDepositDestination]);
 
   useEffect(() => {
     if (scopedActivationNeeded?.venue !== "lighter") return;
@@ -243,6 +327,23 @@ export function CarryAccountSetup({
       document.removeEventListener("visibilitychange", refreshOnReturn);
     };
   }, [scopedActivationNeeded, refreshLighterReadiness]);
+
+  const copyVerifiedLighterDepositAddress = useCallback(async () => {
+    if (!lighterDepositDestination || scopedActivationNeeded?.venue !== "lighter") return;
+    try {
+      const verified = validateVerifiedLighterDepositDestination(
+        lighterDepositDestination,
+        scopedActivationNeeded.ownerAddress,
+      );
+      await navigator.clipboard.writeText(verified.destination.deposit_address);
+      setLighterDepositAddressCopied(true);
+      setLighterDepositDestinationError(null);
+    } catch {
+      setLighterDepositDestination(null);
+      setLighterDepositDestinationError("Deposit destination could not be reverified. No USDC should be sent.");
+      setLighterDepositAddressCopied(false);
+    }
+  }, [lighterDepositDestination, scopedActivationNeeded]);
 
   const connectAsterProgrammatic = useCallback(async (refreshExistingSigner = false) => {
     setWorking(true);
@@ -998,7 +1099,14 @@ export function CarryAccountSetup({
               <LighterReadinessPanel
                 readiness={lighterReadiness}
                 error={lighterReadinessError}
-                checking={checkingLighterReadiness}
+                checking={checkingLighterReadiness || checkingLighterDepositDestination}
+                depositDestination={lighterDepositDestination}
+                depositDestinationError={lighterDepositDestinationError}
+                depositAddressCopied={lighterDepositAddressCopied}
+                onCopyDepositAddress={() => void copyVerifiedLighterDepositAddress()}
+                onGenerateDepositAddress={() => void refreshLighterDepositDestination()}
+                canGenerateDepositAddress={perpsTurnkey.authenticated && !lighterDepositRetryForbidden}
+                depositRetryForbidden={lighterDepositRetryForbidden}
                 onRefresh={() => void refreshLighterReadiness()}
               />
             ) : (
@@ -1031,11 +1139,25 @@ function LighterReadinessPanel({
   readiness,
   error,
   checking,
+  depositDestination,
+  depositDestinationError,
+  depositAddressCopied,
+  onCopyDepositAddress,
+  onGenerateDepositAddress,
+  canGenerateDepositAddress,
+  depositRetryForbidden,
   onRefresh,
 }: {
   readiness: LighterActivationReadiness | null;
   error: string | null;
   checking: boolean;
+  depositDestination: VerifiedLighterDepositDestination | null;
+  depositDestinationError: string | null;
+  depositAddressCopied: boolean;
+  onCopyDepositAddress: () => void;
+  onGenerateDepositAddress: () => void;
+  canGenerateDepositAddress: boolean;
+  depositRetryForbidden: boolean;
   onRefresh: () => void;
 }) {
   const baseStagingBalanceReady = readiness
@@ -1055,9 +1177,23 @@ function LighterReadinessPanel({
       </div>
       {readiness ? (
         <>
-          <p className="mt-2 text-xs leading-5 text-[#d8eaff]">{describeLighterActivationNextStep(readiness)}</p>
+          <p className="mt-2 text-xs leading-5 text-[#d8eaff]">
+            {depositDestination
+              ? "A fresh owner-bound Lighter deposit destination is verified. Use only USDC on Base and only the address shown below."
+              : describeLighterActivationNextStep(readiness)}
+          </p>
+          <LighterDepositDestinationPanel
+            destination={depositDestination}
+            error={depositDestinationError}
+            checking={checking}
+            copied={depositAddressCopied}
+            onCopy={onCopyDepositAddress}
+            onGenerate={onGenerateDepositAddress}
+            canGenerate={canGenerateDepositAddress}
+            retryForbidden={depositRetryForbidden}
+          />
           <div className="mt-2 divide-y divide-[#1b283b]">
-            {!readiness.lighter_owner_account_ready && <>
+            {!readiness.lighter_owner_account_ready && !depositDestination && <>
               <ReadinessRow label="Owner wallet staging balance" value={`${formatDecimalUnits(readiness.base_usdc_microunits, 6, 2)} USDC · not deposited`} ready={baseStagingBalanceReady} />
               <ReadinessRow label="Base network fee" value={baseGasReady ? "Funded" : `${formatDecimalUnits(readiness.estimated_base_gas_wei, 18, 6)} ETH required`} ready={baseGasReady} />
             </>}
@@ -1069,6 +1205,55 @@ function LighterReadinessPanel({
         <p className="mt-2 text-xs text-[#8f9aae]">{checking ? "Checking both networks…" : error || "Readiness has not been checked."}</p>
       )}
       <p className="mt-2 text-[11px] leading-4 text-[#657188]">Read-only balances, gas estimates, and owner-bound Lighter account lookup. No payment, transfer, key, or order is submitted by this check.</p>
+    </div>
+  );
+}
+
+function LighterDepositDestinationPanel({
+  destination,
+  error,
+  checking,
+  copied,
+  onCopy,
+  onGenerate,
+  canGenerate,
+  retryForbidden,
+}: {
+  destination: VerifiedLighterDepositDestination | null;
+  error: string | null;
+  checking: boolean;
+  copied: boolean;
+  onCopy: () => void;
+  onGenerate: () => void;
+  canGenerate: boolean;
+  retryForbidden: boolean;
+}) {
+  if (!destination) {
+    return (
+      <div data-lighter-deposit-verified="false" className="mt-3 rounded-md border border-[#60303a] bg-[#251116] p-3">
+        <p className="text-xs font-semibold text-[#ee9da8]">Funding locked</p>
+        <p className="mt-1 text-[11px] leading-4 text-[#d58c96]">
+          {checking ? "Verifying an owner-bound Lighter deposit destination…" : error || "No verified deposit destination is available. Do not send USDC."}
+        </p>
+        <button type="button" disabled={checking || !canGenerate || retryForbidden} onClick={onGenerate} className="mt-2 rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff] hover:bg-[#102033] disabled:border-[#60303a] disabled:text-[#9d6970] disabled:opacity-60">
+          {checking ? "Verifying…" : retryForbidden ? "Generation blocked — reconcile manually" : "Generate verified deposit address"}
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div data-lighter-deposit-verified="true" className="mt-3 rounded-md border border-[#285d4e] bg-[#0b1b18] p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-[#72dfb2]">Verified Lighter deposit address</p>
+          <p className="mt-1 break-all font-mono text-xs text-[#d8eaff]">{destination.destination.deposit_address}</p>
+        </div>
+        <button type="button" aria-label="Copy verified Lighter deposit address" onClick={onCopy} className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[#285d4e] px-2.5 py-2 text-xs font-semibold text-[#9be8c9] hover:bg-[#123027]">
+          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <p className="mt-2 text-[11px] leading-4 text-[#8db4a5]">Base · USDC only · Lighter minimum 5 USDC · 5.5 USDC recommended. This address is bound to the exact Turnkey owner above. Never send to the owner address.</p>
     </div>
   );
 }

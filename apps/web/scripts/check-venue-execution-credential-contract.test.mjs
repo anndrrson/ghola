@@ -8,12 +8,14 @@ import {
   checkAsterOnboardingUiBoundary,
   checkLighterCredentialProvisioningBoundary,
   checkLighterActivationReadinessBoundary,
+  checkLighterUniversalDepositBoundary,
   checkLighterOnboardingUiBoundary,
   checkVenueOnboardingLiveProofBoundary,
   checkTurnkeyVenueOwnerAddressBoundary,
   checkTurnkeyPerpsWalletSelectionBoundary,
   checkVenueExecutionCredentialBoundary,
   checkVenueExecutionCredentialContract,
+  stripCodeComments,
 } from "./check-venue-execution-credential-contract.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -38,6 +40,28 @@ const turnkeyWalletIdentity = readFileSync(resolve(HERE, "../src/lib/perps-turnk
 const liveClient = readFileSync(resolve(HERE, "../src/lib/private-account-client.ts"), "utf8");
 const liveRoutes = readFileSync(resolve(HERE, "../src/lib/private-account-live-routes.ts"), "utf8");
 const liveProxy = readFileSync(resolve(HERE, "../src/app/api/private-account/live-proxy/route.ts"), "utf8");
+const lighterUdaServer = readFileSync(resolve(HERE, "../src/lib/lighter-universal-deposit-address.server.ts"), "utf8");
+const lighterUdaAuthorization = readFileSync(resolve(HERE, "../src/lib/lighter-deposit-authorization.server.ts"), "utf8");
+const privateAccountStore = readFileSync(resolve(HERE, "../src/lib/private-account-store.ts"), "utf8");
+const lighterUdaChallengeRoute = readFileSync(resolve(HERE, "../src/app/api/carry/lighter-deposit-authorization/route.ts"), "utf8");
+const lighterUdaDestinationRoute = readFileSync(resolve(HERE, "../src/app/api/carry/lighter-deposit-destination/route.ts"), "utf8");
+const lighterUdaClient = readFileSync(resolve(HERE, "../src/lib/lighter-universal-deposit-address.client.ts"), "utf8");
+const envExample = readFileSync(resolve(HERE, "../.env.example"), "utf8");
+
+function lighterUdaBoundary(overrides = {}) {
+  return checkLighterUniversalDepositBoundary({
+    serverSource: lighterUdaServer,
+    authorizationSource: lighterUdaAuthorization,
+    storeSource: privateAccountStore,
+    challengeRouteSource: lighterUdaChallengeRoute,
+    destinationRouteSource: lighterUdaDestinationRoute,
+    clientSource: lighterUdaClient,
+    providerSource: turnkeyProvider,
+    setupSource: asterUi,
+    envSource: envExample,
+    ...overrides,
+  });
+}
 
 function changed(mutator) {
   const value = structuredClone(contract);
@@ -62,6 +86,7 @@ test("accepts the fail-closed venue execution credential contract", () => {
     lighterReadinessServer,
     asterUi,
   ).ok, true);
+  assert.equal(lighterUdaBoundary().ok, true);
   assert.equal(checkVenueOnboardingLiveProofBoundary(liveClient, liveRoutes, liveProxy).ok, true);
   assert.equal(checkTurnkeyVenueOwnerAddressBoundary(
     readFileSync(resolve(HERE, "../src/lib/perps-turnkey-aster-signing.ts"), "utf8"),
@@ -378,6 +403,135 @@ test("rejects directing Lighter USDC to the owner without a verified deposit des
       asterUi,
     ),
     /lighter_unverified_deposit_destination_must_fail_closed|lighter_direct_owner_deposit_warning_required|lighter_direct_owner_usdc_deposit_forbidden/,
+  );
+});
+
+test("rejects exposing the Lighter builder key or bypassing owner proof", () => {
+  assert.throws(
+    () => lighterUdaBoundary({
+      serverSource: lighterUdaServer.replace("GHOLA_LIGHTER_BUILDER_KEY", "NEXT_PUBLIC_GHOLA_LIGHTER_BUILDER_KEY"),
+      authorizationSource: lighterUdaAuthorization.replace('import "server-only";', ""),
+      destinationRouteSource: lighterUdaDestinationRoute
+        .replaceAll("verifyLighterDepositAuthorizationToken", "skipTokenVerification")
+        .replaceAll("verifyLighterDepositAuthorizationSignature", "skipSignatureVerification"),
+    }),
+    /lighter_uda_server_builder_key_required|lighter_uda_authorization_server_only_marker_required|lighter_uda_token_verification_required|lighter_uda_signature_verification_required|lighter_uda_public_builder_key_forbidden/,
+  );
+});
+
+test("rejects retrying or creating a Lighter destination before owner verification", () => {
+  assert.throws(
+    () => lighterUdaBoundary({
+      destinationRouteSource: lighterUdaDestinationRoute
+        .replace(
+          "ownerAddress = await verifyLighterDepositAuthorizationSignature({",
+          "await createLighterUniversalDepositAddress({ ownerAddress });\n    ownerAddress = await verifyLighterDepositAuthorizationSignature({",
+        ),
+    }),
+    /lighter_uda_verify_before_create_order_required|lighter_uda_exactly_one_create_site_required/,
+  );
+});
+
+test("rejects removing the durable one-shot Lighter destination claim", () => {
+  assert.throws(
+    () => lighterUdaBoundary({
+      storeSource: privateAccountStore
+        .replaceAll("claimPrivateLighterUdaAttempt", "removedDurableClaim")
+        .replace("owner_commitment TEXT NOT NULL UNIQUE", "owner_commitment TEXT NOT NULL"),
+      destinationRouteSource: lighterUdaDestinationRoute
+        .replaceAll("claimPrivateLighterUdaAttempt", "removedDurableClaim")
+        .replace("if (!claim.acquired)", "if (false)"),
+    }),
+    /lighter_uda_durable_claim_required|lighter_uda_session_owner_quota_required|lighter_uda_destination_durable_claim_required|lighter_uda_duplicate_claim_lock_required/,
+  );
+});
+
+test("rejects a Lighter claim that is not globally wallet-bound", () => {
+  assert.throws(
+    () => lighterUdaBoundary({
+      storeSource: privateAccountStore
+        .replaceAll("private_account_lighter_uda_wallet_commitment_unique", "removedWalletUniqueIndex")
+        .replaceAll("lighterUdaAttemptByWalletBlobPath", "removedWalletBlobClaim")
+        .replaceAll('lighterUdaLedgerError("lighter_uda_transactional_store_required", 503)', 'lighterUdaLedgerError("blob_store_allowed", 503)'),
+      destinationRouteSource: lighterUdaDestinationRoute
+        .replace('gholaCommitment("wallet", ownerAddress.toLowerCase())', 'gholaCommitment("wallet", ownerCommitment)')
+        .replace("claim.record.wallet_commitment !== walletCommitment", "false")
+        .replaceAll('"lighter_uda_attempt_binding_mismatch"', '"lighter_uda_attempt_owner_mismatch"'),
+    }),
+    /lighter_uda_wallet_quota_required|lighter_uda_wallet_blob_claim_required|lighter_uda_transactional_store_required|lighter_uda_wallet_commitment_required|lighter_uda_cross_session_binding_required|lighter_uda_binding_failure_required/,
+  );
+});
+
+test("rejects forwarding the Lighter builder key through redirects", () => {
+  assert.throws(
+    () => lighterUdaBoundary({
+      serverSource: `${lighterUdaServer.replaceAll('redirect: "error"', 'redirect: "follow"')}\nconst bypass = /* redirect: "error" redirect: "error" */ 1;`,
+    }),
+    /lighter_uda_redirect_rejection_required|lighter_uda_all_authenticated_redirects_must_fail_closed/,
+  );
+});
+
+test("rejects a server-only marker that exists only in a comment", () => {
+  assert.throws(
+    () => lighterUdaBoundary({
+      authorizationSource: `${lighterUdaAuthorization.replace('import "server-only";', "")}\n/* import "server-only"; */`,
+    }),
+    /lighter_uda_authorization_server_only_marker_required/,
+  );
+});
+
+test("rejects a funding lock marker that exists only in a JSX comment", () => {
+  assert.throws(
+    () => lighterUdaBoundary({
+      setupSource: `${asterUi.replace("checking || !canGenerate || retryForbidden", "checking || !canGenerate")}\nconst GuardComment = () => <>{/* checking || !canGenerate || retryForbidden */}</>;`,
+    }),
+    /lighter_uda_retry_forbidden_button_lock_required/,
+  );
+});
+
+test("rejects an environment marker that exists only in a comment", () => {
+  assert.throws(
+    () => lighterUdaBoundary({
+      envSource: `${envExample.replace("GHOLA_LIGHTER_BUILDER_KEY=", "GHOLA_LIGHTER_BUILDER_KEY_REMOVED=")}\n# GHOLA_LIGHTER_BUILDER_KEY=`,
+    }),
+    /lighter_uda_builder_env_documentation_required/,
+  );
+});
+
+test("comment stripping preserves comment-like string content and offsets", () => {
+  const source = 'const url = "https://bridge.lighter.xyz"; const n = /* fake */ 1; const value = "// real string"; const View = () => <>{/* jsx fake */}</>;';
+  const stripped = stripCodeComments(source);
+  assert.equal(stripped.length, source.length);
+  assert.match(stripped, /https:\/\/bridge\.lighter\.xyz/);
+  assert.match(stripped, /\/\/ real string/);
+  assert.doesNotMatch(stripped, /fake/);
+  assert.doesNotMatch(stripped, /jsx fake/);
+});
+
+test("rejects retrying after an unknown or lost destination response", () => {
+  assert.throws(
+    () => lighterUdaBoundary({
+      clientSource: lighterUdaClient
+        .replace("ambiguousDestinationError()", "new Error()")
+        .replace("!RETRYABLE_DESTINATION_REJECTIONS.has(code)", "false"),
+      setupSource: asterUi.replace(
+        "checking || !canGenerate || retryForbidden",
+        "checking || !canGenerate",
+      ),
+    }),
+    /lighter_uda_client_ambiguous_transport_lock_required|lighter_uda_client_unknown_failure_lock_required|lighter_uda_retry_forbidden_button_lock_required/,
+  );
+});
+
+test("rejects a generic or non-explicit Lighter funding UI", () => {
+  assert.throws(
+    () => lighterUdaBoundary({
+      providerSource: turnkeyProvider.replaceAll("signLighterDepositAuthorization", "signOwnerMessage"),
+      setupSource: asterUi
+        .replaceAll("Generate verified deposit address", "Continue")
+        .replaceAll('data-lighter-deposit-verified="false"', 'data-lighter-deposit-verified="unknown"'),
+    }),
+    /lighter_uda_specific_turnkey_signer_required|lighter_uda_explicit_generation_action_required|lighter_uda_locked_ui_state_required/,
   );
 });
 

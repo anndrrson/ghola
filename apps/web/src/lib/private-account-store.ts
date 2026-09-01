@@ -9,10 +9,11 @@ import type {
   GholaConnectorWorkOrder,
   GholaLinkabilityScore,
 } from "./private-account-connectors";
-import type {
-  GholaAdversarialLinkabilitySimulation,
-  GholaPlatformFundingRotation,
-  GholaPrivacyScheduleDecision,
+import {
+  gholaCommitment,
+  type GholaAdversarialLinkabilitySimulation,
+  type GholaPlatformFundingRotation,
+  type GholaPrivacyScheduleDecision,
 } from "./private-account";
 import type {
   GholaAuditorExportRevocation,
@@ -166,6 +167,35 @@ export interface PrivateCoordinatorLockRecordV1 {
   run_window_commitment: string;
   acquired_at: string;
   expires_at: string;
+}
+
+export type PrivateLighterUdaAttemptStatus = "pending" | "verified" | "ambiguous";
+
+export interface PrivateLighterUdaDestinationV1 {
+  owner_address: `0x${string}`;
+  deposit_address: `0x${string}`;
+  market: "perps";
+  asset: "USDC";
+  blocked: false;
+  action_type: "LIGHTER_PERPS";
+  to_chain_id: "3586256";
+  to_token_address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+  recipient_address: `0x${string}`;
+  resolved_user_id: `0x${string}`;
+}
+
+export interface PrivateLighterUdaAttemptRecordV1 {
+  version: 1;
+  attempt_id: string;
+  owner_commitment: string;
+  wallet_commitment: string;
+  owner_address: `0x${string}`;
+  claim_token: string;
+  status: PrivateLighterUdaAttemptStatus;
+  destination: PrivateLighterUdaDestinationV1 | null;
+  failure_code: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface PrivateModeCanaryRecordV1 {
@@ -895,6 +925,10 @@ type SettlementRow = Omit<PrivateSettlementRecordV1, "version" | "evidence"> & {
 type CoordinatorLockRow = Omit<PrivateCoordinatorLockRecordV1, "version"> & {
   version?: number;
 };
+type LighterUdaAttemptRow = Omit<PrivateLighterUdaAttemptRecordV1, "version" | "destination"> & {
+  version?: number;
+  destination: unknown;
+};
 type ModeCanaryRow = Omit<PrivateModeCanaryRecordV1, "version"> & {
   version?: number;
 };
@@ -1110,6 +1144,8 @@ const auctionOrders = new Map<string, PrivateAuctionOrderRecordV1>();
 const auctionClearings = new Map<string, PrivateAuctionClearingRecordV1>();
 const auctionPreparedTransactions = new Map<string, PrivateAuctionPreparedTransactionRecordV1>();
 const coordinatorLocks = new Map<string, PrivateCoordinatorLockRecordV1>();
+const lighterUdaAttemptsByOwner = new Map<string, PrivateLighterUdaAttemptRecordV1>();
+const lighterUdaAttemptsByWallet = new Map<string, PrivateLighterUdaAttemptRecordV1>();
 const modeCanaries = new Map<string, PrivateModeCanaryRecordV1>();
 const liveTradingCanaryReports = new Map<string, PrivateLiveTradingCanaryReportRecordV1>();
 const agentArbCanaryReports = new Map<string, PrivateAgentArbCanaryReportRecordV1>();
@@ -1132,6 +1168,7 @@ let schemaReady = false;
 let privateBlobRecordAdapterForTests: {
   put(pathname: string, value: string): Promise<void>;
   get(pathname: string): Promise<string | null>;
+  putIfAbsent?(pathname: string, value: string): Promise<boolean>;
 } | null = null;
 
 export function setPrivateBlobRecordAdapterForTests(adapter: typeof privateBlobRecordAdapterForTests) {
@@ -3552,6 +3589,216 @@ export async function getPrivateCoordinatorLock(
   return rows[0] ? coordinatorLockRow(rows[0]) : null;
 }
 
+export async function claimPrivateLighterUdaAttempt(input: {
+  attempt_id: string;
+  owner_commitment: string;
+  wallet_commitment: string;
+  owner_address: `0x${string}`;
+  claim_token: string;
+  now: Date;
+}): Promise<
+  | { acquired: true; record: PrivateLighterUdaAttemptRecordV1 }
+  | { acquired: false; record: PrivateLighterUdaAttemptRecordV1 }
+> {
+  if (process.env.NODE_ENV !== "test" && process.env.GHOLA_PRIVATE_ACCOUNT_STORE === "blob") {
+    throw lighterUdaLedgerError("lighter_uda_transactional_store_required", 503);
+  }
+  const createdAt = input.now.toISOString();
+  const record: PrivateLighterUdaAttemptRecordV1 = {
+    version: 1,
+    attempt_id: input.attempt_id,
+    owner_commitment: input.owner_commitment,
+    wallet_commitment: input.wallet_commitment,
+    owner_address: input.owner_address,
+    claim_token: input.claim_token,
+    status: "pending",
+    destination: null,
+    failure_code: null,
+    created_at: createdAt,
+    updated_at: createdAt,
+  };
+  const sql = await getSql();
+  if (sql) {
+    await ensureSchema(sql);
+    const inserted = (await sql`
+      INSERT INTO private_account_lighter_uda_attempts (
+        attempt_id,
+        owner_commitment,
+        wallet_commitment,
+        owner_address,
+        claim_token,
+        status,
+        destination,
+        failure_code,
+        created_at,
+        updated_at
+      ) VALUES (
+        ${record.attempt_id},
+        ${record.owner_commitment},
+        ${record.wallet_commitment},
+        ${record.owner_address},
+        ${record.claim_token},
+        ${record.status},
+        NULL,
+        NULL,
+        ${record.created_at},
+        ${record.updated_at}
+      )
+      ON CONFLICT DO NOTHING
+      RETURNING *
+    `) as LighterUdaAttemptRow[];
+    if (inserted[0]) return { acquired: true, record: lighterUdaAttemptRow(inserted[0]) };
+    const rows = (await sql`
+      SELECT * FROM private_account_lighter_uda_attempts
+      WHERE owner_commitment = ${input.owner_commitment}
+        OR wallet_commitment = ${input.wallet_commitment}
+      ORDER BY created_at ASC
+      LIMIT 1
+    `) as LighterUdaAttemptRow[];
+    const existing = rows[0] ? lighterUdaAttemptRow(rows[0]) : null;
+    if (!existing) throw lighterUdaLedgerError("lighter_uda_attempt_ledger_unavailable", 503);
+    return { acquired: false, record: existing };
+  }
+  if (shouldUsePrivateBlobRecordStore()) {
+    const walletPathname = lighterUdaAttemptByWalletBlobPath(record.wallet_commitment);
+    const walletInserted = await putPrivateBlobRecordIfAbsent(walletPathname, record);
+    if (!walletInserted) {
+      const existing = await readPrivateLighterUdaAttemptBlob(walletPathname);
+      if (!existing) throw lighterUdaLedgerError("lighter_uda_attempt_ledger_unavailable", 503);
+      cachePrivateLighterUdaAttempt(existing);
+      return { acquired: false, record: existing };
+    }
+    const ownerPathname = lighterUdaAttemptByOwnerBlobPath(record.owner_commitment);
+    const ownerInserted = await putPrivateBlobRecordIfAbsent(ownerPathname, record);
+    if (!ownerInserted) {
+      const existing = await readPrivateLighterUdaAttemptBlob(ownerPathname);
+      if (!existing) throw lighterUdaLedgerError("lighter_uda_attempt_ledger_unavailable", 503);
+      cachePrivateLighterUdaAttempt(existing);
+      return { acquired: false, record: existing };
+    }
+    cachePrivateLighterUdaAttempt(record);
+    return { acquired: true, record };
+  }
+  if (process.env.NODE_ENV !== "test") {
+    throw lighterUdaLedgerError("lighter_uda_attempt_ledger_unconfigured", 503);
+  }
+  const existing = lighterUdaAttemptsByWallet.get(record.wallet_commitment) ??
+    lighterUdaAttemptsByOwner.get(record.owner_commitment);
+  if (existing) return { acquired: false, record: existing };
+  cachePrivateLighterUdaAttempt(record);
+  return { acquired: true, record };
+}
+
+export async function settlePrivateLighterUdaAttempt(input: {
+  owner_commitment: string;
+  wallet_commitment: string;
+  owner_address: `0x${string}`;
+  claim_token: string;
+  status: "verified" | "ambiguous";
+  destination: PrivateLighterUdaDestinationV1 | null;
+  failure_code: string | null;
+  now: Date;
+}): Promise<PrivateLighterUdaAttemptRecordV1> {
+  if (
+    (input.status === "verified" && (!input.destination || input.failure_code !== null)) ||
+    (input.status === "ambiguous" && (input.destination !== null || !input.failure_code))
+  ) {
+    throw lighterUdaLedgerError("lighter_uda_attempt_settlement_invalid", 500);
+  }
+  const updatedAt = input.now.toISOString();
+  const sql = await getSql();
+  if (sql) {
+    await ensureSchema(sql);
+    const updated = (await sql`
+      UPDATE private_account_lighter_uda_attempts
+      SET
+        status = ${input.status},
+        destination = ${input.destination ? JSON.stringify(input.destination) : null}::jsonb,
+        failure_code = ${input.failure_code},
+        updated_at = ${updatedAt}
+      WHERE owner_commitment = ${input.owner_commitment}
+        AND wallet_commitment = ${input.wallet_commitment}
+        AND owner_address = ${input.owner_address}
+        AND claim_token = ${input.claim_token}
+        AND status = 'pending'
+      RETURNING *
+    `) as LighterUdaAttemptRow[];
+    if (updated[0]) return lighterUdaAttemptRow(updated[0]);
+    throw lighterUdaLedgerError("lighter_uda_attempt_settlement_conflict", 409);
+  }
+  const current = await getPrivateLighterUdaAttempt({
+    owner_commitment: input.owner_commitment,
+    wallet_commitment: input.wallet_commitment,
+  });
+  if (
+    !current ||
+    current.status !== "pending" ||
+    current.owner_address.toLowerCase() !== input.owner_address.toLowerCase() ||
+    current.claim_token !== input.claim_token
+  ) {
+    throw lighterUdaLedgerError("lighter_uda_attempt_settlement_conflict", 409);
+  }
+  const settled: PrivateLighterUdaAttemptRecordV1 = {
+    ...current,
+    status: input.status,
+    destination: input.destination,
+    failure_code: input.failure_code,
+    updated_at: updatedAt,
+  };
+  if (shouldUsePrivateBlobRecordStore()) {
+    await putPrivateBlobRecord(lighterUdaAttemptByWalletBlobPath(input.wallet_commitment), settled);
+    await putPrivateBlobRecord(lighterUdaAttemptByOwnerBlobPath(input.owner_commitment), settled);
+  }
+  cachePrivateLighterUdaAttempt(settled);
+  return settled;
+}
+
+export async function getPrivateLighterUdaAttempt(
+  input: { owner_commitment: string; wallet_commitment: string },
+): Promise<PrivateLighterUdaAttemptRecordV1 | null> {
+  const sql = await getSql();
+  if (sql) {
+    await ensureSchema(sql);
+    const rows = (await sql`
+      SELECT * FROM private_account_lighter_uda_attempts
+      WHERE owner_commitment = ${input.owner_commitment}
+        AND wallet_commitment = ${input.wallet_commitment}
+      LIMIT 1
+    `) as LighterUdaAttemptRow[];
+    return rows[0] ? lighterUdaAttemptRow(rows[0]) : null;
+  }
+  if (shouldUsePrivateBlobRecordStore()) {
+    const [byOwner, byWallet] = await Promise.all([
+      readPrivateLighterUdaAttemptBlob(lighterUdaAttemptByOwnerBlobPath(input.owner_commitment)),
+      readPrivateLighterUdaAttemptBlob(lighterUdaAttemptByWalletBlobPath(input.wallet_commitment)),
+    ]);
+    if (!byOwner && !byWallet) return null;
+    if (!byOwner || !byWallet || byOwner.attempt_id !== byWallet.attempt_id) {
+      throw lighterUdaLedgerError("lighter_uda_attempt_ledger_corrupt", 503);
+    }
+    cachePrivateLighterUdaAttempt(byWallet);
+    return byWallet;
+  }
+  if (process.env.NODE_ENV !== "test") {
+    throw lighterUdaLedgerError("lighter_uda_attempt_ledger_unconfigured", 503);
+  }
+  const byOwner = lighterUdaAttemptsByOwner.get(input.owner_commitment) ?? null;
+  const byWallet = lighterUdaAttemptsByWallet.get(input.wallet_commitment) ?? null;
+  if (!byOwner && !byWallet) return null;
+  return byOwner?.attempt_id === byWallet?.attempt_id ? byOwner : null;
+}
+
+export function resetPrivateLighterUdaAttemptsForTests() {
+  if (process.env.NODE_ENV !== "test") throw new Error("lighter_uda_attempt_reset_forbidden");
+  lighterUdaAttemptsByOwner.clear();
+  lighterUdaAttemptsByWallet.clear();
+}
+
+function cachePrivateLighterUdaAttempt(record: PrivateLighterUdaAttemptRecordV1) {
+  lighterUdaAttemptsByOwner.set(record.owner_commitment, record);
+  lighterUdaAttemptsByWallet.set(record.wallet_commitment, record);
+}
+
 export async function putPrivateAccountIntent(
   record: PrivateAccountIntentRecordV1,
 ): Promise<PrivateAccountIntentRecordV1> {
@@ -5482,6 +5729,8 @@ export async function resetPrivateAccountStoreForTests() {
   auctionClearings.clear();
   auctionPreparedTransactions.clear();
   coordinatorLocks.clear();
+  lighterUdaAttemptsByOwner.clear();
+  lighterUdaAttemptsByWallet.clear();
   modeCanaries.clear();
   liveTradingCanaryReports.clear();
   agentArbCanaryReports.clear();
@@ -5607,6 +5856,37 @@ async function putPrivateBlobRecord(pathname: string, value: unknown): Promise<v
   }
 }
 
+async function putPrivateBlobRecordIfAbsent(pathname: string, value: unknown): Promise<boolean> {
+  if (privateAccountBlobAccess() !== "private") {
+    throw lighterUdaLedgerError("lighter_uda_attempt_private_blob_required", 503);
+  }
+  const serialized = JSON.stringify(value);
+  if (privateBlobRecordAdapterForTests) {
+    if (privateBlobRecordAdapterForTests.putIfAbsent) {
+      return privateBlobRecordAdapterForTests.putIfAbsent(pathname, serialized);
+    }
+    if (await privateBlobRecordAdapterForTests.get(pathname)) return false;
+    await privateBlobRecordAdapterForTests.put(pathname, serialized);
+    return true;
+  }
+  try {
+    const { put } = await import("@vercel/blob");
+    await put(pathname, serialized, {
+      access: "private",
+      addRandomSuffix: false,
+      allowOverwrite: false,
+      cacheControlMaxAge: 60,
+      contentType: "application/json",
+      ...blobOptions(),
+    });
+    return true;
+  } catch {
+    const existing = await readPrivateBlobRecord<unknown>(pathname).catch(() => null);
+    if (existing !== null) return false;
+    throw lighterUdaLedgerError("lighter_uda_attempt_ledger_unavailable", 503);
+  }
+}
+
 async function readPrivateBlobRecord<T>(pathname: string): Promise<T | null> {
   if (privateAccountBlobAccess() !== "private") {
     throw new Error("private_account_private_blob_required");
@@ -5628,6 +5908,16 @@ async function readPrivateBlobRecord<T>(pathname: string): Promise<T | null> {
     if (error instanceof Error && error.name === "BlobNotFoundError") return null;
     throw new Error("private_account_persistence_unavailable");
   }
+}
+
+async function readPrivateLighterUdaAttemptBlob(
+  pathname: string,
+): Promise<PrivateLighterUdaAttemptRecordV1 | null> {
+  const value = await readPrivateBlobRecord<unknown>(pathname);
+  if (value === null) return null;
+  const record = lighterUdaAttemptRecord(value);
+  if (!record) throw lighterUdaLedgerError("lighter_uda_attempt_ledger_corrupt", 503);
+  return record;
 }
 
 async function readBlobJson<T>(pathname: string): Promise<T | null> {
@@ -5799,6 +6089,14 @@ function venueExecutionVaultByAccountModeBlobPath(
 
 function venueExecutionVaultByCommitmentBlobPath(vaultCommitment: string): string {
   return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/venue-vaults/by-commitment/${safeBlobSegment(vaultCommitment)}.json`;
+}
+
+function lighterUdaAttemptByOwnerBlobPath(ownerCommitment: string): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/lighter-uda-attempts/by-owner/${safeBlobSegment(ownerCommitment)}.json`;
+}
+
+function lighterUdaAttemptByWalletBlobPath(walletCommitment: string): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/lighter-uda-attempts/by-wallet/${safeBlobSegment(walletCommitment)}.json`;
 }
 
 async function ensureSchema(sql: NeonSql): Promise<void> {
@@ -6167,6 +6465,49 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
       acquired_at TIMESTAMPTZ NOT NULL,
       expires_at TIMESTAMPTZ NOT NULL
     )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS private_account_lighter_uda_attempts (
+      attempt_id TEXT PRIMARY KEY,
+      owner_commitment TEXT NOT NULL UNIQUE,
+      wallet_commitment TEXT,
+      owner_address TEXT NOT NULL,
+      claim_token TEXT NOT NULL,
+      status TEXT NOT NULL,
+      destination JSONB,
+      failure_code TEXT,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL
+    )
+  `;
+  await sql`
+    ALTER TABLE private_account_lighter_uda_attempts
+    ADD COLUMN IF NOT EXISTS wallet_commitment TEXT
+  `;
+  const legacyLighterUdaAttempts = (await sql`
+    SELECT attempt_id, owner_address
+    FROM private_account_lighter_uda_attempts
+    WHERE wallet_commitment IS NULL
+  `) as Array<{ attempt_id: string; owner_address: string }>;
+  for (const legacy of legacyLighterUdaAttempts) {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(legacy.owner_address)) {
+      throw lighterUdaLedgerError("lighter_uda_attempt_ledger_corrupt", 503);
+    }
+    const walletCommitment = gholaCommitment("wallet", legacy.owner_address.toLowerCase());
+    await sql`
+      UPDATE private_account_lighter_uda_attempts
+      SET wallet_commitment = ${walletCommitment}
+      WHERE attempt_id = ${legacy.attempt_id}
+        AND wallet_commitment IS NULL
+    `;
+  }
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS private_account_lighter_uda_wallet_commitment_unique
+    ON private_account_lighter_uda_attempts (wallet_commitment)
+  `;
+  await sql`
+    ALTER TABLE private_account_lighter_uda_attempts
+    ALTER COLUMN wallet_commitment SET NOT NULL
   `;
   await sql`
     CREATE TABLE IF NOT EXISTS private_account_accounts (
@@ -7038,6 +7379,111 @@ function coordinatorLockRow(row: CoordinatorLockRow): PrivateCoordinatorLockReco
     acquired_at: dateString(row.acquired_at),
     expires_at: dateString(row.expires_at),
   };
+}
+
+function lighterUdaAttemptRow(row: LighterUdaAttemptRow): PrivateLighterUdaAttemptRecordV1 {
+  const record = lighterUdaAttemptRecord({ ...row, version: 1 });
+  if (!record) throw lighterUdaLedgerError("lighter_uda_attempt_ledger_corrupt", 503);
+  return record;
+}
+
+function lighterUdaAttemptRecord(value: unknown): PrivateLighterUdaAttemptRecordV1 | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const ownerAddress = typeof row.owner_address === "string" && /^0x[0-9a-fA-F]{40}$/.test(row.owner_address)
+    ? row.owner_address as `0x${string}`
+    : null;
+  const status = row.status;
+  const destination = privateLighterUdaDestination(row.destination, ownerAddress);
+  const createdAt = persistedDateString(row.created_at);
+  const updatedAt = persistedDateString(row.updated_at);
+  if (
+    row.version !== 1 ||
+    typeof row.attempt_id !== "string" ||
+    !/^[a-z][a-z0-9_-]{8,100}$/.test(row.attempt_id) ||
+    typeof row.owner_commitment !== "string" ||
+    !/^owner_[0-9a-f]{48}$/.test(row.owner_commitment) ||
+    typeof row.wallet_commitment !== "string" ||
+    !/^wallet_[0-9a-f]{48}$/.test(row.wallet_commitment) ||
+    !ownerAddress ||
+    typeof row.claim_token !== "string" ||
+    !/^[0-9a-f]{64}$/.test(row.claim_token) ||
+    (status !== "pending" && status !== "verified" && status !== "ambiguous") ||
+    !createdAt ||
+    !updatedAt ||
+    (status === "verified" && (!destination || row.failure_code !== null)) ||
+    (status !== "verified" && destination !== null) ||
+    (status === "ambiguous" && (typeof row.failure_code !== "string" || !/^lighter_uda_[a-z0-9_]{3,100}$/.test(row.failure_code))) ||
+    (status === "pending" && row.failure_code !== null)
+  ) return null;
+  return {
+    version: 1,
+    attempt_id: row.attempt_id,
+    owner_commitment: row.owner_commitment,
+    wallet_commitment: row.wallet_commitment,
+    owner_address: ownerAddress,
+    claim_token: row.claim_token,
+    status,
+    destination,
+    failure_code: status === "ambiguous" ? row.failure_code as string : null,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  };
+}
+
+function privateLighterUdaDestination(
+  value: unknown,
+  ownerAddress: `0x${string}` | null,
+): PrivateLighterUdaDestinationV1 | null {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !ownerAddress) return null;
+  const destination = value as Record<string, unknown>;
+  const depositAddress = typeof destination.deposit_address === "string" && /^0x[0-9a-fA-F]{40}$/.test(destination.deposit_address)
+    ? destination.deposit_address as `0x${string}`
+    : null;
+  const resolvedUserId = typeof destination.resolved_user_id === "string" && /^0x[0-9a-fA-F]{40}$/.test(destination.resolved_user_id)
+    ? destination.resolved_user_id as `0x${string}`
+    : null;
+  const recipientAddress = typeof destination.recipient_address === "string" && /^0x[0-9a-fA-F]{40}$/.test(destination.recipient_address)
+    ? destination.recipient_address as `0x${string}`
+    : null;
+  if (
+    destination.owner_address !== ownerAddress ||
+    !depositAddress ||
+    depositAddress.toLowerCase() === ownerAddress.toLowerCase() ||
+    depositAddress.toLowerCase() === "0x0000000000000000000000000000000000000000" ||
+    destination.market !== "perps" ||
+    destination.asset !== "USDC" ||
+    destination.blocked !== false ||
+    destination.action_type !== "LIGHTER_PERPS" ||
+    destination.to_chain_id !== "3586256" ||
+    destination.to_token_address !== "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" ||
+    !recipientAddress ||
+    recipientAddress.toLowerCase() !== ownerAddress.toLowerCase() ||
+    !resolvedUserId ||
+    resolvedUserId.toLowerCase() !== ownerAddress.toLowerCase()
+  ) return null;
+  return {
+    owner_address: ownerAddress,
+    deposit_address: depositAddress,
+    market: "perps",
+    asset: "USDC",
+    blocked: false,
+    action_type: "LIGHTER_PERPS",
+    to_chain_id: "3586256",
+    to_token_address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    recipient_address: recipientAddress,
+    resolved_user_id: resolvedUserId,
+  };
+}
+
+function persistedDateString(value: unknown): string | null {
+  if (!(typeof value === "string" || value instanceof Date)) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function lighterUdaLedgerError(code: string, status: number) {
+  return Object.assign(new Error(code), { code, status });
 }
 
 function receiptRow(row: ReceiptRow): PrivateAccountReceiptRecordV1 {
