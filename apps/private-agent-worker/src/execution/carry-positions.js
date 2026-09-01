@@ -972,9 +972,9 @@ export async function runCarryMonitoringTick({
   env = process.env,
   now_ms: nowMs = Date.now(),
 }) {
-  const records = (await Promise.all(["active", "rebalancing"].map((status) =>
+  const records = (await Promise.all(["active", "rebalancing", "frozen"].map((status) =>
     listAllCarryPositionRecords({ state, status })
-  ))).flat();
+  ))).flat().filter((record) => isCarryMonitoringRetry(record.position));
   const concurrency = boundedInteger(env.PRIVATE_AGENT_CARRY_MONITOR_CONCURRENCY, 1, 32, 8);
   const results = await mapConcurrentOrdered(records, concurrency, async (record) => {
     if (!record.monitoring_context?.venue_access) {
@@ -1102,7 +1102,7 @@ export async function observeStoredCarryPosition({
   const owned = await ownedRecord(state, positionId, ownerCommitment);
   if (!owned.ok) return owned;
   const position = owned.record.position;
-  if (position.status !== "active" && position.status !== "rebalancing") {
+  if (!isCarryMonitoringRetry(position)) {
     return denied("carry_position_not_monitorable");
   }
   if (!venueAccess?.[position.long_venue_id] || !venueAccess?.[position.short_venue_id]) {
@@ -1305,6 +1305,20 @@ export async function observeStoredCarryPosition({
     nowMs,
   });
   return { ...advanced, record: funding.record || advanced.record, observation_ok: true, observation, funding: funding.summary };
+}
+
+const RECOVERABLE_MONITORING_FREEZE_REASONS = new Set([
+  "observation_unavailable",
+  "observation_stale",
+  "contract_equivalence_unverifiable",
+  "funding_observation_unverifiable",
+]);
+
+function isCarryMonitoringRetry(position) {
+  return position?.status === "active"
+    || position?.status === "rebalancing"
+    || (position?.status === "frozen"
+      && RECOVERABLE_MONITORING_FREEZE_REASONS.has(position?.terminal_reason));
 }
 
 export async function collectStoredCarryFundingEvidence({ state, ownerCommitment, positionId, venueAccess, recipient, readFundingSettlements, nowMs, final = false, clock = Date.now }) {

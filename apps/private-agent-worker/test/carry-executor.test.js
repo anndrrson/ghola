@@ -2230,6 +2230,37 @@ test("background monitoring triggers an automatic reduce-only exit and finalizes
   assert.equal(result.record.value_ledger.realized.net_value_micro_usdc, 19_000);
 });
 
+test("execution recovery does not misclassify a monitoring quarantine as an ambiguous saga", async (t) => {
+  const fixture = await setup(t, "monitoring-quarantine-retry");
+  const entry = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => filledReceipt(args),
+  });
+  assert.equal(entry.ok, true);
+  const frozen = await advanceStoredCarryPosition({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.position_id,
+    event: {
+      version: 1,
+      event_id: "carry:monitor:quarantine:0001",
+      sequence: entry.record.position.last_event_sequence + 1,
+      type: "observation_unavailable",
+    },
+    now_ms: NOW + 100,
+  });
+  assert.equal(frozen.record.position.status, "frozen");
+  let submissions = 0;
+  const tick = await runCarryExecutionTick({
+    ...fixture,
+    executeOrder: async () => { submissions += 1; throw new Error("unexpected submission"); },
+  });
+  assert.equal(tick.ok, true);
+  assert.equal(tick.checked, 0);
+  assert.equal(submissions, 0);
+  assert.equal((await fixture.state.getCarryPositionRecord(fixture.position_id)).position.terminal_reason, "observation_unavailable");
+});
+
 test("completes a supervised restart-to-flat lifecycle for every qualified venue pair", async (t) => {
   const pairs = [
     { long: "hyperliquid", short: "lighter" },

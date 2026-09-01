@@ -17,6 +17,12 @@ const MAX_CASHFLOW_VALUATION_LIFETIME_MS = 300_000;
 const POSITION_STATUSES = new Set([
   "draft", "opening", "active", "rebalancing", "exiting", "reconciled", "frozen", "manual_intervention",
 ]);
+const RECOVERABLE_MONITORING_FREEZE_REASONS = new Set([
+  "observation_unavailable",
+  "observation_stale",
+  "contract_equivalence_unverifiable",
+  "funding_observation_unverifiable",
+]);
 const EVENT_TYPES = new Set([
   "preflight_passed", "entry_reconciled", "entry_failed_no_fill", "observation", "manual_exit_requested",
   "observation_unavailable", "mandate_invalid", "submission_ambiguous", "restart_detected", "recovery_failed", "reconciliation_complete", "exit_reconciled",
@@ -507,7 +513,11 @@ export function compileCarryCapitalActionPlan(value) {
   const nowMs = positiveInteger(raw.now_ms, "carry_capital_plan_now");
   const position = object(raw.position, "carry_capital_plan_position_required");
   const positionStatus = enumValue(position.status, POSITION_STATUSES, "carry_capital_plan_position_status");
-  if (!new Set(["active", "rebalancing"]).has(positionStatus)) fail("carry_capital_plan_position_not_monitored");
+  const recoverableMonitoringFreeze = positionStatus === "frozen"
+    && RECOVERABLE_MONITORING_FREEZE_REASONS.has(position.terminal_reason);
+  if (!new Set(["active", "rebalancing"]).has(positionStatus) && !recoverableMonitoringFreeze) {
+    fail("carry_capital_plan_position_not_monitored");
+  }
   const positionId = identifier(position.position_id, "carry_capital_plan_position_id");
   const asset = normalized(position.asset, ASSET, "carry_capital_plan_asset");
   const longVenue = carryExecutionVenue(position.long_venue_id, "carry_capital_plan_long_venue");
@@ -2351,7 +2361,7 @@ function applyEvent(position, event, nowMs) {
     return;
   }
   if (event.type === "observation_unavailable") {
-    requireStatus(position, new Set(["active", "rebalancing"]));
+    requireMonitorableStatus(position);
     position.status = "frozen";
     position.next_actions = ["reconcile_only"];
     position.retry_permitted = false;
@@ -2451,7 +2461,7 @@ function applyEvent(position, event, nowMs) {
     return;
   }
   if (event.type === "observation") {
-    requireStatus(position, new Set(["active", "rebalancing"]));
+    requireMonitorableStatus(position);
     const mandateExpiresAt = position.mandate_authorization?.signed_mandate?.expires_at_ms;
     if (!Number.isSafeInteger(mandateExpiresAt) || mandateExpiresAt <= nowMs) {
       position.status = "exiting";
@@ -2620,14 +2630,12 @@ function applyEvent(position, event, nowMs) {
         return;
       }
       if (sameSources) {
-        position.status = "active";
-        position.next_actions = ["monitor_carry_and_margin"];
+        restoreActiveMonitoring(position);
         return;
       }
     }
     if (previousObservationAsOf === asOf) {
-      position.status = "active";
-      position.next_actions = ["monitor_carry_and_margin"];
+      restoreActiveMonitoring(position);
       return;
     }
     position.last_observation_as_of_ms = asOf;
@@ -2653,8 +2661,7 @@ function applyEvent(position, event, nowMs) {
         position.terminal_reason = "carry_below_exit_threshold";
       }
     } else {
-      position.status = "active";
-      position.next_actions = ["monitor_carry_and_margin"];
+      restoreActiveMonitoring(position);
     }
     return;
   }
@@ -2701,6 +2708,18 @@ function applyEvent(position, event, nowMs) {
       position.next_actions = ["cancel_open_orders", "reduce_only_close_observed_exposure"];
     }
   }
+}
+
+function requireMonitorableStatus(position) {
+  if (position.status === "active" || position.status === "rebalancing") return;
+  if (position.status === "frozen" && RECOVERABLE_MONITORING_FREEZE_REASONS.has(position.terminal_reason)) return;
+  fail("carry_event_not_allowed_in_state");
+}
+
+function restoreActiveMonitoring(position) {
+  position.status = "active";
+  position.next_actions = ["monitor_carry_and_margin"];
+  position.terminal_reason = null;
 }
 
 function migrationProposalFromObservation(position, event, nowMs) {

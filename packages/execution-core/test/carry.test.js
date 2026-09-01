@@ -1837,7 +1837,7 @@ test("restart-frozen reconciliation never reactivates exposure after mandate exp
   assert.equal(recovered.position.short_filled_micro_usdc, 10_000_000_000);
 });
 
-test("an unavailable monitoring observation freezes without retry", () => {
+test("an unavailable monitoring observation quarantines order submission but accepts fresh evidence", () => {
   let current = position();
   current = advanceCarryPosition({
     position: current,
@@ -1863,6 +1863,21 @@ test("an unavailable monitoring observation freezes without retry", () => {
   assert.equal(result.position.status, "frozen");
   assert.equal(result.position.retry_permitted, false);
   assert.deepEqual(result.position.next_actions, ["reconcile_only"]);
+
+  const recovered = advanceCarryPosition({
+    position: result.position,
+    event: event(4, "observation", {
+      ...contractObservation({ ...fundingObservation(NOW + 4, 4) }),
+      as_of_ms: NOW + 4,
+      expected_net_value_bps: 100,
+      margin_runway_ms_by_venue: { hyperliquid: 30 * HOUR, lighter: 30 * HOUR },
+    }),
+    now_ms: NOW + 4,
+  });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.position.status, "active");
+  assert.equal(recovered.position.terminal_reason, null);
+  assert.deepEqual(recovered.position.next_actions, ["monitor_carry_and_margin"]);
 });
 
 test("a proven no-fill entry terminates flat without an exit order", () => {

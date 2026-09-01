@@ -1178,7 +1178,7 @@ test("monitoring stores an exact owner-only collateral recommendation without tr
   assert.equal(plan.automatic_transfer_permitted, false);
 });
 
-test("monitor failure freezes an active position without retry", async (t) => {
+test("monitor failure quarantines an active position until fresh evidence recovers it", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-failure-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
@@ -1195,6 +1195,21 @@ test("monitor failure freezes an active position without retry", async (t) => {
   assert.equal(result.observation_ok, false);
   assert.equal(result.record.position.status, "frozen");
   assert.equal(result.record.position.retry_permitted, false);
+
+  const recovered = await runCarryMonitoringTick({
+    state,
+    preflight: async () => monitoringObservation({
+      economic_opportunity: monitoringOpportunity(NOW + 200, 9),
+      margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
+      qualification_reasons: [],
+    }),
+    now_ms: NOW + 200,
+  });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.checked, 1);
+  assert.equal(recovered.results[0].observation_ok, true);
+  assert.equal(recovered.results[0].record.position.status, "active");
+  assert.equal(recovered.results[0].record.position.terminal_reason, null);
 });
 
 test("worker monitoring survives without an open browser", async (t) => {

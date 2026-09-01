@@ -639,6 +639,7 @@ export async function runCarryExecutionTick({
     record.final_reconciliation_evidence
     && activeReservationPositions.has(record.position.position_id)
   );
+  const recoveryFrozenRecords = frozenRecords.filter((record) => !isRecoverableMonitoringFreeze(record.position));
   const tasks = [
     ...records.map((record) => ({
       position_id: record.position?.position_id,
@@ -655,7 +656,7 @@ export async function runCarryExecutionTick({
         now,
       }),
     })),
-    ...frozenRecords.map((record) => ({
+    ...recoveryFrozenRecords.map((record) => ({
       position_id: record.position?.position_id,
       run: () => synchronizeFrozenCarryRecovery({
         state,
@@ -744,6 +745,18 @@ export async function runCarryExecutionTick({
     checked: tasks.length,
     results,
   };
+}
+
+const RECOVERABLE_MONITORING_FREEZE_REASONS = new Set([
+  "observation_unavailable",
+  "observation_stale",
+  "contract_equivalence_unverifiable",
+  "funding_observation_unverifiable",
+]);
+
+function isRecoverableMonitoringFreeze(position) {
+  return position?.status === "frozen"
+    && RECOVERABLE_MONITORING_FREEZE_REASONS.has(position?.terminal_reason);
 }
 
 async function processExitingCarryRecord({
