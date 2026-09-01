@@ -33,6 +33,10 @@ import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { usePerpsTurnkey } from "@/lib/perps-turnkey-provider";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { TurnkeyPerpsManager } from "@/components/trade/TurnkeyPerpsManager";
+import {
+  TRADE_PRODUCT_OPTIONS,
+  WorkspaceProductNav,
+} from "@/components/trade/WorkspaceProductNav";
 import { GholaMarketChart } from "@/components/private-account/GholaMarketChart";
 import { CarryChartStrip } from "@/components/carry/CarryChartStrip";
 import { CarryPositionRail } from "@/components/carry/CarryPositionRail";
@@ -184,12 +188,6 @@ const DEFAULT_QUOTE_SIZE = "25";
 const QUOTE_SIZE_OPTIONS = ["5", "25", "100"] as const;
 const PRODUCTS: CoinbaseProductId[] = ["SOL-USD", "BTC-USD", "ETH-USD"];
 const INTERVALS: CoinbaseCandleInterval[] = ["1m", "5m", "15m", "1h"];
-const TRADE_PRODUCTS: Array<{ id: TradeProduct; label: string }> = [
-  { id: "spot", label: "Spot" },
-  { id: "perps", label: "Perps" },
-  { id: "swap", label: "Swap" },
-  { id: "automate", label: "Automate" },
-];
 const SURFACE_RAISED = "border border-[#292c33] bg-[linear-gradient(180deg,#121317_0%,#0c0d10_58%,#090a0c_100%)] shadow-[0_24px_70px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.045),inset_0_-1px_0_rgba(0,0,0,0.42)]";
 const SURFACE_SUNKEN = "border border-[#24272e] bg-[linear-gradient(180deg,#090a0d_0%,#07080a_100%)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03),inset_0_12px_28px_rgba(0,0,0,0.24)]";
 const LAST_TRADE_PRODUCT_KEY = "ghola:last-trade-product:v1";
@@ -247,7 +245,7 @@ export function PublicCoinbaseLiveTrade({
         : requestedProduct === "spot"
           ? "spot"
       : readStoredTradeProduct() || "spot";
-    if (TRADE_PRODUCTS.some((item) => item.id === nextProduct)) {
+    if (TRADE_PRODUCT_OPTIONS.some((item) => item.id === nextProduct)) {
       setTradeProduct(nextProduct);
     }
     const requestedVenue = searchParams.get("venue");
@@ -808,37 +806,6 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
       <div className="mb-3 text-sm font-medium tracking-tight text-white">{title}</div>
       <div className="grid gap-2">{children}</div>
     </div>
-  );
-}
-
-function WorkspaceProductNav({
-  value,
-  onChange,
-}: {
-  value: TradeProduct;
-  onChange: (value: TradeProduct) => void;
-}) {
-  return (
-    <nav
-      aria-label="Trading product"
-      className="flex w-full gap-1 overflow-x-auto rounded-lg border border-[#252a32] bg-[#0b0d11] p-1"
-    >
-      {TRADE_PRODUCTS.map((product) => (
-        <button
-          key={product.id}
-          type="button"
-          aria-current={value === product.id ? "page" : undefined}
-          onClick={() => onChange(product.id)}
-          className={
-            value === product.id
-              ? "min-w-[88px] flex-1 rounded-md bg-[#142235] px-4 py-2.5 text-sm font-semibold text-[#8fcbff] shadow-[inset_0_0_0_1px_rgba(61,168,255,0.24)]"
-              : "min-w-[88px] flex-1 rounded-md px-4 py-2.5 text-sm font-medium text-[#7f8998] transition hover:bg-white/[0.035] hover:text-[#dfe5ed]"
-          }
-        >
-          {product.label}
-        </button>
-      ))}
-    </nav>
   );
 }
 
@@ -2515,7 +2482,7 @@ function readStoredTradeProduct(): TradeProduct | null {
   try {
     const value = window.localStorage.getItem(LAST_TRADE_PRODUCT_KEY)
       ?? window.localStorage.getItem("ghola:last-trade-product");
-    return TRADE_PRODUCTS.some((item) => item.id === value) ? value as TradeProduct : null;
+    return TRADE_PRODUCT_OPTIONS.some((item) => item.id === value) ? value as TradeProduct : null;
   } catch {
     return null;
   }
