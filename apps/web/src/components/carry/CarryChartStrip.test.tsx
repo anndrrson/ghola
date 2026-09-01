@@ -194,6 +194,126 @@ describe("CarryChartStrip", () => {
     expect(container.textContent).toContain("USE CURRENT QUALIFIED ROUTE");
   });
 
+  it("keeps the selected terminal mounted through a transient live-route gap", async () => {
+    const fresh = shadowResponse([
+      snapshot("hyperliquid", 10_000_000),
+      snapshot("aster", 100_000_000),
+      snapshot("lighter", 150_000_000),
+    ]);
+    const staleAt = Date.now() - 31_000;
+    const transientGap = shadowResponse([
+      snapshot("hyperliquid", 10_000_000, {
+        as_of_ms: staleAt,
+        observed_at_ms: staleAt,
+        depth_observed_at_ms: staleAt,
+      }),
+      snapshot("aster", 100_000_000),
+      snapshot("lighter", 150_000_000),
+    ]);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => fresh } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => transientGap } as Response)
+      .mockResolvedValue({ ok: true, json: async () => fresh } as Response);
+
+    await act(async () => {
+      root.render(
+        <CarryChartStrip
+          asset="BTC"
+          defaultOpen
+          preferredLongVenue="hyperliquid"
+          preferredShortVenue="aster"
+          onAssetSelect={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const builder = container.querySelector('[aria-label="Carry execution terminal"]');
+    expect(builder?.getAttribute("data-route-qualified")).toBe("true");
+
+    const refresh = container.querySelector<HTMLButtonElement>('[aria-label="Refresh cross-venue routes"]');
+    await act(async () => {
+      refresh!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const retained = container.querySelector('[aria-label="Carry execution terminal"]');
+    expect(retained).toBe(builder);
+    expect(retained?.getAttribute("data-route-qualified")).toBe("false");
+    expect(container.textContent).toContain("SELECTED ROUTE STALE OR UNAVAILABLE · CHECKS PAUSED");
+
+    await act(async () => {
+      refresh!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const recovered = container.querySelector('[aria-label="Carry execution terminal"]');
+    expect(recovered).toBe(builder);
+    expect(recovered?.getAttribute("data-route-qualified")).toBe("true");
+  });
+
+  it("remounts route-scoped state when a stale route is explicitly replaced", async () => {
+    const fresh = shadowResponse([
+      snapshot("hyperliquid", 10_000_000),
+      snapshot("aster", 100_000_000),
+      snapshot("lighter", 150_000_000),
+    ]);
+    const staleAt = Date.now() - 31_000;
+    const preferredRouteGap = shadowResponse([
+      snapshot("hyperliquid", 10_000_000, {
+        as_of_ms: staleAt,
+        observed_at_ms: staleAt,
+        depth_observed_at_ms: staleAt,
+      }),
+      snapshot("aster", 100_000_000),
+      snapshot("lighter", 150_000_000),
+    ]);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => fresh } as Response)
+      .mockResolvedValue({ ok: true, json: async () => preferredRouteGap } as Response);
+
+    await act(async () => {
+      root.render(
+        <CarryChartStrip
+          asset="BTC"
+          defaultOpen
+          preferredLongVenue="hyperliquid"
+          preferredShortVenue="aster"
+          onAssetSelect={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const originalBuilder = container.querySelector('[aria-label="Carry execution terminal"]');
+    expect(originalBuilder).toBeTruthy();
+
+    const refresh = container.querySelector<HTMLButtonElement>('[aria-label="Refresh cross-venue routes"]');
+    await act(async () => {
+      refresh!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[aria-label="Carry execution terminal"]')).toBe(originalBuilder);
+
+    const replace = [...container.querySelectorAll<HTMLButtonElement>("button")].find((item) =>
+      item.textContent?.includes("USE CURRENT QUALIFIED ROUTE")
+    );
+    await act(async () => {
+      replace!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[aria-label="Carry execution terminal"]')).not.toBe(originalBuilder);
+  });
+
   it("quarantines aged quotes from both display and execution", async () => {
     const staleAt = Date.now() - 31_000;
     await renderShadow(shadowResponse([

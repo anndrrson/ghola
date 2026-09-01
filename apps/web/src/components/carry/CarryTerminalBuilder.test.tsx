@@ -389,6 +389,69 @@ describe("CarryTerminalBuilder", () => {
     expect(api.executeCarryPositionEntry).toHaveBeenCalledWith("carry:position:test", true);
   });
 
+  it("keeps an immediate pending receipt while a live route briefly loses qualification", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    let resolveMatrix!: (value: ReturnType<typeof readyMatrix> & {
+      selected_pair: Record<string, unknown>;
+    }) => void;
+    api.preflightCarryExecutionMatrix.mockReturnValue(new Promise((resolve) => {
+      resolveMatrix = resolve;
+    }));
+
+    await act(async () => root.render(
+      <CarryTerminalBuilder candidate={candidate()} routeQualified />,
+    ));
+    const check = [...container.querySelectorAll("button")].find((item) =>
+      item.textContent?.includes("NO-SUBMIT CHECK")
+    );
+    expect(check).toBeTruthy();
+
+    await act(async () => {
+      check!.click();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("NO-SUBMIT RECEIPT");
+    expect(container.textContent).toContain("CHECKING");
+
+    await act(async () => root.render(
+      <CarryTerminalBuilder candidate={candidate()} routeQualified={false} />,
+    ));
+    expect(container.querySelector('[aria-label="Carry position builder"]')
+      ?.getAttribute("data-route-qualified")).toBe("false");
+    expect(container.textContent).toContain("NO-SUBMIT RECEIPT");
+    expect(container.textContent).toContain("CHECKING");
+
+    await act(async () => {
+      resolveMatrix({
+        ...readyMatrix(),
+        selected_pair: {
+          long_venue_id: "hyperliquid",
+          short_venue_id: "lighter",
+          transaction_broadcast: false,
+          error_code: null,
+          result: {
+            correlation_id: "ghola-pair-pending-1234",
+            no_submit_ready: true,
+            capital_ready: false,
+            live_creation_ready: false,
+            qualification_pilot_ready: false,
+            creation_opportunity: { eligible: false },
+          },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("PAIR PAIR-PENDING");
+    const stale = [...container.querySelectorAll("button")].find((item) =>
+      item.textContent?.includes("ROUTE STALE · WAITING")
+    ) as HTMLButtonElement | undefined;
+    expect(stale?.disabled).toBe(true);
+    stale?.click();
+    expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
+  });
+
   it("removes an expired creation action instead of failing after owner signing", async () => {
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
     api.preflightCarryPair.mockResolvedValue({

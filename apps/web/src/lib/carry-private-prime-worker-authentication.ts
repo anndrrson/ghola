@@ -13,7 +13,13 @@ type VerificationInput = {
 
 export type CarryPrivatePrimeWorkerAuthenticationResult =
   | { ok: true }
-  | { ok: false; error: "carry_private_prime_worker_authentication_invalid" };
+  | {
+      ok: false;
+      error: "carry_private_prime_worker_authentication_invalid";
+      reason: "shape" | "response_age" | "request_binding" | "signer_pin" | "mac" | "signature";
+    };
+
+const MAX_AUTHENTICATED_RESPONSE_AGE_MS = 30_000;
 
 export function verifyCarryPrivatePrimeWorkerAuthentication({
   route_path,
@@ -32,7 +38,7 @@ export function verifyCarryPrivatePrimeWorkerAuthentication({
   const operationClass = string(body.operation_class);
   const workOrderCommitment = string(body.work_order_commitment);
   const checkedAtMs = integer(readiness.checked_at_ms);
-  const expiresAtMs = integer(readiness.expires_at_ms);
+  const expiresAtMs = nullableInteger(readiness.expires_at_ms);
   const evidenceCommitment = string(readiness.evidence_commitment);
   const macHex = string(authentication.mac_hex);
   const signatureB64 = string(authentication.signature_b64);
@@ -44,9 +50,26 @@ export function verifyCarryPrivatePrimeWorkerAuthentication({
     operationClass &&
     workOrderCommitment &&
     checkedAtMs !== null &&
-    expiresAtMs !== null &&
-    checkedAtMs <= now_ms + 1_000 &&
-    expiresAtMs > now_ms &&
+    expiresAtMs !== undefined &&
+    /^carry:private-prime:[0-9a-f]{40}$/.test(evidenceCommitment) &&
+    authentication.version === 1 &&
+    authentication.algorithm === "hmac-sha256" &&
+    authentication.request_bound === true &&
+    /^[0-9a-f]{64}$/.test(macHex) &&
+    authentication.signature_algorithm === "ed25519" &&
+    authentication.attestation_bound === true &&
+    signatureB64.length > 0 &&
+    signerPublicKeyB64.length > 0
+  );
+  if (!validShape) return invalid("shape");
+  if (checkedAtMs === null) return invalid("shape");
+  if (expiresAtMs === undefined) return invalid("shape");
+  // Readiness evidence may be expired or unavailable in a valid negative answer.
+  // Bound response replay with the fresh check time and unique work order instead.
+  if (checkedAtMs > now_ms + 1_000 || checkedAtMs < now_ms - MAX_AUTHENTICATED_RESPONSE_AGE_MS) {
+    return invalid("response_age");
+  }
+  const requestBound = Boolean(
     readiness.owner_commitment === ownerCommitment &&
     readiness.asset === asset &&
     context.route_path === route_path &&
@@ -56,28 +79,19 @@ export function verifyCarryPrivatePrimeWorkerAuthentication({
     context.work_order_commitment === workOrderCommitment &&
     context.evidence_commitment === evidenceCommitment &&
     context.checked_at_ms === checkedAtMs &&
-    context.expires_at_ms === expiresAtMs &&
-    /^carry:private-prime:[0-9a-f]{40}$/.test(evidenceCommitment) &&
-    authentication.version === 1 &&
-    authentication.algorithm === "hmac-sha256" &&
-    authentication.request_bound === true &&
-    /^[0-9a-f]{64}$/.test(macHex) &&
-    authentication.signature_algorithm === "ed25519" &&
-    authentication.attestation_bound === true &&
-    signatureB64.length > 0 &&
-    signerPublicKeyB64.length > 0 &&
-    signerAllowed(signerPublicKeyB64, env)
+    context.expires_at_ms === expiresAtMs
   );
-  if (!validShape) return invalid();
+  if (!requestBound) return invalid("request_binding");
+  if (!signerAllowed(signerPublicKeyB64, env)) return invalid("signer_pin");
   const message = carryPrivatePrimeWorkerAuthenticationMessage(context);
   const expected = createHmac("sha256", secret).update(message).digest("hex");
-  return safeHexEqual(macHex, expected) && attestedSignatureValid(signatureB64, signerPublicKeyB64, message)
-    ? { ok: true }
-    : invalid();
+  if (!safeHexEqual(macHex, expected)) return invalid("mac");
+  if (!attestedSignatureValid(signatureB64, signerPublicKeyB64, message)) return invalid("signature");
+  return { ok: true };
 }
 
-function invalid(): CarryPrivatePrimeWorkerAuthenticationResult {
-  return { ok: false, error: "carry_private_prime_worker_authentication_invalid" };
+function invalid(reason: Exclude<CarryPrivatePrimeWorkerAuthenticationResult, { ok: true }>["reason"]): CarryPrivatePrimeWorkerAuthenticationResult {
+  return { ok: false, error: "carry_private_prime_worker_authentication_invalid", reason };
 }
 
 function safeHexEqual(left: string, right: string) {
@@ -124,4 +138,9 @@ function string(value: unknown): string {
 
 function integer(value: unknown): number | null {
   return Number.isSafeInteger(value) ? Number(value) : null;
+}
+
+function nullableInteger(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  return Number.isSafeInteger(value) ? Number(value) : undefined;
 }

@@ -61,6 +61,8 @@ export function CarryChartStrip({
   const [clock, setClock] = useState(() => Date.now());
   const [livePatches, setLivePatches] = useState<CarryLiveMarketPatch[]>([]);
   const [executionRouteKey, setExecutionRouteKey] = useState("");
+  const [implicitExecutionRouteKey, setImplicitExecutionRouteKey] = useState("");
+  const [retainedExecution, setRetainedExecution] = useState<PricedCarryCandidate | null>(null);
   const loadedOnceRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -162,11 +164,35 @@ export function CarryChartStrip({
     && preferredLongVenue !== preferredShortVenue
     ? `${asset}:${preferredLongVenue}:${preferredShortVenue}`
     : "";
-  const selectedExecution = assetExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === executionRouteKey)
-    || (preferredExecutionRouteKey
-      ? assetExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === preferredExecutionRouteKey)
-      : assetExecutionCandidates[0])
-    || null;
+  const firstExecutionRouteKey = assetExecutionCandidates[0]
+    ? carryRouteKey(assetExecutionCandidates[0].candidate)
+    : "";
+  const implicitRouteKeyForAsset = implicitExecutionRouteKey.startsWith(`${asset}:`)
+    ? implicitExecutionRouteKey
+    : "";
+  const desiredExecutionRouteKey = executionRouteKey
+    || preferredExecutionRouteKey
+    || implicitRouteKeyForAsset
+    || firstExecutionRouteKey;
+  const selectedExecution = assetExecutionCandidates.find(({ candidate }) =>
+    carryRouteKey(candidate) === desiredExecutionRouteKey
+  ) || null;
+  const retainedForDesiredRoute = retainedExecution
+    && retainedExecution.candidate.asset === asset
+    && carryRouteKey(retainedExecution.candidate) === desiredExecutionRouteKey
+    ? retainedExecution
+    : null;
+  const terminalExecution = selectedExecution || retainedForDesiredRoute;
+  useEffect(() => {
+    if (executionRouteKey || preferredExecutionRouteKey || !firstExecutionRouteKey) return;
+    setImplicitExecutionRouteKey((current) => current.startsWith(`${asset}:`)
+      ? current
+      : firstExecutionRouteKey);
+  }, [asset, executionRouteKey, firstExecutionRouteKey, preferredExecutionRouteKey]);
+  useEffect(() => {
+    if (!selectedExecution) return;
+    setRetainedExecution(selectedExecution);
+  }, [selectedExecution]);
   const selected = preferredExecutionRouteKey
     ? selectedExecution
     : selectedExecution || selectedObserved;
@@ -351,30 +377,52 @@ export function CarryChartStrip({
               </Link>
             </div>
           )}
-          {selectedExecution ? (
+          {terminalExecution ? (
             <>
-              {assetExecutionCandidates.length > 1 ? (
-                <label className="mt-2 flex items-center justify-end gap-2 font-mono text-[9px] text-[#657286]">
-                  EXEC ROUTE
-                  <select
-                    aria-label="Carry execution route"
-                    value={carryRouteKey(selectedExecution.candidate)}
-                    onChange={(event) => setExecutionRouteKey(event.target.value)}
-                    className="max-w-[18rem] rounded border border-[#202a37] bg-[#070a0f] px-2 py-1 text-[10px] text-[#b8c3d1] outline-none focus:border-[#35618d]"
-                  >
-                    {assetExecutionCandidates.map(({ candidate, daily_value_bps: dailyValueBps }) => (
-                      <option key={carryRouteKey(candidate)} value={carryRouteKey(candidate)}>
-                        L {venueName(candidate.long.venue_id)} / S {venueName(candidate.short.venue_id)} · {formatBps(dailyValueBps)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-              <CarryTerminalBuilder
-                candidate={selectedExecution.candidate}
-                autoRunNoSubmit={autoRunNoSubmit}
-                onAutoRunNoSubmitConsumed={onAutoRunNoSubmitConsumed}
-              />
+              <div>
+                {selectedExecution && assetExecutionCandidates.length > 1 ? (
+                  <label className="mt-2 flex items-center justify-end gap-2 font-mono text-[9px] text-[#657286]">
+                    EXEC ROUTE
+                    <select
+                      aria-label="Carry execution route"
+                      value={carryRouteKey(selectedExecution.candidate)}
+                      onChange={(event) => setExecutionRouteKey(event.target.value)}
+                      className="max-w-[18rem] rounded border border-[#202a37] bg-[#070a0f] px-2 py-1 text-[10px] text-[#b8c3d1] outline-none focus:border-[#35618d]"
+                    >
+                      {assetExecutionCandidates.map(({ candidate, daily_value_bps: dailyValueBps }) => (
+                        <option key={carryRouteKey(candidate)} value={carryRouteKey(candidate)}>
+                          L {venueName(candidate.long.venue_id)} / S {venueName(candidate.short.venue_id)} · {formatBps(dailyValueBps)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : !selectedExecution ? (
+                  <div className="mt-2 flex min-h-8 items-center justify-between gap-3 rounded border border-[#4b3840] bg-[#160d11] px-2.5 text-[10px] text-[#d6959f]">
+                    <span>SELECTED ROUTE STALE OR UNAVAILABLE · CHECKS PAUSED</span>
+                    {assetExecutionCandidates.length > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => setExecutionRouteKey(carryRouteKey(assetExecutionCandidates[0].candidate))}
+                        className="shrink-0 rounded border border-[#684b55] px-2 py-1 font-mono font-semibold text-[#efb0ba] hover:bg-white/5"
+                      >
+                        USE CURRENT QUALIFIED ROUTE
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+              <div
+                key={carryRouteKey(terminalExecution.candidate)}
+                aria-label="Carry execution terminal"
+                data-route-qualified={selectedExecution ? "true" : "false"}
+              >
+                <CarryTerminalBuilder
+                  candidate={terminalExecution.candidate}
+                  routeQualified={Boolean(selectedExecution)}
+                  autoRunNoSubmit={autoRunNoSubmit}
+                  onAutoRunNoSubmitConsumed={onAutoRunNoSubmitConsumed}
+                />
+              </div>
             </>
           ) : preferredExecutionRouteKey && assetExecutionCandidates.length > 0 ? (
             <div className="mt-2 flex min-h-8 items-center justify-between gap-3 rounded border border-[#4b3840] bg-[#160d11] px-2.5 text-[10px] text-[#d6959f]">

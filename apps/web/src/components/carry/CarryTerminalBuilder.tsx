@@ -123,10 +123,12 @@ const CARRY_CREATION_PROOF_FUTURE_TOLERANCE_MS = 5_000;
 
 export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   candidate,
+  routeQualified = true,
   autoRunNoSubmit = false,
   onAutoRunNoSubmitConsumed,
 }: {
   candidate: CarryCandidate;
+  routeQualified?: boolean;
   autoRunNoSubmit?: boolean;
   onAutoRunNoSubmitConsumed?: () => void;
 }) {
@@ -360,7 +362,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   };
 
   const runCheck = useCallback(async () => {
-    if (!executionPair || !privateSessionReady) return;
+    if (!executionPair || !privateSessionReady || !routeQualified) return;
     const localReference = shortReference(`ghola-${Date.now().toString(36)}`);
     const checkedRoute = `${candidate.asset} · L ${venueName(candidate.long.venue_id)} / S ${venueName(candidate.short.venue_id)}`;
     setBusy("check");
@@ -460,6 +462,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     privateSessionReady,
     readiness,
     restoredReadiness,
+    routeQualified,
   ]);
 
   useEffect(() => {
@@ -467,11 +470,11 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
       autoRunNoSubmitConsumedRef.current = false;
       return;
     }
-    if (!executionPair || !privateSessionReady || autoRunNoSubmitConsumedRef.current) return;
+    if (!executionPair || !privateSessionReady || !routeQualified || autoRunNoSubmitConsumedRef.current) return;
     autoRunNoSubmitConsumedRef.current = true;
     onAutoRunNoSubmitConsumed?.();
     void runCheck();
-  }, [autoRunNoSubmit, executionPair, onAutoRunNoSubmitConsumed, privateSessionReady, runCheck]);
+  }, [autoRunNoSubmit, executionPair, onAutoRunNoSubmitConsumed, privateSessionReady, routeQualified, runCheck]);
 
   async function savePosition() {
     if (!proof) return;
@@ -636,9 +639,9 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   );
   const useFleetSetup = privateSessionReady && (restoredReadiness || selectedPairReady);
   const connectionHref = useFleetSetup ? fleetSetupHref : pairSetupHref;
-  const canSave = actionableProof && creationProofFreshness.fresh;
+  const canSave = routeQualified && actionableProof && creationProofFreshness.fresh;
   const needsSetupToSave = saveSetupRequired || !perpsTurnkey.authenticated;
-  const canEnter = current?.position.status === "draft" && supervision.ready;
+  const canEnter = routeQualified && current?.position.status === "draft" && supervision.ready;
   const canExit = current ? ["active", "rebalancing", "frozen"].includes(current.position.status) : false;
   const connectionAction = auth.loading
     ? "CHECKING SIGN-IN…"
@@ -654,7 +657,11 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
           ? "CONNECT TO VERIFY & TRADE"
           : "CONNECT TO VERIFY · NO EDGE YET";
   return (
-    <div className="mt-2 grid gap-2 border-t border-[#1d2733] pt-2 lg:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]" aria-label="Carry position builder">
+    <div
+      className="mt-2 grid gap-2 border-t border-[#1d2733] pt-2 lg:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]"
+      aria-label="Carry position builder"
+      data-route-qualified={routeQualified ? "true" : "false"}
+    >
       {!proof && !current ? (
         <div className="flex min-w-0 items-center justify-between gap-3 rounded border border-[#1d2733] bg-[#070a0f] px-2 py-1 lg:col-span-2">
           <span className="truncate font-mono text-[9px] font-semibold tracking-[0.12em] text-[#8fbbe2]">
@@ -720,8 +727,8 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
               {recordsLoading ? "SYNCING POSITIONS…" : "RETRY POSITION SYNC"}
             </button>
           ) : !current && !canSave ? (
-            <button type="button" disabled={!executionPair || busy !== null} onClick={() => void runCheck()} className="rounded border border-[#285040] bg-[#0a1b16] px-2 py-2 font-mono text-[10px] font-semibold text-[#75d9b0] disabled:opacity-40">
-              {busy === "check" ? "CHECKING…" : executionPair ? restoredReadiness ? "CHECK PAIR · FLEET READY" : "NO-SUBMIT CHECK" : "READ-ONLY ROUTE"}
+            <button type="button" disabled={!executionPair || !routeQualified || busy !== null} onClick={() => void runCheck()} className="rounded border border-[#285040] bg-[#0a1b16] px-2 py-2 font-mono text-[10px] font-semibold text-[#75d9b0] disabled:opacity-40">
+              {busy === "check" ? "CHECKING…" : !routeQualified ? "ROUTE STALE · WAITING" : executionPair ? restoredReadiness ? "CHECK PAIR · FLEET READY" : "NO-SUBMIT CHECK" : "READ-ONLY ROUTE"}
             </button>
           ) : !current && canSave && needsSetupToSave ? (
             <Link href={pairSetupHref} className="rounded border border-[#31577a] bg-[#10243a] px-2 py-2 text-center font-mono text-[10px] font-semibold text-[#b7ddff] hover:bg-[#142c46]">
@@ -730,6 +737,10 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
           ) : !current && canSave ? (
             <button type="button" disabled={busy !== null} onClick={() => void savePosition()} className="rounded border border-[#31577a] bg-[#10243a] px-2 py-2 font-mono text-[10px] font-semibold text-[#b7ddff] disabled:opacity-40">
               {busy === "save" ? "SAVING…" : migrationSource ? "SIGN MIGRATION" : proof?.qualification_pilot_ready === true ? "ARM CAPPED PROOF" : "SAVE POSITION"}
+            </button>
+          ) : current?.position.status === "draft" && !routeQualified ? (
+            <button type="button" disabled className="rounded border border-[#594b2b] bg-[#1e190c] px-2 py-2 font-mono text-[10px] font-semibold text-[#d9bd74] opacity-70">
+              ROUTE STALE · ENTRY LOCKED
             </button>
           ) : current?.position.status === "draft" && !supervision.ready ? (
             <button type="button" disabled className="rounded border border-[#63333b] bg-[#231014] px-2 py-2 font-mono text-[10px] font-semibold text-[#ef929e] opacity-70">

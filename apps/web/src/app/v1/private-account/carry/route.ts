@@ -371,6 +371,7 @@ export async function POST(req: NextRequest) {
           correlation_id: correlationId,
           action,
           operation_class: route.operationClass,
+          authentication_reason: authenticated.reason,
           duration_ms: Date.now() - startedAt,
         });
         return response({ error: authenticated.error }, 502, correlationId);

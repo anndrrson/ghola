@@ -496,6 +496,19 @@ test("rejects private-prime evidence without its exact signed request context", 
   );
 });
 
+test("rejects a gateway that conflates negative readiness expiry with response authentication", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivatePrimeAuthentication: sources.webPrivatePrimeAuthentication.replace(
+        "checkedAtMs < now_ms - MAX_AUTHENTICATED_RESPONSE_AGE_MS",
+        "expiresAtMs > now_ms",
+      ),
+    }),
+    /carry_private_prime_gateway_response_freshness_missing|carry_private_prime_gateway_negative_readiness_rejected/,
+  );
+});
+
 test("rejects a no-submit proof detached from raw pair evidence or the pinned worker signer", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -534,11 +547,37 @@ test("rejects a terminal that leaves expired creation proof actionable", () => {
     () => checkCarryExecutionContract({
       ...sources,
       webCarryBuilder: sources.webCarryBuilder.replace(
-        "const canSave = actionableProof && creationProofFreshness.fresh",
+        "const canSave = routeQualified && actionableProof && creationProofFreshness.fresh",
         "const canSave = actionableProof",
       ),
     }),
     /carry_creation_stale_action_gate_missing/,
+  );
+});
+
+test("rejects a terminal that unmounts an active check during a transient route gap", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: sources.webCarryChart.replace(
+        "const terminalExecution = selectedExecution || retainedForDesiredRoute;",
+        "const terminalExecution = selectedExecution;",
+      ),
+    }),
+    /carry_terminal_transient_route_retention_missing/,
+  );
+});
+
+test("rejects a terminal that can carry pending proof state across routes", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: sources.webCarryChart.replace(
+        "key={carryRouteKey(terminalExecution.candidate)}",
+        "",
+      ),
+    }),
+    /carry_terminal_route_state_scope_missing/,
   );
 });
 

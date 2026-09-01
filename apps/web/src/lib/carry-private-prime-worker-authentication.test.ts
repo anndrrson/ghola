@@ -9,7 +9,7 @@ const SIGNER = generateKeyPairSync("ed25519");
 const SIGNER_PUBLIC_KEY_B64 = SIGNER.publicKey.export({ format: "der", type: "spki" }).toString("base64");
 
 describe("private-prime worker authentication", () => {
-  it("accepts only fresh evidence bound to the exact owner request", () => {
+  it("accepts a fresh authenticated response bound to the exact owner request", () => {
     expect(verifyCarryPrivatePrimeWorkerAuthentication({
       route_path: "/carry/readiness",
       body: body(),
@@ -20,7 +20,12 @@ describe("private-prime worker authentication", () => {
     })).toEqual({ ok: true });
   });
 
-  it("rejects tampering, replay under another work order, expiry, and missing authentication", () => {
+  it("authenticates a fresh negative readiness response even when its evidence is expired or has no expiry", () => {
+    expect(verify(response({ expires_at_ms: NOW - 1 }))).toEqual({ ok: true });
+    expect(verify(response({ expires_at_ms: null }))).toEqual({ ok: true });
+  });
+
+  it("rejects tampering, replay under another work order, stale responses, and missing authentication", () => {
     const tampered = response();
     tampered.private_prime_readiness.asset = "ETH";
     expect(verify(tampered).ok).toBe(false);
@@ -28,7 +33,11 @@ describe("private-prime worker authentication", () => {
     contextTampered.private_prime_authentication.context.work_order_commitment = "carry_readiness_other";
     expect(verify(contextTampered).ok).toBe(false);
     expect(verify(response(), { work_order_commitment: "carry_readiness_other" }).ok).toBe(false);
-    expect(verify(response(), {}, NOW + 5_001).ok).toBe(false);
+    expect(verify(response({ expires_at_ms: NOW + 60_000 }), {}, NOW + 30_001)).toEqual({
+      ok: false,
+      error: "carry_private_prime_worker_authentication_invalid",
+      reason: "response_age",
+    });
     expect(verify({ private_prime_readiness: response().private_prime_readiness }).ok).toBe(false);
     expect(verifyCarryPrivatePrimeWorkerAuthentication({
       route_path: "/carry/readiness",
@@ -66,13 +75,14 @@ function body(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function response() {
+function response(readinessOverrides: Record<string, unknown> = {}) {
   const privatePrimeReadiness = {
     owner_commitment: "owner_commitment_0001",
     asset: "BTC",
     evidence_commitment: `carry:private-prime:${"a".repeat(40)}`,
     checked_at_ms: NOW,
     expires_at_ms: NOW + 5_000,
+    ...readinessOverrides,
   };
   const message = carryPrivatePrimeWorkerAuthenticationMessage({
     route_path: "/carry/readiness",
