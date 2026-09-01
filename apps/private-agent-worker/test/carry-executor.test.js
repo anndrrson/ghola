@@ -323,6 +323,16 @@ test("bootstraps one capped candidate only after separate qualification confirma
     executeOrder: async (order) => {
       const receipt = qualificationReceipt(order);
       await state.putIdempotency(order.work_order_commitment, receipt);
+      await state.putExecutionAttempt(order.work_order_commitment, {
+        venue_id: order.venue_id,
+        account_commitment: receipt.account_commitment,
+        submit_count: 1,
+        ambiguity_retry_count: 0,
+        status: receipt.status,
+        provider_ref_seed: { provider_ref_commitment: receipt.provider_ref_commitment },
+        result_seed: { result_commitment: receipt.result_commitment },
+        final_proof: receipt.final_proof,
+      });
       return receipt;
     },
     env,

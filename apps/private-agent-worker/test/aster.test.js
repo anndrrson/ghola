@@ -979,6 +979,80 @@ test("routes Aster through durable policy and idempotency state in dry-run", asy
   assert.equal((await state.getExecutionAttempt(args.work_order_commitment)).status, "open");
 });
 
+test("atomically claims one Aster submission under concurrent identical requests", async (t) => {
+  const old = { ...process.env };
+  const dir = mkdtempSync(join(tmpdir(), "ghola-aster-concurrent-submit-"));
+  t.after(() => {
+    process.env = old;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "true";
+  process.env.PRIVATE_AGENT_ASTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_ASTER_LIVE_MODE = "full_ticket";
+  process.env.PRIVATE_AGENT_ASTER_FULL_TICKET_MAX_NOTIONAL_USD = "25";
+  const state = createWorkerState(dir);
+  const args = {
+    venue_id: "aster",
+    operation_class: "limit_order",
+    work_order_commitment: "work:aster:concurrent:0001",
+    policy_commitment: "policy:aster:concurrent:0001",
+    session_policy: {
+      policy_commitment: "policy:aster:concurrent:0001",
+      market_allowlist: ["BTC-PERP"],
+      max_notional_bucket: "25",
+      max_order_count: 2,
+      max_daily_notional_bucket: "100",
+      kill_switch: false,
+    },
+    instruction: {
+      ...orderInstruction(),
+      order: { ...orderInstruction().order, base_size: "0.01", limit_price: "1000" },
+    },
+    execution: { execution_mode: "byo_api_key" },
+    recipient: null,
+    state,
+  };
+  const originalGetAttempt = state.getExecutionAttempt.bind(state);
+  const originalClaimAttempt = state.claimExecutionAttempt.bind(state);
+  let reads = 0;
+  let releaseReads;
+  let firstRead;
+  const bothRead = new Promise((resolve) => { releaseReads = resolve; });
+  const firstReadStarted = new Promise((resolve) => { firstRead = resolve; });
+  const claims = [];
+  state.getExecutionAttempt = async (key) => {
+    const result = await originalGetAttempt(key);
+    if (key === args.work_order_commitment && reads < 2) {
+      reads += 1;
+      if (reads === 1) {
+        firstRead();
+        await bothRead;
+      } else {
+        releaseReads();
+      }
+    }
+    return result;
+  };
+  state.claimExecutionAttempt = async (...claimArgs) => {
+    const result = await originalClaimAttempt(...claimArgs);
+    claims.push(result.ok);
+    return result;
+  };
+
+  const first = executeAutopilotOrder(args);
+  await firstReadStarted;
+  const second = executeAutopilotOrder(args);
+  const outcomes = await Promise.allSettled([first, second]);
+  assert.deepEqual(claims.sort(), [false, true]);
+  assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1);
+  const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+  assert.equal(rejected.reason.status, 409);
+  assert.match(rejected.reason.message, /reconcile it instead of retrying/);
+  const attempt = await originalGetAttempt(args.work_order_commitment);
+  assert.equal(attempt.submit_count, 1);
+  assert.equal(attempt.ambiguity_retry_count, 0);
+});
+
 test("refreshes read-only Aster reconciliation instead of replaying a stale cache", async (t) => {
   const old = { ...process.env };
   const dir = mkdtempSync(join(tmpdir(), "ghola-aster-reconcile-refresh-"));
@@ -994,6 +1068,9 @@ test("refreshes read-only Aster reconciliation instead of replaying a stale cach
   await state.putIdempotency(targetWork, { status: "submitted" });
   const originalPutAttempt = state.putExecutionAttempt.bind(state);
   let attemptWrites = 0;
+  state.claimExecutionAttempt = async () => {
+    throw new Error("read-only reconciliation must not claim a submission");
+  };
   state.putExecutionAttempt = async (...args) => {
     attemptWrites += 1;
     return originalPutAttempt(...args);

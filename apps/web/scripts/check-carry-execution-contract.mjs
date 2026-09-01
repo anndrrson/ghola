@@ -936,7 +936,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("qualification", 'venueAdapterCapability(venueId, "no_submit_reconciliation")', "qualification_reconciliation_registry_missing");
   requireText("qualification", "image_digest: imageDigest", "qualification_image_binding_missing");
   requireText("qualification", 'network: "mainnet"', "qualification_mainnet_proof_missing");
-  requireText("qualification", "ambiguous_submission_retry_count: 0", "qualification_no_retry_proof_missing");
+  requireText("qualification", 'entry: qualificationSubmissionAttempt("entry", entry)', "qualification_entry_attempt_derivation_missing");
+  requireText("qualification", 'exit: qualificationSubmissionAttempt("exit", exit)', "qualification_exit_attempt_derivation_missing");
+  requireText("qualification", "ambiguous_submission_retry_count: ambiguityRetryCount", "qualification_no_retry_proof_missing");
+  requireText("qualification", "attempt?.ambiguity_retry_count", "qualification_durable_retry_evidence_missing");
+  forbidText("qualification", "ambiguous_submission_retry_count: 0", "qualification_retry_evidence_hardcoded");
   requireText("qualification", "gross_exposure_micro_usdc: 0", "qualification_flat_proof_missing");
   requireText("qualification", "open_order_count: 0", "qualification_zero_orders_proof_missing");
   requireText("qualification", "qualification_account_binding_mismatch", "qualification_account_lineage_gate_missing");
@@ -1006,6 +1010,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifierTest", "rejects missing, incomplete, or image-mismatched five-venue shadow qualification", "carry_release_shadow_qualification_test_missing");
   requireCount("privateExecution", "submit_count: readOnlyReconcile ? 0 : 1", 3, "durable_submit_count_missing");
   requireText("privateExecution", "ambiguity_retry_count: 0", "durable_retry_count_missing");
+  requireCount("privateExecution", "persistPreSubmissionAttempt({", 3, "durable_atomic_submit_claim_missing");
+  requireText("privateExecution", "state.claimExecutionAttempt(workOrderCommitment, attempt)", "durable_atomic_state_claim_missing");
+  requireText("asterTest", "atomically claims one Aster submission under concurrent identical requests", "durable_atomic_submit_concurrency_test_missing");
+  requireText("serverTest", "atomically accepts one concurrent Hyperliquid submission", "hyperliquid_atomic_submit_concurrency_test_missing");
   requireText("privateExecution", 'venueAdapterCapability(venueId, capability)', "worker_carry_capability_registry_missing");
   requireText("privateExecution", 'registeredCarryAdapter(venue_id, "carry_execution")', "worker_carry_execution_registry_dispatch_missing");
   requireText("privateExecution", 'registeredCarryAdapter(venue_id, "no_submit_reconciliation")', "worker_carry_no_submit_registry_dispatch_missing");

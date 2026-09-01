@@ -104,6 +104,10 @@ test("derives qualification only from a completed durable flat lifecycle", async
     [entryWork, { receipt: executionReceipt("0.001", "account:aster:qualification:0001") }],
     [exitWork, { receipt: executionReceipt("0.001", "account:aster:qualification:0001") }],
   ]);
+  const attempts = new Map([
+    [entryWork, executionAttempt("account:aster:qualification:0001")],
+    [exitWork, executionAttempt("account:aster:qualification:0001")],
+  ]);
   const record = {
     owner_commitment: "owner:carry:qualification:0001",
     position: { position_id: "carry:position:0001", status: "reconciled", long_venue_id: "hyperliquid", short_venue_id: "aster" },
@@ -154,7 +158,7 @@ test("derives qualification only from a completed durable flat lifecycle", async
     getCarryPositionRecord: async () => record,
     getMultiLegSaga: async (id) => sagas[id],
     getIdempotency: async (key) => map.get(key) || null,
-    getExecutionAttempt: async () => null,
+    getExecutionAttempt: async (key) => attempts.get(key) || null,
     putIdempotency: async (key, receipt) => { map.set(key, { receipt }); return receipt; },
   };
   const result = await recordCompletedCarryVenueQualifications({
@@ -171,6 +175,27 @@ test("derives qualification only from a completed durable flat lifecycle", async
     now_ms: NOW + 1,
     env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
   })).proven, true);
+
+  attempts.get(entryWork).ambiguity_retry_count = 1;
+  const retried = await recordCompletedCarryVenueQualifications({
+    state,
+    position_id: record.position.position_id,
+    now_ms: NOW,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+  });
+  assert.equal(retried.ok, false);
+  assert.equal(retried.error, "entry_submission_attempt_proof_incomplete");
+
+  attempts.get(entryWork).ambiguity_retry_count = 0;
+  attempts.delete(exitWork);
+  const missing = await recordCompletedCarryVenueQualifications({
+    state,
+    position_id: record.position.position_id,
+    now_ms: NOW,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+  });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.error, "exit_submission_attempt_proof_incomplete");
 });
 
 function evidence(venueId) {
@@ -211,9 +236,42 @@ function evidence(venueId) {
       open_order_count: 0,
       evidence_commitment: "exit_evidence_0001",
     },
+    submission_attempts: submissionAttempts(accountCommitment),
     ambiguous_submission_retry_count: 0,
     authority_boundary_acceptable: true,
     authority_evidence_commitment: "authority_evidence_0001",
+  };
+}
+
+function submissionAttempts(accountCommitment) {
+  return {
+    entry: {
+      work_order_commitment: "work:carry:entry:qualification:0001",
+      account_commitment: accountCommitment,
+      submit_count: 1,
+      ambiguity_retry_count: 0,
+      evidence_commitment: "attempt:entry:qualification:0001",
+    },
+    exit: {
+      work_order_commitment: "work:carry:exit:qualification:0001",
+      account_commitment: accountCommitment,
+      submit_count: 1,
+      ambiguity_retry_count: 0,
+      evidence_commitment: "attempt:exit:qualification:0001",
+    },
+  };
+}
+
+function executionAttempt(accountCommitment) {
+  return {
+    venue_id: "aster",
+    account_commitment: accountCommitment,
+    submit_count: 1,
+    ambiguity_retry_count: 0,
+    status: "filled",
+    provider_ref_seed: { order_id: "42" },
+    result_seed: { kind: "aster_order_filled" },
+    final_proof: { final_venue_execution_proven: true },
   };
 }
 

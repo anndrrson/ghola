@@ -83,6 +83,11 @@ export async function recordCompletedCarryVenueQualifications({ state, position_
     const exitProof = exit.receipt?.final_proof || {};
     const exactBase = equalPositiveDecimal(entryProof.filled_base_size, exitProof.filled_base_size);
     const authorityAcceptable = acceptableAuthorityBoundary(noSubmit?.authority_boundary);
+    const submissionAttempts = {
+      entry: qualificationSubmissionAttempt("entry", entry),
+      exit: qualificationSubmissionAttempt("exit", exit),
+    };
+    const ambiguityRetryCount = totalAmbiguityRetryCount(submissionAttempts);
     const evidence = {
       version: 1,
       venue_id: venueId,
@@ -119,7 +124,8 @@ export async function recordCompletedCarryVenueQualifications({ state, position_
         open_order_count: 0,
         evidence_commitment: receiptCommitment("exit", exit.receipt),
       },
-      ambiguous_submission_retry_count: 0,
+      submission_attempts: submissionAttempts,
+      ambiguous_submission_retry_count: ambiguityRetryCount,
       authority_boundary_acceptable: authorityAcceptable,
       authority_evidence_commitment: noSubmit?.evidence_commitment || "",
     };
@@ -166,7 +172,24 @@ export function assessCarryVenueQualification({ venue_id: venueId, evidence, ima
   if (exit.live_order_broadcast !== true || exit.reduce_only !== true || exit.exact_base_quantity !== true || exit.final_venue_execution_proven !== true || exit.account_state_checked !== true || exit.gross_exposure_micro_usdc !== 0 || exit.open_order_count !== 0 || !commitment(exit.evidence_commitment)) {
     reasons.push("exit_recovery_proof_incomplete");
   }
-  if (evidence.ambiguous_submission_retry_count !== 0) reasons.push("ambiguity_retry_invariant_failed");
+  const attempts = evidence.submission_attempts || {};
+  for (const phase of ["entry", "exit"]) {
+    const attempt = attempts[phase] || {};
+    if (attempt.account_commitment !== evidence.account_commitment
+      || !commitment(attempt.work_order_commitment)
+      || attempt.submit_count !== 1
+      || attempt.ambiguity_retry_count !== 0
+      || !commitment(attempt.evidence_commitment)) {
+      reasons.push(`${phase}_submission_attempt_proof_incomplete`);
+    }
+  }
+  if (attempts.entry?.work_order_commitment === attempts.exit?.work_order_commitment) {
+    reasons.push("submission_attempt_lineage_reused");
+  }
+  const derivedRetryCount = totalAmbiguityRetryCount(attempts);
+  if (derivedRetryCount !== 0 || evidence.ambiguous_submission_retry_count !== derivedRetryCount) {
+    reasons.push("ambiguity_retry_invariant_failed");
+  }
   if (evidence.authority_boundary_acceptable !== true || !commitment(evidence.authority_evidence_commitment)) reasons.push("authority_boundary_unproven");
   return result(reasons.length === 0, venueId, reasons, {
     source: "deployment_bound_lifecycle",
@@ -247,12 +270,46 @@ function evidenceDigest(value) {
 async function sagaReceipt({ state, saga, venueId }) {
   const leg = saga?.legs?.find((item) => item.venue_id === venueId);
   const context = saga?.execution_context?.legs?.find((item) => item.leg_id === leg?.leg_id);
-  if (!context) return { context: null, receipt: null };
+  if (!context) return { context: null, receipt: null, attempt: null };
   const [cached, attempt] = await Promise.all([
     state.getIdempotency?.(context.work_order_commitment),
     state.getExecutionAttempt?.(context.work_order_commitment),
   ]);
-  return { context, receipt: cached?.receipt || attempt || null };
+  return { context, receipt: cached?.receipt || attempt || null, attempt: attempt || null };
+}
+
+function qualificationSubmissionAttempt(phase, execution) {
+  const attempt = execution?.attempt;
+  const workOrderCommitment = String(execution?.context?.work_order_commitment || "");
+  return {
+    work_order_commitment: workOrderCommitment,
+    account_commitment: attempt?.account_commitment || null,
+    submit_count: nonnegativeIntegerOrNull(attempt?.submit_count),
+    ambiguity_retry_count: nonnegativeIntegerOrNull(attempt?.ambiguity_retry_count),
+    evidence_commitment: attempt
+      ? `carry:qualification:${phase}:attempt:${createHash("sha256").update(JSON.stringify({
+        work_order_commitment: workOrderCommitment,
+        account_commitment: attempt.account_commitment || null,
+        submit_count: attempt.submit_count,
+        ambiguity_retry_count: attempt.ambiguity_retry_count,
+        status: attempt.status || null,
+        provider_ref_seed: attempt.provider_ref_seed || null,
+        result_seed: attempt.result_seed || null,
+        final_proof: attempt.final_proof || null,
+      })).digest("hex").slice(0, 40)}`
+      : "",
+  };
+}
+
+function totalAmbiguityRetryCount(attempts) {
+  const counts = [attempts?.entry?.ambiguity_retry_count, attempts?.exit?.ambiguity_retry_count];
+  return counts.every((value) => Number.isSafeInteger(value) && value >= 0)
+    ? counts.reduce((total, value) => total + value, 0)
+    : null;
+}
+
+function nonnegativeIntegerOrNull(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function acceptableAuthorityBoundary(boundary) {

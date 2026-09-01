@@ -2259,6 +2259,101 @@ describe("private agent worker", () => {
     assert.match((await second.json()).error, /reconcile it instead of retrying/);
   });
 
+  it("atomically accepts one concurrent Hyperliquid submission", async () => {
+    await close(server);
+    const state = createWorkerState(dir);
+    const originalGetAttempt = state.getExecutionAttempt.bind(state);
+    const originalClaimAttempt = state.claimExecutionAttempt.bind(state);
+    const claims = [];
+    let reads = 0;
+    let releaseReads;
+    let firstRead;
+    const bothRead = new Promise((resolve) => { releaseReads = resolve; });
+    const firstReadStarted = new Promise((resolve) => { firstRead = resolve; });
+    const workOrderCommitment = "connector_work_order_hl_concurrent_123";
+    state.getExecutionAttempt = async (key) => {
+      const result = await originalGetAttempt(key);
+      if (key === workOrderCommitment && reads < 2) {
+        reads += 1;
+        if (reads === 1) {
+          firstRead();
+          await bothRead;
+        } else {
+          releaseReads();
+        }
+      }
+      return result;
+    };
+    state.claimExecutionAttempt = async (...args) => {
+      const result = await originalClaimAttempt(...args);
+      claims.push(result.ok);
+      return result;
+    };
+    server = createPrivateAgentWorkerServer({
+      state,
+      startAutopilotDueLoop: false,
+      startMultiLegRecoveryLoop: false,
+      startCarryMonitoringLoop: false,
+      startCarryExecutionLoop: false,
+      startKrakenV2Heartbeat: false,
+    });
+    baseUrl = await listen(server);
+    const vault = await encryptedHyperliquidVault(baseUrl);
+    const requestBody = {
+      version: 1,
+      account_commitment: vault.account_commitment,
+      work_order_commitment: workOrderCommitment,
+      vault_commitment: vault.vault_commitment,
+      policy_commitment: vault.policy_commitment,
+      operation_class: "limit_order",
+      encrypted_execution_vault: vault.encrypted_execution_vault,
+      encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+        venue_id: "hyperliquid",
+        work_order_commitment: workOrderCommitment,
+        operation_class: "limit_order",
+        order: {
+          market: "BTC",
+          side: "buy",
+          base_size: "0.001",
+          limit_price: "10000",
+          tif: "Gtc",
+        },
+      }),
+      session_policy: vault.session_policy,
+    };
+    const submit = () => fetch(`${baseUrl}/hyperliquid/orders`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    const first = submit();
+    await firstReadStarted;
+    const second = submit();
+    const responses = await Promise.all([first, second]);
+    assert.deepEqual(responses.map((response) => response.status).sort(), [202, 409]);
+    assert.deepEqual(claims.sort(), [false, true]);
+    const accepted = responses.find((response) => response.status === 202);
+    const rejected = responses.find((response) => response.status === 409);
+    const acceptedReceipt = await accepted.json();
+    assert.match((await rejected.json()).error, /reconcile it instead of retrying/);
+    const attempt = await originalGetAttempt(workOrderCommitment);
+    assert.equal(attempt.account_commitment, vault.account_commitment);
+    assert.equal(attempt.submit_count, 1);
+    assert.equal(attempt.ambiguity_retry_count, 0);
+
+    const replay = await submit();
+    assert.equal(replay.status, 202);
+    const replayReceipt = await replay.json();
+    assert.equal(replayReceipt.provider_ref_commitment, acceptedReceipt.provider_ref_commitment);
+    assert.equal(replayReceipt.result_commitment, acceptedReceipt.result_commitment);
+    assert.equal(claims.length, 2);
+  });
+
   it("rejects plaintext strategy fields recursively", async () => {
     const response = await fetch(`${baseUrl}/private-agent/sessions`, {
       method: "POST",

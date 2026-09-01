@@ -64,6 +64,24 @@ export class PrivateExecutionError extends Error {
   }
 }
 
+async function persistPreSubmissionAttempt({
+  state,
+  workOrderCommitment,
+  attempt,
+  readOnlyReconcile,
+  retryMessage,
+}) {
+  if (readOnlyReconcile) {
+    await state.putExecutionAttempt(workOrderCommitment, attempt);
+    return;
+  }
+  if (typeof state.claimExecutionAttempt !== "function") {
+    throw new PrivateExecutionError("atomic execution attempt state is unavailable", 503);
+  }
+  const claim = await state.claimExecutionAttempt(workOrderCommitment, attempt);
+  if (!claim?.ok) throw new PrivateExecutionError(retryMessage, 409);
+}
+
 const AUTOPILOT_INTERNAL_INSTRUCTION = Symbol("ghola.autopilot.internal_instruction");
 const HYPERLIQUID_PROOF_PROTOCOL = "ghola-hyperliquid-proof-v2";
 const ACCOUNT_BOUND_COMMITMENT = /^[A-Za-z0-9_.:-]{8,240}$/;
@@ -381,7 +399,13 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     status: "pending",
     created_at: new Date().toISOString(),
   };
-  await state.putExecutionAttempt(body.work_order_commitment, pendingAttempt);
+  await persistPreSubmissionAttempt({
+    state,
+    workOrderCommitment: body.work_order_commitment,
+    attempt: pendingAttempt,
+    readOnlyReconcile,
+    retryMessage: "hyperliquid work order already has a durable submission attempt; reconcile it instead of retrying",
+  });
   let adapterResult;
   try {
     adapterResult = await submitHyperliquidExecution({
@@ -399,9 +423,7 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     throw error;
   }
   await state.putExecutionAttempt(body.work_order_commitment, {
-    venue_id: "hyperliquid",
-    platform_class: "hyperliquid_style_market",
-    execution_mode: executionMode,
+    ...pendingAttempt,
     submit_count: pendingAttempt.submit_count,
     ambiguity_retry_count: pendingAttempt.ambiguity_retry_count,
     provider_ref_seed: adapterResult.provider_ref_seed,
@@ -1175,7 +1197,13 @@ export async function executeAsterOrder({ body, recipient, state }) {
     status: "pending",
     created_at: new Date().toISOString(),
   };
-  await state.putExecutionAttempt(body.work_order_commitment, pending);
+  await persistPreSubmissionAttempt({
+    state,
+    workOrderCommitment: body.work_order_commitment,
+    attempt: pending,
+    readOnlyReconcile,
+    retryMessage: "aster work order already has an attempt; reconcile it instead of retrying",
+  });
   let result;
   try {
     result = await submitAndReconcileAsterExecution({ credential, instruction, clientOrderId });
@@ -1335,7 +1363,13 @@ export async function executeLighterOrder({ body, recipient, state }) {
     status: "pending",
     created_at: new Date().toISOString(),
   };
-  await state.putExecutionAttempt(body.work_order_commitment, pending);
+  await persistPreSubmissionAttempt({
+    state,
+    workOrderCommitment: body.work_order_commitment,
+    attempt: pending,
+    readOnlyReconcile,
+    retryMessage: "lighter work order already has an attempt; reconcile it instead of retrying",
+  });
   let result;
   try {
     result = await submitAndReconcileLighterExecution({ credential, instruction, clientOrderIndex });

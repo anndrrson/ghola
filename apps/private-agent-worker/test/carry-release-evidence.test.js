@@ -1778,6 +1778,22 @@ function qualificationEvidence() {
       open_order_count: 0,
       evidence_commitment: "qualification:exit:aster:0001",
     },
+    submission_attempts: {
+      entry: {
+        work_order_commitment: "work:carry:entry:aster:release:0001",
+        account_commitment: accountCommitment,
+        submit_count: 1,
+        ambiguity_retry_count: 0,
+        evidence_commitment: "attempt:entry:aster:release:0001",
+      },
+      exit: {
+        work_order_commitment: "work:carry:exit:aster:release:0001",
+        account_commitment: accountCommitment,
+        submit_count: 1,
+        ambiguity_retry_count: 0,
+        evidence_commitment: "attempt:exit:aster:release:0001",
+      },
+    },
     ambiguous_submission_retry_count: 0,
     authority_boundary_acceptable: true,
     authority_evidence_commitment: "qualification:authority:aster:0001",
