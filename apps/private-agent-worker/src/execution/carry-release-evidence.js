@@ -23,9 +23,83 @@ import { readCarryShadowQualification } from "./carry-shadow-qualification.js";
 import { loadCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
 import { verifyCashflowValuationEvidence } from "./carry-stablecoin-conversion.js";
 import { liquidationDistanceSourceForVenue } from "../venues/liquidation-distance.js";
+import { finalizeCarryLifecycleEventRecord } from "../state/private-state.js";
 
 const DEFAULT_LIFECYCLE_PROOF_MAX_AGE_MS = 90 * 86_400_000;
 const MAX_LIFECYCLE_PROOFS_PER_ASSET = 64;
+const LIFECYCLE_JOURNAL_PAGE_SIZE = 1_000;
+
+async function readCompleteCarryLifecycleJournal({ state, record }) {
+  if (typeof state?.listCarryLifecycleEvents !== "function") {
+    return denied("carry_release_lifecycle_journal_unproven");
+  }
+  const positionId = record?.position?.position_id;
+  const expectedSequence = record?.position?.last_event_sequence;
+  if (!positionId || !Number.isSafeInteger(expectedSequence) || expectedSequence <= 0) {
+    return denied("carry_release_lifecycle_journal_unproven");
+  }
+  if (record?.lifecycle_journal?.version !== 1
+    || record.lifecycle_journal.origin_sequence !== 1) {
+    return denied("carry_release_lifecycle_journal_unproven");
+  }
+  const journal = [];
+  let afterSequence = 0;
+  let previousCommitment = null;
+  while (afterSequence < expectedSequence) {
+    const page = await state.listCarryLifecycleEvents({
+      position_id: positionId,
+      after_sequence: afterSequence,
+      limit: LIFECYCLE_JOURNAL_PAGE_SIZE,
+    });
+    if (!Array.isArray(page) || page.length === 0) {
+      return denied("carry_release_lifecycle_journal_unproven");
+    }
+    for (const stored of page) {
+      const sequence = afterSequence + 1;
+      if (stored?.position_id !== positionId
+        || stored.sequence !== sequence
+        || stored.event?.sequence !== sequence
+        || stored.event_id !== stored.event?.event_id
+        || stored.previous_event_commitment !== previousCommitment) {
+        return denied("carry_release_lifecycle_journal_unproven");
+      }
+      let expected;
+      try {
+        expected = finalizeCarryLifecycleEventRecord({
+          position_id: positionId,
+          event: stored.event,
+          previous_event_commitment: previousCommitment,
+        });
+      } catch {
+        return denied("carry_release_lifecycle_journal_unproven");
+      }
+      if (stableJson(stored) !== stableJson(expected)) {
+        return denied("carry_release_lifecycle_journal_unproven");
+      }
+      journal.push(stored);
+      afterSequence = sequence;
+      previousCommitment = stored.event_commitment;
+      if (afterSequence > expectedSequence) {
+        return denied("carry_release_lifecycle_journal_unproven");
+      }
+    }
+  }
+  const overflow = await state.listCarryLifecycleEvents({
+    position_id: positionId,
+    after_sequence: expectedSequence,
+    limit: 1,
+  });
+  if (!Array.isArray(overflow) || overflow.length > 0) {
+    return denied("carry_release_lifecycle_journal_unproven");
+  }
+  const events = journal.map((item) => item.event);
+  const tail = Array.isArray(record.lifecycle_events) ? record.lifecycle_events : [];
+  const expectedTail = events.slice(-256);
+  if (tail.length !== expectedTail.length || stableJson(tail) !== stableJson(expectedTail)) {
+    return denied("carry_release_lifecycle_journal_unproven");
+  }
+  return { ok: true, events };
+}
 
 export async function recordCompletedCarryLifecycleProof({
   state,
@@ -483,7 +557,9 @@ export async function buildCompletedCarryReleaseMaterial({
     return denied("carry_release_sagas_not_reconciled");
   }
   const entryReconciledAt = entrySaga.updated_at_ms;
-  const events = Array.isArray(record.lifecycle_events) ? record.lifecycle_events : [];
+  const lifecycleJournal = await readCompleteCarryLifecycleJournal({ state, record });
+  if (!lifecycleJournal.ok) return lifecycleJournal;
+  const events = lifecycleJournal.events;
   if (events.some((event) => ["submission_ambiguous", "recovery_failed"].includes(event?.type))) {
     return denied("carry_release_ambiguous_or_recovered_lifecycle");
   }
@@ -638,7 +714,7 @@ export async function buildCompletedCarryReleaseMaterial({
         last_automatic_observed_at: iso(monitoringEndedAt),
         max_observation_gap_ms: maxObservationGapMs,
         max_allowed_gap_ms: maxAllowedObservationGapMs,
-        failure_count: 0,
+        failure_count: monitoringFailures.length,
         transaction_broadcast: false,
       },
       margin_runways: marginRunways,

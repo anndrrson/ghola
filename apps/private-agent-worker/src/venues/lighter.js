@@ -11,6 +11,8 @@ const OWNER_ONLY = ["withdraw", "transfer", "leverage", "margin", "account_confi
 const SAFE_COMMITMENT = /^[A-Za-z0-9_.:-]{8,240}$/;
 const UINT48_MAX = 281_474_976_710_655;
 const GOLDILOCKS_MODULUS = 0xffffffff00000001n;
+const LIGHTER_ACCOUNT_STATUS_INACTIVE = 0;
+const LIGHTER_ACCOUNT_STATUS_ACTIVE = 1;
 
 export class LighterExecutionError extends Error {
   constructor(message, status = 400, code = "venue_rejected") {
@@ -137,14 +139,15 @@ export async function verifyLighterCredential({ credential, runner = defaultRunn
   if (result?.credential_verified !== true || result?.account_read !== true || result?.transaction_broadcast !== false) {
     throw new LighterExecutionError("lighter credential verification failed", 502, "venue_access_required");
   }
+  const account = sanitizeAccount(result.account, {}, { expectedAccountIndex: credential.account_index });
   return {
     can_read: true,
-    can_trade: true,
+    can_trade: account.can_trade,
     can_withdraw: false,
     secure_withdrawal_to_owner_possible: true,
     non_owner_fund_movement_possible: false,
     venue_native_trade_only: false,
-    account: sanitizeAccount(result.account),
+    account,
   };
 }
 
@@ -164,7 +167,7 @@ export async function readLighterWithdrawalRouteQuote({
     || result?.withdrawal_terms_checked !== true
     || result?.transaction_broadcast !== false
     || result?.fee_source !== "lighter_sdk_normal_withdrawal_v1"
-    || decimal(result?.normal_withdrawal_fee_usdc) !== 0) {
+    || strictDecimal(result?.normal_withdrawal_fee_usdc) !== 0) {
     throw new LighterExecutionError("lighter withdrawal route verification failed", 502, "venue_access_required");
   }
   const minimum = decimalToMicro(result.minimum_withdrawal_usdc, "ceiling");
@@ -209,7 +212,7 @@ export async function verifyLighterNoSubmit({ credential, instruction, clientOrd
   ) {
     throw new LighterExecutionError("lighter no-submit verification failed", 502, "connector_submit_failed");
   }
-  return normalizedVerification(result, order);
+  return normalizedVerification(result, order, credential.account_index);
 }
 
 export async function submitLighterExecution({ credential, instruction, clientOrderIndex, runner = defaultRunner }) {
@@ -492,8 +495,8 @@ function lighterMarket(value) {
   return market;
 }
 
-function normalizedVerification(result, order) {
-  const account = sanitizeAccount(result.account, result.market);
+function normalizedVerification(result, order, expectedAccountIndex) {
+  const account = sanitizeAccount(result.account, result.market, { expectedAccountIndex });
   return {
     status: account.can_trade && account.available_balance > 0 ? "verified_ready" : "verified_no_funds",
     checks: {
@@ -501,6 +504,7 @@ function normalizedVerification(result, order) {
       signer_matches_key: true,
       market_data_checked: true,
       account_state_checked: true,
+      margin_state_checked: account.margin_state_verified,
       order_request_checked: true,
       transaction_broadcast: false,
     },
@@ -555,18 +559,60 @@ function ambiguousLighterWrite(error) {
   );
 }
 
-function sanitizeAccount(account = {}, market = {}) {
+function sanitizeAccount(account = {}, market = {}, {
+  expectedAccountIndex = null,
+} = {}) {
+  if (!account || typeof account !== "object" || Array.isArray(account)) {
+    throw new LighterExecutionError("lighter account state response is invalid", 502, "connector_submit_failed");
+  }
+  const code = account.code;
+  const accountStatus = account.status;
+  const accountIndex = account.account_index;
+  const index = account.index;
+  const availableBalance = strictDecimal(account.available_balance);
+  const marginBalance = strictDecimal(account.total_asset_value ?? account.collateral);
+  const initialMarginProvided = account.cross_initial_margin_requirement !== undefined
+    && account.cross_initial_margin_requirement !== null;
+  const maintenanceMarginProvided = account.cross_maintenance_margin_requirement !== undefined
+    && account.cross_maintenance_margin_requirement !== null;
+  const initialMargin = initialMarginProvided ? strictDecimal(account.cross_initial_margin_requirement) : null;
+  const maintenanceMargin = maintenanceMarginProvided ? strictDecimal(account.cross_maintenance_margin_requirement) : null;
   const liquidation = lighterLiquidationDistance(account);
-  const openOrderCount = nonnegativeIntegerOrNull(account.pending_order_count);
+  const openOrderCount = typeof account.pending_order_count === "number"
+    ? nonnegativeIntegerOrNull(account.pending_order_count)
+    : null;
   const makerFeeBps = rateBps(market.maker_fee);
   const takerFeeBps = rateBps(market.taker_fee);
+  if (code !== 0
+    || !Number.isSafeInteger(accountStatus)
+    || ![LIGHTER_ACCOUNT_STATUS_INACTIVE, LIGHTER_ACCOUNT_STATUS_ACTIVE].includes(accountStatus)
+    || !Number.isSafeInteger(accountIndex)
+    || accountIndex < 0
+    || !Number.isSafeInteger(index)
+    || index !== accountIndex
+    || (expectedAccountIndex !== null && accountIndex !== expectedAccountIndex)
+    || availableBalance === null
+    || availableBalance < 0
+    || marginBalance === null
+    || marginBalance < 0
+    || availableBalance > marginBalance
+    || (initialMarginProvided && (initialMargin === null || initialMargin < 0))
+    || (maintenanceMarginProvided && (maintenanceMargin === null || maintenanceMargin < 0))
+    || openOrderCount === null
+    || !Number.isSafeInteger(liquidation.position_count)
+    || liquidation.position_count < 0) {
+    throw new LighterExecutionError("lighter account state response is invalid", 502, "connector_submit_failed");
+  }
   return {
-    can_trade: true,
-    account_status: Number.isInteger(Number(account.status)) ? Number(account.status) : null,
-    available_balance: decimal(account.available_balance),
-    margin_balance: decimal(account.total_asset_value ?? account.collateral),
-    initial_margin: decimal(account.cross_initial_margin_requirement),
-    maintenance_margin: decimal(account.cross_maintenance_margin_requirement),
+    can_trade: accountStatus === LIGHTER_ACCOUNT_STATUS_ACTIVE,
+    account_status: accountStatus,
+    account_status_verified: true,
+    account_index: accountIndex,
+    available_balance: availableBalance,
+    margin_balance: marginBalance,
+    initial_margin: initialMargin,
+    maintenance_margin: maintenanceMargin,
+    margin_state_verified: initialMargin !== null && maintenanceMargin !== null,
     position_count: liquidation.position_count,
     liquidation_distance_bps: liquidation.liquidation_distance_bps,
     liquidation_distance_verified: liquidation.liquidation_distance_verified,
@@ -664,9 +710,11 @@ function positiveDecimal(value, message) {
   return String(value);
 }
 
-function decimal(value) {
-  const number = Number(value);
-  return Number.isFinite(number) && number >= 0 ? number : 0;
+function strictDecimal(value) {
+  const raw = String(value ?? "");
+  if (!/^-?\d+(?:\.\d+)?$/.test(raw)) return null;
+  const number = Number(raw);
+  return Number.isFinite(number) ? number : null;
 }
 
 function nonnegativeIntegerOrNull(value) {

@@ -756,6 +756,16 @@ export function applyCarryLivePatches(
   });
 }
 
+export function carryEvidenceResponseForEffectiveVenues(
+  response: CarryShadowResponse | null,
+  effectiveVenues: CarryVenueShadow[],
+): CarryShadowResponse | null {
+  if (!response || response.venues.length !== effectiveVenues.length) return null;
+  return response.venues.every((venue, index) => venue === effectiveVenues[index])
+    ? response
+    : null;
+}
+
 function applyCarryLivePatch(
   snapshot: CarryShadowSnapshot,
   patch: CarryLiveMarketPatch,

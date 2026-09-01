@@ -373,7 +373,7 @@ export async function advanceStoredCarryPosition({ state, position_id: positionI
     )) ? { final_reconciliation_evidence: publicReconciliationEvidence(event, nowMs) } : {}),
     updated_at: new Date(nowMs).toISOString(),
   };
-  return storeUpdate(state, next, record.record.record_version);
+  return storeUpdate(state, next, record.record.record_version, { lifecycle_event: recordedEvent });
 }
 
 export async function requestStoredCarryPositionExit({
@@ -1573,8 +1573,11 @@ async function ownedRecord(state, positionId, ownerCommitment) {
   return { ok: true, record };
 }
 
-async function storeUpdate(state, record, expectedVersion) {
-  const stored = await state.putCarryPositionRecord(record, { expected_version: expectedVersion });
+async function storeUpdate(state, record, expectedVersion, input = {}) {
+  const stored = await state.putCarryPositionRecord(record, {
+    expected_version: expectedVersion,
+    ...input,
+  });
   return stored.ok
     ? { ok: true, duplicate: false, record: publicRecord(stored.record) }
     : publicStoredResult(stored);

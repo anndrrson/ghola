@@ -109,6 +109,98 @@ describe("CarryChartStrip", () => {
     expect(edge?.getAttribute("title")).toContain("not realized P&L");
   });
 
+  it("downgrades every committed economic claim after a live funding patch", async () => {
+    const body = shadowResponse([
+      snapshot("hyperliquid", 40_000_000),
+      snapshot("lighter", 10_000_000),
+      snapshot("aster", 150_000_000),
+    ]);
+    body.shadow_qualification = marketQualification();
+    body.funding_persistence = routingFundingPersistence();
+    body.routing_advantage = routingAdvantageSummary(Date.parse(body.observed_at));
+    vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => body } as Response);
+    await act(async () => {
+      root.render(<CarryChartStrip asset="BTC" defaultOpen onAssetSelect={vi.fn()} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    let rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
+    expect(rail?.getAttribute("data-routing-evidence")).toBe("committed");
+    expect(rail?.getAttribute("data-edge-evidence")).toBe("durable");
+    expect(rail?.getAttribute("data-net-evidence")).toBe("committed");
+
+    await act(async () => {
+      root.render(<CarryChartStrip
+        asset="BTC"
+        defaultOpen
+        hyperliquidLivePatch={{
+          venue_id: "hyperliquid",
+          asset: "BTC",
+          received_at_ms: Date.now(),
+          funding_rate_e12_per_interval: 41_000_000,
+        }}
+        onAssetSelect={vi.fn()}
+      />);
+      await Promise.resolve();
+    });
+
+    rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
+    expect(rail?.getAttribute("data-routing-evidence")).toBe("indicative");
+    expect(rail?.getAttribute("data-edge-evidence")).toBe("indicative");
+    expect(rail?.getAttribute("data-market-evidence")).not.toBe("ready");
+    expect(rail?.textContent).not.toContain("EDGE✓");
+    expect(rail?.textContent).not.toContain("NET24H✓");
+    expect(rail?.textContent).not.toContain("Committed funding edge");
+  });
+
+  it("downgrades committed worker economics after a live orderbook patch", async () => {
+    const body = shadowResponse([
+      snapshot("hyperliquid", 40_000_000),
+      snapshot("lighter", 10_000_000),
+      snapshot("aster", 150_000_000),
+    ]);
+    body.shadow_qualification = marketQualification();
+    body.funding_persistence = routingFundingPersistence();
+    body.routing_advantage = routingAdvantageSummary(Date.parse(body.observed_at));
+    vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => body } as Response);
+    await act(async () => {
+      root.render(<CarryChartStrip asset="BTC" defaultOpen onAssetSelect={vi.fn()} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[aria-label="Cross-venue route intelligence"]')
+      ?.getAttribute("data-routing-evidence")).toBe("committed");
+
+    await act(async () => {
+      root.render(<CarryChartStrip
+        asset="BTC"
+        defaultOpen
+        hyperliquidLivePatch={{
+          venue_id: "hyperliquid",
+          asset: "BTC",
+          received_at_ms: Date.now(),
+          best_bid_e8: 5_999_000_000_000,
+          best_ask_e8: 6_001_000_000_000,
+          depth_bids: [{ price_e8: 5_999_000_000_000, size_e8: 100_000_000 }],
+          depth_asks: [{ price_e8: 6_001_000_000_000, size_e8: 100_000_000 }],
+          depth_complete: true,
+          orderbook_valid: true,
+        }}
+        onAssetSelect={vi.fn()}
+      />);
+      await Promise.resolve();
+    });
+
+    const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
+    expect(rail?.getAttribute("data-routing-evidence")).toBe("indicative");
+    expect(rail?.getAttribute("data-edge-evidence")).toBe("indicative");
+    expect(rail?.getAttribute("data-net-evidence")).toBe("indicative");
+    expect(rail?.textContent).not.toContain("EDGE✓");
+    expect(rail?.textContent).not.toContain("NET24H✓");
+  });
+
   it("keeps the primary rail aligned with the executable builder route", async () => {
     await renderShadow(shadowResponse([
       snapshot("hyperliquid", 10_000_000),

@@ -82,6 +82,21 @@ test("requires durable state configuration", () => {
     PRIVATE_AGENT_STATE_POSTGRES_URL: "",
   }));
   assert.ok(single.invalid.some((value) => value.includes("SINGLE_CVM_OK=true")));
+
+  const multiProcess = auditPhalaWorkerEnv(completeEnv({
+    PRIVATE_AGENT_STATE_STORE: "json",
+    PRIVATE_AGENT_STATE_POSTGRES_URL: "",
+    PRIVATE_AGENT_STATE_SINGLE_CVM_OK: "true",
+  }));
+  assert.ok(multiProcess.invalid.some((value) => value.includes("SINGLE_PROCESS_OK=true")));
+
+  const asserted = auditPhalaWorkerEnv(completeEnv({
+    PRIVATE_AGENT_STATE_STORE: "json",
+    PRIVATE_AGENT_STATE_POSTGRES_URL: "",
+    PRIVATE_AGENT_STATE_SINGLE_CVM_OK: "true",
+    PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK: "true",
+  }));
+  assert.equal(asserted.complete, true);
 });
 
 test("compares web and worker authorization without exposing secrets", () => {

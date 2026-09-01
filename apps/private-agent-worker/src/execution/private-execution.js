@@ -11,6 +11,7 @@ import {
   assertCoinbaseKeyPermissions,
   coinbaseCredentialFromVault,
   loadPartnerCoinbaseCredential,
+  reconcileCoinbaseExecution,
   submitCoinbaseExecution,
   verifyCoinbaseNoSubmit,
 } from "../venues/coinbase.js";
@@ -43,6 +44,7 @@ import {
   dryRunAsterCredential,
   readAsterAccountState,
   readAsterFundingSettlements,
+  reconcileAsterExecution,
   submitAndReconcileAsterExecution,
   verifyAsterNoSubmit,
 } from "../venues/aster.js";
@@ -51,6 +53,7 @@ import {
   openLighterExecutionCredential,
   readLighterFundingSettlements,
   readLighterWithdrawalRouteQuote,
+  reconcileLighterExecution,
   submitAndReconcileLighterExecution,
   verifyLighterCredential,
   verifyLighterNoSubmit,
@@ -63,6 +66,19 @@ export class PrivateExecutionError extends Error {
     this.status = status;
     if (code) this.code = code;
     if (options?.cause) this.cause = options.cause;
+  }
+}
+
+function enforceEmergencyRiskReductionInstruction(instruction, required) {
+  if (!required) return;
+  const recoveryOperation = instruction?.operation_class === "reconcile"
+    || instruction?.order?.reduce_only === true;
+  if (!recoveryOperation) {
+    throw new PrivateExecutionError(
+      "unsafe interprocess state permits only reconcile or venue-native reduce-only execution",
+      503,
+      "unsafe_interprocess_state_risk_increase_denied",
+    );
   }
 }
 
@@ -416,9 +432,13 @@ export async function createHyperliquidManagedAllocation({ body, state }) {
 
 export async function storeCoinbaseSession({ body, recipient, state, provider }) {
   if (body.execution_mode === "byo_api_key") {
-    await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/coinbase-advanced-execution-vault-v1",
+    await openContextBoundVenueExecutionVault({
+      body,
+      recipient,
+      aadVersion: "ghola/coinbase-advanced-execution-vault-v1",
       expectedKind: "ghola_coinbase_advanced_execution_vault",
+      allowedNetworks: ["mainnet", "sandbox"],
+      defaultMode: "byo_api_key",
     });
   }
   let strategyPolicy = null;
@@ -453,7 +473,7 @@ export async function storeCoinbaseSession({ body, recipient, state, provider })
   return session;
 }
 
-export async function executeHyperliquidOrder({ body, recipient, state }) {
+export async function executeHyperliquidOrder({ body, recipient, state, emergencyRiskReductionOnly = false }) {
   const readOnlyReconcile = body.operation_class === "reconcile";
   const cached = await state.getIdempotency(body.work_order_commitment);
   if (cached?.receipt && !readOnlyReconcile) return cached.receipt;
@@ -479,6 +499,7 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     venue_id: "hyperliquid",
     session,
   }), { state, venue_id: "hyperliquid", body });
+  enforceEmergencyRiskReductionInstruction(instruction, emergencyRiskReductionOnly);
   const cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
   let pendingAttempt = {
     venue_id: "hyperliquid",
@@ -690,9 +711,13 @@ export async function streamHyperliquidAccountState({ body, recipient, state, on
 export async function verifyVenueCredential({ body, recipient }) {
   const venueId = body.venue_id;
   if (venueId === "coinbase_advanced") {
-    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/coinbase-advanced-execution-vault-v1",
+    const openedVault = await openContextBoundVenueExecutionVault({
+      body,
+      recipient,
+      aadVersion: "ghola/coinbase-advanced-execution-vault-v1",
       expectedKind: "ghola_coinbase_advanced_execution_vault",
+      allowedNetworks: ["mainnet", "sandbox"],
+      defaultMode: "byo_api_key",
     });
     const credential = coinbaseCredentialFromVault(openedVault.json);
     const permissions = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true"
@@ -782,9 +807,14 @@ export async function verifyVenueCredential({ body, recipient }) {
     });
   }
   if (venueId === "jupiter") {
-    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/solana-swap-execution-vault-v1",
+    const openedVault = await openContextBoundVenueExecutionVault({
+      body,
+      recipient,
+      aadVersion: "ghola/solana-swap-execution-vault-v1",
       expectedKind: "ghola_solana_swap_execution_vault",
+      allowedNetworks: ["mainnet"],
+      defaultMode: "user_stealth",
+      venueId: "jupiter",
     });
     jupiterCredentialFromVault(openedVault.json);
     return credentialVerificationResult({
@@ -861,9 +891,62 @@ async function openAccountBoundExecutionVault({
   return opened;
 }
 
-export async function executeCoinbaseOrder({ body, recipient, state }) {
+async function openContextBoundVenueExecutionVault({
+  body,
+  recipient,
+  aadVersion,
+  expectedKind,
+  allowedNetworks,
+  defaultMode,
+  venueId = null,
+}) {
+  const accountCommitment = String(body?.account_commitment || "");
+  if (!ACCOUNT_BOUND_COMMITMENT.test(accountCommitment)) {
+    throw new PrivateExecutionError("execution vault account commitment is unavailable", 400);
+  }
+  const opened = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+    aadPrefix: aadVersion,
+    expectedKind,
+  });
+  const network = String(opened.json?.network || "");
+  if (!allowedNetworks.includes(network)) {
+    throw new PrivateExecutionError("execution vault network is invalid", 400);
+  }
+  const vaultMode = String(opened.json?.execution_mode || defaultMode || "");
+  const requestMode = String(body?.execution_mode || vaultMode);
+  if (!vaultMode || requestMode !== vaultMode) {
+    throw new PrivateExecutionError("execution vault mode binding mismatch", 403);
+  }
+  const aadParts = [
+    aadVersion,
+    `account:${accountCommitment}`,
+    `recipient:${recipient.recipient_id}`,
+    `mode:${vaultMode}`,
+    `network:${network}`,
+  ];
+  if (venueId) {
+    const vaultVenue = String(opened.json?.venue_id || venueId);
+    if (vaultVenue !== venueId || (body?.venue_id && String(body.venue_id) !== venueId)) {
+      throw new PrivateExecutionError("execution vault venue binding mismatch", 403);
+    }
+    aadParts.push(`venue:${venueId}`);
+  }
+  if (opened.associatedDataText !== aadParts.join("|")) {
+    throw new PrivateExecutionError("execution vault account binding mismatch", 403);
+  }
+  return opened;
+}
+
+export async function executeCoinbaseOrder({ body, recipient, state, emergencyRiskReductionOnly = false }) {
   const cached = await state.getIdempotency(body.work_order_commitment);
   if (cached?.receipt) return cached.receipt;
+  const priorAttempt = await state.getExecutionAttempt(body.work_order_commitment);
+  if (["pending", "ambiguous", "submitted", "filled", "partially_filled", "cancelled", "reconciled"].includes(priorAttempt?.status)) {
+    throw new PrivateExecutionError(
+      "coinbase work order already has a durable submission attempt; reconcile it instead of retrying",
+      409,
+    );
+  }
   const session = await state.findSession({
     venue_id: "coinbase_advanced",
     vault_commitment: body.vault_commitment || undefined,
@@ -876,20 +959,58 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
     venue_id: "coinbase_advanced",
     session,
   }), { state, venue_id: "coinbase_advanced", body });
-  await enforceInstructionPolicy({
-    body,
-    instruction,
-    session,
-    state,
-    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
-  });
-
+  enforceEmergencyRiskReductionInstruction(instruction, emergencyRiskReductionOnly);
   let credential;
   if (body.execution_mode === "partner_omnibus") {
     credential = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true"
       ? dryRunCoinbaseCredential()
       : loadPartnerCoinbaseCredential(process.env);
-    if (body.omnibus_allocation) {
+  } else {
+    if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
+      credential = dryRunCoinbaseCredential();
+    } else {
+      const openedVault = await openContextBoundVenueExecutionVault({
+        body,
+        recipient,
+        aadVersion: "ghola/coinbase-advanced-execution-vault-v1",
+        expectedKind: "ghola_coinbase_advanced_execution_vault",
+        allowedNetworks: ["mainnet", "sandbox"],
+        defaultMode: "byo_api_key",
+      });
+      credential = coinbaseCredentialFromVault(openedVault.json);
+    }
+  }
+
+  const clientOrderId = await state.deriveClientOrderId("gh", body.work_order_commitment);
+  let pending = {
+    venue_id: "coinbase_advanced",
+    account_commitment: body.account_commitment || null,
+    platform_class: "coinbase_style_provider",
+    execution_mode: body.execution_mode,
+    submit_count: 0,
+    ambiguity_retry_count: 0,
+    provider_ref_seed: { venue: "coinbase_advanced", client_order_id: clientOrderId, pending: true },
+    result_seed: {
+      kind: "coinbase_submission_pending",
+      product_id: instruction.order?.market || instruction.cancel?.market || null,
+    },
+    fills: [],
+    final_proof: null,
+    status: "pending",
+    created_at: new Date().toISOString(),
+  };
+  pending = await claimSubmissionAfterPolicyValidation({
+    body,
+    instruction,
+    session,
+    state,
+    attempt: pending,
+    readOnlyReconcile: false,
+    retryMessage: "coinbase work order already has a durable submission attempt; reconcile it instead of retrying",
+    venueId: "coinbase_advanced",
+  });
+  if (body.execution_mode === "partner_omnibus" && body.omnibus_allocation) {
+    try {
       await state.putOmnibusAllocation(body.omnibus_allocation);
       await state.reserveOmnibus({
         allocation_commitment: body.omnibus_allocation.allocation_commitment,
@@ -897,20 +1018,19 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
         work_order_commitment: body.work_order_commitment,
         notional_bucket: String(bucketToUsd(body.session_policy?.max_notional_bucket || "0")),
       });
-    }
-  } else {
-    if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
-      credential = dryRunCoinbaseCredential();
-    } else {
-      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/coinbase-advanced-execution-vault-v1",
-        expectedKind: "ghola_coinbase_advanced_execution_vault",
+    } catch (error) {
+      await state.putExecutionAttempt(body.work_order_commitment, {
+        ...pending,
+        result_seed: {
+          kind: "coinbase_reservation_ambiguous",
+          product_id: pending.result_seed.product_id,
+        },
+        status: "ambiguous",
+        updated_at: new Date().toISOString(),
       });
-      credential = coinbaseCredentialFromVault(openedVault.json);
+      throw error;
     }
   }
-
-  const clientOrderId = await state.deriveClientOrderId("gh", body.work_order_commitment);
   let adapterResult;
   try {
     adapterResult = await submitCoinbaseExecution({
@@ -919,13 +1039,21 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
       clientOrderId,
     });
   } catch (error) {
-    if (body.execution_mode === "partner_omnibus" && body.omnibus_allocation?.allocation_commitment) {
-      await state.releaseOmnibus({
-        allocation_commitment: body.omnibus_allocation.allocation_commitment,
-        work_order_commitment: body.work_order_commitment,
-      });
-    }
-    throw error;
+    await state.putExecutionAttempt(body.work_order_commitment, {
+      ...pending,
+      result_seed: {
+        kind: "coinbase_submission_ambiguous",
+        product_id: pending.result_seed.product_id,
+      },
+      status: "ambiguous",
+      updated_at: new Date().toISOString(),
+    });
+    throw new PrivateExecutionError(
+      "coinbase submission outcome is ambiguous; reconcile the durable client order id before any further action",
+      Number.isInteger(error?.status) ? error.status : 502,
+      "submission_ambiguous",
+      { cause: error },
+    );
   }
 
   const receipt = executionReceipt({
@@ -948,15 +1076,13 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
     },
   });
   await state.putExecutionAttempt(body.work_order_commitment, {
-    venue_id: "coinbase_advanced",
-    platform_class: "coinbase_style_provider",
-    execution_mode: body.execution_mode,
+    ...pending,
     provider_ref_seed: adapterResult.provider_ref_seed,
     result_seed: adapterResult.result_seed,
     fills: adapterResult.fills,
     final_proof: adapterResult.final_proof || null,
     status: adapterResult.status,
-    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   });
   if (body.execution_mode === "partner_omnibus" && body.omnibus_allocation?.allocation_commitment) {
     for (const fill of receipt.fill_commitments || []) {
@@ -971,19 +1097,138 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
   return state.putIdempotency(body.work_order_commitment, receipt);
 }
 
+export async function reconcileCoinbaseOrder({ body, recipient, state }) {
+  const attempted = await state.getExecutionAttempt(body.work_order_commitment);
+  const expectedClientOrderId = await state.deriveClientOrderId("gh", body.work_order_commitment);
+  const storedClientOrderId = attempted?.provider_ref_seed?.client_order_id || null;
+  const storedOrderId = attempted?.provider_ref_seed?.order_id || null;
+  const storedProductId = attempted?.result_seed?.product_id || null;
+  if (
+    !attempted ||
+    attempted.venue_id !== "coinbase_advanced" ||
+    storedClientOrderId !== expectedClientOrderId ||
+    !storedProductId
+  ) {
+    return reconcileStoredExecution({
+      body: {
+        ...body,
+        venue_id: "coinbase_advanced",
+        platform_class: "coinbase_style_provider",
+        operation_class: "reconcile",
+      },
+      state,
+      venue_id: "coinbase_advanced",
+      platform_class: "coinbase_style_provider",
+    });
+  }
+  const executionMode = attempted.execution_mode === "partner_omnibus"
+    ? "partner_omnibus"
+    : "byo_api_key";
+  let credential;
+  if (executionMode === "partner_omnibus") {
+    credential = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true"
+      ? dryRunCoinbaseCredential()
+      : loadPartnerCoinbaseCredential(process.env);
+  } else {
+    if (!body.encrypted_execution_vault) {
+      return reconcileStoredExecution({
+        body: { ...body, execution_mode: executionMode, operation_class: "reconcile" },
+        state,
+        venue_id: "coinbase_advanced",
+        platform_class: "coinbase_style_provider",
+      });
+    }
+    const openedVault = await openContextBoundVenueExecutionVault({
+      body: { ...body, execution_mode: executionMode },
+      recipient,
+      aadVersion: "ghola/coinbase-advanced-execution-vault-v1",
+      expectedKind: "ghola_coinbase_advanced_execution_vault",
+      allowedNetworks: ["mainnet", "sandbox"],
+      defaultMode: "byo_api_key",
+    });
+    credential = coinbaseCredentialFromVault(openedVault.json);
+  }
+  const instruction = normalizeInstruction({
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: "coinbase_advanced",
+    operation_class: "reconcile",
+    reconcile: {
+      target_work_order_commitment: body.work_order_commitment,
+      target_client_order_id: expectedClientOrderId,
+      target_order_id: storedOrderId,
+      product_id: storedProductId,
+    },
+  }, { venue_id: "coinbase_advanced", operation_class: "reconcile" });
+  const result = await reconcileCoinbaseExecution({
+    credential,
+    instruction,
+    clientOrderId: expectedClientOrderId,
+  });
+  const proofValid = result.final_proof?.proof_kind === "coinbase_advanced_order_state_v1"
+    && result.final_proof?.venue_id === "coinbase_advanced"
+    && result.final_proof?.target_order_matched === true
+    && result.final_proof?.target_client_order_matched === true
+    && result.final_proof?.target_product_matched === true
+    && result.final_proof?.original_order_target_matched === true
+    && result.final_proof?.final_venue_execution_proven === true
+    && result.provider_ref_seed?.client_order_id === expectedClientOrderId
+    && typeof result.provider_ref_seed?.order_id === "string"
+    && (!storedOrderId || result.provider_ref_seed.order_id === storedOrderId);
+  await state.putExecutionAttempt(body.work_order_commitment, {
+    ...attempted,
+    provider_ref_seed: result.provider_ref_seed,
+    result_seed: result.result_seed,
+    fills: result.fills || [],
+    final_proof: result.final_proof || null,
+    status: result.status,
+    updated_at: new Date().toISOString(),
+  });
+  return executionReceipt({
+    venue_id: "coinbase_advanced",
+    platform_class: "coinbase_style_provider",
+    execution_mode: executionMode,
+    instruction,
+    body: { ...body, operation_class: "reconcile", execution_mode: executionMode },
+    status: proofValid ? "reconciled" : "outcome_unknown",
+    provider_ref_seed: result.provider_ref_seed,
+    result_seed: result.result_seed,
+    fills: proofValid ? result.fills : [],
+    final_proof: result.final_proof,
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      coinbase_sees: "authenticated_exact_order_read",
+      transaction_broadcast: false,
+    },
+  });
+}
+
 export async function executeSolanaPerpsOrder({ body, recipient, state }) {
   const cached = await state.getIdempotency(body.work_order_commitment);
   if (cached?.receipt) return cached.receipt;
   const venueId = normalizeSolanaPerpsVenueId(body.venue_id);
+  const priorAttempt = await state.getExecutionAttempt(body.work_order_commitment);
+  if (["pending", "ambiguous", "submitted", "filled", "partially_filled", "cancelled", "reconciled"].includes(priorAttempt?.status)) {
+    throw new PrivateExecutionError(
+      `${venueId} work order already has a durable submission attempt; reconcile it instead of retrying`,
+      409,
+    );
+  }
   const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
   let credential = null;
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
     if (executionMode === "ghola_pooled") {
       credential = loadPooledSolanaPerpsCredential(venueId);
     } else {
-      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/solana-perps-execution-vault-v1",
+      const openedVault = await openContextBoundVenueExecutionVault({
+        body: { ...body, execution_mode: executionMode, venue_id: venueId },
+        recipient,
+        aadVersion: "ghola/solana-perps-execution-vault-v1",
         expectedKind: "ghola_solana_perps_execution_vault",
+        allowedNetworks: ["mainnet"],
+        defaultMode: "user_stealth",
+        venueId,
       });
       credential = solanaPerpsCredentialFromVault(openedVault.json);
     }
@@ -1000,31 +1245,62 @@ export async function executeSolanaPerpsOrder({ body, recipient, state }) {
     venue_id: venueId,
     session,
   }), { state, venue_id: venueId, body });
-  await enforceInstructionPolicy({
+  const clientOrderId = await state.deriveClientOrderId(venueId, body.work_order_commitment);
+  let pending = {
+    venue_id: venueId,
+    account_commitment: body.account_commitment || null,
+    platform_class: "solana_perps_market",
+    execution_mode: executionMode,
+    submit_count: 0,
+    ambiguity_retry_count: 0,
+    provider_ref_seed: { venue: venueId, client_order_id: clientOrderId, pending: true },
+    result_seed: { kind: `${venueId}_submission_pending` },
+    fills: [],
+    final_proof: null,
+    status: "pending",
+    created_at: new Date().toISOString(),
+  };
+  pending = await claimSubmissionAfterPolicyValidation({
     body,
     instruction,
     session,
     state,
-    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
-  });
-  const clientOrderId = await state.deriveClientOrderId(venueId, body.work_order_commitment);
-  const adapterResult = await submitSolanaPerpsExecution({
-    credential,
-    instruction,
-    clientOrderId,
+    attempt: pending,
+    readOnlyReconcile: false,
+    retryMessage: `${venueId} work order already has a durable submission attempt; reconcile it instead of retrying`,
     venueId,
-    executionMode,
   });
+  let adapterResult;
+  try {
+    adapterResult = await submitSolanaPerpsExecution({
+      credential,
+      instruction,
+      clientOrderId,
+      venueId,
+      executionMode,
+    });
+  } catch (error) {
+    await state.putExecutionAttempt(body.work_order_commitment, {
+      ...pending,
+      result_seed: { kind: `${venueId}_submission_ambiguous` },
+      status: "ambiguous",
+      updated_at: new Date().toISOString(),
+    });
+    throw new PrivateExecutionError(
+      `${venueId} submission outcome is ambiguous; reconcile before any further action`,
+      Number.isInteger(error?.status) ? error.status : 502,
+      "submission_ambiguous",
+      { cause: error },
+    );
+  }
   await state.putExecutionAttempt(body.work_order_commitment, {
-    venue_id: venueId,
-    platform_class: "solana_perps_market",
-    execution_mode: executionMode,
+    ...pending,
     provider_ref_seed: adapterResult.provider_ref_seed,
     result_seed: adapterResult.result_seed,
     fills: adapterResult.fills,
     final_proof: adapterResult.final_proof || null,
     status: adapterResult.status,
-    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   });
   const receipt = executionReceipt({
     venue_id: venueId,
@@ -1055,15 +1331,27 @@ export async function executeSolanaPerpsOrder({ body, recipient, state }) {
 export async function executeJupiterSwapOrder({ body, recipient, state }) {
   const cached = await state.getIdempotency(body.work_order_commitment);
   if (cached?.receipt) return cached.receipt;
+  const priorAttempt = await state.getExecutionAttempt(body.work_order_commitment);
+  if (["pending", "ambiguous", "submitted", "filled", "partially_filled", "cancelled", "reconciled"].includes(priorAttempt?.status)) {
+    throw new PrivateExecutionError(
+      "jupiter work order already has a durable submission attempt; reconcile it instead of retrying",
+      409,
+    );
+  }
   const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
   let credential = null;
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
     if (executionMode === "ghola_pooled") {
       credential = loadPooledJupiterCredential();
     } else {
-      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/solana-swap-execution-vault-v1",
+      const openedVault = await openContextBoundVenueExecutionVault({
+        body: { ...body, execution_mode: executionMode, venue_id: "jupiter" },
+        recipient,
+        aadVersion: "ghola/solana-swap-execution-vault-v1",
         expectedKind: "ghola_solana_swap_execution_vault",
+        allowedNetworks: ["mainnet"],
+        defaultMode: "user_stealth",
+        venueId: "jupiter",
       });
       credential = jupiterCredentialFromVault(openedVault.json);
     }
@@ -1080,30 +1368,61 @@ export async function executeJupiterSwapOrder({ body, recipient, state }) {
     venue_id: "jupiter",
     session,
   });
-  await enforceInstructionPolicy({
+  const clientOrderId = await state.deriveClientOrderId("jupiter", body.work_order_commitment);
+  let pending = {
+    venue_id: "jupiter",
+    account_commitment: body.account_commitment || null,
+    platform_class: "solana_swap_aggregator",
+    execution_mode: executionMode,
+    submit_count: 0,
+    ambiguity_retry_count: 0,
+    provider_ref_seed: { venue: "jupiter", client_order_id: clientOrderId, pending: true },
+    result_seed: { kind: "jupiter_submission_pending" },
+    fills: [],
+    final_proof: null,
+    status: "pending",
+    created_at: new Date().toISOString(),
+  };
+  pending = await claimSubmissionAfterPolicyValidation({
     body,
     instruction,
     session,
     state,
-    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
+    attempt: pending,
+    readOnlyReconcile: false,
+    retryMessage: "jupiter work order already has a durable submission attempt; reconcile it instead of retrying",
+    venueId: "jupiter",
   });
-  const clientOrderId = await state.deriveClientOrderId("jupiter", body.work_order_commitment);
-  const adapterResult = await submitJupiterSwapExecution({
-    credential,
-    instruction,
-    clientOrderId,
-    executionMode,
-  });
+  let adapterResult;
+  try {
+    adapterResult = await submitJupiterSwapExecution({
+      credential,
+      instruction,
+      clientOrderId,
+      executionMode,
+    });
+  } catch (error) {
+    await state.putExecutionAttempt(body.work_order_commitment, {
+      ...pending,
+      result_seed: { kind: "jupiter_submission_ambiguous" },
+      status: "ambiguous",
+      updated_at: new Date().toISOString(),
+    });
+    throw new PrivateExecutionError(
+      "jupiter submission outcome is ambiguous; reconcile before any further action",
+      Number.isInteger(error?.status) ? error.status : 502,
+      "submission_ambiguous",
+      { cause: error },
+    );
+  }
   await state.putExecutionAttempt(body.work_order_commitment, {
-    venue_id: "jupiter",
-    platform_class: "solana_swap_aggregator",
-    execution_mode: executionMode,
+    ...pending,
     provider_ref_seed: adapterResult.provider_ref_seed,
     result_seed: adapterResult.result_seed,
     fills: adapterResult.fills,
     final_proof: adapterResult.final_proof || null,
     status: adapterResult.status,
-    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   });
   const receipt = executionReceipt({
     venue_id: "jupiter",
@@ -1265,7 +1584,187 @@ export async function verifyAutopilotOrder({
   throw new PrivateExecutionError("autopilot venue is unsupported", 400);
 }
 
-export async function executeAsterOrder({ body, recipient, state }) {
+async function readOnlyReconcileContext({ body, recipient, state, venueId }) {
+  const session = await state.findSession({
+    venue_id: venueId,
+    vault_commitment: body.vault_commitment || undefined,
+    policy_commitment: body.policy_commitment || undefined,
+  });
+  const sealedInstruction = await instructionForBody({
+    body,
+    recipient,
+    venue_id: venueId,
+    session,
+  });
+  if (body.operation_class !== "reconcile" || sealedInstruction.operation_class !== "reconcile") {
+    throw new PrivateExecutionError(
+      "sealed execution instruction must be an exact read-only reconcile",
+      400,
+      "reconcile_instruction_mismatch",
+    );
+  }
+  const targetWorkOrderCommitment = String(
+    sealedInstruction.reconcile?.target_work_order_commitment || "",
+  );
+  if (!targetWorkOrderCommitment) {
+    throw new PrivateExecutionError(
+      "reconcile target work order is required",
+      400,
+      "reconcile_target_missing",
+    );
+  }
+  if (targetWorkOrderCommitment !== body.work_order_commitment) {
+    throw new PrivateExecutionError(
+      "reconcile target work order must match request work order",
+      409,
+      "reconcile_target_work_order_mismatch",
+    );
+  }
+  const instruction = await resolvePrivateOrderTarget(sealedInstruction, {
+    state,
+    venue_id: venueId,
+    body,
+  });
+  const [attempt, cached] = await Promise.all([
+    state.getExecutionAttempt(targetWorkOrderCommitment),
+    state.getIdempotency(targetWorkOrderCommitment),
+  ]);
+  const storedVenueId = attempt?.venue_id || cached?.receipt?.venue_id || null;
+  if (storedVenueId && storedVenueId !== venueId) {
+    throw new PrivateExecutionError(
+      "reconcile target venue mismatch",
+      409,
+      "reconcile_target_mismatch",
+    );
+  }
+  await enforceInstructionPolicy({
+    body,
+    instruction,
+    session,
+    state,
+    trusted_internal: Boolean(body[AUTOPILOT_INTERNAL_INSTRUCTION]),
+    account_usage: false,
+  });
+  return { instruction, targetWorkOrderCommitment, attempt };
+}
+
+function exactTerminalReconciliationProven(result, { venueId, proofKind }) {
+  const proof = result?.final_proof;
+  return proof?.proof_kind === proofKind
+    && proof?.venue_id === venueId
+    && proof?.target_client_order_matched === true
+    && proof?.original_order_target_matched === true
+    && proof?.final_venue_execution_proven === true
+    && proof?.broadcast_performed === false;
+}
+
+async function persistReadOnlyReconciliation({
+  state,
+  targetWorkOrderCommitment,
+  attempt,
+  result,
+  venueId,
+  platformClass,
+  executionMode,
+}) {
+  await state.putExecutionAttempt(targetWorkOrderCommitment, {
+    ...(attempt || {}),
+    venue_id: venueId,
+    platform_class: platformClass,
+    execution_mode: executionMode,
+    provider_ref_seed: result.provider_ref_seed,
+    result_seed: result.result_seed,
+    fills: result.fills || [],
+    final_proof: result.final_proof || null,
+    status: result.status,
+    created_at: attempt?.created_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+}
+
+export async function reconcileAsterOrder({ body, recipient, state }) {
+  const context = await readOnlyReconcileContext({ body, recipient, state, venueId: "aster" });
+  const credential = await asterCredentialForBody({ body, recipient });
+  const result = await reconcileAsterExecution({
+    credential,
+    market: context.instruction.reconcile?.market || context.instruction.reconcile?.product_id,
+    targetClientOrderId: context.instruction.reconcile?.target_client_order_id,
+  });
+  await persistReadOnlyReconciliation({
+    state,
+    ...context,
+    result,
+    venueId: "aster",
+    platformClass: "hyperliquid_style_market",
+    executionMode: "byo_api_key",
+  });
+  const proven = exactTerminalReconciliationProven(result, {
+    venueId: "aster",
+    proofKind: "aster_client_order_reconciliation_v1",
+  });
+  return executionReceipt({
+    venue_id: "aster",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: "byo_api_key",
+    instruction: context.instruction,
+    body,
+    status: proven ? "reconciled" : "outcome_unknown",
+    provider_ref_seed: result.provider_ref_seed,
+    result_seed: result.result_seed,
+    fills: proven ? result.fills : [],
+    final_proof: result.final_proof,
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      aster_sees: "authenticated_exact_order_read",
+      transaction_broadcast: false,
+    },
+  });
+}
+
+export async function reconcileLighterOrder({ body, recipient, state }) {
+  const context = await readOnlyReconcileContext({ body, recipient, state, venueId: "lighter" });
+  const credential = await lighterCredentialForBody({ body, recipient });
+  const result = await reconcileLighterExecution({
+    credential,
+    clientOrderIndex: context.instruction.reconcile?.target_client_order_index,
+    market: context.instruction.reconcile?.target_market ||
+      context.instruction.reconcile?.market ||
+      context.instruction.reconcile?.product_id,
+  });
+  await persistReadOnlyReconciliation({
+    state,
+    ...context,
+    result,
+    venueId: "lighter",
+    platformClass: "hyperliquid_style_market",
+    executionMode: "byo_api_key",
+  });
+  const proven = exactTerminalReconciliationProven(result, {
+    venueId: "lighter",
+    proofKind: "lighter_client_order_index_reconciliation_v1",
+  });
+  return executionReceipt({
+    venue_id: "lighter",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: "byo_api_key",
+    instruction: context.instruction,
+    body,
+    status: proven ? "reconciled" : "outcome_unknown",
+    provider_ref_seed: result.provider_ref_seed,
+    result_seed: result.result_seed,
+    fills: proven ? result.fills : [],
+    final_proof: result.final_proof,
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      lighter_sees: "authenticated_exact_order_read",
+      transaction_broadcast: false,
+    },
+  });
+}
+
+export async function executeAsterOrder({ body, recipient, state, emergencyRiskReductionOnly = false }) {
   const readOnlyReconcile = body.operation_class === "reconcile";
   const cached = await state.getIdempotency(body.work_order_commitment);
   if (cached?.receipt && !readOnlyReconcile) return cached.receipt;
@@ -1285,6 +1784,7 @@ export async function executeAsterOrder({ body, recipient, state }) {
     venue_id: "aster",
     session,
   }), { state, venue_id: "aster", body });
+  enforceEmergencyRiskReductionInstruction(instruction, emergencyRiskReductionOnly);
   const clientOrderId = await state.deriveClientOrderId("gh", body.work_order_commitment);
   let pending = {
     venue_id: "aster",
@@ -1427,7 +1927,7 @@ async function asterCredentialForBody({ body, recipient }) {
   return asterCredentialFromVault(opened.json);
 }
 
-export async function executeLighterOrder({ body, recipient, state }) {
+export async function executeLighterOrder({ body, recipient, state, emergencyRiskReductionOnly = false }) {
   const readOnlyReconcile = body.operation_class === "reconcile";
   const cached = await state.getIdempotency(body.work_order_commitment);
   if (cached?.receipt && !readOnlyReconcile) return cached.receipt;
@@ -1447,6 +1947,7 @@ export async function executeLighterOrder({ body, recipient, state }) {
     venue_id: "lighter",
     session,
   }), { state, venue_id: "lighter", body });
+  enforceEmergencyRiskReductionInstruction(instruction, emergencyRiskReductionOnly);
   const clientOrderIndex = lighterClientOrderIndex(body.work_order_commitment);
   let pending = {
     venue_id: "lighter",
@@ -1672,9 +2173,14 @@ export async function verifySolanaPerpsOrderNoSubmit({ body, recipient, state })
   const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
   const credential = executionMode === "ghola_pooled"
     ? loadPooledSolanaPerpsCredential(venueId)
-    : solanaPerpsCredentialFromVault((await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/solana-perps-execution-vault-v1",
+    : solanaPerpsCredentialFromVault((await openContextBoundVenueExecutionVault({
+        body: { ...body, execution_mode: executionMode, venue_id: venueId },
+        recipient,
+        aadVersion: "ghola/solana-perps-execution-vault-v1",
         expectedKind: "ghola_solana_perps_execution_vault",
+        allowedNetworks: ["mainnet"],
+        defaultMode: "user_stealth",
+        venueId,
       })).json);
   const session = await state.findSession({
     venue_id: venueId,
@@ -1770,9 +2276,13 @@ export async function verifyCoinbaseOrderNoSubmit({ body, recipient, state }) {
   } else if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
     credential = dryRunCoinbaseCredential();
   } else {
-    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/coinbase-advanced-execution-vault-v1",
+    const openedVault = await openContextBoundVenueExecutionVault({
+      body: { ...body, execution_mode: body.execution_mode || "byo_api_key" },
+      recipient,
+      aadVersion: "ghola/coinbase-advanced-execution-vault-v1",
       expectedKind: "ghola_coinbase_advanced_execution_vault",
+      allowedNetworks: ["mainnet", "sandbox"],
+      defaultMode: "byo_api_key",
     });
     credential = coinbaseCredentialFromVault(openedVault.json);
   }
@@ -1824,9 +2334,14 @@ export async function verifyJupiterSwapNoSubmit({ body, recipient, state }) {
   const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
   const credential = executionMode === "ghola_pooled"
     ? loadPooledJupiterCredential()
-    : jupiterCredentialFromVault((await openSealedBundle(body.encrypted_execution_vault, recipient, {
-        aadPrefix: "ghola/solana-swap-execution-vault-v1",
+    : jupiterCredentialFromVault((await openContextBoundVenueExecutionVault({
+        body: { ...body, execution_mode: executionMode, venue_id: "jupiter" },
+        recipient,
+        aadVersion: "ghola/solana-swap-execution-vault-v1",
         expectedKind: "ghola_solana_swap_execution_vault",
+        allowedNetworks: ["mainnet"],
+        defaultMode: "user_stealth",
+        venueId: "jupiter",
       })).json);
   const session = await state.findSession({
     venue_id: "jupiter",
@@ -1966,7 +2481,11 @@ export async function verifyHyperliquidOrderNoSubmit({ body, recipient, state })
 export async function reconcileStoredExecution({ body, state, venue_id, platform_class }) {
   const attempted = await state.getExecutionAttempt(body.work_order_commitment);
   const cached = (await state.getIdempotency(body.work_order_commitment))?.receipt || null;
-  const status = attempted?.status === "failed" ? "failed" : "reconciled";
+  const storedProof = attempted?.final_proof || cached?.final_proof || null;
+  // These routes have no live venue query yet. A cached signature or local
+  // receipt is evidence of an attempt, not terminal venue state.
+  const finalVenueProofValid = false;
+  const status = finalVenueProofValid ? "reconciled" : "outcome_unknown";
   const providerRefSeed = attempted?.provider_ref_seed ||
     cached?.provider_ref_commitment ||
     {
@@ -1981,14 +2500,14 @@ export async function reconcileStoredExecution({ body, state, venue_id, platform
       status,
       work_order_commitment: body.work_order_commitment,
     };
-  const finalProof = attempted?.final_proof || {
+  const finalProof = finalVenueProofValid ? storedProof : {
     version: 1,
     proof_kind: "connector_execution_reconciliation_v1",
-    status,
+    status: "outcome_unknown",
     venue_id,
-    broadcast_performed: Boolean(attempted || cached),
-    final_venue_execution_proven: Boolean(attempted || cached),
-    final_fill_proven: Array.isArray(attempted?.fills) && attempted.fills.length > 0,
+    broadcast_performed: storedProof?.broadcast_performed === true,
+    final_venue_execution_proven: false,
+    final_fill_proven: false,
     checked_at: new Date().toISOString(),
   };
   return executionReceipt({
@@ -2002,13 +2521,51 @@ export async function reconcileStoredExecution({ body, state, venue_id, platform
     status,
     provider_ref_seed: providerRefSeed,
     result_seed: resultSeed,
-    fills: attempted?.fills || cached?.fill_commitments || [],
+    fills: finalVenueProofValid ? attempted?.fills || [] : [],
     final_proof: finalProof,
     visibility_summary: cached?.visibility_summary || {
       main_wallet_exposed: false,
       ghola_operator_sees: "commitment_and_ciphertext_only",
       public_chain_sees: "reconciled_from_worker_state",
     },
+  });
+}
+
+export function privateExecutionInstructionAssociatedDataMatches({
+  associatedDataText,
+  body,
+  recipient,
+  venue_id,
+}) {
+  const recipientId = typeof recipient?.recipient_id === "string" ? recipient.recipient_id : "";
+  const venueId = typeof venue_id === "string" ? venue_id : "";
+  const workOrderCommitment = typeof body?.work_order_commitment === "string"
+    ? body.work_order_commitment
+    : "";
+  const previewCommitment = typeof body?.preview_commitment === "string"
+    ? body.preview_commitment
+    : "";
+  if (
+    !associatedDataText ||
+    !recipientId ||
+    recipientId !== recipientId.trim() ||
+    !venueId ||
+    venueId !== venueId.trim() ||
+    workOrderCommitment !== workOrderCommitment.trim() ||
+    previewCommitment !== previewCommitment.trim()
+  ) return false;
+  const lineage = [
+    workOrderCommitment ? `work_order:${workOrderCommitment}` : null,
+    previewCommitment ? `preview:${previewCommitment}` : null,
+  ].filter(Boolean);
+  return lineage.some((binding) => {
+    const expectedAad = [
+      "ghola/private-execution-instruction-v1",
+      binding,
+      `venue:${venueId}`,
+      `recipient:${recipientId}`,
+    ].join("|");
+    return associatedDataText === expectedAad;
   });
 }
 
@@ -2024,10 +2581,12 @@ async function instructionForBody({ body, recipient, venue_id, session }) {
       aadPrefix: "ghola/private-execution-instruction-v1",
       expectedKind: "ghola_private_execution_instruction",
     });
-    const boundToWorkOrder = opened.associatedDataText.includes(`work_order:${body.work_order_commitment}`);
-    const boundToPreview = body.preview_commitment &&
-      opened.associatedDataText.includes(`preview:${body.preview_commitment}`);
-    if (!boundToWorkOrder && !boundToPreview) {
+    if (!privateExecutionInstructionAssociatedDataMatches({
+      associatedDataText: opened.associatedDataText,
+      body,
+      recipient,
+      venue_id,
+    })) {
       throw new PrivateExecutionError("execution instruction commitment mismatch");
     }
     return normalizeInstruction(opened.json, {
@@ -2060,11 +2619,26 @@ async function resolvePrivateOrderTarget(instruction, { state, venue_id, body })
       ? instruction.reconcile?.target_work_order_commitment
       : null;
   if (!target) return instruction;
-  const cached = (await state.getIdempotency(target))?.receipt;
-  if (!cached && !await durableRecoveryTargetAllowed({ state, body, target, venueId: venue_id })) {
+  const [cachedRecord, attempt] = await Promise.all([
+    state.getIdempotency(target),
+    state.getExecutionAttempt(target),
+  ]);
+  const cached = cachedRecord?.receipt;
+  const storedVenueId = attempt?.venue_id || cached?.venue_id || null;
+  const exactStoredAttempt = Boolean(attempt || cached) && storedVenueId === venue_id;
+  if (!exactStoredAttempt && !await durableRecoveryTargetAllowed({ state, body, target, venueId: venue_id })) {
     throw new PrivateExecutionError(instruction.operation_class === "cancel"
       ? "cancel target work order is unknown"
       : "reconcile target work order is unknown");
+  }
+  if (storedVenueId && storedVenueId !== venue_id) {
+    throw new PrivateExecutionError(
+      instruction.operation_class === "cancel"
+        ? "cancel target venue mismatch"
+        : "reconcile target venue mismatch",
+      409,
+      "recovery_target_venue_mismatch",
+    );
   }
   const clientOrderId = venue_id === "hyperliquid"
     ? await state.deriveHyperliquidCloid(target)
@@ -2074,7 +2648,6 @@ async function resolvePrivateOrderTarget(instruction, { state, venue_id, body })
         ? await state.deriveClientOrderId("gh", target)
         : await state.deriveClientOrderId("ghola", target);
   if (instruction.operation_class === "reconcile") {
-    const attempt = await state.getExecutionAttempt(target);
     return {
       ...instruction,
       reconcile: {

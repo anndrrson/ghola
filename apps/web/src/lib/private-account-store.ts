@@ -5259,6 +5259,59 @@ export async function putConnectorWorkOrder(
   return record;
 }
 
+export async function claimConnectorWorkOrderForPreview(
+  record: PrivateConnectorWorkOrderRecordV1,
+): Promise<{ claimed: boolean; record: PrivateConnectorWorkOrderRecordV1 }> {
+  const sql = await getSql();
+  if (!sql) {
+    const existing = Array.from(connectorWorkOrders.values())
+      .find((candidate) => candidate.preview_commitment === record.preview_commitment);
+    if (existing) return { claimed: false, record: existing };
+    connectorWorkOrders.set(record.work_order_commitment, record);
+    return { claimed: true, record };
+  }
+  await ensureSchema(sql);
+  const inserted = (await sql`
+    INSERT INTO private_account_connector_work_orders (
+      work_order_commitment,
+      owner_commitment,
+      intent_id,
+      account_commitment,
+      action_commitment,
+      preview_commitment,
+      approval_commitment,
+      execution_plan_commitment,
+      platform_class,
+      status,
+      work_order,
+      created_at,
+      updated_at
+    ) VALUES (
+      ${record.work_order_commitment},
+      ${record.owner_commitment},
+      ${record.intent_id},
+      ${record.account_commitment},
+      ${record.action_commitment},
+      ${record.preview_commitment},
+      ${record.approval_commitment},
+      ${record.execution_plan_commitment},
+      ${record.platform_class},
+      ${record.status},
+      ${JSON.stringify(record.work_order)}::jsonb,
+      ${record.created_at},
+      ${record.updated_at}
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING *
+  `) as ConnectorWorkOrderRow[];
+  if (inserted[0]) {
+    return { claimed: true, record: connectorWorkOrderRow(inserted[0]) };
+  }
+  const existing = await getConnectorWorkOrderByPreview(record.preview_commitment);
+  if (!existing) throw new Error("connector_preview_claim_conflict_without_record");
+  return { claimed: false, record: existing };
+}
+
 export async function getConnectorWorkOrder(
   workOrderCommitment: string,
 ): Promise<PrivateConnectorWorkOrderRecordV1 | null> {
@@ -7332,7 +7385,7 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_linkability_owner ON private_account_linkability_scores (owner_commitment, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_linkability_platform ON private_account_linkability_scores (owner_commitment, platform_class, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_connector_work_orders_owner ON private_account_connector_work_orders (owner_commitment, updated_at DESC)`;
-  await sql`CREATE INDEX IF NOT EXISTS idx_private_account_connector_work_orders_preview ON private_account_connector_work_orders (preview_commitment, updated_at DESC)`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_private_account_connector_work_orders_preview_unique ON private_account_connector_work_orders (preview_commitment)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_connector_results_owner ON private_account_connector_results (owner_commitment, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_connector_results_work_order ON private_account_connector_results (work_order_commitment, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_runtime_envelopes_intent ON private_account_runtime_envelopes (intent_id, created_at DESC)`;

@@ -28,6 +28,11 @@ import { bodyHash } from "../src/auth/capability.js";
 import { createWorkerState } from "../src/state/private-state.js";
 import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
 import {
+  privateExecutionInstructionAssociatedDataMatches,
+  reconcileAsterOrder,
+  reconcileLighterOrder,
+} from "../src/execution/private-execution.js";
+import {
   asterPreparationId,
   asterRegistrationParameters,
   asterRegistrationTypedData,
@@ -458,6 +463,8 @@ describe("private agent worker", () => {
     process.env.PRIVATE_AGENT_EXECUTION_TOKEN = "secret";
     process.env.PRIVATE_AGENT_ALLOW_UNATTESTED_DEV = "true";
     process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "true";
+    process.env.PRIVATE_AGENT_STATE_SINGLE_CVM_OK = "true";
+    process.env.PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK = "true";
     server = createPrivateAgentWorkerServer({
       lighterGenerateApiKey: async () => [LIGHTER_PRIVATE_KEY, LIGHTER_PUBLIC_KEY, null],
     });
@@ -468,6 +475,159 @@ describe("private agent worker", () => {
     await close(server);
     rmSync(dir, { recursive: true, force: true });
     resetEnv();
+  });
+
+  it("rejects prefix and field-injection instruction AAD replays across every private venue", () => {
+    const recipient = { recipient_id: "phala:cvm:recipient_exact" };
+    for (const venueId of [
+      "hyperliquid",
+      "aster",
+      "lighter",
+      "coinbase_advanced",
+      "phoenix",
+      "backpack",
+      "jupiter",
+    ]) {
+      const body = {
+        work_order_commitment: `work_order_${venueId}`,
+        preview_commitment: `preview_${venueId}`,
+      };
+      const workOrderAad = [
+        "ghola/private-execution-instruction-v1",
+        `work_order:${body.work_order_commitment}`,
+        `venue:${venueId}`,
+        `recipient:${recipient.recipient_id}`,
+      ].join("|");
+      const previewAad = [
+        "ghola/private-execution-instruction-v1",
+        `preview:${body.preview_commitment}`,
+        `venue:${venueId}`,
+        `recipient:${recipient.recipient_id}`,
+      ].join("|");
+      const matches = (associatedDataText) => privateExecutionInstructionAssociatedDataMatches({
+        associatedDataText,
+        body,
+        recipient,
+        venue_id: venueId,
+      });
+
+      assert.equal(matches(workOrderAad), true, `${venueId} exact work order`);
+      assert.equal(matches(previewAad), true, `${venueId} exact preview`);
+      assert.equal(matches(workOrderAad.replace(
+        body.work_order_commitment,
+        `${body.work_order_commitment}_suffix`,
+      )), false, `${venueId} work-order prefix replay`);
+      assert.equal(matches(previewAad.replace(
+        body.preview_commitment,
+        `${body.preview_commitment}_suffix`,
+      )), false, `${venueId} preview prefix replay`);
+      assert.equal(matches(workOrderAad.replace(`venue:${venueId}`, "venue:wrong")), false, `${venueId} venue binding`);
+      assert.equal(matches(`${workOrderAad}|recipient:injected`), false, `${venueId} recipient injection`);
+      assert.equal(privateExecutionInstructionAssociatedDataMatches({
+        associatedDataText: workOrderAad,
+        body: { ...body, work_order_commitment: ` ${body.work_order_commitment}` },
+        recipient,
+        venue_id: venueId,
+      }), false, `${venueId} leading work-order whitespace`);
+      assert.equal(privateExecutionInstructionAssociatedDataMatches({
+        associatedDataText: previewAad,
+        body: { ...body, preview_commitment: `${body.preview_commitment} ` },
+        recipient,
+        venue_id: venueId,
+      }), false, `${venueId} trailing preview whitespace`);
+    }
+  });
+
+  it("rejects a valid encrypted instruction whose AAD only prefix-matches the submitted order", async () => {
+    const workOrderCommitment = "connector_work_order_prefix";
+    const vault = await encryptedHyperliquidVault(baseUrl);
+    const response = await fetch(`${baseUrl}/hyperliquid/orders`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        account_commitment: vault.account_commitment,
+        work_order_commitment: workOrderCommitment,
+        preview_commitment: "preview_prefix",
+        vault_commitment: vault.vault_commitment,
+        policy_commitment: vault.policy_commitment,
+        operation_class: "limit_order",
+        encrypted_execution_vault: vault.encrypted_execution_vault,
+        encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+          venue_id: "hyperliquid",
+          work_order_commitment: `${workOrderCommitment}_attacker_suffix`,
+          operation_class: "limit_order",
+          order: {
+            market: "BTC",
+            side: "buy",
+            base_size: "0.001",
+            limit_price: "10000",
+            tif: "Gtc",
+          },
+        }),
+        session_policy: vault.session_policy,
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, "execution instruction commitment mismatch");
+    assert.equal(await createWorkerState(dir).getExecutionAttempt(workOrderCommitment), null);
+  });
+
+  it("rejects mismatched Aster and Lighter reconcile targets before target-state or venue reads", async () => {
+    const workerRecipient = loadRecipient();
+    for (const [venueId, reconcile] of [
+      ["aster", reconcileAsterOrder],
+      ["lighter", reconcileLighterOrder],
+    ]) {
+      const requestWorkOrder = `connector_work_order_${venueId}_reconcile_request`;
+      const targetWorkOrder = `connector_work_order_${venueId}_reconcile_target`;
+      let targetReads = 0;
+      let targetWrites = 0;
+      const state = {
+        findSession: async () => null,
+        getExecutionAttempt: async () => {
+          targetReads += 1;
+          throw new Error("mismatched reconcile target reached execution state");
+        },
+        getIdempotency: async () => {
+          targetReads += 1;
+          throw new Error("mismatched reconcile target reached idempotency state");
+        },
+        putExecutionAttempt: async () => {
+          targetWrites += 1;
+          throw new Error("mismatched reconcile target reached persistence");
+        },
+      };
+      const body = {
+        work_order_commitment: requestWorkOrder,
+        operation_class: "reconcile",
+        encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+          venue_id: venueId,
+          work_order_commitment: requestWorkOrder,
+          operation_class: "reconcile",
+          reconcile: {
+            market: "BTC-PERP",
+            target_work_order_commitment: targetWorkOrder,
+          },
+        }),
+      };
+
+      await assert.rejects(
+        () => reconcile({ body, recipient: workerRecipient, state }),
+        (error) => {
+          assert.equal(error.status, 409, `${venueId}: ${error.message} (${error.code || "no-code"})`);
+          assert.equal(error.code, "reconcile_target_work_order_mismatch", venueId);
+          return true;
+        },
+      );
+      assert.equal(targetReads, 0, venueId);
+      assert.equal(targetWrites, 0, venueId);
+    }
   });
 
   it("publishes a stable recipient key", async () => {
@@ -1606,12 +1766,410 @@ describe("private agent worker", () => {
     assert.ok(readiness.next_actions.some((action) => action.code === "autopilot_live_submit_disabled"));
   });
 
-  it("honors single-CVM persistent state for autopilot readiness", async () => {
+  it("blocks risk-increasing and non-emergency routes when interprocess state is unsafe", async () => {
     process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
     process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
     process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
     process.env.PRIVATE_AGENT_STATE_STORE = "json";
     process.env.PRIVATE_AGENT_STATE_SINGLE_CVM_OK = "true";
+    delete process.env.PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK;
+    const requests = [
+      ["/autopilot/readiness", { method: "POST" }],
+      ["/carry/positions/capital-plan", { method: "POST" }],
+      ["/carry/preflight", { method: "POST" }],
+      ["/carry/shadow?assets=BTC", { method: "GET" }],
+      ["/autopilot/sessions/test/events", { method: "GET" }],
+      ["/autopilot/sessions/test/resume", { method: "POST" }],
+      ["/autopilot/tri-venue/run", { method: "POST" }],
+      ["/hyperliquid/verify", { method: "POST" }],
+      ["/venues/coinbase/orders", { method: "POST" }],
+      ["/venues/solana-perps/orders", { method: "POST" }],
+    ];
+    for (const [path, options] of requests) {
+      const response = await fetch(`${baseUrl}${path}`, options);
+      assert.equal(response.status, 503, path);
+      assert.equal((await response.json()).error, "carry_interprocess_state_not_ready", path);
+    }
+    const health = await fetch(`${baseUrl}/health`);
+    assert.notEqual(health.status, 404);
+  });
+
+  it("blocks Phoenix and Backpack orders during unsafe state because native reduction is unproven", async () => {
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    process.env.PRIVATE_AGENT_STATE_STORE = "json";
+    process.env.PRIVATE_AGENT_STATE_SINGLE_CVM_OK = "true";
+    delete process.env.PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK;
+    for (const venue_id of ["phoenix", "backpack"]) {
+      const response = await fetch(`${baseUrl}/venues/solana-perps/orders`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ venue_id, operation_class: "perp_limit_order", reduce_only: true }),
+      });
+      assert.equal(response.status, 503, venue_id);
+      assert.equal((await response.json()).error, "carry_interprocess_state_not_ready", venue_id);
+    }
+  });
+
+  it("blocks pause and kill when unsafe state cannot provide a durable execution fence", async () => {
+    await close(server);
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    process.env.PRIVATE_AGENT_STATE_STORE = "json";
+    const state = createWorkerState(dir);
+    let stateReady = true;
+    server = createPrivateAgentWorkerServer({
+      state,
+      sharedStateReadiness: () => ({
+        ready: stateReady,
+        mode: "json",
+        reason_codes: stateReady ? [] : ["worker_state_store_not_shared"],
+      }),
+      startAutopilotDueLoop: false,
+      startMultiLegRecoveryLoop: false,
+      startCarryMonitoringLoop: false,
+      startCarryExecutionLoop: false,
+      startCarryFundingObservationLoop: false,
+      startKrakenV2Heartbeat: false,
+    });
+    baseUrl = await listen(server);
+
+    const sessionBody = {
+      version: 1,
+      owner_commitment: "owner_unsafe_state_emergency_control_123",
+      session_policy: {
+        venue_allowlist: ["jupiter"],
+        market_allowlist: ["SOL-USD"],
+        max_notional_bucket: "50",
+        max_daily_notional_bucket: "250",
+        max_order_count: 10,
+        ttl_ms: 2 * 60 * 60_000,
+        max_slippage_bps: 50,
+      },
+    };
+    const createToken = capabilityToken({
+      path: "/autopilot/sessions",
+      scope: "autopilot:control",
+      body: sessionBody,
+      expected: { owner_commitment: sessionBody.owner_commitment },
+    });
+    const created = await fetch(`${baseUrl}/autopilot/sessions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${createToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(sessionBody),
+    });
+    assert.equal(created.status, 201);
+    const sessionId = (await created.json()).session.autopilot_session_id;
+    const before = await state.getAutopilotSession(sessionId);
+
+    stateReady = false;
+    for (const [path, method] of [
+      [`/autopilot/sessions/${sessionId}/pause`, "POST"],
+      [`/autopilot/sessions/${sessionId}/kill`, "POST"],
+      ["/autopilot/tri-venue/kill", "POST"],
+    ]) {
+      const denied = await fetch(`${baseUrl}${path}`, { method });
+      assert.equal(denied.status, 503, path);
+      assert.equal((await denied.json()).error, "carry_interprocess_state_not_ready", path);
+    }
+    const after = await state.getAutopilotSession(sessionId);
+    assert.equal(after.status, before.status);
+    assert.equal(after.updated_at, before.updated_at);
+  });
+
+  it("allows native reduce-only and reconcile but denies entry, cancel, and exit when state is unsafe", async () => {
+    await close(server);
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    process.env.PRIVATE_AGENT_STATE_STORE = "json";
+    let stateReady = true;
+    server = createPrivateAgentWorkerServer({
+      state: createWorkerState(dir),
+      sharedStateReadiness: () => ({
+        ready: stateReady,
+        mode: "json",
+        reason_codes: stateReady ? [] : ["worker_state_store_not_shared"],
+      }),
+      startAutopilotDueLoop: false,
+      startMultiLegRecoveryLoop: false,
+      startCarryMonitoringLoop: false,
+      startCarryExecutionLoop: false,
+      startCarryFundingObservationLoop: false,
+      startKrakenV2Heartbeat: false,
+    });
+    baseUrl = await listen(server);
+    const vault = await encryptedHyperliquidVault(baseUrl);
+    stateReady = false;
+    const executionExpected = (body) => ({
+      account_commitment: body.account_commitment,
+      venue_id: "hyperliquid",
+      platform_class: "hyperliquid_style_market",
+      operation_class: body.operation_class,
+      work_order_commitment: body.work_order_commitment,
+      policy_commitment: body.policy_commitment,
+      vault_commitment: body.vault_commitment,
+    });
+    const snapshotBody = {
+      version: 1,
+      account_commitment: vault.account_commitment,
+      vault_commitment: vault.vault_commitment,
+      encrypted_execution_vault: vault.encrypted_execution_vault,
+    };
+    const snapshotToken = capabilityToken({
+      path: "/hyperliquid/account-snapshot",
+      scope: "reconcile:read",
+      body: snapshotBody,
+      expected: {
+        account_commitment: snapshotBody.account_commitment,
+        venue_id: "hyperliquid",
+        platform_class: "hyperliquid_style_market",
+        vault_commitment: snapshotBody.vault_commitment,
+      },
+    });
+    const snapshot = await fetch(`${baseUrl}/hyperliquid/account-snapshot`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${snapshotToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(snapshotBody),
+    });
+    assert.equal(snapshot.status, 200, JSON.stringify(await snapshot.clone().json()));
+    assert.equal((await snapshot.json()).status, "ready_to_trade");
+
+    const submit = async (body) => {
+      const token = capabilityToken({
+        path: "/hyperliquid/orders",
+        scope: "order:submit",
+        body,
+        expected: executionExpected(body),
+      });
+      return fetch(`${baseUrl}/hyperliquid/orders`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "x-ghola-sealed-execution-required": "true",
+        },
+        body: JSON.stringify(body),
+      });
+    };
+
+    const reductionWorkOrder = "unsafe_state_reduce_only_work_order_123";
+    const reductionBody = {
+      ...vault,
+      work_order_commitment: reductionWorkOrder,
+      operation_class: "limit_order",
+      encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+        venue_id: "hyperliquid",
+        work_order_commitment: reductionWorkOrder,
+        operation_class: "limit_order",
+        order: {
+          market: "BTC",
+          side: "sell",
+          base_size: "0.001",
+          limit_price: "10000",
+          tif: "Ioc",
+          reduce_only: true,
+        },
+      }),
+    };
+    const reduced = await submit(reductionBody);
+    assert.equal(reduced.status, 202, JSON.stringify(await reduced.clone().json()));
+
+    const entryWorkOrder = "unsafe_state_entry_work_order_123";
+    const entryBody = {
+      ...vault,
+      work_order_commitment: entryWorkOrder,
+      operation_class: "limit_order",
+      encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+        venue_id: "hyperliquid",
+        work_order_commitment: entryWorkOrder,
+        operation_class: "limit_order",
+        order: {
+          market: "BTC",
+          side: "buy",
+          base_size: "0.001",
+          limit_price: "10000",
+          tif: "Ioc",
+          reduce_only: false,
+        },
+      }),
+    };
+    const entry = await submit(entryBody);
+    assert.equal(entry.status, 503);
+    assert.equal((await entry.json()).error_code, "unsafe_interprocess_state_risk_increase_denied");
+
+    const disguisedEntryWorkOrder = "unsafe_state_disguised_entry_work_order_123";
+    const disguisedEntryBody = {
+      ...vault,
+      work_order_commitment: disguisedEntryWorkOrder,
+      operation_class: "cancel",
+      encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+        venue_id: "hyperliquid",
+        work_order_commitment: disguisedEntryWorkOrder,
+        operation_class: "limit_order",
+        order: {
+          market: "BTC",
+          side: "buy",
+          base_size: "0.001",
+          limit_price: "10000",
+          tif: "Ioc",
+          reduce_only: false,
+        },
+      }),
+    };
+    const disguisedEntry = await submit(disguisedEntryBody);
+    assert.equal(disguisedEntry.status, 503);
+    assert.equal((await disguisedEntry.json()).error_code, "unsafe_interprocess_state_risk_increase_denied");
+
+    const cancelWorkOrder = "unsafe_state_cancel_work_order_123";
+    const cancelBody = {
+      ...vault,
+      work_order_commitment: cancelWorkOrder,
+      operation_class: "cancel",
+      encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+        venue_id: "hyperliquid",
+        work_order_commitment: cancelWorkOrder,
+        operation_class: "cancel",
+        cancel: {
+          market: "BTC",
+          target_work_order_commitment: reductionWorkOrder,
+        },
+      }),
+    };
+    const cancelled = await submit(cancelBody);
+    assert.equal(cancelled.status, 503, JSON.stringify(await cancelled.clone().json()));
+    assert.equal((await cancelled.json()).error_code, "unsafe_interprocess_state_risk_increase_denied");
+
+    const reconcileBody = {
+      ...vault,
+      work_order_commitment: reductionWorkOrder,
+    };
+    const reconcileToken = capabilityToken({
+      path: "/hyperliquid/reconcile",
+      scope: "reconcile:read",
+      body: reconcileBody,
+      expected: {
+        ...executionExpected(reconcileBody),
+        operation_class: "reconcile",
+      },
+    });
+    const reconciled = await fetch(`${baseUrl}/hyperliquid/reconcile`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${reconcileToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(reconcileBody),
+    });
+    assert.equal(reconciled.status, 200, JSON.stringify(await reconciled.clone().json()));
+
+    const exitBody = {
+      owner_commitment: "owner_unsafe_state_exit_123",
+      position_id: "carry:position:unsafe-state-missing",
+      event_id: "carry:event:unsafe-state-exit:1",
+      sequence: 1,
+    };
+    const exitToken = capabilityToken({
+      path: "/carry/positions/exit-request",
+      scope: "carry:write",
+      body: exitBody,
+      expected: {
+        owner_commitment: exitBody.owner_commitment,
+        operation_class: "/exit-request",
+      },
+    });
+    const exit = await fetch(`${baseUrl}/carry/positions/exit-request`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${exitToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(exitBody),
+    });
+    assert.equal(exit.status, 503);
+    assert.equal((await exit.json()).error, "carry_interprocess_state_not_ready");
+
+    const readBody = {
+      owner_commitment: exitBody.owner_commitment,
+      position_id: exitBody.position_id,
+    };
+    const readToken = capabilityToken({
+      path: "/carry/positions/read",
+      scope: "carry:read",
+      body: readBody,
+      expected: {
+        owner_commitment: readBody.owner_commitment,
+        operation_class: "/read",
+      },
+    });
+    const read = await fetch(`${baseUrl}/carry/positions/read`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${readToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(readBody),
+    });
+    assert.equal(read.status, 404);
+    assert.equal((await read.json()).error, "carry_position_not_found");
+  });
+
+  it("disables autonomous Carry loops when interprocess state is unsafe", async () => {
+    await close(server);
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    process.env.PRIVATE_AGENT_STATE_STORE = "json";
+    process.env.PRIVATE_AGENT_STATE_SINGLE_CVM_OK = "true";
+    delete process.env.PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK;
+    const loop = (name) => ({
+      health: () => ({
+        name,
+        status: "healthy",
+        running: true,
+        run_count: 1,
+        consecutive_failures: 0,
+        last_started_at: "2027-01-15T08:00:00.000Z",
+        last_completed_at: "2027-01-15T08:00:00.025Z",
+        last_success_at: "2027-01-15T08:00:00.025Z",
+        last_error_code: null,
+      }),
+      stop() {},
+    });
+    server = createPrivateAgentWorkerServer({
+      carryMonitoringLoop: loop("carry_monitor"),
+      carryExecutionLoop: loop("carry_execution"),
+      startAutopilotDueLoop: false,
+      startMultiLegRecoveryLoop: false,
+      startCarryFundingObservationLoop: false,
+      startKrakenV2Heartbeat: false,
+    });
+    baseUrl = await listen(server);
+
+    const response = await fetch(`${baseUrl}/health`);
+    const body = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(body.carry_supervision.ready, false);
+    assert.equal(body.carry_supervision.monitoring.status, "disabled");
+    assert.equal(body.carry_supervision.execution.status, "disabled");
+    assert.equal(body.carry_supervision.recovery.status, "disabled");
+    assert.equal(body.carry_supervision.observation.status, "disabled");
+  });
+
+  it("honors asserted single-CVM single-process state for autopilot readiness", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    process.env.PRIVATE_AGENT_STATE_STORE = "json";
+    process.env.PRIVATE_AGENT_STATE_SINGLE_CVM_OK = "true";
+    process.env.PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK = "true";
     const body = {
       version: 1,
       operation_class: "autopilot_execution_readiness",
@@ -2124,6 +2682,8 @@ describe("private agent worker", () => {
     process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
     process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
     process.env.PRIVATE_AGENT_STATE_STORE = "json";
+    delete process.env.PRIVATE_AGENT_STATE_SINGLE_CVM_OK;
+    delete process.env.PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK;
     enablePooledReadinessEnv();
     process.env.PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON = JSON.stringify({
       accounts: [{
@@ -2153,10 +2713,9 @@ describe("private agent worker", () => {
       body: JSON.stringify(body),
     });
 
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 503);
     const readiness = await response.json();
-    assert.equal(readiness.status, "blocked");
-    assert.equal(readiness.ready, false);
+    assert.equal(readiness.error, "carry_interprocess_state_not_ready");
     assert.equal(readiness.state_store.mode, "json");
     assert.equal(readiness.state_store.shared, false);
     assert.ok(readiness.reason_codes.includes("worker_state_store_not_shared"));
@@ -2617,6 +3176,30 @@ describe("private agent worker", () => {
     assert.equal(JSON.stringify(body).includes("sealed-provider-v1"), false);
   });
 
+  it("rejects Coinbase and Jupiter vaults replayed under another account commitment", async () => {
+    for (const fixture of [
+      { venue_id: "coinbase_advanced", vault: await encryptedCoinbaseVault(baseUrl) },
+      { venue_id: "jupiter", vault: await encryptedJupiterVault(baseUrl) },
+    ]) {
+      const response = await fetch(`${baseUrl}/venues/credentials/verify`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer secret",
+          "content-type": "application/json",
+          "x-ghola-sealed-execution-required": "true",
+        },
+        body: JSON.stringify({
+          version: 1,
+          venue_id: fixture.venue_id,
+          account_commitment: "acct_commitment_wrong_123",
+          encrypted_execution_vault: fixture.vault,
+        }),
+      });
+      assert.equal(response.status, 403);
+      assert.match((await response.json()).error, /account binding mismatch/);
+    }
+  });
+
   it("prepares an Aster signer inside the worker without authorizing or broadcasting", async () => {
     const response = await fetch(`${baseUrl}/venues/aster/credentials/prepare`, {
       method: "POST",
@@ -2898,6 +3481,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         venue_id: "coinbase_advanced",
+        account_commitment: "acct_commitment_123",
         platform_class: "coinbase_style_provider",
         execution_mode: "byo_api_key",
         work_order_commitment: "connector_work_order_coinbase_verify_123",
@@ -3774,6 +4358,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         venue_id: "phoenix",
+        account_commitment: "acct_commitment_123",
         platform_class: "solana_perps_market",
         execution_mode: "user_stealth",
         work_order_commitment: workOrderCommitment,
@@ -3813,7 +4398,7 @@ describe("private agent worker", () => {
     assert.equal(JSON.stringify(body).includes("wallet_private_key"), false);
   });
 
-  it("reconciles Solana perps work orders without exposing raw venue details", async () => {
+  it("keeps Solana perps reconciliation ambiguous without a live venue query", async () => {
     const response = await fetch(`${baseUrl}/venues/solana-perps/reconcile`, {
       method: "POST",
       headers: {
@@ -3831,9 +4416,10 @@ describe("private agent worker", () => {
 
     assert.equal(response.status, 200);
     const body = await response.json();
-    assert.equal(body.status, "reconciled");
+    assert.equal(body.status, "outcome_unknown");
     assert.equal(body.platform_class, "solana_perps_market");
     assert.equal(body.visibility_summary.main_wallet_exposed, false);
+    assert.equal(body.final_proof.final_venue_execution_proven, false);
   });
 
   it("verifies Solana perps no-submit readiness without broadcasting", async () => {
@@ -3854,6 +4440,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         venue_id: "phoenix",
+        account_commitment: "acct_commitment_123",
         platform_class: "solana_perps_market",
         execution_mode: "user_stealth",
         work_order_commitment: workOrderCommitment,
@@ -3910,6 +4497,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         venue_id: "jupiter",
+        account_commitment: "acct_commitment_123",
         platform_class: "solana_swap_aggregator",
         execution_mode: "user_stealth",
         work_order_commitment: workOrderCommitment,
@@ -4025,10 +4613,10 @@ describe("private agent worker", () => {
 
     assert.equal(reconcileResponse.status, 200);
     const reconciled = await reconcileResponse.json();
-    assert.equal(reconciled.status, "reconciled");
+    assert.equal(reconciled.status, "outcome_unknown");
     assert.equal(reconciled.platform_class, "solana_swap_aggregator");
     assert.equal(reconciled.visibility_summary.main_wallet_exposed, false);
-    assert.equal(reconciled.final_proof.proof_kind, "jupiter_swap_execution_proof_v1");
+    assert.equal(reconciled.final_proof.final_venue_execution_proven, false);
   });
 
   it("verifies pooled Phoenix no-submit readiness without a user execution vault", async () => {
@@ -4048,6 +4636,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         venue_id: "phoenix",
+        account_commitment: "acct_commitment_123",
         platform_class: "solana_perps_market",
         execution_mode: "ghola_pooled",
         allocation_commitment: "pooled_venue_allocation_phoenix_123",
@@ -4147,6 +4736,7 @@ describe("private agent worker", () => {
       body: JSON.stringify({
         version: 1,
         venue_id: "phoenix",
+        account_commitment: "acct_commitment_123",
         platform_class: "solana_perps_market",
         execution_mode: "user_stealth",
         work_order_commitment: workOrderCommitment,
@@ -4175,8 +4765,8 @@ describe("private agent worker", () => {
 
     assert.equal(response.status, 503);
     const body = await response.json();
-    assert.equal(body.error_code, "connector_submit_failed");
-    assert.match(body.error, /live submit is disabled/);
+    assert.equal(body.error_code, "submission_ambiguous");
+    assert.match(body.error, /reconcile before any further action/);
   });
 
   it("rejects shielded-funding attestation without a bearer token", async () => {

@@ -22,6 +22,7 @@ import {
 } from "../src/execution/carry-readiness.js";
 import { storeCarryTransferRouteEvidence } from "../src/execution/carry-transfer-routes.js";
 import { carryShadowFixture } from "./carry-shadow-fixture.js";
+import { finalizeCarryLifecycleEventRecord } from "../src/state/private-state.js";
 import {
   CARRY_EXECUTION_VENUES,
   cashflowValuationEvidenceMessage,
@@ -1144,6 +1145,96 @@ test("refuses a lifecycle with a monitoring outage", async () => {
   assert.equal(result.error, "carry_release_monitoring_failure_detected");
 });
 
+test("uses the full durable lifecycle journal after the 256-event UI tail rolls over", async () => {
+  const fixture = await stateFixture();
+  const observations = Array.from({ length: 300 }, (_, index) => {
+    const recordedAtMs = 1_800_000_001_001 + index * 5;
+    const observation = monitoringObservation(
+      fixture.record.position.position_id,
+      recordedAtMs,
+      "aa",
+      recordedAtMs - 1,
+    );
+    observation.funding_observation_commitment = `carry:funding:current:${index.toString(16).padStart(64, "0")}`;
+    return observation;
+  });
+  fixture.lifecycle.events = [
+    ...observations,
+    { type: "manual_exit_requested", recorded_at_ms: 1_800_000_003_000 },
+  ];
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(fixture.record.lifecycle_events.length, 256);
+  assert.equal(result.material.monitoring.observation_count, 300);
+});
+
+test("rejects a pre-tail monitoring failure from the full durable lifecycle journal", async () => {
+  const fixture = await stateFixture();
+  const observations = Array.from({ length: 300 }, (_, index) => {
+    const recordedAtMs = 1_800_000_001_010 + index * 5;
+    const observation = monitoringObservation(
+      fixture.record.position.position_id,
+      recordedAtMs,
+      "bb",
+      recordedAtMs - 1,
+    );
+    observation.funding_observation_commitment = `carry:funding:current:${(index + 1_000).toString(16).padStart(64, "0")}`;
+    return observation;
+  });
+  fixture.lifecycle.events = [
+    { type: "observation_unavailable", recorded_at_ms: 1_800_000_001_001, reason: "venue_read_unavailable" },
+    ...observations,
+    { type: "manual_exit_requested", recorded_at_ms: 1_800_000_003_000 },
+  ];
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(fixture.record.lifecycle_events.some((event) => event.type === "observation_unavailable"), false);
+  assert.equal(result.error, "carry_release_monitoring_failure_detected");
+});
+
+test("refuses a tampered durable lifecycle journal", async () => {
+  const fixture = await stateFixture();
+  const listLifecycleEvents = fixture.state.listCarryLifecycleEvents;
+  fixture.state.listCarryLifecycleEvents = async (input) => {
+    const rows = await listLifecycleEvents(input);
+    return input.after_sequence === 0 && rows[0]
+      ? [{ ...rows[0], event_commitment: `carry:lifecycle-event:${"0".repeat(64)}` }, ...rows.slice(1)]
+      : rows;
+  };
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_lifecycle_journal_unproven");
+});
+
+test("refuses release proof for a legacy-anchored lifecycle journal", async () => {
+  const fixture = await stateFixture();
+  fixture.record.lifecycle_journal.origin_sequence = 4;
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.error, "carry_release_lifecycle_journal_unproven");
+});
+
 test("refuses monitoring gaps beyond the signed freshness budget", async () => {
   const fixture = await stateFixture();
   fixture.record.position.risk_mandate.max_data_age_ms = 2_000;
@@ -1470,6 +1561,7 @@ async function stateFixture() {
   });
   const record = {
     owner_commitment: OWNER,
+    lifecycle_journal: { version: 1, origin_sequence: 1 },
     entry_saga_id: entrySaga.saga_id,
     exit_saga_id: exitSaga.saga_id,
     monitoring_context: {
@@ -1604,8 +1696,22 @@ async function stateFixture() {
       },
     });
   }
+  const lifecycle = { events: null };
+  const prepareLifecycle = () => {
+    const events = normalizeFixtureLifecycle(lifecycle.events || record.lifecycle_events);
+    if (lifecycle.events) lifecycle.events = events;
+    record.position.last_event_sequence = events.length;
+    record.lifecycle_events = events.slice(-256);
+    return fixtureLifecycleJournal(record.position.position_id, events);
+  };
   const state = {
-    getCarryPositionRecord: async () => record,
+    getCarryPositionRecord: async () => {
+      prepareLifecycle();
+      return record;
+    },
+    listCarryLifecycleEvents: async ({ after_sequence: afterSequence = 0, limit = 1_000 } = {}) => prepareLifecycle()
+      .filter((item) => item.sequence > afterSequence)
+      .slice(0, limit),
     getMultiLegSaga: async (id) => id === entrySaga.saga_id ? entrySaga : exitSaga,
     getExecutionAttempt: async (key) => attempts[key] || null,
     getIdempotency: async (key) => key.startsWith("carry:qualification:aster:")
@@ -1651,7 +1757,7 @@ async function stateFixture() {
     expires_at_ms: NOW + 30_000,
     now_ms: NOW,
   });
-  return { state, record, attempts, receipts };
+  return { state, record, attempts, receipts, lifecycle };
 }
 
 function releaseTransferRoutes(readiness) {
@@ -2065,4 +2171,26 @@ function stableJson(value) {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
     .join(",")}}`;
+}
+
+function normalizeFixtureLifecycle(events) {
+  return events.map((event, index) => ({
+    ...event,
+    version: 1,
+    event_id: `carry:event:release:${index + 1}`,
+    sequence: index + 1,
+  }));
+}
+
+function fixtureLifecycleJournal(positionId, events) {
+  let previousEventCommitment = null;
+  return events.map((event) => {
+    const entry = finalizeCarryLifecycleEventRecord({
+      position_id: positionId,
+      event,
+      previous_event_commitment: previousEventCommitment,
+    });
+    previousEventCommitment = entry.event_commitment;
+    return entry;
+  });
 }

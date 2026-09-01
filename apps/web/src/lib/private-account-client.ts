@@ -1416,6 +1416,8 @@ export async function reconcilePrivateAccountConnector(input: {
   work_order_commitment?: string;
   preview_commitment?: string;
   connector_result_commitment?: string;
+  venue_id?: "hyperliquid" | "aster" | "lighter" | "coinbase_advanced";
+  encrypted_execution_instruction_bundle?: unknown;
 }) {
   return privateAccountFetch("/v1/private-account/connectors/reconcile", {
     method: "POST",

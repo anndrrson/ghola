@@ -278,6 +278,16 @@ export async function submitAsterExecution({
   env = process.env,
 }) {
   assertAsterPilotMode(credential, instruction?.operation_class, env);
+  if (instruction?.operation_class === "reconcile") {
+    return reconcileAsterExecution({
+      credential,
+      market: instruction.reconcile?.market || instruction.reconcile?.product_id,
+      targetClientOrderId: instruction.reconcile?.target_client_order_id || clientOrderId,
+      fetchImpl,
+      now,
+      env,
+    });
+  }
   if (env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
     return normalizedResult({
       clientOrderId,
@@ -285,30 +295,6 @@ export async function submitAsterExecution({
       status: instruction?.operation_class === "cancel" ? "CANCELED" : "NEW",
       executedQty: "0",
     }, { dryRun: true, targetClientOrderId: clientOrderId });
-  }
-  if (instruction?.operation_class === "reconcile") {
-    const symbol = asterSymbol(instruction.reconcile?.market || instruction.reconcile?.product_id);
-    const target = instruction.reconcile?.target_client_order_id || clientOrderId;
-    const reconciled = normalizedResult(await signedRequest({
-      credential,
-      method: "GET",
-      path: "/fapi/v3/order",
-      params: { symbol, origClientOrderId: target },
-      fetchImpl,
-      now,
-    }), { targetClientOrderId: target, expectedSymbol: symbol, broadcastPerformed: false });
-    const exactOriginalOrderObserved = reconciled.final_proof?.target_client_order_matched === true
-      && reconciled.final_proof?.target_symbol_matched === true
-      && exactUnsignedIdentifier(reconciled.provider_ref_seed?.order_id) !== null;
-    return {
-      ...reconciled,
-      final_proof: {
-        ...reconciled.final_proof,
-        query_broadcast: false,
-        original_order_target_matched: exactOriginalOrderObserved,
-        original_order_broadcast_proven: exactOriginalOrderObserved,
-      },
-    };
   }
   if (instruction?.operation_class === "cancel") {
     const symbol = asterSymbol(instruction.cancel?.market);
@@ -333,6 +319,70 @@ export async function submitAsterExecution({
     now,
     ambiguousOnTransportFailure: true,
   }), { targetClientOrderId: clientOrderId, expectedSymbol: order.symbol, broadcastPerformed: true });
+}
+
+export async function reconcileAsterExecution({
+  credential,
+  market,
+  targetClientOrderId,
+  fetchImpl = fetch,
+  now = () => Date.now(),
+  env = process.env,
+}) {
+  assertAsterPilotMode(credential, "reconcile", env);
+  const symbol = asterSymbol(market);
+  const target = exactAsterClientOrderId(targetClientOrderId);
+  if (env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
+    return {
+      status: "outcome_unknown",
+      provider_ref_seed: { venue: "aster", client_order_id: target, order_id: null, dry_run: true },
+      result_seed: { kind: "aster_reconcile_dry_run", status: "outcome_unknown" },
+      fills: [],
+      final_proof: {
+        version: 1,
+        proof_kind: "aster_client_order_reconciliation_v1",
+        status: "outcome_unknown",
+        venue_id: "aster",
+        target_client_order_matched: false,
+        target_symbol_matched: false,
+        query_broadcast: false,
+        broadcast_performed: false,
+        original_order_target_matched: false,
+        original_order_broadcast_proven: false,
+        final_venue_execution_proven: false,
+        final_fill_proven: false,
+        checked_at: new Date(now()).toISOString(),
+      },
+    };
+  }
+  const reconciled = normalizedResult(await signedRequest({
+    credential,
+    method: "GET",
+    path: "/fapi/v3/order",
+    params: { symbol, origClientOrderId: target },
+    fetchImpl,
+    now,
+  }), { targetClientOrderId: target, expectedSymbol: symbol, broadcastPerformed: false });
+  const exactOriginalOrderObserved = reconciled.final_proof?.target_client_order_matched === true
+    && reconciled.final_proof?.target_symbol_matched === true
+    && exactUnsignedIdentifier(reconciled.provider_ref_seed?.order_id) !== null;
+  return {
+    ...reconciled,
+    final_proof: {
+      ...reconciled.final_proof,
+      version: 1,
+      proof_kind: "aster_client_order_reconciliation_v1",
+      status: reconciled.final_proof?.final_venue_execution_proven === true
+        ? reconciled.status
+        : "outcome_unknown",
+      venue_id: "aster",
+      query_broadcast: false,
+      original_order_target_matched: exactOriginalOrderObserved,
+      original_order_broadcast_proven: exactOriginalOrderObserved,
+      final_fill_proven: reconciled.status === "filled",
+      checked_at: new Date(now()).toISOString(),
+    },
+  };
 }
 
 export async function submitAndReconcileAsterExecution({

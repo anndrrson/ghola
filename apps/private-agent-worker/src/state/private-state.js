@@ -30,6 +30,7 @@ function emptyState() {
     tick_snapshots: {},
     multi_leg_sagas: {},
     carry_positions: {},
+    carry_lifecycle_events: {},
     revenue_evidence: [],
     hyperliquid_managed_allocations: {},
     omnibus: {},
@@ -80,6 +81,7 @@ export function createWorkerState(dir) {
       tick_snapshots: loaded.tick_snapshots || {},
       multi_leg_sagas: loaded.multi_leg_sagas || {},
       carry_positions: loaded.carry_positions || {},
+      carry_lifecycle_events: loaded.carry_lifecycle_events || {},
       revenue_evidence: Array.isArray(loaded.revenue_evidence) ? loaded.revenue_evidence : [],
       hyperliquid_managed_allocations: loaded.hyperliquid_managed_allocations || {},
       omnibus: loaded.omnibus || {},
@@ -485,6 +487,24 @@ export function createPostgresWorkerState(databaseUrl) {
         await sql`
           CREATE INDEX IF NOT EXISTS idx_worker_carry_positions_owner_status_scan
           ON worker_carry_positions (owner_commitment, status, (record_json->>'updated_at') DESC, position_id DESC)
+        `;
+        await sql`
+          CREATE TABLE IF NOT EXISTS worker_carry_lifecycle_events (
+            position_id TEXT NOT NULL,
+            sequence BIGINT NOT NULL,
+            event_id TEXT NOT NULL,
+            previous_event_commitment TEXT,
+            event_commitment TEXT NOT NULL,
+            event_json JSONB NOT NULL,
+            recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (position_id, sequence),
+            UNIQUE (position_id, event_id),
+            UNIQUE (event_commitment)
+          )
+        `;
+        await sql`
+          CREATE INDEX IF NOT EXISTS idx_worker_carry_lifecycle_events_position_sequence
+          ON worker_carry_lifecycle_events (position_id, sequence ASC)
         `;
         await sql`
           CREATE TABLE IF NOT EXISTS worker_revenue_events (
@@ -1337,11 +1357,170 @@ export function createPostgresWorkerState(databaseUrl) {
     },
 
     async putCarryPositionRecord(record, input = {}) {
+      const sql = await ensureInitialized();
       const positionId = record?.position?.position_id;
       const expectedVersion = input.expected_version;
+      const lifecycleEvent = input.lifecycle_event || null;
+      if (lifecycleEvent) {
+        if (!Number.isInteger(expectedVersion) || expectedVersion <= 0) {
+          return { ok: false, error: "carry_record_expected_version_required" };
+        }
+        const pool = await transactionPool();
+        const client = await pool.connect();
+        let transactionOpen = false;
+        try {
+          await client.query("BEGIN");
+          transactionOpen = true;
+          const currentRows = await client.query(
+            `SELECT record_json, record_version
+             FROM worker_carry_positions
+             WHERE position_id = $1
+             FOR UPDATE`,
+            [positionId],
+          );
+          const existing = decodeJson(currentRows.rows[0]?.record_json);
+          if (!existing || Number(currentRows.rows[0]?.record_version) !== expectedVersion) {
+            await client.query("ROLLBACK");
+            transactionOpen = false;
+            return { ok: false, error: "carry_record_version_conflict", record: existing || null };
+          }
+          const firstRows = await client.query(
+            `SELECT event_json
+             FROM worker_carry_lifecycle_events
+             WHERE position_id = $1
+             ORDER BY sequence ASC
+             LIMIT 1`,
+            [positionId],
+          );
+          const latestRows = await client.query(
+            `SELECT event_json
+             FROM worker_carry_lifecycle_events
+             WHERE position_id = $1
+             ORDER BY sequence DESC
+             LIMIT 1`,
+            [positionId],
+          );
+          const duplicateRows = await client.query(
+            `SELECT 1
+             FROM worker_carry_lifecycle_events
+             WHERE position_id = $1 AND event_id = $2
+             LIMIT 1`,
+            [positionId, lifecycleEvent.event_id],
+          );
+          if (duplicateRows.rows[0]) {
+            await client.query("ROLLBACK");
+            transactionOpen = false;
+            return { ok: false, error: "carry_lifecycle_event_conflict", record: existing };
+          }
+          const first = decodeJson(firstRows.rows[0]?.event_json);
+          const previous = decodeJson(latestRows.rows[0]?.event_json);
+          const journalBoundary = [first, previous]
+            .filter(Boolean)
+            .filter((item, index, items) => items.findIndex((candidate) => candidate.sequence === item.sequence) === index);
+          const bound = bindCarryLifecycleJournalMetadata({ existing, record, journal: journalBoundary });
+          if (!bound.ok) {
+            await client.query("ROLLBACK");
+            transactionOpen = false;
+            return { ...bound, record: existing };
+          }
+          const next = {
+            ...bound.record,
+            record_version: expectedVersion + 1,
+            updated_at: new Date().toISOString(),
+          };
+          const append = prepareCarryLifecycleAppend({
+            existing,
+            next,
+            event: lifecycleEvent,
+            journal: journalBoundary,
+          });
+          if (!append.ok) {
+            await client.query("ROLLBACK");
+            transactionOpen = false;
+            return { ...append, record: existing };
+          }
+          await client.query(
+            `INSERT INTO worker_carry_lifecycle_events (
+               position_id, sequence, event_id, previous_event_commitment,
+               event_commitment, event_json, recorded_at
+             ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+            [
+              positionId,
+              append.entry.sequence,
+              append.entry.event_id,
+              append.entry.previous_event_commitment,
+              append.entry.event_commitment,
+              jsonParam(append.entry),
+              timestampOrNow(lifecycleEvent.recorded_at_ms),
+            ],
+          );
+          const updatedRows = await client.query(
+            `UPDATE worker_carry_positions
+             SET owner_commitment = $1,
+                 status = $2,
+                 record_version = $3,
+                 record_json = $4::jsonb,
+                 updated_at = NOW()
+             WHERE position_id = $5 AND record_version = $6
+             RETURNING record_json`,
+            [next.owner_commitment, next.position.status, next.record_version, jsonParam(next), positionId, expectedVersion],
+          );
+          if (!updatedRows.rows[0]) throw new Error("carry_record_version_conflict");
+          await client.query("COMMIT");
+          transactionOpen = false;
+          return { ok: true, record: decodeJson(updatedRows.rows[0].record_json) };
+        } catch (error) {
+          if (transactionOpen) await client.query("ROLLBACK").catch(() => undefined);
+          if (error?.code === "23505") {
+            return { ok: false, error: "carry_lifecycle_event_conflict", record: await this.getCarryPositionRecord(positionId) };
+          }
+          throw error;
+        } finally {
+          client.release();
+        }
+      }
+      const currentRows = await sql`
+        SELECT record_json, record_version
+        FROM worker_carry_positions
+        WHERE position_id = ${positionId}
+      `;
+      const existing = decodeJson(currentRows[0]?.record_json);
+      if (expectedVersion === null) {
+        if (existing) return { ok: false, error: "carry_record_version_conflict", record: existing };
+      } else if (!Number.isInteger(expectedVersion) || expectedVersion <= 0) {
+        return { ok: false, error: "carry_record_expected_version_required", record: existing || null };
+      } else if (!existing || Number(currentRows[0]?.record_version) !== expectedVersion) {
+        return { ok: false, error: "carry_record_version_conflict", record: existing || null };
+      }
+      const firstRows = existing ? await sql`
+        SELECT event_json
+        FROM worker_carry_lifecycle_events
+        WHERE position_id = ${positionId}
+        ORDER BY sequence ASC
+        LIMIT 1
+      ` : [];
+      const latestRows = existing ? await sql`
+        SELECT event_json
+        FROM worker_carry_lifecycle_events
+        WHERE position_id = ${positionId}
+        ORDER BY sequence DESC
+        LIMIT 1
+      ` : [];
+      const journalBoundary = [decodeJson(firstRows[0]?.event_json), decodeJson(latestRows[0]?.event_json)]
+        .filter(Boolean)
+        .filter((item, index, items) => items.findIndex((candidate) => candidate.sequence === item.sequence) === index);
+      const bound = bindCarryLifecycleJournalMetadata({ existing, record, journal: journalBoundary });
+      if (!bound.ok) return { ...bound, record: existing || null };
+      const lifecycleBinding = prepareCarryLifecycleAppend({
+        existing,
+        next: bound.record,
+        event: null,
+        journal: journalBoundary,
+      });
+      if (!lifecycleBinding.ok) return { ...lifecycleBinding, record: existing || null };
       let rows;
       if (expectedVersion === null) {
-        const next = { ...record, record_version: 1, updated_at: new Date().toISOString() };
+        const next = { ...bound.record, record_version: 1, updated_at: new Date().toISOString() };
         rows = await sql`
           INSERT INTO worker_carry_positions (
             position_id, owner_commitment, status, record_version, record_json, created_at, updated_at
@@ -1354,7 +1533,7 @@ export function createPostgresWorkerState(databaseUrl) {
           RETURNING record_json
         `;
       } else if (Number.isInteger(expectedVersion) && expectedVersion > 0) {
-        const next = { ...record, record_version: expectedVersion + 1, updated_at: new Date().toISOString() };
+        const next = { ...bound.record, record_version: expectedVersion + 1, updated_at: new Date().toISOString() };
         rows = await sql`
           UPDATE worker_carry_positions
           SET owner_commitment = ${next.owner_commitment},
@@ -1447,6 +1626,22 @@ export function createPostgresWorkerState(databaseUrl) {
               ORDER BY record_json->>'updated_at' DESC, position_id DESC LIMIT ${limit}
             `;
       return rows.map((row) => decodeJson(row.record_json)).filter(Boolean);
+    },
+
+    async listCarryLifecycleEvents(input = {}) {
+      const sql = await ensureInitialized();
+      const positionId = stringValue(input.position_id);
+      if (!positionId) return [];
+      const afterSequence = Math.max(0, Number.parseInt(String(input.after_sequence || 0), 10) || 0);
+      const limit = Math.max(1, Math.min(positiveInt(input.limit, 1_000), 1_000));
+      const rows = await sql`
+        SELECT event_json
+        FROM worker_carry_lifecycle_events
+        WHERE position_id = ${positionId} AND sequence > ${afterSequence}
+        ORDER BY sequence ASC
+        LIMIT ${limit}
+      `;
+      return rows.map((row) => decodeJson(row.event_json)).filter(Boolean);
     },
 
     async appendRevenueEvidence(event) {
@@ -1840,6 +2035,161 @@ function stableRecordId(prefix, value) {
     .update(JSON.stringify(value ?? null))
     .digest("hex")
     .slice(0, 32)}`;
+}
+
+export function finalizeCarryLifecycleEventRecord({
+  position_id: positionId,
+  event,
+  previous_event_commitment: previousEventCommitment = null,
+}) {
+  const normalizedPositionId = stringValue(positionId);
+  if (!normalizedPositionId) throw new Error("carry_lifecycle_position_id_required");
+  if (!event || typeof event !== "object" || Array.isArray(event)) {
+    throw new Error("carry_lifecycle_event_required");
+  }
+  if (!Number.isSafeInteger(event.sequence) || event.sequence <= 0) {
+    throw new Error("carry_lifecycle_event_sequence_invalid");
+  }
+  if (typeof event.event_id !== "string" || !event.event_id.trim()) {
+    throw new Error("carry_lifecycle_event_id_required");
+  }
+  if (previousEventCommitment !== null && !stringValue(previousEventCommitment)) {
+    throw new Error("carry_lifecycle_previous_commitment_invalid");
+  }
+  const material = {
+    version: 1,
+    position_id: normalizedPositionId,
+    sequence: event.sequence,
+    event_id: event.event_id,
+    previous_event_commitment: previousEventCommitment,
+    event: structuredClone(event),
+  };
+  return {
+    ...material,
+    event_commitment: `carry:lifecycle-event:${createHash("sha256")
+      .update(canonicalStateJson(material))
+      .digest("hex")}`,
+  };
+}
+
+function prepareCarryLifecycleAppend({ existing, next, event, journal }) {
+  const originSequence = next?.lifecycle_journal?.origin_sequence;
+  if (next?.lifecycle_journal?.version !== 1
+    || !Number.isSafeInteger(originSequence)
+    || originSequence <= 0) {
+    return { ok: false, error: "carry_lifecycle_journal_metadata_invalid" };
+  }
+  if (!event) {
+    const eventOwnedFields = [
+      "position",
+      "lifecycle_events",
+      "latest_observation",
+      "final_reconciliation_evidence",
+    ];
+    if (existing && eventOwnedFields.some((field) =>
+      Object.hasOwn(existing, field) !== Object.hasOwn(next, field)
+      || canonicalStateJson(existing[field]) !== canonicalStateJson(next[field])
+    )) {
+      return { ok: false, error: "carry_lifecycle_projection_write_requires_event" };
+    }
+    const nextSequence = next?.position?.last_event_sequence ?? 0;
+    const nextTail = Array.isArray(next?.lifecycle_events) ? next.lifecycle_events : [];
+    if (!existing) {
+      return nextSequence === 0 && nextTail.length === 0
+        ? { ok: true, entry: null }
+        : { ok: false, error: "carry_lifecycle_event_required" };
+    }
+    const existingTail = Array.isArray(existing.lifecycle_events) ? existing.lifecycle_events : [];
+    const latest = journal.at(-1) || null;
+    if (nextSequence !== (existing.position?.last_event_sequence ?? 0)
+      || canonicalStateJson(nextTail) !== canonicalStateJson(existingTail)
+      || (nextSequence < originSequence ? latest !== null : latest?.sequence !== nextSequence)) {
+      return { ok: false, error: "carry_lifecycle_event_required" };
+    }
+    return { ok: true, entry: null };
+  }
+  const sequence = event?.sequence;
+  if (!existing || !Number.isSafeInteger(existing.position?.last_event_sequence)) {
+    return { ok: false, error: "carry_lifecycle_previous_position_missing" };
+  }
+  if (sequence !== existing.position.last_event_sequence + 1
+    || next.position?.last_event_sequence !== sequence) {
+    return { ok: false, error: "carry_lifecycle_event_sequence_invalid" };
+  }
+  const tail = Array.isArray(next.lifecycle_events) ? next.lifecycle_events : [];
+  const existingTail = Array.isArray(existing.lifecycle_events) ? existing.lifecycle_events : [];
+  const expectedTail = existingTail.concat(event).slice(-256);
+  if (tail.length === 0
+    || tail.length > 256
+    || canonicalStateJson(tail) !== canonicalStateJson(expectedTail)) {
+    return { ok: false, error: "carry_lifecycle_snapshot_binding_mismatch" };
+  }
+  const previous = journal.at(-1) || null;
+  if (sequence < originSequence || (!previous && sequence !== originSequence)) {
+    return { ok: false, error: "carry_lifecycle_journal_missing" };
+  }
+  if (previous && previous.sequence !== sequence - 1) {
+    return { ok: false, error: "carry_lifecycle_journal_sequence_invalid" };
+  }
+  if (journal.some((item) => item.event_id === event.event_id || item.sequence === sequence)) {
+    return { ok: false, error: "carry_lifecycle_event_conflict" };
+  }
+  try {
+    return {
+      ok: true,
+      entry: finalizeCarryLifecycleEventRecord({
+        position_id: next.position.position_id,
+        event,
+        previous_event_commitment: previous?.event_commitment || null,
+      }),
+    };
+  } catch (error) {
+    return { ok: false, error: error.message || "carry_lifecycle_event_invalid" };
+  }
+}
+
+function bindCarryLifecycleJournalMetadata({ existing, record, journal }) {
+  const existingMetadata = existing?.lifecycle_journal;
+  let originSequence;
+  if (existingMetadata !== undefined) {
+    if (existingMetadata?.version !== 1
+      || !Number.isSafeInteger(existingMetadata.origin_sequence)
+      || existingMetadata.origin_sequence <= 0) {
+      return { ok: false, error: "carry_lifecycle_journal_metadata_invalid" };
+    }
+    originSequence = existingMetadata.origin_sequence;
+    if (record?.lifecycle_journal !== undefined
+      && canonicalStateJson(record.lifecycle_journal) !== canonicalStateJson(existingMetadata)) {
+      return { ok: false, error: "carry_lifecycle_journal_metadata_immutable" };
+    }
+  } else {
+    const storedSequences = journal
+      .map((item) => item?.sequence)
+      .filter((sequence) => Number.isSafeInteger(sequence) && sequence > 0);
+    originSequence = storedSequences.length > 0
+      ? Math.min(...storedSequences)
+      : (existing?.position?.last_event_sequence ?? 0) + 1;
+  }
+  if (!Number.isSafeInteger(originSequence) || originSequence <= 0) {
+    return { ok: false, error: "carry_lifecycle_journal_metadata_invalid" };
+  }
+  return {
+    ok: true,
+    record: {
+      ...record,
+      lifecycle_journal: { version: 1, origin_sequence: originSequence },
+    },
+  };
+}
+
+function canonicalStateJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalStateJson).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, child]) => child !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, child]) => `${JSON.stringify(key)}:${canonicalStateJson(child)}`)
+    .join(",")}}`;
 }
 
 function toIso(value) {
@@ -2557,25 +2907,38 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save, atomicU
     },
 
     async putCarryPositionRecord(record, input = {}) {
-      const state = await loadState();
-      const positionId = record?.position?.position_id;
-      const existing = state.carry_positions[positionId] || null;
-      const expectedVersion = input.expected_version;
-      if (expectedVersion === null) {
-        if (existing) return { ok: false, error: "carry_record_version_conflict", record: existing };
-      } else if (!Number.isInteger(expectedVersion) || expectedVersion <= 0) {
-        return { ok: false, error: "carry_record_expected_version_required", record: existing };
-      } else if (!existing || existing.record_version !== expectedVersion) {
-        return { ok: false, error: "carry_record_version_conflict", record: existing };
-      }
-      const next = {
-        ...record,
-        record_version: expectedVersion === null ? 1 : expectedVersion + 1,
-        updated_at: new Date().toISOString(),
-      };
-      state.carry_positions[positionId] = next;
-      await save(state);
-      return { ok: true, record: next };
+      return updateState((state) => {
+        const positionId = record?.position?.position_id;
+        const existing = state.carry_positions[positionId] || null;
+        const expectedVersion = input.expected_version;
+        if (expectedVersion === null) {
+          if (existing) return { ok: false, error: "carry_record_version_conflict", record: structuredClone(existing) };
+        } else if (!Number.isInteger(expectedVersion) || expectedVersion <= 0) {
+          return { ok: false, error: "carry_record_expected_version_required", record: structuredClone(existing) };
+        } else if (!existing || existing.record_version !== expectedVersion) {
+          return { ok: false, error: "carry_record_version_conflict", record: structuredClone(existing) };
+        }
+        const journal = Array.isArray(state.carry_lifecycle_events[positionId])
+          ? state.carry_lifecycle_events[positionId]
+          : [];
+        const bound = bindCarryLifecycleJournalMetadata({ existing, record, journal });
+        if (!bound.ok) return { ...bound, record: structuredClone(existing) };
+        const next = {
+          ...bound.record,
+          record_version: expectedVersion === null ? 1 : expectedVersion + 1,
+          updated_at: new Date().toISOString(),
+        };
+        const append = prepareCarryLifecycleAppend({
+          existing,
+          next,
+          event: input.lifecycle_event || null,
+          journal,
+        });
+        if (!append.ok) return { ...append, record: structuredClone(existing) };
+        if (append.entry) state.carry_lifecycle_events[positionId] = journal.concat(append.entry);
+        state.carry_positions[positionId] = next;
+        return { ok: true, record: structuredClone(next) };
+      });
     },
 
     async getCarryPositionRecord(positionId) {
@@ -2599,6 +2962,19 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save, atomicU
           String(right.updated_at || "").localeCompare(String(left.updated_at || "")) ||
           String(right.position?.position_id || "").localeCompare(String(left.position?.position_id || "")))
         .slice(0, limit);
+    },
+
+    async listCarryLifecycleEvents(input = {}) {
+      const positionId = stringValue(input.position_id);
+      if (!positionId) return [];
+      const afterSequence = Math.max(0, Number.parseInt(String(input.after_sequence || 0), 10) || 0);
+      const limit = Math.max(1, Math.min(positiveInt(input.limit, 1_000), 1_000));
+      const rows = (await loadState()).carry_lifecycle_events[positionId];
+      return (Array.isArray(rows) ? rows : [])
+        .filter((item) => Number(item?.sequence || 0) > afterSequence)
+        .sort((left, right) => Number(left.sequence || 0) - Number(right.sequence || 0))
+        .slice(0, limit)
+        .map((item) => structuredClone(item));
     },
 
     async appendRevenueEvidence(event) {
@@ -2789,6 +3165,7 @@ function normalizeState(value) {
     tick_snapshots: loaded.tick_snapshots || {},
     multi_leg_sagas: loaded.multi_leg_sagas || {},
     carry_positions: loaded.carry_positions || {},
+    carry_lifecycle_events: loaded.carry_lifecycle_events || {},
     revenue_evidence: Array.isArray(loaded.revenue_evidence) ? loaded.revenue_evidence : [],
     hyperliquid_managed_allocations: loaded.hyperliquid_managed_allocations || {},
     omnibus: loaded.omnibus || {},

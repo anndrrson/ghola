@@ -55,6 +55,8 @@ export function auditPhalaWorkerEnv(env = {}) {
     "PRIVATE_AGENT_GLOBAL_KILL_SWITCH",
     "PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT",
     "PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET",
+    "PRIVATE_AGENT_STATE_SINGLE_CVM_OK",
+    "PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK",
   ]) {
     if (nonEmpty(env[key]) && !BOOLEAN_VALUES.has(normalized(env[key]))) {
       invalid.push(`${key} must be true or false`);
@@ -84,6 +86,10 @@ export function auditPhalaWorkerEnv(env = {}) {
   }
   if (SINGLE_CVM_MODES.has(stateMode) && normalized(env.PRIVATE_AGENT_STATE_SINGLE_CVM_OK) !== "true") {
     invalid.push("single-CVM state requires PRIVATE_AGENT_STATE_SINGLE_CVM_OK=true");
+  }
+  if (["json", "file"].includes(stateMode)
+    && normalized(env.PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK) !== "true") {
+    invalid.push("JSON/file state requires PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK=true");
   }
 
   const liveMode = normalized(env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE);

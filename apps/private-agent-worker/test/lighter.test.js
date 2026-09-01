@@ -34,6 +34,23 @@ function credential() {
   });
 }
 
+function detailedAccount(overrides = {}) {
+  return {
+    code: 0,
+    status: 1,
+    index: 123,
+    account_index: 123,
+    available_balance: "50",
+    total_asset_value: "50",
+    collateral: "50",
+    cross_initial_margin_requirement: "0",
+    cross_maintenance_margin_requirement: "0",
+    pending_order_count: 0,
+    positions: [],
+    ...overrides,
+  };
+}
+
 test("reads exact Lighter withdrawal capacity and delay without broadcasting", async () => {
   const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
   const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
@@ -256,7 +273,10 @@ test("authenticates a Lighter key and account without broadcasting", async () =>
           credential_verified: true,
           account_read: true,
           transaction_broadcast: false,
-          account: { status: 1, available_balance: "50", collateral: "50", pending_order_count: 0 },
+          account: detailedAccount({
+            cross_initial_margin_requirement: undefined,
+            cross_maintenance_margin_requirement: undefined,
+          }),
         };
       },
     });
@@ -265,6 +285,28 @@ test("authenticates a Lighter key and account without broadcasting", async () =>
     assert.equal(result.venue_native_trade_only, false);
     assert.equal(result.secure_withdrawal_to_owner_possible, true);
     assert.equal(result.non_owner_fund_movement_possible, false);
+
+    const inactive = await verifyLighterCredential({
+      credential: credential(),
+      runner: async () => ({
+        credential_verified: true,
+        account_read: true,
+        transaction_broadcast: false,
+        account: detailedAccount({ status: 0 }),
+      }),
+    });
+    assert.equal(inactive.can_read, true);
+    assert.equal(inactive.can_trade, false);
+
+    await assert.rejects(verifyLighterCredential({
+      credential: credential(),
+      runner: async () => ({
+        credential_verified: true,
+        account_read: true,
+        transaction_broadcast: false,
+        account: detailedAccount({ index: 124, account_index: 124 }),
+      }),
+    }), (error) => error.code === "connector_submit_failed");
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
@@ -290,13 +332,9 @@ test("builds a Lighter order packet without broadcast", async () => {
         order_packet_built: true,
         signed_order_fields_checked: true,
         transaction_broadcast: false,
-        account: {
-          status: 1,
+        account: detailedAccount({
           available_balance: "500",
           total_asset_value: "500",
-          cross_initial_margin_requirement: "0",
-          cross_maintenance_margin_requirement: "0",
-          pending_order_count: 0,
           positions: [{
             market_id: 1,
             symbol: "BTC",
@@ -305,13 +343,14 @@ test("builds a Lighter order packet without broadcast", async () => {
             position_value: "50000",
             liquidation_price: "75000",
           }],
-        },
+        }),
         market: { maker_fee: "0.00010", taker_fee: "0.00045" },
         order_shape: { base_size: "0.0010", limit_price: "100000.00", quantity_step_e8: 10_000, price_tick_e8: 1_000_000 },
       }),
     });
     assert.equal(result.status, "verified_ready");
     assert.equal(result.checks.transaction_broadcast, false);
+    assert.equal(result.checks.margin_state_checked, true);
     assert.equal(result.account.taker_fee_bps, 4.5);
     assert.equal(result.account.fees_conservative_upper_bound, true);
     assert.equal(result.account.position_count, 1);
@@ -342,7 +381,7 @@ test("fails closed when Lighter no-submit omits signed packet binding or account
     order_packet_built: true,
     signed_order_fields_checked: true,
     transaction_broadcast: false,
-    account: { available_balance: "50", collateral: "50", positions: [] },
+    account: detailedAccount(),
     market: { maker_fee: "0.0001", taker_fee: "0.00045" },
     order_shape: { base_size: "0.001", limit_price: "100000" },
   };
@@ -353,15 +392,82 @@ test("fails closed when Lighter no-submit omits signed packet binding or account
       clientOrderIndex: 77,
       runner: async () => ({ ...verified, signed_order_fields_checked: false }),
     }), (error) => error.code === "connector_submit_failed");
-    const result = await verifyLighterNoSubmit({
+    await assert.rejects(verifyLighterNoSubmit({
       credential: credential(),
       instruction: instruction(),
       clientOrderIndex: 77,
-      runner: async () => verified,
+      runner: async () => ({ ...verified, account: { ...verified.account, pending_order_count: undefined } }),
+    }), (error) => error.code === "connector_submit_failed");
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
+test("derives Lighter trade readiness only from a bound active account response", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "read_only";
+  const verified = {
+    credential_verified: true,
+    account_state_checked: true,
+    market_data_checked: true,
+    order_packet_built: true,
+    signed_order_fields_checked: true,
+    transaction_broadcast: false,
+    market: { maker_fee: "0.0001", taker_fee: "0.00045" },
+    order_shape: { base_size: "0.001", limit_price: "100000" },
+  };
+  try {
+    const inactive = await verifyLighterNoSubmit({
+      credential: credential(),
+      instruction: instruction(),
+      clientOrderIndex: 77,
+      runner: async () => ({ ...verified, account: detailedAccount({ status: 0 }) }),
     });
-    assert.equal(result.account.position_count, 0);
-    assert.equal(result.account.open_order_count, null);
-    assert.equal(result.account.flat_zero_orders, false);
+    assert.equal(inactive.status, "verified_no_funds");
+    assert.equal(inactive.account.can_trade, false);
+    assert.equal(inactive.account.account_status_verified, true);
+
+    const pinnedShape = await verifyLighterNoSubmit({
+      credential: credential(),
+      instruction: instruction(),
+      clientOrderIndex: 78,
+      runner: async () => ({
+        ...verified,
+        account: detailedAccount({
+          cross_initial_margin_requirement: undefined,
+          cross_maintenance_margin_requirement: undefined,
+        }),
+      }),
+    });
+    assert.equal(pinnedShape.status, "verified_ready");
+    assert.equal(pinnedShape.checks.margin_state_checked, false);
+    assert.equal(pinnedShape.account.initial_margin, null);
+    assert.equal(pinnedShape.account.maintenance_margin, null);
+
+    for (const account of [
+      detailedAccount({ status: 2 }),
+      detailedAccount({ account_index: 124, index: 124 }),
+      detailedAccount({ account_index: 124 }),
+      detailedAccount({ available_balance: "not-a-balance" }),
+      detailedAccount({ available_balance: "-1" }),
+      detailedAccount({ total_asset_value: "-1" }),
+      detailedAccount({ available_balance: "51", total_asset_value: "50" }),
+      detailedAccount({ cross_initial_margin_requirement: "-1" }),
+      detailedAccount({ pending_order_count: "0" }),
+      detailedAccount({ positions: null }),
+    ]) {
+      await assert.rejects(verifyLighterNoSubmit({
+        credential: credential(),
+        instruction: instruction(),
+        clientOrderIndex: 77,
+        runner: async () => ({ ...verified, account }),
+      }), (error) => error.code === "connector_submit_failed");
+    }
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;

@@ -98,7 +98,10 @@ import {
   readHyperliquidSnapshot,
   readLighterCarryWithdrawalRoute,
   readPrivateCarryAccountCapacity,
+  reconcileAsterOrder,
+  reconcileCoinbaseOrder,
   reconcileHyperliquidOrder,
+  reconcileLighterOrder,
   reconcileStoredExecution,
   streamHyperliquidAccountState,
   storeCoinbaseSession,
@@ -821,15 +824,57 @@ function sharedStateReady() {
     return { ready: true, mode: stateStoreMode(), reason_codes: [] };
   }
   const mode = stateStoreMode();
-  const singleCvmPersistentStateOk =
+  const singleProcessFileStateOk =
     process.env.PRIVATE_AGENT_STATE_SINGLE_CVM_OK === "true" &&
+    process.env.PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK === "true" &&
     ["json", "file"].includes(mode);
-  const ready = ["postgres", "postgresql", "neon"].includes(mode) || singleCvmPersistentStateOk;
+  const singleCvmSqliteStateOk =
+    process.env.PRIVATE_AGENT_STATE_SINGLE_CVM_OK === "true" &&
+    ["sqlite", "sql"].includes(mode);
+  const ready = ["postgres", "postgresql", "neon"].includes(mode)
+    || singleProcessFileStateOk
+    || singleCvmSqliteStateOk;
   return {
     ready,
     mode,
     reason_codes: ready ? [] : ["worker_state_store_not_shared"],
   };
+}
+
+const STATE_INDEPENDENT_ROUTES = new Set([
+  "/health",
+  "/healthz",
+  "/ready",
+  "/.well-known/private-agent-evidence",
+  "/.well-known/private-agent-recipient",
+]);
+
+const UNSAFE_STATE_EMERGENCY_ROUTES = new Set([
+  // These authenticated reads only consume the capability JTI; their handlers
+  // cannot start execution or increase venue exposure.
+  "/carry/positions/read",
+  "/hyperliquid/account-snapshot",
+  "/venues/credentials/verify",
+  "/hyperliquid/reconcile",
+  "/venues/aster/reconcile",
+  "/venues/lighter/reconcile",
+  "/venues/coinbase/reconcile",
+  "/venues/solana-perps/reconcile",
+  "/venues/solana-swap/reconcile",
+  "/omnibus/reconcile",
+  "/hyperliquid/orders",
+  "/venues/aster/orders",
+  "/venues/lighter/orders",
+]);
+
+function emergencyStateAccessCandidate(method, path) {
+  if (method !== "POST") return false;
+  return UNSAFE_STATE_EMERGENCY_ROUTES.has(path);
+}
+
+function stateAccessAllowedWithoutInterprocessSafety(method, path) {
+  return (method === "GET" && STATE_INDEPENDENT_ROUTES.has(path))
+    || emergencyStateAccessCandidate(method, path);
 }
 
 function positiveCap(name, fallbackName = null) {
@@ -2228,40 +2273,6 @@ function coinbaseSessionReceipt(body) {
   };
 }
 
-function coinbaseOrderReceipt(body, status = "submitted") {
-  const providerRefCommitment = commitment("coinbase_provider_ref", {
-    work_order_commitment: body.work_order_commitment,
-    operation_class: body.operation_class,
-    execution_mode: body.execution_mode,
-    vault_commitment: body.vault_commitment || null,
-    allocation_commitment: body.omnibus_allocation?.allocation_commitment || body.allocation_commitment || null,
-  });
-  return {
-    version: 1,
-    venue_id: "coinbase_advanced",
-    platform_class: "coinbase_style_provider",
-    execution_mode: body.execution_mode || "partner_omnibus",
-    status,
-    work_order_commitment: body.work_order_commitment,
-    vault_commitment: body.vault_commitment || null,
-    allocation_commitment: body.omnibus_allocation?.allocation_commitment || body.allocation_commitment || null,
-    provider_ref_commitment: providerRefCommitment,
-    result_commitment: commitment("coinbase_result", {
-      work_order_commitment: body.work_order_commitment,
-      provider_ref_commitment: providerRefCommitment,
-      status,
-    }),
-    visibility_summary: {
-      main_wallet_exposed: false,
-      ghola_operator_sees: "commitment_and_ciphertext_only",
-      coinbase_sees: body.execution_mode === "partner_omnibus"
-        ? "partner_pooled_account_and_order_activity"
-        : "byo_account_and_order_activity",
-    },
-    updated_at: new Date().toISOString(),
-  };
-}
-
 function solanaPerpsOrderReceipt(body, status = "submitted") {
   const venueId = ["phoenix", "drift", "backpack"].includes(body.venue_id) ? body.venue_id : "phoenix";
   const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
@@ -2727,6 +2738,7 @@ function triVenueSessionBody(body, strategy = "arb", hyperliquidAllocation = nul
 export function createPrivateAgentWorkerServer(options = {}) {
   const recipient = options.recipient || loadRecipient();
   const state = options.state || createConfiguredWorkerState(dataDir());
+  const readSharedStateReadiness = options.sharedStateReadiness || sharedStateReady;
   const krakenV2 = options.krakenV2Service || createKrakenV2Service({
     env: process.env,
     state: options.krakenV2State,
@@ -2786,13 +2798,14 @@ export function createPrivateAgentWorkerServer(options = {}) {
       : undefined);
   const readCarryCashflowValuation = options.readCarryCashflowValuation
     || createAsterCashflowValuationReader({ fetchImpl: options.fetchImpl || fetch });
-  const carryFundingObservationLoop = options.startCarryFundingObservationLoop === false
+  const stateMutationReady = readSharedStateReadiness().ready;
+  const carryFundingObservationLoop = !stateMutationReady || options.startCarryFundingObservationLoop === false
     ? null
     : startCarryFundingObservationLoop({ state, fetchPerpShadowSet });
-  const dueLoop = options.startAutopilotDueLoop === false
+  const dueLoop = !stateMutationReady || options.startAutopilotDueLoop === false
     ? null
     : startAutopilotDueLoop({ state, recipient });
-  const multiLegRecoveryLoop = options.startMultiLegRecoveryLoop === false
+  const multiLegRecoveryLoop = !stateMutationReady || options.startMultiLegRecoveryLoop === false
     ? null
     : startMultiLegRecoveryLoop({
         state,
@@ -2800,31 +2813,35 @@ export function createPrivateAgentWorkerServer(options = {}) {
         executeOrder: executeAutopilotOrder,
         verifyOrder: verifyAutopilotOrder,
       });
-  const carryMonitoringLoop = options.carryMonitoringLoop !== undefined
-    ? options.carryMonitoringLoop
-    : options.startCarryMonitoringLoop === false
-      ? null
-      : startCarryMonitoringLoop({
-        state,
-        recipient,
-        verifyOrder: verifyAutopilotOrder,
-        readHyperliquidSnapshot,
-        readHyperliquidCarryMetrics,
-        readFundingSettlements: readCarryFundingSettlements,
-        probeTransferRoute: probeCarryTransferRoute,
-      });
-  const carryExecutionLoop = options.carryExecutionLoop !== undefined
-    ? options.carryExecutionLoop
-    : options.startCarryExecutionLoop === false
-      ? null
-      : startCarryExecutionLoop({
-        state,
-        recipient,
-        verifyOrder: verifyAutopilotOrder,
-        executeOrder: executeAutopilotOrder,
-        readFundingSettlements: readCarryFundingSettlements,
-        readCashflowValuation: readCarryCashflowValuation,
-      });
+  const carryMonitoringLoop = !stateMutationReady
+    ? null
+    : options.carryMonitoringLoop !== undefined
+      ? options.carryMonitoringLoop
+      : options.startCarryMonitoringLoop === false
+        ? null
+        : startCarryMonitoringLoop({
+          state,
+          recipient,
+          verifyOrder: verifyAutopilotOrder,
+          readHyperliquidSnapshot,
+          readHyperliquidCarryMetrics,
+          readFundingSettlements: readCarryFundingSettlements,
+          probeTransferRoute: probeCarryTransferRoute,
+        });
+  const carryExecutionLoop = !stateMutationReady
+    ? null
+    : options.carryExecutionLoop !== undefined
+      ? options.carryExecutionLoop
+      : options.startCarryExecutionLoop === false
+        ? null
+        : startCarryExecutionLoop({
+          state,
+          recipient,
+          verifyOrder: verifyAutopilotOrder,
+          executeOrder: executeAutopilotOrder,
+          readFundingSettlements: readCarryFundingSettlements,
+          readCashflowValuation: readCarryCashflowValuation,
+        });
   const krakenHeartbeat = options.startKrakenV2Heartbeat === false
     ? null
     : krakenV2.startHeartbeat?.(60_000);
@@ -2933,6 +2950,18 @@ export function createPrivateAgentWorkerServer(options = {}) {
         observation: carryFundingObservationLoop,
         checked_at_ms: requestStartedAt,
       });
+      const requestStateReadiness = readSharedStateReadiness();
+      if (!requestStateReadiness.ready
+        && !stateAccessAllowedWithoutInterprocessSafety(req.method, url.pathname)) {
+        return json(res, 503, {
+          error: "carry_interprocess_state_not_ready",
+          state_store: {
+            mode: requestStateReadiness.mode,
+            shared: false,
+          },
+          reason_codes: requestStateReadiness.reason_codes,
+        });
+      }
 
       if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/healthz")) {
         return json(res, ready.ready ? 200 : 503, await runtimeHealthEvidence(recipient, ready, new Date(), carrySupervision));
@@ -3227,6 +3256,9 @@ export function createPrivateAgentWorkerServer(options = {}) {
             carry_supervision: carrySupervision,
           });
         }
+        if (url.pathname === "/carry/positions/execute-entry" && readSharedStateReadiness().ready !== true) {
+          return json(res, 503, { error: "carry_interprocess_state_not_ready" });
+        }
         const carryRoutes = {
           "/carry/positions": ["carry:write", (body) => createStoredCarryPosition({
             state,
@@ -3302,6 +3334,9 @@ export function createPrivateAgentWorkerServer(options = {}) {
         const route = carryRoutes[url.pathname];
         if (!route) return json(res, 404, { error: "not found" });
         const [scope, handler] = route;
+        if (scope !== "carry:read" && readSharedStateReadiness().ready !== true) {
+          return json(res, 503, { error: "carry_interprocess_state_not_ready" });
+        }
         const authorized = await readAuthorizedJson(req, res, {
           path: url.pathname,
           scope,
@@ -4490,7 +4525,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
             missing: ready.missing,
           });
         }
-        const receipt = await executeHyperliquidOrder({ body, recipient, state });
+        const receipt = await executeHyperliquidOrder({
+          body,
+          recipient,
+          state,
+          emergencyRiskReductionOnly: !requestStateReadiness.ready,
+        });
         return json(res, 202, receipt);
       }
 
@@ -4658,7 +4698,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
         }
-        return json(res, 202, await executeAsterOrder({ body, recipient, state }));
+        return json(res, 202, await executeAsterOrder({
+          body,
+          recipient,
+          state,
+          emergencyRiskReductionOnly: !requestStateReadiness.ready,
+        }));
       }
 
       if (req.method === "POST" && url.pathname === "/venues/aster/verify") {
@@ -4713,7 +4758,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
         }
-        return json(res, 200, await executeAsterOrder({ body: requestBody, recipient, state }));
+        return json(res, 200, await reconcileAsterOrder({ body: requestBody, recipient, state }));
       }
 
       if (req.method === "POST" && url.pathname === "/venues/lighter/preflight") {
@@ -4808,7 +4853,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
         }
-        return json(res, 202, await executeLighterOrder({ body, recipient, state }));
+        return json(res, 202, await executeLighterOrder({
+          body,
+          recipient,
+          state,
+          emergencyRiskReductionOnly: !requestStateReadiness.ready,
+        }));
       }
 
       if (req.method === "POST" && url.pathname === "/venues/lighter/verify") {
@@ -4863,7 +4913,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
           return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
         }
-        return json(res, 200, await executeLighterOrder({ body: requestBody, recipient, state }));
+        return json(res, 200, await reconcileLighterOrder({ body: requestBody, recipient, state }));
       }
 
       if (req.method === "POST" && url.pathname === "/venues/coinbase/sessions") {
@@ -4931,7 +4981,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
             missing: ready.missing,
           });
         }
-        const receipt = await executeCoinbaseOrder({ body, recipient, state });
+        const receipt = await executeCoinbaseOrder({
+          body,
+          recipient,
+          state,
+          emergencyRiskReductionOnly: !requestStateReadiness.ready,
+        });
         return json(res, 202, receipt);
       }
 
@@ -4994,13 +5049,17 @@ export function createPrivateAgentWorkerServer(options = {}) {
             details: errors,
           });
         }
-        return json(res, 200, coinbaseOrderReceipt({
-          ...body,
-          venue_id: "coinbase_advanced",
-          platform_class: "coinbase_style_provider",
-          execution_mode: body.execution_mode || "partner_omnibus",
-          operation_class: "reconcile",
-        }, "reconciled"));
+        return json(res, 200, await reconcileCoinbaseOrder({
+          body: {
+            ...body,
+            venue_id: "coinbase_advanced",
+            platform_class: "coinbase_style_provider",
+            execution_mode: body.execution_mode || "partner_omnibus",
+            operation_class: "reconcile",
+          },
+          recipient,
+          state,
+        }));
       }
 
       if (req.method === "POST" && url.pathname === "/venues/solana-perps/orders") {

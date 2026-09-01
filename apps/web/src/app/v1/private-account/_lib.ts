@@ -96,6 +96,7 @@ import {
   type ConnectorSafeIntentInput,
   type GholaCompiledPrivateIntent,
   type GholaConnectorManifest,
+  type GholaConnectorReconcileVenueId,
   type GholaConnectorReadiness,
   type GholaConnectorResult,
   type GholaConnectorWorkOrder,
@@ -146,6 +147,7 @@ import {
   consumePrivateAccountApproval,
   consumePrivateExecutionPlan,
   consumePrivateAccountPreview,
+  claimConnectorWorkOrderForPreview,
   acquirePrivateCoordinatorLock,
   releasePrivateCoordinatorLock,
   getPrivateAccountApproval,
@@ -6505,9 +6507,25 @@ export async function connectorReconcileFromBody(
   }
   const manifestRecord = await getConnectorManifestRecord(workOrderRecord.work_order.manifest_commitment);
   if (!manifestRecord) return { error: "connector_artifact_missing" as const };
+  const requestedVenueId = stringValue(value.venue_id);
+  const priorProofVenueId = existingResult?.result.final_proof?.venue_id ?? "";
+  const reconcileVenueId = connectorReconcileVenueId(
+    requestedVenueId || priorProofVenueId || (
+      workOrderRecord.platform_class === "coinbase_style_provider"
+        ? "coinbase_advanced"
+        : workOrderRecord.platform_class === "hyperliquid_style_market"
+          ? "hyperliquid"
+          : ""
+    ),
+    workOrderRecord.platform_class,
+  );
+  if (!reconcileVenueId) return { error: "connector_reconcile_venue_required" as const };
   let hyperliquidExecutionVault: GholaHyperliquidExecutionVault | null = null;
   let hyperliquidManagedAllocation: GholaHyperliquidManagedAllocation | null = null;
-  if (workOrderRecord.platform_class === "hyperliquid_style_market") {
+  let venueExecutionVault: Parameters<typeof reconcileConnectorResult>[0]["venue_execution_vault"] = null;
+  let omnibusAllocation: Parameters<typeof reconcileConnectorResult>[0]["omnibus_allocation"] = null;
+  const encryptedReconcileInstruction = value.encrypted_execution_instruction_bundle;
+  if (reconcileVenueId === "hyperliquid") {
     const [vaultRecord, allocationRecord] = await Promise.all([
       getHyperliquidExecutionVaultByAccount(workOrderRecord.account_commitment),
       getHyperliquidManagedAllocationByAccount(workOrderRecord.account_commitment),
@@ -6521,6 +6539,47 @@ export async function connectorReconcileFromBody(
     } else {
       return { error: "hyperliquid_execution_vault_not_ready" as const };
     }
+  } else if (reconcileVenueId === "aster" || reconcileVenueId === "lighter") {
+    if (!encryptedReconcileInstruction || typeof encryptedReconcileInstruction !== "object") {
+      return { error: "encrypted_reconcile_instruction_required" as const };
+    }
+    const vaultRecord = await getVenueExecutionVaultByAccount({
+      account_commitment: workOrderRecord.account_commitment,
+      venue_id: reconcileVenueId,
+      execution_mode: "byo_api_key",
+    });
+    if (
+      !vaultRecord ||
+      vaultRecord.owner_commitment !== owner.owner_commitment ||
+      vaultRecord.status !== "sealed" ||
+      vaultRecord.vault.venue_id !== reconcileVenueId ||
+      vaultRecord.vault.platform_class !== "hyperliquid_style_market"
+    ) {
+      return {
+        error: reconcileVenueId === "aster"
+          ? "aster_execution_vault_not_ready" as const
+          : "lighter_execution_vault_not_ready" as const,
+      };
+    }
+    venueExecutionVault = vaultRecord.vault;
+  } else if (reconcileVenueId === "coinbase_advanced") {
+    const [vaultRecord, allocationRecord] = await Promise.all([
+      getVenueExecutionVaultByAccount({
+        account_commitment: workOrderRecord.account_commitment,
+        venue_id: "coinbase_advanced",
+      }),
+      getOmnibusAllocationByAccount({
+        account_commitment: workOrderRecord.account_commitment,
+        venue_id: "coinbase_advanced",
+      }),
+    ]);
+    if (allocationRecord?.owner_commitment === owner.owner_commitment && allocationRecord.status === "allocated") {
+      omnibusAllocation = allocationRecord.allocation;
+    } else if (vaultRecord?.owner_commitment === owner.owner_commitment && vaultRecord.status === "sealed") {
+      venueExecutionVault = vaultRecord.vault;
+    } else {
+      return { error: "coinbase_execution_vault_not_ready" as const };
+    }
   }
   // Submission resolves the currently selected attested worker through
   // connectorRuntimeEnv. Reconciliation must use that same routing policy;
@@ -6530,9 +6589,13 @@ export async function connectorReconcileFromBody(
   const reconciled = await reconcileConnectorResult({
     work_order: workOrderRecord.work_order,
     manifest: manifestRecord.manifest,
+    venue_id: reconcileVenueId,
     existing_result: existingResult?.result ?? null,
     hyperliquid_execution_vault: hyperliquidExecutionVault,
     hyperliquid_managed_allocation: hyperliquidManagedAllocation,
+    venue_execution_vault: venueExecutionVault,
+    omnibus_allocation: omnibusAllocation,
+    encrypted_execution_instruction_bundle: encryptedReconcileInstruction,
     env: connectorEnv,
   });
   const now = new Date().toISOString();
@@ -9200,11 +9263,7 @@ async function connectorForExecution(input: {
     return { error: "connector_artifact_missing" };
   }
   let workOrderRecord = await getConnectorWorkOrderByPreview(input.preview.preview_commitment);
-  if (
-    !workOrderRecord ||
-    workOrderRecord.owner_commitment !== input.owner.owner_commitment ||
-    workOrderRecord.approval_commitment !== input.approval_commitment
-  ) {
+  if (!workOrderRecord) {
     const workOrder = buildConnectorWorkOrder({
       owner_commitment: input.owner.owner_commitment,
       intent_id: input.intent.intent_id,
@@ -9218,7 +9277,7 @@ async function connectorForExecution(input: {
       readiness,
       linkability_score: linkabilityRecord.score,
     });
-    workOrderRecord = await putConnectorWorkOrder({
+    const claimed = await claimConnectorWorkOrderForPreview({
       version: 1,
       work_order_commitment: workOrder.work_order_commitment,
       owner_commitment: input.owner.owner_commitment,
@@ -9234,6 +9293,20 @@ async function connectorForExecution(input: {
       created_at: workOrder.created_at,
       updated_at: workOrder.updated_at,
     });
+    workOrderRecord = claimed.record;
+  }
+  if (
+    workOrderRecord.owner_commitment !== input.owner.owner_commitment ||
+    workOrderRecord.intent_id !== input.intent.intent_id ||
+    workOrderRecord.account_commitment !== input.intent.account_commitment ||
+    workOrderRecord.action_commitment !== input.intent.action_commitment ||
+    workOrderRecord.preview_commitment !== input.preview.preview_commitment ||
+    workOrderRecord.platform_class !== manifestRecord.platform_class ||
+    workOrderRecord.approval_commitment !== input.approval_commitment
+  ) {
+    // A preview is a one-shot authorization envelope. It can never mint a
+    // second work order, including after an ambiguous response or reapproval.
+    return { error: "connector_submit_ambiguous" };
   }
   const existingResult = await getConnectorResultByWorkOrder(workOrderRecord.work_order_commitment);
   if (existingResult && existingResult.owner_commitment === input.owner.owner_commitment) {
@@ -9566,6 +9639,20 @@ function isPlatformClass(value: string): value is GholaPlatformClass {
     "rfq_solver_network",
     "partner_tokenized_assets",
   ].includes(value);
+}
+
+function connectorReconcileVenueId(
+  value: string,
+  platformClass: GholaPlatformClass,
+): GholaConnectorReconcileVenueId | null {
+  if (
+    platformClass === "hyperliquid_style_market" &&
+    (value === "hyperliquid" || value === "aster" || value === "lighter")
+  ) return value;
+  if (platformClass === "coinbase_style_provider" && value === "coinbase_advanced") {
+    return value;
+  }
+  return null;
 }
 
 export function isVenueId(value: string): value is GholaVenueId {

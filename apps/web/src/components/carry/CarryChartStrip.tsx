@@ -10,6 +10,7 @@ import {
   annualFundingBps,
   buildPairCandidates,
   carryCandidateAgeMs,
+  carryEvidenceResponseForEffectiveVenues,
   carryFundingEvidenceForCandidate,
   carryMarketQualificationEvidence,
   carryRoutingAdvantage,
@@ -146,6 +147,10 @@ export function CarryChartStrip({
     effectivePatches,
     clock,
   ), [clock, data, effectivePatches]);
+  const committedEvidenceResponse = useMemo(() => carryEvidenceResponseForEffectiveVenues(
+    data,
+    effectiveVenues,
+  ), [data, effectiveVenues]);
   const pricedCandidates = useMemo(() => rankCarryCandidatesByNet(
     buildPairCandidates(effectiveVenues),
     10_000,
@@ -200,17 +205,17 @@ export function CarryChartStrip({
     : selectedExecution || selectedObserved;
   const routeMode = selectedExecution ? "execution" : selected ? "shadow" : "none";
   const routingAdvantage = carryRoutingAdvantage(selectedExecution, assetExecutionCandidates);
-  const routingEvidence = carryRoutingAdvantageEvidence(data, selectedExecution, routingAdvantage);
+  const routingEvidence = carryRoutingAdvantageEvidence(committedEvidenceResponse, selectedExecution, routingAdvantage);
   const selectedAgeMs = selected ? carryCandidateAgeMs(selected.candidate, clock) : Number.POSITIVE_INFINITY;
   const committedSelectedNet = routingEvidence.status === "committed" ? routingEvidence.selectedNet : null;
   const selectedHasPositiveNet = committedSelectedNet
     ? committedSelectedNet.dailyNetUsd > 0
     : selected ? routeHasPositiveNet(selected.quote) : false;
   const edgeEvidence = carryFundingEvidenceForCandidate(
-    data,
+    committedEvidenceResponse,
     selected?.candidate || null,
   );
-  const marketEvidence = carryMarketQualificationEvidence(data);
+  const marketEvidence = carryMarketQualificationEvidence(committedEvidenceResponse);
   const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${asset}-PERP&carry=open`;
   const setupHref = `/account?setup=carry&return_to=${encodeURIComponent(terminalReturn)}`;
 
@@ -362,7 +367,7 @@ export function CarryChartStrip({
                     {!quote.exactCosts
                       ? " · exact costs required"
                       : routeHasPositiveNet(quote)
-                        ? ` · indicative net · ${carryFundingEvidenceForCandidate(data, candidate).detail}`
+                        ? ` · indicative net · ${carryFundingEvidenceForCandidate(committedEvidenceResponse, candidate).detail}`
                         : " · no net edge"}
                   </p>
                 </button>

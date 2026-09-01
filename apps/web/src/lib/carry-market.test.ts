@@ -6,6 +6,7 @@ import {
   buildPairCandidates,
   builderModel,
   carryCandidateAgeMs,
+  carryEvidenceResponseForEffectiveVenues,
   carryMarketQualificationEvidence,
   carryRoutingAdvantage,
   carryRoutingAdvantageEvidence,
@@ -388,6 +389,50 @@ describe("Carry market model", () => {
       funding_rate_e12_per_interval: 99_000_000,
     }], now);
     expect(unchanged).toBe(base);
+  });
+
+  it("invalidates committed evidence when a live patch changes its snapshot", () => {
+    const now = 1_800_000_000_000;
+    const base = venue("hyperliquid", snapshot("hyperliquid", "BTC", 10_000_000, "ready"));
+    const response = {
+      version: 1 as const,
+      mode: "shadow_read_only" as const,
+      executable: false as const,
+      observed_at: new Date(now).toISOString(),
+      venues: [base],
+    };
+    expect(carryEvidenceResponseForEffectiveVenues(response, response.venues)).toBe(response);
+    const effective = applyCarryLivePatches(response.venues, [{
+      venue_id: "hyperliquid",
+      asset: "BTC",
+      received_at_ms: now,
+      funding_rate_e12_per_interval: 20_000_000,
+    }], now);
+    expect(carryEvidenceResponseForEffectiveVenues(response, effective)).toBeNull();
+  });
+
+  it("invalidates committed evidence when a live orderbook changes modeled execution cost", () => {
+    const now = 1_800_000_000_000;
+    const base = venue("hyperliquid", snapshot("hyperliquid", "BTC", 10_000_000, "ready"));
+    const response = {
+      version: 1 as const,
+      mode: "shadow_read_only" as const,
+      executable: false as const,
+      observed_at: new Date(now).toISOString(),
+      venues: [base],
+    };
+    const effective = applyCarryLivePatches(response.venues, [{
+      venue_id: "hyperliquid",
+      asset: "BTC",
+      received_at_ms: now,
+      best_bid_e8: 5_999_000_000_000,
+      best_ask_e8: 6_001_000_000_000,
+      depth_bids: [{ price_e8: 5_999_000_000_000, size_e8: 100_000_000 }],
+      depth_asks: [{ price_e8: 6_001_000_000_000, size_e8: 100_000_000 }],
+      depth_complete: true,
+      orderbook_valid: true,
+    }], now);
+    expect(carryEvidenceResponseForEffectiveVenues(response, effective)).toBeNull();
   });
 
   it("does not let an orderbook patch revive stale funding", () => {

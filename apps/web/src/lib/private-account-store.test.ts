@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 const privateBlobRecords = new Map<string, string>();
 
 import {
+  claimConnectorWorkOrderForPreview,
   claimPrivateLighterUdaAttempt,
   consumePrivateAccountApproval,
   consumePrivateAccountPreview,
@@ -35,6 +36,7 @@ import {
   resetPrivateAccountStoreForTests,
   settlePrivateLighterUdaAttempt,
   setPrivateBlobRecordAdapterForTests,
+  type PrivateConnectorWorkOrderRecordV1,
 } from "./private-account-store";
 import {
   approvePrivateAccountAction,
@@ -55,6 +57,52 @@ describe("private account store", () => {
     delete process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS;
     delete process.env.BLOB_READ_WRITE_TOKEN;
     delete process.env.DATABASE_URL;
+  });
+
+  it("atomically binds one connector work order to each preview", async () => {
+    const record = (suffix: string): PrivateConnectorWorkOrderRecordV1 => ({
+      version: 1,
+      work_order_commitment: `connector_work_order_${suffix}`,
+      owner_commitment: "owner_preview_once",
+      intent_id: "intent_preview_once",
+      account_commitment: "account_preview_once",
+      action_commitment: "action_preview_once",
+      preview_commitment: "preview_once",
+      approval_commitment: `approval_${suffix}`,
+      execution_plan_commitment: null,
+      platform_class: "hyperliquid_style_market",
+      status: "prepared",
+      work_order: {
+        version: 1,
+        work_order_commitment: `connector_work_order_${suffix}`,
+        owner_commitment: "owner_preview_once",
+        intent_id: "intent_preview_once",
+        account_commitment: "account_preview_once",
+        action_commitment: "action_preview_once",
+        preview_commitment: "preview_once",
+        approval_commitment: `approval_${suffix}`,
+        execution_plan_commitment: null,
+        platform_class: "hyperliquid_style_market",
+        selected_rail: "direct_public_fallback",
+        manifest_commitment: "manifest_preview_once",
+        connector_readiness_commitment: "readiness_preview_once",
+        compiler_commitment: "compiler_preview_once",
+        linkability_score_commitment: "linkability_preview_once",
+        platform_funding_account_commitment: "funding_preview_once",
+        rotation_commitment: "rotation_preview_once",
+        status: "prepared",
+        created_at: "2026-09-01T00:00:00.000Z",
+        updated_at: "2026-09-01T00:00:00.000Z",
+      },
+      created_at: "2026-09-01T00:00:00.000Z",
+      updated_at: "2026-09-01T00:00:00.000Z",
+    });
+    const claims = await Promise.all([
+      claimConnectorWorkOrderForPreview(record("first")),
+      claimConnectorWorkOrderForPreview(record("second")),
+    ]);
+    expect(claims.filter((claim) => claim.claimed)).toHaveLength(1);
+    expect(new Set(claims.map((claim) => claim.record.work_order_commitment)).size).toBe(1);
   });
 
   it("atomically persists one owner-bound Lighter UDA result across process-memory resets", async () => {

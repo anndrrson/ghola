@@ -4,6 +4,7 @@ import { generateKeyPairSync } from "node:crypto";
 import {
   assertCoinbaseKeyPermissions,
   buildCoinbaseJwt,
+  reconcileCoinbaseExecution,
   submitCoinbaseExecution,
 } from "../src/venues/coinbase.js";
 
@@ -128,6 +129,7 @@ describe("coinbase live adapter", () => {
             return new Response(JSON.stringify({
               order: {
                 order_id: "protected_order",
+                client_order_id: "coinbase_protected_order",
                 product_id: "SOL-USD",
                 status: "FILLED",
                 completion_percentage: "100",
@@ -250,6 +252,152 @@ describe("coinbase live adapter", () => {
       else process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS = oldProducts;
       if (oldCap === undefined) delete process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD;
       else process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD = oldCap;
+    }
+  });
+
+  it("rejects a terminal Coinbase row that does not match the exact submitted order", async () => {
+    const oldDryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    const oldLiveMode = process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+    delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = "full";
+    try {
+      const result = await reconcileCoinbaseExecution({
+        credential: testCredential(),
+        clientOrderId: "ghola_expected_client_order",
+        instruction: {
+          operation_class: "reconcile",
+          reconcile: {
+            product_id: "BTC-USD",
+            target_order_id: "expected_order_id",
+            target_client_order_id: "ghola_expected_client_order",
+          },
+        },
+        fetchImpl: async (url) => String(url).endsWith("/key_permissions")
+          ? new Response(JSON.stringify({ can_view: true, can_trade: true, can_transfer: false }), { status: 200 })
+          : new Response(JSON.stringify({
+              order: {
+                order_id: "different_order_id",
+                client_order_id: "different_client_order",
+                product_id: "ETH-USD",
+                status: "FILLED",
+                completion_percentage: "100",
+                filled_size: "1",
+                average_filled_price: "100",
+              },
+            }), { status: 200 }),
+      });
+      assert.equal(result.status, "outcome_unknown");
+      assert.equal(result.final_proof.final_venue_execution_proven, false);
+      assert.equal(result.final_proof.target_order_matched, false);
+      assert.equal(result.final_proof.target_client_order_matched, false);
+      assert.equal(result.final_proof.target_product_matched, false);
+      assert.equal(result.final_proof.original_order_target_matched, false);
+    } finally {
+      if (oldDryRun === undefined) delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+      else process.env.PRIVATE_AGENT_VENUE_DRY_RUN = oldDryRun;
+      if (oldLiveMode === undefined) delete process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+      else process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = oldLiveMode;
+    }
+  });
+
+  it("recovers an ambiguous Coinbase response by locating the exact client order once", async () => {
+    const oldDryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    const oldLiveMode = process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+    delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = "full";
+    let listCalls = 0;
+    let getCalls = 0;
+    try {
+      const result = await reconcileCoinbaseExecution({
+        credential: testCredential(),
+        clientOrderId: "ghola_expected_client_order",
+        instruction: {
+          operation_class: "reconcile",
+          reconcile: {
+            product_id: "BTC-USD",
+            target_work_order_commitment: "work:coinbase:ambiguous:1",
+            target_client_order_id: "ghola_expected_client_order",
+          },
+        },
+        fetchImpl: async (url) => {
+          const value = String(url);
+          if (value.endsWith("/key_permissions")) {
+            return new Response(JSON.stringify({ can_view: true, can_trade: true, can_transfer: false }), { status: 200 });
+          }
+          if (value.includes("/orders/historical/batch?")) {
+            listCalls += 1;
+            return new Response(JSON.stringify({
+              orders: [{
+                order_id: "expected_order_id",
+                client_order_id: "ghola_expected_client_order",
+                product_id: "BTC-USD",
+              }],
+              has_next: false,
+            }), { status: 200 });
+          }
+          getCalls += 1;
+          return new Response(JSON.stringify({
+            order: {
+              order_id: "expected_order_id",
+              client_order_id: "ghola_expected_client_order",
+              product_id: "BTC-USD",
+              status: "FILLED",
+              completion_percentage: "100",
+              filled_size: "0.001",
+              average_filled_price: "10000",
+            },
+          }), { status: 200 });
+        },
+      });
+      assert.equal(result.status, "filled");
+      assert.equal(result.final_proof.original_order_target_matched, true);
+      assert.equal(result.final_proof.final_venue_execution_proven, true);
+      assert.equal(listCalls, 1);
+      assert.equal(getCalls, 1);
+    } finally {
+      if (oldDryRun === undefined) delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+      else process.env.PRIVATE_AGENT_VENUE_DRY_RUN = oldDryRun;
+      if (oldLiveMode === undefined) delete process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+      else process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = oldLiveMode;
+    }
+  });
+
+  it("keeps Coinbase ambiguous when the exact client order cannot be found", async () => {
+    const oldDryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    const oldLiveMode = process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+    delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = "full";
+    try {
+      const result = await reconcileCoinbaseExecution({
+        credential: testCredential(),
+        clientOrderId: "ghola_missing_client_order",
+        instruction: {
+          operation_class: "reconcile",
+          reconcile: {
+            product_id: "BTC-USD",
+            target_work_order_commitment: "work:coinbase:ambiguous:2",
+            target_client_order_id: "ghola_missing_client_order",
+          },
+        },
+        fetchImpl: async (url) => String(url).endsWith("/key_permissions")
+          ? new Response(JSON.stringify({ can_view: true, can_trade: true, can_transfer: false }), { status: 200 })
+          : new Response(JSON.stringify({
+              orders: [{
+                order_id: "other_order_id",
+                client_order_id: "other_client_order",
+                product_id: "BTC-USD",
+              }],
+              has_next: false,
+            }), { status: 200 }),
+      });
+      assert.equal(result.status, "outcome_unknown");
+      assert.equal(result.final_proof.original_order_target_matched, false);
+      assert.equal(result.final_proof.final_venue_execution_proven, false);
+    } finally {
+      if (oldDryRun === undefined) delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+      else process.env.PRIVATE_AGENT_VENUE_DRY_RUN = oldDryRun;
+      if (oldLiveMode === undefined) delete process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+      else process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = oldLiveMode;
     }
   });
 });

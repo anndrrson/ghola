@@ -237,7 +237,14 @@ async function reconcileSubmittedCoinbaseOrder({ credential, instruction, client
     }
     if (attempt + 1 < attempts && intervalMs > 0) await delay(intervalMs);
   }
-  const terminal = coinbaseOrderTerminal(order);
+  const returnedOrderId = typeof order?.order_id === "string" ? order.order_id : null;
+  const returnedClientOrderId = typeof order?.client_order_id === "string" ? order.client_order_id : null;
+  const expectedProductId = typeof instruction.order?.market === "string" ? instruction.order.market : null;
+  const targetOrderMatched = returnedOrderId === orderId;
+  const targetClientOrderMatched = returnedClientOrderId === clientOrderId;
+  const targetProductMatched = expectedProductId !== null && order?.product_id === expectedProductId;
+  const exactTargetMatched = targetOrderMatched && targetClientOrderMatched && targetProductMatched;
+  const terminal = exactTargetMatched && coinbaseOrderTerminal(order);
   const completion = Number.parseFloat(String(order?.completion_percentage ?? "0"));
   const filledSize = decimalNumber(order?.filled_size);
   const reportedFilledValue = Number.parseFloat(String(order?.filled_value ?? ""));
@@ -257,11 +264,17 @@ async function reconcileSubmittedCoinbaseOrder({ credential, instruction, client
     fee: order?.total_fees || order?.fee || null,
   }] : [];
   return {
-    status: fullFill ? "filled" : terminal ? (filledSize > 0 ? "partially_filled" : "unfilled") : "submitted",
+    status: !exactTargetMatched
+      ? "outcome_unknown"
+      : fullFill
+        ? "filled"
+        : terminal
+          ? (filledSize > 0 ? "partially_filled" : "unfilled")
+          : "submitted",
     provider_ref_seed: {
       venue: "coinbase_advanced",
-      client_order_id: clientOrderId,
-      order_id: orderId,
+      client_order_id: returnedClientOrderId,
+      order_id: returnedOrderId,
     },
     result_seed: {
       kind: "coinbase_order_reconciliation",
@@ -277,11 +290,82 @@ async function reconcileSubmittedCoinbaseOrder({ credential, instruction, client
       status: fullFill ? "filled" : terminal ? "terminal" : "outcome_unknown",
       venue_id: "coinbase_advanced",
       broadcast_performed: true,
+      target_order_matched: targetOrderMatched,
+      target_client_order_matched: targetClientOrderMatched,
+      target_product_matched: targetProductMatched,
+      original_order_target_matched: exactTargetMatched,
       final_venue_execution_proven: terminal,
       final_fill_proven: fullFill,
       cumulative_filled_micro_usdc: filledNotionalMicro,
       filled_base_size: filledSize > 0 ? String(order.filled_size) : null,
       average_filled_price: order?.average_filled_price || null,
+      checked_at: new Date().toISOString(),
+    },
+  };
+}
+
+async function locateCoinbaseOrderByClientOrderId({
+  credential,
+  clientOrderId,
+  productId,
+  fetchImpl,
+}) {
+  if (!clientOrderId || !productId) return null;
+  let cursor = null;
+  const seenCursors = new Set();
+  const matches = [];
+  for (let page = 0; page < 3; page += 1) {
+    const query = new URLSearchParams({
+      product_ids: productId,
+      limit: "100",
+    });
+    if (cursor) query.set("cursor", cursor);
+    const response = await coinbaseRequest({
+      credential,
+      method: "GET",
+      path: `/orders/historical/batch?${query.toString()}`,
+      fetchImpl,
+    });
+    const orders = Array.isArray(response?.orders) ? response.orders : [];
+    matches.push(...orders.filter((order) =>
+      order?.client_order_id === clientOrderId && order?.product_id === productId));
+    if (matches.length > 1) return null;
+    const nextCursor = typeof response?.cursor === "string" ? response.cursor : "";
+    if (response?.has_next !== true || !nextCursor || seenCursors.has(nextCursor)) break;
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
+  }
+  return matches.length === 1 && typeof matches[0]?.order_id === "string" ? matches[0] : null;
+}
+
+function unknownTargetedCoinbaseReconciliation({ clientOrderId, productId }) {
+  return {
+    status: "outcome_unknown",
+    provider_ref_seed: {
+      venue: "coinbase_advanced",
+      client_order_id: clientOrderId || null,
+      order_id: null,
+    },
+    result_seed: {
+      kind: "coinbase_order_reconciliation",
+      order_status: "UNKNOWN",
+      product_id: productId || null,
+      reconciliation_error: "exact_client_order_not_found",
+    },
+    fills: [],
+    final_proof: {
+      version: 1,
+      proof_kind: "coinbase_advanced_order_state_v1",
+      status: "outcome_unknown",
+      venue_id: "coinbase_advanced",
+      broadcast_performed: true,
+      target_order_matched: false,
+      target_client_order_matched: false,
+      target_product_matched: false,
+      original_order_target_matched: false,
+      final_venue_execution_proven: false,
+      final_fill_proven: false,
+      cumulative_filled_micro_usdc: 0,
       checked_at: new Date().toISOString(),
     },
   };
@@ -363,13 +447,45 @@ export async function reconcileCoinbaseExecution({ credential, instruction, clie
     await assertCoinbaseKeyPermissions(credential, fetchImpl);
   }
   const product = instruction.order?.market || instruction.cancel?.market || instruction.reconcile?.product_id || null;
-  const targetOrderId = instruction.reconcile?.target_order_id;
-  if (
-    instruction.reconcile?.target_work_order_commitment &&
-    !targetOrderId &&
-    process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true"
-  ) {
-    throw new CoinbaseExecutionError("coinbase targeted reconciliation requires the persisted venue order id", 409);
+  let targetOrderId = instruction.reconcile?.target_order_id;
+  const targetClientOrderId = instruction.reconcile?.target_client_order_id || clientOrderId;
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
+    return {
+      status: "outcome_unknown",
+      provider_ref_seed: {
+        venue: "coinbase_advanced",
+        client_order_id: instruction.reconcile?.target_client_order_id || clientOrderId,
+        order_id: targetOrderId || null,
+        dry_run: true,
+      },
+      result_seed: { kind: "coinbase_reconcile_dry_run", product_id: product },
+      fills: [],
+      final_proof: {
+        version: 1,
+        proof_kind: "coinbase_advanced_order_state_v1",
+        status: "outcome_unknown",
+        venue_id: "coinbase_advanced",
+        broadcast_performed: false,
+        final_venue_execution_proven: false,
+        final_fill_proven: false,
+        checked_at: new Date().toISOString(),
+      },
+    };
+  }
+  if (instruction.reconcile?.target_work_order_commitment && !targetOrderId) {
+    const located = await locateCoinbaseOrderByClientOrderId({
+      credential,
+      clientOrderId: targetClientOrderId,
+      productId: product,
+      fetchImpl,
+    });
+    targetOrderId = located?.order_id || null;
+    if (!targetOrderId) {
+      return unknownTargetedCoinbaseReconciliation({
+        clientOrderId: targetClientOrderId,
+        productId: product,
+      });
+    }
   }
   if (targetOrderId) {
     return reconcileSubmittedCoinbaseOrder({
@@ -378,7 +494,7 @@ export async function reconcileCoinbaseExecution({ credential, instruction, clie
         operation_class: "spot_market_order",
         order: { market: product },
       },
-      clientOrderId: instruction.reconcile?.target_client_order_id || clientOrderId,
+      clientOrderId: targetClientOrderId,
       orderId: targetOrderId,
       fetchImpl,
     });
@@ -386,12 +502,10 @@ export async function reconcileCoinbaseExecution({ credential, instruction, clie
   const query = new URLSearchParams();
   if (product) query.set("product_id", product);
   const path = `/orders/historical/fills${query.size ? `?${query.toString()}` : ""}`;
-  const body = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true"
-    ? { fills: [] }
-    : await coinbaseRequest({ credential, method: "GET", path, fetchImpl });
+  const body = await coinbaseRequest({ credential, method: "GET", path, fetchImpl });
   const fills = Array.isArray(body.fills) ? body.fills : [];
   return {
-    status: "reconciled",
+    status: "outcome_unknown",
     provider_ref_seed: { venue: "coinbase_advanced", client_order_id: clientOrderId, fills: fills.length },
     result_seed: {
       kind: "coinbase_reconcile",
@@ -405,6 +519,16 @@ export async function reconcileCoinbaseExecution({ credential, instruction, clie
       price: fill.price || null,
       fee: fill.commission || fill.fee || null,
     })),
+    final_proof: {
+      version: 1,
+      proof_kind: "coinbase_advanced_order_state_v1",
+      status: "outcome_unknown",
+      venue_id: "coinbase_advanced",
+      broadcast_performed: false,
+      final_venue_execution_proven: false,
+      final_fill_proven: false,
+      checked_at: new Date().toISOString(),
+    },
   };
 }
 

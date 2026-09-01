@@ -1072,6 +1072,11 @@ test("refreshes read-only Aster reconciliation instead of replaying a stale cach
   const state = createWorkerState(dir);
   const targetWork = "work:aster:original:0001";
   await state.putIdempotency(targetWork, { status: "submitted" });
+  await state.putExecutionAttempt(targetWork, {
+    venue_id: "aster",
+    status: "submitted",
+    provider_ref_seed: { venue: "aster", client_order_id: "gh_original_0001" },
+  });
   const originalPutAttempt = state.putExecutionAttempt.bind(state);
   let attemptWrites = 0;
   state.claimExecutionAttemptWithPolicyUsage = async () => {
@@ -1176,7 +1181,8 @@ test("allows exact reconciliation of a durably recorded recovery child", async (
     recipient: null,
     state,
   });
-  assert.equal(receipt.status, "open");
+  assert.equal(receipt.status, "outcome_unknown");
+  assert.equal(receipt.final_proof.final_venue_execution_proven, false);
   assert.equal((await state.getExecutionAttempt("work:aster:recovery-child:reconcile:0001")).submit_count, 0);
 });
 

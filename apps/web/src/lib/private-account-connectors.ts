@@ -30,6 +30,11 @@ import { isGholaHyperliquidProofProtocol } from "./hyperliquid-proof-protocol";
 
 export type GholaConnectorStatus = "ready" | "missing" | "stale" | "blocked";
 export type GholaConnectorMode = "http" | "local_test";
+export type GholaConnectorReconcileVenueId =
+  | "hyperliquid"
+  | "aster"
+  | "lighter"
+  | "coinbase_advanced";
 export type GholaConnectorSubmitError =
   | "connector_not_ready"
   | "connector_submit_failed"
@@ -213,6 +218,10 @@ export interface GholaConnectorFinalProof {
   filled_base_size?: string | null;
   signature_commitment?: string | null;
   request_commitment?: string | null;
+  target_order_matched?: boolean;
+  target_client_order_matched?: boolean;
+  target_product_matched?: boolean;
+  original_order_target_matched?: boolean;
   checked_at: string;
 }
 
@@ -942,13 +951,63 @@ export async function verifyConnectorNoSubmit(input: {
 export async function reconcileConnectorResult(input: {
   work_order: GholaConnectorWorkOrder;
   manifest: GholaConnectorManifest;
+  venue_id: GholaConnectorReconcileVenueId;
   existing_result?: GholaConnectorResult | null;
   hyperliquid_execution_vault?: GholaHyperliquidExecutionVault | null;
   hyperliquid_managed_allocation?: GholaHyperliquidManagedAllocation | null;
+  venue_execution_vault?: {
+    venue_id: string;
+    execution_mode: string;
+    account_commitment?: string;
+    vault_commitment: string;
+    encrypted_vault_commitment: string;
+    policy_commitment: string;
+    allocation_commitment?: string | null;
+    encrypted_execution_vault: unknown;
+  } | null;
+  omnibus_allocation?: {
+    allocation_commitment: string;
+    pool_commitment: string;
+    partner_commitment: string;
+    subledger_account_commitment: string;
+    settlement_funding_commitment?: string | null;
+    utilization_bucket?: string;
+    status?: string;
+  } | null;
+  encrypted_execution_instruction_bundle?: unknown;
   now?: Date;
   env?: Record<string, string | undefined>;
 }): Promise<GholaConnectorResult> {
   const now = input.now ?? new Date();
+  if (!connectorReconcileVenueMatchesPlatform(input.venue_id, input.manifest.platform_class)) {
+    return connectorResult({
+      work_order: input.work_order,
+      manifest: input.manifest,
+      status: "ambiguous",
+      provider_ref_seed: input.existing_result?.provider_ref_commitment ?? input.work_order.work_order_commitment,
+      reason: "connector_reconcile_venue_mismatch",
+      now,
+    });
+  }
+  if (
+    (input.venue_id === "aster" || input.venue_id === "lighter") &&
+    (
+      input.venue_execution_vault?.venue_id !== input.venue_id ||
+      !input.venue_execution_vault.account_commitment ||
+      !input.venue_execution_vault.encrypted_execution_vault ||
+      !input.encrypted_execution_instruction_bundle ||
+      typeof input.encrypted_execution_instruction_bundle !== "object"
+    )
+  ) {
+    return connectorResult({
+      work_order: input.work_order,
+      manifest: input.manifest,
+      status: "ambiguous",
+      provider_ref_seed: input.existing_result?.provider_ref_commitment ?? input.work_order.work_order_commitment,
+      reason: "connector_reconcile_artifact_missing",
+      now,
+    });
+  }
   const mode = connectorMode(input.env ?? process.env);
   if (mode === "local_test") {
     return connectorResult({
@@ -965,33 +1024,72 @@ export async function reconcileConnectorResult(input: {
     return connectorResult({
       work_order: input.work_order,
       manifest: input.manifest,
-      status: "failed",
+      status: "ambiguous",
       provider_ref_seed: input.existing_result?.provider_ref_commitment ?? input.work_order.work_order_commitment,
       reason: "connector_endpoint_missing",
       now,
     });
   }
   try {
-    const reconcilePath = connectorReconcilePath(input.manifest.platform_class);
+    const reconcilePath = connectorReconcilePath(input.venue_id);
     const payload = {
       version: 1,
+      venue_id: input.venue_id,
+      platform_class: input.manifest.platform_class,
+      operation_class: "reconcile",
       work_order_commitment: input.work_order.work_order_commitment,
       provider_ref_commitment: input.existing_result?.provider_ref_commitment ?? null,
-      ...(input.manifest.platform_class === "hyperliquid_style_market" && input.hyperliquid_execution_vault
+      ...(input.venue_id === "hyperliquid" && input.hyperliquid_execution_vault
         ? {
             execution_mode: "byo_api_key",
+            account_commitment: input.hyperliquid_execution_vault.account_commitment,
             vault_commitment: input.hyperliquid_execution_vault.vault_commitment,
             encrypted_vault_commitment: input.hyperliquid_execution_vault.encrypted_vault_commitment,
             policy_commitment: input.hyperliquid_execution_vault.policy_commitment,
             encrypted_execution_vault: input.hyperliquid_execution_vault.encrypted_execution_vault,
           }
         : {}),
-      ...(input.manifest.platform_class === "hyperliquid_style_market" && input.hyperliquid_managed_allocation
+      ...(input.venue_id === "hyperliquid" && input.hyperliquid_managed_allocation
         ? {
+            account_commitment: input.hyperliquid_managed_allocation.account_commitment,
             execution_mode: input.hyperliquid_managed_allocation.execution_mode,
             managed_allocation_commitment: input.hyperliquid_managed_allocation.allocation_commitment,
             allocation_commitment: input.hyperliquid_managed_allocation.allocation_commitment,
             policy_commitment: input.hyperliquid_managed_allocation.policy_commitment,
+          }
+        : {}),
+      ...((input.venue_id === "aster" || input.venue_id === "lighter") && input.venue_execution_vault
+        ? {
+            execution_mode: "byo_api_key",
+            account_commitment: input.venue_execution_vault.account_commitment,
+            vault_commitment: input.venue_execution_vault.vault_commitment,
+            encrypted_vault_commitment: input.venue_execution_vault.encrypted_vault_commitment,
+            policy_commitment: input.venue_execution_vault.policy_commitment,
+            allocation_commitment: input.venue_execution_vault.allocation_commitment ?? null,
+            encrypted_execution_vault: input.venue_execution_vault.encrypted_execution_vault,
+            encrypted_execution_instruction_bundle: input.encrypted_execution_instruction_bundle,
+          }
+        : {}),
+      ...(input.venue_id === "coinbase_advanced"
+        ? {
+            account_commitment: input.venue_execution_vault?.account_commitment,
+            execution_mode: input.venue_execution_vault?.execution_mode ||
+              (input.omnibus_allocation ? "partner_omnibus" : "byo_api_key"),
+            vault_commitment: input.venue_execution_vault?.vault_commitment ?? null,
+            encrypted_vault_commitment: input.venue_execution_vault?.encrypted_vault_commitment ?? null,
+            policy_commitment: input.venue_execution_vault?.policy_commitment ?? null,
+            allocation_commitment: input.venue_execution_vault?.allocation_commitment ??
+              input.omnibus_allocation?.allocation_commitment ??
+              null,
+            ...(input.venue_execution_vault?.encrypted_execution_vault
+              ? { encrypted_execution_vault: input.venue_execution_vault.encrypted_execution_vault }
+              : {}),
+            ...(input.omnibus_allocation
+              ? { omnibus_allocation: input.omnibus_allocation }
+              : {}),
+            ...(input.encrypted_execution_instruction_bundle
+              ? { encrypted_execution_instruction_bundle: input.encrypted_execution_instruction_bundle }
+              : {}),
           }
         : {}),
     };
@@ -1003,7 +1101,7 @@ export async function reconcileConnectorResult(input: {
       scope: "reconcile:read",
       body: payload,
       expected: workerCapabilityExpectedFromBody(payload, {
-        venue_id: venueIdForPlatformClass(input.manifest.platform_class),
+        venue_id: input.venue_id,
         platform_class: input.manifest.platform_class,
         operation_class: "reconcile",
       }),
@@ -1020,37 +1118,77 @@ export async function reconcileConnectorResult(input: {
     });
     const body = asRecord(await res.json().catch(() => null));
     const finalProof = connectorFinalProof(body.final_proof);
-    const hyperliquidProtocolValid = input.manifest.platform_class !== "hyperliquid_style_market" ||
-      (
-        isGholaHyperliquidProofProtocol(body.execution_protocol) &&
-        finalProof?.proof_kind === "hyperliquid_order_status_reconciliation_v1"
-      );
-    const outcomeUnknown = !hyperliquidProtocolValid ||
-      body.status === "outcome_unknown" ||
-      finalProof?.status === "outcome_unknown";
+    const finalVenueProofValid = connectorReconciliationProofValid({
+      venueId: input.venue_id,
+      workOrderCommitment: input.work_order.work_order_commitment,
+      body,
+      finalProof,
+    });
     return connectorResult({
       work_order: input.work_order,
       manifest: input.manifest,
-      status: res.ok && outcomeUnknown
-        ? "ambiguous"
-        : res.ok && body.status !== "failed" ? "reconciled" : "failed",
+      status: res.ok && finalVenueProofValid ? "reconciled" : "ambiguous",
       provider_ref_seed: stringValue(body.provider_ref_commitment) ||
         input.existing_result?.provider_ref_commitment ||
         input.work_order.work_order_commitment,
       final_proof: finalProof,
-      reason: res.ok ? (outcomeUnknown ? "connector_submit_ambiguous" : null) : "connector_reconcile_failed",
+      reason: res.ok && finalVenueProofValid
+        ? null
+        : res.ok ? "connector_submit_ambiguous" : "connector_reconcile_failed",
       now,
     });
   } catch {
     return connectorResult({
       work_order: input.work_order,
       manifest: input.manifest,
-      status: "failed",
+      status: "ambiguous",
       provider_ref_seed: input.existing_result?.provider_ref_commitment ?? input.work_order.work_order_commitment,
       reason: "connector_reconcile_failed",
       now,
     });
   }
+}
+
+function connectorReconciliationProofValid(input: {
+  venueId: GholaConnectorReconcileVenueId;
+  workOrderCommitment: string;
+  body: Record<string, unknown>;
+  finalProof: GholaConnectorFinalProof | null;
+}): boolean {
+  const proof = input.finalProof;
+  if (
+    !proof ||
+    proof.final_venue_execution_proven !== true ||
+    proof.status === "outcome_unknown" ||
+    stringValue(input.body.work_order_commitment) !== input.workOrderCommitment ||
+    (stringValue(input.body.venue_id) && stringValue(input.body.venue_id) !== input.venueId) ||
+    proof.venue_id !== input.venueId
+  ) return false;
+  if (input.venueId === "hyperliquid") {
+    return isGholaHyperliquidProofProtocol(input.body.execution_protocol)
+      && proof.proof_kind === "hyperliquid_order_status_reconciliation_v1"
+      && proof.target_client_order_matched === true;
+  }
+  if (input.venueId === "aster") {
+    return proof.proof_kind === "aster_client_order_reconciliation_v1"
+      && proof.target_client_order_matched === true
+      && proof.original_order_target_matched === true
+      && proof.broadcast_performed === false;
+  }
+  if (input.venueId === "lighter") {
+    return proof.proof_kind === "lighter_client_order_index_reconciliation_v1"
+      && proof.target_client_order_matched === true
+      && proof.original_order_target_matched === true
+      && proof.broadcast_performed === false;
+  }
+  if (input.venueId === "coinbase_advanced") {
+    return proof.proof_kind === "coinbase_advanced_order_state_v1"
+      && proof.target_order_matched === true
+      && proof.target_client_order_matched === true
+      && proof.target_product_matched === true
+      && proof.original_order_target_matched === true;
+  }
+  return false;
 }
 
 export function publicConnectorManifest(manifest: GholaConnectorManifest) {
@@ -1715,8 +1853,20 @@ function connectorSubmitPath(platformClass: GholaPlatformClass): string {
   return connectorSdkSpecForPlatform(platformClass).http_paths.submit;
 }
 
-function connectorReconcilePath(platformClass: GholaPlatformClass): string {
-  return connectorSdkSpecForPlatform(platformClass).http_paths.reconcile;
+function connectorReconcilePath(venueId: GholaConnectorReconcileVenueId): string {
+  if (venueId === "aster") return "/venues/aster/reconcile";
+  if (venueId === "lighter") return "/venues/lighter/reconcile";
+  if (venueId === "coinbase_advanced") return "/venues/coinbase/reconcile";
+  return "/hyperliquid/reconcile";
+}
+
+function connectorReconcileVenueMatchesPlatform(
+  venueId: GholaConnectorReconcileVenueId,
+  platformClass: GholaPlatformClass,
+): boolean {
+  return platformClass === "hyperliquid_style_market"
+    ? venueId === "hyperliquid" || venueId === "aster" || venueId === "lighter"
+    : platformClass === "coinbase_style_provider" && venueId === "coinbase_advanced";
 }
 
 function connectorNoSubmitVerifyPath(platformClass: GholaPlatformClass): string {
@@ -2112,6 +2262,10 @@ function connectorFinalProof(value: unknown): GholaConnectorFinalProof | null {
     filled_base_size: stringValue(body.filled_base_size) || null,
     signature_commitment: stringValue(body.signature_commitment) || null,
     request_commitment: stringValue(body.request_commitment) || null,
+    target_order_matched: body.target_order_matched === true,
+    target_client_order_matched: body.target_client_order_matched === true,
+    target_product_matched: body.target_product_matched === true,
+    original_order_target_matched: body.original_order_target_matched === true,
     checked_at: checkedAt,
   };
 }

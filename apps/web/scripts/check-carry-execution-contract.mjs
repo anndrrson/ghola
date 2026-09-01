@@ -11,6 +11,7 @@ const REPO_ROOT = resolve(HERE, "../../..");
 export const CARRY_RELEASE_FILES = Object.freeze({
   sourceTreeAttestation: "scripts/carry-source-tree-attestation.mjs",
   sourceTreeAttestationTest: "apps/web/scripts/carry-source-tree-attestation.test.mjs",
+  workerImageWorkflow: ".github/workflows/build-private-agent-worker-image.yml",
   executionContract: "apps/web/scripts/check-carry-execution-contract.mjs",
   executionContractTest: "apps/web/scripts/check-carry-execution-contract.test.mjs",
   webPackage: "apps/web/package.json",
@@ -24,6 +25,9 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   registryTest: "packages/execution-core/test/venues.test.js",
   liquidationDistance: "apps/private-agent-worker/src/venues/liquidation-distance.js",
   server: "apps/private-agent-worker/src/server.js",
+  phalaCompose: "apps/private-agent-worker/docker-compose.phala.yml",
+  phalaWorkerEnv: "scripts/lib/phala-worker-env.mjs",
+  phalaWorkerEnvTest: "scripts/lib/phala-worker-env.test.mjs",
   workerState: "apps/private-agent-worker/src/state/private-state.js",
   workerPackage: "apps/private-agent-worker/package.json",
   workerDockerfile: "apps/private-agent-worker/Dockerfile",
@@ -51,6 +55,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   executor: "apps/private-agent-worker/src/execution/carry-executor.js",
   multiLegOrchestrator: "apps/private-agent-worker/src/execution/multi-leg-orchestrator.js",
   privateExecution: "apps/private-agent-worker/src/execution/private-execution.js",
+  coinbase: "apps/private-agent-worker/src/venues/coinbase.js",
   adapterRegistryTest: "apps/private-agent-worker/test/carry-adapter-registry.test.js",
   multiLegOrchestratorTest: "apps/private-agent-worker/test/multi-leg-orchestrator.test.js",
   qualification: "apps/private-agent-worker/src/execution/carry-qualification.js",
@@ -75,6 +80,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webWorkerRoutingTest: "apps/web/src/lib/private-account-worker-routing.test.ts",
   webEnvExample: "apps/web/.env.example",
   webClient: "apps/web/src/lib/private-account-client.ts",
+  webConnectorReconciliation: "apps/web/src/lib/private-account-connectors.ts",
+  webConnectorReconciliationTest: "apps/web/src/lib/private-account-reconcile.test.ts",
   webMandate: "apps/web/src/lib/carry-risk-mandate.ts",
   webMandateTest: "apps/web/src/lib/carry-risk-mandate.test.ts",
   webCollateralReview: "apps/web/src/lib/carry-collateral-review.ts",
@@ -126,6 +133,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   webPrivateAccount: "apps/web/src/lib/private-account.ts",
   webPrivateAccountTest: "apps/web/src/lib/private-account.test.ts",
   webPrivateAccountStore: "apps/web/src/lib/private-account-store.ts",
+  webPrivateAccountStoreTest: "apps/web/src/lib/private-account-store.test.ts",
+  webPrivateAccountRouteLib: "apps/web/src/app/v1/private-account/_lib.ts",
   webPassport: "apps/web/src/lib/private-agent-passport.ts",
   webPassportTest: "apps/web/src/lib/private-agent-passport.test.ts",
   phalaConfig: "apps/web/src/lib/private-agent-phala.ts",
@@ -164,6 +173,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   shadowTest: "apps/private-agent-worker/test/perp-shadow-adapters.test.js",
   asterTest: "apps/private-agent-worker/test/aster.test.js",
   lighterTest: "apps/private-agent-worker/test/lighter.test.js",
+  coinbaseTest: "apps/private-agent-worker/test/coinbase.test.js",
   lighterConcurrencyTest: "apps/private-agent-worker/test/lighter-concurrency.test.js",
   privateStatePolicyClaimTest: "apps/private-agent-worker/test/private-state-policy-claim.test.js",
   hyperliquidMetricsTest: "apps/private-agent-worker/test/hyperliquid-account-metrics.test.js",
@@ -195,6 +205,18 @@ export function checkCarryExecutionContract(sources) {
   };
   const forbidText = (key, value, code) => {
     if (String(sources[key] || "").includes(value)) failures.push(code);
+  };
+  const sourceSection = (key, start, end) => {
+    const source = String(sources[key] || "");
+    const startIndex = source.indexOf(start);
+    if (startIndex < 0) return "";
+    const endIndex = end ? source.indexOf(end, startIndex + start.length) : source.length;
+    return source.slice(startIndex, endIndex < 0 ? source.length : endIndex);
+  };
+  const requireOrdered = (section, before, after, code) => {
+    const beforeIndex = section.indexOf(before);
+    const afterIndex = section.indexOf(after);
+    if (beforeIndex < 0 || afterIndex < 0 || beforeIndex >= afterIndex) failures.push(code);
   };
 
   for (const [key, path] of Object.entries(CARRY_RELEASE_FILES)) {
@@ -621,9 +643,19 @@ export function checkCarryExecutionContract(sources) {
   requireText("registry", "aster_fapi_v3_position_risk_v1", "aster_liquidation_provenance_missing");
   requireText("hyperliquid", "hyperliquidLiquidationDistance(state)", "hyperliquid_liquidation_reader_binding_missing");
   requireText("lighter", "lighterLiquidationDistance(account)", "lighter_liquidation_reader_binding_missing");
+  requireText("lighter", "accountStatus === LIGHTER_ACCOUNT_STATUS_ACTIVE", "lighter_account_status_readiness_gate_missing");
+  requireText("lighter", "availableBalance < 0", "lighter_negative_balance_gate_missing");
+  requireText("lighter", "availableBalance > marginBalance", "lighter_inconsistent_balance_gate_missing");
+  requireText("lighter", "expectedAccountIndex", "lighter_account_index_binding_missing");
+  requireText("lighter", "sanitizeAccount(result.account, {}, { expectedAccountIndex: credential.account_index })", "lighter_credential_account_binding_missing");
+  requireText("lighter", "margin_state_checked: account.margin_state_verified", "lighter_optional_margin_truthfulness_missing");
   requireText("aster", "asterLiquidationDistance(positions)", "aster_liquidation_reader_binding_missing");
   requireText("liquidationDistanceTest", "Hyperliquid flat is explicit and malformed open evidence fails closed", "hyperliquid_liquidation_fail_closed_test_missing");
   requireText("liquidationDistanceTest", "Lighter flat is explicit and never defaults malformed positions", "lighter_liquidation_fail_closed_test_missing");
+  requireText("lighterTest", "derives Lighter trade readiness only from a bound active account response", "lighter_account_readiness_test_missing");
+  requireText("lighterTest", "pinnedShape.checks.margin_state_checked", "lighter_pinned_account_shape_test_missing");
+  requireText("lighterTest", 'total_asset_value: "-1"', "lighter_negative_balance_test_missing");
+  requireText("lighterTest", "assert.equal(inactive.can_trade, false)", "lighter_credential_inactive_test_missing");
   requireText("liquidationDistanceTest", "Aster flat is explicit and malformed open evidence fails closed", "aster_liquidation_fail_closed_test_missing");
   requireText("preflight", "validVenueLiquidationBinding(value, value.position_count)", "carry_preflight_liquidation_binding_missing");
   requireText("preflight", "validVenueLiquidationBinding({ ...account, venue_id: venueId }, 1)", "carry_monitoring_liquidation_provenance_missing");
@@ -994,6 +1026,70 @@ export function checkCarryExecutionContract(sources) {
   requireText("qualification", "open_order_count: 0", "qualification_zero_orders_proof_missing");
   requireText("qualification", "qualification_account_binding_mismatch", "qualification_account_lineage_gate_missing");
   requireText("releaseMaterial", "buildCompletedCarryReleaseMaterial", "carry_release_material_builder_missing");
+  requireText("workerState", "worker_carry_lifecycle_events", "carry_lifecycle_journal_table_missing");
+  requireText("workerState", "INSERT INTO worker_carry_lifecycle_events", "carry_lifecycle_journal_postgres_transaction_missing");
+  requireText("workerState", "const lifecycleEvent = input.lifecycle_event || null", "carry_lifecycle_journal_state_binding_missing");
+  requireText("workerState", "finalizeCarryLifecycleEventRecord", "carry_lifecycle_journal_commitment_missing");
+  requireText("workerState", "FOR UPDATE", "carry_lifecycle_postgres_row_lock_missing");
+  requireText("workerState", "listCarryLifecycleEvents", "carry_lifecycle_journal_reader_missing");
+  requireText("workerState", "bindCarryLifecycleJournalMetadata", "carry_lifecycle_legacy_anchor_missing");
+  requireText("workerState", "canonicalStateJson(tail) !== canonicalStateJson(expectedTail)", "carry_lifecycle_tail_prefix_binding_missing");
+  requireText("positions", "lifecycle_event: recordedEvent", "carry_lifecycle_journal_atomic_binding_missing");
+  requireText("releaseMaterial", "readCompleteCarryLifecycleJournal", "carry_release_full_lifecycle_journal_missing");
+  requireText("releaseMaterial", "carry_release_lifecycle_journal_unproven", "carry_release_lifecycle_journal_gate_missing");
+  requireText("releaseMaterial", "record.lifecycle_journal.origin_sequence !== 1", "carry_release_lifecycle_origin_gate_missing");
+  forbidText("releaseMaterial", "const events = Array.isArray(record.lifecycle_events)", "carry_release_truncated_lifecycle_source_forbidden");
+  requireText("positionsTest", "beyond the 256-event UI tail and rejects stale CAS appends", "carry_lifecycle_journal_rollover_test_missing");
+  requireText("positionsTest", "anchors legacy Carry journals without freezing positions or qualifying missing history", "carry_lifecycle_legacy_anchor_test_missing");
+  requireText("server", "PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK", "carry_json_single_process_assertion_missing");
+  requireText("server", "carry_interprocess_state_not_ready", "carry_entry_interprocess_state_gate_missing");
+  requireText("server", "const readSharedStateReadiness = options.sharedStateReadiness || sharedStateReady", "carry_state_readiness_provider_missing");
+  requireText("server", "const stateMutationReady = readSharedStateReadiness().ready", "carry_autonomous_state_gate_missing");
+  requireText("server", "STATE_INDEPENDENT_ROUTES", "carry_interprocess_state_allowlist_missing");
+  requireText("server", "UNSAFE_STATE_EMERGENCY_ROUTES", "carry_emergency_state_allowlist_missing");
+  requireText("server", "emergencyStateAccessCandidate", "carry_emergency_state_candidate_gate_missing");
+  requireText("server", "stateAccessAllowedWithoutInterprocessSafety", "carry_global_state_route_gate_missing");
+  requireText("server", "!requestStateReadiness.ready", "carry_request_state_readiness_gate_missing");
+  requireText("server", "emergencyRiskReductionOnly: !requestStateReadiness.ready", "carry_emergency_execution_mode_binding_missing");
+  requireText("privateExecution", "function enforceEmergencyRiskReductionInstruction", "carry_emergency_decrypted_instruction_gate_missing");
+  requireText("privateExecution", "instruction?.order?.reduce_only === true", "carry_emergency_reduce_only_gate_missing");
+  requireCount("privateExecution", "enforceEmergencyRiskReductionInstruction(instruction, emergencyRiskReductionOnly);", 4, "carry_emergency_adapter_gate_missing");
+  requireText("serverTest", "blocks risk-increasing and non-emergency routes when interprocess state is unsafe", "carry_global_state_route_test_missing");
+  requireText("serverTest", "blocks pause and kill when unsafe state cannot provide a durable execution fence", "carry_unsafe_control_fail_closed_test_missing");
+  requireText("serverTest", "allows native reduce-only and reconcile but denies entry, cancel, and exit when state is unsafe", "carry_unsafe_execution_fail_closed_test_missing");
+  requireText("serverTest", "unsafe_state_disguised_entry_work_order_123", "carry_emergency_disguised_entry_test_missing");
+  requireText("serverTest", "blocks Phoenix and Backpack orders during unsafe state because native reduction is unproven", "carry_unsafe_solana_order_denial_test_missing");
+  const emergencyRoutesStart = String(sources.server || "").indexOf("const UNSAFE_STATE_EMERGENCY_ROUTES");
+  const emergencyRoutesEnd = String(sources.server || "").indexOf("]);", emergencyRoutesStart);
+  const emergencyRoutesSource = emergencyRoutesStart >= 0 && emergencyRoutesEnd > emergencyRoutesStart
+    ? String(sources.server || "").slice(emergencyRoutesStart, emergencyRoutesEnd)
+    : "";
+  if (emergencyRoutesSource.includes('"/venues/solana-perps/orders"')) {
+    failures.push("carry_unsafe_solana_order_route_allowed");
+  }
+  for (const [route, code] of [
+    ['"/venues/coinbase/orders"', "carry_unsafe_coinbase_order_route_allowed"],
+    ['"/carry/positions/exit-request"', "carry_unsafe_exit_route_allowed"],
+    ['"/autopilot/tri-venue/kill"', "carry_unsafe_tri_kill_route_allowed"],
+  ]) {
+    if (emergencyRoutesSource.includes(route)) failures.push(code);
+  }
+  requireText(
+    "server",
+    "return UNSAFE_STATE_EMERGENCY_ROUTES.has(path);",
+    "carry_unsafe_state_exact_allowlist_gate_missing",
+  );
+  requireText("workerState", "carry_lifecycle_projection_write_requires_event", "carry_lifecycle_projection_guard_missing");
+  requireText("positionsTest", "projectionMutation.error", "carry_lifecycle_projection_guard_test_missing");
+  requireText("phalaCompose", "PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK", "carry_phala_single_process_env_missing");
+  requireText("phalaWorkerEnv", "JSON/file state requires PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK=true", "carry_phala_single_process_validation_missing");
+  requireText("phalaWorkerEnvTest", "SINGLE_PROCESS_OK=true", "carry_phala_single_process_validation_test_missing");
+  requireText("workerImageWorkflow", "Test private-agent worker", "carry_worker_image_test_gate_missing");
+  requireText("workerImageWorkflow", "run: npm ci", "carry_worker_image_test_install_missing");
+  requireText("workerImageWorkflow", "run: node --test", "carry_worker_image_test_command_missing");
+  requireText("releaseMaterialTest", "pre-tail monitoring failure from the full durable lifecycle journal", "carry_release_pre_tail_failure_test_missing");
+  requireText("releaseMaterialTest", "refuses a tampered durable lifecycle journal", "carry_release_lifecycle_journal_tamper_test_missing");
+  requireText("releaseMaterialTest", "refuses release proof for a legacy-anchored lifecycle journal", "carry_release_legacy_journal_denial_test_missing");
   requireText("releaseMaterial", "carry_release_monitoring_evidence_missing", "carry_release_monitoring_gate_missing");
   requireText("releaseMaterial", "carry_release_margin_runway_evidence_missing", "carry_release_runway_gate_missing");
   requireText("releaseMaterial", "carry_release_contract_equivalence_exceeded", "carry_release_contract_basis_gate_missing");
@@ -1059,7 +1155,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("evidenceVerifierTest", "rejects missing, incomplete, or image-mismatched five-venue shadow qualification", "carry_release_shadow_qualification_test_missing");
   requireText("privateExecution", "ambiguity_retry_count: 0", "durable_retry_count_missing");
   requireText("privateExecution", "async function claimSubmissionAfterPolicyValidation({", "durable_atomic_policy_claim_helper_missing");
-  requireCount("privateExecution", "= await claimSubmissionAfterPolicyValidation({", 3, "durable_atomic_policy_adapter_claim_missing");
+  requireCount("privateExecution", "= await claimSubmissionAfterPolicyValidation({", 6, "durable_atomic_policy_adapter_claim_missing");
   requireText("privateExecution", 'typeof state.claimExecutionAttemptWithPolicyUsage !== "function"', "durable_atomic_policy_fail_closed_missing");
   requireText("privateExecution", "const allowedAttempt = {", "durable_atomic_allowed_attempt_missing");
   requireText("privateExecution", "...attempt,\n    submit_count: 1,", "durable_atomic_allowed_submit_count_missing");
@@ -1072,6 +1168,64 @@ export function checkCarryExecutionContract(sources) {
   requireText("privateExecution", "amounts: collector.amounts", "durable_atomic_policy_amount_binding_missing");
   forbidText("privateExecution", "persistPreSubmissionAttempt({", "durable_legacy_split_submit_claim_forbidden");
   forbidText("privateExecution", "state.claimExecutionAttempt(", "durable_legacy_attempt_only_claim_forbidden");
+  const coinbaseSubmitSource = sourceSection(
+    "privateExecution",
+    "export async function executeCoinbaseOrder(",
+    "export async function reconcileCoinbaseOrder(",
+  );
+  const solanaPerpsSubmitSource = sourceSection(
+    "privateExecution",
+    "export async function executeSolanaPerpsOrder(",
+    "export async function executeJupiterSwapOrder(",
+  );
+  const jupiterSubmitSource = sourceSection(
+    "privateExecution",
+    "export async function executeJupiterSwapOrder(",
+    "export async function executeAutopilotOrder(",
+  );
+  requireOrdered(
+    coinbaseSubmitSource,
+    "pending = await claimSubmissionAfterPolicyValidation({",
+    "await state.reserveOmnibus({",
+    "coinbase_pending_claim_before_reservation_missing",
+  );
+  requireOrdered(
+    coinbaseSubmitSource,
+    "pending = await claimSubmissionAfterPolicyValidation({",
+    "adapterResult = await submitCoinbaseExecution({",
+    "coinbase_pending_claim_before_network_missing",
+  );
+  requireOrdered(
+    solanaPerpsSubmitSource,
+    "pending = await claimSubmissionAfterPolicyValidation({",
+    "adapterResult = await submitSolanaPerpsExecution({",
+    "solana_perps_pending_claim_before_network_missing",
+  );
+  requireOrdered(
+    jupiterSubmitSource,
+    "pending = await claimSubmissionAfterPolicyValidation({",
+    "adapterResult = await submitJupiterSwapExecution({",
+    "jupiter_pending_claim_before_network_missing",
+  );
+  for (const [section, venue, code] of [
+    [coinbaseSubmitSource, "coinbase", "coinbase_ambiguous_freeze_missing"],
+    [solanaPerpsSubmitSource, "solana_perps", "solana_perps_ambiguous_freeze_missing"],
+    [jupiterSubmitSource, "jupiter", "jupiter_ambiguous_freeze_missing"],
+  ]) {
+    if (!section.includes('status: "ambiguous"') || !section.includes('"submission_ambiguous"')) {
+      failures.push(code);
+    }
+    if (!section.includes("already has a durable submission attempt; reconcile it instead of retrying")) {
+      failures.push(`${venue}_durable_retry_guard_missing`);
+    }
+  }
+  const coinbasePreReceiptSource = coinbaseSubmitSource.slice(
+    0,
+    coinbaseSubmitSource.indexOf("const receipt = executionReceipt({"),
+  );
+  if (coinbasePreReceiptSource.includes("releaseOmnibus")) {
+    failures.push("coinbase_ambiguous_omnibus_release_present");
+  }
   requireCount("workerState", "async claimExecutionAttemptWithPolicyUsage(workOrderCommitment, input = {}) {", 2, "durable_atomic_policy_state_implementations_missing");
   requireText("workerState", 'client.query("BEGIN ISOLATION LEVEL READ COMMITTED")', "durable_atomic_policy_postgres_transaction_missing");
   requireText("workerState", '"SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"', "durable_atomic_policy_postgres_lock_missing");
@@ -1237,8 +1391,45 @@ export function checkCarryExecutionContract(sources) {
   requireText("privateExecution", 'registeredCarryAdapter(venue_id, "no_submit_reconciliation")', "worker_carry_no_submit_registry_dispatch_missing");
   requireText("privateExecution", 'registeredCarryAdapterId(venueId, "carry_execution")', "worker_carry_funding_registry_dispatch_missing");
   requireText("privateExecution", "openAccountBoundExecutionVault", "carry_execution_vault_account_binding_missing");
-  requireCount("privateExecution", 'deriveClientOrderId("gh",', 4, "aster_client_order_length_guard_missing");
+  requireCount("privateExecution", 'deriveClientOrderId("gh",', 5, "aster_client_order_length_guard_missing");
   requireText("privateExecution", "opened.associatedDataText !== expectedAad", "carry_execution_vault_exact_aad_missing");
+  requireText("privateExecution", "async function openContextBoundVenueExecutionVault({", "venue_execution_vault_context_binding_missing");
+  requireText("privateExecution", "requestMode !== vaultMode", "venue_execution_vault_mode_binding_missing");
+  requireText("privateExecution", '`mode:${vaultMode}`', "venue_execution_vault_mode_aad_missing");
+  requireText("privateExecution", '`network:${network}`', "venue_execution_vault_network_aad_missing");
+  requireText("privateExecution", 'aadParts.push(`venue:${venueId}`)', "venue_execution_vault_venue_aad_missing");
+  requireText("privateExecution", 'opened.associatedDataText !== aadParts.join("|")', "venue_execution_vault_exact_context_aad_missing");
+  requireCount("privateExecution", "openContextBoundVenueExecutionVault({", 11, "venue_execution_vault_context_callsites_missing");
+  requireText(
+    "privateExecution",
+    "export function privateExecutionInstructionAssociatedDataMatches",
+    "carry_execution_instruction_aad_matcher_missing",
+  );
+  requireText(
+    "privateExecution",
+    "return associatedDataText === expectedAad;",
+    "carry_execution_instruction_exact_aad_missing",
+  );
+  requireText(
+    "privateExecution",
+    "if (!privateExecutionInstructionAssociatedDataMatches({",
+    "carry_execution_instruction_aad_callsite_missing",
+  );
+  forbidText(
+    "privateExecution",
+    "opened.associatedDataText.includes(",
+    "carry_execution_instruction_substring_aad_present",
+  );
+  requireText(
+    "serverTest",
+    "rejects prefix and field-injection instruction AAD replays across every private venue",
+    "carry_execution_instruction_aad_replay_test_missing",
+  );
+  requireText(
+    "serverTest",
+    "rejects a valid encrypted instruction whose AAD only prefix-matches the submitted order",
+    "carry_execution_instruction_aad_ingress_test_missing",
+  );
   requireText("privateExecution", '`account:${accountCommitment}`', "carry_execution_vault_account_commitment_missing");
   forbidText("privateExecution", 'aadPrefix: "ghola/hyperliquid-execution-vault-v1"', "hyperliquid_prefix_only_vault_open_forbidden");
   forbidText("privateExecution", 'aadPrefix: "ghola/aster-execution-vault-v1"', "aster_prefix_only_vault_open_forbidden");
@@ -1279,6 +1470,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("aster", "target_client_order_matched", "aster_target_match_proof_missing");
   requireText("lighter", "submitAndReconcileLighterExecution", "lighter_exact_reconcile_missing");
   requireText("lighter", "target_client_order_matched", "lighter_target_match_proof_missing");
+  requireText("webConnectorReconciliation", 'if (venueId === "aster") return "/venues/aster/reconcile";', "web_aster_reconcile_route_binding_missing");
+  requireText("webConnectorReconciliation", 'if (venueId === "lighter") return "/venues/lighter/reconcile";', "web_lighter_reconcile_route_binding_missing");
+  requireText("webConnectorReconciliation", 'if (venueId === "coinbase_advanced") return "/venues/coinbase/reconcile";', "web_coinbase_reconcile_route_binding_missing");
+  requireText("webConnectorReconciliation", 'return "/hyperliquid/reconcile";', "web_hyperliquid_reconcile_route_binding_missing");
+  requireText("webConnectorReconciliation", "encrypted_execution_instruction_bundle: input.encrypted_execution_instruction_bundle", "web_sealed_reconcile_instruction_missing");
+  requireText("webConnectorReconciliation", "proof.venue_id !== input.venueId", "web_reconcile_proof_venue_binding_missing");
+  requireText("webConnectorReconciliationTest", "binds %s reconciliation route, vault, instruction, and proof", "web_reconcile_exact_venue_test_missing");
+  requireText("webConnectorReconciliationTest", "rejects a cross-venue proof for an exact Lighter reconciliation", "web_reconcile_cross_venue_negative_test_missing");
   requireText("aster", "original_order_broadcast_proven: exactOriginalOrderObserved", "aster_original_broadcast_proof_missing");
   requireText("lighter", "original_order_broadcast_proven: exactOriginalOrderObserved", "lighter_original_broadcast_proof_missing");
   requireText("lighter", "nonnegativeIntegerOrNull(order?.order_index) !== null", "lighter_original_order_id_proof_missing");
@@ -1944,6 +2143,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryMarket", "CARRY_LATENCY_BUFFER_BPS_PER_LEG", "carry_terminal_latency_buffer_missing");
   requireText("webCarryMarket", "CARRY_STABLE_COLLATERAL_BASIS_RISK_BPS", "carry_terminal_collateral_basis_buffer_missing");
   requireText("webCarryMarket", "applyCarryLivePatches", "carry_incremental_quote_engine_missing");
+  requireText("webCarryMarket", "carryEvidenceResponseForEffectiveVenues", "carry_live_patch_evidence_invalidation_missing");
+  requireText("webCarryChart", "committedEvidenceResponse", "carry_live_patch_evidence_downgrade_missing");
+  requireText("webCarryMarketTest", "invalidates committed evidence when a live patch changes its snapshot", "carry_live_patch_evidence_invalidation_test_missing");
+  requireText("webCarryChartTest", "downgrades every committed economic claim after a live funding patch", "carry_live_patch_evidence_ui_test_missing");
+  requireText("webCarryChartTest", "downgrades committed worker economics after a live orderbook patch", "carry_live_orderbook_evidence_ui_test_missing");
   requireText("webCarryMarket", "orderbookInvalidated", "carry_live_orderbook_quarantine_missing");
   requireText("webCarryMarket", "bestBid = orderbookInvalidated ? null", "carry_live_orderbook_bbo_clear_missing");
   requireText("webCarryMarket", "orderbookInvalidated ? { orderbook: 0 }", "carry_live_orderbook_persistent_quarantine_missing");
@@ -2053,6 +2257,114 @@ export function checkCarryExecutionContract(sources) {
   requireText("webPassportTest", "does not persist an encrypted venue vault before worker verification succeeds", "carry_transactional_vault_test_missing");
   requireText("webPassportTest", "links two Carry venues through authenticated routes", "carry_onboarding_route_test_missing");
   requireText("webPassportTest", "forwards all three sealed Carry venues through one no-submit matrix", "carry_three_venue_no_submit_web_test_missing");
+  requireText(
+    "webPrivateAccountStore",
+    "export async function claimConnectorWorkOrderForPreview(",
+    "connector_preview_atomic_claim_missing",
+  );
+  requireText(
+    "webPrivateAccountStore",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_private_account_connector_work_orders_preview_unique",
+    "connector_preview_unique_index_missing",
+  );
+  requireText(
+    "webPrivateAccountStore",
+    "ON CONFLICT DO NOTHING\n    RETURNING *",
+    "connector_preview_insert_if_absent_missing",
+  );
+  requireCount(
+    "webPrivateAccountRouteLib",
+    "claimConnectorWorkOrderForPreview",
+    2,
+    "connector_preview_claim_route_binding_missing",
+  );
+  requireText(
+    "webPrivateAccountRouteLib",
+    "workOrderRecord.approval_commitment !== input.approval_commitment",
+    "connector_preview_approval_binding_missing",
+  );
+  requireText(
+    "webPrivateAccountRouteLib",
+    "A preview is a one-shot authorization envelope.",
+    "connector_preview_one_shot_fail_closed_missing",
+  );
+  requireText(
+    "webPrivateAccountStoreTest",
+    "atomically binds one connector work order to each preview",
+    "connector_preview_atomic_claim_test_missing",
+  );
+  requireText("webConnectorReconciliation", 'if (venueId === "aster") return "/venues/aster/reconcile";', "connector_aster_reconcile_route_missing");
+  requireText("webConnectorReconciliation", 'if (venueId === "lighter") return "/venues/lighter/reconcile";', "connector_lighter_reconcile_route_missing");
+  requireText("webConnectorReconciliation", 'if (venueId === "coinbase_advanced") return "/venues/coinbase/reconcile";', "connector_coinbase_reconcile_route_missing");
+  requireText(
+    "webConnectorReconciliation",
+    'venueId === "hyperliquid" || venueId === "aster" || venueId === "lighter"',
+    "connector_perp_reconcile_venue_binding_missing",
+  );
+  requireText(
+    "webConnectorReconciliation",
+    'platformClass === "coinbase_style_provider" && venueId === "coinbase_advanced"',
+    "connector_coinbase_reconcile_venue_binding_missing",
+  );
+  requireText("webConnectorReconciliation", 'proof.proof_kind === "aster_client_order_reconciliation_v1"', "connector_aster_exact_proof_missing");
+  requireText("webConnectorReconciliation", 'proof.proof_kind === "lighter_client_order_index_reconciliation_v1"', "connector_lighter_exact_proof_missing");
+  requireText("webConnectorReconciliation", 'proof.proof_kind === "coinbase_advanced_order_state_v1"', "connector_coinbase_exact_proof_missing");
+  requireText("webConnectorReconciliation", "proof.target_order_matched === true", "connector_coinbase_target_order_gate_missing");
+  requireText("webConnectorReconciliation", "proof.target_product_matched === true", "connector_coinbase_target_product_gate_missing");
+  requireText("webConnectorReconciliation", "proof.original_order_target_matched === true", "connector_original_order_target_gate_missing");
+  requireText("webConnectorReconciliationTest", "binds %s reconciliation route, vault, instruction, and proof", "connector_dedicated_perp_reconcile_test_missing");
+  requireText("webConnectorReconciliationTest", "rejects a cross-venue proof for an exact Lighter reconciliation", "connector_cross_venue_proof_rejection_test_missing");
+  requireText("webConnectorReconciliationTest", "fails closed before fetch when the venue does not match the platform", "connector_reconcile_platform_gate_test_missing");
+  requireText("webConnectorReconciliationTest", "rejects generic Coinbase 2xx reconciliation", "connector_coinbase_generic_proof_rejection_test_missing");
+  requireText("webConnectorReconciliationTest", "accepts only exact terminal Coinbase order proof", "connector_coinbase_exact_proof_test_missing");
+  requireText("privateExecution", "export async function reconcileAsterOrder(", "worker_aster_dedicated_reconcile_missing");
+  requireText("privateExecution", "const result = await reconcileAsterExecution({", "worker_aster_reconcile_adapter_missing");
+  requireText("privateExecution", "export async function reconcileLighterOrder(", "worker_lighter_dedicated_reconcile_missing");
+  requireText("privateExecution", "const result = await reconcileLighterExecution({", "worker_lighter_reconcile_adapter_missing");
+  requireText("privateExecution", "export async function reconcileCoinbaseOrder(", "worker_coinbase_dedicated_reconcile_missing");
+  requireText("privateExecution", "const result = await reconcileCoinbaseExecution({", "worker_coinbase_reconcile_adapter_missing");
+  requireText("server", 'url.pathname === "/venues/aster/reconcile"', "worker_aster_reconcile_route_missing");
+  requireText("server", 'url.pathname === "/venues/lighter/reconcile"', "worker_lighter_reconcile_route_missing");
+  requireText("server", 'url.pathname === "/venues/coinbase/reconcile"', "worker_coinbase_reconcile_route_missing");
+  requireText("coinbase", "export async function reconcileCoinbaseExecution({", "coinbase_exact_reconcile_adapter_missing");
+  requireText("coinbase", "target_client_order_matched: targetClientOrderMatched", "coinbase_exact_client_order_proof_missing");
+  requireText("coinbase", "target_product_matched: targetProductMatched", "coinbase_exact_product_proof_missing");
+  requireText("coinbase", "original_order_target_matched: exactTargetMatched", "coinbase_exact_target_proof_missing");
+  requireText("coinbase", "async function locateCoinbaseOrderByClientOrderId({", "coinbase_targeted_reconcile_lookup_missing");
+  requireText("coinbase", "for (let page = 0; page < 3; page += 1)", "coinbase_targeted_reconcile_lookup_unbounded");
+  requireText(
+    "coinbase",
+    "order?.client_order_id === clientOrderId && order?.product_id === productId",
+    "coinbase_targeted_reconcile_lookup_not_exact",
+  );
+  requireText(
+    "coinbase",
+    'matches.length === 1 && typeof matches[0]?.order_id === "string"',
+    "coinbase_targeted_reconcile_lookup_not_unique",
+  );
+  requireText(
+    "coinbase",
+    "if (instruction.reconcile?.target_work_order_commitment && !targetOrderId)",
+    "coinbase_targeted_reconcile_fallback_missing",
+  );
+  requireText("coinbase", "targetOrderId = located?.order_id || null", "coinbase_targeted_reconcile_fallback_order_binding_missing");
+  requireText(
+    "coinbase",
+    "const exactTargetMatched = targetOrderMatched && targetClientOrderMatched && targetProductMatched;",
+    "coinbase_exact_target_conjunction_missing",
+  );
+  requireText("coinbase", "const terminal = exactTargetMatched && coinbaseOrderTerminal(order);", "coinbase_terminal_exact_target_gate_missing");
+  requireText("coinbaseTest", "rejects a terminal Coinbase row that does not match the exact submitted order", "coinbase_mismatched_target_test_missing");
+  requireText(
+    "coinbaseTest",
+    "recovers an ambiguous Coinbase response by locating the exact client order once",
+    "coinbase_targeted_reconcile_fallback_test_missing",
+  );
+  requireText(
+    "coinbaseTest",
+    "keeps Coinbase ambiguous when the exact client order cannot be found",
+    "coinbase_targeted_reconcile_not_found_test_missing",
+  );
   const verificationGate = String(sources.webPassport || "").indexOf("if (!serverVerification.ok)");
   const vaultPersistence = String(sources.webPassport || "").indexOf("if (vaultToStore) await putVenueExecutionVault(vaultToStore)");
   if (verificationGate < 0 || vaultPersistence <= verificationGate) failures.push("carry_vault_persisted_before_verification");

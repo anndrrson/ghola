@@ -23,7 +23,7 @@ import {
 import { storeCarryTransferRouteEvidence } from "../src/execution/carry-transfer-routes.js";
 import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
 import { carryAccountStateCommitment } from "../src/execution/carry-readiness.js";
-import { createWorkerState } from "../src/state/private-state.js";
+import { createWorkerState, createWorkerStateAdapter } from "../src/state/private-state.js";
 import { liquidationDistanceSourceForVenue } from "../src/venues/liquidation-distance.js";
 import {
   carryOpportunityInputEvidence,
@@ -204,10 +204,176 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
 
   state = createWorkerState(dir);
   const reloaded = await state.getCarryPositionRecord(record.position.position_id);
+  const reloadedLifecycle = await state.listCarryLifecycleEvents({
+    position_id: record.position.position_id,
+  });
   assert.equal(reloaded.position.status, "reconciled");
+  assert.equal(reloadedLifecycle.length, lifecycle().length);
+  assert.deepEqual(reloadedLifecycle.map((item) => item.event), reloaded.lifecycle_events);
   assert.equal(reloaded.value_ledger.realized.net_value_micro_usdc, 21_000);
   assert.equal(reloaded.value_ledger.realized.attribution.status, "finalized");
   assert.equal(reloaded.value_ledger.finalization_evidence.open_order_count, 0);
+});
+
+test("persists an append-only Carry lifecycle journal beyond the 256-event UI tail and rejects stale CAS appends", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-lifecycle-journal-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  let state = createWorkerState(dir);
+  const positionId = "carry:position:journal:0001";
+  let record = {
+    owner_commitment: OWNER,
+    position: {
+      position_id: positionId,
+      status: "active",
+      last_event_sequence: 0,
+    },
+    lifecycle_events: [],
+  };
+  let stored = await state.putCarryPositionRecord(record, { expected_version: null });
+  assert.equal(stored.ok, true);
+  record = stored.record;
+
+  for (let sequence = 1; sequence <= 300; sequence += 1) {
+    const event = {
+      version: 1,
+      event_id: `carry:event:journal:${sequence}`,
+      sequence,
+      type: "observation",
+      recorded_at_ms: NOW + sequence,
+    };
+    const next = {
+      ...record,
+      position: { ...record.position, last_event_sequence: sequence },
+      lifecycle_events: [...record.lifecycle_events, event].slice(-256),
+    };
+    stored = await state.putCarryPositionRecord(next, {
+      expected_version: record.record_version,
+      lifecycle_event: event,
+    });
+    assert.equal(stored.ok, true, stored.error);
+    record = stored.record;
+  }
+
+  assert.equal(record.lifecycle_events.length, 256);
+  let journal = await state.listCarryLifecycleEvents({ position_id: positionId, limit: 1_000 });
+  assert.equal(journal.length, 300);
+  assert.equal(journal[0].sequence, 1);
+  assert.equal(journal.at(-1).sequence, 300);
+  assert.equal(journal.at(-1).previous_event_commitment, journal.at(-2).event_commitment);
+
+  const projectionMutation = await state.putCarryPositionRecord({
+    ...record,
+    position: { ...record.position, status: "reconciled" },
+    final_reconciliation_evidence: { known_flat: true, open_order_count: 0 },
+  }, { expected_version: record.record_version });
+  assert.equal(projectionMutation.error, "carry_lifecycle_projection_write_requires_event");
+
+  const event = {
+    version: 1,
+    event_id: "carry:event:journal:1",
+    sequence: 301,
+    type: "observation",
+    recorded_at_ms: NOW + 301,
+  };
+  const next = {
+    ...record,
+    position: { ...record.position, last_event_sequence: 301 },
+    lifecycle_events: [...record.lifecycle_events, event].slice(-256),
+  };
+  const freshEvent = { ...event, event_id: "carry:event:journal:301" };
+  const tamperedPrefix = {
+    ...next,
+    lifecycle_events: [
+      { ...record.lifecycle_events[1], type: "tampered_observation" },
+      ...record.lifecycle_events.slice(2),
+      freshEvent,
+    ],
+  };
+  const tampered = await state.putCarryPositionRecord(tamperedPrefix, {
+    expected_version: record.record_version,
+    lifecycle_event: freshEvent,
+  });
+  assert.equal(tampered.error, "carry_lifecycle_snapshot_binding_mismatch");
+  const detached = await state.putCarryPositionRecord(next, {
+    expected_version: record.record_version,
+  });
+  assert.equal(detached.error, "carry_lifecycle_projection_write_requires_event");
+  const duplicate = await state.putCarryPositionRecord(next, {
+    expected_version: record.record_version,
+    lifecycle_event: event,
+  });
+  assert.equal(duplicate.error, "carry_lifecycle_event_conflict");
+  const stale = await state.putCarryPositionRecord(next, {
+    expected_version: record.record_version - 1,
+    lifecycle_event: { ...event, event_id: "carry:event:journal:301" },
+  });
+  assert.equal(stale.error, "carry_record_version_conflict");
+
+  state = createWorkerState(dir);
+  journal = await state.listCarryLifecycleEvents({ position_id: positionId, limit: 1_000 });
+  assert.equal(journal.length, 300);
+  assert.equal((await state.getCarryPositionRecord(positionId)).position.last_event_sequence, 300);
+});
+
+test("anchors legacy Carry journals without freezing positions or qualifying missing history", async () => {
+  const positionId = "carry:position:legacy-journal:0001";
+  const priorEvents = [1, 2, 3].map((sequence) => ({
+    version: 1,
+    event_id: `carry:event:legacy:${sequence}`,
+    sequence,
+    type: "observation",
+    recorded_at_ms: NOW + sequence,
+  }));
+  let snapshot = {
+    carry_positions: {
+      [positionId]: {
+        record_version: 7,
+        owner_commitment: OWNER,
+        position: { position_id: positionId, status: "active", last_event_sequence: 3 },
+        lifecycle_events: priorEvents,
+      },
+    },
+    carry_lifecycle_events: {},
+  };
+  const state = createWorkerStateAdapter({
+    path: "memory://legacy-carry-journal",
+    hmacSecret: "11".repeat(32),
+    load: async () => structuredClone(snapshot),
+    save: async (next) => { snapshot = structuredClone(next); },
+  });
+  const legacy = await state.getCarryPositionRecord(positionId);
+  const ordinary = await state.putCarryPositionRecord({ ...legacy, marker: "still-managed" }, {
+    expected_version: legacy.record_version,
+  });
+  assert.equal(ordinary.ok, true, ordinary.error);
+  assert.deepEqual(ordinary.record.lifecycle_journal, { version: 1, origin_sequence: 4 });
+
+  const event = {
+    version: 1,
+    event_id: "carry:event:legacy:4",
+    sequence: 4,
+    type: "exit_requested",
+    recorded_at_ms: NOW + 4,
+  };
+  const appended = await state.putCarryPositionRecord({
+    ...ordinary.record,
+    position: { ...ordinary.record.position, last_event_sequence: 4 },
+    lifecycle_events: ordinary.record.lifecycle_events.concat(event),
+  }, {
+    expected_version: ordinary.record.record_version,
+    lifecycle_event: event,
+  });
+  assert.equal(appended.ok, true, appended.error);
+  const journal = await state.listCarryLifecycleEvents({ position_id: positionId });
+  assert.equal(journal.length, 1);
+  assert.equal(journal[0].sequence, 4);
+  assert.equal(journal[0].previous_event_commitment, null);
+
+  const mutated = await state.putCarryPositionRecord({
+    ...appended.record,
+    lifecycle_journal: { version: 1, origin_sequence: 1 },
+  }, { expected_version: appended.record.record_version });
+  assert.equal(mutated.error, "carry_lifecycle_journal_metadata_immutable");
 });
 
 test("refuses caller-claimed final value before durable cost evidence is complete", async (t) => {
@@ -721,14 +887,7 @@ test("creates an owner-signed migration replacement only from the selected flat 
     state,
     position_id: parent.position.position_id,
     owner_commitment: OWNER,
-    event: event(5, "exit_reconciled", { gross_exposure_micro_usdc: 0, open_order_count: 0 }),
-    now_ms: NOW + 5,
-  });
-  assert.equal(reconciled.record.position.pending_migration.status, "owner_signature_required");
-  const storedParent = await state.getCarryPositionRecord(parent.position.position_id);
-  const finalizedParent = await state.putCarryPositionRecord({
-    ...storedParent,
-    final_reconciliation_evidence: {
+    event: event(5, "exit_reconciled", {
       owner_commitment: OWNER,
       carry_position_id: parent.position.position_id,
       account_state_checked: true,
@@ -741,9 +900,11 @@ test("creates an owner-signed migration replacement only from the selected flat 
         { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
         { venue_id: "lighter", account_commitment: "account:lighter:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
       ],
-    },
-  }, { expected_version: storedParent.record_version });
-  assert.equal(finalizedParent.ok, true);
+    }),
+    now_ms: NOW + 5,
+  });
+  assert.equal(reconciled.record.position.pending_migration.status, "owner_signature_required");
+  assert.equal(reconciled.record.final_reconciliation_evidence.reconciliation_commitment, "carry:reconciliation:migration-parent:0001");
 
   const replacementBase = {
     version: 1,

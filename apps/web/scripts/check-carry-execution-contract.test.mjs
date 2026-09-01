@@ -9,6 +9,17 @@ import {
 
 const sources = loadCarryReleaseSources();
 
+function mutateSection(source, start, end, mutate) {
+  const startIndex = source.indexOf(start);
+  assert.notEqual(startIndex, -1, `missing mutation start: ${start}`);
+  const endIndex = source.indexOf(end, startIndex + start.length);
+  assert.notEqual(endIndex, -1, `missing mutation end: ${end}`);
+  const section = source.slice(startIndex, endIndex);
+  const mutated = mutate(section);
+  assert.notEqual(mutated, section, `mutation made no change in: ${start}`);
+  return `${source.slice(0, startIndex)}${mutated}${source.slice(endIndex)}`;
+}
+
 test("accepts the complete cross-venue Carry execution contract", () => {
   assert.equal(checkCarryExecutionContract(sources).ok, true);
 });
@@ -124,6 +135,99 @@ test("rejects release validation when any venue bypasses the atomic policy-and-a
       ),
     }),
     /durable_atomic_policy_adapter_claim_missing/,
+  );
+});
+
+test("rejects Coinbase, Solana perps, or Jupiter network access before a durable pending claim", () => {
+  for (const [start, end, code] of [
+    ["export async function executeCoinbaseOrder(", "export async function reconcileCoinbaseOrder(", /coinbase_pending_claim_before_(reservation|network)_missing|durable_atomic_policy_adapter_claim_missing/],
+    ["export async function executeSolanaPerpsOrder(", "export async function executeJupiterSwapOrder(", /solana_perps_pending_claim_before_network_missing|durable_atomic_policy_adapter_claim_missing/],
+    ["export async function executeJupiterSwapOrder(", "export async function executeAutopilotOrder(", /jupiter_pending_claim_before_network_missing|durable_atomic_policy_adapter_claim_missing/],
+  ]) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        privateExecution: mutateSection(sources.privateExecution, start, end, (section) => section.replace(
+          "pending = await claimSubmissionAfterPolicyValidation({",
+          "pending = await claimExecutionAttemptOnly({",
+        )),
+      }),
+      code,
+    );
+  }
+});
+
+test("rejects Coinbase ambiguity paths that release omnibus reservation before exact reconciliation", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privateExecution: mutateSection(
+        sources.privateExecution,
+        "export async function executeCoinbaseOrder(",
+        "export async function reconcileCoinbaseOrder(",
+        (section) => section.replace(
+          "  const receipt = executionReceipt({",
+          "  await state.releaseOmnibus({});\n  const receipt = executionReceipt({",
+        ),
+      ),
+    }),
+    /coinbase_ambiguous_omnibus_release_present/,
+  );
+});
+
+test("rejects a venue execution vault without exact mode, network, and venue AAD", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privateExecution: sources.privateExecution.replace(
+        'opened.associatedDataText !== aadParts.join("|")',
+        "false",
+      ),
+    }),
+    /venue_execution_vault_exact_context_aad_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privateExecution: sources.privateExecution.replace(
+        'aadParts.push(`venue:${venueId}`)',
+        "void venueId",
+      ),
+    }),
+    /venue_execution_vault_venue_aad_missing/,
+  );
+});
+
+test("rejects preview authorization that is reusable or detached from exact approval", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivateAccountStore: sources.webPrivateAccountStore.replace(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_private_account_connector_work_orders_preview_unique",
+        "CREATE INDEX IF NOT EXISTS idx_private_account_connector_work_orders_preview_unique",
+      ),
+    }),
+    /connector_preview_unique_index_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivateAccountRouteLib: sources.webPrivateAccountRouteLib.replace(
+        "const claimed = await claimConnectorWorkOrderForPreview({",
+        "const claimed = await putConnectorWorkOrder({",
+      ),
+    }),
+    /connector_preview_claim_route_binding_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivateAccountRouteLib: sources.webPrivateAccountRouteLib.replace(
+        "workOrderRecord.approval_commitment !== input.approval_commitment",
+        "workOrderRecord.approval_commitment === input.approval_commitment",
+      ),
+    }),
+    /connector_preview_approval_binding_missing/,
   );
 });
 
@@ -515,6 +619,167 @@ test("rejects a full-book scan without its composite database index", () => {
       ),
     }),
     /carry_record_scan_composite_index_missing/,
+  );
+});
+
+test("rejects release proof assembled from the truncated Carry UI tail", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial
+        .replaceAll("readCompleteCarryLifecycleJournal", "readTruncatedCarryLifecycleTail"),
+    }),
+    /carry_release_full_lifecycle_journal_missing/,
+  );
+});
+
+test("rejects Carry entry without an interprocess state assertion", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replaceAll("PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK", "PRIVATE_AGENT_STATE_UNSAFE"),
+    }),
+    /carry_json_single_process_assertion_missing/,
+  );
+});
+
+test("rejects a route surface that allows stateful work without interprocess safety", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replaceAll(
+        "stateAccessAllowedWithoutInterprocessSafety",
+        "stateAccessAlwaysAllowed",
+      ),
+    }),
+    /carry_global_state_route_gate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      serverTest: sources.serverTest.replaceAll(
+        "blocks risk-increasing and non-emergency routes when interprocess state is unsafe",
+        "allows stateful routes without interprocess state",
+      ),
+    }),
+    /carry_global_state_route_test_missing/,
+  );
+});
+
+test("rejects an unsafe-state gate without authenticated emergency reduction", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replaceAll(
+        "UNSAFE_STATE_EMERGENCY_ROUTES",
+        "UNSAFE_STATE_NO_EMERGENCY_ROUTES",
+      ),
+    }),
+    /carry_emergency_state_allowlist_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privateExecution: sources.privateExecution.replaceAll(
+        "enforceEmergencyRiskReductionInstruction",
+        "permitEmergencyExecutionWithoutInspection",
+      ),
+    }),
+    /carry_emergency_decrypted_instruction_gate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      serverTest: sources.serverTest.replaceAll(
+        "unsafe_state_disguised_entry_work_order_123",
+        "unsafe_state_unchecked_entry_work_order_123",
+      ),
+    }),
+    /carry_emergency_disguised_entry_test_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replace(
+        '  "/venues/lighter/orders",',
+        '  "/venues/lighter/orders",\n  "/venues/solana-perps/orders",',
+      ),
+    }),
+    /carry_unsafe_solana_order_route_allowed/,
+  );
+});
+
+test("rejects unsafe-state exit or kill routes that bypass the exact fail-closed allowlist", () => {
+  for (const [route, code] of [
+    ['  "/carry/positions/exit-request",\n', /carry_unsafe_exit_route_allowed/],
+    ['  "/autopilot/tri-venue/kill",\n', /carry_unsafe_tri_kill_route_allowed/],
+  ]) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        server: sources.server.replace(
+          '  "/carry/positions/read",\n',
+          `  "/carry/positions/read",\n${route}`,
+        ),
+      }),
+      code,
+    );
+  }
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replace(
+        "return UNSAFE_STATE_EMERGENCY_ROUTES.has(path);",
+        'return UNSAFE_STATE_EMERGENCY_ROUTES.has(path) || path.endsWith("/kill");',
+      ),
+    }),
+    /carry_unsafe_state_exact_allowlist_gate_missing/,
+  );
+});
+
+test("rejects non-event mutation of lifecycle-derived Carry projections", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      workerState: sources.workerState.replaceAll(
+        "carry_lifecycle_projection_write_requires_event",
+        "carry_lifecycle_projection_write_allowed",
+      ),
+    }),
+    /carry_lifecycle_projection_guard_missing/,
+  );
+});
+
+test("rejects a Phala surface that cannot configure the single-process assertion", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      phalaCompose: sources.phalaCompose.replaceAll("PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK", "PRIVATE_AGENT_STATE_UNSAFE"),
+    }),
+    /carry_phala_single_process_env_missing/,
+  );
+});
+
+test("rejects Carry release without an origin-one lifecycle gate", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replace(
+        "record.lifecycle_journal.origin_sequence !== 1",
+        "record.lifecycle_journal.origin_sequence < 1",
+      ),
+    }),
+    /carry_release_lifecycle_origin_gate_missing/,
+  );
+});
+
+test("rejects an image workflow that skips worker tests", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      workerImageWorkflow: sources.workerImageWorkflow.replace("run: node --test", "run: node --check src/server.js"),
+    }),
+    /carry_worker_image_test_command_missing/,
   );
 });
 
@@ -2499,6 +2764,65 @@ test("rejects venue reconciliation that drifts from the exact original order", (
   );
 });
 
+test("rejects web reconciliation detached from the exact venue", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webConnectorReconciliation: sources.webConnectorReconciliation.replace(
+        'if (venueId === "aster") return "/venues/aster/reconcile";',
+        'if (venueId === "aster") return "/hyperliquid/reconcile";',
+      ),
+    }),
+    /web_aster_reconcile_route_binding_missing/,
+  );
+});
+
+test("rejects Coinbase reconciliation without exact venue, client, product, and order proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webConnectorReconciliation: sources.webConnectorReconciliation.replace(
+        "proof.target_product_matched === true",
+        "proof.target_product_matched !== false",
+      ),
+    }),
+    /connector_coinbase_target_product_gate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coinbase: sources.coinbase.replace(
+        "const exactTargetMatched = targetOrderMatched && targetClientOrderMatched && targetProductMatched;",
+        "const exactTargetMatched = targetOrderMatched && targetClientOrderMatched;",
+      ),
+    }),
+    /coinbase_exact_target_conjunction_missing/,
+  );
+});
+
+test("rejects Coinbase response-loss recovery that requires a persisted order id", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coinbase: sources.coinbase.replace(
+        "if (instruction.reconcile?.target_work_order_commitment && !targetOrderId)",
+        "if (false && instruction.reconcile?.target_work_order_commitment && !targetOrderId)",
+      ),
+    }),
+    /coinbase_targeted_reconcile_fallback_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coinbase: sources.coinbase.replace(
+        "order?.client_order_id === clientOrderId && order?.product_id === productId",
+        "order?.client_order_id === clientOrderId || order?.product_id === productId",
+      ),
+    }),
+    /coinbase_targeted_reconcile_lookup_not_exact/,
+  );
+});
+
 test("rejects Aster client order ids that exceed the venue limit", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -3106,6 +3430,56 @@ test("rejects execution adapters without authoritative liquidation-distance read
       ),
     }),
     /lighter_liquidation_provenance_missing/,
+  );
+});
+
+test("rejects Lighter readiness inferred from an unbound account response", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      lighter: sources.lighter.replaceAll(
+        "accountStatus === LIGHTER_ACCOUNT_STATUS_ACTIVE",
+        "true",
+      ),
+    }),
+    /lighter_account_status_readiness_gate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      lighter: sources.lighter.replaceAll("expectedAccountIndex", "ignoredAccountIndex"),
+    }),
+    /lighter_account_index_binding_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      lighter: sources.lighter.replaceAll(
+        "sanitizeAccount(result.account, {}, { expectedAccountIndex: credential.account_index })",
+        "sanitizeAccount(result.account)",
+      ),
+    }),
+    /lighter_credential_account_binding_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      lighterTest: sources.lighterTest.replaceAll(
+        "derives Lighter trade readiness only from a bound active account response",
+        "assumes Lighter trade readiness",
+      ),
+    }),
+    /lighter_account_readiness_test_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      lighterTest: sources.lighterTest.replaceAll(
+        "assert.equal(inactive.can_trade, false)",
+        "assert.equal(inactive.can_trade, true)",
+      ),
+    }),
+    /lighter_credential_inactive_test_missing/,
   );
 });
 
@@ -3909,6 +4283,32 @@ test("rejects Carry vault verification outside its exact account binding", () =>
   );
 });
 
+test("rejects substring matching for encrypted execution-instruction AAD", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privateExecution: sources.privateExecution.replace(
+        "return associatedDataText === expectedAad;",
+        "return associatedDataText.includes(expectedAad);",
+      ),
+    }),
+    /carry_execution_instruction_exact_aad_missing/,
+  );
+});
+
+test("rejects an encrypted execution-instruction matcher disconnected from ingress", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privateExecution: sources.privateExecution.replace(
+        "if (!privateExecutionInstructionAssociatedDataMatches({",
+        "if (false && !privateExecutionInstructionAssociatedDataMatches({",
+      ),
+    }),
+    /carry_execution_instruction_aad_callsite_missing/,
+  );
+});
+
 test("rejects restart recovery that cannot distinguish pre-submit from ambiguity", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -4575,6 +4975,16 @@ test("rejects a terminal that hides commitment-backed funding evidence", () => {
       webCarryChart: sources.webCarryChart.replaceAll("EVID {edgeEvidence.value}", "EVID —"),
     }),
     /carry_funding_evidence_display_missing/,
+  );
+});
+
+test("rejects a terminal that keeps committed evidence after live snapshot patches", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: sources.webCarryChart.replaceAll("committedEvidenceResponse", "data"),
+    }),
+    /carry_live_patch_evidence_downgrade_missing/,
   );
 });
 
